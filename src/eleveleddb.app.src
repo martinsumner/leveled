@@ -1,0 +1,17 @@
+{application, eleveleddb,
+ [
+  {description, ""},
+  {vsn, "0.0.1"},
+  {modules, []},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, {eleveleddb_app, []}},
+  {env, [
+         %% Default max file size (in bytes)
+         {max_file_size, 32#80000000}, % 4GB default
+
+        ]}
+ ]}.
