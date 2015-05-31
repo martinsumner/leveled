@@ -1,19 +1,25 @@
 -module(leveled_internal).
+
 -export([termiterator/6]).
+
 -include_lib("eunit/include/eunit.hrl").
 
 
 %% We will have a sorted list of terms
-%% Some terms will be dummy terms which are pointers to more terms which can be found
-%% If a pointer is hit need to replenish the term list before proceeding
+%% Some terms will be dummy terms which are pointers to more terms which can be 
+%% found.  If a pointer is hit need to replenish the term list before 
+%% proceeding.
 %%
-%% Helper Functions should have free functions - FolderFun, CompareFun, PointerCheck}
-%% FolderFun - function which takes the next item and the accumulator and returns an updated accunulator
-%% CompareFun - function which should be able to compare two keys (which are not pointers)
+%% Helper Functions should have free functions - 
+%% {FolderFun, CompareFun, PointerCheck}
+%% FolderFun - function which takes the next item and the accumulator and 
+%% returns an updated accumulator
+%% CompareFun - function which should be able to compare two keys (which are 
+%% not pointers), and return a winning item (or combination of items)
 %% PointerCheck - function for differentiating between keys and pointer
 
-termiterator(HeadItem, [], Acc, HelperFuns, _StartKey, _EndKey) ->
-	io:format("Reached empty list with head item of ~w~n", [HeadItem]),
+termiterator(HeadItem, [], Acc, HelperFuns, 
+	_StartKey, _EndKey) ->
 	case HeadItem of 
 		null ->
 			Acc;
@@ -21,7 +27,8 @@ termiterator(HeadItem, [], Acc, HelperFuns, _StartKey, _EndKey) ->
 			{FolderFun, _, _} = HelperFuns,
 			FolderFun(Acc, HeadItem)
 	end;
-termiterator(null, [NextItem|TailList], Acc, HelperFuns, StartKey, EndKey) ->
+termiterator(null, [NextItem|TailList], Acc, HelperFuns, 
+	StartKey, EndKey) ->
 	%% Check that the NextItem is not a pointer before promoting to HeadItem
 	%% Cannot now promote a HeadItem which is a pointer
 	{_, _, PointerCheck} = HelperFuns,
@@ -29,30 +36,37 @@ termiterator(null, [NextItem|TailList], Acc, HelperFuns, StartKey, EndKey) ->
 		{true, Pointer} ->
 			NewSlice = getnextslice(Pointer, EndKey),
 			ExtendedList = lists:merge(NewSlice, TailList),
-			termiterator(null, ExtendedList, Acc, HelperFuns, StartKey, EndKey);
+			termiterator(null, ExtendedList, Acc, HelperFuns, 
+				StartKey, EndKey);
 		false ->
-			termiterator(NextItem, TailList, Acc, HelperFuns, StartKey, EndKey)
+			termiterator(NextItem, TailList, Acc, HelperFuns, 
+				StartKey, EndKey)
 	end;
-termiterator(HeadItem, [NextItem|TailList], Acc, HelperFuns, StartKey, EndKey) ->
-	io:format("Checking head item of ~w~n", [HeadItem]),
+termiterator(HeadItem, [NextItem|TailList], Acc, HelperFuns, 
+	StartKey, EndKey) ->
 	{FolderFun, CompareFun, PointerCheck} = HelperFuns,
-	%% HeadItem cannot be pointer, but NextItem might be, so check before comparison
+	%% HeadItem cannot be pointer, but NextItem might be, so check before 
+	%% comparison
 	case PointerCheck(NextItem) of 
 		{true, Pointer} ->
 			NewSlice = getnextslice(Pointer, EndKey),
 			ExtendedList = lists:merge(NewSlice, [NextItem|TailList]),
-			termiterator(null, ExtendedList, Acc, HelperFuns, StartKey, EndKey);
+			termiterator(null, ExtendedList, Acc, HelperFuns, 
+				StartKey, EndKey);
 		false ->
-			%% Compare to see if Head and Next match, or if Head is a winner to be added
-			%% to accumulator
+			%% Compare to see if Head and Next match, or if Head is a winner 
+			%% to be added to accumulator
 			case CompareFun(HeadItem, NextItem) of 
 				{match, StrongItem, _WeakItem} ->
-					%% Discard WeakItem
-					termiterator(StrongItem, TailList, Acc, HelperFuns, StartKey, EndKey);
+					%% Discard WeakItem, Strong Item might be an aggregation of
+					%% the items  
+					termiterator(StrongItem, TailList, Acc, HelperFuns, 
+						StartKey, EndKey);
 				{winner, HeadItem} ->
 					%% Add next item to accumulator, and proceed with next item
 					AccPlus = FolderFun(Acc, HeadItem),
-					termiterator(NextItem, TailList, AccPlus, HelperFuns, HeadItem, EndKey)
+					termiterator(NextItem, TailList, AccPlus, HelperFuns, 
+						HeadItem, EndKey)
 			end
 	end.
 			
