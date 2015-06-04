@@ -23,16 +23,16 @@
 %% There will be up to 4000 blocks in a single bst file
 %%
 %% The slots is a series of references
-%% - 4 byte bloom-filter length
+%% - 4 byte bloom-filter length 
 %% - 4 byte key-helper length 
-%% - a variable-length compressed bloom filter for all keys in slot (approx 1KB)
-%% - 32 ordered variable-length key helpers pointing to first key in each 
+%% - a variable-length compressed bloom filter for all keys in slot (approx 3KB)
+%% - 64 ordered variable-length key helpers pointing to first key in each 
 %% block (in slot) of the form Key Length, Key, Block Position
 %% - 4 byte CRC for the slot
 %%
 %% The slot index in the footer is made up of 128 keys and pointers at the 
 %% the start of each slot
-%% - 128 Key Length (4 byte), Key, Position (4 byte) indexes
+%% - 64 x Key Length (4 byte), Key, Position (4 byte) indexes
 %% - 4 bytes CRC for the index
 %%
 %% The format of the file is intended to support quick lookups, whilst 
@@ -54,8 +54,9 @@
 
 -record(metadata, {version = ?CURRENT_VERSION :: tuple(),
 					   mutable = false :: true | false,
-					   compressed = true :: tre | false,
-					   slot_list :: list(),
+					   compressed = true :: true | false,
+					   slot_array,
+					   open_slot :: integer(),
 					   cache :: tuple(),
 					   smallest_key :: tuple(),
 					   largest_key :: tuple(),
@@ -73,9 +74,9 @@ start_file(Handle) ->
 	{ok, _} = file:position(Handle, bof),
 	file:write(Handle, Header),
 	{Version, {M, C}, _, _} = convert_header(Header),
-	FileMD = #metadata{version=Version, mutable=M, compressed=C},
-	SlotArray = array:new(?SLOT_COUNT),
-	{Handle, FileMD, SlotArray}.
+	FileMD = #metadata{version = Version, mutable = M, compressed = C, 
+	slot_array = array:new(?SLOT_COUNT), open_slot = 0},
+	{Handle, FileMD}.
 
 
 create_header(initial) ->
@@ -119,6 +120,8 @@ convert_header_v01(Header) ->
 	{{0, 1}, {M, C}, {FooterP, SlotLng, HlpLng}, none}.
 
 
+% add_slot(Handle, FileMD, SlotArray)
+
 
 
 %%%%%%%%%%%%%%%%
@@ -148,7 +151,7 @@ bad_header_test() ->
 	?assertMatch(unknown_version, convert_header(NewHdr2)).
 
 record_onstartfile_test() ->
-	{_, FileMD, _} = start_file("onstartfile.bst"),
+	{_, FileMD} = start_file("onstartfile.bst"),
 	?assertMatch({0, 1}, FileMD#metadata.version).
 
 

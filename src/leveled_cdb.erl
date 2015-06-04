@@ -54,24 +54,22 @@
   put/4,
   open_active_file/1,
   get_nextkey/1,
-  get_nextkey/2]).
+  get_nextkey/2,
+  fold/3,
+  fold_keys/3]).
 
 -include_lib("eunit/include/eunit.hrl").
 
 -define(DWORD_SIZE, 8).
 -define(WORD_SIZE, 4).
 -define(CRC_CHECK, true).
+-define(MAX_FILE_SIZE, 3221225472).
+-define(BASE_POSITION, 2048).
 
 %%
 %% from_dict(FileName,ListOfKeyValueTuples)
 %% Given a filename and a dictionary, create a cdb
 %% using the key value pairs from the dict.
-%%
-%% @spec from_dict(filename(),dictionary()) -> ok
-%% where
-%%	filename() = string(),
-%%	dictionary() = dict()
-%%
 from_dict(FileName,Dict) ->
   KeyValueList = dict:to_list(Dict),
   create(FileName, KeyValueList).
@@ -82,30 +80,21 @@ from_dict(FileName,Dict) ->
 %% this function creates a CDB
 %%
 create(FileName,KeyValueList) ->
-  {ok, Handle} = file:open(FileName, [write]),
-  {ok, _} = file:position(Handle, {bof, 2048}),
+  {ok, Handle} = file:open(FileName, [binary, raw, read, write]),
+  {ok, _} = file:position(Handle, {bof, ?BASE_POSITION}),
   {BasePos, HashTree} = write_key_value_pairs(Handle, KeyValueList),
-  io:format("KVs has been written to base position ~w~n", [BasePos]),
-  L2 = write_hash_tables(Handle, HashTree),
-  io:format("Index list output of ~w~n", [L2]),
-  write_top_index_table(Handle, BasePos, L2),
-  file:close(Handle).
+  close_file(Handle, HashTree, BasePos).
 
 %%
 %% dump(FileName) -> List
 %% Given a file name, this function returns a list
 %% of {key,value} tuples from the CDB.
 %%
-%%
-%% @spec dump(filename()) -> key_value_list()
-%% where
-%%  filename() = string(),
-%%  key_value_list() = [{key,value}]
 dump(FileName) ->
   dump(FileName, ?CRC_CHECK).
 
 dump(FileName, CRCCheck) ->
-  {ok, Handle} = file:open(FileName, [binary,raw]),
+  {ok, Handle} = file:open(FileName, [binary, raw, read]),
   Fn = fun(Index, Acc) ->
     {ok, _} = file:position(Handle, ?DWORD_SIZE * Index),
     {_, Count} = read_next_2_integers(Handle),
@@ -117,8 +106,9 @@ dump(FileName, CRCCheck) ->
   {ok, _} = file:position(Handle, {bof, 2048}),
   Fn1 = fun(_I,Acc) ->
     {KL,VL} = read_next_2_integers(Handle),
-    Key = read_next_string(Handle, KL),
-    case read_next_string(Handle, VL, crc, CRCCheck) of
+    Key = read_next_term(Handle, KL),
+    io:format("Key read of ~w~n", [Key]),
+    case read_next_term(Handle, VL, crc, CRCCheck) of
       {false, _} ->
         {ok, CurrLoc} = file:position(Handle, cur),
         Return = {crc_wonky, get(Handle, Key)};
@@ -169,9 +159,15 @@ put(FileName, Key, Value, {LastPosition, HashTree}) when is_list(FileName) ->
     [binary, raw, read, write, delayed_write]),
   put(Handle, Key, Value, {LastPosition, HashTree});
 put(Handle, Key, Value, {LastPosition, HashTree}) ->
-  Bin = key_value_to_record({Key, Value}), % create binary for Key and Value
-  ok = file:pwrite(Handle, LastPosition, Bin),
-  {LastPosition + byte_size(Bin), put_hashtree(Key, LastPosition, HashTree)}.
+  Bin = key_value_to_record({Key, Value}), 
+  PotentialNewSize = LastPosition + byte_size(Bin),
+  if PotentialNewSize > ?MAX_FILE_SIZE ->
+    close_file(Handle, HashTree, LastPosition),
+    roll;
+  true ->
+    ok = file:pwrite(Handle, LastPosition, Bin),
+    {Handle, PotentialNewSize, put_hashtree(Key, LastPosition, HashTree)}
+  end.
 
 
 %%
@@ -182,7 +178,7 @@ get(FileNameOrHandle, Key) ->
   get(FileNameOrHandle, Key, ?CRC_CHECK).
 
 get(FileName, Key, CRCCheck) when is_list(FileName), is_list(Key) ->
-  {ok,Handle} = file:open(FileName,[binary,raw]),
+  {ok,Handle} = file:open(FileName,[binary, raw, read]),
   get(Handle,Key, CRCCheck);
 
 get(Handle, Key, CRCCheck) when is_tuple(Handle), is_list(Key) ->
@@ -230,7 +226,7 @@ get_nextkey(Handle, {Position, FirstHashPosition}) ->
   {ok, Position} = file:position(Handle, Position),
   case read_next_2_integers(Handle) of 
     {KeyLength, ValueLength} ->
-      NextKey = read_next_string(Handle, KeyLength),
+      NextKey = read_next_term(Handle, KeyLength),
       NextPosition = Position + KeyLength + ValueLength + ?DWORD_SIZE,
       case NextPosition of 
         FirstHashPosition ->
@@ -243,9 +239,75 @@ get_nextkey(Handle, {Position, FirstHashPosition}) ->
   end.
 
 
+%% Fold over all of the objects in the file, applying FoldFun to each object
+%% where FoldFun(K, V, Acc0) -> Acc , or FoldFun(K, Acc0) -> Acc if KeyOnly is
+%% set to true
+
+fold(FileName, FoldFun, Acc0) when is_list(FileName) ->
+  {ok, Handle} = file:open(FileName, [binary, raw, read]),
+  fold(Handle, FoldFun, Acc0);
+fold(Handle, FoldFun, Acc0) ->
+  {ok, _} = file:position(Handle, bof),
+  {FirstHashPosition, _} = read_next_2_integers(Handle),
+  fold(Handle, FoldFun, Acc0, {256 * ?DWORD_SIZE, FirstHashPosition}, false).
+
+fold(Handle, FoldFun, Acc0, {Position, FirstHashPosition}, KeyOnly) ->
+  {ok, Position} = file:position(Handle, Position),
+  case Position of 
+    FirstHashPosition ->
+      Acc0;
+    _ ->
+      case read_next_2_integers(Handle) of 
+        {KeyLength, ValueLength} ->
+          NextKey = read_next_term(Handle, KeyLength),
+          NextPosition = Position + KeyLength + ValueLength + ?DWORD_SIZE,
+          case KeyOnly of 
+            true ->
+              fold(Handle, FoldFun, FoldFun(NextKey, Acc0), 
+                {NextPosition, FirstHashPosition}, KeyOnly);
+            false ->
+              case read_next_term(Handle, ValueLength, crc, ?CRC_CHECK) of
+                {false, _} -> 
+                  io:format("Skipping value for Key ~w as CRC check failed~n", 
+                    [NextKey]),
+                  fold(Handle, FoldFun, Acc0, 
+                    {NextPosition, FirstHashPosition}, KeyOnly);
+                {_, Value} ->
+                  fold(Handle, FoldFun, FoldFun(NextKey, Value, Acc0), 
+                    {NextPosition, FirstHashPosition}, KeyOnly)
+              end
+          end;
+      eof ->
+        Acc0
+      end
+  end.
+
+
+fold_keys(FileName, FoldFun, Acc0) when is_list(FileName) ->
+  {ok, Handle} = file:open(FileName, [binary, raw, read]),
+  fold_keys(Handle, FoldFun, Acc0);
+fold_keys(Handle, FoldFun, Acc0) ->
+  {ok, _} = file:position(Handle, bof),
+  {FirstHashPosition, _} = read_next_2_integers(Handle),
+  fold(Handle, FoldFun, Acc0, {256 * ?DWORD_SIZE, FirstHashPosition}, true).
+
+
 %%%%%%%%%%%%%%%%%%%%
 %% Internal functions
 %%%%%%%%%%%%%%%%%%%%
+
+%% Take an active file and write the hash details necessary to close that
+%% file and roll a new active file if requested.  
+%%
+%% Base Pos should be at the end of the KV pairs written (the position for)
+%% the hash tables
+close_file(Handle, HashTree, BasePos) ->
+  {ok, BasePos} = file:position(Handle, BasePos),
+  L2 = write_hash_tables(Handle, HashTree),
+  write_top_index_table(Handle, BasePos, L2),
+  file:close(Handle).
+
+
 
 %% Fetch a list of positions by passing a key to the HashTree
 get_hashtree(Key, HashTree) ->
@@ -282,9 +344,9 @@ extract_kvpair(_, [], _, _) ->
 extract_kvpair(Handle, [Position|Rest], Key, Check) ->
   {ok, _} = file:position(Handle, Position),
   {KeyLength, ValueLength} = read_next_2_integers(Handle),
-  case read_next_string(Handle, KeyLength) of
+  case read_next_term(Handle, KeyLength) of
     Key ->  % If same key as passed in, then found!
-      case read_next_string(Handle, ValueLength, crc, Check) of
+      case read_next_term(Handle, ValueLength, crc, Check) of
         {false, _} -> 
           crc_wonky;
         {_, Value} ->
@@ -301,10 +363,10 @@ scan_over_file(Handle, Position) ->
   scan_over_file(Handle, Position, HashTree).
 
 scan_over_file(Handle, Position, HashTree) ->
-  case read_next_2_integers(Handle) of 
-    {KeyLength, ValueLength} -> 
-      Key = read_next_string(Handle, KeyLength),
-      {ok, ValueAsBin} = file:read(Handle, ValueLength),
+  case saferead_keyvalue(Handle) of
+    false ->
+      {Position, HashTree};
+    {Key, ValueAsBin, KeyLength, ValueLength} ->
       case crccheck_value(ValueAsBin) of
         true ->
           NewPosition = Position + KeyLength + ValueLength + ?DWORD_SIZE,
@@ -316,6 +378,34 @@ scan_over_file(Handle, Position, HashTree) ->
       end;
     eof ->
       {Position, HashTree}
+  end.
+
+
+%% Read the Key/Value at this point, returning {ok, Key, Value}
+%% catch expected exceptiosn associated with file corruption (or end) and 
+%% return eof
+saferead_keyvalue(Handle) ->
+  case read_next_2_integers(Handle) of 
+    {error, einval} ->
+      false;
+    eof ->
+      false;
+    {KeyL, ValueL} ->
+      case read_next_term(Handle, KeyL) of 
+        {error, einval} ->
+          false;
+        eof ->
+          false;
+        Key ->
+          case file:read(Handle, ValueL) of 
+            {error, einval} ->
+              false;
+            eof ->
+              false;
+            {ok, Value} ->
+              {Key, Value, KeyL, ValueL}
+          end 
+      end
   end.
 
 %% The first four bytes of the value are the crc check
@@ -356,26 +446,30 @@ to_dict(FileName) ->
   KeyValueList = dump(FileName),
   dict:from_list(KeyValueList).
 
-read_next_string(Handle, Length) ->
-  {ok, Bin} = file:read(Handle, Length),
-  binary_to_list(Bin).
+read_next_term(Handle, Length) ->
+  case file:read(Handle, Length) of  
+    {ok, Bin} ->
+      binary_to_term(Bin);
+    ReadError ->
+      ReadError
+  end.
 
 %% Read next string where the string has a CRC prepended - stripping the crc 
 %% and checking if requested
-read_next_string(Handle, Length, crc, Check) ->
+read_next_term(Handle, Length, crc, Check) ->
   case Check of 
     true ->
       {ok, <<CRC:32/integer, Bin/binary>>} = file:read(Handle, Length),
       case calc_crc(Bin) of 
         CRC ->
-          {true, binary_to_list(Bin)};
+          {true, binary_to_term(Bin)};
         _ ->
-          {false, binary_to_list(Bin)}
+          {false, binary_to_term(Bin)}
       end;
     _ ->
       {ok, _} = file:position(Handle, {cur, 4}),
       {ok, Bin} = file:read(Handle, Length - 4),
-      {unchecked, binary_to_list(Bin)}
+      {unchecked, binary_to_term(Bin)}
   end.
 
 
@@ -386,9 +480,9 @@ read_next_2_integers(Handle) ->
   case file:read(Handle,?DWORD_SIZE) of 
     {ok, <<Int1:32,Int2:32>>} -> 
       {endian_flip(Int1), endian_flip(Int2)};
-    MatchError
+    ReadError
       ->
-        MatchError
+        ReadError
   end.
 
 %% Seach the hash table for the matching hash and key.  Be prepared for 
@@ -398,7 +492,6 @@ search_hash_table(_Handle, [], _Hash, _Key, _CRCCHeck) ->
 search_hash_table(Handle, [Entry|RestOfEntries], Hash, Key, CRCCheck) ->
   {ok, _} = file:position(Handle, Entry),
   {StoredHash, DataLoc} = read_next_2_integers(Handle),
-  io:format("looking in data location ~w~n", [DataLoc]),
   case StoredHash of
     Hash ->
       KV = extract_kvpair(Handle, [DataLoc], Key, CRCCheck),
@@ -432,7 +525,7 @@ write_key_value_pairs(_, [], Acc) ->
   Acc;
 write_key_value_pairs(Handle, [HeadPair|TailList], Acc) -> 
   {Key, Value} = HeadPair,
-  {NewPosition, HashTree} = put(Handle, Key, Value, Acc),
+  {Handle, NewPosition, HashTree} = put(Handle, Key, Value, Acc),
   write_key_value_pairs(Handle, TailList, {NewPosition, HashTree}).
 
 %% Write the actual hashtables at the bottom of the file.  Each hash table
@@ -549,14 +642,16 @@ endian_flip(Int) ->
   X.
 
 hash(Key) ->
+  BK = term_to_binary(Key),
   H = 5381,
-  hash1(H,Key) band 16#FFFFFFFF.
+  hash1(H, BK) band 16#FFFFFFFF.
 
-hash1(H,[]) ->H;
-hash1(H,[B|Rest]) ->
+hash1(H, <<>>) -> 
+  H;
+hash1(H, <<B:8/integer, Rest/bytes>>) ->
   H1 = H * 33,
   H2 = H1 bxor B,
-  hash1(H2,Rest).
+  hash1(H2, Rest).
 
 % Get the least significant 8 bits from the hash.
 hash_to_index(Hash) ->
@@ -567,41 +662,21 @@ hash_to_slot(Hash,L) ->
 
 %% Create a binary of the LengthKeyLengthValue, adding a CRC check
 %% at the front of the value
-key_value_to_record({Key,Value}) ->
-  L1 = endian_flip(length(Key)),
-  L2 = endian_flip(length(Value) + 4),
-  LB1 = list_to_binary(Key), 
-  LB2 = list_to_binary(Value), 
-  CRC = calc_crc(LB2),
-  <<L1:32,L2:32,LB1/binary,CRC:32/integer,LB2/binary>>.
+key_value_to_record({Key, Value}) ->
+  BK = term_to_binary(Key), 
+  BV = term_to_binary(Value), 
+  LK = byte_size(BK),
+  LV = byte_size(BV),
+  LK_FL = endian_flip(LK),
+  LV_FL = endian_flip(LV + 4),
+  CRC = calc_crc(BV),
+  <<LK_FL:32, LV_FL:32, BK:LK/binary, CRC:32/integer, BV:LV/binary>>.
+
 
 %%%%%%%%%%%%%%%%
 % T E S T 
 %%%%%%%%%%%%%%%  
-
-hash_1_test() ->
-  Hash = hash("key1"),
-  ?assertMatch(Hash,2088047427).
-
-hash_to_index_1_test() ->
-  Hash = hash("key1"),
-  Index = hash_to_index(Hash),
-  ?assertMatch(Index,67).
-
-hash_to_index_2_test() ->
-  Hash = 256,
-  I = hash_to_index(Hash),
-  ?assertMatch(I,0).
- 
-hash_to_index_3_test() ->
-  Hash = 268,
-  I = hash_to_index(Hash),
-  ?assertMatch(I,12).
-
-hash_to_index_4_test() ->
-  Hash = hash("key2"),
-  Index = hash_to_index(Hash),
-  ?assertMatch(Index,64).
+-ifdef(TEST).
 
 write_key_value_pairs_1_test() ->
   {ok,Handle} = file:open("test.cdb",write),
@@ -612,8 +687,11 @@ write_key_value_pairs_1_test() ->
   Index2 = hash_to_index(Hash2),
   R0 = array:new(256, {default, gb_trees:empty()}),
   R1 = array:set(Index1, gb_trees:insert(Hash1, [0], array:get(Index1, R0)), R0),
-  R2 = array:set(Index2, gb_trees:insert(Hash2, [22], array:get(Index2, R1)), R1),
-  ?assertMatch(R2, HashTree).
+  R2 = array:set(Index2, gb_trees:insert(Hash2, [30], array:get(Index2, R1)), R1),
+  io:format("HashTree is ~w~n", [HashTree]),
+  io:format("Expected HashTree is ~w~n", [R2]),
+  ?assertMatch(R2, HashTree),
+  ok = file:delete("test.cdb").
 
 
 write_hash_tables_1_test() ->
@@ -623,7 +701,8 @@ write_hash_tables_1_test() ->
   R2 = array:set(67, gb_trees:insert(6383014723, [0], array:get(67, R1)), R1),
   Result = write_hash_tables(Handle, R2),
   io:format("write hash tables result of ~w ~n", [Result]),
-  ?assertMatch(Result,[{67,16,2},{64,0,2}]).
+  ?assertMatch(Result,[{67,16,2},{64,0,2}]),
+  ok = file:delete("test.cdb").
 
 find_open_slot_1_test() ->
   List = [<<1:32,1:32>>,<<0:32,0:32>>,<<1:32,1:32>>,<<1:32,1:32>>],
@@ -654,7 +733,8 @@ full_1_test() ->
   List1 = lists:sort([{"key1","value1"},{"key2","value2"}]),
   create("simple.cdb",lists:sort([{"key1","value1"},{"key2","value2"}])),
   List2 = lists:sort(dump("simple.cdb")),
-  ?assertMatch(List1,List2).
+  ?assertMatch(List1,List2),
+  ok = file:delete("simple.cdb").
 
 full_2_test() ->
   List1 = lists:sort([{lists:flatten(io_lib:format("~s~p",[Prefix,Plug])),
@@ -664,7 +744,8 @@ full_2_test() ->
       "tiep4||","qweq"]]),
   create("full.cdb",List1),
   List2 = lists:sort(dump("full.cdb")),
-  ?assertMatch(List1,List2).
+  ?assertMatch(List1,List2),
+  ok = file:delete("full.cdb").
 
 from_dict_test() ->
   D = dict:new(),
@@ -676,7 +757,8 @@ from_dict_test() ->
   D3 = lists:sort(dict:to_list(D2)),
   io:format("KVP is ~w~n", [KVP]),
   io:format("D3 is ~w~n", [D3]),
-  ?assertMatch(KVP,D3).
+  ?assertMatch(KVP, D3),
+  ok = file:delete("from_dict_test.cdb").
 
 to_dict_test() ->
   D = dict:new(),
@@ -686,7 +768,8 @@ to_dict_test() ->
   Dict = to_dict("from_dict_test.cdb"),
   D3 = lists:sort(dict:to_list(D2)),
   D4 = lists:sort(dict:to_list(Dict)),
-  ?assertMatch(D4,D3).
+  ?assertMatch(D4,D3),
+  ok = file:delete("from_dict_test.cdb").
 
 crccheck_emptyvalue_test() ->
   ?assertMatch(false, crccheck_value(<<>>)).
@@ -729,9 +812,10 @@ activewrite_singlewrite_test() ->
   {LastPosition, KeyDict} = open_active_file("test_mem.cdb"),
   io:format("File opened as new active file " 
     "with LastPosition=~w ~n", [LastPosition]),
-  {_, UpdKeyDict} = put("test_mem.cdb", Key, Value, {LastPosition, KeyDict}),
+  {_, _, UpdKeyDict} = put("test_mem.cdb", Key, Value, {LastPosition, KeyDict}),
   io:format("New key and value added to active file ~n", []),
-  ?assertMatch({Key, Value}, get_mem(Key, "test_mem.cdb", UpdKeyDict)).
+  ?assertMatch({Key, Value}, get_mem(Key, "test_mem.cdb", UpdKeyDict)),
+  ok = file:delete("test_mem.cdb").
 
 search_hash_table_findinslot_test() ->
   Key1 = "key1", % this is in slot 3 if count is 8
@@ -766,10 +850,11 @@ search_hash_table_findinslot_test() ->
   ok = file:pwrite(Handle, FirstHashPosition + (Slot -1) * ?DWORD_SIZE, RBin),
   ok = file:close(Handle),
   io:format("Find key following change to hash table~n"),
-  ?assertMatch(missing, get("hashtable1_test.cdb", Key1)).
+  ?assertMatch(missing, get("hashtable1_test.cdb", Key1)),
+  ok = file:delete("hashtable1_test.cdb").
 
-getnextkey_test() ->
-  L = [{"K9", "V9"}, {"K2", "V2"}, {"K3", "V3"}, 
+getnextkey_inclemptyvalue_test() ->
+  L = [{"K9", "V9"}, {"K2", "V2"}, {"K3", ""}, 
     {"K4", "V4"}, {"K5", "V5"}, {"K6", "V6"}, {"K7", "V7"}, 
     {"K8", "V8"}, {"K1", "V1"}],
   ok = create("hashtable1_test.cdb", L),
@@ -778,7 +863,8 @@ getnextkey_test() ->
   ?assertMatch("K9", FirstKey),
   {SecondKey, Handle, P2} = get_nextkey(Handle, P1),
   ?assertMatch("K2", SecondKey),
-  {_, Handle, P3} = get_nextkey(Handle, P2),
+  {ThirdKeyNoValue, Handle, P3} = get_nextkey(Handle, P2),
+  ?assertMatch("K3", ThirdKeyNoValue),
   {_, Handle, P4} = get_nextkey(Handle, P3),
   {_, Handle, P5} = get_nextkey(Handle, P4),
   {_, Handle, P6} = get_nextkey(Handle, P5),
@@ -786,19 +872,114 @@ getnextkey_test() ->
   {_, Handle, P8} = get_nextkey(Handle, P7),
   {LastKey, Info} = get_nextkey(Handle, P8),
   ?assertMatch(nomorekeys, Info),
-  ?assertMatch("K1", LastKey).
+  ?assertMatch("K1", LastKey),
+  ok = file:delete("hashtable1_test.cdb").
 
 newactivefile_test() ->
   {LastPosition, _} = open_active_file("activefile_test.cdb"),
   ?assertMatch(256 * ?DWORD_SIZE, LastPosition),
   Response = get_nextkey("activefile_test.cdb"),
-  ?assertMatch(nomorekeys, Response).
+  ?assertMatch(nomorekeys, Response),
+  ok = file:delete("activefile_test.cdb").
 
+emptyvalue_fromdict_test() ->
+  D = dict:new(),
+  D1 = dict:store("K1", "V1", D),
+  D2 = dict:store("K2", "", D1),
+  D3 = dict:store("K3", "V3", D2),
+  D4 = dict:store("K4", "", D3),
+  ok = from_dict("from_dict_test_ev.cdb",D4),
+  io:format("Store created ~n", []),
+  KVP = lists:sort(dump("from_dict_test_ev.cdb")),
+  D_Result = lists:sort(dict:to_list(D4)),
+  io:format("KVP is ~w~n", [KVP]),
+  io:format("D_Result is ~w~n", [D_Result]),
+  ?assertMatch(KVP, D_Result),
+  ok = file:delete("from_dict_test_ev.cdb").
 
+fold_test() ->
+  K1 = {"Key1", 1},
+  V1 = 2,
+  K2 = {"Key1", 2},
+  V2 = 4,
+  K3 = {"Key1", 3},
+  V3 = 8,
+  K4 = {"Key1", 4},
+  V4 = 16,
+  K5 = {"Key1", 5},
+  V5 = 32,
+  D = dict:from_list([{K1, V1}, {K2, V2}, {K3, V3}, {K4, V4}, {K5, V5}]),
+  ok = from_dict("fold_test.cdb", D),
+  FromSN = 2,
+  FoldFun = fun(K, V, Acc) ->
+    {_Key, Seq} = K,
+    if Seq > FromSN ->
+      Acc + V;
+    true ->
+      Acc
+    end
+  end,
+  ?assertMatch(56, fold("fold_test.cdb", FoldFun, 0)),
+  ok = file:delete("fold_test.cdb").
 
+fold_keys_test() ->
+  K1 = {"Key1", 1},
+  V1 = 2,
+  K2 = {"Key2", 2},
+  V2 = 4,
+  K3 = {"Key3", 3},
+  V3 = 8,
+  K4 = {"Key4", 4},
+  V4 = 16,
+  K5 = {"Key5", 5},
+  V5 = 32,
+  D = dict:from_list([{K1, V1}, {K2, V2}, {K3, V3}, {K4, V4}, {K5, V5}]),
+  ok = from_dict("fold_keys_test.cdb", D),
+  FromSN = 2,
+  FoldFun = fun(K, Acc) ->
+    {Key, Seq} = K,
+    if Seq > FromSN ->
+      lists:append(Acc, [Key]);
+    true ->
+      Acc
+    end
+  end,
+  Result = fold_keys("fold_keys_test.cdb", FoldFun, []),
+  ?assertMatch(["Key3", "Key4", "Key5"], lists:sort(Result)),
+  ok = file:delete("fold_keys_test.cdb").
 
+fold2_test() ->
+  K1 = {"Key1", 1},
+  V1 = 2,
+  K2 = {"Key1", 2},
+  V2 = 4,
+  K3 = {"Key1", 3},
+  V3 = 8,
+  K4 = {"Key1", 4},
+  V4 = 16,
+  K5 = {"Key1", 5},
+  V5 = 32,
+  K6 = {"Key2", 1},
+  V6 = 64,
+  D = dict:from_list([{K1, V1}, {K2, V2}, {K3, V3}, 
+    {K4, V4}, {K5, V5}, {K6, V6}]),
+  ok = from_dict("fold2_test.cdb", D),
+  FoldFun = fun(K, V, Acc) ->
+    {Key, Seq} = K,
+    case dict:find(Key, Acc) of 
+      error ->
+        dict:store(Key, {Seq, V}, Acc);
+      {ok, {LSN, _V}} when Seq > LSN ->
+        dict:store(Key, {Seq, V}, Acc);
+      _ ->
+        Acc 
+    end 
+  end,
+  RD = dict:new(),
+  RD1 = dict:store("Key1", {5, 32}, RD),
+  RD2 = dict:store("Key2", {1, 64}, RD1),
+  Result = fold("fold2_test.cdb", FoldFun, dict:new()),
+  ?assertMatch(RD2, Result),
+  ok = file:delete("fold2_test.cdb").
 
-
-
-
-
+-endif.

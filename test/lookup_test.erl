@@ -1,7 +1,11 @@
 -module(lookup_test).
 
--export([go_dict/1, go_ets/1, go_gbtree/1, 
-    go_arrayofdict/1, go_arrayofgbtree/1, go_arrayofdict_withcache/1]).
+-export([go_dict/1, 
+    go_ets/1, 
+    go_gbtree/1, 
+    go_arrayofdict/1, 
+    go_arrayofgbtree/1, 
+    go_arrayofdict_withcache/1]).
 
 -define(CACHE_SIZE, 512).
 
