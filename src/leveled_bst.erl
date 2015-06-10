@@ -1,7 +1,7 @@
 %%
 %% This module provides functions for managing bst files - a modified version
 %% of sst files, to be used in leveleddb.
-%% bst files are borken into the following sections:
+%% bst files are broken into the following sections:
 %% - Header (fixed width 32 bytes - containing pointers and metadata)
 %% - Blocks (variable length)
 %% - Slots (variable length)
@@ -16,6 +16,17 @@
 %% - 14 bytes spare for future options
 %% - 4 bytes CRC (header)  
 %%
+%% A key in the file is a tuple of {Key, Value/Metadata, Sequence #, State}
+%% - Keys are themselves tuples, and all entries must be added to the bst 
+%% in key order
+%% - Metadata can be null or some fast-access information that may be required
+%% in preference to the full value (e.g. vector clocks, hashes).  This could 
+%% be a value instead of Metadata should the file be sued in an alternate 
+%% - Sequence numbers is the integer representing the order which the item
+%% was added (which also acts as reference to find the cdb file under which 
+%% the value is stored)
+%% - State can be tomb (for tombstone), active or {timestamp, TS}
+%%
 %% The Blocks is a series of blocks of: 
 %% - 4 byte block length
 %% - variable-length compressed list of 32 keys & values
@@ -29,8 +40,9 @@
 %% - 64 ordered variable-length key helpers pointing to first key in each 
 %% block (in slot) of the form Key Length, Key, Block Position
 %% - 4 byte CRC for the slot
+%% - ulitmately a slot covers 64 x 32 = 2048 keys
 %%
-%% The slot index in the footer is made up of 128 keys and pointers at the 
+%% The slot index in the footer is made up of 64 keys and pointers at the 
 %% the start of each slot
 %% - 64 x Key Length (4 byte), Key, Position (4 byte) indexes
 %% - 4 bytes CRC for the index
@@ -42,20 +54,20 @@
 
 -module(leveled_bst).
 
--export([start_file/1, convert_header/1]).
+-export([start_file/1, convert_header/1, append_slot/4]).
 
 -include_lib("eunit/include/eunit.hrl").
 
 -define(WORD_SIZE, 4).
 -define(CURRENT_VERSION, {0,1}).
--define(SLOT_COUNT, 128).
+-define(SLOT_COUNT, 64).
 -define(BLOCK_SIZE, 32).
--define(SLOT_SIZE, 32).
+-define(SLOT_SIZE, 64).
 
 -record(metadata, {version = ?CURRENT_VERSION :: tuple(),
 					   mutable = false :: true | false,
 					   compressed = true :: true | false,
-					   slot_array,
+					   slot_index,
 					   open_slot :: integer(),
 					   cache :: tuple(),
 					   smallest_key :: tuple(),
@@ -63,6 +75,11 @@
 					   smallest_sqn :: integer(),
 					   largest_sqn :: integer()
 					  }).
+
+-record(object, {key :: tuple(),
+					value,
+					sequence_numb :: integer(),
+					state}).
 
 %% Start a bare file with an initial header and no further details
 %% Return the {Handle, metadata record}
@@ -72,10 +89,10 @@ start_file(FileName) when is_list(FileName) ->
 start_file(Handle) -> 
 	Header = create_header(initial),
 	{ok, _} = file:position(Handle, bof),
-	file:write(Handle, Header),
+	ok = file:write(Handle, Header),
 	{Version, {M, C}, _, _} = convert_header(Header),
 	FileMD = #metadata{version = Version, mutable = M, compressed = C, 
-	slot_array = array:new(?SLOT_COUNT), open_slot = 0},
+	slot_index = array:new(?SLOT_COUNT), open_slot = 0},
 	{Handle, FileMD}.
 
 
@@ -120,13 +137,84 @@ convert_header_v01(Header) ->
 	{{0, 1}, {M, C}, {FooterP, SlotLng, HlpLng}, none}.
 
 
-% add_slot(Handle, FileMD, SlotArray)
+%% Append a slot of blocks to the end file, and update the slot index in the
+%% file metadata
 
+append_slot(Handle, SortedKVList, SlotCount, FileMD) ->
+	{ok, _} = file:position(Handle, eof),
+	{KeyList, BlockIndexBin, BlockBin} = add_blocks(SortedKVList),
+	ok = file:write(Handle, BlockBin),
+	[TopObject|_] = SortedKVList,
+	BloomBin = leveled_rice:create_bloom(KeyList),
+	SlotIndex = array:set(SlotCount, 
+		{TopObject#object.key, BloomBin, BlockIndexBin}, 
+		FileMD#metadata.slot_index),
+	{Handle, FileMD#metadata{slot_index=SlotIndex}}.
+
+
+add_blocks(SortedKVList) ->
+	add_blocks(SortedKVList, [], [], [], 0).
+
+add_blocks([], KeyList, BlockIndex, BlockBinList, _) ->
+	{KeyList, serialise_blockindex(BlockIndex), list_to_binary(BlockBinList)};
+add_blocks(SortedKVList, KeyList, BlockIndex, BlockBinList, Position) ->
+	case length(SortedKVList) of 
+		KeyCount when KeyCount >= ?BLOCK_SIZE ->
+			{TopBlock, Rest} = lists:split(?BLOCK_SIZE, SortedKVList);
+		KeyCount ->
+			{TopBlock, Rest} = lists:split(KeyCount, SortedKVList)
+	end,
+	[TopKey|_] = TopBlock,
+	TopBin = serialise_block(TopBlock),
+	add_blocks(Rest, add_to_keylist(KeyList, TopBlock), 
+		[{TopKey, Position}|BlockIndex], 
+		[TopBin|BlockBinList], Position + byte_size(TopBin)). 
+
+add_to_keylist(KeyList, []) ->
+	KeyList;
+add_to_keylist(KeyList, [TopKV|Rest]) ->
+	add_to_keylist([map_keyforbloom(TopKV)|KeyList], Rest).
+
+map_keyforbloom(_Object=#object{key=Key}) ->
+	Key.
+
+
+serialise_blockindex(BlockIndex) ->
+	serialise_blockindex(BlockIndex, <<>>).
+
+serialise_blockindex([], BlockBin) ->
+	BlockBin;
+serialise_blockindex([TopIndex|Rest], BlockBin) ->
+	{Key, BlockPos} = TopIndex,
+	KeyBin = serialise_key(Key),
+	KeyLength = byte_size(KeyBin),
+	serialise_blockindex(Rest, 
+		<<KeyLength:32/integer, KeyBin/binary, BlockPos:32/integer, 
+		BlockBin/binary>>).
+
+serialise_block(Block) ->
+	term_to_binary(Block).
+
+serialise_key(Key) ->
+	term_to_binary(Key).
 
 
 %%%%%%%%%%%%%%%%
 % T E S T 
 %%%%%%%%%%%%%%%  
+
+create_sample_kv(Prefix, Counter) ->
+	Key = {o, "Bucket1", lists:concat([Prefix, Counter])},
+	Object = #object{key=Key, value=null, 
+	sequence_numb=random:uniform(1000000), state=active},
+	Object.
+
+create_ordered_kvlist(KeyList, 0) ->
+	KeyList;
+create_ordered_kvlist(KeyList, Length) ->
+	KV = create_sample_kv("Key", Length),
+	create_ordered_kvlist([KV|KeyList], Length - 1).
+
 
 empty_header_test() ->
 	Header = create_header(initial),
@@ -152,7 +240,22 @@ bad_header_test() ->
 
 record_onstartfile_test() ->
 	{_, FileMD} = start_file("onstartfile.bst"),
-	?assertMatch({0, 1}, FileMD#metadata.version).
+	?assertMatch({0, 1}, FileMD#metadata.version),
+	ok = file:delete("onstartfile.bst").
+
+append_initialblock_test() ->
+	{Handle, FileMD} = start_file("onstartfile.bst"),
+	KVList = create_ordered_kvlist([], 2048),
+	Key1 = {o, "Bucket1", "Key1"},
+	[TopObj|_] = KVList,
+	?assertMatch(Key1, TopObj#object.key),
+	{_, UpdFileMD} = append_slot(Handle, KVList, 0, FileMD),
+	{TopKey1, BloomBin, _} = array:get(0, UpdFileMD#metadata.slot_index),
+	io:format("top key of ~w~n", [TopKey1]),
+	?assertMatch(Key1, TopKey1),
+	?assertMatch(true, leveled_rice:check_key(Key1, BloomBin)),
+	?assertMatch(false, leveled_rice:check_key("OtherKey", BloomBin)).
+
 
 
 
