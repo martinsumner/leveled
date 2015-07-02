@@ -42,8 +42,9 @@
 %% - 4 byte CRC for the slot
 %% - ulitmately a slot covers 64 x 32 = 2048 keys
 %%
-%% The slot index in the footer is made up of 64 keys and pointers at the 
-%% the start of each slot
+%% The slot index in the footer is made up of up to 64 ordered keys and 
+%% pointers, with the key being a key at the start of each slot
+%% - 1 byte value showing number of keys in slot index
 %% - 64 x Key Length (4 byte), Key, Position (4 byte) indexes
 %% - 4 bytes CRC for the index
 %%
@@ -59,10 +60,13 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(WORD_SIZE, 4).
+-define(DWORD_SIZE, 8).
 -define(CURRENT_VERSION, {0,1}).
 -define(SLOT_COUNT, 64).
 -define(BLOCK_SIZE, 32).
 -define(SLOT_SIZE, 64).
+-define(FOOTERPOS_HEADERPOS, 2).
+
 
 -record(metadata, {version = ?CURRENT_VERSION :: tuple(),
 					   mutable = false :: true | false,
@@ -141,15 +145,80 @@ convert_header_v01(Header) ->
 %% file metadata
 
 append_slot(Handle, SortedKVList, SlotCount, FileMD) ->
-	{ok, _} = file:position(Handle, eof),
+	{ok, SlotPos} = file:position(Handle, eof),
 	{KeyList, BlockIndexBin, BlockBin} = add_blocks(SortedKVList),
 	ok = file:write(Handle, BlockBin),
 	[TopObject|_] = SortedKVList,
 	BloomBin = leveled_rice:create_bloom(KeyList),
 	SlotIndex = array:set(SlotCount, 
-		{TopObject#object.key, BloomBin, BlockIndexBin}, 
+		{TopObject#object.key, BloomBin, BlockIndexBin, SlotPos}, 
 		FileMD#metadata.slot_index),
 	{Handle, FileMD#metadata{slot_index=SlotIndex}}.
+
+append_slot_index(Handle, _FileMD=#metadata{slot_index=SlotIndex}) ->
+	{ok, FooterPos} = file:position(Handle, eof),
+	SlotBin1 = <<?SLOT_COUNT:8/integer>>,
+	SlotBin2 = array:foldl(fun slot_folder_write/3, SlotBin1, SlotIndex),
+	CRC = erlang:crc32(SlotBin2),
+	SlotBin3 = <<CRC:32/integer, SlotBin2/binary>>,
+	ok = file:write(Handle, SlotBin3),
+	SlotLength = byte_size(SlotBin3),
+	Header = <<FooterPos:32/integer, SlotLength:32/integer>>,
+	ok = file:pwrite(Handle, ?FOOTERPOS_HEADERPOS, Header).
+
+slot_folder_write(_Index, undefined, Bin) ->
+	Bin;
+slot_folder_write(_Index, {ObjectKey, _, _, SlotPos}, Bin) ->
+	KeyBin = serialise_key(ObjectKey),
+	KeyLen = byte_size(KeyBin),
+	<<Bin/binary, KeyLen:32/integer, KeyBin/binary, SlotPos:32/integer>>.
+
+slot_folder_read(<<>>, SlotIndex, SlotCount) ->
+	io:format("Slot index read with count=~w slots~n", [SlotCount]),
+	SlotIndex;
+slot_folder_read(SlotIndexBin, SlotIndex, SlotCount) ->
+	<<KeyLen:32/integer, Tail1/binary>> = SlotIndexBin,
+	<<KeyBin:KeyLen/binary, SlotPos:32/integer, Tail2/binary>> = Tail1,
+	slot_folder_read(Tail2, 
+		array:set(SlotCount, {load_key(KeyBin), null, null, SlotPos}, SlotIndex),
+		SlotCount + 1).
+
+read_slot_index(SlotIndexBin) ->
+	<<CRC:32/integer, SlotIndexBin2/binary>> = SlotIndexBin,
+	case erlang:crc32(SlotIndexBin2) of 
+		CRC ->
+			<<SlotCount:8/integer, SlotIndexBin3/binary>> = SlotIndexBin2,
+			CleanSlotIndex = array:new(SlotCount),
+			SlotIndex = slot_folder_read(SlotIndexBin3, CleanSlotIndex, 0),
+			{ok, SlotIndex};
+		_ ->
+			{error, crc_wonky}
+	end. 
+
+find_slot_index(Handle) ->
+	{ok, SlotIndexPtr} = file:pread(Handle, ?FOOTERPOS_HEADERPOS, ?DWORD_SIZE),
+	<<FooterPos:32/integer, SlotIndexLength:32/integer>> = SlotIndexPtr,
+	{ok, SlotIndexBin} = file:pread(Handle, FooterPos, SlotIndexLength),
+	SlotIndexBin.
+
+
+read_blockindex(Handle, Position) ->
+	{ok, _FilePos} = file:position(Handle, Position),
+	{ok, <<BlockLength:32/integer>>} = file:read(Handle, 4),
+	io:format("block length is ~w~n", [BlockLength]),
+	{ok, BlockBin} = file:read(Handle, BlockLength),
+	CheckLessBlockLength = BlockLength - 4,
+	<<Block:CheckLessBlockLength/binary, CRC:32/integer>> = BlockBin,
+	case erlang:crc32(Block) of 
+		CRC ->
+			<<BloomFilterL:32/integer, KeyHelperL:32/integer, 
+			Tail/binary>> = Block,
+			<<BloomFilter:BloomFilterL/binary, 
+			KeyHelper:KeyHelperL/binary>> = Tail,
+			{ok, BloomFilter, KeyHelper};
+		_ ->
+			{error, crc_wonky}
+	end.
 
 
 add_blocks(SortedKVList) ->
@@ -197,6 +266,9 @@ serialise_block(Block) ->
 
 serialise_key(Key) ->
 	term_to_binary(Key).
+
+load_key(KeyBin) ->
+	binary_to_term(KeyBin).
 
 
 %%%%%%%%%%%%%%%%
@@ -250,13 +322,26 @@ append_initialblock_test() ->
 	[TopObj|_] = KVList,
 	?assertMatch(Key1, TopObj#object.key),
 	{_, UpdFileMD} = append_slot(Handle, KVList, 0, FileMD),
-	{TopKey1, BloomBin, _} = array:get(0, UpdFileMD#metadata.slot_index),
+	{TopKey1, BloomBin, _, _} = array:get(0, UpdFileMD#metadata.slot_index),
 	io:format("top key of ~w~n", [TopKey1]),
 	?assertMatch(Key1, TopKey1),
 	?assertMatch(true, leveled_rice:check_key(Key1, BloomBin)),
-	?assertMatch(false, leveled_rice:check_key("OtherKey", BloomBin)).
+	?assertMatch(false, leveled_rice:check_key("OtherKey", BloomBin)),
+	ok = file:delete("onstartfile.bst").
 
-
+append_initialslotindex_test() ->
+	{Handle, FileMD} = start_file("onstartfile.bst"),
+	KVList = create_ordered_kvlist([], 2048),
+	{_, UpdFileMD} = append_slot(Handle, KVList, 0, FileMD),
+	append_slot_index(Handle, UpdFileMD),
+	SlotIndexBin = find_slot_index(Handle),
+	{ok, SlotIndex} = read_slot_index(SlotIndexBin),
+	io:format("slot index is ~w ~n", [SlotIndex]),
+	TopItem = array:get(0, SlotIndex),
+	io:format("top item in slot index is ~w~n", [TopItem]),
+	{ok, BloomFilter, KeyHelper} = read_blockindex(Handle, 32),
+	?assertMatch(true, false),
+	ok = file:delete("onstartfile.bst").
 
 
 
