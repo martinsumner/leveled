@@ -3,17 +3,21 @@
 %% of sst files, to be used in leveleddb.
 %% bst files are broken into the following sections:
 %% - Header (fixed width 32 bytes - containing pointers and metadata)
+%% - Summaries (variable length)
 %% - Blocks (variable length)
 %% - Slots (variable length)
 %% - Footer (variable length - contains slot index and helper metadata)
 %%
-%% The 32-byte header is made up of
+%% The 64-byte header is made up of
 %% - 1 byte version (major 5 bits, minor 3 bits) - default 0.1
 %% - 1 byte state bits (1 bit to indicate mutability, 1 for use of compression)
+%% - 4 bytes summary length
+%% - 4 bytes blocks length
+%% - 4 bytes slots length
 %% - 4 bytes footer position
 %% - 4 bytes slot list length
 %% - 4 bytes helper length
-%% - 14 bytes spare for future options
+%% - 34 bytes spare for future options
 %% - 4 bytes CRC (header)  
 %%
 %% A key in the file is a tuple of {Key, Value/Metadata, Sequence #, State}
@@ -21,10 +25,9 @@
 %% in key order
 %% - Metadata can be null or some fast-access information that may be required
 %% in preference to the full value (e.g. vector clocks, hashes).  This could 
-%% be a value instead of Metadata should the file be sued in an alternate 
+%% be a value instead of Metadata should the file be used in an alternate 
 %% - Sequence numbers is the integer representing the order which the item
-%% was added (which also acts as reference to find the cdb file under which 
-%% the value is stored)
+%% was added to the overall database
 %% - State can be tomb (for tombstone), active or {timestamp, TS}
 %%
 %% The Blocks is a series of blocks of: 

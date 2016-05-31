@@ -5,7 +5,10 @@
     go_gbtree/1, 
     go_arrayofdict/1, 
     go_arrayofgbtree/1, 
-    go_arrayofdict_withcache/1]).
+    go_arrayofdict_withcache/1,
+    create_blocks/3,
+    size_testblocks/1,
+    test_testblocks/2]).
 
 -define(CACHE_SIZE, 512).
 
@@ -242,4 +245,79 @@ merge_values(_, Value1, Value2) ->
     lists:append(Value1, Value2).
 
 
+%% Some functions for testing options compressing term_to_binary
 
+create_block(N, BlockType) ->
+    case BlockType of
+        keylist ->
+            create_block(N, BlockType, []);
+        keygbtree ->
+            create_block(N, BlockType, gb_trees:empty())
+    end.
+
+create_block(0, _, KeyStruct) ->
+    KeyStruct;
+create_block(N, BlockType, KeyStruct) ->
+    Bucket = <<"pdsRecord">>,
+    case N of
+        20 ->
+            Key = lists:concat(["key-20-special"]);
+        _ ->
+            Key = lists:concat(["key-", N, "-", random:uniform(1000)])
+    end,
+    SequenceNumber = random:uniform(1000000000),
+    Indexes = [{<<"DateOfBirth_int">>, random:uniform(10000)}, {<<"index1_bin">>, lists:concat([random:uniform(1000), "SomeCommonText"])}, {<<"index2_bin">>, <<"RepetitionRepetitionRepetition">>}],
+    case BlockType of
+        keylist ->
+            Term = {o, Bucket, Key, {Indexes, SequenceNumber}},
+            create_block(N-1, BlockType, [Term|KeyStruct]);
+        keygbtree ->
+            create_block(N-1, BlockType, gb_trees:insert({o, Bucket, Key}, {Indexes, SequenceNumber}, KeyStruct))
+    end.
+
+
+create_blocks(N, Compression, BlockType) ->
+    create_blocks(N, Compression, BlockType, 10000, []).
+
+create_blocks(_, _, _, 0, BlockList) ->
+    BlockList;
+create_blocks(N, Compression, BlockType, TestLoops, BlockList) ->
+    NewBlock = term_to_binary(create_block(N, BlockType), [{compressed, Compression}]),
+    create_blocks(N, Compression, BlockType, TestLoops - 1, [NewBlock|BlockList]).
+    
+size_testblocks(BlockList) ->
+    size_testblocks(BlockList,0).
+
+size_testblocks([], Acc) ->
+    Acc;
+size_testblocks([H|T], Acc) ->
+    size_testblocks(T, Acc + byte_size(H)).
+
+test_testblocks([], _) ->
+    true;
+test_testblocks([H|T], BlockType) ->
+    Block = binary_to_term(H),
+    case findkey("key-20-special", Block, BlockType) of
+        true ->
+            test_testblocks(T, BlockType);
+        not_found ->
+            false
+    end.
+
+findkey(_, [], keylist) ->
+    not_found;
+findkey(Key, [H|T], keylist) ->
+    case H of
+        {o, <<"pdsRecord">>, Key, _} ->
+            true;
+        _ ->
+        findkey(Key,T, keylist)     
+    end;
+findkey(Key, Tree, keygbtree) ->
+    case gb_trees:lookup({o, <<"pdsRecord">>, Key}, Tree) of
+        none ->
+            not_found;
+        _ ->
+            true
+    end.
+    
