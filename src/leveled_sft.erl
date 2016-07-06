@@ -328,9 +328,12 @@ write_group(Handle, KL1, KL2, {SlotCount, SlotTotal},
     UpdHandle = WriteFun(slots , {Handle, SerialisedSlots}),
     case maxslots_bylevel(SlotTotal, Level) of
         reached ->
-            UpdHandle;
+            complete_write(UpdHandle,
+                            SlotIndex,
+                            {LSN, HSN}, {LowKey, LastKey},
+                            WriteFun);
         continue ->
-            write_group(UpdHandle, KL1, KL2, 0,
+            write_group(UpdHandle, KL1, KL2, {0, SlotTotal},
                         SlotIndex, <<>>,
                         {LSN, HSN}, LowKey, LastKey, Level, WriteFun)
     end;
@@ -350,13 +353,10 @@ write_group(Handle, KL1, KL2, {SlotCount, SlotTotal},
     case Status of
         partial ->
             UpdHandle = WriteFun(slots , {Handle, UpdSlots}),
-            ConvSlotIndex = convert_slotindex(UpdSlotIndex),
-            FinHandle = WriteFun(finalise, {UpdHandle,
-                                            ConvSlotIndex,
-                                            SNExtremes,
-                                            {FirstKey, FinalKey}}),
-            {_, PointerIndex} = ConvSlotIndex,
-            {FinHandle, PointerIndex, SNExtremes, {FirstKey, FinalKey}};
+            complete_write(UpdHandle,
+                            UpdSlotIndex,
+                            SNExtremes, {FirstKey, FinalKey},
+                            WriteFun);
         full ->
             write_group(Handle, KL1rem, KL2rem, {SlotCount + 1, SlotTotal + 1},
                         UpdSlotIndex, UpdSlots,
@@ -364,8 +364,19 @@ write_group(Handle, KL1, KL2, {SlotCount, SlotTotal},
     end.
         
 
+complete_write(Handle, SlotIndex, SNExtremes, {FirstKey, FinalKey}, WriteFun) ->
+    ConvSlotIndex = convert_slotindex(SlotIndex),
+    FinHandle = WriteFun(finalise, {Handle,
+                                    ConvSlotIndex,
+                                    SNExtremes,
+                                    {FirstKey, FinalKey}}),
+    {_, PointerIndex} = ConvSlotIndex,
+    {FinHandle, PointerIndex, SNExtremes, {FirstKey, FinalKey}}.
+
+
 %% Take a slot index, and remove the SegFilters replacing with pointers
-%% Return a tuple of the accumulated slot filters, and a pointer-based slot-index
+%% Return a tuple of the accumulated slot filters, and a pointer-based
+%% slot-index
 
 convert_slotindex(SlotIndex) ->
     SlotFun = fun({LowKey, SegFilter, LengthList},
@@ -418,6 +429,7 @@ sftwrite_function(finalise,
                         KeyExtremes}).
 
 maxslots_bylevel(SlotTotal, _Level) ->
+    io:format("Slot total of ~w~n", [SlotTotal]),
     case SlotTotal of
         ?SLOT_COUNT ->
             reached;
@@ -540,10 +552,11 @@ create_slot(KL1, KL2, Level, BlockCount, SegLists, SerialisedSlot, LengthList,
     end,
     SerialisedBlock = serialise_block(BlockKeyList),
     % io:format("Serialised Block to be added ~w based on BlockKeyList ~w~n", [SerialisedBlock, BlockKeyList]),
-    BlockLength = bit_size(SerialisedBlock),
+    BlockLength = byte_size(SerialisedBlock),
     SerialisedSlot2 = <<SerialisedSlot/binary, SerialisedBlock/binary>>,
     create_slot(KL1b, KL2b, Level, BlockCount - 1, SegLists ++ [SegmentList],
-                SerialisedSlot2, LengthList ++ [BlockLength], TrackingMetadata).
+                SerialisedSlot2, LengthList ++ [BlockLength],
+                TrackingMetadata).
 
 
 last([], {last, LastKey}) -> {keyonly, LastKey};
@@ -670,10 +683,10 @@ update_sequencenumbers({_, _, _, _}, LSN, HSN) ->
 
 generate_segment_filter([SegL1]) ->
     generate_segment_filter({SegL1, [], [], []});
-generate_segment_filter([SegL1, []]) ->
-    generate_segment_filter({SegL1, [], [], []});
-generate_segment_filter([SegL1, SegL2, []]) ->
+generate_segment_filter([SegL1, SegL2]) ->
     generate_segment_filter({SegL1, SegL2, [], []});
+generate_segment_filter([SegL1, SegL2, SegL3]) ->
+    generate_segment_filter({SegL1, SegL2, SegL3, []});
 generate_segment_filter([SegL1, SegL2, SegL3, SegL4]) ->
     generate_segment_filter({SegL1, SegL2, SegL3, SegL4});
 generate_segment_filter(SegLists) ->
@@ -1099,7 +1112,7 @@ createslot_stage2_test() ->
         _KL1, _KL2} = Out,
     ?assertMatch(Status, full),
     Sum1 = lists:foldl(fun(X, Sum) -> Sum + X end, 0, LengthList),
-    Sum2 = bit_size(SerialisedSlot),
+    Sum2 = byte_size(SerialisedSlot),
     ?assertMatch(Sum1, Sum2).
 
 
@@ -1112,7 +1125,7 @@ createslot_stage3_test() ->
         KL1, KL2} = Out,
     ?assertMatch(Status, full),
     Sum1 = lists:foldl(fun(X, Sum) -> Sum + X end, 0, LengthList),
-    Sum2 = bit_size(SerialisedSlot),
+    Sum2 = byte_size(SerialisedSlot),
     ?assertMatch(Sum1, Sum2),
     ?assertMatch(LowKey, {o, "BucketSeq", "Key00000001"}),
     ?assertMatch(LastKey, {o, "BucketSeq", "Key00000128"}),
@@ -1140,8 +1153,8 @@ createslot_stage3_test() ->
 
 testwrite_function(slots, {Handle, SerialisedSlots}) ->
     lists:append(Handle, [SerialisedSlots]);
-testwrite_function(finalise, {Handle, ConvSlotIndex, SNExtremes, KeyExtremes}) ->
-    {Handle, ConvSlotIndex, SNExtremes, KeyExtremes}.
+testwrite_function(finalise, {Handle, C_SlotIndex, SNExtremes, KeyExtremes}) ->
+    {Handle, C_SlotIndex, SNExtremes, KeyExtremes}.
 
 writegroup_stage1_test() ->
     {KL1, KL2} = sample_keylist(),
@@ -1149,12 +1162,15 @@ writegroup_stage1_test() ->
     {{Handle, {_, PointerIndex}, SNExtremes, KeyExtremes},
         PointerIndex, SNExtremes, KeyExtremes} = Output,
     ?assertMatch(SNExtremes, {1,3}),
-    ?assertMatch(KeyExtremes, {{o, "Bucket1", "Key1"}, {o, "Bucket4", "Key1"}}),
+    ?assertMatch(KeyExtremes, {{o, "Bucket1", "Key1"},
+                                {o, "Bucket4", "Key1"}}),
     [TopIndex|[]] = PointerIndex,
     {TopKey, _SegFilter,  {LengthList, _Total}} = TopIndex,
     ?assertMatch(TopKey, {o, "Bucket1", "Key1"}),
-    TotalLength = lists:foldl(fun(X, Acc) -> Acc + X end, 0, LengthList),
-    ActualLength = lists:foldl(fun(X, Acc) -> Acc + bit_size(X) end, 0, Handle),
+    TotalLength = lists:foldl(fun(X, Acc) -> Acc + X end,
+                                0, LengthList),
+    ActualLength = lists:foldl(fun(X, Acc) -> Acc + byte_size(X) end,
+                                0, Handle),
     ?assertMatch(TotalLength, ActualLength).
 
 initial_create_header_test() ->
@@ -1162,18 +1178,45 @@ initial_create_header_test() ->
     ?assertMatch(?HEADER_LENGTH, byte_size(Output)).
 
 initial_create_file_test() ->
-    Filename = "test1.sft",
+    Filename = "../test/test1.sft",
     {KL1, KL2} = sample_keylist(),
     {Handle, FileMD} = create_file(Filename),
     {UpdHandle, UpdFileMD} = complete_file(Handle, FileMD, KL1, KL2, 1),
     Result1 = fetch_keyvalue(UpdHandle, UpdFileMD, {o, "Bucket1", "Key8"}),
     io:format("Result is ~w~n", [Result1]),
-    ?assertMatch(Result1, {{o, "Bucket1", "Key8"}, 1, {active, infinity}, null}),
+    ?assertMatch(Result1, {{o, "Bucket1", "Key8"},
+                            1, {active, infinity}, null}),
     Result2 = fetch_keyvalue(UpdHandle, UpdFileMD, {o, "Bucket1", "Key88"}),
     io:format("Result is ~w~n", [Result2]),
     ?assertMatch(Result2, not_present),
     ok = file:close(UpdHandle),
     ok = file:delete(Filename).
     
-%% big_create_file_test() ->
-    
+big_create_file_test() ->
+    Filename = "../test/bigtest1.sft",
+    {KL1, KL2} = {lists:sort(generate_randomkeys(50000)),
+                    lists:sort(generate_randomkeys(50000))},
+    {InitHandle, InitFileMD} = create_file(Filename),
+    {Handle, FileMD} = complete_file(InitHandle, InitFileMD, KL1, KL2, 1),
+    [{K1, Sq1, St1, V1}|_] = KL1,
+    [{K2, Sq2, St2, V2}|_] = KL2,
+    Result1 = fetch_keyvalue(Handle, FileMD, K1),
+    Result2 = fetch_keyvalue(Handle, FileMD, K2),
+    io:format("Results are:~n~w~n~w~n", [Result1, Result2]),
+    ?assertMatch(Result1, {K1, Sq1, St1, V1}),
+    ?assertMatch(Result2, {K2, Sq2, St2, V2}),
+    FailedFinds = lists:foldl(fun(K, Acc) ->
+                                    {Kn, _, _, _} = K,
+                                    Rn = fetch_keyvalue(Handle, FileMD, Kn),
+                                    case Rn of
+                                        {Kn, _, _, _} -> Acc;
+                                        _ -> Acc + 1
+                                    end
+                                end,
+                                0,
+                                lists:sublist(KL2, 1000)),
+    ?assertMatch(FailedFinds, 0),
+    Result3 = fetch_keyvalue(Handle, FileMD, {o, "Bucket1024", "Key1024Alt"}),
+    ?assertMatch(Result3, not_present),
+    ok = file:close(Handle),
+    ok = file:delete(Filename).
