@@ -105,20 +105,16 @@
 %% Summaries could be used for other summaries of table content in the future,
 %% perhaps application-specific bloom filters
 
-%% The 80-byte header is made up of
+%% The 56-byte header is made up of
 %% - 1 byte version (major 5 bits, minor 3 bits) - default 0.1
 %% - 1 byte options (currently undefined)
 %% - 1 byte Block Size - the expected number of keys in each block
 %% - 1 byte Block Count - the expected number of blocks in each slot
 %% - 2 byte Slot Count - the maximum number of slots in the file
 %% - 6 bytes - spare
-%% - 4 bytes - Blocks position
 %% - 4 bytes - Blocks length
-%% - 4 bytes - Slot Index position
 %% - 4 bytes - Slot Index length
-%% - 4 bytes - Slot Filter position
 %% - 4 bytes - Slot Filter length
-%% - 4 bytes - Table Summary position
 %% - 4 bytes - Table summary length
 %% - 24 bytes - spare
 %% - 4 bytes - CRC32
@@ -168,7 +164,7 @@
 -define(DIVISOR_BITS, 13).
 -define(DIVISOR, 8092).
 -define(COMPRESSION_LEVEL, 1).
--define(HEADER_LENGTH, 56).
+-define(HEADER_LEN, 56).
 
 
 -record(state, {version = ?CURRENT_VERSION :: tuple(),
@@ -181,8 +177,8 @@
                 slots_pointer :: integer(),
                 index_pointer :: integer(),
                 filter_pointer :: integer(),
-                summary_pointer :: integer(),
-                summary_length :: integer()}).
+                summ_pointer :: integer(),
+                summ_length :: integer()}).
 
 
 %% Start a bare file with an initial header and no further details
@@ -199,20 +195,6 @@ create_file(Handle) ->
 	{Handle, FileMD}.
 
 
-%% The 56-byte header is made up of
-%% - 1 byte version (major 5 bits, minor 3 bits) - default 0.1
-%% - 1 byte options (currently undefined)
-%% - 1 byte Block Size - the expected number of keys in each block
-%% - 1 byte Block Count - the expected number of blocks in each slot
-%% - 2 byte Slot Count - the maximum number of slots in the file
-%% - 6 bytes - spare
-%% - 4 bytes - Blocks length
-%% - 4 bytes - Slot Index length
-%% - 4 bytes - Slot Filter length
-%% - 4 bytes - Table summary length
-%% - 24 bytes - spare
-%% - 4 bytes - CRC32
-
 create_header(initial) ->
 	{Major, Minor} = ?CURRENT_VERSION, 
 	Version = <<Major:5, Minor:3>>,
@@ -226,34 +208,47 @@ create_header(initial) ->
     CRC32 = erlang:crc32(H1),
 	<<H1/binary, CRC32:32/integer>>.
 
+%% Open a file returning a handle and metadata which can be used in fetch and
+%% iterator requests
 
+open_file(Filename) ->
+    {ok, _Handle} = file:open(Filename, [binary, raw, read, write]).
+    %% Need to write other metadata somewhere
+    %% ... probably in summmary 
+    %% ... is there a need for two levels of summary?
+    
 %% Take a file handle with a previously created header and complete it based on
 %% the two key lists KL1 and KL2
 
 complete_file(Handle, FileMD, KL1, KL2, Level) ->
-    {UpdHandle,
+    {{UpdHandle,
         PointerList,
         {LowSQN, HighSQN},
-        {LowKey, HighKey}} = write_group(Handle, KL1, KL2, [], <<>>, Level,
+        {LowKey, HighKey}},
+    KeyRemainders} = write_group(Handle, KL1, KL2, [], <<>>, Level,
                                             fun sftwrite_function/2),
     {ok, HeaderLengths} = file:pread(UpdHandle, 12, 16),
-    <<Blnth:32/integer,
-        Ilnth:32/integer,
-        Flnth:32/integer,
-        Slnth:32/integer>> = HeaderLengths, 
-    {UpdHandle, FileMD#state{slot_index=PointerList,
-                                smallest_sqn=LowSQN,
-                                highest_sqn=HighSQN,
-                                smallest_key=LowKey,
-                                highest_key=HighKey,
-                                slots_pointer=?HEADER_LENGTH,
-                                index_pointer=?HEADER_LENGTH + Blnth,
-                                filter_pointer=?HEADER_LENGTH + Blnth + Ilnth,
-                                summary_pointer=?HEADER_LENGTH + Blnth + Ilnth + Flnth,
-                                summary_length=Slnth}}.
+    <<Blen:32/integer,
+        Ilen:32/integer,
+        Flen:32/integer,
+        Slen:32/integer>> = HeaderLengths, 
+    {UpdHandle,
+        FileMD#state{slot_index=PointerList,
+                        smallest_sqn=LowSQN,
+                        highest_sqn=HighSQN,
+                        smallest_key=LowKey,
+                        highest_key=HighKey,
+                        slots_pointer=?HEADER_LEN,
+                        index_pointer=?HEADER_LEN + Blen,
+                        filter_pointer=?HEADER_LEN + Blen + Ilen,
+                        summ_pointer=?HEADER_LEN + Blen + Ilen + Flen,
+                        summ_length=Slen},
+        KeyRemainders}.
 
 %% Fetch a Key and Value from a file, returns
 %% {value, KV} or not_present
+%% The key must be pre-checked to ensure it is in the valid range for the file
+%% A key out of range may fail
 
 fetch_keyvalue(Handle, FileMD, Key) ->
     {_NearestKey, {FilterLen, PointerF},
@@ -296,14 +291,13 @@ fetch_keyvalue_fromblock([BlockNumber|T], Key, LengthList, Handle, StartOfSlot) 
     end.
     
     
-
-
 get_nearestkey(KVList, Key) ->
     get_nearestkey(KVList, Key, not_found).
     
 get_nearestkey([], _KeyToFind, PrevV) ->
     PrevV;
-get_nearestkey([{K, _FilterInfo, _SlotInfo}|_T], KeyToFind, PrevV) when K > KeyToFind ->
+get_nearestkey([{K, _FilterInfo, _SlotInfo}|_T], KeyToFind, PrevV)
+                                                    when K > KeyToFind ->
     PrevV;
 get_nearestkey([Result|T], KeyToFind, _) ->
     get_nearestkey(T, KeyToFind, Result).
@@ -328,10 +322,11 @@ write_group(Handle, KL1, KL2, {SlotCount, SlotTotal},
     UpdHandle = WriteFun(slots , {Handle, SerialisedSlots}),
     case maxslots_bylevel(SlotTotal, Level) of
         reached ->
-            complete_write(UpdHandle,
+            {complete_write(UpdHandle,
                             SlotIndex,
                             {LSN, HSN}, {LowKey, LastKey},
-                            WriteFun);
+                            WriteFun),
+            {KL1, KL2}};
         continue ->
             write_group(UpdHandle, KL1, KL2, {0, SlotTotal},
                         SlotIndex, <<>>,
@@ -353,10 +348,11 @@ write_group(Handle, KL1, KL2, {SlotCount, SlotTotal},
     case Status of
         partial ->
             UpdHandle = WriteFun(slots , {Handle, UpdSlots}),
-            complete_write(UpdHandle,
+            {complete_write(UpdHandle,
                             UpdSlotIndex,
                             SNExtremes, {FirstKey, FinalKey},
-                            WriteFun);
+                            WriteFun),
+            {KL1rem, KL2rem}};
         full ->
             write_group(Handle, KL1rem, KL2rem, {SlotCount + 1, SlotTotal + 1},
                         UpdSlotIndex, UpdSlots,
@@ -364,7 +360,9 @@ write_group(Handle, KL1, KL2, {SlotCount, SlotTotal},
     end.
         
 
-complete_write(Handle, SlotIndex, SNExtremes, {FirstKey, FinalKey}, WriteFun) ->
+complete_write(Handle, SlotIndex,
+                    SNExtremes, {FirstKey, FinalKey},
+                    WriteFun) ->
     ConvSlotIndex = convert_slotindex(SlotIndex),
     FinHandle = WriteFun(finalise, {Handle,
                                     ConvSlotIndex,
@@ -404,7 +402,7 @@ sftwrite_function(finalise,
                     _KeyExtremes}) ->
     {ok, Position} = file:position(Handle, cur),
     
-    SlotsLength = Position - ?HEADER_LENGTH,
+    SlotsLength = Position - ?HEADER_LEN,
     SerialisedIndex = term_to_binary(PointerIndex),
     IndexLength = byte_size(SerialisedIndex),
     
@@ -429,7 +427,6 @@ sftwrite_function(finalise,
                         KeyExtremes}).
 
 maxslots_bylevel(SlotTotal, _Level) ->
-    io:format("Slot total of ~w~n", [SlotTotal]),
     case SlotTotal of
         ?SLOT_COUNT ->
             reached;
@@ -551,7 +548,6 @@ create_slot(KL1, KL2, Level, BlockCount, SegLists, SerialisedSlot, LengthList,
                                     Status}
     end,
     SerialisedBlock = serialise_block(BlockKeyList),
-    % io:format("Serialised Block to be added ~w based on BlockKeyList ~w~n", [SerialisedBlock, BlockKeyList]),
     BlockLength = byte_size(SerialisedBlock),
     SerialisedSlot2 = <<SerialisedSlot/binary, SerialisedBlock/binary>>,
     create_slot(KL1b, KL2b, Level, BlockCount - 1, SegLists ++ [SegmentList],
@@ -1159,8 +1155,9 @@ testwrite_function(finalise, {Handle, C_SlotIndex, SNExtremes, KeyExtremes}) ->
 writegroup_stage1_test() ->
     {KL1, KL2} = sample_keylist(),
     Output = write_group([], KL1, KL2,  [], <<>>, 1, fun testwrite_function/2),
-    {{Handle, {_, PointerIndex}, SNExtremes, KeyExtremes},
-        PointerIndex, SNExtremes, KeyExtremes} = Output,
+    {{{Handle, {_, PointerIndex}, SNExtremes, KeyExtremes},
+        PointerIndex, SNExtremes, KeyExtremes},
+        {_KL1Rem, _KL2Rem}} = Output,
     ?assertMatch(SNExtremes, {1,3}),
     ?assertMatch(KeyExtremes, {{o, "Bucket1", "Key1"},
                                 {o, "Bucket4", "Key1"}}),
@@ -1175,13 +1172,13 @@ writegroup_stage1_test() ->
 
 initial_create_header_test() ->
     Output = create_header(initial),
-    ?assertMatch(?HEADER_LENGTH, byte_size(Output)).
+    ?assertMatch(?HEADER_LEN, byte_size(Output)).
 
 initial_create_file_test() ->
     Filename = "../test/test1.sft",
     {KL1, KL2} = sample_keylist(),
     {Handle, FileMD} = create_file(Filename),
-    {UpdHandle, UpdFileMD} = complete_file(Handle, FileMD, KL1, KL2, 1),
+    {UpdHandle, UpdFileMD, {[], []}} = complete_file(Handle, FileMD, KL1, KL2, 1),
     Result1 = fetch_keyvalue(UpdHandle, UpdFileMD, {o, "Bucket1", "Key8"}),
     io:format("Result is ~w~n", [Result1]),
     ?assertMatch(Result1, {{o, "Bucket1", "Key8"},
@@ -1197,7 +1194,9 @@ big_create_file_test() ->
     {KL1, KL2} = {lists:sort(generate_randomkeys(50000)),
                     lists:sort(generate_randomkeys(50000))},
     {InitHandle, InitFileMD} = create_file(Filename),
-    {Handle, FileMD} = complete_file(InitHandle, InitFileMD, KL1, KL2, 1),
+    {Handle, FileMD, {_KL1Rem, _KL2Rem}} = complete_file(InitHandle,
+                                                            InitFileMD,
+                                                            KL1, KL2, 1),
     [{K1, Sq1, St1, V1}|_] = KL1,
     [{K2, Sq2, St2, V2}|_] = KL2,
     Result1 = fetch_keyvalue(Handle, FileMD, K1),
