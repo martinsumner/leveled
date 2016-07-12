@@ -1398,5 +1398,7 @@ big_iterator_test() ->
                                                     {o, "Bucket9999", "Key9999"},
                                                     32),
     NumFoundKeys2 = length(Result2),
-    ?assertMatch(NumFoundKeys2, 32 * 128).
+    ?assertMatch(NumFoundKeys2, 32 * 128),
+    ok = file:close(Handle),
+    ok = file:delete(Filename).
     
