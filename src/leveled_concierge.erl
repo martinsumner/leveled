@@ -1,4 +1,4 @@
-%% The manager is responsible for controlling access to the store and 
+%% The concierge is responsible for controlling access to the store and 
 %% maintaining both an in-memory view and a persisted state of all the sft
 %% files in use across the store.
 %%
@@ -34,15 +34,18 @@
 %% will call the manifets manager on a timeout to confirm that they are no
 %% longer in use (by any iterators).
 %%
-%% If there is an iterator request, the manager will simply handoff a copy of
-%% the manifest, and register the interest of the iterator at the manifest
-%% sequence number at the time of the request.  Iterators should de-register
-%% themselves from the manager on completion.  Iterators should be
+%% If there is a iterator/snapshot request, the concierge will simply handoff a
+%% copy of the manifest, and register the interest of the iterator at the
+%% manifest sequence number at the time of the request.  Iterators should
+%% de-register themselves from the manager on completion.  Iterators should be
 %% automatically release after a timeout period.  A file can be deleted if
 %% there are no registered iterators from before the point the file was
 %% removed from the manifest.
+%%
+
+
     
--module(leveled_keymanager).
+-module(leveled_concierge).
 
 %% -behaviour(gen_server).
 
@@ -50,16 +53,19 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(LEVEL_SCALEFACTOR, [0, 8, 64, 512,
-                            4096, 32768, 262144, infinity]).
+-define(LEVEL_SCALEFACTOR, [{0, 0}, {1, 8}, {2, 64}, {3, 512},
+                            {4, 4096}, {5, 32768}, {6, 262144}, {7, infinity}]).
 -define(MAX_LEVELS, 8).
 -define(MAX_WORK_WAIT, 300).
+-define(MANIFEST_FP, "manifest").
+-define(FILES_FP, "files").
 
 -record(state, {level_fileref :: list(),
                 ongoing_work :: list(),
 				manifest_sqn :: integer(),
                 registered_iterators :: list(),
-                unreferenced_files :: list()}).
+                unreferenced_files :: list(),
+                root_path :: string()}).
 
 
 %% Work out what the current work queue should be
@@ -92,8 +98,8 @@ return_work(State, From) ->
 assess_workqueue(WorkQ, ?MAX_LEVELS - 1, _LevelFileRef, _OngoingWork) ->
     WorkQ;
 assess_workqueue(WorkQ, LevelToAssess, LevelFileRef, OngoingWork)->
-    MaxFiles = get_item(LevelToAssess +  1, ?LEVEL_SCALEFACTOR, 0),
-    FileCount = length(get_item(LevelToAssess + 1, LevelFileRef, [])),
+    MaxFiles = get_item(LevelToAssess, ?LEVEL_SCALEFACTOR, 0),
+    FileCount = length(get_item(LevelToAssess, LevelFileRef, [])),
     NewWQ = maybe_append_work(WorkQ, LevelToAssess, LevelFileRef, MaxFiles,
                                 FileCount, OngoingWork),
     assess_workqueue(NewWQ, LevelToAssess + 1, LevelFileRef, OngoingWork).
@@ -111,8 +117,8 @@ maybe_append_work(WorkQ, Level, LevelFileRef,
             WorkQ;
         false ->
             lists:append(WorkQ, [{Level,
-                                    get_item(Level + 1, LevelFileRef, []),
-                                    get_item(Level + 2, LevelFileRef, [])}])
+                                    get_item(Level, LevelFileRef, []),
+                                    get_item(Level + 1, LevelFileRef, [])}])
     end;
 maybe_append_work(WorkQ, Level, _LevelFileRef,
                     _MaxFiles, FileCount, _OngoingWork) ->
@@ -121,10 +127,13 @@ maybe_append_work(WorkQ, Level, _LevelFileRef,
     WorkQ.
 
 
-get_item(Index, List, Default) when Index > length(List) ->
-    Default;
-get_item(Index, List, _Default) ->
-    lists:nth(Index, List).
+get_item(Index, List, Default) ->
+    case lists:keysearch(Index, 1, List) of
+        {value, {Index, Value}} ->
+            Value;
+        false ->
+            Default
+    end.
 
 
 %% Request a manifest change
@@ -135,15 +144,16 @@ get_item(Index, List, _Default) ->
 %% - Update the Manifest Sequence Number (msn)
 %% - Confirm this Pid has a current element of manifest work outstanding at
 %% that level
-%% - Rename the manifest file created under the MergeID at the sink Level
-%% to be the current manifest file (current.<msn>.sink)
-%% (Note than on startup if the highest msn in all the current. files for that
-%% level is a sink file, it must be confirmed that th elevel above is at the
-%% same or higher msn.  If not the next lowest current.<msn>.sink must be
-%% chosen. This avoids inconsistency on crash between these steps - although
-%% the inconsistency would have been survivable)
-%% - Rename the manifest file created under the MergeID at the source levl
-%% to the current manifest file (current.<msn>.src)
+%% - Rename the manifest file created under the MergeID (<mergeID>.<level>)
+%% at the sink Level to be the current manifest file (current_<level>.<msn>)
+%% --------  NOTE --------
+%% If there is a crash between these two points, the K/V data that has been
+%% merged from the source level will now be in both the source and the sink
+%% level.  Therefore in store operations this potential duplication must be
+%% handled.
+%% --------  NOTE --------
+%% - Rename the manifest file created under the MergeID (<mergeID>.<level>)
+%% at the source level to the current manifest file (current_<level>.<msn>)
 %% - Update the state of the LevelFileRef lists
 %% - Add the ClearedFiles to the list of files to be cleared (as a tuple with
 %% the new msn)
@@ -153,38 +163,65 @@ commit_manifest_change(SrcLevel, NewSrcMan, NewSnkMan, ClearedFiles,
                                                     MergeID, From, State) ->
     NewMSN = State#state.manifest_sqn +  1,
     OngoingWork = State#state.ongoing_work,
+    RootPath = State#state.root_path,
     SnkLevel = SrcLevel + 1,
     case {lists:keyfind(SrcLevel, 1, OngoingWork),
                 lists:keyfind(SrcLevel + 1, 1, OngoingWork)} of
         {{SrcLevel, From, TS}, {SnkLevel, From, TS}} ->
             io:format("Merge ~s was a success in ~w microseconds",
                 [MergeID, timer:diff_now(os:timestamp(), TS)]),
-            _OutstandingWork = lists:keydelete(SnkLevel, 1,
+            OutstandingWork = lists:keydelete(SnkLevel, 1,
                                 lists:keydelete(SrcLevel, 1, OngoingWork)),
-            rename_manifest_file(MergeID, sink, NewMSN, SnkLevel),
-            rename_manifest_file(MergeID, src, NewMSN, SrcLevel),
-            _NewLFR = update_levelfileref(NewSrcMan,
+            ok = rename_manifest_files(RootPath, MergeID,
+                                        NewMSN, SrcLevel, SnkLevel),
+            NewLFR = update_levelfileref(NewSrcMan,
                                             NewSnkMan,
                                             SrcLevel,
                                             State#state.level_fileref),
-            _UnreferencedFiles = update_deletions(ClearedFiles,
+            UnreferencedFiles = update_deletions(ClearedFiles,
                                                     NewMSN,
                                                     State#state.unreferenced_files),
-            ok;
+            io:format("Merge ~s has been commmitted at sequence number ~w~n",
+                        [MergeID, NewMSN]),
+            {ok, State#state{ongoing_work=OutstandingWork,
+                                manifest_sqn=NewMSN,
+                                level_fileref=NewLFR,
+                                unreferenced_files=UnreferencedFiles}};
         _ ->
-            error
+            io:format("Merge commit ~s not matched to known work~n",
+                        [MergeID]),
+            {error, State}
     end.    
     
 
 
-rename_manifest_file(_MergeID, _SrcOrSink, _NewMSN, _Level) ->
+rename_manifest_files(RootPath, MergeID,  NewMSN, SrcLevel, SnkLevel) ->
+    ManifestFP = RootPath ++ "/" ++ ?MANIFEST_FP ++ "/",
+    ok = file:rename(ManifestFP ++ MergeID
+                            ++ "." ++ integer_to_list(SnkLevel),
+                        ManifestFP ++ "current_" ++ integer_to_list(SnkLevel)
+                            ++ "." ++ integer_to_list(NewMSN)),
+    ok = file:rename(ManifestFP ++ MergeID
+                            ++ "." ++ integer_to_list(SrcLevel),
+                        ManifestFP ++ "current_" ++ integer_to_list(SrcLevel)
+                            ++ "." ++ integer_to_list(NewMSN)),
     ok.
 
-update_levelfileref(_NewSrcMan, _NewSinkMan, _SrcLevel, CurrLFR) ->
-    CurrLFR.
+update_levelfileref(NewSrcMan, NewSinkMan, SrcLevel, CurrLFR) ->
+    lists:keyreplace(SrcLevel + 1,
+                        1,
+                        lists:keyreplace(SrcLevel,
+                                            1,
+                                            CurrLFR,
+                                            {SrcLevel, NewSrcMan}),
+                        {SrcLevel + 1, NewSinkMan}).
 
-update_deletions(_ClearedFiles, _NewMSN, UnreferencedFiles) ->
-    UnreferencedFiles.
+update_deletions([], _NewMSN, UnreferencedFiles) ->
+    UnreferencedFiles;
+update_deletions([ClearedFile|Tail], MSN, UnreferencedFiles) ->
+    update_deletions(Tail,
+                        MSN,
+                        lists:append(UnreferencedFiles, [{ClearedFile, MSN}])).
 
 %%%============================================================================
 %%% Test
@@ -195,7 +232,7 @@ compaction_work_assessment_test() ->
     L0 = [{{o, "B1", "K1"}, {o, "B3", "K3"}, dummy_pid}],
     L1 = [{{o, "B1", "K1"}, {o, "B2", "K2"}, dummy_pid},
             {{o, "B2", "K3"}, {o, "B4", "K4"}, dummy_pid}],
-    LevelFileRef = [L0, L1],
+    LevelFileRef = [{0, L0}, {1, L1}],
     OngoingWork1 = [],
     WorkQ1 = assess_workqueue([], 0, LevelFileRef, OngoingWork1),
     ?assertMatch(WorkQ1, [{0, L0, L1}]),
@@ -210,11 +247,11 @@ compaction_work_assessment_test() ->
                         {{o, "B9", "K0001"}, {o, "B9", "K9999"}, dummy_pid},
                         {{o, "BA", "K0001"}, {o, "BA", "K9999"}, dummy_pid},
                         {{o, "BB", "K0001"}, {o, "BB", "K9999"}, dummy_pid}]),
-    WorkQ3 = assess_workqueue([], 0, [[], L1Alt], OngoingWork1),
+    WorkQ3 = assess_workqueue([], 0, [{0, []}, {1, L1Alt}], OngoingWork1),
     ?assertMatch(WorkQ3, [{1, L1Alt, []}]),
-    WorkQ4 = assess_workqueue([], 0, [[], L1Alt], OngoingWork2),
+    WorkQ4 = assess_workqueue([], 0, [{0, []}, {1, L1Alt}], OngoingWork2),
     ?assertMatch(WorkQ4, [{1, L1Alt, []}]),
     OngoingWork3 = lists:append(OngoingWork2, [{1, dummy_pid, os:timestamp()}]),
-    WorkQ5 = assess_workqueue([], 0, [[], L1Alt], OngoingWork3),
+    WorkQ5 = assess_workqueue([], 0, [{0, []}, {1, L1Alt}], OngoingWork3),
     ?assertMatch(WorkQ5, []).
 

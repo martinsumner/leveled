@@ -2,7 +2,7 @@
 %% level and cleaning out of old files across a level
 
 
--module(leveled_worker).
+-module(leveled_housekeeping).
 
 -export([merge_file/3, perform_merge/3]).      
 
