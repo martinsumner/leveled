@@ -1,3 +1,71 @@
+%% -------- Overview ---------
+%%
+%% The eleveleddb is based on the LSM-tree similar to leveldb, except that:
+%% - Values are kept seperately to Keys & Metadata
+%% - Different file formats are used for value store (based on constant
+%% database), and key store (based on sst)
+%% - It is not intended to be general purpose, but be specifically suited for
+%% use as a Riak backend in specific circumstances (relatively large values,
+%% and frequent use of iterators)
+%% - The Value store is an extended nursery log in leveldb terms.  It is keyed
+%% on the sequence number of the write
+%% - The Key Store is a LSM tree, where the key is the actaul object key, and
+%% the value is the metadata of the object including the sequence number
+%%
+%% -------- Concierge & Manifest ---------
+%%
+%% The concierge is responsible for opening up the store, and keeps a manifest
+%% of where items can be found.  The manifest keeps a mapping of:
+%% - Sequence Number ranges and the PID of the Value Store file that contains
+%% that range
+%% - Key ranges to PID mappings for each leval of the KeyStore
+%%
+%% -------- GET --------
+%%
+%% A GET request for Key and Metadata requires a lookup in the KeyStore only.
+%% - The concierge should consult the manifest for the lowest level to find
+%% the PID which may contain the Key
+%% - The concierge should ask the file owner if the Key is present, if not
+%% present lower levels should be consulted until the objetc is found
+%%
+%% If a value is required, when the Key/Metadata has been fetched from the
+%% KeyStore, the sequence number should be tkane, and matched in the ValueStore
+%% manifest to find the right value.
+%%
+%% For recent PUTs the Key/Metadata is added into memory, and there is an
+%% in-memory hash table for the entries in the most recent ValueStore CDB. 
+%%
+%% -------- PUT --------
+%%
+%% A PUT request must be persisted to the open (and append only) CDB file which
+%% acts as a transaction log to persist the change.  The Key & Metadata needs
+%% also to be placed in memory.
+%%
+%% Once the CDB file is full, the managing process should be requested to
+%% complete the lookup hash, and a new CDB file be started.
+%%
+%% Once the in-memory 
+%%
+%% -------- Snapshots (Key Only) --------
+%%
+%% If there is a iterator/snapshot request, the concierge will simply handoff a
+%% copy of the manifest, and register the interest of the iterator at the
+%% manifest sequence number at the time of the request.  Iterators should
+%% de-register themselves from the manager on completion.  Iterators should be
+%% automatically release after a timeout period.  A file can be deleted if
+%% there are no registered iterators from before the point the file was
+%% removed from the manifest.
+%%
+%% -------- Snapshots (Key & Value) --------
+%%
+%%
+%%
+%% -------- Special Ops --------
+%%
+%% e.g. Get all for SegmentID/Partition
+%%
+%% -------- KeyStore ---------
+%%
 %% The concierge is responsible for controlling access to the store and 
 %% maintaining both an in-memory view and a persisted state of all the sft
 %% files in use across the store.
@@ -34,14 +102,7 @@
 %% will call the manifets manager on a timeout to confirm that they are no
 %% longer in use (by any iterators).
 %%
-%% If there is a iterator/snapshot request, the concierge will simply handoff a
-%% copy of the manifest, and register the interest of the iterator at the
-%% manifest sequence number at the time of the request.  Iterators should
-%% de-register themselves from the manager on completion.  Iterators should be
-%% automatically release after a timeout period.  A file can be deleted if
-%% there are no registered iterators from before the point the file was
-%% removed from the manifest.
-%%
+
 
 
     
