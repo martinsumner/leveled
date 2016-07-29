@@ -56,6 +56,8 @@
         code_change/3,
         cdb_open_writer/1,
         cdb_open_reader/1,
+        cdb_get/2,
+        cdb_put/3,
         from_dict/2, 
         create/2,
         dump/1,
@@ -107,11 +109,11 @@ cdb_open_reader(Filename) ->
             Error
     end.
 
-%cdb_get(Pid, Key) ->
-%    gen_server:call(Pid, {cdb_get, Key}, infinity).
-%
-%cdb_put(Pid, Key, Value) ->
-%    gen_server:call(Pid, {cdb_put, Key, Value}, infinity).
+cdb_get(Pid, Key) ->
+    gen_server:call(Pid, {cdb_get, Key}, infinity).
+
+cdb_put(Pid, Key, Value) ->
+    gen_server:call(Pid, {cdb_put, Key, Value}, infinity).
 %
 %cdb_close(Pid) ->
 %    gen_server:call(Pid, cdb_close, infinity).
@@ -139,7 +141,36 @@ handle_call({cdb_open_reader, Filename}, _From, State) ->
     {ok, Handle} = file:open(Filename, [binary, raw, read]),
     {reply, ok, State#state{handle=Handle,
                             filename=Filename,
-                            writer=false}}.
+                            writer=false}};
+handle_call({cdb_get, Key}, _From, State) ->
+    case State#state.writer of
+        true ->
+            {reply,
+                get_mem(Key, State#state.handle, State#state.hashtree),
+                State};
+        false ->
+            {reply,
+                get(State#state.handle, Key),
+                State}
+    end;
+handle_call({cdb_put, Key, Value}, _From, State) ->
+    case State#state.writer of
+        true ->
+            Result = put(State#state.handle,
+                            Key, Value,
+                            {State#state.last_position, State#state.hashtree}),
+            {UpdHandle, NewPosition, HashTree} = Result,
+            {reply,
+                ok,
+                State#state{handle=UpdHandle,
+                            last_position=NewPosition,
+                            hashtree=HashTree}};
+        false ->
+            {reply,
+                {error, read_only},
+                State}
+    end.
+    
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
