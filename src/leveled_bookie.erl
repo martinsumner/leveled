@@ -57,21 +57,9 @@
 %% be added to the ledger.  Initially this will be added to the Bookie's
 %% in-memory view of recent changes only.
 %%
-%% The Bookie's memory consists of up to two in-memory ets tables
-%% - the 'cmem' (current in-memory table) which is always subject to potential
-%% change;
-%% - the 'imem' (the immutable in-memory table) which is awaiting persistence
-%% to the disk-based lsm-tree by the Penciller.
-%%
-%% The key and metadata should be written to the cmem store if it has
-%% sufficient capacity, but this potentially should include the secondary key
-%% changes which have been made as part of the transaction.
-%%
-%% If there is insufficient space in the cmem, the cmem should be converted
-%% into the imem, and a new cmem be created.  This requires the previous imem
-%% to have been cleared from state due to compaction into the persisted Ledger
-%% by the Penciller - otherwise the PUT is blocked.  On creation of an imem,
-%% the compaction process for that imem by the Penciller should be triggered.
+%% The Bookie's memory consists of an in-memory ets table.  Periodically, the
+%% current table is pushed to the Penciller for eventual persistence, and a
+%% new tabble is started.
 %%
 %% This completes the non-deferrable work associated with a PUT
 %%
