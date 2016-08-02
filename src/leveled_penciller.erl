@@ -1,87 +1,28 @@
-%% -------- Overview ---------
+%% -------- Penciller ---------
 %%
-%% The eleveleddb is based on the LSM-tree similar to leveldb, except that:
-%% - Values are kept seperately to Keys & Metadata
-%% - Different file formats are used for value store (based on constant
-%% database), and key store (based on sst)
-%% - It is not intended to be general purpose, but be specifically suited for
-%% use as a Riak backend in specific circumstances (relatively large values,
-%% and frequent use of iterators)
-%% - The Value store is an extended nursery log in leveldb terms.  It is keyed
-%% on the sequence number of the write
-%% - The Key Store is a LSM tree, where the key is the actaul object key, and
-%% the value is the metadata of the object including the sequence number
+%% The penciller is repsonsible for writing and re-writing the ledger - a
+%% persisted, ordered view of non-recent Keys and Metadata which have been
+%% added to the store.
+%% - The penciller maintains a manifest of all the files within the current
+%% Ledger.
+%% - The Penciller queues re-write (compaction) work up to be managed by Clerks
+%% - The Penciller mainatins a register of iterators who have requested
+%% snapshots of the Ledger
+%% - The accepts new dumps (in the form of immutable ets tables) from the
+%% Bookie, and calls the Bookie once the process of pencilling this data in
+%% the Ledger is complete - and the Bookie is free to forget about the data
 %%
-%% -------- Concierge & Manifest ---------
+%% -------- Ledger ---------
 %%
-%% The concierge is responsible for opening up the store, and keeps a manifest
-%% of where items can be found.  The manifest keeps a mapping of:
-%% - Sequence Number ranges and the PID of the Value Store file that contains
-%% that range
-%% - Key ranges to PID mappings for each leval of the KeyStore
-%%
-%% -------- GET --------
-%%
-%% A GET request for Key and Metadata requires a lookup in the KeyStore only.
-%% - The concierge should consult the manifest for the lowest level to find
-%% the PID which may contain the Key
-%% - The concierge should ask the file owner if the Key is present, if not
-%% present lower levels should be consulted until the objetc is found
-%%
-%% If a value is required, when the Key/Metadata has been fetched from the
-%% KeyStore, the sequence number should be tkane, and matched in the ValueStore
-%% manifest to find the right value.
-%%
-%% For recent PUTs the Key/Metadata is added into memory, and there is an
-%% in-memory hash table for the entries in the most recent ValueStore CDB. 
-%%
-%% -------- PUT --------
-%%
-%% A PUT request must be persisted to the open (and append only) CDB file which
-%% acts as a transaction log to persist the change.  The Key & Metadata needs
-%% also to be placed in memory.
-%%
-%% Once the CDB file is full, the managing process should be requested to
-%% complete the lookup hash, and a new CDB file be started.
-%%
-%% Once the in-memory 
-%%
-%% -------- Snapshots (Key Only) --------
-%%
-%% If there is a iterator/snapshot request, the concierge will simply handoff a
-%% copy of the manifest, and register the interest of the iterator at the
-%% manifest sequence number at the time of the request.  Iterators should
-%% de-register themselves from the manager on completion.  Iterators should be
-%% automatically release after a timeout period.  A file can be deleted if
-%% there are no registered iterators from before the point the file was
-%% removed from the manifest.
-%%
-%% -------- Snapshots (Key & Value) --------
-%%
-%%
-%%
-%% -------- Special Ops --------
-%%
-%% e.g. Get all for SegmentID/Partition
-%%
-%% -------- KeyStore ---------
-%%
-%% The concierge is responsible for controlling access to the store and 
-%% maintaining both an in-memory view and a persisted state of all the sft
-%% files in use across the store.
-%%
-%% The store is divided into many levels
-%% L0: May contain one, and only one sft file PID which is the most recent file
-%% added to the top of the store.  Access to the store will be stalled when a
-%% second file is added whilst one still remains at this level.  The target
-%% size of L0 is therefore 0.
+%% The Ledger is divided into many levels
 %% L1 - Ln: May contain multiple non-overlapping PIDs managing sft files.
 %% Compaction work should be sheduled if the number of files exceeds the target
 %% size of the level, where the target size is 8 ^ n.
 %%
 %% The most recent revision of a Key can be found by checking each level until
-%% the key is found.  To check a level the write file must be sought from the
-%% manifest for that level, and then a call is made to that level.
+%% the key is found.  To check a level the correct file must be sought from the
+%% manifest for that level, and then a call is made to that file.  If the Key
+%% is not present then every level should be checked.
 %%
 %% If a compaction change takes the size of a level beyond the target size,
 %% then compaction work for that level + 1 should be added to the compaction
@@ -93,20 +34,19 @@
 %% The compaction worker will always call the level manager to find out the
 %% highest priority work currently in the queue before proceeding.
 %%
-%% When the compaction worker picks work off the queue it will take the current
-%% manifest for the level and level - 1.  The compaction worker will choose
-%% which file to compact from level - 1, and once the compaction is complete
-%% will call to the manager with the new version of the manifest to be written.
+%% When the clerk picks work off the queue it will take the current manifest
+%% for the level and level - 1.  The clerk will choose which file to compact
+%% from level - 1, and once the compaction is complete will call to the
+%% Penciller with the new version of the manifest to be written.
+%%
 %% Once the new version of the manifest had been persisted, the state of any
 %% deleted files will be changed to pending deletion.  In pending deletion they
-%% will call the manifets manager on a timeout to confirm that they are no
-%% longer in use (by any iterators).
+%% will call the Penciller on a timeout to confirm that they are no longer in
+%% use (by any iterators).
 %%
 
 
-
-    
--module(leveled_concierge).
+-module(leveled_penciller).
 
 %% -behaviour(gen_server).
 
@@ -315,4 +255,3 @@ compaction_work_assessment_test() ->
     OngoingWork3 = lists:append(OngoingWork2, [{1, dummy_pid, os:timestamp()}]),
     WorkQ5 = assess_workqueue([], 0, [{0, []}, {1, L1Alt}], OngoingWork3),
     ?assertMatch(WorkQ5, []).
-

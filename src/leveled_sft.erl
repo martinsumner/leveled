@@ -150,10 +150,6 @@
         handle_info/2,
         terminate/2,
         code_change/3,
-        speedtest_check_forsegment/4,
-        generate_randomsegfilter/1,
-        generate_randomkeys/1,
-        strip_to_keyonly/1,
         sft_new/4,
         sft_open/1,
         sft_get/2,
@@ -1296,7 +1292,10 @@ generate_sequentialkeys(Target, Incr, Acc) ->
                 {active, infinity}, null},
     generate_sequentialkeys(Target, Incr + 1, [NextKey|Acc]).
 
-
+dummy_test() ->
+    R = speedtest_check_forsegment(a, 0, b, c),
+    ?assertMatch(R, true),
+    _ = generate_randomsegfilter(8).
 
 simple_create_block_test() ->
     KeyList1 = [{{o, "Bucket1", "Key1"}, 1, {active, infinity}, null},

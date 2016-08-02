@@ -58,17 +58,7 @@
         cdb_open_reader/1,
         cdb_get/2,
         cdb_put/3,
-        from_dict/2, 
-        create/2,
-        dump/1,
-        get/2,
-        get_mem/3,
-        put/4,
-        open_active_file/1,
-        get_nextkey/1,
-        get_nextkey/2,
-        fold/3,
-        fold_keys/3]).
+        cdb_close/1]).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -114,9 +104,9 @@ cdb_get(Pid, Key) ->
 
 cdb_put(Pid, Key, Value) ->
     gen_server:call(Pid, {cdb_put, Key, Value}, infinity).
-%
-%cdb_close(Pid) ->
-%    gen_server:call(Pid, cdb_close, infinity).
+
+cdb_close(Pid) ->
+    gen_server:call(Pid, cdb_close, infinity).
 
 
 %%%============================================================================
@@ -159,18 +149,30 @@ handle_call({cdb_put, Key, Value}, _From, State) ->
             Result = put(State#state.handle,
                             Key, Value,
                             {State#state.last_position, State#state.hashtree}),
-            {UpdHandle, NewPosition, HashTree} = Result,
-            {reply,
-                ok,
-                State#state{handle=UpdHandle,
-                            last_position=NewPosition,
-                            hashtree=HashTree}};
+            case Result of
+                roll ->
+                    {reply, roll, State};
+                {UpdHandle, NewPosition, HashTree} ->
+                    {reply, ok, State#state{handle=UpdHandle,
+                                                last_position=NewPosition,
+                                                hashtree=HashTree}}
+                end;
         false ->
             {reply,
                 {error, read_only},
                 State}
-    end.
-    
+    end;
+handle_call(cdb_close, _From, State) ->
+    case State#state.writer of
+        true ->
+            ok = close_file(State#state.handle,
+                                State#state.hashtree,
+                                State#state.last_position);
+        false ->
+            ok = file:close(State#state.handle)
+    end,
+    {stop, normal, ok, State}.
+            
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -178,8 +180,8 @@ handle_cast(_Msg, State) ->
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(_Reason, _State) ->
-    ok.
+terminate(_Reason, State) ->
+    file:close(State#state.handle).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -264,8 +266,8 @@ open_active_file(FileName) when is_list(FileName) ->
             ok = file:close(Handle);
         {ok, _} ->
             LogDetails = [LastPosition, file:position(Handle, eof)],
-            io:format("File to be truncated at last position of" 
-                        "~w with end of file at ~w~n", LogDetails),
+            io:format("File to be truncated at last position of ~w " 
+                        "with end of file at ~w~n", LogDetails),
             {ok, LastPosition} = file:position(Handle, LastPosition),
             ok = file:truncate(Handle),
             ok = file:close(Handle)
