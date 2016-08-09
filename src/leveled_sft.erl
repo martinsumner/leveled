@@ -143,6 +143,7 @@
 -module(leveled_sft).
 
 -behaviour(gen_server).
+-include("../include/leveled.hrl").
 
 -export([init/1,
         handle_call/3,
@@ -151,13 +152,19 @@
         terminate/2,
         code_change/3,
         sft_new/4,
+        sft_new/5,
         sft_open/1,
         sft_get/2,
         sft_getkeyrange/4,
         sft_close/1,
-        sft_clear/1]).
+        sft_clear/1,
+        sft_checkready/1,
+        sft_getfilename/1,
+        strip_to_keyonly/1,
+        generate_randomkeys/1]).
 
 -include_lib("eunit/include/eunit.hrl").
+
 
 -define(WORD_SIZE, 4).
 -define(DWORD_SIZE, 8).
@@ -174,6 +181,7 @@
 -define(HEADER_LEN, 56).
 -define(ITERATOR_SCANWIDTH, 1).
 -define(MERGE_SCANWIDTH, 8).
+-define(MAX_KEYS, ?SLOT_COUNT * ?BLOCK_COUNT * ?BLOCK_SIZE).
 
 
 -record(state, {version = ?CURRENT_VERSION :: tuple(),
@@ -189,7 +197,9 @@
                 summ_pointer :: integer(),
                 summ_length :: integer(),
                 filename :: string(),
-                handle :: file:fd()}).
+                handle :: file:fd(),
+                background_complete=false :: boolean(),
+                background_failure="Unknown" :: string()}).
 
 
 %%%============================================================================
@@ -197,9 +207,22 @@
 %%%============================================================================
 
 sft_new(Filename, KL1, KL2, Level) ->
+    sft_new(Filename, KL1, KL2, Level, #sft_options{}).
+
+sft_new(Filename, KL1, KL2, Level, Options) ->
     {ok, Pid} = gen_server:start(?MODULE, [], []),
-    Reply = gen_server:call(Pid, {sft_new, Filename, KL1, KL2, Level}, infinity),
+    Reply = case Options#sft_options.wait of
+        true ->
+            gen_server:call(Pid,
+                            {sft_new, Filename, KL1, KL2, Level},
+                            infinity);
+        false ->
+            gen_server:call(Pid,
+                            {sft_new, Filename, KL1, KL2, Level, background},
+                            infinity)
+    end,
     {ok, Pid, Reply}.
+
 
 sft_open(Filename) ->
     {ok, Pid} = gen_server:start(?MODULE, [], []),
@@ -225,6 +248,11 @@ sft_close(Pid) ->
 sft_clear(Pid) ->
     file_request(Pid, clear).
 
+sft_checkready(Pid) ->
+    gen_server:call(Pid, background_complete, infinity).
+
+sft_getfilename(Pid) ->
+    gen_server:call(Pid, get_filename, infinty).
 
 %%%============================================================================
 %%% API helper functions
@@ -275,6 +303,47 @@ check_pid(Pid) ->
 init([]) ->
     {ok, #state{}}.
 
+handle_call({sft_new, Filename, KL1, [], Level, background}, From, State) ->
+    {ListForFile, KL1Rem} = case length(KL1) of
+            L when L >= ?MAX_KEYS ->
+                lists:split(?MAX_KEYS, KL1);
+            _ ->
+                {KL1, []}
+        end,
+    StartKey = strip_to_keyonly(lists:nth(1, ListForFile)),
+    EndKey = strip_to_keyonly(lists:last(ListForFile)),
+    Ext = filename:extension(Filename),
+    Components = filename:split(Filename),
+    {TmpFilename, PrmFilename} = case Ext of
+        [] ->
+            {filename:join(Components) ++ ".pnd", filename:join(Components) ++ ".sft"};
+        Ext ->
+            %% This seems unnecessarily hard
+            DN = filename:dirname(Filename),
+            FP = lists:last(Components),
+            FP_NOEXT = lists:sublist(FP, 1, 1 + length(FP) - length(Ext)),
+            {DN ++ "/" ++ FP_NOEXT ++ ".pnd", DN ++ "/" ++ FP_NOEXT ++ ".sft"}
+    end,
+    gen_server:reply(From, {{KL1Rem, []}, StartKey, EndKey}),
+    case create_file(TmpFilename) of
+        {error, Reason} ->
+            {noreply, State#state{background_complete=false,
+                                    background_failure=Reason}};
+        {Handle, FileMD} ->
+            io:format("Creating file in background with input of size ~w~n",
+                        [length(ListForFile)]),
+            % Key remainders must match to empty
+            Rename = {true, TmpFilename, PrmFilename},
+            {ReadHandle, UpdFileMD, {[], []}} = complete_file(Handle,
+                                                                FileMD,
+                                                                ListForFile,
+                                                                [],
+                                                                Level,
+                                                                Rename),
+            {noreply, UpdFileMD#state{handle=ReadHandle,
+                                        filename=PrmFilename,
+                                        background_complete=true}}
+    end;
 handle_call({sft_new, Filename, KL1, KL2, Level}, _From, State) ->
     case create_file(Filename) of
         {error, Reason} ->
@@ -292,7 +361,7 @@ handle_call({sft_new, Filename, KL1, KL2, Level}, _From, State) ->
             {reply, {KeyRemainders,
                         UpdFileMD#state.smallest_key,
                         UpdFileMD#state.highest_key},
-                    UpdFileMD#state{handle=ReadHandle}}
+                    UpdFileMD#state{handle=ReadHandle, filename=Filename}}
     end;
 handle_call({sft_open, Filename}, _From, _State) ->
     {_Handle, FileMD} = open_file(Filename),
@@ -315,8 +384,17 @@ handle_call(close, _From, State) ->
 handle_call(clear, _From, State) ->
     ok = file:close(State#state.handle),
     ok = file:delete(State#state.filename),
-    {reply, true, State}.
-
+    {reply, true, State};
+handle_call(background_complete, _From, State) ->
+    case State#state.background_complete of
+        true ->
+            {reply, ok, State};
+        false ->
+            {reply, {error, State#state.background_failure}, State}
+    end;
+handle_call(get_filename, _from, State) ->
+    {reply, State#state.filename, State}.
+    
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -338,6 +416,7 @@ code_change(_OldVsn, State, _Extra) ->
 %% Return the {Handle, metadata record}
 create_file(FileName) when is_list(FileName) ->
     io:format("Opening file with filename ~s~n", [FileName]),
+    ok = filelib:ensure_dir(FileName),
     case file:open(FileName, [binary, raw, read, write]) of
         {ok, Handle} ->
             Header = create_header(initial),
@@ -396,15 +475,23 @@ open_file(FileMD) ->
     
 %% Take a file handle with a previously created header and complete it based on
 %% the two key lists KL1 and KL2
-
 complete_file(Handle, FileMD, KL1, KL2, Level) ->
+    complete_file(Handle, FileMD, KL1, KL2, Level, false).
+
+complete_file(Handle, FileMD, KL1, KL2, Level, Rename) ->
     {ok, KeyRemainders} = write_keys(Handle,
                                         maybe_expand_pointer(KL1),
                                         maybe_expand_pointer(KL2),
                                         [], <<>>,
                                         Level,
                                         fun sftwrite_function/2),
-    {ReadHandle, UpdFileMD} = open_file(FileMD),
+    {ReadHandle, UpdFileMD} = case Rename of
+        false ->
+            open_file(FileMD);
+        {true, OldName, NewName} ->
+            ok = file:rename(OldName, NewName),
+            open_file(FileMD#state{filename=NewName})
+    end,    
     {ReadHandle, UpdFileMD, KeyRemainders}.
 
 %% Fetch a Key and Value from a file, returns
