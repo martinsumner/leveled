@@ -159,7 +159,7 @@
         pcl_fetch/2,
         pcl_workforclerk/1,
         pcl_requestmanifestchange/2,
-        commit_manifest_change/3]).
+        pcl_confirmdelete/2]).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -181,7 +181,7 @@
 -record(state, {manifest = [] :: list(),
                 ongoing_work = [] :: list(),
 				manifest_sqn = 0 :: integer(),
-                levelzero_sqn =0 :: integer(),
+                levelzero_sqn = 0 :: integer(),
                 registered_iterators = [] :: list(),
                 unreferenced_files = [] :: list(),
                 root_path = "../test/" :: string(),
@@ -214,7 +214,10 @@ pcl_workforclerk(Pid) ->
     gen_server:call(Pid, work_for_clerk, infinity).
 
 pcl_requestmanifestchange(Pid, WorkItem) ->
-    gen_server:call(Pid, {manifest_change, WorkItem}, infinity).
+    gen_server:cast(Pid, {manifest_change, WorkItem}).
+
+pcl_confirmdelete(Pid, FileName) ->
+    gen_server:call(Pid, {confirm_delete, FileName}).
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -222,22 +225,27 @@ pcl_requestmanifestchange(Pid, WorkItem) ->
 
 init([]) ->
     TID = ets:new(?MEMTABLE, [ordered_set, private]),
-    {ok, #state{memtable=TID}}.
+    {ok, Clerk} = leveled_clerk:clerk_new(self()),
+    {ok, #state{memtable=TID, clerk=Clerk}}.
 
 handle_call({push_mem, DumpList}, _From, State) ->
     {TableSize, Manifest, L0Pend} = case State#state.levelzero_pending of
         {true, Remainder, {StartKey, EndKey, Pid}} ->
             %% Need to handle not error scenarios?
             %% N.B. Sync call - so will be ready
-            ok = leveled_sft:sft_checkready(Pid),
+            {ok, SrcFN} = leveled_sft:sft_checkready(Pid),
             %% Reset ETS, but re-insert any remainder
             true = ets:delete_all_objects(State#state.memtable),
             true = ets:insert(State#state.memtable, Remainder),
+            ManifestEntry = #manifest_entry{start_key=StartKey,
+                                                end_key=EndKey,
+                                                owner=Pid,
+                                                filename=SrcFN},
             {length(Remainder),
                 lists:keystore(0,
                                 1,
                                 State#state.manifest,
-                                {0, [{StartKey, EndKey, Pid}]}),
+                                {0, [ManifestEntry]}),
                 ?L0PEND_RESET};
         {false, _, _} ->
             {State#state.table_size,
@@ -246,7 +254,9 @@ handle_call({push_mem, DumpList}, _From, State) ->
         Unexpected ->
             io:format("Unexpected value of ~w~n", [Unexpected]),
             error
-    end,    
+    end,
+    %% Prompt clerk to ask about work - do this for every push_mem
+    ok = leveled_clerk:clerk_prompt(State#state.clerk, penciller),
     case do_push_to_mem(DumpList, TableSize, State#state.memtable) of
         {twist, ApproxTableSize} ->
             {reply, ok, State#state{table_size=ApproxTableSize,
@@ -258,13 +268,14 @@ handle_call({push_mem, DumpList}, _From, State) ->
                     L0SN = State#state.levelzero_sqn + 1,
                     FileName = State#state.root_path
                                 ++ ?FILES_FP ++ "/"
-                                ++ integer_to_list(L0SN),
-                    SFT = leveled_sft:sft_new(FileName,
-                                                ets:tab2list(State#state.memtable),
-                                                [],
-                                                0,
-                                                #sft_options{wait=false}),
-                    {ok, L0Pid, Reply} = SFT,
+                                ++ integer_to_list(L0SN) ++ "_0_0",
+                    Dump = ets:tab2list(State#state.memtable),
+                    L0_SFT = leveled_sft:sft_new(FileName,
+                                                    Dump,
+                                                    [],
+                                                    0,
+                                                    #sft_options{wait=false}),
+                    {ok, L0Pid, Reply} = L0_SFT,
                     {{KL1Rem, []}, L0StartKey, L0EndKey} = Reply,
                     {reply, ok, State#state{levelzero_pending={true,
                                                                 KL1Rem,
@@ -285,10 +296,16 @@ handle_call({fetch, Key}, _From, State) ->
     {reply, fetch(Key, State#state.manifest, State#state.memtable), State};
 handle_call(work_for_clerk, From, State) ->
     {UpdState, Work} = return_work(State, From),
-    {reply, Work, UpdState}.
+    {reply, Work, UpdState};
+handle_call({confirm_delete, FileName}, _From, State) ->
+    Reply = confirm_delete(FileName,
+                            State#state.unreferenced_files,
+                            State#state.registered_iterators),
+    {reply, Reply, State}.
 
-handle_cast(_Msg, State) ->
-    {noreply, State}.
+handle_cast({manifest_change, WI}, State) ->
+    {ok, UpdState} = commit_manifest_change(WI, State),
+    {noreply, UpdState}.
 
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -453,7 +470,7 @@ get_item(Index, List, Default) ->
 %% - the list of ongoing work needs to be cleared of this item
 
 
-commit_manifest_change(ReturnedWorkItem, From, State) ->
+commit_manifest_change(ReturnedWorkItem, State) ->
     NewMSN = State#state.manifest_sqn +  1,
     [SentWorkItem] = State#state.ongoing_work,
     RootPath = State#state.root_path,
@@ -461,8 +478,8 @@ commit_manifest_change(ReturnedWorkItem, From, State) ->
     
     case {SentWorkItem#penciller_work.next_sqn,
             SentWorkItem#penciller_work.clerk} of
-        {NewMSN, From} ->
-            MTime = timer:diff_now(os:timestamp(),
+        {NewMSN, _From} ->
+            MTime = timer:now_diff(os:timestamp(),
                                     SentWorkItem#penciller_work.start_time),
             io:format("Merge to sqn ~w completed in ~w microseconds
                         at Level ~w~n",
@@ -477,14 +494,15 @@ commit_manifest_change(ReturnedWorkItem, From, State) ->
             io:format("Merge has been commmitted at sequence number ~w~n",
                         [NewMSN]),
             NewManifest = ReturnedWorkItem#penciller_work.new_manifest,
-            {ok, State#state{ongoing_work=null,
+            %% io:format("Updated manifest is ~w~n", [NewManifest]),
+            {ok, State#state{ongoing_work=[],
                                 manifest_sqn=NewMSN,
                                 manifest=NewManifest,
                                 unreferenced_files=UnreferencedFilesUpd}};
-        {MaybeWrongMSN, MaybeWrongClerk} ->
-            io:format("Merge commit from ~w at sqn ~w not matched to expected
-                        clerk ~w or sqn ~w~n",
-                        [From, NewMSN, MaybeWrongClerk, MaybeWrongMSN]),
+        {MaybeWrongMSN, From} ->
+            io:format("Merge commit at sqn ~w not matched to expected
+                        sqn ~w from Clerk ~w~n",
+                        [NewMSN, MaybeWrongMSN, From]),
             {error, State}
     end.
 
@@ -505,9 +523,26 @@ filepath(RootPath, NewMSN, new_merge_files) ->
 update_deletions([], _NewMSN, UnreferencedFiles) ->
     UnreferencedFiles;
 update_deletions([ClearedFile|Tail], MSN, UnreferencedFiles) ->
+    io:format("Adding cleared file ~s to deletion list ~n",
+                [ClearedFile#manifest_entry.filename]),
     update_deletions(Tail,
                         MSN,
-                        lists:append(UnreferencedFiles, [{ClearedFile, MSN}])).
+                        lists:append(UnreferencedFiles,
+                            [{ClearedFile#manifest_entry.filename, MSN}])).
+
+confirm_delete(Filename, UnreferencedFiles, RegisteredIterators) ->
+    case lists:keyfind(Filename, 1, UnreferencedFiles) of
+        false ->
+            false;
+        {Filename, MSN} ->
+            LowSQN = lists:foldl(fun({_, SQN}, MinSQN) -> min(SQN, MinSQN) end,
+                                    infinity,
+                                    RegisteredIterators),
+            if
+                MSN >= LowSQN -> false;
+                true -> true
+            end
+    end.
 
 %%%============================================================================
 %%% Test
@@ -532,3 +567,16 @@ compaction_work_assessment_test() ->
     Manifest3 = [{0, []}, {1, L1Alt}],
     WorkQ3 = assess_workqueue([], 0, Manifest3),
     ?assertMatch(WorkQ3, [{1, Manifest3}]).
+
+confirm_delete_test() ->
+    Filename = 'test.sft',
+    UnreferencedFiles = [{'other.sft', 15}, {Filename, 10}],
+    RegisteredIterators1 = [{dummy_pid, 16}, {dummy_pid, 12}],
+    R1 = confirm_delete(Filename, UnreferencedFiles, RegisteredIterators1),
+    ?assertMatch(R1, true),
+    RegisteredIterators2 = [{dummy_pid, 10}, {dummy_pid, 12}],
+    R2 = confirm_delete(Filename, UnreferencedFiles, RegisteredIterators2),
+    ?assertMatch(R2, false),
+    RegisteredIterators3 = [{dummy_pid, 9}, {dummy_pid, 12}],
+    R3 = confirm_delete(Filename, UnreferencedFiles, RegisteredIterators3),
+    ?assertMatch(R3, false).

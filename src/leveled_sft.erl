@@ -160,6 +160,7 @@
         sft_clear/1,
         sft_checkready/1,
         sft_getfilename/1,
+        sft_setfordelete/2,
         strip_to_keyonly/1,
         generate_randomkeys/1]).
 
@@ -182,6 +183,7 @@
 -define(ITERATOR_SCANWIDTH, 1).
 -define(MERGE_SCANWIDTH, 8).
 -define(MAX_KEYS, ?SLOT_COUNT * ?BLOCK_COUNT * ?BLOCK_SIZE).
+-define(DELETE_TIMEOUT, 60000).
 
 
 -record(state, {version = ?CURRENT_VERSION :: tuple(),
@@ -199,7 +201,9 @@
                 filename :: string(),
                 handle :: file:fd(),
                 background_complete=false :: boolean(),
-                background_failure="Unknown" :: string()}).
+                background_failure="Unknown" :: string(),
+                ready_for_delete = false ::boolean(),
+                penciller :: pid()}).
 
 
 %%%============================================================================
@@ -223,7 +227,6 @@ sft_new(Filename, KL1, KL2, Level, Options) ->
     end,
     {ok, Pid, Reply}.
 
-
 sft_open(Filename) ->
     {ok, Pid} = gen_server:start(?MODULE, [], []),
     case gen_server:call(Pid, {sft_open, Filename}, infinity) of
@@ -232,6 +235,9 @@ sft_open(Filename) ->
         Error ->
             Error
     end.
+
+sft_setfordelete(Pid, Penciller) ->
+    file_request(Pid, {set_for_delete, Penciller}).
 
 sft_get(Pid, Key) ->
     file_request(Pid, {get_kv, Key}).
@@ -266,18 +272,7 @@ sft_getfilename(Pid) ->
 file_request(Pid, Request) ->
     case check_pid(Pid) of
         ok ->
-            try
-                gen_server:call(Pid, Request, infinity)
-            catch
-                exit:{normal,_} when Request == file_close ->
-                    %% Honest race condition in bitcask_eqc PULSE test.
-                    ok;
-                exit:{noproc,_} when Request == file_close ->
-                    %% Honest race condition in bitcask_eqc PULSE test.
-                    ok;
-                X1:X2 ->
-                    exit({file_request_error, self(), Request, X1, X2})
-            end;
+            gen_server:call(Pid, Request, infinity);
         Error ->
             Error
     end.
@@ -388,16 +383,42 @@ handle_call(clear, _From, State) ->
 handle_call(background_complete, _From, State) ->
     case State#state.background_complete of
         true ->
-            {reply, ok, State};
+            {reply, {ok, State#state.filename}, State};
         false ->
             {reply, {error, State#state.background_failure}, State}
     end;
-handle_call(get_filename, _from, State) ->
-    {reply, State#state.filename, State}.
+handle_call(get_filename, _From, State) ->
+    {reply, State#state.filename, State};
+handle_call({set_for_delete, Penciller}, _From, State) ->
+    {reply,
+        ok,
+        State#state{ready_for_delete=true,
+                            penciller=Penciller},
+        ?DELETE_TIMEOUT}.
     
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
+handle_info(timeout, State) ->
+    case State#state.ready_for_delete of
+        true ->
+            case leveled_penciller:pcl_confirmdelete(State#state.penciller,
+                                                        State#state.filename)
+                                                            of
+                true ->
+                    io:format("Polled for deletion and now clearing ~s~n",
+                                [State#state.filename]),
+                    ok = file:close(State#state.handle),
+                    ok = file:delete(State#state.filename),
+                    {stop, shutdown, State};
+                false ->
+                    io:format("Polled for deletion but ~s not ready~n",
+                                [State#state.filename]),
+                    {noreply, State, ?DELETE_TIMEOUT}
+            end;
+        false ->
+            {noreply, State}
+    end;
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -583,7 +604,7 @@ fetch_range(Handle, FileMD, StartKey, EndKey, FunList, AccFun, ScanWidth, Acc) -
                             LengthList, 0, PointerB + FileMD#state.slots_pointer,
                             AccFun(null, Acc));
         not_found ->
-            {complete, Acc}
+            {complete, AccFun(null, Acc)}
     end.
 
 fetch_range(Handle, FileMD, _StartKey, NearestKey, EndKey, FunList, AccFun, ScanWidth,
@@ -989,7 +1010,12 @@ serialise_block(BlockKeyList) ->
 %% any lower sequence numbers should be compacted out of existence
 
 
-key_dominates([H1|T1], [], Level) ->
+key_dominates(KL1, KL2, Level) ->
+    key_dominates_expanded(maybe_expand_pointer(KL1),
+                            maybe_expand_pointer(KL2),
+                            Level).
+
+key_dominates_expanded([H1|T1], [], Level) ->
     {_, _, St1, _} = H1,
     case maybe_reap_expiredkey(St1, Level) of
         true ->
@@ -997,7 +1023,7 @@ key_dominates([H1|T1], [], Level) ->
         false ->
             {{next_key, H1}, maybe_expand_pointer(T1), []}
     end;
-key_dominates([], [H2|T2], Level) ->
+key_dominates_expanded([], [H2|T2], Level) ->
     {_, _, St2, _} = H2,
     case maybe_reap_expiredkey(St2, Level) of
         true ->
@@ -1005,7 +1031,7 @@ key_dominates([], [H2|T2], Level) ->
         false ->
             {{next_key, H2}, [], maybe_expand_pointer(T2)}
     end;
-key_dominates([H1|T1], [H2|T2], Level) ->
+key_dominates_expanded([H1|T1], [H2|T2], Level) ->
     {K1, Sq1, St1, _} = H1,
     {K2, Sq2, St2, _} = H2,
     case K1 of
@@ -1051,7 +1077,7 @@ maybe_expand_pointer([]) ->
 maybe_expand_pointer([H|Tail]) ->
     case H of
         {next, SFTPid, StartKey} ->
-            io:format("Scanning further on PID ~w ~w~n", [SFTPid, StartKey]),
+            %% io:format("Scanning further on PID ~w ~w~n", [SFTPid, StartKey]),
             QResult = sft_getkvrange(SFTPid, StartKey, all, ?MERGE_SCANWIDTH),
             Acc = pointer_append_queryresults(QResult, SFTPid),
             lists:append(Acc, Tail);

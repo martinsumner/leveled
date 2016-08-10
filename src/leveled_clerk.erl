@@ -13,7 +13,7 @@
         handle_cast/2,
         handle_info/2,
         terminate/2,
-        clerk_new/0,
+        clerk_new/1,
         clerk_prompt/2,
         code_change/3,
         perform_merge/4]).      
@@ -26,14 +26,15 @@
 %%% API
 %%%============================================================================
 
-clerk_new() ->
+clerk_new(Owner) ->
     {ok, Pid} = gen_server:start(?MODULE, [], []),
-    ok = gen_server:call(Pid, register, infinity),
+    ok = gen_server:call(Pid, {register, Owner}, infinity),
     {ok, Pid}.
     
 
 clerk_prompt(Pid, penciller) ->
-    gen_server:cast(Pid, penciller_prompt, infinity).
+    gen_server:cast(Pid, penciller_prompt),
+    ok.
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -42,10 +43,10 @@ clerk_prompt(Pid, penciller) ->
 init([]) ->
     {ok, #state{}}.
 
-handle_call(register, From, State) ->
-    {noreply, State#state{owner=From}}.
+handle_call({register, Owner}, _From, State) ->
+    {reply, ok, State#state{owner=Owner}}.
 
-handle_cast({penciller_prompt, From}, State) ->
+handle_cast(penciller_prompt, State) ->
     case leveled_penciller:pcl_workforclerk(State#state.owner) of
         none ->
             io:format("Work prompted but none needed~n"),
@@ -54,7 +55,9 @@ handle_cast({penciller_prompt, From}, State) ->
             {NewManifest, FilesToDelete} = merge(WI),
             UpdWI = WI#penciller_work{new_manifest=NewManifest,
                                         unreferenced_files=FilesToDelete},
-            leveled_penciller:pcl_requestmanifestchange(From, UpdWI),
+            leveled_penciller:pcl_requestmanifestchange(State#state.owner,
+                                                        UpdWI),
+            mark_for_delete(FilesToDelete, State#state.owner),
             {noreply, State}
     end.
 
@@ -74,58 +77,69 @@ code_change(_OldVsn, State, _Extra) ->
 
 merge(WI) ->
     SrcLevel = WI#penciller_work.src_level,
-    {Selection, UpdMFest1} = select_filetomerge(SrcLevel,
+    {SrcF, UpdMFest1} = select_filetomerge(SrcLevel,
                                                 WI#penciller_work.manifest),
-    {{StartKey, EndKey}, SrcFile} = Selection,
-    SrcFilename = leveled_sft:sft_getfilename(SrcFile),
     SinkFiles = get_item(SrcLevel + 1, UpdMFest1, []),
-    SplitLists = lists:splitwith(fun(Ref) ->
-                                        case {Ref#manifest_entry.start_key,
-                                                Ref#manifest_entry.end_key} of
-                                            {_, EK} when StartKey > EK ->
-                                                false;
-                                            {SK, _} when EndKey < SK ->
-                                                false;
-                                            _ ->
-                                                true
-                                        end end,
-                                        SinkFiles),
-    {Candidates, Others} = SplitLists,
+    Splits = lists:splitwith(fun(Ref) ->
+                                case {Ref#manifest_entry.start_key,
+                                     Ref#manifest_entry.end_key} of
+                                 {_, EK} when SrcF#manifest_entry.start_key > EK ->
+                                     false;
+                                 {SK, _} when SrcF#manifest_entry.end_key < SK ->
+                                     false;
+                                 _ ->
+                                     true
+                                end end,
+                            SinkFiles),
+    {Candidates, Others} = Splits,
     
     %% TODO:
     %% Need to work out if this is the top level
     %% And then tell merge process to create files at the top level
     %% Which will include the reaping of expired tombstones
-                                        
-    io:format("Merge from level ~w to merge into ~w files below",
+    io:format("Merge from level ~w to merge into ~w files below~n",
                 [SrcLevel, length(Candidates)]),
-    
+     
     MergedFiles = case length(Candidates) of
         0 ->
             %% If no overlapping candiates, manifest change only required
             %%
             %% TODO: need to think still about simply renaming when at 
             %% lower level
-            [SrcFile];
+            [SrcF];
         _ ->
-            perform_merge({SrcFile, SrcFilename},
+            perform_merge({SrcF#manifest_entry.owner,
+                            SrcF#manifest_entry.filename},
                             Candidates,
                             SrcLevel,
                             {WI#penciller_work.ledger_filepath,
                                 WI#penciller_work.next_sqn})
-    end,
+    end,  
+    case MergedFiles of
+        error ->
+            merge_failure;
+        _ ->
+            NewLevel = lists:sort(lists:append(MergedFiles, Others)),
+            UpdMFest2 = lists:keystore(SrcLevel + 1,
+                                        1,
+                                        UpdMFest1,
+                                        {SrcLevel + 1, NewLevel}),
+            
+            ok = filelib:ensure_dir(WI#penciller_work.manifest_file),
+            {ok, Handle} = file:open(WI#penciller_work.manifest_file,
+                                        [binary, raw, write]),
+            ok = file:write(Handle, term_to_binary(UpdMFest2)),
+            ok = file:close(Handle),
+            {UpdMFest2, Candidates}
+    end.
     
-    NewLevel = lists:sort(lists:append(MergedFiles, Others)),
-    UpdMFest2 = lists:keyreplace(SrcLevel + 1,
-                                    1,
-                                    UpdMFest1,
-                                    {SrcLevel, NewLevel}),
+
+mark_for_delete([], _Penciller) ->
+    ok;
+mark_for_delete([Head|Tail], Penciller) ->
+    leveled_sft:sft_setfordelete(Head#manifest_entry.owner, Penciller),
+    mark_for_delete(Tail, Penciller).
     
-    {ok, Handle} = file:open(WI#penciller_work.manifest_file,
-                                [binary, raw, write]),
-    ok = file:write(Handle, term_to_binary(UpdMFest2)),
-    ok = file:close(Handle),
-    {UpdMFest2, Candidates}.
         
             
 %% An algorithm for discovering which files to merge ....
@@ -173,11 +187,12 @@ select_filetomerge(SrcLevel, Manifest) ->
 %%
 %% The level is the level which the new files should be created at.
 
-perform_merge(FileToMerge, CandidateList, Level, {Filepath, MSN}) ->
-    {Filename, UpperSFTPid} = FileToMerge,
+perform_merge({UpperSFTPid, Filename}, CandidateList, Level, {Filepath, MSN}) ->
     io:format("Merge to be commenced for FileToMerge=~s with MSN=~w~n",
                     [Filename, MSN]),
-    PointerList = lists:map(fun(P) -> {next, P, all} end, CandidateList),
+    PointerList = lists:map(fun(P) ->
+                                {next, P#manifest_entry.owner, all} end,
+                            CandidateList),
     do_merge([{next, UpperSFTPid, all}],
                     PointerList, Level, {Filepath, MSN}, 0, []).
 
@@ -187,12 +202,14 @@ do_merge([], [], Level, {_Filepath, MSN}, FileCounter, OutList) ->
     OutList;
 do_merge(KL1, KL2, Level, {Filepath, MSN}, FileCounter, OutList) ->
     FileName = lists:flatten(io_lib:format(Filepath ++ "_~w_~w.sft",
-                                            [Level, FileCounter])),
+                                            [Level + 1, FileCounter])),
     io:format("File to be created as part of MSN=~w Filename=~s~n",
                 [MSN, FileName]),
+    TS1 = os:timestamp(),
     case leveled_sft:sft_new(FileName, KL1, KL2, Level) of
         {ok, _Pid, {error, Reason}} ->
-            io:format("Exiting due to error~w~n", [Reason]);
+            io:format("Exiting due to error~w~n", [Reason]),
+            error;
         {ok, Pid, Reply} ->
             {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} = Reply,
             ExtMan = lists:append(OutList,
@@ -200,6 +217,8 @@ do_merge(KL1, KL2, Level, {Filepath, MSN}, FileCounter, OutList) ->
                                                         end_key=HighestKey,
                                                         owner=Pid,
                                                         filename=FileName}]),
+            MTime = timer:now_diff(os:timestamp(), TS1),
+            io:format("file creation took ~w microseconds ~n", [MTime]),
             do_merge(KL1Rem, KL2Rem, Level, {Filepath, MSN},
                             FileCounter + 1, ExtMan)
     end.
@@ -278,7 +297,7 @@ merge_file_test() ->
     KL4_L2 = lists:sort(generate_randomkeys(16000, 750, 250)),
     {ok, PidL2_4, _} = leveled_sft:sft_new("../test/KL4_L2.sft",
                                             KL4_L2, [], 2),
-    Result = perform_merge({"../test/KL1_L1.sft", PidL1_1},
+    Result = perform_merge({PidL1_1, "../test/KL1_L1.sft"},
                             [PidL2_1, PidL2_2, PidL2_3, PidL2_4],
                             2, {"../test/", 99}),
     lists:foreach(fun(ManEntry) ->
