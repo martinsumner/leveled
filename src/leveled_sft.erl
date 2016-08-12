@@ -161,6 +161,7 @@
         sft_checkready/1,
         sft_getfilename/1,
         sft_setfordelete/2,
+        sft_getmaxsequencenumber/1,
         strip_to_keyonly/1,
         generate_randomkeys/1]).
 
@@ -259,6 +260,9 @@ sft_checkready(Pid) ->
 
 sft_getfilename(Pid) ->
     gen_server:call(Pid, get_filename, infinty).
+
+sft_getmaxsequencenumber(Pid) ->
+    gen_server:call(Pid, get_maxsqn, infinity).
 
 %%%============================================================================
 %%% API helper functions
@@ -394,7 +398,9 @@ handle_call({set_for_delete, Penciller}, _From, State) ->
         ok,
         State#state{ready_for_delete=true,
                             penciller=Penciller},
-        ?DELETE_TIMEOUT}.
+        ?DELETE_TIMEOUT};
+handle_call(get_maxsqn, _From, State) ->
+    {reply, State#state.highest_sqn, State}.
     
 handle_cast(_Msg, State) ->
     {noreply, State}.

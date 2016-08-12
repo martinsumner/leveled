@@ -20,7 +20,11 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--record(state, {owner :: pid()}).
+-define(INACTIVITY_TIMEOUT, 2000).
+-define(HAPPYTIME_MULTIPLIER, 5).
+
+-record(state, {owner :: pid(),
+                in_backlog = false :: boolean()}).
 
 %%%============================================================================
 %%% API
@@ -47,20 +51,17 @@ handle_call({register, Owner}, _From, State) ->
     {reply, ok, State#state{owner=Owner}}.
 
 handle_cast(penciller_prompt, State) ->
-    case leveled_penciller:pcl_workforclerk(State#state.owner) of
-        none ->
-            io:format("Work prompted but none needed~n"),
-            {noreply, State};
-        WI ->
-            {NewManifest, FilesToDelete} = merge(WI),
-            UpdWI = WI#penciller_work{new_manifest=NewManifest,
-                                        unreferenced_files=FilesToDelete},
-            leveled_penciller:pcl_requestmanifestchange(State#state.owner,
-                                                        UpdWI),
-            mark_for_delete(FilesToDelete, State#state.owner),
-            {noreply, State}
-    end.
+    Timeout = requestandhandle_work(State),
+    {noreply, State, Timeout}.
 
+handle_info(timeout, State) ->
+    %% The pcl prompt will cause a penciller_prompt, to re-trigger timeout
+    case leveled_penciller:pcl_prompt(State#state.owner) of
+        ok ->
+            {noreply, State};
+        pause ->
+            {noreply, State}
+    end;
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -74,6 +75,27 @@ code_change(_OldVsn, State, _Extra) ->
 %%%============================================================================
 %%% Internal functions
 %%%============================================================================
+
+requestandhandle_work(State) ->
+    case leveled_penciller:pcl_workforclerk(State#state.owner) of
+        {none, Backlog} ->
+            io:format("Work prompted but none needed~n"),
+            case Backlog of
+                false ->
+                    ?INACTIVITY_TIMEOUT * ?HAPPYTIME_MULTIPLIER;
+                _ ->
+                    ?INACTIVITY_TIMEOUT
+            end;
+        {WI, _} ->
+            {NewManifest, FilesToDelete} = merge(WI),
+            UpdWI = WI#penciller_work{new_manifest=NewManifest,
+                                        unreferenced_files=FilesToDelete},
+            leveled_penciller:pcl_requestmanifestchange(State#state.owner,
+                                                        UpdWI),
+            mark_for_delete(FilesToDelete, State#state.owner),
+            ?INACTIVITY_TIMEOUT
+    end.    
+
 
 merge(WI) ->
     SrcLevel = WI#penciller_work.src_level,
@@ -106,6 +128,8 @@ merge(WI) ->
             %%
             %% TODO: need to think still about simply renaming when at 
             %% lower level
+            io:format("File ~s to simply switch levels to level ~w~n",
+                        [SrcF#manifest_entry.filename, SrcLevel + 1]),
             [SrcF];
         _ ->
             perform_merge({SrcF#manifest_entry.owner,
@@ -130,7 +154,13 @@ merge(WI) ->
                                         [binary, raw, write]),
             ok = file:write(Handle, term_to_binary(UpdMFest2)),
             ok = file:close(Handle),
-            {UpdMFest2, Candidates}
+            case lists:member(SrcF, MergedFiles) of
+                true ->
+                    {UpdMFest2, Candidates};
+                false ->
+                    %% Can rub out src file as it is not part of output
+                    {UpdMFest2, Candidates ++ [SrcF]}
+            end
     end.
     
 
@@ -298,7 +328,10 @@ merge_file_test() ->
     {ok, PidL2_4, _} = leveled_sft:sft_new("../test/KL4_L2.sft",
                                             KL4_L2, [], 2),
     Result = perform_merge({PidL1_1, "../test/KL1_L1.sft"},
-                            [PidL2_1, PidL2_2, PidL2_3, PidL2_4],
+                            [#manifest_entry{owner=PidL2_1},
+                                #manifest_entry{owner=PidL2_2},
+                                #manifest_entry{owner=PidL2_3},
+                                #manifest_entry{owner=PidL2_4}],
                             2, {"../test/", 99}),
     lists:foreach(fun(ManEntry) ->
                         {o, B1, K1} = ManEntry#manifest_entry.start_key,
