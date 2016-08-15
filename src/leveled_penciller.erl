@@ -84,9 +84,8 @@
 %% To initiate the Ledger the must consult the manifest, and then start a SFT
 %% management process for each file in the manifest.
 %%
-%% The penciller should then try and read any persisted ETS table in the
-%% on_shutdown folder. The Penciller must then discover the highest sequence
-%% number in the ledger, and respond to the Bookie with that sequence number.
+%% The penciller should then try and read any Level 0 file which has the
+%% manifest sequence number one higher than the last store in the manifest.
 %%
 %% The Bookie will ask the Inker for any Keys seen beyond that sequence number
 %% before the startup of the overall store can be completed.
@@ -153,14 +152,15 @@
         handle_info/2,
         terminate/2,
         code_change/3,
-        pcl_new/0,
         pcl_start/1,
         pcl_pushmem/2,
         pcl_fetch/2,
         pcl_workforclerk/1,
         pcl_requestmanifestchange/2,
         pcl_confirmdelete/2,
-        pcl_prompt/1]).
+        pcl_prompt/1,
+        pcl_close/1,
+        pcl_getstartupsequencenumber/1]).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -182,6 +182,7 @@
 -record(state, {manifest = [] :: list(),
                 ongoing_work = [] :: list(),
 				manifest_sqn = 0 :: integer(),
+                ledger_sqn = 0 :: integer(),
                 registered_iterators = [] :: list(),
                 unreferenced_files = [] :: list(),
                 root_path = "../test" :: string(),
@@ -196,13 +197,8 @@
 %%% API
 %%%============================================================================
  
-pcl_new() ->
-    gen_server:start(?MODULE, [], []).
-
 pcl_start(RootDir) ->
-    {ok, Pid} = gen_server:start(?MODULE, [], []),
-    gen_server:call(Pid, {load, RootDir}, infinity),
-    ok.
+    gen_server:start(?MODULE, [RootDir], []).
 
 pcl_pushmem(Pid, DumpList) ->
     %% Bookie to dump memory onto penciller
@@ -215,7 +211,7 @@ pcl_workforclerk(Pid) ->
     gen_server:call(Pid, work_for_clerk, infinity).
 
 pcl_requestmanifestchange(Pid, WorkItem) ->
-    gen_server:cast(Pid, {manifest_change, WorkItem}).
+    gen_server:call(Pid, {manifest_change, WorkItem}, infinity).
 
 pcl_confirmdelete(Pid, FileName) ->
     gen_server:call(Pid, {confirm_delete, FileName}).
@@ -223,23 +219,116 @@ pcl_confirmdelete(Pid, FileName) ->
 pcl_prompt(Pid) ->
     gen_server:call(Pid, prompt_compaction).
 
+pcl_getstartupsequencenumber(Pid) ->
+    gen_server:call(Pid, get_startup_sqn).
+
+pcl_close(Pid) ->
+    gen_server:call(Pid, close).
+
 %%%============================================================================
 %%% gen_server callbacks
 %%%============================================================================
 
-init([]) ->
+init([RootPath]) ->
     TID = ets:new(?MEMTABLE, [ordered_set, private]),
     {ok, Clerk} = leveled_clerk:clerk_new(self()),
-    {ok, #state{memtable=TID, clerk=Clerk}}.
+    InitState = #state{memtable=TID, clerk=Clerk, root_path=RootPath},
+    
+    %% Open manifest
+    ManifestPath = InitState#state.root_path ++ "/" ++ ?MANIFEST_FP ++ "/",
+    {ok, Filenames} = file:list_dir(ManifestPath),
+    CurrRegex = "nonzero_(?<MSN>[0-9]+)\\." ++ ?CURRENT_FILEX,
+    ValidManSQNs = lists:foldl(fun(FN, Acc) ->
+                                    case re:run(FN,
+                                                CurrRegex,
+                                                [{capture, ['MSN'], list}]) of
+                                        nomatch ->
+                                            Acc;
+                                        {match, [Int]} when is_list(Int) ->
+                                            Acc ++ [list_to_integer(Int)];
+                                        _ ->
+                                            Acc
+                                    end end,
+                                    [],
+                                    Filenames),
+    TopManSQN = lists:foldl(fun(X, MaxSQN) -> max(X, MaxSQN) end,
+                            0,
+                            ValidManSQNs),
+    io:format("Store to be started based on " ++
+                "manifest sequence number of ~w~n", [TopManSQN]),
+    case TopManSQN of
+        0 ->
+            io:format("Seqence number of 0 indicates no valid manifest~n"),
+            {ok, InitState};
+        _ ->
+            {ok, Bin} = file:read_file(filepath(InitState#state.root_path,
+                                                    TopManSQN,
+                                                    current_manifest)),
+            Manifest = binary_to_term(Bin),
+            {UpdManifest, MaxSQN} = open_all_filesinmanifest(Manifest),
+            io:format("Maximum sequence number of ~w "
+                        ++ "found in nonzero levels~n",
+                        [MaxSQN]),
+            
+            %% TODO
+            %% Find any L0 File left outstanding
+            L0FN = filepath(RootPath,
+                            TopManSQN + 1,
+                            new_merge_files) ++ "_0_0.sft",
+            case filelib:is_file(L0FN) of
+                true ->
+                    io:format("L0 file found ~s~n", [L0FN]),
+                    {ok,
+                        L0Pid,
+                        {L0StartKey, L0EndKey}} = leveled_sft:sft_open(L0FN),
+                    L0SQN = leveled_sft:sft_getmaxsequencenumber(L0Pid),
+                    ManifestEntry = #manifest_entry{start_key=L0StartKey,
+                                                        end_key=L0EndKey,
+                                                        owner=L0Pid,
+                                                        filename=L0FN},
+                    UpdManifest2 = lists:keystore(0,
+                                                    1,
+                                                    UpdManifest,
+                                                    {0, [ManifestEntry]}),
+                    io:format("L0 file had maximum sequence number of ~w~n",
+                                [L0SQN]),
+                    {ok,
+                        InitState#state{manifest=UpdManifest2,
+                                            manifest_sqn=TopManSQN,
+                                            ledger_sqn=max(MaxSQN, L0SQN)}};
+                false ->
+                    io:format("No L0 file found~n"),
+                    {ok,
+                        InitState#state{manifest=UpdManifest,
+                                            manifest_sqn=TopManSQN,
+                                            ledger_sqn=MaxSQN}}
+            end
+    end.
+    
 
 handle_call({push_mem, DumpList}, _From, State) ->
-    case push_to_memory(DumpList, State) of
-        {ok, UpdState} ->
-            {reply, ok, UpdState};
-        {{pause, Reason, Details}, UpdState} ->
-            io:format("Excess work due to - " ++ Reason, Details),
-            {reply, pause, UpdState#state{backlog=true}}
-    end;
+    StartWatch = os:timestamp(),
+    Response = case assess_sqn(DumpList) of
+        {MinSQN, MaxSQN} when MaxSQN > MinSQN,
+                                MinSQN >= State#state.ledger_sqn ->
+            case push_to_memory(DumpList, State) of
+                {ok, UpdState} ->
+                    {reply, ok, UpdState};
+                {{pause, Reason, Details}, UpdState} ->
+                    io:format("Excess work due to - " ++ Reason, Details),
+                    {reply, pause, UpdState#state{backlog=true,
+                                                    ledger_sqn=MaxSQN}}
+            end;
+        {MinSQN, MaxSQN} ->
+            io:format("Mismatch of sequence number expectations with push "
+                        ++ "having sequence numbers between ~w and ~w "
+                        ++ "but current sequence number is ~w~n",
+                        [MinSQN, MaxSQN, State#state.ledger_sqn]),
+            {reply, refused, State}
+    end,
+    io:format("Push completed in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(),StartWatch)]),
+    Response;
 handle_call({fetch, Key}, _From, State) ->
     {reply, fetch(Key, State#state.manifest, State#state.memtable), State};
 handle_call(work_for_clerk, From, State) ->
@@ -249,14 +338,13 @@ handle_call({confirm_delete, FileName}, _From, State) ->
     Reply = confirm_delete(FileName,
                             State#state.unreferenced_files,
                             State#state.registered_iterators),
-    {reply, Reply, State};
-handle_call({load, RootDir}, _From, State) ->
-    {Manifest, ManifestSQN} = load_manifest(RootDir),
-    {UpdManifest, MaxSQN} = load_allsft(RootDir, Manifest),
-    {UpdMaxSQN} = load_levelzero(RootDir, MaxSQN),
-    {reply, UpdMaxSQN, State#state{root_path=RootDir,
-                                    manifest=UpdManifest,
-                                    manifest_sqn=ManifestSQN}};
+    case Reply of
+        true ->
+            UF1 = lists:keydelete(FileName, 1, State#state.unreferenced_files),
+            {reply, true, State#state{unreferenced_files=UF1}};
+        _ ->
+            {reply, Reply, State}
+    end;
 handle_call(prompt_compaction, _From, State) ->
     case push_to_memory([], State) of
         {ok, UpdState} ->
@@ -264,17 +352,66 @@ handle_call(prompt_compaction, _From, State) ->
         {{pause, Reason, Details}, UpdState} ->
             io:format("Excess work due to - " ++ Reason, Details),
             {reply, pause, UpdState#state{backlog=true}}
-    end.
-            
-
-handle_cast({manifest_change, WI}, State) ->
+    end;
+handle_call({manifest_change, WI}, _From, State) ->
     {ok, UpdState} = commit_manifest_change(WI, State),
-    {noreply, UpdState}.
+    {reply, ok, UpdState};
+handle_call(get_startup_sqn, _From, State) ->
+    {reply, State#state.ledger_sqn, State};
+handle_call(close, _From, State) ->
+    {stop, normal, ok, State}.
+            
+handle_cast(_Msg, State) ->
+    {noreply, State}.
 
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(_Reason, _State) ->
+terminate(_Reason, State) ->
+    %% When a Penciller shuts down it isn't safe to try an manage the safe
+    %% finishing of any outstanding work.  The last commmitted manifest will
+    %% be used.
+    %%
+    %% Level 0 files lie outside of the manifest, and so if there is no L0
+    %% file present it is safe to write the current contents of memory.  If
+    %% there is a L0 file present - then the memory can be dropped (it is
+    %% recoverable from the ledger, and there should not be a lot to recover
+    %% as presumably the ETS file has been recently flushed, hence the presence
+    %% of a L0 file).
+    %%
+    %% The penciller should close each file in the unreferenced files, and
+    %% then each file in the manifest, and cast a close on the clerk.
+    %% The cast may not succeed as the clerk could be synchronously calling
+    %% the penciller looking for a manifest commit
+    %%
+    leveled_clerk:clerk_stop(State#state.clerk),
+    Dump = ets:tab2list(State#state.memtable),
+    case {State#state.levelzero_pending,
+            get_item(0, State#state.manifest, []), length(Dump)} of
+        {{false, _, _}, [], L} when L > 0 ->
+            MSN = State#state.manifest_sqn + 1,
+            FileName = State#state.root_path
+                        ++ "/" ++ ?FILES_FP ++ "/"
+                        ++ integer_to_list(MSN) ++ "_0_0",
+            {ok,
+                L0Pid,
+                {{KR1, _}, _SK, _HK}} = leveled_sft:sft_new(FileName ++ ".pnd",
+                                                                Dump,
+                                                                [],
+                                                                0),
+            io:format("Dump of memory on close to filename ~s with"
+                        ++ " remainder ~w~n", [FileName, length(KR1)]),
+            leveled_sft:sft_close(L0Pid),
+            file:rename(FileName ++ ".pnd", FileName ++ ".sft");
+        {{false, _, _}, [], L} when L == 0 ->
+            io:format("No keys to dump from memory when closing~n");
+        _ ->
+            io:format("No opportunity to persist memory before closing "
+                        ++ "with ~w keys discarded~n", [length(Dump)])
+    end,
+    ok = close_files(0, State#state.manifest),
+    lists:foreach(fun({_FN, Pid, _SN}) -> leveled_sft:sft_close(Pid) end,
+                    State#state.unreferenced_files),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -288,7 +425,7 @@ code_change(_OldVsn, State, _Extra) ->
 push_to_memory(DumpList, State) ->
     {TableSize, UpdState} = case State#state.levelzero_pending of
         {true, Remainder, {StartKey, EndKey, Pid}} ->
-            %% Need to handle not error scenarios?
+            %% Need to handle error scenarios?
             %% N.B. Sync call - so will be ready
             {ok, SrcFN} = leveled_sft:sft_checkready(Pid),
             %% Reset ETS, but re-insert any remainder
@@ -429,6 +566,7 @@ manifest_locked(State) ->
     end.
 
 
+
 %% Work out what the current work queue should be
 %%
 %% The work queue should have a lower level work at the front, and no work
@@ -485,7 +623,40 @@ return_work(State, From) ->
     end.
 
 
+close_files(?MAX_LEVELS - 1, _Manifest) ->
+    ok;
+close_files(Level, Manifest) ->
+    LevelList = get_item(Level, Manifest, []),
+    lists:foreach(fun(F) -> leveled_sft:sft_close(F#manifest_entry.owner) end,
+                    LevelList),
+    close_files(Level + 1, Manifest).
 
+
+open_all_filesinmanifest(Manifest) ->
+    open_all_filesinmanifest({Manifest, 0}, 0).
+
+open_all_filesinmanifest(Result, ?MAX_LEVELS - 1) ->
+    Result;
+open_all_filesinmanifest({Manifest, TopSQN}, Level) ->
+    LevelList = get_item(Level, Manifest, []),
+    %% The Pids in the saved manifest related to now closed references
+    %% Need to roll over the manifest at this level starting new processes to
+    %5 replace them
+    LvlR = lists:foldl(fun(F, {FL, FL_SQN}) ->
+                            FN = F#manifest_entry.filename,
+                            {ok, P, _Keys} = leveled_sft:sft_open(FN),
+                            F_SQN = leveled_sft:sft_getmaxsequencenumber(P),
+                            {lists:append(FL,
+                                        [F#manifest_entry{owner = P}]),
+                                max(FL_SQN, F_SQN)}
+                            end,
+                            {[], 0},
+                            LevelList),
+    %% Result is tuple of revised file list for this level in manifest, and
+    %% the maximum sequence number seen at this level
+    {LvlFL, LvlSQN} = LvlR, 
+    UpdManifest = lists:keystore(Level, 1, Manifest, {Level, LvlFL}),
+    open_all_filesinmanifest({UpdManifest, max(TopSQN, LvlSQN)}, Level + 1).
 
 assess_workqueue(WorkQ, ?MAX_LEVELS - 1, _Manifest) ->
     WorkQ;
@@ -539,8 +710,8 @@ commit_manifest_change(ReturnedWorkItem, State) ->
         {NewMSN, _From} ->
             MTime = timer:now_diff(os:timestamp(),
                                     SentWorkItem#penciller_work.start_time),
-            io:format("Merge to sqn ~w completed in ~w microseconds
-                        at Level ~w~n",
+            io:format("Merge to sqn ~w completed in ~w microseconds " ++
+                        "at Level ~w~n",
                         [SentWorkItem#penciller_work.next_sqn,
                             MTime,
                             SentWorkItem#penciller_work.src_level]),
@@ -558,8 +729,8 @@ commit_manifest_change(ReturnedWorkItem, State) ->
                                 manifest=NewManifest,
                                 unreferenced_files=UnreferencedFilesUpd}};
         {MaybeWrongMSN, From} ->
-            io:format("Merge commit at sqn ~w not matched to expected
-                        sqn ~w from Clerk ~w~n",
+            io:format("Merge commit at sqn ~w not matched to expected" ++
+                        " sqn ~w from Clerk ~w~n",
                         [NewMSN, MaybeWrongMSN, From]),
             {error, State}
     end.
@@ -586,43 +757,36 @@ update_deletions([ClearedFile|Tail], MSN, UnreferencedFiles) ->
     update_deletions(Tail,
                         MSN,
                         lists:append(UnreferencedFiles,
-                            [{ClearedFile#manifest_entry.filename, MSN}])).
+                            [{ClearedFile#manifest_entry.filename,
+                                ClearedFile#manifest_entry.owner,
+                                MSN}])).
 
 confirm_delete(Filename, UnreferencedFiles, RegisteredIterators) ->
     case lists:keyfind(Filename, 1, UnreferencedFiles) of
         false ->
             false;
-        {Filename, MSN} ->
+        {Filename, _Pid, MSN} ->
             LowSQN = lists:foldl(fun({_, SQN}, MinSQN) -> min(SQN, MinSQN) end,
                                     infinity,
                                     RegisteredIterators),
             if
-                MSN >= LowSQN -> false;
-                true -> true
+                MSN >= LowSQN ->
+                    false;
+                true ->
+                    true
             end
     end.
 
 
-%% load_manifest(RootDir),
-%% {UpdManifest, MaxSQN} = load_allsft(RootDir, Manifest),
-%% Level0SQN, UpdMaxSQN} = load_levelzero(RootDir, MaxSQN)
 
-load_manifest(_RootDir) ->
-    {{}, 0}.
+assess_sqn(DumpList) ->
+    assess_sqn(DumpList, infinity, 0).
 
-load_allsft(_RootDir, _Manifest) ->
-    %% Manifest has been persisted with PIDs that are no longer
-    %% valid, roll through each entry opening files and replacing Pids in
-    %% Manifest
-    {{}, 0}.
-
-load_levelzero(_RootDir, _MaxSQN) ->
-    %% When loading L0 manifest make sure that the lowest sequence number in
-    %% the L0 manifest is bigger than the highest in all levels below
-    %% - not True
-    %% ... what about key remainders?
-    %% ... need to rethink L0
-    {0, 0}.
+assess_sqn([], MinSQN, MaxSQN) ->
+    {MinSQN, MaxSQN};
+assess_sqn([HeadKey|Tail], MinSQN, MaxSQN) ->
+    {_K, SQN} = leveled_sft:strip_to_key_seqn_only(HeadKey),
+    assess_sqn(Tail, min(MinSQN, SQN), max(MaxSQN, SQN)).
 
 
 %%%============================================================================
@@ -651,7 +815,8 @@ compaction_work_assessment_test() ->
 
 confirm_delete_test() ->
     Filename = 'test.sft',
-    UnreferencedFiles = [{'other.sft', 15}, {Filename, 10}],
+    UnreferencedFiles = [{'other.sft', dummy_owner, 15},
+                            {Filename, dummy_owner, 10}],
     RegisteredIterators1 = [{dummy_pid, 16}, {dummy_pid, 12}],
     R1 = confirm_delete(Filename, UnreferencedFiles, RegisteredIterators1),
     ?assertMatch(R1, true),

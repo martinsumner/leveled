@@ -15,6 +15,7 @@
         terminate/2,
         clerk_new/1,
         clerk_prompt/2,
+        clerk_stop/1,
         code_change/3,
         perform_merge/4]).      
 
@@ -23,8 +24,7 @@
 -define(INACTIVITY_TIMEOUT, 2000).
 -define(HAPPYTIME_MULTIPLIER, 5).
 
--record(state, {owner :: pid(),
-                in_backlog = false :: boolean()}).
+-record(state, {owner :: pid()}).
 
 %%%============================================================================
 %%% API
@@ -35,10 +35,12 @@ clerk_new(Owner) ->
     ok = gen_server:call(Pid, {register, Owner}, infinity),
     {ok, Pid}.
     
-
 clerk_prompt(Pid, penciller) ->
     gen_server:cast(Pid, penciller_prompt),
     ok.
+
+clerk_stop(Pid) ->
+    gen_server:cast(Pid, stop).
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -48,11 +50,13 @@ init([]) ->
     {ok, #state{}}.
 
 handle_call({register, Owner}, _From, State) ->
-    {reply, ok, State#state{owner=Owner}}.
+    {reply, ok, State#state{owner=Owner}, ?INACTIVITY_TIMEOUT}.
 
 handle_cast(penciller_prompt, State) ->
     Timeout = requestandhandle_work(State),
-    {noreply, State, Timeout}.
+    {noreply, State, Timeout};
+handle_cast(stop, State) ->
+    {stop, normal, State}.
 
 handle_info(timeout, State) ->
     %% The pcl prompt will cause a penciller_prompt, to re-trigger timeout
@@ -90,10 +94,21 @@ requestandhandle_work(State) ->
             {NewManifest, FilesToDelete} = merge(WI),
             UpdWI = WI#penciller_work{new_manifest=NewManifest,
                                         unreferenced_files=FilesToDelete},
-            leveled_penciller:pcl_requestmanifestchange(State#state.owner,
-                                                        UpdWI),
-            mark_for_delete(FilesToDelete, State#state.owner),
-            ?INACTIVITY_TIMEOUT
+            R = leveled_penciller:pcl_requestmanifestchange(State#state.owner,
+                                                                UpdWI),
+            case R of
+                ok ->
+                    %% Request for manifest change must be a synchronous call
+                    %% Otherwise cannot mark files for deletion (may erase
+                    %% without manifest change on close)
+                    mark_for_delete(FilesToDelete, State#state.owner),
+                    ?INACTIVITY_TIMEOUT;
+                _ ->
+                    %% New files will forever remain in an undetermined state
+                    %% The disconnected files should be logged at start-up for
+                    %% Manual clear-up
+                    ?INACTIVITY_TIMEOUT
+            end
     end.    
 
 

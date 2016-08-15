@@ -163,6 +163,7 @@
         sft_setfordelete/2,
         sft_getmaxsequencenumber/1,
         strip_to_keyonly/1,
+        strip_to_key_seqn_only/1,
         generate_randomkeys/1]).
 
 -include_lib("eunit/include/eunit.hrl").
@@ -231,29 +232,33 @@ sft_new(Filename, KL1, KL2, Level, Options) ->
 sft_open(Filename) ->
     {ok, Pid} = gen_server:start(?MODULE, [], []),
     case gen_server:call(Pid, {sft_open, Filename}, infinity) of
-        ok ->
-            {ok, Pid};
+        {ok, {SK, EK}} ->
+            {ok, Pid, {SK, EK}};
         Error ->
             Error
     end.
 
 sft_setfordelete(Pid, Penciller) ->
-    file_request(Pid, {set_for_delete, Penciller}).
+    gen_server:call(Pid, {set_for_delete, Penciller}, infinity).
 
 sft_get(Pid, Key) ->
-    file_request(Pid, {get_kv, Key}).
+    gen_server:call(Pid, {get_kv, Key}, infinity).
 
 sft_getkeyrange(Pid, StartKey, EndKey, ScanWidth) ->
-    file_request(Pid, {get_keyrange, StartKey, EndKey, ScanWidth}).
+    gen_server:call(Pid,
+                    {get_keyrange, StartKey, EndKey, ScanWidth},
+                    infinity).
 
 sft_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
-    file_request(Pid, {get_kvrange, StartKey, EndKey, ScanWidth}).
-
-sft_close(Pid) ->
-    file_request(Pid, close).
+    gen_server:call(Pid,
+                    {get_kvrange, StartKey, EndKey, ScanWidth},
+                    infinity).
 
 sft_clear(Pid) ->
-    file_request(Pid, clear).
+    gen_server:call(Pid, clear, infinity).
+
+sft_close(Pid) ->
+    gen_server:call(Pid, close, infinity).
 
 sft_checkready(Pid) ->
     gen_server:call(Pid, background_complete, infinity).
@@ -264,36 +269,7 @@ sft_getfilename(Pid) ->
 sft_getmaxsequencenumber(Pid) ->
     gen_server:call(Pid, get_maxsqn, infinity).
 
-%%%============================================================================
-%%% API helper functions
-%%%============================================================================
 
-%% This saftey measure of checking the Pid is alive before perfoming any ops
-%% is copied from the bitcask source code.
-%%
-%% It is not clear at present if this is necessary.
-
-file_request(Pid, Request) ->
-    case check_pid(Pid) of
-        ok ->
-            gen_server:call(Pid, Request, infinity);
-        Error ->
-            Error
-    end.
-
-check_pid(Pid) ->
-    IsPid = is_pid(Pid),
-    IsAlive = IsPid andalso is_process_alive(Pid),
-    case {IsAlive, IsPid} of
-        {true, _} ->
-            ok;
-        {false, true} ->
-            %% Same result as `file' module when accessing closed FD
-            {error, einval};
-        _ ->
-            %% Same result as `file' module when providing wrong arg
-            {error, badarg}
-    end.
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -363,8 +339,12 @@ handle_call({sft_new, Filename, KL1, KL2, Level}, _From, State) ->
                     UpdFileMD#state{handle=ReadHandle, filename=Filename}}
     end;
 handle_call({sft_open, Filename}, _From, _State) ->
-    {_Handle, FileMD} = open_file(Filename),
-    {reply, {FileMD#state.smallest_key, FileMD#state.highest_key}, FileMD};
+    {_Handle, FileMD} = open_file(#state{filename=Filename}),
+    io:format("Opened filename with name ~s~n", [Filename]),
+    {reply,
+        {ok,
+            {FileMD#state.smallest_key, FileMD#state.highest_key}},
+                FileMD};
 handle_call({get_kv, Key}, _From, State) ->
     Reply = fetch_keyvalue(State#state.handle, State, Key),
     {reply, Reply, State};
@@ -379,11 +359,9 @@ handle_call({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
                                 ScanWidth),
     {reply, Reply, State};
 handle_call(close, _From, State) ->
-    {reply, true, State};
+    {stop, normal, ok, State};
 handle_call(clear, _From, State) ->
-    ok = file:close(State#state.handle),
-    ok = file:delete(State#state.filename),
-    {reply, true, State};
+    {stop, normal, ok, State#state{ready_for_delete=true}};
 handle_call(background_complete, _From, State) ->
     case State#state.background_complete of
         true ->
@@ -401,7 +379,7 @@ handle_call({set_for_delete, Penciller}, _From, State) ->
         ?DELETE_TIMEOUT};
 handle_call(get_maxsqn, _From, State) ->
     {reply, State#state.highest_sqn, State}.
-    
+
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -412,10 +390,6 @@ handle_info(timeout, State) ->
                                                         State#state.filename)
                                                             of
                 true ->
-                    io:format("Polled for deletion and now clearing ~s~n",
-                                [State#state.filename]),
-                    ok = file:close(State#state.handle),
-                    ok = file:delete(State#state.filename),
                     {stop, shutdown, State};
                 false ->
                     io:format("Polled for deletion but ~s not ready~n",
@@ -428,8 +402,18 @@ handle_info(timeout, State) ->
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(_Reason, _State) ->
-    ok.
+terminate(Reason, State) ->
+    io:format("Exit called for reason ~w on filename ~s~n",
+                [Reason, State#state.filename]),
+    case State#state.ready_for_delete of
+        true ->
+            io:format("Exit called and now clearing ~s~n",
+                        [State#state.filename]),
+            ok = file:close(State#state.handle),
+            ok = file:delete(State#state.filename);
+        _ ->
+            ok = file:close(State#state.handle)
+    end.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -453,7 +437,8 @@ create_file(FileName) when is_list(FileName) ->
             FileMD = #state{next_position=StartPos, filename=FileName},
             {Handle, FileMD};
         {error, Reason} ->
-            io:format("Error opening filename ~s with reason ~s", [FileName, Reason]),
+            io:format("Error opening filename ~s with reason ~s",
+                        [FileName, Reason]),
             {error, Reason}
     end.
 
@@ -484,7 +469,8 @@ open_file(FileMD) ->
         Ilen:32/integer,
         Flen:32/integer,
         Slen:32/integer>> = HeaderLengths,
-    {ok, SummaryBin} = file:pread(Handle, ?HEADER_LEN + Blen + Ilen + Flen, Slen),
+    {ok, SummaryBin} = file:pread(Handle,
+                                    ?HEADER_LEN + Blen + Ilen + Flen, Slen),
     {{LowSQN, HighSQN}, {LowKey, HighKey}} = binary_to_term(SummaryBin),
     {ok, SlotIndexBin} = file:pread(Handle, ?HEADER_LEN + Blen, Ilen),
     SlotIndex = binary_to_term(SlotIndexBin),
@@ -552,14 +538,17 @@ fetch_keyvalue(Handle, FileMD, Key) ->
 
 %% Fetches a range of keys returning a list of {Key, SeqN} tuples
 fetch_range_keysonly(Handle, FileMD, StartKey, EndKey) ->
-    fetch_range(Handle, FileMD, StartKey, EndKey, [], fun acc_list_keysonly/2).
+    fetch_range(Handle, FileMD, StartKey, EndKey, [],
+                    fun acc_list_keysonly/2).
 
 fetch_range_keysonly(Handle, FileMD, StartKey, EndKey, ScanWidth) ->
-    fetch_range(Handle, FileMD, StartKey, EndKey, [], fun acc_list_keysonly/2, ScanWidth).
+    fetch_range(Handle, FileMD, StartKey, EndKey, [],
+                    fun acc_list_keysonly/2, ScanWidth).
 
 %% Fetches a range of keys returning the full tuple, including value
 fetch_range_kv(Handle, FileMD, StartKey, EndKey, ScanWidth) ->
-    fetch_range(Handle, FileMD, StartKey, EndKey, [], fun acc_list_kv/2, ScanWidth).
+    fetch_range(Handle, FileMD, StartKey, EndKey, [],
+                    fun acc_list_kv/2, ScanWidth).
 
 acc_list_keysonly(null, empty) ->
     [];
@@ -594,39 +583,60 @@ acc_list_kv(R, RList) ->
 %% used - e.g. counters, hash-lists to build bloom filters etc
 
 fetch_range(Handle, FileMD, StartKey, EndKey, FunList, AccFun) ->
-    fetch_range(Handle, FileMD, StartKey, EndKey, FunList, AccFun, ?ITERATOR_SCANWIDTH).
+    fetch_range(Handle, FileMD, StartKey, EndKey, FunList,
+                    AccFun, ?ITERATOR_SCANWIDTH).
     
 fetch_range(Handle, FileMD, StartKey, EndKey, FunList, AccFun, ScanWidth) ->
-    fetch_range(Handle, FileMD, StartKey, EndKey, FunList, AccFun, ScanWidth, empty).
+    fetch_range(Handle, FileMD, StartKey, EndKey, FunList,
+                    AccFun, ScanWidth, empty).
 
-fetch_range(_Handle, _FileMD, StartKey, _EndKey, _FunList, _AccFun, 0, Acc) ->
+fetch_range(_Handle, _FileMD, StartKey, _EndKey, _FunList,
+                    _AccFun, 0, Acc) ->
     {partial, Acc, StartKey};
-fetch_range(Handle, FileMD, StartKey, EndKey, FunList, AccFun, ScanWidth, Acc) ->
+fetch_range(Handle, FileMD, StartKey, EndKey, FunList,
+                    AccFun, ScanWidth, Acc) ->
     %% get_nearestkey gets the last key in the index <= StartKey, or the next
     %% key along if {next, StartKey} is passed
     case get_nearestkey(FileMD#state.slot_index, StartKey) of
         {NearestKey, _Filter, {LengthList, PointerB}} ->
-            fetch_range(Handle, FileMD, StartKey, NearestKey, EndKey, FunList, AccFun, ScanWidth,
-                            LengthList, 0, PointerB + FileMD#state.slots_pointer,
+            fetch_range(Handle, FileMD, StartKey, NearestKey, EndKey, FunList,
+                            AccFun, ScanWidth,
+                            LengthList,
+                            0,
+                            PointerB + FileMD#state.slots_pointer,
                             AccFun(null, Acc));
         not_found ->
             {complete, AccFun(null, Acc)}
     end.
 
-fetch_range(Handle, FileMD, _StartKey, NearestKey, EndKey, FunList, AccFun, ScanWidth,
-                        LengthList, BlockNumber, _Pointer, Acc)
+fetch_range(Handle, FileMD, _StartKey, NearestKey, EndKey, FunList,
+                        AccFun, ScanWidth,
+                        LengthList,
+                        BlockNumber,
+                        _Pointer,
+                        Acc)
                         when length(LengthList) == BlockNumber ->
     %% Reached the end of the slot.  Move the start key on one to scan a new slot
-    fetch_range(Handle, FileMD, {next, NearestKey}, EndKey, FunList, AccFun, ScanWidth - 1, Acc);
-fetch_range(Handle, FileMD, StartKey, NearestKey, EndKey, FunList, AccFun, ScanWidth,
-                        LengthList, BlockNumber, Pointer, Acc) ->
+    fetch_range(Handle, FileMD, {next, NearestKey}, EndKey, FunList,
+                        AccFun, ScanWidth - 1,
+                        Acc);
+fetch_range(Handle, FileMD, StartKey, NearestKey, EndKey, FunList,
+                        AccFun, ScanWidth,
+                        LengthList,
+                        BlockNumber,
+                        Pointer,
+                        Acc) ->
     Block = fetch_block(Handle, LengthList, BlockNumber, Pointer),
     Results = scan_block(Block, StartKey, EndKey, FunList, AccFun, Acc),
     case Results of
         {partial, Acc1, StartKey} ->
             %% Move on to the next block
-            fetch_range(Handle, FileMD, StartKey, NearestKey, EndKey, FunList, AccFun, ScanWidth,
-                        LengthList, BlockNumber +  1, Pointer, Acc1);
+            fetch_range(Handle, FileMD, StartKey, NearestKey, EndKey, FunList,
+                        AccFun, ScanWidth,
+                        LengthList,
+                        BlockNumber +  1,
+                        Pointer,
+                        Acc1);
         {complete, Acc1} ->
             {complete, Acc1}
     end.
@@ -665,8 +675,8 @@ applyfuns([HeadFun|OtherFuns], KV) ->
 
 fetch_keyvalue_fromblock([], _Key, _LengthList, _Handle, _StartOfSlot) ->
     not_present;
-fetch_keyvalue_fromblock([BlockNumber|T], Key, LengthList, Handle, StartOfSlot) ->
-    BlockToCheck = fetch_block(Handle, LengthList, BlockNumber, StartOfSlot),
+fetch_keyvalue_fromblock([BlockNmb|T], Key, LengthList, Handle, StartOfSlot) ->
+    BlockToCheck = fetch_block(Handle, LengthList, BlockNmb, StartOfSlot),
     Result = lists:keyfind(Key, 1, BlockToCheck),
     case Result of
         false ->
@@ -675,9 +685,9 @@ fetch_keyvalue_fromblock([BlockNumber|T], Key, LengthList, Handle, StartOfSlot) 
             KV
     end.
     
-fetch_block(Handle, LengthList, BlockNumber, StartOfSlot) ->
-    Start = lists:sum(lists:sublist(LengthList, BlockNumber)),
-    Length = lists:nth(BlockNumber + 1, LengthList),
+fetch_block(Handle, LengthList, BlockNmb, StartOfSlot) ->
+    Start = lists:sum(lists:sublist(LengthList, BlockNmb)),
+    Length = lists:nth(BlockNmb + 1, LengthList),
     {ok, BlockToCheckBin} = file:pread(Handle, Start + StartOfSlot, Length),
     binary_to_term(BlockToCheckBin).
 
@@ -1384,18 +1394,20 @@ generate_randomsegfilter(BlockSize) ->
                                                     Block4})).
 
 
+generate_randomkeys({Count, StartSQN}) ->
+    generate_randomkeys(Count, StartSQN, []);
 generate_randomkeys(Count) ->
-    generate_randomkeys(Count, []).
+    generate_randomkeys(Count, 0, []).
 
-generate_randomkeys(0, Acc) ->
+generate_randomkeys(0, _SQN, Acc) ->
     Acc;
-generate_randomkeys(Count, Acc) ->
+generate_randomkeys(Count, SQN, Acc) ->
     RandKey = {{o,
                 lists:concat(["Bucket", random:uniform(1024)]),
                 lists:concat(["Key", random:uniform(1024)])},
-                Count + 1,
+                SQN,
                 {active, infinity}, null},
-    generate_randomkeys(Count - 1, [RandKey|Acc]).
+    generate_randomkeys(Count - 1, SQN + 1, [RandKey|Acc]).
     
 generate_sequentialkeys(Count, Start) ->
     generate_sequentialkeys(Count + Start, Start, []).
