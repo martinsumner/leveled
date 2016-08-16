@@ -251,7 +251,7 @@ do_merge(KL1, KL2, Level, {Filepath, MSN}, FileCounter, OutList) ->
     io:format("File to be created as part of MSN=~w Filename=~s~n",
                 [MSN, FileName]),
     TS1 = os:timestamp(),
-    case leveled_sft:sft_new(FileName, KL1, KL2, Level) of
+    case leveled_sft:sft_new(FileName, KL1, KL2, Level + 1) of
         {ok, _Pid, {error, Reason}} ->
             io:format("Exiting due to error~w~n", [Reason]),
             error;
@@ -263,7 +263,7 @@ do_merge(KL1, KL2, Level, {Filepath, MSN}, FileCounter, OutList) ->
                                                         owner=Pid,
                                                         filename=FileName}]),
             MTime = timer:now_diff(os:timestamp(), TS1),
-            io:format("file creation took ~w microseconds ~n", [MTime]),
+            io:format("File creation took ~w microseconds ~n", [MTime]),
             do_merge(KL1Rem, KL2Rem, Level, {Filepath, MSN},
                             FileCounter + 1, ExtMan)
     end.

@@ -184,8 +184,8 @@
 -define(HEADER_LEN, 56).
 -define(ITERATOR_SCANWIDTH, 1).
 -define(MERGE_SCANWIDTH, 8).
--define(MAX_KEYS, ?SLOT_COUNT * ?BLOCK_COUNT * ?BLOCK_SIZE).
 -define(DELETE_TIMEOUT, 60000).
+-define(MAX_KEYS, ?SLOT_COUNT * ?BLOCK_COUNT * ?BLOCK_SIZE).
 
 
 -record(state, {version = ?CURRENT_VERSION :: tuple(),
@@ -202,8 +202,9 @@
                 summ_length :: integer(),
                 filename :: string(),
                 handle :: file:fd(),
-                background_complete=false :: boolean(),
-                background_failure="Unknown" :: string(),
+                background_complete = false :: boolean(),
+                background_failure = "Unknown" :: string(),
+                oversized_file = false :: boolean(),
                 ready_for_delete = false ::boolean(),
                 penciller :: pid()}).
 
@@ -217,17 +218,17 @@ sft_new(Filename, KL1, KL2, Level) ->
 
 sft_new(Filename, KL1, KL2, Level, Options) ->
     {ok, Pid} = gen_server:start(?MODULE, [], []),
-    Reply = case Options#sft_options.wait of
+    case Options#sft_options.wait of
         true ->
-            gen_server:call(Pid,
-                            {sft_new, Filename, KL1, KL2, Level},
-                            infinity);
+            Reply = gen_server:call(Pid,
+                                    {sft_new, Filename, KL1, KL2, Level},
+                                    infinity),
+            {ok, Pid, Reply};
         false ->
-            gen_server:call(Pid,
-                            {sft_new, Filename, KL1, KL2, Level, background},
-                            infinity)
-    end,
-    {ok, Pid, Reply}.
+            gen_server:cast(Pid,
+                            {sft_new, Filename, KL1, KL2, Level}),
+            {ok, Pid}
+    end.
 
 sft_open(Filename) ->
     {ok, Pid} = gen_server:start(?MODULE, [], []),
@@ -278,47 +279,13 @@ sft_getmaxsequencenumber(Pid) ->
 init([]) ->
     {ok, #state{}}.
 
-handle_call({sft_new, Filename, KL1, [], Level, background}, From, State) ->
-    {ListForFile, KL1Rem} = case length(KL1) of
-            L when L >= ?MAX_KEYS ->
-                lists:split(?MAX_KEYS, KL1);
-            _ ->
-                {KL1, []}
-        end,
-    StartKey = strip_to_keyonly(lists:nth(1, ListForFile)),
-    EndKey = strip_to_keyonly(lists:last(ListForFile)),
-    Ext = filename:extension(Filename),
-    Components = filename:split(Filename),
-    {TmpFilename, PrmFilename} = case Ext of
-        [] ->
-            {filename:join(Components) ++ ".pnd", filename:join(Components) ++ ".sft"};
-        Ext ->
-            %% This seems unnecessarily hard
-            DN = filename:dirname(Filename),
-            FP = lists:last(Components),
-            FP_NOEXT = lists:sublist(FP, 1, 1 + length(FP) - length(Ext)),
-            {DN ++ "/" ++ FP_NOEXT ++ ".pnd", DN ++ "/" ++ FP_NOEXT ++ ".sft"}
-    end,
-    gen_server:reply(From, {{KL1Rem, []}, StartKey, EndKey}),
-    case create_file(TmpFilename) of
-        {error, Reason} ->
-            {noreply, State#state{background_complete=false,
-                                    background_failure=Reason}};
-        {Handle, FileMD} ->
-            io:format("Creating file in background with input of size ~w~n",
-                        [length(ListForFile)]),
-            % Key remainders must match to empty
-            Rename = {true, TmpFilename, PrmFilename},
-            {ReadHandle, UpdFileMD, {[], []}} = complete_file(Handle,
-                                                                FileMD,
-                                                                ListForFile,
-                                                                [],
-                                                                Level,
-                                                                Rename),
-            {noreply, UpdFileMD#state{handle=ReadHandle,
-                                        filename=PrmFilename,
-                                        background_complete=true}}
-    end;
+handle_call({sft_new, Filename, KL1, [], 0}, _From, _State) ->
+    {ok, State} = create_levelzero(KL1, Filename),
+    {reply,
+        {{[], []},
+            State#state.smallest_key,
+            State#state.highest_key},
+        State};
 handle_call({sft_new, Filename, KL1, KL2, Level}, _From, State) ->
     case create_file(Filename) of
         {error, Reason} ->
@@ -365,7 +332,12 @@ handle_call(clear, _From, State) ->
 handle_call(background_complete, _From, State) ->
     case State#state.background_complete of
         true ->
-            {reply, {ok, State#state.filename}, State};
+            {reply,
+                {ok,
+                    State#state.filename,
+                    State#state.smallest_key,
+                    State#state.highest_key},
+                State};
         false ->
             {reply, {error, State#state.background_failure}, State}
     end;
@@ -380,6 +352,9 @@ handle_call({set_for_delete, Penciller}, _From, State) ->
 handle_call(get_maxsqn, _From, State) ->
     {reply, State#state.highest_sqn, State}.
 
+handle_cast({sft_new, Filename, Inp1, [], 0}, _State) ->
+    {ok, State} = create_levelzero(Inp1, Filename),
+    {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -423,6 +398,47 @@ code_change(_OldVsn, State, _Extra) ->
 %%%============================================================================
 
 
+create_levelzero(Inp1, Filename) ->
+    ListForFile = case is_list(Inp1) of
+                        true ->
+                            Inp1;
+                        false ->
+                            ets:tab2list(Inp1)
+                    end,
+    Ext = filename:extension(Filename),
+    Components = filename:split(Filename),
+    {TmpFilename, PrmFilename} = case Ext of
+        [] ->
+            {filename:join(Components) ++ ".pnd",
+                filename:join(Components) ++ ".sft"};
+        Ext ->
+            %% This seems unnecessarily hard
+            DN = filename:dirname(Filename),
+            FP = lists:last(Components),
+            FP_NOEXT = lists:sublist(FP, 1, 1 + length(FP) - length(Ext)),
+            {DN ++ "/" ++ FP_NOEXT ++ ".pnd", DN ++ "/" ++ FP_NOEXT ++ ".sft"}
+    end,
+    case create_file(TmpFilename) of
+        {error, Reason} ->
+            {error,
+                #state{background_complete=false, background_failure=Reason}};
+        {Handle, FileMD} ->
+            InputSize = length(ListForFile),
+            io:format("Creating file with input of size ~w~n", [InputSize]),
+            Rename = {true, TmpFilename, PrmFilename},
+            {ReadHandle, UpdFileMD, {[], []}} = complete_file(Handle,
+                                                                FileMD,
+                                                                ListForFile,
+                                                                [],
+                                                                0,
+                                                                Rename),
+            {ok,
+                UpdFileMD#state{handle=ReadHandle,
+                                filename=PrmFilename,
+                                background_complete=true,
+                                oversized_file=InputSize>?MAX_KEYS}}
+    end.
+
 %% Start a bare file with an initial header and no further details
 %% Return the {Handle, metadata record}
 create_file(FileName) when is_list(FileName) ->
@@ -446,7 +462,9 @@ create_file(FileName) when is_list(FileName) ->
 create_header(initial) ->
 	{Major, Minor} = ?CURRENT_VERSION, 
 	Version = <<Major:5, Minor:3>>,
-	Options = <<0:8>>, % Not thought of any options
+    %% Not thought of any options - options are ignored
+	Options = <<0:8>>, 
+    %% Settings are currently ignored
     {BlSize, BlCount, SlCount} = {?BLOCK_COUNT, ?BLOCK_SIZE, ?SLOT_COUNT},
     Settings = <<BlSize:8, BlCount:8, SlCount:16>>,
     {SpareO, SpareL} = {<<0:48>>, <<0:192>>},
@@ -871,6 +889,10 @@ sftwrite_function(finalise,
                         SNExtremes,
                         KeyExtremes}).
 
+%% Level 0 files are of variable (infinite) size to avoid issues with having
+%% any remainders when flushing from memory
+maxslots_bylevel(_SlotTotal, 0) ->
+    continue;
 maxslots_bylevel(SlotTotal, _Level) ->
     case SlotTotal of
         ?SLOT_COUNT ->

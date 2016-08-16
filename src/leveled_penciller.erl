@@ -1,29 +1,35 @@
 %% -------- PENCILLER ---------
 %%
-%% The penciller is repsonsible for writing and re-writing the ledger - a
+%% The penciller is responsible for writing and re-writing the ledger - a
 %% persisted, ordered view of non-recent Keys and Metadata which have been
 %% added to the store.
 %% - The penciller maintains a manifest of all the files within the current
 %% Ledger.
-%% - The Penciller queues re-write (compaction) work up to be managed by Clerks
+%% - The Penciller provides re-write (compaction) work up to be managed by
+%% the Penciller's Clerk
 %% - The Penciller mainatins a register of iterators who have requested
 %% snapshots of the Ledger
-%% - The accepts new dumps (in the form of immutable ets tables) from the
-%% Bookie, and calls the Bookie once the process of pencilling this data in
-%% the Ledger is complete - and the Bookie is free to forget about the data
+%% - The accepts new dumps (in the form of lists of keys) from the Bookie, and
+%% calls the Bookie once the process of pencilling this data in the Ledger is
+%% complete - and the Bookie is free to forget about the data
 %%
 %% -------- LEDGER ---------
 %%
 %% The Ledger is divided into many levels
-%% L0: ETS tables are received from the Bookie and merged into a single ETS
+%% - L0: New keys are received from the Bookie and merged into a single ETS
 %% table, until that table is the size of a SFT file, and it is then persisted
-%% as a SFT file at this level.  Once the persistence is completed, the ETS
-%% table can be dropped.  There can be only one SFT file at Level 0, so
-%% the work to merge that file to the lower level must be the highest priority,
-%% as otherwise the database will stall.
-%% L1 TO L7: May contain multiple non-overlapping PIDs managing sft files.
-%% Compaction work should be sheduled if the number of files exceeds the target
-%% size of the level, where the target size is 8 ^ n.
+%% as a SFT file at this level.  L0 SFT files can be larger than the normal 
+%% maximum size - so we don't have to consider problems of either having more
+%% than one L0 file (and handling what happens on a crash between writing the
+%% files when the second may have overlapping sequence numbers), or having a
+%% remainder with overlapping in sequence numbers in memory after the file is
+%% written.   Once the persistence is completed, the ETS table can be erased.
+%% There can be only one SFT file at Level 0, so the work to merge that file
+%% to the lower level must be the highest priority, as otherwise writes to the
+%% ledger will stall, when there is next a need to persist.
+%% - L1 TO L7: May contain multiple processes managing non-overlapping sft
+%% files.  Compaction work should be sheduled if the number of files exceeds
+%% the target size of the level, where the target size is 8 ^ n.
 %%
 %% The most recent revision of a Key can be found by checking each level until
 %% the key is found.  To check a level the correct file must be sought from the
@@ -33,28 +39,30 @@
 %% If a compaction change takes the size of a level beyond the target size,
 %% then compaction work for that level + 1 should be added to the compaction
 %% work queue.
-%% Compaction work is fetched by the Pencllier's Clerk because:
+%% Compaction work is fetched by the Penciller's Clerk because:
 %% - it has timed out due to a period of inactivity
 %% - it has been triggered by the a cast to indicate the arrival of high
 %% priority compaction work
 %% The Penciller's Clerk (which performs compaction worker) will always call
-%% the Penciller to find out the highest priority work currently in the queue
+%% the Penciller to find out the highest priority work currently required
 %% whenever it has either completed work, or a timeout has occurred since it
 %% was informed there was no work to do.
 %%
-%% When the clerk picks work off the queue it will take the current manifest
-%% for the level and level - 1.  The clerk will choose which file to compact
-%% from level - 1, and once the compaction is complete will call to the
-%% Penciller with the new version of the manifest to be written.
+%% When the clerk picks work it will take the current manifest, and the
+%% Penciller assumes the manifest sequence number is to be incremented.
+%% When the clerk has completed the work it cna request that the manifest
+%% change be committed by the Penciller.  The commit is made through changing
+%% the filename of the new manifest - so the Penciller is not held up by the
+%% process of wiritng a file, just altering file system metadata.
 %%
-%% Once the new version of the manifest had been persisted, the state of any
-%% deleted files will be changed to pending deletion.  In pending deletion they
-%% will call the Penciller on a timeout to confirm that they are no longer in
-%% use (by any iterators).
+%% The manifest is locked by a clerk taking work, or by there being a need to
+%% write a file to Level 0.  If the manifest is locked, then new keys can still
+%% be added in memory - however, the response to that push will be to "pause",
+%% that is to say the Penciller will ask the Bookie to slowdown.
 %%
 %% ---------- PUSH ----------
 %%
-%% The Penciller must support the PUSH of an ETS table from the Bookie.  The
+%% The Penciller must support the PUSH of a dump of keys from the Bookie.  The
 %% call to PUSH should be immediately acknowledged, and then work should be
 %% completed to merge the ETS table into the L0 ETS table.
 %%
@@ -177,7 +185,8 @@
 -define(ARCHIVE_FILEX, "arc").
 -define(MEMTABLE, mem).
 -define(MAX_TABLESIZE, 32000).
--define(L0PEND_RESET, {false, [], none}).
+-define(PROMPT_WAIT_ONL0, 5).
+-define(L0PEND_RESET, {false, null, null}).
 
 -record(state, {manifest = [] :: list(),
                 ongoing_work = [] :: list(),
@@ -188,7 +197,7 @@
                 root_path = "../test" :: string(),
                 table_size = 0 :: integer(),
                 clerk :: pid(),
-                levelzero_pending = {false, [], none} :: tuple(),
+                levelzero_pending = ?L0PEND_RESET :: tuple(),
                 memtable,
                 backlog = false :: boolean()}).
 
@@ -230,13 +239,18 @@ pcl_close(Pid) ->
 %%%============================================================================
 
 init([RootPath]) ->
-    TID = ets:new(?MEMTABLE, [ordered_set, private]),
+    TID = ets:new(?MEMTABLE, [ordered_set]),
     {ok, Clerk} = leveled_clerk:clerk_new(self()),
     InitState = #state{memtable=TID, clerk=Clerk, root_path=RootPath},
     
     %% Open manifest
     ManifestPath = InitState#state.root_path ++ "/" ++ ?MANIFEST_FP ++ "/",
-    {ok, Filenames} = file:list_dir(ManifestPath),
+    {ok, Filenames} = case filelib:is_dir(ManifestPath) of
+                            true ->
+                                file:list_dir(ManifestPath);
+                            false ->
+                                {ok, []}
+                        end,
     CurrRegex = "nonzero_(?<MSN>[0-9]+)\\." ++ ?CURRENT_FILEX,
     ValidManSQNs = lists:foldl(fun(FN, Acc) ->
                                     case re:run(FN,
@@ -270,8 +284,7 @@ init([RootPath]) ->
                         ++ "found in nonzero levels~n",
                         [MaxSQN]),
             
-            %% TODO
-            %% Find any L0 File left outstanding
+            %% Find any L0 files
             L0FN = filepath(RootPath,
                             TopManSQN + 1,
                             new_merge_files) ++ "_0_0.sft",
@@ -311,6 +324,8 @@ handle_call({push_mem, DumpList}, _From, State) ->
     Response = case assess_sqn(DumpList) of
         {MinSQN, MaxSQN} when MaxSQN > MinSQN,
                                 MinSQN >= State#state.ledger_sqn ->
+            io:format("SQN check completed in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(),StartWatch)]),
             case push_to_memory(DumpList, State) of
                 {ok, UpdState} ->
                     {reply, ok, UpdState};
@@ -346,12 +361,31 @@ handle_call({confirm_delete, FileName}, _From, State) ->
             {reply, Reply, State}
     end;
 handle_call(prompt_compaction, _From, State) ->
-    case push_to_memory([], State) of
-        {ok, UpdState} ->
-            {reply, ok, UpdState#state{backlog=false}};
-        {{pause, Reason, Details}, UpdState} ->
-            io:format("Excess work due to - " ++ Reason, Details),
-            {reply, pause, UpdState#state{backlog=true}}
+    %% If there is a prompt immediately after a L0 async write event then
+    %% there exists the potential for the prompt to stall the database.
+    %% Should only accept prompts if there has been a safe wait from the
+    %% last L0 write event.
+    Proceed = case State#state.levelzero_pending of
+                    {true, _Pid, TS} ->
+                        TD = timer:now_diff(os:timestamp(),TS),
+                        if
+                            TD < ?PROMPT_WAIT_ONL0 * 1000000 -> false;
+                            true -> true
+                        end;
+                    ?L0PEND_RESET ->
+                        true
+                end,
+    if
+        Proceed ->
+            case push_to_memory([], State) of
+                {ok, UpdState} ->
+                    {reply, ok, UpdState#state{backlog=false}};
+                {{pause, Reason, Details}, UpdState} ->
+                    io:format("Excess work due to - " ++ Reason, Details),
+                    {reply, pause, UpdState#state{backlog=true}}
+            end;
+        true ->
+            {reply, ok, State#state{backlog=false}}
     end;
 handle_call({manifest_change, WI}, _From, State) ->
     {ok, UpdState} = commit_manifest_change(WI, State),
@@ -388,22 +422,21 @@ terminate(_Reason, State) ->
     Dump = ets:tab2list(State#state.memtable),
     case {State#state.levelzero_pending,
             get_item(0, State#state.manifest, []), length(Dump)} of
-        {{false, _, _}, [], L} when L > 0 ->
+        {?L0PEND_RESET, [], L} when L > 0 ->
             MSN = State#state.manifest_sqn + 1,
             FileName = State#state.root_path
                         ++ "/" ++ ?FILES_FP ++ "/"
                         ++ integer_to_list(MSN) ++ "_0_0",
             {ok,
                 L0Pid,
-                {{KR1, _}, _SK, _HK}} = leveled_sft:sft_new(FileName ++ ".pnd",
+                {{[], []}, _SK, _HK}} = leveled_sft:sft_new(FileName ++ ".pnd",
                                                                 Dump,
                                                                 [],
                                                                 0),
-            io:format("Dump of memory on close to filename ~s with"
-                        ++ " remainder ~w~n", [FileName, length(KR1)]),
+            io:format("Dump of memory on close to filename ~s~n", [FileName]),
             leveled_sft:sft_close(L0Pid),
             file:rename(FileName ++ ".pnd", FileName ++ ".sft");
-        {{false, _, _}, [], L} when L == 0 ->
+        {?L0PEND_RESET, [], L} when L == 0 ->
             io:format("No keys to dump from memory when closing~n");
         _ ->
             io:format("No opportunity to persist memory before closing "
@@ -424,31 +457,36 @@ code_change(_OldVsn, State, _Extra) ->
 
 push_to_memory(DumpList, State) ->
     {TableSize, UpdState} = case State#state.levelzero_pending of
-        {true, Remainder, {StartKey, EndKey, Pid}} ->
+        {true, Pid, _TS} ->
             %% Need to handle error scenarios?
             %% N.B. Sync call - so will be ready
-            {ok, SrcFN} = leveled_sft:sft_checkready(Pid),
-            %% Reset ETS, but re-insert any remainder
+            {ok, SrcFN, StartKey, EndKey} = leveled_sft:sft_checkready(Pid),
             true = ets:delete_all_objects(State#state.memtable),
-            true = ets:insert(State#state.memtable, Remainder),
             ManifestEntry = #manifest_entry{start_key=StartKey,
                                                 end_key=EndKey,
                                                 owner=Pid,
                                                 filename=SrcFN},
-            {length(Remainder),
+            {0,
                 State#state{manifest=lists:keystore(0,
                                                     1,
                                                     State#state.manifest,
                                                     {0, [ManifestEntry]}),
                             levelzero_pending=?L0PEND_RESET}};
-        {false, _, _} ->
+        ?L0PEND_RESET ->
             {State#state.table_size, State}
     end,
     
     %% Prompt clerk to ask about work - do this for every push_mem
     ok = leveled_clerk:clerk_prompt(UpdState#state.clerk, penciller),    
     
-    case do_push_to_mem(DumpList, TableSize, UpdState#state.memtable) of
+    SW2 = os:timestamp(),
+    MemoryInsertion = do_push_to_mem(DumpList,
+                                        TableSize,
+                                        UpdState#state.memtable),
+    io:format("Push into memory timed at ~w microseconds~n",
+                [timer:now_diff(os:timestamp(),SW2)]),
+    
+    case MemoryInsertion of
         {twist, ApproxTableSize} ->
             {ok, UpdState#state{table_size=ApproxTableSize}};
         {roll, ApproxTableSize} ->
@@ -459,30 +497,16 @@ push_to_memory(DumpList, State) ->
                     FileName = UpdState#state.root_path
                                 ++ "/" ++ ?FILES_FP ++ "/"
                                 ++ integer_to_list(MSN) ++ "_0_0",
-                    Dump = ets:tab2list(UpdState#state.memtable),
-                    L0_SFT = leveled_sft:sft_new(FileName,
-                                                    Dump,
-                                                    [],
-                                                    0,
-                                                    #sft_options{wait=false}),
-                    {ok, L0Pid, Reply} = L0_SFT,
-                    {{KL1Rem, []}, L0StartKey, L0EndKey} = Reply,
-                    Backlog = length(KL1Rem),
-                    Rsp =
-                        if
-                            Backlog > ?MAX_TABLESIZE ->
-                                {pause,
-                                    "Backlog of ~w in memory table~n",
-                                    [Backlog]};
-                            true ->
-                                ok
-                        end,
-                    {Rsp,
+                    Opts = #sft_options{wait=false},
+                    {ok, L0Pid} = leveled_sft:sft_new(FileName,
+                                                        UpdState#state.memtable,
+                                                        [],
+                                                        0,
+                                                        Opts),
+                    {ok,
                         UpdState#state{levelzero_pending={true,
-                                                        KL1Rem,
-                                                        {L0StartKey,
-                                                            L0EndKey,
-                                                            L0Pid}},
+                                                            L0Pid,
+                                                            os:timestamp()},
                                         table_size=ApproxTableSize,
                                         manifest_sqn=MSN}};
                 {[], true} ->
@@ -558,20 +582,20 @@ manifest_locked(State) ->
             true;
         true ->
             case State#state.levelzero_pending of
-                {true, _, _} ->
+                {true, _Pid, _TS} ->
                     true;
                 _ ->
                     false
             end
     end.
 
-
-
 %% Work out what the current work queue should be
 %%
 %% The work queue should have a lower level work at the front, and no work
 %% should be added to the queue if a compaction worker has already been asked
 %% to look at work at that level
+%%
+%% The full queue is calculated for logging purposes only
 
 return_work(State, From) ->
     WorkQueue = assess_workqueue([],
