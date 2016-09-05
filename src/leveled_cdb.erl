@@ -373,10 +373,10 @@ get(FileNameOrHandle, Key) ->
 get(FileNameOrHandle, Key, CRCCheck) ->
     get(FileNameOrHandle, Key, CRCCheck, no_cache).
 
-get(FileName, Key, CRCCheck, Cache) when is_list(FileName), is_list(Key) ->
-    {ok,Handle} = file:open(FileName,[binary, raw, read]),
-    get(Handle,Key, CRCCheck, Cache);
-get(Handle, Key, CRCCheck, Cache) when is_tuple(Handle), is_list(Key) ->
+get(FileName, Key, CRCCheck, Cache) when is_list(FileName) ->
+    {ok, Handle} = file:open(FileName,[binary, raw, read]),
+    get(Handle, Key, CRCCheck, Cache);
+get(Handle, Key, CRCCheck, Cache) when is_tuple(Handle) ->
     Hash = hash(Key),
     Index = hash_to_index(Hash),
     {HashTable, Count} = get_index(Handle, Index, Cache),
@@ -401,7 +401,8 @@ get_index(Handle, Index, no_cache) ->
     % Get location of hashtable and number of entries in the hash
     read_next_2_integers(Handle);
 get_index(_Handle, Index, Cache) ->
-    lists:keyfind(Index, 1, Cache).
+    {_Pointer, Count} = lists:keyfind(Index, 1, Cache),
+    Count.
 
 %% Get a Key/Value pair from an active CDB file (with no hash table written)
 %% This requires a key dictionary to be passed in (mapping keys to positions)
@@ -921,7 +922,7 @@ hash1(H, <<B:8/integer, Rest/bytes>>) ->
 hash_to_index(Hash) ->
     Hash band 255.
 
-hash_to_slot(Hash,L) ->
+hash_to_slot(Hash, L) ->
     (Hash bsr 8) rem L.
 
 %% Create a binary of the LengthKeyLengthValue, adding a CRC check
