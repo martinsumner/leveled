@@ -16,9 +16,9 @@
 %%
 %% This is to be used in eleveledb, and in this context: 
 %% - Keys will be a Sequence Number
-%% - Values will be a Checksum; Pointers (length * 3); Key; [Metadata]; [Value]
-%% where the pointers can be used to extract just part of the value 
-%% (i.e. metadata only)
+%% - Values will be a Checksum | Object | KeyAdditions
+%% Where the KeyAdditions are all the Key changes required to be added to the
+%% ledger to complete the changes (the addition of postings and tombstones).
 %%
 %% This module provides functions to create and query a CDB (constant database).
 %% A CDB implements a two-level hashtable which provides fast {key,value} 
@@ -58,7 +58,11 @@
         cdb_open_reader/1,
         cdb_get/2,
         cdb_put/3,
-        cdb_close/1]).
+        cdb_lastkey/1,
+        cdb_filename/1,
+        cdb_keycheck/2,
+        cdb_close/1,
+        cdb_complete/1]).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -70,8 +74,8 @@
 
 -record(state, {hashtree,
                 last_position :: integer(),
-				smallest_sqn :: integer(),
-				highest_sqn :: integer(),
+                last_key = empty,
+                hash_index = [] :: list(),
                 filename :: string(),
                 handle :: file:fd(),
                 writer :: boolean}).
@@ -108,6 +112,22 @@ cdb_put(Pid, Key, Value) ->
 cdb_close(Pid) ->
     gen_server:call(Pid, cdb_close, infinity).
 
+cdb_complete(Pid) ->
+    gen_server:call(Pid, cdb_complete, infinity).
+
+%% Get the last key to be added to the file (which will have the highest
+%% sequence number)
+cdb_lastkey(Pid) ->
+    gen_server:call(Pid, cdb_lastkey, infinity).
+
+%% Get the filename of the database
+cdb_filename(Pid) ->
+    gen_server:call(Pid, cdb_filename, infinity).
+
+%% Check to see if the key is probably present, will return either
+%% probably or missing.  Does not do a definitive check
+cdb_keycheck(Pid, Key) ->
+    gen_server:call(Pid, {cdb_keycheck, Key}, infinity).
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -118,29 +138,59 @@ init([]) ->
 
 handle_call({cdb_open_writer, Filename}, _From, State) ->
     io:format("Opening file for writing with filename ~s~n", [Filename]),
-    {LastPosition, HashTree} = open_active_file(Filename),
+    {LastPosition, HashTree, LastKey} = open_active_file(Filename),
     {ok, Handle} = file:open(Filename, [binary, raw, read,
                                             write, delayed_write]),
     {reply, ok, State#state{handle=Handle,
                             last_position=LastPosition,
+                            last_key=LastKey,
                             filename=Filename,
                             hashtree=HashTree,
                             writer=true}};
 handle_call({cdb_open_reader, Filename}, _From, State) ->
     io:format("Opening file for reading with filename ~s~n", [Filename]),
     {ok, Handle} = file:open(Filename, [binary, raw, read]),
+    Index = load_index(Handle),
     {reply, ok, State#state{handle=Handle,
                             filename=Filename,
-                            writer=false}};
+                            writer=false,
+                            hash_index=Index}};
 handle_call({cdb_get, Key}, _From, State) ->
-    case State#state.writer of
-        true ->
+    case {State#state.writer, State#state.hash_index} of
+        {true, _} ->
             {reply,
                 get_mem(Key, State#state.handle, State#state.hashtree),
                 State};
-        false ->
+        {false, []} ->
             {reply,
                 get(State#state.handle, Key),
+                State};
+        {false, Cache} ->
+            {reply,
+                get_withcache(State#state.handle, Key, Cache),
+                State}
+    end;
+handle_call({cdb_keycheck, Key}, _From, State) ->
+    case {State#state.writer, State#state.hash_index} of
+        {true, _} ->
+            {reply,
+                get_mem(Key,
+                        State#state.handle,
+                        State#state.hashtree,
+                        loose_presence),
+                State};
+        {false, []} ->
+            {reply,
+                get(State#state.handle,
+                    Key,
+                    loose_presence),
+                State};
+        {false, Cache} ->
+            {reply,
+                get(State#state.handle,
+                    Key,
+                    loose_presence,
+                    Cache),
                 State}
     end;
 handle_call({cdb_put, Key, Value}, _From, State) ->
@@ -151,10 +201,12 @@ handle_call({cdb_put, Key, Value}, _From, State) ->
                             {State#state.last_position, State#state.hashtree}),
             case Result of
                 roll ->
+                    %% Key and value could not be written
                     {reply, roll, State};
                 {UpdHandle, NewPosition, HashTree} ->
                     {reply, ok, State#state{handle=UpdHandle,
                                                 last_position=NewPosition,
+                                                last_key=Key,
                                                 hashtree=HashTree}}
                 end;
         false ->
@@ -162,17 +214,31 @@ handle_call({cdb_put, Key, Value}, _From, State) ->
                 {error, read_only},
                 State}
     end;
+handle_call(cdb_lastkey, _From, State) ->
+    {reply, State#state.last_key, State};
+handle_call(cdb_filename, _From, State) ->
+    {reply, State#state.filename, State};
 handle_call(cdb_close, _From, State) ->
+    ok = file:close(State#state.handle),
+    {stop, normal, ok, State};
+handle_call(cdb_complete, _From, State) ->
     case State#state.writer of
         true ->
             ok = close_file(State#state.handle,
                                 State#state.hashtree,
-                                State#state.last_position);
+                                State#state.last_position),
+            %% Rename file
+            NewName = filename:rootname(State#state.filename, ".pnd")
+                        ++ ".cdb",
+            io:format("Renaming file from ~s to ~s~n", [State#state.filename, NewName]),
+            ok = file:rename(State#state.filename, NewName),
+            {stop, normal, {ok, NewName}, State};
         false ->
-            ok = file:close(State#state.handle)
-    end,
-    {stop, normal, ok, State}.
-            
+            ok = file:close(State#state.handle),
+            {stop, normal, {ok, State#state.filename}, State}
+    end.
+    
+
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -260,7 +326,7 @@ dump(FileName, CRCCheck) ->
 open_active_file(FileName) when is_list(FileName) ->
     {ok, Handle} = file:open(FileName, [binary, raw, read, write]),
     {ok, Position} = file:position(Handle, {bof, 256*?DWORD_SIZE}),
-    {LastPosition, HashTree} = scan_over_file(Handle, Position),
+    {LastPosition, HashTree, LastKey} = scan_over_file(Handle, Position),
     case file:position(Handle, eof) of 
         {ok, LastPosition} ->
             ok = file:close(Handle);
@@ -272,7 +338,7 @@ open_active_file(FileName) when is_list(FileName) ->
             ok = file:truncate(Handle),
             ok = file:close(Handle)
     end,
-    {LastPosition, HashTree}.
+    {LastPosition, HashTree, LastKey}.
 
 %% put(Handle, Key, Value, {LastPosition, HashDict}) -> {NewPosition, KeyDict}
 %% Append to an active file a new key/value pair returning an updated 
@@ -298,18 +364,22 @@ put(Handle, Key, Value, {LastPosition, HashTree}) ->
 %% get(FileName,Key) -> {key,value}
 %% Given a filename and a key, returns a key and value tuple.
 %%
+get_withcache(Handle, Key, Cache) ->
+    get(Handle, Key, ?CRC_CHECK, Cache).
+
 get(FileNameOrHandle, Key) ->
     get(FileNameOrHandle, Key, ?CRC_CHECK).
 
-get(FileName, Key, CRCCheck) when is_list(FileName), is_list(Key) ->
+get(FileNameOrHandle, Key, CRCCheck) ->
+    get(FileNameOrHandle, Key, CRCCheck, no_cache).
+
+get(FileName, Key, CRCCheck, Cache) when is_list(FileName), is_list(Key) ->
     {ok,Handle} = file:open(FileName,[binary, raw, read]),
-    get(Handle,Key, CRCCheck);
-get(Handle, Key, CRCCheck) when is_tuple(Handle), is_list(Key) ->
+    get(Handle,Key, CRCCheck, Cache);
+get(Handle, Key, CRCCheck, Cache) when is_tuple(Handle), is_list(Key) ->
     Hash = hash(Key),
     Index = hash_to_index(Hash),
-    {ok,_} = file:position(Handle, {bof, ?DWORD_SIZE * Index}),
-    % Get location of hashtable and number of entries in the hash
-    {HashTable, Count} = read_next_2_integers(Handle),
+    {HashTable, Count} = get_index(Handle, Index, Cache),
     % If the count is 0 for that index - key must be missing
     case Count of
         0 ->
@@ -326,14 +396,32 @@ get(Handle, Key, CRCCheck) when is_tuple(Handle), is_list(Key) ->
             search_hash_table(Handle, lists:append(L2, L1), Hash, Key, CRCCheck)
     end.
 
+get_index(Handle, Index, no_cache) ->
+    {ok,_} = file:position(Handle, {bof, ?DWORD_SIZE * Index}),
+    % Get location of hashtable and number of entries in the hash
+    read_next_2_integers(Handle);
+get_index(_Handle, Index, Cache) ->
+    lists:keyfind(Index, 1, Cache).
+
 %% Get a Key/Value pair from an active CDB file (with no hash table written)
 %% This requires a key dictionary to be passed in (mapping keys to positions)
 %% Will return {Key, Value} or missing
-get_mem(Key, Filename, HashTree) when is_list(Filename) ->
+get_mem(Key, FNOrHandle, HashTree) ->
+    get_mem(Key, FNOrHandle, HashTree, ?CRC_CHECK).
+
+get_mem(Key, Filename, HashTree, CRCCheck) when is_list(Filename) ->
     {ok, Handle} = file:open(Filename, [binary, raw, read]),
-    get_mem(Key, Handle, HashTree);
-get_mem(Key, Handle, HashTree) ->
-    extract_kvpair(Handle, get_hashtree(Key, HashTree), Key).
+    get_mem(Key, Handle, HashTree, CRCCheck);
+get_mem(Key, Handle, HashTree, CRCCheck) ->
+    ListToCheck = get_hashtree(Key, HashTree),
+    case {CRCCheck, ListToCheck} of
+        {loose_presence, []} ->
+            missing;
+        {loose_presence, _L} ->
+            probably;
+        _ ->
+        extract_kvpair(Handle, ListToCheck, Key, CRCCheck)
+    end.
 
 %% Get the next key at a position in the file (or the first key if no position 
 %% is passed).  Will return both a key and the next position
@@ -433,6 +521,15 @@ fold_keys(Handle, FoldFun, Acc0) ->
 %% Internal functions
 %%%%%%%%%%%%%%%%%%%%
 
+load_index(Handle) ->
+    Index = lists:seq(0, 255),
+    lists:map(fun(X) ->
+                    file:position(Handle, {bof, ?DWORD_SIZE * X}),
+                    {HashTablePos, Count} = read_next_2_integers(Handle),
+                    {X, {HashTablePos, Count}} end,
+                Index).
+
+
 %% Take an active file and write the hash details necessary to close that
 %% file and roll a new active file if requested.  
 %%
@@ -473,9 +570,6 @@ put_hashtree(Key, Position, HashTree) ->
 
 %% Function to extract a Key-Value pair given a file handle and a position
 %% Will confirm that the key matches and do a CRC check when requested
-extract_kvpair(Handle, Positions, Key) ->
-    extract_kvpair(Handle, Positions, Key, ?CRC_CHECK).
-
 extract_kvpair(_, [], _, _) ->
     missing;
 extract_kvpair(Handle, [Position|Rest], Key, Check) ->
@@ -497,12 +591,12 @@ extract_kvpair(Handle, [Position|Rest], Key, Check) ->
 %% at that point return the position and the key dictionary scanned so far
 scan_over_file(Handle, Position) ->
     HashTree = array:new(256, {default, gb_trees:empty()}),
-    scan_over_file(Handle, Position, HashTree).
+    scan_over_file(Handle, Position, HashTree, empty).
 
-scan_over_file(Handle, Position, HashTree) ->
+scan_over_file(Handle, Position, HashTree, LastKey) ->
     case saferead_keyvalue(Handle) of
         false ->
-            {Position, HashTree};
+            {Position, HashTree, LastKey};
         {Key, ValueAsBin, KeyLength, ValueLength} ->
             case crccheck_value(ValueAsBin) of
                 true ->
@@ -510,14 +604,15 @@ scan_over_file(Handle, Position, HashTree) ->
                                     + ?DWORD_SIZE,
                     scan_over_file(Handle,
                                     NewPosition, 
-                                    put_hashtree(Key, Position, HashTree));
+                                    put_hashtree(Key, Position, HashTree),
+                                    Key);
                 false ->
                     io:format("CRC check returned false on key of ~w ~n",
                                     [Key]),
-                    {Position, HashTree}
+                    {Position, HashTree, LastKey}
             end;
         eof ->
-            {Position, HashTree}
+            {Position, HashTree, LastKey}
     end.
 
 
@@ -531,7 +626,6 @@ saferead_keyvalue(Handle) ->
         eof ->
             false;
         {KeyL, ValueL} ->
-            io:format("KeyL ~w ValueL ~w~n", [KeyL, ValueL]),
             case safe_read_next_term(Handle, KeyL) of 
                 {error, einval} ->
                     false;
@@ -540,7 +634,6 @@ saferead_keyvalue(Handle) ->
                 false ->
                     false;
                 Key ->
-                    io:format("Found Key of ~s~n", [Key]),
                     case file:read(Handle, ValueL) of 
                         {error, einval} ->
                             false;
@@ -640,14 +733,25 @@ read_next_2_integers(Handle) ->
 
 %% Seach the hash table for the matching hash and key.  Be prepared for 
 %% multiple keys to have the same hash value.
-search_hash_table(_Handle, [], _Hash, _Key, _CRCCHeck) -> 
+%%
+%% There are three possible values of CRCCheck:
+%% true - check the CRC before returning key & value
+%% false - don't check the CRC before returning key & value
+%% loose_presence - confirm that the hash of the key is present
+
+search_hash_table(_Handle, [], _Hash, _Key, _CRCCheck) -> 
     missing;
 search_hash_table(Handle, [Entry|RestOfEntries], Hash, Key, CRCCheck) ->
     {ok, _} = file:position(Handle, Entry),
     {StoredHash, DataLoc} = read_next_2_integers(Handle),
     case StoredHash of
         Hash ->
-            KV = extract_kvpair(Handle, [DataLoc], Key, CRCCheck),
+            KV = case CRCCheck of
+                loose_presence ->
+                    probably;
+                _ ->
+                    extract_kvpair(Handle, [DataLoc], Key, CRCCheck)
+            end,
             case KV of
                 missing ->
                     search_hash_table(Handle, RestOfEntries, Hash, Key, CRCCheck);
@@ -789,6 +893,13 @@ write_top_index_table(Handle, BasePos, List) ->
     lists:foldl(FnWriteIndex, BasePos, CompleteList),
     ok = file:advise(Handle, 0, ?DWORD_SIZE * 256, will_need).
 
+%% To make this compatible with original Bernstein format this endian flip
+%% and also the use of the standard hash function required.
+%%
+%% Hash function contains mysterious constants, some explanation here as to
+%% what they are -
+%% http://stackoverflow.com/ ++
+%% questions/10696223/reason-for-5381-number-in-djb-hash-function
   
 endian_flip(Int) ->
     <<X:32/unsigned-little-integer>> = <<Int:32>>,
@@ -962,12 +1073,24 @@ activewrite_singlewrite_test() ->
     InitialD1 = dict:store("0001", "Initial value", InitialD),
     ok = from_dict("../test/test_mem.cdb", InitialD1),
     io:format("New db file created ~n", []),
-    {LastPosition, KeyDict} = open_active_file("../test/test_mem.cdb"),
+    {LastPosition, KeyDict, _} = open_active_file("../test/test_mem.cdb"),
     io:format("File opened as new active file " 
                     "with LastPosition=~w ~n", [LastPosition]),
-    {_, _, UpdKeyDict} = put("../test/test_mem.cdb", Key, Value, {LastPosition, KeyDict}),
+    {_, _, UpdKeyDict} = put("../test/test_mem.cdb",
+                                Key, Value,
+                                {LastPosition, KeyDict}),
     io:format("New key and value added to active file ~n", []),
-    ?assertMatch({Key, Value}, get_mem(Key, "../test/test_mem.cdb", UpdKeyDict)),
+    ?assertMatch({Key, Value},
+                    get_mem(Key, "../test/test_mem.cdb",
+                    UpdKeyDict)),
+    ?assertMatch(probably,
+                    get_mem(Key, "../test/test_mem.cdb",
+                    UpdKeyDict,
+                    loose_presence)),
+    ?assertMatch(missing,
+                    get_mem("not_present", "../test/test_mem.cdb",
+                    UpdKeyDict,
+                    loose_presence)),
     ok = file:delete("../test/test_mem.cdb").
 
 search_hash_table_findinslot_test() ->
@@ -992,6 +1115,8 @@ search_hash_table_findinslot_test() ->
     io:format("Slot 2 has Hash ~w Position ~w~n", [ReadH4, ReadP4]),
     ?assertMatch(0, ReadH4),
     ?assertMatch({"key1", "value1"}, get(Handle, Key1)),
+    ?assertMatch(probably, get(Handle, Key1, loose_presence)),
+    ?assertMatch(missing, get(Handle, "Key99", loose_presence)),
     {ok, _} = file:position(Handle, FirstHashPosition),
     FlipH3 = endian_flip(ReadH3),
     FlipP3 = endian_flip(ReadP3),
@@ -1029,7 +1154,7 @@ getnextkey_inclemptyvalue_test() ->
     ok = file:delete("../test/hashtable2_test.cdb").
 
 newactivefile_test() ->
-    {LastPosition, _} = open_active_file("../test/activefile_test.cdb"),
+    {LastPosition, _, _} = open_active_file("../test/activefile_test.cdb"),
     ?assertMatch(256 * ?DWORD_SIZE, LastPosition),
     Response = get_nextkey("../test/activefile_test.cdb"),
     ?assertMatch(nomorekeys, Response),

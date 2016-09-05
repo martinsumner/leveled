@@ -178,11 +178,8 @@
 -define(MAX_WORK_WAIT, 300).
 -define(MANIFEST_FP, "ledger_manifest").
 -define(FILES_FP, "ledger_files").
--define(SHUTDOWN_FP, "ledger_onshutdown").
 -define(CURRENT_FILEX, "crr").
 -define(PENDING_FILEX, "pnd").
--define(BACKUP_FILEX, "bak").
--define(ARCHIVE_FILEX, "arc").
 -define(MEMTABLE, mem).
 -define(MAX_TABLESIZE, 32000).
 -define(PROMPT_WAIT_ONL0, 5).
@@ -198,6 +195,7 @@
                 table_size = 0 :: integer(),
                 clerk :: pid(),
                 levelzero_pending = ?L0PEND_RESET :: tuple(),
+                levelzero_snapshot = [] :: list(),
                 memtable,
                 backlog = false :: boolean()}).
 
@@ -471,7 +469,8 @@ push_to_memory(DumpList, State) ->
                                                     1,
                                                     State#state.manifest,
                                                     {0, [ManifestEntry]}),
-                            levelzero_pending=?L0PEND_RESET}};
+                            levelzero_pending=?L0PEND_RESET,
+                            levelzero_snapshot=[]}};
         ?L0PEND_RESET ->
             {State#state.table_size, State}
     end,
@@ -479,17 +478,16 @@ push_to_memory(DumpList, State) ->
     %% Prompt clerk to ask about work - do this for every push_mem
     ok = leveled_clerk:clerk_prompt(UpdState#state.clerk, penciller),    
     
-    SW2 = os:timestamp(),
     MemoryInsertion = do_push_to_mem(DumpList,
                                         TableSize,
-                                        UpdState#state.memtable),
-    io:format("Push into memory timed at ~w microseconds~n",
-                [timer:now_diff(os:timestamp(),SW2)]),
+                                        UpdState#state.memtable,
+                                        UpdState#state.levelzero_snapshot),
     
     case MemoryInsertion of
-        {twist, ApproxTableSize} ->
-            {ok, UpdState#state{table_size=ApproxTableSize}};
-        {roll, ApproxTableSize} ->
+        {twist, ApproxTableSize, UpdSnapshot} ->
+            {ok, UpdState#state{table_size=ApproxTableSize,
+                                    levelzero_snapshot=UpdSnapshot}};
+        {roll, ApproxTableSize, UpdSnapshot} ->
             L0 = get_item(0, UpdState#state.manifest, []),
             case {L0, manifest_locked(UpdState)} of
                 {[], false} ->
@@ -508,17 +506,20 @@ push_to_memory(DumpList, State) ->
                                                             L0Pid,
                                                             os:timestamp()},
                                         table_size=ApproxTableSize,
-                                        manifest_sqn=MSN}};
+                                        manifest_sqn=MSN,
+                                        levelzero_snapshot=UpdSnapshot}};
                 {[], true} ->
                     {{pause,
                             "L0 file write blocked by change at sqn=~w~n",
                             [UpdState#state.manifest_sqn]},
-                        UpdState#state{table_size=ApproxTableSize}};
+                        UpdState#state{table_size=ApproxTableSize,
+                                        levelzero_snapshot=UpdSnapshot}};
                 _ ->
                     {{pause,
                         "L0 file write blocked by L0 file in manifest~n",
                         []},
-                        UpdState#state{table_size=ApproxTableSize}}
+                        UpdState#state{table_size=ApproxTableSize,
+                                        levelzero_snapshot=UpdSnapshot}}
             end
     end.
 
@@ -556,20 +557,24 @@ fetch(Key, Manifest, Level, FetchFun) ->
             end
     end.
 
-do_push_to_mem(DumpList, TableSize, MemTable) ->
+do_push_to_mem(DumpList, TableSize, MemTable, Snapshot) ->
+    SW = os:timestamp(),
+    UpdSnapshot = lists:append(Snapshot, DumpList),
     ets:insert(MemTable, DumpList),
+    io:format("Push into memory timed at ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SW)]),
     case TableSize + length(DumpList) of
         ApproxTableSize when ApproxTableSize > ?MAX_TABLESIZE ->
             case ets:info(MemTable, size) of
                 ActTableSize when ActTableSize > ?MAX_TABLESIZE ->
-                    {roll, ActTableSize};
+                    {roll, ActTableSize, UpdSnapshot};
                 ActTableSize ->
                     io:format("Table size is actually ~w~n", [ActTableSize]),
-                    {twist, ActTableSize}
+                    {twist, ActTableSize, UpdSnapshot}
             end;
         ApproxTableSize ->
             io:format("Table size is approximately ~w~n", [ApproxTableSize]),
-            {twist, ApproxTableSize}
+            {twist, ApproxTableSize, UpdSnapshot}
     end.
 
 
