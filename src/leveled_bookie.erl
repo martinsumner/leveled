@@ -42,7 +42,7 @@
 %% the request to the ledger.
 %%
 %% The inker will pass the request to the current (append only) CDB journal
-%% fileto persist the change.  The call should return either 'ok' or 'roll'.
+%% file to persist the change.  The call should return either 'ok' or 'roll'.
 %% 'roll' indicates that the CDB file has insufficient capacity for
 %% this write.
 
@@ -59,7 +59,7 @@
 %%
 %% The Bookie's memory consists of an in-memory ets table.  Periodically, the
 %% current table is pushed to the Penciller for eventual persistence, and a
-%% new tabble is started.
+%% new table is started.
 %%
 %% This completes the non-deferrable work associated with a PUT
 %%

@@ -71,6 +71,7 @@
 -define(CRC_CHECK, true).
 -define(MAX_FILE_SIZE, 3221225472).
 -define(BASE_POSITION, 2048).
+-define(WRITE_OPS, [binary, raw, read, write]).
 
 -record(state, {hashtree,
                 last_position :: integer(),
@@ -139,8 +140,7 @@ init([]) ->
 handle_call({cdb_open_writer, Filename}, _From, State) ->
     io:format("Opening file for writing with filename ~s~n", [Filename]),
     {LastPosition, HashTree, LastKey} = open_active_file(Filename),
-    {ok, Handle} = file:open(Filename, [binary, raw, read,
-                                            write, delayed_write]),
+    {ok, Handle} = file:open(Filename, [sync | ?WRITE_OPS]),
     {reply, ok, State#state{handle=Handle,
                             last_position=LastPosition,
                             last_key=LastKey,
@@ -220,7 +220,7 @@ handle_call(cdb_filename, _From, State) ->
     {reply, State#state.filename, State};
 handle_call(cdb_close, _From, State) ->
     ok = file:close(State#state.handle),
-    {stop, normal, ok, State};
+    {stop, normal, ok, State#state{handle=closed}};
 handle_call(cdb_complete, _From, State) ->
     case State#state.writer of
         true ->
@@ -247,7 +247,12 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, State) ->
-    file:close(State#state.handle).
+    case State#state.handle of
+        closed ->
+            ok;
+        Handle ->
+            file:close(Handle)
+    end.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -270,7 +275,7 @@ from_dict(FileName,Dict) ->
 %% this function creates a CDB
 %%
 create(FileName,KeyValueList) ->
-    {ok, Handle} = file:open(FileName, [binary, raw, read, write]),
+    {ok, Handle} = file:open(FileName, ?WRITE_OPS),
     {ok, _} = file:position(Handle, {bof, ?BASE_POSITION}),
     {BasePos, HashTree} = write_key_value_pairs(Handle, KeyValueList),
     close_file(Handle, HashTree, BasePos).
@@ -324,7 +329,7 @@ dump(FileName, CRCCheck) ->
 %% tuples as the write_key_value_pairs function, and the current position, and 
 %% the file handle
 open_active_file(FileName) when is_list(FileName) ->
-    {ok, Handle} = file:open(FileName, [binary, raw, read, write]),
+    {ok, Handle} = file:open(FileName, ?WRITE_OPS),
     {ok, Position} = file:position(Handle, {bof, 256*?DWORD_SIZE}),
     {LastPosition, HashTree, LastKey} = scan_over_file(Handle, Position),
     case file:position(Handle, eof) of 
@@ -345,14 +350,12 @@ open_active_file(FileName) when is_list(FileName) ->
 %% dictionary of Keys and positions.  Returns an updated Position
 %%
 put(FileName, Key, Value, {LastPosition, HashTree}) when is_list(FileName) ->
-  {ok, Handle} = file:open(FileName, 
-    [binary, raw, read, write, delayed_write]),
+  {ok, Handle} = file:open(FileName, ?WRITE_OPS),
   put(Handle, Key, Value, {LastPosition, HashTree});
 put(Handle, Key, Value, {LastPosition, HashTree}) ->
   Bin = key_value_to_record({Key, Value}), 
   PotentialNewSize = LastPosition + byte_size(Bin),
   if PotentialNewSize > ?MAX_FILE_SIZE ->
-    close_file(Handle, HashTree, LastPosition),
     roll;
   true ->
     ok = file:pwrite(Handle, LastPosition, Bin),

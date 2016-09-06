@@ -102,6 +102,7 @@
         ink_put/4,
         ink_get/3,
         ink_snap/1,
+        ink_close/1,
         build_dummy_journal/0,
         simple_manifest_reader/2]).
 
@@ -138,6 +139,9 @@ ink_get(Pid, PrimaryKey, SQN) ->
 
 ink_snap(Pid) ->
     gen_server:call(Pid, snapshot, infinity).
+
+ink_close(Pid) ->
+    gen_server:call(Pid, close, infinity).
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -200,7 +204,12 @@ handle_call({get, Key, SQN}, _From, State) ->
 handle_call(snapshot, _From , State) ->
     %% TODO: Not yet implemented registration of snapshot
     %% Should return manifest and register the snapshot
-    {reply, State#state.manifest, State}.
+    {reply, {State#state.manifest,
+                State#state.active_journaldb,
+                State#state.active_journaldb_sqn},
+                State};
+handle_call(close, _From, State) ->
+    {stop, normal, ok, State}.
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -208,8 +217,12 @@ handle_cast(_Msg, State) ->
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(_Reason, _State) ->
-    ok.
+terminate(Reason, State) ->
+    io:format("Inker closing journal for reason ~w~n", [Reason]),
+    io:format("Close triggered with journal_sqn=~w and manifest_sqn=~w~n",
+                    [State#state.journal_sqn, State#state.manifest_sqn]),
+    io:format("Manifest when closing is ~w~n", [State#state.manifest]),
+    close_allmanifest(State#state.manifest, State#state.active_journaldb).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -235,21 +248,24 @@ put_object(PrimaryKey, Object, KeyChanges, State) ->
                                         Bin1) of
                 ok ->
                     {rolling, State#state{journal_sqn=NewSQN,
-                                            active_journaldb=NewJournalP}};
+                                            active_journaldb=NewJournalP,
+                                            active_journaldb_sqn=NewSQN}};
                 roll ->
                     {blocked, State#state{journal_sqn=NewSQN,
-                                            active_journaldb=NewJournalP}}
+                                            active_journaldb=NewJournalP,
+                                            active_journaldb_sqn=NewSQN}}
             end
     end.
 
 roll_active_file(OldActiveJournal, Manifest, ManifestSQN, RootPath) ->
+    io:format("Rolling old journal ~w~n", [OldActiveJournal]),
     {ok, NewFilename} = leveled_cdb:cdb_complete(OldActiveJournal),
     {ok, PidR} = leveled_cdb:cdb_open_reader(NewFilename),
     JournalRegex2 = "nursery_(?<SQN>[0-9]+)\\." ++ ?JOURNAL_FILEX,
     [JournalSQN] = sequencenumbers_fromfilenames([NewFilename],
                                                     JournalRegex2,
                                                     'SQN'),
-    NewManifest = lists:append(Manifest, {JournalSQN, NewFilename, PidR}),
+    NewManifest = lists:append(Manifest, [{JournalSQN, NewFilename, PidR}]),
     NewManifestSQN = ManifestSQN + 1,
     ok = simple_manifest_writer(NewManifest, NewManifestSQN, RootPath),
     {NewManifest, NewManifestSQN}.
@@ -387,7 +403,7 @@ close_allmanifest([], ActiveJournal) ->
     leveled_cdb:cdb_close(ActiveJournal);
 close_allmanifest([H|ManifestT], ActiveJournal) ->
     {_, _, Pid} = H,
-    leveled_cdb:cdb_close(Pid),
+    ok = leveled_cdb:cdb_close(Pid),
     close_allmanifest(ManifestT, ActiveJournal).
 
 
@@ -396,12 +412,12 @@ roll_pending_journals([TopJournalSQN], Manifest, _RootPath)
     {TopJournalSQN, Manifest};
 roll_pending_journals([JournalSQN|T], Manifest, RootPath) ->
     Filename = filepath(RootPath, JournalSQN, new_journal),
-    PidW = leveled_cdb:cdb_open_writer(Filename),
+    {ok, PidW} = leveled_cdb:cdb_open_writer(Filename),
     {ok, NewFilename} = leveled_cdb:cdb_complete(PidW),
     {ok, PidR} = leveled_cdb:cdb_open_reader(NewFilename),
     roll_pending_journals(T,
                             lists:append(Manifest,
-                                            {JournalSQN, NewFilename, PidR}),
+                                            [{JournalSQN, NewFilename, PidR}]),
                             RootPath).
 
 
@@ -454,7 +470,7 @@ simple_manifest_writer(Manifest, ManSQN, RootPath) ->
     NewFN = filename:join(ManPath, integer_to_list(ManSQN) ++ ?MANIFEST_FILEX),
     TmpFN = filename:join(ManPath, integer_to_list(ManSQN) ++ ?PENDING_FILEX),
     MBin = term_to_binary(Manifest),
-    case file:is_file(NewFN) of
+    case filelib:is_file(NewFN) of
         true ->
             io:format("Error - trying to write manifest for"
                         ++ " ManifestSQN=~w which already exists~n", [ManSQN]),
