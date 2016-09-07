@@ -103,6 +103,7 @@
         ink_get/3,
         ink_snap/1,
         ink_close/1,
+        ink_print_manifest/1,
         build_dummy_journal/0,
         simple_manifest_reader/2]).
 
@@ -121,15 +122,16 @@
                 active_journaldb :: pid(),
                 active_journaldb_sqn :: integer(),
                 removed_journaldbs = [] :: list(),
-                root_path :: string()}).
+                root_path :: string(),
+                cdb_options :: #cdb_options{}}).
 
 
 %%%============================================================================
 %%% API
 %%%============================================================================
  
-ink_start(RootDir) ->
-    gen_server:start(?MODULE, [RootDir], []).
+ink_start(InkerOpts) ->
+    gen_server:start(?MODULE, [InkerOpts], []).
 
 ink_put(Pid, PrimaryKey, Object, KeyChanges) ->
     gen_server:call(Pid, {put, PrimaryKey, Object, KeyChanges}, infinity).
@@ -143,11 +145,16 @@ ink_snap(Pid) ->
 ink_close(Pid) ->
     gen_server:call(Pid, close, infinity).
 
+ink_print_manifest(Pid) ->
+    gen_server:call(Pid, print_manifest, infinity).
+
 %%%============================================================================
 %%% gen_server callbacks
 %%%============================================================================
 
-init([RootPath]) ->
+init([InkerOpts]) ->
+    RootPath = InkerOpts#inker_options.root_path,
+    CDBopts = InkerOpts#inker_options.cdb_options,
     JournalFP = filepath(RootPath, journal_dir),
     {ok, JournalFilenames} = case filelib:is_dir(JournalFP) of
         true ->
@@ -170,13 +177,15 @@ init([RootPath]) ->
         ManifestSQN} = build_manifest(ManifestFilenames,
                                         JournalFilenames,
                                         fun simple_manifest_reader/2,
-                                        RootPath),
+                                        RootPath,
+                                        CDBopts),
     {ok, #state{manifest = Manifest,
                     manifest_sqn = ManifestSQN,
                     journal_sqn = JournalSQN,
                     active_journaldb = ActiveJournal,
                     active_journaldb_sqn = LowActiveSQN,
-                    root_path = RootPath}}.
+                    root_path = RootPath,
+                    cdb_options = CDBopts}}.
 
 
 handle_call({put, Key, Object, KeyChanges}, From, State) ->
@@ -208,6 +217,9 @@ handle_call(snapshot, _From , State) ->
                 State#state.active_journaldb,
                 State#state.active_journaldb_sqn},
                 State};
+handle_call(print_manifest, _From, State) ->
+    manifest_printer(State#state.manifest),
+    {reply, ok, State};
 handle_call(close, _From, State) ->
     {stop, normal, ok, State}.
 
@@ -221,7 +233,8 @@ terminate(Reason, State) ->
     io:format("Inker closing journal for reason ~w~n", [Reason]),
     io:format("Close triggered with journal_sqn=~w and manifest_sqn=~w~n",
                     [State#state.journal_sqn, State#state.manifest_sqn]),
-    io:format("Manifest when closing is ~w~n", [State#state.manifest]),
+    io:format("Manifest when closing is: ~n"),
+    manifest_printer(State#state.manifest),
     close_allmanifest(State#state.manifest, State#state.active_journaldb).
 
 code_change(_OldVsn, State, _Extra) ->
@@ -242,7 +255,8 @@ put_object(PrimaryKey, Object, KeyChanges, State) ->
             {ok, State#state{journal_sqn=NewSQN}};
         roll ->
             FileName = filepath(State#state.root_path, NewSQN, new_journal),
-            {ok, NewJournalP} = leveled_cdb:cdb_open_writer(FileName),
+            CDBopts = State#state.cdb_options,
+            {ok, NewJournalP} = leveled_cdb:cdb_open_writer(FileName, CDBopts),
             case leveled_cdb:cdb_put(NewJournalP,
                                         {NewSQN, PrimaryKey},
                                         Bin1) of
@@ -265,13 +279,13 @@ roll_active_file(OldActiveJournal, Manifest, ManifestSQN, RootPath) ->
     [JournalSQN] = sequencenumbers_fromfilenames([NewFilename],
                                                     JournalRegex2,
                                                     'SQN'),
-    NewManifest = lists:append(Manifest, [{JournalSQN, NewFilename, PidR}]),
+    NewManifest = add_to_manifest(Manifest, {JournalSQN, NewFilename, PidR}),
     NewManifestSQN = ManifestSQN + 1,
     ok = simple_manifest_writer(NewManifest, NewManifestSQN, RootPath),
     {NewManifest, NewManifestSQN}.
 
 get_object(PrimaryKey, SQN, Manifest, ActiveJournal, ActiveJournalSQN) ->
-    if
+    Obj = if
         SQN < ActiveJournalSQN ->
             JournalP = find_in_manifest(SQN, Manifest),
             if 
@@ -284,13 +298,30 @@ get_object(PrimaryKey, SQN, Manifest, ActiveJournal, ActiveJournalSQN) ->
             end;
         true ->
             leveled_cdb:cdb_get(ActiveJournal, {SQN, PrimaryKey})
+    end,
+    case Obj of
+        {{SQN, PK}, Bin} ->
+            {{SQN, PK}, binary_to_term(Bin)};
+        _ ->
+            Obj
     end.
-        
+
 
 build_manifest(ManifestFilenames,
                 JournalFilenames,
                 ManifestRdrFun,
                 RootPath) ->
+    build_manifest(ManifestFilenames,
+                    JournalFilenames,
+                    ManifestRdrFun,
+                    RootPath,
+                    #cdb_options{}).
+
+build_manifest(ManifestFilenames,
+                JournalFilenames,
+                ManifestRdrFun,
+                RootPath,
+                CDBopts) ->
     %% Setup root paths
     JournalFP = filepath(RootPath, journal_dir),
     %% Find the manifest with a highest Manifest sequence number
@@ -336,7 +367,7 @@ build_manifest(ManifestFilenames,
                                                             integer_to_list(X)
                                                             ++ "." ++
                                                             ?JOURNAL_FILEX,
-                                                    Acc ++ [{X, FN}];
+                                                    add_to_manifest(Acc, {X, FN});
                                             true
                                                 -> Acc
                                         end end,
@@ -345,11 +376,12 @@ build_manifest(ManifestFilenames,
     
     %% Enrich the manifest so it contains the Pid of any of the immutable 
     %% entries
-    io:format("Manifest1 is ~w~n", [Manifest1]),
-    Manifest2 = lists:map(fun({X, Y}) ->
-                                FN = filename:join(JournalFP, Y),
-                                {ok, Pid} = leveled_cdb:cdb_open_reader(FN),
-                                {X, Y, Pid} end,
+    io:format("Manifest on startup is: ~n"),
+    manifest_printer(Manifest1),
+    Manifest2 = lists:map(fun({LowSQN, FN}) ->
+                                FP = filename:join(JournalFP, FN),
+                                {ok, Pid} = leveled_cdb:cdb_open_reader(FP),
+                                {LowSQN, FN, Pid} end,
                             Manifest1),
     
     %% Find any more recent mutable files that have a higher sequence number
@@ -378,7 +410,8 @@ build_manifest(ManifestFilenames,
                 end,
             LowActiveSQN = TopSQNInManifest + 1,
             ActiveFN = filepath(RootPath, LowActiveSQN, new_journal),
-            {ok, ActiveJournal} = leveled_cdb:cdb_open_writer(ActiveFN),
+            {ok, ActiveJournal} = leveled_cdb:cdb_open_writer(ActiveFN,
+                                                                CDBopts),
             {Manifest2,
                 {ActiveJournal, LowActiveSQN},
                 TopSQNInManifest,
@@ -391,7 +424,8 @@ build_manifest(ManifestFilenames,
             %% Need to work out highest sequence number in tail file to feed 
             %% into opening of pending journal
             ActiveFN = filepath(RootPath, ActiveJournalSQN, new_journal),
-            {ok, ActiveJournal} = leveled_cdb:cdb_open_writer(ActiveFN),
+            {ok, ActiveJournal} = leveled_cdb:cdb_open_writer(ActiveFN,
+                                                                CDBopts),
             {HighestSQN, _HighestKey} = leveled_cdb:cdb_lastkey(ActiveJournal),
             {Manifest3,
                 {ActiveJournal, ActiveJournalSQN},
@@ -416,8 +450,8 @@ roll_pending_journals([JournalSQN|T], Manifest, RootPath) ->
     {ok, NewFilename} = leveled_cdb:cdb_complete(PidW),
     {ok, PidR} = leveled_cdb:cdb_open_reader(NewFilename),
     roll_pending_journals(T,
-                            lists:append(Manifest,
-                                            [{JournalSQN, NewFilename, PidR}]),
+                            add_to_manifest(Manifest,
+                                            {JournalSQN, NewFilename, PidR}),
                             RootPath).
 
 
@@ -436,6 +470,9 @@ sequencenumbers_fromfilenames(Filenames, Regex, IntName) ->
                             end end,
                             [],
                             Filenames).
+
+add_to_manifest(Manifest, Entry) ->
+    lists:reverse(lists:sort([Entry|Manifest])).
 
 find_in_manifest(_SQN, []) ->
     error;
@@ -483,7 +520,17 @@ simple_manifest_writer(Manifest, ManSQN, RootPath) ->
             ok
     end.
     
-
+manifest_printer(Manifest) ->
+    lists:foreach(fun(X) ->
+                        {SQN, FN} = case X of
+                                        {A, B, _PID} ->
+                                            {A, B};
+                                        {A, B} ->
+                                            {A, B}
+                                    end,
+                            io:format("At SQN=~w journal has filename ~s~n",
+                                            [SQN, FN]) end,
+                    Manifest).
 
 %%%============================================================================
 %%% Test
@@ -502,15 +549,15 @@ build_dummy_journal() ->
     {ok, J1} = leveled_cdb:cdb_open_writer(F1),
     {K1, V1} = {"Key1", "TestValue1"},
     {K2, V2} = {"Key2", "TestValue2"},
-    ok = leveled_cdb:cdb_put(J1, {1, K1}, V1),
-    ok = leveled_cdb:cdb_put(J1, {2, K2}, V2),
+    ok = leveled_cdb:cdb_put(J1, {1, K1}, term_to_binary({V1, []})),
+    ok = leveled_cdb:cdb_put(J1, {2, K2}, term_to_binary({V2, []})),
     {ok, _} = leveled_cdb:cdb_complete(J1),
     F2 = filename:join(JournalFP, "nursery_3.pnd"),
     {ok, J2} = leveled_cdb:cdb_open_writer(F2),
     {K1, V3} = {"Key1", "TestValue3"},
     {K4, V4} = {"Key4", "TestValue4"},
-    ok = leveled_cdb:cdb_put(J2, {3, K1}, V3),
-    ok = leveled_cdb:cdb_put(J2, {4, K4}, V4),
+    ok = leveled_cdb:cdb_put(J2, {3, K1}, term_to_binary({V3, []})),
+    ok = leveled_cdb:cdb_put(J2, {4, K4}, term_to_binary({V4, []})),
     ok = leveled_cdb:cdb_close(J2),
     Manifest = {2, [{1, "nursery_1.cdb"}], []},
     ManifestBin = term_to_binary(Manifest),
@@ -558,8 +605,8 @@ another_buildmanifest_test() ->
     {ok, NewActiveJN} = leveled_cdb:cdb_open_writer(FN2),
     {K5, V5} = {"Key5", "TestValue5"},
     {K6, V6} = {"Key6", "TestValue6"},
-    ok = leveled_cdb:cdb_put(NewActiveJN, {5, K5}, V5),
-    ok = leveled_cdb:cdb_put(NewActiveJN, {6, K6}, V6),
+    ok = leveled_cdb:cdb_put(NewActiveJN, {5, K5}, term_to_binary({V5, []})),
+    ok = leveled_cdb:cdb_put(NewActiveJN, {6, K6}, term_to_binary({V6, []})),
     ok = leveled_cdb:cdb_close(NewActiveJN),
     %% Test setup - now build manifest
     Res = build_manifest(["1.man"],
@@ -572,7 +619,7 @@ another_buildmanifest_test() ->
     {Man, {ActJournal, ActJournalSQN}, HighSQN, ManSQN} = Res,
     ?assertMatch(HighSQN, 6),
     ?assertMatch(ManSQN, 1),
-    ?assertMatch([{1, "nursery_1.cdb", _}, {3, "nursery_3.cdb", _}], Man),
+    ?assertMatch([{3, "nursery_3.cdb", _}, {1, "nursery_1.cdb", _}], Man),
     {ActSQN, _ActK} = leveled_cdb:cdb_lastkey(ActJournal),
     ?assertMatch(ActSQN, 6),
     ?assertMatch(ActJournalSQN, 5),
@@ -599,5 +646,52 @@ empty_buildmanifest_test() ->
     close_allmanifest(Man, ActJournal),
     clean_testdir(RootPath).
 
+simplejournal_test() ->
+    %% build up a database, and then open it through the gen_server wrap
+    %% Get and Put some keys
+    RootPath = "../test/inker",
+    build_dummy_journal(),
+    {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,
+                                            cdb_options=#cdb_options{}}),
+    R1 = ink_get(Ink1, "Key1", 1),
+    ?assertMatch(R1, {{1, "Key1"}, {"TestValue1", []}}),
+    R2 = ink_get(Ink1, "Key1", 3),
+    ?assertMatch(R2, {{3, "Key1"}, {"TestValue3", []}}),
+    {ok, NewSQN1} = ink_put(Ink1, "Key99", "TestValue99", []),
+    ?assertMatch(NewSQN1, 5),
+    R3 = ink_get(Ink1, "Key99", 5),
+    io:format("Result 3 is ~w~n", [R3]),
+    ?assertMatch(R3, {{5, "Key99"}, {"TestValue99", []}}),
+    ink_close(Ink1),
+    clean_testdir(RootPath).
+
+rollafile_simplejournal_test() ->
+    RootPath = "../test/inker",
+    build_dummy_journal(),
+    CDBopts = #cdb_options{max_size=300000},
+    {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,
+                                            cdb_options=CDBopts}),
+    FunnyLoop = lists:seq(1, 48),
+    {ok, NewSQN1} = ink_put(Ink1, "KeyAA", "TestValueAA", []),
+    ?assertMatch(NewSQN1, 5),
+    ok = ink_print_manifest(Ink1),
+    R0 = ink_get(Ink1, "KeyAA", 5),
+    ?assertMatch(R0, {{5, "KeyAA"}, {"TestValueAA", []}}),
+    lists:foreach(fun(X) ->
+                        {ok, _} = ink_put(Ink1,
+                                            "KeyZ" ++ integer_to_list(X),
+                                            crypto:rand_bytes(10000),
+                                            []) end,
+                    FunnyLoop),
+    {ok, NewSQN2} = ink_put(Ink1, "KeyBB", "TestValueBB", []),
+    ?assertMatch(NewSQN2, 54),
+    ok = ink_print_manifest(Ink1),
+    R1 = ink_get(Ink1, "KeyAA", 5),
+    ?assertMatch(R1, {{5, "KeyAA"}, {"TestValueAA", []}}),
+    R2 = ink_get(Ink1, "KeyBB", 54),
+    ?assertMatch(R2, {{54, "KeyBB"}, {"TestValueBB", []}}),
+    ink_close(Ink1),
+    clean_testdir(RootPath).
+    
 
 -endif.

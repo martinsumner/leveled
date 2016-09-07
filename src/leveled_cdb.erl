@@ -47,6 +47,7 @@
 -module(leveled_cdb).
 
 -behaviour(gen_server).
+-include("../include/leveled.hrl").
 
 -export([init/1,
         handle_call/3,
@@ -55,6 +56,7 @@
         terminate/2,
         code_change/3,
         cdb_open_writer/1,
+        cdb_open_writer/2,
         cdb_open_reader/1,
         cdb_get/2,
         cdb_put/3,
@@ -79,7 +81,8 @@
                 hash_index = [] :: list(),
                 filename :: string(),
                 handle :: file:fd(),
-                writer :: boolean}).
+                writer :: boolean,
+                max_size :: integer()}).
 
 
 %%%============================================================================
@@ -87,7 +90,11 @@
 %%%============================================================================
 
 cdb_open_writer(Filename) ->
-    {ok, Pid} = gen_server:start(?MODULE, [], []),
+    %% No options passed
+    cdb_open_writer(Filename, #cdb_options{}).
+
+cdb_open_writer(Filename, Opts) ->
+    {ok, Pid} = gen_server:start(?MODULE, [Opts], []),
     case gen_server:call(Pid, {cdb_open_writer, Filename}, infinity) of
         ok ->
             {ok, Pid};
@@ -96,7 +103,7 @@ cdb_open_writer(Filename) ->
     end.
 
 cdb_open_reader(Filename) ->
-    {ok, Pid} = gen_server:start(?MODULE, [], []),
+    {ok, Pid} = gen_server:start(?MODULE, [#cdb_options{}], []),
     case gen_server:call(Pid, {cdb_open_reader, Filename}, infinity) of
         ok ->
             {ok, Pid};
@@ -134,27 +141,33 @@ cdb_keycheck(Pid, Key) ->
 %%% gen_server callbacks
 %%%============================================================================
 
-init([]) ->
-    {ok, #state{}}.
+init([Opts]) ->
+    MaxSize = case Opts#cdb_options.max_size of
+                    undefined ->
+                        ?MAX_FILE_SIZE;
+                    M ->
+                        M
+                end,
+    {ok, #state{max_size=MaxSize}}.
 
 handle_call({cdb_open_writer, Filename}, _From, State) ->
     io:format("Opening file for writing with filename ~s~n", [Filename]),
     {LastPosition, HashTree, LastKey} = open_active_file(Filename),
     {ok, Handle} = file:open(Filename, [sync | ?WRITE_OPS]),
     {reply, ok, State#state{handle=Handle,
-                            last_position=LastPosition,
-                            last_key=LastKey,
-                            filename=Filename,
-                            hashtree=HashTree,
-                            writer=true}};
+                                last_position=LastPosition,
+                                last_key=LastKey,
+                                filename=Filename,
+                                hashtree=HashTree,
+                                writer=true}};
 handle_call({cdb_open_reader, Filename}, _From, State) ->
     io:format("Opening file for reading with filename ~s~n", [Filename]),
     {ok, Handle} = file:open(Filename, [binary, raw, read]),
     Index = load_index(Handle),
     {reply, ok, State#state{handle=Handle,
-                            filename=Filename,
-                            writer=false,
-                            hash_index=Index}};
+                                filename=Filename,
+                                writer=false,
+                                hash_index=Index}};
 handle_call({cdb_get, Key}, _From, State) ->
     case {State#state.writer, State#state.hash_index} of
         {true, _} ->
@@ -198,7 +211,8 @@ handle_call({cdb_put, Key, Value}, _From, State) ->
         true ->
             Result = put(State#state.handle,
                             Key, Value,
-                            {State#state.last_position, State#state.hashtree}),
+                            {State#state.last_position, State#state.hashtree},
+                            State#state.max_size),
             case Result of
                 roll ->
                     %% Key and value could not be written
@@ -230,7 +244,8 @@ handle_call(cdb_complete, _From, State) ->
             %% Rename file
             NewName = filename:rootname(State#state.filename, ".pnd")
                         ++ ".cdb",
-            io:format("Renaming file from ~s to ~s~n", [State#state.filename, NewName]),
+            io:format("Renaming file from ~s to ~s~n",
+                        [State#state.filename, NewName]),
             ok = file:rename(State#state.filename, NewName),
             {stop, normal, {ok, NewName}, State};
         false ->
@@ -349,18 +364,23 @@ open_active_file(FileName) when is_list(FileName) ->
 %% Append to an active file a new key/value pair returning an updated 
 %% dictionary of Keys and positions.  Returns an updated Position
 %%
-put(FileName, Key, Value, {LastPosition, HashTree}) when is_list(FileName) ->
+put(FileName, Key, Value, {LastPosition, HashTree}, MaxSize) when is_list(FileName) ->
   {ok, Handle} = file:open(FileName, ?WRITE_OPS),
-  put(Handle, Key, Value, {LastPosition, HashTree});
-put(Handle, Key, Value, {LastPosition, HashTree}) ->
+  put(Handle, Key, Value, {LastPosition, HashTree}, MaxSize);
+put(Handle, Key, Value, {LastPosition, HashTree}, MaxSize) ->
   Bin = key_value_to_record({Key, Value}), 
   PotentialNewSize = LastPosition + byte_size(Bin),
-  if PotentialNewSize > ?MAX_FILE_SIZE ->
+  if PotentialNewSize > MaxSize ->
     roll;
   true ->
     ok = file:pwrite(Handle, LastPosition, Bin),
     {Handle, PotentialNewSize, put_hashtree(Key, LastPosition, HashTree)}
   end.
+
+%% Should not be used for non-test PUTs by the inker - as the Max File Size
+%% should be taken from the startup options not the default
+put(FileName, Key, Value, {LastPosition, HashTree}) ->
+    put(FileName, Key, Value, {LastPosition, HashTree}, ?MAX_FILE_SIZE).
 
 
 %%
@@ -393,10 +413,14 @@ get(Handle, Key, CRCCheck, Cache) when is_tuple(Handle) ->
             Slot = hash_to_slot(Hash, Count),  
             {ok, _} = file:position(Handle, {cur, Slot * ?DWORD_SIZE}),
             LastHashPosition = HashTable + ((Count-1) * ?DWORD_SIZE),
-            LocList = lists:seq(FirstHashPosition, LastHashPosition, ?DWORD_SIZE), 
+            LocList = lists:seq(FirstHashPosition,
+                                    LastHashPosition,
+                                    ?DWORD_SIZE), 
             % Split list around starting slot.
             {L1, L2} = lists:split(Slot, LocList),
-            search_hash_table(Handle, lists:append(L2, L1), Hash, Key, CRCCheck)
+            search_hash_table(Handle,
+                                lists:append(L2, L1),
+                                Hash, Key, CRCCheck)
     end.
 
 get_index(Handle, Index, no_cache) ->
@@ -758,7 +782,11 @@ search_hash_table(Handle, [Entry|RestOfEntries], Hash, Key, CRCCheck) ->
             end,
             case KV of
                 missing ->
-                    search_hash_table(Handle, RestOfEntries, Hash, Key, CRCCheck);
+                    search_hash_table(Handle,
+                                        RestOfEntries,
+                                        Hash,
+                                        Key,
+                                        CRCCheck);
                 _ ->
                     KV 
             end;
@@ -948,14 +976,24 @@ key_value_to_record({Key, Value}) ->
 
 write_key_value_pairs_1_test() ->
     {ok,Handle} = file:open("../test/test.cdb",write),
-    {_, HashTree} = write_key_value_pairs(Handle,[{"key1","value1"},{"key2","value2"}]),
+    {_, HashTree} = write_key_value_pairs(Handle,
+                                            [{"key1","value1"},
+                                                {"key2","value2"}]),
     Hash1 = hash("key1"),
     Index1 = hash_to_index(Hash1),
     Hash2 = hash("key2"),
     Index2 = hash_to_index(Hash2),
     R0 = array:new(256, {default, gb_trees:empty()}),
-    R1 = array:set(Index1, gb_trees:insert(Hash1, [0], array:get(Index1, R0)), R0),
-    R2 = array:set(Index2, gb_trees:insert(Hash2, [30], array:get(Index2, R1)), R1),
+    R1 = array:set(Index1,
+                    gb_trees:insert(Hash1,
+                                        [0],
+                                        array:get(Index1, R0)),
+                    R0),
+    R2 = array:set(Index2,
+                    gb_trees:insert(Hash2,
+                                        [30],
+                                        array:get(Index2, R1)),
+                    R1),
     io:format("HashTree is ~w~n", [HashTree]),
     io:format("Expected HashTree is ~w~n", [R2]),
     ?assertMatch(R2, HashTree),
@@ -965,8 +1003,16 @@ write_key_value_pairs_1_test() ->
 write_hash_tables_1_test() ->
     {ok, Handle} = file:open("../test/testx.cdb",write),
     R0 = array:new(256, {default, gb_trees:empty()}),
-    R1 = array:set(64, gb_trees:insert(6383014720, [18], array:get(64, R0)), R0),
-    R2 = array:set(67, gb_trees:insert(6383014723, [0], array:get(67, R1)), R1),
+    R1 = array:set(64,
+                    gb_trees:insert(6383014720,
+                                    [18],
+                                    array:get(64, R0)),
+                    R0),
+    R2 = array:set(67,
+                    gb_trees:insert(6383014723,
+                                    [0],
+                                    array:get(67, R1)),
+                    R1),
     Result = write_hash_tables(Handle, R2),
     io:format("write hash tables result of ~w ~n", [Result]),
     ?assertMatch(Result,[{67,16,2},{64,0,2}]),
@@ -999,7 +1045,8 @@ find_open_slot_5_test() ->
 
 full_1_test() ->
     List1 = lists:sort([{"key1","value1"},{"key2","value2"}]),
-    create("../test/simple.cdb",lists:sort([{"key1","value1"},{"key2","value2"}])),
+    create("../test/simple.cdb",
+            lists:sort([{"key1","value1"},{"key2","value2"}])),
     List2 = lists:sort(dump("../test/simple.cdb")),
     ?assertMatch(List1,List2),
     ok = file:delete("../test/simple.cdb").
@@ -1103,7 +1150,8 @@ search_hash_table_findinslot_test() ->
       {"K4", "V4"}, {"K5", "V5"}, {"K6", "V6"}, {"K7", "V7"}, 
       {"K8", "V8"}]),
     ok = from_dict("../test/hashtable1_test.cdb",D),
-    {ok, Handle} = file:open("../test/hashtable1_test.cdb", [binary, raw, read, write]),
+    {ok, Handle} = file:open("../test/hashtable1_test.cdb",
+                                [binary, raw, read, write]),
     Hash = hash(Key1),
     Index = hash_to_index(Hash),
     {ok, _} = file:position(Handle, {bof, ?DWORD_SIZE*Index}),
@@ -1124,12 +1172,17 @@ search_hash_table_findinslot_test() ->
     {ok, _} = file:position(Handle, FirstHashPosition),
     FlipH3 = endian_flip(ReadH3),
     FlipP3 = endian_flip(ReadP3),
-    RBin = <<FlipH3:32/integer, FlipP3:32/integer, 0:32/integer, 0:32/integer>>,
+    RBin = <<FlipH3:32/integer,
+                FlipP3:32/integer,
+                0:32/integer,
+                0:32/integer>>,
     io:format("Replacement binary of ~w~n", [RBin]),
     {ok, OldBin} = file:pread(Handle, 
       FirstHashPosition + (Slot -1)  * ?DWORD_SIZE, 16),
     io:format("Bin to be replaced is ~w ~n", [OldBin]),
-    ok = file:pwrite(Handle, FirstHashPosition + (Slot -1) * ?DWORD_SIZE, RBin),
+    ok = file:pwrite(Handle,
+                        FirstHashPosition + (Slot -1) * ?DWORD_SIZE,
+                        RBin),
     ok = file:close(Handle),
     io:format("Find key following change to hash table~n"),
     ?assertMatch(missing, get("../test/hashtable1_test.cdb", Key1)),

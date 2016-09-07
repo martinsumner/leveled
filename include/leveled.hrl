@@ -18,4 +18,12 @@
                         {start_key :: tuple(),
                         end_key :: tuple(),
                         owner :: pid(),
-                        filename :: string()}).                       
+                        filename :: string()}).
+
+-record(cdb_options,
+                        {max_size :: integer()}).
+
+-record(inker_options,
+                        {cdb_max_size :: integer(),
+                        root_path :: string(),
+                        cdb_options :: #cdb_options{}}).
