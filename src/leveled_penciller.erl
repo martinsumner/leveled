@@ -197,15 +197,16 @@
                 levelzero_pending = ?L0PEND_RESET :: tuple(),
                 levelzero_snapshot = [] :: list(),
                 memtable,
-                backlog = false :: boolean()}).
+                backlog = false :: boolean(),
+                memtable_maxsize :: integer}).
 
 
 %%%============================================================================
 %%% API
 %%%============================================================================
  
-pcl_start(RootDir) ->
-    gen_server:start(?MODULE, [RootDir], []).
+pcl_start(PCLopts) ->
+    gen_server:start(?MODULE, [PCLopts], []).
 
 pcl_pushmem(Pid, DumpList) ->
     %% Bookie to dump memory onto penciller
@@ -236,10 +237,20 @@ pcl_close(Pid) ->
 %%% gen_server callbacks
 %%%============================================================================
 
-init([RootPath]) ->
+init([PCLopts]) ->
+    RootPath = PCLopts#penciller_options.root_path,
+    MaxTableSize = case PCLopts#penciller_options.max_inmemory_tablesize of
+                        undefined ->
+                            ?MAX_TABLESIZE;
+                        M ->
+                            M
+                    end,
     TID = ets:new(?MEMTABLE, [ordered_set]),
     {ok, Clerk} = leveled_clerk:clerk_new(self()),
-    InitState = #state{memtable=TID, clerk=Clerk, root_path=RootPath},
+    InitState = #state{memtable=TID,
+                        clerk=Clerk,
+                        root_path=RootPath,
+                        memtable_maxsize=MaxTableSize},
     
     %% Open manifest
     ManifestPath = InitState#state.root_path ++ "/" ++ ?MANIFEST_FP ++ "/",
@@ -320,7 +331,7 @@ init([RootPath]) ->
 handle_call({push_mem, DumpList}, _From, State) ->
     StartWatch = os:timestamp(),
     Response = case assess_sqn(DumpList) of
-        {MinSQN, MaxSQN} when MaxSQN > MinSQN,
+        {MinSQN, MaxSQN} when MaxSQN >= MinSQN,
                                 MinSQN >= State#state.ledger_sqn ->
             io:format("SQN check completed in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(),StartWatch)]),
@@ -436,6 +447,10 @@ terminate(_Reason, State) ->
             file:rename(FileName ++ ".pnd", FileName ++ ".sft");
         {?L0PEND_RESET, [], L} when L == 0 ->
             io:format("No keys to dump from memory when closing~n");
+        {{true, L0Pid, _TS}, _, _} ->
+            leveled_sft:sft_close(L0Pid),
+            io:format("No opportunity to persist memory before closing "
+                        ++ "with ~w keys discarded~n", [length(Dump)]);
         _ ->
             io:format("No opportunity to persist memory before closing "
                         ++ "with ~w keys discarded~n", [length(Dump)])
@@ -481,7 +496,8 @@ push_to_memory(DumpList, State) ->
     MemoryInsertion = do_push_to_mem(DumpList,
                                         TableSize,
                                         UpdState#state.memtable,
-                                        UpdState#state.levelzero_snapshot),
+                                        UpdState#state.levelzero_snapshot,
+                                        UpdState#state.memtable_maxsize),
     
     case MemoryInsertion of
         {twist, ApproxTableSize, UpdSnapshot} ->
@@ -557,16 +573,16 @@ fetch(Key, Manifest, Level, FetchFun) ->
             end
     end.
 
-do_push_to_mem(DumpList, TableSize, MemTable, Snapshot) ->
+do_push_to_mem(DumpList, TableSize, MemTable, Snapshot, MaxSize) ->
     SW = os:timestamp(),
     UpdSnapshot = lists:append(Snapshot, DumpList),
     ets:insert(MemTable, DumpList),
     io:format("Push into memory timed at ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SW)]),
     case TableSize + length(DumpList) of
-        ApproxTableSize when ApproxTableSize > ?MAX_TABLESIZE ->
+        ApproxTableSize when ApproxTableSize > MaxSize ->
             case ets:info(MemTable, size) of
-                ActTableSize when ActTableSize > ?MAX_TABLESIZE ->
+                ActTableSize when ActTableSize > MaxSize ->
                     {roll, ActTableSize, UpdSnapshot};
                 ActTableSize ->
                     io:format("Table size is actually ~w~n", [ActTableSize]),
@@ -769,14 +785,19 @@ rename_manifest_files(RootPath, NewMSN) ->
     file:rename(filepath(RootPath, NewMSN, pending_manifest),
                     filepath(RootPath, NewMSN, current_manifest)).
 
+filepath(RootPath, manifest) ->
+    RootPath ++ "/" ++ ?MANIFEST_FP;
+filepath(RootPath, files) ->
+    RootPath ++ "/" ++ ?FILES_FP.
+
 filepath(RootPath, NewMSN, pending_manifest) ->
-    RootPath ++ "/" ++ ?MANIFEST_FP ++ "/" ++ "nonzero_"
+    filepath(RootPath, manifest) ++ "/" ++ "nonzero_"
                 ++ integer_to_list(NewMSN) ++ "." ++ ?PENDING_FILEX;
 filepath(RootPath, NewMSN, current_manifest) ->
-    RootPath ++ "/" ++ ?MANIFEST_FP ++ "/" ++ "nonzero_"
+    filepath(RootPath, manifest) ++ "/" ++ "nonzero_"
                 ++ integer_to_list(NewMSN) ++ "." ++ ?CURRENT_FILEX;
 filepath(RootPath, NewMSN, new_merge_files) ->
-    RootPath ++ "/" ++ ?FILES_FP ++ "/" ++ integer_to_list(NewMSN).
+    filepath(RootPath, files) ++ "/" ++ integer_to_list(NewMSN).
  
 update_deletions([], _NewMSN, UnreferencedFiles) ->
     UnreferencedFiles;
@@ -822,6 +843,24 @@ assess_sqn([HeadKey|Tail], MinSQN, MaxSQN) ->
 %%% Test
 %%%============================================================================
 
+-ifdef(TEST).
+
+clean_testdir(RootPath) ->
+    clean_subdir(filepath(RootPath, manifest)),
+    clean_subdir(filepath(RootPath, files)).
+
+clean_subdir(DirPath) ->
+    case filelib:is_dir(DirPath) of
+        true ->
+            {ok, Files} = file:list_dir(DirPath),
+            lists:foreach(fun(FN) -> file:delete(filename:join(DirPath, FN)),
+                                        io:format("Delete file ~s/~s~n",
+                                                    [DirPath, FN])
+                                        end,
+                            Files);
+        false ->
+            ok
+    end.
 
 compaction_work_assessment_test() ->
     L0 = [{{o, "B1", "K1"}, {o, "B3", "K3"}, dummy_pid}],
@@ -855,3 +894,50 @@ confirm_delete_test() ->
     RegisteredIterators3 = [{dummy_pid, 9}, {dummy_pid, 12}],
     R3 = confirm_delete(Filename, UnreferencedFiles, RegisteredIterators3),
     ?assertMatch(R3, false).
+
+
+simple_server_test() ->
+    RootPath = "../test/ledger",
+    clean_testdir(RootPath),
+    {ok, PCL} = pcl_start(#penciller_options{root_path=RootPath,
+                                                max_inmemory_tablesize=1000}),
+    Key1 = {{o,"Bucket0001", "Key0001"},1, {active, infinity}, null},
+    KL1 = lists:sort(leveled_sft:generate_randomkeys({1000, 2})),
+    Key2 = {{o,"Bucket0002", "Key0002"},1002, {active, infinity}, null},
+    KL2 = lists:sort(leveled_sft:generate_randomkeys({1000, 1002})),
+    Key3 = {{o,"Bucket0003", "Key0003"},2002, {active, infinity}, null},
+    ok = pcl_pushmem(PCL, [Key1]),
+    R1 = pcl_fetch(PCL, {o,"Bucket0001", "Key0001"}),
+    ?assertMatch(R1, Key1),
+    ok = pcl_pushmem(PCL, KL1),
+    R2 = pcl_fetch(PCL, {o,"Bucket0001", "Key0001"}),
+    ?assertMatch(R2, Key1),
+    S1 =  pcl_pushmem(PCL, [Key2]),
+    if S1 == pause -> timer:sleep(2); true -> ok end,
+    R3 = pcl_fetch(PCL, {o,"Bucket0001", "Key0001"}),
+    R4 = pcl_fetch(PCL, {o,"Bucket0002", "Key0002"}),
+    ?assertMatch(R3, Key1),
+    ?assertMatch(R4, Key2),
+    S2 = pcl_pushmem(PCL, KL2),
+    if S2 == pause -> timer:sleep(2000); true -> ok end,
+    S3 = pcl_pushmem(PCL, [Key3]),
+    if S3 == pause -> timer:sleep(2000); true -> ok end,
+    R5 = pcl_fetch(PCL, {o,"Bucket0001", "Key0001"}),
+    R6 = pcl_fetch(PCL, {o,"Bucket0002", "Key0002"}),
+    R7 = pcl_fetch(PCL, {o,"Bucket0003", "Key0003"}),
+    ?assertMatch(R5, Key1),
+    ?assertMatch(R6, Key2),
+    ?assertMatch(R7, Key3),
+    ok = pcl_close(PCL),
+    {ok, PCLr} = pcl_start(#penciller_options{root_path=RootPath,
+                                                max_inmemory_tablesize=1000}),
+    R8 = pcl_fetch(PCLr, {o,"Bucket0001", "Key0001"}),
+    R9 = pcl_fetch(PCLr, {o,"Bucket0002", "Key0002"}),
+    R10 = pcl_fetch(PCLr, {o,"Bucket0003", "Key0003"}),
+    ?assertMatch(R8, Key1),
+    ?assertMatch(R9, Key2),
+    ?assertMatch(R10, Key3),
+    ok = pcl_close(PCLr),
+    clean_testdir(RootPath).
+
+-endif.

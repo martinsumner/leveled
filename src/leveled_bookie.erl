@@ -90,3 +90,77 @@
 
 -module(leveled_bookie).
 
+-behaviour(gen_server).
+
+-include("../include/leveled.hrl").
+
+-export([init/1,
+        handle_call/3,
+        handle_cast/2,
+        handle_info/2,
+        terminate/2,
+        code_change/3]).
+
+-include_lib("eunit/include/eunit.hrl").
+
+
+-record(state, {inker :: pid(),
+                penciller :: pid()}).
+
+
+%%%============================================================================
+%%% API
+%%%============================================================================
+
+
+
+%%%============================================================================
+%%% gen_server callbacks
+%%%============================================================================
+
+init([Opts]) ->
+    {InkerOpts, PencillerOpts} = set_options(Opts),
+    {Inker, Penciller} = startup(InkerOpts, PencillerOpts),
+    {ok, #state{inker=Inker, penciller=Penciller}}.
+
+
+handle_call(_, _From, State) ->
+    {reply, ok, State}.
+
+handle_cast(_Msg, State) ->
+    {noreply, State}.
+
+handle_info(_Info, State) ->
+    {noreply, State}.
+
+terminate(_Reason, _State) ->
+    ok.
+
+code_change(_OldVsn, State, _Extra) ->
+    {ok, State}.
+
+
+%%%============================================================================
+%%% Internal functions
+%%%============================================================================
+
+set_options(_Opts) ->
+    {#inker_options{}, #penciller_options{}}.
+
+startup(InkerOpts, PencillerOpts) ->
+    {ok, Inker} = leveled_inker:ink_start(InkerOpts),
+    {ok, Penciller} = leveled_penciller:pcl_start(PencillerOpts),
+    LedgerSQN = leveled_penciller:pcl_getstartupsequencenumber(Penciller),
+    KeyChanges = leveled_inker:ink_fetchkeychangesfrom(Inker, LedgerSQN),
+    ok = leveled_penciller:pcl_pushmem(Penciller, KeyChanges),
+    {Inker, Penciller}.
+
+
+
+%%%============================================================================
+%%% Test
+%%%============================================================================
+
+-ifdef(TEST).
+
+-endif.

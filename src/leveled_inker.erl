@@ -539,7 +539,7 @@ manifest_printer(Manifest) ->
 -ifdef(TEST).
 
 build_dummy_journal() ->
-    RootPath = "../test/inker",
+    RootPath = "../test/journal",
     JournalFP = filepath(RootPath, journal_dir),
     ManifestFP = filepath(RootPath, manifest_dir),
     ok = filelib:ensure_dir(RootPath),
@@ -577,7 +577,7 @@ clean_subdir(DirPath) ->
                     Files).
 
 simple_buildmanifest_test() ->
-    RootPath = "../test/inker",
+    RootPath = "../test/journal",
     build_dummy_journal(),
     Res = build_manifest(["1.man"],
                             ["nursery_1.cdb", "nursery_3.pnd"],
@@ -596,7 +596,7 @@ simple_buildmanifest_test() ->
 
 another_buildmanifest_test() ->
     %% There is a rolled jounral file which is not yet in the manifest
-    RootPath = "../test/inker",
+    RootPath = "../test/journal",
     build_dummy_journal(),
     FN = filepath(RootPath, 3, new_journal),
     {ok, FileToRoll} = leveled_cdb:cdb_open_writer(FN),
@@ -628,7 +628,7 @@ another_buildmanifest_test() ->
 
 
 empty_buildmanifest_test() ->
-    RootPath = "../test/inker/",
+    RootPath = "../test/journal",
     Res = build_manifest([],
                             [],
                             fun simple_manifest_reader/2,
@@ -649,7 +649,7 @@ empty_buildmanifest_test() ->
 simplejournal_test() ->
     %% build up a database, and then open it through the gen_server wrap
     %% Get and Put some keys
-    RootPath = "../test/inker",
+    RootPath = "../test/journal",
     build_dummy_journal(),
     {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,
                                             cdb_options=#cdb_options{}}),
@@ -666,7 +666,7 @@ simplejournal_test() ->
     clean_testdir(RootPath).
 
 rollafile_simplejournal_test() ->
-    RootPath = "../test/inker",
+    RootPath = "../test/journal",
     build_dummy_journal(),
     CDBopts = #cdb_options{max_size=300000},
     {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,

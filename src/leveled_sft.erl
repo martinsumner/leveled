@@ -200,7 +200,7 @@
                 filter_pointer :: integer(),
                 summ_pointer :: integer(),
                 summ_length :: integer(),
-                filename :: string(),
+                filename = "not set" :: string(),
                 handle :: file:fd(),
                 background_complete = false :: boolean(),
                 background_failure = "Unknown" :: string(),
@@ -387,7 +387,12 @@ terminate(Reason, State) ->
             ok = file:close(State#state.handle),
             ok = file:delete(State#state.filename);
         _ ->
-            ok = file:close(State#state.handle)
+            case State#state.handle of
+                undefined ->
+                    ok;
+                Handle ->
+                    file:close(Handle)
+            end
     end.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -520,6 +525,7 @@ complete_file(Handle, FileMD, KL1, KL2, Level, Rename) ->
         false ->
             open_file(FileMD);
         {true, OldName, NewName} ->
+            io:format("Renaming file from ~s to ~s~n", [OldName, NewName]),
             ok = file:rename(OldName, NewName),
             open_file(FileMD#state{filename=NewName})
     end,    

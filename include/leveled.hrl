@@ -27,3 +27,7 @@
                         {cdb_max_size :: integer(),
                         root_path :: string(),
                         cdb_options :: #cdb_options{}}).
+
+-record(penciller_options,
+                        {root_path :: string(),
+                        max_inmemory_tablesize :: integer()}).
