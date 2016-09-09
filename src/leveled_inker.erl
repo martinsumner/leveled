@@ -139,6 +139,9 @@ ink_put(Pid, PrimaryKey, Object, KeyChanges) ->
 ink_get(Pid, PrimaryKey, SQN) ->
     gen_server:call(Pid, {get, PrimaryKey, SQN}, infinity).
 
+ink_fetchkeychanges(Pid, SQN) ->
+    gen_server:call(Pid, {fetch_keychanges, SQN}, infinity).
+
 ink_snap(Pid) ->
     gen_server:call(Pid, snapshot, infinity).
 
@@ -220,6 +223,12 @@ handle_call(snapshot, _From , State) ->
 handle_call(print_manifest, _From, State) ->
     manifest_printer(State#state.manifest),
     {reply, ok, State};
+handle_call({fetch_keychanges, SQN}, _From, State) ->
+    KeyChanges = fetch_key_changes(SQN,
+                                    State#state.manifest,
+                                    State#state.active_journaldb,
+                                    State#state.active_journaldb_sqn),
+    {reply, KeyChanges, State};
 handle_call(close, _From, State) ->
     {stop, normal, ok, State}.
 
@@ -454,6 +463,16 @@ roll_pending_journals([JournalSQN|T], Manifest, RootPath) ->
                                             {JournalSQN, NewFilename, PidR}),
                             RootPath).
 
+
+fetch_key_changes(SQN, Manifest, ActiveJournal, ActiveSQN) ->
+    InitialChanges = case SQN of
+                            SQN when SQN < ActiveSQN ->
+                                fetch_key_changes(SQN, Manifest);
+                            _ ->
+                                []
+                        end,
+    RecentChanges = fetch_key_changes(SQN, ActiveJournal),
+    InitialChanges ++ RecentChanges.
 
 
 sequencenumbers_fromfilenames(Filenames, Regex, IntName) ->

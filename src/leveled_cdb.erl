@@ -63,6 +63,7 @@
         cdb_lastkey/1,
         cdb_filename/1,
         cdb_keycheck/2,
+        cdb_scan/4,
         cdb_close/1,
         cdb_complete/1]).
 
@@ -122,6 +123,11 @@ cdb_close(Pid) ->
 
 cdb_complete(Pid) ->
     gen_server:call(Pid, cdb_complete, infinity).
+
+cdb_scan(Pid, StartPosition, FilterFun, InitAcc) ->
+    gen_server:call(Pid,
+                    {cdb_scan, StartPosition, FilterFun, InitAcc},
+                    infinity).
 
 %% Get the last key to be added to the file (which will have the highest
 %% sequence number)
@@ -232,6 +238,12 @@ handle_call(cdb_lastkey, _From, State) ->
     {reply, State#state.last_key, State};
 handle_call(cdb_filename, _From, State) ->
     {reply, State#state.filename, State};
+handle_call({cdb_scan, StartPos, FilterFun, Acc}, _From, State) ->
+    {LastPosition, Acc2} = scan_over_file(State#state.handle,
+                                            StartPos,
+                                            FilterFun,
+                                            Acc),
+    {reply, {LastPosition, Acc2}, State};
 handle_call(cdb_close, _From, State) ->
     ok = file:close(State#state.handle),
     {stop, normal, ok, State#state{handle=closed}};
@@ -346,7 +358,8 @@ dump(FileName, CRCCheck) ->
 open_active_file(FileName) when is_list(FileName) ->
     {ok, Handle} = file:open(FileName, ?WRITE_OPS),
     {ok, Position} = file:position(Handle, {bof, 256*?DWORD_SIZE}),
-    {LastPosition, HashTree, LastKey} = scan_over_file(Handle, Position),
+    {LastPosition, {HashTree, LastKey}} = startup_scan_over_file(Handle,
+                                                                    Position),
     case file:position(Handle, eof) of 
         {ok, LastPosition} ->
             ok = file:close(Handle);
@@ -617,32 +630,43 @@ extract_kvpair(Handle, [Position|Rest], Key, Check) ->
 
 %% Scan through the file until there is a failure to crc check an input, and 
 %% at that point return the position and the key dictionary scanned so far
-scan_over_file(Handle, Position) ->
+startup_scan_over_file(Handle, Position) ->
     HashTree = array:new(256, {default, gb_trees:empty()}),
-    scan_over_file(Handle, Position, HashTree, empty).
+    scan_over_file(Handle, Position, fun startup_filter/4, {HashTree, empty}).
 
-scan_over_file(Handle, Position, HashTree, LastKey) ->
+%% Scan for key changes - scan over file returning applying FilterFun
+%% The FilterFun should accept as input:
+%% - Key, Value, Position, Accumulator, outputting a new Accumulator
+%% and a loop|stop instruction as a tuple i.e. {loop, Acc} or {stop, Acc}
+
+scan_over_file(Handle, Position, FilterFun, Output) ->
     case saferead_keyvalue(Handle) of
         false ->
-            {Position, HashTree, LastKey};
+            {Position, Output};
         {Key, ValueAsBin, KeyLength, ValueLength} ->
-            case crccheck_value(ValueAsBin) of
-                true ->
-                    NewPosition = Position + KeyLength + ValueLength
+            NewPosition = Position + KeyLength + ValueLength
                                     + ?DWORD_SIZE,
-                    scan_over_file(Handle,
-                                    NewPosition, 
-                                    put_hashtree(Key, Position, HashTree),
-                                    Key);
-                false ->
-                    io:format("CRC check returned false on key of ~w ~n",
-                                    [Key]),
-                    {Position, HashTree, LastKey}
+            case FilterFun(Key, ValueAsBin, Position, Output) of
+                {stop, UpdOutput} ->
+                    {Position, UpdOutput};
+                {loop, UpdOutput} ->
+                    scan_over_file(Handle, NewPosition, FilterFun, UpdOutput)
             end;
         eof ->
-            {Position, HashTree, LastKey}
+            {Position, Output}
     end.
 
+%% Specific filter to be used at startup to build a hashtree for an incomplete
+%% cdb file, and returns at the end the hashtree and the final Key seen in the
+%% journal
+
+startup_filter(Key, ValueAsBin, Position, {Hashtree, LastKey}) ->
+    case crccheck_value(ValueAsBin) of
+        true ->
+            {loop, {put_hashtree(Key, Position, Hashtree), Key}};
+        false ->
+            {stop, {Hashtree, LastKey}}
+    end.
 
 %% Read the Key/Value at this point, returning {ok, Key, Value}
 %% catch expected exceptiosn associated with file corruption (or end) and 

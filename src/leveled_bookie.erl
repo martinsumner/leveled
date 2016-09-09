@@ -53,9 +53,9 @@
 %% - close the previously active journal file (writing the hashtree), and move
 %% it to the historic journal
 %%
-%% Once the object has been persisted to the Journal, the Key and Metadata can
-%% be added to the ledger.  Initially this will be added to the Bookie's
-%% in-memory view of recent changes only.
+%% Once the object has been persisted to the Journal, the Key with Metadata
+%% and the keychanges can be added to the ledger.  Initially this will be
+%% added to the Bookie'sin-memory view of recent changes only.
 %%
 %% The Bookie's memory consists of an in-memory ets table.  Periodically, the
 %% current table is pushed to the Penciller for eventual persistence, and a
@@ -106,6 +106,16 @@
 
 -record(state, {inker :: pid(),
                 penciller :: pid()}).
+
+-record(item, {primary_key :: term(),
+                contents :: list(),
+                metadatas :: list(),
+                vclock,
+                hash :: integer(),
+                size :: integer(),
+                key_changes :: list()})
+
+
 
 
 %%%============================================================================

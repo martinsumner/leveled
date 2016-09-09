@@ -901,11 +901,14 @@ simple_server_test() ->
     clean_testdir(RootPath),
     {ok, PCL} = pcl_start(#penciller_options{root_path=RootPath,
                                                 max_inmemory_tablesize=1000}),
-    Key1 = {{o,"Bucket0001", "Key0001"},1, {active, infinity}, null},
+    Key1 = {{o,"Bucket0001", "Key0001"}, 1, {active, infinity}, null},
     KL1 = lists:sort(leveled_sft:generate_randomkeys({1000, 2})),
-    Key2 = {{o,"Bucket0002", "Key0002"},1002, {active, infinity}, null},
+    Key2 = {{o,"Bucket0002", "Key0002"}, 1002, {active, infinity}, null},
     KL2 = lists:sort(leveled_sft:generate_randomkeys({1000, 1002})),
-    Key3 = {{o,"Bucket0003", "Key0003"},2002, {active, infinity}, null},
+    Key3 = {{o,"Bucket0003", "Key0003"}, 2002, {active, infinity}, null},
+    KL3 = lists:sort(leveled_sft:generate_randomkeys({1000, 2002})),
+    Key4 = {{o,"Bucket0004", "Key0004"}, 3002, {active, infinity}, null},
+    KL4 = lists:sort(leveled_sft:generate_randomkeys({1000, 3002})),
     ok = pcl_pushmem(PCL, [Key1]),
     R1 = pcl_fetch(PCL, {o,"Bucket0001", "Key0001"}),
     ?assertMatch(R1, Key1),
@@ -931,12 +934,41 @@ simple_server_test() ->
     ok = pcl_close(PCL),
     {ok, PCLr} = pcl_start(#penciller_options{root_path=RootPath,
                                                 max_inmemory_tablesize=1000}),
+    TopSQN = pcl_getstartupsequencenumber(PCLr),
+    case TopSQN of
+        2001 ->
+            %% Last push not persisted
+            S3a = pcl_pushmem(PCL, [Key3]),
+            if S3a == pause -> timer:sleep(2000); true -> ok end;
+        2002 ->
+            %% everything got persisted
+            ok;
+        _ ->
+            io:format("Unexpected sequence number on restart ~w~n", [TopSQN]),
+            ok = pcl_close(PCLr),
+            clean_testdir(RootPath),
+            ?assertMatch(true, false)
+    end,
     R8 = pcl_fetch(PCLr, {o,"Bucket0001", "Key0001"}),
     R9 = pcl_fetch(PCLr, {o,"Bucket0002", "Key0002"}),
     R10 = pcl_fetch(PCLr, {o,"Bucket0003", "Key0003"}),
     ?assertMatch(R8, Key1),
     ?assertMatch(R9, Key2),
     ?assertMatch(R10, Key3),
+    S4 = pcl_pushmem(PCLr, KL3),
+    if S4 == pause -> timer:sleep(2000); true -> ok end,
+    S5 = pcl_pushmem(PCLr, [Key4]),
+    if S5 == pause -> timer:sleep(2000); true -> ok end,
+    S6 = pcl_pushmem(PCLr, KL4),
+    if S6 == pause -> timer:sleep(2000); true -> ok end,
+    R11 = pcl_fetch(PCLr, {o,"Bucket0001", "Key0001"}),
+    R12 = pcl_fetch(PCLr, {o,"Bucket0002", "Key0002"}),
+    R13 = pcl_fetch(PCLr, {o,"Bucket0003", "Key0003"}),
+    R14 = pcl_fetch(PCLr, {o,"Bucket0004", "Key0004"}),
+    ?assertMatch(R11, Key1),
+    ?assertMatch(R12, Key2),
+    ?assertMatch(R13, Key3),
+    ?assertMatch(R14, Key4),
     ok = pcl_close(PCLr),
     clean_testdir(RootPath).
 
