@@ -168,7 +168,8 @@
         pcl_confirmdelete/2,
         pcl_prompt/1,
         pcl_close/1,
-        pcl_getstartupsequencenumber/1]).
+        pcl_getstartupsequencenumber/1,
+        clean_testdir/1]).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -835,7 +836,7 @@ assess_sqn(DumpList) ->
 assess_sqn([], MinSQN, MaxSQN) ->
     {MinSQN, MaxSQN};
 assess_sqn([HeadKey|Tail], MinSQN, MaxSQN) ->
-    {_K, SQN} = leveled_sft:strip_to_key_seqn_only(HeadKey),
+    {_K, SQN} = leveled_bookie:strip_to_keyseqonly(HeadKey),
     assess_sqn(Tail, min(MinSQN, SQN), max(MaxSQN, SQN)).
 
 
@@ -901,13 +902,13 @@ simple_server_test() ->
     clean_testdir(RootPath),
     {ok, PCL} = pcl_start(#penciller_options{root_path=RootPath,
                                                 max_inmemory_tablesize=1000}),
-    Key1 = {{o,"Bucket0001", "Key0001"}, 1, {active, infinity}, null},
+    Key1 = {{o,"Bucket0001", "Key0001"}, {1, {active, infinity}, null}},
     KL1 = lists:sort(leveled_sft:generate_randomkeys({1000, 2})),
-    Key2 = {{o,"Bucket0002", "Key0002"}, 1002, {active, infinity}, null},
+    Key2 = {{o,"Bucket0002", "Key0002"}, {1002, {active, infinity}, null}},
     KL2 = lists:sort(leveled_sft:generate_randomkeys({1000, 1002})),
-    Key3 = {{o,"Bucket0003", "Key0003"}, 2002, {active, infinity}, null},
+    Key3 = {{o,"Bucket0003", "Key0003"}, {2002, {active, infinity}, null}},
     KL3 = lists:sort(leveled_sft:generate_randomkeys({1000, 2002})),
-    Key4 = {{o,"Bucket0004", "Key0004"}, 3002, {active, infinity}, null},
+    Key4 = {{o,"Bucket0004", "Key0004"}, {3002, {active, infinity}, null}},
     KL4 = lists:sort(leveled_sft:generate_randomkeys({1000, 3002})),
     ok = pcl_pushmem(PCL, [Key1]),
     R1 = pcl_fetch(PCL, {o,"Bucket0001", "Key0001"}),

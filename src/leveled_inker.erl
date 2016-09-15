@@ -101,11 +101,14 @@
         ink_start/1,
         ink_put/4,
         ink_get/3,
+        ink_fetch/3,
+        ink_loadpcl/4,
         ink_snap/1,
         ink_close/1,
         ink_print_manifest/1,
         build_dummy_journal/0,
-        simple_manifest_reader/2]).
+        simple_manifest_reader/2,
+        clean_testdir/1]).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -114,7 +117,8 @@
 -define(JOURNAL_FILEX, "cdb").
 -define(MANIFEST_FILEX, "man").
 -define(PENDING_FILEX, "pnd").
-
+-define(LOADING_PAUSE, 5000).
+-define(LOADING_BATCH, 1000).
 
 -record(state, {manifest = [] :: list(),
 				manifest_sqn = 0 :: integer(),
@@ -139,14 +143,17 @@ ink_put(Pid, PrimaryKey, Object, KeyChanges) ->
 ink_get(Pid, PrimaryKey, SQN) ->
     gen_server:call(Pid, {get, PrimaryKey, SQN}, infinity).
 
-ink_fetchkeychanges(Pid, SQN) ->
-    gen_server:call(Pid, {fetch_keychanges, SQN}, infinity).
+ink_fetch(Pid, PrimaryKey, SQN) ->
+    gen_server:call(Pid, {fetch, PrimaryKey, SQN}, infinity).
 
 ink_snap(Pid) ->
     gen_server:call(Pid, snapshot, infinity).
 
 ink_close(Pid) ->
     gen_server:call(Pid, close, infinity).
+
+ink_loadpcl(Pid, MinSQN, FilterFun, Penciller) ->
+    gen_server:call(Pid, {load_pcl, MinSQN, FilterFun, Penciller}, infinity).
 
 ink_print_manifest(Pid) ->
     gen_server:call(Pid, print_manifest, infinity).
@@ -193,10 +200,10 @@ init([InkerOpts]) ->
 
 handle_call({put, Key, Object, KeyChanges}, From, State) ->
     case put_object(Key, Object, KeyChanges, State) of
-        {ok, UpdState} ->
-            {reply, {ok, UpdState#state.journal_sqn}, UpdState};
-        {rolling, UpdState} ->
-            gen_server:reply(From, {ok, UpdState#state.journal_sqn}),
+        {ok, UpdState, ObjSize} ->
+            {reply, {ok, UpdState#state.journal_sqn, ObjSize}, UpdState};
+        {rolling, UpdState, ObjSize} ->
+            gen_server:reply(From, {ok, UpdState#state.journal_sqn, ObjSize}),
             {NewManifest,
                 NewManifestSQN} = roll_active_file(State#state.active_journaldb,
                                                     State#state.manifest,
@@ -207,12 +214,31 @@ handle_call({put, Key, Object, KeyChanges}, From, State) ->
         {blocked, UpdState} ->
             {reply, blocked, UpdState}
     end;
+handle_call({fetch, Key, SQN}, _From, State) ->
+    case get_object(Key,
+                        SQN,
+                        State#state.manifest,
+                        State#state.active_journaldb,
+                        State#state.active_journaldb_sqn) of
+        {{SQN, Key}, {Value, _IndexSpecs}} ->
+            {reply, {ok, Value}, State};
+        Other ->
+            io:format("Unexpected failure to fetch value for" ++
+                        "Key=~s SQN=~w with reason ~w", [Key, SQN, Other]),
+            {reply, not_present, State}
+    end;
 handle_call({get, Key, SQN}, _From, State) ->
     {reply, get_object(Key,
                         SQN,
                         State#state.manifest,
                         State#state.active_journaldb,
                         State#state.active_journaldb_sqn), State};
+handle_call({load_pcl, StartSQN, FilterFun, Penciller}, _From, State) ->
+    Manifest = State#state.manifest ++ [{State#state.active_journaldb_sqn,
+                                            dummy,
+                                            State#state.active_journaldb}],
+    Reply = load_from_sequence(StartSQN, FilterFun, Penciller, Manifest),
+    {reply, Reply, State};
 handle_call(snapshot, _From , State) ->
     %% TODO: Not yet implemented registration of snapshot
     %% Should return manifest and register the snapshot
@@ -223,12 +249,6 @@ handle_call(snapshot, _From , State) ->
 handle_call(print_manifest, _From, State) ->
     manifest_printer(State#state.manifest),
     {reply, ok, State};
-handle_call({fetch_keychanges, SQN}, _From, State) ->
-    KeyChanges = fetch_key_changes(SQN,
-                                    State#state.manifest,
-                                    State#state.active_journaldb,
-                                    State#state.active_journaldb_sqn),
-    {reply, KeyChanges, State};
 handle_call(close, _From, State) ->
     {stop, normal, ok, State}.
 
@@ -257,11 +277,12 @@ code_change(_OldVsn, State, _Extra) ->
 put_object(PrimaryKey, Object, KeyChanges, State) ->
     NewSQN = State#state.journal_sqn + 1,
     Bin1 = term_to_binary({Object, KeyChanges}, [compressed]),
+    ObjSize = byte_size(Bin1),
     case leveled_cdb:cdb_put(State#state.active_journaldb,
                                 {NewSQN, PrimaryKey},
                                 Bin1) of
         ok ->
-            {ok, State#state{journal_sqn=NewSQN}};
+            {ok, State#state{journal_sqn=NewSQN}, ObjSize};
         roll ->
             FileName = filepath(State#state.root_path, NewSQN, new_journal),
             CDBopts = State#state.cdb_options,
@@ -270,9 +291,11 @@ put_object(PrimaryKey, Object, KeyChanges, State) ->
                                         {NewSQN, PrimaryKey},
                                         Bin1) of
                 ok ->
-                    {rolling, State#state{journal_sqn=NewSQN,
-                                            active_journaldb=NewJournalP,
-                                            active_journaldb_sqn=NewSQN}};
+                    {rolling,
+                        State#state{journal_sqn=NewSQN,
+                                        active_journaldb=NewJournalP,
+                                        active_journaldb_sqn=NewSQN},
+                        ObjSize};
                 roll ->
                     {blocked, State#state{journal_sqn=NewSQN,
                                             active_journaldb=NewJournalP,
@@ -464,16 +487,49 @@ roll_pending_journals([JournalSQN|T], Manifest, RootPath) ->
                             RootPath).
 
 
-fetch_key_changes(SQN, Manifest, ActiveJournal, ActiveSQN) ->
-    InitialChanges = case SQN of
-                            SQN when SQN < ActiveSQN ->
-                                fetch_key_changes(SQN, Manifest);
-                            _ ->
-                                []
-                        end,
-    RecentChanges = fetch_key_changes(SQN, ActiveJournal),
-    InitialChanges ++ RecentChanges.
+%% Scan between sequence numbers applying FilterFun to each entry where
+%% FilterFun{K, V, Acc} -> Penciller Key List
+%% Load the output for the CDB file into the Penciller.
 
+load_from_sequence(_MinSQN, _FilterFun, _Penciller, []) ->
+    ok;
+load_from_sequence(MinSQN, FilterFun, Penciller, [{LowSQN, _FN, Pid}|ManTail])
+                                        when MinSQN >= LowSQN ->
+    ok = load_between_sequence(MinSQN,
+                                MinSQN + ?LOADING_BATCH,
+                                FilterFun,
+                                Penciller,
+                                Pid,
+                                undefined),
+    load_from_sequence(MinSQN, FilterFun, Penciller, ManTail);
+load_from_sequence(MinSQN, FilterFun, Penciller, [_H|ManTail]) ->
+    load_from_sequence(MinSQN, FilterFun, Penciller, ManTail).
+
+load_between_sequence(MinSQN, MaxSQN, FilterFun, Penciller, CDBpid, StartPos) ->
+    InitAcc = {MinSQN, MaxSQN, []},
+    case leveled_cdb:cdb_scan(CDBpid, FilterFun, InitAcc, StartPos) of
+        {eof, Acc} ->
+            ok = push_to_penciller(Penciller, Acc),
+            ok;
+        {LastPosition, Acc} ->
+            ok = push_to_penciller(Penciller, Acc),
+            load_between_sequence(MaxSQN + 1,
+                                    MaxSQN + 1 + ?LOADING_BATCH,
+                                    FilterFun,
+                                    Penciller,
+                                    CDBpid,
+                                    LastPosition)
+    end.
+
+push_to_penciller(Penciller, KeyList) ->
+    R = leveled_penciler:pcl_pushmem(Penciller, KeyList),
+    if
+        R == pause ->
+            timer:sleep(?LOADING_PAUSE);
+        true ->
+            ok
+    end.
+            
 
 sequencenumbers_fromfilenames(Filenames, Regex, IntName) ->
     lists:foldl(fun(FN, Acc) ->
@@ -676,7 +732,7 @@ simplejournal_test() ->
     ?assertMatch(R1, {{1, "Key1"}, {"TestValue1", []}}),
     R2 = ink_get(Ink1, "Key1", 3),
     ?assertMatch(R2, {{3, "Key1"}, {"TestValue3", []}}),
-    {ok, NewSQN1} = ink_put(Ink1, "Key99", "TestValue99", []),
+    {ok, NewSQN1, _ObjSize} = ink_put(Ink1, "Key99", "TestValue99", []),
     ?assertMatch(NewSQN1, 5),
     R3 = ink_get(Ink1, "Key99", 5),
     io:format("Result 3 is ~w~n", [R3]),
@@ -691,18 +747,18 @@ rollafile_simplejournal_test() ->
     {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,
                                             cdb_options=CDBopts}),
     FunnyLoop = lists:seq(1, 48),
-    {ok, NewSQN1} = ink_put(Ink1, "KeyAA", "TestValueAA", []),
+    {ok, NewSQN1, _ObjSize} = ink_put(Ink1, "KeyAA", "TestValueAA", []),
     ?assertMatch(NewSQN1, 5),
     ok = ink_print_manifest(Ink1),
     R0 = ink_get(Ink1, "KeyAA", 5),
     ?assertMatch(R0, {{5, "KeyAA"}, {"TestValueAA", []}}),
     lists:foreach(fun(X) ->
-                        {ok, _} = ink_put(Ink1,
-                                            "KeyZ" ++ integer_to_list(X),
-                                            crypto:rand_bytes(10000),
-                                            []) end,
+                        {ok, _, _} = ink_put(Ink1,
+                                                "KeyZ" ++ integer_to_list(X),
+                                                crypto:rand_bytes(10000),
+                                                []) end,
                     FunnyLoop),
-    {ok, NewSQN2} = ink_put(Ink1, "KeyBB", "TestValueBB", []),
+    {ok, NewSQN2, _ObjSize} = ink_put(Ink1, "KeyBB", "TestValueBB", []),
     ?assertMatch(NewSQN2, 54),
     ok = ink_print_manifest(Ink1),
     R1 = ink_get(Ink1, "KeyAA", 5),

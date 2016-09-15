@@ -162,8 +162,6 @@
         sft_getfilename/1,
         sft_setfordelete/2,
         sft_getmaxsequencenumber/1,
-        strip_to_keyonly/1,
-        strip_to_key_seqn_only/1,
         generate_randomkeys/1]).
 
 -include_lib("eunit/include/eunit.hrl").
@@ -203,7 +201,7 @@
                 filename = "not set" :: string(),
                 handle :: file:fd(),
                 background_complete = false :: boolean(),
-                background_failure = "Unknown" :: string(),
+                background_failure :: tuple(),
                 oversized_file = false :: boolean(),
                 ready_for_delete = false ::boolean(),
                 penciller :: pid()}).
@@ -458,7 +456,7 @@ create_file(FileName) when is_list(FileName) ->
             FileMD = #state{next_position=StartPos, filename=FileName},
             {Handle, FileMD};
         {error, Reason} ->
-            io:format("Error opening filename ~s with reason ~s",
+            io:format("Error opening filename ~s with reason ~w",
                         [FileName, Reason]),
             {error, Reason}
     end.
@@ -579,7 +577,7 @@ acc_list_keysonly(null, empty) ->
 acc_list_keysonly(null, RList) ->
     RList;
 acc_list_keysonly(R, RList) ->
-    lists:append(RList, [strip_to_key_seqn_only(R)]).
+    lists:append(RList, [leveled_bookie:strip_to_keyseqonly(R)]).
 
 acc_list_kv(null, empty) ->
     [];
@@ -668,7 +666,7 @@ fetch_range(Handle, FileMD, StartKey, NearestKey, EndKey, FunList,
 scan_block([], StartKey, _EndKey, _FunList, _AccFun, Acc) ->
     {partial, Acc, StartKey};
 scan_block([HeadKV|T], StartKey, EndKey, FunList, AccFun, Acc) ->
-    K = strip_to_keyonly(HeadKV),
+    K = leveled_bookie:strip_to_keyonly(HeadKV),
     case K of
         K when K < StartKey, StartKey /= all ->
             scan_block(T, StartKey, EndKey, FunList, AccFun, Acc);
@@ -676,11 +674,11 @@ scan_block([HeadKV|T], StartKey, EndKey, FunList, AccFun, Acc) ->
             {complete, Acc};
         _ ->
             case applyfuns(FunList, HeadKV) of
-                include ->
+                true ->
                     %% Add result to the accumulator
                     scan_block(T, StartKey, EndKey, FunList,
                                 AccFun, AccFun(HeadKV, Acc));
-                skip ->
+                false ->
                     scan_block(T, StartKey, EndKey, FunList,
                                 AccFun, Acc)
             end
@@ -688,13 +686,13 @@ scan_block([HeadKV|T], StartKey, EndKey, FunList, AccFun, Acc) ->
 
 
 applyfuns([], _KV) ->
-    include;
+    true;
 applyfuns([HeadFun|OtherFuns], KV) ->
     case HeadFun(KV) of
         true ->
             applyfuns(OtherFuns, KV);
         false ->
-            skip
+            false
     end.
 
 fetch_keyvalue_fromblock([], _Key, _LengthList, _Handle, _StartOfSlot) ->
@@ -1005,20 +1003,20 @@ create_slot(KL1, KL2, Level, BlockCount, SegLists, SerialisedSlot, LengthList,
     {BlockKeyList, Status,
         {LSNb, HSNb},
         SegmentList, KL1b, KL2b} = create_block(KL1, KL2, Level),
-    case LowKey of
+    TrackingMetadata = case LowKey of
         null ->
             [NewLowKeyV|_] = BlockKeyList,
-            TrackingMetadata = {strip_to_keyonly(NewLowKeyV),
-                                    min(LSN, LSNb), max(HSN, HSNb),
-                                    strip_to_keyonly(last(BlockKeyList,
-                                                        {last, LastKey})),
-                                    Status};
+            {leveled_bookie:strip_to_keyonly(NewLowKeyV),
+                min(LSN, LSNb), max(HSN, HSNb),
+                leveled_bookie:strip_to_keyonly(last(BlockKeyList,
+                                                    {last, LastKey})),
+                Status};
         _ ->
-            TrackingMetadata = {LowKey,
-                                    min(LSN, LSNb), max(HSN, HSNb),
-                                    strip_to_keyonly(last(BlockKeyList,
-                                                        {last, LastKey})),
-                                    Status}
+            {LowKey,
+                min(LSN, LSNb), max(HSN, HSNb),
+                leveled_bookie:strip_to_keyonly(last(BlockKeyList,
+                                                    {last, LastKey})),
+                Status}
     end,
     SerialisedBlock = serialise_block(BlockKeyList),
     BlockLength = byte_size(SerialisedBlock),
@@ -1033,11 +1031,6 @@ last([E|Es], PrevLast) -> last(E, Es, PrevLast).
 
 last(_, [E|Es], PrevLast) -> last(E, Es, PrevLast);
 last(E, [], _) -> E.
-
-strip_to_keyonly({keyonly, K}) -> K;
-strip_to_keyonly({K, _, _, _}) -> K.
-
-strip_to_key_seqn_only({K, SeqN, _, _}) -> {K, SeqN}.
 
 serialise_block(BlockKeyList) ->
     term_to_binary(BlockKeyList, [{compressed, ?COMPRESSION_LEVEL}]).
@@ -1060,7 +1053,7 @@ key_dominates(KL1, KL2, Level) ->
                             Level).
 
 key_dominates_expanded([H1|T1], [], Level) ->
-    {_, _, St1, _} = H1,
+    St1 = leveled_bookie:strip_to_statusonly(H1),
     case maybe_reap_expiredkey(St1, Level) of
         true ->
             {skipped_key, maybe_expand_pointer(T1), []};
@@ -1068,7 +1061,7 @@ key_dominates_expanded([H1|T1], [], Level) ->
             {{next_key, H1}, maybe_expand_pointer(T1), []}
     end;
 key_dominates_expanded([], [H2|T2], Level) ->
-    {_, _, St2, _} = H2,
+    St2 = leveled_bookie:strip_to_statusonly(H2),
     case maybe_reap_expiredkey(St2, Level) of
         true ->
             {skipped_key, [], maybe_expand_pointer(T2)};
@@ -1076,8 +1069,8 @@ key_dominates_expanded([], [H2|T2], Level) ->
             {{next_key, H2}, [], maybe_expand_pointer(T2)}
     end;
 key_dominates_expanded([H1|T1], [H2|T2], Level) ->
-    {K1, Sq1, St1, _} = H1,
-    {K2, Sq2, St2, _} = H2,
+    {K1, Sq1, St1} = leveled_bookie:strip_to_details(H1),
+    {K2, Sq2, St2} = leveled_bookie:strip_to_details(H2),
     case K1 of
         K2 ->
             case Sq1 > Sq2 of
@@ -1139,14 +1132,16 @@ pointer_append_queryresults(Results, QueryPid) ->
     end.
 
     
-%% Update the sequence numbers    
-update_sequencenumbers({_, SN, _, _}, 0, 0) ->
+%% Update the sequence numbers
+update_sequencenumbers(Item, LSN, HSN) when is_tuple(Item) ->
+    update_sequencenumbers(leveled_bookie:strip_to_seqonly(Item), LSN, HSN);    
+update_sequencenumbers(SN, 0, 0) ->
     {SN, SN};
-update_sequencenumbers({_, SN, _, _}, LSN, HSN) when SN < LSN ->
+update_sequencenumbers(SN, LSN, HSN) when SN < LSN ->
     {SN, HSN};
-update_sequencenumbers({_, SN, _, _}, LSN, HSN) when SN > HSN ->
+update_sequencenumbers(SN, LSN, HSN) when SN > HSN ->
     {LSN, SN};
-update_sequencenumbers({_, _, _, _}, LSN, HSN) ->
+update_sequencenumbers(_SN, LSN, HSN) ->
     {LSN, HSN}.
 
 
@@ -1250,7 +1245,7 @@ merge_seglists({SegList1, SegList2, SegList3, SegList4}) ->
     lists:sort(Stage4).
 
 hash_for_segmentid(KV) ->
-    erlang:phash2(strip_to_keyonly(KV), ?MAX_SEG_HASH).
+    erlang:phash2(leveled_bookie:strip_to_keyonly(KV), ?MAX_SEG_HASH).
 
 
 %% Check for a given list of segments in the filter, returning in normal
@@ -1396,30 +1391,6 @@ findremainder(BitStr, Factor) ->
 %%% Test
 %%%============================================================================
 
-speedtest_check_forsegment(_, 0, _, _) ->
-    true;
-speedtest_check_forsegment(SegFilter, LoopCount, CRCCheck, IDsToCheck) ->
-    check_for_segments(SegFilter, gensegmentids(IDsToCheck), CRCCheck),
-    speedtest_check_forsegment(SegFilter, LoopCount - 1, CRCCheck, IDsToCheck).
-
-gensegmentids(Count) ->
-    gensegmentids([], Count).
-
-gensegmentids(GeneratedIDs, 0) ->
-    lists:sort(GeneratedIDs);
-gensegmentids(GeneratedIDs, Count) ->
-    gensegmentids([random:uniform(1024*1024)|GeneratedIDs], Count - 1).
-    
-
-generate_randomsegfilter(BlockSize) ->
-    Block1 = gensegmentids(BlockSize),
-    Block2 = gensegmentids(BlockSize),
-    Block3 = gensegmentids(BlockSize),
-    Block4 = gensegmentids(BlockSize),
-    serialise_segment_filter(generate_segment_filter({Block1,
-                                                    Block2,
-                                                    Block3,
-                                                    Block4})).
 
 
 generate_randomkeys({Count, StartSQN}) ->
@@ -1433,8 +1404,8 @@ generate_randomkeys(Count, SQN, Acc) ->
     RandKey = {{o,
                 lists:concat(["Bucket", random:uniform(1024)]),
                 lists:concat(["Key", random:uniform(1024)])},
-                SQN,
-                {active, infinity}, null},
+                {SQN,
+                {active, infinity}, null}},
     generate_randomkeys(Count - 1, SQN + 1, [RandKey|Acc]).
     
 generate_sequentialkeys(Count, Start) ->
@@ -1447,76 +1418,71 @@ generate_sequentialkeys(Target, Incr, Acc) ->
     NextKey = {{o,
                 "BucketSeq",
                 lists:concat(["Key", KeyStr])},
-                5,
-                {active, infinity}, null},
+                {5,
+                {active, infinity}, null}},
     generate_sequentialkeys(Target, Incr + 1, [NextKey|Acc]).
 
-dummy_test() ->
-    R = speedtest_check_forsegment(a, 0, b, c),
-    ?assertMatch(R, true),
-    _ = generate_randomsegfilter(8).
-
 simple_create_block_test() ->
-    KeyList1 = [{{o, "Bucket1", "Key1"}, 1, {active, infinity}, null},
-    {{o, "Bucket1", "Key3"}, 2, {active, infinity}, null}],
-    KeyList2 = [{{o, "Bucket1", "Key2"}, 3, {active, infinity}, null}],
+    KeyList1 = [{{o, "Bucket1", "Key1"}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key3"}, {2, {active, infinity}, null}}],
+    KeyList2 = [{{o, "Bucket1", "Key2"}, {3, {active, infinity}, null}}],
     {MergedKeyList, ListStatus, SN, _, _, _} = create_block(KeyList1,
                                                             KeyList2,
                                                             1),
     ?assertMatch(partial, ListStatus),
     [H1|T1] = MergedKeyList,
-    ?assertMatch(H1, {{o, "Bucket1", "Key1"}, 1, {active, infinity}, null}),
+    ?assertMatch(H1, {{o, "Bucket1", "Key1"}, {1, {active, infinity}, null}}),
     [H2|T2] = T1,
-    ?assertMatch(H2, {{o, "Bucket1", "Key2"}, 3, {active, infinity}, null}),
-    ?assertMatch(T2, [{{o, "Bucket1", "Key3"}, 2, {active, infinity}, null}]),
+    ?assertMatch(H2, {{o, "Bucket1", "Key2"}, {3, {active, infinity}, null}}),
+    ?assertMatch(T2, [{{o, "Bucket1", "Key3"}, {2, {active, infinity}, null}}]),
     ?assertMatch(SN, {1,3}).
 
 dominate_create_block_test() ->
-    KeyList1 = [{{o, "Bucket1", "Key1"}, 1, {active, infinity}, null},
-    {{o, "Bucket1", "Key2"}, 2, {active, infinity}, null}],
-    KeyList2 = [{{o, "Bucket1", "Key2"}, 3, {tomb, infinity}, null}],
+    KeyList1 = [{{o, "Bucket1", "Key1"}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key2"}, {2, {active, infinity}, null}}],
+    KeyList2 = [{{o, "Bucket1", "Key2"}, {3, {tomb, infinity}, null}}],
     {MergedKeyList, ListStatus, SN, _, _, _} = create_block(KeyList1,
                                                             KeyList2,
                                                             1),
     ?assertMatch(partial, ListStatus),
     [K1, K2] = MergedKeyList,
-    ?assertMatch(K1, {{o, "Bucket1", "Key1"}, 1, {active, infinity}, null}),
-    ?assertMatch(K2, {{o, "Bucket1", "Key2"}, 3, {tomb, infinity}, null}),
+    ?assertMatch(K1, {{o, "Bucket1", "Key1"}, {1, {active, infinity}, null}}),
+    ?assertMatch(K2, {{o, "Bucket1", "Key2"}, {3, {tomb, infinity}, null}}),
     ?assertMatch(SN, {1,3}).
 
 sample_keylist() ->
-    KeyList1 = [{{o, "Bucket1", "Key1"}, 1, {active, infinity}, null},
-    {{o, "Bucket1", "Key3"}, 1, {active, infinity}, null},
-    {{o, "Bucket1", "Key5"}, 1, {active, infinity}, null},
-    {{o, "Bucket1", "Key7"}, 1, {active, infinity}, null},
-    {{o, "Bucket1", "Key9"}, 1, {active, infinity}, null},
-    {{o, "Bucket2", "Key1"}, 1, {active, infinity}, null},
-    {{o, "Bucket2", "Key3"}, 1, {active, infinity}, null},
-    {{o, "Bucket2", "Key5"}, 1, {active, infinity}, null},
-    {{o, "Bucket2", "Key7"}, 1, {active, infinity}, null},
-    {{o, "Bucket2", "Key9"}, 1, {active, infinity}, null},
-    {{o, "Bucket3", "Key1"}, 1, {active, infinity}, null},
-    {{o, "Bucket3", "Key3"}, 1, {active, infinity}, null},
-    {{o, "Bucket3", "Key5"}, 1, {active, infinity}, null},
-    {{o, "Bucket3", "Key7"}, 1, {active, infinity}, null},
-    {{o, "Bucket3", "Key9"}, 1, {active, infinity}, null},
-    {{o, "Bucket4", "Key1"}, 1, {active, infinity}, null}],
-    KeyList2 = [{{o, "Bucket1", "Key2"}, 1, {active, infinity}, null},
-    {{o, "Bucket1", "Key4"}, 1, {active, infinity}, null},
-    {{o, "Bucket1", "Key6"}, 1, {active, infinity}, null},
-    {{o, "Bucket1", "Key8"}, 1, {active, infinity}, null},
-    {{o, "Bucket1", "Key9a"}, 1, {active, infinity}, null},
-    {{o, "Bucket1", "Key9b"}, 1, {active, infinity}, null},
-    {{o, "Bucket1", "Key9c"}, 1, {active, infinity}, null},
-    {{o, "Bucket1", "Key9d"}, 1, {active, infinity}, null},
-    {{o, "Bucket2", "Key2"}, 1, {active, infinity}, null},
-    {{o, "Bucket2", "Key4"}, 1, {active, infinity}, null},
-    {{o, "Bucket2", "Key6"}, 1, {active, infinity}, null},
-    {{o, "Bucket2", "Key8"}, 1, {active, infinity}, null},
-    {{o, "Bucket3", "Key2"}, 1, {active, infinity}, null},
-    {{o, "Bucket3", "Key4"}, 3, {active, infinity}, null},
-    {{o, "Bucket3", "Key6"}, 2, {active, infinity}, null},
-    {{o, "Bucket3", "Key8"}, 1, {active, infinity}, null}],
+    KeyList1 = [{{o, "Bucket1", "Key1"}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key3"}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key5"}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key7"}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key9"}, {1, {active, infinity}, null}},
+    {{o, "Bucket2", "Key1"}, {1, {active, infinity}, null}},
+    {{o, "Bucket2", "Key3"}, {1, {active, infinity}, null}},
+    {{o, "Bucket2", "Key5"}, {1, {active, infinity}, null}},
+    {{o, "Bucket2", "Key7"}, {1, {active, infinity}, null}},
+    {{o, "Bucket2", "Key9"}, {1, {active, infinity}, null}},
+    {{o, "Bucket3", "Key1"}, {1, {active, infinity}, null}},
+    {{o, "Bucket3", "Key3"}, {1, {active, infinity}, null}},
+    {{o, "Bucket3", "Key5"}, {1, {active, infinity}, null}},
+    {{o, "Bucket3", "Key7"}, {1, {active, infinity}, null}},
+    {{o, "Bucket3", "Key9"}, {1, {active, infinity}, null}},
+    {{o, "Bucket4", "Key1"}, {1, {active, infinity}, null}}],
+    KeyList2 = [{{o, "Bucket1", "Key2"}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key4"}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key6"}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key8"}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key9a"}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key9b"}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key9c"}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key9d"}, {1, {active, infinity}, null}},
+    {{o, "Bucket2", "Key2"}, {1, {active, infinity}, null}},
+    {{o, "Bucket2", "Key4"}, {1, {active, infinity}, null}},
+    {{o, "Bucket2", "Key6"}, {1, {active, infinity}, null}},
+    {{o, "Bucket2", "Key8"}, {1, {active, infinity}, null}},
+    {{o, "Bucket3", "Key2"}, {1, {active, infinity}, null}},
+    {{o, "Bucket3", "Key4"}, {3, {active, infinity}, null}},
+    {{o, "Bucket3", "Key6"}, {2, {active, infinity}, null}},
+    {{o, "Bucket3", "Key8"}, {1, {active, infinity}, null}}],
     {KeyList1, KeyList2}.
 
 alternating_create_block_test() ->
@@ -1528,12 +1494,12 @@ alternating_create_block_test() ->
     ?assertMatch(BlockSize, 32),
     ?assertMatch(ListStatus, complete),
     K1 = lists:nth(1, MergedKeyList),
-    ?assertMatch(K1, {{o, "Bucket1", "Key1"}, 1, {active, infinity}, null}),
+    ?assertMatch(K1, {{o, "Bucket1", "Key1"}, {1, {active, infinity}, null}}),
     K11 = lists:nth(11, MergedKeyList),
-    ?assertMatch(K11, {{o, "Bucket1", "Key9b"}, 1, {active, infinity}, null}),
+    ?assertMatch(K11, {{o, "Bucket1", "Key9b"}, {1, {active, infinity}, null}}),
     K32 = lists:nth(32, MergedKeyList),
-    ?assertMatch(K32, {{o, "Bucket4", "Key1"}, 1, {active, infinity}, null}),
-    HKey = {{o, "Bucket1", "Key0"}, 1, {active, infinity}, null},
+    ?assertMatch(K32, {{o, "Bucket4", "Key1"}, {1, {active, infinity}, null}}),
+    HKey = {{o, "Bucket1", "Key0"}, {1, {active, infinity}, null}},
     {_, ListStatus2, _, _, _, _} = create_block([HKey|KeyList1], KeyList2, 1),
     ?assertMatch(ListStatus2, full).
 
@@ -1690,7 +1656,7 @@ initial_create_file_test() ->
     Result1 = fetch_keyvalue(UpdHandle, UpdFileMD, {o, "Bucket1", "Key8"}),
     io:format("Result is ~w~n", [Result1]),
     ?assertMatch(Result1, {{o, "Bucket1", "Key8"},
-                            1, {active, infinity}, null}),
+                            {1, {active, infinity}, null}}),
     Result2 = fetch_keyvalue(UpdHandle, UpdFileMD, {o, "Bucket1", "Key88"}),
     io:format("Result is ~w~n", [Result2]),
     ?assertMatch(Result2, not_present),
@@ -1705,18 +1671,18 @@ big_create_file_test() ->
     {Handle, FileMD, {_KL1Rem, _KL2Rem}} = complete_file(InitHandle,
                                                             InitFileMD,
                                                             KL1, KL2, 1),
-    [{K1, Sq1, St1, V1}|_] = KL1,
-    [{K2, Sq2, St2, V2}|_] = KL2,
+    [{K1, {Sq1, St1, V1}}|_] = KL1,
+    [{K2, {Sq2, St2, V2}}|_] = KL2,
     Result1 = fetch_keyvalue(Handle, FileMD, K1),
     Result2 = fetch_keyvalue(Handle, FileMD, K2),
-    ?assertMatch(Result1, {K1, Sq1, St1, V1}),
-    ?assertMatch(Result2, {K2, Sq2, St2, V2}),
+    ?assertMatch(Result1, {K1, {Sq1, St1, V1}}),
+    ?assertMatch(Result2, {K2, {Sq2, St2, V2}}),
     SubList = lists:sublist(KL2, 1000),
     FailedFinds = lists:foldl(fun(K, Acc) ->
-                                    {Kn, _, _, _} = K,
+                                    {Kn, {_, _, _}} = K,
                                     Rn = fetch_keyvalue(Handle, FileMD, Kn),
                                     case Rn of
-                                        {Kn, _, _, _} ->
+                                        {Kn, {_, _, _}} ->
                                             Acc;
                                         _ ->
                                             Acc + 1

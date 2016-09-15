@@ -82,7 +82,7 @@
                 hash_index = [] :: list(),
                 filename :: string(),
                 handle :: file:fd(),
-                writer :: boolean,
+                writer :: boolean(),
                 max_size :: integer()}).
 
 
@@ -124,9 +124,16 @@ cdb_close(Pid) ->
 cdb_complete(Pid) ->
     gen_server:call(Pid, cdb_complete, infinity).
 
-cdb_scan(Pid, StartPosition, FilterFun, InitAcc) ->
+%% cdb_scan returns {LastPosition, Acc}.  Use LastPosition as StartPosiiton to
+%% continue from that point (calling function has to protect against) double
+%% counting.
+%%
+%% LastPosition could be the atom complete when the last key processed was at
+%% the end of the file.  last_key must be defined in LoopState.
+
+cdb_scan(Pid, FilterFun, InitAcc, StartPosition) ->
     gen_server:call(Pid,
-                    {cdb_scan, StartPosition, FilterFun, InitAcc},
+                    {cdb_scan, FilterFun, InitAcc, StartPosition},
                     infinity).
 
 %% Get the last key to be added to the file (which will have the highest
@@ -238,15 +245,24 @@ handle_call(cdb_lastkey, _From, State) ->
     {reply, State#state.last_key, State};
 handle_call(cdb_filename, _From, State) ->
     {reply, State#state.filename, State};
-handle_call({cdb_scan, StartPos, FilterFun, Acc}, _From, State) ->
+handle_call({cdb_scan, FilterFun, Acc, StartPos}, _From, State) ->
+    {ok, StartPos0} = case StartPos of
+                            undefined ->
+                                file:position(State#state.handle,
+                                                ?BASE_POSITION);
+                            StartPos ->
+                                {ok, StartPos}
+                        end,
+    ok = check_last_key(State#state.last_key),
     {LastPosition, Acc2} = scan_over_file(State#state.handle,
-                                            StartPos,
+                                            StartPos0,
                                             FilterFun,
-                                            Acc),
+                                            Acc,
+                                            State#state.last_key),
     {reply, {LastPosition, Acc2}, State};
 handle_call(cdb_close, _From, State) ->
     ok = file:close(State#state.handle),
-    {stop, normal, ok, State#state{handle=closed}};
+    {stop, normal, ok, State#state{handle=undefined}};
 handle_call(cdb_complete, _From, State) ->
     case State#state.writer of
         true ->
@@ -262,6 +278,9 @@ handle_call(cdb_complete, _From, State) ->
             {stop, normal, {ok, NewName}, State};
         false ->
             ok = file:close(State#state.handle),
+            {stop, normal, {ok, State#state.filename}, State};
+        undefined ->
+            ok = file:close(State#state.handle),
             {stop, normal, {ok, State#state.filename}, State}
     end.
     
@@ -275,7 +294,7 @@ handle_info(_Info, State) ->
 
 terminate(_Reason, State) ->
     case State#state.handle of
-        closed ->
+        undefined ->
             ok;
         Handle ->
             file:close(Handle)
@@ -632,28 +651,36 @@ extract_kvpair(Handle, [Position|Rest], Key, Check) ->
 %% at that point return the position and the key dictionary scanned so far
 startup_scan_over_file(Handle, Position) ->
     HashTree = array:new(256, {default, gb_trees:empty()}),
-    scan_over_file(Handle, Position, fun startup_filter/4, {HashTree, empty}).
+    scan_over_file(Handle,
+                    Position,
+                    fun startup_filter/4,
+                    {HashTree, empty},
+                    undefined).
 
 %% Scan for key changes - scan over file returning applying FilterFun
 %% The FilterFun should accept as input:
 %% - Key, Value, Position, Accumulator, outputting a new Accumulator
 %% and a loop|stop instruction as a tuple i.e. {loop, Acc} or {stop, Acc}
 
-scan_over_file(Handle, Position, FilterFun, Output) ->
+scan_over_file(Handle, Position, FilterFun, Output, LastKey) ->
     case saferead_keyvalue(Handle) of
         false ->
             {Position, Output};
         {Key, ValueAsBin, KeyLength, ValueLength} ->
             NewPosition = Position + KeyLength + ValueLength
                                     + ?DWORD_SIZE,
-            case FilterFun(Key, ValueAsBin, Position, Output) of
-                {stop, UpdOutput} ->
+            case {FilterFun(Key, ValueAsBin, Position, Output), Key} of
+                {{stop, UpdOutput}, _} ->
                     {Position, UpdOutput};
-                {loop, UpdOutput} ->
-                    scan_over_file(Handle, NewPosition, FilterFun, UpdOutput)
-            end;
-        eof ->
-            {Position, Output}
+                {{loop, UpdOutput}, LastKey} ->
+                    {eof, UpdOutput};
+                {{loop, UpdOutput}, _} ->
+                    scan_over_file(Handle,
+                                    NewPosition,
+                                    FilterFun,
+                                    UpdOutput,
+                                    Key)
+            end
     end.
 
 %% Specific filter to be used at startup to build a hashtree for an incomplete
@@ -666,6 +693,15 @@ startup_filter(Key, ValueAsBin, Position, {Hashtree, LastKey}) ->
             {loop, {put_hashtree(Key, Position, Hashtree), Key}};
         false ->
             {stop, {Hashtree, LastKey}}
+    end.
+
+%% Confirm that the last key has been defined and set to a non-default value
+
+check_last_key(LastKey) ->
+    case LastKey of
+        undefined -> error;
+        empty -> error;
+        _ -> ok
     end.
 
 %% Read the Key/Value at this point, returning {ok, Key, Value}
@@ -765,7 +801,7 @@ read_next_term(Handle, Length, crc, Check) ->
                 _ ->
                     {false, binary_to_term(Bin)}
             end;
-        _ ->
+        false ->
             {ok, _} = file:position(Handle, {cur, 4}),
             {ok, Bin} = file:read(Handle, Length - 4),
             {unchecked, binary_to_term(Bin)}
@@ -999,7 +1035,7 @@ key_value_to_record({Key, Value}) ->
 -ifdef(TEST).
 
 write_key_value_pairs_1_test() ->
-    {ok,Handle} = file:open("../test/test.cdb",write),
+    {ok,Handle} = file:open("../test/test.cdb",[write]),
     {_, HashTree} = write_key_value_pairs(Handle,
                                             [{"key1","value1"},
                                                 {"key2","value2"}]),
@@ -1025,7 +1061,7 @@ write_key_value_pairs_1_test() ->
 
 
 write_hash_tables_1_test() ->
-    {ok, Handle} = file:open("../test/testx.cdb",write),
+    {ok, Handle} = file:open("../test/testx.cdb", [write]),
     R0 = array:new(256, {default, gb_trees:empty()}),
     R1 = array:set(64,
                     gb_trees:insert(6383014720,

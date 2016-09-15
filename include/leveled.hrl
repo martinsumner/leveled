@@ -31,3 +31,25 @@
 -record(penciller_options,
                         {root_path :: string(),
                         max_inmemory_tablesize :: integer()}).
+
+-record(bookie_options,
+                       {root_path :: string(),
+                        cache_size :: integer(),
+                        metadata_extractor :: function(),
+                        indexspec_converter :: function()}).
+
+%% Temp location for records related to riak
+
+-record(r_content, {
+          metadata,
+          value :: term()
+         }).
+
+-record(r_object, {
+          bucket,
+          key,
+          contents :: [#r_content{}],
+          vclock,
+          updatemetadata=dict:store(clean, true, dict:new()),
+          updatevalue :: term()}).
+          
