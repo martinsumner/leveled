@@ -161,6 +161,7 @@
         terminate/2,
         code_change/3,
         pcl_start/1,
+        pcl_quickstart/1,
         pcl_pushmem/2,
         pcl_fetch/2,
         pcl_workforclerk/1,
@@ -205,6 +206,9 @@
 %%%============================================================================
 %%% API
 %%%============================================================================
+
+pcl_quickstart(RootPath) ->
+    pcl_start(#penciller_options{root_path=RootPath}).
  
 pcl_start(PCLopts) ->
     gen_server:start(?MODULE, [PCLopts], []).
@@ -349,7 +353,10 @@ handle_call({push_mem, DumpList}, _From, State) ->
                         ++ "having sequence numbers between ~w and ~w "
                         ++ "but current sequence number is ~w~n",
                         [MinSQN, MaxSQN, State#state.ledger_sqn]),
-            {reply, refused, State}
+            {reply, refused, State};
+        empty ->
+            io:format("Empty request pushed to Penciller~n"),
+            {reply, ok, State}
     end,
     io:format("Push completed in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(),StartWatch)]),
@@ -830,6 +837,8 @@ confirm_delete(Filename, UnreferencedFiles, RegisteredIterators) ->
 
 
 
+assess_sqn([]) ->
+    empty;
 assess_sqn(DumpList) ->
     assess_sqn(DumpList, infinity, 0).
 

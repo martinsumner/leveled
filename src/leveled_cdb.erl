@@ -253,13 +253,17 @@ handle_call({cdb_scan, FilterFun, Acc, StartPos}, _From, State) ->
                             StartPos ->
                                 {ok, StartPos}
                         end,
-    ok = check_last_key(State#state.last_key),
-    {LastPosition, Acc2} = scan_over_file(State#state.handle,
-                                            StartPos0,
-                                            FilterFun,
-                                            Acc,
-                                            State#state.last_key),
-    {reply, {LastPosition, Acc2}, State};
+    case check_last_key(State#state.last_key) of
+        ok ->
+            {LastPosition, Acc2} = scan_over_file(State#state.handle,
+                                                    StartPos0,
+                                                    FilterFun,
+                                                    Acc,
+                                                    State#state.last_key),
+            {reply, {LastPosition, Acc2}, State};
+        empty ->
+            {reply, {eof, Acc}, State}
+    end;
 handle_call(cdb_close, _From, State) ->
     ok = file:close(State#state.handle),
     {stop, normal, ok, State#state{handle=undefined}};
@@ -382,11 +386,11 @@ open_active_file(FileName) when is_list(FileName) ->
     case file:position(Handle, eof) of 
         {ok, LastPosition} ->
             ok = file:close(Handle);
-        {ok, _} ->
-            LogDetails = [LastPosition, file:position(Handle, eof)],
+        {ok, EndPosition} ->
+            LogDetails = [LastPosition, EndPosition],
             io:format("File to be truncated at last position of ~w " 
                         "with end of file at ~w~n", LogDetails),
-            {ok, LastPosition} = file:position(Handle, LastPosition),
+            {ok, _LastPosition} = file:position(Handle, LastPosition),
             ok = file:truncate(Handle),
             ok = file:close(Handle)
     end,
@@ -653,25 +657,33 @@ startup_scan_over_file(Handle, Position) ->
     HashTree = array:new(256, {default, gb_trees:empty()}),
     scan_over_file(Handle,
                     Position,
-                    fun startup_filter/4,
+                    fun startup_filter/5,
                     {HashTree, empty},
-                    undefined).
+                    empty).
 
 %% Scan for key changes - scan over file returning applying FilterFun
 %% The FilterFun should accept as input:
-%% - Key, Value, Position, Accumulator, outputting a new Accumulator
-%% and a loop|stop instruction as a tuple i.e. {loop, Acc} or {stop, Acc}
+%% - Key, ValueBin, Position, Accumulator, Fun (to extract values from Binary)
+%% -> outputting a new Accumulator and a loop|stop instruction as a tuple
+%% i.e. {loop, Acc} or {stop, Acc}
 
 scan_over_file(Handle, Position, FilterFun, Output, LastKey) ->
     case saferead_keyvalue(Handle) of
         false ->
+            io:format("Failure to read Key/Value at Position ~w"
+                            ++ " in scan~n", [Position]),
             {Position, Output};
         {Key, ValueAsBin, KeyLength, ValueLength} ->
             NewPosition = Position + KeyLength + ValueLength
                                     + ?DWORD_SIZE,
-            case {FilterFun(Key, ValueAsBin, Position, Output), Key} of
+            case {FilterFun(Key,
+                            ValueAsBin,
+                            Position,
+                            Output,
+                            fun extract_value/1),
+                    Key} of
                 {{stop, UpdOutput}, _} ->
-                    {Position, UpdOutput};
+                    {NewPosition, UpdOutput};
                 {{loop, UpdOutput}, LastKey} ->
                     {eof, UpdOutput};
                 {{loop, UpdOutput}, _} ->
@@ -687,7 +699,7 @@ scan_over_file(Handle, Position, FilterFun, Output, LastKey) ->
 %% cdb file, and returns at the end the hashtree and the final Key seen in the
 %% journal
 
-startup_filter(Key, ValueAsBin, Position, {Hashtree, LastKey}) ->
+startup_filter(Key, ValueAsBin, Position, {Hashtree, LastKey}, _ExtractFun) ->
     case crccheck_value(ValueAsBin) of
         true ->
             {loop, {put_hashtree(Key, Position, Hashtree), Key}};
@@ -700,7 +712,7 @@ startup_filter(Key, ValueAsBin, Position, {Hashtree, LastKey}) ->
 check_last_key(LastKey) ->
     case LastKey of
         undefined -> error;
-        empty -> error;
+        empty -> empty;
         _ -> ok
     end.
 
@@ -806,6 +818,11 @@ read_next_term(Handle, Length, crc, Check) ->
             {ok, Bin} = file:read(Handle, Length - 4),
             {unchecked, binary_to_term(Bin)}
     end.
+
+%% Extract value from binary containing CRC
+extract_value(ValueAsBin) ->
+    <<_CRC:32/integer, Bin/binary>> = ValueAsBin,
+    binary_to_term(Bin).
 
 
 %% Used for reading lengths

@@ -276,6 +276,10 @@ code_change(_OldVsn, State, _Extra) ->
 
 put_object(PrimaryKey, Object, KeyChanges, State) ->
     NewSQN = State#state.journal_sqn + 1,
+    %% TODO: The term goes through a double binary_to_term conversion
+    %% as the CDB will also do the same conversion
+    %% Perhaps have CDB started up in apure binary mode, when it doesn't
+    %5 receive terms?
     Bin1 = term_to_binary({Object, KeyChanges}, [compressed]),
     ObjSize = byte_size(Bin1),
     case leveled_cdb:cdb_put(State#state.active_journaldb,
@@ -493,8 +497,9 @@ roll_pending_journals([JournalSQN|T], Manifest, RootPath) ->
 
 load_from_sequence(_MinSQN, _FilterFun, _Penciller, []) ->
     ok;
-load_from_sequence(MinSQN, FilterFun, Penciller, [{LowSQN, _FN, Pid}|ManTail])
+load_from_sequence(MinSQN, FilterFun, Penciller, [{LowSQN, FN, Pid}|ManTail])
                                         when MinSQN >= LowSQN ->
+    io:format("Loading from filename ~s from SQN ~w~n", [FN, MinSQN]),
     ok = load_between_sequence(MinSQN,
                                 MinSQN + ?LOADING_BATCH,
                                 FilterFun,
@@ -508,11 +513,11 @@ load_from_sequence(MinSQN, FilterFun, Penciller, [_H|ManTail]) ->
 load_between_sequence(MinSQN, MaxSQN, FilterFun, Penciller, CDBpid, StartPos) ->
     InitAcc = {MinSQN, MaxSQN, []},
     case leveled_cdb:cdb_scan(CDBpid, FilterFun, InitAcc, StartPos) of
-        {eof, Acc} ->
-            ok = push_to_penciller(Penciller, Acc),
+        {eof, {_AccMinSQN, _AccMaxSQN, AccKL}} ->
+            ok = push_to_penciller(Penciller, AccKL),
             ok;
-        {LastPosition, Acc} ->
-            ok = push_to_penciller(Penciller, Acc),
+        {LastPosition, {_AccMinSQN, _AccMaxSQN, AccKL}} ->
+            ok = push_to_penciller(Penciller, AccKL),
             load_between_sequence(MaxSQN + 1,
                                     MaxSQN + 1 + ?LOADING_BATCH,
                                     FilterFun,
@@ -522,7 +527,7 @@ load_between_sequence(MinSQN, MaxSQN, FilterFun, Penciller, CDBpid, StartPos) ->
     end.
 
 push_to_penciller(Penciller, KeyList) ->
-    R = leveled_penciler:pcl_pushmem(Penciller, KeyList),
+    R = leveled_penciller:pcl_pushmem(Penciller, KeyList),
     if
         R == pause ->
             timer:sleep(?LOADING_PAUSE);

@@ -1069,8 +1069,9 @@ key_dominates_expanded([], [H2|T2], Level) ->
             {{next_key, H2}, [], maybe_expand_pointer(T2)}
     end;
 key_dominates_expanded([H1|T1], [H2|T2], Level) ->
-    {K1, Sq1, St1} = leveled_bookie:strip_to_details(H1),
-    {K2, Sq2, St2} = leveled_bookie:strip_to_details(H2),
+    {{K1, V1}, {K2, V2}} = {H1, H2},
+    {Sq1, St1, _MD1} = leveled_bookie:striphead_to_details(V1),
+    {Sq2, St2, _MD2} = leveled_bookie:striphead_to_details(V2),
     case K1 of
         K2 ->
             case Sq1 > Sq2 of

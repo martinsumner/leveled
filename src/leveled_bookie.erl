@@ -142,7 +142,8 @@
         strip_to_keyonly/1,
         strip_to_keyseqonly/1,
         strip_to_seqonly/1,
-        strip_to_statusonly/1]).
+        strip_to_statusonly/1,
+        striphead_to_details/1]).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -301,7 +302,11 @@ startup(InkerOpts, PencillerOpts) ->
     {ok, Inker} = leveled_inker:ink_start(InkerOpts),
     {ok, Penciller} = leveled_penciller:pcl_start(PencillerOpts),
     LedgerSQN = leveled_penciller:pcl_getstartupsequencenumber(Penciller),
-    ok = leveled_inker:ink_loadpcl(Inker, LedgerSQN, fun load_fun/4, Penciller),
+    io:format("LedgerSQN=~w at startup~n", [LedgerSQN]),
+    ok = leveled_inker:ink_loadpcl(Inker,
+                                    LedgerSQN + 1,
+                                    fun load_fun/5,
+                                    Penciller),
     {Inker, Penciller}.
 
 
@@ -413,10 +418,11 @@ maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
             {ok, Cache}
     end.
 
-load_fun(KeyInLedger, ValueInLedger, _Position, Acc0) ->
+load_fun(KeyInLedger, ValueInLedger, _Position, Acc0, ExtractFun) ->
     {MinSQN, MaxSQN, Output} = Acc0,
     {SQN, PK} = KeyInLedger,
-    {Obj, IndexSpecs} = ValueInLedger,
+    io:format("Reloading changes with SQN=~w PK=~w~n", [SQN, PK]),
+    {Obj, IndexSpecs} = binary_to_term(ExtractFun(ValueInLedger)),
     case SQN of
         SQN when SQN < MinSQN ->
             {loop, Acc0};    
@@ -445,7 +451,7 @@ reset_filestructure() ->
     
 single_key_test() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie} = book_start(#bookie_options{root_path=RootPath}),
+    {ok, Bookie1} = book_start(#bookie_options{root_path=RootPath}),
     {B1, K1, V1, Spec1, MD} = {"Bucket1",
                                 "Key1",
                                 "Value1",
@@ -453,10 +459,14 @@ single_key_test() ->
                                 {"MDK1", "MDV1"}},
     Content = #r_content{metadata=MD, value=V1},
     Object = #r_object{bucket=B1, key=K1, contents=[Content], vclock=[{'a',1}]},
-    ok = book_riakput(Bookie, Object, Spec1),
-    {ok, F1} = book_riakget(Bookie, B1, K1),
+    ok = book_riakput(Bookie1, Object, Spec1),
+    {ok, F1} = book_riakget(Bookie1, B1, K1),
     ?assertMatch(F1, Object),
-    ok = book_close(Bookie),
+    ok = book_close(Bookie1),
+    {ok, Bookie2} = book_start(#bookie_options{root_path=RootPath}),
+    {ok, F2} = book_riakget(Bookie2, B1, K1),
+    ?assertMatch(F2, Object),
+    ok = book_close(Bookie2),
     reset_filestructure().
 
 -endif.
