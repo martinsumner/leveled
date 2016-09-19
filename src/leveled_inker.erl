@@ -189,7 +189,7 @@ init([InkerOpts]) ->
                                         fun simple_manifest_reader/2,
                                         RootPath,
                                         CDBopts),
-    {ok, #state{manifest = Manifest,
+    {ok, #state{manifest = lists:reverse(lists:keysort(1, Manifest)),
                     manifest_sqn = ManifestSQN,
                     journal_sqn = JournalSQN,
                     active_journaldb = ActiveJournal,
@@ -224,7 +224,7 @@ handle_call({fetch, Key, SQN}, _From, State) ->
             {reply, {ok, Value}, State};
         Other ->
             io:format("Unexpected failure to fetch value for" ++
-                        "Key=~s SQN=~w with reason ~w", [Key, SQN, Other]),
+                        "Key=~w SQN=~w with reason ~w", [Key, SQN, Other]),
             {reply, not_present, State}
     end;
 handle_call({get, Key, SQN}, _From, State) ->
@@ -234,9 +234,10 @@ handle_call({get, Key, SQN}, _From, State) ->
                         State#state.active_journaldb,
                         State#state.active_journaldb_sqn), State};
 handle_call({load_pcl, StartSQN, FilterFun, Penciller}, _From, State) ->
-    Manifest = State#state.manifest ++ [{State#state.active_journaldb_sqn,
-                                            dummy,
-                                            State#state.active_journaldb}],
+    Manifest = lists:reverse(State#state.manifest)
+                ++ [{State#state.active_journaldb_sqn,
+                        dummy,
+                        State#state.active_journaldb}],
     Reply = load_from_sequence(StartSQN, FilterFun, Penciller, Manifest),
     {reply, Reply, State};
 handle_call(snapshot, _From , State) ->
@@ -311,21 +312,15 @@ roll_active_file(OldActiveJournal, Manifest, ManifestSQN, RootPath) ->
     SW = os:timestamp(),
     io:format("Rolling old journal ~w~n", [OldActiveJournal]),
     {ok, NewFilename} = leveled_cdb:cdb_complete(OldActiveJournal),
-    io:format("Rolling old journal S1 completed in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(),SW)]),
     {ok, PidR} = leveled_cdb:cdb_open_reader(NewFilename),
-    io:format("Rolling old journal S2 completed in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(),SW)]),
     JournalRegex2 = "nursery_(?<SQN>[0-9]+)\\." ++ ?JOURNAL_FILEX,
     [JournalSQN] = sequencenumbers_fromfilenames([NewFilename],
                                                     JournalRegex2,
                                                     'SQN'),
     NewManifest = add_to_manifest(Manifest, {JournalSQN, NewFilename, PidR}),
-    io:format("Rolling old journal S3 completed in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(),SW)]),
     NewManifestSQN = ManifestSQN + 1,
     ok = simple_manifest_writer(NewManifest, NewManifestSQN, RootPath),
-    io:format("Rolling old journal S4 completed in ~w microseconds~n",
+    io:format("Rolling old journal completed in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(),SW)]),
     {NewManifest, NewManifestSQN}.
 

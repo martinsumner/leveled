@@ -457,7 +457,7 @@ generate_multiple_objects(0, _KeyNumber, ObjL) ->
 generate_multiple_objects(Count, KeyNumber, ObjL) ->
     Obj = {"Bucket",
             "Key" ++ integer_to_list(KeyNumber),
-            crypto:rand_bytes(128),
+            crypto:rand_bytes(1024),
             [],
             [{"MDK", "MDV" ++ integer_to_list(KeyNumber)},
                 {"MDK2", "MDV" ++ integer_to_list(KeyNumber)}]},
@@ -541,7 +541,6 @@ multi_key_test() ->
     {ok, F2D} = book_riakget(Bookie2, B2, K2),
     ?assertMatch(F2D, Obj2),
     ok = book_close(Bookie2),
-    reset_filestructure(),
-    ?assertMatch(true, false).
+    reset_filestructure().
 
 -endif.
