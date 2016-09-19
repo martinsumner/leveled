@@ -177,7 +177,9 @@ handle_call({cdb_open_reader, Filename}, _From, State) ->
     io:format("Opening file for reading with filename ~s~n", [Filename]),
     {ok, Handle} = file:open(Filename, [binary, raw, read]),
     Index = load_index(Handle),
+    LastKey = find_lastkey(Handle, Index),
     {reply, ok, State#state{handle=Handle,
+                                last_key=LastKey,
                                 filename=Filename,
                                 writer=false,
                                 hash_index=Index}};
@@ -464,8 +466,8 @@ get_index(Handle, Index, no_cache) ->
     % Get location of hashtable and number of entries in the hash
     read_next_2_integers(Handle);
 get_index(_Handle, Index, Cache) ->
-    {_Pointer, Count} = lists:keyfind(Index, 1, Cache),
-    Count.
+    {Index, {Pointer, Count}} = lists:keyfind(Index, 1, Cache),
+    {Pointer, Count}.
 
 %% Get a Key/Value pair from an active CDB file (with no hash table written)
 %% This requires a key dictionary to be passed in (mapping keys to positions)
@@ -593,6 +595,31 @@ load_index(Handle) ->
                     {X, {HashTablePos, Count}} end,
                 Index).
 
+%% Function to find the LastKey in the file
+find_lastkey(Handle, IndexCache) ->
+    LastPosition = scan_index(Handle, IndexCache),
+    {ok, _} = file:position(Handle, LastPosition),
+    {KeyLength, _ValueLength} = read_next_2_integers(Handle),
+    read_next_term(Handle, KeyLength).
+
+scan_index(Handle, IndexCache) ->
+    lists:foldl(fun({_X, {Pos, Count}}, LastPosition) ->
+                        scan_index(Handle, Pos, 0, Count, LastPosition) end,
+                        0,
+                        IndexCache).
+
+scan_index(_Handle, _Position, Count, Checks, LastPosition)
+                when Count == Checks ->
+    LastPosition;
+scan_index(Handle, Position, Count, Checks, LastPosition) ->
+    {ok, _} = file:position(Handle, Position + ?DWORD_SIZE * Count),
+    {_Hash, HPosition} = read_next_2_integers(Handle),
+    scan_index(Handle,
+                Position,
+                Count + 1 ,
+                Checks,
+                max(LastPosition, HPosition)).
+
 
 %% Take an active file and write the hash details necessary to close that
 %% file and roll a new active file if requested.  
@@ -601,8 +628,13 @@ load_index(Handle) ->
 %% the hash tables
 close_file(Handle, HashTree, BasePos) ->
     {ok, BasePos} = file:position(Handle, BasePos),
+    SW = os:timestamp(),
     L2 = write_hash_tables(Handle, HashTree),
+    io:format("Hash Table write took ~w microseconds~n",
+                [timer:now_diff(os:timestamp(),SW)]),
     write_top_index_table(Handle, BasePos, L2),
+    io:format("Top Index Table write took ~w microseconds~n",
+                [timer:now_diff(os:timestamp(),SW)]),
     file:close(Handle).
 
 
@@ -661,6 +693,19 @@ startup_scan_over_file(Handle, Position) ->
                     {HashTree, empty},
                     empty).
 
+%% Specific filter to be used at startup to build a hashtree for an incomplete
+%% cdb file, and returns at the end the hashtree and the final Key seen in the
+%% journal
+
+startup_filter(Key, ValueAsBin, Position, {Hashtree, LastKey}, _ExtractFun) ->
+    case crccheck_value(ValueAsBin) of
+        true ->
+            {loop, {put_hashtree(Key, Position, Hashtree), Key}};
+        false ->
+            {stop, {Hashtree, LastKey}}
+    end.
+
+
 %% Scan for key changes - scan over file returning applying FilterFun
 %% The FilterFun should accept as input:
 %% - Key, ValueBin, Position, Accumulator, Fun (to extract values from Binary)
@@ -674,37 +719,32 @@ scan_over_file(Handle, Position, FilterFun, Output, LastKey) ->
                             ++ " in scan~n", [Position]),
             {Position, Output};
         {Key, ValueAsBin, KeyLength, ValueLength} ->
-            NewPosition = Position + KeyLength + ValueLength
-                                    + ?DWORD_SIZE,
-            case {FilterFun(Key,
+            NewPosition = case Key of
+                                LastKey ->
+                                    eof;
+                                _ ->
+                                    Position + KeyLength + ValueLength
+                                    + ?DWORD_SIZE
+                            end,
+            case FilterFun(Key,
                             ValueAsBin,
                             Position,
                             Output,
-                            fun extract_value/1),
-                    Key} of
-                {{stop, UpdOutput}, _} ->
+                            fun extract_value/1) of
+                {stop, UpdOutput} ->
                     {NewPosition, UpdOutput};
-                {{loop, UpdOutput}, LastKey} ->
-                    {eof, UpdOutput};
-                {{loop, UpdOutput}, _} ->
-                    scan_over_file(Handle,
-                                    NewPosition,
-                                    FilterFun,
-                                    UpdOutput,
-                                    Key)
+                {loop, UpdOutput} ->
+                    case NewPosition of
+                        eof ->
+                            {eof, UpdOutput};
+                        _ ->
+                            scan_over_file(Handle,
+                                            NewPosition,
+                                            FilterFun,
+                                            UpdOutput,
+                                            LastKey)
+                    end
             end
-    end.
-
-%% Specific filter to be used at startup to build a hashtree for an incomplete
-%% cdb file, and returns at the end the hashtree and the final Key seen in the
-%% journal
-
-startup_filter(Key, ValueAsBin, Position, {Hashtree, LastKey}, _ExtractFun) ->
-    case crccheck_value(ValueAsBin) of
-        true ->
-            {loop, {put_hashtree(Key, Position, Hashtree), Key}};
-        false ->
-            {stop, {Hashtree, LastKey}}
     end.
 
 %% Confirm that the last key has been defined and set to a non-default value
@@ -972,17 +1012,16 @@ find_open_slot1([_|RestOfSlots], [_|RestOfEntries]) ->
 write_top_index_table(Handle, BasePos, List) ->
   % fold function to find any missing index tuples, and add one a replacement 
   % in this case with a count of 0.  Also orders the list by index
-    FnMakeIndex = fun(I, Acc) ->
+    FnMakeIndex = fun(I) ->
         case lists:keysearch(I, 1, List) of
             {value, Tuple} ->
-                [Tuple|Acc];
+                Tuple;
             false ->
-                [{I, BasePos, 0}|Acc]
+                {I, BasePos, 0}
         end
     end,
     % Fold function to write the index entries
-    FnWriteIndex = fun({Index, Pos, Count}, CurrPos) ->
-        {ok, _} = file:position(Handle, ?DWORD_SIZE * Index),
+    FnWriteIndex = fun({_Index, Pos, Count}, {AccBin, CurrPos}) ->
         case Count == 0 of
             true ->
                 PosLE = endian_flip(CurrPos),
@@ -992,14 +1031,16 @@ write_top_index_table(Handle, BasePos, List) ->
                 NextPos = Pos + (Count * ?DWORD_SIZE)
         end, 
         CountLE = endian_flip(Count),
-        Bin = <<PosLE:32, CountLE:32>>,
-        file:write(Handle, Bin),
-        NextPos
+        {<<AccBin/binary, PosLE:32, CountLE:32>>, NextPos}
     end,
     
     Seq = lists:seq(0, 255),
-    CompleteList = lists:keysort(1, lists:foldl(FnMakeIndex, [], Seq)),
-    lists:foldl(FnWriteIndex, BasePos, CompleteList),
+    CompleteList = lists:keysort(1, lists:map(FnMakeIndex, Seq)),
+    {IndexBin, _Pos} = lists:foldl(FnWriteIndex,
+                                    {<<>>, BasePos},
+                                    CompleteList),
+    {ok, _} = file:position(Handle, 0),
+    ok = file:write(Handle, IndexBin),
     ok = file:advise(Handle, 0, ?DWORD_SIZE * 256, will_need).
 
 %% To make this compatible with original Bernstein format this endian flip
@@ -1131,7 +1172,7 @@ full_1_test() ->
 full_2_test() ->
     List1 = lists:sort([{lists:flatten(io_lib:format("~s~p",[Prefix,Plug])),
                 lists:flatten(io_lib:format("value~p",[Plug]))} 
-                ||  Plug <- lists:seq(1,2000),
+                ||  Plug <- lists:seq(1,200),
                 Prefix <- ["dsd","so39ds","oe9%#*(","020dkslsldclsldowlslf%$#",
                   "tiep4||","qweq"]]),
     create("../test/full.cdb",List1),
@@ -1393,5 +1434,23 @@ fold2_test() ->
     Result = fold("../test/fold2_test.cdb", FoldFun, dict:new()),
     ?assertMatch(RD2, Result),
     ok = file:delete("../test/fold2_test.cdb").
+
+find_lastkey_test() ->
+    {ok, P1} = cdb_open_writer("../test/lastkey.pnd"),
+    ok = cdb_put(P1, "Key1", "Value1"),
+    ok = cdb_put(P1, "Key3", "Value3"),
+    ok = cdb_put(P1, "Key2", "Value2"),
+    R1 = cdb_lastkey(P1),
+    ?assertMatch(R1, "Key2"),
+    ok = cdb_close(P1),
+    {ok, P2} = cdb_open_writer("../test/lastkey.pnd"),
+    R2 = cdb_lastkey(P2),
+    ?assertMatch(R2, "Key2"),
+    {ok, F2} = cdb_complete(P2),
+    {ok, P3} = cdb_open_reader(F2),
+    R3 = cdb_lastkey(P3),
+    ?assertMatch(R3, "Key2"),
+    ok = cdb_close(P3),
+    ok = file:delete("../test/lastkey.cdb").
 
 -endif.

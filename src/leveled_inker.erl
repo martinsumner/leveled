@@ -308,16 +308,25 @@ put_object(PrimaryKey, Object, KeyChanges, State) ->
     end.
 
 roll_active_file(OldActiveJournal, Manifest, ManifestSQN, RootPath) ->
+    SW = os:timestamp(),
     io:format("Rolling old journal ~w~n", [OldActiveJournal]),
     {ok, NewFilename} = leveled_cdb:cdb_complete(OldActiveJournal),
+    io:format("Rolling old journal S1 completed in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(),SW)]),
     {ok, PidR} = leveled_cdb:cdb_open_reader(NewFilename),
+    io:format("Rolling old journal S2 completed in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(),SW)]),
     JournalRegex2 = "nursery_(?<SQN>[0-9]+)\\." ++ ?JOURNAL_FILEX,
     [JournalSQN] = sequencenumbers_fromfilenames([NewFilename],
                                                     JournalRegex2,
                                                     'SQN'),
     NewManifest = add_to_manifest(Manifest, {JournalSQN, NewFilename, PidR}),
+    io:format("Rolling old journal S3 completed in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(),SW)]),
     NewManifestSQN = ManifestSQN + 1,
     ok = simple_manifest_writer(NewManifest, NewManifestSQN, RootPath),
+    io:format("Rolling old journal S4 completed in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(),SW)]),
     {NewManifest, NewManifestSQN}.
 
 get_object(PrimaryKey, SQN, Manifest, ActiveJournal, ActiveJournalSQN) ->
@@ -358,8 +367,6 @@ build_manifest(ManifestFilenames,
                 ManifestRdrFun,
                 RootPath,
                 CDBopts) ->
-    %% Setup root paths
-    JournalFP = filepath(RootPath, journal_dir),
     %% Find the manifest with a highest Manifest sequence number
     %% Open it and read it to get the current Confirmed Manifest
     ManifestRegex = "(?<MSQN>[0-9]+)\\." ++ ?MANIFEST_FILEX,
@@ -374,9 +381,12 @@ build_manifest(ManifestFilenames,
                                 {0, [], [], 0};
                             _ ->
                                 PersistedManSQN = lists:max(ValidManSQNs),
-                                {J1, M1, R1} = ManifestRdrFun(PersistedManSQN,
-                                                                RootPath),
-                                {J1, M1, R1, PersistedManSQN}
+                                M1 = ManifestRdrFun(PersistedManSQN, RootPath),
+                                J1 = lists:foldl(fun({JSQN, _FN}, Acc) ->
+                                                        max(JSQN, Acc) end,
+                                                    0,
+                                                    M1),
+                                {J1, M1, [], PersistedManSQN}
                         end,
     
     %% Find any more recent immutable files that have a higher sequence number
@@ -415,8 +425,7 @@ build_manifest(ManifestFilenames,
     io:format("Manifest on startup is: ~n"),
     manifest_printer(Manifest1),
     Manifest2 = lists:map(fun({LowSQN, FN}) ->
-                                FP = filename:join(JournalFP, FN),
-                                {ok, Pid} = leveled_cdb:cdb_open_reader(FP),
+                                {ok, Pid} = leveled_cdb:cdb_open_reader(FN),
                                 {LowSQN, FN, Pid} end,
                             Manifest1),
     
@@ -498,7 +507,7 @@ roll_pending_journals([JournalSQN|T], Manifest, RootPath) ->
 load_from_sequence(_MinSQN, _FilterFun, _Penciller, []) ->
     ok;
 load_from_sequence(MinSQN, FilterFun, Penciller, [{LowSQN, FN, Pid}|ManTail])
-                                        when MinSQN >= LowSQN ->
+                                        when LowSQN >= MinSQN ->
     io:format("Loading from filename ~s from SQN ~w~n", [FN, MinSQN]),
     ok = load_between_sequence(MinSQN,
                                 MinSQN + ?LOADING_BATCH,
@@ -576,6 +585,8 @@ filepath(RootPath, NewSQN, new_journal) ->
 
 simple_manifest_reader(SQN, RootPath) ->
     ManifestPath = filepath(RootPath, manifest_dir),
+    io:format("Opening manifest file at ~s with SQN ~w~n",
+                [ManifestPath, SQN]),
     {ok, MBin} = file:read_file(filename:join(ManifestPath,
                                                 integer_to_list(SQN)
                                                 ++ ".man")),
@@ -584,9 +595,12 @@ simple_manifest_reader(SQN, RootPath) ->
 
 simple_manifest_writer(Manifest, ManSQN, RootPath) ->
     ManPath = filepath(RootPath, manifest_dir),
-    NewFN = filename:join(ManPath, integer_to_list(ManSQN) ++ ?MANIFEST_FILEX),
-    TmpFN = filename:join(ManPath, integer_to_list(ManSQN) ++ ?PENDING_FILEX),
-    MBin = term_to_binary(Manifest),
+    NewFN = filename:join(ManPath,
+                            integer_to_list(ManSQN) ++ "." ++ ?MANIFEST_FILEX),
+    TmpFN = filename:join(ManPath,
+                            integer_to_list(ManSQN) ++ "." ++ ?PENDING_FILEX),
+    MBin = term_to_binary(lists:map(fun({SQN, FN, _PID}) -> {SQN, FN} end,
+                                        Manifest)),
     case filelib:is_file(NewFN) of
         true ->
             io:format("Error - trying to write manifest for"

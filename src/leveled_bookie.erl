@@ -448,7 +448,25 @@ reset_filestructure() ->
     leveled_inker:clean_testdir(RootPath ++ "/" ++ ?JOURNAL_FP),
     leveled_penciller:clean_testdir(RootPath ++ "/" ++ ?LEDGER_FP),
     RootPath.
+
+generate_multiple_objects(Count, KeyNumber) ->
+    generate_multiple_objects(Count, KeyNumber, []).
     
+generate_multiple_objects(0, _KeyNumber, ObjL) ->
+    ObjL;
+generate_multiple_objects(Count, KeyNumber, ObjL) ->
+    Obj = {"Bucket",
+            "Key" ++ integer_to_list(KeyNumber),
+            crypto:rand_bytes(128),
+            [],
+            [{"MDK", "MDV" ++ integer_to_list(KeyNumber)},
+                {"MDK2", "MDV" ++ integer_to_list(KeyNumber)}]},
+    {B1, K1, V1, Spec1, MD} = Obj,
+    Content = #r_content{metadata=MD, value=V1},
+    Obj1 = #r_object{bucket=B1, key=K1, contents=[Content], vclock=[{'a',1}]},
+    generate_multiple_objects(Count - 1, KeyNumber + 1, ObjL ++ [{Obj1, Spec1}]).
+
+
 single_key_test() ->
     RootPath = reset_filestructure(),
     {ok, Bookie1} = book_start(#bookie_options{root_path=RootPath}),
@@ -468,5 +486,62 @@ single_key_test() ->
     ?assertMatch(F2, Object),
     ok = book_close(Bookie2),
     reset_filestructure().
+
+multi_key_test() ->
+    RootPath = reset_filestructure(),
+    {ok, Bookie1} = book_start(#bookie_options{root_path=RootPath}),
+    {B1, K1, V1, Spec1, MD1} = {"Bucket",
+                                "Key1",
+                                "Value1",
+                                [],
+                                {"MDK1", "MDV1"}},
+    C1 = #r_content{metadata=MD1, value=V1},
+    Obj1 = #r_object{bucket=B1, key=K1, contents=[C1], vclock=[{'a',1}]},
+    {B2, K2, V2, Spec2, MD2} = {"Bucket",
+                                "Key2",
+                                "Value2",
+                                [],
+                                {"MDK2", "MDV2"}},
+    C2 = #r_content{metadata=MD2, value=V2},
+    Obj2 = #r_object{bucket=B2, key=K2, contents=[C2], vclock=[{'a',1}]},
+    ok = book_riakput(Bookie1, Obj1, Spec1),
+    ObjL1 = generate_multiple_objects(100, 3),
+    SW1 = os:timestamp(),
+    lists:foreach(fun({O, S}) -> ok = book_riakput(Bookie1, O, S) end, ObjL1),
+    io:format("PUT of 100 objects completed in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(),SW1)]),
+    ok = book_riakput(Bookie1, Obj2, Spec2),
+    {ok, F1A} = book_riakget(Bookie1, B1, K1),
+    ?assertMatch(F1A, Obj1),
+    {ok, F2A} = book_riakget(Bookie1, B2, K2),
+    ?assertMatch(F2A, Obj2),
+    ObjL2 = generate_multiple_objects(100, 103),
+    SW2 = os:timestamp(),
+    lists:foreach(fun({O, S}) -> ok = book_riakput(Bookie1, O, S) end, ObjL2),
+    io:format("PUT of 100 objects completed in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(),SW2)]),
+    {ok, F1B} = book_riakget(Bookie1, B1, K1),
+    ?assertMatch(F1B, Obj1),
+    {ok, F2B} = book_riakget(Bookie1, B2, K2),
+    ?assertMatch(F2B, Obj2),
+    ok = book_close(Bookie1),
+    %% Now reopen the file, and confirm that a fetch is still possible
+    {ok, Bookie2} = book_start(#bookie_options{root_path=RootPath}),
+    {ok, F1C} = book_riakget(Bookie2, B1, K1),
+    ?assertMatch(F1C, Obj1),
+    {ok, F2C} = book_riakget(Bookie2, B2, K2),
+    ?assertMatch(F2C, Obj2),
+    ObjL3 = generate_multiple_objects(100, 203),
+    SW3 = os:timestamp(),
+    lists:foreach(fun({O, S}) -> ok = book_riakput(Bookie2, O, S) end, ObjL3),
+    io:format("PUT of 100 objects completed in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(),SW3)]),
+    {ok, F1D} = book_riakget(Bookie2, B1, K1),
+    ?assertMatch(F1D, Obj1),
+    {ok, F2D} = book_riakget(Bookie2, B2, K2),
+    ?assertMatch(F2D, Obj2),
+    ok = book_close(Bookie2),
+    reset_filestructure(),
+    ?assertMatch(true, false).
 
 -endif.
