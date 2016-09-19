@@ -400,20 +400,22 @@ build_manifest(ManifestFilenames,
     OtherSQNs_imm = sequencenumbers_fromfilenames(UnremovedJournalFiles,
                                                     JournalRegex1,
                                                     'SQN'),
-    Manifest1 = lists:foldl(fun(X, Acc) ->
-                                        if
-                                            X > JournalSQN1
-                                                ->
-                                                    FN = "nursery_" ++
-                                                            integer_to_list(X)
-                                                            ++ "." ++
-                                                            ?JOURNAL_FILEX,
-                                                    add_to_manifest(Acc, {X, FN});
-                                            true
-                                                -> Acc
-                                        end end,
-                                    ConfirmedManifest,
-                                    lists:sort(OtherSQNs_imm)),
+    ExtendManifestFun = fun(X, Acc) ->
+                            if
+                                X > JournalSQN1
+                                    ->
+                                        FN = filepath(RootPath, journal_dir) 
+                                                ++ "nursery_" ++
+                                                integer_to_list(X)
+                                                ++ "." ++
+                                                ?JOURNAL_FILEX,
+                                        add_to_manifest(Acc, {X, FN});
+                                true
+                                    -> Acc
+                            end end,
+    Manifest1 = lists:foldl(ExtendManifestFun,
+                                ConfirmedManifest,
+                                lists:sort(OtherSQNs_imm)),
     
     %% Enrich the manifest so it contains the Pid of any of the immutable 
     %% entries
@@ -648,7 +650,7 @@ build_dummy_journal() ->
     ok = leveled_cdb:cdb_put(J2, {3, K1}, term_to_binary({V3, []})),
     ok = leveled_cdb:cdb_put(J2, {4, K4}, term_to_binary({V4, []})),
     ok = leveled_cdb:cdb_close(J2),
-    Manifest = {2, [{1, "nursery_1.cdb"}], []},
+    Manifest = [{1, "../test/journal/journal_files/nursery_1.cdb"}],
     ManifestBin = term_to_binary(Manifest),
     {ok, MF1} = file:open(filename:join(ManifestFP, "1.man"),
                             [binary, raw, read, write]),
@@ -669,14 +671,15 @@ simple_buildmanifest_test() ->
     RootPath = "../test/journal",
     build_dummy_journal(),
     Res = build_manifest(["1.man"],
-                            ["nursery_1.cdb", "nursery_3.pnd"],
+                            ["../test/journal/journal_files/nursery_1.cdb",
+                                "../test/journal/journal_files/nursery_3.pnd"],
                             fun simple_manifest_reader/2,
                             RootPath),
     io:format("Build manifest output is ~w~n", [Res]),
     {Man, {ActJournal, ActJournalSQN}, HighSQN, ManSQN} = Res,
     ?assertMatch(HighSQN, 4),
     ?assertMatch(ManSQN, 1),
-    ?assertMatch([{1, "nursery_1.cdb", _}], Man),
+    ?assertMatch([{1, "../test/journal/journal_files/nursery_1.cdb", _}], Man),
     {ActSQN, _ActK} = leveled_cdb:cdb_lastkey(ActJournal),
     ?assertMatch(ActSQN, 4),
     ?assertMatch(ActJournalSQN, 3),
@@ -699,16 +702,17 @@ another_buildmanifest_test() ->
     ok = leveled_cdb:cdb_close(NewActiveJN),
     %% Test setup - now build manifest
     Res = build_manifest(["1.man"],
-                            ["nursery_1.cdb",
-                                "nursery_3.cdb",
-                                "nursery_5.pnd"],
+                            ["../test/journal/journal_files/nursery_1.cdb",
+                                "../test/journal/journal_files/nursery_3.cdb",
+                                "../test/journal/journal_files/nursery_5.pnd"],
                             fun simple_manifest_reader/2,
                             RootPath),
     io:format("Build manifest output is ~w~n", [Res]),
     {Man, {ActJournal, ActJournalSQN}, HighSQN, ManSQN} = Res,
     ?assertMatch(HighSQN, 6),
     ?assertMatch(ManSQN, 1),
-    ?assertMatch([{3, "nursery_3.cdb", _}, {1, "nursery_1.cdb", _}], Man),
+    ?assertMatch([{3, "../test/journal/journal_files/nursery_3.cdb", _},
+                    {1, "../test/journal/journal_files/nursery_1.cdb", _}], Man),
     {ActSQN, _ActK} = leveled_cdb:cdb_lastkey(ActJournal),
     ?assertMatch(ActSQN, 6),
     ?assertMatch(ActJournalSQN, 5),

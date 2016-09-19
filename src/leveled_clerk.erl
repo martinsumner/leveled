@@ -295,8 +295,8 @@ generate_randomkeys(Count, Acc, BucketLow, BRange) ->
     RandKey = {{o,
                 "Bucket" ++ BNumber,
                 "Key" ++ KNumber},
-                Count + 1,
-                {active, infinity}, null},
+                {Count + 1,
+                {active, infinity}, null}},
     generate_randomkeys(Count - 1, [RandKey|Acc], BucketLow, BRange).
 
 choose_pid_toquery([ManEntry|_T], Key) when
@@ -310,8 +310,8 @@ choose_pid_toquery([_H|T], Key) ->
 find_randomkeys(_FList, 0, _Source) ->
     ok;
 find_randomkeys(FList, Count, Source) ->
-    K1 = leveled_sft:strip_to_keyonly(lists:nth(random:uniform(length(Source)),
-                                                                Source)),
+    KV1 = lists:nth(random:uniform(length(Source)), Source),
+    K1 = leveled_bookie:strip_to_keyonly(KV1),
     P1 = choose_pid_toquery(FList, K1),
     FoundKV = leveled_sft:sft_get(P1, K1),
     case FoundKV of
@@ -319,7 +319,7 @@ find_randomkeys(FList, Count, Source) ->
             io:format("Failed to find ~w in ~w~n", [K1, P1]),
             ?assertMatch(true, false);
         _ ->
-            Found = leveled_sft:strip_to_keyonly(FoundKV),
+            Found = leveled_bookie:strip_to_keyonly(FoundKV),
             io:format("success finding ~w in ~w~n", [K1, P1]),
             ?assertMatch(K1, Found)
     end,

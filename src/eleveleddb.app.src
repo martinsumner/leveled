@@ -1,0 +1,12 @@
+{application, eleveleddb,
+ [
+  {description, ""},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { eleveleddb_app, []}},
+  {env, []}
+ ]}.
