@@ -200,7 +200,7 @@
                 levelzero_snapshot = [] :: list(),
                 memtable,
                 backlog = false :: boolean(),
-                memtable_maxsize :: integer}).
+                memtable_maxsize :: integer()}).
 
 
 %%%============================================================================
@@ -945,20 +945,22 @@ simple_server_test() ->
     {ok, PCLr} = pcl_start(#penciller_options{root_path=RootPath,
                                                 max_inmemory_tablesize=1000}),
     TopSQN = pcl_getstartupsequencenumber(PCLr),
-    case TopSQN of
-        2001 ->
-            %% Last push not persisted
-            S3a = pcl_pushmem(PCL, [Key3]),
-            if S3a == pause -> timer:sleep(2000); true -> ok end;
-        2002 ->
-            %% everything got persisted
-            ok;
-        _ ->
-            io:format("Unexpected sequence number on restart ~w~n", [TopSQN]),
-            ok = pcl_close(PCLr),
-            clean_testdir(RootPath),
-            ?assertMatch(true, false)
-    end,
+    Check = case TopSQN of
+                2001 ->
+                    %% Last push not persisted
+                    S3a = pcl_pushmem(PCL, [Key3]),
+                    if S3a == pause -> timer:sleep(2000); true -> ok end,
+                    ok;
+                2002 ->
+                    %% everything got persisted
+                    ok;
+                _ ->
+                    io:format("Unexpected sequence number on restart ~w~n", [TopSQN]),
+                    ok = pcl_close(PCLr),
+                    clean_testdir(RootPath),
+                    error
+            end,
+    ?assertMatch(Check, ok),
     R8 = pcl_fetch(PCLr, {o,"Bucket0001", "Key0001"}),
     R9 = pcl_fetch(PCLr, {o,"Bucket0002", "Key0002"}),
     R10 = pcl_fetch(PCLr, {o,"Bucket0003", "Key0003"}),

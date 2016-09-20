@@ -1323,8 +1323,7 @@ getnextkey_inclemptyvalue_test() ->
     {_, Handle, P6} = get_nextkey(Handle, P5),
     {_, Handle, P7} = get_nextkey(Handle, P6),
     {_, Handle, P8} = get_nextkey(Handle, P7),
-    {LastKey, Info} = get_nextkey(Handle, P8),
-    ?assertMatch(nomorekeys, Info),
+    {LastKey, nomorekeys} = get_nextkey(Handle, P8),
     ?assertMatch("K1", LastKey),
     ok = file:delete("../test/hashtable2_test.cdb").
 
