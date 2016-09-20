@@ -251,7 +251,7 @@ init([PCLopts]) ->
                             M
                     end,
     TID = ets:new(?MEMTABLE, [ordered_set]),
-    {ok, Clerk} = leveled_clerk:clerk_new(self()),
+    {ok, Clerk} = leveled_pclerk:clerk_new(self()),
     InitState = #state{memtable=TID,
                         clerk=Clerk,
                         root_path=RootPath,
@@ -435,7 +435,7 @@ terminate(_Reason, State) ->
     %% The cast may not succeed as the clerk could be synchronously calling
     %% the penciller looking for a manifest commit
     %%
-    leveled_clerk:clerk_stop(State#state.clerk),
+    leveled_pclerk:clerk_stop(State#state.clerk),
     Dump = ets:tab2list(State#state.memtable),
     case {State#state.levelzero_pending,
             get_item(0, State#state.manifest, []), length(Dump)} of
@@ -499,7 +499,7 @@ push_to_memory(DumpList, State) ->
     end,
     
     %% Prompt clerk to ask about work - do this for every push_mem
-    ok = leveled_clerk:clerk_prompt(UpdState#state.clerk, penciller),    
+    ok = leveled_pclerk:clerk_prompt(UpdState#state.clerk, penciller),    
     
     MemoryInsertion = do_push_to_mem(DumpList,
                                         TableSize,
