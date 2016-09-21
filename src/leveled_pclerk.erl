@@ -59,12 +59,12 @@ handle_cast(stop, State) ->
     {stop, normal, State}.
 
 handle_info(timeout, State) ->
-    %% The pcl prompt will cause a penciller_prompt, to re-trigger timeout
     case leveled_penciller:pcl_prompt(State#state.owner) of
         ok ->
-            {noreply, State};
+            Timeout = requestandhandle_work(State),
+            {noreply, State, Timeout};
         pause ->
-            {noreply, State}
+            {noreply, State, ?INACTIVITY_TIMEOUT}
     end;
 handle_info(_Info, State) ->
     {noreply, State}.

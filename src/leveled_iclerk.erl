@@ -19,7 +19,8 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(KEYS_TO_CHECK, 100).
+-define(BATCH_SIZE, 16)
+-define(BATCHES_TO_CHECK, 8).
 
 -record(state, {owner :: pid()}).
 
@@ -80,6 +81,27 @@ journal_compact(_InkerManifest, _Penciller, _Timeout, _Owner) ->
 
 check_all_files(_InkerManifest) ->
     ok.
+
+check_single_file(CDB, _PencilSnapshot, SampleSize, BatchSize) ->
+    PositionList = leveled_cdb:cdb_getpositions(CDB, SampleSize),
+    KeySizeList = fetch_inbatches(PositionList, BatchSize, CDB, []),
+    KeySizeList.
+    %% TODO:
+    %% Need to check the penciller snapshot to see if these keys are at the
+    %% right sequence number
+    %%
+    %% The calculate the proportion (by value size) of the CDB which is at the
+    %% wrong sequence number to help determine eligibility for compaction
+    %%
+    %% BIG TODO:
+    %% Need to snapshot a penciller
+    
+fetch_inbatches([], _BatchSize, _CDB, CheckedList) ->
+    CheckedList;
+fetch_inbatches(PositionList, BatchSize, CDB, CheckedList) ->
+    {Batch, Tail} = lists:split(BatchSize, PositionList),
+    KL_List = leveled_cdb:direct_fetch(CDB, Batch, key_size),
+    fetch_inbatches(Tail, BatchSize, CDB, CheckedList ++ KL_List).
 
 window_closed(_Timeout) ->
     true.

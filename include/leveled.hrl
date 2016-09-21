@@ -30,6 +30,7 @@
 
 -record(penciller_options,
                         {root_path :: string(),
+                        penciller :: pid(),
                         max_inmemory_tablesize :: integer()}).
 
 -record(bookie_options,
