@@ -26,12 +26,17 @@
 -record(inker_options,
                         {cdb_max_size :: integer(),
                         root_path :: string(),
-                        cdb_options :: #cdb_options{}}).
+                        cdb_options :: #cdb_options{},
+                        start_snapshot = false :: boolean,
+                        source_inker :: pid(),
+                        requestor :: pid()}).
 
 -record(penciller_options,
                         {root_path :: string(),
-                        penciller :: pid(),
-                        max_inmemory_tablesize :: integer()}).
+                        max_inmemory_tablesize :: integer(),
+                        start_snapshot = false :: boolean(),
+                        source_penciller :: pid(),
+                        requestor :: pid()}).
 
 -record(bookie_options,
                        {root_path :: string(),

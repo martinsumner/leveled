@@ -138,6 +138,8 @@
         book_riakput/3,
         book_riakget/3,
         book_riakhead/3,
+        book_snapshotstore/3,
+        book_snapshotledger/3,
         book_close/1,
         strip_to_keyonly/1,
         strip_to_keyseqonly/1,
@@ -179,6 +181,12 @@ book_riakget(Pid, Bucket, Key) ->
 book_riakhead(Pid, Bucket, Key) ->
     PrimaryKey = {o, Bucket, Key},
     gen_server:call(Pid, {head, PrimaryKey}, infinity).
+
+book_snapshotstore(Pid, Requestor, Timeout) ->
+    gen_server:call(Pid, {snapshot, Requestor, store, Timeout}, infinity).
+
+book_snapshotledger(Pid, Requestor, Timeout) ->
+    gen_server:call(Pid, {snapshot, Requestor, ledger, Timeout}, infinity).
 
 book_close(Pid) ->
     gen_server:call(Pid, close, infinity).
@@ -267,6 +275,19 @@ handle_call({head, Key}, _From, State) ->
                     OMD = build_metadata_object(Key, MD),
                     {reply, {ok, OMD}, State}
             end
+    end;
+handle_call({snapshot, Requestor, SnapType, _Timeout}, _From, State) ->
+    PCLopts = #penciller_options{start_snapshot=true,
+                                    source_penciller=State#state.penciller, 
+                                    requestor=Requestor},
+    {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
+    case SnapType of
+        store ->
+            InkerOpts = #inker_options{},
+            {ok, JournalSnapshot} = leveled_inker:ink_start(InkerOpts),
+            {reply, {ok, LedgerSnapshot, JournalSnapshot}, State};
+        ledger ->
+            {reply, {ok, LedgerSnapshot, null}, State}
     end;
 handle_call(close, _From, State) ->
     {stop, normal, ok, State}.

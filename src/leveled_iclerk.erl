@@ -12,7 +12,6 @@
         handle_info/2,
         terminate/2,
         clerk_new/1,
-        clerk_compact/3,
         clerk_remove/2,
         clerk_stop/1,
         code_change/3]).      
@@ -33,10 +32,6 @@ clerk_new(Owner) ->
     ok = gen_server:call(Pid, {register, Owner}, infinity),
     {ok, Pid}.
     
-clerk_compact(Pid, InkerManifest, Penciller) ->
-    gen_server:cast(Pid, {compact, InkerManifest, Penciller}),
-    ok.
-
 clerk_remove(Pid, Removals) ->
     gen_server:cast(Pid, {remove, Removals}),
     ok.
@@ -54,9 +49,6 @@ init([]) ->
 handle_call({register, Owner}, _From, State) ->
     {reply, ok, State#state{owner=Owner}}.
 
-handle_cast({compact, InkerManifest, Penciller, Timeout}, State) ->
-    ok = journal_compact(InkerManifest, Penciller, Timeout, State#state.owner),
-    {noreply, State};
 handle_cast({remove, _Removals}, State) ->
     {noreply, State};
 handle_cast(stop, State) ->
@@ -76,11 +68,6 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%============================================================================
 
-journal_compact(_InkerManifest, _Penciller, _Timeout, _Owner) ->
-    ok.
-
-check_all_files(_InkerManifest) ->
-    ok.
 
 check_single_file(CDB, _PencilSnapshot, SampleSize, BatchSize) ->
     PositionList = leveled_cdb:cdb_getpositions(CDB, SampleSize),

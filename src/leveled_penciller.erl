@@ -235,6 +235,7 @@
         pcl_close/1,
         pcl_registersnapshot/2,
         pcl_updatesnapshotcache/3,
+        pcl_loadsnapshot/2,
         pcl_getstartupsequencenumber/1,
         roll_new_tree/3,
         clean_testdir/1]).
@@ -254,7 +255,7 @@
 -define(PROMPT_WAIT_ONL0, 5).
 -define(L0PEND_RESET, {false, null, null}).
 
--record(l0snapshot, {increments = [] :: list,
+-record(l0snapshot, {increments = [] :: list(),
                         tree = gb_trees:empty() :: gb_trees:tree(),
                         ledger_sqn = 0 :: integer()}).                 
 
@@ -269,9 +270,13 @@
                 clerk :: pid(),
                 levelzero_pending = ?L0PEND_RESET :: tuple(),
                 memtable_copy = #l0snapshot{} :: #l0snapshot{},
+                levelzero_snapshot = gb_trees:empty() :: gb_trees:tree(),
                 memtable,
                 backlog = false :: boolean(),
-                memtable_maxsize :: integer()}).
+                memtable_maxsize :: integer(),
+                is_snapshot = false :: boolean(),
+                snapshot_fully_loaded = false :: boolean(),
+                source_penciller :: pid()}).
 
  
 
@@ -313,6 +318,9 @@ pcl_registersnapshot(Pid, Snapshot) ->
 pcl_updatesnapshotcache(Pid, Tree, SQN) ->
     gen_server:cast(Pid, {update_snapshotcache, Tree, SQN}).
 
+pcl_loadsnapshot(Pid, Increment) ->
+    gen_server:call(Pid, {load_snapshot, Increment}, infinity).
+
 pcl_close(Pid) ->
     gen_server:call(Pid, close).
 
@@ -322,10 +330,21 @@ pcl_close(Pid) ->
 %%%============================================================================
 
 init([PCLopts]) ->
-    case PCLopts#penciller_options.root_path of
-        undefined ->
-            {ok, #state{}};
-        _RootPath ->
+    case {PCLopts#penciller_options.root_path,
+            PCLopts#penciller_options.start_snapshot} of
+        {undefined, true} ->
+            SrcPenciller = PCLopts#penciller_options.source_penciller,
+            {ok, {LedgerSQN,
+                    MemTableCopy,
+                    Manifest}} = pcl_registersnapshot(SrcPenciller, self()),
+            
+            {ok, #state{memtable_copy=MemTableCopy,
+                            is_snapshot=true,
+                            source_penciller=SrcPenciller,
+                            manifest=Manifest,
+                            ledger_sqn=LedgerSQN}};
+            %% Need to do something about timeout
+        {_RootPath, false} ->
             start_from_file(PCLopts)
     end.    
     
@@ -474,6 +493,22 @@ handle_call({register_snapshot, Snapshot}, _From, State) ->
             State#state.manifest,
             State#state.memtable_copy},
         State#state{registered_snapshots = Rs}};
+handle_call({load_snapshot, Increment}, _From, State) ->
+    MemTableCopy = State#state.memtable_copy,
+    {Tree0, TreeSQN0} = roll_new_tree(MemTableCopy#l0snapshot.tree,
+                                        MemTableCopy#l0snapshot.increments,
+                                        MemTableCopy#l0snapshot.ledger_sqn),
+    if
+        TreeSQN0 > MemTableCopy#l0snapshot.ledger_sqn ->
+            pcl_updatesnapshotcache(State#state.source_penciller,
+                                    Tree0,
+                                    TreeSQN0)
+    end,
+    {Tree1, TreeSQN1} = roll_new_tree(Tree0, [Increment], TreeSQN0),
+    io:format("Snapshot loaded to start at SQN~w~n", [TreeSQN1]),
+    {reply, ok, State#state{levelzero_snapshot=Tree1,
+                            ledger_sqn=TreeSQN1,
+                            snapshot_fully_loaded=true}};
 handle_call(close, _From, State) ->
     {stop, normal, ok, State}.
 
@@ -539,19 +574,6 @@ terminate(_Reason, State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-%%%============================================================================
-%%% External functions
-%%%============================================================================
-
-roll_new_tree(Tree, [], HighSQN) ->
-    {Tree, HighSQN};
-roll_new_tree(Tree, [{SQN, KVList}|TailIncs], HighSQN) when SQN >= HighSQN ->
-    UpdTree = lists:foldl(fun({K, V}, TreeAcc) ->
-                                gb_trees:enter(K, V, TreeAcc) end,
-                            Tree,
-                            KVList),
-    roll_new_tree(UpdTree, TailIncs, SQN).
-    
 
 %%%============================================================================
 %%% Internal functions
@@ -829,6 +851,19 @@ return_work(State, From) ->
             {State, none}
     end.
 
+
+%% This takes the three parts of a memtable copy - the increments, the tree
+%% and the SQN at which the tree was formed, and outputs a new tree
+
+roll_new_tree(Tree, [], HighSQN) ->
+    {Tree, HighSQN};
+roll_new_tree(Tree, [{SQN, KVList}|TailIncs], HighSQN) when SQN >= HighSQN ->
+    UpdTree = lists:foldl(fun({K, V}, TreeAcc) ->
+                                gb_trees:enter(K, V, TreeAcc) end,
+                            Tree,
+                            KVList),
+    roll_new_tree(UpdTree, TailIncs, SQN).
+
 %% Update the memtable copy if the tree created advances the SQN
 cache_tree_in_memcopy(MemCopy, Tree, SQN) ->
     case MemCopy#l0snapshot.ledger_sqn of
@@ -854,7 +889,6 @@ cache_tree_in_memcopy(MemCopy, Tree, SQN) ->
 add_increment_to_memcopy(MemCopy, SQN, KVList) ->
     Incs = MemCopy#l0snapshot.increments ++ [{SQN, KVList}],
     MemCopy#l0snapshot{increments=Incs}.
-
 
 close_files(?MAX_LEVELS - 1, _Manifest) ->
     ok;
@@ -1182,5 +1216,27 @@ memcopy_test() ->
     Size1 = gb_trees:size(Tree1),
     ?assertMatch(2000, Size1),
     ?assertMatch(3000, HighSQN1).
+    
+memcopy_updatecache_test() ->
+    KVL1 = lists:map(fun(X) -> {"Key" ++ integer_to_list(X),
+                                "Value" ++ integer_to_list(X) ++ "A"} end,
+                lists:seq(1, 1000)),
+    KVL2 = lists:map(fun(X) -> {"Key" ++ integer_to_list(X),
+                                "Value" ++ integer_to_list(X) ++ "B"} end,
+                lists:seq(1001, 2000)),
+    KVL3 = lists:map(fun(X) -> {"Key" ++ integer_to_list(X),
+                                "Value" ++ integer_to_list(X) ++ "C"} end,
+                lists:seq(1, 1000)),
+    MemCopy0 = #l0snapshot{},
+    MemCopy1 = add_increment_to_memcopy(MemCopy0, 1000, KVL1),
+    MemCopy2 = add_increment_to_memcopy(MemCopy1, 2000, KVL2),
+    MemCopy3 = add_increment_to_memcopy(MemCopy2, 3000, KVL3),
+    ?assertMatch(0, MemCopy3#l0snapshot.ledger_sqn),
+    {Tree1, HighSQN1} = roll_new_tree(gb_trees:empty(), MemCopy3#l0snapshot.increments, 0),
+    MemCopy4 = cache_tree_in_memcopy(MemCopy3, Tree1, HighSQN1),
+    ?assertMatch(0, length(MemCopy4#l0snapshot.increments)),
+    Size2 = gb_trees:size(MemCopy4#l0snapshot.tree),
+    ?assertMatch(2000, Size2),
+    ?assertMatch(3000, MemCopy4#l0snapshot.ledger_sqn).
 
 -endif.
