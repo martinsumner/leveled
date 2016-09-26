@@ -12,16 +12,19 @@
         handle_info/2,
         terminate/2,
         clerk_new/1,
+        clerk_compact/5,
         clerk_remove/2,
         clerk_stop/1,
         code_change/3]).      
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(BATCH_SIZE, 16)
+-define(SAMPLE_SIZE, 200).
+-define(BATCH_SIZE, 16).
 -define(BATCHES_TO_CHECK, 8).
 
--record(state, {owner :: pid()}).
+-record(state, {owner :: pid(),
+                penciller_snapshot :: pid()}).
 
 %%%============================================================================
 %%% API
@@ -36,6 +39,9 @@ clerk_remove(Pid, Removals) ->
     gen_server:cast(Pid, {remove, Removals}),
     ok.
 
+clerk_compact(Pid, Manifest, ManifestSQN, Penciller, Timeout) ->
+    gen_server:cast(Pid, {compact, Manifest, ManifestSQN, Penciller, Timeout}).
+
 clerk_stop(Pid) ->
     gen_server:cast(Pid, stop).
 
@@ -49,6 +55,15 @@ init([]) ->
 handle_call({register, Owner}, _From, State) ->
     {reply, ok, State#state{owner=Owner}}.
 
+handle_cast({compact, Manifest, _ManifestSQN, Penciller, _Timeout}, State) ->
+    PclOpts = #penciller_options{start_snapshot = true,
+                                    source_penciller = Penciller,
+                                    requestor = self()},
+    PclSnap = leveled_penciller:pcl_start(PclOpts),
+    ok = leveled_penciller:pcl_loadsnapshot(PclSnap, []),
+    _CandidateList = scan_all_files(Manifest, PclSnap),
+    %% TODO - Lots
+    {noreply, State};
 handle_cast({remove, _Removals}, State) ->
     {noreply, State};
 handle_cast(stop, State) ->
@@ -69,20 +84,38 @@ code_change(_OldVsn, State, _Extra) ->
 %%%============================================================================
 
 
-check_single_file(CDB, _PencilSnapshot, SampleSize, BatchSize) ->
+check_single_file(CDB, PclSnap, SampleSize, BatchSize) ->
     PositionList = leveled_cdb:cdb_getpositions(CDB, SampleSize),
     KeySizeList = fetch_inbatches(PositionList, BatchSize, CDB, []),
-    KeySizeList.
-    %% TODO:
-    %% Need to check the penciller snapshot to see if these keys are at the
-    %% right sequence number
-    %%
-    %% The calculate the proportion (by value size) of the CDB which is at the
-    %% wrong sequence number to help determine eligibility for compaction
-    %%
-    %% BIG TODO:
-    %% Need to snapshot a penciller
-    
+    R0 = lists:foldl(fun(KS, {ActSize, RplSize}) ->
+                            {{PK, SQN}, Size} = KS,
+                            Chk = leveled_pcl:pcl_checksequencenumber(PclSnap,
+                                                                        PK,
+                                                                        SQN),
+                            case Chk of
+                                true ->
+                                    {ActSize + Size, RplSize};
+                                false ->
+                                    {ActSize, RplSize + Size}
+                            end end,
+                        {0, 0},
+                        KeySizeList),
+    {ActiveSize, ReplacedSize} = R0,
+    100 * (ActiveSize / (ActiveSize + ReplacedSize)).
+
+scan_all_files(Manifest, Penciller) ->
+    scan_all_files(Manifest, Penciller, []).
+
+scan_all_files([], _Penciller, CandidateList) ->
+    CandidateList;
+scan_all_files([{LowSQN, FN, JournalP}|Tail], Penciller, CandidateList) ->
+    CompactPerc = check_single_file(JournalP,
+                                        Penciller,
+                                        ?SAMPLE_SIZE,
+                                        ?BATCH_SIZE),
+    scan_all_files(Tail, Penciller, CandidateList ++
+                                        [{LowSQN, FN, JournalP, CompactPerc}]).
+
 fetch_inbatches([], _BatchSize, _CDB, CheckedList) ->
     CheckedList;
 fetch_inbatches(PositionList, BatchSize, CDB, CheckedList) ->
@@ -90,8 +123,8 @@ fetch_inbatches(PositionList, BatchSize, CDB, CheckedList) ->
     KL_List = leveled_cdb:direct_fetch(CDB, Batch, key_size),
     fetch_inbatches(Tail, BatchSize, CDB, CheckedList ++ KL_List).
 
-window_closed(_Timeout) ->
-    true.
+
+
 
 
 %%%============================================================================

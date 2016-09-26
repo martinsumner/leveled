@@ -104,6 +104,7 @@
         ink_fetch/3,
         ink_loadpcl/4,
         ink_registersnapshot/2,
+        ink_compactjournal/3,
         ink_close/1,
         ink_print_manifest/1,
         build_dummy_journal/0,
@@ -126,8 +127,10 @@
                 active_journaldb :: pid(),
                 active_journaldb_sqn :: integer(),
                 removed_journaldbs = [] :: list(),
+                registered_snapshots = [] :: list(),
                 root_path :: string(),
-                cdb_options :: #cdb_options{}}).
+                cdb_options :: #cdb_options{},
+                clerk :: pid()}).
 
 
 %%%============================================================================
@@ -154,6 +157,9 @@ ink_close(Pid) ->
 
 ink_loadpcl(Pid, MinSQN, FilterFun, Penciller) ->
     gen_server:call(Pid, {load_pcl, MinSQN, FilterFun, Penciller}, infinity).
+
+ink_compactjournal(Pid, Penciller, Timeout) ->
+    gen_server:call(Pid, {compact_journal, Penciller, Timeout}, infinty).
 
 ink_print_manifest(Pid) ->
     gen_server:call(Pid, print_manifest, infinity).
@@ -221,14 +227,17 @@ handle_call({load_pcl, StartSQN, FilterFun, Penciller}, _From, State) ->
                         State#state.active_journaldb}],
     Reply = load_from_sequence(StartSQN, FilterFun, Penciller, Manifest),
     {reply, Reply, State};
-handle_call({register_snapshot, _Requestor}, _From , State) ->
-    %% TODO: Not yet implemented registration of snapshot
-    %% Should return manifest and register the snapshot
+handle_call({register_snapshot, Requestor}, _From , State) ->
+    Rs = [{Requestor,
+            State#state.manifest_sqn}|State#state.registered_snapshots],
     {reply, {State#state.manifest,
                 State#state.active_journaldb},
-                State};
+                State#state{registered_snapshots=Rs}};
 handle_call(print_manifest, _From, State) ->
     manifest_printer(State#state.manifest),
+    {reply, ok, State};
+handle_call({compact_journal, Penciller, Timeout}, _From, State) ->
+    leveled_iclerk:clerk_compact(Penciller, Timeout),
     {reply, ok, State};
 handle_call(close, _From, State) ->
     {stop, normal, ok, State}.
@@ -256,6 +265,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%%============================================================================
 
 start_from_file(InkerOpts) ->
+    {ok, Clerk} = leveled_iclerk:clerk_new(self()),
     RootPath = InkerOpts#inker_options.root_path,
     CDBopts = InkerOpts#inker_options.cdb_options,
     JournalFP = filepath(RootPath, journal_dir),
@@ -288,7 +298,8 @@ start_from_file(InkerOpts) ->
                     active_journaldb = ActiveJournal,
                     active_journaldb_sqn = LowActiveSQN,
                     root_path = RootPath,
-                    cdb_options = CDBopts}}.
+                    cdb_options = CDBopts,
+                    clerk = Clerk}}.
 
 
 put_object(PrimaryKey, Object, KeyChanges, State) ->
