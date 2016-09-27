@@ -60,11 +60,13 @@
         cdb_getpositions/2,
         cdb_directfetch/3,
         cdb_lastkey/1,
+        cdb_firstkey/1,
         cdb_filename/1,
         cdb_keycheck/2,
         cdb_scan/4,
         cdb_close/1,
-        cdb_complete/1]).
+        cdb_complete/1,
+        cdb_destroy/1]).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -133,6 +135,9 @@ cdb_close(Pid) ->
 cdb_complete(Pid) ->
     gen_server:call(Pid, cdb_complete, infinity).
 
+cdb_destroy(Pid) ->
+    gen_server:cast(Pid, destroy).
+
 %% cdb_scan returns {LastPosition, Acc}.  Use LastPosition as StartPosiiton to
 %% continue from that point (calling function has to protect against) double
 %% counting.
@@ -149,6 +154,9 @@ cdb_scan(Pid, FilterFun, InitAcc, StartPosition) ->
 %% sequence number)
 cdb_lastkey(Pid) ->
     gen_server:call(Pid, cdb_lastkey, infinity).
+
+cdb_firstkey(Pid) ->
+    gen_server:call(Pid, cdb_firstkey, infinity).
 
 %% Get the filename of the database
 cdb_filename(Pid) ->
@@ -254,6 +262,8 @@ handle_call({put_kv, Key, Value}, _From, State) ->
     end;
 handle_call(cdb_lastkey, _From, State) ->
     {reply, State#state.last_key, State};
+handle_call(cdb_firstkey, _From, State) ->
+    {reply, extract_key(State#state.handle, ?BASE_POSITION), State};
 handle_call(cdb_filename, _From, State) ->
     {reply, State#state.filename, State};
 handle_call({get_positions, SampleSize}, _From, State) ->
@@ -339,7 +349,10 @@ handle_call(cdb_complete, _From, State) ->
     end.
     
 
-
+handle_cast(destroy, State) ->
+    ok = file:close(State#state.handle),
+    ok = file:delete(State#state.filename),
+    {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -1551,16 +1564,14 @@ find_lastkey_test() ->
     ok = cdb_put(P1, "Key1", "Value1"),
     ok = cdb_put(P1, "Key3", "Value3"),
     ok = cdb_put(P1, "Key2", "Value2"),
-    R1 = cdb_lastkey(P1),
-    ?assertMatch(R1, "Key2"),
+    ?assertMatch("Key2", cdb_lastkey(P1)),
+    ?assertMatch("Key1", cdb_firstkey(P1)),
     ok = cdb_close(P1),
     {ok, P2} = cdb_open_writer("../test/lastkey.pnd"),
-    R2 = cdb_lastkey(P2),
-    ?assertMatch(R2, "Key2"),
+    ?assertMatch("Key2", cdb_lastkey(P2)),
     {ok, F2} = cdb_complete(P2),
     {ok, P3} = cdb_open_reader(F2),
-    R3 = cdb_lastkey(P3),
-    ?assertMatch(R3, "Key2"),
+    ?assertMatch("Key2", cdb_lastkey(P3)),
     ok = cdb_close(P3),
     ok = file:delete("../test/lastkey.cdb").
 

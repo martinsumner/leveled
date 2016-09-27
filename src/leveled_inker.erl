@@ -105,16 +105,20 @@
         ink_loadpcl/4,
         ink_registersnapshot/2,
         ink_compactjournal/3,
-        ink_close/1,
+        ink_getmanifest/1,
+        ink_updatemanifest/4,
         ink_print_manifest/1,
+        ink_close/1,
         build_dummy_journal/0,
         simple_manifest_reader/2,
-        clean_testdir/1]).
+        clean_testdir/1,
+        filepath/3]).
 
 -include_lib("eunit/include/eunit.hrl").
 
 -define(MANIFEST_FP, "journal_manifest").
 -define(FILES_FP, "journal_files").
+-define(COMPACT_FP, "post_compact").
 -define(JOURNAL_FILEX, "cdb").
 -define(MANIFEST_FILEX, "man").
 -define(PENDING_FILEX, "pnd").
@@ -126,7 +130,7 @@
                 journal_sqn = 0 :: integer(),
                 active_journaldb :: pid(),
                 active_journaldb_sqn :: integer(),
-                removed_journaldbs = [] :: list(),
+                pending_removals = [] :: list(),
                 registered_snapshots = [] :: list(),
                 root_path :: string(),
                 cdb_options :: #cdb_options{},
@@ -160,6 +164,17 @@ ink_loadpcl(Pid, MinSQN, FilterFun, Penciller) ->
 
 ink_compactjournal(Pid, Penciller, Timeout) ->
     gen_server:call(Pid, {compact_journal, Penciller, Timeout}, infinty).
+
+ink_getmanifest(Pid) ->
+    gen_server:call(Pid, get_manifest, infinity).
+
+ink_updatemanifest(Pid, ManifestSnippet, PromptDeletion, DeletedFiles) ->
+    gen_server:call(Pid,
+                        {update_manifest,
+                            ManifestSnippet,
+                            PromptDeletion,
+                            DeletedFiles},
+                        infinity).
 
 ink_print_manifest(Pid) ->
     gen_server:call(Pid, print_manifest, infinity).
@@ -233,11 +248,45 @@ handle_call({register_snapshot, Requestor}, _From , State) ->
     {reply, {State#state.manifest,
                 State#state.active_journaldb},
                 State#state{registered_snapshots=Rs}};
+handle_call(get_manifest, _From, State) ->
+    {reply, State#state.manifest, State};
+handle_call({update_manifest,
+                ManifestSnippet,
+                PromptDeletion,
+                DeletedFiles}, _From, State) ->
+    Man0 = lists:foldl(fun(ManEntry, AccMan) ->
+                            Check = lists:member(ManEntry, DeletedFiles),
+                            if
+                                Check == false ->
+                                    lists:append(AccMan, ManEntry)
+                            end
+                            end,
+                        [],
+                        State#state.manifest),                    
+    Man1 = lists:foldl(fun(ManEntry, AccMan) ->
+                        add_to_manifest(AccMan, ManEntry) end,
+                    Man0,
+                    ManifestSnippet),
+    NewManifestSQN = State#state.manifest_sqn + 1,
+    ok = simple_manifest_writer(Man1, NewManifestSQN, State#state.root_path),
+    PendingRemovals = case PromptDeletion of
+                            true ->
+                                State#state.pending_removals ++
+                                    {NewManifestSQN, DeletedFiles};
+                            _ ->
+                                State#state.pending_removals
+                        end,
+    {reply, ok, State#state{manifest=Man1,
+                                manifest_sqn=NewManifestSQN,
+                                pending_removals=PendingRemovals}};
 handle_call(print_manifest, _From, State) ->
     manifest_printer(State#state.manifest),
     {reply, ok, State};
 handle_call({compact_journal, Penciller, Timeout}, _From, State) ->
-    leveled_iclerk:clerk_compact(Penciller, Timeout),
+    leveled_iclerk:clerk_compact(State#state.clerk,
+                                    self(),
+                                    Penciller,
+                                    Timeout),
     {reply, ok, State};
 handle_call(close, _From, State) ->
     {stop, normal, ok, State}.
@@ -265,7 +314,6 @@ code_change(_OldVsn, State, _Extra) ->
 %%%============================================================================
 
 start_from_file(InkerOpts) ->
-    {ok, Clerk} = leveled_iclerk:clerk_new(self()),
     RootPath = InkerOpts#inker_options.root_path,
     CDBopts = InkerOpts#inker_options.cdb_options,
     JournalFP = filepath(RootPath, journal_dir),
@@ -284,6 +332,14 @@ start_from_file(InkerOpts) ->
             filelib:ensure_dir(ManifestFP),
             {ok, []}
     end,
+    
+    CompactFP = filepath(RootPath, journal_compact_dir),
+    filelib:ensure_dir(CompactFP),
+    IClerkCDBOpts = CDBopts#cdb_options{file_path = CompactFP},
+    IClerkOpts = #iclerk_options{inker = self(),
+                                    cdb_options=IClerkCDBOpts},
+    {ok, Clerk} = leveled_iclerk:clerk_new(IClerkOpts),
+    
     {Manifest,
         {ActiveJournal, LowActiveSQN},
         JournalSQN,
@@ -597,8 +653,9 @@ find_in_manifest(SQN, [_Head|Tail]) ->
 filepath(RootPath, journal_dir) ->
     RootPath ++ "/" ++ ?FILES_FP ++ "/";
 filepath(RootPath, manifest_dir) ->
-    RootPath ++ "/" ++ ?MANIFEST_FP ++ "/".
-
+    RootPath ++ "/" ++ ?MANIFEST_FP ++ "/";
+filepath(RootPath, journal_compact_dir) ->
+    filepath(RootPath, journal_dir) ++ "/" ++ ?COMPACT_FP ++ "/".
 
 filepath(RootPath, NewSQN, new_journal) ->
     filename:join(filepath(RootPath, journal_dir),

@@ -21,13 +21,14 @@
                         filename :: string()}).
 
 -record(cdb_options,
-                        {max_size :: integer()}).
+                        {max_size :: integer(),
+                        file_path :: string()}).
 
 -record(inker_options,
                         {cdb_max_size :: integer(),
                         root_path :: string(),
                         cdb_options :: #cdb_options{},
-                        start_snapshot = false :: boolean,
+                        start_snapshot = false :: boolean(),
                         source_inker :: pid(),
                         requestor :: pid()}).
 
@@ -43,6 +44,11 @@
                         cache_size :: integer(),
                         metadata_extractor :: function(),
                         indexspec_converter :: function()}).
+
+-record(iclerk_options,
+                        {inker :: pid(),
+                        max_run_length :: integer(),
+                        cdb_options :: #cdb_options{}}).                                               
 
 %% Temp location for records related to riak
 

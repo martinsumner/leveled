@@ -1393,6 +1393,7 @@ findremainder(BitStr, Factor) ->
 %%%============================================================================
 
 
+-ifdef(TEST).
 
 generate_randomkeys({Count, StartSQN}) ->
     generate_randomkeys(Count, StartSQN, []);
@@ -1760,4 +1761,5 @@ big_iterator_test() ->
     ?assertMatch(NumFoundKeys3, 4 * 128),
     ok = file:close(Handle),
     ok = file:delete(Filename).
-    
+
+-endif.
