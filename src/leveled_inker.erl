@@ -112,6 +112,7 @@
         build_dummy_journal/0,
         simple_manifest_reader/2,
         clean_testdir/1,
+        filepath/2,
         filepath/3]).
 
 -include_lib("eunit/include/eunit.hrl").
@@ -661,8 +662,12 @@ filepath(RootPath, NewSQN, new_journal) ->
     filename:join(filepath(RootPath, journal_dir),
                     "nursery_"
                         ++ integer_to_list(NewSQN)
+                        ++ "." ++ ?PENDING_FILEX);
+filepath(CompactFilePath, NewSQN, compact_journal) ->
+    filename:join(CompactFilePath,
+                    "nursery_"
+                        ++ integer_to_list(NewSQN)
                         ++ "." ++ ?PENDING_FILEX).
-
 
 simple_manifest_reader(SQN, RootPath) ->
     ManifestPath = filepath(RootPath, manifest_dir),
