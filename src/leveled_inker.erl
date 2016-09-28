@@ -164,7 +164,26 @@ ink_loadpcl(Pid, MinSQN, FilterFun, Penciller) ->
     gen_server:call(Pid, {load_pcl, MinSQN, FilterFun, Penciller}, infinity).
 
 ink_compactjournal(Pid, Penciller, Timeout) ->
-    gen_server:call(Pid, {compact_journal, Penciller, Timeout}, infinty).
+    CheckerInitiateFun = fun initiate_penciller_snapshot/1,
+    CheckerFilterFun = fun leveled_penciller:pcl_checksequencenumber/3,
+    gen_server:call(Pid,
+                        {compact,
+                            Penciller,
+                            CheckerInitiateFun,
+                            CheckerFilterFun,
+                            Timeout},
+                        infiniy).
+
+%% Allows the Checker to be overriden in test, use something other than a
+%% penciller
+ink_compactjournal(Pid, Checker, InitiateFun, FilterFun, Timeout) ->
+    gen_server:call(Pid,
+                        {compact,
+                            Checker,
+                            InitiateFun,
+                            FilterFun,
+                            Timeout},
+                        infinity).
 
 ink_getmanifest(Pid) ->
     gen_server:call(Pid, get_manifest, infinity).
@@ -259,21 +278,23 @@ handle_call({update_manifest,
                             Check = lists:member(ManEntry, DeletedFiles),
                             if
                                 Check == false ->
-                                    lists:append(AccMan, ManEntry)
+                                    AccMan ++ [ManEntry];
+                                true ->
+                                    AccMan
                             end
                             end,
                         [],
                         State#state.manifest),                    
     Man1 = lists:foldl(fun(ManEntry, AccMan) ->
-                        add_to_manifest(AccMan, ManEntry) end,
-                    Man0,
-                    ManifestSnippet),
+                            add_to_manifest(AccMan, ManEntry) end,
+                        Man0,
+                        ManifestSnippet),
     NewManifestSQN = State#state.manifest_sqn + 1,
     ok = simple_manifest_writer(Man1, NewManifestSQN, State#state.root_path),
     PendingRemovals = case PromptDeletion of
                             true ->
                                 State#state.pending_removals ++
-                                    {NewManifestSQN, DeletedFiles};
+                                    [{NewManifestSQN, DeletedFiles}];
                             _ ->
                                 State#state.pending_removals
                         end,
@@ -283,14 +304,24 @@ handle_call({update_manifest,
 handle_call(print_manifest, _From, State) ->
     manifest_printer(State#state.manifest),
     {reply, ok, State};
-handle_call({compact_journal, Penciller, Timeout}, _From, State) ->
+handle_call({compact,
+                Checker,
+                InitiateFun,
+                FilterFun,
+                Timeout},
+                    _From, State) ->
     leveled_iclerk:clerk_compact(State#state.clerk,
+                                    Checker,
+                                    InitiateFun,
+                                    FilterFun,
                                     self(),
-                                    Penciller,
                                     Timeout),
     {reply, ok, State};
 handle_call(close, _From, State) ->
-    {stop, normal, ok, State}.
+    {stop, normal, ok, State};
+handle_call(Msg, _From, State) ->
+    io:format("Unexpected message ~w~n", [Msg]),
+    {reply, error, State}.
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -712,6 +743,15 @@ manifest_printer(Manifest) ->
                                             [SQN, FN]) end,
                     Manifest).
 
+
+initiate_penciller_snapshot(Penciller) ->
+    PclOpts = #penciller_options{start_snapshot = true,
+                                    source_penciller = Penciller,
+                                    requestor = self()},
+    FilterServer = leveled_penciller:pcl_start(PclOpts),
+    ok = leveled_penciller:pcl_loadsnapshot(FilterServer, []),
+    FilterServer.
+
 %%%============================================================================
 %%% Test
 %%%============================================================================
@@ -720,6 +760,7 @@ manifest_printer(Manifest) ->
 
 build_dummy_journal() ->
     RootPath = "../test/journal",
+    clean_testdir(RootPath),
     JournalFP = filepath(RootPath, journal_dir),
     ManifestFP = filepath(RootPath, manifest_dir),
     ok = filelib:ensure_dir(RootPath),
@@ -753,7 +794,13 @@ clean_testdir(RootPath) ->
 
 clean_subdir(DirPath) ->
     {ok, Files} = file:list_dir(DirPath),
-    lists:foreach(fun(FN) -> file:delete(filename:join(DirPath, FN)) end,
+    lists:foreach(fun(FN) ->
+                        File = filename:join(DirPath, FN),
+                        case file:delete(File) of
+                            ok -> io:format("Success deleting ~s~n", [File]);
+                            _ -> io:format("Error deleting ~s~n", [File])
+                        end
+                        end,
                     Files).
 
 simple_buildmanifest_test() ->
@@ -872,8 +919,53 @@ rollafile_simplejournal_test() ->
     ?assertMatch(R1, {{5, "KeyAA"}, {"TestValueAA", []}}),
     R2 = ink_get(Ink1, "KeyBB", 54),
     ?assertMatch(R2, {{54, "KeyBB"}, {"TestValueBB", []}}),
+    Man = ink_getmanifest(Ink1),
+    FakeMan = [{3, "test", dummy}, {1, "other_test", dummy}],
+    ok = ink_updatemanifest(Ink1, FakeMan, true, Man),
+    ?assertMatch(FakeMan, ink_getmanifest(Ink1)),
+    ok = ink_updatemanifest(Ink1, Man, true, FakeMan),
+    ?assertMatch({{5, "KeyAA"}, {"TestValueAA", []}},
+                    ink_get(Ink1, "KeyAA", 5)),
+    ?assertMatch({{54, "KeyBB"}, {"TestValueBB", []}},
+                    ink_get(Ink1, "KeyBB", 54)),
     ink_close(Ink1),
     clean_testdir(RootPath).
     
+compact_journal_test() ->
+    RootPath = "../test/journal",
+    build_dummy_journal(),
+    CDBopts = #cdb_options{max_size=300000},
+    {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,
+                                            cdb_options=CDBopts}),
+    FunnyLoop = lists:seq(1, 48),
+    {ok, NewSQN1, _ObjSize} = ink_put(Ink1, "KeyAA", "TestValueAA", []),
+    ?assertMatch(NewSQN1, 5),
+    ok = ink_print_manifest(Ink1),
+    R0 = ink_get(Ink1, "KeyAA", 5),
+    ?assertMatch(R0, {{5, "KeyAA"}, {"TestValueAA", []}}),
+    Checker = lists:map(fun(X) ->
+                            PK = "KeyZ" ++ integer_to_list(X),
+                            {ok, SQN, _} = ink_put(Ink1,
+                                                    PK,
+                                                    crypto:rand_bytes(10000),
+                                                    []),
+                            {SQN, PK}
+                            end,
+                        FunnyLoop),
+    {ok, NewSQN2, _ObjSize} = ink_put(Ink1, "KeyBB", "TestValueBB", []),
+    ?assertMatch(NewSQN2, 54),
+    ActualManifest = ink_getmanifest(Ink1),
+    ?assertMatch(2, length(ActualManifest)),
+    ok = ink_compactjournal(Ink1,
+                            Checker,
+                            fun(X) -> X end,
+                            fun(L, K, SQN) -> lists:member({SQN, K}, L) end,
+                            5000),
+    timer:sleep(1000),
+    CompactedManifest = ink_getmanifest(Ink1),
+    ?assertMatch(1, length(CompactedManifest)),
+    ink_updatemanifest(Ink1, ActualManifest, true, CompactedManifest),
+    ink_close(Ink1),
+    clean_testdir(RootPath).
 
 -endif.

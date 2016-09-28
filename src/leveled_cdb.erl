@@ -336,8 +336,10 @@ handle_call(cdb_complete, _From, State) ->
             %% Rename file
             NewName = filename:rootname(State#state.filename, ".pnd")
                         ++ ".cdb",
-            io:format("Renaming file from ~s to ~s~n",
-                        [State#state.filename, NewName]),
+            io:format("Renaming file from ~s to ~s " ++ 
+                        "for which existence is ~w~n",
+                        [State#state.filename, NewName,
+                            filelib:is_file(NewName)]),
             ok = file:rename(State#state.filename, NewName),
             {stop, normal, {ok, NewName}, State};
         false ->

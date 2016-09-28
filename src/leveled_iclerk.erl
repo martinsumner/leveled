@@ -12,7 +12,7 @@
         handle_info/2,
         terminate/2,
         clerk_new/1,
-        clerk_compact/4,
+        clerk_compact/6,
         clerk_remove/2,
         clerk_stop/1,
         code_change/3]).      
@@ -51,8 +51,14 @@ clerk_remove(Pid, Removals) ->
     gen_server:cast(Pid, {remove, Removals}),
     ok.
 
-clerk_compact(Pid, Penciller, Inker, Timeout) ->
-    clerk_compact(Pid, Penciller, Inker, Timeout).
+clerk_compact(Pid, Checker, InitiateFun, FilterFun, Inker, Timeout) ->
+    gen_server:cast(Pid,
+                    {compact,
+                    Checker,
+                    InitiateFun,
+                    FilterFun,
+                    Inker,
+                    Timeout}).
 
 clerk_stop(Pid) ->
     gen_server:cast(Pid, stop).
@@ -76,25 +82,18 @@ init([IClerkOpts]) ->
 handle_call(_Msg, _From, State) ->
     {reply, not_supprted, State}.
 
-handle_cast({compact, Penciller, Inker, _Timeout}, State) ->
+handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
+                State) ->
     % Need to fetch manifest at start rather than have it be passed in
     % Don't want to process a queued call waiting on an old manifest
     Manifest = leveled_inker:ink_getmanifest(Inker),
     MaxRunLength = State#state.max_run_length,
-    PclOpts = #penciller_options{start_snapshot = true,
-                                    source_penciller = Penciller,
-                                    requestor = self()},
-    FilterFun = fun leveled_penciller:pcl_checksequencenumber/3,
-    FilterServer = leveled_penciller:pcl_start(PclOpts),
-    ok = leveled_penciller:pcl_loadsnapshot(FilterServer, []),
-    
+    FilterServer = InitiateFun(Checker),
     CDBopts = State#state.cdb_options,
     FP = CDBopts#cdb_options.file_path,
     ok = filelib:ensure_dir(FP),
     
-    Candidates = scan_all_files(Manifest,
-                                FilterFun,
-                                FilterServer),
+    Candidates = scan_all_files(Manifest, FilterFun, FilterServer),
     BestRun = assess_candidates(Candidates, MaxRunLength),
     case score_run(BestRun, MaxRunLength) of
         Score when Score > 0 ->
@@ -278,6 +277,10 @@ compact_files(BestRun, CDBopts, FilterFun, FilterServer) ->
                                 [],
                                 true).
 
+
+compact_files([], _CDBopts, null, _FilterFun, _FilterServer,
+                            ManSlice0, PromptDelete0) ->
+    {ManSlice0, PromptDelete0};
 compact_files([], _CDBopts, ActiveJournal0, _FilterFun, _FilterServer,
                             ManSlice0, PromptDelete0) ->
     ManSlice1 = ManSlice0 ++ generate_manifest_entry(ActiveJournal0),
@@ -538,7 +541,8 @@ compact_single_file_test() ->
     ?assertMatch(missing, leveled_cdb:cdb_get(PidR, {7, "Key1"})),
     ?assertMatch(missing, leveled_cdb:cdb_get(PidR, {1, "Key1"})),
     {_RK1, RV1} = leveled_cdb:cdb_get(PidR, {2, "Key2"}),
-    ?assertMatch("Value2", binary_to_term(RV1)).
+    ?assertMatch("Value2", binary_to_term(RV1)),
+    ok = leveled_cdb:cdb_destroy(CDB).
 
 
 -endif.
