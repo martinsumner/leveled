@@ -7,11 +7,16 @@
 %% Ledger.
 %% - The Penciller provides re-write (compaction) work up to be managed by
 %% the Penciller's Clerk
-%% - The Penciller mainatins a register of iterators who have requested
+%% - The Penciller maintains a register of iterators who have requested
 %% snapshots of the Ledger
 %% - The accepts new dumps (in the form of lists of keys) from the Bookie, and
 %% calls the Bookie once the process of pencilling this data in the Ledger is
 %% complete - and the Bookie is free to forget about the data
+%% - The Penciller's persistence of the ledger may not be reliable, in that it
+%% may lose data but only in sequence from a particular sequence number.  On
+%% startup the Penciller will inform the Bookie of the highest sequence number
+%% it has, and the Bookie should load any missing data from that point out of
+%5 the journal.
 %%
 %% -------- LEDGER ---------
 %%
@@ -78,17 +83,20 @@
 %%
 %% ---------- SNAPSHOT ----------
 %%
-%% Iterators may request a snapshot of the database.  To provide a snapshot
-%% the Penciller must snapshot the ETS table, and then send this with a copy
-%% of the manifest.
+%% Iterators may request a snapshot of the database.  A snapshot is a cloned
+%% Penciller seeded not from disk, but by the in-memory ETS table and the
+%% in-memory manifest.
+
+%% To provide a snapshot the Penciller must snapshot the ETS table.  The
+%% snapshot of the ETS table is managed by the Penciller storing a list of the
+%% batches of Keys which have been pushed to the Penciller, and it is expected
+%% that this will be converted by the clone into a gb_tree.  The clone may
+%% then update the master Penciller with the gb_tree to be cached and used by
+%% other cloned processes. 
 %%
-%% Iterators requesting snapshots are registered by the Penciller, so that SFT
-%% files valid at the point of the snapshot until either the iterator is
+%% Clones formed to support snapshots are registered by the Penciller, so that
+%% SFT files valid at the point of the snapshot until either the iterator is
 %% completed or has timed out.
-%%
-%% Snapshot requests may request a filtered view of the ETS table (whihc may
-%% be quicker than requesting the full table), or requets a snapshot of only
-%% the persisted part of the Ledger
 %%
 %% ---------- ON STARTUP ----------
 %%
@@ -105,15 +113,14 @@
 %% ---------- ON SHUTDOWN ----------
 %%
 %% On a controlled shutdown the Penciller should attempt to write any in-memory
-%% ETS table to disk into the special ..on_shutdown folder
+%% ETS table to a L0 SFT file, assuming one is nto already pending.  If one is
+%% already pending then the Penciller will not persist this part of the Ledger.
 %%
 %% ---------- FOLDER STRUCTURE ----------
 %%
 %% The following folders are used by the Penciller
-%% $ROOT/ledger_manifest/ - used for keeping manifest files
-%% $ROOT/ledger_onshutdown/ - containing the persisted view of the ETS table
-%% written on controlled shutdown
-%% $ROOT/ledger_files/ - containing individual SFT files
+%% $ROOT/ledger/ledger_manifest/ - used for keeping manifest files
+%% $ROOT/ledger/ledger_files/ - containing individual SFT files
 %%
 %% In larger stores there could be a large number of files in the ledger_file
 %% folder - perhaps o(1000).  It is assumed that modern file systems should

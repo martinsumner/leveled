@@ -66,7 +66,8 @@
         cdb_scan/4,
         cdb_close/1,
         cdb_complete/1,
-        cdb_destroy/1]).
+        cdb_destroy/1,
+        cdb_deletepending/1]).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -84,7 +85,8 @@
                 filename :: string(),
                 handle :: file:fd(),
                 writer :: boolean(),
-                max_size :: integer()}).
+                max_size :: integer(),
+                pending_delete = false :: boolean()}).
 
 
 %%%============================================================================
@@ -137,6 +139,9 @@ cdb_complete(Pid) ->
 
 cdb_destroy(Pid) ->
     gen_server:cast(Pid, destroy).
+
+cdb_deletepending(Pid) ->
+    gen_server:cast(Pid, delete_pending).
 
 %% cdb_scan returns {LastPosition, Acc}.  Use LastPosition as StartPosiiton to
 %% continue from that point (calling function has to protect against) double
@@ -355,6 +360,8 @@ handle_cast(destroy, State) ->
     ok = file:close(State#state.handle),
     ok = file:delete(State#state.filename),
     {noreply, State};
+handle_cast(delete_pending, State) ->
+    {noreply, State#state{pending_delete = true}};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -362,11 +369,14 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, State) ->
-    case State#state.handle of
-        undefined ->
+    case {State#state.handle, State#state.pending_delete} of
+        {undefined, _} ->
             ok;
-        Handle ->
-            file:close(Handle)
+        {Handle, false} ->
+            file:close(Handle);
+        {Handle, true} ->
+            file:close(Handle),
+            file:delete(State#state.filename)
     end.
 
 code_change(_OldVsn, State, _Extra) ->

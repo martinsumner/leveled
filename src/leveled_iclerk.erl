@@ -80,7 +80,7 @@ init([IClerkOpts]) ->
     end.
 
 handle_call(_Msg, _From, State) ->
-    {reply, not_supprted, State}.
+    {reply, not_supported, State}.
 
 handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
                 State) ->
@@ -111,11 +111,20 @@ handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
                                         BestRun),
             ok = leveled_inker:ink_updatemanifest(Inker,
                                                     ManifestSlice,
-                                                    PromptDelete,
                                                     FilesToDelete),
-            {noreply, State};
+            ok = leveled_inker:ink_compactioncomplete(Inker),
+            case PromptDelete of
+                true ->
+                    lists:foreach(fun({_SQN, _FN, J2D}) ->
+                                        leveled_cdb:cdb_deletepending(J2D) end,
+                                    FilesToDelete),
+                    {noreply, State};
+                false ->
+                    {noreply, State}
+            end;
         Score ->
             io:format("No compaction run as highest score=~w~n", [Score]),
+            ok = leveled_inker:ink_compactioncomplete(Inker),
             {noreply, State}
     end;
 handle_cast({remove, _Removals}, State) ->
@@ -361,6 +370,9 @@ write_values([KVC|Rest], CDBopts, Journal0, ManSlice0) ->
                                 FN = leveled_inker:filepath(FP,
                                                             SQN,
                                                             compact_journal),
+                                io:format("Generate journal for compaction"
+                                                ++ " with filename ~s~n",
+                                            [FN]),
                                 leveled_cdb:cdb_open_writer(FN,
                                                             CDBopts);
                             _ ->

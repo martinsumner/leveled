@@ -11,7 +11,7 @@
 %% and frequent use of iterators)
 %% - The Journal is an extended nursery log in leveldb terms.  It is keyed
 %% on the sequence number of the write
-%% - The ledger is a LSM tree, where the key is the actaul object key, and
+%% - The ledger is a merge tree, where the key is the actaul object key, and
 %% the value is the metadata of the object including the sequence number
 %%
 %%
@@ -140,6 +140,7 @@
         book_riakhead/3,
         book_snapshotstore/3,
         book_snapshotledger/3,
+        book_compactjournal/2,
         book_close/1,
         strip_to_keyonly/1,
         strip_to_keyseqonly/1,
@@ -152,6 +153,8 @@
 -define(CACHE_SIZE, 1000).
 -define(JOURNAL_FP, "journal").
 -define(LEDGER_FP, "ledger").
+-define(SHUTDOWN_WAITS, 60).
+-define(SHUTDOWN_PAUSE, 10000).
 
 -record(state, {inker :: pid(),
                 penciller :: pid(),
@@ -187,6 +190,9 @@ book_snapshotstore(Pid, Requestor, Timeout) ->
 
 book_snapshotledger(Pid, Requestor, Timeout) ->
     gen_server:call(Pid, {snapshot, Requestor, ledger, Timeout}, infinity).
+
+book_compactjournal(Pid, Timeout) ->
+    gen_server:call(Pid, {compact_journal, Timeout}, infinity).
 
 book_close(Pid) ->
     gen_server:call(Pid, close, infinity).
@@ -289,6 +295,11 @@ handle_call({snapshot, Requestor, SnapType, _Timeout}, _From, State) ->
         ledger ->
             {reply, {ok, LedgerSnapshot, null}, State}
     end;
+handle_call({compact_journal, Timeout}, _From, State) ->
+    ok = leveled_inker:ink_compactjournal(State#state.inker,
+                                            State#state.penciller,
+                                            Timeout),
+    {reply, ok, State};
 handle_call(close, _From, State) ->
     {stop, normal, ok, State}.
 
@@ -300,7 +311,16 @@ handle_info(_Info, State) ->
 
 terminate(Reason, State) ->
     io:format("Bookie closing for reason ~w~n", [Reason]),
-    ok = leveled_inker:ink_close(State#state.inker),
+    WaitList = lists:duplicate(?SHUTDOWN_WAITS, ?SHUTDOWN_PAUSE),
+    ok = case shutdown_wait(WaitList, State#state.inker) of
+            false ->
+                io:format("Forcing close of inker following wait of "
+                                ++ "~w milliseconds~n",
+                            [lists:sum(WaitList)]),
+                leveled_inker:ink_forceclose(State#state.inker);
+            true ->
+                ok
+        end,
     ok = leveled_penciller:pcl_close(State#state.penciller).
 
 code_change(_OldVsn, State, _Extra) ->
@@ -311,11 +331,30 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%============================================================================
 
+shutdown_wait([], _Inker) ->
+    false;
+shutdown_wait([TopPause|Rest], Inker) ->
+    case leveled_inker:ink_close(Inker) of
+        ok ->
+            true;
+        pause ->
+            io:format("Inker shutdown stil waiting process to complete~n"),
+            ok = timer:sleep(TopPause),
+            shutdown_wait(Rest, Inker)
+    end.
+    
+
 set_options(Opts) ->
     %% TODO: Change the max size default, and allow setting through options
+    MaxJournalSize = case Opts#bookie_options.max_journalsize of
+                            undefined ->
+                                30000;
+                            MS ->
+                                MS
+                        end,
     {#inker_options{root_path = Opts#bookie_options.root_path ++
                                     "/" ++ ?JOURNAL_FP,
-                        cdb_options = #cdb_options{max_size=30000}},
+                        cdb_options = #cdb_options{max_size=MaxJournalSize}},
         #penciller_options{root_path=Opts#bookie_options.root_path ++
                                     "/" ++ ?LEDGER_FP}}.
 
@@ -442,10 +481,10 @@ maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
 load_fun(KeyInLedger, ValueInLedger, _Position, Acc0, ExtractFun) ->
     {MinSQN, MaxSQN, Output} = Acc0,
     {SQN, PK} = KeyInLedger,
-    io:format("Reloading changes with SQN=~w PK=~w~n", [SQN, PK]),
     {Obj, IndexSpecs} = binary_to_term(ExtractFun(ValueInLedger)),
     case SQN of
         SQN when SQN < MinSQN ->
+            io:format("Skipping due to low SQN ~w~n", [SQN]),
             {loop, Acc0};    
         SQN when SQN =< MaxSQN ->
             %% TODO - get correct size in a more efficient manner
@@ -454,6 +493,8 @@ load_fun(KeyInLedger, ValueInLedger, _Position, Acc0, ExtractFun) ->
             Changes = preparefor_ledgercache(PK, SQN, Obj, Size, IndexSpecs),
             {loop, {MinSQN, MaxSQN, Output ++ Changes}};
         SQN when SQN > MaxSQN ->
+            io:format("Skipping as exceeded MaxSQN ~w with SQN ~w~n",
+                        [MaxSQN, SQN]),
             {stop, Acc0}
     end.
 

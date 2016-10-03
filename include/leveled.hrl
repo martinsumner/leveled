@@ -42,6 +42,7 @@
 -record(bookie_options,
                        {root_path :: string(),
                         cache_size :: integer(),
+                        max_journalsize :: integer(),
                         metadata_extractor :: function(),
                         indexspec_converter :: function()}).
 

@@ -408,19 +408,7 @@ create_levelzero(Inp1, Filename) ->
                         false ->
                             ets:tab2list(Inp1)
                     end,
-    Ext = filename:extension(Filename),
-    Components = filename:split(Filename),
-    {TmpFilename, PrmFilename} = case Ext of
-        [] ->
-            {filename:join(Components) ++ ".pnd",
-                filename:join(Components) ++ ".sft"};
-        Ext ->
-            %% This seems unnecessarily hard
-            DN = filename:dirname(Filename),
-            FP = lists:last(Components),
-            FP_NOEXT = lists:sublist(FP, 1, 1 + length(FP) - length(Ext)),
-            {DN ++ "/" ++ FP_NOEXT ++ ".pnd", DN ++ "/" ++ FP_NOEXT ++ ".sft"}
-    end,
+    {TmpFilename, PrmFilename} = generate_filenames(Filename),
     case create_file(TmpFilename) of
         {error, Reason} ->
             {error,
@@ -441,6 +429,23 @@ create_levelzero(Inp1, Filename) ->
                                 background_complete=true,
                                 oversized_file=InputSize>?MAX_KEYS}}
     end.
+
+
+generate_filenames(RootFilename) ->
+    Ext = filename:extension(RootFilename),
+    Components = filename:split(RootFilename),
+    case Ext of
+        [] ->
+            {filename:join(Components) ++ ".pnd",
+                filename:join(Components) ++ ".sft"};
+        Ext ->
+            %% This seems unnecessarily hard
+            DN = filename:dirname(RootFilename),
+            FP = lists:last(Components),
+            FP_NOEXT = lists:sublist(FP, 1, 1 + length(FP) - length(Ext)),
+            {DN ++ "/" ++ FP_NOEXT ++ "pnd", DN ++ "/" ++ FP_NOEXT ++ "sft"}
+    end.    
+
 
 %% Start a bare file with an initial header and no further details
 %% Return the {Handle, metadata record}
@@ -1761,5 +1766,17 @@ big_iterator_test() ->
     ?assertMatch(NumFoundKeys3, 4 * 128),
     ok = file:close(Handle),
     ok = file:delete(Filename).
+
+filename_test() ->
+    FN1 = "../tmp/filename",
+    FN2 = "../tmp/filename.pnd",
+    FN3 = "../tmp/subdir/file_name.pend",
+    ?assertMatch({"../tmp/filename.pnd", "../tmp/filename.sft"},
+                    generate_filenames(FN1)),
+    ?assertMatch({"../tmp/filename.pnd", "../tmp/filename.sft"},
+                    generate_filenames(FN2)),
+    ?assertMatch({"../tmp/subdir/file_name.pnd",
+                        "../tmp/subdir/file_name.sft"},
+                    generate_filenames(FN3)).
 
 -endif.

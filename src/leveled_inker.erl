@@ -105,10 +105,12 @@
         ink_loadpcl/4,
         ink_registersnapshot/2,
         ink_compactjournal/3,
+        ink_compactioncomplete/1,
         ink_getmanifest/1,
-        ink_updatemanifest/4,
+        ink_updatemanifest/3,
         ink_print_manifest/1,
         ink_close/1,
+        ink_forceclose/1,
         build_dummy_journal/0,
         simple_manifest_reader/2,
         clean_testdir/1,
@@ -135,7 +137,9 @@
                 registered_snapshots = [] :: list(),
                 root_path :: string(),
                 cdb_options :: #cdb_options{},
-                clerk :: pid()}).
+                clerk :: pid(),
+                compaction_pending = false :: boolean(),
+                is_snapshot = false :: boolean()}).
 
 
 %%%============================================================================
@@ -158,7 +162,10 @@ ink_registersnapshot(Pid, Requestor) ->
     gen_server:call(Pid, {snapshot, Requestor}, infinity).
 
 ink_close(Pid) ->
-    gen_server:call(Pid, close, infinity).
+    gen_server:call(Pid, {close, false}, infinity).
+
+ink_forceclose(Pid) ->
+    gen_server:call(Pid, {close, true}, infinity).
 
 ink_loadpcl(Pid, MinSQN, FilterFun, Penciller) ->
     gen_server:call(Pid, {load_pcl, MinSQN, FilterFun, Penciller}, infinity).
@@ -172,7 +179,7 @@ ink_compactjournal(Pid, Penciller, Timeout) ->
                             CheckerInitiateFun,
                             CheckerFilterFun,
                             Timeout},
-                        infiniy).
+                        infinity).
 
 %% Allows the Checker to be overriden in test, use something other than a
 %% penciller
@@ -185,14 +192,16 @@ ink_compactjournal(Pid, Checker, InitiateFun, FilterFun, Timeout) ->
                             Timeout},
                         infinity).
 
+ink_compactioncomplete(Pid) ->
+    gen_server:call(Pid, compaction_complete, infinity).
+
 ink_getmanifest(Pid) ->
     gen_server:call(Pid, get_manifest, infinity).
 
-ink_updatemanifest(Pid, ManifestSnippet, PromptDeletion, DeletedFiles) ->
+ink_updatemanifest(Pid, ManifestSnippet, DeletedFiles) ->
     gen_server:call(Pid,
                         {update_manifest,
                             ManifestSnippet,
-                            PromptDeletion,
                             DeletedFiles},
                         infinity).
 
@@ -213,7 +222,8 @@ init([InkerOpts]) ->
                 {ActiveJournalDB,
                     Manifest}} = ink_registersnapshot(SrcInker, Requestor),            
             {ok, #state{manifest=Manifest,
-                            active_journaldb=ActiveJournalDB}};
+                            active_journaldb=ActiveJournalDB,
+                            is_snapshot=true}};
             %% Need to do something about timeout
         {_RootPath, false} ->
             start_from_file(InkerOpts)
@@ -272,7 +282,6 @@ handle_call(get_manifest, _From, State) ->
     {reply, State#state.manifest, State};
 handle_call({update_manifest,
                 ManifestSnippet,
-                PromptDeletion,
                 DeletedFiles}, _From, State) ->
     Man0 = lists:foldl(fun(ManEntry, AccMan) ->
                             Check = lists:member(ManEntry, DeletedFiles),
@@ -291,13 +300,7 @@ handle_call({update_manifest,
                         ManifestSnippet),
     NewManifestSQN = State#state.manifest_sqn + 1,
     ok = simple_manifest_writer(Man1, NewManifestSQN, State#state.root_path),
-    PendingRemovals = case PromptDeletion of
-                            true ->
-                                State#state.pending_removals ++
-                                    [{NewManifestSQN, DeletedFiles}];
-                            _ ->
-                                State#state.pending_removals
-                        end,
+    PendingRemovals = [{NewManifestSQN, DeletedFiles}],
     {reply, ok, State#state{manifest=Man1,
                                 manifest_sqn=NewManifestSQN,
                                 pending_removals=PendingRemovals}};
@@ -316,9 +319,16 @@ handle_call({compact,
                                     FilterFun,
                                     self(),
                                     Timeout),
-    {reply, ok, State};
-handle_call(close, _From, State) ->
-    {stop, normal, ok, State};
+    {reply, ok, State#state{compaction_pending=true}};
+handle_call(compaction_complete, _From, State) ->
+    {reply, ok, State#state{compaction_pending=false}};
+handle_call({close, Force}, _From, State) ->
+    case {State#state.compaction_pending, Force} of
+        {true, false} ->
+            {reply, pause, State};
+        _ ->
+            {stop, normal, ok, State}
+    end;
 handle_call(Msg, _From, State) ->
     io:format("Unexpected message ~w~n", [Msg]),
     {reply, error, State}.
@@ -330,12 +340,21 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(Reason, State) ->
-    io:format("Inker closing journal for reason ~w~n", [Reason]),
-    io:format("Close triggered with journal_sqn=~w and manifest_sqn=~w~n",
-                    [State#state.journal_sqn, State#state.manifest_sqn]),
-    io:format("Manifest when closing is: ~n"),
-    manifest_printer(State#state.manifest),
-    close_allmanifest(State#state.manifest, State#state.active_journaldb).
+    case State#state.is_snapshot of
+        true ->
+            ok;
+        false ->    
+            io:format("Inker closing journal for reason ~w~n", [Reason]),
+            io:format("Close triggered with journal_sqn=~w and manifest_sqn=~w~n",
+                            [State#state.journal_sqn, State#state.manifest_sqn]),
+            io:format("Manifest when closing is: ~n"),
+            leveled_iclerk:clerk_stop(State#state.clerk),
+            lists:foreach(fun({Snap, _SQN}) -> ok = ink_close(Snap) end,
+                            State#state.registered_snapshots),
+            manifest_printer(State#state.manifest),
+            close_allmanifest(State#state.manifest, State#state.active_journaldb),
+            close_allremovals(State#state.pending_removals)
+    end.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -597,6 +616,25 @@ close_allmanifest([H|ManifestT], ActiveJournal) ->
     ok = leveled_cdb:cdb_close(Pid),
     close_allmanifest(ManifestT, ActiveJournal).
 
+close_allremovals([]) ->
+    ok;
+close_allremovals([{ManifestSQN, Removals}|Tail]) ->
+    io:format("Closing removals at ManifestSQN=~w~n", [ManifestSQN]),
+    lists:foreach(fun({LowSQN, FN, Handle}) ->
+                        io:format("Closing removed file with LowSQN=~w" ++
+                                        " and filename ~s~n",
+                                    [LowSQN, FN]),
+                        if
+                            is_pid(Handle) == true ->
+                                ok = leveled_cdb:cdb_close(Handle);
+                            true ->
+                                io:format("Non pid in removal ~w - test~n",
+                                            [Handle])
+                        end
+                        end,
+                    Removals),
+    close_allremovals(Tail).
+
 
 roll_pending_journals([TopJournalSQN], Manifest, _RootPath)
                         when is_integer(TopJournalSQN) ->
@@ -621,22 +659,22 @@ load_from_sequence(_MinSQN, _FilterFun, _Penciller, []) ->
 load_from_sequence(MinSQN, FilterFun, Penciller, [{LowSQN, FN, Pid}|ManTail])
                                         when LowSQN >= MinSQN ->
     io:format("Loading from filename ~s from SQN ~w~n", [FN, MinSQN]),
-    ok = load_between_sequence(MinSQN,
-                                MinSQN + ?LOADING_BATCH,
-                                FilterFun,
-                                Penciller,
-                                Pid,
-                                undefined),
-    load_from_sequence(MinSQN, FilterFun, Penciller, ManTail);
+    {ok, LastMinSQN} = load_between_sequence(MinSQN,
+                                                MinSQN + ?LOADING_BATCH,
+                                                FilterFun,
+                                                Penciller,
+                                                Pid,
+                                                undefined),
+    load_from_sequence(LastMinSQN, FilterFun, Penciller, ManTail);
 load_from_sequence(MinSQN, FilterFun, Penciller, [_H|ManTail]) ->
     load_from_sequence(MinSQN, FilterFun, Penciller, ManTail).
 
 load_between_sequence(MinSQN, MaxSQN, FilterFun, Penciller, CDBpid, StartPos) ->
     InitAcc = {MinSQN, MaxSQN, []},
     case leveled_cdb:cdb_scan(CDBpid, FilterFun, InitAcc, StartPos) of
-        {eof, {_AccMinSQN, _AccMaxSQN, AccKL}} ->
+        {eof, {AccMinSQN, _AccMaxSQN, AccKL}} ->
             ok = push_to_penciller(Penciller, AccKL),
-            ok;
+            {ok, AccMinSQN};
         {LastPosition, {_AccMinSQN, _AccMaxSQN, AccKL}} ->
             ok = push_to_penciller(Penciller, AccKL),
             load_between_sequence(MaxSQN + 1,
@@ -748,7 +786,7 @@ initiate_penciller_snapshot(Penciller) ->
     PclOpts = #penciller_options{start_snapshot = true,
                                     source_penciller = Penciller,
                                     requestor = self()},
-    FilterServer = leveled_penciller:pcl_start(PclOpts),
+    {ok, FilterServer} = leveled_penciller:pcl_start(PclOpts),
     ok = leveled_penciller:pcl_loadsnapshot(FilterServer, []),
     FilterServer.
 
@@ -793,6 +831,7 @@ clean_testdir(RootPath) ->
     clean_subdir(filepath(RootPath, manifest_dir)).
 
 clean_subdir(DirPath) ->
+    ok = filelib:ensure_dir(DirPath),
     {ok, Files} = file:list_dir(DirPath),
     lists:foreach(fun(FN) ->
                         File = filename:join(DirPath, FN),
@@ -921,9 +960,9 @@ rollafile_simplejournal_test() ->
     ?assertMatch(R2, {{54, "KeyBB"}, {"TestValueBB", []}}),
     Man = ink_getmanifest(Ink1),
     FakeMan = [{3, "test", dummy}, {1, "other_test", dummy}],
-    ok = ink_updatemanifest(Ink1, FakeMan, true, Man),
+    ok = ink_updatemanifest(Ink1, FakeMan, Man),
     ?assertMatch(FakeMan, ink_getmanifest(Ink1)),
-    ok = ink_updatemanifest(Ink1, Man, true, FakeMan),
+    ok = ink_updatemanifest(Ink1, Man, FakeMan),
     ?assertMatch({{5, "KeyAA"}, {"TestValueAA", []}},
                     ink_get(Ink1, "KeyAA", 5)),
     ?assertMatch({{54, "KeyBB"}, {"TestValueBB", []}},
@@ -964,7 +1003,6 @@ compact_journal_test() ->
     timer:sleep(1000),
     CompactedManifest = ink_getmanifest(Ink1),
     ?assertMatch(1, length(CompactedManifest)),
-    ink_updatemanifest(Ink1, ActualManifest, true, CompactedManifest),
     ink_close(Ink1),
     clean_testdir(RootPath).
 
