@@ -159,7 +159,7 @@ ink_fetch(Pid, PrimaryKey, SQN) ->
     gen_server:call(Pid, {fetch, PrimaryKey, SQN}, infinity).
 
 ink_registersnapshot(Pid, Requestor) ->
-    gen_server:call(Pid, {snapshot, Requestor}, infinity).
+    gen_server:call(Pid, {register_snapshot, Requestor}, infinity).
 
 ink_close(Pid) ->
     gen_server:call(Pid, {close, false}, infinity).
@@ -218,11 +218,12 @@ init([InkerOpts]) ->
         {undefined, true} ->
             SrcInker = InkerOpts#inker_options.source_inker,
             Requestor = InkerOpts#inker_options.requestor,
-            {ok,
-                {ActiveJournalDB,
-                    Manifest}} = ink_registersnapshot(SrcInker, Requestor),            
+            {Manifest,
+                ActiveJournalDB,
+                ActiveJournalSQN} = ink_registersnapshot(SrcInker, Requestor),
             {ok, #state{manifest=Manifest,
                             active_journaldb=ActiveJournalDB,
+                            active_journaldb_sqn=ActiveJournalSQN,
                             is_snapshot=true}};
             %% Need to do something about timeout
         {_RootPath, false} ->
@@ -276,7 +277,8 @@ handle_call({register_snapshot, Requestor}, _From , State) ->
     Rs = [{Requestor,
             State#state.manifest_sqn}|State#state.registered_snapshots],
     {reply, {State#state.manifest,
-                State#state.active_journaldb},
+                State#state.active_journaldb,
+                State#state.active_journaldb_sqn},
                 State#state{registered_snapshots=Rs}};
 handle_call(get_manifest, _From, State) ->
     {reply, State#state.manifest, State};
@@ -656,33 +658,67 @@ roll_pending_journals([JournalSQN|T], Manifest, RootPath) ->
 
 load_from_sequence(_MinSQN, _FilterFun, _Penciller, []) ->
     ok;
-load_from_sequence(MinSQN, FilterFun, Penciller, [{LowSQN, FN, Pid}|ManTail])
+load_from_sequence(MinSQN, FilterFun, Penciller, [{LowSQN, FN, Pid}|Rest])
                                         when LowSQN >= MinSQN ->
-    io:format("Loading from filename ~s from SQN ~w~n", [FN, MinSQN]),
-    {ok, LastMinSQN} = load_between_sequence(MinSQN,
-                                                MinSQN + ?LOADING_BATCH,
-                                                FilterFun,
-                                                Penciller,
-                                                Pid,
-                                                undefined),
-    load_from_sequence(LastMinSQN, FilterFun, Penciller, ManTail);
-load_from_sequence(MinSQN, FilterFun, Penciller, [_H|ManTail]) ->
-    load_from_sequence(MinSQN, FilterFun, Penciller, ManTail).
-
-load_between_sequence(MinSQN, MaxSQN, FilterFun, Penciller, CDBpid, StartPos) ->
-    InitAcc = {MinSQN, MaxSQN, []},
-    case leveled_cdb:cdb_scan(CDBpid, FilterFun, InitAcc, StartPos) of
-        {eof, {AccMinSQN, _AccMaxSQN, AccKL}} ->
-            ok = push_to_penciller(Penciller, AccKL),
-            {ok, AccMinSQN};
-        {LastPosition, {_AccMinSQN, _AccMaxSQN, AccKL}} ->
-            ok = push_to_penciller(Penciller, AccKL),
-            load_between_sequence(MaxSQN + 1,
-                                    MaxSQN + 1 + ?LOADING_BATCH,
+    load_between_sequence(MinSQN,
+                            MinSQN + ?LOADING_BATCH,
+                            FilterFun,
+                            Penciller,
+                            Pid,
+                            undefined,
+                            FN,
+                            Rest);
+load_from_sequence(MinSQN, FilterFun, Penciller, [{_LowSQN, FN, Pid}|Rest]) ->
+    case Rest of
+        [] ->
+            load_between_sequence(MinSQN,
+                                    MinSQN + ?LOADING_BATCH,
                                     FilterFun,
                                     Penciller,
-                                    CDBpid,
-                                    LastPosition)
+                                    Pid,
+                                    undefined,
+                                    FN,
+                                    Rest);
+        [{NextSQN, _FN, Pid}|_Rest] when NextSQN > MinSQN ->
+            load_between_sequence(MinSQN,
+                                    MinSQN + ?LOADING_BATCH,
+                                    FilterFun,
+                                    Penciller,
+                                    Pid,
+                                    undefined,
+                                    FN,
+                                    Rest);
+        _ ->
+            load_from_sequence(MinSQN, FilterFun, Penciller, Rest)
+    end.
+
+
+
+load_between_sequence(MinSQN, MaxSQN, FilterFun, Penciller,
+                                CDBpid, StartPos, FN, Rest) ->
+    io:format("Loading from filename ~s from SQN ~w~n", [FN, MinSQN]),
+    InitAcc = {MinSQN, MaxSQN, []},
+    Res = case leveled_cdb:cdb_scan(CDBpid, FilterFun, InitAcc, StartPos) of
+                {eof, {AccMinSQN, _AccMaxSQN, AccKL}} ->
+                    ok = push_to_penciller(Penciller, AccKL),
+                    {ok, AccMinSQN};
+                {LastPosition, {_AccMinSQN, _AccMaxSQN, AccKL}} ->
+                    ok = push_to_penciller(Penciller, AccKL),
+                    NextSQN = MaxSQN + 1,
+                    load_between_sequence(NextSQN,
+                                            NextSQN + ?LOADING_BATCH,
+                                            FilterFun,
+                                            Penciller,
+                                            CDBpid,
+                                            LastPosition,
+                                            FN,
+                                            Rest)
+            end,
+    case Res of
+        {ok, LMSQN} ->
+            load_from_sequence(LMSQN, FilterFun, Penciller, Rest);
+        ok ->
+            ok
     end.
 
 push_to_penciller(Penciller, KeyList) ->

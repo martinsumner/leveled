@@ -117,19 +117,7 @@ merge(WI) ->
     {SrcF, UpdMFest1} = select_filetomerge(SrcLevel,
                                                 WI#penciller_work.manifest),
     SinkFiles = get_item(SrcLevel + 1, UpdMFest1, []),
-    Splits = lists:splitwith(fun(Ref) ->
-                                case {Ref#manifest_entry.start_key,
-                                     Ref#manifest_entry.end_key} of
-                                 {_, EK} when SrcF#manifest_entry.start_key > EK ->
-                                     false;
-                                 {SK, _} when SrcF#manifest_entry.end_key < SK ->
-                                     false;
-                                 _ ->
-                                     true
-                                end end,
-                            SinkFiles),
-    {Candidates, Others} = Splits,
-    
+    {Candidates, Others} = check_for_merge_candidates(SrcF, SinkFiles),
     %% TODO:
     %% Need to work out if this is the top level
     %% And then tell merge process to create files at the top level
@@ -185,7 +173,20 @@ mark_for_delete([Head|Tail], Penciller) ->
     leveled_sft:sft_setfordelete(Head#manifest_entry.owner, Penciller),
     mark_for_delete(Tail, Penciller).
     
-        
+
+check_for_merge_candidates(SrcF, SinkFiles) ->
+    lists:partition(fun(Ref) ->
+                        case {Ref#manifest_entry.start_key,
+                            Ref#manifest_entry.end_key} of
+                                {_, EK} when SrcF#manifest_entry.start_key > EK ->
+                                    false;
+                                {SK, _} when SrcF#manifest_entry.end_key < SK ->
+                                    false;
+                                _ ->
+                                    true
+                        end end,
+                    SinkFiles).
+    
             
 %% An algorithm for discovering which files to merge ....
 %% We can find the most optimal file:
@@ -374,6 +375,17 @@ merge_file_test() ->
     lists:foreach(fun(ManEntry) ->
                     leveled_sft:sft_clear(ManEntry#manifest_entry.owner) end,
                     Result).
+
+select_merge_candidates_test() ->
+    Sink1 = #manifest_entry{start_key = {o, "Bucket", "Key1"},
+                                end_key = {o, "Bucket", "Key20000"}},
+    Sink2 = #manifest_entry{start_key = {o, "Bucket", "Key20001"},
+                                end_key = {o, "Bucket1", "Key1"}},
+    Src1 = #manifest_entry{start_key = {o, "Bucket", "Key40001"},
+                                end_key = {o, "Bucket", "Key60000"}},
+    {Candidates, Others} = check_for_merge_candidates(Src1, [Sink1, Sink2]),
+    ?assertMatch([Sink2], Candidates),
+    ?assertMatch([Sink1], Others).
 
 
 select_merge_file_test() ->

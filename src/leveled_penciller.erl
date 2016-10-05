@@ -862,10 +862,14 @@ fetch(Key, Manifest, Level, FetchFun) ->
                         not_present,
                         LevelManifest) of
         not_present ->
+            io:format("Key ~w out of range at level ~w with manifest ~w~n",
+                        [Key, Level, LevelManifest]),
             fetch(Key, Manifest, Level + 1, FetchFun);
         FileToCheck ->
             case FetchFun(FileToCheck, Key) of
                 not_present ->
+                    io:format("Key ~w not found checking file at level ~w~n",
+                                [Key, Level]),       
                     fetch(Key, Manifest, Level + 1, FetchFun);
                 ObjectFound ->
                     ObjectFound
@@ -1022,6 +1026,25 @@ open_all_filesinmanifest({Manifest, TopSQN}, Level) ->
     UpdManifest = lists:keystore(Level, 1, Manifest, {Level, LvlFL}),
     open_all_filesinmanifest({UpdManifest, max(TopSQN, LvlSQN)}, Level + 1).
 
+print_manifest(Manifest) ->
+    lists:foreach(fun(L) ->
+                        io:format("Manifest at Level ~w~n", [L]),
+                        Level = get_item(L, Manifest, []),
+                        lists:foreach(fun(M) ->
+                                            {_, SB, SK} = M#manifest_entry.start_key,
+                                            {_, EB, EK} = M#manifest_entry.end_key,
+                                            io:format("Manifest entry of " ++ 
+                                                        "startkey ~s ~s " ++
+                                                        "endkey ~s ~s " ++
+                                                        "filename=~s~n",
+                                                [SB, SK, EB, EK,
+                                                    M#manifest_entry.filename])
+                                            end,
+                                        Level)
+                        end,
+                    lists:seq(1, ?MAX_LEVELS - 1)).
+
+
 assess_workqueue(WorkQ, ?MAX_LEVELS - 1, _Manifest) ->
     WorkQ;
 assess_workqueue(WorkQ, LevelToAssess, Manifest)->
@@ -1087,7 +1110,7 @@ commit_manifest_change(ReturnedWorkItem, State) ->
             io:format("Merge has been commmitted at sequence number ~w~n",
                         [NewMSN]),
             NewManifest = ReturnedWorkItem#penciller_work.new_manifest,
-            %% io:format("Updated manifest is ~w~n", [NewManifest]),
+            print_manifest(NewManifest),
             {ok, State#state{ongoing_work=[],
                                 manifest_sqn=NewMSN,
                                 manifest=NewManifest,

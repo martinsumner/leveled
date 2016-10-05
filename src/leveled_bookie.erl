@@ -155,6 +155,7 @@
 -define(LEDGER_FP, "ledger").
 -define(SHUTDOWN_WAITS, 60).
 -define(SHUTDOWN_PAUSE, 10000).
+-define(SNAPSHOT_TIMEOUT, 300000).
 
 -record(state, {inker :: pid(),
                 penciller :: pid(),
@@ -162,7 +163,8 @@
                 indexspec_converter :: function(),
                 cache_size :: integer(),
                 back_pressure :: boolean(),
-                ledger_cache :: gb_trees:tree()}).
+                ledger_cache :: gb_trees:tree(),
+                is_snapshot :: boolean()}).
 
 
 
@@ -202,32 +204,46 @@ book_close(Pid) ->
 %%%============================================================================
 
 init([Opts]) ->
-    {InkerOpts, PencillerOpts} = set_options(Opts),
-    {Inker, Penciller} = startup(InkerOpts, PencillerOpts),
-    Extractor = if
-                    Opts#bookie_options.metadata_extractor == undefined ->
-                        fun extract_metadata/2;
-                    true ->
-                        Opts#bookie_options.metadata_extractor
-                end,
-    Converter = if
-                    Opts#bookie_options.indexspec_converter == undefined ->
-                        fun convert_indexspecs/3;
-                    true ->
-                        Opts#bookie_options.indexspec_converter
-                end,
-    CacheSize = if
-                    Opts#bookie_options.cache_size == undefined ->
-                        ?CACHE_SIZE;
-                    true ->
-                        Opts#bookie_options.cache_size
-                end,
-    {ok, #state{inker=Inker,
-                penciller=Penciller,
-                metadata_extractor=Extractor,
-                indexspec_converter=Converter,
-                cache_size=CacheSize,
-                ledger_cache=gb_trees:empty()}}.
+    case Opts#bookie_options.snapshot_bookie of
+        undefined ->
+            % Start from file not snapshot
+            {InkerOpts, PencillerOpts} = set_options(Opts),
+            {Inker, Penciller} = startup(InkerOpts, PencillerOpts),
+            Extractor = if
+                            Opts#bookie_options.metadata_extractor == undefined ->
+                                fun extract_metadata/2;
+                            true ->
+                                Opts#bookie_options.metadata_extractor
+                        end,
+            Converter = if
+                            Opts#bookie_options.indexspec_converter == undefined ->
+                                fun convert_indexspecs/3;
+                            true ->
+                                Opts#bookie_options.indexspec_converter
+                        end,
+            CacheSize = if
+                            Opts#bookie_options.cache_size == undefined ->
+                                ?CACHE_SIZE;
+                            true ->
+                                Opts#bookie_options.cache_size
+                        end,
+            {ok, #state{inker=Inker,
+                        penciller=Penciller,
+                        metadata_extractor=Extractor,
+                        indexspec_converter=Converter,
+                        cache_size=CacheSize,
+                        ledger_cache=gb_trees:empty(),
+                        is_snapshot=false}};
+        Bookie ->
+            {ok,
+                {Penciller, LedgerCache},
+                Inker} = book_snapshotstore(Bookie, self(), ?SNAPSHOT_TIMEOUT),
+            ok = leveled_penciller:pcl_loadsnapshot(Penciller, []),
+            {ok, #state{penciller=Penciller,
+                        inker=Inker,
+                        ledger_cache=LedgerCache,
+                        is_snapshot=true}}
+    end.
 
 
 handle_call({put, PrimaryKey, Object, IndexSpecs}, From, State) ->
@@ -289,11 +305,21 @@ handle_call({snapshot, Requestor, SnapType, _Timeout}, _From, State) ->
     {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
     case SnapType of
         store ->
-            InkerOpts = #inker_options{},
+            InkerOpts = #inker_options{start_snapshot=true,
+                                        source_inker=State#state.inker,
+                                        requestor=Requestor},
             {ok, JournalSnapshot} = leveled_inker:ink_start(InkerOpts),
-            {reply, {ok, LedgerSnapshot, JournalSnapshot}, State};
+            {reply,
+                {ok,
+                    {LedgerSnapshot, State#state.ledger_cache},
+                    JournalSnapshot},
+                State};
         ledger ->
-            {reply, {ok, LedgerSnapshot, null}, State}
+            {reply,
+                {ok,
+                    {LedgerSnapshot, State#state.ledger_cache},
+                    null},
+                State}
     end;
 handle_call({compact_journal, Timeout}, _From, State) ->
     ok = leveled_inker:ink_compactjournal(State#state.inker,
