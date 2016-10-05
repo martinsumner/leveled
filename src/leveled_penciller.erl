@@ -862,14 +862,10 @@ fetch(Key, Manifest, Level, FetchFun) ->
                         not_present,
                         LevelManifest) of
         not_present ->
-            io:format("Key ~w out of range at level ~w with manifest ~w~n",
-                        [Key, Level, LevelManifest]),
             fetch(Key, Manifest, Level + 1, FetchFun);
         FileToCheck ->
             case FetchFun(FileToCheck, Key) of
                 not_present ->
-                    io:format("Key ~w not found checking file at level ~w~n",
-                                [Key, Level]),       
                     fetch(Key, Manifest, Level + 1, FetchFun);
                 ObjectFound ->
                     ObjectFound

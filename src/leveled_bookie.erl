@@ -159,8 +159,6 @@
 
 -record(state, {inker :: pid(),
                 penciller :: pid(),
-                metadata_extractor :: function(),
-                indexspec_converter :: function(),
                 cache_size :: integer(),
                 back_pressure :: boolean(),
                 ledger_cache :: gb_trees:tree(),
@@ -209,18 +207,6 @@ init([Opts]) ->
             % Start from file not snapshot
             {InkerOpts, PencillerOpts} = set_options(Opts),
             {Inker, Penciller} = startup(InkerOpts, PencillerOpts),
-            Extractor = if
-                            Opts#bookie_options.metadata_extractor == undefined ->
-                                fun extract_metadata/2;
-                            true ->
-                                Opts#bookie_options.metadata_extractor
-                        end,
-            Converter = if
-                            Opts#bookie_options.indexspec_converter == undefined ->
-                                fun convert_indexspecs/3;
-                            true ->
-                                Opts#bookie_options.indexspec_converter
-                        end,
             CacheSize = if
                             Opts#bookie_options.cache_size == undefined ->
                                 ?CACHE_SIZE;
@@ -229,8 +215,6 @@ init([Opts]) ->
                         end,
             {ok, #state{inker=Inker,
                         penciller=Penciller,
-                        metadata_extractor=Extractor,
-                        indexspec_converter=Converter,
                         cache_size=CacheSize,
                         ledger_cache=gb_trees:empty(),
                         is_snapshot=false}};
@@ -311,19 +295,21 @@ handle_call({snapshot, Requestor, SnapType, _Timeout}, _From, State) ->
             {ok, JournalSnapshot} = leveled_inker:ink_start(InkerOpts),
             {reply,
                 {ok,
-                    {LedgerSnapshot, State#state.ledger_cache},
+                    {LedgerSnapshot,
+                        State#state.ledger_cache},
                     JournalSnapshot},
                 State};
         ledger ->
             {reply,
                 {ok,
-                    {LedgerSnapshot, State#state.ledger_cache},
+                    {LedgerSnapshot,
+                        State#state.ledger_cache},
                     null},
                 State}
     end;
 handle_call({compact_journal, Timeout}, _From, State) ->
     ok = leveled_inker:ink_compactjournal(State#state.inker,
-                                            State#state.penciller,
+                                            self(),
                                             Timeout),
     {reply, ok, State};
 handle_call(close, _From, State) ->
@@ -510,7 +496,6 @@ load_fun(KeyInLedger, ValueInLedger, _Position, Acc0, ExtractFun) ->
     {Obj, IndexSpecs} = binary_to_term(ExtractFun(ValueInLedger)),
     case SQN of
         SQN when SQN < MinSQN ->
-            io:format("Skipping due to low SQN ~w~n", [SQN]),
             {loop, Acc0};    
         SQN when SQN =< MaxSQN ->
             %% TODO - get correct size in a more efficient manner
@@ -631,4 +616,16 @@ multi_key_test() ->
     ok = book_close(Bookie2),
     reset_filestructure().
 
+indexspecs_test() ->
+    IndexSpecs = [{add, "t1_int", 456},
+                    {add, "t1_bin", "adbc123"},
+                    {remove, "t1_bin", "abdc456"}],
+    Changes = convert_indexspecs(IndexSpecs, 1, {o, "Bucket", "Key2"}),
+    ?assertMatch({{i, "Bucket", "t1_int", 456, "Key2"},
+                    {1, {active, infinity}, null}}, lists:nth(1, Changes)),
+    ?assertMatch({{i, "Bucket", "t1_bin", "adbc123", "Key2"},
+                    {1, {active, infinity}, null}}, lists:nth(2, Changes)),
+    ?assertMatch({{i, "Bucket", "t1_bin", "abdc456", "Key2"},
+                    {1, {tomb, infinity}, null}}, lists:nth(3, Changes)).
+    
 -endif.

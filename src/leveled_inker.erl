@@ -170,12 +170,12 @@ ink_forceclose(Pid) ->
 ink_loadpcl(Pid, MinSQN, FilterFun, Penciller) ->
     gen_server:call(Pid, {load_pcl, MinSQN, FilterFun, Penciller}, infinity).
 
-ink_compactjournal(Pid, Penciller, Timeout) ->
+ink_compactjournal(Pid, Bookie, Timeout) ->
     CheckerInitiateFun = fun initiate_penciller_snapshot/1,
     CheckerFilterFun = fun leveled_penciller:pcl_checksequencenumber/3,
     gen_server:call(Pid,
                         {compact,
-                            Penciller,
+                            Bookie,
                             CheckerInitiateFun,
                             CheckerFilterFun,
                             Timeout},
@@ -818,13 +818,14 @@ manifest_printer(Manifest) ->
                     Manifest).
 
 
-initiate_penciller_snapshot(Penciller) ->
-    PclOpts = #penciller_options{start_snapshot = true,
-                                    source_penciller = Penciller,
-                                    requestor = self()},
-    {ok, FilterServer} = leveled_penciller:pcl_start(PclOpts),
-    ok = leveled_penciller:pcl_loadsnapshot(FilterServer, []),
-    FilterServer.
+initiate_penciller_snapshot(Bookie) ->
+    {ok,
+        {LedgerSnap, LedgerCache},
+        _} = leveled_bookie:book_snapshotledger(Bookie, self(), undefined),
+    ok = leveled_penciller:pcl_loadsnapshot(LedgerSnap,
+                                                gb_trees:to_list(LedgerCache)),
+    MaxSQN = leveled_penciller:pcl_getstartupsequencenumber(LedgerSnap),
+    {LedgerSnap, MaxSQN}.
 
 %%%============================================================================
 %%% Test
@@ -864,6 +865,7 @@ build_dummy_journal() ->
 
 clean_testdir(RootPath) ->
     clean_subdir(filepath(RootPath, journal_dir)),
+    clean_subdir(filepath(RootPath, journal_compact_dir)),
     clean_subdir(filepath(RootPath, manifest_dir)).
 
 clean_subdir(DirPath) ->
@@ -1033,7 +1035,7 @@ compact_journal_test() ->
     ?assertMatch(2, length(ActualManifest)),
     ok = ink_compactjournal(Ink1,
                             Checker,
-                            fun(X) -> X end,
+                            fun(X) -> {X, 55} end,
                             fun(L, K, SQN) -> lists:member({SQN, K}, L) end,
                             5000),
     timer:sleep(1000),

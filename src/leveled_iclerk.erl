@@ -13,7 +13,6 @@
         terminate/2,
         clerk_new/1,
         clerk_compact/6,
-        clerk_remove/2,
         clerk_stop/1,
         code_change/3]).      
 
@@ -47,10 +46,6 @@
 clerk_new(InkerClerkOpts) ->
     gen_server:start(?MODULE, [InkerClerkOpts], []).
     
-clerk_remove(Pid, Removals) ->
-    gen_server:cast(Pid, {remove, Removals}),
-    ok.
-
 clerk_compact(Pid, Checker, InitiateFun, FilterFun, Inker, Timeout) ->
     gen_server:cast(Pid,
                     {compact,
@@ -88,12 +83,12 @@ handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
     % Don't want to process a queued call waiting on an old manifest
     Manifest = leveled_inker:ink_getmanifest(Inker),
     MaxRunLength = State#state.max_run_length,
-    FilterServer = InitiateFun(Checker),
+    {FilterServer, MaxSQN} = InitiateFun(Checker),
     CDBopts = State#state.cdb_options,
     FP = CDBopts#cdb_options.file_path,
     ok = filelib:ensure_dir(FP),
     
-    Candidates = scan_all_files(Manifest, FilterFun, FilterServer),
+    Candidates = scan_all_files(Manifest, FilterFun, FilterServer, MaxSQN),
     BestRun = assess_candidates(Candidates, MaxRunLength),
     case score_run(BestRun, MaxRunLength) of
         Score when Score > 0 ->
@@ -102,7 +97,8 @@ handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
                 PromptDelete} = compact_files(BestRun,
                                                 CDBopts,
                                                 FilterFun,
-                                                FilterServer),
+                                                FilterServer,
+                                                MaxSQN),
             FilesToDelete = lists:map(fun(C) ->
                                             {C#candidate.low_sqn,
                                                 C#candidate.filename,
@@ -127,8 +123,6 @@ handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
             ok = leveled_inker:ink_compactioncomplete(Inker),
             {noreply, State}
     end;
-handle_cast({remove, _Removals}, State) ->
-    {noreply, State};
 handle_cast(stop, State) ->
     {stop, normal, State}.
 
@@ -147,38 +141,45 @@ code_change(_OldVsn, State, _Extra) ->
 %%%============================================================================
 
 
-check_single_file(CDB, FilterFun, FilterServer, SampleSize, BatchSize) ->
+check_single_file(CDB, FilterFun, FilterServer, MaxSQN, SampleSize, BatchSize) ->
+    FN = leveled_cdb:cdb_filename(CDB),
     PositionList = leveled_cdb:cdb_getpositions(CDB, SampleSize),
     KeySizeList = fetch_inbatches(PositionList, BatchSize, CDB, []),
     R0 = lists:foldl(fun(KS, {ActSize, RplSize}) ->
                             {{SQN, PK}, Size} = KS,
                             Check = FilterFun(FilterServer, PK, SQN),
-                            case Check of
-                                true ->
+                            case {Check, SQN > MaxSQN} of
+                                {true, _} ->
                                     {ActSize + Size, RplSize};
-                                false ->
+                                {false, true} ->
+                                    {ActSize + Size, RplSize};
+                                _ ->
                                     {ActSize, RplSize + Size}
                             end end,
                         {0, 0},
                         KeySizeList),
     {ActiveSize, ReplacedSize} = R0,
-    100 * ActiveSize / (ActiveSize + ReplacedSize).
+    Score = 100 * ActiveSize / (ActiveSize + ReplacedSize),
+    io:format("Score for filename ~s is ~w~n", [FN, Score]),
+    Score.
 
-scan_all_files(Manifest, FilterFun, FilterServer) ->
-    scan_all_files(Manifest, FilterFun, FilterServer, []).
+scan_all_files(Manifest, FilterFun, FilterServer, MaxSQN) ->
+    scan_all_files(Manifest, FilterFun, FilterServer, MaxSQN, []).
 
-scan_all_files([], _FilterFun, _FilterServer, CandidateList) ->
+scan_all_files([], _FilterFun, _FilterServer, _MaxSQN, CandidateList) ->
     CandidateList;
-scan_all_files([Entry|Tail], FilterFun, FilterServer, CandidateList) ->
+scan_all_files([Entry|Tail], FilterFun, FilterServer, MaxSQN, CandidateList) ->
     {LowSQN, FN, JournalP} = Entry,
     CpctPerc = check_single_file(JournalP,
                                     FilterFun,
                                     FilterServer,
+                                    MaxSQN,
                                     ?SAMPLE_SIZE,
                                     ?BATCH_SIZE),
     scan_all_files(Tail,
                     FilterFun,
                     FilterServer,
+                    MaxSQN,
                     CandidateList ++
                         [#candidate{low_sqn = LowSQN,
                                     filename = FN,
@@ -274,27 +275,29 @@ print_compaction_run(BestRun, MaxRunLength) ->
                         end,
                     BestRun).
 
-compact_files([], _CDBopts, _FilterFun, _FilterServer) ->
+compact_files([], _CDBopts, _FilterFun, _FilterServer, _MaxSQN) ->
     {[], 0};
-compact_files(BestRun, CDBopts, FilterFun, FilterServer) ->
+compact_files(BestRun, CDBopts, FilterFun, FilterServer, MaxSQN) ->
     BatchesOfPositions = get_all_positions(BestRun, []),
     compact_files(BatchesOfPositions,
                                 CDBopts,
                                 null,
                                 FilterFun,
                                 FilterServer,
+                                MaxSQN,
                                 [],
                                 true).
 
 
-compact_files([], _CDBopts, null, _FilterFun, _FilterServer,
+compact_files([], _CDBopts, null, _FilterFun, _FilterServer, _MaxSQN,
                             ManSlice0, PromptDelete0) ->
     {ManSlice0, PromptDelete0};
-compact_files([], _CDBopts, ActiveJournal0, _FilterFun, _FilterServer,
+compact_files([], _CDBopts, ActiveJournal0, _FilterFun, _FilterServer, _MaxSQN,
                             ManSlice0, PromptDelete0) ->
     ManSlice1 = ManSlice0 ++ generate_manifest_entry(ActiveJournal0),
     {ManSlice1, PromptDelete0};
-compact_files([Batch|T], CDBopts, ActiveJournal0, FilterFun, FilterServer,
+compact_files([Batch|T], CDBopts, ActiveJournal0,
+                            FilterFun, FilterServer, MaxSQN, 
                             ManSlice0, PromptDelete0) ->
     {SrcJournal, PositionList} = Batch,
     KVCs0 = leveled_cdb:cdb_directfetch(SrcJournal,
@@ -302,7 +305,8 @@ compact_files([Batch|T], CDBopts, ActiveJournal0, FilterFun, FilterServer,
                                         key_value_check),
     R0 = filter_output(KVCs0,
                         FilterFun,
-                        FilterServer),
+                        FilterServer,
+                        MaxSQN),
     {KVCs1, PromptDelete1} = R0,
     PromptDelete2 = case {PromptDelete0, PromptDelete1} of
                         {true, true} ->
@@ -314,7 +318,7 @@ compact_files([Batch|T], CDBopts, ActiveJournal0, FilterFun, FilterServer,
                                                 CDBopts, 
                                                 ActiveJournal0,
                                                 ManSlice0),
-    compact_files(T, CDBopts, ActiveJournal1, FilterFun, FilterServer,
+    compact_files(T, CDBopts, ActiveJournal1, FilterFun, FilterServer, MaxSQN,
                                 ManSlice1, PromptDelete2).
 
 get_all_positions([], PositionBatches) ->
@@ -341,16 +345,18 @@ split_positions_into_batches(Positions, Journal, Batches) ->
                                     Batches ++ [{Journal, ThisBatch}]).
 
 
-filter_output(KVCs, FilterFun, FilterServer) ->
+filter_output(KVCs, FilterFun, FilterServer, MaxSQN) ->
     lists:foldl(fun(KVC, {Acc, PromptDelete}) ->
                         {{SQN, PK}, _V, CrcCheck} = KVC,
                         KeyValid = FilterFun(FilterServer, PK, SQN),
-                        case {KeyValid, CrcCheck} of
-                            {true, true} ->
+                        case {KeyValid, CrcCheck, SQN > MaxSQN} of
+                            {true, true, _} ->
                                 {Acc ++ [KVC], PromptDelete};
-                            {false, _} ->
+                            {false, true, true} ->
+                                {Acc ++ [KVC], PromptDelete};
+                            {false, true, false} ->
                                 {Acc, PromptDelete};
-                            {_, false} ->
+                            {_, false, _} ->
                                 io:format("Corrupted value found for " ++ "
                                             Key ~w at SQN ~w~n", [PK, SQN]),
                                 {Acc, false}
@@ -415,7 +421,9 @@ simple_score_test() ->
     ?assertMatch(6.0, score_run(Run1, 4)),
     Run2 = [#candidate{compaction_perc = 75.0}],
     ?assertMatch(-15.0, score_run(Run2, 4)),
-    ?assertMatch(0.0, score_run([], 4)).
+    ?assertMatch(0.0, score_run([], 4)),
+    Run3 = [#candidate{compaction_perc = 100.0}],
+    ?assertMatch(-40.0, score_run(Run3, 4)).
 
 score_compare_test() ->
     Run1 = [#candidate{compaction_perc = 75.0},
@@ -514,15 +522,18 @@ check_single_file_test() ->
                         _ ->
                             false
                     end end,
-    Score1 = check_single_file(CDB, LedgerFun1, LedgerSrv1, 8, 4),
+    Score1 = check_single_file(CDB, LedgerFun1, LedgerSrv1, 9, 8, 4),
     ?assertMatch(37.5, Score1),
     LedgerFun2 = fun(_Srv, _Key, _ObjSQN) -> true end,
-    Score2 = check_single_file(CDB, LedgerFun2, LedgerSrv1, 8, 4),
+    Score2 = check_single_file(CDB, LedgerFun2, LedgerSrv1, 9, 8, 4),
     ?assertMatch(100.0, Score2),
-    Score3 = check_single_file(CDB, LedgerFun1, LedgerSrv1, 8, 3),
+    Score3 = check_single_file(CDB, LedgerFun1, LedgerSrv1, 9, 8, 3),
     ?assertMatch(37.5, Score3),
+    Score4 = check_single_file(CDB, LedgerFun1, LedgerSrv1, 4, 8, 4),
+    ?assertMatch(75.0, Score4),
     ok = leveled_cdb:cdb_destroy(CDB).
-    
+
+
 compact_single_file_test() ->
     RP = "../test/journal",
     {ok, CDB} = fetch_testcdb(RP),
@@ -543,7 +554,8 @@ compact_single_file_test() ->
     R1 = compact_files([Candidate],
                         #cdb_options{file_path=CompactFP},
                         LedgerFun1,
-                        LedgerSrv1),
+                        LedgerSrv1,
+                        9),
     {ManSlice1, PromptDelete1} = R1,
     ?assertMatch(true, PromptDelete1),
     [{LowSQN, FN, PidR}] = ManSlice1,
