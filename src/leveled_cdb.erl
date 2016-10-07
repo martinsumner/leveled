@@ -66,6 +66,7 @@
         cdb_scan/4,
         cdb_close/1,
         cdb_complete/1,
+        cdb_roll/1,
         cdb_destroy/1,
         cdb_deletepending/1]).
 
@@ -137,6 +138,9 @@ cdb_close(Pid) ->
 cdb_complete(Pid) ->
     gen_server:call(Pid, cdb_complete, infinity).
 
+cdb_roll(Pid) ->
+    gen_server:call(Pid, cdb_roll, infinity).
+
 cdb_destroy(Pid) ->
     gen_server:cast(Pid, destroy).
 
@@ -197,9 +201,7 @@ handle_call({open_writer, Filename}, _From, State) ->
                                 writer=true}};
 handle_call({open_reader, Filename}, _From, State) ->
     io:format("Opening file for reading with filename ~s~n", [Filename]),
-    {ok, Handle} = file:open(Filename, [binary, raw, read]),
-    Index = load_index(Handle),
-    LastKey = find_lastkey(Handle, Index),
+    {Handle, Index, LastKey} = open_for_readonly(Filename),
     {reply, ok, State#state{handle=Handle,
                                 last_key=LastKey,
                                 filename=Filename,
@@ -332,29 +334,33 @@ handle_call({cdb_scan, FilterFun, Acc, StartPos}, _From, State) ->
 handle_call(cdb_close, _From, State) ->
     ok = file:close(State#state.handle),
     {stop, normal, ok, State#state{handle=undefined}};
+handle_call(cdb_complete, _From, State=#state{writer=Writer})
+                                                when Writer == true ->
+    NewName = determine_new_filename(State#state.filename),
+    ok = close_file(State#state.handle,
+                        State#state.hashtree,
+                        State#state.last_position),
+    ok = rename_for_read(State#state.filename, NewName),
+    {stop, normal, {ok, NewName}, State};
 handle_call(cdb_complete, _From, State) ->
-    case State#state.writer of
-        true ->
-            ok = close_file(State#state.handle,
-                                State#state.hashtree,
-                                State#state.last_position),
-            %% Rename file
-            NewName = filename:rootname(State#state.filename, ".pnd")
-                        ++ ".cdb",
-            io:format("Renaming file from ~s to ~s " ++ 
-                        "for which existence is ~w~n",
-                        [State#state.filename, NewName,
-                            filelib:is_file(NewName)]),
-            ok = file:rename(State#state.filename, NewName),
-            {stop, normal, {ok, NewName}, State};
-        false ->
-            ok = file:close(State#state.handle),
-            {stop, normal, {ok, State#state.filename}, State};
-        undefined ->
-            ok = file:close(State#state.handle),
-            {stop, normal, {ok, State#state.filename}, State}
-    end.
-    
+    ok = file:close(State#state.handle),
+    {stop, normal, {ok, State#state.filename}, State};
+handle_call(cdb_roll, From, State=#state{writer=Writer})
+                                                when Writer == true ->
+    NewName = determine_new_filename(State#state.filename),
+    gen_server:reply(From, {ok, NewName}),
+    ok = close_file(State#state.handle,
+                        State#state.hashtree,
+                        State#state.last_position),
+    ok = rename_for_read(State#state.filename, NewName),
+    io:format("Opening file for reading with filename ~s~n", [NewName]),
+    {Handle, Index, LastKey} = open_for_readonly(NewName),
+    {noreply, State#state{handle=Handle,
+                            last_key=LastKey,
+                            filename=NewName,
+                            writer=false,
+                            hash_index=Index}}.
+
 
 handle_cast(destroy, State) ->
     ok = file:close(State#state.handle),
@@ -658,6 +664,23 @@ fold_keys(Handle, FoldFun, Acc0) ->
 %%%%%%%%%%%%%%%%%%%%
 %% Internal functions
 %%%%%%%%%%%%%%%%%%%%
+
+determine_new_filename(Filename) ->
+    filename:rootname(Filename, ".pnd") ++ ".cdb".
+    
+rename_for_read(Filename, NewName) ->
+    %% Rename file
+    io:format("Renaming file from ~s to ~s " ++ 
+                "for which existence is ~w~n",
+                [Filename, NewName,
+                    filelib:is_file(NewName)]),
+    file:rename(Filename, NewName).
+
+open_for_readonly(Filename) ->
+    {ok, Handle} = file:open(Filename, [binary, raw, read]),
+    Index = load_index(Handle),
+    LastKey = find_lastkey(Handle, Index),
+    {Handle, Index, LastKey}.
 
 load_index(Handle) ->
     Index = lists:seq(0, 255),

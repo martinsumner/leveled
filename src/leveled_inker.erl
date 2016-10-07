@@ -139,7 +139,8 @@
                 cdb_options :: #cdb_options{},
                 clerk :: pid(),
                 compaction_pending = false :: boolean(),
-                is_snapshot = false :: boolean()}).
+                is_snapshot = false :: boolean(),
+                source_inker :: pid()}).
 
 
 %%%============================================================================
@@ -160,6 +161,9 @@ ink_fetch(Pid, PrimaryKey, SQN) ->
 
 ink_registersnapshot(Pid, Requestor) ->
     gen_server:call(Pid, {register_snapshot, Requestor}, infinity).
+
+ink_releasesnapshot(Pid, Snapshot) ->
+    gen_server:call(Pid, {release_snapshot, Snapshot}, infinity).
 
 ink_close(Pid) ->
     gen_server:call(Pid, {close, false}, infinity).
@@ -217,13 +221,13 @@ init([InkerOpts]) ->
             InkerOpts#inker_options.start_snapshot} of
         {undefined, true} ->
             SrcInker = InkerOpts#inker_options.source_inker,
-            Requestor = InkerOpts#inker_options.requestor,
             {Manifest,
                 ActiveJournalDB,
-                ActiveJournalSQN} = ink_registersnapshot(SrcInker, Requestor),
+                ActiveJournalSQN} = ink_registersnapshot(SrcInker, self()),
             {ok, #state{manifest=Manifest,
                             active_journaldb=ActiveJournalDB,
                             active_journaldb_sqn=ActiveJournalSQN,
+                            source_inker=SrcInker,
                             is_snapshot=true}};
             %% Need to do something about timeout
         {_RootPath, false} ->
@@ -276,10 +280,17 @@ handle_call({load_pcl, StartSQN, FilterFun, Penciller}, _From, State) ->
 handle_call({register_snapshot, Requestor}, _From , State) ->
     Rs = [{Requestor,
             State#state.manifest_sqn}|State#state.registered_snapshots],
+    io:format("Inker snapshot ~w registered at SQN ~w~n",
+                    [Requestor, State#state.manifest_sqn]),
     {reply, {State#state.manifest,
                 State#state.active_journaldb,
                 State#state.active_journaldb_sqn},
                 State#state{registered_snapshots=Rs}};
+handle_call({release_snapshot, Snapshot}, _From , State) ->
+    Rs = lists:keydelete(Snapshot, 1, State#state.registered_snapshots),
+    io:format("Snapshot ~w released~n", [Snapshot]),
+    io:format("Remaining snapshots are ~w~n", [Rs]),
+    {reply, ok, State#state{registered_snapshots=Rs}};
 handle_call(get_manifest, _From, State) ->
     {reply, State#state.manifest, State};
 handle_call({update_manifest,
@@ -344,7 +355,7 @@ handle_info(_Info, State) ->
 terminate(Reason, State) ->
     case State#state.is_snapshot of
         true ->
-            ok;
+            ok = ink_releasesnapshot(State#state.source_inker, self());
         false ->    
             io:format("Inker closing journal for reason ~w~n", [Reason]),
             io:format("Close triggered with journal_sqn=~w and manifest_sqn=~w~n",
@@ -444,16 +455,16 @@ put_object(PrimaryKey, Object, KeyChanges, State) ->
             end
     end.
 
-roll_active_file(OldActiveJournal, Manifest, ManifestSQN, RootPath) ->
+roll_active_file(ActiveJournal, Manifest, ManifestSQN, RootPath) ->
     SW = os:timestamp(),
-    io:format("Rolling old journal ~w~n", [OldActiveJournal]),
-    {ok, NewFilename} = leveled_cdb:cdb_complete(OldActiveJournal),
-    {ok, PidR} = leveled_cdb:cdb_open_reader(NewFilename),
+    io:format("Rolling old journal ~w~n", [ActiveJournal]),
+    {ok, NewFilename} = leveled_cdb:cdb_roll(ActiveJournal),
     JournalRegex2 = "nursery_(?<SQN>[0-9]+)\\." ++ ?JOURNAL_FILEX,
     [JournalSQN] = sequencenumbers_fromfilenames([NewFilename],
                                                     JournalRegex2,
                                                     'SQN'),
-    NewManifest = add_to_manifest(Manifest, {JournalSQN, NewFilename, PidR}),
+    NewManifest = add_to_manifest(Manifest,
+                                    {JournalSQN, NewFilename, ActiveJournal}),
     NewManifestSQN = ManifestSQN + 1,
     ok = simple_manifest_writer(NewManifest, NewManifestSQN, RootPath),
     io:format("Rolling old journal completed in ~w microseconds~n",

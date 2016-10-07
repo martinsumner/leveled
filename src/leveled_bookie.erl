@@ -213,6 +213,8 @@ init([Opts]) ->
                             true ->
                                 Opts#bookie_options.cache_size
                         end,
+            io:format("Bookie starting with Pcl ~w Ink ~w~n",
+                                                [Penciller, Inker]),
             {ok, #state{inker=Inker,
                         penciller=Penciller,
                         cache_size=CacheSize,
@@ -223,6 +225,8 @@ init([Opts]) ->
                 {Penciller, LedgerCache},
                 Inker} = book_snapshotstore(Bookie, self(), ?SNAPSHOT_TIMEOUT),
             ok = leveled_penciller:pcl_loadsnapshot(Penciller, []),
+            io:format("Snapshot starting with Pcl ~w Ink ~w~n",
+                                                [Penciller, Inker]),
             {ok, #state{penciller=Penciller,
                         inker=Inker,
                         ledger_cache=LedgerCache,
@@ -282,16 +286,14 @@ handle_call({head, Key}, _From, State) ->
                     {reply, {ok, OMD}, State}
             end
     end;
-handle_call({snapshot, Requestor, SnapType, _Timeout}, _From, State) ->
+handle_call({snapshot, _Requestor, SnapType, _Timeout}, _From, State) ->
     PCLopts = #penciller_options{start_snapshot=true,
-                                    source_penciller=State#state.penciller, 
-                                    requestor=Requestor},
+                                    source_penciller=State#state.penciller},
     {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
     case SnapType of
         store ->
             InkerOpts = #inker_options{start_snapshot=true,
-                                        source_inker=State#state.inker,
-                                        requestor=Requestor},
+                                        source_inker=State#state.inker},
             {ok, JournalSnapshot} = leveled_inker:ink_start(InkerOpts),
             {reply,
                 {ok,
@@ -497,12 +499,19 @@ load_fun(KeyInLedger, ValueInLedger, _Position, Acc0, ExtractFun) ->
     case SQN of
         SQN when SQN < MinSQN ->
             {loop, Acc0};    
-        SQN when SQN =< MaxSQN ->
+        SQN when SQN < MaxSQN ->
             %% TODO - get correct size in a more efficient manner
             %% Need to have compressed size
             Size = byte_size(term_to_binary(ValueInLedger, [compressed])),
             Changes = preparefor_ledgercache(PK, SQN, Obj, Size, IndexSpecs),
             {loop, {MinSQN, MaxSQN, Output ++ Changes}};
+        MaxSQN ->
+            %% TODO - get correct size in a more efficient manner
+            %% Need to have compressed size
+            io:format("Reached end of load batch with SQN ~w~n", [SQN]),
+            Size = byte_size(term_to_binary(ValueInLedger, [compressed])),
+            Changes = preparefor_ledgercache(PK, SQN, Obj, Size, IndexSpecs),
+            {stop, {MinSQN, MaxSQN, Output ++ Changes}};
         SQN when SQN > MaxSQN ->
             io:format("Skipping as exceeded MaxSQN ~w with SQN ~w~n",
                         [MaxSQN, SQN]),

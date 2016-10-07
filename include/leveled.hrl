@@ -29,15 +29,13 @@
                         root_path :: string(),
                         cdb_options :: #cdb_options{},
                         start_snapshot = false :: boolean(),
-                        source_inker :: pid(),
-                        requestor :: pid()}).
+                        source_inker :: pid()}).
 
 -record(penciller_options,
                         {root_path :: string(),
                         max_inmemory_tablesize :: integer(),
                         start_snapshot = false :: boolean(),
-                        source_penciller :: pid(),
-                        requestor :: pid()}).
+                        source_penciller :: pid()}).
 
 -record(bookie_options,
                        {root_path :: string(),

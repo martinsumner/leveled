@@ -491,42 +491,40 @@ handle_call({manifest_change, WI}, _From, State=#state{is_snapshot=Snap})
                                                         when Snap == false ->
     {ok, UpdState} = commit_manifest_change(WI, State),
     {reply, ok, UpdState};
-handle_call({check_sqn, Key, SQN}, _From, State) ->
-    Obj = if
-                State#state.is_snapshot == true ->
-                    fetch_snap(Key,
+handle_call({fetch, Key}, _From, State=#state{is_snapshot=Snap})
+                                                        when Snap == false ->
+    {reply,
+        fetch(Key,
+                State#state.manifest,
+                State#state.memtable),
+        State};
+handle_call({check_sqn, Key, SQN}, _From, State=#state{is_snapshot=Snap})
+                                                        when Snap == false ->
+    {reply,
+        compare_to_sqn(fetch(Key,
                                 State#state.manifest,
-                                State#state.levelzero_snapshot);
-                true ->
-                    fetch(Key,
-                            State#state.manifest,
-                            State#state.memtable)
-            end,
-    Reply = case Obj of
-                not_present ->
-                    false;
-                Obj ->
-                    SQNToCompare = leveled_bookie:strip_to_seqonly(Obj),
-                    if
-                        SQNToCompare > SQN ->
-                            false;
-                        true ->
-                            true
-                    end
-            end,
-    {reply, Reply, State};
-handle_call({fetch, Key}, _From, State) ->
-    Reply = if
-                State#state.is_snapshot == true ->
-                    fetch_snap(Key,
-                                State#state.manifest,
-                                State#state.levelzero_snapshot);
-                true ->
-                    fetch(Key,
-                            State#state.manifest,
-                            State#state.memtable)
-            end,
-    {reply, Reply, State};
+                                State#state.memtable),
+                        SQN),
+        State};
+handle_call({fetch, Key},
+                _From,
+                State=#state{snapshot_fully_loaded=Ready})
+                                                        when Ready == true ->
+    {reply,
+        fetch_snap(Key,
+                    State#state.manifest,
+                    State#state.levelzero_snapshot),
+        State};
+handle_call({check_sqn, Key, SQN},
+                _From,
+                State=#state{snapshot_fully_loaded=Ready})
+                                                        when Ready == true ->
+    {reply,
+        compare_to_sqn(fetch_snap(Key,
+                                    State#state.manifest,
+                                    State#state.levelzero_snapshot),
+                        SQN),
+        State};
 handle_call(work_for_clerk, From, State) ->
     {UpdState, Work} = return_work(State, From),
     {reply, {Work, UpdState#state.backlog}, UpdState};
@@ -568,6 +566,8 @@ handle_cast(_Msg, State) ->
 handle_info(_Info, State) ->
     {noreply, State}.
 
+terminate(_Reason, _State=#state{is_snapshot=Snap}) when Snap == true ->
+    ok;
 terminate(_Reason, State) ->
     %% When a Penciller shuts down it isn't safe to try an manage the safe
     %% finishing of any outstanding work.  The last commmitted manifest will
@@ -585,46 +585,41 @@ terminate(_Reason, State) ->
     %% The cast may not succeed as the clerk could be synchronously calling
     %% the penciller looking for a manifest commit
     %%
-    if
-        State#state.is_snapshot == true ->
-            ok;
-        true ->      
-            leveled_pclerk:clerk_stop(State#state.clerk),
-            Dump = ets:tab2list(State#state.memtable),
-            case {State#state.levelzero_pending,
-                    get_item(0, State#state.manifest, []), length(Dump)} of
-                {?L0PEND_RESET, [], L} when L > 0 ->
-                    MSN = State#state.manifest_sqn + 1,
-                    FileName = State#state.root_path
-                                ++ "/" ++ ?FILES_FP ++ "/"
-                                ++ integer_to_list(MSN) ++ "_0_0",
-                    NewSFT = leveled_sft:sft_new(FileName ++ ".pnd",
-                                                    Dump,
-                                                    [],
-                                                    0),
-                    {ok, L0Pid, {{[], []}, _SK, _HK}} = NewSFT,
-                    io:format("Dump of memory on close to filename ~s~n",
-                                [FileName]),
-                    leveled_sft:sft_close(L0Pid),
-                    file:rename(FileName ++ ".pnd", FileName ++ ".sft");
-                {?L0PEND_RESET, [], L} when L == 0 ->
-                    io:format("No keys to dump from memory when closing~n");
-                {{true, L0Pid, _TS}, _, _} ->
-                    leveled_sft:sft_close(L0Pid),
-                    io:format("No opportunity to persist memory before closing"
-                                ++ " with ~w keys discarded~n",
-                                [length(Dump)]);
-                _ ->
-                    io:format("No opportunity to persist memory before closing"
-                                ++ " with ~w keys discarded~n",
-                                [length(Dump)])
-            end,
-            ok = close_files(0, State#state.manifest),
-            lists:foreach(fun({_FN, Pid, _SN}) ->
-                                    leveled_sft:sft_close(Pid) end,
-                            State#state.unreferenced_files),
-            ok
-    end.
+    leveled_pclerk:clerk_stop(State#state.clerk),
+    Dump = ets:tab2list(State#state.memtable),
+    case {State#state.levelzero_pending,
+            get_item(0, State#state.manifest, []), length(Dump)} of
+        {?L0PEND_RESET, [], L} when L > 0 ->
+            MSN = State#state.manifest_sqn + 1,
+            FileName = State#state.root_path
+                        ++ "/" ++ ?FILES_FP ++ "/"
+                        ++ integer_to_list(MSN) ++ "_0_0",
+            NewSFT = leveled_sft:sft_new(FileName ++ ".pnd",
+                                            Dump,
+                                            [],
+                                            0),
+            {ok, L0Pid, {{[], []}, _SK, _HK}} = NewSFT,
+            io:format("Dump of memory on close to filename ~s~n",
+                        [FileName]),
+            leveled_sft:sft_close(L0Pid),
+            file:rename(FileName ++ ".pnd", FileName ++ ".sft");
+        {?L0PEND_RESET, [], L} when L == 0 ->
+            io:format("No keys to dump from memory when closing~n");
+        {{true, L0Pid, _TS}, _, _} ->
+            leveled_sft:sft_close(L0Pid),
+            io:format("No opportunity to persist memory before closing"
+                        ++ " with ~w keys discarded~n",
+                        [length(Dump)]);
+        _ ->
+            io:format("No opportunity to persist memory before closing"
+                        ++ " with ~w keys discarded~n",
+                        [length(Dump)])
+    end,
+    ok = close_files(0, State#state.manifest),
+    lists:foreach(fun({_FN, Pid, _SN}) ->
+                            leveled_sft:sft_close(Pid) end,
+                    State#state.unreferenced_files),
+    ok.
 
 
 code_change(_OldVsn, State, _Extra) ->
@@ -842,6 +837,21 @@ fetch(Key, Manifest, Level, FetchFun) ->
             end
     end.
     
+
+compare_to_sqn(Obj, SQN) ->
+    case Obj of
+        not_present ->
+            false;
+        Obj ->
+            SQNToCompare = leveled_bookie:strip_to_seqonly(Obj),
+            if
+                SQNToCompare > SQN ->
+                    false;
+                true ->
+                    true
+            end
+    end.
+
 
 %% Manifest lock - don't have two changes to the manifest happening
 %% concurrently
@@ -1280,8 +1290,7 @@ simple_server_test() ->
     ?assertMatch(R13, Key3),
     ?assertMatch(R14, Key4),
     SnapOpts = #penciller_options{start_snapshot = true,
-                                    source_penciller = PCLr,
-                                    requestor = self()},
+                                    source_penciller = PCLr},
     {ok, PclSnap} = pcl_start(SnapOpts),
     ok = pcl_loadsnapshot(PclSnap, []),
     ?assertMatch(Key1, pcl_fetch(PclSnap, {o,"Bucket0001", "Key0001"})),
