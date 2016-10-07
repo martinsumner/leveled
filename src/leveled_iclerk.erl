@@ -81,7 +81,12 @@ handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
                 State) ->
     % Need to fetch manifest at start rather than have it be passed in
     % Don't want to process a queued call waiting on an old manifest
-    Manifest = leveled_inker:ink_getmanifest(Inker),
+    Manifest = case leveled_inker:ink_getmanifest(Inker) of
+                    [] ->
+                        [];
+                    [_Active|Tail] ->
+                        Tail
+                end,
     MaxRunLength = State#state.max_run_length,
     {FilterServer, MaxSQN} = InitiateFun(Checker),
     CDBopts = State#state.cdb_options,
@@ -159,7 +164,12 @@ check_single_file(CDB, FilterFun, FilterServer, MaxSQN, SampleSize, BatchSize) -
                         {0, 0},
                         KeySizeList),
     {ActiveSize, ReplacedSize} = R0,
-    Score = 100 * ActiveSize / (ActiveSize + ReplacedSize),
+    Score = case ActiveSize + ReplacedSize of
+                0 ->
+                    100.0;
+                _ ->
+                    100 * ActiveSize / (ActiveSize + ReplacedSize)
+            end,
     io:format("Score for filename ~s is ~w~n", [FN, Score]),
     Score.
 
@@ -219,6 +229,7 @@ assess_candidates(AllCandidates, MaxRunLength) ->
     end.
 
 assess_candidates([], _MaxRunLength, _CurrentRun0, BestAssessment) ->
+    io:format("Best run of ~w~n", [BestAssessment]),
     BestAssessment;
 assess_candidates([HeadC|Tail], MaxRunLength, CurrentRun0, BestAssessment) ->
     CurrentRun1 = choose_best_assessment(CurrentRun0 ++ [HeadC],

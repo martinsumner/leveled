@@ -139,7 +139,7 @@ cdb_complete(Pid) ->
     gen_server:call(Pid, cdb_complete, infinity).
 
 cdb_roll(Pid) ->
-    gen_server:call(Pid, cdb_roll, infinity).
+    gen_server:cast(Pid, cdb_roll).
 
 cdb_destroy(Pid) ->
     gen_server:cast(Pid, destroy).
@@ -344,11 +344,17 @@ handle_call(cdb_complete, _From, State=#state{writer=Writer})
     {stop, normal, {ok, NewName}, State};
 handle_call(cdb_complete, _From, State) ->
     ok = file:close(State#state.handle),
-    {stop, normal, {ok, State#state.filename}, State};
-handle_call(cdb_roll, From, State=#state{writer=Writer})
-                                                when Writer == true ->
+    {stop, normal, {ok, State#state.filename}, State}.
+
+
+handle_cast(destroy, State) ->
+    ok = file:close(State#state.handle),
+    ok = file:delete(State#state.filename),
+    {noreply, State};
+handle_cast(delete_pending, State) ->
+    {noreply, State#state{pending_delete = true}};
+handle_cast(cdb_roll, State=#state{writer=Writer}) when Writer == true ->
     NewName = determine_new_filename(State#state.filename),
-    gen_server:reply(From, {ok, NewName}),
     ok = close_file(State#state.handle,
                         State#state.hashtree,
                         State#state.last_position),
@@ -359,15 +365,7 @@ handle_call(cdb_roll, From, State=#state{writer=Writer})
                             last_key=LastKey,
                             filename=NewName,
                             writer=false,
-                            hash_index=Index}}.
-
-
-handle_cast(destroy, State) ->
-    ok = file:close(State#state.handle),
-    ok = file:delete(State#state.filename),
-    {noreply, State};
-handle_cast(delete_pending, State) ->
-    {noreply, State#state{pending_delete = true}};
+                            hash_index=Index}};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
