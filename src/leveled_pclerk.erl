@@ -14,17 +14,20 @@
         handle_info/2,
         terminate/2,
         clerk_new/1,
-        clerk_prompt/2,
-        clerk_stop/1,
+        clerk_prompt/1,
+        clerk_returnmanifestchange/2,
         code_change/3,
         perform_merge/4]).      
 
 -include_lib("eunit/include/eunit.hrl").
 
 -define(INACTIVITY_TIMEOUT, 2000).
+-define(QUICK_TIMEOUT, 500).
 -define(HAPPYTIME_MULTIPLIER, 5).
 
--record(state, {owner :: pid()}).
+-record(state, {owner :: pid(),
+                change_pending=false :: boolean(),
+                work_item :: #penciller_work{}}).
 
 %%%============================================================================
 %%% API
@@ -34,13 +37,12 @@ clerk_new(Owner) ->
     {ok, Pid} = gen_server:start(?MODULE, [], []),
     ok = gen_server:call(Pid, {register, Owner}, infinity),
     {ok, Pid}.
-    
-clerk_prompt(Pid, penciller) ->
-    gen_server:cast(Pid, penciller_prompt),
-    ok.
 
-clerk_stop(Pid) ->
-    gen_server:cast(Pid, stop).
+clerk_returnmanifestchange(Pid, Closing) ->
+    gen_server:call(Pid, {return_manifest_change, Closing}).
+
+clerk_prompt(Pid) ->
+    gen_server:cast(Pid, prompt).
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -50,21 +52,41 @@ init([]) ->
     {ok, #state{}}.
 
 handle_call({register, Owner}, _From, State) ->
-    {reply, ok, State#state{owner=Owner}, ?INACTIVITY_TIMEOUT}.
+    {reply, ok, State#state{owner=Owner}, ?INACTIVITY_TIMEOUT};
+handle_call({return_manifest_change, Closing}, From, State) ->
+    case {State#state.change_pending, Closing} of
+        {true, true} ->
+            WI = State#state.work_item,
+            ok = mark_for_delete(WI#penciller_work.unreferenced_files,
+                                           State#state.owner),
+            {stop, normal, {ok, WI}, State};
+        {true, false} ->
+            WI = State#state.work_item,
+            gen_server:reply(From, {ok, WI}),
+            mark_for_delete(WI#penciller_work.unreferenced_files,
+                            State#state.owner),
+            {noreply,
+                State#state{work_item=null, change_pending=false},
+                ?INACTIVITY_TIMEOUT};
+        {false, true} ->
+            {stop, normal, no_change_required, State}
+    end.
 
-handle_cast(penciller_prompt, State) ->
-    Timeout = requestandhandle_work(State),
-    {noreply, State, Timeout};
-handle_cast(stop, State) ->
-    {stop, normal, State}.
+handle_cast(prompt, State) ->
+    io:format("Clerk reducing timeout due to prompt~n"),
+    {noreply, State, ?QUICK_TIMEOUT};
+handle_cast(_Msg, State) ->
+    {noreply, State}.
 
-handle_info(timeout, State) ->
-    case leveled_penciller:pcl_prompt(State#state.owner) of
-        ok ->
-            Timeout = requestandhandle_work(State),
+handle_info(timeout, State=#state{change_pending=Pnd}) when Pnd == false ->
+    case requestandhandle_work(State) of
+        {false, Timeout} ->
             {noreply, State, Timeout};
-        pause ->
-            {noreply, State, ?INACTIVITY_TIMEOUT}
+        {true, WI} ->
+            % No timeout now as will wait for call to return manifest
+            % change
+            {noreply,
+                State#state{change_pending=true, work_item=WI}}
     end;
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -86,29 +108,16 @@ requestandhandle_work(State) ->
             io:format("Work prompted but none needed~n"),
             case Backlog of
                 false ->
-                    ?INACTIVITY_TIMEOUT * ?HAPPYTIME_MULTIPLIER;
+                    {false, ?INACTIVITY_TIMEOUT * ?HAPPYTIME_MULTIPLIER};
                 _ ->
-                    ?INACTIVITY_TIMEOUT
+                    {false, ?INACTIVITY_TIMEOUT}
             end;
         {WI, _} ->
             {NewManifest, FilesToDelete} = merge(WI),
             UpdWI = WI#penciller_work{new_manifest=NewManifest,
                                         unreferenced_files=FilesToDelete},
-            R = leveled_penciller:pcl_requestmanifestchange(State#state.owner,
-                                                                UpdWI),
-            case R of
-                ok ->
-                    %% Request for manifest change must be a synchronous call
-                    %% Otherwise cannot mark files for deletion (may erase
-                    %% without manifest change on close)
-                    mark_for_delete(FilesToDelete, State#state.owner),
-                    ?INACTIVITY_TIMEOUT;
-                _ ->
-                    %% New files will forever remain in an undetermined state
-                    %% The disconnected files should be logged at start-up for
-                    %% Manual clear-up
-                    ?INACTIVITY_TIMEOUT
-            end
+            ok = leveled_penciller:pcl_promptmanifestchange(State#state.owner),
+            {true, UpdWI}
     end.    
 
 
@@ -252,22 +261,16 @@ do_merge(KL1, KL2, Level, {Filepath, MSN}, FileCounter, OutList) ->
     io:format("File to be created as part of MSN=~w Filename=~s~n",
                 [MSN, FileName]),
     TS1 = os:timestamp(),
-    case leveled_sft:sft_new(FileName, KL1, KL2, Level + 1) of
-        {ok, _Pid, {error, Reason}} ->
-            io:format("Exiting due to error~w~n", [Reason]),
-            error;
-        {ok, Pid, Reply} ->
-            {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} = Reply,
-            ExtMan = lists:append(OutList,
-                                    [#manifest_entry{start_key=SmallestKey,
-                                                        end_key=HighestKey,
-                                                        owner=Pid,
-                                                        filename=FileName}]),
-            MTime = timer:now_diff(os:timestamp(), TS1),
-            io:format("File creation took ~w microseconds ~n", [MTime]),
-            do_merge(KL1Rem, KL2Rem, Level, {Filepath, MSN},
-                            FileCounter + 1, ExtMan)
-    end.
+    {ok, Pid, Reply} = leveled_sft:sft_new(FileName, KL1, KL2, Level + 1),
+    {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} = Reply,
+    ExtMan = lists:append(OutList,
+                            [#manifest_entry{start_key=SmallestKey,
+                                                end_key=HighestKey,
+                                                owner=Pid,
+                                                filename=FileName}]),
+    MTime = timer:now_diff(os:timestamp(), TS1),
+    io:format("File creation took ~w microseconds ~n", [MTime]),
+    do_merge(KL1Rem, KL2Rem, Level, {Filepath, MSN}, FileCounter + 1, ExtMan).
 
 
 get_item(Index, List, Default) ->

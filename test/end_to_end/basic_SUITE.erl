@@ -221,6 +221,7 @@ check_bookie_forlist(Bookie, ChkList) ->
     check_bookie_forlist(Bookie, ChkList, false).
 
 check_bookie_forlist(Bookie, ChkList, Log) ->
+    SW = os:timestamp(),
     lists:foreach(fun({_RN, Obj, _Spc}) ->
                     if
                         Log == true ->
@@ -232,15 +233,20 @@ check_bookie_forlist(Bookie, ChkList, Log) ->
                                                     Obj#r_object.bucket,
                                                     Obj#r_object.key),
                     R = {ok, Obj} end,
-                ChkList).
+                ChkList),
+    io:format("Fetch check took ~w microseconds checking list of length ~w~n",
+                    [timer:now_diff(os:timestamp(), SW), length(ChkList)]).
 
 check_bookie_formissinglist(Bookie, ChkList) ->
+    SW = os:timestamp(),
     lists:foreach(fun({_RN, Obj, _Spc}) ->
                     R = leveled_bookie:book_riakget(Bookie,
                                                         Obj#r_object.bucket,
                                                         Obj#r_object.key),
                     R = not_found end,
-                ChkList).
+                ChkList),
+    io:format("Miss check took ~w microseconds checking list of length ~w~n",
+                    [timer:now_diff(os:timestamp(), SW), length(ChkList)]).
 
 check_bookie_forobject(Bookie, TestObject) ->
     {ok, TestObject} = leveled_bookie:book_riakget(Bookie,

@@ -76,6 +76,7 @@
 -define(WORD_SIZE, 4).
 -define(CRC_CHECK, true).
 -define(MAX_FILE_SIZE, 3221225472).
+-define(BINARY_MODE, false).
 -define(BASE_POSITION, 2048).
 -define(WRITE_OPS, [binary, raw, read, write]).
 
@@ -87,7 +88,8 @@
                 handle :: file:fd(),
                 writer :: boolean(),
                 max_size :: integer(),
-                pending_delete = false :: boolean()}).
+                pending_delete = false :: boolean(),
+                binary_mode = false :: boolean()}).
 
 
 %%%============================================================================
@@ -187,7 +189,7 @@ init([Opts]) ->
                     M ->
                         M
                 end,
-    {ok, #state{max_size=MaxSize}}.
+    {ok, #state{max_size=MaxSize, binary_mode=Opts#cdb_options.binary_mode}}.
 
 handle_call({open_writer, Filename}, _From, State) ->
     io:format("Opening file for writing with filename ~s~n", [Filename]),
@@ -251,6 +253,7 @@ handle_call({put_kv, Key, Value}, _From, State) ->
             Result = put(State#state.handle,
                             Key, Value,
                             {State#state.last_position, State#state.hashtree},
+                            State#state.binary_mode,
                             State#state.max_size),
             case Result of
                 roll ->
@@ -478,23 +481,32 @@ open_active_file(FileName) when is_list(FileName) ->
 %% Append to an active file a new key/value pair returning an updated 
 %% dictionary of Keys and positions.  Returns an updated Position
 %%
-put(FileName, Key, Value, {LastPosition, HashTree}, MaxSize) when is_list(FileName) ->
-  {ok, Handle} = file:open(FileName, ?WRITE_OPS),
-  put(Handle, Key, Value, {LastPosition, HashTree}, MaxSize);
-put(Handle, Key, Value, {LastPosition, HashTree}, MaxSize) ->
-  Bin = key_value_to_record({Key, Value}), 
-  PotentialNewSize = LastPosition + byte_size(Bin),
-  if PotentialNewSize > MaxSize ->
-    roll;
-  true ->
-    ok = file:pwrite(Handle, LastPosition, Bin),
-    {Handle, PotentialNewSize, put_hashtree(Key, LastPosition, HashTree)}
-  end.
+put(FileName,
+        Key,
+        Value,
+        {LastPosition, HashTree},
+        BinaryMode,
+        MaxSize) when is_list(FileName) ->
+    {ok, Handle} = file:open(FileName, ?WRITE_OPS),
+    put(Handle, Key, Value, {LastPosition, HashTree}, BinaryMode, MaxSize);
+put(Handle, Key, Value, {LastPosition, HashTree}, BinaryMode, MaxSize) ->
+    Bin = key_value_to_record({Key, Value}, BinaryMode),
+    PotentialNewSize = LastPosition + byte_size(Bin),
+    if
+        PotentialNewSize > MaxSize ->
+            roll;
+        true ->
+            ok = file:pwrite(Handle, LastPosition, Bin),
+            {Handle,
+                PotentialNewSize,
+                put_hashtree(Key, LastPosition, HashTree)}
+    end.
 
 %% Should not be used for non-test PUTs by the inker - as the Max File Size
 %% should be taken from the startup options not the default
 put(FileName, Key, Value, {LastPosition, HashTree}) ->
-    put(FileName, Key, Value, {LastPosition, HashTree}, ?MAX_FILE_SIZE).
+    put(FileName, Key, Value, {LastPosition, HashTree},
+            ?BINARY_MODE, ?MAX_FILE_SIZE).
 
 
 %%
@@ -864,7 +876,7 @@ scan_over_file(Handle, Position, FilterFun, Output, LastKey) ->
                             ValueAsBin,
                             Position,
                             Output,
-                            fun extract_value/1) of
+                            fun extract_valueandsize/1) of
                 {stop, UpdOutput} ->
                     {NewPosition, UpdOutput};
                 {loop, UpdOutput} ->
@@ -993,10 +1005,10 @@ read_next_term(Handle, Length, crc, Check) ->
             {unchecked, binary_to_term(Bin)}
     end.
 
-%% Extract value from binary containing CRC
-extract_value(ValueAsBin) ->
+%% Extract value and size from binary containing CRC
+extract_valueandsize(ValueAsBin) ->
     <<_CRC:32/integer, Bin/binary>> = ValueAsBin,
-    binary_to_term(Bin).
+    {binary_to_term(Bin), byte_size(Bin)}.
 
 
 %% Used for reading lengths
@@ -1234,9 +1246,14 @@ hash_to_slot(Hash, L) ->
 
 %% Create a binary of the LengthKeyLengthValue, adding a CRC check
 %% at the front of the value
-key_value_to_record({Key, Value}) ->
-    BK = term_to_binary(Key), 
-    BV = term_to_binary(Value), 
+key_value_to_record({Key, Value}, BinaryMode) ->
+    BK = term_to_binary(Key),
+    BV = case BinaryMode of
+                true ->
+                    Value;
+                false ->
+                    term_to_binary(Value)
+            end,
     LK = byte_size(BK),
     LV = byte_size(BV),
     LK_FL = endian_flip(LK),

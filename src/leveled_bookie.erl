@@ -368,7 +368,8 @@ set_options(Opts) ->
                         end,
     {#inker_options{root_path = Opts#bookie_options.root_path ++
                                     "/" ++ ?JOURNAL_FP,
-                        cdb_options = #cdb_options{max_size=MaxJournalSize}},
+                        cdb_options = #cdb_options{max_size=MaxJournalSize,
+                                                    binary_mode=true}},
         #penciller_options{root_path=Opts#bookie_options.root_path ++
                                     "/" ++ ?LEDGER_FP}}.
 
@@ -495,22 +496,25 @@ maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
 load_fun(KeyInLedger, ValueInLedger, _Position, Acc0, ExtractFun) ->
     {MinSQN, MaxSQN, Output} = Acc0,
     {SQN, PK} = KeyInLedger,
-    {Obj, IndexSpecs} = binary_to_term(ExtractFun(ValueInLedger)),
+    % VBin may already be a term
+    % TODO: Should VSize include CRC?
+    % Using ExtractFun means we ignore simple way of getting size (from length)
+    {VBin, VSize} = ExtractFun(ValueInLedger), 
+    {Obj, IndexSpecs} = case is_binary(VBin) of
+                            true ->
+                                binary_to_term(VBin);
+                            false ->
+                                VBin
+                        end,
     case SQN of
         SQN when SQN < MinSQN ->
             {loop, Acc0};    
         SQN when SQN < MaxSQN ->
-            %% TODO - get correct size in a more efficient manner
-            %% Need to have compressed size
-            Size = byte_size(term_to_binary(ValueInLedger, [compressed])),
-            Changes = preparefor_ledgercache(PK, SQN, Obj, Size, IndexSpecs),
+            Changes = preparefor_ledgercache(PK, SQN, Obj, VSize, IndexSpecs),
             {loop, {MinSQN, MaxSQN, Output ++ Changes}};
         MaxSQN ->
-            %% TODO - get correct size in a more efficient manner
-            %% Need to have compressed size
             io:format("Reached end of load batch with SQN ~w~n", [SQN]),
-            Size = byte_size(term_to_binary(ValueInLedger, [compressed])),
-            Changes = preparefor_ledgercache(PK, SQN, Obj, Size, IndexSpecs),
+            Changes = preparefor_ledgercache(PK, SQN, Obj, VSize, IndexSpecs),
             {stop, {MinSQN, MaxSQN, Output ++ Changes}};
         SQN when SQN > MaxSQN ->
             io:format("Skipping as exceeded MaxSQN ~w with SQN ~w~n",

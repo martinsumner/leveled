@@ -22,7 +22,8 @@
 
 -record(cdb_options,
                         {max_size :: integer(),
-                        file_path :: string()}).
+                        file_path :: string(),
+                        binary_mode = false :: boolean()}).
 
 -record(inker_options,
                         {cdb_max_size :: integer(),

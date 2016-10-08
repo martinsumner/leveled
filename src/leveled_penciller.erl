@@ -236,9 +236,8 @@
         pcl_fetch/2,
         pcl_checksequencenumber/3,
         pcl_workforclerk/1,
-        pcl_requestmanifestchange/2,
+        pcl_promptmanifestchange/1,
         pcl_confirmdelete/2,
-        pcl_prompt/1,
         pcl_close/1,
         pcl_registersnapshot/2,
         pcl_updatesnapshotcache/3,
@@ -308,14 +307,11 @@ pcl_checksequencenumber(Pid, Key, SQN) ->
 pcl_workforclerk(Pid) ->
     gen_server:call(Pid, work_for_clerk, infinity).
 
-pcl_requestmanifestchange(Pid, WorkItem) ->
-    gen_server:call(Pid, {manifest_change, WorkItem}, infinity).
+pcl_promptmanifestchange(Pid) ->
+    gen_server:cast(Pid, manifest_change).
 
 pcl_confirmdelete(Pid, FileName) ->
     gen_server:call(Pid, {confirm_delete, FileName}, infinity).
-
-pcl_prompt(Pid) ->
-    gen_server:call(Pid, prompt_compaction, infinity).
 
 pcl_getstartupsequencenumber(Pid) ->
     gen_server:call(Pid, get_startup_sqn, infinity).
@@ -454,57 +450,12 @@ handle_call({confirm_delete, FileName}, _From, State=#state{is_snapshot=Snap})
         _ ->
             {reply, Reply, State}
     end;
-handle_call(prompt_compaction, _From, State=#state{is_snapshot=Snap})
-                                                        when Snap == false ->
-    %% If there is a prompt immediately after a L0 async write event then
-    %% there exists the potential for the prompt to stall the database.
-    %% Should only accept prompts if there has been a safe wait from the
-    %% last L0 write event.
-    Proceed = case State#state.levelzero_pending of
-                    {true, _Pid, TS} ->
-                        TD = timer:now_diff(os:timestamp(),TS),
-                        if
-                            TD < ?PROMPT_WAIT_ONL0 * 1000000 -> false;
-                            true -> true
-                        end;
-                    ?L0PEND_RESET ->
-                        true
-                end,
-    if
-        Proceed ->
-            {_TableSize, State1} = checkready_pushtomem(State),
-            case roll_memory(State1, State1#state.memtable_maxsize) of
-                {ok, L0Pend, MSN, TableSize} ->
-                    io:format("Prompted push completed~n"),
-                    {reply, ok, State1#state{levelzero_pending=L0Pend,
-                                                table_size=TableSize,
-                                                manifest_sqn=MSN,
-                                                backlog=false}};
-                {pause, Reason, Details} ->
-                    io:format("Excess work due to - " ++ Reason, Details),
-                    {reply, pause, State1#state{backlog=true}}
-            end;
-        true ->
-            {reply, ok, State#state{backlog=false}}
-    end;
-handle_call({manifest_change, WI}, _From, State=#state{is_snapshot=Snap})
-                                                        when Snap == false ->
-    {ok, UpdState} = commit_manifest_change(WI, State),
-    {reply, ok, UpdState};
 handle_call({fetch, Key}, _From, State=#state{is_snapshot=Snap})
                                                         when Snap == false ->
     {reply,
         fetch(Key,
                 State#state.manifest,
                 State#state.memtable),
-        State};
-handle_call({check_sqn, Key, SQN}, _From, State=#state{is_snapshot=Snap})
-                                                        when Snap == false ->
-    {reply,
-        compare_to_sqn(fetch(Key,
-                                State#state.manifest,
-                                State#state.memtable),
-                        SQN),
         State};
 handle_call({fetch, Key},
                 _From,
@@ -560,6 +511,11 @@ handle_call(close, _From, State) ->
 handle_cast({update_snapshotcache, Tree, SQN}, State) ->
     MemTableC = cache_tree_in_memcopy(State#state.memtable_copy, Tree, SQN),
     {noreply, State#state{memtable_copy=MemTableC}};
+handle_cast(manifest_change, State) ->
+    {ok, WI} = leveled_pclerk:clerk_returnmanifestchange(State#state.clerk,
+                                                            false),
+    {ok, UpdState} = commit_manifest_change(WI, State),
+    {noreply, UpdState};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -585,13 +541,20 @@ terminate(_Reason, State) ->
     %% The cast may not succeed as the clerk could be synchronously calling
     %% the penciller looking for a manifest commit
     %%
-    leveled_pclerk:clerk_stop(State#state.clerk),
-    Dump = ets:tab2list(State#state.memtable),
-    case {State#state.levelzero_pending,
-            get_item(0, State#state.manifest, []), length(Dump)} of
+    MC = leveled_pclerk:clerk_returnmanifestchange(State#state.clerk, true),
+    UpdState = case MC of
+                    {ok, WI} ->
+                        {ok, NewState} = commit_manifest_change(WI, State),
+                        NewState;
+                    no_change_required ->
+                        State
+                end,
+    Dump = ets:tab2list(UpdState#state.memtable),
+    case {UpdState#state.levelzero_pending,
+            get_item(0, UpdState#state.manifest, []), length(Dump)} of
         {?L0PEND_RESET, [], L} when L > 0 ->
-            MSN = State#state.manifest_sqn + 1,
-            FileName = State#state.root_path
+            MSN = UpdState#state.manifest_sqn + 1,
+            FileName = UpdState#state.root_path
                         ++ "/" ++ ?FILES_FP ++ "/"
                         ++ integer_to_list(MSN) ++ "_0_0",
             NewSFT = leveled_sft:sft_new(FileName ++ ".pnd",
@@ -615,10 +578,10 @@ terminate(_Reason, State) ->
                         ++ " with ~w keys discarded~n",
                         [length(Dump)])
     end,
-    ok = close_files(0, State#state.manifest),
+    ok = close_files(0, UpdState#state.manifest),
     lists:foreach(fun({_FN, Pid, _SN}) ->
                             leveled_sft:sft_close(Pid) end,
-                    State#state.unreferenced_files),
+                    UpdState#state.unreferenced_files),
     ok.
 
 
@@ -732,6 +695,8 @@ checkready_pushtomem(State) ->
                                                 end_key=EndKey,
                                                 owner=Pid,
                                                 filename=SrcFN},
+            % Prompt clerk to ask about work - do this for every L0 roll
+            ok = leveled_pclerk:clerk_prompt(State#state.clerk),
             {0,
                 State#state{manifest=lists:keystore(0,
                                                     1,
@@ -742,9 +707,6 @@ checkready_pushtomem(State) ->
         ?L0PEND_RESET ->
             {State#state.table_size, State}
     end,
-    
-    %% Prompt clerk to ask about work - do this for every push_mem
-    ok = leveled_pclerk:clerk_prompt(UpdState#state.clerk, penciller),    
     {TableSize, UpdState}.
 
 quickcheck_pushtomem(DumpList, TableSize, MaxSize) ->
@@ -1216,6 +1178,15 @@ confirm_delete_test() ->
     ?assertMatch(R3, false).
 
 
+maybe_pause_push(R) ->
+    if
+        R == pause ->
+            io:format("Pausing push~n"),
+            timer:sleep(1000);
+        true ->
+            ok
+    end.
+
 simple_server_test() ->
     RootPath = "../test/ledger",
     clean_testdir(RootPath),
@@ -1230,27 +1201,17 @@ simple_server_test() ->
     Key4 = {{o,"Bucket0004", "Key0004"}, {3002, {active, infinity}, null}},
     KL4 = lists:sort(leveled_sft:generate_randomkeys({1000, 3002})),
     ok = pcl_pushmem(PCL, [Key1]),
-    R1 = pcl_fetch(PCL, {o,"Bucket0001", "Key0001"}),
-    ?assertMatch(R1, Key1),
+    ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001"})),
     ok = pcl_pushmem(PCL, KL1),
-    R2 = pcl_fetch(PCL, {o,"Bucket0001", "Key0001"}),
-    ?assertMatch(R2, Key1),
-    S1 =  pcl_pushmem(PCL, [Key2]),
-    if S1 == pause -> timer:sleep(2); true -> ok end,
-    R3 = pcl_fetch(PCL, {o,"Bucket0001", "Key0001"}),
-    R4 = pcl_fetch(PCL, {o,"Bucket0002", "Key0002"}),
-    ?assertMatch(R3, Key1),
-    ?assertMatch(R4, Key2),
-    S2 = pcl_pushmem(PCL, KL2),
-    if S2 == pause -> timer:sleep(1000); true -> ok end,
-    S3 = pcl_pushmem(PCL, [Key3]),
-    if S3 == pause -> timer:sleep(1000); true -> ok end,
-    R5 = pcl_fetch(PCL, {o,"Bucket0001", "Key0001"}),
-    R6 = pcl_fetch(PCL, {o,"Bucket0002", "Key0002"}),
-    R7 = pcl_fetch(PCL, {o,"Bucket0003", "Key0003"}),
-    ?assertMatch(R5, Key1),
-    ?assertMatch(R6, Key2),
-    ?assertMatch(R7, Key3),
+    ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001"})),
+    maybe_pause_push(pcl_pushmem(PCL, [Key2])),
+    ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001"})),
+    ?assertMatch(Key2, pcl_fetch(PCL, {o,"Bucket0002", "Key0002"})),
+    maybe_pause_push(pcl_pushmem(PCL, KL2)),
+    maybe_pause_push(pcl_pushmem(PCL, [Key3])),
+    ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001"})),
+    ?assertMatch(Key2, pcl_fetch(PCL, {o,"Bucket0002", "Key0002"})),
+    ?assertMatch(Key3, pcl_fetch(PCL, {o,"Bucket0003", "Key0003"})),
     ok = pcl_close(PCL),
     {ok, PCLr} = pcl_start(#penciller_options{root_path=RootPath,
                                                 max_inmemory_tablesize=1000}),
@@ -1268,27 +1229,20 @@ simple_server_test() ->
                     io:format("Unexpected sequence number on restart ~w~n", [TopSQN]),
                     error
             end,
-    ?assertMatch(Check, ok),
-    R8 = pcl_fetch(PCLr, {o,"Bucket0001", "Key0001"}),
-    R9 = pcl_fetch(PCLr, {o,"Bucket0002", "Key0002"}),
-    R10 = pcl_fetch(PCLr, {o,"Bucket0003", "Key0003"}),
-    ?assertMatch(R8, Key1),
-    ?assertMatch(R9, Key2),
-    ?assertMatch(R10, Key3),
+    ?assertMatch(ok, Check),
+    ?assertMatch(Key1, pcl_fetch(PCLr, {o,"Bucket0001", "Key0001"})),
+    ?assertMatch(Key2, pcl_fetch(PCLr, {o,"Bucket0002", "Key0002"})),
+    ?assertMatch(Key3, pcl_fetch(PCLr, {o,"Bucket0003", "Key0003"})),
     S4 = pcl_pushmem(PCLr, KL3),
     if S4 == pause -> timer:sleep(1000); true -> ok end,
     S5 = pcl_pushmem(PCLr, [Key4]),
     if S5 == pause -> timer:sleep(1000); true -> ok end,
     S6 = pcl_pushmem(PCLr, KL4),
     if S6 == pause -> timer:sleep(1000); true -> ok end,
-    R11 = pcl_fetch(PCLr, {o,"Bucket0001", "Key0001"}),
-    R12 = pcl_fetch(PCLr, {o,"Bucket0002", "Key0002"}),
-    R13 = pcl_fetch(PCLr, {o,"Bucket0003", "Key0003"}),
-    R14 = pcl_fetch(PCLr, {o,"Bucket0004", "Key0004"}),
-    ?assertMatch(R11, Key1),
-    ?assertMatch(R12, Key2),
-    ?assertMatch(R13, Key3),
-    ?assertMatch(R14, Key4),
+    ?assertMatch(Key1, pcl_fetch(PCLr, {o,"Bucket0001", "Key0001"})),
+    ?assertMatch(Key2, pcl_fetch(PCLr, {o,"Bucket0002", "Key0002"})),
+    ?assertMatch(Key3, pcl_fetch(PCLr, {o,"Bucket0003", "Key0003"})),
+    ?assertMatch(Key4, pcl_fetch(PCLr, {o,"Bucket0004", "Key0004"})),
     SnapOpts = #penciller_options{start_snapshot = true,
                                     source_penciller = PCLr},
     {ok, PclSnap} = pcl_start(SnapOpts),

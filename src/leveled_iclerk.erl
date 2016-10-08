@@ -28,6 +28,7 @@
 %% Sliding scale to allow preference of longer runs up to maximum
 -define(SINGLEFILE_COMPACTION_TARGET, 60.0).
 -define(MAXRUN_COMPACTION_TARGET, 80.0).
+-define(CRC_SIZE, 4).
 
 -record(state, {inker :: pid(),
                     max_run_length :: integer(),
@@ -150,16 +151,17 @@ check_single_file(CDB, FilterFun, FilterServer, MaxSQN, SampleSize, BatchSize) -
     FN = leveled_cdb:cdb_filename(CDB),
     PositionList = leveled_cdb:cdb_getpositions(CDB, SampleSize),
     KeySizeList = fetch_inbatches(PositionList, BatchSize, CDB, []),
+    io:format("KeySizeList ~w~n", [KeySizeList]),
     R0 = lists:foldl(fun(KS, {ActSize, RplSize}) ->
                             {{SQN, PK}, Size} = KS,
                             Check = FilterFun(FilterServer, PK, SQN),
                             case {Check, SQN > MaxSQN} of
                                 {true, _} ->
-                                    {ActSize + Size, RplSize};
+                                    {ActSize + Size - ?CRC_SIZE, RplSize};
                                 {false, true} ->
-                                    {ActSize + Size, RplSize};
+                                    {ActSize + Size - ?CRC_SIZE, RplSize};
                                 _ ->
-                                    {ActSize, RplSize + Size}
+                                    {ActSize, RplSize + Size - ?CRC_SIZE}
                             end end,
                         {0, 0},
                         KeySizeList),
@@ -579,5 +581,24 @@ compact_single_file_test() ->
     ?assertMatch("Value2", binary_to_term(RV1)),
     ok = leveled_cdb:cdb_destroy(CDB).
 
+
+compact_empty_file_test() ->
+    RP = "../test/journal",
+    FN1 = leveled_inker:filepath(RP, 1, new_journal),
+    CDBopts = #cdb_options{binary_mode=true},
+    {ok, CDB1} = leveled_cdb:cdb_open_writer(FN1, CDBopts),
+    ok = leveled_cdb:cdb_put(CDB1, {1, "Key1"}, <<>>),
+    {ok, FN2} = leveled_cdb:cdb_complete(CDB1),
+    {ok, CDB2} = leveled_cdb:cdb_open_reader(FN2),
+    LedgerSrv1 = [{8, "Key1"}, {2, "Key2"}, {3, "Key3"}],
+    LedgerFun1 = fun(Srv, Key, ObjSQN) ->
+                    case lists:keyfind(ObjSQN, 1, Srv) of
+                        {ObjSQN, Key} ->
+                            true;
+                        _ ->
+                            false
+                    end end,
+    Score1 = check_single_file(CDB2, LedgerFun1, LedgerSrv1, 9, 8, 4),
+    ?assertMatch(100.0, Score1).
 
 -endif.

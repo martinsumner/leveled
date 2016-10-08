@@ -413,8 +413,10 @@ get_object(PrimaryKey, SQN, Manifest) ->
     JournalP = find_in_manifest(SQN, Manifest),
     Obj = leveled_cdb:cdb_get(JournalP, {SQN, PrimaryKey}),
     case Obj of
-        {{SQN, PK}, Bin} ->
+        {{SQN, PK}, Bin} when is_binary(Bin) ->
             {{SQN, PK}, binary_to_term(Bin)};
+        {{SQN, PK}, Term} ->
+            {{SQN, PK}, Term};
         _ ->
             Obj
     end.
@@ -799,6 +801,23 @@ simple_inker_test() ->
     RootPath = "../test/journal",
     build_dummy_journal(),
     CDBopts = #cdb_options{max_size=300000},
+    {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,
+                                            cdb_options=CDBopts}),
+    Obj1 = ink_get(Ink1, "Key1", 1),
+    ?assertMatch({{1, "Key1"}, {"TestValue1", []}}, Obj1),
+    Obj2 = ink_get(Ink1, "Key4", 4),
+    ?assertMatch({{4, "Key4"}, {"TestValue4", []}}, Obj2),
+    ink_close(Ink1),
+    clean_testdir(RootPath).
+
+simple_inker_completeactivejournal_test() ->
+    RootPath = "../test/journal",
+    build_dummy_journal(),
+    CDBopts = #cdb_options{max_size=300000},
+    {ok, PidW} = leveled_cdb:cdb_open_writer(filepath(RootPath,
+                                                        3,
+                                                        new_journal)),
+    {ok, _FN} = leveled_cdb:cdb_complete(PidW),
     {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,
                                             cdb_options=CDBopts}),
     Obj1 = ink_get(Ink1, "Key1", 1),
