@@ -7,8 +7,8 @@
 %% Ledger.
 %% - The Penciller provides re-write (compaction) work up to be managed by
 %% the Penciller's Clerk
-%% - The Penciller maintains a register of iterators who have requested
-%% snapshots of the Ledger
+%% - The Penciller can be cloned and maintains a register of clones who have
+%% requested snapshots of the Ledger
 %% - The accepts new dumps (in the form of lists of keys) from the Bookie, and
 %% calls the Bookie once the process of pencilling this data in the Ledger is
 %% complete - and the Bookie is free to forget about the data
@@ -236,7 +236,7 @@
         pcl_fetch/2,
         pcl_checksequencenumber/3,
         pcl_workforclerk/1,
-        pcl_promptmanifestchange/1,
+        pcl_promptmanifestchange/2,
         pcl_confirmdelete/2,
         pcl_close/1,
         pcl_registersnapshot/2,
@@ -307,8 +307,8 @@ pcl_checksequencenumber(Pid, Key, SQN) ->
 pcl_workforclerk(Pid) ->
     gen_server:call(Pid, work_for_clerk, infinity).
 
-pcl_promptmanifestchange(Pid) ->
-    gen_server:cast(Pid, manifest_change).
+pcl_promptmanifestchange(Pid, WI) ->
+    gen_server:cast(Pid, {manifest_change, WI}).
 
 pcl_confirmdelete(Pid, FileName) ->
     gen_server:call(Pid, {confirm_delete, FileName}, infinity).
@@ -511,10 +511,11 @@ handle_call(close, _From, State) ->
 handle_cast({update_snapshotcache, Tree, SQN}, State) ->
     MemTableC = cache_tree_in_memcopy(State#state.memtable_copy, Tree, SQN),
     {noreply, State#state{memtable_copy=MemTableC}};
-handle_cast(manifest_change, State) ->
-    {ok, WI} = leveled_pclerk:clerk_returnmanifestchange(State#state.clerk,
-                                                            false),
+handle_cast({manifest_change, WI}, State) ->
     {ok, UpdState} = commit_manifest_change(WI, State),
+    ok = leveled_pclerk:clerk_manifestchange(State#state.clerk,
+                                                confirm,
+                                                false),
     {noreply, UpdState};
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -541,12 +542,18 @@ terminate(_Reason, State) ->
     %% The cast may not succeed as the clerk could be synchronously calling
     %% the penciller looking for a manifest commit
     %%
-    MC = leveled_pclerk:clerk_returnmanifestchange(State#state.clerk, true),
+    MC = leveled_pclerk:clerk_manifestchange(State#state.clerk,
+                                                return,
+                                                true),
     UpdState = case MC of
                     {ok, WI} ->
                         {ok, NewState} = commit_manifest_change(WI, State),
+                        Clerk = State#state.clerk,
+                        ok = leveled_pclerk:clerk_manifestchange(Clerk,
+                                                                    confirm,
+                                                                    true),
                         NewState;
-                    no_change_required ->
+                    no_change ->
                         State
                 end,
     Dump = ets:tab2list(UpdState#state.memtable),
@@ -1233,12 +1240,9 @@ simple_server_test() ->
     ?assertMatch(Key1, pcl_fetch(PCLr, {o,"Bucket0001", "Key0001"})),
     ?assertMatch(Key2, pcl_fetch(PCLr, {o,"Bucket0002", "Key0002"})),
     ?assertMatch(Key3, pcl_fetch(PCLr, {o,"Bucket0003", "Key0003"})),
-    S4 = pcl_pushmem(PCLr, KL3),
-    if S4 == pause -> timer:sleep(1000); true -> ok end,
-    S5 = pcl_pushmem(PCLr, [Key4]),
-    if S5 == pause -> timer:sleep(1000); true -> ok end,
-    S6 = pcl_pushmem(PCLr, KL4),
-    if S6 == pause -> timer:sleep(1000); true -> ok end,
+    maybe_pause_push(pcl_pushmem(PCLr, KL3)),
+    maybe_pause_push(pcl_pushmem(PCLr, [Key4])),
+    maybe_pause_push(pcl_pushmem(PCLr, KL4)),
     ?assertMatch(Key1, pcl_fetch(PCLr, {o,"Bucket0001", "Key0001"})),
     ?assertMatch(Key2, pcl_fetch(PCLr, {o,"Bucket0002", "Key0002"})),
     ?assertMatch(Key3, pcl_fetch(PCLr, {o,"Bucket0003", "Key0003"})),
@@ -1268,10 +1272,8 @@ simple_server_test() ->
     % in a new snapshot
     Key1A = {{o,"Bucket0001", "Key0001"}, {4002, {active, infinity}, null}},
     KL1A = lists:sort(leveled_sft:generate_randomkeys({4002, 2})),
-    S7 = pcl_pushmem(PCLr, [Key1A]),
-    if S7 == pause -> timer:sleep(1000); true -> ok end,
-    S8 = pcl_pushmem(PCLr, KL1A),
-    if S8 == pause -> timer:sleep(1000); true -> ok end,
+    maybe_pause_push(pcl_pushmem(PCLr, [Key1A])),
+    maybe_pause_push(pcl_pushmem(PCLr, KL1A)),
     ?assertMatch(true, pcl_checksequencenumber(PclSnap,
                                                 {o,"Bucket0001", "Key0001"},
                                                 1)),

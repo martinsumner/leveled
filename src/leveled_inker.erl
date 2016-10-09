@@ -59,7 +59,7 @@
 %%
 %% Compaction is a process whereby an Inker's clerk will:
 %% - Request a view of the current Inker manifest and a snaphot of the Ledger
-%% - Test all files within the Journal to find th eapproximate comapction
+%% - Test all files within the Journal to find the approximate comapction
 %% potential percentage (the volume of the Journal that has been replaced)
 %% - Attempts to find the optimal "run" of files to compact
 %% - Compacts those files in the run, by rolling over the files re-writing

@@ -18,9 +18,11 @@
 %% -------- The actors ---------
 %% 
 %% The store is fronted by a Bookie, who takes support from different actors:
-%% - An Inker who persists new data into the jornal, and returns items from
+%% - An Inker who persists new data into the journal, and returns items from
 %% the journal based on sequence number
-%% - A Penciller who periodically redraws the ledger
+%% - A Penciller who periodically redraws the ledger, that associates keys with
+%% sequence numbers and other metadata, as well as secondary keys (for index
+%% queries)
 %% - One or more Clerks, who may be used by either the inker or the penciller
 %% to fulfill background tasks
 %%
@@ -61,11 +63,10 @@
 %% well as the object size on disk within the Journal.
 %%
 %% Once the object has been persisted to the Journal, the Ledger can be updated.
-%% The Ledger is updated by the Bookie applying a function (passed in at
-%% startup) to the Value to return the Object Metadata, a function to generate
-%% a hash of the Value and also taking the Primary Key, the IndexSpecs, the
-%% Sequence Number in the Journal and the Object Size (returned from the
-%% Inker).
+%% The Ledger is updated by the Bookie applying a function (extract_metadata/4)
+%% to the Value to return the Object Metadata, a function to generate a hash
+%% of the Value and also taking the Primary Key, the IndexSpecs, the Sequence
+%% Number in the Journal and the Object Size (returned from the Inker).
 %%
 %% The Bookie should generate a series of ledger key changes from this
 %% information, using a function passed in at startup.  For Riak this will be
@@ -79,30 +80,26 @@
 %%      null,
 %%      {active, TS}|{tomb, TS}}
 %%
-%% Recent Ledger changes are retained initially in the Bookies' memory (in an
-%% in-memory ets table).  Periodically, the current table is pushed to the
-%% Penciller for eventual persistence, and a new table is started.
+%% Recent Ledger changes are retained initially in the Bookies' memory (in a
+%% small generally balanced tree).  Periodically, the current table is pushed to
+%% the Penciller for eventual persistence, and a new table is started.
 %%
 %% This completes the non-deferrable work associated with a PUT
 %%
 %% -------- Snapshots (Key & Metadata Only) --------
 %%
 %% If there is a snapshot request (e.g. to iterate over the keys) the Bookie
-%% must first produce a tree representing the results of the request which are
-%% present in its in-memory view of the ledger.  The Bookie then requests
-%% a copy of the current Ledger manifest from the Penciller, and the Penciller
-%5 should interest of the iterator at the manifest sequence number at the time
-%% of the request.
+%% may request a clone of the Penciller, or the Penciller and the Inker.
+%%
+%% The clone is seeded with the manifest.  Teh clone should be registered with
+%% the real Inker/Penciller, so that the real Inker/Penciller may prevent the
+%% deletion of files still in use by a snapshot clone.
 %%
 %% Iterators should de-register themselves from the Penciller on completion.
 %% Iterators should be automatically release after a timeout period.  A file
 %% can only be deleted from the Ledger if it is no longer in the manifest, and
 %% there are no registered iterators from before the point the file was
 %% removed from the manifest.
-%%
-%% Snapshots may be non-recent, if recency is unimportant.  Non-recent
-%% snapshots do no require the Bookie to return the results of the in-memory
-%% table, the Penciller alone cna be asked.
 %%
 %% -------- Special Ops --------
 %%
@@ -115,10 +112,11 @@
 %% On startup the Bookie must restart both the Inker to load the Journal, and
 %% the Penciller to load the Ledger.  Once the Penciller has started, the
 %% Bookie should request the highest sequence number in the Ledger, and then
-%% and try and rebuild any missing information from the Journal
+%% and try and rebuild any missing information from the Journal.
 %%
 %% To rebuild the Ledger it requests the Inker to scan over the files from
-%% the sequence number and re-generate the Ledger changes.
+%% the sequence number and re-generate the Ledger changes - pushing the changes
+%% directly back into the Ledger.
 
 
 
@@ -359,7 +357,6 @@ shutdown_wait([TopPause|Rest], Inker) ->
     
 
 set_options(Opts) ->
-    %% TODO: Change the max size default, and allow setting through options
     MaxJournalSize = case Opts#bookie_options.max_journalsize of
                             undefined ->
                                 30000;
@@ -497,8 +494,6 @@ load_fun(KeyInLedger, ValueInLedger, _Position, Acc0, ExtractFun) ->
     {MinSQN, MaxSQN, Output} = Acc0,
     {SQN, PK} = KeyInLedger,
     % VBin may already be a term
-    % TODO: Should VSize include CRC?
-    % Using ExtractFun means we ignore simple way of getting size (from length)
     {VBin, VSize} = ExtractFun(ValueInLedger), 
     {Obj, IndexSpecs} = case is_binary(VBin) of
                             true ->

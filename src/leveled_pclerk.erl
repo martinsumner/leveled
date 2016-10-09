@@ -1,6 +1,52 @@
-%% Controlling asynchronous work in leveleddb to manage compaction within a
-%% level and cleaning out of old files across a level
-
+%% -------- PENCILLER's CLERK ---------
+%%
+%% The Penciller's clerk is responsible for compaction work within the Ledger.
+%%
+%% The Clerk will periodically poll the Penciller to see if there is work for
+%% it to complete, except if the Clerk has informed the Penciller that it has
+%% readied a manifest change to be committed - in which case it will wait to
+%% be called by the Penciller.
+%%
+%% -------- COMMITTING MANIFEST CHANGES ---------
+%%
+%% Once the Penciller has taken a manifest change, the SFT file owners which no
+%% longer form part of the manifest will be marked for delete.  By marking for
+%% deletion, the owners will poll to confirm when it is safe for them to be
+%% deleted.
+%%
+%% It is imperative that the file is not marked for deletion until it is
+%% certain that the manifest change has been committed.  Some uncollected
+%% garbage is considered acceptable.
+%%
+%% The process of committing a manifest change is as follows:
+%%
+%% A - The Clerk completes a merge, and casts a prompt to the Penciller with
+%% a work item describing the change
+%%
+%% B - The Penciller commits the change to disk, and then calls the Clerk to
+%% confirm the manifest change
+%%
+%% C - The Clerk replies immediately to acknowledge this call, then marks the
+%% removed files for deletion
+%%
+%% Shutdown < A/B - If the Penciller starts the shutdown process before the
+%% merge is complete, in the shutdown the Penciller will call a request for the
+%% manifest change which will pick up the pending change.  It will then confirm
+%% the change, and now the Clerk will mark the files for delete before it
+%% replies to the Penciller so it can complete the shutdown process (which will
+%% prompt erasing of the removed files).
+%%
+%% The clerk will not request work on timeout if the committing of a manifest
+%5 change is pending confirmation.
+%%
+%% -------- TIMEOUTS ---------
+%%
+%% The Penciller may prompt the Clerk to callback soon (i.e. reduce the
+%% Timeout) if it has urgent work ready (i.e. it has written a L0 file).
+%%
+%% There will also be a natural quick timeout once the committing of a manifest
+%% change has occurred.
+%% 
 
 -module(leveled_pclerk).
 
@@ -15,15 +61,15 @@
         terminate/2,
         clerk_new/1,
         clerk_prompt/1,
-        clerk_returnmanifestchange/2,
+        clerk_manifestchange/3,
         code_change/3,
         perform_merge/4]).      
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(INACTIVITY_TIMEOUT, 2000).
+-define(INACTIVITY_TIMEOUT, 5000).
 -define(QUICK_TIMEOUT, 500).
--define(HAPPYTIME_MULTIPLIER, 5).
+-define(HAPPYTIME_MULTIPLIER, 2).
 
 -record(state, {owner :: pid(),
                 change_pending=false :: boolean(),
@@ -38,8 +84,8 @@ clerk_new(Owner) ->
     ok = gen_server:call(Pid, {register, Owner}, infinity),
     {ok, Pid}.
 
-clerk_returnmanifestchange(Pid, Closing) ->
-    gen_server:call(Pid, {return_manifest_change, Closing}).
+clerk_manifestchange(Pid, Action, Closing) ->
+    gen_server:call(Pid, {manifest_change, Action, Closing}, infinity).
 
 clerk_prompt(Pid) ->
     gen_server:cast(Pid, prompt).
@@ -53,23 +99,29 @@ init([]) ->
 
 handle_call({register, Owner}, _From, State) ->
     {reply, ok, State#state{owner=Owner}, ?INACTIVITY_TIMEOUT};
-handle_call({return_manifest_change, Closing}, From, State) ->
-    case {State#state.change_pending, Closing} of
-        {true, true} ->
+handle_call({manifest_change, return, true}, _From, State) ->
+    case State#state.change_pending of
+        true ->
+            WI = State#state.work_item,
+            {reply, {ok, WI}, State};
+        false ->
+            {reply, no_change, State}
+    end;
+handle_call({manifest_change, confirm, Closing}, From, State) ->
+    case Closing of
+        true ->
             WI = State#state.work_item,
             ok = mark_for_delete(WI#penciller_work.unreferenced_files,
                                            State#state.owner),
-            {stop, normal, {ok, WI}, State};
-        {true, false} ->
+            {stop, normal, ok, State};
+        false ->
+            gen_server:reply(From, ok),
             WI = State#state.work_item,
-            gen_server:reply(From, {ok, WI}),
             mark_for_delete(WI#penciller_work.unreferenced_files,
                             State#state.owner),
             {noreply,
                 State#state{work_item=null, change_pending=false},
-                ?INACTIVITY_TIMEOUT};
-        {false, true} ->
-            {stop, normal, no_change_required, State}
+                ?QUICK_TIMEOUT}
     end.
 
 handle_cast(prompt, State) ->
@@ -116,7 +168,8 @@ requestandhandle_work(State) ->
             {NewManifest, FilesToDelete} = merge(WI),
             UpdWI = WI#penciller_work{new_manifest=NewManifest,
                                         unreferenced_files=FilesToDelete},
-            ok = leveled_penciller:pcl_promptmanifestchange(State#state.owner),
+            ok = leveled_penciller:pcl_promptmanifestchange(State#state.owner,
+                                                            UpdWI),
             {true, UpdWI}
     end.    
 
@@ -203,8 +256,8 @@ check_for_merge_candidates(SrcF, SinkFiles) ->
 %% - The one that overlaps with the fewest files below?
 %% - The smallest file?
 %% We could try and be fair in some way (merge oldest first)
-%% Ultimately, there is alack of certainty that being fair or optimal is
-%% genuinely better - ultimately every file has to be compacted.
+%% Ultimately, there is a lack of certainty that being fair or optimal is
+%% genuinely better - eventually every file has to be compacted.
 %%
 %% Hence, the initial implementation is to select files to merge at random
 
@@ -286,6 +339,7 @@ get_item(Index, List, Default) ->
 %%% Test
 %%%============================================================================
 
+-ifdef(TEST).
 
 generate_randomkeys(Count, BucketRangeLow, BucketRangeHigh) ->
     generate_randomkeys(Count, [], BucketRangeLow, BucketRangeHigh).
@@ -399,3 +453,5 @@ select_merge_file_test() ->
     {FileRef, NewManifest} = select_filetomerge(0, Manifest),
     ?assertMatch(FileRef, {{o, "B1", "K1"}, {o, "B3", "K3"}, dummy_pid}),
     ?assertMatch(NewManifest, [{0, []}, {1, L1}]).
+
+-endif.
