@@ -7,9 +7,9 @@
             journal_compaction/1,
             fetchput_snapshot/1]).
 
-all() -> [% simple_put_fetch_head,
-            % many_put_fetch_head,
-            % journal_compaction,
+all() -> [simple_put_fetch_head,
+            many_put_fetch_head,
+            journal_compaction,
             fetchput_snapshot].
 
 
