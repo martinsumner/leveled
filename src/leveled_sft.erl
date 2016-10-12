@@ -159,7 +159,6 @@
         sft_close/1,
         sft_clear/1,
         sft_checkready/1,
-        sft_getfilename/1,
         sft_setfordelete/2,
         sft_getmaxsequencenumber/1,
         generate_randomkeys/1]).
@@ -255,9 +254,6 @@ sft_close(Pid) ->
 sft_checkready(Pid) ->
     gen_server:call(Pid, background_complete, infinity).
 
-sft_getfilename(Pid) ->
-    gen_server:call(Pid, get_filename, infinty).
-
 sft_getmaxsequencenumber(Pid) ->
     gen_server:call(Pid, get_maxsqn, infinity).
 
@@ -330,8 +326,6 @@ handle_call(background_complete, _From, State) ->
         false ->
             {reply, {error, State#state.background_failure}, State}
     end;
-handle_call(get_filename, _From, State) ->
-    {reply, State#state.filename, State};
 handle_call({set_for_delete, Penciller}, _From, State) ->
     {reply,
         ok,
@@ -362,9 +356,7 @@ handle_info(timeout, State) ->
             end;
         false ->
             {noreply, State}
-    end;
-handle_info(_Info, State) ->
-    {noreply, State}.
+    end.
 
 terminate(Reason, State) ->
     io:format("Exit called for reason ~w on filename ~s~n",
@@ -878,18 +870,12 @@ sftwrite_function(finalise,
                                     IndexLength:32/integer,
                                     FilterLength:32/integer,
                                     SummaryLength:32/integer>>),
-    file:close(Handle);
-sftwrite_function(finalise,
-                    {Handle,
-                    SlotIndex,
-                    SNExtremes,
-                    KeyExtremes}) ->
-    {SlotFilters, PointerIndex} = convert_slotindex(SlotIndex),
-    sftwrite_function(finalise,
-                        {Handle,
-                        {SlotFilters, PointerIndex},
-                        SNExtremes,
-                        KeyExtremes}).
+    {ok, _Position} = file:position(Handle, bof),
+    ok = file:advise(Handle,
+                        BlocksLength + IndexLength,
+                        FilterLength,
+                        will_need),
+    file:close(Handle).
 
 %% Level 0 files are of variable (infinite) size to avoid issues with having
 %% any remainders when flushing from memory
