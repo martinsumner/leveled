@@ -234,12 +234,14 @@
         pcl_start/1,
         pcl_pushmem/2,
         pcl_fetch/2,
+        pcl_fetchkeys/5,
         pcl_checksequencenumber/3,
         pcl_workforclerk/1,
         pcl_promptmanifestchange/2,
         pcl_confirmdelete/2,
         pcl_close/1,
         pcl_registersnapshot/2,
+        pcl_releasesnapshot/2,
         pcl_updatesnapshotcache/3,
         pcl_loadsnapshot/2,
         pcl_getstartupsequencenumber/1,
@@ -284,7 +286,6 @@
                 snapshot_fully_loaded = false :: boolean(),
                 source_penciller :: pid()}).
 
- 
 
 %%%============================================================================
 %%% API
@@ -300,6 +301,11 @@ pcl_pushmem(Pid, DumpList) ->
     
 pcl_fetch(Pid, Key) ->
     gen_server:call(Pid, {fetch, Key}, infinity).
+
+pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc) ->
+    gen_server:call(Pid,
+                    {fetch_keys, StartKey, EndKey, AccFun, InitAcc},
+                    infinity).
 
 pcl_checksequencenumber(Pid, Key, SQN) ->
     gen_server:call(Pid, {check_sqn, Key, SQN}, infinity).
@@ -318,6 +324,9 @@ pcl_getstartupsequencenumber(Pid) ->
 
 pcl_registersnapshot(Pid, Snapshot) ->
     gen_server:call(Pid, {register_snapshot, Snapshot}, infinity).
+
+pcl_releasesnapshot(Pid, Snapshot) ->
+    gen_server:cast(Pid, {release_snapshot, Snapshot}).
 
 pcl_updatesnapshotcache(Pid, Tree, SQN) ->
     gen_server:cast(Pid, {update_snapshotcache, Tree, SQN}).
@@ -476,6 +485,16 @@ handle_call({check_sqn, Key, SQN},
                                     State#state.levelzero_snapshot),
                         SQN),
         State};
+handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc},
+                _From,
+                State=#state{snapshot_fully_loaded=Ready})
+                                                        when Ready == true ->
+    L0iter = gb_trees:iterator_from(StartKey, State#state.levelzero_snapshot),
+    SFTiter = initiate_rangequery_frommanifest(StartKey,
+                                                EndKey,
+                                                State#state.manifest),
+    Acc = keyfolder(L0iter, SFTiter, StartKey, EndKey, {AccFun, InitAcc}),
+    {reply, Acc, State};
 handle_call(work_for_clerk, From, State) ->
     {UpdState, Work} = return_work(State, From),
     {reply, {Work, UpdState#state.backlog}, UpdState};
@@ -498,7 +517,10 @@ handle_call({load_snapshot, Increment}, _From, State) ->
         TreeSQN0 > MemTableCopy#l0snapshot.ledger_sqn ->
             pcl_updatesnapshotcache(State#state.source_penciller,
                                     Tree0,
-                                    TreeSQN0)
+                                    TreeSQN0);
+        true ->
+            io:format("No update required to snapshot cache~n"),
+            ok
     end,
     {Tree1, TreeSQN1} = roll_new_tree(Tree0, [Increment], TreeSQN0),
     io:format("Snapshot loaded to start at SQN~w~n", [TreeSQN1]),
@@ -517,15 +539,20 @@ handle_cast({manifest_change, WI}, State) ->
                                                 confirm,
                                                 false),
     {noreply, UpdState};
-handle_cast(_Msg, State) ->
-    {noreply, State}.
+handle_cast({release_snapshot, Snapshot}, State) ->
+    Rs = lists:keydelete(Snapshot, 1, State#state.registered_snapshots),
+    io:format("Penciller snapshot ~w released~n", [Snapshot]),
+    {noreply, State#state{registered_snapshots=Rs}}.
 
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(_Reason, _State=#state{is_snapshot=Snap}) when Snap == true ->
+terminate(Reason, State=#state{is_snapshot=Snap}) when Snap == true ->
+    ok = pcl_releasesnapshot(State#state.source_penciller, self()),
+    io:format("Sent release message for snapshot following close for "
+                ++ "reason ~w~n", [Reason]),   
     ok;
-terminate(_Reason, State) ->
+terminate(Reason, State) ->
     %% When a Penciller shuts down it isn't safe to try an manage the safe
     %% finishing of any outstanding work.  The last commmitted manifest will
     %% be used.
@@ -542,6 +569,7 @@ terminate(_Reason, State) ->
     %% The cast may not succeed as the clerk could be synchronously calling
     %% the penciller looking for a manifest commit
     %%
+    io:format("Penciller closing for reason - ~w~n", [Reason]),
     MC = leveled_pclerk:clerk_manifestchange(State#state.clerk,
                                                 return,
                                                 true),
@@ -976,18 +1004,215 @@ print_manifest(Manifest) ->
                         io:format("Manifest at Level ~w~n", [L]),
                         Level = get_item(L, Manifest, []),
                         lists:foreach(fun(M) ->
-                                            {_, SB, SK} = M#manifest_entry.start_key,
-                                            {_, EB, EK} = M#manifest_entry.end_key,
-                                            io:format("Manifest entry of " ++ 
-                                                        "startkey ~s ~s " ++
-                                                        "endkey ~s ~s " ++
-                                                        "filename=~s~n",
-                                                [SB, SK, EB, EK,
-                                                    M#manifest_entry.filename])
-                                            end,
+                                            print_manifest_entry(M) end,
                                         Level)
                         end,
                     lists:seq(1, ?MAX_LEVELS - 1)).
+
+print_manifest_entry(Entry) ->
+    {S1, S2, S3} = leveled_bookie:print_key(Entry#manifest_entry.start_key),
+    {E1, E2, E3} = leveled_bookie:print_key(Entry#manifest_entry.end_key),
+    io:format("Manifest entry of " ++ 
+                "startkey ~s ~s ~s " ++
+                "endkey ~s ~s ~s " ++
+                "filename=~s~n",
+        [S1, S2, S3, E1, E2, E3,
+            Entry#manifest_entry.filename]).
+
+initiate_rangequery_frommanifest(StartKey, EndKey, Manifest) ->
+    CompareFun = fun(M) ->
+                    C1 = leveled_bookie:key_compare(StartKey,
+                                                    M#manifest_entry.end_key,
+                                                    gt),
+                    C2 = leveled_bookie:key_compare(EndKey,
+                                                    M#manifest_entry.start_key,
+                                                    lt),
+                    not (C1 or C2) end,
+    lists:foldl(fun(L, AccL) ->
+                    Level = get_item(L, Manifest, []),
+                    FL = lists:foldl(fun(M, Acc) ->
+                                            case CompareFun(M) of
+                                                true ->
+                                                    Acc ++ [{next_file, M}];
+                                                false ->
+                                                    Acc
+                                            end end,
+                                        [],
+                                        Level),
+                    case FL of
+                        [] -> AccL;
+                        FL -> AccL ++ [{L, FL}]
+                    end
+                    end,
+                [],
+                lists:seq(1, ?MAX_LEVELS - 1)).
+
+%% Looks to find the best choice for the next key across the levels (other
+%% than in-memory table)
+%% In finding the best choice, the next key in a given level may be a next
+%% block or next file pointer which will need to be expanded
+
+find_nextkey(QueryArray, StartKey, EndKey) ->
+    find_nextkey(QueryArray,
+                    1,
+                    {null, null},
+                    {fun leveled_sft:sft_getkvrange/4, StartKey, EndKey, 1}).
+
+find_nextkey(_QueryArray, LCnt, {null, null}, _QueryFunT)
+                                            when LCnt > ?MAX_LEVELS ->
+    % The array has been scanned wihtout finding a best key - must be
+    % exhausted - respond to indicate no more keys to be found by the
+    % iterator
+    no_more_keys;
+find_nextkey(QueryArray, LCnt, {BKL, BestKV}, _QueryFunT)
+                                            when LCnt > ?MAX_LEVELS ->
+    % All levels have been scanned, so need to remove the best result from
+    % the array, and return that array along with the best key/sqn/status
+    % combination
+    {BKL, [BestKV|Tail]} = lists:keyfind(BKL, 1, QueryArray),
+    {lists:keyreplace(BKL, 1, QueryArray, {BKL, Tail}), BestKV};
+find_nextkey(QueryArray, LCnt, {BestKeyLevel, BestKV}, QueryFunT) ->
+    % Get the next key at this level
+    {NextKey, RestOfKeys} = case lists:keyfind(LCnt, 1, QueryArray) of
+                                    false ->
+                                        {null, null};
+                                    {LCnt, []} ->
+                                        {null, null};
+                                    {LCnt, [NK|ROfKs]} ->
+                                        {NK, ROfKs}
+                                end,
+    % Compare the next key at this level with the best key
+    case {NextKey, BestKeyLevel, BestKV} of
+        {null, BKL, BKV} ->
+            % There is no key at this level - go to the next level
+            find_nextkey(QueryArray, LCnt + 1, {BKL, BKV}, QueryFunT);
+        {{next_file, ManifestEntry}, BKL, BKV} ->
+            % The first key at this level is pointer to a file - need to query
+            % the file to expand this level out before proceeding
+            Owner = ManifestEntry#manifest_entry.owner,
+            {QueryFun, StartKey, EndKey, ScanSize} = QueryFunT,
+            QueryResult = QueryFun(Owner, StartKey, EndKey, ScanSize),
+            NewEntry = {LCnt, QueryResult ++ RestOfKeys},
+            % Need to loop around at this level (LCnt) as we have not yet
+            % examined a real key at this level
+            find_nextkey(lists:keyreplace(LCnt, 1, QueryArray, NewEntry),
+                            LCnt,
+                            {BKL, BKV},
+                            QueryFunT);
+        {{next, SFTpid, NewStartKey}, BKL, BKV} ->
+            % The first key at this level is pointer within a file  - need to
+            % query the file to expand this level out before proceeding
+            {QueryFun, _StartKey, EndKey, ScanSize} = QueryFunT,
+            QueryResult = QueryFun(SFTpid, NewStartKey, EndKey, ScanSize),
+            NewEntry = {LCnt, QueryResult ++ RestOfKeys},
+            % Need to loop around at this level (LCnt) as we have not yet
+            % examined a real key at this level
+            find_nextkey(lists:keyreplace(LCnt, 1, QueryArray, NewEntry),
+                            LCnt,
+                            {BKL, BKV},
+                            QueryFunT);
+        {{Key, Val}, null, null} ->
+            % No best key set - so can assume that this key is the best key,
+            % and check the higher levels
+            find_nextkey(QueryArray,
+                            LCnt + 1,
+                            {LCnt, {Key, Val}},
+                            QueryFunT);
+        {{Key, Val}, _BKL, {BestKey, _BestVal}} when Key < BestKey ->
+            % There is a real key and a best key to compare, and the real key
+            % at this level is before the best key, and so is now the new best
+            % key
+            % The QueryArray is not modified until we have checked all levels
+            find_nextkey(QueryArray,
+                            LCnt + 1,
+                            {LCnt, {Key, Val}},
+                            QueryFunT);
+        {{Key, Val}, BKL, {BestKey, BestVal}} when Key == BestKey ->
+            SQN = leveled_bookie:strip_to_seqonly({Key, Val}),
+            BestSQN = leveled_bookie:strip_to_seqonly({BestKey, BestVal}),
+            if
+                SQN =< BestSQN ->
+                    % This is a dominated key, so we need to skip over it
+                    NewEntry = {LCnt, RestOfKeys},
+                    find_nextkey(lists:keyreplace(LCnt, 1, QueryArray, NewEntry),
+                                    LCnt + 1,
+                                    {BKL, {BestKey, BestVal}},
+                                    QueryFunT);
+                SQN > BestSQN ->
+                    % There is a real key at the front of this level and it has
+                    % a higher SQN than the best key, so we should use this as
+                    % the best key
+                    % But we also need to remove the dominated key from the
+                    % lower level in the query array
+                    io:format("Key at level ~w with SQN ~w is better than " ++
+                                    "key at lower level ~w with SQN ~w~n",
+                                [LCnt, SQN, BKL, BestSQN]),   
+                    OldBestEntry = lists:keyfind(BKL, 1, QueryArray),
+                    {BKL, [{BestKey, BestVal}|BestTail]} = OldBestEntry,
+                    find_nextkey(lists:keyreplace(BKL,
+                                                    1,
+                                                    QueryArray,
+                                                    {BKL, BestTail}),
+                                    LCnt + 1,
+                                    {LCnt, {Key, Val}},
+                                    QueryFunT)
+            end;
+        {_, BKL, BKV} ->
+            % This is not the best key
+            find_nextkey(QueryArray, LCnt + 1, {BKL, BKV}, QueryFunT)
+    end.
+
+
+keyfolder(null, SFTiterator, StartKey, EndKey, {AccFun, Acc}) ->
+    case find_nextkey(SFTiterator, StartKey, EndKey) of
+        no_more_keys ->
+            Acc;
+        {NxtSFTiterator, {SFTKey, SFTVal}} ->
+            Acc1 = AccFun(SFTKey, SFTVal, Acc),
+            keyfolder(null, NxtSFTiterator, StartKey, EndKey, {AccFun, Acc1})
+    end;
+keyfolder(IMMiterator, SFTiterator, StartKey, EndKey, {AccFun, Acc}) ->
+    case gb_trees:next(IMMiterator) of
+        none ->
+            % There are no more keys in the in-memory iterator, so now
+            % iterate only over the remaining keys in the SFT iterator
+            keyfolder(null, SFTiterator, StartKey, EndKey, {AccFun, Acc});
+        {IMMKey, IMMVal, NxtIMMiterator} ->
+            case {leveled_bookie:key_compare(EndKey, IMMKey, lt),
+                    find_nextkey(SFTiterator, StartKey, EndKey)} of
+                {true, _} ->
+                    % There are no more keys in-range in the in-memory
+                    % iterator, so take action as if this iterator is empty
+                    % (see above)
+                    keyfolder(null, SFTiterator,
+                                    StartKey, EndKey, {AccFun, Acc});
+                {false, no_more_keys} ->
+                    % No more keys in range in the persisted store, so use the
+                    % in-memory KV as the next
+                    Acc1 = AccFun(IMMKey, IMMVal, Acc),
+                    keyfolder(NxtIMMiterator, SFTiterator,
+                                    StartKey, EndKey, {AccFun, Acc1});
+                {false, {NxtSFTiterator, {SFTKey, SFTVal}}} ->
+                    % There is a next key, so need to know which is the next
+                    % key between the two (and handle two keys with different
+                    % sequence numbers).  
+                    case leveled_bookie:key_dominates({IMMKey, IMMVal},
+                                                        {SFTKey, SFTVal}) of
+                        left_hand_first ->
+                            Acc1 = AccFun(IMMKey, IMMVal, Acc),
+                            keyfolder(NxtIMMiterator, SFTiterator,
+                                            StartKey, EndKey, {AccFun, Acc1});
+                        right_hand_first ->
+                            Acc1 = AccFun(SFTKey, SFTVal, Acc),
+                            keyfolder(IMMiterator, NxtSFTiterator,
+                                            StartKey, EndKey, {AccFun, Acc1});
+                        left_hand_dominant ->
+                            Acc1 = AccFun(IMMKey, IMMVal, Acc),
+                            keyfolder(NxtIMMiterator, NxtSFTiterator,
+                                            StartKey, EndKey, {AccFun, Acc1})
+                    end
+             end
+    end.    
 
 
 assess_workqueue(WorkQ, ?MAX_LEVELS - 1, _Manifest) ->
@@ -1069,8 +1294,14 @@ commit_manifest_change(ReturnedWorkItem, State) ->
 
 
 rename_manifest_files(RootPath, NewMSN) ->
-    file:rename(filepath(RootPath, NewMSN, pending_manifest),
-                    filepath(RootPath, NewMSN, current_manifest)).
+    OldFN = filepath(RootPath, NewMSN, pending_manifest),
+    NewFN = filepath(RootPath, NewMSN, current_manifest),
+    io:format("Rename of manifest from ~s ~w to ~s ~w~n",
+                [OldFN,
+                    filelib:is_file(OldFN),
+                    NewFN,
+                    filelib:is_file(NewFN)]),
+    file:rename(OldFN,NewFN).
 
 filepath(RootPath, manifest) ->
     RootPath ++ "/" ++ ?MANIFEST_FP;
@@ -1152,20 +1383,27 @@ clean_subdir(DirPath) ->
     end.
 
 compaction_work_assessment_test() ->
-    L0 = [{{o, "B1", "K1"}, {o, "B3", "K3"}, dummy_pid}],
-    L1 = [{{o, "B1", "K1"}, {o, "B2", "K2"}, dummy_pid},
-            {{o, "B2", "K3"}, {o, "B4", "K4"}, dummy_pid}],
+    L0 = [{{o, "B1", "K1", null}, {o, "B3", "K3", null}, dummy_pid}],
+    L1 = [{{o, "B1", "K1", null}, {o, "B2", "K2", null}, dummy_pid},
+            {{o, "B2", "K3", null}, {o, "B4", "K4", null}, dummy_pid}],
     Manifest = [{0, L0}, {1, L1}],
     WorkQ1 = assess_workqueue([], 0, Manifest),
     ?assertMatch(WorkQ1, [{0, Manifest}]),
     L1Alt = lists:append(L1,
-                        [{{o, "B5", "K0001"}, {o, "B5", "K9999"}, dummy_pid},
-                        {{o, "B6", "K0001"}, {o, "B6", "K9999"}, dummy_pid},
-                        {{o, "B7", "K0001"}, {o, "B7", "K9999"}, dummy_pid},
-                        {{o, "B8", "K0001"}, {o, "B8", "K9999"}, dummy_pid},
-                        {{o, "B9", "K0001"}, {o, "B9", "K9999"}, dummy_pid},
-                        {{o, "BA", "K0001"}, {o, "BA", "K9999"}, dummy_pid},
-                        {{o, "BB", "K0001"}, {o, "BB", "K9999"}, dummy_pid}]),
+                        [{{o, "B5", "K0001", null}, {o, "B5", "K9999", null},
+                            dummy_pid},
+                        {{o, "B6", "K0001", null}, {o, "B6", "K9999", null},
+                            dummy_pid},
+                        {{o, "B7", "K0001", null}, {o, "B7", "K9999", null},
+                            dummy_pid},
+                        {{o, "B8", "K0001", null}, {o, "B8", "K9999", null},
+                            dummy_pid},
+                        {{o, "B9", "K0001", null}, {o, "B9", "K9999", null},
+                            dummy_pid},
+                        {{o, "BA", "K0001", null}, {o, "BA", "K9999", null},
+                            dummy_pid},
+                        {{o, "BB", "K0001", null}, {o, "BB", "K9999", null},
+                            dummy_pid}]),
     Manifest3 = [{0, []}, {1, L1Alt}],
     WorkQ3 = assess_workqueue([], 0, Manifest3),
     ?assertMatch(WorkQ3, [{1, Manifest3}]).
@@ -1199,26 +1437,26 @@ simple_server_test() ->
     clean_testdir(RootPath),
     {ok, PCL} = pcl_start(#penciller_options{root_path=RootPath,
                                                 max_inmemory_tablesize=1000}),
-    Key1 = {{o,"Bucket0001", "Key0001"}, {1, {active, infinity}, null}},
+    Key1 = {{o,"Bucket0001", "Key0001", null}, {1, {active, infinity}, null}},
     KL1 = lists:sort(leveled_sft:generate_randomkeys({1000, 2})),
-    Key2 = {{o,"Bucket0002", "Key0002"}, {1002, {active, infinity}, null}},
+    Key2 = {{o,"Bucket0002", "Key0002", null}, {1002, {active, infinity}, null}},
     KL2 = lists:sort(leveled_sft:generate_randomkeys({1000, 1002})),
-    Key3 = {{o,"Bucket0003", "Key0003"}, {2002, {active, infinity}, null}},
+    Key3 = {{o,"Bucket0003", "Key0003", null}, {2002, {active, infinity}, null}},
     KL3 = lists:sort(leveled_sft:generate_randomkeys({1000, 2002})),
-    Key4 = {{o,"Bucket0004", "Key0004"}, {3002, {active, infinity}, null}},
+    Key4 = {{o,"Bucket0004", "Key0004", null}, {3002, {active, infinity}, null}},
     KL4 = lists:sort(leveled_sft:generate_randomkeys({1000, 3002})),
     ok = pcl_pushmem(PCL, [Key1]),
-    ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001"})),
+    ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001", null})),
     ok = pcl_pushmem(PCL, KL1),
-    ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001"})),
+    ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001", null})),
     maybe_pause_push(pcl_pushmem(PCL, [Key2])),
-    ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001"})),
-    ?assertMatch(Key2, pcl_fetch(PCL, {o,"Bucket0002", "Key0002"})),
+    ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001", null})),
+    ?assertMatch(Key2, pcl_fetch(PCL, {o,"Bucket0002", "Key0002", null})),
     maybe_pause_push(pcl_pushmem(PCL, KL2)),
     maybe_pause_push(pcl_pushmem(PCL, [Key3])),
-    ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001"})),
-    ?assertMatch(Key2, pcl_fetch(PCL, {o,"Bucket0002", "Key0002"})),
-    ?assertMatch(Key3, pcl_fetch(PCL, {o,"Bucket0003", "Key0003"})),
+    ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001", null})),
+    ?assertMatch(Key2, pcl_fetch(PCL, {o,"Bucket0002", "Key0002", null})),
+    ?assertMatch(Key3, pcl_fetch(PCL, {o,"Bucket0003", "Key0003", null})),
     ok = pcl_close(PCL),
     {ok, PCLr} = pcl_start(#penciller_options{root_path=RootPath,
                                                 max_inmemory_tablesize=1000}),
@@ -1233,61 +1471,86 @@ simple_server_test() ->
                     %% everything got persisted
                     ok;
                 _ ->
-                    io:format("Unexpected sequence number on restart ~w~n", [TopSQN]),
+                    io:format("Unexpected sequence number on restart ~w~n",
+                                [TopSQN]),
                     error
             end,
     ?assertMatch(ok, Check),
-    ?assertMatch(Key1, pcl_fetch(PCLr, {o,"Bucket0001", "Key0001"})),
-    ?assertMatch(Key2, pcl_fetch(PCLr, {o,"Bucket0002", "Key0002"})),
-    ?assertMatch(Key3, pcl_fetch(PCLr, {o,"Bucket0003", "Key0003"})),
+    ?assertMatch(Key1, pcl_fetch(PCLr, {o,"Bucket0001", "Key0001", null})),
+    ?assertMatch(Key2, pcl_fetch(PCLr, {o,"Bucket0002", "Key0002", null})),
+    ?assertMatch(Key3, pcl_fetch(PCLr, {o,"Bucket0003", "Key0003", null})),
     maybe_pause_push(pcl_pushmem(PCLr, KL3)),
     maybe_pause_push(pcl_pushmem(PCLr, [Key4])),
     maybe_pause_push(pcl_pushmem(PCLr, KL4)),
-    ?assertMatch(Key1, pcl_fetch(PCLr, {o,"Bucket0001", "Key0001"})),
-    ?assertMatch(Key2, pcl_fetch(PCLr, {o,"Bucket0002", "Key0002"})),
-    ?assertMatch(Key3, pcl_fetch(PCLr, {o,"Bucket0003", "Key0003"})),
-    ?assertMatch(Key4, pcl_fetch(PCLr, {o,"Bucket0004", "Key0004"})),
+    ?assertMatch(Key1, pcl_fetch(PCLr, {o,"Bucket0001", "Key0001", null})),
+    ?assertMatch(Key2, pcl_fetch(PCLr, {o,"Bucket0002", "Key0002", null})),
+    ?assertMatch(Key3, pcl_fetch(PCLr, {o,"Bucket0003", "Key0003", null})),
+    ?assertMatch(Key4, pcl_fetch(PCLr, {o,"Bucket0004", "Key0004", null})),
     SnapOpts = #penciller_options{start_snapshot = true,
                                     source_penciller = PCLr},
     {ok, PclSnap} = pcl_start(SnapOpts),
     ok = pcl_loadsnapshot(PclSnap, []),
-    ?assertMatch(Key1, pcl_fetch(PclSnap, {o,"Bucket0001", "Key0001"})),
-    ?assertMatch(Key2, pcl_fetch(PclSnap, {o,"Bucket0002", "Key0002"})),
-    ?assertMatch(Key3, pcl_fetch(PclSnap, {o,"Bucket0003", "Key0003"})),
-    ?assertMatch(Key4, pcl_fetch(PclSnap, {o,"Bucket0004", "Key0004"})),
+    ?assertMatch(Key1, pcl_fetch(PclSnap, {o,"Bucket0001", "Key0001", null})),
+    ?assertMatch(Key2, pcl_fetch(PclSnap, {o,"Bucket0002", "Key0002", null})),
+    ?assertMatch(Key3, pcl_fetch(PclSnap, {o,"Bucket0003", "Key0003", null})),
+    ?assertMatch(Key4, pcl_fetch(PclSnap, {o,"Bucket0004", "Key0004", null})),
     ?assertMatch(true, pcl_checksequencenumber(PclSnap,
-                                                {o,"Bucket0001", "Key0001"},
+                                                {o,
+                                                    "Bucket0001",
+                                                    "Key0001",
+                                                    null},
                                                 1)),
     ?assertMatch(true, pcl_checksequencenumber(PclSnap,
-                                                {o,"Bucket0002", "Key0002"},
+                                                {o,
+                                                    "Bucket0002",
+                                                    "Key0002",
+                                                    null},
                                                 1002)),
     ?assertMatch(true, pcl_checksequencenumber(PclSnap,
-                                                {o,"Bucket0003", "Key0003"},
+                                                {o,
+                                                    "Bucket0003",
+                                                    "Key0003",
+                                                    null},
                                                 2002)),
     ?assertMatch(true, pcl_checksequencenumber(PclSnap,
-                                                {o,"Bucket0004", "Key0004"},
+                                                {o,
+                                                    "Bucket0004",
+                                                    "Key0004",
+                                                    null},
                                                 3002)),
     % Add some more keys and confirm that chekc sequence number still
     % sees the old version in the previous snapshot, but will see the new version
     % in a new snapshot
-    Key1A = {{o,"Bucket0001", "Key0001"}, {4002, {active, infinity}, null}},
+    Key1A = {{o,"Bucket0001", "Key0001", null}, {4002, {active, infinity}, null}},
     KL1A = lists:sort(leveled_sft:generate_randomkeys({4002, 2})),
     maybe_pause_push(pcl_pushmem(PCLr, [Key1A])),
     maybe_pause_push(pcl_pushmem(PCLr, KL1A)),
     ?assertMatch(true, pcl_checksequencenumber(PclSnap,
-                                                {o,"Bucket0001", "Key0001"},
+                                                {o,
+                                                    "Bucket0001",
+                                                    "Key0001",
+                                                    null},
                                                 1)),
     ok = pcl_close(PclSnap),
     {ok, PclSnap2} = pcl_start(SnapOpts),
     ok = pcl_loadsnapshot(PclSnap2, []),
     ?assertMatch(false, pcl_checksequencenumber(PclSnap2,
-                                                {o,"Bucket0001", "Key0001"},
+                                                {o,
+                                                    "Bucket0001",
+                                                    "Key0001",
+                                                    null},
                                                 1)),
     ?assertMatch(true, pcl_checksequencenumber(PclSnap2,
-                                                {o,"Bucket0001", "Key0001"},
+                                                {o,
+                                                    "Bucket0001",
+                                                    "Key0001",
+                                                    null},
                                                 4002)),
     ?assertMatch(true, pcl_checksequencenumber(PclSnap2,
-                                                {o,"Bucket0002", "Key0002"},
+                                                {o,
+                                                    "Bucket0002",
+                                                    "Key0002",
+                                                    null},
                                                 1002)),
     ok = pcl_close(PclSnap2),
     ok = pcl_close(PCLr),
@@ -1333,5 +1596,175 @@ memcopy_updatecache_test() ->
     Size2 = gb_trees:size(MemCopy4#l0snapshot.tree),
     ?assertMatch(2000, Size2),
     ?assertMatch(3000, MemCopy4#l0snapshot.ledger_sqn).
+
+rangequery_manifest_test() ->
+    {E1,
+        E2,
+        E3} = {#manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
+                                end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K93"},
+                                filename="Z1"},
+                #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld9"}, "K97"},
+                                end_key={o, "Bucket1", "K71", null},
+                                filename="Z2"},
+                #manifest_entry{start_key={o, "Bucket1", "K75", null},
+                                end_key={o, "Bucket1", "K993", null},
+                                filename="Z3"}},
+    {E4,
+        E5,
+        E6} = {#manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
+                                end_key={i, "Bucket1", {"Idx1", "Fld7"}, "K93"},
+                                filename="Z4"},
+                #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld7"}, "K97"},
+                                end_key={o, "Bucket1", "K78", null},
+                                filename="Z5"},
+                #manifest_entry{start_key={o, "Bucket1", "K81", null},
+                                end_key={o, "Bucket1", "K996", null},
+                                filename="Z6"}},
+    Man = [{1, [E1, E2, E3]}, {2, [E4, E5, E6]}],
+    R1 = initiate_rangequery_frommanifest({o, "Bucket1", "K711", null},
+                                            {o, "Bucket1", "K999", null},
+                                            Man),
+    ?assertMatch([{1, [{next_file, E3}]},
+                        {2, [{next_file, E5}, {next_file, E6}]}],
+                    R1),
+    R2 = initiate_rangequery_frommanifest({i, "Bucket1", {"Idx1", "Fld8"}, null},
+                                            {i, "Bucket1", {"Idx1", "Fld8"}, null},
+                                            Man),
+    ?assertMatch([{1, [{next_file, E1}]}, {2, [{next_file, E5}]}],
+                    R2),
+    R3 = initiate_rangequery_frommanifest({i, "Bucket1", {"Idx0", "Fld8"}, null},
+                                            {i, "Bucket1", {"Idx0", "Fld9"}, null},
+                                            Man),
+    ?assertMatch([], R3).
+
+simple_findnextkey_test() ->
+    QueryArray = [
+    {2, [{{o, "Bucket1", "Key1"}, {5, {active, infinity}, null}},
+            {{o, "Bucket1", "Key5"}, {4, {active, infinity}, null}}]},
+    {3, [{{o, "Bucket1", "Key3"}, {3, {active, infinity}, null}}]},
+    {5, [{{o, "Bucket1", "Key2"}, {2, {active, infinity}, null}}]}
+    ],
+    {Array2, KV1} = find_nextkey(QueryArray,
+                                    {o, "Bucket1", "Key0"},
+                                    {o, "Bucket1", "Key5"}),
+    ?assertMatch({{o, "Bucket1", "Key1"}, {5, {active, infinity}, null}}, KV1),
+    {Array3, KV2} = find_nextkey(Array2,
+                                    {o, "Bucket1", "Key0"},
+                                    {o, "Bucket1", "Key5"}),
+    ?assertMatch({{o, "Bucket1", "Key2"}, {2, {active, infinity}, null}}, KV2),
+    {Array4, KV3} = find_nextkey(Array3,
+                                    {o, "Bucket1", "Key0"},
+                                    {o, "Bucket1", "Key5"}),
+    ?assertMatch({{o, "Bucket1", "Key3"}, {3, {active, infinity}, null}}, KV3),
+    {Array5, KV4} = find_nextkey(Array4,
+                                    {o, "Bucket1", "Key0"},
+                                    {o, "Bucket1", "Key5"}),
+    ?assertMatch({{o, "Bucket1", "Key5"}, {4, {active, infinity}, null}}, KV4),
+    ER = find_nextkey(Array5,
+                        {o, "Bucket1", "Key0"},
+                        {o, "Bucket1", "Key5"}),
+    ?assertMatch(no_more_keys, ER).
+
+sqnoverlap_findnextkey_test() ->
+    QueryArray = [
+    {2, [{{o, "Bucket1", "Key1"}, {5, {active, infinity}, null}},
+            {{o, "Bucket1", "Key5"}, {4, {active, infinity}, null}}]},
+    {3, [{{o, "Bucket1", "Key3"}, {3, {active, infinity}, null}}]},
+    {5, [{{o, "Bucket1", "Key5"}, {2, {active, infinity}, null}}]}
+    ],
+    {Array2, KV1} = find_nextkey(QueryArray,
+                                    {o, "Bucket1", "Key0"},
+                                    {o, "Bucket1", "Key5"}),
+    ?assertMatch({{o, "Bucket1", "Key1"}, {5, {active, infinity}, null}}, KV1),
+    {Array3, KV2} = find_nextkey(Array2,
+                                    {o, "Bucket1", "Key0"},
+                                    {o, "Bucket1", "Key5"}),
+    ?assertMatch({{o, "Bucket1", "Key3"}, {3, {active, infinity}, null}}, KV2),
+    {Array4, KV3} = find_nextkey(Array3,
+                                    {o, "Bucket1", "Key0"},
+                                    {o, "Bucket1", "Key5"}),
+    ?assertMatch({{o, "Bucket1", "Key5"}, {4, {active, infinity}, null}}, KV3),
+    ER = find_nextkey(Array4,
+                        {o, "Bucket1", "Key0"},
+                        {o, "Bucket1", "Key5"}),
+    ?assertMatch(no_more_keys, ER).
+
+sqnoverlap_otherway_findnextkey_test() ->
+    QueryArray = [
+    {2, [{{o, "Bucket1", "Key1"}, {5, {active, infinity}, null}},
+            {{o, "Bucket1", "Key5"}, {1, {active, infinity}, null}}]},
+    {3, [{{o, "Bucket1", "Key3"}, {3, {active, infinity}, null}}]},
+    {5, [{{o, "Bucket1", "Key5"}, {2, {active, infinity}, null}}]}
+    ],
+    {Array2, KV1} = find_nextkey(QueryArray,
+                                    {o, "Bucket1", "Key0"},
+                                    {o, "Bucket1", "Key5"}),
+    ?assertMatch({{o, "Bucket1", "Key1"}, {5, {active, infinity}, null}}, KV1),
+    {Array3, KV2} = find_nextkey(Array2,
+                                    {o, "Bucket1", "Key0"},
+                                    {o, "Bucket1", "Key5"}),
+    ?assertMatch({{o, "Bucket1", "Key3"}, {3, {active, infinity}, null}}, KV2),
+    {Array4, KV3} = find_nextkey(Array3,
+                                    {o, "Bucket1", "Key0"},
+                                    {o, "Bucket1", "Key5"}),
+    ?assertMatch({{o, "Bucket1", "Key5"}, {2, {active, infinity}, null}}, KV3),
+    ER = find_nextkey(Array4,
+                        {o, "Bucket1", "Key0"},
+                        {o, "Bucket1", "Key5"}),
+    ?assertMatch(no_more_keys, ER).
+
+foldwithimm_simple_test() ->
+    QueryArray = [
+        {2, [{{o, "Bucket1", "Key1"}, {5, {active, infinity}, null}},
+                {{o, "Bucket1", "Key5"}, {1, {active, infinity}, null}}]},
+        {3, [{{o, "Bucket1", "Key3"}, {3, {active, infinity}, null}}]},
+        {5, [{{o, "Bucket1", "Key5"}, {2, {active, infinity}, null}}]}
+    ],
+    IMM0 = gb_trees:enter({o, "Bucket1", "Key6"},
+                                {7, {active, infinity}, null},
+                            gb_trees:empty()),
+    IMM1 = gb_trees:enter({o, "Bucket1", "Key1"},
+                                {8, {active, infinity}, null},
+                            IMM0),
+    IMM2 = gb_trees:enter({o, "Bucket1", "Key8"},
+                                {9, {active, infinity}, null},
+                            IMM1),
+    IMMiter = gb_trees:iterator_from({o, "Bucket1", "Key1"}, IMM2),
+    AccFun = fun(K, V, Acc) -> SQN= leveled_bookie:strip_to_seqonly({K, V}),
+                                Acc ++ [{K, SQN}] end,
+    Acc = keyfolder(IMMiter,
+                    QueryArray,
+                    {o, "Bucket1", "Key1"}, {o, "Bucket1", "Key6"},
+                    {AccFun, []}),
+    ?assertMatch([{{o, "Bucket1", "Key1"}, 8},
+                    {{o, "Bucket1", "Key3"}, 3},
+                    {{o, "Bucket1", "Key5"}, 2},
+                    {{o, "Bucket1", "Key6"}, 7}], Acc),
+    
+    IMM1A = gb_trees:enter({o, "Bucket1", "Key1"},
+                                {8, {active, infinity}, null},
+                            gb_trees:empty()),
+    IMMiterA = gb_trees:iterator_from({o, "Bucket1", "Key1"}, IMM1A),
+    AccA = keyfolder(IMMiterA,
+                    QueryArray,
+                    {o, "Bucket1", "Key1"}, {o, "Bucket1", "Key6"},
+                    {AccFun, []}),
+    ?assertMatch([{{o, "Bucket1", "Key1"}, 8},
+                    {{o, "Bucket1", "Key3"}, 3},
+                    {{o, "Bucket1", "Key5"}, 2}], AccA),
+    
+    IMM3 = gb_trees:enter({o, "Bucket1", "Key4"},
+                                {10, {active, infinity}, null},
+                            IMM2),
+    IMMiterB = gb_trees:iterator_from({o, "Bucket1", "Key1"}, IMM3),
+    AccB = keyfolder(IMMiterB,
+                    QueryArray,
+                    {o, "Bucket1", "Key1"}, {o, "Bucket1", "Key6"},
+                    {AccFun, []}),
+    ?assertMatch([{{o, "Bucket1", "Key1"}, 8},
+                    {{o, "Bucket1", "Key3"}, 3},
+                    {{o, "Bucket1", "Key4"}, 10},
+                    {{o, "Bucket1", "Key5"}, 2},
+                    {{o, "Bucket1", "Key6"}, 7}], AccB).
 
 -endif.

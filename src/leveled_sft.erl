@@ -14,8 +14,8 @@
 %%
 %% All keys are not equal in sft files, keys are only expected in a specific
 %% series of formats
-%% - {o, Bucket, Key} - Object Keys
-%% - {i, Bucket, IndexName, IndexTerm, Key} - Postings
+%% - {o, Bucket, Key, SubKey|null} - Object Keys
+%% - {i, Bucket, {IndexName, IndexTerm}, Key} - Postings
 %% The {Bucket, Key} part of all types of keys are hashed for segment filters.
 %% For Postings the {Bucket, IndexName, IndexTerm} is also hashed.  This
 %% causes a false positive on lookup of a segment, but allows for the presence
@@ -155,7 +155,7 @@
         sft_new/5,
         sft_open/1,
         sft_get/2,
-        sft_getkeyrange/4,
+        sft_getkvrange/4,
         sft_close/1,
         sft_clear/1,
         sft_checkready/1,
@@ -243,15 +243,8 @@ sft_setfordelete(Pid, Penciller) ->
 sft_get(Pid, Key) ->
     gen_server:call(Pid, {get_kv, Key}, infinity).
 
-sft_getkeyrange(Pid, StartKey, EndKey, ScanWidth) ->
-    gen_server:call(Pid,
-                    {get_keyrange, StartKey, EndKey, ScanWidth},
-                    infinity).
-
 sft_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
-    gen_server:call(Pid,
-                    {get_kvrange, StartKey, EndKey, ScanWidth},
-                    infinity).
+    gen_server:call(Pid, {get_kvrange, StartKey, EndKey, ScanWidth}, infinity).
 
 sft_clear(Pid) ->
     gen_server:call(Pid, clear, infinity).
@@ -313,15 +306,13 @@ handle_call({sft_open, Filename}, _From, _State) ->
 handle_call({get_kv, Key}, _From, State) ->
     Reply = fetch_keyvalue(State#state.handle, State, Key),
     {reply, Reply, State};
-handle_call({get_keyrange, StartKey, EndKey, ScanWidth}, _From, State) ->
-    Reply = fetch_range_keysonly(State#state.handle, State,
-                                    StartKey, EndKey,
-                                    ScanWidth),
-    {reply, Reply, State};
 handle_call({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
-    Reply = fetch_range_kv(State#state.handle, State,
-                                StartKey, EndKey,
-                                ScanWidth),
+    Reply = pointer_append_queryresults(fetch_range_kv(State#state.handle,
+                                                        State,
+                                                        StartKey,
+                                                        EndKey,
+                                                        ScanWidth),
+                                            self()),
     {reply, Reply, State};
 handle_call(close, _From, State) ->
     {stop, normal, ok, State};
@@ -582,7 +573,7 @@ acc_list_keysonly(null, empty) ->
 acc_list_keysonly(null, RList) ->
     RList;
 acc_list_keysonly(R, RList) ->
-    lists:append(RList, [leveled_bookie:strip_to_keyseqonly(R)]).
+    lists:append(RList, [leveled_bookie:strip_to_keyseqstatusonly(R)]).
 
 acc_list_kv(null, empty) ->
     [];
@@ -672,10 +663,12 @@ scan_block([], StartKey, _EndKey, _FunList, _AccFun, Acc) ->
     {partial, Acc, StartKey};
 scan_block([HeadKV|T], StartKey, EndKey, FunList, AccFun, Acc) ->
     K = leveled_bookie:strip_to_keyonly(HeadKV),
-    case K of
-        K when K < StartKey, StartKey /= all ->
+    Pre = leveled_bookie:key_compare(StartKey, K, gt),
+    Post = leveled_bookie:key_compare(EndKey, K, lt),
+    case {Pre, Post} of
+        {true, _} when StartKey /= all ->
             scan_block(T, StartKey, EndKey, FunList, AccFun, Acc);
-        K when K > EndKey, EndKey /= all ->
+        {_, true} when EndKey /= all ->
             {complete, Acc};
         _ ->
             case applyfuns(FunList, HeadKV) of
@@ -1121,8 +1114,7 @@ maybe_expand_pointer([H|Tail]) ->
     case H of
         {next, SFTPid, StartKey} ->
             %% io:format("Scanning further on PID ~w ~w~n", [SFTPid, StartKey]),
-            QResult = sft_getkvrange(SFTPid, StartKey, all, ?MERGE_SCANWIDTH),
-            Acc = pointer_append_queryresults(QResult, SFTPid),
+            Acc = sft_getkvrange(SFTPid, StartKey, all, ?MERGE_SCANWIDTH),
             lists:append(Acc, Tail);
         _ ->
             [H|Tail]
@@ -1409,8 +1401,9 @@ generate_randomkeys(0, _SQN, Acc) ->
     Acc;
 generate_randomkeys(Count, SQN, Acc) ->
     RandKey = {{o,
-                lists:concat(["Bucket", random:uniform(1024)]),
-                lists:concat(["Key", random:uniform(1024)])},
+                    lists:concat(["Bucket", random:uniform(1024)]),
+                    lists:concat(["Key", random:uniform(1024)]),
+                    null},
                 {SQN,
                 {active, infinity}, null}},
     generate_randomkeys(Count - 1, SQN + 1, [RandKey|Acc]).
@@ -1423,73 +1416,74 @@ generate_sequentialkeys(Target, Incr, Acc) when Incr =:= Target ->
 generate_sequentialkeys(Target, Incr, Acc) ->
     KeyStr = string:right(integer_to_list(Incr), 8, $0),
     NextKey = {{o,
-                "BucketSeq",
-                lists:concat(["Key", KeyStr])},
+                    "BucketSeq",
+                    lists:concat(["Key", KeyStr]),
+                    null},
                 {5,
                 {active, infinity}, null}},
     generate_sequentialkeys(Target, Incr + 1, [NextKey|Acc]).
 
 simple_create_block_test() ->
-    KeyList1 = [{{o, "Bucket1", "Key1"}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key3"}, {2, {active, infinity}, null}}],
-    KeyList2 = [{{o, "Bucket1", "Key2"}, {3, {active, infinity}, null}}],
+    KeyList1 = [{{o, "Bucket1", "Key1", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key3", null}, {2, {active, infinity}, null}}],
+    KeyList2 = [{{o, "Bucket1", "Key2", null}, {3, {active, infinity}, null}}],
     {MergedKeyList, ListStatus, SN, _, _, _} = create_block(KeyList1,
                                                             KeyList2,
                                                             1),
     ?assertMatch(partial, ListStatus),
     [H1|T1] = MergedKeyList,
-    ?assertMatch(H1, {{o, "Bucket1", "Key1"}, {1, {active, infinity}, null}}),
+    ?assertMatch(H1, {{o, "Bucket1", "Key1", null}, {1, {active, infinity}, null}}),
     [H2|T2] = T1,
-    ?assertMatch(H2, {{o, "Bucket1", "Key2"}, {3, {active, infinity}, null}}),
-    ?assertMatch(T2, [{{o, "Bucket1", "Key3"}, {2, {active, infinity}, null}}]),
+    ?assertMatch(H2, {{o, "Bucket1", "Key2", null}, {3, {active, infinity}, null}}),
+    ?assertMatch(T2, [{{o, "Bucket1", "Key3", null}, {2, {active, infinity}, null}}]),
     ?assertMatch(SN, {1,3}).
 
 dominate_create_block_test() ->
-    KeyList1 = [{{o, "Bucket1", "Key1"}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key2"}, {2, {active, infinity}, null}}],
-    KeyList2 = [{{o, "Bucket1", "Key2"}, {3, {tomb, infinity}, null}}],
+    KeyList1 = [{{o, "Bucket1", "Key1", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key2", null}, {2, {active, infinity}, null}}],
+    KeyList2 = [{{o, "Bucket1", "Key2", null}, {3, {tomb, infinity}, null}}],
     {MergedKeyList, ListStatus, SN, _, _, _} = create_block(KeyList1,
                                                             KeyList2,
                                                             1),
     ?assertMatch(partial, ListStatus),
     [K1, K2] = MergedKeyList,
-    ?assertMatch(K1, {{o, "Bucket1", "Key1"}, {1, {active, infinity}, null}}),
-    ?assertMatch(K2, {{o, "Bucket1", "Key2"}, {3, {tomb, infinity}, null}}),
+    ?assertMatch(K1, {{o, "Bucket1", "Key1", null}, {1, {active, infinity}, null}}),
+    ?assertMatch(K2, {{o, "Bucket1", "Key2", null}, {3, {tomb, infinity}, null}}),
     ?assertMatch(SN, {1,3}).
 
 sample_keylist() ->
-    KeyList1 = [{{o, "Bucket1", "Key1"}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key3"}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key5"}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key7"}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key9"}, {1, {active, infinity}, null}},
-    {{o, "Bucket2", "Key1"}, {1, {active, infinity}, null}},
-    {{o, "Bucket2", "Key3"}, {1, {active, infinity}, null}},
-    {{o, "Bucket2", "Key5"}, {1, {active, infinity}, null}},
-    {{o, "Bucket2", "Key7"}, {1, {active, infinity}, null}},
-    {{o, "Bucket2", "Key9"}, {1, {active, infinity}, null}},
-    {{o, "Bucket3", "Key1"}, {1, {active, infinity}, null}},
-    {{o, "Bucket3", "Key3"}, {1, {active, infinity}, null}},
-    {{o, "Bucket3", "Key5"}, {1, {active, infinity}, null}},
-    {{o, "Bucket3", "Key7"}, {1, {active, infinity}, null}},
-    {{o, "Bucket3", "Key9"}, {1, {active, infinity}, null}},
-    {{o, "Bucket4", "Key1"}, {1, {active, infinity}, null}}],
-    KeyList2 = [{{o, "Bucket1", "Key2"}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key4"}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key6"}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key8"}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key9a"}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key9b"}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key9c"}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key9d"}, {1, {active, infinity}, null}},
-    {{o, "Bucket2", "Key2"}, {1, {active, infinity}, null}},
-    {{o, "Bucket2", "Key4"}, {1, {active, infinity}, null}},
-    {{o, "Bucket2", "Key6"}, {1, {active, infinity}, null}},
-    {{o, "Bucket2", "Key8"}, {1, {active, infinity}, null}},
-    {{o, "Bucket3", "Key2"}, {1, {active, infinity}, null}},
-    {{o, "Bucket3", "Key4"}, {3, {active, infinity}, null}},
-    {{o, "Bucket3", "Key6"}, {2, {active, infinity}, null}},
-    {{o, "Bucket3", "Key8"}, {1, {active, infinity}, null}}],
+    KeyList1 = [{{o, "Bucket1", "Key1", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key3", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key5", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key7", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key9", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket2", "Key1", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket2", "Key3", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket2", "Key5", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket2", "Key7", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket2", "Key9", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket3", "Key1", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket3", "Key3", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket3", "Key5", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket3", "Key7", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket3", "Key9", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket4", "Key1", null}, {1, {active, infinity}, null}}],
+    KeyList2 = [{{o, "Bucket1", "Key2", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key4", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key6", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key8", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key9a", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key9b", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key9c", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket1", "Key9d", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket2", "Key2", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket2", "Key4", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket2", "Key6", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket2", "Key8", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket3", "Key2", null}, {1, {active, infinity}, null}},
+    {{o, "Bucket3", "Key4", null}, {3, {active, infinity}, null}},
+    {{o, "Bucket3", "Key6", null}, {2, {active, infinity}, null}},
+    {{o, "Bucket3", "Key8", null}, {1, {active, infinity}, null}}],
     {KeyList1, KeyList2}.
 
 alternating_create_block_test() ->
@@ -1501,12 +1495,12 @@ alternating_create_block_test() ->
     ?assertMatch(BlockSize, 32),
     ?assertMatch(ListStatus, complete),
     K1 = lists:nth(1, MergedKeyList),
-    ?assertMatch(K1, {{o, "Bucket1", "Key1"}, {1, {active, infinity}, null}}),
+    ?assertMatch(K1, {{o, "Bucket1", "Key1", null}, {1, {active, infinity}, null}}),
     K11 = lists:nth(11, MergedKeyList),
-    ?assertMatch(K11, {{o, "Bucket1", "Key9b"}, {1, {active, infinity}, null}}),
+    ?assertMatch(K11, {{o, "Bucket1", "Key9b", null}, {1, {active, infinity}, null}}),
     K32 = lists:nth(32, MergedKeyList),
-    ?assertMatch(K32, {{o, "Bucket4", "Key1"}, {1, {active, infinity}, null}}),
-    HKey = {{o, "Bucket1", "Key0"}, {1, {active, infinity}, null}},
+    ?assertMatch(K32, {{o, "Bucket4", "Key1", null}, {1, {active, infinity}, null}}),
+    HKey = {{o, "Bucket1", "Key0", null}, {1, {active, infinity}, null}},
     {_, ListStatus2, _, _, _, _} = create_block([HKey|KeyList1], KeyList2, 1),
     ?assertMatch(ListStatus2, full).
 
@@ -1565,17 +1559,17 @@ createslot_stage1_test() ->
     {{LowKey, SegFilter, _SerialisedSlot, _LengthList},
         {{LSN, HSN}, LastKey, Status},
         KL1, KL2} = Out,
-    ?assertMatch(LowKey, {o, "Bucket1", "Key1"}),
-    ?assertMatch(LastKey, {o, "Bucket4", "Key1"}),
+    ?assertMatch(LowKey, {o, "Bucket1", "Key1", null}),
+    ?assertMatch(LastKey, {o, "Bucket4", "Key1", null}),
     ?assertMatch(Status, partial),
     ?assertMatch(KL1, []),
     ?assertMatch(KL2, []),
     R0 = check_for_segments(serialise_segment_filter(SegFilter),
-            [hash_for_segmentid({keyonly, {o, "Bucket1", "Key1"}})],
+            [hash_for_segmentid({keyonly, {o, "Bucket1", "Key1", null}})],
             true),
     ?assertMatch(R0, {maybe_present, [0]}),
     R1 = check_for_segments(serialise_segment_filter(SegFilter),
-            [hash_for_segmentid({keyonly, {o, "Bucket1", "Key99"}})],
+            [hash_for_segmentid({keyonly, {o, "Bucket1", "Key99", null}})],
             true),
     ?assertMatch(R1, not_present),
     ?assertMatch(LSN, 1),
@@ -1605,25 +1599,29 @@ createslot_stage3_test() ->
     Sum1 = lists:foldl(fun(X, Sum) -> Sum + X end, 0, LengthList),
     Sum2 = byte_size(SerialisedSlot),
     ?assertMatch(Sum1, Sum2),
-    ?assertMatch(LowKey, {o, "BucketSeq", "Key00000001"}),
-    ?assertMatch(LastKey, {o, "BucketSeq", "Key00000128"}),
+    ?assertMatch(LowKey, {o, "BucketSeq", "Key00000001", null}),
+    ?assertMatch(LastKey, {o, "BucketSeq", "Key00000128", null}),
     ?assertMatch(KL1, []),
     Rem = length(KL2),
     ?assertMatch(Rem, 72),
     R0 = check_for_segments(serialise_segment_filter(SegFilter),
-            [hash_for_segmentid({keyonly, {o, "BucketSeq", "Key00000100"}})],
+            [hash_for_segmentid({keyonly,
+                                    {o, "BucketSeq", "Key00000100", null}})],
             true),
     ?assertMatch(R0, {maybe_present, [3]}),
     R1 = check_for_segments(serialise_segment_filter(SegFilter),
-            [hash_for_segmentid({keyonly, {o, "Bucket1", "Key99"}})],
+            [hash_for_segmentid({keyonly,
+                                    {o, "Bucket1", "Key99", null}})],
             true),
     ?assertMatch(R1, not_present),
     R2 = check_for_segments(serialise_segment_filter(SegFilter),
-            [hash_for_segmentid({keyonly, {o, "BucketSeq", "Key00000040"}})],
+            [hash_for_segmentid({keyonly,
+                                    {o, "BucketSeq", "Key00000040", null}})],
             true),
     ?assertMatch(R2, {maybe_present, [1]}),
     R3 = check_for_segments(serialise_segment_filter(SegFilter),
-            [hash_for_segmentid({keyonly, {o, "BucketSeq", "Key00000004"}})],
+            [hash_for_segmentid({keyonly,
+                                    {o, "BucketSeq", "Key00000004", null}})],
             true),
     ?assertMatch(R3, {maybe_present, [0]}).
 
@@ -1640,11 +1638,11 @@ writekeys_stage1_test() ->
                                                 fun testwrite_function/2),
     {Handle, {_, PointerIndex}, SNExtremes, KeyExtremes} = FunOut,
     ?assertMatch(SNExtremes, {1,3}),
-    ?assertMatch(KeyExtremes, {{o, "Bucket1", "Key1"},
-                                {o, "Bucket4", "Key1"}}),
+    ?assertMatch(KeyExtremes, {{o, "Bucket1", "Key1", null},
+                                {o, "Bucket4", "Key1", null}}),
     [TopIndex|[]] = PointerIndex,
     {TopKey, _SegFilter,  {LengthList, _Total}} = TopIndex,
-    ?assertMatch(TopKey, {o, "Bucket1", "Key1"}),
+    ?assertMatch(TopKey, {o, "Bucket1", "Key1", null}),
     TotalLength = lists:foldl(fun(X, Acc) -> Acc + X end,
                                 0, LengthList),
     ActualLength = lists:foldl(fun(X, Acc) -> Acc + byte_size(X) end,
@@ -1660,11 +1658,11 @@ initial_create_file_test() ->
     {KL1, KL2} = sample_keylist(),
     {Handle, FileMD} = create_file(Filename),
     {UpdHandle, UpdFileMD, {[], []}} = complete_file(Handle, FileMD, KL1, KL2, 1),
-    Result1 = fetch_keyvalue(UpdHandle, UpdFileMD, {o, "Bucket1", "Key8"}),
+    Result1 = fetch_keyvalue(UpdHandle, UpdFileMD, {o, "Bucket1", "Key8", null}),
     io:format("Result is ~w~n", [Result1]),
-    ?assertMatch(Result1, {{o, "Bucket1", "Key8"},
+    ?assertMatch(Result1, {{o, "Bucket1", "Key8", null},
                             {1, {active, infinity}, null}}),
-    Result2 = fetch_keyvalue(UpdHandle, UpdFileMD, {o, "Bucket1", "Key88"}),
+    Result2 = fetch_keyvalue(UpdHandle, UpdFileMD, {o, "Bucket1", "Key88", null}),
     io:format("Result is ~w~n", [Result2]),
     ?assertMatch(Result2, not_present),
     ok = file:close(UpdHandle),
@@ -1699,7 +1697,9 @@ big_create_file_test() ->
                                 SubList),
     io:format("FailedFinds of ~w~n", [FailedFinds]),
     ?assertMatch(FailedFinds, 0),
-    Result3 = fetch_keyvalue(Handle, FileMD, {o, "Bucket1024", "Key1024Alt"}),
+    Result3 = fetch_keyvalue(Handle,
+                                FileMD,
+                                {o, "Bucket1024", "Key1024Alt", null}),
     ?assertMatch(Result3, not_present),
     ok = file:close(Handle),
     ok = file:delete(Filename).
@@ -1708,35 +1708,46 @@ initial_iterator_test() ->
     Filename = "../test/test2.sft",
     {KL1, KL2} = sample_keylist(),
     {Handle, FileMD} = create_file(Filename),
-    {UpdHandle, UpdFileMD, {[], []}} = complete_file(Handle, FileMD, KL1, KL2, 1),
+    {UpdHandle, UpdFileMD, {[], []}} = complete_file(Handle,
+                                                        FileMD,
+                                                        KL1,
+                                                        KL2,
+                                                        1),
     Result1 = fetch_range_keysonly(UpdHandle, UpdFileMD,
-                                    {o, "Bucket1", "Key8"},
-                                    {o, "Bucket1", "Key9d"}),
+                                    {o, "Bucket1", "Key8", null},
+                                    {o, "Bucket1", "Key9d", null}),
     io:format("Result returned of ~w~n", [Result1]),
-    ?assertMatch(Result1, {complete, [{{o, "Bucket1", "Key8"}, 1},
-                                        {{o, "Bucket1", "Key9"}, 1},
-                                        {{o, "Bucket1", "Key9a"}, 1},
-                                        {{o, "Bucket1", "Key9b"}, 1},
-                                        {{o, "Bucket1", "Key9c"}, 1},
-                                        {{o, "Bucket1", "Key9d"}, 1}]}),
+    ?assertMatch({complete,
+                        [{{o, "Bucket1", "Key8", null}, 1, {active, infinity}},
+                        {{o, "Bucket1", "Key9", null}, 1, {active, infinity}},
+                        {{o, "Bucket1", "Key9a", null}, 1, {active, infinity}},
+                        {{o, "Bucket1", "Key9b", null}, 1, {active, infinity}},
+                        {{o, "Bucket1", "Key9c", null}, 1, {active, infinity}},
+                        {{o, "Bucket1", "Key9d", null}, 1, {active, infinity}}
+                        ]},
+                    Result1),
     Result2 = fetch_range_keysonly(UpdHandle, UpdFileMD,
-                                    {o, "Bucket1", "Key8"},
-                                    {o, "Bucket1", "Key9b"}),
-    ?assertMatch(Result2, {complete, [{{o, "Bucket1", "Key8"}, 1},
-                                        {{o, "Bucket1", "Key9"}, 1},
-                                        {{o, "Bucket1", "Key9a"}, 1},
-                                        {{o, "Bucket1", "Key9b"}, 1}]}),
+                                    {o, "Bucket1", "Key8", null},
+                                    {o, "Bucket1", "Key9b", null}),
+    ?assertMatch({complete,
+                        [{{o, "Bucket1", "Key8", null}, 1, {active, infinity}},
+                        {{o, "Bucket1", "Key9", null}, 1, {active, infinity}},
+                        {{o, "Bucket1", "Key9a", null}, 1, {active, infinity}},
+                        {{o, "Bucket1", "Key9b", null}, 1, {active, infinity}}
+                        ]},
+                    Result2),
     Result3 = fetch_range_keysonly(UpdHandle, UpdFileMD,
-                                    {o, "Bucket3", "Key4"},
+                                    {o, "Bucket3", "Key4", null},
                                     all),
     {partial, RL3, _} = Result3,
-    ?assertMatch(RL3, [{{o, "Bucket3", "Key4"}, 3},
-                                        {{o, "Bucket3", "Key5"}, 1},
-                                        {{o, "Bucket3", "Key6"}, 2},
-                                        {{o, "Bucket3", "Key7"}, 1},
-                                        {{o, "Bucket3", "Key8"}, 1},
-                                        {{o, "Bucket3", "Key9"}, 1},
-                                        {{o, "Bucket4", "Key1"}, 1}]),
+    ?assertMatch([{{o, "Bucket3", "Key4", null}, 3, {active, infinity}},
+                        {{o, "Bucket3", "Key5", null}, 1, {active, infinity}},
+                        {{o, "Bucket3", "Key6", null}, 2, {active, infinity}},
+                        {{o, "Bucket3", "Key7", null}, 1, {active, infinity}},
+                        {{o, "Bucket3", "Key8", null}, 1, {active, infinity}},
+                        {{o, "Bucket3", "Key9", null}, 1, {active, infinity}},
+                        {{o, "Bucket4", "Key1", null}, 1, {active, infinity}}],
+                    RL3),
     ok = file:close(UpdHandle),
     ok = file:delete(Filename).
 
@@ -1748,22 +1759,26 @@ big_iterator_test() ->
                                                             InitFileMD,
                                                             KL1, KL2, 1),
     io:format("Remainder lengths are ~w and ~w ~n", [length(KL1Rem), length(KL2Rem)]),
-    {complete, Result1} = fetch_range_keysonly(Handle, FileMD, {o, "Bucket0000", "Key0000"},
-                                                    {o, "Bucket9999", "Key9999"},
+    {complete, Result1} = fetch_range_keysonly(Handle,
+                                                    FileMD,
+                                                    {o, "Bucket0000", "Key0000", null},
+                                                    {o, "Bucket9999", "Key9999", null},
                                                     256),
     NumFoundKeys1 = length(Result1),
     NumAddedKeys = 10000 - length(KL1Rem),
     ?assertMatch(NumFoundKeys1, NumAddedKeys),
-    {partial, Result2, _} = fetch_range_keysonly(Handle, FileMD, {o, "Bucket0000", "Key0000"},
-                                                    {o, "Bucket9999", "Key9999"},
+    {partial, Result2, _} = fetch_range_keysonly(Handle,
+                                                    FileMD,
+                                                    {o, "Bucket0000", "Key0000", null},
+                                                    {o, "Bucket9999", "Key9999", null},
                                                     32),
-    NumFoundKeys2 = length(Result2),
-    ?assertMatch(NumFoundKeys2, 32 * 128),
-    {partial, Result3, _} = fetch_range_keysonly(Handle, FileMD, {o, "Bucket0000", "Key0000"},
-                                                    {o, "Bucket9999", "Key9999"},
+    ?assertMatch(32 * 128, length(Result2)),
+    {partial, Result3, _} = fetch_range_keysonly(Handle,
+                                                    FileMD,
+                                                    {o, "Bucket0000", "Key0000", null},
+                                                    {o, "Bucket9999", "Key9999", null},
                                                     4),
-    NumFoundKeys3 = length(Result3),
-    ?assertMatch(NumFoundKeys3, 4 * 128),
+    ?assertMatch(4 * 128, length(Result3)),
     ok = file:close(Handle),
     ok = file:delete(Filename).
 

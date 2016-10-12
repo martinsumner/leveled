@@ -100,6 +100,7 @@ init([]) ->
 handle_call({register, Owner}, _From, State) ->
     {reply, ok, State#state{owner=Owner}, ?INACTIVITY_TIMEOUT};
 handle_call({manifest_change, return, true}, _From, State) ->
+    io:format("Request for manifest change from clerk on closing~n"),
     case State#state.change_pending of
         true ->
             WI = State#state.work_item,
@@ -110,11 +111,13 @@ handle_call({manifest_change, return, true}, _From, State) ->
 handle_call({manifest_change, confirm, Closing}, From, State) ->
     case Closing of
         true ->
+            io:format("Confirmation of manifest change on closing~n"),
             WI = State#state.work_item,
             ok = mark_for_delete(WI#penciller_work.unreferenced_files,
                                            State#state.owner),
             {stop, normal, ok, State};
         false ->
+            io:format("Prompted confirmation of manifest change~n"),
             gen_server:reply(From, ok),
             WI = State#state.work_item,
             mark_for_delete(WI#penciller_work.unreferenced_files,
@@ -168,6 +171,7 @@ requestandhandle_work(State) ->
             {NewManifest, FilesToDelete} = merge(WI),
             UpdWI = WI#penciller_work{new_manifest=NewManifest,
                                         unreferenced_files=FilesToDelete},
+            io:format("Clerk prompting Penciller regarding manifest change~n"),
             ok = leveled_penciller:pcl_promptmanifestchange(State#state.owner,
                                                             UpdWI),
             {true, UpdWI}

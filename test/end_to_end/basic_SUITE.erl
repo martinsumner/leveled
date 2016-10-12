@@ -7,9 +7,9 @@
             journal_compaction/1,
             fetchput_snapshot/1]).
 
-all() -> [simple_put_fetch_head,
-            many_put_fetch_head,
-            journal_compaction,
+all() -> [% simple_put_fetch_head,
+            % many_put_fetch_head,
+            % journal_compaction,
             fetchput_snapshot].
 
 
@@ -203,6 +203,15 @@ fetchput_snapshot(_Config) ->
     {ok, FNsC} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
     true = length(FNsB) > length(FNsA),
     true = length(FNsB) > length(FNsC),
+    
+    {B1Size, B1Count} = check_bucket_stats(Bookie2, "Bucket1"),
+    true = B1Size > 0,
+    true = B1Count == 1,
+    {B1Size, B1Count} = check_bucket_stats(Bookie2, "Bucket1"),
+    {BSize, BCount} = check_bucket_stats(Bookie2, "Bucket"),
+    true = BSize > 0,
+    true = BCount == 140000,
+    
     ok = leveled_bookie:book_close(Bookie2),
     reset_filestructure().
 
@@ -215,6 +224,21 @@ reset_filestructure() ->
     leveled_inker:clean_testdir(RootPath ++ "/journal"),
     leveled_penciller:clean_testdir(RootPath ++ "/ledger"),
     RootPath.
+
+
+
+check_bucket_stats(Bookie, Bucket) ->
+    FoldSW1 = os:timestamp(),
+    io:format("Checking bucket size~n"),
+    {async, Folder1} = leveled_bookie:book_returnfolder(Bookie,
+                                                        {bucket_stats,
+                                                            Bucket}),
+    {B1Size, B1Count} = Folder1(),
+    io:format("Bucket fold completed in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), FoldSW1)]),
+    io:format("Bucket ~w has size ~w and count ~w~n",
+                [Bucket, B1Size, B1Count]),
+    {B1Size, B1Count}.
 
 
 check_bookie_forlist(Bookie, ChkList) ->

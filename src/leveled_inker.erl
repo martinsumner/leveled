@@ -251,8 +251,8 @@ handle_call({register_snapshot, Requestor}, _From , State) ->
                 State#state{registered_snapshots=Rs}};
 handle_call({release_snapshot, Snapshot}, _From , State) ->
     Rs = lists:keydelete(Snapshot, 1, State#state.registered_snapshots),
-    io:format("Snapshot ~w released~n", [Snapshot]),
-    io:format("Remaining snapshots are ~w~n", [Rs]),
+    io:format("Ledger snapshot ~w released~n", [Snapshot]),
+    io:format("Remaining ledger snapshots are ~w~n", [Rs]),
     {reply, ok, State#state{registered_snapshots=Rs}};
 handle_call(get_manifest, _From, State) ->
     {reply, State#state.manifest, State};
