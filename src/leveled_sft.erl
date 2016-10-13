@@ -563,7 +563,7 @@ acc_list_keysonly(null, empty) ->
 acc_list_keysonly(null, RList) ->
     RList;
 acc_list_keysonly(R, RList) ->
-    lists:append(RList, [leveled_bookie:strip_to_keyseqstatusonly(R)]).
+    lists:append(RList, [leveled_codec:strip_to_keyseqstatusonly(R)]).
 
 acc_list_kv(null, empty) ->
     [];
@@ -652,10 +652,8 @@ fetch_range(Handle, FileMD, StartKey, NearestKey, EndKey, FunList,
 scan_block([], StartKey, _EndKey, _FunList, _AccFun, Acc) ->
     {partial, Acc, StartKey};
 scan_block([HeadKV|T], StartKey, EndKey, FunList, AccFun, Acc) ->
-    K = leveled_bookie:strip_to_keyonly(HeadKV),
-    Pre = leveled_bookie:key_compare(StartKey, K, gt),
-    Post = leveled_bookie:key_compare(EndKey, K, lt),
-    case {Pre, Post} of
+    K = leveled_codec:strip_to_keyonly(HeadKV),
+    case {StartKey > K, leveled_codec:endkey_passed(EndKey, K)} of
         {true, _} when StartKey /= all ->
             scan_block(T, StartKey, EndKey, FunList, AccFun, Acc);
         {_, true} when EndKey /= all ->
@@ -988,15 +986,15 @@ create_slot(KL1, KL2, Level, BlockCount, SegLists, SerialisedSlot, LengthList,
     TrackingMetadata = case LowKey of
         null ->
             [NewLowKeyV|_] = BlockKeyList,
-            {leveled_bookie:strip_to_keyonly(NewLowKeyV),
+            {leveled_codec:strip_to_keyonly(NewLowKeyV),
                 min(LSN, LSNb), max(HSN, HSNb),
-                leveled_bookie:strip_to_keyonly(last(BlockKeyList,
+                leveled_codec:strip_to_keyonly(last(BlockKeyList,
                                                     {last, LastKey})),
                 Status};
         _ ->
             {LowKey,
                 min(LSN, LSNb), max(HSN, HSNb),
-                leveled_bookie:strip_to_keyonly(last(BlockKeyList,
+                leveled_codec:strip_to_keyonly(last(BlockKeyList,
                                                     {last, LastKey})),
                 Status}
     end,
@@ -1035,7 +1033,7 @@ key_dominates(KL1, KL2, Level) ->
                             Level).
 
 key_dominates_expanded([H1|T1], [], Level) ->
-    St1 = leveled_bookie:strip_to_statusonly(H1),
+    St1 = leveled_codec:strip_to_statusonly(H1),
     case maybe_reap_expiredkey(St1, Level) of
         true ->
             {skipped_key, maybe_expand_pointer(T1), []};
@@ -1043,7 +1041,7 @@ key_dominates_expanded([H1|T1], [], Level) ->
             {{next_key, H1}, maybe_expand_pointer(T1), []}
     end;
 key_dominates_expanded([], [H2|T2], Level) ->
-    St2 = leveled_bookie:strip_to_statusonly(H2),
+    St2 = leveled_codec:strip_to_statusonly(H2),
     case maybe_reap_expiredkey(St2, Level) of
         true ->
             {skipped_key, [], maybe_expand_pointer(T2)};
@@ -1052,8 +1050,8 @@ key_dominates_expanded([], [H2|T2], Level) ->
     end;
 key_dominates_expanded([H1|T1], [H2|T2], Level) ->
     {{K1, V1}, {K2, V2}} = {H1, H2},
-    {Sq1, St1, _MD1} = leveled_bookie:striphead_to_details(V1),
-    {Sq2, St2, _MD2} = leveled_bookie:striphead_to_details(V2),
+    {Sq1, St1, _MD1} = leveled_codec:striphead_to_details(V1),
+    {Sq2, St2, _MD2} = leveled_codec:striphead_to_details(V2),
     case K1 of
         K2 ->
             case Sq1 > Sq2 of
@@ -1116,7 +1114,7 @@ pointer_append_queryresults(Results, QueryPid) ->
     
 %% Update the sequence numbers
 update_sequencenumbers(Item, LSN, HSN) when is_tuple(Item) ->
-    update_sequencenumbers(leveled_bookie:strip_to_seqonly(Item), LSN, HSN);    
+    update_sequencenumbers(leveled_codec:strip_to_seqonly(Item), LSN, HSN);    
 update_sequencenumbers(SN, 0, 0) ->
     {SN, SN};
 update_sequencenumbers(SN, LSN, HSN) when SN < LSN ->
@@ -1227,7 +1225,7 @@ merge_seglists({SegList1, SegList2, SegList3, SegList4}) ->
     lists:sort(Stage4).
 
 hash_for_segmentid(KV) ->
-    erlang:phash2(leveled_bookie:strip_to_keyonly(KV), ?MAX_SEG_HASH).
+    erlang:phash2(leveled_codec:strip_to_keyonly(KV), ?MAX_SEG_HASH).
 
 
 %% Check for a given list of segments in the filter, returning in normal

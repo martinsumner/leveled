@@ -140,16 +140,7 @@
         book_snapshotstore/3,
         book_snapshotledger/3,
         book_compactjournal/2,
-        book_close/1,
-        strip_to_keyonly/1,
-        strip_to_keyseqonly/1,
-        strip_to_seqonly/1,
-        strip_to_statusonly/1,
-        strip_to_keyseqstatusonly/1,
-        striphead_to_details/1,
-        key_compare/3,
-        key_dominates/2,
-        print_key/1]).
+        book_close/1]).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -265,7 +256,7 @@ handle_call({get, Key}, _From, State) ->
         not_present ->
             {reply, not_found, State};
         Head ->
-            {Seqn, Status, _MD} = striphead_to_details(Head),
+            {Seqn, Status, _MD} = leveled_codec:striphead_to_details(Head),
             case Status of
                 {tomb, _} ->
                     {reply, not_found, State};
@@ -283,12 +274,12 @@ handle_call({head, Key}, _From, State) ->
         not_present ->
             {reply, not_found, State};
         Head ->
-            {_Seqn, Status, MD} = striphead_to_details(Head),
+            {_Seqn, Status, MD} = leveled_codec:striphead_to_details(Head),
             case Status of
                 {tomb, _} ->
                     {reply, not_found, State};
                 {active, _} ->
-                    OMD = build_metadata_object(Key, MD),
+                    OMD = leveled_codec:build_metadata_object(Key, MD),
                     {reply, {ok, OMD}, State}
             end
     end;
@@ -442,116 +433,20 @@ fetch_value(Key, SQN, Inker) ->
             not_present
     end.
 
-%% Format of a Key within the ledger is
-%% {PrimaryKey, SQN, Metadata, Status} 
-
-strip_to_keyonly({keyonly, K}) -> K;
-strip_to_keyonly({K, _V}) -> K.
-
-strip_to_keyseqonly({K, {SeqN, _, _}}) -> {K, SeqN}.
-
-strip_to_keyseqstatusonly({K, {SeqN, St, _MD}}) -> {K, SeqN, St}.
-
-strip_to_statusonly({_, {_, St, _}}) -> St.
-
-strip_to_seqonly({_, {SeqN, _, _}}) -> SeqN.
-
-striphead_to_details({SeqN, St, MD}) -> {SeqN, St, MD}.
-
-key_dominates(LeftKey, RightKey) ->
-    case {LeftKey, RightKey} of
-        {{LK, _LVAL}, {RK, _RVAL}} when LK < RK ->
-            left_hand_first;
-        {{LK, _LVAL}, {RK, _RVAL}} when RK < LK ->
-            right_hand_first;
-        {{LK, {LSN, _LST, _LMD}}, {RK, {RSN, _RST, _RMD}}}
-                                                when LK == RK, LSN >= RSN ->
-            left_hand_dominant;
-        {{LK, {LSN, _LST, _LMD}}, {RK, {RSN, _RST, _RMD}}}
-                                                when LK == RK, LSN < RSN ->
-            right_hand_dominant
-    end.
-        
-
-
-get_metadatas(#r_object{contents=Contents}) ->
-    [Content#r_content.metadata || Content <- Contents].
-
-set_vclock(Object=#r_object{}, VClock) -> Object#r_object{vclock=VClock}.
-
-vclock(#r_object{vclock=VClock}) -> VClock.
-
-to_binary(v0, Obj) ->
-    term_to_binary(Obj).
-
-hash(Obj=#r_object{}) ->
-    Vclock = vclock(Obj),
-    UpdObj = set_vclock(Obj, lists:sort(Vclock)),
-    erlang:phash2(to_binary(v0, UpdObj)).
-
-extract_metadata(Obj, Size) ->
-    {get_metadatas(Obj), vclock(Obj), hash(Obj), Size}.
 
 accumulate_size(_Key, Value, {Size, Count}) ->
     {_, _, MD} = Value,
     {_, _, _, ObjSize} = MD,
     {Size + ObjSize, Count + 1}.
 
-build_metadata_object(PrimaryKey, Head) ->
-    {o, Bucket, Key, null} = PrimaryKey,
-    {MD, VC, _, _} = Head,
-    Contents = lists:foldl(fun(X, Acc) -> Acc ++ [#r_content{metadata=X}] end,
-                            [],
-                            MD),
-    #r_object{contents=Contents, bucket=Bucket, key=Key, vclock=VC}.
-
-convert_indexspecs(IndexSpecs, SQN, PrimaryKey) ->
-    lists:map(fun({IndexOp, IndexField, IndexValue}) ->
-                        Status = case IndexOp of
-                                    add ->
-                                        %% TODO: timestamp support
-                                        {active, infinity};
-                                    remove ->
-                                        %% TODO: timestamps for delayed reaping 
-                                        {tomb, infinity}
-                                end,
-                        {o, B, K, _SK} = PrimaryKey,
-                        {{i, B, {IndexField, IndexValue}, K},
-                            {SQN, Status, null}}
-                    end,
-                IndexSpecs).
-
-% Return a tuple of string to ease the printing of keys to logs
-print_key(Key) ->
-    case Key of
-        {o, B, K, _SK} ->
-            {"Object", B, K};
-        {i, B, {F, _V}, _K} ->
-            {"Index", B, F}
-    end.
-
-% Compare a key against a query key, only comparing elements that are non-null
-% in the Query key
-key_compare(QueryKey, CheckingKey, gt) ->
-    key_compare(QueryKey, CheckingKey, fun(X,Y) -> X > Y end);
-key_compare(QueryKey, CheckingKey, lt) ->
-    key_compare(QueryKey, CheckingKey, fun(X,Y) -> X < Y end);
-key_compare({QK1, null, null, null}, {CK1, _, _, _}, CompareFun) ->
-    CompareFun(QK1, CK1);
-key_compare({QK1, QK2, null, null}, {CK1, CK2, _, _}, CompareFun) ->
-    CompareFun({QK1, QK2}, {CK1, CK2});
-key_compare({QK1, QK2, QK3, null}, {CK1, CK2, CK3, _}, CompareFun) ->
-    CompareFun({QK1, QK2, QK3}, {CK1, CK2, CK3});
-key_compare(QueryKey, CheckingKey, CompareFun) ->
-    CompareFun(QueryKey, CheckingKey).
     
 
 preparefor_ledgercache(PK, SQN, Obj, Size, IndexSpecs) ->
     PrimaryChange = {PK,
                         {SQN,
                             {active, infinity},
-                            extract_metadata(Obj, Size)}},
-    SecChanges = convert_indexspecs(IndexSpecs, SQN, PK),
+                            leveled_codec:extract_metadata(Obj, Size)}},
+    SecChanges = leveled_codec:convert_indexspecs(IndexSpecs, SQN, PK),
     [PrimaryChange] ++ SecChanges.
 
 addto_ledgercache(Changes, Cache) ->
@@ -709,17 +604,5 @@ multi_key_test() ->
     ?assertMatch(F2D, Obj2),
     ok = book_close(Bookie2),
     reset_filestructure().
-
-indexspecs_test() ->
-    IndexSpecs = [{add, "t1_int", 456},
-                    {add, "t1_bin", "adbc123"},
-                    {remove, "t1_bin", "abdc456"}],
-    Changes = convert_indexspecs(IndexSpecs, 1, {o, "Bucket", "Key2", null}),
-    ?assertMatch({{i, "Bucket", {"t1_int", 456}, "Key2"},
-                    {1, {active, infinity}, null}}, lists:nth(1, Changes)),
-    ?assertMatch({{i, "Bucket", {"t1_bin", "adbc123"}, "Key2"},
-                    {1, {active, infinity}, null}}, lists:nth(2, Changes)),
-    ?assertMatch({{i, "Bucket", {"t1_bin", "abdc456"}, "Key2"},
-                    {1, {tomb, infinity}, null}}, lists:nth(3, Changes)).
     
 -endif.

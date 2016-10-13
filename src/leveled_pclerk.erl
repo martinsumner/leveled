@@ -370,7 +370,7 @@ find_randomkeys(_FList, 0, _Source) ->
     ok;
 find_randomkeys(FList, Count, Source) ->
     KV1 = lists:nth(random:uniform(length(Source)), Source),
-    K1 = leveled_bookie:strip_to_keyonly(KV1),
+    K1 = leveled_codec:strip_to_keyonly(KV1),
     P1 = choose_pid_toquery(FList, K1),
     FoundKV = leveled_sft:sft_get(P1, K1),
     Check = case FoundKV of
@@ -378,7 +378,7 @@ find_randomkeys(FList, Count, Source) ->
                     io:format("Failed to find ~w in ~w~n", [K1, P1]),
                     error;
                 _ ->
-                    Found = leveled_bookie:strip_to_keyonly(FoundKV),
+                    Found = leveled_codec:strip_to_keyonly(FoundKV),
                     io:format("success finding ~w in ~w~n", [K1, P1]),
                     ?assertMatch(K1, Found),
                     ok

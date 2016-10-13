@@ -1098,12 +1098,18 @@ write_key_value_pairs(Handle, [HeadPair|TailList], Acc) ->
 write_hash_tables(Handle, HashTree) ->
     Seq = lists:seq(0, 255),
     {ok, StartPos} = file:position(Handle, cur),
+    SWC = os:timestamp(),
     {IndexList, HashTreeBin} = write_hash_tables(Seq,
                                                     HashTree,
                                                     StartPos,
                                                     [],
                                                     <<>>),
+    io:format("HashTree computed in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWC)]),
+    SWW = os:timestamp(),
     ok = file:write(Handle, HashTreeBin),
+    io:format("HashTree written in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWW)]),
     {ok, EndPos} = file:position(Handle, cur),
     ok = file:advise(Handle, StartPos, EndPos - StartPos, will_need),
     IndexList.

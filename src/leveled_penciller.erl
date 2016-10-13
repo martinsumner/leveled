@@ -843,7 +843,7 @@ compare_to_sqn(Obj, SQN) ->
         not_present ->
             false;
         Obj ->
-            SQNToCompare = leveled_bookie:strip_to_seqonly(Obj),
+            SQNToCompare = leveled_codec:strip_to_seqonly(Obj),
             if
                 SQNToCompare > SQN ->
                     false;
@@ -936,7 +936,7 @@ roll_new_tree(Tree, [], HighSQN) ->
 roll_new_tree(Tree, [{SQN, KVList}|TailIncs], HighSQN) when SQN >= HighSQN ->
     R = lists:foldl(fun({Kx, Vx}, {TreeAcc, MaxSQN}) ->
                         UpdTree = gb_trees:enter(Kx, Vx, TreeAcc),
-                        SQNx = leveled_bookie:strip_to_seqonly({Kx, Vx}),
+                        SQNx = leveled_codec:strip_to_seqonly({Kx, Vx}),
                         {UpdTree, max(SQNx, MaxSQN)}
                         end,
                     {Tree, HighSQN},
@@ -1025,8 +1025,8 @@ print_manifest(Manifest) ->
                     lists:seq(0, ?MAX_LEVELS - 1)).
 
 print_manifest_entry(Entry) ->
-    {S1, S2, S3} = leveled_bookie:print_key(Entry#manifest_entry.start_key),
-    {E1, E2, E3} = leveled_bookie:print_key(Entry#manifest_entry.end_key),
+    {S1, S2, S3} = leveled_codec:print_key(Entry#manifest_entry.start_key),
+    {E1, E2, E3} = leveled_codec:print_key(Entry#manifest_entry.end_key),
     io:format("Manifest entry of " ++ 
                 "startkey ~s ~s ~s " ++
                 "endkey ~s ~s ~s " ++
@@ -1036,12 +1036,9 @@ print_manifest_entry(Entry) ->
 
 initiate_rangequery_frommanifest(StartKey, EndKey, Manifest) ->
     CompareFun = fun(M) ->
-                    C1 = leveled_bookie:key_compare(StartKey,
-                                                    M#manifest_entry.end_key,
-                                                    gt),
-                    C2 = leveled_bookie:key_compare(EndKey,
-                                                    M#manifest_entry.start_key,
-                                                    lt),
+                    C1 = StartKey > M#manifest_entry.end_key,
+                    C2 = leveled_codec:endkey_passed(EndKey,
+                                                        M#manifest_entry.start_key),
                     not (C1 or C2) end,
     lists:foldl(fun(L, AccL) ->
                     Level = get_item(L, Manifest, []),
@@ -1143,8 +1140,8 @@ find_nextkey(QueryArray, LCnt, {BestKeyLevel, BestKV}, QueryFunT) ->
                             {LCnt, {Key, Val}},
                             QueryFunT);
         {{Key, Val}, BKL, {BestKey, BestVal}} when Key == BestKey ->
-            SQN = leveled_bookie:strip_to_seqonly({Key, Val}),
-            BestSQN = leveled_bookie:strip_to_seqonly({BestKey, BestVal}),
+            SQN = leveled_codec:strip_to_seqonly({Key, Val}),
+            BestSQN = leveled_codec:strip_to_seqonly({BestKey, BestVal}),
             if
                 SQN =< BestSQN ->
                     % This is a dominated key, so we need to skip over it
@@ -1193,7 +1190,7 @@ keyfolder(IMMiterator, SFTiterator, StartKey, EndKey, {AccFun, Acc}) ->
             % iterate only over the remaining keys in the SFT iterator
             keyfolder(null, SFTiterator, StartKey, EndKey, {AccFun, Acc});
         {IMMKey, IMMVal, NxtIMMiterator} ->
-            case leveled_bookie:key_compare(EndKey, IMMKey, lt) of
+            case leveled_codec:endkey_passed(EndKey, IMMKey) of
                 true ->
                     % There are no more keys in-range in the in-memory
                     % iterator, so take action as if this iterator is empty
@@ -1212,7 +1209,7 @@ keyfolder(IMMiterator, SFTiterator, StartKey, EndKey, {AccFun, Acc}) ->
                             % There is a next key, so need to know which is the
                             % next key between the two (and handle two keys
                             % with different sequence numbers).  
-                            case leveled_bookie:key_dominates({IMMKey,
+                            case leveled_codec:key_dominates({IMMKey,
                                                                     IMMVal},
                                                                 {SFTKey,
                                                                     SFTVal}) of
@@ -1377,7 +1374,7 @@ assess_sqn(DumpList) ->
 assess_sqn([], MinSQN, MaxSQN) ->
     {MinSQN, MaxSQN};
 assess_sqn([HeadKey|Tail], MinSQN, MaxSQN) ->
-    {_K, SQN} = leveled_bookie:strip_to_keyseqonly(HeadKey),
+    {_K, SQN} = leveled_codec:strip_to_keyseqonly(HeadKey),
     assess_sqn(Tail, min(MinSQN, SQN), max(MaxSQN, SQN)).
 
 
@@ -1763,7 +1760,7 @@ foldwithimm_simple_test() ->
                                 {9, {active, infinity}, null},
                             IMM1),
     IMMiter = gb_trees:iterator_from({o, "Bucket1", "Key1"}, IMM2),
-    AccFun = fun(K, V, Acc) -> SQN= leveled_bookie:strip_to_seqonly({K, V}),
+    AccFun = fun(K, V, Acc) -> SQN = leveled_codec:strip_to_seqonly({K, V}),
                                 Acc ++ [{K, SQN}] end,
     Acc = keyfolder(IMMiter,
                     QueryArray,
