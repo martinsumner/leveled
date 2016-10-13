@@ -278,8 +278,6 @@ handle_call({sft_new, Filename, KL1, KL2, Level}, _From, State) ->
         {error, Reason} ->
             {reply, {error, Reason}, State};
         {Handle, FileMD} ->
-            io:format("Creating file with inputs of size ~w ~w~n",
-                        [length(KL1), length(KL2)]),
             {ReadHandle, UpdFileMD, KeyRemainders} = complete_file(Handle,
                                                                     FileMD,
                                                                     KL1, KL2,

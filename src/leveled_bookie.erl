@@ -361,13 +361,15 @@ code_change(_OldVsn, State, _Extra) ->
 %%%============================================================================
 
 bucket_stats(Penciller, LedgerCache, Bucket) ->
+    PCLopts = #penciller_options{start_snapshot=true,
+                                    source_penciller=Penciller},
+    {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
     Folder = fun() ->
-                PCLopts = #penciller_options{start_snapshot=true,
-                                                source_penciller=Penciller},
-                {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
                 Increment = gb_trees:to_list(LedgerCache),
+                io:format("Length of increment in snapshot is ~w~n",
+                            [length(Increment)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
-                                                        Increment),   
+                                                        {infinity, Increment}),   
                 StartKey = {o, Bucket, null, null},
                 EndKey = {o, Bucket, null, null},
                 Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,

@@ -594,7 +594,7 @@ load_from_sequence(MinSQN, FilterFun, Penciller, [{_LowSQN, FN, Pid}|Rest]) ->
                                     undefined,
                                     FN,
                                     Rest);
-        [{NextSQN, _FN, Pid}|_Rest] when NextSQN > MinSQN ->
+        [{NextSQN, _NxtFN, _NxtPid}|_Rest] when NextSQN > MinSQN ->
             load_between_sequence(MinSQN,
                                     MinSQN + ?LOADING_BATCH,
                                     FilterFun,

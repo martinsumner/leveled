@@ -151,7 +151,6 @@ check_single_file(CDB, FilterFun, FilterServer, MaxSQN, SampleSize, BatchSize) -
     FN = leveled_cdb:cdb_filename(CDB),
     PositionList = leveled_cdb:cdb_getpositions(CDB, SampleSize),
     KeySizeList = fetch_inbatches(PositionList, BatchSize, CDB, []),
-    io:format("KeySizeList ~w~n", [KeySizeList]),
     R0 = lists:foldl(fun(KS, {ActSize, RplSize}) ->
                             {{SQN, PK}, Size} = KS,
                             Check = FilterFun(FilterServer, PK, SQN),

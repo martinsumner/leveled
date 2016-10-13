@@ -335,7 +335,7 @@ pcl_loadsnapshot(Pid, Increment) ->
     gen_server:call(Pid, {load_snapshot, Increment}, infinity).
 
 pcl_close(Pid) ->
-    gen_server:call(Pid, close).
+    gen_server:call(Pid, close, 60000).
 
 
 %%%============================================================================
@@ -493,6 +493,8 @@ handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc},
     SFTiter = initiate_rangequery_frommanifest(StartKey,
                                                 EndKey,
                                                 State#state.manifest),
+    io:format("Manifest for iterator of:~n"),
+    print_manifest(SFTiter),
     Acc = keyfolder(L0iter, SFTiter, StartKey, EndKey, {AccFun, InitAcc}),
     {reply, Acc, State};
 handle_call(work_for_clerk, From, State) ->
@@ -523,7 +525,8 @@ handle_call({load_snapshot, Increment}, _From, State) ->
             ok
     end,
     {Tree1, TreeSQN1} = roll_new_tree(Tree0, [Increment], TreeSQN0),
-    io:format("Snapshot loaded to start at SQN~w~n", [TreeSQN1]),
+    io:format("Snapshot loaded with increments to start at SQN=~w~n",
+                [TreeSQN1]),
     {reply, ok, State#state{levelzero_snapshot=Tree1,
                             ledger_sqn=TreeSQN1,
                             snapshot_fully_loaded=true}};
@@ -852,6 +855,7 @@ compare_to_sqn(Obj, SQN) ->
 
 %% Manifest lock - don't have two changes to the manifest happening
 %% concurrently
+% TODO: Is this necessary now?
 
 manifest_locked(State) ->
     if
@@ -930,11 +934,15 @@ return_work(State, From) ->
 roll_new_tree(Tree, [], HighSQN) ->
     {Tree, HighSQN};
 roll_new_tree(Tree, [{SQN, KVList}|TailIncs], HighSQN) when SQN >= HighSQN ->
-    UpdTree = lists:foldl(fun({K, V}, TreeAcc) ->
-                                gb_trees:enter(K, V, TreeAcc) end,
-                            Tree,
-                            KVList),
-    roll_new_tree(UpdTree, TailIncs, SQN);
+    R = lists:foldl(fun({Kx, Vx}, {TreeAcc, MaxSQN}) ->
+                        UpdTree = gb_trees:enter(Kx, Vx, TreeAcc),
+                        SQNx = leveled_bookie:strip_to_seqonly({Kx, Vx}),
+                        {UpdTree, max(SQNx, MaxSQN)}
+                        end,
+                    {Tree, HighSQN},
+                    KVList),
+    {UpdTree, UpdSQN} = R,
+    roll_new_tree(UpdTree, TailIncs, UpdSQN);
 roll_new_tree(Tree, [_H|TailIncs], HighSQN) ->
     roll_new_tree(Tree, TailIncs, HighSQN).
 
@@ -949,14 +957,14 @@ cache_tree_in_memcopy(MemCopy, Tree, SQN) ->
                                         SQN >= PushSQN ->
                                             Acc;
                                         true ->
-                                            Acc ++ {PushSQN, PushL}
+                                            Acc ++ [{PushSQN, PushL}]
                                     end end,
                                 [],
                                 MemCopy#l0snapshot.increments),
             #l0snapshot{ledger_sqn = SQN,
                         increments = Incs,
                         tree = Tree};           
-        _ ->
+        _CurrentSQN ->
             MemCopy
     end.
 
@@ -1004,10 +1012,17 @@ print_manifest(Manifest) ->
                         io:format("Manifest at Level ~w~n", [L]),
                         Level = get_item(L, Manifest, []),
                         lists:foreach(fun(M) ->
-                                            print_manifest_entry(M) end,
+                                            R = is_record(M, manifest_entry),
+                                            case R of
+                                                true ->
+                                                    print_manifest_entry(M);
+                                                false ->
+                                                    {_, M1} = M,
+                                                    print_manifest_entry(M1)
+                                            end end,
                                         Level)
                         end,
-                    lists:seq(1, ?MAX_LEVELS - 1)).
+                    lists:seq(0, ?MAX_LEVELS - 1)).
 
 print_manifest_entry(Entry) ->
     {S1, S2, S3} = leveled_bookie:print_key(Entry#manifest_entry.start_key),
@@ -1045,7 +1060,7 @@ initiate_rangequery_frommanifest(StartKey, EndKey, Manifest) ->
                     end
                     end,
                 [],
-                lists:seq(1, ?MAX_LEVELS - 1)).
+                lists:seq(0, ?MAX_LEVELS - 1)).
 
 %% Looks to find the best choice for the next key across the levels (other
 %% than in-memory table)
@@ -1054,7 +1069,7 @@ initiate_rangequery_frommanifest(StartKey, EndKey, Manifest) ->
 
 find_nextkey(QueryArray, StartKey, EndKey) ->
     find_nextkey(QueryArray,
-                    1,
+                    0,
                     {null, null},
                     {fun leveled_sft:sft_getkvrange/4, StartKey, EndKey, 1}).
 
@@ -1178,40 +1193,47 @@ keyfolder(IMMiterator, SFTiterator, StartKey, EndKey, {AccFun, Acc}) ->
             % iterate only over the remaining keys in the SFT iterator
             keyfolder(null, SFTiterator, StartKey, EndKey, {AccFun, Acc});
         {IMMKey, IMMVal, NxtIMMiterator} ->
-            case {leveled_bookie:key_compare(EndKey, IMMKey, lt),
-                    find_nextkey(SFTiterator, StartKey, EndKey)} of
-                {true, _} ->
+            case leveled_bookie:key_compare(EndKey, IMMKey, lt) of
+                true ->
                     % There are no more keys in-range in the in-memory
                     % iterator, so take action as if this iterator is empty
                     % (see above)
                     keyfolder(null, SFTiterator,
                                     StartKey, EndKey, {AccFun, Acc});
-                {false, no_more_keys} ->
-                    % No more keys in range in the persisted store, so use the
-                    % in-memory KV as the next
-                    Acc1 = AccFun(IMMKey, IMMVal, Acc),
-                    keyfolder(NxtIMMiterator, SFTiterator,
-                                    StartKey, EndKey, {AccFun, Acc1});
-                {false, {NxtSFTiterator, {SFTKey, SFTVal}}} ->
-                    % There is a next key, so need to know which is the next
-                    % key between the two (and handle two keys with different
-                    % sequence numbers).  
-                    case leveled_bookie:key_dominates({IMMKey, IMMVal},
-                                                        {SFTKey, SFTVal}) of
-                        left_hand_first ->
+                false ->
+                    case find_nextkey(SFTiterator, StartKey, EndKey) of
+                        no_more_keys ->
+                            % No more keys in range in the persisted store, so use the
+                            % in-memory KV as the next
                             Acc1 = AccFun(IMMKey, IMMVal, Acc),
                             keyfolder(NxtIMMiterator, SFTiterator,
                                             StartKey, EndKey, {AccFun, Acc1});
-                        right_hand_first ->
-                            Acc1 = AccFun(SFTKey, SFTVal, Acc),
-                            keyfolder(IMMiterator, NxtSFTiterator,
-                                            StartKey, EndKey, {AccFun, Acc1});
-                        left_hand_dominant ->
-                            Acc1 = AccFun(IMMKey, IMMVal, Acc),
-                            keyfolder(NxtIMMiterator, NxtSFTiterator,
-                                            StartKey, EndKey, {AccFun, Acc1})
+                        {NxtSFTiterator, {SFTKey, SFTVal}} ->
+                            % There is a next key, so need to know which is the
+                            % next key between the two (and handle two keys
+                            % with different sequence numbers).  
+                            case leveled_bookie:key_dominates({IMMKey,
+                                                                    IMMVal},
+                                                                {SFTKey,
+                                                                    SFTVal}) of
+                                left_hand_first ->
+                                    Acc1 = AccFun(IMMKey, IMMVal, Acc),
+                                    keyfolder(NxtIMMiterator, SFTiterator,
+                                                    StartKey, EndKey,
+                                                    {AccFun, Acc1});
+                                right_hand_first ->
+                                    Acc1 = AccFun(SFTKey, SFTVal, Acc),
+                                    keyfolder(IMMiterator, NxtSFTiterator,
+                                                    StartKey, EndKey,
+                                                    {AccFun, Acc1});
+                                left_hand_dominant ->
+                                    Acc1 = AccFun(IMMKey, IMMVal, Acc),
+                                    keyfolder(NxtIMMiterator, NxtSFTiterator,
+                                                    StartKey, EndKey,
+                                                    {AccFun, Acc1})
+                            end
                     end
-             end
+            end
     end.    
 
 
@@ -1373,10 +1395,12 @@ clean_subdir(DirPath) ->
     case filelib:is_dir(DirPath) of
         true ->
             {ok, Files} = file:list_dir(DirPath),
-            lists:foreach(fun(FN) -> file:delete(filename:join(DirPath, FN)),
-                                        io:format("Delete file ~s/~s~n",
-                                                    [DirPath, FN])
-                                        end,
+            lists:foreach(fun(FN) ->
+                                File = filename:join(DirPath, FN),
+                                case file:delete(File) of
+                                    ok -> io:format("Success deleting ~s~n", [File]);
+                                    _ -> io:format("Error deleting ~s~n", [File])
+                                end end,
                             Files);
         false ->
             ok
@@ -1556,35 +1580,19 @@ simple_server_test() ->
     ok = pcl_close(PCLr),
     clean_testdir(RootPath).
 
-memcopy_test() ->
+memcopy_updatecache1_test() ->
     KVL1 = lists:map(fun(X) -> {"Key" ++ integer_to_list(X),
-                                "Value" ++ integer_to_list(X) ++ "A"} end,
+                                {X, null, "Val" ++ integer_to_list(X) ++ "A"}}
+                                end,
                 lists:seq(1, 1000)),
     KVL2 = lists:map(fun(X) -> {"Key" ++ integer_to_list(X),
-                                "Value" ++ integer_to_list(X) ++ "B"} end,
+                                {X, null, "Val" ++ integer_to_list(X) ++ "B"}}
+                                end,
                 lists:seq(1001, 2000)),
     KVL3 = lists:map(fun(X) -> {"Key" ++ integer_to_list(X),
-                                "Value" ++ integer_to_list(X) ++ "C"} end,
-                lists:seq(1, 1000)),
-    MemCopy0 = #l0snapshot{},
-    MemCopy1 = add_increment_to_memcopy(MemCopy0, 1000, KVL1),
-    MemCopy2 = add_increment_to_memcopy(MemCopy1, 2000, KVL2),
-    MemCopy3 = add_increment_to_memcopy(MemCopy2, 3000, KVL3),
-    {Tree1, HighSQN1} = roll_new_tree(gb_trees:empty(), MemCopy3#l0snapshot.increments, 0),
-    Size1 = gb_trees:size(Tree1),
-    ?assertMatch(2000, Size1),
-    ?assertMatch(3000, HighSQN1).
-    
-memcopy_updatecache_test() ->
-    KVL1 = lists:map(fun(X) -> {"Key" ++ integer_to_list(X),
-                                "Value" ++ integer_to_list(X) ++ "A"} end,
-                lists:seq(1, 1000)),
-    KVL2 = lists:map(fun(X) -> {"Key" ++ integer_to_list(X),
-                                "Value" ++ integer_to_list(X) ++ "B"} end,
-                lists:seq(1001, 2000)),
-    KVL3 = lists:map(fun(X) -> {"Key" ++ integer_to_list(X),
-                                "Value" ++ integer_to_list(X) ++ "C"} end,
-                lists:seq(1, 1000)),
+                                {X, null, "Val" ++ integer_to_list(X) ++ "C"}}
+                                end,
+                lists:seq(2001, 3000)),
     MemCopy0 = #l0snapshot{},
     MemCopy1 = add_increment_to_memcopy(MemCopy0, 1000, KVL1),
     MemCopy2 = add_increment_to_memcopy(MemCopy1, 2000, KVL2),
@@ -1594,8 +1602,33 @@ memcopy_updatecache_test() ->
     MemCopy4 = cache_tree_in_memcopy(MemCopy3, Tree1, HighSQN1),
     ?assertMatch(0, length(MemCopy4#l0snapshot.increments)),
     Size2 = gb_trees:size(MemCopy4#l0snapshot.tree),
-    ?assertMatch(2000, Size2),
+    ?assertMatch(3000, Size2),
     ?assertMatch(3000, MemCopy4#l0snapshot.ledger_sqn).
+
+memcopy_updatecache2_test() ->
+    KVL1 = lists:map(fun(X) -> {"Key" ++ integer_to_list(X),
+                                {X, null, "Val" ++ integer_to_list(X) ++ "A"}}
+                                end,
+                lists:seq(1, 1000)),
+    KVL2 = lists:map(fun(X) -> {"Key" ++ integer_to_list(X),
+                                {X, null, "Val" ++ integer_to_list(X) ++ "B"}}
+                                end,
+                lists:seq(1001, 2000)),
+    KVL3 = lists:map(fun(X) -> {"Key" ++ integer_to_list(X),
+                                {X, null, "Val" ++ integer_to_list(X) ++ "C"}}
+                                end,
+                lists:seq(1, 1000)),
+    MemCopy0 = #l0snapshot{},
+    MemCopy1 = add_increment_to_memcopy(MemCopy0, 1000, KVL1),
+    MemCopy2 = add_increment_to_memcopy(MemCopy1, 2000, KVL2),
+    MemCopy3 = add_increment_to_memcopy(MemCopy2, 3000, KVL3),
+    ?assertMatch(0, MemCopy3#l0snapshot.ledger_sqn),
+    {Tree1, HighSQN1} = roll_new_tree(gb_trees:empty(), MemCopy3#l0snapshot.increments, 0),
+    MemCopy4 = cache_tree_in_memcopy(MemCopy3, Tree1, HighSQN1),
+    ?assertMatch(1, length(MemCopy4#l0snapshot.increments)),
+    Size2 = gb_trees:size(MemCopy4#l0snapshot.tree),
+    ?assertMatch(2000, Size2),
+    ?assertMatch(2000, MemCopy4#l0snapshot.ledger_sqn).
 
 rangequery_manifest_test() ->
     {E1,

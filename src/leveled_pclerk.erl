@@ -73,7 +73,7 @@
 
 -record(state, {owner :: pid(),
                 change_pending=false :: boolean(),
-                work_item :: #penciller_work{}}).
+                work_item :: #penciller_work{}|null}).
 
 %%%============================================================================
 %%% API
@@ -208,28 +208,23 @@ merge(WI) ->
                             {WI#penciller_work.ledger_filepath,
                                 WI#penciller_work.next_sqn})
     end,  
-    case MergedFiles of
-        error ->
-            merge_failure;
-        _ ->
-            NewLevel = lists:sort(lists:append(MergedFiles, Others)),
-            UpdMFest2 = lists:keystore(SrcLevel + 1,
-                                        1,
-                                        UpdMFest1,
-                                        {SrcLevel + 1, NewLevel}),
-            
-            ok = filelib:ensure_dir(WI#penciller_work.manifest_file),
-            {ok, Handle} = file:open(WI#penciller_work.manifest_file,
-                                        [binary, raw, write]),
-            ok = file:write(Handle, term_to_binary(UpdMFest2)),
-            ok = file:close(Handle),
-            case lists:member(SrcF, MergedFiles) of
-                true ->
-                    {UpdMFest2, Candidates};
-                false ->
-                    %% Can rub out src file as it is not part of output
-                    {UpdMFest2, Candidates ++ [SrcF]}
-            end
+    NewLevel = lists:sort(lists:append(MergedFiles, Others)),
+    UpdMFest2 = lists:keystore(SrcLevel + 1,
+                                1,
+                                UpdMFest1,
+                                {SrcLevel + 1, NewLevel}),
+    
+    ok = filelib:ensure_dir(WI#penciller_work.manifest_file),
+    {ok, Handle} = file:open(WI#penciller_work.manifest_file,
+                                [binary, raw, write]),
+    ok = file:write(Handle, term_to_binary(UpdMFest2)),
+    ok = file:close(Handle),
+    case lists:member(SrcF, MergedFiles) of
+        true ->
+            {UpdMFest2, Candidates};
+        false ->
+            %% Can rub out src file as it is not part of output
+            {UpdMFest2, Candidates ++ [SrcF]}
     end.
     
 
@@ -317,6 +312,8 @@ do_merge(KL1, KL2, Level, {Filepath, MSN}, FileCounter, OutList) ->
                                             [Level + 1, FileCounter])),
     io:format("File to be created as part of MSN=~w Filename=~s~n",
                 [MSN, FileName]),
+    % Attempt to trace intermittent eaccess failures
+    false = filelib:is_file(FileName), 
     TS1 = os:timestamp(),
     {ok, Pid, Reply} = leveled_sft:sft_new(FileName, KL1, KL2, Level + 1),
     {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} = Reply,

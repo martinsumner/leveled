@@ -5,12 +5,14 @@
 -export([simple_put_fetch_head/1,
             many_put_fetch_head/1,
             journal_compaction/1,
-            fetchput_snapshot/1]).
+            fetchput_snapshot/1,
+            load_and_count/1]).
 
 all() -> [simple_put_fetch_head,
             many_put_fetch_head,
             journal_compaction,
-            fetchput_snapshot].
+            fetchput_snapshot,
+            load_and_count].
 
 
 simple_put_fetch_head(_Config) ->
@@ -216,6 +218,73 @@ fetchput_snapshot(_Config) ->
     reset_filestructure().
 
 
+load_and_count(_Config) ->
+    % Use artificially small files, and the load keys, counting they're all
+    % present
+    RootPath = reset_filestructure(),
+    StartOpts1 = #bookie_options{root_path=RootPath, max_journalsize=50000000},
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+    {TestObject, TestSpec} = generate_testobject(),
+    ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
+    check_bookie_forobject(Bookie1, TestObject),
+    io:format("Loading initial small objects~n"),
+    lists:foldl(fun(_X, Acc) ->
+                        load_objects(5000, [Acc + 2], Bookie1, TestObject,
+                            fun generate_multiple_smallobjects/2),
+                        {_Size, Count} = check_bucket_stats(Bookie1, "Bucket"),
+                        if
+                            Acc + 5000 == Count ->
+                                ok
+                        end,
+                        Acc + 5000 end,
+                        0,
+                        lists:seq(1, 20)),
+    check_bookie_forobject(Bookie1, TestObject),
+    io:format("Loading larger compressible objects~n"),
+    lists:foldl(fun(_X, Acc) ->
+                        load_objects(5000, [Acc + 2], Bookie1, TestObject,
+                            fun generate_multiple_compressibleobjects/2),
+                        {_Size, Count} = check_bucket_stats(Bookie1, "Bucket"),
+                        if
+                            Acc + 5000 == Count ->
+                                ok
+                        end,
+                        Acc + 5000 end,
+                        100000,
+                        lists:seq(1, 20)),
+    check_bookie_forobject(Bookie1, TestObject),
+    io:format("Replacing small objects~n"),
+    lists:foldl(fun(_X, Acc) ->
+                        load_objects(5000, [Acc + 2], Bookie1, TestObject,
+                            fun generate_multiple_smallobjects/2),
+                        {_Size, Count} = check_bucket_stats(Bookie1, "Bucket"),
+                        if
+                            Count == 200000 ->
+                                ok
+                        end,
+                        Acc + 5000 end,
+                        0,
+                        lists:seq(1, 20)),
+    check_bookie_forobject(Bookie1, TestObject),
+    io:format("Loading more small objects~n"),
+    lists:foldl(fun(_X, Acc) ->
+                        load_objects(5000, [Acc + 2], Bookie1, TestObject,
+                            fun generate_multiple_compressibleobjects/2),
+                        {_Size, Count} = check_bucket_stats(Bookie1, "Bucket"),
+                        if
+                            Acc + 5000 == Count ->
+                                ok
+                        end,
+                        Acc + 5000 end,
+                        200000,
+                        lists:seq(1, 20)),
+    check_bookie_forobject(Bookie1, TestObject),
+    ok = leveled_bookie:book_close(Bookie1),
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
+    {_BSize, 300000} = check_bucket_stats(Bookie2, "Bucket"),
+    ok = leveled_bookie:book_close(Bookie2),
+    reset_filestructure().
+
 
 reset_filestructure() ->
     RootPath  = "test",
@@ -236,7 +305,7 @@ check_bucket_stats(Bookie, Bucket) ->
     {B1Size, B1Count} = Folder1(),
     io:format("Bucket fold completed in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), FoldSW1)]),
-    io:format("Bucket ~w has size ~w and count ~w~n",
+    io:format("Bucket ~s has size ~w and count ~w~n",
                 [Bucket, B1Size, B1Count]),
     {B1Size, B1Count}.
 
@@ -306,6 +375,26 @@ generate_testobject(B, K, V, Spec, MD) ->
     {#r_object{bucket=B, key=K, contents=[Content], vclock=[{'a',1}]},
         Spec}.
 
+
+generate_multiple_compressibleobjects(Count, KeyNumber) ->
+    S1 = "111111111111111",
+    S2 = "222222222222222",
+    S3 = "333333333333333",
+    S4 = "aaaaaaaaaaaaaaa",
+    S5 = "AAAAAAAAAAAAAAA",
+    S6 = "GGGGGGGGGGGGGGG",
+    S7 = "===============",
+    S8 = "...............",
+    Selector = [{1, S1}, {2, S2}, {3, S3}, {4, S4},
+                {5, S5}, {6, S6}, {7, S7}, {8, S8}],
+    L = lists:seq(1, 1024),
+    V = lists:foldl(fun(_X, Acc) ->
+                        {_, Str} = lists:keyfind(random:uniform(8), 1, Selector),
+                        Acc ++ Str end,
+                    "",
+                    L),
+    generate_multiple_objects(Count, KeyNumber, [], V).
+    
 generate_multiple_smallobjects(Count, KeyNumber) ->
     generate_multiple_objects(Count, KeyNumber, [], crypto:rand_bytes(512)).
 
