@@ -84,16 +84,32 @@ to_ledgerkey(Bucket, Key, Tag) ->
 hash(Obj) ->
     erlang:phash2(term_to_binary(Obj)).
 
-% Return a tuple of string to ease the printing of keys to logs
+% Return a tuple of strings to ease the printing of keys to logs
 print_key(Key) ->
-    case Key of
-        {o, B, K, _SK} ->
-            {"Object", B, K};
-        {o_rkv@v1, B, K, _SK} ->
-            {"RiakObject", B, K};
-        {i, B, {F, _V}, _K} ->
-            {"Index", B, F}
+    {A_STR, B_TERM, C_TERM} = case Key of
+                                    {o, B, K, _SK} ->
+                                        {"Object", B, K};
+                                    {o_rkv@v1, B, K, _SK} ->
+                                        {"RiakObject", B, K};
+                                    {i, B, {F, _V}, _K} ->
+                                        {"Index", B, F}
+                                end,
+    {B_STR, FB} = check_for_string(B_TERM),
+    {C_STR, FC} = check_for_string(C_TERM),
+    {A_STR, B_STR, C_STR, FB, FC}.
+
+check_for_string(Item) ->
+    if
+        is_binary(Item) == true ->
+            {binary_to_list(Item), "~s"};
+        is_integer(Item) == true ->
+            {integer_to_list(Item), "~s"};
+        is_list(Item) == true ->
+            {Item, "~s"};
+        true ->
+            {Item, "~w"}
     end.
+                    
 
 % Compare a key against a query key, only comparing elements that are non-null
 % in the Query key.  This is used for comparing against end keys in queries.
@@ -208,5 +224,17 @@ indexspecs_test() ->
                     {1, {active, infinity}, null}}, lists:nth(2, Changes)),
     ?assertMatch({{i, "Bucket", {"t1_bin", "abdc456"}, "Key2"},
                     {1, {tomb, infinity}, null}}, lists:nth(3, Changes)).
-    
+
+endkey_passed_test() ->
+    TestKey = {i, null, null, null},
+    K1 = {i, 123, {"a", "b"}, <<>>},
+    K2 = {o, 123, {"a", "b"}, <<>>},
+    ?assertMatch(false, endkey_passed(TestKey, K1)),
+    ?assertMatch(true, endkey_passed(TestKey, K2)).
+
+stringcheck_test() ->
+    ?assertMatch({"Bucket", "~s"}, check_for_string("Bucket")),
+    ?assertMatch({"Bucket", "~s"}, check_for_string(<<"Bucket">>)),
+    ?assertMatch({bucket, "~w"}, check_for_string(bucket)).
+
 -endif.

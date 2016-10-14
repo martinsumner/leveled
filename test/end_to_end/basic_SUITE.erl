@@ -12,7 +12,8 @@ all() -> [simple_put_fetch_head,
             many_put_fetch_head,
             journal_compaction,
             fetchput_snapshot,
-            load_and_count].
+            load_and_count
+            ].
 
 
 simple_put_fetch_head(_Config) ->
@@ -36,7 +37,21 @@ simple_put_fetch_head(_Config) ->
     check_bookie_forlist(Bookie2, ChkList1),
     check_bookie_forobject(Bookie2, TestObject),
     check_bookie_formissingobject(Bookie2, "Bucket1", "Key2"),
+    ok = leveled_bookie:book_put(Bookie2, "Bucket1", "Key2", "Value2",
+                                    [{add, "Index1", "Term1"}]),
+    {ok, "Value2"} = leveled_bookie:book_get(Bookie2, "Bucket1", "Key2"),
+    {ok, {62888926, 43}} = leveled_bookie:book_head(Bookie2,
+                                                    "Bucket1",
+                                                    "Key2"),
+    check_bookie_formissingobject(Bookie2, "Bucket1", "Key2"),
+    ok = leveled_bookie:book_put(Bookie2, "Bucket1", "Key2", <<"Value2">>,
+                                    [{remove, "Index1", "Term1"},
+                                    {add, "Index1", <<"Term2">>}]),
+    {ok, <<"Value2">>} = leveled_bookie:book_get(Bookie2, "Bucket1", "Key2"),
     ok = leveled_bookie:book_close(Bookie2),
+    {ok, Bookie3} = leveled_bookie:book_start(StartOpts2),
+    {ok, <<"Value2">>} = leveled_bookie:book_get(Bookie3, "Bucket1", "Key2"),
+    ok = leveled_bookie:book_close(Bookie3),
     reset_filestructure().
 
 many_put_fetch_head(_Config) ->

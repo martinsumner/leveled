@@ -1022,15 +1022,18 @@ print_manifest(Manifest) ->
                                             end end,
                                         Level)
                         end,
-                    lists:seq(0, ?MAX_LEVELS - 1)).
+                    lists:seq(0, ?MAX_LEVELS - 1)),
+    ok.
 
 print_manifest_entry(Entry) ->
-    {S1, S2, S3} = leveled_codec:print_key(Entry#manifest_entry.start_key),
-    {E1, E2, E3} = leveled_codec:print_key(Entry#manifest_entry.end_key),
+    {S1, S2, S3,
+        FS2, FS3} = leveled_codec:print_key(Entry#manifest_entry.start_key),
+    {E1, E2, E3,
+        FE2, FE3} = leveled_codec:print_key(Entry#manifest_entry.end_key),
     io:format("Manifest entry of " ++ 
-                "startkey ~s ~s ~s " ++
-                "endkey ~s ~s ~s " ++
-                "filename=~s~n",
+                "startkey ~s " ++ FS2 ++ " " ++ FS3 ++
+                " endkey ~s " ++ FE2 ++ " " ++ FE3 ++
+                " filename=~s~n",
         [S1, S2, S3, E1, E2, E3,
             Entry#manifest_entry.filename]).
 
@@ -1666,6 +1669,15 @@ rangequery_manifest_test() ->
                                             {i, "Bucket1", {"Idx0", "Fld9"}, null},
                                             Man),
     ?assertMatch([], R3).
+
+print_manifest_test() ->
+    M1 = #manifest_entry{start_key={i, "Bucket1", {<<"Idx1">>, "Fld1"}, "K8"},
+                                end_key={i, 4565, {"Idx1", "Fld9"}, "K93"},
+                                filename="Z1"},
+    M2 = #manifest_entry{start_key={i, self(), {null, "Fld1"}, "K8"},
+                                end_key={i, <<200:32/integer>>, {"Idx1", "Fld9"}, "K93"},
+                                filename="Z1"},
+    ?assertMatch(ok, print_manifest([{1, [M1, M2]}])).
 
 simple_findnextkey_test() ->
     QueryArray = [
