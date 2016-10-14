@@ -13,6 +13,7 @@
         terminate/2,
         clerk_new/1,
         clerk_compact/6,
+        clerk_hashtablecalc/3,
         clerk_stop/1,
         code_change/3]).      
 
@@ -55,6 +56,10 @@ clerk_compact(Pid, Checker, InitiateFun, FilterFun, Inker, Timeout) ->
                     FilterFun,
                     Inker,
                     Timeout}).
+
+clerk_hashtablecalc(HashTree, StartPos, CDBpid) ->
+    {ok, Clerk} = gen_server:start(?MODULE, [#iclerk_options{}], []),
+    gen_server:cast(Clerk, {hashtable_calc, HashTree, StartPos, CDBpid}).
 
 clerk_stop(Pid) ->
     gen_server:cast(Pid, stop).
@@ -129,6 +134,10 @@ handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
             ok = leveled_inker:ink_compactioncomplete(Inker),
             {noreply, State}
     end;
+handle_cast({hashtable_calc, HashTree, StartPos, CDBpid}, State) ->
+    {IndexList, HashTreeBin} = leveled_cdb:hashtable_calc(HashTree, StartPos),
+    ok = leveled_cdb:cdb_returnhashtable(CDBpid, IndexList, HashTreeBin),
+    {stop, normal, State};
 handle_cast(stop, State) ->
     {stop, normal, State}.
 
