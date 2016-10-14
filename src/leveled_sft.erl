@@ -14,7 +14,7 @@
 %%
 %% All keys are not equal in sft files, keys are only expected in a specific
 %% series of formats
-%% - {o, Bucket, Key, SubKey|null} - Object Keys
+%% - {Tag, Bucket, Key, SubKey|null} - Object Keys
 %% - {i, Bucket, {IndexName, IndexTerm}, Key} - Postings
 %% The {Bucket, Key} part of all types of keys are hashed for segment filters.
 %% For Postings the {Bucket, IndexName, IndexTerm} is also hashed.  This

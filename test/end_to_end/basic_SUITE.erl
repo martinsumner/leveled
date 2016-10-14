@@ -300,7 +300,7 @@ check_bucket_stats(Bookie, Bucket) ->
     FoldSW1 = os:timestamp(),
     io:format("Checking bucket size~n"),
     {async, Folder1} = leveled_bookie:book_returnfolder(Bookie,
-                                                        {bucket_stats,
+                                                        {riakbucket_stats,
                                                             Bucket}),
     {B1Size, B1Count} = Folder1(),
     io:format("Bucket fold completed in ~w microseconds~n",

@@ -51,8 +51,6 @@
                         max_run_length :: integer(),
                         cdb_options :: #cdb_options{}}).                                               
 
-%% Temp location for records related to riak
-
 -record(r_content, {
           metadata,
           value :: term()
@@ -65,4 +63,4 @@
           vclock,
           updatemetadata=dict:store(clean, true, dict:new()),
           updatevalue :: term()}).
-          
+ 

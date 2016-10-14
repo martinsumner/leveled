@@ -1655,7 +1655,10 @@ find_lastkey_test() ->
     {ok, F2} = cdb_complete(P2),
     {ok, P3} = cdb_open_reader(F2),
     ?assertMatch("Key2", cdb_lastkey(P3)),
-    ok = cdb_close(P3),
+    {ok, _FN} = cdb_complete(P3),
+    {ok, P4} = cdb_open_reader(F2),
+    ?assertMatch("Key2", cdb_lastkey(P4)),
+    ok = cdb_close(P4),
     ok = file:delete("../test/lastkey.cdb").
 
 get_keys_byposition_simple_test() ->

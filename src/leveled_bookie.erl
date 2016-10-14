@@ -71,11 +71,11 @@
 %% The Bookie should generate a series of ledger key changes from this
 %% information, using a function passed in at startup.  For Riak this will be
 %% of the form:
-%% {{o, Bucket, Key, SubKey|null},
+%% {{o_rkv@v1, Bucket, Key, SubKey|null},
 %%      SQN,
 %%      {Hash, Size, {Riak_Metadata}},
 %%      {active, TS}|{tomb, TS}} or
-%% {{i, Bucket, IndexTerm, IndexField, Key},
+%% {{i, Bucket, {IndexTerm, IndexField}, Key},
 %%      SQN,
 %%      null,
 %%      {active, TS}|{tomb, TS}}
@@ -136,6 +136,9 @@
         book_riakput/3,
         book_riakget/3,
         book_riakhead/3,
+        book_put/5,
+        book_get/3,
+        book_head/3,
         book_returnfolder/2,
         book_snapshotstore/3,
         book_snapshotledger/3,
@@ -167,17 +170,33 @@
 book_start(Opts) ->
     gen_server:start(?MODULE, [Opts], []).
 
-book_riakput(Pid, Object, IndexSpecs) ->
-    PrimaryKey = {o, Object#r_object.bucket, Object#r_object.key, null},
-    gen_server:call(Pid, {put, PrimaryKey, Object, IndexSpecs}, infinity).
+book_riakput(Pid, RiakObject, IndexSpecs) ->
+    {Bucket, Key} = leveled_codec:riakto_keydetails(RiakObject),
+    book_put(Pid, Bucket, Key, RiakObject, IndexSpecs, o_rkv@v1).
+
+book_put(Pid, Bucket, Key, Object, IndexSpecs) ->
+    book_put(Pid, Bucket, Key, Object, IndexSpecs, o).
 
 book_riakget(Pid, Bucket, Key) ->
-    PrimaryKey = {o, Bucket, Key, null},    
-    gen_server:call(Pid, {get, PrimaryKey}, infinity).
+    book_get(Pid, Bucket, Key, o_rkv@v1).
+
+book_get(Pid, Bucket, Key) ->
+    book_get(Pid, Bucket, Key, o).
 
 book_riakhead(Pid, Bucket, Key) ->
-    PrimaryKey = {o, Bucket, Key, null},
-    gen_server:call(Pid, {head, PrimaryKey}, infinity).
+    book_head(Pid, Bucket, Key, o_rkv@v1).
+
+book_head(Pid, Bucket, Key) ->
+    book_head(Pid, Bucket, Key, o).
+
+book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag) ->
+    gen_server:call(Pid, {put, Bucket, Key, Object, IndexSpecs, Tag}, infinity).
+
+book_get(Pid, Bucket, Key, Tag) ->
+    gen_server:call(Pid, {get, Bucket, Key, Tag}, infinity).
+
+book_head(Pid, Bucket, Key, Tag) ->
+    gen_server:call(Pid, {head, Bucket, Key, Tag}, infinity).
 
 book_returnfolder(Pid, FolderType) ->
     gen_server:call(Pid, {return_folder, FolderType}, infinity).
@@ -231,12 +250,13 @@ init([Opts]) ->
     end.
 
 
-handle_call({put, PrimaryKey, Object, IndexSpecs}, From, State) ->
+handle_call({put, Bucket, Key, Object, IndexSpecs, Tag}, From, State) ->
+    LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
     {ok, SQN, ObjSize} = leveled_inker:ink_put(State#state.inker,
-                                                PrimaryKey,
+                                                LedgerKey,
                                                 Object,
                                                 IndexSpecs),
-    Changes = preparefor_ledgercache(PrimaryKey,
+    Changes = preparefor_ledgercache(LedgerKey,
                                         SQN,
                                         Object,
                                         ObjSize,
@@ -251,8 +271,11 @@ handle_call({put, PrimaryKey, Object, IndexSpecs}, From, State) ->
         {pause, NewCache} ->
             {noreply, State#state{ledger_cache=NewCache, back_pressure=true}}
     end;
-handle_call({get, Key}, _From, State) ->
-    case fetch_head(Key, State#state.penciller, State#state.ledger_cache) of
+handle_call({get, Bucket, Key, Tag}, _From, State) ->
+    LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
+    case fetch_head(LedgerKey,
+                    State#state.penciller,
+                    State#state.ledger_cache) of
         not_present ->
             {reply, not_found, State};
         Head ->
@@ -261,7 +284,7 @@ handle_call({get, Key}, _From, State) ->
                 {tomb, _} ->
                     {reply, not_found, State};
                 {active, _} ->
-                    case fetch_value(Key, Seqn, State#state.inker) of
+                    case fetch_value(LedgerKey, Seqn, State#state.inker) of
                         not_present ->
                             {reply, not_found, State};
                         Object ->
@@ -269,8 +292,11 @@ handle_call({get, Key}, _From, State) ->
                     end
             end
     end;
-handle_call({head, Key}, _From, State) ->
-    case fetch_head(Key, State#state.penciller, State#state.ledger_cache) of
+handle_call({head, Bucket, Key, Tag}, _From, State) ->
+    LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
+    case fetch_head(LedgerKey,
+                    State#state.penciller,
+                    State#state.ledger_cache) of
         not_present ->
             {reply, not_found, State};
         Head ->
@@ -279,7 +305,7 @@ handle_call({head, Key}, _From, State) ->
                 {tomb, _} ->
                     {reply, not_found, State};
                 {active, _} ->
-                    OMD = leveled_codec:build_metadata_object(Key, MD),
+                    OMD = leveled_codec:build_metadata_object(LedgerKey, MD),
                     {reply, {ok, OMD}, State}
             end
     end;
@@ -308,11 +334,12 @@ handle_call({snapshot, _Requestor, SnapType, _Timeout}, _From, State) ->
     end;
 handle_call({return_folder, FolderType}, _From, State) ->
     case FolderType of
-        {bucket_stats, Bucket} ->
+        {riakbucket_stats, Bucket} ->
             {reply,
                 bucket_stats(State#state.penciller,
                                     State#state.ledger_cache,
-                                    Bucket),
+                                    Bucket,
+                                    o_rkv@v1),
                 State}
     end;
 handle_call({compact_journal, Timeout}, _From, State) ->
@@ -351,7 +378,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%============================================================================
 
-bucket_stats(Penciller, LedgerCache, Bucket) ->
+bucket_stats(Penciller, LedgerCache, Bucket, Tag) ->
     PCLopts = #penciller_options{start_snapshot=true,
                                     source_penciller=Penciller},
     {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
@@ -361,8 +388,8 @@ bucket_stats(Penciller, LedgerCache, Bucket) ->
                             [length(Increment)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                         {infinity, Increment}),   
-                StartKey = {o, Bucket, null, null},
-                EndKey = {o, Bucket, null, null},
+                StartKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
+                EndKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
                 Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
                                                         StartKey,
                                                         EndKey,
@@ -433,21 +460,16 @@ fetch_value(Key, SQN, Inker) ->
             not_present
     end.
 
-
-accumulate_size(_Key, Value, {Size, Count}) ->
-    {_, _, MD} = Value,
-    {_, _, _, ObjSize} = MD,
-    {Size + ObjSize, Count + 1}.
-
-    
+accumulate_size(Key, Value, {Size, Count}) ->
+    {Size + leveled_codec:get_size(Key, Value), Count + 1}.
 
 preparefor_ledgercache(PK, SQN, Obj, Size, IndexSpecs) ->
-    PrimaryChange = {PK,
-                        {SQN,
-                            {active, infinity},
-                            leveled_codec:extract_metadata(Obj, Size)}},
-    SecChanges = leveled_codec:convert_indexspecs(IndexSpecs, SQN, PK),
-    [PrimaryChange] ++ SecChanges.
+    {Bucket, Key, PrimaryChange} = leveled_codec:generate_ledgerkv(PK,
+                                                                    SQN,
+                                                                    Obj,
+                                                                    Size),
+    ConvSpecs = leveled_codec:convert_indexspecs(IndexSpecs, Bucket, Key, SQN),
+    [PrimaryChange] ++ ConvSpecs.
 
 addto_ledgercache(Changes, Cache) ->
     lists:foldl(fun({K, V}, Acc) -> gb_trees:enter(K, V, Acc) end,
@@ -510,6 +532,9 @@ reset_filestructure() ->
     leveled_inker:clean_testdir(RootPath ++ "/" ++ ?JOURNAL_FP),
     leveled_penciller:clean_testdir(RootPath ++ "/" ++ ?LEDGER_FP),
     RootPath.
+
+
+
 
 generate_multiple_objects(Count, KeyNumber) ->
     generate_multiple_objects(Count, KeyNumber, []).
