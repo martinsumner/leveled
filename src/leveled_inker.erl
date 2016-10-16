@@ -299,10 +299,7 @@ handle_call({close, Force}, _From, State) ->
             {reply, pause, State};
         _ ->
             {stop, normal, ok, State}
-    end;
-handle_call(Msg, _From, State) ->
-    io:format("Unexpected message ~w~n", [Msg]),
-    {reply, error, State}.
+    end.
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -814,10 +811,10 @@ simple_inker_completeactivejournal_test() ->
     RootPath = "../test/journal",
     build_dummy_journal(),
     CDBopts = #cdb_options{max_size=300000},
-    {ok, PidW} = leveled_cdb:cdb_open_writer(filepath(RootPath,
-                                                        3,
-                                                        new_journal)),
-    {ok, _FN} = leveled_cdb:cdb_complete(PidW),
+    JournalFP = filepath(RootPath, journal_dir),
+    F2 = filename:join(JournalFP, "nursery_3.pnd"),
+    {ok, PidW} = leveled_cdb:cdb_open_writer(F2),
+    {ok, _F2} = leveled_cdb:cdb_complete(PidW),
     {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,
                                             cdb_options=CDBopts}),
     Obj1 = ink_get(Ink1, "Key1", 1),
