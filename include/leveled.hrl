@@ -1,4 +1,8 @@
 
+-define(RIAK_TAG, o_rkv).
+-define(STD_TAG, o).
+-define(IDX_TAG, i).
+
 -record(sft_options,
                         {wait = true :: boolean(),
                         expire_tombstones = false :: boolean()}).

@@ -71,7 +71,7 @@
 %% The Bookie should generate a series of ledger key changes from this
 %% information, using a function passed in at startup.  For Riak this will be
 %% of the form:
-%% {{o_rkv@v1, Bucket, Key, SubKey|null},
+%% {{o_rkv, Bucket, Key, SubKey|null},
 %%      SQN,
 %%      {Hash, Size, {Riak_Metadata}},
 %%      {active, TS}|{tomb, TS}} or
@@ -134,9 +134,11 @@
         code_change/3,
         book_start/1,
         book_riakput/3,
+        book_riakdelete/4,
         book_riakget/3,
         book_riakhead/3,
         book_put/5,
+        book_delete/4,
         book_get/3,
         book_head/3,
         book_returnfolder/2,
@@ -172,22 +174,28 @@ book_start(Opts) ->
 
 book_riakput(Pid, RiakObject, IndexSpecs) ->
     {Bucket, Key} = leveled_codec:riakto_keydetails(RiakObject),
-    book_put(Pid, Bucket, Key, RiakObject, IndexSpecs, o_rkv@v1).
+    book_put(Pid, Bucket, Key, RiakObject, IndexSpecs, ?RIAK_TAG).
 
 book_put(Pid, Bucket, Key, Object, IndexSpecs) ->
-    book_put(Pid, Bucket, Key, Object, IndexSpecs, o).
+    book_put(Pid, Bucket, Key, Object, IndexSpecs, ?STD_TAG).
+
+book_riakdelete(Pid, Bucket, Key, IndexSpecs) ->
+    book_put(Pid, Bucket, Key, delete, IndexSpecs, ?RIAK_TAG).
+
+book_delete(Pid, Bucket, Key, IndexSpecs) ->
+    book_put(Pid, Bucket, Key, delete, IndexSpecs, ?STD_TAG).
 
 book_riakget(Pid, Bucket, Key) ->
-    book_get(Pid, Bucket, Key, o_rkv@v1).
+    book_get(Pid, Bucket, Key, ?RIAK_TAG).
 
 book_get(Pid, Bucket, Key) ->
-    book_get(Pid, Bucket, Key, o).
+    book_get(Pid, Bucket, Key, ?STD_TAG).
 
 book_riakhead(Pid, Bucket, Key) ->
-    book_head(Pid, Bucket, Key, o_rkv@v1).
+    book_head(Pid, Bucket, Key, ?RIAK_TAG).
 
 book_head(Pid, Bucket, Key) ->
-    book_head(Pid, Bucket, Key, o).
+    book_head(Pid, Bucket, Key, ?STD_TAG).
 
 book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag) ->
     gen_server:call(Pid, {put, Bucket, Key, Object, IndexSpecs, Tag}, infinity).
@@ -281,7 +289,7 @@ handle_call({get, Bucket, Key, Tag}, _From, State) ->
         Head ->
             {Seqn, Status, _MD} = leveled_codec:striphead_to_details(Head),
             case Status of
-                {tomb, _} ->
+                tomb ->
                     {reply, not_found, State};
                 {active, _} ->
                     case fetch_value(LedgerKey, Seqn, State#state.inker) of
@@ -302,7 +310,7 @@ handle_call({head, Bucket, Key, Tag}, _From, State) ->
         Head ->
             {_Seqn, Status, MD} = leveled_codec:striphead_to_details(Head),
             case Status of
-                {tomb, _} ->
+                tomb ->
                     {reply, not_found, State};
                 {active, _} ->
                     OMD = leveled_codec:build_metadata_object(LedgerKey, MD),
@@ -339,7 +347,7 @@ handle_call({return_folder, FolderType}, _From, State) ->
                 bucket_stats(State#state.penciller,
                                     State#state.ledger_cache,
                                     Bucket,
-                                    o_rkv@v1),
+                                    ?RIAK_TAG),
                 State}
     end;
 handle_call({compact_journal, Timeout}, _From, State) ->
@@ -461,7 +469,12 @@ fetch_value(Key, SQN, Inker) ->
     end.
 
 accumulate_size(Key, Value, {Size, Count}) ->
-    {Size + leveled_codec:get_size(Key, Value), Count + 1}.
+    case leveled_codec:is_active(Key, Value) of
+        true ->
+            {Size + leveled_codec:get_size(Key, Value), Count + 1};
+        false ->
+            {Size, Count}
+    end.
 
 preparefor_ledgercache(PK, SQN, Obj, Size, IndexSpecs) ->
     {Bucket, Key, PrimaryChange} = leveled_codec:generate_ledgerkv(PK,

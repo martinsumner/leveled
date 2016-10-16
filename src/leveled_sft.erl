@@ -712,8 +712,6 @@ get_nearestkey(KVList, all) ->
     end;
 get_nearestkey(KVList, Key) ->
     case Key of
-        {first, K} ->
-            get_firstkeytomatch(KVList, K, not_found);
         {next, K} ->
             get_nextkeyaftermatch(KVList, K, not_found);
         _ ->

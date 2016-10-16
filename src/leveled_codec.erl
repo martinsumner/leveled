@@ -22,7 +22,7 @@
 %%
 %% Currently the only tags supported are:
 %% - o (standard objects)
-%% - o_rkv@v1 (riak objects)
+%% - o_rkv (riak objects)
 %% - i (index entries)
 
 
@@ -38,6 +38,7 @@
         strip_to_statusonly/1,
         strip_to_keyseqstatusonly/1,
         striphead_to_details/1,
+        is_active/2,
         endkey_passed/2,
         key_dominates/2,
         print_key/1,
@@ -77,7 +78,15 @@ key_dominates(LeftKey, RightKey) ->
                                                 when LK == RK, LSN < RSN ->
             right_hand_dominant
     end.
-        
+
+is_active(Key, Value) ->
+    case strip_to_statusonly({Key, Value}) of
+        {active, infinity} ->
+            true;
+        tomb ->
+            false
+    end.
+
 to_ledgerkey(Bucket, Key, Tag) ->
     {Tag, Bucket, Key, null}.
 
@@ -87,11 +96,11 @@ hash(Obj) ->
 % Return a tuple of strings to ease the printing of keys to logs
 print_key(Key) ->
     {A_STR, B_TERM, C_TERM} = case Key of
-                                    {o, B, K, _SK} ->
+                                    {?STD_TAG, B, K, _SK} ->
                                         {"Object", B, K};
-                                    {o_rkv@v1, B, K, _SK} ->
+                                    {?RIAK_TAG, B, K, _SK} ->
                                         {"RiakObject", B, K};
-                                    {i, B, {F, _V}, _K} ->
+                                    {?IDX_TAG, B, {F, _V}, _K} ->
                                         {"Index", B, F}
                                 end,
     {B_STR, FB} = check_for_string(B_TERM),
@@ -142,24 +151,32 @@ generate_ledgerkv(PrimaryKey, SQN, Obj, Size) ->
 
 generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS) ->
     {Tag, Bucket, Key, _} = PrimaryKey,
+    Status = case Obj of
+                    delete ->
+                        tomb;
+                    _ ->
+                        {active, TS}
+                end,
     {Bucket,
         Key,
-        {PrimaryKey, {SQN, {active, TS}, extract_metadata(Obj, Size, Tag)}}}.
+        {PrimaryKey, {SQN, Status, extract_metadata(Obj, Size, Tag)}}}.
 
 
-extract_metadata(Obj, Size, o_rkv@v1) ->
+
+
+extract_metadata(Obj, Size, ?RIAK_TAG) ->
     riak_extract_metadata(Obj, Size);
-extract_metadata(Obj, Size, o) ->
+extract_metadata(Obj, Size, ?STD_TAG) ->
     {hash(Obj), Size}.
 
 get_size(PK, Value) ->
     {Tag, _Bucket, _Key, _} = PK,
     {_, _, MD} = Value,
     case Tag of
-        o_rkv@v1 ->
+        ?RIAK_TAG ->
             {_RMD, _VC, _Hash, Size} = MD,
             Size;
-        o ->
+        ?STD_TAG ->
             {_Hash, Size} = MD,
             Size
     end.
@@ -168,9 +185,9 @@ get_size(PK, Value) ->
 build_metadata_object(PrimaryKey, MD) ->
     {Tag, Bucket, Key, null} = PrimaryKey,
     case Tag of
-        o_rkv@v1 ->
+        ?RIAK_TAG ->
             riak_metadata_object(Bucket, Key, MD);
-        o ->
+        ?STD_TAG ->
             MD
     end.
 
@@ -184,6 +201,8 @@ riak_metadata_object(Bucket, Key, MD) ->
                             RMD),
     #r_object{contents=Contents, bucket=Bucket, key=Key, vclock=VC}.
 
+riak_extract_metadata(delete, Size) ->
+    {delete, null, null, Size};
 riak_extract_metadata(Obj, Size) ->
     {get_metadatas(Obj), vclock(Obj), riak_hash(Obj), Size}.
 

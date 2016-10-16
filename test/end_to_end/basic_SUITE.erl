@@ -2,21 +2,23 @@
 -include_lib("common_test/include/ct.hrl").
 -include("../include/leveled.hrl").
 -export([all/0]).
--export([simple_put_fetch_head/1,
+-export([simple_put_fetch_head_delete/1,
             many_put_fetch_head/1,
             journal_compaction/1,
             fetchput_snapshot/1,
-            load_and_count/1]).
+            load_and_count/1,
+            load_and_count_withdelete/1]).
 
-all() -> [simple_put_fetch_head,
+all() -> [simple_put_fetch_head_delete,
             many_put_fetch_head,
             journal_compaction,
             fetchput_snapshot,
-            load_and_count
+            load_and_count,
+            load_and_count_withdelete
             ].
 
 
-simple_put_fetch_head(_Config) ->
+simple_put_fetch_head_delete(_Config) ->
     RootPath = reset_filestructure(),
     StartOpts1 = #bookie_options{root_path=RootPath},
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
@@ -51,7 +53,13 @@ simple_put_fetch_head(_Config) ->
     ok = leveled_bookie:book_close(Bookie2),
     {ok, Bookie3} = leveled_bookie:book_start(StartOpts2),
     {ok, <<"Value2">>} = leveled_bookie:book_get(Bookie3, "Bucket1", "Key2"),
+    ok = leveled_bookie:book_delete(Bookie3, "Bucket1", "Key2",
+                                    [{remove, "Index1", "Term1"}]),
+    not_found = leveled_bookie:book_get(Bookie3, "Bucket1", "Key2"),
     ok = leveled_bookie:book_close(Bookie3),
+    {ok, Bookie4} = leveled_bookie:book_start(StartOpts2),
+    not_found = leveled_bookie:book_get(Bookie4, "Bucket1", "Key2"),
+    ok = leveled_bookie:book_close(Bookie4),
     reset_filestructure().
 
 many_put_fetch_head(_Config) ->
@@ -300,6 +308,50 @@ load_and_count(_Config) ->
     ok = leveled_bookie:book_close(Bookie2),
     reset_filestructure().
 
+load_and_count_withdelete(_Config) ->
+    RootPath = reset_filestructure(),
+    StartOpts1 = #bookie_options{root_path=RootPath, max_journalsize=50000000},
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+    {TestObject, TestSpec} = generate_testobject(),
+    ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
+    check_bookie_forobject(Bookie1, TestObject),
+    io:format("Loading initial small objects~n"),
+    lists:foldl(fun(_X, Acc) ->
+                        load_objects(5000, [Acc + 2], Bookie1, TestObject,
+                            fun generate_multiple_smallobjects/2),
+                        {_Size, Count} = check_bucket_stats(Bookie1, "Bucket"),
+                        if
+                            Acc + 5000 == Count ->
+                                ok
+                        end,
+                        Acc + 5000 end,
+                        0,
+                        lists:seq(1, 20)),
+    check_bookie_forobject(Bookie1, TestObject),
+    {BucketD, KeyD} = leveled_codec:riakto_keydetails(TestObject),
+    {_, 1} = check_bucket_stats(Bookie1, BucketD),
+    ok = leveled_bookie:book_riakdelete(Bookie1, BucketD, KeyD, []),
+    not_found = leveled_bookie:book_riakget(Bookie1, BucketD, KeyD),
+    {_, 0} = check_bucket_stats(Bookie1, BucketD),
+    io:format("Loading larger compressible objects~n"),
+    lists:foldl(fun(_X, Acc) ->
+                        load_objects(5000, [Acc + 2], Bookie1, no_check,
+                            fun generate_multiple_compressibleobjects/2),
+                        {_Size, Count} = check_bucket_stats(Bookie1, "Bucket"),
+                        if
+                            Acc + 5000 == Count ->
+                                ok
+                        end,
+                        Acc + 5000 end,
+                        100000,
+                        lists:seq(1, 20)),
+    not_found = leveled_bookie:book_riakget(Bookie1, BucketD, KeyD),
+    ok = leveled_bookie:book_close(Bookie1),
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
+    check_bookie_formissingobject(Bookie2, BucketD, KeyD),
+    {_BSize, 0} = check_bucket_stats(Bookie2, BucketD),
+    ok = leveled_bookie:book_close(Bookie2).
+
 
 reset_filestructure() ->
     RootPath  = "test",
@@ -445,6 +497,11 @@ load_objects(ChunkSize, GenList, Bookie, TestObject, Generator) ->
                     Time = timer:now_diff(os:timestamp(), StartWatchA),
                     io:format("~w objects loaded in ~w seconds~n",
                                 [ChunkSize, Time/1000000]),
-                    check_bookie_forobject(Bookie, TestObject),
+                    if
+                        TestObject == no_check ->
+                            ok;
+                        true ->
+                            check_bookie_forobject(Bookie, TestObject)
+                    end,
                     lists:sublist(ObjListA, 1000) end,
                 GenList).
