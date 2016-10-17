@@ -1,6 +1,6 @@
 -module(basic_SUITE).
 -include_lib("common_test/include/ct.hrl").
--include("../include/leveled.hrl").
+-include("include/leveled.hrl").
 -export([all/0]).
 -export([simple_put_fetch_head_delete/1,
             many_put_fetch_head/1,
