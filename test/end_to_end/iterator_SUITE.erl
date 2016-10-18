@@ -3,6 +3,8 @@
 -include_lib("common_test/include/ct.hrl").
 -include("include/leveled.hrl").
 
+-define(KEY_ONLY, {false, undefined}).
+
 -export([all/0]).
 -export([simple_load_with2i/1,
             simple_querycount/1]).
@@ -73,7 +75,7 @@ simple_querycount(_Config) ->
                                 T = count_termsonindex("Bucket",
                                                         IdxF,
                                                         Book1,
-                                                        {false, undefined}),
+                                                        ?KEY_ONLY),
                                 io:format("~w terms found on index ~s~n",
                                             [T, IdxF]),
                                 Acc + T
@@ -87,13 +89,13 @@ simple_querycount(_Config) ->
     Index1Count = count_termsonindex("Bucket",
                                         "idx1_bin",
                                         Book1,
-                                        {false, undefined}),
+                                        ?KEY_ONLY),
     ok = leveled_bookie:book_close(Book1),
     {ok, Book2} = leveled_bookie:book_start(StartOpts1),
     Index1Count = count_termsonindex("Bucket",
                                         "idx1_bin",
                                         Book2,
-                                        {false, undefined}),
+                                        ?KEY_ONLY),
     NameList = testutil:name_list(),
     TotalNameByName = lists:foldl(fun({_X, Name}, Acc) ->
                                         {ok, Regex} = re:compile("[0-9]+" ++
@@ -165,7 +167,79 @@ simple_querycount(_Config) ->
                                                                 {false,
                                                                     RxMia2K}}),
     Mia2000Count1 = length(Mia2KFolder3()),
+    
+    V9 = testutil:get_compressiblevalue(),
+    Indexes9 = testutil:get_randomindexes_generator(8),
+    [{_RN, Obj9, Spc9}] = testutil:generate_objects(1, uuid, [], V9, Indexes9),
+    ok = leveled_bookie:book_riakput(Book2, Obj9, Spc9),
+    R9 = lists:map(fun({add, IdxF, IdxT}) ->
+                        R = leveled_bookie:book_returnfolder(Book2,
+                                                            {index_query,
+                                                                "Bucket",
+                                                                {IdxF,
+                                                                    IdxT,
+                                                                    IdxT},
+                                                                ?KEY_ONLY}),
+                        {async, Fldr} = R,
+                        case length(Fldr()) of
+                            X when X > 0 ->
+                                {IdxF, IdxT, X}
+                        end
+                        end,
+                    Spc9),
+    Spc9Del = lists:map(fun({add, IdxF, IdxT}) -> {remove, IdxF, IdxT} end,
+                        Spc9),
+    ok = leveled_bookie:book_riakput(Book2, Obj9, Spc9Del),
+    lists:foreach(fun({IdxF, IdxT, X}) ->
+                        R = leveled_bookie:book_returnfolder(Book2,
+                                                            {index_query,
+                                                                "Bucket",
+                                                                {IdxF,
+                                                                    IdxT,
+                                                                    IdxT},
+                                                                ?KEY_ONLY}),
+                        {async, Fldr} = R,
+                        case length(Fldr()) of
+                            Y ->
+                                Y = X - 1
+                        end
+                        end,
+                    R9),
     ok = leveled_bookie:book_close(Book2),
+    {ok, Book3} = leveled_bookie:book_start(StartOpts1),
+    lists:foreach(fun({IdxF, IdxT, X}) ->
+                        R = leveled_bookie:book_returnfolder(Book3,
+                                                            {index_query,
+                                                                "Bucket",
+                                                                {IdxF,
+                                                                    IdxT,
+                                                                    IdxT},
+                                                                ?KEY_ONLY}),
+                        {async, Fldr} = R,
+                        case length(Fldr()) of
+                            Y ->
+                                Y = X - 1
+                        end
+                        end,
+                    R9),
+    ok = leveled_bookie:book_riakput(Book3, Obj9, Spc9),
+    {ok, Book4} = leveled_bookie:book_start(StartOpts1),
+    lists:foreach(fun({IdxF, IdxT, X}) ->
+                        R = leveled_bookie:book_returnfolder(Book4,
+                                                            {index_query,
+                                                                "Bucket",
+                                                                {IdxF,
+                                                                    IdxT,
+                                                                    IdxT},
+                                                                ?KEY_ONLY}),
+                        {async, Fldr} = R,
+                        case length(Fldr()) of
+                            X ->
+                                ok
+                        end
+                        end,
+                    R9),
+    ok = leveled_bookie:book_close(Book4),
     testutil:reset_filestructure().
     
 

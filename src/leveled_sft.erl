@@ -1378,7 +1378,7 @@ generate_randomkeys(Count) ->
     generate_randomkeys(Count, 0, []).
 
 generate_randomkeys(0, _SQN, Acc) ->
-    Acc;
+    lists:reverse(Acc);
 generate_randomkeys(Count, SQN, Acc) ->
     RandKey = {{o,
                     lists:concat(["Bucket", random:uniform(1024)]),
@@ -1651,7 +1651,7 @@ initial_create_file_test() ->
 big_create_file_test() ->
     Filename = "../test/bigtest1.sft",
     {KL1, KL2} = {lists:sort(generate_randomkeys(2000)),
-                    lists:sort(generate_randomkeys(50000))},
+                    lists:sort(generate_randomkeys(40000))},
     {InitHandle, InitFileMD} = create_file(Filename),
     {Handle, FileMD, {_KL1Rem, _KL2Rem}} = complete_file(InitHandle,
                                                             InitFileMD,

@@ -39,6 +39,7 @@
         strip_to_keyseqstatusonly/1,
         striphead_to_details/1,
         is_active/2,
+        is_indexkey/1,
         endkey_passed/2,
         key_dominates/2,
         print_key/1,
@@ -107,6 +108,11 @@ to_ledgerkey(Bucket, Key, Tag, Field, Value) when Tag == ?IDX_TAG ->
 to_ledgerkey(Bucket, Key, Tag) ->
     {Tag, Bucket, Key, null}.
 
+is_indexkey({Tag, _, _, _}) when Tag == ?IDX_TAG ->
+    true;
+is_indexkey(_Key) ->
+    false.
+
 hash(Obj) ->
     erlang:phash2(term_to_binary(Obj)).
 
@@ -156,7 +162,7 @@ convert_indexspecs(IndexSpecs, Bucket, Key, SQN) ->
                                         {active, infinity};
                                     remove ->
                                         %% TODO: timestamps for delayed reaping 
-                                        {tomb, infinity}
+                                        tomb
                                 end,
                         {to_ledgerkey(Bucket, Key, ?IDX_TAG,
                                 IdxField, IdxValue),
@@ -260,7 +266,7 @@ indexspecs_test() ->
     ?assertMatch({{i, "Bucket", {"t1_bin", "adbc123"}, "Key2"},
                     {1, {active, infinity}, null}}, lists:nth(2, Changes)),
     ?assertMatch({{i, "Bucket", {"t1_bin", "abdc456"}, "Key2"},
-                    {1, {tomb, infinity}, null}}, lists:nth(3, Changes)).
+                    {1, tomb, null}}, lists:nth(3, Changes)).
 
 endkey_passed_test() ->
     TestKey = {i, null, null, null},

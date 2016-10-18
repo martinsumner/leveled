@@ -724,10 +724,9 @@ manifest_printer(Manifest) ->
 
 initiate_penciller_snapshot(Bookie) ->
     {ok,
-        {LedgerSnap, LedgerCache},
+        {LedgerSnap, {_ObjTree, ChangeList}},
         _} = leveled_bookie:book_snapshotledger(Bookie, self(), undefined),
-    ok = leveled_penciller:pcl_loadsnapshot(LedgerSnap,
-                                                gb_trees:to_list(LedgerCache)),
+    ok = leveled_penciller:pcl_loadsnapshot(LedgerSnap, ChangeList),
     MaxSQN = leveled_penciller:pcl_getstartupsequencenumber(LedgerSnap),
     {LedgerSnap, MaxSQN}.
 

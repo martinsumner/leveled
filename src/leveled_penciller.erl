@@ -639,6 +639,14 @@ start_from_file(PCLopts) ->
                         M ->
                             M
                     end,
+    % Options (not) chosen here:
+    % - As we pass the ETS table to the sft file when the L0 file is created
+    % then this cannot be private.
+    % - There is no use of iterator, so a set could be used, but then the
+    % output of tab2list would need to be sorted
+    % TODO:
+    % - Test switching to [set, private] and sending the L0 snapshots to the
+    % sft_new cast
     TID = ets:new(?MEMTABLE, [ordered_set]),
     {ok, Clerk} = leveled_pclerk:clerk_new(self()),
     InitState = #state{memtable=TID,
@@ -1371,14 +1379,12 @@ confirm_delete(Filename, UnreferencedFiles, RegisteredSnapshots) ->
 
 assess_sqn([]) ->
     empty;
-assess_sqn(DumpList) ->
-    assess_sqn(DumpList, infinity, 0).
-
-assess_sqn([], MinSQN, MaxSQN) ->
-    {MinSQN, MaxSQN};
-assess_sqn([HeadKey|Tail], MinSQN, MaxSQN) ->
-    {_K, SQN} = leveled_codec:strip_to_keyseqonly(HeadKey),
-    assess_sqn(Tail, min(MinSQN, SQN), max(MaxSQN, SQN)).
+assess_sqn([HeadKV|[]]) ->
+    {leveled_codec:strip_to_seqonly(HeadKV),
+        leveled_codec:strip_to_seqonly(HeadKV)};
+assess_sqn([HeadKV|DumpList]) ->
+    {leveled_codec:strip_to_seqonly(HeadKV),
+        leveled_codec:strip_to_seqonly(lists:last(DumpList))}.
 
 
 %%%============================================================================
@@ -1405,6 +1411,13 @@ clean_subdir(DirPath) ->
         false ->
             ok
     end.
+
+assess_sqn_test() ->
+    L1 = [{{}, {5, active, {}}}, {{}, {6, active, {}}}],
+    ?assertMatch({5, 6}, assess_sqn(L1)),
+    L2 = [{{}, {5, active, {}}}],
+    ?assertMatch({5, 5}, assess_sqn(L2)),
+    ?assertMatch(empty, assess_sqn([])).
 
 compaction_work_assessment_test() ->
     L0 = [{{o, "B1", "K1", null}, {o, "B3", "K3", null}, dummy_pid}],
@@ -1462,13 +1475,13 @@ simple_server_test() ->
     {ok, PCL} = pcl_start(#penciller_options{root_path=RootPath,
                                                 max_inmemory_tablesize=1000}),
     Key1 = {{o,"Bucket0001", "Key0001", null}, {1, {active, infinity}, null}},
-    KL1 = lists:sort(leveled_sft:generate_randomkeys({1000, 2})),
+    KL1 = leveled_sft:generate_randomkeys({1000, 2}),
     Key2 = {{o,"Bucket0002", "Key0002", null}, {1002, {active, infinity}, null}},
-    KL2 = lists:sort(leveled_sft:generate_randomkeys({1000, 1002})),
+    KL2 = leveled_sft:generate_randomkeys({1000, 1002}),
     Key3 = {{o,"Bucket0003", "Key0003", null}, {2002, {active, infinity}, null}},
-    KL3 = lists:sort(leveled_sft:generate_randomkeys({1000, 2002})),
+    KL3 = leveled_sft:generate_randomkeys({1000, 2002}),
     Key4 = {{o,"Bucket0004", "Key0004", null}, {3002, {active, infinity}, null}},
-    KL4 = lists:sort(leveled_sft:generate_randomkeys({1000, 3002})),
+    KL4 = leveled_sft:generate_randomkeys({1000, 3002}),
     ok = pcl_pushmem(PCL, [Key1]),
     ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001", null})),
     ok = pcl_pushmem(PCL, KL1),
@@ -1546,7 +1559,7 @@ simple_server_test() ->
     % sees the old version in the previous snapshot, but will see the new version
     % in a new snapshot
     Key1A = {{o,"Bucket0001", "Key0001", null}, {4002, {active, infinity}, null}},
-    KL1A = lists:sort(leveled_sft:generate_randomkeys({4002, 2})),
+    KL1A = leveled_sft:generate_randomkeys({4002, 2}),
     maybe_pause_push(pcl_pushmem(PCLr, [Key1A])),
     maybe_pause_push(pcl_pushmem(PCLr, KL1A)),
     ?assertMatch(true, pcl_checksequencenumber(PclSnap,
