@@ -119,14 +119,14 @@ simple_querycount(_Config) ->
                 Index1Count ->
                     ok
             end,
-    RegMia = re:compile("[0-9]+Mia"),
+    {ok, RegMia} = re:compile("[0-9]+Mia"),
     {async,
         Mia2KFolder1} = leveled_bookie:book_returnfolder(Book2,
                                                             {index_query,
                                                                 "Bucket",
                                                                 {"idx2_bin",
-                                                                    "2000L",
-                                                                    "2000N~"},
+                                                                    "2000",
+                                                                    "2000~"},
                                                                 {false,
                                                                     RegMia}}),
     Mia2000Count1 = length(Mia2KFolder1()),
@@ -135,23 +135,36 @@ simple_querycount(_Config) ->
                                                             {index_query,
                                                                 "Bucket",
                                                                 {"idx2_bin",
-                                                                    "2000Ma",
-                                                                    "2000Mz"},
+                                                                    "2000",
+                                                                    "2001"},
                                                                 {true,
                                                                     undefined}}),
     Mia2000Count2 = lists:foldl(fun({Term, _Key}, Acc) ->
-                                    case Term of
-                                        "2000Mia" ->
-                                            Acc + 1;
+                                    case re:run(Term, RegMia) of
+                                        nomatch ->
+                                            Acc;
                                         _ ->
-                                            Acc
+                                            Acc + 1
                                     end end,
                                 0,
                                 Mia2KFolder2()),
     ok = case Mia2000Count2 of
-                Mia2000Count1 ->
+                Mia2000Count1 when Mia2000Count1 > 0 ->
+                    io:format("Mia2000 counts match at ~w~n",
+                                [Mia2000Count1]),
                     ok
             end,
+    {ok, RxMia2K} = re:compile("^2000[0-9]+Mia"),
+    {async,
+        Mia2KFolder3} = leveled_bookie:book_returnfolder(Book2,
+                                                            {index_query,
+                                                                "Bucket",
+                                                                {"idx2_bin",
+                                                                    "1980",
+                                                                    "2100"},
+                                                                {false,
+                                                                    RxMia2K}}),
+    Mia2000Count1 = length(Mia2KFolder3()),
     ok = leveled_bookie:book_close(Book2),
     testutil:reset_filestructure().
     
