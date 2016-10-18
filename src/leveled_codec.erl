@@ -28,7 +28,7 @@
 
 -module(leveled_codec).
 
--include("../include/leveled.hrl").
+-include("include/leveled.hrl").
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -43,13 +43,23 @@
         key_dominates/2,
         print_key/1,
         to_ledgerkey/3,
+        to_ledgerkey/5,
+        from_ledgerkey/1,
         build_metadata_object/2,
         generate_ledgerkv/4,
         generate_ledgerkv/5,
         get_size/2,
         convert_indexspecs/4,
-        riakto_keydetails/1]).         
+        riakto_keydetails/1,
+        generate_uuid/0]).         
 
+
+%% Credit to
+%% https://github.com/afiskon/erlang-uuid-v4/blob/master/src/uuid.erl
+generate_uuid() ->
+    <<A:32, B:16, C:16, D:16, E:48>> = crypto:rand_bytes(16),
+    io_lib:format("~8.16.0b-~4.16.0b-4~3.16.0b-~4.16.0b-~12.16.0b", 
+                        [A, B, C band 16#0fff, D band 16#3fff bor 16#8000, E]).
 
 
 strip_to_keyonly({keyonly, K}) -> K;
@@ -86,6 +96,13 @@ is_active(Key, Value) ->
         tomb ->
             false
     end.
+
+from_ledgerkey({Tag, Bucket, {_IdxField, IdxValue}, Key})
+                                                when Tag == ?IDX_TAG ->
+    {Bucket, Key, IdxValue}.
+
+to_ledgerkey(Bucket, Key, Tag, Field, Value) when Tag == ?IDX_TAG ->
+    {?IDX_TAG, Bucket, {Field, Value}, Key}.
 
 to_ledgerkey(Bucket, Key, Tag) ->
     {Tag, Bucket, Key, null}.
@@ -132,7 +149,7 @@ endkey_passed(EndKey, CheckingKey) ->
     EndKey < CheckingKey.
 
 convert_indexspecs(IndexSpecs, Bucket, Key, SQN) ->
-    lists:map(fun({IndexOp, IndexField, IndexValue}) ->
+    lists:map(fun({IndexOp, IdxField, IdxValue}) ->
                         Status = case IndexOp of
                                     add ->
                                         %% TODO: timestamp support
@@ -141,7 +158,8 @@ convert_indexspecs(IndexSpecs, Bucket, Key, SQN) ->
                                         %% TODO: timestamps for delayed reaping 
                                         {tomb, infinity}
                                 end,
-                        {{i, Bucket, {IndexField, IndexValue}, Key},
+                        {to_ledgerkey(Bucket, Key, ?IDX_TAG,
+                                IdxField, IdxValue),
                             {SQN, Status, null}}
                     end,
                 IndexSpecs).

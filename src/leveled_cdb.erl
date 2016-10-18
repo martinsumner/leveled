@@ -44,7 +44,7 @@
 -module(leveled_cdb).
 
 -behaviour(gen_server).
--include("../include/leveled.hrl").
+-include("include/leveled.hrl").
 
 -export([init/1,
         handle_call/3,

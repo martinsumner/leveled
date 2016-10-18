@@ -76,7 +76,7 @@
 
 -behaviour(gen_server).
 
--include("../include/leveled.hrl").
+-include("include/leveled.hrl").
 
 -export([init/1,
         handle_call/3,
@@ -669,20 +669,14 @@ filepath(RootPath, journal_compact_dir) ->
 filepath(RootPath, NewSQN, new_journal) ->
     filename:join(filepath(RootPath, journal_dir),
                     integer_to_list(NewSQN) ++ "_"
-                        ++ generate_uuid()
+                        ++ leveled_codec:generate_uuid()
                         ++ "." ++ ?PENDING_FILEX);
 filepath(CompactFilePath, NewSQN, compact_journal) ->
     filename:join(CompactFilePath,
                     integer_to_list(NewSQN) ++ "_"
-                        ++ generate_uuid()
+                        ++ leveled_codec:generate_uuid()
                         ++ "." ++ ?PENDING_FILEX).
 
-%% Credit to
-%% https://github.com/afiskon/erlang-uuid-v4/blob/master/src/uuid.erl
-generate_uuid() ->
-    <<A:32, B:16, C:16, D:16, E:48>> = crypto:rand_bytes(16),
-    io_lib:format("~8.16.0b-~4.16.0b-4~3.16.0b-~4.16.0b-~12.16.0b", 
-                        [A, B, C band 16#0fff, D band 16#3fff bor 16#8000, E]).
 
 simple_manifest_reader(SQN, RootPath) ->
     ManifestPath = filepath(RootPath, manifest_dir),
@@ -815,6 +809,9 @@ simple_inker_completeactivejournal_test() ->
     F2 = filename:join(JournalFP, "nursery_3.pnd"),
     {ok, PidW} = leveled_cdb:cdb_open_writer(F2),
     {ok, _F2} = leveled_cdb:cdb_complete(PidW),
+    F1 = filename:join(JournalFP, "nursery_1.cdb"),
+    F1r = filename:join(JournalFP, "nursery_1.pnd"),
+    ok = file:rename(F1, F1r),
     {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,
                                             cdb_options=CDBopts}),
     Obj1 = ink_get(Ink1, "Key1", 1),
