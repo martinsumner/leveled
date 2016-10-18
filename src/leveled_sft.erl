@@ -183,7 +183,7 @@
 -define(MERGE_SCANWIDTH, 8).
 -define(DELETE_TIMEOUT, 60000).
 -define(MAX_KEYS, ?SLOT_COUNT * ?BLOCK_COUNT * ?BLOCK_SIZE).
-
+-define(DISCARD_EXT, ".discarded").
 
 -record(state, {version = ?CURRENT_VERSION :: tuple(),
                 slot_index :: list(),
@@ -387,7 +387,7 @@ create_levelzero(Inp1, Filename) ->
                         true ->
                             Inp1;
                         false ->
-                            ets:tab2list(Inp1)
+                            leveled_penciller:roll_into_list(Inp1)
                     end,
     {TmpFilename, PrmFilename} = generate_filenames(Filename),
     case create_file(TmpFilename) of
@@ -510,6 +510,19 @@ complete_file(Handle, FileMD, KL1, KL2, Level, Rename) ->
             open_file(FileMD);
         {true, OldName, NewName} ->
             io:format("Renaming file from ~s to ~s~n", [OldName, NewName]),
+            case filelib:is_file(NewName) of
+                true ->
+                    io:format("Filename ~s already exists~n",
+                                    [NewName]),
+                    AltName = filename:join(filename:dirname(NewName),
+                                            filename:basename(NewName))
+                                ++ ?DISCARD_EXT,
+                    io:format("Rename rogue filename ~s to ~s~n",
+                                    [NewName, AltName]),
+                    ok = file:rename(NewName, AltName);
+                false ->
+                    ok
+            end,
             ok = file:rename(OldName, NewName),
             open_file(FileMD#state{filename=NewName})
     end,    

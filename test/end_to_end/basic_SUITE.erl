@@ -192,6 +192,7 @@ fetchput_snapshot(_Config) ->
     io:format("Checked for replacement objects in active bookie" ++
                     ", old objects in snapshot~n"),
     
+    ok = filelib:ensure_dir(RootPath ++ "/ledger/ledger_files"),
     {ok, FNsA} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
     ObjList3 = testutil:generate_objects(15000, 5002),
     lists:foreach(fun({_RN, Obj, Spc}) ->
@@ -212,6 +213,7 @@ fetchput_snapshot(_Config) ->
     testutil:check_forlist(SnapBookie3, lists:nth(length(CLs2), CLs2)),
     testutil:check_formissinglist(SnapBookie2, ChkList3),
     testutil:check_formissinglist(SnapBookie2, lists:nth(length(CLs2), CLs2)),
+    testutil:check_forlist(Bookie2, ChkList2),
     testutil:check_forlist(SnapBookie3, ChkList2),
     testutil:check_forlist(SnapBookie2, ChkList1),
     io:format("Started new snapshot and check for new objects~n"),

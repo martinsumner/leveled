@@ -53,14 +53,22 @@ check_forlist(Bookie, ChkList, Log) ->
     lists:foreach(fun({_RN, Obj, _Spc}) ->
                     if
                         Log == true ->
-                            io:format("Fetching Key ~w~n", [Obj#r_object.key]);
+                            io:format("Fetching Key ~s~n", [Obj#r_object.key]);
                         true ->
                             ok
                     end,
                     R = leveled_bookie:book_riakget(Bookie,
                                                     Obj#r_object.bucket,
                                                     Obj#r_object.key),
-                    R = {ok, Obj} end,
+                    ok = case R of
+                                {ok, Obj} ->
+                                    ok;
+                                not_found ->
+                                    io:format("Object not found for key ~s~n",
+                                                [Obj#r_object.key]),
+                                    error
+                            end
+                    end,
                 ChkList),
     io:format("Fetch check took ~w microseconds checking list of length ~w~n",
                     [timer:now_diff(os:timestamp(), SW), length(ChkList)]).

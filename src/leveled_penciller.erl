@@ -246,6 +246,7 @@
         pcl_loadsnapshot/2,
         pcl_getstartupsequencenumber/1,
         roll_new_tree/3,
+        roll_into_list/1,
         clean_testdir/1]).
 
 -include_lib("eunit/include/eunit.hrl").
@@ -377,7 +378,7 @@ handle_call({push_mem, DumpList}, From, State=#state{is_snapshot=Snap})
     % then add to memory in the background before updating the loop state
     % - Push the update into memory (do_pushtomem/3)
     % - If we haven't got through quickcheck now need to check if there is a
-    % definite need to write a new L0 file (roll_memory/2).  If all clear this
+    % definite need to write a new L0 file (roll_memory/3).  If all clear this
     % will write the file in the background and allow a response to the user.
     % If not the change has still been made but the the L0 file will not have
     % been prompted - so the reply does not indicate failure but returns the
@@ -414,7 +415,7 @@ handle_call({push_mem, DumpList}, From, State=#state{is_snapshot=Snap})
                                             State1#state.memtable_copy,
                                             MaxSQN),
 
-                    case roll_memory(State1, MaxTableSize) of
+                    case roll_memory(State1, MaxTableSize, L0Snap) of
                         {ok, L0Pend, ManSN, TableSize2} ->
                             io:format("Push completed in ~w microseconds~n",
                                 [timer:now_diff(os:timestamp(), StartWatch)]),
@@ -587,9 +588,16 @@ terminate(Reason, State) ->
                     no_change ->
                         State
                 end,
-    Dump = ets:tab2list(UpdState#state.memtable),
+    % TODO:
+    % This next section (to the end of the case clause), appears to be
+    % pointless. It will persist the in-memory state to a SFT file, but on
+    % startup that file will be ignored as the manifest has not bene updated
+    %
+    % Should we update the manifest, or stop trying to persist on closure?
+    Dump = roll_into_list(State#state.memtable_copy),
     case {UpdState#state.levelzero_pending,
-            get_item(0, UpdState#state.manifest, []), length(Dump)} of
+            get_item(0, UpdState#state.manifest, []),
+            length(Dump)} of
         {?L0PEND_RESET, [], L} when L > 0 ->
             MSN = UpdState#state.manifest_sqn + 1,
             FileName = UpdState#state.root_path
@@ -616,6 +624,8 @@ terminate(Reason, State) ->
                         ++ " with ~w keys discarded~n",
                         [length(Dump)])
     end,
+    
+    % Tidy shutdown of individual files
     ok = close_files(0, UpdState#state.manifest),
     lists:foreach(fun({_FN, Pid, _SN}) ->
                             leveled_sft:sft_close(Pid) end,
@@ -639,15 +649,9 @@ start_from_file(PCLopts) ->
                         M ->
                             M
                     end,
-    % Options (not) chosen here:
-    % - As we pass the ETS table to the sft file when the L0 file is created
-    % then this cannot be private.
-    % - There is no use of iterator, so a set could be used, but then the
-    % output of tab2list would need to be sorted
-    % TODO:
-    % - Test switching to [set, private] and sending the L0 snapshots to the
-    % sft_new cast
-    TID = ets:new(?MEMTABLE, [ordered_set]),
+    % There is no need to export this ets table (hence private) or iterate
+    % over it (hence set not ordered_set)
+    TID = ets:new(?MEMTABLE, [set, private]),
     {ok, Clerk} = leveled_pclerk:clerk_new(self()),
     InitState = #state{memtable=TID,
                         clerk=Clerk,
@@ -767,12 +771,17 @@ quickcheck_pushtomem(DumpList, TableSize, MaxSize) ->
 do_pushtomem(DumpList, MemTable, Snapshot, MaxSQN) ->
     SW = os:timestamp(),
     UpdSnapshot = add_increment_to_memcopy(Snapshot, MaxSQN, DumpList),
+    % Note that the DumpList must have been taken from a source which
+    % naturally de-duplicates the keys.  It is not possible just to cache
+    % changes in a list (in the Bookie for example), as the insert method does
+    % not apply the list in order, and so it is not clear which of a duplicate
+    % key will be applied
     ets:insert(MemTable, DumpList),
     io:format("Push into memory timed at ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SW)]),
     UpdSnapshot.
 
-roll_memory(State, MaxSize) ->
+roll_memory(State, MaxSize, MemTableCopy) ->
     case ets:info(State#state.memtable, size) of
         Size when Size > MaxSize ->
             L0 = get_item(0, State#state.manifest, []),
@@ -784,7 +793,7 @@ roll_memory(State, MaxSize) ->
                                 ++ integer_to_list(MSN) ++ "_0_0",
                     Opts = #sft_options{wait=false},
                     {ok, L0Pid} = leveled_sft:sft_new(FileName,
-                                                        State#state.memtable,
+                                                        MemTableCopy,
                                                         [],
                                                         0,
                                                         Opts),
@@ -938,7 +947,6 @@ return_work(State, From) ->
 
 %% This takes the three parts of a memtable copy - the increments, the tree
 %% and the SQN at which the tree was formed, and outputs a new tree
-
 roll_new_tree(Tree, [], HighSQN) ->
     {Tree, HighSQN};
 roll_new_tree(Tree, [{SQN, KVList}|TailIncs], HighSQN) when SQN >= HighSQN ->
@@ -953,6 +961,14 @@ roll_new_tree(Tree, [{SQN, KVList}|TailIncs], HighSQN) when SQN >= HighSQN ->
     roll_new_tree(UpdTree, TailIncs, UpdSQN);
 roll_new_tree(Tree, [_H|TailIncs], HighSQN) ->
     roll_new_tree(Tree, TailIncs, HighSQN).
+
+%% This takes the three parts of a memtable copy - the increments, the tree
+%% and the SQN at which the tree was formed, and outputs a sorted list
+roll_into_list(MemTableCopy) ->
+    {Tree, _SQN} = roll_new_tree(MemTableCopy#l0snapshot.tree,
+                                    MemTableCopy#l0snapshot.increments,
+                                    MemTableCopy#l0snapshot.ledger_sqn),
+    gb_trees:to_list(Tree).
 
 %% Update the memtable copy if the tree created advances the SQN
 cache_tree_in_memcopy(MemCopy, Tree, SQN) ->
@@ -1331,7 +1347,7 @@ rename_manifest_files(RootPath, NewMSN) ->
                     filelib:is_file(OldFN),
                     NewFN,
                     filelib:is_file(NewFN)]),
-    file:rename(OldFN,NewFN).
+    ok = file:rename(OldFN,NewFN).
 
 filepath(RootPath, manifest) ->
     RootPath ++ "/" ++ ?MANIFEST_FP;
@@ -1379,13 +1395,14 @@ confirm_delete(Filename, UnreferencedFiles, RegisteredSnapshots) ->
 
 assess_sqn([]) ->
     empty;
-assess_sqn([HeadKV|[]]) ->
-    {leveled_codec:strip_to_seqonly(HeadKV),
-        leveled_codec:strip_to_seqonly(HeadKV)};
-assess_sqn([HeadKV|DumpList]) ->
-    {leveled_codec:strip_to_seqonly(HeadKV),
-        leveled_codec:strip_to_seqonly(lists:last(DumpList))}.
+assess_sqn(DumpList) ->
+    assess_sqn(DumpList, infinity, 0).
 
+assess_sqn([], MinSQN, MaxSQN) ->
+    {MinSQN, MaxSQN};
+assess_sqn([HeadKey|Tail], MinSQN, MaxSQN) ->
+    SQN = leveled_codec:strip_to_seqonly(HeadKey),
+    assess_sqn(Tail, min(MinSQN, SQN), max(MaxSQN, SQN)).
 
 %%%============================================================================
 %%% Test
@@ -1499,11 +1516,6 @@ simple_server_test() ->
                                                 max_inmemory_tablesize=1000}),
     TopSQN = pcl_getstartupsequencenumber(PCLr),
     Check = case TopSQN of
-                2001 ->
-                    %% Last push not persisted
-                    S3a = pcl_pushmem(PCL, [Key3]),
-                    if S3a == pause -> timer:sleep(1000); true -> ok end,
-                    ok;
                 2002 ->
                     %% everything got persisted
                     ok;

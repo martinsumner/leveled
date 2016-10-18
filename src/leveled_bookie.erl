@@ -160,7 +160,7 @@
                 penciller :: pid(),
                 cache_size :: integer(),
                 back_pressure :: boolean(),
-                ledger_cache :: {gb_trees:tree(), list()},
+                ledger_cache :: gb_trees:tree(),
                 is_snapshot :: boolean()}).
 
 
@@ -242,7 +242,7 @@ init([Opts]) ->
             {ok, #state{inker=Inker,
                         penciller=Penciller,
                         cache_size=CacheSize,
-                        ledger_cache={gb_trees:empty(), []},
+                        ledger_cache=gb_trees:empty(),
                         is_snapshot=false}};
         Bookie ->
             {ok,
@@ -397,15 +397,16 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%============================================================================
 
-bucket_stats(Penciller, {_ObjTree, ChangeList}, Bucket, Tag) ->
+bucket_stats(Penciller, LedgerCache, Bucket, Tag) ->
     PCLopts = #penciller_options{start_snapshot=true,
                                     source_penciller=Penciller},
     {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
     Folder = fun() ->
+                Increment = gb_trees:to_list(LedgerCache),
                 io:format("Length of increment in snapshot is ~w~n",
-                            [length(ChangeList)]),
+                            [length(Increment)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
-                                                        {infinity, ChangeList}),   
+                                                        {infinity, Increment}),   
                 StartKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
                 EndKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
                 Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
@@ -418,7 +419,7 @@ bucket_stats(Penciller, {_ObjTree, ChangeList}, Bucket, Tag) ->
                 end,
     {async, Folder}.
 
-index_query(Penciller, {_ObjTree, ChangeList},
+index_query(Penciller, LedgerCache,
                 Bucket,
                 {IdxField, StartValue, EndValue},
                 {ReturnTerms, TermRegex}) ->
@@ -426,10 +427,11 @@ index_query(Penciller, {_ObjTree, ChangeList},
                                     source_penciller=Penciller},
     {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
     Folder = fun() ->
+                Increment = gb_trees:to_list(LedgerCache),
                 io:format("Length of increment in snapshot is ~w~n",
-                            [length(ChangeList)]),
+                            [length(Increment)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
-                                                        {infinity, ChangeList}),   
+                                                        {infinity, Increment}),   
                 StartKey = leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG,
                                                         IdxField, StartValue),
                 EndKey = leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG,
@@ -491,9 +493,8 @@ startup(InkerOpts, PencillerOpts) ->
     {Inker, Penciller}.
 
 
-fetch_head(Key, Penciller, {ObjTree, _ChangeList}) ->
-    
-    case gb_trees:lookup(Key, ObjTree) of
+fetch_head(Key, Penciller, LedgerCache) ->
+    case gb_trees:lookup(Key, LedgerCache) of
         {value, Head} ->
             Head;
         none ->
@@ -569,30 +570,20 @@ preparefor_ledgercache(PK, SQN, Obj, Size, IndexSpecs) ->
     [PrimaryChange] ++ ConvSpecs.
 
 addto_ledgercache(Changes, Cache) ->
-    {ObjectTree, ChangeList} = Cache,
-    {lists:foldl(fun({K, V}, Acc) ->
-                        case leveled_codec:is_indexkey(K) of
-                            false ->
-                                gb_trees:enter(K, V, Acc);
-                            true ->
-                                Acc
-                        end
-                        end,
-                    ObjectTree,
-                    Changes),
-        ChangeList ++ Changes}.
+    lists:foldl(fun({K, V}, Acc) -> gb_trees:enter(K, V, Acc) end,
+                    Cache,
+                    Changes).
 
 maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
-    {_ObjectTree, ChangeList} = Cache,
-    CacheSize = length(ChangeList),
+    CacheSize = gb_trees:size(Cache),
     if
         CacheSize > MaxCacheSize ->
             case leveled_penciller:pcl_pushmem(Penciller,
-                                                ChangeList) of
+                                                gb_trees:to_list(Cache)) of
                 ok ->
-                    {ok, {gb_trees:empty(), []}};
+                    {ok, gb_trees:empty()};
                 pause ->
-                    {pause, {gb_trees:empty(), []}};
+                    {pause, gb_trees:empty()};
                 refused ->
                     {ok, Cache}
             end;
