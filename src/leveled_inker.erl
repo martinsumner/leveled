@@ -695,7 +695,7 @@ simple_manifest_writer(Manifest, ManSQN, RootPath) ->
     TmpFN = filename:join(ManPath,
                             integer_to_list(ManSQN) ++ "." ++ ?PENDING_FILEX),
     MBin = term_to_binary(lists:map(fun({SQN, FN, _PID}) -> {SQN, FN} end,
-                                        Manifest)),
+                                        Manifest), [compressed]),
     case filelib:is_file(NewFN) of
         true ->
             io:format("Error - trying to write manifest for"

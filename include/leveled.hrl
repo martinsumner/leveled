@@ -46,8 +46,6 @@
                        {root_path :: string(),
                         cache_size :: integer(),
                         max_journalsize :: integer(),
-                        metadata_extractor :: function(),
-                        indexspec_converter :: function(),
                         snapshot_bookie :: pid()}).
 
 -record(iclerk_options,

@@ -39,7 +39,6 @@
         strip_to_keyseqstatusonly/1,
         striphead_to_details/1,
         is_active/2,
-        is_indexkey/1,
         endkey_passed/2,
         key_dominates/2,
         print_key/1,
@@ -107,11 +106,6 @@ to_ledgerkey(Bucket, Key, Tag, Field, Value) when Tag == ?IDX_TAG ->
 
 to_ledgerkey(Bucket, Key, Tag) ->
     {Tag, Bucket, Key, null}.
-
-is_indexkey({Tag, _, _, _}) when Tag == ?IDX_TAG ->
-    true;
-is_indexkey(_Key) ->
-    false.
 
 hash(Obj) ->
     erlang:phash2(term_to_binary(Obj)).

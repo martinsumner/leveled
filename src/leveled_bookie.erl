@@ -133,6 +133,7 @@
         terminate/2,
         code_change/3,
         book_start/1,
+        book_start/3,
         book_riakput/3,
         book_riakdelete/4,
         book_riakget/3,
@@ -168,6 +169,11 @@
 %%%============================================================================
 %%% API
 %%%============================================================================
+
+book_start(RootPath, LedgerCacheSize, JournalSize) ->
+    book_start(#bookie_options{root_path=RootPath,
+                                cache_size=LedgerCacheSize,
+                                max_journalsize=JournalSize}).
 
 book_start(Opts) ->
     gen_server:start(?MODULE, [Opts], []).

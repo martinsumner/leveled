@@ -282,9 +282,6 @@ handle_call({sft_new, Filename, KL1, KL2, Level}, _From, State) ->
                                                                     FileMD,
                                                                     KL1, KL2,
                                                                     Level),
-            {KL1Rem, KL2Rem} = KeyRemainders,
-            io:format("File created with remainders of size ~w ~w~n",
-                        [length(KL1Rem), length(KL2Rem)]),
             {reply, {KeyRemainders,
                         UpdFileMD#state.smallest_key,
                         UpdFileMD#state.highest_key},
@@ -334,7 +331,10 @@ handle_call(get_maxsqn, _From, State) ->
     {reply, State#state.highest_sqn, State}.
 
 handle_cast({sft_new, Filename, Inp1, [], 0}, _State) ->
+    SW = os:timestamp(),
     {ok, State} = create_levelzero(Inp1, Filename),
+    io:format("File creation of L0 file ~s took ~w microseconds~n",
+                        [Filename, timer:now_diff(os:timestamp(), SW)]),
     {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.

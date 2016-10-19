@@ -40,9 +40,7 @@ simple_load_with2i(_Config) ->
 
 simple_querycount(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = #bookie_options{root_path=RootPath,
-                                    max_journalsize=50000000},
-    {ok, Book1} = leveled_bookie:book_start(StartOpts1),
+    {ok, Book1} = leveled_bookie:book_start(RootPath, 4000, 50000000),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = leveled_bookie:book_riakput(Book1, TestObject, TestSpec),
     testutil:check_forobject(Book1, TestObject),
@@ -91,7 +89,7 @@ simple_querycount(_Config) ->
                                         Book1,
                                         ?KEY_ONLY),
     ok = leveled_bookie:book_close(Book1),
-    {ok, Book2} = leveled_bookie:book_start(StartOpts1),
+    {ok, Book2} = leveled_bookie:book_start(RootPath, 2000, 50000000),
     Index1Count = count_termsonindex("Bucket",
                                         "idx1_bin",
                                         Book2,
@@ -206,7 +204,7 @@ simple_querycount(_Config) ->
                         end,
                     R9),
     ok = leveled_bookie:book_close(Book2),
-    {ok, Book3} = leveled_bookie:book_start(StartOpts1),
+    {ok, Book3} = leveled_bookie:book_start(RootPath, 2000, 50000000),
     lists:foreach(fun({IdxF, IdxT, X}) ->
                         R = leveled_bookie:book_returnfolder(Book3,
                                                             {index_query,
@@ -223,7 +221,7 @@ simple_querycount(_Config) ->
                         end,
                     R9),
     ok = leveled_bookie:book_riakput(Book3, Obj9, Spc9),
-    {ok, Book4} = leveled_bookie:book_start(StartOpts1),
+    {ok, Book4} = leveled_bookie:book_start(RootPath, 2000, 50000000),
     lists:foreach(fun({IdxF, IdxT, X}) ->
                         R = leveled_bookie:book_returnfolder(Book4,
                                                             {index_query,
