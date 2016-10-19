@@ -41,7 +41,11 @@ simple_load_with2i(_Config) ->
 simple_querycount(_Config) ->
     RootPath = testutil:reset_filestructure(),
     {ok, Book1} = leveled_bookie:book_start(RootPath, 4000, 50000000),
-    {TestObject, TestSpec} = testutil:generate_testobject(),
+    {TestObject, TestSpec} = testutil:generate_testobject("Bucket",
+                                                            "Key1",
+                                                            "Value1",
+                                                            [],
+                                                            {"MDK1", "MDV1"}),
     ok = leveled_bookie:book_riakput(Book1, TestObject, TestSpec),
     testutil:check_forobject(Book1, TestObject),
     testutil:check_formissingobject(Book1, "Bucket1", "Key2"),
@@ -237,6 +241,7 @@ simple_querycount(_Config) ->
                         end
                         end,
                     R9),
+    testutil:check_forobject(Book4, TestObject),
     ok = leveled_bookie:book_close(Book4),
     testutil:reset_filestructure().
     

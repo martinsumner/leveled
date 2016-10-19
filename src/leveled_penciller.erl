@@ -751,8 +751,7 @@ start_from_file(PCLopts) ->
 checkready_pushtomem(State) ->
     {TableSize, UpdState} = case State#state.levelzero_pending of
         {true, Pid, _TS} ->
-            %% Need to handle error scenarios?
-            %% N.B. Sync call - so will be ready
+            % N.B. Sync call - so will be ready
             {ok, SrcFN, StartKey, EndKey} = leveled_sft:sft_checkready(Pid),
             true = ets:delete_all_objects(State#state.memtable),
             ManifestEntry = #manifest_entry{start_key=StartKey,
@@ -898,22 +897,11 @@ return_work(State, From) ->
             io:format("Work at Level ~w to be scheduled for ~w with ~w " ++
                         "queue items outstanding~n",
                         [SrcLevel, From, length(OtherWork)]),
-            case {element(1, State#state.levelzero_pending),
-                        State#state.ongoing_work} of
-                {true, _} ->
+            case element(1, State#state.levelzero_pending) of
+                true ->
                     % Once the L0 file is completed there will be more work
                     % - so don't be busy doing other work now
                     io:format("Allocation of work blocked as L0 pending~n"),
-                    {State, none};
-                {_, [OutstandingWork]} ->
-                    % Still awaiting a response 
-                    io:format("Ongoing work requested by ~w " ++
-                                "but work outstanding from Level ~w " ++
-                                "and Clerk ~w at sequence number ~w~n",
-                                [From,
-                                    OutstandingWork#penciller_work.src_level,
-                                    OutstandingWork#penciller_work.clerk,
-                                    OutstandingWork#penciller_work.next_sqn]),
                     {State, none};
                 _ ->
                     %% No work currently outstanding
@@ -1526,17 +1514,7 @@ simple_server_test() ->
     ok = pcl_close(PCL),
     {ok, PCLr} = pcl_start(#penciller_options{root_path=RootPath,
                                                 max_inmemory_tablesize=1000}),
-    TopSQN = pcl_getstartupsequencenumber(PCLr),
-    Check = case TopSQN of
-                2002 ->
-                    %% everything got persisted
-                    ok;
-                _ ->
-                    io:format("Unexpected sequence number on restart ~w~n",
-                                [TopSQN]),
-                    error
-            end,
-    ?assertMatch(ok, Check),
+    ?assertMatch(2002, pcl_getstartupsequencenumber(PCLr)),
     ?assertMatch(Key1, pcl_fetch(PCLr, {o,"Bucket0001", "Key0001", null})),
     ?assertMatch(Key2, pcl_fetch(PCLr, {o,"Bucket0002", "Key0002", null})),
     ?assertMatch(Key3, pcl_fetch(PCLr, {o,"Bucket0003", "Key0003", null})),

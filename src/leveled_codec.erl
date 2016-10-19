@@ -33,7 +33,6 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -export([strip_to_keyonly/1,
-        strip_to_keyseqonly/1,
         strip_to_seqonly/1,
         strip_to_statusonly/1,
         strip_to_keyseqstatusonly/1,
@@ -64,8 +63,6 @@ generate_uuid() ->
 
 strip_to_keyonly({keyonly, K}) -> K;
 strip_to_keyonly({K, _V}) -> K.
-
-strip_to_keyseqonly({K, {SeqN, _, _ }}) -> {K, SeqN}.
 
 strip_to_keyseqstatusonly({K, {SeqN, St, _MD}}) -> {K, SeqN, St}.
 

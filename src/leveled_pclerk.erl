@@ -129,9 +129,7 @@ handle_call({manifest_change, confirm, Closing}, From, State) ->
 
 handle_cast(prompt, State) ->
     io:format("Clerk reducing timeout due to prompt~n"),
-    {noreply, State, ?QUICK_TIMEOUT};
-handle_cast(_Msg, State) ->
-    {noreply, State}.
+    {noreply, State, ?QUICK_TIMEOUT}.
 
 handle_info(timeout, State=#state{change_pending=Pnd}) when Pnd == false ->
     case requestandhandle_work(State) of
@@ -142,9 +140,7 @@ handle_info(timeout, State=#state{change_pending=Pnd}) when Pnd == false ->
             % change
             {noreply,
                 State#state{change_pending=true, work_item=WI}}
-    end;
-handle_info(_Info, State) ->
-    {noreply, State}.
+    end.
 
 terminate(_Reason, _State) ->
     ok.
@@ -373,17 +369,9 @@ find_randomkeys(FList, Count, Source) ->
     K1 = leveled_codec:strip_to_keyonly(KV1),
     P1 = choose_pid_toquery(FList, K1),
     FoundKV = leveled_sft:sft_get(P1, K1),
-    Check = case FoundKV of
-                not_present ->
-                    io:format("Failed to find ~w in ~w~n", [K1, P1]),
-                    error;
-                _ ->
-                    Found = leveled_codec:strip_to_keyonly(FoundKV),
-                    io:format("success finding ~w in ~w~n", [K1, P1]),
-                    ?assertMatch(K1, Found),
-                    ok
-            end,
-    ?assertMatch(Check, ok),
+    Found = leveled_codec:strip_to_keyonly(FoundKV),
+    io:format("success finding ~w in ~w~n", [K1, P1]),
+    ?assertMatch(K1, Found),
     find_randomkeys(FList, Count - 1, Source).
 
 
