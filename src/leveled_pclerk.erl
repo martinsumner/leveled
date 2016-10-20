@@ -62,8 +62,7 @@
         clerk_new/1,
         clerk_prompt/1,
         clerk_manifestchange/3,
-        code_change/3,
-        perform_merge/4]).      
+        code_change/3]).      
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -193,7 +192,7 @@ merge(WI) ->
             perform_merge({SrcF#manifest_entry.owner,
                             SrcF#manifest_entry.filename},
                             Candidates,
-                            SrcLevel,
+                            {SrcLevel, WI#penciller_work.target_is_basement},
                             {WI#penciller_work.ledger_filepath,
                                 WI#penciller_work.next_sqn})
     end,  
@@ -283,28 +282,32 @@ select_filetomerge(SrcLevel, Manifest) ->
 %%
 %% The level is the level which the new files should be created at.
 
-perform_merge({UpperSFTPid, Filename}, CandidateList, Level, {Filepath, MSN}) ->
+perform_merge({SrcPid, SrcFN}, CandidateList, LevelInfo, {Filepath, MSN}) ->
     io:format("Merge to be commenced for FileToMerge=~s with MSN=~w~n",
-                    [Filename, MSN]),
+                    [SrcFN, MSN]),
     PointerList = lists:map(fun(P) ->
                                 {next, P#manifest_entry.owner, all} end,
                             CandidateList),
-    do_merge([{next, UpperSFTPid, all}],
-                    PointerList, Level, {Filepath, MSN}, 0, []).
+    do_merge([{next, SrcPid, all}],
+                PointerList,
+                LevelInfo,
+                {Filepath, MSN},
+                0,
+                []).
 
-do_merge([], [], Level, {_Filepath, MSN}, FileCounter, OutList) ->
+do_merge([], [], {SrcLevel, _IsB}, {_Filepath, MSN}, FileCounter, OutList) ->
     io:format("Merge completed with MSN=~w Level=~w and FileCounter=~w~n",
-                [MSN, Level, FileCounter]),
+                [MSN, SrcLevel, FileCounter]),
     OutList;
-do_merge(KL1, KL2, Level, {Filepath, MSN}, FileCounter, OutList) ->
+do_merge(KL1, KL2, {SrcLevel, IsB}, {Filepath, MSN}, FileCounter, OutList) ->
     FileName = lists:flatten(io_lib:format(Filepath ++ "_~w_~w.sft",
-                                            [Level + 1, FileCounter])),
+                                            [SrcLevel + 1, FileCounter])),
     io:format("File to be created as part of MSN=~w Filename=~s~n",
                 [MSN, FileName]),
     % Attempt to trace intermittent eaccess failures
     false = filelib:is_file(FileName), 
     TS1 = os:timestamp(),
-    {ok, Pid, Reply} = leveled_sft:sft_new(FileName, KL1, KL2, Level + 1),
+    {ok, Pid, Reply} = leveled_sft:sft_new(FileName, KL1, KL2, SrcLevel + 1),
     {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} = Reply,
     ExtMan = lists:append(OutList,
                             [#manifest_entry{start_key=SmallestKey,
@@ -313,7 +316,9 @@ do_merge(KL1, KL2, Level, {Filepath, MSN}, FileCounter, OutList) ->
                                                 filename=FileName}]),
     MTime = timer:now_diff(os:timestamp(), TS1),
     io:format("File creation took ~w microseconds ~n", [MTime]),
-    do_merge(KL1Rem, KL2Rem, Level, {Filepath, MSN}, FileCounter + 1, ExtMan).
+    do_merge(KL1Rem, KL2Rem,
+                {SrcLevel, IsB}, {Filepath, MSN},
+                FileCounter + 1, ExtMan).
 
 
 get_item(Index, List, Default) ->
@@ -389,7 +394,7 @@ merge_file_test() ->
                                 #manifest_entry{owner=PidL2_2},
                                 #manifest_entry{owner=PidL2_3},
                                 #manifest_entry{owner=PidL2_4}],
-                            2, {"../test/", 99}),
+                            {2, false}, {"../test/", 99}),
     lists:foreach(fun(ManEntry) ->
                         {o, B1, K1} = ManEntry#manifest_entry.start_key,
                         {o, B2, K2} = ManEntry#manifest_entry.end_key,

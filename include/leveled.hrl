@@ -16,7 +16,8 @@
                         ledger_filepath :: string(),
                         manifest_file :: string(),
                         new_manifest :: list(),
-                        unreferenced_files :: list()}).
+                        unreferenced_files :: list(),
+                        target_is_basement = false ::boolean()}).
 
 -record(manifest_entry,
                         {start_key :: tuple(),

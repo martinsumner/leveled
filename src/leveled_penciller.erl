@@ -914,16 +914,20 @@ compare_to_sqn(Obj, SQN) ->
 %% The full queue is calculated for logging purposes only
 
 return_work(State, From) ->
-    WorkQueue = assess_workqueue([],
-                                    0,
-                                    State#state.manifest),
-    case length(WorkQueue) of
+    {WorkQ, BasementL} = assess_workqueue([], 0, State#state.manifest, 0),
+    case length(WorkQ) of
         L when L > 0 ->
-            [{SrcLevel, Manifest}|OtherWork] = WorkQueue,
+            [{SrcLevel, Manifest}|OtherWork] = WorkQ,
             Backlog = length(OtherWork),
             io:format("Work at Level ~w to be scheduled for ~w with ~w " ++
                         "queue items outstanding~n",
                         [SrcLevel, From, Backlog]),
+            IsBasement = if
+                                SrcLevel + 1 == BasementL ->
+                                    true;
+                                true ->
+                                    false
+                            end,
             case element(1, State#state.levelzero_pending) of
                 true ->
                     % Once the L0 file is completed there will be more work
@@ -946,7 +950,8 @@ return_work(State, From) ->
                                             manifest=Manifest,
                                             start_time = os:timestamp(),
                                             ledger_filepath = FP,
-                                            manifest_file = ManFile},
+                                            manifest_file = ManFile,
+                                            target_is_basement = IsBasement},
                     {State#state{ongoing_work=[WI]}, WI}
             end;
         _ ->
@@ -1161,7 +1166,7 @@ find_nextkey(QueryArray, LCnt, {BestKeyLevel, BestKV}, QueryFunT) ->
                             QueryFunT);
         {{Key, Val}, null, null} ->
             % No best key set - so can assume that this key is the best key,
-            % and check the higher levels
+            % and check the lower levels
             find_nextkey(QueryArray,
                             LCnt + 1,
                             {LCnt, {Key, Val}},
@@ -1270,14 +1275,21 @@ keyfolder(IMMiterator, SFTiterator, StartKey, EndKey, {AccFun, Acc}) ->
     end.    
 
 
-assess_workqueue(WorkQ, ?MAX_LEVELS - 1, _Manifest) ->
-    WorkQ;
-assess_workqueue(WorkQ, LevelToAssess, Manifest)->
+assess_workqueue(WorkQ, ?MAX_LEVELS - 1, _Man, BasementLevel) ->
+    {WorkQ, BasementLevel};
+assess_workqueue(WorkQ, LevelToAssess, Man, BasementLevel) ->
     MaxFiles = get_item(LevelToAssess, ?LEVEL_SCALEFACTOR, 0),
-    FileCount = length(get_item(LevelToAssess, Manifest, [])),
-    NewWQ = maybe_append_work(WorkQ, LevelToAssess, Manifest, MaxFiles,
-                                FileCount),
-    assess_workqueue(NewWQ, LevelToAssess + 1, Manifest).
+    case length(get_item(LevelToAssess, Man, [])) of
+        FileCount when FileCount > 0 ->
+            NewWQ = maybe_append_work(WorkQ,
+                                        LevelToAssess,
+                                        Man,
+                                        MaxFiles,
+                                        FileCount),
+            assess_workqueue(NewWQ, LevelToAssess + 1, Man, LevelToAssess);
+        0 ->
+            assess_workqueue(WorkQ, LevelToAssess + 1, Man, BasementLevel)
+    end.
 
 
 maybe_append_work(WorkQ, Level, Manifest,
@@ -1418,7 +1430,6 @@ confirm_delete(Filename, UnreferencedFiles, RegisteredSnapshots) ->
     end.
 
 
-
 assess_sqn([]) ->
     empty;
 assess_sqn(DumpList) ->
@@ -1467,7 +1478,7 @@ compaction_work_assessment_test() ->
     L1 = [{{o, "B1", "K1", null}, {o, "B2", "K2", null}, dummy_pid},
             {{o, "B2", "K3", null}, {o, "B4", "K4", null}, dummy_pid}],
     Manifest = [{0, L0}, {1, L1}],
-    WorkQ1 = assess_workqueue([], 0, Manifest),
+    {WorkQ1, 1} = assess_workqueue([], 0, Manifest, 0),
     ?assertMatch(WorkQ1, [{0, Manifest}]),
     L1Alt = lists:append(L1,
                         [{{o, "B5", "K0001", null}, {o, "B5", "K9999", null},
@@ -1485,7 +1496,7 @@ compaction_work_assessment_test() ->
                         {{o, "BB", "K0001", null}, {o, "BB", "K9999", null},
                             dummy_pid}]),
     Manifest3 = [{0, []}, {1, L1Alt}],
-    WorkQ3 = assess_workqueue([], 0, Manifest3),
+    {WorkQ3, 1} = assess_workqueue([], 0, Manifest3, 0),
     ?assertMatch(WorkQ3, [{1, Manifest3}]).
 
 confirm_delete_test() ->
