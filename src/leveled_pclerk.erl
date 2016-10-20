@@ -304,8 +304,6 @@ do_merge(KL1, KL2, {SrcLevel, IsB}, {Filepath, MSN}, FileCounter, OutList) ->
                                             [SrcLevel + 1, FileCounter])),
     io:format("File to be created as part of MSN=~w Filename=~s~n",
                 [MSN, FileName]),
-    % Attempt to trace intermittent eaccess failures
-    false = filelib:is_file(FileName), 
     TS1 = os:timestamp(),
     {ok, Pid, Reply} = leveled_sft:sft_new(FileName, KL1, KL2, SrcLevel + 1),
     {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} = Reply,
