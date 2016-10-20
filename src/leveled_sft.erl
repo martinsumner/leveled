@@ -252,7 +252,7 @@ sft_close(Pid) ->
     gen_server:call(Pid, close, infinity).
 
 sft_checkready(Pid) ->
-    gen_server:call(Pid, background_complete, infinity).
+    gen_server:call(Pid, background_complete, 50).
 
 sft_getmaxsequencenumber(Pid) ->
     gen_server:call(Pid, get_maxsqn, infinity).

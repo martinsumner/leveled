@@ -609,7 +609,7 @@ load_from_sequence(MinSQN, FilterFun, Penciller, [{_LowSQN, FN, Pid}|Rest]) ->
 load_between_sequence(MinSQN, MaxSQN, FilterFun, Penciller,
                                 CDBpid, StartPos, FN, Rest) ->
     io:format("Loading from filename ~s from SQN ~w~n", [FN, MinSQN]),
-    InitAcc = {MinSQN, MaxSQN, []},
+    InitAcc = {MinSQN, MaxSQN, gb_trees:empty()},
     Res = case leveled_cdb:cdb_scan(CDBpid, FilterFun, InitAcc, StartPos) of
                 {eof, {AccMinSQN, _AccMaxSQN, AccKL}} ->
                     ok = push_to_penciller(Penciller, AccKL),
@@ -633,12 +633,18 @@ load_between_sequence(MinSQN, MaxSQN, FilterFun, Penciller,
             ok
     end.
 
-push_to_penciller(Penciller, KeyList) ->
+push_to_penciller(Penciller, KeyTree) ->
+    % The push to penciller must start as a tree to correctly de-duplicate
+    % the list by order before becoming a de-duplicated list for loading
+    KeyList = gb_trees:to_list(KeyTree),
     R = leveled_penciller:pcl_pushmem(Penciller, KeyList),
     if
         R == pause ->
             timer:sleep(?LOADING_PAUSE);
-        true ->
+        R == returned ->
+            timer:sleep(?LOADING_PAUSE),
+            push_to_penciller(Penciller, KeyTree);
+        R == ok ->
             ok
     end.
             

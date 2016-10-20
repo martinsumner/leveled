@@ -306,7 +306,6 @@
                 memtable_copy = #l0snapshot{} :: #l0snapshot{},
                 levelzero_snapshot = gb_trees:empty() :: gb_trees:tree(),
                 memtable,
-                backlog = false :: boolean(),
                 memtable_maxsize :: integer(),
                 is_snapshot = false :: boolean(),
                 snapshot_fully_loaded = false :: boolean(),
@@ -412,58 +411,25 @@ handle_call({push_mem, DumpList}, From, State=#state{is_snapshot=Snap})
     case assess_sqn(DumpList) of
         {MinSQN, MaxSQN} when MaxSQN >= MinSQN,
                                 MinSQN >= State#state.ledger_sqn ->
-            MaxTableSize = State#state.memtable_maxsize,
-            {TableSize0, State1} = checkready_pushtomem(State),
-            case quickcheck_pushtomem(DumpList,
-                                        TableSize0,
-                                        MaxTableSize) of
-                {twist, TableSize1} ->
-                    gen_server:reply(From, ok),
-                    io:format("Reply made on push in ~w microseconds~n",
+            case checkready_pushtomem(State) of
+                {ok, TableSize0, State1} ->
+                    push_and_roll(DumpList,
+                                    TableSize0,
+                                    State#state.memtable_maxsize,
+                                    MaxSQN,
+                                    StartWatch,
+                                    From,
+                                    State1);
+                timeout ->
+                    io:format("Timeout of ~w microseconds awaiting " ++
+                                    "L0 SFT write~n",
                                 [timer:now_diff(os:timestamp(), StartWatch)]),
-                    L0Snap = do_pushtomem(DumpList,
-                                            State1#state.memtable,
-                                            State1#state.memtable_copy,
-                                            MaxSQN),
-                    io:format("Push completed in ~w microseconds~n",
-                                [timer:now_diff(os:timestamp(), StartWatch)]),
-                    {noreply,
-                        State1#state{memtable_copy=L0Snap,
-                                        table_size=TableSize1,
-                                        ledger_sqn=MaxSQN}};
-                {maybe_roll, TableSize1} ->
-                    L0Snap = do_pushtomem(DumpList,
-                                            State1#state.memtable,
-                                            State1#state.memtable_copy,
-                                            MaxSQN),
-
-                    case roll_memory(State1, MaxTableSize, L0Snap) of
-                        {ok, L0Pend, ManSN, TableSize2} ->
-                            io:format("Push completed in ~w microseconds~n",
-                                [timer:now_diff(os:timestamp(), StartWatch)]),
-                            {reply,
-                                ok,
-                                State1#state{levelzero_pending=L0Pend,
-                                                table_size=TableSize2,
-                                                manifest_sqn=ManSN,
-                                                memtable_copy=L0Snap,
-                                                ledger_sqn=MaxSQN,
-                                                backlog=false}};
-                        {pause, Reason, Details} ->
-                            io:format("Excess work due to - " ++ Reason,
-                                        Details),
-                            {reply,
-                                pause,
-                                State1#state{backlog=true,
-                                                memtable_copy=L0Snap,
-                                                table_size=TableSize1,
-                                                ledger_sqn=MaxSQN}}
-                    end
+                    {reply, returned, State}
             end;
         {MinSQN, MaxSQN} ->
             io:format("Mismatch of sequence number expectations with push "
-                        ++ "having sequence numbers between ~w and ~w "
-                        ++ "but current sequence number is ~w~n",
+                            ++ "having sequence numbers between ~w and ~w "
+                            ++ "but current sequence number is ~w~n",
                         [MinSQN, MaxSQN, State#state.ledger_sqn]),
             {reply, refused, State};
         empty ->
@@ -520,7 +486,7 @@ handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc},
     {reply, Acc, State};
 handle_call(work_for_clerk, From, State) ->
     {UpdState, Work} = return_work(State, From),
-    {reply, {Work, UpdState#state.backlog}, UpdState};
+    {reply, Work, UpdState};
 handle_call(get_startup_sqn, _From, State) ->
     {reply, State#state.ledger_sqn, State};
 handle_call({register_snapshot, Snapshot}, _From, State) ->
@@ -568,7 +534,8 @@ handle_cast({release_snapshot, Snapshot}, State) ->
     io:format("Penciller snapshot ~w released~n", [Snapshot]),
     {noreply, State#state{registered_snapshots=Rs}}.
 
-handle_info(_Info, State) ->
+handle_info({_Ref, {ok, SrcFN, _StartKey, _EndKey}}, State) ->
+    io:format("Orphaned reply after timeout on L0 file write ~s~n", [SrcFN]),
     {noreply, State}.
 
 terminate(Reason, State=#state{is_snapshot=Snap}) when Snap == true ->
@@ -749,28 +716,87 @@ start_from_file(PCLopts) ->
 
 
 checkready_pushtomem(State) ->
-    {TableSize, UpdState} = case State#state.levelzero_pending of
+    case State#state.levelzero_pending of
         {true, Pid, _TS} ->
-            % N.B. Sync call - so will be ready
-            {ok, SrcFN, StartKey, EndKey} = leveled_sft:sft_checkready(Pid),
-            true = ets:delete_all_objects(State#state.memtable),
-            ManifestEntry = #manifest_entry{start_key=StartKey,
-                                                end_key=EndKey,
-                                                owner=Pid,
-                                                filename=SrcFN},
-            % Prompt clerk to ask about work - do this for every L0 roll
-            ok = leveled_pclerk:clerk_prompt(State#state.clerk),
-            {0,
-                State#state{manifest=lists:keystore(0,
+            case checkready(Pid) of
+                timeout ->
+                    timeout;
+                {ok, SrcFN, StartKey, EndKey} ->
+                    true = ets:delete_all_objects(State#state.memtable),
+                    ManifestEntry = #manifest_entry{start_key=StartKey,
+                                                        end_key=EndKey,
+                                                        owner=Pid,
+                                                        filename=SrcFN},
+                    % Prompt clerk to ask about work - do this for every
+                    % L0 roll
+                    ok = leveled_pclerk:clerk_prompt(State#state.clerk),
+                    UpdManifest = lists:keystore(0,
                                                     1,
                                                     State#state.manifest,
                                                     {0, [ManifestEntry]}),
-                            levelzero_pending=?L0PEND_RESET,
-                            memtable_copy=#l0snapshot{}}};
+                    {ok,
+                        0,
+                        State#state{manifest=UpdManifest,
+                                    levelzero_pending=?L0PEND_RESET,
+                                    memtable_copy=#l0snapshot{}}}
+            end;
         ?L0PEND_RESET ->
-            {State#state.table_size, State}
-    end,
-    {TableSize, UpdState}.
+            {ok, State#state.table_size, State}
+    end.
+
+
+checkready(Pid) ->
+    try
+        leveled_sft:sft_checkready(Pid)
+    catch
+        exit:{timeout, _} ->
+            timeout
+    end.
+
+
+push_and_roll(DumpList, TableSize, MaxTableSize, MaxSQN, StartWatch, From, State) ->
+    case quickcheck_pushtomem(DumpList, TableSize, MaxTableSize) of
+        {twist, TableSize1} ->
+            gen_server:reply(From, ok),
+            io:format("Reply made on push in ~w microseconds~n",
+                        [timer:now_diff(os:timestamp(), StartWatch)]),
+            L0Snap = do_pushtomem(DumpList,
+                                    State#state.memtable,
+                                    State#state.memtable_copy,
+                                    MaxSQN),
+            io:format("Push completed in ~w microseconds~n",
+                        [timer:now_diff(os:timestamp(), StartWatch)]),
+            {noreply,
+                State#state{memtable_copy=L0Snap,
+                                table_size=TableSize1,
+                                ledger_sqn=MaxSQN}};
+        {maybe_roll, TableSize1} ->
+            L0Snap = do_pushtomem(DumpList,
+                                    State#state.memtable,
+                                    State#state.memtable_copy,
+                                    MaxSQN),
+
+            case roll_memory(State, MaxTableSize, L0Snap) of
+                {ok, L0Pend, ManSN, TableSize2} ->
+                    io:format("Push completed in ~w microseconds~n",
+                        [timer:now_diff(os:timestamp(), StartWatch)]),
+                    {reply,
+                        ok,
+                        State#state{levelzero_pending=L0Pend,
+                                        table_size=TableSize2,
+                                        manifest_sqn=ManSN,
+                                        memtable_copy=L0Snap,
+                                        ledger_sqn=MaxSQN}};
+                {pause, Reason, Details} ->
+                    io:format("Excess work due to - " ++ Reason,
+                                Details),
+                    {reply,
+                        pause,
+                        State#state{memtable_copy=L0Snap,
+                                        table_size=TableSize1,
+                                        ledger_sqn=MaxSQN}}
+            end
+    end.
 
 quickcheck_pushtomem(DumpList, TableSize, MaxSize) ->
     case TableSize + length(DumpList) of
@@ -894,9 +920,10 @@ return_work(State, From) ->
     case length(WorkQueue) of
         L when L > 0 ->
             [{SrcLevel, Manifest}|OtherWork] = WorkQueue,
+            Backlog = length(OtherWork),
             io:format("Work at Level ~w to be scheduled for ~w with ~w " ++
                         "queue items outstanding~n",
-                        [SrcLevel, From, length(OtherWork)]),
+                        [SrcLevel, From, Backlog]),
             case element(1, State#state.levelzero_pending) of
                 true ->
                     % Once the L0 file is completed there will be more work
@@ -1557,7 +1584,7 @@ simple_server_test() ->
                                                     "Key0004",
                                                     null},
                                                 3002)),
-    % Add some more keys and confirm that chekc sequence number still
+    % Add some more keys and confirm that check sequence number still
     % sees the old version in the previous snapshot, but will see the new version
     % in a new snapshot
     Key1A = {{o,"Bucket0001", "Key0001", null}, {4002, {active, infinity}, null}},

@@ -156,6 +156,7 @@
 -define(SHUTDOWN_WAITS, 60).
 -define(SHUTDOWN_PAUSE, 10000).
 -define(SNAPSHOT_TIMEOUT, 300000).
+-define(JITTER_PROBABILITY, 0.1).
 
 -record(state, {inker :: pid(),
                 penciller :: pid(),
@@ -582,23 +583,41 @@ addto_ledgercache(Changes, Cache) ->
 
 maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
     CacheSize = gb_trees:size(Cache),
+    TimeToPush = maybe_withjitter(CacheSize, MaxCacheSize),
     if
-        CacheSize > MaxCacheSize ->
-            case leveled_penciller:pcl_pushmem(Penciller,
-                                                gb_trees:to_list(Cache)) of
+        TimeToPush ->
+            Dump = gb_trees:to_list(Cache),
+            case leveled_penciller:pcl_pushmem(Penciller, Dump) of
                 ok ->
                     {ok, gb_trees:empty()};
                 pause ->
                     {pause, gb_trees:empty()};
-                refused ->
+                returned ->
                     {ok, Cache}
             end;
         true ->
-            {ok, Cache}
+             {ok, Cache}
+    end.
+
+
+maybe_withjitter(CacheSize, MaxCacheSize) ->
+    if
+        CacheSize > 2 * MaxCacheSize ->
+            true;
+        CacheSize > MaxCacheSize ->
+            R = random:uniform(),
+            if
+                R < ?JITTER_PROBABILITY ->
+                    true;
+                true ->
+                    false
+            end;
+        true ->
+            false
     end.
 
 load_fun(KeyInLedger, ValueInLedger, _Position, Acc0, ExtractFun) ->
-    {MinSQN, MaxSQN, Output} = Acc0,
+    {MinSQN, MaxSQN, OutputTree} = Acc0,
     {SQN, PK} = KeyInLedger,
     % VBin may already be a term
     {VBin, VSize} = ExtractFun(ValueInLedger), 
@@ -613,11 +632,11 @@ load_fun(KeyInLedger, ValueInLedger, _Position, Acc0, ExtractFun) ->
             {loop, Acc0};    
         SQN when SQN < MaxSQN ->
             Changes = preparefor_ledgercache(PK, SQN, Obj, VSize, IndexSpecs),
-            {loop, {MinSQN, MaxSQN, Output ++ Changes}};
+            {loop, {MinSQN, MaxSQN, addto_ledgercache(Changes, OutputTree)}};
         MaxSQN ->
             io:format("Reached end of load batch with SQN ~w~n", [SQN]),
             Changes = preparefor_ledgercache(PK, SQN, Obj, VSize, IndexSpecs),
-            {stop, {MinSQN, MaxSQN, Output ++ Changes}};
+            {stop, {MinSQN, MaxSQN, addto_ledgercache(Changes, OutputTree)}};
         SQN when SQN > MaxSQN ->
             io:format("Skipping as exceeded MaxSQN ~w with SQN ~w~n",
                         [MaxSQN, SQN]),

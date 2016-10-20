@@ -67,9 +67,8 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(INACTIVITY_TIMEOUT, 5000).
--define(QUICK_TIMEOUT, 500).
--define(HAPPYTIME_MULTIPLIER, 2).
+-define(MAX_TIMEOUT, 2000).
+-define(MIN_TIMEOUT, 200).
 
 -record(state, {owner :: pid(),
                 change_pending=false :: boolean(),
@@ -98,7 +97,7 @@ init([]) ->
     {ok, #state{}}.
 
 handle_call({register, Owner}, _From, State) ->
-    {reply, ok, State#state{owner=Owner}, ?INACTIVITY_TIMEOUT};
+    {reply, ok, State#state{owner=Owner}, ?MIN_TIMEOUT};
 handle_call({manifest_change, return, true}, _From, State) ->
     io:format("Request for manifest change from clerk on closing~n"),
     case State#state.change_pending of
@@ -124,12 +123,11 @@ handle_call({manifest_change, confirm, Closing}, From, State) ->
                             State#state.owner),
             {noreply,
                 State#state{work_item=null, change_pending=false},
-                ?QUICK_TIMEOUT}
+                ?MIN_TIMEOUT}
     end.
 
 handle_cast(prompt, State) ->
-    io:format("Clerk reducing timeout due to prompt~n"),
-    {noreply, State, ?QUICK_TIMEOUT}.
+    {noreply, State, ?MIN_TIMEOUT}.
 
 handle_info(timeout, State=#state{change_pending=Pnd}) when Pnd == false ->
     case requestandhandle_work(State) of
@@ -155,15 +153,10 @@ code_change(_OldVsn, State, _Extra) ->
 
 requestandhandle_work(State) ->
     case leveled_penciller:pcl_workforclerk(State#state.owner) of
-        {none, Backlog} ->
+        none ->
             io:format("Work prompted but none needed~n"),
-            case Backlog of
-                false ->
-                    {false, ?INACTIVITY_TIMEOUT * ?HAPPYTIME_MULTIPLIER};
-                _ ->
-                    {false, ?INACTIVITY_TIMEOUT}
-            end;
-        {WI, _} ->
+            {false, ?MAX_TIMEOUT};
+        WI ->
             {NewManifest, FilesToDelete} = merge(WI),
             UpdWI = WI#penciller_work{new_manifest=NewManifest,
                                         unreferenced_files=FilesToDelete},
