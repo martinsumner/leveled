@@ -15,6 +15,10 @@
             generate_smallobjects/2,
             generate_objects/2,
             generate_objects/5,
+            generate_objects/6,
+            set_object/5,
+            get_key/1,
+            get_value/1,
             get_compressiblevalue/0,
             get_randomindexes_generator/1,
             name_list/0,
@@ -152,32 +156,44 @@ generate_objects(Count, KeyNumber) ->
 generate_objects(Count, KeyNumber, ObjL, Value) ->
     generate_objects(Count, KeyNumber, ObjL, Value, fun() -> [] end).
 
-generate_objects(0, _KeyNumber, ObjL, _Value, _IndexGen) ->
+generate_objects(Count, KeyNumber, ObjL, Value, IndexGen) ->
+    generate_objects(Count, KeyNumber, ObjL, Value, IndexGen, "Bucket").
+
+generate_objects(0, _KeyNumber, ObjL, _Value, _IndexGen, _Bucket) ->
     ObjL;
-generate_objects(Count, uuid, ObjL, Value, IndexGen) ->
-    {Obj1, Spec1} = set_object(leveled_codec:generate_uuid(),
+generate_objects(Count, uuid, ObjL, Value, IndexGen, Bucket) ->
+    {Obj1, Spec1} = set_object(Bucket,
+                                leveled_codec:generate_uuid(),
                                 Value,
                                 IndexGen),
     generate_objects(Count - 1,
                         uuid,
                         ObjL ++ [{random:uniform(), Obj1, Spec1}],
                         Value,
-                        IndexGen);
-generate_objects(Count, KeyNumber, ObjL, Value, IndexGen) ->
-    {Obj1, Spec1} = set_object("Key" ++ integer_to_list(KeyNumber),
+                        IndexGen,
+                        Bucket);
+generate_objects(Count, KeyNumber, ObjL, Value, IndexGen, Bucket) ->
+    {Obj1, Spec1} = set_object(Bucket,
+                                "Key" ++ integer_to_list(KeyNumber),
                                 Value,
                                 IndexGen),
     generate_objects(Count - 1,
                         KeyNumber + 1,
                         ObjL ++ [{random:uniform(), Obj1, Spec1}],
                         Value,
-                        IndexGen).
+                        IndexGen,
+                        Bucket).
 
-set_object(Key, Value, IndexGen) ->
-    Obj = {"Bucket",
+set_object(Bucket, Key, Value, IndexGen) ->
+    set_object(Bucket, Key, Value, IndexGen, []).
+
+set_object(Bucket, Key, Value, IndexGen, Indexes2Remove) ->
+    Obj = {Bucket,
             Key,
             Value,
-            IndexGen(),
+            IndexGen() ++ lists:map(fun({add, IdxF, IdxV}) ->
+                                            {remove, IdxF, IdxV} end,
+                                        Indexes2Remove),
             [{"MDK", "MDV" ++ Key},
                 {"MDK2", "MDV" ++ Key}]},
     {B1, K1, V1, Spec1, MD} = Obj,
@@ -185,6 +201,12 @@ set_object(Key, Value, IndexGen) ->
     {#r_object{bucket=B1, key=K1, contents=[Content], vclock=[{'a',1}]},
         Spec1}.
 
+get_key(Object) ->
+    Object#r_object.key.
+
+get_value(Object) ->
+    [Content] = Object#r_object.contents,
+    Content#r_content.value.
 
 load_objects(ChunkSize, GenList, Bookie, TestObject, Generator) ->
     lists:map(fun(KN) ->
