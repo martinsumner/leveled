@@ -40,6 +40,7 @@
         is_active/2,
         endkey_passed/2,
         key_dominates/2,
+        maybe_reap_expiredkey/2,
         print_key/1,
         to_ledgerkey/3,
         to_ledgerkey/5,
@@ -85,6 +86,20 @@ key_dominates(LeftKey, RightKey) ->
                                                 when LK == RK, LSN < RSN ->
             right_hand_dominant
     end.
+
+
+maybe_reap_expiredkey(KV, IsBasement) ->
+    Status = strip_to_statusonly(KV),
+    maybe_reap(Status, IsBasement).
+
+maybe_reap({_, infinity}, _) ->
+    false; % key is not set to expire
+maybe_reap({_, TS}, {basement, CurrTS}) when CurrTS > TS ->
+    true; % basement and ready to expire
+maybe_reap(tomb, {basement, _CurrTS}) ->
+    true; % always expire in basement
+maybe_reap(_, _) ->
+    false.
 
 is_active(Key, Value) ->
     case strip_to_statusonly({Key, Value}) of

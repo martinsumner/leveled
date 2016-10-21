@@ -1053,16 +1053,14 @@ key_dominates(KL1, KL2, Level) ->
                             Level).
 
 key_dominates_expanded([H1|T1], [], Level) ->
-    St1 = leveled_codec:strip_to_statusonly(H1),
-    case maybe_reap_expiredkey(St1, Level) of
+    case leveled_codec:maybe_reap_expiredkey(H1, Level) of
         true ->
             {skipped_key, maybe_expand_pointer(T1), []};
         false ->
             {{next_key, H1}, maybe_expand_pointer(T1), []}
     end;
 key_dominates_expanded([], [H2|T2], Level) ->
-    St2 = leveled_codec:strip_to_statusonly(H2),
-    case maybe_reap_expiredkey(St2, Level) of
+    case leveled_codec:maybe_reap_expiredkey(H2, Level) of
         true ->
             {skipped_key, [], maybe_expand_pointer(T2)};
         false ->
@@ -1071,36 +1069,25 @@ key_dominates_expanded([], [H2|T2], Level) ->
 key_dominates_expanded([H1|T1], [H2|T2], Level) ->
     case leveled_codec:key_dominates(H1, H2) of
         left_hand_first ->
-            St1 = leveled_codec:strip_to_statusonly(H1),
-            case maybe_reap_expiredkey(St1, Level) of
+            case leveled_codec:maybe_reap_expiredkey(H1, Level) of
                 true ->
                     {skipped_key, maybe_expand_pointer(T1), [H2|T2]};
                 false ->
                     {{next_key, H1}, maybe_expand_pointer(T1), [H2|T2]}
             end;
-        left_hand_dominant ->
-            {skipped_key, [H1|T1], maybe_expand_pointer(T2)};
-        right_hand_dominant ->
-            {skipped_key, maybe_expand_pointer(T1), [H2|T2]};
         right_hand_first ->
-            St2 = leveled_codec:strip_to_statusonly(H2),
-            case maybe_reap_expiredkey(St2, Level) of
+            case leveled_codec:maybe_reap_expiredkey(H2, Level) of
                 true ->
                     {skipped_key, [H1|T1], maybe_expand_pointer(T2)};
                 false ->
                     {{next_key, H2}, [H1|T1], maybe_expand_pointer(T2)}
-            end
+            end;
+        left_hand_dominant ->
+            {skipped_key, [H1|T1], maybe_expand_pointer(T2)};
+        right_hand_dominant ->
+            {skipped_key, maybe_expand_pointer(T1), [H2|T2]}
     end.
 
-
-maybe_reap_expiredkey({_, infinity}, _) ->
-    false; % key is not set to expire
-maybe_reap_expiredkey({_, TS}, {basement, CurrTS}) when CurrTS > TS ->
-    true; % basement and ready to expire
-maybe_reap_expiredkey(tomb, {basement, _CurrTS}) ->
-    true; % always expire in basement
-maybe_reap_expiredkey(_, _) ->
-    false.
 
 %% When a list is provided it may include a pointer to gain another batch of
 %% entries from the same file, or a new batch of entries from another file
@@ -1550,8 +1537,49 @@ merge_seglists_test() ->
     R8 = check_for_segments(SegBin, [0,900], false),
     ?assertMatch(R8, {maybe_present, [0]}),
     R9 = check_for_segments(SegBin, [1024*1024 - 1], false),
-    ?assertMatch(R9, not_present).
-
+    ?assertMatch(R9, not_present),
+    io:format("Try corrupted bloom filter with flipped bit in " ++
+                "penultimate delta~n"),
+    ExpectedDeltasFlippedBit = <<0:1, 0:13, 0:2,
+                                    0:1, 50:13, 1:2,
+                                    0:1, 25:13, 2:2,
+                                    0:1, 25:13, 0:2,
+                                    0:1, 100:13, 0:2,
+                                    0:1, 0:13, 1:2,
+                                    2:2, 1709:13, 2:2>>,
+    SegBin1 = <<ExpectedTopHashes/bitstring,
+                            7:16/integer,
+                            ExpectedDeltasFlippedBit/bitstring,
+                            0:7/integer>>,
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin1, [900], true)),
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin1, [200], true)),
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin1, [0,900], true)),
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin1, [1024*1024 - 1], true)),
+    % This match is before the flipped bit, so still works without CRC check
+    ?assertMatch({maybe_present, [0]},
+                    check_for_segments(SegBin1, [0,900], false)),
+    io:format("Try corrupted bloom filter with flipped bit in " ++
+                "final block's top hash~n"),
+    ExpectedTopHashesFlippedBit = <<200:20, 200:20, 10000:20, 1:20>>,
+    SegBin2 = <<ExpectedTopHashesFlippedBit/bitstring,
+                            7:16/integer,
+                            ExpectedDeltas/bitstring,
+                            0:7/integer>>,
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin2, [900], true)),
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin2, [200], true)),
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin2, [0,900], true)),
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin2, [1024*1024 - 1], true)),
+    % This match is before the flipped bit, so still works without CRC check
+    ?assertMatch({maybe_present, [0]},
+                    check_for_segments(SegBin2, [0,900], false)).
     
 createslot_stage1_test() ->
     {KeyList1, KeyList2} = sample_keylist(),

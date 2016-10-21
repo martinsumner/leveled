@@ -43,7 +43,7 @@ simple_load_with2i(_Config) ->
 
 simple_querycount(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    {ok, Book1} = leveled_bookie:book_start(RootPath, 4000, 50000000),
+    {ok, Book1} = leveled_bookie:book_start(RootPath, 2500, 50000000),
     {TestObject, TestSpec} = testutil:generate_testobject("Bucket",
                                                             "Key1",
                                                             "Value1",
