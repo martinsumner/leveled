@@ -342,7 +342,7 @@ pcl_promptmanifestchange(Pid, WI) ->
     gen_server:cast(Pid, {manifest_change, WI}).
 
 pcl_confirmdelete(Pid, FileName) ->
-    gen_server:call(Pid, {confirm_delete, FileName}, infinity).
+    gen_server:cast(Pid, {confirm_delete, FileName}).
 
 pcl_getstartupsequencenumber(Pid) ->
     gen_server:call(Pid, get_startup_sqn, infinity).
@@ -436,18 +436,6 @@ handle_call({push_mem, DumpList}, From, State=#state{is_snapshot=Snap})
             io:format("Empty request pushed to Penciller~n"),
             {reply, ok, State}
     end;
-handle_call({confirm_delete, FileName}, _From, State=#state{is_snapshot=Snap})
-                                                        when Snap == false ->    
-    Reply = confirm_delete(FileName,
-                            State#state.unreferenced_files,
-                            State#state.registered_snapshots),
-    case Reply of
-        true ->
-            UF1 = lists:keydelete(FileName, 1, State#state.unreferenced_files),
-            {reply, true, State#state{unreferenced_files=UF1}};
-        _ ->
-            {reply, Reply, State}
-    end;
 handle_call({fetch, Key}, _From, State=#state{is_snapshot=Snap})
                                                         when Snap == false ->
     {reply,
@@ -532,7 +520,20 @@ handle_cast({manifest_change, WI}, State) ->
 handle_cast({release_snapshot, Snapshot}, State) ->
     Rs = lists:keydelete(Snapshot, 1, State#state.registered_snapshots),
     io:format("Penciller snapshot ~w released~n", [Snapshot]),
-    {noreply, State#state{registered_snapshots=Rs}}.
+    {noreply, State#state{registered_snapshots=Rs}};
+handle_cast({confirm_delete, FileName}, State=#state{is_snapshot=Snap})
+                                                        when Snap == false ->    
+    Reply = confirm_delete(FileName,
+                            State#state.unreferenced_files,
+                            State#state.registered_snapshots),
+    case Reply of
+        {true, Pid} ->
+            UF1 = lists:keydelete(FileName, 1, State#state.unreferenced_files),
+            ok = leveled_sft:sft_deleteconfirmed(Pid),
+            {noreply, State#state{unreferenced_files=UF1}};
+        _ ->
+            {noreply, State}
+    end.
 
 handle_info({_Ref, {ok, SrcFN, _StartKey, _EndKey}}, State) ->
     io:format("Orphaned reply after timeout on L0 file write ~s~n", [SrcFN]),
@@ -1417,7 +1418,7 @@ confirm_delete(Filename, UnreferencedFiles, RegisteredSnapshots) ->
     case lists:keyfind(Filename, 1, UnreferencedFiles) of
         false ->
             false;
-        {Filename, _Pid, MSN} ->
+        {Filename, Pid, MSN} ->
             LowSQN = lists:foldl(fun({_, SQN}, MinSQN) -> min(SQN, MinSQN) end,
                                     infinity,
                                     RegisteredSnapshots),
@@ -1425,7 +1426,7 @@ confirm_delete(Filename, UnreferencedFiles, RegisteredSnapshots) ->
                 MSN >= LowSQN ->
                     false;
                 true ->
-                    true
+                    {true, Pid}
             end
     end.
 
@@ -1505,7 +1506,7 @@ confirm_delete_test() ->
                             {Filename, dummy_owner, 10}],
     RegisteredIterators1 = [{dummy_pid, 16}, {dummy_pid, 12}],
     R1 = confirm_delete(Filename, UnreferencedFiles, RegisteredIterators1),
-    ?assertMatch(R1, true),
+    ?assertMatch(R1, {true, dummy_owner}),
     RegisteredIterators2 = [{dummy_pid, 10}, {dummy_pid, 12}],
     R2 = confirm_delete(Filename, UnreferencedFiles, RegisteredIterators2),
     ?assertMatch(R2, false),

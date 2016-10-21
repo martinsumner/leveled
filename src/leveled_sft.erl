@@ -160,6 +160,7 @@
         sft_clear/1,
         sft_checkready/1,
         sft_setfordelete/2,
+        sft_deleteconfirmed/1,
         sft_getmaxsequencenumber/1,
         generate_randomkeys/1]).
 
@@ -251,6 +252,9 @@ sft_clear(Pid) ->
 sft_close(Pid) ->
     gen_server:call(Pid, close, infinity).
 
+sft_deleteconfirmed(Pid) ->
+    gen_server:cast(Pid, close).
+
 sft_checkready(Pid) ->
     gen_server:call(Pid, background_complete, 50).
 
@@ -336,21 +340,18 @@ handle_cast({sft_new, Filename, Inp1, [], 0}, _State) ->
     {ok, State} = create_levelzero(Inp1, Filename),
     io:format("File creation of L0 file ~s took ~w microseconds~n",
                         [Filename, timer:now_diff(os:timestamp(), SW)]),
-    {noreply, State}.
+    {noreply, State};
+handle_cast(close, State) ->
+    {stop, normal, State}.
 
 handle_info(timeout, State) ->
     case State#state.ready_for_delete of
         true ->
             io:format("File ~s prompting for delete status check~n",
                         [State#state.filename]),
-            case leveled_penciller:pcl_confirmdelete(State#state.penciller,
-                                                        State#state.filename)
-                                                            of
-                true ->
-                    {stop, shutdown, State};
-                false ->
-                    {noreply, State, ?DELETE_TIMEOUT}
-            end;
+            ok = leveled_penciller:pcl_confirmdelete(State#state.penciller,
+                                                        State#state.filename),
+            {noreply, State, ?DELETE_TIMEOUT};
         false ->
             {noreply, State}
     end.
