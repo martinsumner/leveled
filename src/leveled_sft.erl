@@ -1101,6 +1101,8 @@ maybe_reap_expiredkey({_, infinity}, _) ->
     false; % key is not set to expire
 maybe_reap_expiredkey({_, TS}, {basement, CurrTS}) when CurrTS > TS ->
     true; % basement and ready to expire
+maybe_reap_expiredkey(tomb, {basement, _CurrTS}) ->
+    true; % always expire in basement
 maybe_reap_expiredkey(_, _) ->
     false.
 
@@ -1760,6 +1762,7 @@ key_dominates_test() ->
     KV4 = {{o, "Bucket", "Key4", null}, {7, {active, infinity}, []}},
     KV5 = {{o, "Bucket", "Key1", null}, {4, {active, infinity}, []}},
     KV6 = {{o, "Bucket", "Key1", null}, {99, {tomb, 999}, []}},
+    KV7 = {{o, "Bucket", "Key1", null}, {99, tomb, []}},
     KL1 = [KV1, KV2],
     KL2 = [KV3, KV4],
     ?assertMatch({{next_key, KV1}, [KV2], KL2},
@@ -1789,7 +1792,19 @@ key_dominates_test() ->
     ?assertMatch({{next_key, KV6}, [], []},
                     key_dominates([KV6], [], {basement, 1})),
     ?assertMatch({{next_key, KV6}, [], []},
-                    key_dominates([], [KV6], {basement, 1})).
+                    key_dominates([], [KV6], {basement, 1})),
+    ?assertMatch({skipped_key, [], []},
+                    key_dominates([KV7], [], {basement, 1})),
+    ?assertMatch({skipped_key, [], []},
+                    key_dominates([], [KV7], {basement, 1})),
+    ?assertMatch({skipped_key, [KV7|KL2], [KV2]},
+                    key_dominates([KV7|KL2], KL1, 1)),
+    ?assertMatch({{next_key, KV7}, KL2, [KV2]},
+                    key_dominates([KV7|KL2], [KV2], 1)),
+    ?assertMatch({skipped_key, [KV7|KL2], [KV2]},
+                    key_dominates([KV7|KL2], KL1, {basement, 1})),
+    ?assertMatch({skipped_key, KL2, [KV2]},
+                    key_dominates([KV7|KL2], [KV2], {basement, 1})).
 
 
 big_iterator_test() ->

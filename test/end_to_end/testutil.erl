@@ -26,6 +26,8 @@
 
 
 reset_filestructure() ->
+    io:format("Waiting 2s to give a chance for all file closes to complete~n"),
+    timer:sleep(2000),
     RootPath  = "test",
     filelib:ensure_dir(RootPath ++ "/journal/"),
     filelib:ensure_dir(RootPath ++ "/ledger/"),
