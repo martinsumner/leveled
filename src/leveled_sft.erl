@@ -181,7 +181,7 @@
 -define(HEADER_LEN, 56).
 -define(ITERATOR_SCANWIDTH, 1).
 -define(MERGE_SCANWIDTH, 8).
--define(DELETE_TIMEOUT, 60000).
+-define(DELETE_TIMEOUT, 10000).
 -define(MAX_KEYS, ?SLOT_COUNT * ?BLOCK_COUNT * ?BLOCK_SIZE).
 -define(DISCARD_EXT, ".discarded").
 
@@ -296,7 +296,7 @@ handle_call({sft_open, Filename}, _From, _State) ->
                 FileMD};
 handle_call({get_kv, Key}, _From, State) ->
     Reply = fetch_keyvalue(State#state.handle, State, Key),
-    {reply, Reply, State};
+    statecheck_onreply(Reply, State);
 handle_call({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
     Reply = pointer_append_queryresults(fetch_range_kv(State#state.handle,
                                                         State,
@@ -304,7 +304,7 @@ handle_call({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
                                                         EndKey,
                                                         ScanWidth),
                                             self()),
-    {reply, Reply, State};
+    statecheck_onreply(Reply, State);
 handle_call(close, _From, State) ->
     {stop, normal, ok, State};
 handle_call(clear, _From, State) ->
@@ -322,34 +322,33 @@ handle_call(background_complete, _From, State) ->
             {reply, {error, State#state.background_failure}, State}
     end;
 handle_call({set_for_delete, Penciller}, _From, State) ->
+    io:format("File ~s has been set for delete~n", [State#state.filename]),
     {reply,
         ok,
         State#state{ready_for_delete=true,
                             penciller=Penciller},
         ?DELETE_TIMEOUT};
 handle_call(get_maxsqn, _From, State) ->
-    {reply, State#state.highest_sqn, State}.
+    statecheck_onreply(State#state.highest_sqn, State).
 
 handle_cast({sft_new, Filename, Inp1, [], 0}, _State) ->
     SW = os:timestamp(),
     {ok, State} = create_levelzero(Inp1, Filename),
     io:format("File creation of L0 file ~s took ~w microseconds~n",
                         [Filename, timer:now_diff(os:timestamp(), SW)]),
-    {noreply, State};
-handle_cast(_Msg, State) ->
     {noreply, State}.
 
 handle_info(timeout, State) ->
     case State#state.ready_for_delete of
         true ->
+            io:format("File ~s prompting for delete status check~n",
+                        [State#state.filename]),
             case leveled_penciller:pcl_confirmdelete(State#state.penciller,
                                                         State#state.filename)
                                                             of
                 true ->
                     {stop, shutdown, State};
                 false ->
-                    io:format("Polled for deletion but ~s not ready~n",
-                                [State#state.filename]),
                     {noreply, State, ?DELETE_TIMEOUT}
             end;
         false ->
@@ -376,6 +375,15 @@ terminate(Reason, State) ->
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+
+
+statecheck_onreply(Reply, State) ->
+    case State#state.ready_for_delete of
+        true ->
+            {reply, Reply, State, ?DELETE_TIMEOUT};
+        false ->
+            {reply, Reply, State}
+    end.
 
 %%%============================================================================
 %%% Internal functions

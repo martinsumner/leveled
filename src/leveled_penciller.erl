@@ -490,7 +490,7 @@ handle_call(work_for_clerk, From, State) ->
 handle_call(get_startup_sqn, _From, State) ->
     {reply, State#state.ledger_sqn, State};
 handle_call({register_snapshot, Snapshot}, _From, State) ->
-    Rs = [{Snapshot, State#state.ledger_sqn}|State#state.registered_snapshots],
+    Rs = [{Snapshot, State#state.manifest_sqn}|State#state.registered_snapshots],
     {reply,
         {ok,
             State#state.ledger_sqn,
@@ -540,7 +540,7 @@ handle_info({_Ref, {ok, SrcFN, _StartKey, _EndKey}}, State) ->
 
 terminate(Reason, State=#state{is_snapshot=Snap}) when Snap == true ->
     ok = pcl_releasesnapshot(State#state.source_penciller, self()),
-    io:format("Sent release message for snapshot following close for "
+    io:format("Sent release message for cloned Penciller following close for "
                 ++ "reason ~w~n", [Reason]),   
     ok;
 terminate(Reason, State) ->

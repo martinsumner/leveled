@@ -10,12 +10,13 @@
             load_and_count_withdelete/1
             ]).
 
-all() -> [simple_put_fetch_head_delete,
-            many_put_fetch_head,
-            journal_compaction,
-            fetchput_snapshot,
-            load_and_count,
-            load_and_count_withdelete
+all() -> [
+            % simple_put_fetch_head_delete,
+            % many_put_fetch_head,
+            % journal_compaction,
+            fetchput_snapshot %,
+            % load_and_count,
+            % load_and_count_withdelete
             ].
 
 
@@ -151,7 +152,7 @@ journal_compaction(_Config) ->
 
 fetchput_snapshot(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = #bookie_options{root_path=RootPath, max_journalsize=3000000},
+    StartOpts1 = #bookie_options{root_path=RootPath, max_journalsize=30000000},
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
@@ -201,7 +202,7 @@ fetchput_snapshot(_Config) ->
     ChkList3 = lists:sublist(lists:sort(ObjList3), 100),
     testutil:check_forlist(Bookie2, ChkList3),
     testutil:check_formissinglist(SnapBookie2, ChkList3),
-    GenList = [20002, 40002, 60002, 80002, 100002, 120002],
+    GenList = [20002, 40002, 60002, 80002],
     CLs2 = testutil:load_objects(20000, GenList, Bookie2, TestObject,
                                     fun testutil:generate_smallobjects/2),
     io:format("Loaded significant numbers of new objects~n"),
@@ -222,13 +223,22 @@ fetchput_snapshot(_Config) ->
                                     fun testutil:generate_smallobjects/2),
     testutil:check_forlist(Bookie2, lists:nth(length(CLs3), CLs3)),
     testutil:check_forlist(Bookie2, lists:nth(1, CLs3)),
+    
+    io:format("Starting 15s sleep in which snap2 should block deletion~n"),
+    timer:sleep(15000),
     {ok, FNsB} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
     ok = leveled_bookie:book_close(SnapBookie2),
+    io:format("Starting 15s sleep as snap2 close should unblock deletion~n"),
+    timer:sleep(15000),
+    io:format("Pause for deletion has ended~n"),
+    
     testutil:check_forlist(Bookie2, lists:nth(length(CLs3), CLs3)),
     ok = leveled_bookie:book_close(SnapBookie3),
+    io:format("Starting 15s sleep as snap3 close should unblock deletion~n"),
+    timer:sleep(15000),
+    io:format("Pause for deletion has ended~n"),
     testutil:check_forlist(Bookie2, lists:nth(length(CLs3), CLs3)),
     testutil:check_forlist(Bookie2, lists:nth(1, CLs3)),
-    timer:sleep(90000),
     {ok, FNsC} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
     true = length(FNsB) > length(FNsA),
     true = length(FNsB) > length(FNsC),
@@ -239,7 +249,7 @@ fetchput_snapshot(_Config) ->
     {B1Size, B1Count} = testutil:check_bucket_stats(Bookie2, "Bucket1"),
     {BSize, BCount} = testutil:check_bucket_stats(Bookie2, "Bucket"),
     true = BSize > 0,
-    true = BCount == 140000,
+    true = BCount == 100000,
     
     ok = leveled_bookie:book_close(Bookie2),
     testutil:reset_filestructure().

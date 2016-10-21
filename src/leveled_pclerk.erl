@@ -118,8 +118,8 @@ handle_call({manifest_change, confirm, Closing}, From, State) ->
             io:format("Prompted confirmation of manifest change~n"),
             gen_server:reply(From, ok),
             WI = State#state.work_item,
-            mark_for_delete(WI#penciller_work.unreferenced_files,
-                            State#state.owner),
+            ok = mark_for_delete(WI#penciller_work.unreferenced_files,
+                                    State#state.owner),
             {noreply,
                 State#state{work_item=null, change_pending=false},
                 ?MIN_TIMEOUT}
