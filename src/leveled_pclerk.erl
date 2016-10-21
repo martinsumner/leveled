@@ -80,6 +80,7 @@
 clerk_new(Owner) ->
     {ok, Pid} = gen_server:start(?MODULE, [], []),
     ok = gen_server:call(Pid, {register, Owner}, infinity),
+    io:format("Penciller's clerk ~w started with owner ~w~n", [Pid, Owner]),
     {ok, Pid}.
 
 clerk_manifestchange(Pid, Action, Closing) ->
@@ -104,7 +105,7 @@ handle_call({manifest_change, return, true}, _From, State) ->
             WI = State#state.work_item,
             {reply, {ok, WI}, State};
         false ->
-            {reply, no_change, State}
+            {stop, normal, no_change, State}
     end;
 handle_call({manifest_change, confirm, Closing}, From, State) ->
     case Closing of
@@ -139,8 +140,9 @@ handle_info(timeout, State=#state{change_pending=Pnd}) when Pnd == false ->
                 State#state{change_pending=true, work_item=WI}}
     end.
 
-terminate(_Reason, _State) ->
-    ok.
+terminate(Reason, _State) ->
+    io:format("Penciller's Clerk ~w shutdown now complete for reason ~w~n",
+                [self(), Reason]).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -153,7 +155,7 @@ code_change(_OldVsn, State, _Extra) ->
 requestandhandle_work(State) ->
     case leveled_penciller:pcl_workforclerk(State#state.owner) of
         none ->
-            io:format("Work prompted but none needed~n"),
+            io:format("Work prompted but none needed ~w~n", [self()]),
             {false, ?MAX_TIMEOUT};
         WI ->
             {NewManifest, FilesToDelete} = merge(WI),
@@ -219,7 +221,7 @@ merge(WI) ->
 mark_for_delete([], _Penciller) ->
     ok;
 mark_for_delete([Head|Tail], Penciller) ->
-    leveled_sft:sft_setfordelete(Head#manifest_entry.owner, Penciller),
+    ok = leveled_sft:sft_setfordelete(Head#manifest_entry.owner, Penciller),
     mark_for_delete(Tail, Penciller).
     
 
@@ -305,7 +307,18 @@ do_merge(KL1, KL2, {SrcLevel, IsB}, {Filepath, MSN}, FileCounter, OutList) ->
     io:format("File to be created as part of MSN=~w Filename=~s~n",
                 [MSN, FileName]),
     TS1 = os:timestamp(),
-    {ok, Pid, Reply} = leveled_sft:sft_new(FileName, KL1, KL2, SrcLevel + 1),
+    LevelR = case IsB of
+                    true ->
+                        #level{level = SrcLevel + 1,
+                                is_basement = true,
+                                timestamp = os:timestamp()};
+                    false ->
+                        SrcLevel + 1
+                end,    
+    {ok, Pid, Reply} = leveled_sft:sft_new(FileName,
+                                            KL1,
+                                            KL2,
+                                            LevelR),
     {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} = Reply,
     ExtMan = lists:append(OutList,
                             [#manifest_entry{start_key=SmallestKey,

@@ -88,15 +88,15 @@ key_dominates(LeftKey, RightKey) ->
     end.
 
 
-maybe_reap_expiredkey(KV, IsBasement) ->
+maybe_reap_expiredkey(KV, LevelD) ->
     Status = strip_to_statusonly(KV),
-    maybe_reap(Status, IsBasement).
+    maybe_reap(Status, LevelD).
 
 maybe_reap({_, infinity}, _) ->
     false; % key is not set to expire
-maybe_reap({_, TS}, {basement, CurrTS}) when CurrTS > TS ->
+maybe_reap({_, TS}, {true, CurrTS}) when CurrTS > TS ->
     true; % basement and ready to expire
-maybe_reap(tomb, {basement, _CurrTS}) ->
+maybe_reap(tomb, {true, _CurrTS}) ->
     true; % always expire in basement
 maybe_reap(_, _) ->
     false.

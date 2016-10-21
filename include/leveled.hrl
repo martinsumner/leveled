@@ -19,6 +19,11 @@
                         unreferenced_files :: list(),
                         target_is_basement = false ::boolean()}).
 
+-record(level,
+                        {level :: integer(),
+                        is_basement = false :: boolean(),
+                        timestamp :: integer()}).                      
+
 -record(manifest_entry,
                         {start_key :: tuple(),
                         end_key :: tuple(),

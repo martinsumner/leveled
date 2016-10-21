@@ -529,6 +529,9 @@ handle_cast({confirm_delete, FileName}, State=#state{is_snapshot=Snap})
     case Reply of
         {true, Pid} ->
             UF1 = lists:keydelete(FileName, 1, State#state.unreferenced_files),
+            io:format("Filename ~s removed from unreferenced files as delete "
+                            ++ "is confirmed - file should now close~n",
+                        [FileName]),
             ok = leveled_sft:sft_deleteconfirmed(Pid),
             {noreply, State#state{unreferenced_files=UF1}};
         _ ->
@@ -610,8 +613,9 @@ terminate(Reason, State) ->
     % Tidy shutdown of individual files
     ok = close_files(0, UpdState#state.manifest),
     lists:foreach(fun({_FN, Pid, _SN}) ->
-                            leveled_sft:sft_close(Pid) end,
+                            ok = leveled_sft:sft_close(Pid) end,
                     UpdState#state.unreferenced_files),
+    io:format("Shutdown complete for Penciller~n"),
     ok.
 
 
@@ -1015,7 +1019,8 @@ close_files(?MAX_LEVELS - 1, _Manifest) ->
     ok;
 close_files(Level, Manifest) ->
     LevelList = get_item(Level, Manifest, []),
-    lists:foreach(fun(F) -> leveled_sft:sft_close(F#manifest_entry.owner) end,
+    lists:foreach(fun(F) ->
+                        ok = leveled_sft:sft_close(F#manifest_entry.owner) end,
                     LevelList),
     close_files(Level + 1, Manifest).
 

@@ -228,6 +228,7 @@ simple_querycount(_Config) ->
                         end,
                     R9),
     ok = leveled_bookie:book_riakput(Book3, Obj9, Spc9),
+    ok = leveled_bookie:book_close(Book3),
     {ok, Book4} = leveled_bookie:book_start(RootPath, 2000, 50000000),
     lists:foreach(fun({IdxF, IdxT, X}) ->
                         R = leveled_bookie:book_returnfolder(Book4,

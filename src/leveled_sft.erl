@@ -211,20 +211,29 @@
 %%% API
 %%%============================================================================
 
-sft_new(Filename, KL1, KL2, Level) ->
-    sft_new(Filename, KL1, KL2, Level, #sft_options{}).
+sft_new(Filename, KL1, KL2, LevelInfo) ->
+    sft_new(Filename, KL1, KL2, LevelInfo, #sft_options{}).
 
-sft_new(Filename, KL1, KL2, Level, Options) ->
+sft_new(Filename, KL1, KL2, LevelInfo, Options) ->
+    LevelR = case is_integer(LevelInfo) of
+                    true ->
+                        #level{level=LevelInfo};
+                    _ ->
+                        if
+                            is_record(LevelInfo, level) ->
+                                LevelInfo
+                        end
+                end,
     {ok, Pid} = gen_server:start(?MODULE, [], []),
     case Options#sft_options.wait of
         true ->
             Reply = gen_server:call(Pid,
-                                    {sft_new, Filename, KL1, KL2, Level},
+                                    {sft_new, Filename, KL1, KL2, LevelR},
                                     infinity),
             {ok, Pid, Reply};
         false ->
             gen_server:cast(Pid,
-                            {sft_new, Filename, KL1, KL2, Level}),
+                            {sft_new, Filename, KL1, KL2, LevelR}),
             {ok, Pid}
     end.
 
@@ -270,22 +279,22 @@ sft_getmaxsequencenumber(Pid) ->
 init([]) ->
     {ok, #state{}}.
 
-handle_call({sft_new, Filename, KL1, [], 0}, _From, _State) ->
+handle_call({sft_new, Filename, KL1, [], _LevelR=#level{level=L}},
+                _From,
+                _State) when L == 0 ->
     {ok, State} = create_levelzero(KL1, Filename),
     {reply,
         {{[], []},
             State#state.smallest_key,
             State#state.highest_key},
         State};
-handle_call({sft_new, Filename, KL1, KL2, Level}, _From, State) ->
+handle_call({sft_new, Filename, KL1, KL2, LevelR}, _From, _State) ->
     case create_file(Filename) of
-        {error, Reason} ->
-            {reply, {error, Reason}, State};
         {Handle, FileMD} ->
             {ReadHandle, UpdFileMD, KeyRemainders} = complete_file(Handle,
                                                                     FileMD,
                                                                     KL1, KL2,
-                                                                    Level),
+                                                                    LevelR),
             {reply, {KeyRemainders,
                         UpdFileMD#state.smallest_key,
                         UpdFileMD#state.highest_key},
@@ -335,7 +344,8 @@ handle_call({set_for_delete, Penciller}, _From, State) ->
 handle_call(get_maxsqn, _From, State) ->
     statecheck_onreply(State#state.highest_sqn, State).
 
-handle_cast({sft_new, Filename, Inp1, [], 0}, _State) ->
+handle_cast({sft_new, Filename, Inp1, [], _LevelR=#level{level=L}}, _State)
+                                                                when L == 0->
     SW = os:timestamp(),
     {ok, State} = create_levelzero(Inp1, Filename),
     io:format("File creation of L0 file ~s took ~w microseconds~n",
@@ -364,7 +374,12 @@ terminate(Reason, State) ->
             io:format("Exit called and now clearing ~s~n",
                         [State#state.filename]),
             ok = file:close(State#state.handle),
-            ok = file:delete(State#state.filename);
+            ok = case filelib:is_file(State#state.filename) of
+                        true ->
+                            file:delete(State#state.filename);
+                        false ->
+                            ok
+                    end;
         _ ->
             case State#state.handle of
                 undefined ->
@@ -407,12 +422,11 @@ create_levelzero(Inp1, Filename) ->
             InputSize = length(ListForFile),
             io:format("Creating file with input of size ~w~n", [InputSize]),
             Rename = {true, TmpFilename, PrmFilename},
-            {ReadHandle, UpdFileMD, {[], []}} = complete_file(Handle,
-                                                                FileMD,
-                                                                ListForFile,
-                                                                [],
-                                                                0,
-                                                                Rename),
+            {ReadHandle,
+                UpdFileMD,
+                {[], []}} = complete_file(Handle, FileMD,
+                                            ListForFile, [],
+                                            #level{level=0}, Rename),
             {ok,
                 UpdFileMD#state{handle=ReadHandle,
                                 filename=PrmFilename,
@@ -504,15 +518,15 @@ open_file(FileMD) ->
     
 %% Take a file handle with a previously created header and complete it based on
 %% the two key lists KL1 and KL2
-complete_file(Handle, FileMD, KL1, KL2, Level) ->
-    complete_file(Handle, FileMD, KL1, KL2, Level, false).
+complete_file(Handle, FileMD, KL1, KL2, LevelR) ->
+    complete_file(Handle, FileMD, KL1, KL2, LevelR, false).
 
-complete_file(Handle, FileMD, KL1, KL2, Level, Rename) ->
+complete_file(Handle, FileMD, KL1, KL2, LevelR, Rename) ->
     {ok, KeyRemainders} = write_keys(Handle,
                                         maybe_expand_pointer(KL1),
                                         maybe_expand_pointer(KL2),
                                         [], <<>>,
-                                        Level,
+                                        LevelR,
                                         fun sftwrite_function/2),
     {ReadHandle, UpdFileMD} = case Rename of
         false ->
@@ -773,18 +787,27 @@ get_nextkeyaftermatch([_KTuple|T], KeyToFind, PrevV) ->
 %% Slots are created then written in bulk to impove I/O efficiency.  Slots will
 %% be written in groups of 32
 
-write_keys(Handle, KL1, KL2, SlotIndex, SerialisedSlots, Level, WriteFun) ->
-    write_keys(Handle, KL1, KL2, {0, 0},
+write_keys(Handle,
+            KL1, KL2,
+            SlotIndex, SerialisedSlots,
+            LevelR, WriteFun) ->
+    write_keys(Handle,
+                    KL1, KL2,
+                    {0, 0},
                     SlotIndex, SerialisedSlots,
-                    {infinity, 0}, null, {last, null}, Level, WriteFun).
+                    {infinity, 0}, null, {last, null},
+                    LevelR, WriteFun).
 
 
-write_keys(Handle, KL1, KL2, {SlotCount, SlotTotal},
-                    SlotIndex, SerialisedSlots,
-                    {LSN, HSN}, LowKey, LastKey, Level, WriteFun)
+write_keys(Handle,
+            KL1, KL2,
+            {SlotCount, SlotTotal},
+            SlotIndex, SerialisedSlots,
+            {LSN, HSN}, LowKey, LastKey,
+            LevelR, WriteFun)
                     when SlotCount =:= ?SLOT_GROUPWRITE_COUNT ->
     UpdHandle = WriteFun(slots , {Handle, SerialisedSlots}),
-    case maxslots_bylevel(SlotTotal, Level) of
+    case maxslots_bylevel(SlotTotal, LevelR#level.level) of
         reached ->
             {complete_keywrite(UpdHandle,
                                 SlotIndex,
@@ -792,14 +815,20 @@ write_keys(Handle, KL1, KL2, {SlotCount, SlotTotal},
                                 WriteFun),
                 {KL1, KL2}};
         continue ->
-            write_keys(UpdHandle, KL1, KL2, {0, SlotTotal},
+            write_keys(UpdHandle,
+                        KL1, KL2,
+                        {0, SlotTotal},
                         SlotIndex, <<>>,
-                        {LSN, HSN}, LowKey, LastKey, Level, WriteFun)
+                        {LSN, HSN}, LowKey, LastKey,
+                        LevelR, WriteFun)
     end;
-write_keys(Handle, KL1, KL2, {SlotCount, SlotTotal},
-                    SlotIndex, SerialisedSlots,
-                    {LSN, HSN}, LowKey, LastKey, Level, WriteFun) ->
-    SlotOutput = create_slot(KL1, KL2, Level),
+write_keys(Handle,
+            KL1, KL2,
+            {SlotCount, SlotTotal},
+            SlotIndex, SerialisedSlots,
+            {LSN, HSN}, LowKey, LastKey,
+            LevelR, WriteFun) ->
+    SlotOutput = create_slot(KL1, KL2, LevelR),
     {{LowKey_Slot, SegFilter, SerialisedSlot, LengthList},
         {{LSN_Slot, HSN_Slot}, LastKey_Slot, Status},
         KL1rem, KL2rem} = SlotOutput,
@@ -818,9 +847,12 @@ write_keys(Handle, KL1, KL2, {SlotCount, SlotTotal},
                                 WriteFun),
                 {KL1rem, KL2rem}};
         full ->
-            write_keys(Handle, KL1rem, KL2rem, {SlotCount + 1, SlotTotal + 1},
+            write_keys(Handle,
+                        KL1rem, KL2rem,
+                        {SlotCount + 1, SlotTotal + 1},
                         UpdSlotIndex, UpdSlots,
-                        SNExtremes, FirstKey, FinalKey, Level, WriteFun);
+                        SNExtremes, FirstKey, FinalKey,
+                        LevelR, WriteFun);
         complete ->
             UpdHandle = WriteFun(slots , {Handle, UpdSlots}),
             {complete_keywrite(UpdHandle,
@@ -929,11 +961,11 @@ maxslots_bylevel(SlotTotal, _Level) ->
 %% Also this should return a partial block if the KeyLists have been exhausted
 %% but the block is full
 
-create_block(KeyList1, KeyList2, Level) ->
-    create_block(KeyList1, KeyList2, [], {infinity, 0}, [], Level).
+create_block(KeyList1, KeyList2, LevelR) ->
+    create_block(KeyList1, KeyList2, [], {infinity, 0}, [], LevelR).
 
 create_block(KeyList1, KeyList2,
-                BlockKeyList, {LSN, HSN}, SegmentList, _)
+                BlockKeyList, {LSN, HSN}, SegmentList, _LevelR)
                                     when length(BlockKeyList)==?BLOCK_SIZE ->
     case {KeyList1, KeyList2} of
         {[], []} ->
@@ -942,11 +974,13 @@ create_block(KeyList1, KeyList2,
             {BlockKeyList, full, {LSN, HSN}, SegmentList, KeyList1, KeyList2}
     end;
 create_block([], [],
-                BlockKeyList, {LSN, HSN}, SegmentList, _) ->
+                BlockKeyList, {LSN, HSN}, SegmentList, _LevelR) ->
     {BlockKeyList, partial, {LSN, HSN}, SegmentList, [], []};
 create_block(KeyList1, KeyList2,
-                BlockKeyList, {LSN, HSN}, SegmentList, Level) ->
-    case key_dominates(KeyList1, KeyList2, Level) of
+                BlockKeyList, {LSN, HSN}, SegmentList, LevelR) ->
+    case key_dominates(KeyList1,
+                        KeyList2,
+                        {LevelR#level.is_basement, LevelR#level.timestamp}) of
         {{next_key, TopKey}, Rem1, Rem2} ->
             {UpdLSN, UpdHSN} = update_sequencenumbers(TopKey, LSN, HSN),
             NewBlockKeyList = lists:append(BlockKeyList,
@@ -955,11 +989,11 @@ create_block(KeyList1, KeyList2,
                                             [hash_for_segmentid(TopKey)]), 
             create_block(Rem1, Rem2,
                             NewBlockKeyList, {UpdLSN, UpdHSN},
-                            NewSegmentList, Level);
+                            NewSegmentList, LevelR);
         {skipped_key, Rem1, Rem2} ->
             create_block(Rem1, Rem2,
                             BlockKeyList, {LSN, HSN},
-                            SegmentList, Level)
+                            SegmentList, LevelR)
     end.
 
 
@@ -998,11 +1032,11 @@ create_slot(KL1, KL2, _, _, SegLists, SerialisedSlot, LengthList,
     {{LowKey, generate_segment_filter(SegLists), SerialisedSlot, LengthList},
         {{LSN, HSN}, LastKey, partial},
         KL1, KL2};
-create_slot(KL1, KL2, Level, BlockCount, SegLists, SerialisedSlot, LengthList,
+create_slot(KL1, KL2, LevelR, BlockCount, SegLists, SerialisedSlot, LengthList,
                                     {LowKey, LSN, HSN, LastKey, _Status}) ->
     {BlockKeyList, Status,
         {LSNb, HSNb},
-        SegmentList, KL1b, KL2b} = create_block(KL1, KL2, Level),
+        SegmentList, KL1b, KL2b} = create_block(KL1, KL2, LevelR),
     TrackingMetadata = case LowKey of
         null ->
             [NewLowKeyV|_] = BlockKeyList,
@@ -1021,7 +1055,7 @@ create_slot(KL1, KL2, Level, BlockCount, SegLists, SerialisedSlot, LengthList,
     SerialisedBlock = serialise_block(BlockKeyList),
     BlockLength = byte_size(SerialisedBlock),
     SerialisedSlot2 = <<SerialisedSlot/binary, SerialisedBlock/binary>>,
-    create_slot(KL1b, KL2b, Level, BlockCount - 1, SegLists ++ [SegmentList],
+    create_slot(KL1b, KL2b, LevelR, BlockCount - 1, SegLists ++ [SegmentList],
                 SerialisedSlot2, LengthList ++ [BlockLength],
                 TrackingMetadata).
 
@@ -1416,7 +1450,7 @@ simple_create_block_test() ->
     KeyList2 = [{{o, "Bucket1", "Key2", null}, {3, {active, infinity}, null}}],
     {MergedKeyList, ListStatus, SN, _, _, _} = create_block(KeyList1,
                                                             KeyList2,
-                                                            1),
+                                                            #level{level=1}),
     ?assertMatch(partial, ListStatus),
     [H1|T1] = MergedKeyList,
     ?assertMatch(H1, {{o, "Bucket1", "Key1", null}, {1, {active, infinity}, null}}),
@@ -1431,7 +1465,7 @@ dominate_create_block_test() ->
     KeyList2 = [{{o, "Bucket1", "Key2", null}, {3, {tomb, infinity}, null}}],
     {MergedKeyList, ListStatus, SN, _, _, _} = create_block(KeyList1,
                                                             KeyList2,
-                                                            1),
+                                                            #level{level=1}),
     ?assertMatch(partial, ListStatus),
     [K1, K2] = MergedKeyList,
     ?assertMatch(K1, {{o, "Bucket1", "Key1", null}, {1, {active, infinity}, null}}),
@@ -1476,8 +1510,8 @@ sample_keylist() ->
 alternating_create_block_test() ->
     {KeyList1, KeyList2} = sample_keylist(),
     {MergedKeyList, ListStatus, _, _, _, _} = create_block(KeyList1,
-                                                        KeyList2,
-                                                        1),
+                                                            KeyList2,
+                                                            #level{level=1}),
     BlockSize = length(MergedKeyList),
     ?assertMatch(BlockSize, 32),
     ?assertMatch(ListStatus, complete),
@@ -1488,7 +1522,9 @@ alternating_create_block_test() ->
     K32 = lists:nth(32, MergedKeyList),
     ?assertMatch(K32, {{o, "Bucket4", "Key1", null}, {1, {active, infinity}, null}}),
     HKey = {{o, "Bucket1", "Key0", null}, {1, {active, infinity}, null}},
-    {_, ListStatus2, _, _, _, _} = create_block([HKey|KeyList1], KeyList2, 1),
+    {_, ListStatus2, _, _, _, _} = create_block([HKey|KeyList1],
+                                                    KeyList2,
+                                                    #level{level=1}),
     ?assertMatch(ListStatus2, full).
 
 
@@ -1583,7 +1619,7 @@ merge_seglists_test() ->
     
 createslot_stage1_test() ->
     {KeyList1, KeyList2} = sample_keylist(),
-    Out = create_slot(KeyList1, KeyList2, 1),
+    Out = create_slot(KeyList1, KeyList2, #level{level=1}),
     {{LowKey, SegFilter, _SerialisedSlot, _LengthList},
         {{LSN, HSN}, LastKey, Status},
         KL1, KL2} = Out,
@@ -1606,7 +1642,7 @@ createslot_stage1_test() ->
 createslot_stage2_test() ->
     Out = create_slot(lists:sort(generate_randomkeys(100)),
                         lists:sort(generate_randomkeys(100)),
-                        1),
+                        #level{level=1}),
     {{_LowKey, _SegFilter, SerialisedSlot, LengthList},
         {{_LSN, _HSN}, _LastKey, Status},
         _KL1, _KL2} = Out,
@@ -1619,7 +1655,7 @@ createslot_stage2_test() ->
 createslot_stage3_test() ->
     Out = create_slot(lists:sort(generate_sequentialkeys(100, 1)),
                         lists:sort(generate_sequentialkeys(100, 101)),
-                        1),
+                        #level{level=1}),
     {{LowKey, SegFilter, SerialisedSlot, LengthList},
         {{_LSN, _HSN}, LastKey, Status},
         KL1, KL2} = Out,
@@ -1662,7 +1698,10 @@ testwrite_function(finalise, {Handle, C_SlotIndex, SNExtremes, KeyExtremes}) ->
 
 writekeys_stage1_test() ->
     {KL1, KL2} = sample_keylist(),
-    {FunOut, {_KL1Rem, _KL2Rem}} = write_keys([], KL1, KL2,  [], <<>>, 1,
+    {FunOut, {_KL1Rem, _KL2Rem}} = write_keys([],
+                                                KL1, KL2,
+                                                [], <<>>,
+                                                #level{level=1},
                                                 fun testwrite_function/2),
     {Handle, {_, PointerIndex}, SNExtremes, KeyExtremes} = FunOut,
     ?assertMatch(SNExtremes, {1,3}),
@@ -1685,7 +1724,9 @@ initial_create_file_test() ->
     Filename = "../test/test1.sft",
     {KL1, KL2} = sample_keylist(),
     {Handle, FileMD} = create_file(Filename),
-    {UpdHandle, UpdFileMD, {[], []}} = complete_file(Handle, FileMD, KL1, KL2, 1),
+    {UpdHandle, UpdFileMD, {[], []}} = complete_file(Handle, FileMD,
+                                                        KL1, KL2,
+                                                        #level{level=1}),
     Result1 = fetch_keyvalue(UpdHandle, UpdFileMD, {o, "Bucket1", "Key8", null}),
     io:format("Result is ~w~n", [Result1]),
     ?assertMatch(Result1, {{o, "Bucket1", "Key8", null},
@@ -1703,7 +1744,8 @@ big_create_file_test() ->
     {InitHandle, InitFileMD} = create_file(Filename),
     {Handle, FileMD, {_KL1Rem, _KL2Rem}} = complete_file(InitHandle,
                                                             InitFileMD,
-                                                            KL1, KL2, 1),
+                                                            KL1, KL2,
+                                                            #level{level=1}),
     [{K1, {Sq1, St1, V1}}|_] = KL1,
     [{K2, {Sq2, St2, V2}}|_] = KL2,
     Result1 = fetch_keyvalue(Handle, FileMD, K1),
@@ -1736,11 +1778,9 @@ initial_iterator_test() ->
     Filename = "../test/test2.sft",
     {KL1, KL2} = sample_keylist(),
     {Handle, FileMD} = create_file(Filename),
-    {UpdHandle, UpdFileMD, {[], []}} = complete_file(Handle,
-                                                        FileMD,
-                                                        KL1,
-                                                        KL2,
-                                                        1),
+    {UpdHandle, UpdFileMD, {[], []}} = complete_file(Handle, FileMD,
+                                                        KL1, KL2,
+                                                        #level{level=1}),
     Result1 = fetch_range_keysonly(UpdHandle, UpdFileMD,
                                     {o, "Bucket1", "Key8", null},
                                     {o, "Bucket1", "Key9d", null}),
@@ -1790,54 +1830,54 @@ key_dominates_test() ->
     KL1 = [KV1, KV2],
     KL2 = [KV3, KV4],
     ?assertMatch({{next_key, KV1}, [KV2], KL2},
-                    key_dominates(KL1, KL2, 1)),
+                    key_dominates(KL1, KL2, {undefined, 1})),
     ?assertMatch({{next_key, KV1}, KL2, [KV2]},
-                    key_dominates(KL2, KL1, 1)),
+                    key_dominates(KL2, KL1, {undefined, 1})),
     ?assertMatch({skipped_key, KL2, KL1},
-                    key_dominates([KV5|KL2], KL1, 1)),
+                    key_dominates([KV5|KL2], KL1, {undefined, 1})),
     ?assertMatch({{next_key, KV1}, [KV2], []},
-                    key_dominates(KL1, [], 1)),
+                    key_dominates(KL1, [], {undefined, 1})),
     ?assertMatch({skipped_key, [KV6|KL2], [KV2]},
-                    key_dominates([KV6|KL2], KL1, 1)),
+                    key_dominates([KV6|KL2], KL1, {undefined, 1})),
     ?assertMatch({{next_key, KV6}, KL2, [KV2]},
-                    key_dominates([KV6|KL2], [KV2], 1)),
+                    key_dominates([KV6|KL2], [KV2], {undefined, 1})),
     ?assertMatch({skipped_key, [KV6|KL2], [KV2]},
-                    key_dominates([KV6|KL2], KL1, {basement, 1})),
+                    key_dominates([KV6|KL2], KL1, {true, 1})),
     ?assertMatch({skipped_key, [KV6|KL2], [KV2]},
-                    key_dominates([KV6|KL2], KL1, {basement, 1000})),
+                    key_dominates([KV6|KL2], KL1, {true, 1000})),
     ?assertMatch({{next_key, KV6}, KL2, [KV2]},
-                    key_dominates([KV6|KL2], [KV2], {basement, 1})),
+                    key_dominates([KV6|KL2], [KV2], {true, 1})),
     ?assertMatch({skipped_key, KL2, [KV2]},
-                    key_dominates([KV6|KL2], [KV2], {basement, 1000})),
+                    key_dominates([KV6|KL2], [KV2], {true, 1000})),
     ?assertMatch({skipped_key, [], []},
-                    key_dominates([KV6], [], {basement, 1000})),
+                    key_dominates([KV6], [], {true, 1000})),
     ?assertMatch({skipped_key, [], []},
-                    key_dominates([], [KV6], {basement, 1000})),
+                    key_dominates([], [KV6], {true, 1000})),
     ?assertMatch({{next_key, KV6}, [], []},
-                    key_dominates([KV6], [], {basement, 1})),
+                    key_dominates([KV6], [], {true, 1})),
     ?assertMatch({{next_key, KV6}, [], []},
-                    key_dominates([], [KV6], {basement, 1})),
+                    key_dominates([], [KV6], {true, 1})),
     ?assertMatch({skipped_key, [], []},
-                    key_dominates([KV7], [], {basement, 1})),
+                    key_dominates([KV7], [], {true, 1})),
     ?assertMatch({skipped_key, [], []},
-                    key_dominates([], [KV7], {basement, 1})),
+                    key_dominates([], [KV7], {true, 1})),
     ?assertMatch({skipped_key, [KV7|KL2], [KV2]},
-                    key_dominates([KV7|KL2], KL1, 1)),
+                    key_dominates([KV7|KL2], KL1, {undefined, 1})),
     ?assertMatch({{next_key, KV7}, KL2, [KV2]},
-                    key_dominates([KV7|KL2], [KV2], 1)),
+                    key_dominates([KV7|KL2], [KV2], {undefined, 1})),
     ?assertMatch({skipped_key, [KV7|KL2], [KV2]},
-                    key_dominates([KV7|KL2], KL1, {basement, 1})),
+                    key_dominates([KV7|KL2], KL1, {true, 1})),
     ?assertMatch({skipped_key, KL2, [KV2]},
-                    key_dominates([KV7|KL2], [KV2], {basement, 1})).
+                    key_dominates([KV7|KL2], [KV2], {true, 1})).
 
 
 big_iterator_test() ->
     Filename = "../test/bigtest1.sft",
     {KL1, KL2} = {lists:sort(generate_randomkeys(10000)), []},
     {InitHandle, InitFileMD} = create_file(Filename),
-    {Handle, FileMD, {KL1Rem, KL2Rem}} = complete_file(InitHandle,
-                                                            InitFileMD,
-                                                            KL1, KL2, 1),
+    {Handle, FileMD, {KL1Rem, KL2Rem}} = complete_file(InitHandle, InitFileMD,
+                                                        KL1, KL2,
+                                                        #level{level=1}),
     io:format("Remainder lengths are ~w and ~w ~n", [length(KL1Rem), length(KL2Rem)]),
     {complete, Result1} = fetch_range_keysonly(Handle,
                                                     FileMD,
