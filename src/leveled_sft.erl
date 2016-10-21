@@ -1069,25 +1069,21 @@ key_dominates_expanded([], [H2|T2], Level) ->
             {{next_key, H2}, [], maybe_expand_pointer(T2)}
     end;
 key_dominates_expanded([H1|T1], [H2|T2], Level) ->
-    {{K1, V1}, {K2, V2}} = {H1, H2},
-    {Sq1, St1, _MD1} = leveled_codec:striphead_to_details(V1),
-    {Sq2, St2, _MD2} = leveled_codec:striphead_to_details(V2),
-    case K1 of
-        K2 ->
-            case Sq1 > Sq2 of
-                true ->
-                    {skipped_key, [H1|T1], maybe_expand_pointer(T2)};
-                false ->
-                    {skipped_key, maybe_expand_pointer(T1), [H2|T2]}
-            end;
-        K1 when K1 < K2 ->
+    case leveled_codec:key_dominates(H1, H2) of
+        left_hand_first ->
+            St1 = leveled_codec:strip_to_statusonly(H1),
             case maybe_reap_expiredkey(St1, Level) of
                 true ->
                     {skipped_key, maybe_expand_pointer(T1), [H2|T2]};
                 false ->
                     {{next_key, H1}, maybe_expand_pointer(T1), [H2|T2]}
             end;
-        _ ->
+        left_hand_dominant ->
+            {skipped_key, [H1|T1], maybe_expand_pointer(T2)};
+        right_hand_dominant ->
+            {skipped_key, maybe_expand_pointer(T1), [H2|T2]};
+        right_hand_first ->
+            St2 = leveled_codec:strip_to_statusonly(H2),
             case maybe_reap_expiredkey(St2, Level) of
                 true ->
                     {skipped_key, [H1|T1], maybe_expand_pointer(T2)};
