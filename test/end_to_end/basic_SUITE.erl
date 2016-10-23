@@ -7,7 +7,8 @@
             journal_compaction/1,
             fetchput_snapshot/1,
             load_and_count/1,
-            load_and_count_withdelete/1
+            load_and_count_withdelete/1,
+            space_clear_ondelete_test/1
             ]).
 
 all() -> [
@@ -16,7 +17,8 @@ all() -> [
             journal_compaction,
             fetchput_snapshot,
             load_and_count,
-            load_and_count_withdelete
+            load_and_count_withdelete,
+            space_clear_ondelete_test
             ].
 
 
@@ -395,3 +397,75 @@ load_and_count_withdelete(_Config) ->
     ok = leveled_bookie:book_close(Bookie2),
     testutil:reset_filestructure().
 
+
+space_clear_ondelete_test(_Config) ->
+    % Test is a work in progress
+    RootPath = testutil:reset_filestructure(),
+    StartOpts1 = #bookie_options{root_path=RootPath, max_journalsize=20000000},
+    {ok, Book1} = leveled_bookie:book_start(StartOpts1),
+    G2 = fun testutil:generate_compressibleobjects/2,
+    testutil:load_objects(20000,
+                            [uuid, uuid, uuid, uuid],
+                            Book1,
+                            no_check,
+                            G2),
+    
+    {async, F1} = leveled_bookie:book_returnfolder(Book1, {keylist, o_rkv}),
+    SW1 = os:timestamp(),
+    KL1 = F1(),
+    ok = case length(KL1) of
+                80000 ->
+                    io:format("Key list took ~w microseconds for 80K keys~n",
+                                [timer:now_diff(os:timestamp(), SW1)]),
+                    ok
+            end,
+    timer:sleep(10000), % Allow for any L0 file to be rolled
+    {ok, FNsA_L} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
+    {ok, FNsA_J} = file:list_dir(RootPath ++ "/journal/journal_files"),
+    io:format("Bookie created ~w journal files and ~w ledger files~n",
+                    [length(FNsA_J), length(FNsA_L)]),
+    SW2 = os:timestamp(),
+    lists:foreach(fun({Bucket, Key}) ->
+                        ok = leveled_bookie:book_riakdelete(Book1,
+                                                            Bucket,
+                                                            Key,
+                                                            [])
+                        end,
+                    KL1),
+    io:format("Deletion took ~w microseconds for 80K keys~n",
+                                [timer:now_diff(os:timestamp(), SW2)]),
+    ok = leveled_bookie:book_compactjournal(Book1, 30000),
+    timer:sleep(30000), % Allow for any L0 file to be rolled
+    {ok, FNsB_L} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
+    {ok, FNsB_J} = file:list_dir(RootPath ++ "/journal/journal_files"),
+    io:format("Bookie has ~w journal files and ~w ledger files " ++
+                    "after deletes~n",
+                [length(FNsB_J), length(FNsB_L)]),
+    
+    {async, F2} = leveled_bookie:book_returnfolder(Book1, {keylist, o_rkv}),
+    SW3 = os:timestamp(),
+    KL2 = F2(),
+    ok = case length(KL2) of
+                0 ->
+                    io:format("Key list took ~w microseconds for no keys~n",
+                                [timer:now_diff(os:timestamp(), SW3)]),
+                    ok
+            end,
+    ok = leveled_bookie:book_close(Book1),
+    
+    {ok, Book2} = leveled_bookie:book_start(StartOpts1),
+    {async, F3} = leveled_bookie:book_returnfolder(Book2, {keylist, o_rkv}),
+    SW4 = os:timestamp(),
+    KL3 = F3(),
+    ok = case length(KL3) of
+                0 ->
+                    io:format("Key list took ~w microseconds for no keys~n",
+                                [timer:now_diff(os:timestamp(), SW4)]),
+                    ok
+            end,
+    ok = leveled_bookie:book_close(Book2),
+    {ok, FNsC_L} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
+    {ok, FNsC_J} = file:list_dir(RootPath ++ "/journal/journal_files"),
+    io:format("Bookie has ~w journal files and ~w ledger files " ++
+                    "after deletes~n",
+                [length(FNsC_J), length(FNsC_L)]).

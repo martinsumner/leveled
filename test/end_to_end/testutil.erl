@@ -28,7 +28,7 @@
 
 reset_filestructure() ->
     % io:format("Waiting ~w ms to give a chance for all file closes " ++
-                "to complete~n", [Wait]),
+    %             "to complete~n", [Wait]),
     % timer:sleep(Wait),
     RootPath  = "test",
     filelib:ensure_dir(RootPath ++ "/journal/"),

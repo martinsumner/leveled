@@ -366,7 +366,13 @@ handle_call({return_folder, FolderType}, _From, State) ->
                                 Bucket,
                                 {IdxField, StartValue, EndValue},
                                 {ReturnTerms, TermRegex}),
-                State}
+                State};
+        {keylist, Tag} ->
+                {reply,
+                    allkey_query(State#state.penciller,
+                                    State#state.ledger_cache,
+                                    Tag),
+                    State}
     end;
 handle_call({compact_journal, Timeout}, _From, State) ->
     ok = leveled_inker:ink_compactjournal(State#state.inker,
@@ -460,6 +466,28 @@ index_query(Penciller, LedgerCache,
                 end,
     {async, Folder}.
 
+allkey_query(Penciller, LedgerCache, Tag) ->
+    PCLopts = #penciller_options{start_snapshot=true,
+                                    source_penciller=Penciller},
+    {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
+    Folder = fun() ->
+                Increment = gb_trees:to_list(LedgerCache),
+                io:format("Length of increment in snapshot is ~w~n",
+                            [length(Increment)]),
+                ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
+                                                        {infinity, Increment}),   
+                SK = leveled_codec:to_ledgerkey(null, null, Tag),
+                EK = leveled_codec:to_ledgerkey(null, null, Tag),
+                Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
+                                                        SK,
+                                                        EK,
+                                                        fun accumulate_keys/3,
+                                                        []),
+                ok = leveled_penciller:pcl_close(LedgerSnapshot),
+                lists:reverse(Acc)
+                end,
+    {async, Folder}.
+
 
 shutdown_wait([], _Inker) ->
     false;
@@ -527,6 +555,14 @@ accumulate_size(Key, Value, {Size, Count}) ->
             {Size + leveled_codec:get_size(Key, Value), Count + 1};
         false ->
             {Size, Count}
+    end.
+
+accumulate_keys(Key, Value, KeyList) ->
+    case leveled_codec:is_active(Key, Value) of
+        true ->
+            [leveled_codec:from_ledgerkey(Key)|KeyList];
+        false ->
+            KeyList
     end.
 
 

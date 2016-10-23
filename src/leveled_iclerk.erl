@@ -405,7 +405,8 @@ write_values([KVC|Rest], CDBopts, Journal0, ManSlice0) ->
                             _ ->
                                 {ok, Journal0}
                         end,
-    R = leveled_cdb:cdb_put(Journal1, {SQN, PK}, V),
+    ValueToStore = leveled_inker:create_value_for_cdb(V),
+    R = leveled_cdb:cdb_put(Journal1, {SQN, PK}, ValueToStore),
     case R of
         ok ->
             write_values(Rest, CDBopts, Journal1, ManSlice0);

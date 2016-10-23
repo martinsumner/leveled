@@ -111,7 +111,9 @@ is_active(Key, Value) ->
 
 from_ledgerkey({Tag, Bucket, {_IdxField, IdxValue}, Key})
                                                 when Tag == ?IDX_TAG ->
-    {Bucket, Key, IdxValue}.
+    {Bucket, Key, IdxValue};
+from_ledgerkey({_Tag, Bucket, Key, null}) ->
+    {Bucket, Key}.
 
 to_ledgerkey(Bucket, Key, Tag, Field, Value) when Tag == ?IDX_TAG ->
     {?IDX_TAG, Bucket, {Field, Value}, Key}.

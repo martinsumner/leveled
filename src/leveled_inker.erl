@@ -97,6 +97,7 @@
         ink_print_manifest/1,
         ink_close/1,
         ink_forceclose/1,
+        create_value_for_cdb/1,
         build_dummy_journal/0,
         simple_manifest_reader/2,
         clean_testdir/1,
@@ -375,7 +376,7 @@ put_object(PrimaryKey, Object, KeyChanges, State) ->
     %% as the CDB will also do the same conversion
     %% Perhaps have CDB started up in apure binary mode, when it doesn't
     %5 receive terms?
-    Bin1 = term_to_binary({Object, KeyChanges}, [compressed]),
+    Bin1 = create_value_for_cdb({Object, KeyChanges}),    
     ObjSize = byte_size(Bin1),
     case leveled_cdb:cdb_put(State#state.active_journaldb,
                                 {NewSQN, PrimaryKey},
@@ -403,6 +404,15 @@ put_object(PrimaryKey, Object, KeyChanges, State) ->
                                 manifest_sqn = State#state.manifest_sqn + 1,
                                 active_journaldb=NewJournalP},
                 ObjSize}
+    end.
+
+
+create_value_for_cdb(Value) ->
+    case Value of
+        {Object, KeyChanges} ->
+            term_to_binary({Object, KeyChanges}, [compressed]);
+        Value when is_binary(Value) ->
+            Value
     end.
 
 
