@@ -186,6 +186,15 @@ book_riakput(Pid, RiakObject, IndexSpecs) ->
 book_put(Pid, Bucket, Key, Object, IndexSpecs) ->
     book_put(Pid, Bucket, Key, Object, IndexSpecs, ?STD_TAG).
 
+%% TODO:
+%% It is not enough simply to change the value to delete, as the journal
+%% needs to know the key is a tombstone at compaction time, and currently at
+%% compaction time the clerk only knows the Key and not the Value.
+%%
+%% The tombstone cannot be removed from the Journal on compaction, as the
+%% journal entry the tombstone deletes may not have been reaped - and so if the
+%% ledger got erased, the value would be resurrected.
+
 book_riakdelete(Pid, Bucket, Key, IndexSpecs) ->
     book_put(Pid, Bucket, Key, delete, IndexSpecs, ?RIAK_TAG).
 

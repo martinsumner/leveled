@@ -1615,7 +1615,50 @@ merge_seglists_test() ->
                     check_for_segments(SegBin2, [1024*1024 - 1], true)),
     % This match is before the flipped bit, so still works without CRC check
     ?assertMatch({maybe_present, [0]},
-                    check_for_segments(SegBin2, [0,900], false)).
+                    check_for_segments(SegBin2, [0,900], false)),
+    
+    ExpectedDeltasAll1s = <<4294967295:32/integer>>,
+    SegBin3 = <<ExpectedTopHashes/bitstring, ExpectedDeltasAll1s/bitstring>>,
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin3, [900], true)),
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin3, [200], true)),
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin3, [0,900], true)),
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin3, [1024*1024 - 1], true)),
+    % This is so badly mangled, the error gets detected event without CRC
+    % checking being enforced
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin3, [900], false)),
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin3, [200], false)),
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin3, [0,900], false)),
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin3, [1024*1024 - 1], false)),
+    
+    ExpectedDeltasNearlyAll1s = <<4294967287:32/integer>>,
+    SegBin4 = <<ExpectedTopHashes/bitstring,
+                    ExpectedDeltasNearlyAll1s/bitstring>>,
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin4, [900], true)),
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin4, [200], true)),
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin4, [0,900], true)),
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin4, [1024*1024 - 1], true)),
+    % This is so badly mangled, the error gets detected event without CRC
+    % checking being enforced
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin4, [900], false)),
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin4, [200], false)),
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin4, [0,900], false)),
+    ?assertMatch(error_so_maybe_present,
+                    check_for_segments(SegBin4, [1024*1024 - 1], false)).
     
 createslot_stage1_test() ->
     {KeyList1, KeyList2} = sample_keylist(),
