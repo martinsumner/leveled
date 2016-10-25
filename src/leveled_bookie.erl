@@ -663,7 +663,7 @@ maybe_withjitter(CacheSize, MaxCacheSize) ->
 
 load_fun(KeyInLedger, ValueInLedger, _Position, Acc0, ExtractFun) ->
     {MinSQN, MaxSQN, OutputTree} = Acc0,
-    {SQN, PK} = KeyInLedger,
+    {SQN, _Type, PK} = KeyInLedger,
     % VBin may already be a term
     {VBin, VSize} = ExtractFun(ValueInLedger), 
     {Obj, IndexSpecs} = case is_binary(VBin) of

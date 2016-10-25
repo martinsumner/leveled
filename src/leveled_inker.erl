@@ -50,10 +50,19 @@
 %% -------- Objects ---------
 %%
 %% From the perspective of the Inker, objects to store are made up of:
-%% - A Primary Key (as an Erlang term)
-%% - A sequence number (assigned by the Inker)
-%% - An object (an Erlang term)
-%% - A set of Key Deltas associated with the change
+%%  - An Inker Key formed from
+%%      - A sequence number (assigned by the Inker)
+%%      - An Inker key type (stnd, tomb or keyd)
+%%      - A Ledger Key (as an Erlang term)
+%%  - A value formed from
+%%      - An object (an Erlang term) which should be null for tomb types, and
+%%      maybe null for keyd types
+%%      - A set of Key Deltas associated with the change (which may be an
+%%      empty list )    
+%%
+%% Note that only the Inker key type of stnd is directly fetchable, other
+%% key types are to be found only in scans and so can be added without being
+%% entered into the hashtree
 %%
 %% -------- Compaction ---------
 %%
@@ -372,15 +381,20 @@ start_from_file(InkerOpts) ->
 
 put_object(PrimaryKey, Object, KeyChanges, State) ->
     NewSQN = State#state.journal_sqn + 1,
-    %% TODO: The term goes through a double binary_to_term conversion
-    %% as the CDB will also do the same conversion
-    %% Perhaps have CDB started up in apure binary mode, when it doesn't
-    %5 receive terms?
+    {InkerType, HashOpt} = case Object of
+                                delete ->
+                                    {tomb, no_hash};
+                                %delta ->
+                                %    {keyd, no_hash
+                                _ ->
+                                    {stnd, hash}
+                            end,
     Bin1 = create_value_for_cdb({Object, KeyChanges}),    
     ObjSize = byte_size(Bin1),
     case leveled_cdb:cdb_put(State#state.active_journaldb,
-                                {NewSQN, PrimaryKey},
-                                Bin1) of
+                                {NewSQN, InkerType, PrimaryKey},
+                                Bin1,
+                                HashOpt) of
         ok ->
             {ok, State#state{journal_sqn=NewSQN}, ObjSize};
         roll ->
@@ -394,7 +408,10 @@ put_object(PrimaryKey, Object, KeyChanges, State) ->
             ok = simple_manifest_writer(NewManifest,
                                         State#state.manifest_sqn + 1,
                                         State#state.root_path),
-            ok = leveled_cdb:cdb_put(NewJournalP, {NewSQN, PrimaryKey}, Bin1),
+            ok = leveled_cdb:cdb_put(NewJournalP,
+                                        {NewSQN, InkerType, PrimaryKey},
+                                        Bin1,
+                                        HashOpt),
             io:format("Put to new active journal " ++
                             "with manifest write took ~w microseconds~n",
                         [timer:now_diff(os:timestamp(),SW)]),
@@ -418,11 +435,11 @@ create_value_for_cdb(Value) ->
 
 get_object(PrimaryKey, SQN, Manifest) ->
     JournalP = find_in_manifest(SQN, Manifest),
-    Obj = leveled_cdb:cdb_get(JournalP, {SQN, PrimaryKey}),
+    Obj = leveled_cdb:cdb_get(JournalP, {SQN, stnd, PrimaryKey}),
     case Obj of
-        {{SQN, PK}, Bin} when is_binary(Bin) ->
+        {{SQN, stnd, PK}, Bin} when is_binary(Bin) ->
             {{SQN, PK}, binary_to_term(Bin)};
-        {{SQN, PK}, Term} ->
+        {{SQN, stnd, PK}, Term} ->
             {{SQN, PK}, Term};
         _ ->
             Obj
@@ -456,7 +473,7 @@ build_manifest(ManifestFilenames,
     JournalSQN = case leveled_cdb:cdb_lastkey(ActiveJournal) of
                         empty ->
                             ActiveLowSQN;
-                        {JSQN, _LastKey} ->
+                        {JSQN, _Type, _LastKey} ->
                             JSQN
                     end,
     
@@ -499,7 +516,7 @@ open_all_manifest(Man0, RootPath, CDBOpts) ->
                     io:format("Head manifest entry ~s is complete~n",
                                 [HeadFN]),
                     {ok, HeadR} = leveled_cdb:cdb_open_reader(CompleteHeadFN),
-                    {LastSQN, _LastPK} = leveled_cdb:cdb_lastkey(HeadR),
+                    {LastSQN, _Type, _PK} = leveled_cdb:cdb_lastkey(HeadR),
                     add_to_manifest(add_to_manifest(ManifestTail,
                                                     {HeadSQN, HeadFN, HeadR}),
                                         start_new_activejournal(LastSQN + 1,
@@ -765,8 +782,8 @@ build_dummy_journal() ->
     {ok, J1} = leveled_cdb:cdb_open_writer(F1),
     {K1, V1} = {"Key1", "TestValue1"},
     {K2, V2} = {"Key2", "TestValue2"},
-    ok = leveled_cdb:cdb_put(J1, {1, K1}, term_to_binary({V1, []})),
-    ok = leveled_cdb:cdb_put(J1, {2, K2}, term_to_binary({V2, []})),
+    ok = leveled_cdb:cdb_put(J1, {1, stnd, K1}, term_to_binary({V1, []})),
+    ok = leveled_cdb:cdb_put(J1, {2, stnd, K2}, term_to_binary({V2, []})),
     ok = leveled_cdb:cdb_roll(J1),
     _LK = leveled_cdb:cdb_lastkey(J1),
     ok = leveled_cdb:cdb_close(J1),
@@ -774,8 +791,8 @@ build_dummy_journal() ->
     {ok, J2} = leveled_cdb:cdb_open_writer(F2),
     {K1, V3} = {"Key1", "TestValue3"},
     {K4, V4} = {"Key4", "TestValue4"},
-    ok = leveled_cdb:cdb_put(J2, {3, K1}, term_to_binary({V3, []})),
-    ok = leveled_cdb:cdb_put(J2, {4, K4}, term_to_binary({V4, []})),
+    ok = leveled_cdb:cdb_put(J2, {3, stnd, K1}, term_to_binary({V3, []})),
+    ok = leveled_cdb:cdb_put(J2, {4, stnd, K4}, term_to_binary({V4, []})),
     ok = leveled_cdb:cdb_close(J2),
     Manifest = [{1, "../test/journal/journal_files/nursery_1"},
                     {3, "../test/journal/journal_files/nursery_3"}],

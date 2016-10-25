@@ -57,6 +57,7 @@
         cdb_open_reader/1,
         cdb_get/2,
         cdb_put/3,
+        cdb_put/4,
         cdb_getpositions/2,
         cdb_directfetch/3,
         cdb_lastkey/1,
@@ -126,7 +127,10 @@ cdb_get(Pid, Key) ->
     gen_server:call(Pid, {get_kv, Key}, infinity).
 
 cdb_put(Pid, Key, Value) ->
-    gen_server:call(Pid, {put_kv, Key, Value}, infinity).
+    cdb_put(Pid, Key, Value, hash).
+
+cdb_put(Pid, Key, Value, HashOpt) ->
+    gen_server:call(Pid, {put_kv, Key, Value, HashOpt}, infinity).
 
 %% SampleSize can be an integer or the atom all
 cdb_getpositions(Pid, SampleSize) ->
@@ -258,7 +262,7 @@ handle_call({key_check, Key}, _From, State) ->
                     State#state.hash_index),
                 State}
     end;
-handle_call({put_kv, Key, Value}, _From, State) ->
+handle_call({put_kv, Key, Value, HashOpt}, _From, State) ->
     case {State#state.writer, State#state.pending_roll} of
         {true, false} ->
             Result = put(State#state.handle,
@@ -266,15 +270,20 @@ handle_call({put_kv, Key, Value}, _From, State) ->
                             {State#state.last_position, State#state.hashtree},
                             State#state.binary_mode,
                             State#state.max_size),
-            case Result of
-                roll ->
+            case {Result, HashOpt} of
+                {roll, _} ->
                     %% Key and value could not be written
                     {reply, roll, State};
-                {UpdHandle, NewPosition, HashTree} ->
+                {{UpdHandle, NewPosition, HashTree}, hash} ->
                     {reply, ok, State#state{handle=UpdHandle,
                                                 last_position=NewPosition,
                                                 last_key=Key,
-                                                hashtree=HashTree}}
+                                                hashtree=HashTree}};
+                {{UpdHandle, NewPosition, _HashTree}, no_hash} ->
+                    %% Don't update the hashtree
+                    {reply, ok, State#state{handle=UpdHandle,
+                                                last_position=NewPosition,
+                                                last_key=Key}}
                 end;
         _ ->
             {reply,
