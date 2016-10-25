@@ -293,7 +293,14 @@ handle_call({put_kv, Key, Value, HashOpt}, _From, State) ->
 handle_call(cdb_lastkey, _From, State) ->
     {reply, State#state.last_key, State};
 handle_call(cdb_firstkey, _From, State) ->
-    {reply, extract_key(State#state.handle, ?BASE_POSITION), State};
+    {ok, EOFPos} = file:position(State#state.handle, eof),
+    FirstKey = case EOFPos of
+                        ?BASE_POSITION ->
+                            empty;
+                        _ ->
+                            extract_key(State#state.handle, ?BASE_POSITION)
+                    end,
+    {reply, FirstKey, State};
 handle_call(cdb_filename, _From, State) ->
     {reply, State#state.filename, State};
 handle_call({get_positions, SampleSize}, _From, State) ->
@@ -746,12 +753,31 @@ load_index(Handle) ->
 
 %% Function to find the LastKey in the file
 find_lastkey(Handle, IndexCache) ->
-    LastPosition = scan_index(Handle,
-                                IndexCache,
-                                {fun scan_index_findlast/4, 0}),
-    {ok, _} = file:position(Handle, LastPosition),
-    {KeyLength, _ValueLength} = read_next_2_integers(Handle),
-    read_next_term(Handle, KeyLength).
+    {LastPosition, TotalKeys} = scan_index(Handle,
+                                            IndexCache,
+                                            {fun scan_index_findlast/4,
+                                                {0, 0}}),
+    {ok, EOFPos} = file:position(Handle, eof),
+    io:format("TotalKeys ~w in file~n", [TotalKeys]),
+    case TotalKeys of
+        0 ->
+            scan_keys_forlast(Handle, EOFPos, ?BASE_POSITION, empty);
+        _ ->
+            {ok, _} = file:position(Handle, LastPosition),
+            {KeyLength, _ValueLength} = read_next_2_integers(Handle),
+            read_next_term(Handle, KeyLength)
+    end.
+
+scan_keys_forlast(_Handle, EOFPos, NextPos, LastKey) when EOFPos == NextPos ->
+    LastKey;
+scan_keys_forlast(Handle, EOFPos, NextPos, _LastKey)  ->
+    {ok, _} = file:position(Handle, NextPos),
+    {KeyLength, ValueLength} = read_next_2_integers(Handle),
+    scan_keys_forlast(Handle,
+                        EOFPos,
+                        NextPos + KeyLength + ValueLength + ?DWORD_SIZE,
+                        read_next_term(Handle, KeyLength)).
+
 
 scan_index(Handle, IndexCache, {ScanFun, InitAcc}) ->
     lists:foldl(fun({_X, {Pos, Count}}, Acc) ->
@@ -776,11 +802,12 @@ scan_index_forsample(Handle, [CacheEntry|Tail], ScanFun, Acc, SampleSize) ->
     end.
 
 
-scan_index_findlast(Handle, Position, Count, LastPosition) ->
+scan_index_findlast(Handle, Position, Count, {LastPosition, TotalKeys}) ->
     {ok, _} = file:position(Handle, Position),
-    lists:foldl(fun({_Hash, HPos}, MaxPos) -> max(HPos, MaxPos) end,
-                        LastPosition,
-                        read_next_n_integerpairs(Handle, Count)).
+    MaxPos = lists:foldl(fun({_Hash, HPos}, MaxPos) -> max(HPos, MaxPos) end,
+                            LastPosition,
+                            read_next_n_integerpairs(Handle, Count)),
+    {MaxPos, TotalKeys + Count}.
 
 scan_index_returnpositions(Handle, Position, Count, PosList0) ->
     {ok, _} = file:position(Handle, Position),
@@ -1705,7 +1732,7 @@ get_keys_byposition_simple_test() ->
     ok = file:delete(F2).
 
 generate_sequentialkeys(0, KVList) ->
-    KVList;
+    lists:reverse(KVList);
 generate_sequentialkeys(Count, KVList) ->
     KV = {"Key" ++ integer_to_list(Count), "Value" ++ integer_to_list(Count)},
     generate_sequentialkeys(Count - 1, KVList ++ [KV]).
@@ -1740,5 +1767,35 @@ get_keys_byposition_manykeys_test() ->
     ok = cdb_close(P2),
     ok = file:delete(F2).
 
+
+manykeys_but_nohash_test() ->
+    KeyCount = 1024,
+    {ok, P1} = cdb_open_writer("../test/nohash_keysinfile.pnd"),
+    KVList = generate_sequentialkeys(KeyCount, []),
+    lists:foreach(fun({K, V}) -> cdb_put(P1, K, V, no_hash) end, KVList),
+    SW1 = os:timestamp(),
+    {ok, F2} = cdb_complete(P1),
+    SW2 = os:timestamp(),
+    io:format("CDB completed in ~w microseconds~n",
+                [timer:now_diff(SW2, SW1)]),
+    {ok, P2} = cdb_open_reader(F2),
+    io:format("FirstKey is ~s~n", [cdb_firstkey(P2)]),
+    io:format("LastKey is ~s~n", [cdb_lastkey(P2)]),
+    ?assertMatch("Key1", cdb_firstkey(P2)),
+    ?assertMatch("Key1024", cdb_lastkey(P2)),
+    ?assertMatch([], cdb_getpositions(P2, 100)),
+    ok = cdb_close(P2),
+    ok = file:delete(F2).
+
+nokeys_test() ->
+    {ok, P1} = cdb_open_writer("../test/nohash_emptyfile.pnd"),
+    {ok, F2} = cdb_complete(P1),
+    {ok, P2} = cdb_open_reader(F2),
+    io:format("FirstKey is ~s~n", [cdb_firstkey(P2)]),
+    io:format("LastKey is ~s~n", [cdb_lastkey(P2)]),
+    ?assertMatch(empty, cdb_firstkey(P2)),
+    ?assertMatch(empty, cdb_lastkey(P2)),
+    ok = cdb_close(P2),
+    ok = file:delete(F2).
 
 -endif.

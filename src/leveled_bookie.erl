@@ -280,7 +280,8 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag}, From, State) ->
                                                 LedgerKey,
                                                 Object,
                                                 IndexSpecs),
-    Changes = preparefor_ledgercache(LedgerKey,
+    Changes = preparefor_ledgercache(no_type_assigned,
+                                        LedgerKey,
                                         SQN,
                                         Object,
                                         ObjSize,
@@ -505,7 +506,8 @@ shutdown_wait([TopPause|Rest], Inker) ->
         ok ->
             true;
         pause ->
-            io:format("Inker shutdown stil waiting process to complete~n"),
+            io:format("Inker shutdown stil waiting for process to complete" ++
+                        " with further wait of ~w~n", [lists:sum(Rest)]),
             ok = timer:sleep(TopPause),
             shutdown_wait(Rest, Inker)
     end.
@@ -518,12 +520,17 @@ set_options(Opts) ->
                             MS ->
                                 MS
                         end,
-    {#inker_options{root_path = Opts#bookie_options.root_path ++
-                                    "/" ++ ?JOURNAL_FP,
+    
+    AltStrategy = Opts#bookie_options.reload_strategy,
+    ReloadStrategy = leveled_codec:inker_reload_strategy(AltStrategy),
+    
+    JournalFP = Opts#bookie_options.root_path ++ "/" ++ ?JOURNAL_FP,
+    LedgerFP = Opts#bookie_options.root_path ++ "/" ++ ?LEDGER_FP,
+    {#inker_options{root_path = JournalFP,
+                        reload_strategy = ReloadStrategy,
                         cdb_options = #cdb_options{max_size=MaxJournalSize,
                                                     binary_mode=true}},
-        #penciller_options{root_path=Opts#bookie_options.root_path ++
-                                    "/" ++ ?LEDGER_FP}}.
+        #penciller_options{root_path = LedgerFP}}.
 
 startup(InkerOpts, PencillerOpts) ->
     {ok, Inker} = leveled_inker:ink_start(InkerOpts),
@@ -613,13 +620,17 @@ accumulate_index(TermRe, AddFun) ->
     end.
 
 
-preparefor_ledgercache(PK, SQN, Obj, Size, IndexSpecs) ->
-    {Bucket, Key, PrimaryChange} = leveled_codec:generate_ledgerkv(PK,
+preparefor_ledgercache(?INKT_KEYD, LedgerKey, SQN, _Obj, _Size, IndexSpecs) ->
+    {Bucket, Key} = leveled_codec:from_ledgerkey(LedgerKey),
+    leveled_codec:convert_indexspecs(IndexSpecs, Bucket, Key, SQN);
+preparefor_ledgercache(_Type, LedgerKey, SQN, Obj, Size, IndexSpecs) ->
+    {Bucket, Key, PrimaryChange} = leveled_codec:generate_ledgerkv(LedgerKey,
                                                                     SQN,
                                                                     Obj,
                                                                     Size),
     ConvSpecs = leveled_codec:convert_indexspecs(IndexSpecs, Bucket, Key, SQN),
     [PrimaryChange] ++ ConvSpecs.
+
 
 addto_ledgercache(Changes, Cache) ->
     lists:foldl(fun({K, V}, Acc) -> gb_trees:enter(K, V, Acc) end,
@@ -663,24 +674,21 @@ maybe_withjitter(CacheSize, MaxCacheSize) ->
 
 load_fun(KeyInLedger, ValueInLedger, _Position, Acc0, ExtractFun) ->
     {MinSQN, MaxSQN, OutputTree} = Acc0,
-    {SQN, _Type, PK} = KeyInLedger,
+    {SQN, Type, PK} = KeyInLedger,
     % VBin may already be a term
     {VBin, VSize} = ExtractFun(ValueInLedger), 
-    {Obj, IndexSpecs} = case is_binary(VBin) of
-                            true ->
-                                binary_to_term(VBin);
-                            false ->
-                                VBin
-                        end,
+    {Obj, IndexSpecs} = leveled_codec:split_inkvalue(VBin),
     case SQN of
         SQN when SQN < MinSQN ->
             {loop, Acc0};    
         SQN when SQN < MaxSQN ->
-            Changes = preparefor_ledgercache(PK, SQN, Obj, VSize, IndexSpecs),
+            Changes = preparefor_ledgercache(Type, PK, SQN,
+                                                Obj, VSize, IndexSpecs),
             {loop, {MinSQN, MaxSQN, addto_ledgercache(Changes, OutputTree)}};
         MaxSQN ->
             io:format("Reached end of load batch with SQN ~w~n", [SQN]),
-            Changes = preparefor_ledgercache(PK, SQN, Obj, VSize, IndexSpecs),
+            Changes = preparefor_ledgercache(Type, PK, SQN,
+                                                Obj, VSize, IndexSpecs),
             {stop, {MinSQN, MaxSQN, addto_ledgercache(Changes, OutputTree)}};
         SQN when SQN > MaxSQN ->
             io:format("Skipping as exceeded MaxSQN ~w with SQN ~w~n",

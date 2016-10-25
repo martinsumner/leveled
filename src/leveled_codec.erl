@@ -32,7 +32,9 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--export([strip_to_keyonly/1,
+-export([
+        inker_reload_strategy/1,
+        strip_to_keyonly/1,
         strip_to_seqonly/1,
         strip_to_statusonly/1,
         strip_to_keyseqstatusonly/1,
@@ -45,6 +47,13 @@
         to_ledgerkey/3,
         to_ledgerkey/5,
         from_ledgerkey/1,
+        to_inkerkv/4,
+        from_inkerkv/1,
+        from_journalkey/1,
+        compact_inkerkvc/2,
+        split_inkvalue/1,
+        check_forinkertype/2,
+        create_value_for_journal/1,
         build_metadata_object/2,
         generate_ledgerkv/4,
         generate_ledgerkv/5,
@@ -61,6 +70,13 @@ generate_uuid() ->
     io_lib:format("~8.16.0b-~4.16.0b-4~3.16.0b-~4.16.0b-~12.16.0b", 
                         [A, B, C band 16#0fff, D band 16#3fff bor 16#8000, E]).
 
+inker_reload_strategy(AltList) ->
+    ReloadStrategy0 = [{?RIAK_TAG, retain}, {?STD_TAG, retain}],
+    lists:foldl(fun({X, Y}, SList) ->
+                        lists:keyreplace(X, 1, Y, SList)
+                        end,
+                    ReloadStrategy0,
+                    AltList).
 
 strip_to_keyonly({keyonly, K}) -> K;
 strip_to_keyonly({K, _V}) -> K.
@@ -120,6 +136,75 @@ to_ledgerkey(Bucket, Key, Tag, Field, Value) when Tag == ?IDX_TAG ->
 
 to_ledgerkey(Bucket, Key, Tag) ->
     {Tag, Bucket, Key, null}.
+
+%% Return the Key, Value and Hash Option for this object.  The hash option
+%% indicates whether the key would ever be looked up directly, and so if it
+%% requires an entry in the hash table
+to_inkerkv(LedgerKey, SQN, to_fetch, null) ->
+    {{SQN, ?INKT_STND, LedgerKey}, null, true};
+to_inkerkv(LedgerKey, SQN, Object, KeyChanges) ->
+    {InkerType, HashOpt} = check_forinkertype(LedgerKey, Object),
+    Value = create_value_for_journal({Object, KeyChanges}),
+    {{SQN, InkerType, LedgerKey}, Value, HashOpt}.
+
+%% Used when fetching objects, so only handles standard, hashable entries
+from_inkerkv(Object) ->
+    case Object of
+        {{SQN, ?INKT_STND, PK}, Bin} when is_binary(Bin) ->
+            {{SQN, PK}, binary_to_term(Bin)};
+        {{SQN, ?INKT_STND, PK}, Term} ->
+            {{SQN, PK}, Term};
+        _ ->
+            Object
+    end.
+
+from_journalkey({SQN, _Type, LedgerKey}) ->
+    {SQN, LedgerKey}.
+
+compact_inkerkvc({{_SQN, ?INKT_TOMB, _LK}, _V, _CrcCheck}, _Strategy) ->
+    skip;
+compact_inkerkvc({{_SQN, ?INKT_KEYD, LK}, _V, _CrcCheck}, Strategy) ->
+    {Tag, _, _, _} = LK,
+    {Tag, TagStrat} = lists:keyfind(Tag, 1, Strategy),
+    case TagStrat of
+        retain ->
+            skip;
+        TagStrat ->
+            {TagStrat, null}
+    end;
+compact_inkerkvc({{SQN, ?INKT_STND, LK}, V, CrcCheck}, Strategy) ->
+    {Tag, _, _, _} = LK,
+    {Tag, TagStrat} = lists:keyfind(Tag, 1, Strategy),
+    case TagStrat of
+        retain ->
+            {_V, KeyDeltas} = split_inkvalue(V),    
+            {TagStrat, {{SQN, ?INKT_KEYD, LK}, {null, KeyDeltas}, CrcCheck}}; 
+        TagStrat ->
+            {TagStrat, null}
+    end.
+
+split_inkvalue(VBin) ->
+    case is_binary(VBin) of
+            true ->
+                binary_to_term(VBin);
+            false ->
+                VBin
+        end.
+
+check_forinkertype(_LedgerKey, delete) ->
+    {?INKT_TOMB, no_hash};
+check_forinkertype(_LedgerKey, _Object) ->
+    {?INKT_STND, hash}.
+
+create_value_for_journal(Value) ->
+    case Value of
+        {Object, KeyChanges} ->
+            term_to_binary({Object, KeyChanges}, [compressed]);
+        Value when is_binary(Value) ->
+            Value
+    end.
+
+
 
 hash(Obj) ->
     erlang:phash2(term_to_binary(Obj)).

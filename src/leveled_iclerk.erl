@@ -87,10 +87,12 @@
 -define(SINGLEFILE_COMPACTION_TARGET, 60.0).
 -define(MAXRUN_COMPACTION_TARGET, 80.0).
 -define(CRC_SIZE, 4).
+-define(DEFAULT_RELOAD_STRATEGY, leveled_codec:inker_reload_strategy([])).
 
 -record(state, {inker :: pid(),
                     max_run_length :: integer(),
-                    cdb_options}).
+                    cdb_options,
+                    reload_strategy = ?DEFAULT_RELOAD_STRATEGY :: list()}).
 
 -record(candidate, {low_sqn :: integer(),
                     filename :: string(),
@@ -126,15 +128,18 @@ clerk_stop(Pid) ->
 %%%============================================================================
 
 init([IClerkOpts]) ->
+    ReloadStrategy = IClerkOpts#iclerk_options.reload_strategy,
     case IClerkOpts#iclerk_options.max_run_length of
         undefined ->
             {ok, #state{max_run_length = ?MAX_COMPACTION_RUN,
                         inker = IClerkOpts#iclerk_options.inker,
-                        cdb_options = IClerkOpts#iclerk_options.cdb_options}};
+                        cdb_options = IClerkOpts#iclerk_options.cdb_options,
+                        reload_strategy = ReloadStrategy}};
         MRL ->
             {ok, #state{max_run_length = MRL,
                         inker = IClerkOpts#iclerk_options.inker,
-                        cdb_options = IClerkOpts#iclerk_options.cdb_options}}
+                        cdb_options = IClerkOpts#iclerk_options.cdb_options,
+                        reload_strategy = ReloadStrategy}}
     end.
 
 handle_call(_Msg, _From, State) ->
@@ -166,7 +171,8 @@ handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
                                                 CDBopts,
                                                 FilterFun,
                                                 FilterServer,
-                                                MaxSQN),
+                                                MaxSQN,
+                                                State#state.reload_strategy),
             FilesToDelete = lists:map(fun(C) ->
                                             {C#candidate.low_sqn,
                                                 C#candidate.filename,
@@ -296,7 +302,6 @@ assess_candidates(AllCandidates, MaxRunLength) ->
     end.
 
 assess_candidates([], _MaxRunLength, _CurrentRun0, BestAssessment) ->
-    io:format("Best run of ~w~n", [BestAssessment]),
     BestAssessment;
 assess_candidates([HeadC|Tail], MaxRunLength, CurrentRun0, BestAssessment) ->
     CurrentRun1 = choose_best_assessment(CurrentRun0 ++ [HeadC],
@@ -349,13 +354,14 @@ print_compaction_run(BestRun, MaxRunLength) ->
                     [length(BestRun), score_run(BestRun, MaxRunLength)]),
     lists:foreach(fun(File) ->
                         io:format("Filename ~s is part of compaction run~n",
-                                        [File#candidate.filename])
+                                    [File#candidate.filename])
+                                        
                         end,
                     BestRun).
 
-compact_files([], _CDBopts, _FilterFun, _FilterServer, _MaxSQN) ->
+compact_files([], _CDBopts, _FilterFun, _FilterServer, _MaxSQN, _RStrategy) ->
     {[], 0};
-compact_files(BestRun, CDBopts, FilterFun, FilterServer, MaxSQN) ->
+compact_files(BestRun, CDBopts, FilterFun, FilterServer, MaxSQN, RStrategy) ->
     BatchesOfPositions = get_all_positions(BestRun, []),
     compact_files(BatchesOfPositions,
                                 CDBopts,
@@ -363,20 +369,21 @@ compact_files(BestRun, CDBopts, FilterFun, FilterServer, MaxSQN) ->
                                 FilterFun,
                                 FilterServer,
                                 MaxSQN,
+                                RStrategy,
                                 [],
                                 true).
 
 
 compact_files([], _CDBopts, null, _FilterFun, _FilterServer, _MaxSQN,
-                            ManSlice0, PromptDelete0) ->
+                            _RStrategy, ManSlice0, PromptDelete0) ->
     {ManSlice0, PromptDelete0};
 compact_files([], _CDBopts, ActiveJournal0, _FilterFun, _FilterServer, _MaxSQN,
-                            ManSlice0, PromptDelete0) ->
+                            _RStrategy, ManSlice0, PromptDelete0) ->
     ManSlice1 = ManSlice0 ++ generate_manifest_entry(ActiveJournal0),
     {ManSlice1, PromptDelete0};
 compact_files([Batch|T], CDBopts, ActiveJournal0,
                             FilterFun, FilterServer, MaxSQN, 
-                            ManSlice0, PromptDelete0) ->
+                            RStrategy, ManSlice0, PromptDelete0) ->
     {SrcJournal, PositionList} = Batch,
     KVCs0 = leveled_cdb:cdb_directfetch(SrcJournal,
                                         PositionList,
@@ -384,7 +391,8 @@ compact_files([Batch|T], CDBopts, ActiveJournal0,
     R0 = filter_output(KVCs0,
                         FilterFun,
                         FilterServer,
-                        MaxSQN),
+                        MaxSQN,
+                        RStrategy),
     {KVCs1, PromptDelete1} = R0,
     PromptDelete2 = case {PromptDelete0, PromptDelete1} of
                         {true, true} ->
@@ -397,7 +405,7 @@ compact_files([Batch|T], CDBopts, ActiveJournal0,
                                                 ActiveJournal0,
                                                 ManSlice0),
     compact_files(T, CDBopts, ActiveJournal1, FilterFun, FilterServer, MaxSQN,
-                                ManSlice1, PromptDelete2).
+                                RStrategy, ManSlice1, PromptDelete2).
 
 get_all_positions([], PositionBatches) ->
     PositionBatches;
@@ -423,25 +431,34 @@ split_positions_into_batches(Positions, Journal, Batches) ->
                                     Batches ++ [{Journal, ThisBatch}]).
 
 
-filter_output(KVCs, FilterFun, FilterServer, MaxSQN) ->
-    lists:foldl(fun(KVC, {Acc, PromptDelete}) ->
-                        {{SQN, _Type, PK}, _V, CrcCheck} = KVC,
-                        KeyValid = FilterFun(FilterServer, PK, SQN),
-                        case {KeyValid, CrcCheck, SQN > MaxSQN} of
-                            {true, true, _} ->
-                                {Acc ++ [KVC], PromptDelete};
-                            {false, true, true} ->
-                                {Acc ++ [KVC], PromptDelete};
-                            {false, true, false} ->
-                                {Acc, PromptDelete};
-                            {_, false, _} ->
-                                io:format("Corrupted value found for " ++ "
-                                            Key ~w at SQN ~w~n", [PK, SQN]),
-                                {Acc, false}
-                        end
-                        end,
-                    {[], true},
-                    KVCs).
+filter_output(KVCs, FilterFun, FilterServer, MaxSQN, ReloadStrategy) ->
+    lists:foldl(fun(KVC0, {Acc, PromptDelete}) ->
+                    R = leveled_codec:compact_inkerkvc(KVC0, ReloadStrategy),
+                    case R of
+                        skip ->
+                            {Acc, PromptDelete};
+                        {TStrat, KVC1} ->
+                            {K, _V, CrcCheck} = KVC0,
+                            {SQN, LedgerKey} = leveled_codec:from_journalkey(K),
+                            KeyValid = FilterFun(FilterServer, LedgerKey, SQN),
+                            case {KeyValid, CrcCheck, SQN > MaxSQN, TStrat} of
+                                {true, true, _, _} ->
+                                    {Acc ++ [KVC0], PromptDelete};
+                                {false, true, true, _} ->
+                                    {Acc ++ [KVC0], PromptDelete};
+                                {false, true, false, retain} ->
+                                    {Acc ++ [KVC1], PromptDelete};
+                                {false, true, false, _} ->
+                                    {Acc, PromptDelete};
+                                {_, false, _, _} ->
+                                    io:format("Corrupted value found for "
+                                                ++ "Journal Key ~w~n", [K]),
+                                    {Acc, false}
+                            end
+                    end
+                    end,
+                {[], true},
+                KVCs).
     
 
 write_values([], _CDBopts, Journal0, ManSlice0) ->
@@ -462,7 +479,7 @@ write_values([KVC|Rest], CDBopts, Journal0, ManSlice0) ->
                             _ ->
                                 {ok, Journal0}
                         end,
-    ValueToStore = leveled_inker:create_value_for_cdb(V),
+    ValueToStore = leveled_codec:create_value_for_journal(V),
     R = leveled_cdb:cdb_put(Journal1, {SQN, Type, PK}, ValueToStore),
     case R of
         ok ->
@@ -568,17 +585,23 @@ find_bestrun_test() ->
                         #candidate{compaction_perc = 65.0}], 
                     assess_candidates(CList0, 6)).
 
+test_ledgerkey(Key) ->
+    {o, "Bucket", Key, null}.
+
+test_inkerkv(SQN, Key, V, IdxSpecs) ->
+    {{SQN, ?INKT_STND, test_ledgerkey(Key)}, term_to_binary({V, IdxSpecs})}.
+
 fetch_testcdb(RP) ->
     FN1 = leveled_inker:filepath(RP, 1, new_journal),
     {ok, CDB1} = leveled_cdb:cdb_open_writer(FN1, #cdb_options{}),
-    {K1, V1} = {{1, stnd, "Key1"}, term_to_binary("Value1")},
-    {K2, V2} = {{2, stnd, "Key2"}, term_to_binary("Value2")},
-    {K3, V3} = {{3, stnd, "Key3"}, term_to_binary("Value3")},
-    {K4, V4} = {{4, stnd, "Key1"}, term_to_binary("Value4")},
-    {K5, V5} = {{5, stnd, "Key1"}, term_to_binary("Value5")},
-    {K6, V6} = {{6, stnd, "Key1"}, term_to_binary("Value6")},
-    {K7, V7} = {{7, stnd, "Key1"}, term_to_binary("Value7")},
-    {K8, V8} = {{8, stnd, "Key1"}, term_to_binary("Value8")},
+    {K1, V1} = test_inkerkv(1, "Key1", "Value1", []),
+    {K2, V2} = test_inkerkv(2, "Key2", "Value2", []),
+    {K3, V3} = test_inkerkv(3, "Key3", "Value3", []),
+    {K4, V4} = test_inkerkv(4, "Key1", "Value4", []),
+    {K5, V5} = test_inkerkv(5, "Key1", "Value5", []),
+    {K6, V6} = test_inkerkv(6, "Key1", "Value6", []),
+    {K7, V7} = test_inkerkv(7, "Key1", "Value7", []),
+    {K8, V8} = test_inkerkv(8, "Key1", "Value8", []),
     ok = leveled_cdb:cdb_put(CDB1, K1, V1),
     ok = leveled_cdb:cdb_put(CDB1, K2, V2),
     ok = leveled_cdb:cdb_put(CDB1, K3, V3),
@@ -593,7 +616,9 @@ fetch_testcdb(RP) ->
 check_single_file_test() ->
     RP = "../test/journal",
     {ok, CDB} = fetch_testcdb(RP),
-    LedgerSrv1 = [{8, "Key1"}, {2, "Key2"}, {3, "Key3"}],
+    LedgerSrv1 = [{8, {o, "Bucket", "Key1", null}},
+                    {2, {o, "Bucket", "Key2", null}},
+                    {3, {o, "Bucket", "Key3", null}}],
     LedgerFun1 = fun(Srv, Key, ObjSQN) ->
                     case lists:keyfind(ObjSQN, 1, Srv) of
                         {ObjSQN, Key} ->
@@ -613,14 +638,16 @@ check_single_file_test() ->
     ok = leveled_cdb:cdb_destroy(CDB).
 
 
-compact_single_file_test() ->
+compact_single_file_setup() ->
     RP = "../test/journal",
     {ok, CDB} = fetch_testcdb(RP),
     Candidate = #candidate{journal = CDB,
                             low_sqn = 1,
                             filename = "test",
                             compaction_perc = 37.5},
-    LedgerSrv1 = [{8, "Key1"}, {2, "Key2"}, {3, "Key3"}],
+    LedgerSrv1 = [{8, {o, "Bucket", "Key1", null}},
+                    {2, {o, "Bucket", "Key2", null}},
+                    {3, {o, "Bucket", "Key3", null}}],
     LedgerFun1 = fun(Srv, Key, ObjSQN) ->
                     case lists:keyfind(ObjSQN, 1, Srv) of
                         {ObjSQN, Key} ->
@@ -630,33 +657,94 @@ compact_single_file_test() ->
                     end end,
     CompactFP = leveled_inker:filepath(RP, journal_compact_dir),
     ok = filelib:ensure_dir(CompactFP),
+    {Candidate, LedgerSrv1, LedgerFun1, CompactFP, CDB}.
+
+compact_single_file_recovr_test() ->
+    {Candidate,
+        LedgerSrv1,
+        LedgerFun1,
+        CompactFP,
+        CDB} = compact_single_file_setup(),
     R1 = compact_files([Candidate],
                         #cdb_options{file_path=CompactFP},
                         LedgerFun1,
                         LedgerSrv1,
-                        9),
+                        9,
+                        [{?STD_TAG, recovr}]),
     {ManSlice1, PromptDelete1} = R1,
     ?assertMatch(true, PromptDelete1),
     [{LowSQN, FN, PidR}] = ManSlice1,
     io:format("FN of ~s~n", [FN]),
     ?assertMatch(2, LowSQN),
-    ?assertMatch(probably, leveled_cdb:cdb_keycheck(PidR, {8, stnd, "Key1"})),
-    ?assertMatch(missing, leveled_cdb:cdb_get(PidR, {7, stnd, "Key1"})),
-    ?assertMatch(missing, leveled_cdb:cdb_get(PidR, {1, stnd, "Key1"})),
-    {_RK1, RV1} = leveled_cdb:cdb_get(PidR, {2, stnd, "Key2"}),
-    ?assertMatch("Value2", binary_to_term(RV1)),
+    ?assertMatch(probably,
+                    leveled_cdb:cdb_keycheck(PidR,
+                                                {8,
+                                                    stnd,
+                                                    test_ledgerkey("Key1")})),
+    ?assertMatch(missing, leveled_cdb:cdb_get(PidR,
+                                                {7,
+                                                    stnd,
+                                                    test_ledgerkey("Key1")})),
+    ?assertMatch(missing, leveled_cdb:cdb_get(PidR,
+                                                {1,
+                                                    stnd,
+                                                    test_ledgerkey("Key1")})),
+    {_RK1, RV1} = leveled_cdb:cdb_get(PidR,
+                                        {2,
+                                            stnd,
+                                            test_ledgerkey("Key2")}),
+    ?assertMatch({"Value2", []}, binary_to_term(RV1)),
     ok = leveled_cdb:cdb_destroy(CDB).
 
+
+compact_single_file_retain_test() ->
+    {Candidate,
+        LedgerSrv1,
+        LedgerFun1,
+        CompactFP,
+        CDB} = compact_single_file_setup(),
+    R1 = compact_files([Candidate],
+                        #cdb_options{file_path=CompactFP},
+                        LedgerFun1,
+                        LedgerSrv1,
+                        9,
+                        [{?STD_TAG, retain}]),
+    {ManSlice1, PromptDelete1} = R1,
+    ?assertMatch(true, PromptDelete1),
+    [{LowSQN, FN, PidR}] = ManSlice1,
+    io:format("FN of ~s~n", [FN]),
+    ?assertMatch(1, LowSQN),
+    ?assertMatch(probably,
+                    leveled_cdb:cdb_keycheck(PidR,
+                                                {8,
+                                                    stnd,
+                                                    test_ledgerkey("Key1")})),
+    ?assertMatch(missing, leveled_cdb:cdb_get(PidR,
+                                                {7,
+                                                    stnd,
+                                                    test_ledgerkey("Key1")})),
+    ?assertMatch(missing, leveled_cdb:cdb_get(PidR,
+                                                {1,
+                                                    stnd,
+                                                    test_ledgerkey("Key1")})),
+    {_RK1, RV1} = leveled_cdb:cdb_get(PidR,
+                                        {2,
+                                            stnd,
+                                            test_ledgerkey("Key2")}),
+    ?assertMatch({"Value2", []}, binary_to_term(RV1)),
+    ok = leveled_cdb:cdb_destroy(CDB).
 
 compact_empty_file_test() ->
     RP = "../test/journal",
     FN1 = leveled_inker:filepath(RP, 1, new_journal),
     CDBopts = #cdb_options{binary_mode=true},
     {ok, CDB1} = leveled_cdb:cdb_open_writer(FN1, CDBopts),
-    ok = leveled_cdb:cdb_put(CDB1, {1, stnd, "Key1"}, <<>>),
+    ok = leveled_cdb:cdb_put(CDB1, {1, stnd, test_ledgerkey("Key1")}, <<>>),
     {ok, FN2} = leveled_cdb:cdb_complete(CDB1),
     {ok, CDB2} = leveled_cdb:cdb_open_reader(FN2),
-    LedgerSrv1 = [{8, "Key1"}, {2, "Key2"}, {3, "Key3"}],
+    LedgerSrv1 = [{8, {o, "Bucket", "Key1", null}},
+                    {2, {o, "Bucket", "Key2", null}},
+                    {3, {o, "Bucket", "Key3", null}}],
     LedgerFun1 = fun(Srv, Key, ObjSQN) ->
                     case lists:keyfind(ObjSQN, 1, Srv) of
                         {ObjSQN, Key} ->

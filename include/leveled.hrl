@@ -1,7 +1,19 @@
 
+%% Tag to be used on standard Riak KV objects
 -define(RIAK_TAG, o_rkv).
+%% Tag to be used on K/V objects for non-Riak purposes
 -define(STD_TAG, o).
+%% Tag used for secondary index keys
 -define(IDX_TAG, i).
+
+%% Inker key type used for 'normal' objects
+-define(INKT_STND, stnd). 
+%% Inker key type used for objects which contain no value, only key changes
+%% This is used currently for objects formed under a 'retain' strategy on Inker
+%% compaction, but could be used for special set-type objects
+-define(INKT_KEYD, keyd). 
+%% Inker key type used for tombstones
+-define(INKT_TOMB, tomb).
 
 -record(sft_options,
                         {wait = true :: boolean(),
@@ -40,7 +52,8 @@
                         root_path :: string(),
                         cdb_options :: #cdb_options{},
                         start_snapshot = false :: boolean(),
-                        source_inker :: pid()}).
+                        source_inker :: pid(),
+                        reload_strategy = [] :: list()}).
 
 -record(penciller_options,
                         {root_path :: string(),
@@ -52,12 +65,14 @@
                        {root_path :: string(),
                         cache_size :: integer(),
                         max_journalsize :: integer(),
-                        snapshot_bookie :: pid()}).
+                        snapshot_bookie :: pid(),
+                        reload_strategy = [] :: list()}).
 
 -record(iclerk_options,
                         {inker :: pid(),
                         max_run_length :: integer(),
-                        cdb_options :: #cdb_options{}}).                                               
+                        cdb_options :: #cdb_options{},
+                        reload_strategy = [] :: list()}).
 
 -record(r_content, {
           metadata,
