@@ -265,7 +265,7 @@ sft_deleteconfirmed(Pid) ->
     gen_server:cast(Pid, close).
 
 sft_checkready(Pid) ->
-    gen_server:call(Pid, background_complete, 50).
+    gen_server:call(Pid, background_complete, 20).
 
 sft_getmaxsequencenumber(Pid) ->
     gen_server:call(Pid, get_maxsqn, infinity).
