@@ -467,7 +467,7 @@ create_file(FileName) when is_list(FileName) ->
         {error, Reason} ->
             io:format("Error opening filename ~s with reason ~w",
                         [FileName, Reason]),
-            {error, Reason}
+            error
     end.
 
 
@@ -1037,15 +1037,17 @@ create_slot(KL1, KL2, LevelR, BlockCount, SegLists, SerialisedSlot, LengthList,
     {BlockKeyList, Status,
         {LSNb, HSNb},
         SegmentList, KL1b, KL2b} = create_block(KL1, KL2, LevelR),
-    TrackingMetadata = case LowKey of
-        null ->
+    TrackingMetadata = case {LowKey, BlockKeyList} of
+        {null, []} ->
+            {null, LSN, HSN, LastKey, Status};
+        {null, _} ->
             [NewLowKeyV|_] = BlockKeyList,
             {leveled_codec:strip_to_keyonly(NewLowKeyV),
                 min(LSN, LSNb), max(HSN, HSNb),
                 leveled_codec:strip_to_keyonly(last(BlockKeyList,
                                                     {last, LastKey})),
                 Status};
-        _ ->
+        {_, _} ->
             {LowKey,
                 min(LSN, LSNb), max(HSN, HSNb),
                 leveled_codec:strip_to_keyonly(last(BlockKeyList,

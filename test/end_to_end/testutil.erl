@@ -3,6 +3,7 @@
 -include("../include/leveled.hrl").
 
 -export([reset_filestructure/0,
+            reset_filestructure/1,
             check_bucket_stats/2,
             check_forlist/2,
             check_forlist/3,
@@ -27,9 +28,12 @@
 
 
 reset_filestructure() ->
-    % io:format("Waiting ~w ms to give a chance for all file closes " ++
-    %             "to complete~n", [Wait]),
-    % timer:sleep(Wait),
+    reset_filestructure(0).
+    
+reset_filestructure(Wait) ->
+     io:format("Waiting ~w ms to give a chance for all file closes " ++
+                 "to complete~n", [Wait]),
+     timer:sleep(Wait),
     RootPath  = "test",
     filelib:ensure_dir(RootPath ++ "/journal/"),
     filelib:ensure_dir(RootPath ++ "/ledger/"),

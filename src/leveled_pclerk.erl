@@ -319,17 +319,24 @@ do_merge(KL1, KL2, {SrcLevel, IsB}, {Filepath, MSN}, FileCounter, OutList) ->
                                             KL1,
                                             KL2,
                                             LevelR),
-    {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} = Reply,
-    ExtMan = lists:append(OutList,
-                            [#manifest_entry{start_key=SmallestKey,
-                                                end_key=HighestKey,
-                                                owner=Pid,
-                                                filename=FileName}]),
-    MTime = timer:now_diff(os:timestamp(), TS1),
-    io:format("File creation took ~w microseconds ~n", [MTime]),
-    do_merge(KL1Rem, KL2Rem,
-                {SrcLevel, IsB}, {Filepath, MSN},
-                FileCounter + 1, ExtMan).
+    case Reply of
+        {{[], []}, null, _} ->
+            io:format("Merge resulted in empty file ~s~n", [FileName]),
+            io:format("Empty file ~s to be cleared~n", [FileName]),
+            ok = leveled_sft:sft_clear(Pid),
+            OutList;                        
+        {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} ->
+            ExtMan = lists:append(OutList,
+                                    [#manifest_entry{start_key=SmallestKey,
+                                                        end_key=HighestKey,
+                                                        owner=Pid,
+                                                        filename=FileName}]),
+            MTime = timer:now_diff(os:timestamp(), TS1),
+            io:format("File creation took ~w microseconds ~n", [MTime]),
+            do_merge(KL1Rem, KL2Rem,
+                        {SrcLevel, IsB}, {Filepath, MSN},
+                        FileCounter + 1, ExtMan)
+    end.
 
 
 get_item(Index, List, Default) ->

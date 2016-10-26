@@ -179,14 +179,20 @@ handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
                                                 C#candidate.journal}
                                             end,
                                         BestRun),
-            ok = leveled_inker:ink_updatemanifest(Inker,
-                                                    ManifestSlice,
-                                                    FilesToDelete),
+            io:format("Clerk updating Inker as compaction complete of " ++
+                        "~w files~n", [length(FilesToDelete)]),
+            {ok, ManSQN} = leveled_inker:ink_updatemanifest(Inker,
+                                                            ManifestSlice,
+                                                            FilesToDelete),
             ok = leveled_inker:ink_compactioncomplete(Inker),
+            io:format("Clerk has completed compaction process~n"),
             case PromptDelete of
                 true ->
                     lists:foreach(fun({_SQN, _FN, J2D}) ->
-                                        leveled_cdb:cdb_deletepending(J2D) end,
+                                        leveled_cdb:cdb_deletepending(J2D,
+                                                                        ManSQN,
+                                                                        Inker)
+                                        end,
                                     FilesToDelete),
                     {noreply, State};
                 false ->
@@ -639,6 +645,7 @@ check_single_file_test() ->
     ?assertMatch(37.5, Score3),
     Score4 = check_single_file(CDB, LedgerFun1, LedgerSrv1, 4, 8, 4),
     ?assertMatch(75.0, Score4),
+    ok = leveled_cdb:cdb_deletepending(CDB),
     ok = leveled_cdb:cdb_destroy(CDB).
 
 
@@ -698,6 +705,7 @@ compact_single_file_recovr_test() ->
                                             stnd,
                                             test_ledgerkey("Key2")}),
     ?assertMatch({"Value2", []}, binary_to_term(RV1)),
+    ok = leveled_cdb:cdb_deletepending(CDB),
     ok = leveled_cdb:cdb_destroy(CDB).
 
 
@@ -736,6 +744,7 @@ compact_single_file_retain_test() ->
                                             stnd,
                                             test_ledgerkey("Key2")}),
     ?assertMatch({"Value2", []}, binary_to_term(RV1)),
+    ok = leveled_cdb:cdb_deletepending(CDB),
     ok = leveled_cdb:cdb_destroy(CDB).
 
 compact_empty_file_test() ->

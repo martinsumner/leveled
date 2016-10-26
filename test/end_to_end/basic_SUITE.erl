@@ -16,7 +16,7 @@ all() -> [
             many_put_fetch_head,
             journal_compaction,
             fetchput_snapshot,
-            load_and_count,
+            load_and_count ,
             load_and_count_withdelete,
             space_clear_ondelete_test
             ].
@@ -149,7 +149,7 @@ journal_compaction(_Config) ->
     testutil:check_forobject(Bookie2, TestObject),
     testutil:check_forlist(Bookie2, ChkList3),
     ok = leveled_bookie:book_close(Bookie2),
-    testutil:reset_filestructure().
+    testutil:reset_filestructure(10000).
 
 
 fetchput_snapshot(_Config) ->
@@ -435,12 +435,28 @@ space_clear_ondelete_test(_Config) ->
     io:format("Deletion took ~w microseconds for 80K keys~n",
                                 [timer:now_diff(os:timestamp(), SW2)]),
     ok = leveled_bookie:book_compactjournal(Book1, 30000),
-    timer:sleep(30000), % Allow for any L0 file to be rolled
+    F = fun leveled_bookie:book_islastcompactionpending/1,
+    lists:foldl(fun(X, Pending) ->
+                        case Pending of
+                            false ->
+                                false;
+                            true ->
+                                io:format("Loop ~w waiting for journal "
+                                    ++ "compaction to complete~n", [X]),
+                                timer:sleep(20000),
+                                F(Book1)
+                        end end,
+                    true,
+                    lists:seq(1, 15)),
+    io:format("Waiting for journal deletes~n"),
+    timer:sleep(20000), 
     {ok, FNsB_L} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
     {ok, FNsB_J} = file:list_dir(RootPath ++ "/journal/journal_files"),
+    {ok, FNsB_PC} = file:list_dir(RootPath ++ "/journal/journal_files/post_compact"),
+    PointB_Journals = length(FNsB_J) + length(FNsB_PC),
     io:format("Bookie has ~w journal files and ~w ledger files " ++
                     "after deletes~n",
-                [length(FNsB_J), length(FNsB_L)]),
+                [PointB_Journals, length(FNsB_L)]),
     
     {async, F2} = leveled_bookie:book_returnfolder(Book1, {keylist, o_rkv}),
     SW3 = os:timestamp(),
@@ -465,7 +481,20 @@ space_clear_ondelete_test(_Config) ->
             end,
     ok = leveled_bookie:book_close(Book2),
     {ok, FNsC_L} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
-    {ok, FNsC_J} = file:list_dir(RootPath ++ "/journal/journal_files"),
-    io:format("Bookie has ~w journal files and ~w ledger files " ++
-                    "after deletes~n",
-                [length(FNsC_J), length(FNsC_L)]).
+    io:format("Bookie has ~w ledger files " ++
+                    "after close~n", [length(FNsC_L)]),
+    
+    {ok, Book3} = leveled_bookie:book_start(StartOpts1),
+    io:format("This should cause a final ledger merge event~n"),
+    io:format("Will require the penciller to resolve the issue of creating" ++
+                " an empty file as all keys compact on merge~n"),
+    timer:sleep(5000),
+    ok = leveled_bookie:book_close(Book3),
+    {ok, FNsD_L} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
+    io:format("Bookie has ~w ledger files " ++
+                    "after second close~n", [length(FNsD_L)]),
+    true = PointB_Journals < length(FNsA_J),
+    true = length(FNsB_L) =< length(FNsA_L),
+    true = length(FNsC_L) =< length(FNsB_L),
+    true = length(FNsD_L) =< length(FNsB_L),
+    true = length(FNsD_L) == 0.

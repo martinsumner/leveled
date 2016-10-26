@@ -99,8 +99,10 @@
         ink_fetch/3,
         ink_loadpcl/4,
         ink_registersnapshot/2,
+        ink_confirmdelete/2,
         ink_compactjournal/3,
         ink_compactioncomplete/1,
+        ink_compactionpending/1,
         ink_getmanifest/1,
         ink_updatemanifest/3,
         ink_print_manifest/1,
@@ -159,6 +161,9 @@ ink_registersnapshot(Pid, Requestor) ->
 ink_releasesnapshot(Pid, Snapshot) ->
     gen_server:call(Pid, {release_snapshot, Snapshot}, infinity).
 
+ink_confirmdelete(Pid, ManSQN) ->
+    gen_server:call(Pid, {confirm_delete, ManSQN}, 1000).
+
 ink_close(Pid) ->
     gen_server:call(Pid, {close, false}, infinity).
 
@@ -193,6 +198,9 @@ ink_compactjournal(Pid, Checker, InitiateFun, FilterFun, Timeout) ->
 ink_compactioncomplete(Pid) ->
     gen_server:call(Pid, compaction_complete, infinity).
 
+ink_compactionpending(Pid) ->
+    gen_server:call(Pid, compaction_pending, infinity).
+    
 ink_getmanifest(Pid) ->
     gen_server:call(Pid, get_manifest, infinity).
 
@@ -263,6 +271,17 @@ handle_call({release_snapshot, Snapshot}, _From , State) ->
     io:format("Ledger snapshot ~w released~n", [Snapshot]),
     io:format("Remaining ledger snapshots are ~w~n", [Rs]),
     {reply, ok, State#state{registered_snapshots=Rs}};
+handle_call({confirm_delete, ManSQN}, _From, State) ->
+    Reply = lists:foldl(fun({_R, SnapSQN}, Bool) ->
+                                case SnapSQN < ManSQN of
+                                    true ->
+                                        Bool;
+                                    false ->
+                                        false
+                                end end,
+                            true,
+                            State#state.registered_snapshots),
+    {reply, Reply, State};
 handle_call(get_manifest, _From, State) ->
     {reply, State#state.manifest, State};
 handle_call({update_manifest,
@@ -280,10 +299,11 @@ handle_call({update_manifest,
     NewManifestSQN = State#state.manifest_sqn + 1,
     manifest_printer(Man1),
     ok = simple_manifest_writer(Man1, NewManifestSQN, State#state.root_path),
-    PendingRemovals = [{NewManifestSQN, DeletedFiles}],
-    {reply, ok, State#state{manifest=Man1,
-                                manifest_sqn=NewManifestSQN,
-                                pending_removals=PendingRemovals}};
+    {reply,
+        {ok, NewManifestSQN},
+        State#state{manifest=Man1,
+                        manifest_sqn=NewManifestSQN,
+                        pending_removals=DeletedFiles}};
 handle_call(print_manifest, _From, State) ->
     manifest_printer(State#state.manifest),
     {reply, ok, State};
@@ -302,6 +322,8 @@ handle_call({compact,
     {reply, ok, State#state{compaction_pending=true}};
 handle_call(compaction_complete, _From, State) ->
     {reply, ok, State#state{compaction_pending=false}};
+handle_call(compaction_pending, _From, State) ->
+    {reply, State#state.compaction_pending, State};
 handle_call({close, Force}, _From, State) ->
     case {State#state.compaction_pending, Force} of
         {true, false} ->
@@ -329,8 +351,7 @@ terminate(Reason, State) ->
             lists:foreach(fun({Snap, _SQN}) -> ok = ink_close(Snap) end,
                             State#state.registered_snapshots),
             manifest_printer(State#state.manifest),
-            ok = close_allmanifest(State#state.manifest),
-            ok = close_allremovals(State#state.pending_removals)
+            ok = close_allmanifest(State#state.manifest)
     end.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -551,25 +572,6 @@ find_in_manifest(SQN, [{LowSQN, _FN, Pid}|_Tail]) when SQN >= LowSQN ->
 find_in_manifest(SQN, [_Head|Tail]) ->
     find_in_manifest(SQN, Tail).
 
-
-close_allremovals([]) ->
-    ok;
-close_allremovals([{ManifestSQN, Removals}|Tail]) ->
-    io:format("Closing removals at ManifestSQN=~w~n", [ManifestSQN]),
-    lists:foreach(fun({LowSQN, FN, Handle}) ->
-                        io:format("Closing removed file with LowSQN=~w" ++
-                                        " and filename ~s~n",
-                                    [LowSQN, FN]),
-                        if
-                            is_pid(Handle) == true ->
-                                ok = leveled_cdb:cdb_close(Handle);
-                            true ->
-                                io:format("Non pid in removal ~w - test~n",
-                                            [Handle])
-                        end
-                        end,
-                    Removals),
-    close_allremovals(Tail).
 
 
 %% Scan between sequence numbers applying FilterFun to each entry where

@@ -146,6 +146,7 @@
         book_snapshotstore/3,
         book_snapshotledger/3,
         book_compactjournal/2,
+        book_islastcompactionpending/1,
         book_close/1]).
 
 -include_lib("eunit/include/eunit.hrl").
@@ -233,6 +234,9 @@ book_snapshotledger(Pid, Requestor, Timeout) ->
 
 book_compactjournal(Pid, Timeout) ->
     gen_server:call(Pid, {compact_journal, Timeout}, infinity).
+
+book_islastcompactionpending(Pid) ->
+    gen_server:call(Pid, confirm_compact, infinity).
 
 book_close(Pid) ->
     gen_server:call(Pid, close, infinity).
@@ -389,6 +393,8 @@ handle_call({compact_journal, Timeout}, _From, State) ->
                                             self(),
                                             Timeout),
     {reply, ok, State};
+handle_call(confirm_compact, _From, State) ->
+    {reply, leveled_inker:ink_compactionpending(State#state.inker), State};
 handle_call(close, _From, State) ->
     {stop, normal, ok, State}.
 
