@@ -151,7 +151,7 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(CACHE_SIZE, 2000).
+-define(CACHE_SIZE, 1600).
 -define(JOURNAL_FP, "journal").
 -define(LEDGER_FP, "ledger").
 -define(SHUTDOWN_WAITS, 60).

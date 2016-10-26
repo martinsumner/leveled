@@ -1520,11 +1520,15 @@ confirm_delete_test() ->
     ?assertMatch(R3, false).
 
 
-maybe_pause_push(R) ->
+maybe_pause_push(PCL, KL) ->
+    R = pcl_pushmem(PCL, KL),
     if
         R == pause ->
             io:format("Pausing push~n"),
-            timer:sleep(1000);
+            timer:sleep(500),
+            ok;
+        R == returned ->
+            maybe_pause_push(PCL, KL);
         true ->
             ok
     end.
@@ -1546,11 +1550,11 @@ simple_server_test() ->
     ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001", null})),
     ok = pcl_pushmem(PCL, KL1),
     ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001", null})),
-    maybe_pause_push(pcl_pushmem(PCL, [Key2])),
+    ok = maybe_pause_push(PCL, [Key2]),
     ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001", null})),
     ?assertMatch(Key2, pcl_fetch(PCL, {o,"Bucket0002", "Key0002", null})),
-    maybe_pause_push(pcl_pushmem(PCL, KL2)),
-    maybe_pause_push(pcl_pushmem(PCL, [Key3])),
+    ok = maybe_pause_push(PCL, KL2),
+    ok = maybe_pause_push(PCL, [Key3]),
     
     ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001", null})),
     ?assertMatch(Key2, pcl_fetch(PCL, {o,"Bucket0002", "Key0002", null})),
@@ -1562,9 +1566,9 @@ simple_server_test() ->
     ?assertMatch(Key1, pcl_fetch(PCLr, {o,"Bucket0001", "Key0001", null})),
     ?assertMatch(Key2, pcl_fetch(PCLr, {o,"Bucket0002", "Key0002", null})),
     ?assertMatch(Key3, pcl_fetch(PCLr, {o,"Bucket0003", "Key0003", null})),
-    maybe_pause_push(pcl_pushmem(PCLr, KL3)),
-    maybe_pause_push(pcl_pushmem(PCLr, [Key4])),
-    maybe_pause_push(pcl_pushmem(PCLr, KL4)),
+    ok = maybe_pause_push(PCLr, KL3),
+    ok = maybe_pause_push(PCLr, [Key4]),
+    ok = maybe_pause_push(PCLr, KL4),
     ?assertMatch(Key1, pcl_fetch(PCLr, {o,"Bucket0001", "Key0001", null})),
     ?assertMatch(Key2, pcl_fetch(PCLr, {o,"Bucket0002", "Key0002", null})),
     ?assertMatch(Key3, pcl_fetch(PCLr, {o,"Bucket0003", "Key0003", null})),
@@ -1606,8 +1610,8 @@ simple_server_test() ->
     % in a new snapshot
     Key1A = {{o,"Bucket0001", "Key0001", null}, {4002, {active, infinity}, null}},
     KL1A = leveled_sft:generate_randomkeys({4002, 2}),
-    maybe_pause_push(pcl_pushmem(PCLr, [Key1A])),
-    maybe_pause_push(pcl_pushmem(PCLr, KL1A)),
+    ok = maybe_pause_push(PCLr, [Key1A]),
+    ok = maybe_pause_push(PCLr, KL1A),
     ?assertMatch(true, pcl_checksequencenumber(PclSnap,
                                                 {o,
                                                     "Bucket0001",

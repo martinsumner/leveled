@@ -96,7 +96,7 @@ simple_querycount(_Config) ->
                                         Book1,
                                         ?KEY_ONLY),
     ok = leveled_bookie:book_close(Book1),
-    {ok, Book2} = leveled_bookie:book_start(RootPath, 2000, 50000000),
+    {ok, Book2} = leveled_bookie:book_start(RootPath, 1000, 50000000),
     Index1Count = count_termsonindex("Bucket",
                                         "idx1_bin",
                                         Book2,
