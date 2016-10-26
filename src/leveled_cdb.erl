@@ -57,7 +57,7 @@
         cdb_open_reader/1,
         cdb_get/2,
         cdb_put/3,
-        cdb_put/4,
+        cdb_mput/2,
         cdb_getpositions/2,
         cdb_directfetch/3,
         cdb_lastkey/1,
@@ -127,10 +127,10 @@ cdb_get(Pid, Key) ->
     gen_server:call(Pid, {get_kv, Key}, infinity).
 
 cdb_put(Pid, Key, Value) ->
-    cdb_put(Pid, Key, Value, hash).
+    gen_server:call(Pid, {put_kv, Key, Value}, infinity).
 
-cdb_put(Pid, Key, Value, HashOpt) ->
-    gen_server:call(Pid, {put_kv, Key, Value, HashOpt}, infinity).
+cdb_mput(Pid, KVList) ->
+    gen_server:call(Pid, {mput_kv, KVList}, infinity).
 
 %% SampleSize can be an integer or the atom all
 cdb_getpositions(Pid, SampleSize) ->
@@ -262,7 +262,7 @@ handle_call({key_check, Key}, _From, State) ->
                     State#state.hash_index),
                 State}
     end;
-handle_call({put_kv, Key, Value, HashOpt}, _From, State) ->
+handle_call({put_kv, Key, Value}, _From, State) ->
     case {State#state.writer, State#state.pending_roll} of
         {true, false} ->
             Result = put(State#state.handle,
@@ -270,21 +270,39 @@ handle_call({put_kv, Key, Value, HashOpt}, _From, State) ->
                             {State#state.last_position, State#state.hashtree},
                             State#state.binary_mode,
                             State#state.max_size),
-            case {Result, HashOpt} of
-                {roll, _} ->
+            case Result of
+                roll ->
                     %% Key and value could not be written
                     {reply, roll, State};
-                {{UpdHandle, NewPosition, HashTree}, hash} ->
+                {UpdHandle, NewPosition, HashTree} ->
                     {reply, ok, State#state{handle=UpdHandle,
                                                 last_position=NewPosition,
                                                 last_key=Key,
-                                                hashtree=HashTree}};
-                {{UpdHandle, NewPosition, _HashTree}, no_hash} ->
-                    %% Don't update the hashtree
+                                                hashtree=HashTree}}
+                end;
+        _ ->
+            {reply,
+                {error, read_only},
+                State}
+    end;
+handle_call({mput_kv, KVList}, _From, State) ->
+    case {State#state.writer, State#state.pending_roll} of
+        {true, false} ->
+            Result = mput(State#state.handle,
+                            KVList,
+                            {State#state.last_position, State#state.hashtree},
+                            State#state.binary_mode,
+                            State#state.max_size),
+            case Result of
+                roll ->
+                    %% Keys and values could not be written
+                    {reply, roll, State};
+                {UpdHandle, NewPosition, HashTree, LastKey} ->
                     {reply, ok, State#state{handle=UpdHandle,
                                                 last_position=NewPosition,
-                                                last_key=Key}}
-                end;
+                                                last_key=LastKey,
+                                                hashtree=HashTree}}
+            end;
         _ ->
             {reply,
                 {error, read_only},
@@ -542,12 +560,31 @@ put(Handle, Key, Value, {LastPosition, HashTree}, BinaryMode, MaxSize) ->
                 put_hashtree(Key, LastPosition, HashTree)}
     end.
 
+mput(Handle, [], {LastPosition, HashTree0}, _BinaryMode, _MaxSize) ->
+    {Handle, LastPosition, HashTree0};
+mput(Handle, KVList, {LastPosition, HashTree0}, BinaryMode, MaxSize) ->
+    {KPList, Bin, LastKey} = multi_key_value_to_record(KVList,
+                                                        BinaryMode,
+                                                        LastPosition),
+    PotentialNewSize = LastPosition + byte_size(Bin),
+    if
+        PotentialNewSize > MaxSize ->
+            roll;
+        true ->
+            ok = file:pwrite(Handle, LastPosition, Bin),
+            HashTree1 = lists:foldl(fun({K, P}, Acc) ->
+                                            put_hashtree(K, P, Acc)
+                                            end,
+                                        HashTree0,
+                                        KPList),
+            {Handle, PotentialNewSize, HashTree1, LastKey}
+    end.
+
 %% Should not be used for non-test PUTs by the inker - as the Max File Size
 %% should be taken from the startup options not the default
 put(FileName, Key, Value, {LastPosition, HashTree}) ->
     put(FileName, Key, Value, {LastPosition, HashTree},
             ?BINARY_MODE, ?MAX_FILE_SIZE).
-
 
 %%
 %% get(FileName,Key) -> {key,value}
@@ -757,26 +794,14 @@ find_lastkey(Handle, IndexCache) ->
                                             IndexCache,
                                             {fun scan_index_findlast/4,
                                                 {0, 0}}),
-    {ok, EOFPos} = file:position(Handle, eof),
-    io:format("TotalKeys ~w in file~n", [TotalKeys]),
     case TotalKeys of
         0 ->
-            scan_keys_forlast(Handle, EOFPos, ?BASE_POSITION, empty);
+            empty;
         _ ->
             {ok, _} = file:position(Handle, LastPosition),
             {KeyLength, _ValueLength} = read_next_2_integers(Handle),
             read_next_term(Handle, KeyLength)
     end.
-
-scan_keys_forlast(_Handle, EOFPos, NextPos, LastKey) when EOFPos == NextPos ->
-    LastKey;
-scan_keys_forlast(Handle, EOFPos, NextPos, _LastKey)  ->
-    {ok, _} = file:position(Handle, NextPos),
-    {KeyLength, ValueLength} = read_next_2_integers(Handle),
-    scan_keys_forlast(Handle,
-                        EOFPos,
-                        NextPos + KeyLength + ValueLength + ?DWORD_SIZE,
-                        read_next_term(Handle, KeyLength)).
 
 
 scan_index(Handle, IndexCache, {ScanFun, InitAcc}) ->
@@ -1329,6 +1354,16 @@ key_value_to_record({Key, Value}, BinaryMode) ->
     <<LK_FL:32, LV_FL:32, BK:LK/binary, CRC:32/integer, BV:LV/binary>>.
 
 
+multi_key_value_to_record(KVList, BinaryMode, LastPosition) ->
+    lists:foldl(fun({K, V}, {KPosL, Bin, _LK}) ->
+                        Bin0 = key_value_to_record({K, V}, BinaryMode),
+                        {[{K, byte_size(Bin) + LastPosition}|KPosL],
+                            <<Bin/binary, Bin0/binary>>,
+                            K} end,
+                    {[], <<>>, empty},
+                    KVList).
+
+
 %%%%%%%%%%%%%%%%
 % T E S T 
 %%%%%%%%%%%%%%%  
@@ -1768,25 +1803,6 @@ get_keys_byposition_manykeys_test() ->
     ok = file:delete(F2).
 
 
-manykeys_but_nohash_test() ->
-    KeyCount = 1024,
-    {ok, P1} = cdb_open_writer("../test/nohash_keysinfile.pnd"),
-    KVList = generate_sequentialkeys(KeyCount, []),
-    lists:foreach(fun({K, V}) -> cdb_put(P1, K, V, no_hash) end, KVList),
-    SW1 = os:timestamp(),
-    {ok, F2} = cdb_complete(P1),
-    SW2 = os:timestamp(),
-    io:format("CDB completed in ~w microseconds~n",
-                [timer:now_diff(SW2, SW1)]),
-    {ok, P2} = cdb_open_reader(F2),
-    io:format("FirstKey is ~s~n", [cdb_firstkey(P2)]),
-    io:format("LastKey is ~s~n", [cdb_lastkey(P2)]),
-    ?assertMatch("Key1", cdb_firstkey(P2)),
-    ?assertMatch("Key1024", cdb_lastkey(P2)),
-    ?assertMatch([], cdb_getpositions(P2, 100)),
-    ok = cdb_close(P2),
-    ok = file:delete(F2).
-
 nokeys_test() ->
     {ok, P1} = cdb_open_writer("../test/nohash_emptyfile.pnd"),
     {ok, F2} = cdb_complete(P1),
@@ -1797,5 +1813,22 @@ nokeys_test() ->
     ?assertMatch(empty, cdb_lastkey(P2)),
     ok = cdb_close(P2),
     ok = file:delete(F2).
+
+mput_test() ->
+    KeyCount = 1024,
+    {ok, P1} = cdb_open_writer("../test/nohash_keysinfile.pnd"),
+    KVList = generate_sequentialkeys(KeyCount, []),
+    ok = cdb_mput(P1, KVList),
+    {ok, F2} = cdb_complete(P1),
+    {ok, P2} = cdb_open_reader(F2),
+    ?assertMatch("Key1", cdb_firstkey(P2)),
+    ?assertMatch("Key1024", cdb_lastkey(P2)),
+    ?assertMatch({"Key1", "Value1"}, cdb_get(P2, "Key1")),
+    ?assertMatch({"Key1024", "Value1024"}, cdb_get(P2, "Key1024")),
+    ?assertMatch(missing, cdb_get(P2, "Key1025")),
+    ?assertMatch(missing, cdb_get(P2, "Key1026")),
+    ok = cdb_close(P2),
+    ok = file:delete(F2).
+
 
 -endif.

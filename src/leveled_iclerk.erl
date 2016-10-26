@@ -463,10 +463,15 @@ filter_output(KVCs, FilterFun, FilterServer, MaxSQN, ReloadStrategy) ->
 
 write_values([], _CDBopts, Journal0, ManSlice0) ->
     {Journal0, ManSlice0};
-write_values([KVC|Rest], CDBopts, Journal0, ManSlice0) ->
-    {{SQN, Type, PK}, V, _CrcCheck} = KVC,
+write_values(KVCList, CDBopts, Journal0, ManSlice0) ->
+    KVList = lists:map(fun({K, V, _C}) ->
+                            {K, leveled_codec:create_value_for_journal(V)}
+                            end,
+                        KVCList),
     {ok, Journal1} = case Journal0 of
                             null ->
+                                {TK, _TV} = lists:nth(1, KVList),
+                                {SQN, _LK} = leveled_codec:from_journalkey(TK),
                                 FP = CDBopts#cdb_options.file_path,
                                 FN = leveled_inker:filepath(FP,
                                                             SQN,
@@ -479,14 +484,13 @@ write_values([KVC|Rest], CDBopts, Journal0, ManSlice0) ->
                             _ ->
                                 {ok, Journal0}
                         end,
-    ValueToStore = leveled_codec:create_value_for_journal(V),
-    R = leveled_cdb:cdb_put(Journal1, {SQN, Type, PK}, ValueToStore),
+    R = leveled_cdb:cdb_mput(Journal1, KVList),
     case R of
         ok ->
-            write_values(Rest, CDBopts, Journal1, ManSlice0);
+            {Journal1, ManSlice0};
         roll ->
             ManSlice1 = ManSlice0 ++ generate_manifest_entry(Journal1),
-            write_values(Rest, CDBopts, null, ManSlice1)
+            write_values(KVCList, CDBopts, null, ManSlice1)
     end.
     
 

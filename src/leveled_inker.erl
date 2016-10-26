@@ -382,14 +382,13 @@ start_from_file(InkOpts) ->
 
 put_object(LedgerKey, Object, KeyChanges, State) ->
     NewSQN = State#state.journal_sqn + 1,
-    {JournalKey, JournalBin, HashOpt} = leveled_codec:to_inkerkv(LedgerKey,
-                                                                    NewSQN,
-                                                                    Object,
-                                                                    KeyChanges),
+    {JournalKey, JournalBin} = leveled_codec:to_inkerkv(LedgerKey,
+                                                            NewSQN,
+                                                            Object,
+                                                            KeyChanges),
     case leveled_cdb:cdb_put(State#state.active_journaldb,
                                 JournalKey,
-                                JournalBin,
-                                HashOpt) of
+                                JournalBin) of
         ok ->
             {ok, State#state{journal_sqn=NewSQN}, byte_size(JournalBin)};
         roll ->
@@ -405,8 +404,7 @@ put_object(LedgerKey, Object, KeyChanges, State) ->
                                         State#state.root_path),
             ok = leveled_cdb:cdb_put(NewJournalP,
                                         JournalKey,
-                                        JournalBin,
-                                        HashOpt),
+                                        JournalBin),
             io:format("Put to new active journal " ++
                             "with manifest write took ~w microseconds~n",
                         [timer:now_diff(os:timestamp(),SW)]),

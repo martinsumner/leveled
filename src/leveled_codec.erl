@@ -143,9 +143,9 @@ to_ledgerkey(Bucket, Key, Tag) ->
 to_inkerkv(LedgerKey, SQN, to_fetch, null) ->
     {{SQN, ?INKT_STND, LedgerKey}, null, true};
 to_inkerkv(LedgerKey, SQN, Object, KeyChanges) ->
-    {InkerType, HashOpt} = check_forinkertype(LedgerKey, Object),
+    InkerType = check_forinkertype(LedgerKey, Object),
     Value = create_value_for_journal({Object, KeyChanges}),
-    {{SQN, InkerType, LedgerKey}, Value, HashOpt}.
+    {{SQN, InkerType, LedgerKey}, Value}.
 
 %% Used when fetching objects, so only handles standard, hashable entries
 from_inkerkv(Object) ->
@@ -192,9 +192,9 @@ split_inkvalue(VBin) ->
         end.
 
 check_forinkertype(_LedgerKey, delete) ->
-    {?INKT_TOMB, no_hash};
+    ?INKT_TOMB;
 check_forinkertype(_LedgerKey, _Object) ->
-    {?INKT_STND, hash}.
+    ?INKT_STND.
 
 create_value_for_journal(Value) ->
     case Value of
