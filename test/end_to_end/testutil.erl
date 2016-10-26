@@ -23,8 +23,14 @@
             get_compressiblevalue/0,
             get_randomindexes_generator/1,
             name_list/0,
-            load_objects/5]).
+            load_objects/5,
+            put_indexed_objects/3,
+            put_altered_indexed_objects/3,
+            put_altered_indexed_objects/4,
+            check_indexed_objects/4,
+            rotating_object_check/3]).
 
+-define(RETURN_TERMS, {true, undefined}).
 
 
 reset_filestructure() ->
@@ -268,3 +274,109 @@ get_randomdate() ->
     {{Year, Month, Day}, {Hour, Minute, Second}} = Date,
     lists:flatten(io_lib:format("~4..0w~2..0w~2..0w~2..0w~2..0w~2..0w",
                                     [Year, Month, Day, Hour, Minute, Second])).
+
+
+check_indexed_objects(Book, B, KSpecL, V) ->
+    % Check all objects match, return what should be the results of an all
+    % index query
+    IdxR = lists:map(fun({K, Spc}) ->
+                            {ok, O} = leveled_bookie:book_riakget(Book, B, K),
+                            V = testutil:get_value(O),
+                            {add,
+                                "idx1_bin",
+                                IdxVal} = lists:keyfind(add, 1, Spc),
+                            {IdxVal, K} end,
+                        KSpecL),
+    % Check the all index query matches expectations
+    R = leveled_bookie:book_returnfolder(Book,
+                                            {index_query,
+                                                B,
+                                                {"idx1_bin",
+                                                    "0",
+                                                    "~"},
+                                                ?RETURN_TERMS}),
+    SW = os:timestamp(),
+    {async, Fldr} = R,
+    QR0 = Fldr(),
+    io:format("Query match found of length ~w in ~w microseconds " ++
+                    "expected ~w ~n",
+                [length(QR0),
+                    timer:now_diff(os:timestamp(), SW),
+                    length(IdxR)]),
+    QR = lists:sort(QR0),
+    ER = lists:sort(IdxR),
+    
+    ok = if
+                ER == QR ->
+                    ok
+            end,
+    ok.
+
+
+put_indexed_objects(Book, Bucket, Count) ->
+    V = testutil:get_compressiblevalue(),
+    IndexGen = testutil:get_randomindexes_generator(1),
+    SW = os:timestamp(),
+    ObjL1 = testutil:generate_objects(Count,
+                                        uuid,
+                                        [],
+                                        V,
+                                        IndexGen,
+                                        Bucket),
+    KSpecL = lists:map(fun({_RN, Obj, Spc}) ->
+                            leveled_bookie:book_riakput(Book,
+                                                        Obj,
+                                                        Spc),
+                            {testutil:get_key(Obj), Spc}
+                            end,
+                        ObjL1),
+    io:format("Put of ~w objects with ~w index entries "
+                    ++
+                    "each completed in ~w microseconds~n",
+                [Count, 1, timer:now_diff(os:timestamp(), SW)]),
+    {KSpecL, V}.
+
+
+put_altered_indexed_objects(Book, Bucket, KSpecL) ->
+    put_altered_indexed_objects(Book, Bucket, KSpecL, true).
+
+put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i) ->
+    IndexGen = testutil:get_randomindexes_generator(1),
+    V = testutil:get_compressiblevalue(),
+    RplKSpecL = lists:map(fun({K, Spc}) ->
+                                AddSpc = if
+                                            RemoveOld2i == true ->
+                                                [lists:keyfind(add, 1, Spc)];
+                                            RemoveOld2i == false ->
+                                                []
+                                        end,
+                                {O, AltSpc} = testutil:set_object(Bucket,
+                                                                    K,
+                                                                    V,
+                                                                    IndexGen,
+                                                                    AddSpc),
+                                ok = leveled_bookie:book_riakput(Book,
+                                                                    O,
+                                                                    AltSpc),
+                                {K, AltSpc} end,
+                            KSpecL),
+    {RplKSpecL, V}.
+
+rotating_object_check(RootPath, B, NumberOfObjects) ->
+    BookOpts = #bookie_options{root_path=RootPath,
+                                cache_size=1000,
+                                max_journalsize=5000000},
+    {ok, Book1} = leveled_bookie:book_start(BookOpts),
+    {KSpcL1, V1} = testutil:put_indexed_objects(Book1, B, NumberOfObjects),
+    ok = testutil:check_indexed_objects(Book1, B, KSpcL1, V1),
+    {KSpcL2, V2} = testutil:put_altered_indexed_objects(Book1, B, KSpcL1),
+    ok = testutil:check_indexed_objects(Book1, B, KSpcL2, V2),
+    {KSpcL3, V3} = testutil:put_altered_indexed_objects(Book1, B, KSpcL2),
+    ok = leveled_bookie:book_close(Book1),
+    {ok, Book2} = leveled_bookie:book_start(BookOpts),
+    ok = testutil:check_indexed_objects(Book2, B, KSpcL3, V3),
+    {KSpcL4, V4} = testutil:put_altered_indexed_objects(Book2, B, KSpcL3),
+    ok = testutil:check_indexed_objects(Book2, B, KSpcL4, V4),
+    ok = leveled_bookie:book_close(Book2),
+    ok.
+    

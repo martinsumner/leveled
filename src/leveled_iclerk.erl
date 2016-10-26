@@ -162,12 +162,13 @@ handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
     ok = filelib:ensure_dir(FP),
     
     Candidates = scan_all_files(Manifest, FilterFun, FilterServer, MaxSQN),
-    BestRun = assess_candidates(Candidates, MaxRunLength),
-    case score_run(BestRun, MaxRunLength) of
+    BestRun0 = assess_candidates(Candidates, MaxRunLength),
+    case score_run(BestRun0, MaxRunLength) of
         Score when Score > 0 ->
-            print_compaction_run(BestRun, MaxRunLength),
+            BestRun1 = sort_run(BestRun0),
+            print_compaction_run(BestRun1, MaxRunLength),
             {ManifestSlice,
-                PromptDelete} = compact_files(BestRun,
+                PromptDelete} = compact_files(BestRun1,
                                                 CDBopts,
                                                 FilterFun,
                                                 FilterServer,
@@ -178,7 +179,7 @@ handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
                                                 C#candidate.filename,
                                                 C#candidate.journal}
                                             end,
-                                        BestRun),
+                                        BestRun1),
             io:format("Clerk updating Inker as compaction complete of " ++
                         "~w files~n", [length(FilesToDelete)]),
             {ok, ManSQN} = leveled_inker:ink_updatemanifest(Inker,
@@ -365,6 +366,12 @@ print_compaction_run(BestRun, MaxRunLength) ->
                         end,
                     BestRun).
 
+sort_run(RunOfFiles) ->
+    CompareFun = fun(Cand1, Cand2) ->
+                    Cand1#candidate.low_sqn =< Cand2#candidate.low_sqn end,
+    lists:sort(CompareFun, RunOfFiles).
+
+
 compact_files([], _CDBopts, _FilterFun, _FilterServer, _MaxSQN, _RStrategy) ->
     {[], 0};
 compact_files(BestRun, CDBopts, FilterFun, FilterServer, MaxSQN, RStrategy) ->
@@ -418,6 +425,8 @@ get_all_positions([], PositionBatches) ->
 get_all_positions([HeadRef|RestOfBest], PositionBatches) ->
     SrcJournal = HeadRef#candidate.journal,
     Positions = leveled_cdb:cdb_getpositions(SrcJournal, all),
+    io:format("Compaction source ~s has yielded ~w positions~n",
+                [HeadRef#candidate.filename, length(Positions)]),
     Batches = split_positions_into_batches(lists:sort(Positions),
                                             SrcJournal,
                                             []),
@@ -767,5 +776,13 @@ compact_empty_file_test() ->
                     end end,
     Score1 = check_single_file(CDB2, LedgerFun1, LedgerSrv1, 9, 8, 4),
     ?assertMatch(100.0, Score1).
+
+compare_candidate_test() ->
+    Candidate1 = #candidate{low_sqn=1},
+    Candidate2 = #candidate{low_sqn=2},
+    Candidate3 = #candidate{low_sqn=3},
+    Candidate4 = #candidate{low_sqn=4},
+    ?assertMatch([Candidate1, Candidate2, Candidate3, Candidate4],
+                sort_run([Candidate3, Candidate2, Candidate4, Candidate1])).       
 
 -endif.

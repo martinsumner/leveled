@@ -73,7 +73,7 @@ generate_uuid() ->
 inker_reload_strategy(AltList) ->
     ReloadStrategy0 = [{?RIAK_TAG, retain}, {?STD_TAG, retain}],
     lists:foldl(fun({X, Y}, SList) ->
-                        lists:keyreplace(X, 1, Y, SList)
+                        lists:keyreplace(X, 1, SList, {X, Y})
                         end,
                     ReloadStrategy0,
                     AltList).
@@ -163,12 +163,12 @@ from_journalkey({SQN, _Type, LedgerKey}) ->
 
 compact_inkerkvc({{_SQN, ?INKT_TOMB, _LK}, _V, _CrcCheck}, _Strategy) ->
     skip;
-compact_inkerkvc({{_SQN, ?INKT_KEYD, LK}, _V, _CrcCheck}, Strategy) ->
+compact_inkerkvc({{SQN, ?INKT_KEYD, LK}, V, CrcCheck}, Strategy) ->
     {Tag, _, _, _} = LK,
     {Tag, TagStrat} = lists:keyfind(Tag, 1, Strategy),
     case TagStrat of
         retain ->
-            skip;
+            {retain, {{SQN, ?INKT_KEYD, LK}, V, CrcCheck}};
         TagStrat ->
             {TagStrat, null}
     end;

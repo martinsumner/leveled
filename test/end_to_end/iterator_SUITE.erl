@@ -4,14 +4,14 @@
 -include("include/leveled.hrl").
 
 -define(KEY_ONLY, {false, undefined}).
--define(RETURN_TERMS, {true, undefined}).
 
 -export([all/0]).
 -export([simple_load_with2i/1,
             simple_querycount/1,
             rotating_objects/1]).
 
-all() -> [simple_load_with2i,
+all() -> [
+            simple_load_with2i,
             simple_querycount,
             rotating_objects].
 
@@ -278,99 +278,16 @@ count_termsonindex(Bucket, IdxField, Book, QType) ->
 
 rotating_objects(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    ok = rotating_object_check(RootPath, "Bucket1", 10),
-    ok = rotating_object_check(RootPath, "Bucket2", 200),
-    ok = rotating_object_check(RootPath, "Bucket3", 800),
-    ok = rotating_object_check(RootPath, "Bucket4", 1600),
-    ok = rotating_object_check(RootPath, "Bucket5", 3200),
-    ok = rotating_object_check(RootPath, "Bucket6", 9600),
+    ok = testutil:rotating_object_check(RootPath, "Bucket1", 10),
+    ok = testutil:rotating_object_check(RootPath, "Bucket2", 200),
+    ok = testutil:rotating_object_check(RootPath, "Bucket3", 800),
+    ok = testutil:rotating_object_check(RootPath, "Bucket4", 1600),
+    ok = testutil:rotating_object_check(RootPath, "Bucket5", 3200),
+    ok = testutil:rotating_object_check(RootPath, "Bucket6", 9600),
     testutil:reset_filestructure().
 
 
-rotating_object_check(RootPath, Bucket, NumberOfObjects) ->
-    {ok, Book1} = leveled_bookie:book_start(RootPath, 2000, 5000000),
-    {KSpcL1, V1} = put_indexed_objects(Book1, Bucket, NumberOfObjects),
-    ok = check_indexed_objects(Book1, Bucket, KSpcL1, V1),
-    {KSpcL2, V2} = put_altered_indexed_objects(Book1, Bucket, KSpcL1),
-    ok = check_indexed_objects(Book1, Bucket, KSpcL2, V2),
-    {KSpcL3, V3} = put_altered_indexed_objects(Book1, Bucket, KSpcL2),
-    ok = leveled_bookie:book_close(Book1),
-    {ok, Book2} = leveled_bookie:book_start(RootPath, 1000, 5000000),
-    ok = check_indexed_objects(Book2, Bucket, KSpcL3, V3),
-    {KSpcL4, V4} = put_altered_indexed_objects(Book2, Bucket, KSpcL3),
-    ok = check_indexed_objects(Book2, Bucket, KSpcL4, V4),
-    ok = leveled_bookie:book_close(Book2),
-    ok.
-    
 
 
-check_indexed_objects(Book, B, KSpecL, V) ->
-    % Check all objects match, return what should eb the results of an all
-    % index query
-    IdxR = lists:map(fun({K, Spc}) ->
-                            {ok, O} = leveled_bookie:book_riakget(Book, B, K),
-                            V = testutil:get_value(O),
-                            {add,
-                                "idx1_bin",
-                                IdxVal} = lists:keyfind(add, 1, Spc),
-                            {IdxVal, K} end,
-                        KSpecL),
-    % Check the all index query matxhes expectations
-    R = leveled_bookie:book_returnfolder(Book,
-                                            {index_query,
-                                                B,
-                                                {"idx1_bin",
-                                                    "0",
-                                                    "~"},
-                                                ?RETURN_TERMS}),
-    {async, Fldr} = R,
-    QR = lists:sort(Fldr()),
-    ER = lists:sort(IdxR),
-    ok = if
-                ER == QR ->
-                    ok
-            end,
-    ok.
-
-
-put_indexed_objects(Book, Bucket, Count) ->
-    V = testutil:get_compressiblevalue(),
-    IndexGen = testutil:get_randomindexes_generator(1),
-    SW = os:timestamp(),
-    ObjL1 = testutil:generate_objects(Count,
-                                        uuid,
-                                        [],
-                                        V,
-                                        IndexGen,
-                                        Bucket),
-    KSpecL = lists:map(fun({_RN, Obj, Spc}) ->
-                            leveled_bookie:book_riakput(Book,
-                                                        Obj,
-                                                        Spc),
-                            {testutil:get_key(Obj), Spc}
-                            end,
-                        ObjL1),
-    io:format("Put of ~w objects with ~w index entries "
-                    ++
-                    "each completed in ~w microseconds~n",
-                [Count, 1, timer:now_diff(os:timestamp(), SW)]),
-    {KSpecL, V}.
-
-put_altered_indexed_objects(Book, Bucket, KSpecL) ->
-    IndexGen = testutil:get_randomindexes_generator(1),
-    V = testutil:get_compressiblevalue(),
-    RplKSpecL = lists:map(fun({K, Spc}) ->
-                                AddSpc = lists:keyfind(add, 1, Spc),
-                                {O, AltSpc} = testutil:set_object(Bucket,
-                                                                    K,
-                                                                    V,
-                                                                    IndexGen,
-                                                                    [AddSpc]),
-                                ok = leveled_bookie:book_riakput(Book,
-                                                                    O,
-                                                                    AltSpc),
-                                {K, AltSpc} end,
-                            KSpecL),
-    {RplKSpecL, V}.
     
 

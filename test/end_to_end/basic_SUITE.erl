@@ -8,7 +8,7 @@
             fetchput_snapshot/1,
             load_and_count/1,
             load_and_count_withdelete/1,
-            space_clear_ondelete_test/1
+            space_clear_ondelete/1
             ]).
 
 all() -> [
@@ -18,7 +18,7 @@ all() -> [
             fetchput_snapshot,
             load_and_count ,
             load_and_count_withdelete,
-            space_clear_ondelete_test
+            space_clear_ondelete
             ].
 
 
@@ -398,8 +398,7 @@ load_and_count_withdelete(_Config) ->
     testutil:reset_filestructure().
 
 
-space_clear_ondelete_test(_Config) ->
-    % Test is a work in progress
+space_clear_ondelete(_Config) ->
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = #bookie_options{root_path=RootPath, max_journalsize=20000000},
     {ok, Book1} = leveled_bookie:book_start(StartOpts1),
