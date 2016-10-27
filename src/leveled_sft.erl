@@ -234,7 +234,7 @@ sft_new(Filename, KL1, KL2, LevelInfo, Options) ->
         false ->
             gen_server:cast(Pid,
                             {sft_new, Filename, KL1, KL2, LevelR}),
-            {ok, Pid}
+            {ok, Pid, noreply}
     end.
 
 sft_open(Filename) ->
@@ -532,24 +532,28 @@ complete_file(Handle, FileMD, KL1, KL2, LevelR, Rename) ->
         false ->
             open_file(FileMD);
         {true, OldName, NewName} ->
-            io:format("Renaming file from ~s to ~s~n", [OldName, NewName]),
-            case filelib:is_file(NewName) of
-                true ->
-                    io:format("Filename ~s already exists~n",
-                                    [NewName]),
-                    AltName = filename:join(filename:dirname(NewName),
-                                            filename:basename(NewName))
-                                ++ ?DISCARD_EXT,
-                    io:format("Rename rogue filename ~s to ~s~n",
-                                    [NewName, AltName]),
-                    ok = file:rename(NewName, AltName);
-                false ->
-                    ok
-            end,
-            ok = file:rename(OldName, NewName),
+            ok = rename_file(OldName, NewName),
             open_file(FileMD#state{filename=NewName})
     end,    
     {ReadHandle, UpdFileMD, KeyRemainders}.
+
+rename_file(OldName, NewName) ->
+    io:format("Renaming file from ~s to ~s~n", [OldName, NewName]),
+    case filelib:is_file(NewName) of
+        true ->
+            io:format("Filename ~s already exists~n",
+                            [NewName]),
+            AltName = filename:join(filename:dirname(NewName),
+                                    filename:basename(NewName))
+                        ++ ?DISCARD_EXT,
+            io:format("Rename rogue filename ~s to ~s~n",
+                            [NewName, AltName]),
+            ok = file:rename(NewName, AltName);
+        false ->
+            ok
+    end,
+    file:rename(OldName, NewName).
+
 
 %% Fetch a Key and Value from a file, returns
 %% {value, KV} or not_present

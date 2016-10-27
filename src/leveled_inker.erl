@@ -261,15 +261,15 @@ handle_call({load_pcl, StartSQN, FilterFun, Penciller}, _From, State) ->
 handle_call({register_snapshot, Requestor}, _From , State) ->
     Rs = [{Requestor,
             State#state.manifest_sqn}|State#state.registered_snapshots],
-    io:format("Inker snapshot ~w registered at SQN ~w~n",
+    io:format("Journal snapshot ~w registered at SQN ~w~n",
                     [Requestor, State#state.manifest_sqn]),
     {reply, {State#state.manifest,
                 State#state.active_journaldb},
                 State#state{registered_snapshots=Rs}};
 handle_call({release_snapshot, Snapshot}, _From , State) ->
     Rs = lists:keydelete(Snapshot, 1, State#state.registered_snapshots),
-    io:format("Ledger snapshot ~w released~n", [Snapshot]),
-    io:format("Remaining ledger snapshots are ~w~n", [Rs]),
+    io:format("Journal snapshot ~w released~n", [Snapshot]),
+    io:format("Remaining journal snapshots are ~w~n", [Rs]),
     {reply, ok, State#state{registered_snapshots=Rs}};
 handle_call({confirm_delete, ManSQN}, _From, State) ->
     Reply = lists:foldl(fun({_R, SnapSQN}, Bool) ->
@@ -646,15 +646,12 @@ load_between_sequence(MinSQN, MaxSQN, FilterFun, Penciller,
 push_to_penciller(Penciller, KeyTree) ->
     % The push to penciller must start as a tree to correctly de-duplicate
     % the list by order before becoming a de-duplicated list for loading
-    KeyList = gb_trees:to_list(KeyTree),
-    R = leveled_penciller:pcl_pushmem(Penciller, KeyList),
-    if
-        R == pause ->
-            timer:sleep(?LOADING_PAUSE);
-        R == returned ->
+    R = leveled_penciller:pcl_pushmem(Penciller, KeyTree),
+    case R of
+        {returned, _Reason} ->
             timer:sleep(?LOADING_PAUSE),
             push_to_penciller(Penciller, KeyTree);
-        R == ok ->
+        ok ->
             ok
     end.
             
@@ -742,8 +739,7 @@ initiate_penciller_snapshot(Bookie) ->
     {ok,
         {LedgerSnap, LedgerCache},
         _} = leveled_bookie:book_snapshotledger(Bookie, self(), undefined),
-    ok = leveled_penciller:pcl_loadsnapshot(LedgerSnap,
-                                            gb_trees:to_list(LedgerCache)),
+    ok = leveled_penciller:pcl_loadsnapshot(LedgerSnap, LedgerCache),
     MaxSQN = leveled_penciller:pcl_getstartupsequencenumber(LedgerSnap),
     {LedgerSnap, MaxSQN}.
 

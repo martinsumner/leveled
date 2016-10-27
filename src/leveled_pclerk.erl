@@ -59,9 +59,11 @@
         handle_cast/2,
         handle_info/2,
         terminate/2,
-        clerk_new/1,
-        clerk_prompt/1,
-        clerk_manifestchange/3,
+        clerk_new/2,
+        mergeclerk_prompt/1,
+        mergeclerk_manifestchange/3,
+        rollclerk_levelzero/5,
+        rollclerk_close/1,
         code_change/3]).      
 
 -include_lib("eunit/include/eunit.hrl").
@@ -71,23 +73,32 @@
 
 -record(state, {owner :: pid(),
                 change_pending=false :: boolean(),
-                work_item :: #penciller_work{}|null}).
+                work_item :: #penciller_work{}|null,
+                merge_clerk = false :: boolean(),
+                roll_clerk = false ::boolean()}).
 
 %%%============================================================================
 %%% API
 %%%============================================================================
 
-clerk_new(Owner) ->
+clerk_new(Owner, Type) ->
     {ok, Pid} = gen_server:start(?MODULE, [], []),
-    ok = gen_server:call(Pid, {register, Owner}, infinity),
+    ok = gen_server:call(Pid, {register, Owner, Type}, infinity),
     io:format("Penciller's clerk ~w started with owner ~w~n", [Pid, Owner]),
     {ok, Pid}.
 
-clerk_manifestchange(Pid, Action, Closing) ->
+mergeclerk_manifestchange(Pid, Action, Closing) ->
     gen_server:call(Pid, {manifest_change, Action, Closing}, infinity).
 
-clerk_prompt(Pid) ->
+mergeclerk_prompt(Pid) ->
     gen_server:cast(Pid, prompt).
+
+rollclerk_levelzero(Pid, LevelZero, LevelMinus1, LedgerSQN, PCL) ->
+    gen_server:cast(Pid,
+                    {roll_levelzero, LevelZero, LevelMinus1, LedgerSQN, PCL}).
+
+rollclerk_close(Pid) ->
+    gen_server:call(Pid, close, infinity).
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -96,8 +107,18 @@ clerk_prompt(Pid) ->
 init([]) ->
     {ok, #state{}}.
 
-handle_call({register, Owner}, _From, State) ->
-    {reply, ok, State#state{owner=Owner}, ?MIN_TIMEOUT};
+handle_call({register, Owner, Type}, _From, State) ->
+    case Type of
+        merge ->
+            {reply,
+                ok,
+                State#state{owner=Owner, merge_clerk = true},
+                ?MIN_TIMEOUT};
+        roll ->
+            {reply,
+                ok,
+                State#state{owner=Owner, roll_clerk = true}}
+    end;
 handle_call({manifest_change, return, true}, _From, State) ->
     io:format("Request for manifest change from clerk on closing~n"),
     case State#state.change_pending of
@@ -124,20 +145,34 @@ handle_call({manifest_change, confirm, Closing}, From, State) ->
             {noreply,
                 State#state{work_item=null, change_pending=false},
                 ?MIN_TIMEOUT}
-    end.
+    end;
+handle_call(close, _From, State) ->
+    {stop, normal, ok, State}.
 
 handle_cast(prompt, State) ->
-    {noreply, State, ?MIN_TIMEOUT}.
+    {noreply, State, ?MIN_TIMEOUT};
+handle_cast({roll_levelzero, LevelZero, LevelMinus1, LedgerSQN, PCL}, State) ->
+    SW = os:timestamp(),
+    {NewL0, Size, MaxSQN} = leveled_penciller:roll_new_tree(LevelZero,
+                                                            LevelMinus1,
+                                                            LedgerSQN),
+    ok = leveled_penciller:pcl_updatelevelzero(PCL, NewL0, Size, MaxSQN),
+    io:format("Rolled tree to size ~w in ~w microseconds~n",
+                [Size, timer:now_diff(os:timestamp(), SW)]),
+    {noreply, State}.
 
 handle_info(timeout, State=#state{change_pending=Pnd}) when Pnd == false ->
-    case requestandhandle_work(State) of
-        {false, Timeout} ->
-            {noreply, State, Timeout};
-        {true, WI} ->
-            % No timeout now as will wait for call to return manifest
-            % change
-            {noreply,
-                State#state{change_pending=true, work_item=WI}}
+    if
+        State#state.merge_clerk ->
+            case requestandhandle_work(State) of
+                {false, Timeout} ->
+                    {noreply, State, Timeout};
+                {true, WI} ->
+                    % No timeout now as will wait for call to return manifest
+                    % change
+                    {noreply,
+                        State#state{change_pending=true, work_item=WI}}
+            end
     end.
 
 terminate(Reason, _State) ->

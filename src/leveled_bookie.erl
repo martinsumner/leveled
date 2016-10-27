@@ -268,7 +268,8 @@ init([Opts]) ->
             {ok,
                 {Penciller, LedgerCache},
                 Inker} = book_snapshotstore(Bookie, self(), ?SNAPSHOT_TIMEOUT),
-            ok = leveled_penciller:pcl_loadsnapshot(Penciller, []),
+            ok = leveled_penciller:pcl_loadsnapshot(Penciller,
+                                                    gb_trees:empty()),
             io:format("Snapshot starting with Pcl ~w Ink ~w~n",
                                                 [Penciller, Inker]),
             {ok, #state{penciller=Penciller,
@@ -431,11 +432,10 @@ bucket_stats(Penciller, LedgerCache, Bucket, Tag) ->
                                     source_penciller=Penciller},
     {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
     Folder = fun() ->
-                Increment = gb_trees:to_list(LedgerCache),
                 io:format("Length of increment in snapshot is ~w~n",
-                            [length(Increment)]),
+                            [gb_trees:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
-                                                        {infinity, Increment}),   
+                                                            LedgerCache),
                 StartKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
                 EndKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
                 Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
@@ -456,11 +456,10 @@ index_query(Penciller, LedgerCache,
                                     source_penciller=Penciller},
     {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
     Folder = fun() ->
-                Increment = gb_trees:to_list(LedgerCache),
                 io:format("Length of increment in snapshot is ~w~n",
-                            [length(Increment)]),
+                            [gb_trees:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
-                                                        {infinity, Increment}),   
+                                                            LedgerCache),
                 StartKey = leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG,
                                                         IdxField, StartValue),
                 EndKey = leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG,
@@ -487,11 +486,10 @@ allkey_query(Penciller, LedgerCache, Tag) ->
                                     source_penciller=Penciller},
     {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
     Folder = fun() ->
-                Increment = gb_trees:to_list(LedgerCache),
                 io:format("Length of increment in snapshot is ~w~n",
-                            [length(Increment)]),
+                            [gb_trees:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
-                                                        {infinity, Increment}),   
+                                                            LedgerCache),
                 SK = leveled_codec:to_ledgerkey(null, null, Tag),
                 EK = leveled_codec:to_ledgerkey(null, null, Tag),
                 Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
@@ -648,13 +646,10 @@ maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
     TimeToPush = maybe_withjitter(CacheSize, MaxCacheSize),
     if
         TimeToPush ->
-            Dump = gb_trees:to_list(Cache),
-            case leveled_penciller:pcl_pushmem(Penciller, Dump) of
+            case leveled_penciller:pcl_pushmem(Penciller, Cache) of
                 ok ->
                     {ok, gb_trees:empty()};
-                pause ->
-                    {pause, gb_trees:empty()};
-                returned ->
+                {returned, _Reason} ->
                     {ok, Cache}
             end;
         true ->
@@ -794,7 +789,7 @@ multi_key_test() ->
     {ok, F2B} = book_riakget(Bookie1, B2, K2),
     ?assertMatch(F2B, Obj2),
     ok = book_close(Bookie1),
-    %% Now reopen the file, and confirm that a fetch is still possible
+    % Now reopen the file, and confirm that a fetch is still possible
     {ok, Bookie2} = book_start(#bookie_options{root_path=RootPath}),
     {ok, F1C} = book_riakget(Bookie2, B1, K1),
     ?assertMatch(F1C, Obj1),
