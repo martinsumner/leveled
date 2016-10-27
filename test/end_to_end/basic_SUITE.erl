@@ -493,7 +493,7 @@ space_clear_ondelete(_Config) ->
     io:format("Bookie has ~w ledger files " ++
                     "after second close~n", [length(FNsD_L)]),
     true = PointB_Journals < length(FNsA_J),
-    true = length(FNsB_L) =< length(FNsA_L),
-    true = length(FNsC_L) =< length(FNsB_L),
-    true = length(FNsD_L) =< length(FNsB_L),
+    true = length(FNsD_L) < length(FNsA_L),
+    true = length(FNsD_L) < length(FNsB_L),
+    true = length(FNsD_L) < length(FNsC_L),
     true = length(FNsD_L) == 0.
