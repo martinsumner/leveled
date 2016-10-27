@@ -588,15 +588,18 @@ terminate(Reason, State) ->
                         State
                 end,
     case {UpdState#state.levelzero_pending,
-            get_item(0, State#state.manifest, [])} of
-        {true, []} ->
+            get_item(0, State#state.manifest, []),
+                gb_trees:size(State#state.levelzero_cache)} of
+        {true, [], _} ->
             ok = leveled_sft:sft_close(State#state.levelzero_constructor);
-        {false, []} ->
+        {false, [], 0} ->
+            io:format("Level 0 cache empty at close of Penciller~n");
+        {false, [], _N} ->
             KL = roll_into_list(State#state.levelzero_cache),
             L0Pid = roll_memory(UpdState, KL, true),
             ok = leveled_sft:sft_close(L0Pid);
         _ ->
-            ok
+            io:format("No level zero action on close of Penciller~n")
     end,
     
     leveled_pclerk:rollclerk_close(State#state.roll_clerk),

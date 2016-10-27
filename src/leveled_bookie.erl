@@ -157,7 +157,7 @@
 -define(SHUTDOWN_WAITS, 60).
 -define(SHUTDOWN_PAUSE, 10000).
 -define(SNAPSHOT_TIMEOUT, 300000).
--define(JITTER_PROBABILITY, 0.1).
+-define(JITTER_PROBABILITY, 0.01).
 
 -record(state, {inker :: pid(),
                 penciller :: pid(),
