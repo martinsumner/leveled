@@ -73,7 +73,8 @@
 %%
 %% The Penciller MUST NOT accept a new PUSH if the Clerk has commenced the
 %% conversion of the current ETS table into a SFT file, but not completed this
-%% change.  This should prompt a stall.
+%% change.  The Penciller in this case returns the push, and the Bookie should
+%% continue to gorw the cache before trying again.
 %%
 %% ---------- FETCH ----------
 %%
