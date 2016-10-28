@@ -162,7 +162,6 @@
 -record(state, {inker :: pid(),
                 penciller :: pid(),
                 cache_size :: integer(),
-                back_pressure :: boolean(),
                 ledger_cache :: gb_trees:tree(),
                 is_snapshot :: boolean()}).
 
@@ -293,14 +292,10 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag}, From, State) ->
                                         IndexSpecs),
     Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
     gen_server:reply(From, ok),
-    case maybepush_ledgercache(State#state.cache_size,
+    {ok, NewCache} = maybepush_ledgercache(State#state.cache_size,
                                             Cache0,
-                                            State#state.penciller) of
-        {ok, NewCache} ->
-            {noreply, State#state{ledger_cache=NewCache, back_pressure=false}};
-        {pause, NewCache} ->
-            {noreply, State#state{ledger_cache=NewCache, back_pressure=true}}
-    end;
+                                            State#state.penciller),
+    {noreply, State#state{ledger_cache=NewCache}};
 handle_call({get, Bucket, Key, Tag}, _From, State) ->
     LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
     case fetch_head(LedgerKey,
@@ -532,6 +527,7 @@ set_options(Opts) ->
     LedgerFP = Opts#bookie_options.root_path ++ "/" ++ ?LEDGER_FP,
     {#inker_options{root_path = JournalFP,
                         reload_strategy = ReloadStrategy,
+                        max_run_length = Opts#bookie_options.max_run_length,
                         cdb_options = #cdb_options{max_size=MaxJournalSize,
                                                     binary_mode=true}},
         #penciller_options{root_path = LedgerFP}}.

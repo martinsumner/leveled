@@ -34,7 +34,7 @@
 -record(level,
                         {level :: integer(),
                         is_basement = false :: boolean(),
-                        timestamp :: integer()}).                      
+                        timestamp :: erlang:timestamp()}).                      
 
 -record(manifest_entry,
                         {start_key :: tuple(),
@@ -53,7 +53,8 @@
                         cdb_options :: #cdb_options{},
                         start_snapshot = false :: boolean(),
                         source_inker :: pid(),
-                        reload_strategy = [] :: list()}).
+                        reload_strategy = [] :: list(),
+                        max_run_length}).
 
 -record(penciller_options,
                         {root_path :: string(),
@@ -66,7 +67,8 @@
                         cache_size :: integer(),
                         max_journalsize :: integer(),
                         snapshot_bookie :: pid(),
-                        reload_strategy = [] :: list()}).
+                        reload_strategy = [] :: list(),
+                        max_run_length :: integer()}).
 
 -record(iclerk_options,
                         {inker :: pid(),

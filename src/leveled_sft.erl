@@ -241,9 +241,7 @@ sft_open(Filename) ->
     {ok, Pid} = gen_server:start(?MODULE, [], []),
     case gen_server:call(Pid, {sft_open, Filename}, infinity) of
         {ok, {SK, EK}} ->
-            {ok, Pid, {SK, EK}};
-        Error ->
-            Error
+            {ok, Pid, {SK, EK}}
     end.
 
 sft_setfordelete(Pid, Penciller) ->
@@ -467,7 +465,7 @@ create_file(FileName) when is_list(FileName) ->
         {error, Reason} ->
             io:format("Error opening filename ~s with reason ~w",
                         [FileName, Reason]),
-            error
+            {error, Reason}
     end.
 
 
@@ -586,17 +584,16 @@ fetch_keyvalue(Handle, FileMD, Key) ->
 
 %% Fetches a range of keys returning a list of {Key, SeqN} tuples
 fetch_range_keysonly(Handle, FileMD, StartKey, EndKey) ->
-    fetch_range(Handle, FileMD, StartKey, EndKey, [],
-                    fun acc_list_keysonly/2).
+    fetch_range(Handle, FileMD, StartKey, EndKey, fun acc_list_keysonly/2).
 
 fetch_range_keysonly(Handle, FileMD, StartKey, EndKey, ScanWidth) ->
-    fetch_range(Handle, FileMD, StartKey, EndKey, [],
-                    fun acc_list_keysonly/2, ScanWidth).
+    fetch_range(Handle, FileMD, StartKey, EndKey, fun acc_list_keysonly/2,
+                    ScanWidth).
 
 %% Fetches a range of keys returning the full tuple, including value
 fetch_range_kv(Handle, FileMD, StartKey, EndKey, ScanWidth) ->
-    fetch_range(Handle, FileMD, StartKey, EndKey, [],
-                    fun acc_list_kv/2, ScanWidth).
+    fetch_range(Handle, FileMD, StartKey, EndKey, fun acc_list_kv/2,
+                    ScanWidth).
 
 acc_list_keysonly(null, empty) ->
     [];
@@ -630,24 +627,20 @@ acc_list_kv(R, RList) ->
 %% than keys and values, or other entirely different accumulators can be
 %% used - e.g. counters, hash-lists to build bloom filters etc
 
-fetch_range(Handle, FileMD, StartKey, EndKey, FunList, AccFun) ->
-    fetch_range(Handle, FileMD, StartKey, EndKey, FunList,
-                    AccFun, ?ITERATOR_SCANWIDTH).
+fetch_range(Handle, FileMD, StartKey, EndKey, AccFun) ->
+    fetch_range(Handle, FileMD, StartKey, EndKey, AccFun, ?ITERATOR_SCANWIDTH).
     
-fetch_range(Handle, FileMD, StartKey, EndKey, FunList, AccFun, ScanWidth) ->
-    fetch_range(Handle, FileMD, StartKey, EndKey, FunList,
-                    AccFun, ScanWidth, empty).
+fetch_range(Handle, FileMD, StartKey, EndKey, AccFun, ScanWidth) ->
+    fetch_range(Handle, FileMD, StartKey, EndKey, AccFun, ScanWidth, empty).
 
-fetch_range(_Handle, _FileMD, StartKey, _EndKey, _FunList,
-                    _AccFun, 0, Acc) ->
+fetch_range(_Handle, _FileMD, StartKey, _EndKey, _AccFun, 0, Acc) ->
     {partial, Acc, StartKey};
-fetch_range(Handle, FileMD, StartKey, EndKey, FunList,
-                    AccFun, ScanWidth, Acc) ->
+fetch_range(Handle, FileMD, StartKey, EndKey, AccFun, ScanWidth, Acc) ->
     %% get_nearestkey gets the last key in the index <= StartKey, or the next
     %% key along if {next, StartKey} is passed
     case get_nearestkey(FileMD#state.slot_index, StartKey) of
         {NearestKey, _Filter, {LengthList, PointerB}} ->
-            fetch_range(Handle, FileMD, StartKey, NearestKey, EndKey, FunList,
+            fetch_range(Handle, FileMD, StartKey, NearestKey, EndKey,
                             AccFun, ScanWidth,
                             LengthList,
                             0,
@@ -657,7 +650,7 @@ fetch_range(Handle, FileMD, StartKey, EndKey, FunList,
             {complete, AccFun(null, Acc)}
     end.
 
-fetch_range(Handle, FileMD, _StartKey, NearestKey, EndKey, FunList,
+fetch_range(Handle, FileMD, _StartKey, NearestKey, EndKey,
                         AccFun, ScanWidth,
                         LengthList,
                         BlockNumber,
@@ -665,21 +658,21 @@ fetch_range(Handle, FileMD, _StartKey, NearestKey, EndKey, FunList,
                         Acc)
                         when length(LengthList) == BlockNumber ->
     %% Reached the end of the slot.  Move the start key on one to scan a new slot
-    fetch_range(Handle, FileMD, {next, NearestKey}, EndKey, FunList,
+    fetch_range(Handle, FileMD, {next, NearestKey}, EndKey,
                         AccFun, ScanWidth - 1,
                         Acc);
-fetch_range(Handle, FileMD, StartKey, NearestKey, EndKey, FunList,
+fetch_range(Handle, FileMD, StartKey, NearestKey, EndKey,
                         AccFun, ScanWidth,
                         LengthList,
                         BlockNumber,
                         Pointer,
                         Acc) ->
     Block = fetch_block(Handle, LengthList, BlockNumber, Pointer),
-    Results = scan_block(Block, StartKey, EndKey, FunList, AccFun, Acc),
+    Results = scan_block(Block, StartKey, EndKey, AccFun, Acc),
     case Results of
         {partial, Acc1, StartKey} ->
             %% Move on to the next block
-            fetch_range(Handle, FileMD, StartKey, NearestKey, EndKey, FunList,
+            fetch_range(Handle, FileMD, StartKey, NearestKey, EndKey,
                         AccFun, ScanWidth,
                         LengthList,
                         BlockNumber +  1,
@@ -689,37 +682,19 @@ fetch_range(Handle, FileMD, StartKey, NearestKey, EndKey, FunList,
             {complete, Acc1}
     end.
 
-scan_block([], StartKey, _EndKey, _FunList, _AccFun, Acc) ->
+scan_block([], StartKey, _EndKey, _AccFun, Acc) ->
     {partial, Acc, StartKey};
-scan_block([HeadKV|T], StartKey, EndKey, FunList, AccFun, Acc) ->
+scan_block([HeadKV|T], StartKey, EndKey, AccFun, Acc) ->
     K = leveled_codec:strip_to_keyonly(HeadKV),
     case {StartKey > K, leveled_codec:endkey_passed(EndKey, K)} of
         {true, _} when StartKey /= all ->
-            scan_block(T, StartKey, EndKey, FunList, AccFun, Acc);
+            scan_block(T, StartKey, EndKey, AccFun, Acc);
         {_, true} when EndKey /= all ->
             {complete, Acc};
         _ ->
-            case applyfuns(FunList, HeadKV) of
-                true ->
-                    %% Add result to the accumulator
-                    scan_block(T, StartKey, EndKey, FunList,
-                                AccFun, AccFun(HeadKV, Acc));
-                false ->
-                    scan_block(T, StartKey, EndKey, FunList,
-                                AccFun, Acc)
-            end
+            scan_block(T, StartKey, EndKey, AccFun, AccFun(HeadKV, Acc))
     end.
 
-
-applyfuns([], _KV) ->
-    true;
-applyfuns([HeadFun|OtherFuns], KV) ->
-    case HeadFun(KV) of
-        true ->
-            applyfuns(OtherFuns, KV);
-        false ->
-            false
-    end.
 
 fetch_keyvalue_fromblock([], _Key, _LengthList, _Handle, _StartOfSlot) ->
     not_present;
@@ -745,10 +720,7 @@ get_nearestkey(KVList, all) ->
         [] ->
             not_found;
         [H|_Tail] ->
-            H;
-        _ ->
-            io:format("KVList issue ~w~n", [KVList]),
-            error
+            H
     end;
 get_nearestkey(KVList, Key) ->
     case Key of

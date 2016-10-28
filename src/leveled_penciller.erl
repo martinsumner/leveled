@@ -930,16 +930,7 @@ print_manifest(Manifest) ->
     lists:foreach(fun(L) ->
                         io:format("Manifest at Level ~w~n", [L]),
                         Level = get_item(L, Manifest, []),
-                        lists:foreach(fun(M) ->
-                                            R = is_record(M, manifest_entry),
-                                            case R of
-                                                true ->
-                                                    print_manifest_entry(M);
-                                                false ->
-                                                    {_, M1} = M,
-                                                    print_manifest_entry(M1)
-                                            end end,
-                                        Level)
+                        lists:foreach(fun print_manifest_entry/1, Level)
                         end,
                     lists:seq(0, ?MAX_LEVELS - 1)),
     ok.
@@ -1557,7 +1548,10 @@ print_manifest_test() ->
     M2 = #manifest_entry{start_key={i, self(), {null, "Fld1"}, "K8"},
                                 end_key={i, <<200:32/integer>>, {"Idx1", "Fld9"}, "K93"},
                                 filename="Z1"},
-    ?assertMatch(ok, print_manifest([{1, [M1, M2]}])).
+    M3 = #manifest_entry{start_key={?STD_TAG, self(), {null, "Fld1"}, "K8"},
+                                end_key={?RIAK_TAG, <<200:32/integer>>, {"Idx1", "Fld9"}, "K93"},
+                                filename="Z1"},
+    print_manifest([{1, [M1, M2, M3]}]).
 
 simple_findnextkey_test() ->
     QueryArray = [
@@ -1688,5 +1682,50 @@ foldwithimm_simple_test() ->
                     {{o, "Bucket1", "Key4"}, 10},
                     {{o, "Bucket1", "Key5"}, 2},
                     {{o, "Bucket1", "Key6"}, 7}], AccB).
+
+create_file_test() ->
+    Filename = "../test/new_file.sft",
+    ok = file:write_file(Filename, term_to_binary("hello")),
+    {KL1, KL2} = {lists:sort(leveled_sft:generate_randomkeys(10000)), []},
+    {ok, SP, noreply} = leveled_sft:sft_new(Filename,
+                                                KL1,
+                                                KL2,
+                                                0,
+                                                #sft_options{wait=false}),
+    lists:foreach(fun(X) ->
+                        case checkready(SP) of
+                            timeout ->
+                                timer:sleep(X);
+                            _ ->
+                                ok
+                        end end,
+                    [50, 50, 50, 50, 50]),
+    {ok, SrcFN, StartKey, EndKey} = checkready(SP),
+    io:format("StartKey ~w EndKey ~w~n", [StartKey, EndKey]),
+    ?assertMatch({o, _, _, _}, StartKey),
+    ?assertMatch({o, _, _, _}, EndKey),
+    ?assertMatch("../test/new_file.sft", SrcFN),
+    ok = leveled_sft:sft_clear(SP),
+    {ok, Bin} = file:read_file("../test/new_file.sft.discarded"),
+    ?assertMatch("hello", binary_to_term(Bin)).
+
+coverage_test() ->
+    RootPath = "../test/ledger",
+    clean_testdir(RootPath),
+    {ok, PCL} = pcl_start(#penciller_options{root_path=RootPath,
+                                                max_inmemory_tablesize=1000}),
+    Key1 = {{o,"Bucket0001", "Key0001", null}, {1, {active, infinity}, null}},
+    KL1 = leveled_sft:generate_randomkeys({1000, 2}),
+    ok = maybe_pause_push(PCL, [Key1]),
+    ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001", null})),
+    ok = maybe_pause_push(PCL, KL1),
+    ok = pcl_close(PCL),
+    ManifestFP = filepath(RootPath, manifest),
+    file:write_file(ManifestFP ++ "/yeszero_123.man", term_to_binary("hello")),
+    {ok, PCLr} = pcl_start(#penciller_options{root_path=RootPath,
+                                                max_inmemory_tablesize=1000}),
+    ?assertMatch(Key1, pcl_fetch(PCLr, {o,"Bucket0001", "Key0001", null})),
+    ok = pcl_close(PCLr),
+    clean_testdir(RootPath).
 
 -endif.

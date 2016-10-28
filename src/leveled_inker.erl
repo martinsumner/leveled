@@ -371,19 +371,16 @@ start_from_file(InkOpts) ->
     filelib:ensure_dir(CompactFP),
     
     ManifestFP = filepath(RootPath, manifest_dir),
-    {ok, ManifestFilenames} = case filelib:is_dir(ManifestFP) of
-        true ->
-            file:list_dir(ManifestFP);
-        false ->
-            filelib:ensure_dir(ManifestFP),
-            {ok, []}
-    end,
+    ok = filelib:ensure_dir(ManifestFP),
+    {ok, ManifestFilenames} = file:list_dir(ManifestFP),
     
     IClerkCDBOpts = CDBopts#cdb_options{file_path = CompactFP},
     ReloadStrategy = InkOpts#inker_options.reload_strategy,
+    MRL = InkOpts#inker_options.max_run_length,
     IClerkOpts = #iclerk_options{inker = self(),
                                     cdb_options=IClerkCDBOpts,
-                                    reload_strategy = ReloadStrategy},
+                                    reload_strategy = ReloadStrategy,
+                                    max_run_length = MRL},
     {ok, Clerk} = leveled_iclerk:clerk_new(IClerkOpts),
     
     {Manifest,
