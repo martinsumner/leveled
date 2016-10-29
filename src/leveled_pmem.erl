@@ -1,189 +1,166 @@
--module(leveled_pmem).
+%% -------- PENCILLER MEMORY ---------
+%%
+%% Module that provides functions for maintaining the L0 memory of the
+%% Penciller.
+%%
+%% It is desirable that the L0Mem can efficiently handle the push of new trees
+%% whilst maintaining the capability to quickly snapshot the memory for clones
+%% of the Penciller.
+%%
+%% ETS tables are not used due to complications with managing their mutability.
+%%
+%% An attempt was made to merge all trees into a single tree on push (in a
+%% spawned process), but this proved to have an expensive impact as the tree
+%% got larger.
+%%
+%% This approach is to keep a list of trees which have been received in the
+%% order which they were received.  There is then a fixed-size array of hashes
+%% used to either point lookups at the right tree in the list, or inform the
+%% requestor it is not present avoiding any lookups.
+%%
+%% Tests show this takes one third of the time at push (when compared to
+%% merging to a single tree), and is an order of magnitude more efficient as
+%% the tree reaches peak size.  It is also an order of magnitude more
+%% efficient to use the hash index when compared to looking through all the
+%% trees.
+%%
+%% Total time for single_tree 217000 microseconds
+%% Total time for array_tree 209000 microseconds
+%% Total time for array_list 142000 microseconds
+%% Total time for array_filter 69000 microseconds
+%% List of 2000 checked without array - success count of 90 in 36000 microseconds
+%% List of 2000 checked with array - success count of 90 in 1000 microseconds
 
--behaviour(gen_server).
+
+-module(leveled_pmem).
 
 -include("include/leveled.hrl").
 
--export([init/1,
-        handle_call/3,
-        handle_cast/2,
-        handle_info/2,
-        roll_singletree/4,
-        roll_arraytree/4,
-        roll_arraylist/4,
-        terminate/2,
-        code_change/3]).      
+-export([
+        add_to_index/5,
+        to_list/1,
+        new_index/0,
+        check_levelzero/3,
+        merge_trees/3
+        ]).      
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(ARRAY_WIDTH, 32).
--define(SLOT_WIDTH, 16386).
+-define(SLOT_WIDTH, {4096, 12}).
 
--record(state, {}).
 
 %%%============================================================================
 %%% API
 %%%============================================================================
 
-
-roll_singletree(LevelZero, LevelMinus1, LedgerSQN, PCL) ->
-    {ok, Pid} = gen_server:start(?MODULE, [], []),
-    gen_server:call(Pid, {single_tree, LevelZero, LevelMinus1, LedgerSQN, PCL}).
-
-roll_arraytree(LevelZero, LevelMinus1, LedgerSQN, PCL) ->
-    {ok, Pid} = gen_server:start(?MODULE, [], []),
-    gen_server:call(Pid, {array_tree, LevelZero, LevelMinus1, LedgerSQN, PCL}).
-
-roll_arraylist(LevelZero, LevelMinus1, LedgerSQN, PCL) ->
-    {ok, Pid} = gen_server:start(?MODULE, [], []),
-    gen_server:call(Pid, {array_list, LevelZero, LevelMinus1, LedgerSQN, PCL}).
-
-roll_arrayfilt(LevelZero, LevelMinus1, LedgerSQN, PCL) ->
-    {ok, Pid} = gen_server:start(?MODULE, [], []),
-    gen_server:call(Pid, {array_filter, LevelZero, LevelMinus1, LedgerSQN, PCL}).
-
-
-%%%============================================================================
-%%% gen_server callbacks
-%%%============================================================================
-
-init([]) ->
-    {ok, #state{}}.
-
-handle_call({single_tree, LevelZero, LevelMinus1, LedgerSQN, _PCL},
-                                                            _From, State) ->
+add_to_index(L0Index, L0Size, LevelMinus1, LedgerSQN, TreeList) ->
     SW = os:timestamp(),
-    {NewL0, Size, MaxSQN} = leveled_penciller:roll_new_tree(LevelZero,
-                                                            LevelMinus1,
-                                                            LedgerSQN),
-    T = timer:now_diff(os:timestamp(), SW),
-    io:format("Rolled tree to size ~w in ~w microseconds using single_tree~n",
-                [Size, T]),
-    {stop, normal, {NewL0, Size, MaxSQN, T}, State};
-handle_call({array_tree, LevelZero, LevelMinus1, LedgerSQN, _PCL},
-                                                            _From, State) ->
-    SW = os:timestamp(),
-    {MinSQN, MaxSQN, _Size, SplitTrees} = assess_sqn(LevelMinus1, to_array),
-    R = lists:foldl(fun(X, {Arr, ArrSize}) ->
-                        LM1 = array:get(X, SplitTrees),
-                        T0 = array:get(X, LevelZero),
-                        T1 = lists:foldl(fun({K, V}, TrAcc) ->
-                                                gb_trees:enter(K, V, TrAcc)
-                                                end,
-                                            T0,
-                                            LM1),
-                        {array:set(X, T1, Arr), ArrSize + gb_trees:size(T1)}
-                        end,
-                    {array:new(?ARRAY_WIDTH, {default, gb_trees:empty()}), 0},
-                    lists:seq(0, ?ARRAY_WIDTH - 1)),
-    {NextL0, NewSize} = R,
-    T = timer:now_diff(os:timestamp(), SW),
-    io:format("Rolled tree to size ~w in ~w microseconds using array_tree~n",
-                [NewSize, T]),
+    SlotInTreeList = length(TreeList) + 1,
+    FoldFun = fun({K, V}, {AccMinSQN, AccMaxSQN, HashIndex}) ->
+                    SQN = leveled_codec:strip_to_seqonly({K, V}),
+                    {Hash, Slot} = hash_to_slot(K),
+                    L = array:get(Slot, HashIndex),
+                    {min(SQN, AccMinSQN),
+                        max(SQN, AccMaxSQN),
+                        array:set(Slot, [{Hash, SlotInTreeList}|L], HashIndex)}
+                    end,
+    LM1List = gb_trees:to_list(LevelMinus1),
+    {MinSQN, MaxSQN, UpdL0Index} = lists:foldl(FoldFun,
+                                                {infinity, 0, L0Index},
+                                                LM1List),
+    NewL0Size = length(LM1List) + L0Size,
+    io:format("Rolled tree to size ~w in ~w microseconds~n",
+                [NewL0Size, timer:now_diff(os:timestamp(), SW)]),
     if
-        MinSQN >= LedgerSQN ->
-            {stop, normal, {NextL0, NewSize, MaxSQN, T}, State}
-    end;
-handle_call({array_list, LevelZero, LevelMinus1, LedgerSQN, _PCL},
-                                                            _From, State) ->
-    SW = os:timestamp(),
-    {MinSQN, MaxSQN, _Size, SplitTrees} = assess_sqn(LevelMinus1, to_array),
-    R = lists:foldl(fun(X, {Arr, ArrSize}) ->
-                        LM1 = array:get(X, SplitTrees),
-                        T0 = array:get(X, LevelZero),
-                        T1 = lists:foldl(fun({K, V}, TrAcc) ->
-                                                [{K, V}|TrAcc]
-                                                end,
-                                            T0,
-                                            LM1),
-                        {array:set(X, T1, Arr), ArrSize + length(T1)}
-                        end,
-                    {array:new(?ARRAY_WIDTH, {default, []}), 0},
-                    lists:seq(0, ?ARRAY_WIDTH - 1)),
-    {NextL0, NewSize} = R,
-    T = timer:now_diff(os:timestamp(), SW),
-    io:format("Rolled tree to size ~w in ~w microseconds using array_list~n",
-                [NewSize, T]),
-    if
-        MinSQN >= LedgerSQN ->
-            {stop, normal, {NextL0, NewSize, MaxSQN, T}, State}
-    end;
-handle_call({array_filter, LevelZero, LevelMinus1, LedgerSQN, _PCL},
-                                                            _From, State) ->
-    SW = os:timestamp(),
-    {MinSQN, MaxSQN, LM1Size, HashList} = assess_sqn(LevelMinus1, to_hashes),
-    {L0Lookup, L0TreeList, L0Size} = LevelZero,
-    UpdL0TreeList = [{LedgerSQN, LevelMinus1}|L0TreeList],
-    UpdL0Lookup = lists:foldl(fun(X, LookupArray) ->
-                                    L = array:get(X, LookupArray),
-                                    array:set(X, [LedgerSQN|L], LookupArray)
-                                    end,
-                                L0Lookup,
-                                HashList),
-    NewSize = LM1Size + L0Size,
-    T = timer:now_diff(os:timestamp(), SW),
-    io:format("Rolled tree to size ~w in ~w microseconds using array_filter~n",
-                [NewSize, T]),
-    if
-        MinSQN >= LedgerSQN ->
-            {stop,
-                normal,
-                {{UpdL0Lookup, UpdL0TreeList, NewSize}, NewSize, MaxSQN, T},
-                State}
+        MinSQN > LedgerSQN ->
+            {MaxSQN,
+                NewL0Size,
+                UpdL0Index,
+                lists:append(TreeList, [LevelMinus1])}
     end.
+    
 
-handle_cast(_Msg, State) ->
-    {noreply, State}.
+to_list(TreeList) ->
+    SW = os:timestamp(),
+    OutList = lists:foldr(fun(Tree, CompleteList) ->
+                                L = gb_trees:to_list(Tree),
+                                lists:umerge(CompleteList, L)
+                                end,
+                            [],
+                            TreeList),
+    io:format("Rolled tree to list of size ~w in ~w microseconds~n",
+                [length(OutList), timer:now_diff(os:timestamp(), SW)]),
+    OutList.
 
-handle_info(_Msg, State) ->
-    {stop, normal, ok, State}.
 
-terminate(_Reason, _State) ->
-    ok.
+new_index() ->
+    array:new(element(1, ?SLOT_WIDTH), [{default, []}, fixed]).
 
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
 
+check_levelzero(Key, L0Index, TreeList) ->
+    {Hash, Slot} = hash_to_slot(Key),
+    CheckList = array:get(Slot, L0Index),
+    SlotList = lists:foldl(fun({H0, S0}, SL) ->
+                                case H0 of
+                                    Hash ->
+                                        [S0|SL];
+                                    _ ->
+                                        SL
+                                end
+                                end,
+                            [],
+                            CheckList),
+    lists:foldl(fun(SlotToCheck, {Found, KV}) ->
+                        case Found of
+                            true ->
+                                {Found, KV};
+                            false ->
+                                CheckTree = lists:nth(SlotToCheck, TreeList),
+                                case gb_trees:lookup(Key, CheckTree) of
+                                    none ->
+                                        {Found, KV};
+                                    {value, Value} ->
+                                        {true, {Key, Value}}
+                                end
+                        end
+                        end,
+                    {false, not_found},
+                    lists:reverse(lists:usort(SlotList))).
+
+    
+merge_trees(StartKey, EndKey, TreeList) ->
+    lists:foldl(fun(Tree, TreeAcc) ->
+                        merge_nexttree(Tree, TreeAcc, StartKey, EndKey) end,
+                    gb_trees:empty(),
+                    TreeList).
 
 %%%============================================================================
-%%% Internal functions
+%%% Internal Functions
 %%%============================================================================
 
-
-hash_to_index(Key) ->
-    erlang:phash2(Key) band (?ARRAY_WIDTH - 1).
 
 hash_to_slot(Key) ->
-    erlang:phash2(Key) band (?SLOT_WIDTH - 1).
+    H = erlang:phash2(Key),
+    {H bsr element(2, ?SLOT_WIDTH), H band (element(1, ?SLOT_WIDTH) - 1)}.
 
-roll_into_list(Tree) ->
-    gb_trees:to_list(Tree).
+merge_nexttree(Tree, TreeAcc, StartKey, EndKey) ->
+    Iter = gb_trees:iterator_from(StartKey, Tree),
+    merge_nexttree(Iter, TreeAcc, EndKey).
 
-assess_sqn(Tree, to_array) ->
-    L = roll_into_list(Tree),
-    TmpA = array:new(?ARRAY_WIDTH, {default, []}),
-    FoldFun = fun({K, V}, {AccMinSQN, AccMaxSQN, AccSize, Array}) ->
-                    SQN = leveled_codec:strip_to_seqonly({K, V}),
-                    Index = hash_to_index(K),
-                    List0 = array:get(Index, Array),
-                    List1 = lists:append(List0, [{K, V}]),
-                    {min(SQN, AccMinSQN),
-                        max(SQN, AccMaxSQN),
-                        AccSize + 1,
-                        array:set(Index, List1, Array)}
-                    end,
-    lists:foldl(FoldFun, {infinity, 0, 0, TmpA}, L);
-assess_sqn(Tree, to_hashes) ->
-    L = roll_into_list(Tree),
-    FoldFun = fun({K, V}, {AccMinSQN, AccMaxSQN, AccSize, HashList}) ->
-                    SQN = leveled_codec:strip_to_seqonly({K, V}),
-                    Hash = hash_to_slot(K),
-                    {min(SQN, AccMinSQN),
-                        max(SQN, AccMaxSQN),
-                        AccSize + 1,
-                        [Hash|HashList]}
-                    end,
-    lists:foldl(FoldFun, {infinity, 0, 0, []}, L).
+merge_nexttree(Iter, TreeAcc, EndKey) ->
+    case gb_trees:next(Iter) of
+        none ->
+            TreeAcc;
+        {Key, Value, NewIter} ->
+            case leveled_codec:endkey_passed(EndKey, Key) of
+                true ->
+                    TreeAcc;
+                false ->
+                    merge_nexttree(NewIter,
+                                    gb_trees:enter(Key, Value, TreeAcc),
+                                    EndKey)
+            end
+    end.
 
 %%%============================================================================
 %%% Test
@@ -213,49 +190,76 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
                         BRange).
 
 
-speed_test() ->
-    R = lists:foldl(fun(_X, {LedgerSQN,
-                                {L0st, TTst},
-                                {L0at, TTat},
-                                {L0al, TTal},
-                                {L0af, TTaf}}) ->
+compare_method_test() ->
+    R = lists:foldl(fun(_X, {LedgerSQN, L0Size, L0Index, L0TreeList}) ->
                             LM1 = generate_randomkeys(LedgerSQN + 1, 2000, 1, 500),
-                            {NextL0st, S, MaxSQN, Tst} = roll_singletree(L0st,
-                                                                            LM1,
-                                                                            LedgerSQN,
-                                                                            self()),
-                            {NextL0at, S, MaxSQN, Tat} = roll_arraytree(L0at,
-                                                                            LM1,
-                                                                            LedgerSQN,
-                                                                            self()),
-                            {NextL0al, _S, MaxSQN, Tal} = roll_arraylist(L0al,
-                                                                            LM1,
-                                                                            LedgerSQN,
-                                                                            self()),
-                            {NextL0af, _S, MaxSQN, Taf} = roll_arrayfilt(L0af,
-                                                                            LM1,
-                                                                            LedgerSQN,
-                                                                            self()),
-                            {MaxSQN,
-                                {NextL0st, TTst + Tst},
-                                {NextL0at, TTat + Tat},
-                                {NextL0al, TTal + Tal},
-                                {NextL0af, TTaf + Taf}}
+                            add_to_index(L0Index, L0Size, LM1, LedgerSQN, L0TreeList)
                             end,
-                        {0,
-                            {gb_trees:empty(), 0},
-                            {array:new(?ARRAY_WIDTH, [{default, gb_trees:empty()}, fixed]), 0},
-                            {array:new(?ARRAY_WIDTH, [{default, []}, fixed]), 0},
-                            {{array:new(?SLOT_WIDTH, [{default, []}, fixed]), [], 0}, 0}
-                            },
+                        {0, 0, new_index(), []},
                         lists:seq(1, 16)),
-    {_, {_, TimeST}, {_, TimeAT}, {_, TimeLT}, {_, TimeAF}} = R,
-    io:format("Total time for single_tree ~w microseconds ~n", [TimeST]),
-    io:format("Total time for array_tree ~w microseconds ~n", [TimeAT]),
-    io:format("Total time for array_list ~w microseconds ~n", [TimeLT]),
-    io:format("Total time for array_filter ~w microseconds ~n", [TimeAF]),
-    ?assertMatch(true, false).
-                    
+    
+    {SQN, _Size, Index, TreeList} = R,
+    ?assertMatch(32000, SQN),
+    
+    TestList = gb_trees:to_list(generate_randomkeys(1, 2000, 1, 800)),
+
+    S0 = lists:foldl(fun({Key, _V}, Acc) ->
+            R0 = lists:foldr(fun(Tree, {Found, KV}) ->
+                                    case Found of
+                                        true ->
+                                            {true, KV};
+                                        false ->
+                                            L0 = gb_trees:lookup(Key, Tree),
+                                            case L0 of
+                                                none ->
+                                                    {false, not_found};
+                                                {value, Value} ->
+                                                    {true, {Key, Value}}
+                                            end
+                                    end
+                                    end,
+                                {false, not_found},
+                                TreeList),
+            [R0|Acc]
+            end,
+            [],
+            TestList),
+    
+    S1 = lists:foldl(fun({Key, _V}, Acc) ->
+                            R0 = check_levelzero(Key, Index, TreeList),
+                            [R0|Acc]
+                            end,
+                        [],
+                        TestList),
+    
+    ?assertMatch(S0, S1),
+    
+    StartKey = {o, "Bucket0100", null, null},
+    EndKey = {o, "Bucket0200", null, null},
+    SWa = os:timestamp(),
+    DumpList = to_list(TreeList),
+    Q0 = lists:foldl(fun({K, V}, Acc) ->
+                            P = leveled_codec:endkey_passed(EndKey, K),
+                            case {K, P} of
+                                {K, false} when K >= StartKey ->
+                                    gb_trees:enter(K, V, Acc);
+                                _ ->
+                                    Acc
+                            end
+                            end,
+                        gb_trees:empty(),
+                        DumpList),
+    Sz0 = gb_trees:size(Q0),
+    io:format("Crude method took ~w microseconds resulting in tree of " ++
+                    "size ~w~n",
+                [timer:now_diff(os:timestamp(), SWa), Sz0]),
+    SWb = os:timestamp(),
+    Q1 = merge_trees(StartKey, EndKey, TreeList),
+    Sz1 = gb_trees:size(Q1),
+    io:format("Merge method took ~w microseconds resulting in tree of " ++
+                    "size ~w~n",
+                [timer:now_diff(os:timestamp(), SWb), Sz1]),
+    ?assertMatch(Sz0, Sz1).
 
 
 
