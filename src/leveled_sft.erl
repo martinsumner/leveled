@@ -152,7 +152,7 @@
         terminate/2,
         code_change/3,
         sft_new/4,
-        sft_new/5,
+        sft_newfroml0cache/3,
         sft_open/1,
         sft_get/2,
         sft_getkvrange/4,
@@ -211,10 +211,8 @@
 %%% API
 %%%============================================================================
 
-sft_new(Filename, KL1, KL2, LevelInfo) ->
-    sft_new(Filename, KL1, KL2, LevelInfo, #sft_options{}).
 
-sft_new(Filename, KL1, KL2, LevelInfo, Options) ->
+sft_new(Filename, KL1, KL2, LevelInfo) ->
     LevelR = case is_integer(LevelInfo) of
                     true ->
                         #level{level=LevelInfo};
@@ -225,15 +223,30 @@ sft_new(Filename, KL1, KL2, LevelInfo, Options) ->
                         end
                 end,
     {ok, Pid} = gen_server:start(?MODULE, [], []),
+    Reply = gen_server:call(Pid,
+                            {sft_new, Filename, KL1, KL2, LevelR},
+                            infinity),
+    {ok, Pid, Reply}.
+
+sft_newfroml0cache(Filename, L0Cache, Options) ->
+    {ok, Pid} = gen_server:start(?MODULE, [], []),
     case Options#sft_options.wait of
         true ->
+            KL1 = leveled_pmem:to_list(L0Cache),
             Reply = gen_server:call(Pid,
-                                    {sft_new, Filename, KL1, KL2, LevelR},
+                                    {sft_new,
+                                        Filename,
+                                        KL1,
+                                        [],
+                                        #level{level=0}},
                                     infinity),
             {ok, Pid, Reply};
         false ->
             gen_server:cast(Pid,
-                            {sft_new, Filename, KL1, KL2, LevelR}),
+                            {sft_newfromcache,
+                                Filename,
+                                L0Cache,
+                                #level{level=0}}),
             {ok, Pid, noreply}
     end.
 
@@ -342,9 +355,10 @@ handle_call({set_for_delete, Penciller}, _From, State) ->
 handle_call(get_maxsqn, _From, State) ->
     statecheck_onreply(State#state.highest_sqn, State).
 
-handle_cast({sft_new, Filename, Inp1, [], _LevelR=#level{level=L}}, _State)
-                                                                when L == 0->
+handle_cast({sft_newfromcache, Filename, L0Cache, _LevelR=#level{level=L}},
+                                                        _State) when L == 0->
     SW = os:timestamp(),
+    Inp1 = leveled_pmem:to_list(L0Cache),
     {ok, State} = create_levelzero(Inp1, Filename),
     io:format("File creation of L0 file ~s took ~w microseconds~n",
                         [Filename, timer:now_diff(os:timestamp(), SW)]),

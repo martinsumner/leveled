@@ -41,7 +41,7 @@
         to_list/1,
         new_index/0,
         check_levelzero/3,
-        merge_trees/3
+        merge_trees/4
         ]).      
 
 -include_lib("eunit/include/eunit.hrl").
@@ -69,7 +69,7 @@ add_to_index(L0Index, L0Size, LevelMinus1, LedgerSQN, TreeList) ->
                                                 {infinity, 0, L0Index},
                                                 LM1List),
     NewL0Size = length(LM1List) + L0Size,
-    io:format("Rolled tree to size ~w in ~w microseconds~n",
+    io:format("Rolled L0 cache to size ~w in ~w microseconds~n",
                 [NewL0Size, timer:now_diff(os:timestamp(), SW)]),
     if
         MinSQN > LedgerSQN ->
@@ -84,11 +84,11 @@ to_list(TreeList) ->
     SW = os:timestamp(),
     OutList = lists:foldr(fun(Tree, CompleteList) ->
                                 L = gb_trees:to_list(Tree),
-                                lists:umerge(CompleteList, L)
+                                lists:ukeymerge(1, CompleteList, L)
                                 end,
                             [],
                             TreeList),
-    io:format("Rolled tree to list of size ~w in ~w microseconds~n",
+    io:format("L0 cache converted to list of size ~w in ~w microseconds~n",
                 [length(OutList), timer:now_diff(os:timestamp(), SW)]),
     OutList.
 
@@ -128,11 +128,11 @@ check_levelzero(Key, L0Index, TreeList) ->
                     lists:reverse(lists:usort(SlotList))).
 
     
-merge_trees(StartKey, EndKey, TreeList) ->
+merge_trees(StartKey, EndKey, TreeList, LevelMinus1) ->
     lists:foldl(fun(Tree, TreeAcc) ->
                         merge_nexttree(Tree, TreeAcc, StartKey, EndKey) end,
                     gb_trees:empty(),
-                    TreeList).
+                    lists:append(TreeList, [LevelMinus1])).
 
 %%%============================================================================
 %%% Internal Functions
@@ -254,7 +254,7 @@ compare_method_test() ->
                     "size ~w~n",
                 [timer:now_diff(os:timestamp(), SWa), Sz0]),
     SWb = os:timestamp(),
-    Q1 = merge_trees(StartKey, EndKey, TreeList),
+    Q1 = merge_trees(StartKey, EndKey, TreeList, gb_trees:empty()),
     Sz1 = gb_trees:size(Q1),
     io:format("Merge method took ~w microseconds resulting in tree of " ++
                     "size ~w~n",

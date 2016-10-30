@@ -645,7 +645,7 @@ push_to_penciller(Penciller, KeyTree) ->
     % the list by order before becoming a de-duplicated list for loading
     R = leveled_penciller:pcl_pushmem(Penciller, KeyTree),
     case R of
-        {returned, _Reason} ->
+        returned ->
             timer:sleep(?LOADING_PAUSE),
             push_to_penciller(Penciller, KeyTree);
         ok ->

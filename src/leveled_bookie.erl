@@ -645,7 +645,7 @@ maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
             case leveled_penciller:pcl_pushmem(Penciller, Cache) of
                 ok ->
                     {ok, gb_trees:empty()};
-                {returned, _Reason} ->
+                returned ->
                     {ok, Cache}
             end;
         true ->
