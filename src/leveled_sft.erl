@@ -418,13 +418,7 @@ statecheck_onreply(Reply, State) ->
 %%%============================================================================
 
 
-create_levelzero(Inp1, Filename) ->
-    ListForFile = case is_list(Inp1) of
-                        true ->
-                            Inp1;
-                        false ->
-                            leveled_penciller:roll_into_list(Inp1)
-                    end,
+create_levelzero(ListForFile, Filename) ->
     {TmpFilename, PrmFilename} = generate_filenames(Filename),
     case create_file(TmpFilename) of
         {error, Reason} ->
