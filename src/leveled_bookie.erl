@@ -403,15 +403,7 @@ handle_info(_Info, State) ->
 terminate(Reason, State) ->
     io:format("Bookie closing for reason ~w~n", [Reason]),
     WaitList = lists:duplicate(?SHUTDOWN_WAITS, ?SHUTDOWN_PAUSE),
-    ok = case shutdown_wait(WaitList, State#state.inker) of
-            false ->
-                io:format("Forcing close of inker following wait of "
-                                ++ "~w milliseconds~n",
-                            [lists:sum(WaitList)]),
-                leveled_inker:ink_forceclose(State#state.inker);
-            true ->
-                ok
-        end,
+    ok = shutdown_wait(WaitList, State#state.inker),
     ok = leveled_penciller:pcl_close(State#state.penciller).
 
 code_change(_OldVsn, State, _Extra) ->
@@ -503,7 +495,7 @@ shutdown_wait([], _Inker) ->
 shutdown_wait([TopPause|Rest], Inker) ->
     case leveled_inker:ink_close(Inker) of
         ok ->
-            true;
+            ok;
         pause ->
             io:format("Inker shutdown stil waiting for process to complete" ++
                         " with further wait of ~w~n", [lists:sum(Rest)]),

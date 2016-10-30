@@ -12,13 +12,13 @@
             ]).
 
 all() -> [
-            % simple_put_fetch_head_delete,
-            % many_put_fetch_head,
-            journal_compaction %,
-            % fetchput_snapshot,
-            % load_and_count,
-            % load_and_count_withdelete,
-            % space_clear_ondelete
+            simple_put_fetch_head_delete,
+            many_put_fetch_head,
+            journal_compaction,
+            fetchput_snapshot,
+            load_and_count,
+            load_and_count_withdelete,
+            space_clear_ondelete
             ].
 
 
@@ -60,6 +60,7 @@ simple_put_fetch_head_delete(_Config) ->
     ok = leveled_bookie:book_delete(Bookie3, "Bucket1", "Key2",
                                     [{remove, "Index1", "Term1"}]),
     not_found = leveled_bookie:book_get(Bookie3, "Bucket1", "Key2"),
+    not_found = leveled_bookie:book_head(Bookie3, "Bucket1", "Key2"),
     ok = leveled_bookie:book_close(Bookie3),
     {ok, Bookie4} = leveled_bookie:book_start(StartOpts2),
     not_found = leveled_bookie:book_get(Bookie4, "Bucket1", "Key2"),

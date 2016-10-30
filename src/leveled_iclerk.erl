@@ -164,7 +164,7 @@ handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
     Candidates = scan_all_files(Manifest, FilterFun, FilterServer, MaxSQN),
     BestRun0 = assess_candidates(Candidates, MaxRunLength),
     case score_run(BestRun0, MaxRunLength) of
-        Score when Score > 0 ->
+        Score when Score > 0.0 ->
             BestRun1 = sort_run(BestRun0),
             print_compaction_run(BestRun1, MaxRunLength),
             {ManifestSlice,
@@ -372,8 +372,6 @@ sort_run(RunOfFiles) ->
     lists:sort(CompareFun, RunOfFiles).
 
 
-compact_files([], _CDBopts, _FilterFun, _FilterServer, _MaxSQN, _RStrategy) ->
-    {[], 0};
 compact_files(BestRun, CDBopts, FilterFun, FilterServer, MaxSQN, RStrategy) ->
     BatchesOfPositions = get_all_positions(BestRun, []),
     compact_files(BatchesOfPositions,

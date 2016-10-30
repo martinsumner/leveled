@@ -107,7 +107,6 @@
         ink_updatemanifest/3,
         ink_print_manifest/1,
         ink_close/1,
-        ink_forceclose/1,
         build_dummy_journal/0,
         simple_manifest_reader/2,
         clean_testdir/1,
@@ -165,10 +164,7 @@ ink_confirmdelete(Pid, ManSQN) ->
     gen_server:call(Pid, {confirm_delete, ManSQN}, 1000).
 
 ink_close(Pid) ->
-    gen_server:call(Pid, {close, false}, infinity).
-
-ink_forceclose(Pid) ->
-    gen_server:call(Pid, {close, true}, infinity).
+    gen_server:call(Pid, close, infinity).
 
 ink_loadpcl(Pid, MinSQN, FilterFun, Penciller) ->
     gen_server:call(Pid, {load_pcl, MinSQN, FilterFun, Penciller}, infinity).
@@ -324,11 +320,11 @@ handle_call(compaction_complete, _From, State) ->
     {reply, ok, State#state{compaction_pending=false}};
 handle_call(compaction_pending, _From, State) ->
     {reply, State#state.compaction_pending, State};
-handle_call({close, Force}, _From, State) ->
-    case {State#state.compaction_pending, Force} of
-        {true, false} ->
+handle_call(close, _From, State) ->
+    case State#state.compaction_pending of
+        true ->
             {reply, pause, State};
-        _ ->
+        false ->
             {stop, normal, ok, State}
     end.
 
@@ -562,8 +558,6 @@ remove_from_manifest(Manifest, Entry) ->
     io:format("File ~s to be removed from manifest~n", [FN]),
     lists:keydelete(SQN, 1, Manifest).
 
-find_in_manifest(_SQN, []) ->
-    error;
 find_in_manifest(SQN, [{LowSQN, _FN, Pid}|_Tail]) when SQN >= LowSQN ->
     Pid;
 find_in_manifest(SQN, [_Head|Tail]) ->
@@ -720,17 +714,10 @@ simple_manifest_writer(Manifest, ManSQN, RootPath) ->
     end.
     
 manifest_printer(Manifest) ->
-    lists:foreach(fun(X) ->
-                        {SQN, FN} = case X of
-                                        {A, B, _PID} ->
-                                            {A, B};
-                                        {A, B} ->
-                                            {A, B}
-                                    end,
-                            io:format("At SQN=~w journal has filename ~s~n",
+    lists:foreach(fun({SQN, FN, _PID}) ->
+                         io:format("At SQN=~w journal has filename ~s~n",
                                             [SQN, FN]) end,
                     Manifest).
-
 
 initiate_penciller_snapshot(Bookie) ->
     {ok,
