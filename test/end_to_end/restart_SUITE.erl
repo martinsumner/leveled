@@ -16,7 +16,7 @@ retain_strategy(_Config) ->
                                 max_journalsize=5000000,
                                 reload_strategy=[{?RIAK_TAG, retain}]},
     BookOptsAlt = BookOpts#bookie_options{max_run_length=6,
-                                            max_journalsize=500000},
+                                            max_journalsize=100000},
     {ok, Spcl3, LastV3} = rotating_object_check(BookOpts, "Bucket3", 800),
     ok = restart_from_blankledger(BookOpts, [{"Bucket3", Spcl3, LastV3}]),
     {ok, Spcl4, LastV4} = rotating_object_check(BookOpts, "Bucket4", 1600),

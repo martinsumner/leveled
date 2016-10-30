@@ -12,13 +12,13 @@
             ]).
 
 all() -> [
-            simple_put_fetch_head_delete,
-            many_put_fetch_head,
-            journal_compaction,
-            fetchput_snapshot,
-            load_and_count,
-            load_and_count_withdelete,
-            space_clear_ondelete
+            % simple_put_fetch_head_delete,
+            % many_put_fetch_head,
+            journal_compaction %,
+            % fetchput_snapshot,
+            % load_and_count,
+            % load_and_count_withdelete,
+            % space_clear_ondelete
             ].
 
 
@@ -106,8 +106,10 @@ many_put_fetch_head(_Config) ->
 journal_compaction(_Config) ->
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = #bookie_options{root_path=RootPath,
-                                 max_journalsize=4000000},
+                                 max_journalsize=10000000,
+                                 max_run_length=1},
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+    ok = leveled_bookie:book_compactjournal(Bookie1, 30000),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
     testutil:check_forobject(Bookie1, TestObject),
@@ -115,7 +117,7 @@ journal_compaction(_Config) ->
     lists:foreach(fun({_RN, Obj, Spc}) ->
                         leveled_bookie:book_riakput(Bookie1, Obj, Spc) end,
                     ObjList1),
-    ChkList1 = lists:sublist(lists:sort(ObjList1), 1000),
+    ChkList1 = lists:sublist(lists:sort(ObjList1), 10000),
     testutil:check_forlist(Bookie1, ChkList1),
     testutil:check_forobject(Bookie1, TestObject),
     {B2, K2, V2, Spec2, MD} = {"Bucket1",
@@ -130,17 +132,30 @@ journal_compaction(_Config) ->
     testutil:check_forlist(Bookie1, ChkList1),
     testutil:check_forobject(Bookie1, TestObject),
     testutil:check_forobject(Bookie1, TestObject2),
-    timer:sleep(5000), % Allow for compaction to complete
-    io:format("Has journal completed?~n"),
     testutil:check_forlist(Bookie1, ChkList1),
     testutil:check_forobject(Bookie1, TestObject),
     testutil:check_forobject(Bookie1, TestObject2),
     %% Now replace all the objects
-    ObjList2 = testutil:generate_objects(5000, 2),
+    ObjList2 = testutil:generate_objects(50000, 2),
     lists:foreach(fun({_RN, Obj, Spc}) ->
                         leveled_bookie:book_riakput(Bookie1, Obj, Spc) end,
                     ObjList2),
     ok = leveled_bookie:book_compactjournal(Bookie1, 30000),
+    
+    F = fun leveled_bookie:book_islastcompactionpending/1,
+    lists:foldl(fun(X, Pending) ->
+                        case Pending of
+                            false ->
+                                false;
+                            true ->
+                                io:format("Loop ~w waiting for journal "
+                                    ++ "compaction to complete~n", [X]),
+                                timer:sleep(20000),
+                                F(Bookie1)
+                        end end,
+                    true,
+                    lists:seq(1, 15)),
+    
     ChkList3 = lists:sublist(lists:sort(ObjList2), 500),
     testutil:check_forlist(Bookie1, ChkList3),
     ok = leveled_bookie:book_close(Bookie1),
