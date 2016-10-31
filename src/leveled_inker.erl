@@ -249,7 +249,7 @@ handle_call({fetch, Key, SQN}, _From, State) ->
             {reply, {ok, Value}, State};
         Other ->
             io:format("Unexpected failure to fetch value for" ++
-                        "Key=~w SQN=~w with reason ~w", [Key, SQN, Other]),
+                        "Key=~w SQN=~w with reason ~w~n", [Key, SQN, Other]),
             {reply, not_present, State}
     end;
 handle_call({get, Key, SQN}, _From, State) ->

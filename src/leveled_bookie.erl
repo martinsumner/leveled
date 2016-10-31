@@ -314,6 +314,8 @@ handle_call({get, Bucket, Key, Tag}, _From, State) ->
                     Active = TS >= leveled_codec:integer_now(),
                     case {Active,
                             fetch_value(LedgerKey, Seqn, State#state.inker)} of
+                        {_, not_present} ->
+                            {reply, not_found, State};
                         {true, Object} ->
                             {reply, {ok, Object}, State};
                         _ ->

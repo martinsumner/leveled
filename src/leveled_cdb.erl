@@ -904,7 +904,7 @@ extract_kvpair(_, [], _) ->
 extract_kvpair(Handle, [Position|Rest], Key) ->
     {ok, _} = file:position(Handle, Position),
     {KeyLength, ValueLength} = read_next_2_integers(Handle),
-    case read_next_term(Handle, KeyLength) of
+    case safe_read_next_term(Handle, KeyLength) of
         Key ->  % If same key as passed in, then found!
             case read_next_term(Handle, ValueLength, crc) of
                 {false, _} -> 
@@ -1094,7 +1094,7 @@ read_next_term(Handle, Length, crc) ->
         CRC ->
             {true, binary_to_term(Bin)};
         _ ->
-            {false, binary_to_term(Bin)}
+            {false, crc_wonky}
     end.
 
 %% Extract value and size from binary containing CRC

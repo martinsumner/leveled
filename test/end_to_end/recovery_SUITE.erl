@@ -1,12 +1,14 @@
--module(restart_SUITE).
+-module(recovery_SUITE).
 -include_lib("common_test/include/ct.hrl").
 -include("include/leveled.hrl").
 -export([all/0]).
--export([retain_strategy/1
+-export([retain_strategy/1,
+            aae_bustedjournal/1
             ]).
 
 all() -> [
-            retain_strategy
+            retain_strategy,
+            aae_bustedjournal
             ].
 
 retain_strategy(_Config) ->
@@ -32,6 +34,73 @@ retain_strategy(_Config) ->
                                                 {"Bucket6", Spcl6, LastV6}]),
     testutil:reset_filestructure().
 
+
+
+aae_bustedjournal(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    StartOpts = #bookie_options{root_path=RootPath,
+                                 max_journalsize=20000000},
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts),
+    {TestObject, TestSpec} = testutil:generate_testobject(),
+    ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
+    testutil:check_forobject(Bookie1, TestObject),
+    GenList = [2],
+    _CLs = testutil:load_objects(20000, GenList, Bookie1, TestObject,
+                                fun testutil:generate_objects/2),
+    ok = leveled_bookie:book_close(Bookie1),
+    {ok, FNsA_J} = file:list_dir(RootPath ++ "/journal/journal_files"),
+    {ok, Regex} = re:compile(".*\.cdb"),
+    CDBFiles = lists:foldl(fun(FN, Acc) -> case re:run(FN, Regex) of
+                                                nomatch ->
+                                                    Acc;
+                                                _ ->
+                                                    [FN|Acc]
+                                            end
+                                            end,
+                                [],
+                                FNsA_J),
+    [HeadF|_Rest] = CDBFiles,
+    io:format("Selected Journal for corruption of ~s~n", [HeadF]),
+    {ok, Handle} = file:open(RootPath ++ "/journal/journal_files/" ++ HeadF,
+                                [binary, raw, read, write]),
+    lists:foreach(fun(X) ->
+                        Position = X * 1000 + 2048,
+                        ok = file:pwrite(Handle, Position, <<0:8/integer>>)
+                        end,
+                    lists:seq(1, 1000)),
+    ok = file:close(Handle),
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts),
+    
+    {async, KeyF} = leveled_bookie:book_returnfolder(Bookie2,
+                                                        {keylist, ?RIAK_TAG}),
+    KeyList = KeyF(),
+    20001 = length(KeyList),
+    HeadCount = lists:foldl(fun({B, K}, Acc) ->
+                                    case leveled_bookie:book_riakhead(Bookie2,
+                                                                        B,
+                                                                        K) of
+                                        {ok, _} -> Acc + 1;
+                                        not_found -> Acc
+                                    end
+                                    end,
+                                0,
+                                KeyList),
+    20001 = HeadCount,
+    GetCount = lists:foldl(fun({B, K}, Acc) ->
+                                    case leveled_bookie:book_riakget(Bookie2,
+                                                                        B,
+                                                                        K) of
+                                        {ok, _} -> Acc + 1;
+                                        not_found -> Acc
+                                    end
+                                    end,
+                                0,
+                                KeyList),
+    true = GetCount > 19000,
+    true = GetCount < HeadCount,
+    
+    ok = leveled_bookie:book_close(Bookie2),
+    testutil:reset_filestructure().
 
 
 rotating_object_check(BookOpts, B, NumberOfObjects) ->
