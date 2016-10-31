@@ -39,7 +39,7 @@
         strip_to_statusonly/1,
         strip_to_keyseqstatusonly/1,
         striphead_to_details/1,
-        is_active/2,
+        is_active/3,
         endkey_passed/2,
         key_dominates/2,
         maybe_reap_expiredkey/2,
@@ -58,9 +58,10 @@
         generate_ledgerkv/4,
         generate_ledgerkv/5,
         get_size/2,
-        convert_indexspecs/4,
+        convert_indexspecs/5,
         riakto_keydetails/1,
-        generate_uuid/0]).         
+        generate_uuid/0,
+        integer_now/0]).         
 
 
 %% Credit to
@@ -117,11 +118,15 @@ maybe_reap(tomb, {true, _CurrTS}) ->
 maybe_reap(_, _) ->
     false.
 
-is_active(Key, Value) ->
+is_active(Key, Value, Now) ->
     case strip_to_statusonly({Key, Value}) of
         {active, infinity} ->
             true;
         tomb ->
+            false;
+        {active, TS} when Now >= TS ->
+            true;
+        {active, _TS} ->
             false
     end.
 
@@ -247,12 +252,11 @@ endkey_passed({EK1, EK2, EK3, null}, {CK1, CK2, CK3, _}) ->
 endkey_passed(EndKey, CheckingKey) ->
     EndKey < CheckingKey.
 
-convert_indexspecs(IndexSpecs, Bucket, Key, SQN) ->
+convert_indexspecs(IndexSpecs, Bucket, Key, SQN, TTL) ->
     lists:map(fun({IndexOp, IdxField, IdxValue}) ->
                         Status = case IndexOp of
                                     add ->
-                                        %% TODO: timestamp support
-                                        {active, infinity};
+                                        {active, TTL};
                                     remove ->
                                         %% TODO: timestamps for delayed reaping 
                                         tomb
@@ -279,7 +283,12 @@ generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS) ->
         {PrimaryKey, {SQN, Status, extract_metadata(Obj, Size, Tag)}}}.
 
 
+integer_now() ->
+    integer_time(os:timestamp()).
 
+integer_time(TS) ->
+    DT = calendar:now_to_universal_time(TS),
+    calendar:datetime_to_gregorian_seconds(DT).
 
 extract_metadata(Obj, Size, ?RIAK_TAG) ->
     riak_extract_metadata(Obj, Size);
@@ -353,7 +362,7 @@ indexspecs_test() ->
     IndexSpecs = [{add, "t1_int", 456},
                     {add, "t1_bin", "adbc123"},
                     {remove, "t1_bin", "abdc456"}],
-    Changes = convert_indexspecs(IndexSpecs, "Bucket", "Key2", 1),
+    Changes = convert_indexspecs(IndexSpecs, "Bucket", "Key2", 1, infinity),
     ?assertMatch({{i, "Bucket", {"t1_int", 456}, "Key2"},
                     {1, {active, infinity}, null}}, lists:nth(1, Changes)),
     ?assertMatch({{i, "Bucket", {"t1_bin", "adbc123"}, "Key2"},

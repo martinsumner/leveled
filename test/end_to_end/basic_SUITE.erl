@@ -46,7 +46,7 @@ simple_put_fetch_head_delete(_Config) ->
     ok = leveled_bookie:book_put(Bookie2, "Bucket1", "Key2", "Value2",
                                     [{add, "Index1", "Term1"}]),
     {ok, "Value2"} = leveled_bookie:book_get(Bookie2, "Bucket1", "Key2"),
-    {ok, {62888926, 43}} = leveled_bookie:book_head(Bookie2,
+    {ok, {62888926, 56}} = leveled_bookie:book_head(Bookie2,
                                                     "Bucket1",
                                                     "Key2"),
     testutil:check_formissingobject(Bookie2, "Bucket1", "Key2"),

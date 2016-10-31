@@ -319,7 +319,7 @@ do_merge(KL1, KL2, {SrcLevel, IsB}, {Filepath, MSN}, FileCounter, OutList) ->
                     true ->
                         #level{level = SrcLevel + 1,
                                 is_basement = true,
-                                timestamp = os:timestamp()};
+                                timestamp = leveled_codec:integer_now()};
                     false ->
                         SrcLevel + 1
                 end,    
