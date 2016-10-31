@@ -152,7 +152,7 @@
         terminate/2,
         code_change/3,
         sft_new/4,
-        sft_newfroml0cache/3,
+        sft_newfroml0cache/4,
         sft_open/1,
         sft_get/2,
         sft_getkvrange/4,
@@ -228,11 +228,11 @@ sft_new(Filename, KL1, KL2, LevelInfo) ->
                             infinity),
     {ok, Pid, Reply}.
 
-sft_newfroml0cache(Filename, L0Cache, Options) ->
+sft_newfroml0cache(Filename, Slots, FetchFun, Options) ->
     {ok, Pid} = gen_server:start(?MODULE, [], []),
     case Options#sft_options.wait of
         true ->
-            KL1 = leveled_pmem:to_list(L0Cache),
+            KL1 = leveled_pmem:to_list(Slots, FetchFun),
             Reply = gen_server:call(Pid,
                                     {sft_new,
                                         Filename,
@@ -243,10 +243,10 @@ sft_newfroml0cache(Filename, L0Cache, Options) ->
             {ok, Pid, Reply};
         false ->
             gen_server:cast(Pid,
-                            {sft_newfromcache,
+                            {sft_newfroml0cache,
                                 Filename,
-                                L0Cache,
-                                #level{level=0}}),
+                                Slots,
+                                FetchFun}),
             {ok, Pid, noreply}
     end.
 
@@ -355,10 +355,9 @@ handle_call({set_for_delete, Penciller}, _From, State) ->
 handle_call(get_maxsqn, _From, State) ->
     statecheck_onreply(State#state.highest_sqn, State).
 
-handle_cast({sft_newfromcache, Filename, L0Cache, _LevelR=#level{level=L}},
-                                                        _State) when L == 0->
+handle_cast({sft_newfroml0cache, Filename, Slots, FetchFun}, _State) ->
     SW = os:timestamp(),
-    Inp1 = leveled_pmem:to_list(L0Cache),
+    Inp1 = leveled_pmem:to_list(Slots, FetchFun),
     {ok, State} = create_levelzero(Inp1, Filename),
     io:format("File creation of L0 file ~s took ~w microseconds~n",
                         [Filename, timer:now_diff(os:timestamp(), SW)]),

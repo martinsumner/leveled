@@ -38,7 +38,7 @@
 
 -export([
         add_to_index/5,
-        to_list/1,
+        to_list/2,
         new_index/0,
         check_levelzero/3,
         merge_trees/4
@@ -80,17 +80,19 @@ add_to_index(L0Index, L0Size, LevelMinus1, LedgerSQN, TreeList) ->
     end.
     
 
-to_list(TreeList) ->
+to_list(Slots, FetchFun) ->
     SW = os:timestamp(),
-    OutList = lists:foldr(fun(Tree, CompleteList) ->
+    SlotList = lists:reverse(lists:seq(1, Slots)),
+    FullList = lists:foldl(fun(Slot, Acc) ->
+                                Tree = FetchFun(Slot),
                                 L = gb_trees:to_list(Tree),
-                                lists:ukeymerge(1, CompleteList, L)
+                                lists:ukeymerge(1, Acc, L)
                                 end,
                             [],
-                            TreeList),
+                            SlotList),
     io:format("L0 cache converted to list of size ~w in ~w microseconds~n",
-                [length(OutList), timer:now_diff(os:timestamp(), SW)]),
-    OutList.
+                [length(FullList), timer:now_diff(os:timestamp(), SW)]),
+    FullList.
 
 
 new_index() ->
@@ -237,7 +239,8 @@ compare_method_test() ->
     StartKey = {o, "Bucket0100", null, null},
     EndKey = {o, "Bucket0200", null, null},
     SWa = os:timestamp(),
-    DumpList = to_list(TreeList),
+    FetchFun = fun(Slot) -> lists:nth(Slot, TreeList) end,
+    DumpList = to_list(length(TreeList), FetchFun),
     Q0 = lists:foldl(fun({K, V}, Acc) ->
                             P = leveled_codec:endkey_passed(EndKey, K),
                             case {K, P} of

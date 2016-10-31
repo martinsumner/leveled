@@ -514,7 +514,7 @@ set_options(Opts) ->
     
     AltStrategy = Opts#bookie_options.reload_strategy,
     ReloadStrategy = leveled_codec:inker_reload_strategy(AltStrategy),
-    
+    PCLL0CacheSize = Opts#bookie_options.max_pencillercachesize,
     JournalFP = Opts#bookie_options.root_path ++ "/" ++ ?JOURNAL_FP,
     LedgerFP = Opts#bookie_options.root_path ++ "/" ++ ?LEDGER_FP,
     {#inker_options{root_path = JournalFP,
@@ -522,7 +522,8 @@ set_options(Opts) ->
                         max_run_length = Opts#bookie_options.max_run_length,
                         cdb_options = #cdb_options{max_size=MaxJournalSize,
                                                     binary_mode=true}},
-        #penciller_options{root_path = LedgerFP}}.
+        #penciller_options{root_path = LedgerFP,
+                            max_inmemory_tablesize = PCLL0CacheSize}}.
 
 startup(InkerOpts, PencillerOpts) ->
     {ok, Inker} = leveled_inker:ink_start(InkerOpts),

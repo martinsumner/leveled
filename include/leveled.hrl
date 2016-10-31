@@ -66,6 +66,7 @@
                        {root_path :: string(),
                         cache_size :: integer(),
                         max_journalsize :: integer(),
+                        max_pencillercachesize :: integer(),
                         snapshot_bookie :: pid(),
                         reload_strategy = [] :: list(),
                         max_run_length :: integer()}).

@@ -223,6 +223,7 @@
         code_change/3,
         pcl_start/1,
         pcl_pushmem/2,
+        pcl_fetchlevelzero/2,
         pcl_fetch/2,
         pcl_fetchkeys/5,
         pcl_checksequencenumber/3,
@@ -287,6 +288,9 @@ pcl_start(PCLopts) ->
 pcl_pushmem(Pid, DumpList) ->
     %% Bookie to dump memory onto penciller
     gen_server:call(Pid, {push_mem, DumpList}, infinity).
+
+pcl_fetchlevelzero(Pid, Slot) ->
+    gen_server:call(Pid, {fetch_levelzero, Slot}, infinity).
     
 pcl_fetch(Pid, Key) ->
     gen_server:call(Pid, {fetch, Key}, infinity).
@@ -471,6 +475,8 @@ handle_call({load_snapshot, BookieIncrTree}, _From, State) ->
                                 levelzero_size=L0Size,
                                 ledger_sqn=LedgerSQN,
                                 snapshot_fully_loaded=true}};
+handle_call({fetch_levelzero, Slot}, _From, State) ->
+    {reply, lists:nth(Slot, State#state.levelzero_cache), State};
 handle_call(close, _From, State) ->
     {stop, normal, ok, State}.
 
@@ -553,7 +559,7 @@ terminate(Reason, State) ->
         {false, [], 0} ->
             io:format("Level 0 cache empty at close of Penciller~n");
         {false, [], _N} ->
-            L0Pid = roll_memory(UpdState, State#state.levelzero_cache, true),
+            L0Pid = roll_memory(UpdState, true),
             ok = leveled_sft:sft_close(L0Pid);
         _ ->
             io:format("No level zero action on close of Penciller~n")
@@ -696,7 +702,7 @@ update_levelzero(L0Index, L0Size, PushedTree, LedgerSQN, L0Cache, State) ->
             Level0Free = length(get_item(0, State#state.manifest, [])) == 0,
             case {CacheTooBig, Level0Free} of
                 {true, true}  ->
-                    L0Constructor = roll_memory(State, UpdL0Cache),        
+                    L0Constructor = roll_memory(UpdState, false),        
                     UpdState#state{levelzero_pending=true,
                                     levelzero_constructor=L0Constructor};
                 _ ->
@@ -719,19 +725,46 @@ checkready(Pid) ->
             timeout
     end.
 
-roll_memory(State, L0Cache) ->
-    roll_memory(State, L0Cache, false).
+%% Casting a large object (the levelzero cache) to the gen_server did not lead
+%% to an immediate return as expected.  With 32K keys in the TreeList it could
+%% take around 35-40ms.
+%%
+%% To avoid blocking this gen_server, the SFT file cna request each item of the
+%% cache one at a time.
+%%
+%% The Wait is set to false to use a cast when calling this in normal operation
+%% where as the Wait of true is used at shutdown
 
-roll_memory(State, L0Cache, Wait) ->
+roll_memory(State, false) ->
+    FileName = levelzero_filename(State),
+    io:format("Rolling level zero to file ~s~n", [FileName]),
+    Opts = #sft_options{wait=false},
+    PCL = self(),
+    FetchFun = fun(Slot) -> pcl_fetchlevelzero(PCL, Slot) end,
+    % FetchFun = fun(Slot) -> lists:nth(Slot, State#state.levelzero_cache) end,
+    R = leveled_sft:sft_newfroml0cache(FileName,
+                                        length(State#state.levelzero_cache),
+                                        FetchFun,
+                                        Opts),
+    {ok, Constructor, _} = R,
+    Constructor;
+roll_memory(State, true) ->
+    FileName = levelzero_filename(State),
+    Opts = #sft_options{wait=true},
+    FetchFun = fun(Slot) -> lists:nth(Slot, State#state.levelzero_cache) end,
+    R = leveled_sft:sft_newfroml0cache(FileName,
+                                        length(State#state.levelzero_cache),
+                                        FetchFun,
+                                        Opts),
+    {ok, Constructor, _} = R,
+    Constructor.
+
+levelzero_filename(State) ->
     MSN = State#state.manifest_sqn,
     FileName = State#state.root_path
                 ++ "/" ++ ?FILES_FP ++ "/"
                 ++ integer_to_list(MSN) ++ "_0_0",
-    Opts = #sft_options{wait=Wait},
-    {ok, Constructor, _} = leveled_sft:sft_newfroml0cache(FileName,
-                                                            L0Cache,
-                                                            Opts),
-    Constructor.
+    FileName.
 
 
 fetch_mem(Key, Manifest, L0Index, L0Cache) ->
@@ -1636,10 +1669,12 @@ create_file_test() ->
     ok = file:write_file(Filename, term_to_binary("hello")),
     KVL = lists:usort(leveled_sft:generate_randomkeys(10000)),
     Tree = gb_trees:from_orddict(KVL),
+    FetchFun = fun(Slot) -> lists:nth(Slot, [Tree]) end,
     {ok,
         SP,
         noreply} = leveled_sft:sft_newfroml0cache(Filename,
-                                                    [Tree],
+                                                    1,
+                                                    FetchFun,
                                                     #sft_options{wait=false}),
     lists:foreach(fun(X) ->
                         case checkready(SP) of

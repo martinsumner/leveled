@@ -69,14 +69,16 @@ simple_put_fetch_head_delete(_Config) ->
 
 many_put_fetch_head(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = #bookie_options{root_path=RootPath},
+    StartOpts1 = #bookie_options{root_path=RootPath,
+                                    max_pencillercachesize=16000},
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
     testutil:check_forobject(Bookie1, TestObject),
     ok = leveled_bookie:book_close(Bookie1),
     StartOpts2 = #bookie_options{root_path=RootPath,
-                                 max_journalsize=1000000000},
+                                 max_journalsize=1000000000,
+                                 max_pencillercachesize=32000},
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
     testutil:check_forobject(Bookie2, TestObject),
     GenList = [2, 20002, 40002, 60002, 80002,
