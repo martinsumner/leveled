@@ -58,6 +58,7 @@
         generate_ledgerkv/4,
         generate_ledgerkv/5,
         get_size/2,
+        get_keyandhash/2,
         convert_indexspecs/5,
         riakto_keydetails/1,
         generate_uuid/0,
@@ -124,7 +125,7 @@ is_active(Key, Value, Now) ->
             true;
         tomb ->
             false;
-        {active, TS} when Now >= TS ->
+        {active, TS} when TS >= Now ->
             true;
         {active, _TS} ->
             false
@@ -307,6 +308,18 @@ get_size(PK, Value) ->
             Size
     end.
     
+get_keyandhash(LK, Value) ->
+    {Tag, Bucket, Key, _} = LK,
+    {_, _, MD} = Value,
+    case Tag of
+        ?RIAK_TAG ->
+            {_RMD, _VC, Hash, _Size} = MD,
+            {Bucket, Key, Hash};
+        ?STD_TAG ->
+            {Hash, _Size} = MD,
+            {Bucket, Key, Hash}
+    end.
+
 
 build_metadata_object(PrimaryKey, MD) ->
     {Tag, Bucket, Key, null} = PrimaryKey,

@@ -397,6 +397,14 @@ handle_call({return_folder, FolderType}, _From, State) ->
                     allkey_query(State#state.penciller,
                                     State#state.ledger_cache,
                                     Tag),
+                    State};
+        {hashtree_query, Tag, JournalCheck} ->
+                {reply,
+                    hashtree_query(State#state.penciller,
+                                    State#state.ledger_cache,
+                                    State#state.inker,
+                                    Tag,
+                                    JournalCheck),
                     State}
     end;
 handle_call({compact_journal, Timeout}, _From, State) ->
@@ -474,6 +482,34 @@ index_query(Penciller, LedgerCache,
                                     fun add_keys/3
                             end,
                 AccFun = accumulate_index(TermRegex, AddFun),
+                Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
+                                                        StartKey,
+                                                        EndKey,
+                                                        AccFun,
+                                                        []),
+                ok = leveled_penciller:pcl_close(LedgerSnapshot),
+                Acc
+                end,
+    {async, Folder}.
+
+
+hashtree_query(Penciller, LedgerCache, _Inker,
+                Tag, JournalCheck) ->
+    PCLopts = #penciller_options{start_snapshot=true,
+                                    source_penciller=Penciller},
+    {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
+    JournalSnapshot = case JournalCheck of
+                            false ->
+                                null
+                        end,
+    Folder = fun() ->
+                io:format("Length of increment in snapshot is ~w~n",
+                            [gb_trees:size(LedgerCache)]),
+                ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
+                                                            LedgerCache),
+                StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
+                EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
+                AccFun = accumulate_hashes(),
                 Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
                                                         StartKey,
                                                         EndKey,
@@ -586,6 +622,18 @@ accumulate_size() ->
                             false ->
                                 {Size, Count}
                         end
+                end,
+    AccFun.
+
+accumulate_hashes() ->
+    Now = leveled_codec:integer_now(),
+    AccFun = fun(Key, Value, KHList) ->
+                    case leveled_codec:is_active(Key, Value, Now) of
+                        true ->
+                            [leveled_codec:get_keyandhash(Key, Value)|KHList];
+                        false ->
+                            KHList
+                    end
                 end,
     AccFun.
 
@@ -920,6 +968,51 @@ ttl_test() ->
                         end,
                     ObjL2),
     
+    ok = book_close(Bookie2),
+    reset_filestructure().
+
+hashtree_query_test() ->
+    RootPath = reset_filestructure(),
+    {ok, Bookie1} = book_start(#bookie_options{root_path=RootPath,
+                                                max_journalsize=1000000,
+                                                cache_size=500}),
+    ObjL1 = generate_multiple_objects(1200, 1),
+    % Put in all the objects with a TTL in the future
+    Future = leveled_codec:integer_now() + 300,
+    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
+                                                        "Bucket", K, V, S,
+                                                        ?STD_TAG,
+                                                        Future) end,
+                    ObjL1),
+    ObjL2 = generate_multiple_objects(20, 1201),
+    % Put in a few objects with a TTL in the past
+    Past = leveled_codec:integer_now() - 300,
+    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
+                                                        "Bucket", K, V, S,
+                                                        ?STD_TAG,
+                                                        Past) end,
+                    ObjL2),
+    % Scan the store for the Bucket, Keys and Hashes
+    {async, HTFolder} = book_returnfolder(Bookie1,
+                                                {hashtree_query,
+                                                    ?STD_TAG,
+                                                    false}),
+    KeyHashList = HTFolder(),
+        lists:foreach(fun({B, _K, H}) ->
+                            ?assertMatch("Bucket", B),
+                            ?assertMatch(true, is_integer(H))
+                            end,
+                        KeyHashList),
+    ?assertMatch(1200, length(KeyHashList)),
+    ok = book_close(Bookie1),
+    {ok, Bookie2} = book_start(#bookie_options{root_path=RootPath,
+                                                max_journalsize=200000,
+                                                cache_size=500}),
+    {async, HTFolder2} = book_returnfolder(Bookie2,
+                                                {hashtree_query,
+                                                    ?STD_TAG,
+                                                    false}),
+    ?assertMatch(KeyHashList, HTFolder2()),
     ok = book_close(Bookie2),
     reset_filestructure().
 
