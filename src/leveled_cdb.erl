@@ -316,6 +316,8 @@ rolling({key_check, Key}, _From, State) ->
         get_mem(Key, State#state.handle, State#state.hashtree, loose_presence),
         rolling,
         State};
+rolling({get_positions, _SampleSize}, _From, State) ->
+    {reply, [], rolling, State};
 rolling({return_hashtable, IndexList, HashTreeBin}, _From, State) ->
     Handle = State#state.handle,
     {ok, BasePos} = file:position(Handle, State#state.last_position), 
