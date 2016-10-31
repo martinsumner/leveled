@@ -891,7 +891,47 @@ ttl_test() ->
                                                 {bucket_stats, "Bucket"}),
     {_Size, Count} = BucketFolder(),
     ?assertMatch(100, Count),
+    {async,
+        IndexFolder} = book_returnfolder(Bookie1,
+                                            {index_query,
+                                            "Bucket",
+                                            {"idx1_bin", "f8", "f9"},
+                                            {false, undefined}}),
+    KeyList = IndexFolder(),
+    ?assertMatch(20, length(KeyList)),
+    
+    {ok, Regex} = re:compile("f8"),
+    {async,
+        IndexFolderTR} = book_returnfolder(Bookie1,
+                                            {index_query,
+                                            "Bucket",
+                                            {"idx1_bin", "f8", "f9"},
+                                            {true, Regex}}),
+    TermKeyList = IndexFolderTR(),
+    ?assertMatch(10, length(TermKeyList)),
+    
     ok = book_close(Bookie1),
+    {ok, Bookie2} = book_start(#bookie_options{root_path=RootPath}),
+    
+    {async,
+        IndexFolderTR2} = book_returnfolder(Bookie2,
+                                            {index_query,
+                                            "Bucket",
+                                            {"idx1_bin", "f7", "f9"},
+                                            {false, Regex}}),
+    KeyList2 = IndexFolderTR2(),
+    ?assertMatch(10, length(KeyList2)),
+    
+    lists:foreach(fun({K, _V, _S}) ->
+                        not_found = book_get(Bookie2, "Bucket", K, ?STD_TAG)
+                        end,
+                    ObjL2),
+    lists:foreach(fun({K, _V, _S}) ->
+                        not_found = book_head(Bookie2, "Bucket", K, ?STD_TAG)
+                        end,
+                    ObjL2),
+    
+    ok = book_close(Bookie2),
     reset_filestructure().
 
 -endif.
