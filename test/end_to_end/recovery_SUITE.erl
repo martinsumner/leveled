@@ -99,6 +99,22 @@ aae_bustedjournal(_Config) ->
     true = GetCount > 19000,
     true = GetCount < HeadCount,
     
+    {async, HashTreeF1} = leveled_bookie:book_returnfolder(Bookie2,
+                                                            {hashtree_query,
+                                                                ?RIAK_TAG,
+                                                                false}),
+    KeyHashList1 = HashTreeF1(),
+    20001 = length(KeyHashList1),
+    {async, HashTreeF2} = leveled_bookie:book_returnfolder(Bookie2,
+                                                            {hashtree_query,
+                                                                ?RIAK_TAG,
+                                                                check_presence}),
+    KeyHashList2 = HashTreeF2(),
+    % The file is still there, and the hashtree is not corrupted
+    KeyHashList2 = KeyHashList1,
+    % Will need to remove the file or corrupt the hashtree to get presence to
+    % fail
+    
     ok = leveled_bookie:book_close(Bookie2),
     testutil:reset_filestructure().
 
