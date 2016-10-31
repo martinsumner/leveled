@@ -159,7 +159,8 @@
 -define(SHUTDOWN_WAITS, 60).
 -define(SHUTDOWN_PAUSE, 10000).
 -define(SNAPSHOT_TIMEOUT, 300000).
--define(JITTER_PROBABILITY, 0.01).
+-define(JITTER_PROB, 0.01).
+-define(CHECKJOURNAL_PROB, 0.2).
 
 -record(state, {inker :: pid(),
                 penciller :: pid(),
@@ -484,6 +485,12 @@ hashtree_query(State, Tag, JournalCheck) ->
                                                         AccFun,
                                                         []),
                 ok = leveled_penciller:pcl_close(LedgerSnapshot),
+                case JournalCheck of
+                    false ->
+                        ok;
+                    check_presence ->
+                        leveled_inker:ink_close(JournalSnapshot)
+                end,
                 Acc
                 end,
     {async, Folder}.
@@ -615,16 +622,17 @@ accumulate_hashes(JournalCheck, InkerClone) ->
                     case leveled_codec:is_active(LK, V, Now) of
                         true ->
                             {B, K, H} = leveled_codec:get_keyandhash(LK, V),
-                            case JournalCheck of
-                                false ->    
-                                    [{B, K, H}|KHList];
-                                check_presence ->
+                            Check = random:uniform() < ?CHECKJOURNAL_PROB,
+                            case {JournalCheck, Check} of
+                                {check_presence, true} ->
                                     case check_presence(LK, V, InkerClone) of
                                         true ->
                                             [{B, K, H}|KHList];
                                         false ->
                                             KHList
-                                    end
+                                    end;
+                                _ ->    
+                                    [{B, K, H}|KHList]
                             end;
                         false ->
                             KHList
@@ -737,7 +745,7 @@ maybe_withjitter(CacheSize, MaxCacheSize) ->
         CacheSize > MaxCacheSize ->
             R = random:uniform(),
             if
-                R < ?JITTER_PROBABILITY ->
+                R < ?JITTER_PROB ->
                     true;
                 true ->
                     false
@@ -1018,6 +1026,32 @@ hashtree_query_test() ->
                                                     false}),
     ?assertMatch(KeyHashList, HTFolder2()),
     ok = book_close(Bookie2),
+    reset_filestructure().
+
+hashtree_query_withjournalcheck_test() ->
+    RootPath = reset_filestructure(),
+    {ok, Bookie1} = book_start(#bookie_options{root_path=RootPath,
+                                                max_journalsize=1000000,
+                                                cache_size=500}),
+    ObjL1 = generate_multiple_objects(800, 1),
+    % Put in all the objects with a TTL in the future
+    Future = leveled_codec:integer_now() + 300,
+    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
+                                                        "Bucket", K, V, S,
+                                                        ?STD_TAG,
+                                                        Future) end,
+                    ObjL1),
+    {async, HTFolder1} = book_returnfolder(Bookie1,
+                                                {hashtree_query,
+                                                    ?STD_TAG,
+                                                    false}),
+    KeyHashList = HTFolder1(),
+    {async, HTFolder2} = book_returnfolder(Bookie1,
+                                                {hashtree_query,
+                                                    ?STD_TAG,
+                                                    check_presence}),
+    ?assertMatch(KeyHashList, HTFolder2()),
+    ok = book_close(Bookie1),
     reset_filestructure().
 
 -endif.
