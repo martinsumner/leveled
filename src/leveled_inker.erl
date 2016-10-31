@@ -97,6 +97,7 @@
         ink_put/4,
         ink_get/3,
         ink_fetch/3,
+        ink_keycheck/3,
         ink_loadpcl/4,
         ink_registersnapshot/2,
         ink_confirmdelete/2,
@@ -153,6 +154,9 @@ ink_get(Pid, PrimaryKey, SQN) ->
 
 ink_fetch(Pid, PrimaryKey, SQN) ->
     gen_server:call(Pid, {fetch, PrimaryKey, SQN}, infinity).
+
+ink_keycheck(Pid, PrimaryKey, SQN) ->
+    gen_server:call(Pid, {key_check, PrimaryKey, SQN}, infinity).
 
 ink_registersnapshot(Pid, Requestor) ->
     gen_server:call(Pid, {register_snapshot, Requestor}, infinity).
@@ -250,6 +254,8 @@ handle_call({fetch, Key, SQN}, _From, State) ->
     end;
 handle_call({get, Key, SQN}, _From, State) ->
     {reply, get_object(Key, SQN, State#state.manifest), State};
+handle_call({key_check, Key, SQN}, _From, State) ->
+    {reply, key_check(Key, SQN, State#state.manifest), State};
 handle_call({load_pcl, StartSQN, FilterFun, Penciller}, _From, State) ->
     Manifest = lists:reverse(State#state.manifest),
     Reply = load_from_sequence(StartSQN, FilterFun, Penciller, Manifest),
@@ -440,6 +446,13 @@ get_object(LedgerKey, SQN, Manifest) ->
     Obj = leveled_cdb:cdb_get(JournalP, InkerKey),
     leveled_codec:from_inkerkv(Obj).
 
+key_check(LedgerKey, SQN, Manifest) ->
+    JournalP = find_in_manifest(SQN, Manifest),
+    {InkerKey, _V, true} = leveled_codec:to_inkerkv(LedgerKey,
+                                                    SQN,
+                                                    to_fetch,
+                                                    null),
+    leveled_cdb:cdb_keycheck(JournalP, InkerKey).
 
 build_manifest(ManifestFilenames,
                 RootPath,

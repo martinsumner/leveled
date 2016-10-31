@@ -38,6 +38,7 @@
         strip_to_seqonly/1,
         strip_to_statusonly/1,
         strip_to_keyseqstatusonly/1,
+        strip_to_keyseqonly/1,
         striphead_to_details/1,
         is_active/3,
         endkey_passed/2,
@@ -88,6 +89,8 @@ strip_to_keyseqstatusonly({K, {SeqN, St, _MD}}) -> {K, SeqN, St}.
 strip_to_statusonly({_, {_, St, _}}) -> St.
 
 strip_to_seqonly({_, {SeqN, _, _}}) -> SeqN.
+
+strip_to_keyseqonly({LK, {SeqN, _, _}}) -> {LK, SeqN}.
 
 striphead_to_details({SeqN, St, MD}) -> {SeqN, St, MD}.
 

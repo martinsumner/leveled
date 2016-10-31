@@ -343,69 +343,36 @@ handle_call({head, Bucket, Key, Tag}, _From, State) ->
             end
     end;
 handle_call({snapshot, _Requestor, SnapType, _Timeout}, _From, State) ->
-    PCLopts = #penciller_options{start_snapshot=true,
-                                    source_penciller=State#state.penciller},
-    {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
-    case SnapType of
-        store ->
-            InkerOpts = #inker_options{start_snapshot=true,
-                                        source_inker=State#state.inker},
-            {ok, JournalSnapshot} = leveled_inker:ink_start(InkerOpts),
-            {reply,
-                {ok,
-                    {LedgerSnapshot,
-                        State#state.ledger_cache},
-                    JournalSnapshot},
-                State};
-        ledger ->
-            {reply,
-                {ok,
-                    {LedgerSnapshot,
-                        State#state.ledger_cache},
-                    null},
-                State}
-    end;
+    Reply = snapshot_store(State, SnapType),
+    {reply, Reply, State};
 handle_call({return_folder, FolderType}, _From, State) ->
     case FolderType of
         {bucket_stats, Bucket} ->
             {reply,
-                bucket_stats(State#state.penciller,
-                                    State#state.ledger_cache,
-                                    Bucket,
-                                    ?STD_TAG),
+                bucket_stats(State, Bucket, ?STD_TAG),
                 State};
         {riakbucket_stats, Bucket} ->
             {reply,
-                bucket_stats(State#state.penciller,
-                                    State#state.ledger_cache,
-                                    Bucket,
-                                    ?RIAK_TAG),
+                bucket_stats(State, Bucket, ?RIAK_TAG),
                 State};
         {index_query,
                 Bucket,
                 {IdxField, StartValue, EndValue},
                 {ReturnTerms, TermRegex}} ->
             {reply,
-                index_query(State#state.penciller,
-                                State#state.ledger_cache,
+                index_query(State,
                                 Bucket,
                                 {IdxField, StartValue, EndValue},
                                 {ReturnTerms, TermRegex}),
                 State};
         {keylist, Tag} ->
-                {reply,
-                    allkey_query(State#state.penciller,
-                                    State#state.ledger_cache,
-                                    Tag),
-                    State};
+            {reply,
+                allkey_query(State, Tag),
+                State};
         {hashtree_query, Tag, JournalCheck} ->
-                {reply,
-                    hashtree_query(State#state.penciller,
-                                    State#state.ledger_cache,
-                                    State#state.inker,
-                                    Tag,
-                                    JournalCheck),
-                    State}
+            {reply,
+                hashtree_query(State, Tag, JournalCheck),
+                State}
     end;
 handle_call({compact_journal, Timeout}, _From, State) ->
     ok = leveled_inker:ink_compactjournal(State#state.inker,
@@ -437,10 +404,10 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%============================================================================
 
-bucket_stats(Penciller, LedgerCache, Bucket, Tag) ->
-    PCLopts = #penciller_options{start_snapshot=true,
-                                    source_penciller=Penciller},
-    {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
+bucket_stats(State, Bucket, Tag) ->
+    {ok,
+        {LedgerSnapshot, LedgerCache},
+        _JournalSnapshot} = snapshot_store(State, ledger),
     Folder = fun() ->
                 io:format("Length of increment in snapshot is ~w~n",
                             [gb_trees:size(LedgerCache)]),
@@ -459,13 +426,13 @@ bucket_stats(Penciller, LedgerCache, Bucket, Tag) ->
                 end,
     {async, Folder}.
 
-index_query(Penciller, LedgerCache,
+index_query(State,
                 Bucket,
                 {IdxField, StartValue, EndValue},
                 {ReturnTerms, TermRegex}) ->
-    PCLopts = #penciller_options{start_snapshot=true,
-                                    source_penciller=Penciller},
-    {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
+    {ok,
+        {LedgerSnapshot, LedgerCache},
+        _JournalSnapshot} = snapshot_store(State, ledger),
     Folder = fun() ->
                 io:format("Length of increment in snapshot is ~w~n",
                             [gb_trees:size(LedgerCache)]),
@@ -493,15 +460,16 @@ index_query(Penciller, LedgerCache,
     {async, Folder}.
 
 
-hashtree_query(Penciller, LedgerCache, _Inker,
-                Tag, JournalCheck) ->
-    PCLopts = #penciller_options{start_snapshot=true,
-                                    source_penciller=Penciller},
-    {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
-    JournalSnapshot = case JournalCheck of
+hashtree_query(State, Tag, JournalCheck) ->
+    SnapType = case JournalCheck of
                             false ->
-                                null
+                                ledger;
+                            check_presence ->
+                                store
                         end,
+    {ok,
+        {LedgerSnapshot, LedgerCache},
+        JournalSnapshot} = snapshot_store(State, SnapType),
     Folder = fun() ->
                 io:format("Length of increment in snapshot is ~w~n",
                             [gb_trees:size(LedgerCache)]),
@@ -509,7 +477,7 @@ hashtree_query(Penciller, LedgerCache, _Inker,
                                                             LedgerCache),
                 StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
                 EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
-                AccFun = accumulate_hashes(),
+                AccFun = accumulate_hashes(JournalCheck, JournalSnapshot),
                 Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
                                                         StartKey,
                                                         EndKey,
@@ -520,10 +488,10 @@ hashtree_query(Penciller, LedgerCache, _Inker,
                 end,
     {async, Folder}.
 
-allkey_query(Penciller, LedgerCache, Tag) ->
-    PCLopts = #penciller_options{start_snapshot=true,
-                                    source_penciller=Penciller},
-    {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
+allkey_query(State, Tag) ->
+    {ok,
+        {LedgerSnapshot, LedgerCache},
+        _JournalSnapshot} = snapshot_store(State, ledger),
     Folder = fun() ->
                 io:format("Length of increment in snapshot is ~w~n",
                             [gb_trees:size(LedgerCache)]),
@@ -542,6 +510,22 @@ allkey_query(Penciller, LedgerCache, Tag) ->
                 end,
     {async, Folder}.
 
+
+snapshot_store(State, SnapType) ->
+    PCLopts = #penciller_options{start_snapshot=true,
+                                    source_penciller=State#state.penciller},
+    {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
+    case SnapType of
+        store ->
+            InkerOpts = #inker_options{start_snapshot=true,
+                                        source_inker=State#state.inker},
+            {ok, JournalSnapshot} = leveled_inker:ink_start(InkerOpts),
+            {ok, {LedgerSnapshot, State#state.ledger_cache},
+                    JournalSnapshot};
+        ledger ->
+            {ok, {LedgerSnapshot, State#state.ledger_cache},
+                    null}
+    end.
 
 shutdown_wait([], _Inker) ->
     false;
@@ -625,17 +609,37 @@ accumulate_size() ->
                 end,
     AccFun.
 
-accumulate_hashes() ->
+accumulate_hashes(JournalCheck, InkerClone) ->
     Now = leveled_codec:integer_now(),
-    AccFun = fun(Key, Value, KHList) ->
-                    case leveled_codec:is_active(Key, Value, Now) of
+    AccFun = fun(LK, V, KHList) ->
+                    case leveled_codec:is_active(LK, V, Now) of
                         true ->
-                            [leveled_codec:get_keyandhash(Key, Value)|KHList];
+                            {B, K, H} = leveled_codec:get_keyandhash(LK, V),
+                            case JournalCheck of
+                                false ->    
+                                    [{B, K, H}|KHList];
+                                check_presence ->
+                                    case check_presence(LK, V, InkerClone) of
+                                        true ->
+                                            [{B, K, H}|KHList];
+                                        false ->
+                                            KHList
+                                    end
+                            end;
                         false ->
                             KHList
                     end
                 end,
     AccFun.
+
+check_presence(Key, Value, InkerClone) ->
+    {LedgerKey, SQN} = leveled_codec:strip_to_keyseqonly({Key, Value}),
+    case leveled_inker:ink_keycheck(InkerClone, LedgerKey, SQN) of
+        probably ->
+            true;
+        missing ->
+            false
+    end.
 
 accumulate_keys() ->
     Now = leveled_codec:integer_now(),
