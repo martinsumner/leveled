@@ -3,12 +3,14 @@
 -include("include/leveled.hrl").
 -export([all/0]).
 -export([retain_strategy/1,
-            aae_bustedjournal/1
+            aae_bustedjournal/1,
+            journal_compaction_bustedjournal/1
             ]).
 
 all() -> [
-            retain_strategy,
-            aae_bustedjournal
+            % retain_strategy,
+            aae_bustedjournal,
+            journal_compaction_bustedjournal
             ].
 
 retain_strategy(_Config) ->
@@ -48,27 +50,10 @@ aae_bustedjournal(_Config) ->
     _CLs = testutil:load_objects(20000, GenList, Bookie1, TestObject,
                                 fun testutil:generate_objects/2),
     ok = leveled_bookie:book_close(Bookie1),
-    {ok, FNsA_J} = file:list_dir(RootPath ++ "/journal/journal_files"),
-    {ok, Regex} = re:compile(".*\.cdb"),
-    CDBFiles = lists:foldl(fun(FN, Acc) -> case re:run(FN, Regex) of
-                                                nomatch ->
-                                                    Acc;
-                                                _ ->
-                                                    [FN|Acc]
-                                            end
-                                            end,
-                                [],
-                                FNsA_J),
+    CDBFiles = testutil:find_journals(RootPath),
     [HeadF|_Rest] = CDBFiles,
     io:format("Selected Journal for corruption of ~s~n", [HeadF]),
-    {ok, Handle} = file:open(RootPath ++ "/journal/journal_files/" ++ HeadF,
-                                [binary, raw, read, write]),
-    lists:foreach(fun(X) ->
-                        Position = X * 1000 + 2048,
-                        ok = file:pwrite(Handle, Position, <<0:8/integer>>)
-                        end,
-                    lists:seq(1, 1000)),
-    ok = file:close(Handle),
+    testutil:corrupt_journal(RootPath, HeadF, 1000),
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts),
     
     {async, KeyF} = leveled_bookie:book_returnfolder(Bookie2,
@@ -117,6 +102,76 @@ aae_bustedjournal(_Config) ->
     
     ok = leveled_bookie:book_close(Bookie2),
     testutil:reset_filestructure().
+
+
+journal_compaction_bustedjournal(_Config) ->
+    % Simply confirms that none of this causes a crash
+    RootPath = testutil:reset_filestructure(),
+    StartOpts1 = #bookie_options{root_path=RootPath,
+                                 max_journalsize=10000000,
+                                 max_run_length=10},
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+    {TestObject, TestSpec} = testutil:generate_testobject(),
+    ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
+    testutil:check_forobject(Bookie1, TestObject),
+    ObjList1 = testutil:generate_objects(50000, 2),
+    lists:foreach(fun({_RN, Obj, Spc}) ->
+                        leveled_bookie:book_riakput(Bookie1, Obj, Spc) end,
+                    ObjList1),
+    %% Now replace all the objects
+    ObjList2 = testutil:generate_objects(50000, 2),
+    lists:foreach(fun({_RN, Obj, Spc}) ->
+                        leveled_bookie:book_riakput(Bookie1, Obj, Spc) end,
+                    ObjList2),
+    ok = leveled_bookie:book_close(Bookie1),
+    
+    CDBFiles = testutil:find_journals(RootPath),
+    lists:foreach(fun(FN) -> testutil:corrupt_journal(RootPath, FN, 100) end,
+                    CDBFiles),
+    
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
+    
+    ok = leveled_bookie:book_compactjournal(Bookie2, 30000),
+    F = fun leveled_bookie:book_islastcompactionpending/1,
+    lists:foldl(fun(X, Pending) ->
+                        case Pending of
+                            false ->
+                                false;
+                            true ->
+                                io:format("Loop ~w waiting for journal "
+                                    ++ "compaction to complete~n", [X]),
+                                timer:sleep(20000),
+                                F(Bookie2)
+                        end end,
+                    true,
+                    lists:seq(1, 15)),
+    
+    ObjList3 = testutil:generate_objects(15000, 50002),
+    ObjList4 = testutil:generate_objects(15000, 50002),
+    lists:foreach(fun({_RN, Obj, Spc}) ->
+                        leveled_bookie:book_riakput(Bookie2, Obj, Spc) end,
+                    ObjList3),
+    %% Now replace all the objects
+    lists:foreach(fun({_RN, Obj, Spc}) ->
+                        leveled_bookie:book_riakput(Bookie2, Obj, Spc) end,
+                    ObjList4),
+    
+    ok = leveled_bookie:book_compactjournal(Bookie2, 30000),
+    lists:foldl(fun(X, Pending) ->
+                        case Pending of
+                            false ->
+                                false;
+                            true ->
+                                io:format("Loop ~w waiting for journal "
+                                    ++ "compaction to complete~n", [X]),
+                                timer:sleep(20000),
+                                F(Bookie2)
+                        end end,
+                    true,
+                    lists:seq(1, 15)),
+    
+    ok = leveled_bookie:book_close(Bookie2),
+    testutil:reset_filestructure(10000).
 
 
 rotating_object_check(BookOpts, B, NumberOfObjects) ->

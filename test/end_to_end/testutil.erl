@@ -28,7 +28,9 @@
             put_altered_indexed_objects/3,
             put_altered_indexed_objects/4,
             check_indexed_objects/4,
-            rotating_object_check/3]).
+            rotating_object_check/3,
+            corrupt_journal/3,
+            find_journals/1]).
 
 -define(RETURN_TERMS, {true, undefined}).
 
@@ -380,3 +382,26 @@ rotating_object_check(RootPath, B, NumberOfObjects) ->
     ok = leveled_bookie:book_close(Book2),
     ok.
     
+corrupt_journal(RootPath, FileName, Corruptions) ->
+    {ok, Handle} = file:open(RootPath ++ "/journal/journal_files/" ++ FileName,
+                                [binary, raw, read, write]),
+    lists:foreach(fun(X) ->
+                        Position = X * 1000 + 2048,
+                        ok = file:pwrite(Handle, Position, <<0:8/integer>>)
+                        end,
+                    lists:seq(1, Corruptions)),
+    ok = file:close(Handle).
+
+find_journals(RootPath) ->
+    {ok, FNsA_J} = file:list_dir(RootPath ++ "/journal/journal_files"),
+    {ok, Regex} = re:compile(".*\.cdb"),
+    CDBFiles = lists:foldl(fun(FN, Acc) -> case re:run(FN, Regex) of
+                                                nomatch ->
+                                                    Acc;
+                                                _ ->
+                                                    [FN|Acc]
+                                            end
+                                            end,
+                                [],
+                                FNsA_J),
+    CDBFiles.

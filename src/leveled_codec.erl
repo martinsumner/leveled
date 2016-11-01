@@ -56,7 +56,6 @@
         check_forinkertype/2,
         create_value_for_journal/1,
         build_metadata_object/2,
-        generate_ledgerkv/4,
         generate_ledgerkv/5,
         get_size/2,
         get_keyandhash/2,
@@ -170,6 +169,8 @@ from_inkerkv(Object) ->
 from_journalkey({SQN, _Type, LedgerKey}) ->
     {SQN, LedgerKey}.
 
+compact_inkerkvc({_InkerKey, crc_wonky, false}, _Strategy) ->
+    skip;
 compact_inkerkvc({{_SQN, ?INKT_TOMB, _LK}, _V, _CrcCheck}, _Strategy) ->
     skip;
 compact_inkerkvc({{SQN, ?INKT_KEYD, LK}, V, CrcCheck}, Strategy) ->
@@ -270,9 +271,6 @@ convert_indexspecs(IndexSpecs, Bucket, Key, SQN, TTL) ->
                             {SQN, Status, null}}
                     end,
                 IndexSpecs).
-
-generate_ledgerkv(PrimaryKey, SQN, Obj, Size) ->
-    generate_ledgerkv(PrimaryKey, SQN, Obj, Size, infinity).
 
 generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS) ->
     {Tag, Bucket, Key, _} = PrimaryKey,

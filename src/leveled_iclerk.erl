@@ -149,12 +149,7 @@ handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
                 State) ->
     % Need to fetch manifest at start rather than have it be passed in
     % Don't want to process a queued call waiting on an old manifest
-    Manifest = case leveled_inker:ink_getmanifest(Inker) of
-                    [] ->
-                        [];
-                    [_Active|Tail] ->
-                        Tail
-                end,
+    [_Active|Manifest] = leveled_inker:ink_getmanifest(Inker),
     MaxRunLength = State#state.max_run_length,
     {FilterServer, MaxSQN} = InitiateFun(Checker),
     CDBopts = State#state.cdb_options,
@@ -462,11 +457,7 @@ filter_output(KVCs, FilterFun, FilterServer, MaxSQN, ReloadStrategy) ->
                                 {false, true, false, retain} ->
                                     {Acc ++ [KVC1], PromptDelete};
                                 {false, true, false, _} ->
-                                    {Acc, PromptDelete};
-                                {_, false, _, _} ->
-                                    io:format("Corrupted value found for "
-                                                ++ "Journal Key ~w~n", [K]),
-                                    {Acc, false}
+                                    {Acc, PromptDelete}
                             end
                     end
                     end,

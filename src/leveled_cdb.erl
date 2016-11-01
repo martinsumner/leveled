@@ -1025,7 +1025,12 @@ saferead_keyvalue(Handle) ->
                         eof ->
                             false;
                         {ok, Value} ->
-                            {Key, Value, KeyL, ValueL}
+                            case crccheck_value(Value) of
+                                true ->
+                                    {Key, Value, KeyL, ValueL};
+                                false ->
+                                    false
+                            end
                     end 
             end
     end.
