@@ -8,7 +8,7 @@
             ]).
 
 all() -> [
-            % retain_strategy,
+            retain_strategy,
             aae_bustedjournal,
             journal_compaction_bustedjournal
             ].
