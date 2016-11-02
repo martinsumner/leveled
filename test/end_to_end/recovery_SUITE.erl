@@ -8,9 +8,9 @@
             ]).
 
 all() -> [
-            retain_strategy,
-            aae_bustedjournal,
-            journal_compaction_bustedjournal
+            % retain_strategy,
+            aae_bustedjournal %,
+            % journal_compaction_bustedjournal
             ].
 
 retain_strategy(_Config) ->
@@ -103,8 +103,34 @@ aae_bustedjournal(_Config) ->
     % Will need to remove the file or corrupt the hashtree to get presence to
     % fail
     
+    FoldObjectsFun = fun(B, K, V, Acc) -> [{B, K, riak_hash(V)}|Acc] end,
+    SW = os:timestamp(),
+    {async, HashTreeF3} = leveled_bookie:book_returnfolder(Bookie2,
+                                                            {foldobjects_allkeys,
+                                                                ?RIAK_TAG,
+                                                                FoldObjectsFun}),
+    KeyHashList3 = HashTreeF3(),
+    
+    true = length(KeyHashList3) > 19000,
+    true = length(KeyHashList3) < HeadCount,
+    Delta = length(lists:subtract(KeyHashList1, KeyHashList3)),
+    true = Delta < 1001,
+    io:format("Fetch of hashtree using fold objects took ~w microseconds" ++
+                " and found a Delta of ~w and an objects count of ~w~n",
+                [timer:now_diff(os:timestamp(), SW),
+                    Delta,
+                    length(KeyHashList3)]),
+    
     ok = leveled_bookie:book_close(Bookie2),
     testutil:reset_filestructure().
+
+riak_hash(Obj=#r_object{}) ->
+    Vclock = vclock(Obj),
+    UpdObj = set_vclock(Obj, lists:sort(Vclock)),
+    erlang:phash2(term_to_binary(UpdObj)).
+
+set_vclock(Object=#r_object{}, VClock) -> Object#r_object{vclock=VClock}.
+vclock(#r_object{vclock=VClock}) -> VClock.
 
 
 journal_compaction_bustedjournal(_Config) ->

@@ -373,6 +373,10 @@ handle_call({return_folder, FolderType}, _From, State) ->
         {hashtree_query, Tag, JournalCheck} ->
             {reply,
                 hashtree_query(State, Tag, JournalCheck),
+                State};
+        {foldobjects_allkeys, Tag, FoldObjectsFun} ->
+            {reply,
+                foldobjects_allkeys(State, Tag, FoldObjectsFun),
                 State}
     end;
 handle_call({compact_journal, Timeout}, _From, State) ->
@@ -491,6 +495,30 @@ hashtree_query(State, Tag, JournalCheck) ->
                     check_presence ->
                         leveled_inker:ink_close(JournalSnapshot)
                 end,
+                Acc
+                end,
+    {async, Folder}.
+
+
+foldobjects_allkeys(State, Tag, FoldObjectsFun) ->
+    {ok,
+        {LedgerSnapshot, LedgerCache},
+        JournalSnapshot} = snapshot_store(State, store),
+    Folder = fun() ->
+                io:format("Length of increment in snapshot is ~w~n",
+                            [gb_trees:size(LedgerCache)]),
+                ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
+                                                            LedgerCache),
+                StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
+                EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
+                AccFun = accumulate_objects(FoldObjectsFun, JournalSnapshot),
+                Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
+                                                        StartKey,
+                                                        EndKey,
+                                                        AccFun,
+                                                        []),
+                ok = leveled_penciller:pcl_close(LedgerSnapshot),
+                ok = leveled_inker:ink_close(JournalSnapshot),
                 Acc
                 end,
     {async, Folder}.
@@ -636,6 +664,26 @@ accumulate_hashes(JournalCheck, InkerClone) ->
                             end;
                         false ->
                             KHList
+                    end
+                end,
+    AccFun.
+
+accumulate_objects(FoldObjectsFun, InkerClone) ->
+    Now = leveled_codec:integer_now(),
+    AccFun  = fun(LK, V, Acc) ->
+                    case leveled_codec:is_active(LK, V, Now) of
+                        true ->
+                            SQN = leveled_codec:strip_to_seqonly({LK, V}),
+                            {B, K} = leveled_codec:from_ledgerkey(LK),
+                            R = leveled_inker:ink_fetch(InkerClone, LK, SQN),
+                            case R of
+                                {ok, Value} ->
+                                    FoldObjectsFun(B, K, Value, Acc);
+                                not_present ->
+                                    Acc
+                            end;
+                        false ->
+                            Acc
                     end
                 end,
     AccFun.
@@ -1070,5 +1118,37 @@ hashtree_query_withjournalcheck_test() ->
     ?assertMatch(KeyHashList, HTFolder2()),
     ok = book_close(Bookie1),
     reset_filestructure().
+
+foldobjects_vs_hashtree_test() ->
+    RootPath = reset_filestructure(),
+    {ok, Bookie1} = book_start([{root_path, RootPath},
+                                    {max_journalsize, 1000000},
+                                    {cache_size, 500}]),
+    ObjL1 = generate_multiple_objects(800, 1),
+    % Put in all the objects with a TTL in the future
+    Future = leveled_codec:integer_now() + 300,
+    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
+                                                        "Bucket", K, V, S,
+                                                        ?STD_TAG,
+                                                        Future) end,
+                    ObjL1),
+    {async, HTFolder1} = book_returnfolder(Bookie1,
+                                                {hashtree_query,
+                                                    ?STD_TAG,
+                                                    false}),
+    KeyHashList1 = lists:usort(HTFolder1()),
+    io:format("First item ~w~n", [lists:nth(1, KeyHashList1)]),
+    FoldObjectsFun = fun(B, K, V, Acc) ->
+                            [{B, K, erlang:phash2(term_to_binary(V))}|Acc] end,
+    {async, HTFolder2} = book_returnfolder(Bookie1,
+                                            {foldobjects_allkeys,
+                                                ?STD_TAG,
+                                                FoldObjectsFun}),
+    KeyHashList2 = HTFolder2(),
+    ?assertMatch(KeyHashList1, lists:usort(KeyHashList2)),
+    
+    ok = book_close(Bookie1),
+    reset_filestructure().
+
 
 -endif.
