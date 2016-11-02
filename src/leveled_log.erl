@@ -143,7 +143,7 @@ log_timer(LogReference, Subs, StartTime) ->
         true ->
             MicroS = timer:now_diff(os:timestamp(), StartTime),
             {Unit, Time} = case MicroS of
-                                MicroS when MicroS < 100 ->
+                                MicroS when MicroS < 10000 ->
                                     {"microsec", MicroS};
                                 MicroS ->
                                     {"ms", MicroS div 1000}
