@@ -80,7 +80,7 @@
 clerk_new(Owner) ->
     {ok, Pid} = gen_server:start(?MODULE, [], []),
     ok = gen_server:call(Pid, {register, Owner}, infinity),
-    io:format("Penciller's clerk ~w started with owner ~w~n", [Pid, Owner]),
+    leveled_log:log("PC001", [Pid, Owner]),
     {ok, Pid}.
 
 clerk_manifestchange(Pid, Action, Closing) ->
@@ -104,7 +104,7 @@ handle_call({register, Owner}, _From, State) ->
         State#state{owner=Owner},
         ?MIN_TIMEOUT};
 handle_call({manifest_change, return, true}, _From, State) ->
-    io:format("Request for manifest change from clerk on closing~n"),
+    leveled_log:log("PC002", []),
     case State#state.change_pending of
         true ->
             WI = State#state.work_item,
@@ -115,13 +115,13 @@ handle_call({manifest_change, return, true}, _From, State) ->
 handle_call({manifest_change, confirm, Closing}, From, State) ->
     case Closing of
         true ->
-            io:format("Confirmation of manifest change on closing~n"),
+            leveled_log:log("PC003", []),
             WI = State#state.work_item,
             ok = mark_for_delete(WI#penciller_work.unreferenced_files,
                                            State#state.owner),
             {stop, normal, ok, State};
         false ->
-            io:format("Prompted confirmation of manifest change~n"),
+            leveled_log:log("PC004", []),
             gen_server:reply(From, ok),
             WI = State#state.work_item,
             ok = mark_for_delete(WI#penciller_work.unreferenced_files,
@@ -149,8 +149,7 @@ handle_info(timeout, State=#state{change_pending=Pnd}) when Pnd == false ->
 
 
 terminate(Reason, _State) ->
-    io:format("Penciller's Clerk ~w shutdown now complete for reason ~w~n",
-                [self(), Reason]).
+    leveled_log:log("PC005", [self(), Reason]).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -163,13 +162,13 @@ code_change(_OldVsn, State, _Extra) ->
 requestandhandle_work(State) ->
     case leveled_penciller:pcl_workforclerk(State#state.owner) of
         none ->
-            io:format("Work prompted but none needed ~w~n", [self()]),
+            leveled_log:log("PC006", [self()]),
             {false, ?MAX_TIMEOUT};
         WI ->
             {NewManifest, FilesToDelete} = merge(WI),
             UpdWI = WI#penciller_work{new_manifest=NewManifest,
                                         unreferenced_files=FilesToDelete},
-            io:format("Clerk prompting Penciller regarding manifest change~n"),
+            leveled_log:log("PC007", []),
             ok = leveled_penciller:pcl_promptmanifestchange(State#state.owner,
                                                             UpdWI),
             {true, UpdWI}
@@ -186,8 +185,7 @@ merge(WI) ->
     %% Need to work out if this is the top level
     %% And then tell merge process to create files at the top level
     %% Which will include the reaping of expired tombstones
-    io:format("Merge from level ~w to merge into ~w files below~n",
-                [SrcLevel, length(Candidates)]),
+    leveled_log:log("PC008", [SrcLevel, length(Candidates)]),
      
     MergedFiles = case length(Candidates) of
         0 ->
@@ -195,7 +193,7 @@ merge(WI) ->
             %%
             %% TODO: need to think still about simply renaming when at 
             %% lower level
-            io:format("File ~s to simply switch levels to level ~w~n",
+            leveled_log:log("PC009",
                         [SrcF#manifest_entry.filename, SrcLevel + 1]),
             [SrcF];
         _ ->
@@ -293,8 +291,7 @@ select_filetomerge(SrcLevel, Manifest) ->
 %% The level is the level which the new files should be created at.
 
 perform_merge({SrcPid, SrcFN}, CandidateList, LevelInfo, {Filepath, MSN}) ->
-    io:format("Merge to be commenced for FileToMerge=~s with MSN=~w~n",
-                    [SrcFN, MSN]),
+    leveled_log:log("PC010", [SrcFN, MSN]),
     PointerList = lists:map(fun(P) ->
                                 {next, P#manifest_entry.owner, all} end,
                             CandidateList),
@@ -306,14 +303,12 @@ perform_merge({SrcPid, SrcFN}, CandidateList, LevelInfo, {Filepath, MSN}) ->
                 []).
 
 do_merge([], [], {SrcLevel, _IsB}, {_Filepath, MSN}, FileCounter, OutList) ->
-    io:format("Merge completed with MSN=~w Level=~w and FileCounter=~w~n",
-                [MSN, SrcLevel, FileCounter]),
+    leveled_log:log("PC011", [MSN, SrcLevel, FileCounter]),
     OutList;
 do_merge(KL1, KL2, {SrcLevel, IsB}, {Filepath, MSN}, FileCounter, OutList) ->
     FileName = lists:flatten(io_lib:format(Filepath ++ "_~w_~w.sft",
                                             [SrcLevel + 1, FileCounter])),
-    io:format("File to be created as part of MSN=~w Filename=~s~n",
-                [MSN, FileName]),
+    leveled_log:log("PC012", [MSN, FileName]),
     TS1 = os:timestamp(),
     LevelR = case IsB of
                     true ->
@@ -329,8 +324,8 @@ do_merge(KL1, KL2, {SrcLevel, IsB}, {Filepath, MSN}, FileCounter, OutList) ->
                                             LevelR),
     case Reply of
         {{[], []}, null, _} ->
-            io:format("Merge resulted in empty file ~s~n", [FileName]),
-            io:format("Empty file ~s to be cleared~n", [FileName]),
+            leveled_log:log("PC013", [FileName]),
+            leveled_log:log("PC014", [FileName]),
             ok = leveled_sft:sft_clear(Pid),
             OutList;                        
         {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} ->
@@ -339,8 +334,7 @@ do_merge(KL1, KL2, {SrcLevel, IsB}, {Filepath, MSN}, FileCounter, OutList) ->
                                                         end_key=HighestKey,
                                                         owner=Pid,
                                                         filename=FileName}]),
-            MTime = timer:now_diff(os:timestamp(), TS1),
-            io:format("File creation took ~w microseconds ~n", [MTime]),
+            leveled_log:log_timer("PC015", [], TS1),
             do_merge(KL1Rem, KL2Rem,
                         {SrcLevel, IsB}, {Filepath, MSN},
                         FileCounter + 1, ExtMan)

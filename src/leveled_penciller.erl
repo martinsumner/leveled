@@ -338,9 +338,8 @@ init([PCLopts]) ->
             PCLopts#penciller_options.start_snapshot} of
         {undefined, true} ->
             SrcPenciller = PCLopts#penciller_options.source_penciller,
-            io:format("Registering ledger snapshot~n"),
             {ok, State} = pcl_registersnapshot(SrcPenciller, self()),
-            io:format("Ledger snapshot registered~n"),
+            leveled_log:log("P0001", [self()]),
             {ok, State#state{is_snapshot=true, source_penciller=SrcPenciller}};
             %% Need to do something about timeout
         {_RootPath, false} ->
@@ -421,10 +420,7 @@ handle_call({push_mem, PushedTree}, From, State=#state{is_snapshot=Snap})
                                     State#state.levelzero_cache,
                                     State)
         end,
-    io:format("Handling of push completed in ~w microseconds with "
-                    ++ "L0 cache size now ~w~n",
-                [timer:now_diff(os:timestamp(), SW),
-                    S#state.levelzero_size]),       
+    leveled_log:log_timer("P0002", [S#state.levelzero_size], SW),
     {noreply, S};
 handle_call({fetch, Key}, _From, State) ->
     {reply,
@@ -489,8 +485,8 @@ handle_cast({manifest_change, WI}, State) ->
     {noreply, UpdState};
 handle_cast({release_snapshot, Snapshot}, State) ->
     Rs = lists:keydelete(Snapshot, 1, State#state.registered_snapshots),
-    io:format("Ledger snapshot ~w released~n", [Snapshot]),
-    io:format("Remaining ledger snapshots are ~w~n", [Rs]),
+    leveled_log:log("P0003", [Snapshot]),
+    leveled_log:log("P0004", [Rs]),
     {noreply, State#state{registered_snapshots=Rs}};
 handle_cast({confirm_delete, FileName}, State=#state{is_snapshot=Snap})
                                                         when Snap == false ->    
@@ -500,9 +496,7 @@ handle_cast({confirm_delete, FileName}, State=#state{is_snapshot=Snap})
     case Reply of
         {true, Pid} ->
             UF1 = lists:keydelete(FileName, 1, State#state.unreferenced_files),
-            io:format("Filename ~s removed from unreferenced files as delete "
-                            ++ "is confirmed - file should now close~n",
-                        [FileName]),
+            leveled_log:log("P0005", [FileName]),
             ok = leveled_sft:sft_deleteconfirmed(Pid),
             {noreply, State#state{unreferenced_files=UF1}};
         _ ->
@@ -511,13 +505,12 @@ handle_cast({confirm_delete, FileName}, State=#state{is_snapshot=Snap})
 
 
 handle_info({_Ref, {ok, SrcFN, _StartKey, _EndKey}}, State) ->
-    io:format("Orphaned reply after timeout on L0 file write ~s~n", [SrcFN]),
+    leveled_log:log("P0006", [SrcFN]),
     {noreply, State}.
 
 terminate(Reason, State=#state{is_snapshot=Snap}) when Snap == true ->
     ok = pcl_releasesnapshot(State#state.source_penciller, self()),
-    io:format("Sent release message for cloned Penciller following close for "
-                ++ "reason ~w~n", [Reason]),   
+    leveled_log:log("P0007", [Reason]),   
     ok;
 terminate(Reason, State) ->
     %% When a Penciller shuts down it isn't safe to try an manage the safe
@@ -536,7 +529,7 @@ terminate(Reason, State) ->
     %% The cast may not succeed as the clerk could be synchronously calling
     %% the penciller looking for a manifest commit
     %%
-    io:format("Penciller closing for reason - ~w~n", [Reason]),
+    leveled_log:log("P0008", [Reason]),
     MC = leveled_pclerk:clerk_manifestchange(State#state.clerk,
                                                 return,
                                                 true),
@@ -557,12 +550,12 @@ terminate(Reason, State) ->
         {true, [], _} ->
             ok = leveled_sft:sft_close(State#state.levelzero_constructor);
         {false, [], 0} ->
-            io:format("Level 0 cache empty at close of Penciller~n");
+           leveled_log:log("P0009", []);
         {false, [], _N} ->
             L0Pid = roll_memory(UpdState, true),
             ok = leveled_sft:sft_close(L0Pid);
         _ ->
-            io:format("No level zero action on close of Penciller~n")
+            leveled_log:log("P0010", [])
     end,
     
     % Tidy shutdown of individual files
@@ -570,7 +563,7 @@ terminate(Reason, State) ->
     lists:foreach(fun({_FN, Pid, _SN}) ->
                             ok = leveled_sft:sft_close(Pid) end,
                     UpdState#state.unreferenced_files),
-    io:format("Shutdown complete for Penciller~n"),
+    leveled_log:log("P0011", []),
     ok.
 
 
@@ -622,12 +615,10 @@ start_from_file(PCLopts) ->
     TopManSQN = lists:foldl(fun(X, MaxSQN) -> max(X, MaxSQN) end,
                             0,
                             ValidManSQNs),
-    io:format("Store to be started based on " ++
-                "manifest sequence number of ~w~n", [TopManSQN]),
+    leveled_log:log("P0012", [TopManSQN]),
     ManUpdate = case TopManSQN of
                     0 ->
-                        io:format("Seqence number of 0 indicates no valid " ++
-                                    "manifest~n"),
+                        leveled_log:log("P0013", []),
                         {[], 0};
                     _ ->
                         CurrManFile = filepath(InitState#state.root_path,
@@ -639,14 +630,13 @@ start_from_file(PCLopts) ->
                 end,
         
     {UpdManifest, MaxSQN} = ManUpdate,
-    io:format("Maximum sequence number of ~w found in nonzero levels~n",
-                [MaxSQN]),
+    leveled_log:log("P0014", [MaxSQN]),
             
     %% Find any L0 files
     L0FN = filepath(RootPath, TopManSQN, new_merge_files) ++ "_0_0.sft",
     case filelib:is_file(L0FN) of
         true ->
-            io:format("L0 file found ~s~n", [L0FN]),
+            leveled_log:log("P0015", [L0FN]),
             {ok,
                 L0Pid,
                 {L0StartKey, L0EndKey}} = leveled_sft:sft_open(L0FN),
@@ -659,8 +649,7 @@ start_from_file(PCLopts) ->
                                             1,
                                             UpdManifest,
                                             {0, [ManifestEntry]}),
-            io:format("L0 file had maximum sequence number of ~w~n",
-                        [L0SQN]),
+            leveled_log:log("P0016", [L0SQN]),
             LedgerSQN = max(MaxSQN, L0SQN),
             {ok,
                 InitState#state{manifest=UpdManifest2,
@@ -668,7 +657,7 @@ start_from_file(PCLopts) ->
                                     ledger_sqn=LedgerSQN,
                                     persisted_sqn=LedgerSQN}};
         false ->
-            io:format("No L0 file found~n"),
+            leveled_log:log("P0017", []),
             {ok,
                 InitState#state{manifest=UpdManifest,
                                     manifest_sqn=TopManSQN,
@@ -678,10 +667,7 @@ start_from_file(PCLopts) ->
 
 
 log_pushmem_reply(From, Reply, SW) ->
-    io:format("Respone to push_mem of ~w ~s took ~w microseconds~n",
-        [element(1, Reply),
-            element(2, Reply),
-            timer:now_diff(os:timestamp(), SW)]),
+    leveled_log:log_timer("P0018", [element(1,Reply), element(2,Reply)], SW),
     gen_server:reply(From, element(1, Reply)).
 
 
@@ -737,7 +723,7 @@ checkready(Pid) ->
 
 roll_memory(State, false) ->
     FileName = levelzero_filename(State),
-    io:format("Rolling level zero to file ~s~n", [FileName]),
+    leveled_log:log("P0019", [FileName]),
     Opts = #sft_options{wait=false},
     PCL = self(),
     FetchFun = fun(Slot) -> pcl_fetchlevelzero(PCL, Slot) end,
@@ -832,9 +818,7 @@ return_work(State, From) ->
         L when L > 0 ->
             [{SrcLevel, Manifest}|OtherWork] = WorkQ,
             Backlog = length(OtherWork),
-            io:format("Work at Level ~w to be scheduled for ~w with ~w " ++
-                        "queue items outstanding~n",
-                        [SrcLevel, From, Backlog]),
+            leveled_log:log("P0020", [SrcLevel, From, Backlog]),
             IsBasement = if
                                 SrcLevel + 1 == BasementL ->
                                     true;
@@ -845,7 +829,7 @@ return_work(State, From) ->
                 true ->
                     % Once the L0 file is completed there will be more work
                     % - so don't be busy doing other work now
-                    io:format("Allocation of work blocked as L0 pending~n"),
+                    leveled_log:log("P0021", []),
                     {State, none};
                 false ->
                     %% No work currently outstanding
@@ -910,7 +894,7 @@ open_all_filesinmanifest({Manifest, TopSQN}, Level) ->
 
 print_manifest(Manifest) ->
     lists:foreach(fun(L) ->
-                        io:format("Manifest at Level ~w~n", [L]),
+                        leveled_log:log("P0022", [L]),
                         Level = get_item(L, Manifest, []),
                         lists:foreach(fun print_manifest_entry/1, Level)
                         end,
@@ -918,16 +902,10 @@ print_manifest(Manifest) ->
     ok.
 
 print_manifest_entry(Entry) ->
-    {S1, S2, S3,
-        FS2, FS3} = leveled_codec:print_key(Entry#manifest_entry.start_key),
-    {E1, E2, E3,
-        FE2, FE3} = leveled_codec:print_key(Entry#manifest_entry.end_key),
-    io:format("Manifest entry of " ++ 
-                "startkey ~s " ++ FS2 ++ " " ++ FS3 ++
-                " endkey ~s " ++ FE2 ++ " " ++ FE3 ++
-                " filename=~s~n",
-        [S1, S2, S3, E1, E2, E3,
-            Entry#manifest_entry.filename]).
+    {S1, S2, S3} = leveled_codec:print_key(Entry#manifest_entry.start_key),
+    {E1, E2, E3} = leveled_codec:print_key(Entry#manifest_entry.end_key),
+    leveled_log:log("P0023",
+                    [S1, S2, S3, E1, E2, E3, Entry#manifest_entry.filename]).
 
 initiate_rangequery_frommanifest(StartKey, EndKey, Manifest) ->
     CompareFun = fun(M) ->
@@ -1051,9 +1029,6 @@ find_nextkey(QueryArray, LCnt, {BestKeyLevel, BestKV}, QueryFunT) ->
                     % the best key
                     % But we also need to remove the dominated key from the
                     % lower level in the query array
-                    io:format("Key at level ~w with SQN ~w is better than " ++
-                                    "key at lower level ~w with SQN ~w~n",
-                                [LCnt, SQN, BKL, BestSQN]),   
                     OldBestEntry = lists:keyfind(BKL, 1, QueryArray),
                     {BKL, [{BestKey, BestVal}|BestTail]} = OldBestEntry,
                     find_nextkey(lists:keyreplace(BKL,
@@ -1149,8 +1124,7 @@ assess_workqueue(WorkQ, LevelToAssess, Man, BasementLevel) ->
 maybe_append_work(WorkQ, Level, Manifest,
                     MaxFiles, FileCount)
                         when FileCount > MaxFiles ->
-    io:format("Outstanding compaction work items of ~w at level ~w~n",
-                [FileCount - MaxFiles, Level]),
+    leveled_log:log("P0024", [FileCount - MaxFiles, Level]),
     lists:append(WorkQ, [{Level, Manifest}]);
 maybe_append_work(WorkQ, _Level, _Manifest,
                     _MaxFiles, _FileCount) ->
@@ -1183,24 +1157,19 @@ commit_manifest_change(ReturnedWorkItem, State) ->
     RootPath = State#state.root_path,
     UnreferencedFiles = State#state.unreferenced_files,
     
-    case {SentWorkItem#penciller_work.next_sqn,
-            SentWorkItem#penciller_work.clerk} of
-        {NewMSN, _From} ->
-            MTime = timer:now_diff(os:timestamp(),
-                                    SentWorkItem#penciller_work.start_time),
+    if
+        NewMSN == SentWorkItem#penciller_work.next_sqn ->
             WISrcLevel = SentWorkItem#penciller_work.src_level,
-            io:format("Merge to sqn ~w completed in ~w microseconds " ++
-                        "from Level ~w~n",
-                        [SentWorkItem#penciller_work.next_sqn,
-                            MTime,
-                            WISrcLevel]),
+            leveled_log:log_timer("P0025",
+                                    [SentWorkItem#penciller_work.next_sqn,
+                                        WISrcLevel],
+                                    SentWorkItem#penciller_work.start_time),
             ok = rename_manifest_files(RootPath, NewMSN),
             FilesToDelete = ReturnedWorkItem#penciller_work.unreferenced_files,
             UnreferencedFilesUpd = update_deletions(FilesToDelete,
                                                         NewMSN,
                                                         UnreferencedFiles),
-            io:format("Merge has been commmitted at sequence number ~w~n",
-                        [NewMSN]),
+            leveled_log:log("P0026", [NewMSN]),
             NewManifest = ReturnedWorkItem#penciller_work.new_manifest,
             
             CurrL0 = get_item(0, State#state.manifest, []),
@@ -1221,23 +1190,15 @@ commit_manifest_change(ReturnedWorkItem, State) ->
             {ok, State#state{ongoing_work=[],
                                 manifest_sqn=NewMSN,
                                 manifest=RevisedManifest,
-                                unreferenced_files=UnreferencedFilesUpd}};
-        {MaybeWrongMSN, From} ->
-            io:format("Merge commit at sqn ~w not matched to expected" ++
-                        " sqn ~w from Clerk ~w~n",
-                        [NewMSN, MaybeWrongMSN, From]),
-            {error, State}
+                                unreferenced_files=UnreferencedFilesUpd}}
     end.
 
 
 rename_manifest_files(RootPath, NewMSN) ->
     OldFN = filepath(RootPath, NewMSN, pending_manifest),
     NewFN = filepath(RootPath, NewMSN, current_manifest),
-    io:format("Rename of manifest from ~s ~w to ~s ~w~n",
-                [OldFN,
-                    filelib:is_file(OldFN),
-                    NewFN,
-                    filelib:is_file(NewFN)]),
+    leveled_log:log("P0027", [OldFN, filelib:is_file(OldFN),
+                                NewFN, filelib:is_file(NewFN)]),
     ok = file:rename(OldFN,NewFN).
 
 filepath(RootPath, manifest) ->
@@ -1257,8 +1218,7 @@ filepath(RootPath, NewMSN, new_merge_files) ->
 update_deletions([], _NewMSN, UnreferencedFiles) ->
     UnreferencedFiles;
 update_deletions([ClearedFile|Tail], MSN, UnreferencedFiles) ->
-    io:format("Adding cleared file ~s to deletion list ~n",
-                [ClearedFile#manifest_entry.filename]),
+    leveled_log:log("P0028", [ClearedFile#manifest_entry.filename]),
     update_deletions(Tail,
                         MSN,
                         lists:append(UnreferencedFiles,

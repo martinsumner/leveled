@@ -229,20 +229,21 @@ print_key(Key) ->
                                     {?IDX_TAG, B, {F, _V}, _K} ->
                                         {"Index", B, F}
                                 end,
-    {B_STR, FB} = check_for_string(B_TERM),
-    {C_STR, FC} = check_for_string(C_TERM),
-    {A_STR, B_STR, C_STR, FB, FC}.
+    B_STR = turn_to_string(B_TERM),
+    C_STR = turn_to_string(C_TERM),
+    {A_STR, B_STR, C_STR}.
 
-check_for_string(Item) ->
+turn_to_string(Item) ->
     if
         is_binary(Item) == true ->
-            {binary_to_list(Item), "~s"};
+            binary_to_list(Item);
         is_integer(Item) == true ->
-            {integer_to_list(Item), "~s"};
+            integer_to_list(Item);
         is_list(Item) == true ->
-            {Item, "~s"};
+            Item;
         true ->
-            {Item, "~w"}
+            [Output] = io_lib:format("~w", [Item]),
+            Output
     end.
                     
 
@@ -392,8 +393,8 @@ endkey_passed_test() ->
     ?assertMatch(true, endkey_passed(TestKey, K2)).
 
 stringcheck_test() ->
-    ?assertMatch({"Bucket", "~s"}, check_for_string("Bucket")),
-    ?assertMatch({"Bucket", "~s"}, check_for_string(<<"Bucket">>)),
-    ?assertMatch({bucket, "~w"}, check_for_string(bucket)).
+    ?assertMatch("Bucket", turn_to_string("Bucket")),
+    ?assertMatch("Bucket", turn_to_string(<<"Bucket">>)),
+    ?assertMatch("bucket", turn_to_string(bucket)).
 
 -endif.

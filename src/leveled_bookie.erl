@@ -256,8 +256,7 @@ init([Opts]) ->
             {InkerOpts, PencillerOpts} = set_options(Opts),
             {Inker, Penciller} = startup(InkerOpts, PencillerOpts),
             CacheSize = get_opt(cache_size, Opts, ?CACHE_SIZE),
-            io:format("Bookie starting with Pcl ~w Ink ~w~n",
-                                                [Penciller, Inker]),
+            leveled_log:log("B0001", [Inker, Penciller]),
             {ok, #state{inker=Inker,
                         penciller=Penciller,
                         cache_size=CacheSize,
@@ -269,8 +268,7 @@ init([Opts]) ->
                 Inker} = book_snapshotstore(Bookie, self(), ?SNAPSHOT_TIMEOUT),
             ok = leveled_penciller:pcl_loadsnapshot(Penciller,
                                                     gb_trees:empty()),
-            io:format("Snapshot starting with Pcl ~w Ink ~w~n",
-                                                [Penciller, Inker]),
+            leveled_log:log("B0002", [Inker, Penciller]),
             {ok, #state{penciller=Penciller,
                         inker=Inker,
                         ledger_cache=LedgerCache,
@@ -396,7 +394,7 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(Reason, State) ->
-    io:format("Bookie closing for reason ~w~n", [Reason]),
+    leveled_log:log("B0003", [Reason]),
     WaitList = lists:duplicate(?SHUTDOWN_WAITS, ?SHUTDOWN_PAUSE),
     ok = shutdown_wait(WaitList, State#state.inker),
     ok = leveled_penciller:pcl_close(State#state.penciller).
@@ -414,8 +412,7 @@ bucket_stats(State, Bucket, Tag) ->
         {LedgerSnapshot, LedgerCache},
         _JournalSnapshot} = snapshot_store(State, ledger),
     Folder = fun() ->
-                io:format("Length of increment in snapshot is ~w~n",
-                            [gb_trees:size(LedgerCache)]),
+                leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
                 StartKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
@@ -439,8 +436,7 @@ index_query(State,
         {LedgerSnapshot, LedgerCache},
         _JournalSnapshot} = snapshot_store(State, ledger),
     Folder = fun() ->
-                io:format("Length of increment in snapshot is ~w~n",
-                            [gb_trees:size(LedgerCache)]),
+                leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
                 StartKey = leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG,
@@ -476,8 +472,7 @@ hashtree_query(State, Tag, JournalCheck) ->
         {LedgerSnapshot, LedgerCache},
         JournalSnapshot} = snapshot_store(State, SnapType),
     Folder = fun() ->
-                io:format("Length of increment in snapshot is ~w~n",
-                            [gb_trees:size(LedgerCache)]),
+                leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
                 StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
@@ -505,8 +500,7 @@ foldobjects_allkeys(State, Tag, FoldObjectsFun) ->
         {LedgerSnapshot, LedgerCache},
         JournalSnapshot} = snapshot_store(State, store),
     Folder = fun() ->
-                io:format("Length of increment in snapshot is ~w~n",
-                            [gb_trees:size(LedgerCache)]),
+                leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
                 StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
@@ -528,8 +522,7 @@ allkey_query(State, Tag) ->
         {LedgerSnapshot, LedgerCache},
         _JournalSnapshot} = snapshot_store(State, ledger),
     Folder = fun() ->
-                io:format("Length of increment in snapshot is ~w~n",
-                            [gb_trees:size(LedgerCache)]),
+                leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
                 SK = leveled_codec:to_ledgerkey(null, null, Tag),
@@ -601,7 +594,7 @@ startup(InkerOpts, PencillerOpts) ->
     {ok, Inker} = leveled_inker:ink_start(InkerOpts),
     {ok, Penciller} = leveled_penciller:pcl_start(PencillerOpts),
     LedgerSQN = leveled_penciller:pcl_getstartupsequencenumber(Penciller),
-    io:format("LedgerSQN=~w at startup~n", [LedgerSQN]),
+    leveled_log:log("B0005", [LedgerSQN]),
     ok = leveled_inker:ink_loadpcl(Inker,
                                     LedgerSQN + 1,
                                     fun load_fun/5,
@@ -816,13 +809,12 @@ load_fun(KeyInLedger, ValueInLedger, _Position, Acc0, ExtractFun) ->
                                                 Obj, VSize, IndexSpecs),
             {loop, {MinSQN, MaxSQN, addto_ledgercache(Changes, OutputTree)}};
         MaxSQN ->
-            io:format("Reached end of load batch with SQN ~w~n", [SQN]),
+            leveled_log:log("B0006", [SQN]),
             Changes = preparefor_ledgercache(Type, PK, SQN,
                                                 Obj, VSize, IndexSpecs),
             {stop, {MinSQN, MaxSQN, addto_ledgercache(Changes, OutputTree)}};
         SQN when SQN > MaxSQN ->
-            io:format("Skipping as exceeded MaxSQN ~w with SQN ~w~n",
-                        [MaxSQN, SQN]),
+            leveled_log:log("B0007", [MaxSQN, SQN]),
             {stop, Acc0}
     end.
 
