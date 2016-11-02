@@ -18,8 +18,8 @@ all() -> [
 
 simple_load_with2i(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = #bookie_options{root_path=RootPath,
-                                    max_journalsize=50000000},
+    StartOpts1 = [{root_path, RootPath},
+                    {max_journalsize, 50000000}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),

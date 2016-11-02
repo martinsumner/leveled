@@ -62,15 +62,6 @@
                         start_snapshot = false :: boolean(),
                         source_penciller :: pid()}).
 
--record(bookie_options,
-                       {root_path :: string(),
-                        cache_size :: integer(),
-                        max_journalsize :: integer(),
-                        max_pencillercachesize :: integer(),
-                        snapshot_bookie :: pid(),
-                        reload_strategy = [] :: list(),
-                        max_run_length :: integer()}).
-
 -record(iclerk_options,
                         {inker :: pid(),
                         max_run_length :: integer(),

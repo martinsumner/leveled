@@ -15,12 +15,15 @@ all() -> [
 
 retain_strategy(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    BookOpts = #bookie_options{root_path=RootPath,
-                                cache_size=1000,
-                                max_journalsize=5000000,
-                                reload_strategy=[{?RIAK_TAG, retain}]},
-    BookOptsAlt = BookOpts#bookie_options{max_run_length=8,
-                                            max_journalsize=100000},
+    BookOpts = [{root_path, RootPath},
+                    {cache_size, 1000},
+                    {max_journalsize, 5000000},
+                    {reload_strategy, [{?RIAK_TAG, retain}]}],
+    BookOptsAlt = [{root_path, RootPath},
+                    {cache_size, 1000},
+                    {max_journalsize, 100000},
+                    {reload_strategy, [{?RIAK_TAG, retain}]},
+                    {max_run_length, 8}],
     {ok, Spcl3, LastV3} = rotating_object_check(BookOpts, "Bucket3", 800),
     ok = restart_from_blankledger(BookOpts, [{"Bucket3", Spcl3, LastV3}]),
     {ok, Spcl4, LastV4} = rotating_object_check(BookOpts, "Bucket4", 1600),
@@ -40,8 +43,8 @@ retain_strategy(_Config) ->
 
 aae_bustedjournal(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    StartOpts = #bookie_options{root_path=RootPath,
-                                 max_journalsize=20000000},
+    StartOpts = [{root_path, RootPath},
+                    {max_journalsize, 20000000}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
@@ -107,9 +110,9 @@ aae_bustedjournal(_Config) ->
 journal_compaction_bustedjournal(_Config) ->
     % Simply confirms that none of this causes a crash
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = #bookie_options{root_path=RootPath,
-                                 max_journalsize=10000000,
-                                 max_run_length=10},
+    StartOpts1 = [{root_path, RootPath},
+                    {max_journalsize, 10000000},
+                    {max_run_length, 10}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
@@ -133,30 +136,6 @@ journal_compaction_bustedjournal(_Config) ->
     
     ok = leveled_bookie:book_compactjournal(Bookie2, 30000),
     F = fun leveled_bookie:book_islastcompactionpending/1,
-    lists:foldl(fun(X, Pending) ->
-                        case Pending of
-                            false ->
-                                false;
-                            true ->
-                                io:format("Loop ~w waiting for journal "
-                                    ++ "compaction to complete~n", [X]),
-                                timer:sleep(20000),
-                                F(Bookie2)
-                        end end,
-                    true,
-                    lists:seq(1, 15)),
-    
-    ObjList3 = testutil:generate_objects(15000, 50002),
-    ObjList4 = testutil:generate_objects(15000, 50002),
-    lists:foreach(fun({_RN, Obj, Spc}) ->
-                        leveled_bookie:book_riakput(Bookie2, Obj, Spc) end,
-                    ObjList3),
-    %% Now replace all the objects
-    lists:foreach(fun({_RN, Obj, Spc}) ->
-                        leveled_bookie:book_riakput(Bookie2, Obj, Spc) end,
-                    ObjList4),
-    
-    ok = leveled_bookie:book_compactjournal(Bookie2, 30000),
     lists:foldl(fun(X, Pending) ->
                         case Pending of
                             false ->
@@ -237,7 +216,7 @@ rotating_object_check(BookOpts, B, NumberOfObjects) ->
     
     
 restart_from_blankledger(BookOpts, B_SpcL) ->
-    leveled_penciller:clean_testdir(BookOpts#bookie_options.root_path ++
+    leveled_penciller:clean_testdir(proplists:get_value(root_path, BookOpts) ++
                                     "/ledger"),
     {ok, Book1} = leveled_bookie:book_start(BookOpts),
     io:format("Checking index following restart~n"),

@@ -24,15 +24,15 @@ all() -> [
 
 simple_put_fetch_head_delete(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = #bookie_options{root_path=RootPath},
+    StartOpts1 = [{root_path, RootPath}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
     testutil:check_forobject(Bookie1, TestObject),
     testutil:check_formissingobject(Bookie1, "Bucket1", "Key2"),
     ok = leveled_bookie:book_close(Bookie1),
-    StartOpts2 = #bookie_options{root_path=RootPath,
-                                 max_journalsize=3000000},
+    StartOpts2 = [{root_path, RootPath},
+                    {max_journalsize, 3000000}],
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
     testutil:check_forobject(Bookie2, TestObject),
     ObjList1 = testutil:generate_objects(5000, 2),
@@ -69,16 +69,15 @@ simple_put_fetch_head_delete(_Config) ->
 
 many_put_fetch_head(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = #bookie_options{root_path=RootPath,
-                                    max_pencillercachesize=16000},
+    StartOpts1 = [{root_path, RootPath}, {max_pencillercachesize, 16000}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
     testutil:check_forobject(Bookie1, TestObject),
     ok = leveled_bookie:book_close(Bookie1),
-    StartOpts2 = #bookie_options{root_path=RootPath,
-                                 max_journalsize=1000000000,
-                                 max_pencillercachesize=32000},
+    StartOpts2 = [{root_path, RootPath},
+                    {max_journalsize, 1000000000},
+                    {max_pencillercachesize, 32000}],
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
     testutil:check_forobject(Bookie2, TestObject),
     GenList = [2, 20002, 40002, 60002, 80002,
@@ -108,9 +107,9 @@ many_put_fetch_head(_Config) ->
 
 journal_compaction(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = #bookie_options{root_path=RootPath,
-                                 max_journalsize=10000000,
-                                 max_run_length=1},
+    StartOpts1 = [{root_path, RootPath},
+                    {max_journalsize, 10000000},
+                    {max_run_length, 1}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     ok = leveled_bookie:book_compactjournal(Bookie1, 30000),
     {TestObject, TestSpec} = testutil:generate_testobject(),
@@ -172,7 +171,7 @@ journal_compaction(_Config) ->
 
 fetchput_snapshot(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = #bookie_options{root_path=RootPath, max_journalsize=30000000},
+    StartOpts1 = [{root_path, RootPath}, {max_journalsize, 30000000}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
@@ -180,7 +179,7 @@ fetchput_snapshot(_Config) ->
     lists:foreach(fun({_RN, Obj, Spc}) ->
                         leveled_bookie:book_riakput(Bookie1, Obj, Spc) end,
                     ObjList1),
-    SnapOpts1 = #bookie_options{snapshot_bookie=Bookie1},
+    SnapOpts1 = [{snapshot_bookie, Bookie1}],
     {ok, SnapBookie1} = leveled_bookie:book_start(SnapOpts1),
     ChkList1 = lists:sublist(lists:sort(ObjList1), 100),
     testutil:check_forlist(Bookie1, ChkList1),
@@ -191,7 +190,7 @@ fetchput_snapshot(_Config) ->
     io:format("Closed initial bookies~n"),
     
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
-    SnapOpts2 = #bookie_options{snapshot_bookie=Bookie2},
+    SnapOpts2 = [{snapshot_bookie, Bookie2}],
     {ok, SnapBookie2} = leveled_bookie:book_start(SnapOpts2),
     io:format("Bookies restarted~n"),
     
@@ -279,7 +278,7 @@ load_and_count(_Config) ->
     % Use artificially small files, and the load keys, counting they're all
     % present
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = #bookie_options{root_path=RootPath, max_journalsize=50000000},
+    StartOpts1 = [{root_path, RootPath}, {max_journalsize, 50000000}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
@@ -362,7 +361,7 @@ load_and_count(_Config) ->
 
 load_and_count_withdelete(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = #bookie_options{root_path=RootPath, max_journalsize=50000000},
+    StartOpts1 = [{root_path, RootPath}, {max_journalsize, 50000000}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
@@ -418,7 +417,7 @@ load_and_count_withdelete(_Config) ->
 
 space_clear_ondelete(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = #bookie_options{root_path=RootPath, max_journalsize=20000000},
+    StartOpts1 = [{root_path, RootPath}, {max_journalsize, 20000000}],
     {ok, Book1} = leveled_bookie:book_start(StartOpts1),
     G2 = fun testutil:generate_compressibleobjects/2,
     testutil:load_objects(20000,

@@ -365,9 +365,9 @@ put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i) ->
     {RplKSpecL, V}.
 
 rotating_object_check(RootPath, B, NumberOfObjects) ->
-    BookOpts = #bookie_options{root_path=RootPath,
-                                cache_size=1000,
-                                max_journalsize=5000000},
+    BookOpts = [{root_path, RootPath},
+                    {cache_size, 1000},
+                    {max_journalsize, 5000000}],
     {ok, Book1} = leveled_bookie:book_start(BookOpts),
     {KSpcL1, V1} = testutil:put_indexed_objects(Book1, B, NumberOfObjects),
     ok = testutil:check_indexed_objects(Book1, B, KSpcL1, V1),

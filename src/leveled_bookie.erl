@@ -151,6 +151,9 @@
         book_islastcompactionpending/1,
         book_close/1]).
 
+-export([get_opt/2,
+            get_opt/3]).  
+
 -include_lib("eunit/include/eunit.hrl").
 
 -define(CACHE_SIZE, 2000).
@@ -175,9 +178,9 @@
 %%%============================================================================
 
 book_start(RootPath, LedgerCacheSize, JournalSize) ->
-    book_start(#bookie_options{root_path=RootPath,
-                                cache_size=LedgerCacheSize,
-                                max_journalsize=JournalSize}).
+    book_start([{root_path, RootPath},
+                    {cache_size, LedgerCacheSize},
+                    {max_journalsize, JournalSize}]).
 
 book_start(Opts) ->
     gen_server:start(?MODULE, [Opts], []).
@@ -247,17 +250,12 @@ book_close(Pid) ->
 %%%============================================================================
 
 init([Opts]) ->
-    case Opts#bookie_options.snapshot_bookie of
+    case get_opt(snapshot_bookie, Opts) of
         undefined ->
             % Start from file not snapshot
             {InkerOpts, PencillerOpts} = set_options(Opts),
             {Inker, Penciller} = startup(InkerOpts, PencillerOpts),
-            CacheSize = if
-                            Opts#bookie_options.cache_size == undefined ->
-                                ?CACHE_SIZE;
-                            true ->
-                                Opts#bookie_options.cache_size
-                        end,
+            CacheSize = get_opt(cache_size, Opts, ?CACHE_SIZE),
             io:format("Bookie starting with Pcl ~w Ink ~w~n",
                                                 [Penciller, Inker]),
             {ok, #state{inker=Inker,
@@ -551,21 +549,21 @@ shutdown_wait([TopPause|Rest], Inker) ->
     
 
 set_options(Opts) ->
-    MaxJournalSize = case Opts#bookie_options.max_journalsize of
-                            undefined ->
-                                30000;
-                            MS ->
-                                MS
-                        end,
+    MaxJournalSize = get_opt(max_journalsize, Opts, 10000000000),
     
-    AltStrategy = Opts#bookie_options.reload_strategy,
+    AltStrategy = get_opt(reload_strategy, Opts, []),
     ReloadStrategy = leveled_codec:inker_reload_strategy(AltStrategy),
-    PCLL0CacheSize = Opts#bookie_options.max_pencillercachesize,
-    JournalFP = Opts#bookie_options.root_path ++ "/" ++ ?JOURNAL_FP,
-    LedgerFP = Opts#bookie_options.root_path ++ "/" ++ ?LEDGER_FP,
+    
+    PCLL0CacheSize = get_opt(max_pencillercachesize, Opts),
+    RootPath = get_opt(root_path, Opts),
+    JournalFP = RootPath ++ "/" ++ ?JOURNAL_FP,
+    LedgerFP = RootPath ++ "/" ++ ?LEDGER_FP,
+    ok =filelib:ensure_dir(JournalFP),
+    ok =filelib:ensure_dir(LedgerFP),
+    
     {#inker_options{root_path = JournalFP,
                         reload_strategy = ReloadStrategy,
-                        max_run_length = Opts#bookie_options.max_run_length,
+                        max_run_length = get_opt(max_run_length, Opts),
                         cdb_options = #cdb_options{max_size=MaxJournalSize,
                                                     binary_mode=true}},
         #penciller_options{root_path = LedgerFP,
@@ -781,6 +779,23 @@ load_fun(KeyInLedger, ValueInLedger, _Position, Acc0, ExtractFun) ->
     end.
 
 
+get_opt(Key, Opts) ->
+    get_opt(Key, Opts, undefined).
+
+get_opt(Key, Opts, Default) ->
+    case proplists:get_value(Key, Opts) of
+        undefined ->
+            case application:get_env(?MODULE, Key) of
+                {ok, Value} ->
+                    Value;
+                undefined ->
+                    Default
+            end;
+        Value ->
+            Value
+    end.
+
+
 %%%============================================================================
 %%% Test
 %%%============================================================================
@@ -828,7 +843,7 @@ generate_multiple_robjects(Count, KeyNumber, ObjL) ->
 
 single_key_test() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start(#bookie_options{root_path=RootPath}),
+    {ok, Bookie1} = book_start([{root_path, RootPath}]),
     {B1, K1, V1, Spec1, MD} = {"Bucket1",
                                 "Key1",
                                 "Value1",
@@ -840,7 +855,7 @@ single_key_test() ->
     {ok, F1} = book_riakget(Bookie1, B1, K1),
     ?assertMatch(F1, Object),
     ok = book_close(Bookie1),
-    {ok, Bookie2} = book_start(#bookie_options{root_path=RootPath}),
+    {ok, Bookie2} = book_start([{root_path, RootPath}]),
     {ok, F2} = book_riakget(Bookie2, B1, K1),
     ?assertMatch(F2, Object),
     ok = book_close(Bookie2),
@@ -848,7 +863,7 @@ single_key_test() ->
 
 multi_key_test() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start(#bookie_options{root_path=RootPath}),
+    {ok, Bookie1} = book_start([{root_path, RootPath}]),
     {B1, K1, V1, Spec1, MD1} = {"Bucket",
                                 "Key1",
                                 "Value1",
@@ -885,7 +900,7 @@ multi_key_test() ->
     ?assertMatch(F2B, Obj2),
     ok = book_close(Bookie1),
     % Now reopen the file, and confirm that a fetch is still possible
-    {ok, Bookie2} = book_start(#bookie_options{root_path=RootPath}),
+    {ok, Bookie2} = book_start([{root_path, RootPath}]),
     {ok, F1C} = book_riakget(Bookie2, B1, K1),
     ?assertMatch(F1C, Obj1),
     {ok, F2C} = book_riakget(Bookie2, B2, K2),
@@ -904,7 +919,7 @@ multi_key_test() ->
     
 ttl_test() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start(#bookie_options{root_path=RootPath}),
+    {ok, Bookie1} = book_start([{root_path, RootPath}]),
     ObjL1 = generate_multiple_objects(100, 1),
     % Put in all the objects with a TTL in the future
     Future = leveled_codec:integer_now() + 300,
@@ -962,7 +977,7 @@ ttl_test() ->
     ?assertMatch(10, length(TermKeyList)),
     
     ok = book_close(Bookie1),
-    {ok, Bookie2} = book_start(#bookie_options{root_path=RootPath}),
+    {ok, Bookie2} = book_start([{root_path, RootPath}]),
     
     {async,
         IndexFolderTR2} = book_returnfolder(Bookie2,
@@ -987,9 +1002,9 @@ ttl_test() ->
 
 hashtree_query_test() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start(#bookie_options{root_path=RootPath,
-                                                max_journalsize=1000000,
-                                                cache_size=500}),
+    {ok, Bookie1} = book_start([{root_path, RootPath},
+                                {max_journalsize, 1000000},
+                                {cache_size, 500}]),
     ObjL1 = generate_multiple_objects(1200, 1),
     % Put in all the objects with a TTL in the future
     Future = leveled_codec:integer_now() + 300,
@@ -1019,9 +1034,9 @@ hashtree_query_test() ->
                         KeyHashList),
     ?assertMatch(1200, length(KeyHashList)),
     ok = book_close(Bookie1),
-    {ok, Bookie2} = book_start(#bookie_options{root_path=RootPath,
-                                                max_journalsize=200000,
-                                                cache_size=500}),
+    {ok, Bookie2} = book_start([{root_path, RootPath},
+                                    {max_journalsize, 200000},
+                                    {cache_size, 500}]),
     {async, HTFolder2} = book_returnfolder(Bookie2,
                                                 {hashtree_query,
                                                     ?STD_TAG,
@@ -1032,9 +1047,9 @@ hashtree_query_test() ->
 
 hashtree_query_withjournalcheck_test() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start(#bookie_options{root_path=RootPath,
-                                                max_journalsize=1000000,
-                                                cache_size=500}),
+    {ok, Bookie1} = book_start([{root_path, RootPath},
+                                    {max_journalsize, 1000000},
+                                    {cache_size, 500}]),
     ObjL1 = generate_multiple_objects(800, 1),
     % Put in all the objects with a TTL in the future
     Future = leveled_codec:integer_now() + 300,

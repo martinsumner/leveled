@@ -1,6 +1,6 @@
 {application, eleveleddb,
  [
-  {description, ""},
+  {description, "Key Value store based on LSM-Tree and designed for larger values"},
   {vsn, "1"},
   {registered, []},
   {applications, [
@@ -8,5 +8,5 @@
                   stdlib
                  ]},
   {mod, { eleveleddb_app, []}},
-  {env, []}
+  {env, [{root_path, "test"}]}
  ]}.
