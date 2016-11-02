@@ -12,12 +12,12 @@
             ]).
 
 all() -> [
-            simple_put_fetch_head_delete,
-            many_put_fetch_head,
-            journal_compaction,
-            fetchput_snapshot,
-            load_and_count,
-            load_and_count_withdelete,
+            % simple_put_fetch_head_delete,
+            % many_put_fetch_head,
+            % journal_compaction,
+            % fetchput_snapshot,
+            % load_and_count,
+            % load_and_count_withdelete,
             space_clear_ondelete
             ].
 
@@ -504,7 +504,7 @@ space_clear_ondelete(_Config) ->
     io:format("This should cause a final ledger merge event~n"),
     io:format("Will require the penciller to resolve the issue of creating" ++
                 " an empty file as all keys compact on merge~n"),
-    timer:sleep(5000),
+    timer:sleep(12000),
     ok = leveled_bookie:book_close(Book3),
     {ok, FNsD_L} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
     io:format("Bookie has ~w ledger files " ++
