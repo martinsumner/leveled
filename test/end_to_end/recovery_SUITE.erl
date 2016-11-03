@@ -8,9 +8,9 @@
             ]).
 
 all() -> [
-            % retain_strategy,
-            aae_bustedjournal %,
-            % journal_compaction_bustedjournal
+            retain_strategy,
+            aae_bustedjournal,
+            journal_compaction_bustedjournal
             ].
 
 retain_strategy(_Config) ->
