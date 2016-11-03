@@ -29,7 +29,9 @@
             put_altered_indexed_objects/4,
             check_indexed_objects/4,
             rotating_object_check/3,
-            corrupt_journal/3,
+            corrupt_journal/5,
+            restore_file/2,
+            restore_topending/2,
             find_journals/1]).
 
 -define(RETURN_TERMS, {true, undefined}).
@@ -382,15 +384,32 @@ rotating_object_check(RootPath, B, NumberOfObjects) ->
     ok = leveled_bookie:book_close(Book2),
     ok.
     
-corrupt_journal(RootPath, FileName, Corruptions) ->
-    {ok, Handle} = file:open(RootPath ++ "/journal/journal_files/" ++ FileName,
-                                [binary, raw, read, write]),
+corrupt_journal(RootPath, FileName, Corruptions, BasePosition, GapSize) ->
+    OriginalPath = RootPath ++ "/journal/journal_files/" ++ FileName,
+    BackupPath = RootPath ++ "/journal/journal_files/" ++
+                    filename:basename(FileName, ".cdb") ++ ".bak",
+    {ok, _BytesCopied} = file:copy(OriginalPath, BackupPath),
+    {ok, Handle} = file:open(OriginalPath, [binary, raw, read, write]),
     lists:foreach(fun(X) ->
-                        Position = X * 1000 + 2048,
+                        Position = X * GapSize + BasePosition,
                         ok = file:pwrite(Handle, Position, <<0:8/integer>>)
                         end,
                     lists:seq(1, Corruptions)),
     ok = file:close(Handle).
+
+
+restore_file(RootPath, FileName) ->
+    OriginalPath = RootPath ++ "/journal/journal_files/" ++ FileName,
+    BackupPath = RootPath ++ "/journal/journal_files/" ++
+                    filename:basename(FileName, ".cdb") ++ ".bak",
+    file:copy(BackupPath, OriginalPath).
+
+restore_topending(RootPath, FileName) ->
+    OriginalPath = RootPath ++ "/journal/journal_files/" ++ FileName,
+    PndPath = RootPath ++ "/journal/journal_files/" ++
+                    filename:basename(FileName, ".cdb") ++ ".pnd",
+    ok = file:rename(OriginalPath, PndPath),
+    false = filelib:is_file(OriginalPath).
 
 find_journals(RootPath) ->
     {ok, FNsA_J} = file:list_dir(RootPath ++ "/journal/journal_files"),

@@ -8,9 +8,9 @@
             ]).
 
 all() -> [
-            retain_strategy,
-            aae_bustedjournal,
-            journal_compaction_bustedjournal
+            % retain_strategy,
+            aae_bustedjournal %,
+            % journal_compaction_bustedjournal
             ].
 
 retain_strategy(_Config) ->
@@ -56,7 +56,7 @@ aae_bustedjournal(_Config) ->
     CDBFiles = testutil:find_journals(RootPath),
     [HeadF|_Rest] = CDBFiles,
     io:format("Selected Journal for corruption of ~s~n", [HeadF]),
-    testutil:corrupt_journal(RootPath, HeadF, 1000),
+    testutil:corrupt_journal(RootPath, HeadF, 1000, 2048, 1000),
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts),
     
     {async, KeyF} = leveled_bookie:book_returnfolder(Bookie2,
@@ -122,7 +122,73 @@ aae_bustedjournal(_Config) ->
                     length(KeyHashList3)]),
     
     ok = leveled_bookie:book_close(Bookie2),
+    {ok, BytesCopied} = testutil:restore_file(RootPath, HeadF),
+    io:format("File restored is of size ~w~n", [BytesCopied]),
+    {ok, Bookie3} = leveled_bookie:book_start(StartOpts),
+    
+    SW4 = os:timestamp(),
+    {async, HashTreeF4} = leveled_bookie:book_returnfolder(Bookie3,
+                                                            {foldobjects_allkeys,
+                                                                ?RIAK_TAG,
+                                                                FoldObjectsFun}),
+    KeyHashList4 = HashTreeF4(),
+    
+    true = length(KeyHashList4) == 20001,
+    io:format("Fetch of hashtree using fold objects took ~w microseconds" ++
+                " and found an object count of ~w~n",
+                [timer:now_diff(os:timestamp(), SW4), length(KeyHashList4)]),
+    
+    ok = leveled_bookie:book_close(Bookie3),
+    testutil:corrupt_journal(RootPath, HeadF, 500, BytesCopied - 8000, 14),
+    
+    {ok, Bookie4} = leveled_bookie:book_start(StartOpts),
+    
+    SW5 = os:timestamp(),
+    {async, HashTreeF5} = leveled_bookie:book_returnfolder(Bookie4,
+                                                            {foldobjects_allkeys,
+                                                                ?RIAK_TAG,
+                                                                FoldObjectsFun}),
+    KeyHashList5 = HashTreeF5(),
+    
+    true = length(KeyHashList5) > 19000,
+    true = length(KeyHashList5) < HeadCount,
+    Delta5 = length(lists:subtract(KeyHashList1, KeyHashList5)),
+    true = Delta5 < 1001,
+    io:format("Fetch of hashtree using fold objects took ~w microseconds" ++
+                " and found a Delta of ~w and an objects count of ~w~n",
+                [timer:now_diff(os:timestamp(), SW5),
+                    Delta5,
+                    length(KeyHashList5)]),
+    
+    {async, HashTreeF6} = leveled_bookie:book_returnfolder(Bookie4,
+                                                            {hashtree_query,
+                                                                ?RIAK_TAG,
+                                                                check_presence}),
+    KeyHashList6 = HashTreeF6(),
+    true = length(KeyHashList6) > 19000,
+    true = length(KeyHashList6) < HeadCount,
+    
+    ok = leveled_bookie:book_close(Bookie4),
+    
+    testutil:restore_topending(RootPath, HeadF),
+    
+    {ok, Bookie5} = leveled_bookie:book_start(StartOpts),
+    
+    SW6 = os:timestamp(),
+    {async, HashTreeF7} = leveled_bookie:book_returnfolder(Bookie5,
+                                                            {foldobjects_allkeys,
+                                                                ?RIAK_TAG,
+                                                                FoldObjectsFun}),
+    KeyHashList7 = HashTreeF7(),
+    
+    true = length(KeyHashList7) == 20001,
+    io:format("Fetch of hashtree using fold objects took ~w microseconds" ++
+                " and found an object count of ~w~n",
+                [timer:now_diff(os:timestamp(), SW6), length(KeyHashList7)]),
+    
+    ok = leveled_bookie:book_close(Bookie5),
     testutil:reset_filestructure().
+
 
 riak_hash(Obj=#r_object{}) ->
     Vclock = vclock(Obj),

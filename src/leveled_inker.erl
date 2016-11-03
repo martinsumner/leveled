@@ -546,8 +546,9 @@ open_all_manifest(Man0, RootPath, CDBOpts) ->
                                     Pid} = leveled_cdb:cdb_open_reader(CFN),
                                 {LowSQN, FN, Pid};
                             false ->
-                                {ok,
-                                    Pid} = leveled_cdb:cdb_open_reader(PFN),
+                                W = leveled_cdb:cdb_open_writer(PFN, CDBOpts),
+                                {ok, Pid} = W,
+                                ok = leveled_cdb:cdb_roll(Pid),
                                 {LowSQN, FN, Pid}
                         end;
                     _ ->
