@@ -761,11 +761,8 @@ maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
     end.
 
 
-maybe_withjitter(CacheSize, MaxCacheSize) ->
-    
+maybe_withjitter(CacheSize, MaxCacheSize) ->    
     if
-        CacheSize > 2 * MaxCacheSize ->
-            true;
         CacheSize > MaxCacheSize ->
             T = 2 * MaxCacheSize - CacheSize,
             R = random:uniform(CacheSize),
