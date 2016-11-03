@@ -115,7 +115,7 @@ journal_compaction(_Config) ->
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
     testutil:check_forobject(Bookie1, TestObject),
-    ObjList1 = testutil:generate_objects(5000, 2),
+    ObjList1 = testutil:generate_objects(20000, 2),
     lists:foreach(fun({_RN, Obj, Spc}) ->
                         leveled_bookie:book_riakput(Bookie1, Obj, Spc) end,
                     ObjList1),
@@ -137,8 +137,18 @@ journal_compaction(_Config) ->
     testutil:check_forlist(Bookie1, ChkList1),
     testutil:check_forobject(Bookie1, TestObject),
     testutil:check_forobject(Bookie1, TestObject2),
-    %% Now replace all the objects
-    ObjList2 = testutil:generate_objects(50000, 2),
+    %% Delete some of the objects
+    ObjListD = testutil:generate_objects(10000, 2),
+    lists:foreach(fun({_R, O, _S}) ->
+                        ok = leveled_bookie:book_riakdelete(Bookie1,
+                                                            O#r_object.bucket,
+                                                            O#r_object.key,
+                                                            [])
+                        end,
+                    ObjListD),
+    
+    %% Now replace all the other objects
+    ObjList2 = testutil:generate_objects(40000, 10002),
     lists:foreach(fun({_RN, Obj, Spc}) ->
                         leveled_bookie:book_riakput(Bookie1, Obj, Spc) end,
                     ObjList2),
