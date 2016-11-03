@@ -7,7 +7,8 @@
 %% whilst maintaining the capability to quickly snapshot the memory for clones
 %% of the Penciller.
 %%
-%% ETS tables are not used due to complications with managing their mutability.
+%% ETS tables are not used due to complications with managing their mutability,
+%% as the database is snapshotted.
 %%
 %% An attempt was made to merge all trees into a single tree on push (in a
 %% spawned process), but this proved to have an expensive impact as the tree
@@ -28,8 +29,8 @@
 %% Total time for array_tree 209000 microseconds
 %% Total time for array_list 142000 microseconds
 %% Total time for array_filter 69000 microseconds
-%% List of 2000 checked without array - success count of 90 in 36000 microseconds
-%% List of 2000 checked with array - success count of 90 in 1000 microseconds
+%% List of 2000 checked without array - success count of 90 in 36000 microsecs
+%% List of 2000 checked with array - success count of 90 in 1000 microsecs
 %%
 %% The trade-off taken with the approach is that the size of the L0Cache is
 %% uncertain.  The Size count is incremented if the hash is not already
@@ -203,8 +204,10 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
 
 compare_method_test() ->
     R = lists:foldl(fun(_X, {LedgerSQN, L0Size, L0Index, L0TreeList}) ->
-                            LM1 = generate_randomkeys(LedgerSQN + 1, 2000, 1, 500),
-                            add_to_index(L0Index, L0Size, LM1, LedgerSQN, L0TreeList)
+                            LM1 = generate_randomkeys(LedgerSQN + 1,
+                                                        2000, 1, 500),
+                            add_to_index(L0Index, L0Size, LM1, LedgerSQN,
+                                                            L0TreeList)
                             end,
                         {0, 0, new_index(), []},
                         lists:seq(1, 16)),

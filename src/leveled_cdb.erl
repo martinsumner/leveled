@@ -552,41 +552,6 @@ create(FileName,KeyValueList) ->
     {BasePos, HashTree} = write_key_value_pairs(Handle, KeyValueList),
     close_file(Handle, HashTree, BasePos).
 
-%%
-%% dump(FileName) -> List
-%% Given a file name, this function returns a list
-%% of {key,value} tuples from the CDB.
-%%
-
-dump(FileName) ->
-    {ok, Handle} = file:open(FileName, [binary, raw, read]),
-    Fn = fun(Index, Acc) ->
-        {ok, _} = file:position(Handle, ?DWORD_SIZE * Index),
-        {_, Count} = read_next_2_integers(Handle),
-        Acc + Count    
-    end,
-    NumberOfPairs = lists:foldl(Fn, 0, lists:seq(0,255)) bsr 1,
-    io:format("Count of keys in db is ~w~n", [NumberOfPairs]),  
-    {ok, _} = file:position(Handle, {bof, 2048}),
-    Fn1 = fun(_I,Acc) ->
-        {KL,VL} = read_next_2_integers(Handle),
-        Key = read_next_term(Handle, KL),
-        case read_next_term(Handle, VL, crc) of
-            {false, _} ->
-                {ok, CurrLoc} = file:position(Handle, cur),
-                Return = {crc_wonky, get(Handle, Key)};
-            {_, Value} ->
-                {ok, CurrLoc} = file:position(Handle, cur),
-                Return =
-                    case get(Handle, Key) of
-                        {Key,Value} -> {Key ,Value};
-                        X ->  {wonky, X}
-                    end
-        end,
-        {ok, _} = file:position(Handle, CurrLoc),
-        [Return | Acc]
-    end,
-    lists:foldr(Fn1, [], lists:seq(0, NumberOfPairs-1)).
 
 %% Open an active file - one for which it is assumed the hash tables have not 
 %% yet been written
@@ -1069,20 +1034,6 @@ calc_crc(Value) ->
             erlang:crc32(<<Value/bitstring,0:M>>)
     end.
 
-%%
-%% to_dict(FileName)
-%% Given a filename returns a dict containing
-%% the key value pairs from the dict.
-%%
-%% @spec to_dict(filename()) -> dictionary()
-%% where
-%%  filename() = string(),
-%%  dictionary() = dict()
-%%
-to_dict(FileName) ->
-    KeyValueList = dump(FileName),
-    dict:from_list(KeyValueList).
-
 read_next_term(Handle, Length) ->
     case file:read(Handle, Length) of
         {ok, Bin} ->
@@ -1377,6 +1328,59 @@ multi_key_value_to_record(KVList, BinaryMode, LastPosition) ->
 % T E S T 
 %%%%%%%%%%%%%%%  
 -ifdef(TEST).
+
+%%
+%% dump(FileName) -> List
+%% Given a file name, this function returns a list
+%% of {key,value} tuples from the CDB.
+%%
+
+dump(FileName) ->
+    {ok, Handle} = file:open(FileName, [binary, raw, read]),
+    Fn = fun(Index, Acc) ->
+        {ok, _} = file:position(Handle, ?DWORD_SIZE * Index),
+        {_, Count} = read_next_2_integers(Handle),
+        Acc + Count    
+    end,
+    NumberOfPairs = lists:foldl(Fn, 0, lists:seq(0,255)) bsr 1,
+    io:format("Count of keys in db is ~w~n", [NumberOfPairs]),  
+    {ok, _} = file:position(Handle, {bof, 2048}),
+    Fn1 = fun(_I,Acc) ->
+        {KL,VL} = read_next_2_integers(Handle),
+        Key = read_next_term(Handle, KL),
+        case read_next_term(Handle, VL, crc) of
+            {false, _} ->
+                {ok, CurrLoc} = file:position(Handle, cur),
+                Return = {crc_wonky, get(Handle, Key)};
+            {_, Value} ->
+                {ok, CurrLoc} = file:position(Handle, cur),
+                Return =
+                    case get(Handle, Key) of
+                        {Key,Value} -> {Key ,Value};
+                        X ->  {wonky, X}
+                    end
+        end,
+        {ok, _} = file:position(Handle, CurrLoc),
+        [Return | Acc]
+    end,
+    lists:foldr(Fn1, [], lists:seq(0, NumberOfPairs-1)).
+
+%%
+%% to_dict(FileName)
+%% Given a filename returns a dict containing
+%% the key value pairs from the dict.
+%%
+%% @spec to_dict(filename()) -> dictionary()
+%% where
+%%  filename() = string(),
+%%  dictionary() = dict()
+%%
+to_dict(FileName) ->
+    KeyValueList = dump(FileName),
+    dict:from_list(KeyValueList).
+    
+
+
 
 write_key_value_pairs_1_test() ->
     {ok,Handle} = file:open("../test/test.cdb",[write]),

@@ -1260,10 +1260,9 @@ clean_subdir(DirPath) ->
             {ok, Files} = file:list_dir(DirPath),
             lists:foreach(fun(FN) ->
                                 File = filename:join(DirPath, FN),
-                                case file:delete(File) of
-                                    ok -> io:format("Success deleting ~s~n", [File]);
-                                    _ -> io:format("Error deleting ~s~n", [File])
-                                end end,
+                                ok = file:delete(File),
+                                io:format("Success deleting ~s~n", [File])
+                                end,
                             Files);
         false ->
             ok
