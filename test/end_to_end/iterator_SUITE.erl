@@ -7,12 +7,12 @@
 
 -export([all/0]).
 -export([simple_load_with2i/1,
-            simple_querycount/1,
+            query_count/1,
             rotating_objects/1]).
 
 all() -> [
             simple_load_with2i,
-            simple_querycount,
+            query_count,
             rotating_objects].
 
 
@@ -41,9 +41,9 @@ simple_load_with2i(_Config) ->
     testutil:reset_filestructure().
 
 
-simple_querycount(_Config) ->
+query_count(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    {ok, Book1} = leveled_bookie:book_start(RootPath, 2500, 50000000),
+    {ok, Book1} = leveled_bookie:book_start(RootPath, 2000, 50000000),
     {TestObject, TestSpec} = testutil:generate_testobject("Bucket",
                                                             "Key1",
                                                             "Value1",

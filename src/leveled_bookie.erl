@@ -162,7 +162,6 @@
 -define(SHUTDOWN_WAITS, 60).
 -define(SHUTDOWN_PAUSE, 10000).
 -define(SNAPSHOT_TIMEOUT, 300000).
--define(JITTER_PROB, 0.01).
 -define(CHECKJOURNAL_PROB, 0.2).
 
 -record(state, {inker :: pid(),
@@ -780,13 +779,15 @@ maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
 
 
 maybe_withjitter(CacheSize, MaxCacheSize) ->
+    
     if
         CacheSize > 2 * MaxCacheSize ->
             true;
         CacheSize > MaxCacheSize ->
-            R = random:uniform(),
+            T = 2 * MaxCacheSize - CacheSize,
+            R = random:uniform(CacheSize),
             if
-                R < ?JITTER_PROB ->
+                R > T ->
                     true;
                 true ->
                     false
@@ -794,6 +795,8 @@ maybe_withjitter(CacheSize, MaxCacheSize) ->
         true ->
             false
     end.
+
+
 
 load_fun(KeyInLedger, ValueInLedger, _Position, Acc0, ExtractFun) ->
     {MinSQN, MaxSQN, OutputTree} = Acc0,
