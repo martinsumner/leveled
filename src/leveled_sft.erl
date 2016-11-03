@@ -1139,7 +1139,7 @@ pointer_append_queryresults(Results, QueryPid) ->
 %% Update the sequence numbers
 update_sequencenumbers(Item, LSN, HSN) when is_tuple(Item) ->
     update_sequencenumbers(leveled_codec:strip_to_seqonly(Item), LSN, HSN);    
-update_sequencenumbers(SN, 0, 0) ->
+update_sequencenumbers(SN, infinity, 0) ->
     {SN, SN};
 update_sequencenumbers(SN, LSN, HSN) when SN < LSN ->
     {SN, HSN};
