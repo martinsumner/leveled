@@ -1349,9 +1349,6 @@ dump(FileName) ->
         {KL,VL} = read_next_2_integers(Handle),
         Key = read_next_term(Handle, KL),
         case read_next_term(Handle, VL, crc) of
-            {false, _} ->
-                {ok, CurrLoc} = file:position(Handle, cur),
-                Return = {crc_wonky, get(Handle, Key)};
             {_, Value} ->
                 {ok, CurrLoc} = file:position(Handle, cur),
                 Return =
