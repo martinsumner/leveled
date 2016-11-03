@@ -596,13 +596,9 @@ start_from_file(PCLopts) ->
                         levelzero_maxcachesize=MaxTableSize},
     
     %% Open manifest
-    ManifestPath = InitState#state.root_path ++ "/" ++ ?MANIFEST_FP ++ "/",
-    {ok, Filenames} = case filelib:is_dir(ManifestPath) of
-                            true ->
-                                file:list_dir(ManifestPath);
-                            false ->
-                                {ok, []}
-                        end,
+    ManifestPath = filename:join(InitState#state.root_path, ?MANIFEST_FP),
+    filelib:ensure_dir(ManifestPath),
+    {ok, Filenames} = file:list_dir(ManifestPath),
     CurrRegex = "nonzero_(?<MSN>[0-9]+)\\." ++ ?CURRENT_FILEX,
     ValidManSQNs = lists:foldl(fun(FN, Acc) ->
                                     case re:run(FN,
