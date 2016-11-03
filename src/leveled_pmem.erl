@@ -30,7 +30,11 @@
 %% Total time for array_filter 69000 microseconds
 %% List of 2000 checked without array - success count of 90 in 36000 microseconds
 %% List of 2000 checked with array - success count of 90 in 1000 microseconds
-
+%%
+%% The trade-off taken with the approach is that the size of the L0Cache is
+%% uncertain.  The Size count is incremented if the hash is not already
+%% present, so the size may be lower than the actual size due to hash
+%% collisions
 
 -module(leveled_pmem).
 
@@ -56,19 +60,26 @@
 add_to_index(L0Index, L0Size, LevelMinus1, LedgerSQN, TreeList) ->
     SW = os:timestamp(),
     SlotInTreeList = length(TreeList) + 1,
-    FoldFun = fun({K, V}, {AccMinSQN, AccMaxSQN, HashIndex}) ->
+    FoldFun = fun({K, V}, {AccMinSQN, AccMaxSQN, AccCount, HashIndex}) ->
                     SQN = leveled_codec:strip_to_seqonly({K, V}),
                     {Hash, Slot} = hash_to_slot(K),
                     L = array:get(Slot, HashIndex),
+                    Count0 = case lists:keymember(Hash, 1, L) of
+                                    true ->
+                                        AccCount;
+                                    false ->
+                                        AccCount + 1
+                                end,
                     {min(SQN, AccMinSQN),
                         max(SQN, AccMaxSQN),
+                        Count0,
                         array:set(Slot, [{Hash, SlotInTreeList}|L], HashIndex)}
                     end,
     LM1List = gb_trees:to_list(LevelMinus1),
-    {MinSQN, MaxSQN, UpdL0Index} = lists:foldl(FoldFun,
-                                                {infinity, 0, L0Index},
-                                                LM1List),
-    NewL0Size = length(LM1List) + L0Size,
+    StartingT = {infinity, 0, L0Size, L0Index},
+    {MinSQN, MaxSQN, NewL0Size, UpdL0Index} = lists:foldl(FoldFun,
+                                                            StartingT,
+                                                            LM1List),
     leveled_log:log_timer("PM001", [NewL0Size], SW),
     if
         MinSQN > LedgerSQN ->
@@ -198,8 +209,9 @@ compare_method_test() ->
                         {0, 0, new_index(), []},
                         lists:seq(1, 16)),
     
-    {SQN, _Size, Index, TreeList} = R,
+    {SQN, Size, Index, TreeList} = R,
     ?assertMatch(32000, SQN),
+    ?assertMatch(true, Size =< 32000),
     
     TestList = gb_trees:to_list(generate_randomkeys(1, 2000, 1, 800)),
 
