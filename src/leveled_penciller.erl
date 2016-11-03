@@ -611,10 +611,9 @@ start_from_file(PCLopts) ->
                                         nomatch ->
                                             Acc;
                                         {match, [Int]} when is_list(Int) ->
-                                            Acc ++ [list_to_integer(Int)];
-                                        _ ->
-                                            Acc
-                                    end end,
+                                            Acc ++ [list_to_integer(Int)]
+                                    end
+                                    end,
                                     [],
                                     Filenames),
     TopManSQN = lists:foldl(fun(X, MaxSQN) -> max(X, MaxSQN) end,
@@ -1677,7 +1676,7 @@ coverage_test() ->
     ok = pcl_close(PCL),
     
     ManifestFP = filepath(RootPath, manifest),
-    file:write_file(ManifestFP ++ "/yeszero_123.man", term_to_binary("hello")),
+    ok = file:write_file(ManifestFP ++ "/yeszero_123.man", term_to_binary("hello")),
     {ok, PCLr} = pcl_start(#penciller_options{root_path=RootPath,
                                                 max_inmemory_tablesize=1000}),
     ?assertMatch(Key1, pcl_fetch(PCLr, {o,"Bucket0001", "Key0001", null})),
