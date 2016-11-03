@@ -123,7 +123,69 @@
     {"PC014",
         {info, "Empty file ~s to be cleared"}},
     {"PC015",
-        {info, "File created"}}
+        {info, "File created"}},
+    
+    {"I0001",
+        {info, "Unexpected failure to fetch value for Key=~w SQN=~w "
+                ++ "with reason ~w"}},
+    {"I0002",
+        {info, "Journal snapshot ~w registered at SQN ~w"}},
+    {"I0003",
+        {info, "Journal snapshot ~w released"}},
+    {"I0004",
+        {info, "Remaining number of journal snapshots is ~w"}},
+    {"I0005",
+        {info, "Inker closing journal for reason ~w"}},
+    {"I0006",
+        {info, "Close triggered with journal_sqn=~w and manifest_sqn=~w"}},
+    {"I0007",
+        {info, "Inker manifest when closing is:"}},
+    {"I0008",
+        {info, "Put to new active journal required roll and manifest write"}},
+    {"I0009",
+        {info, "Updated manifest on startup:"}},
+    {"I0010",
+        {info, "Unchanged manifest on startup:"}},
+    {"I0011",
+        {info, "Manifest is empty, starting from manifest SQN 1"}},
+    {"I0012",
+        {info, "Head manifest entry ~s is complete so new active journal "
+                ++ "required"}},
+    {"I0013",
+        {info, "File ~s to be removed from manifest"}},
+    {"I0014",
+        {info, "On startup oading from filename ~s from SQN ~w"}},
+    {"I0015",
+        {info, "Opening manifest file at ~s with SQN ~w"}},
+    {"I0016",
+        {info, "Writing new version of manifest for manifestSQN=~w"}},
+    {"I0017",
+        {info, "At SQN=~w journal has filename ~s"}},
+    
+    {"IC001",
+        {info, "Inker no longer alive so Clerk to abandon work "
+                ++ "leaving garbage"}},
+    {"IC002",
+        {info, "Clerk updating Inker as compaction complete of ~w files"}},
+    {"IC003",
+        {info, "No compaction run as highest score=~w"}},
+    {"IC004",
+        {info, "Score for filename ~s is ~w"}},
+    {"IC005",
+        {info, "Compaction to be performed on ~w files with score of ~w"}},
+    {"IC006",
+        {info, "Filename ~s is part of compaction run"}},
+    {"IC007",
+        {info, "Clerk has completed compaction process"}},
+    {"IC008",
+        {info, "Compaction source ~s has yielded ~w positions"}},
+    {"IC009",
+        {info, "Generate journal for compaction with filename ~s"}},
+    
+    {"PM001",
+        {info, "Indexed new cache entry with total L0 cache size now ~w"}},
+    {"PM002",
+        {info, "Completed dump of L0 cache to list of size ~w"}}
     
         ])).
 
@@ -132,7 +194,7 @@ log(LogReference, Subs) ->
     {ok, {LogLevel, LogText}} = dict:find(LogReference, ?LOGBASE),
     case lists:member(LogLevel, ?LOG_LEVEL) of
         true ->
-            io:format(LogText ++ "~n", Subs);
+            io:format(LogReference ++ " " ++ LogText ++ "~n", Subs);
         false ->
             ok
     end.
@@ -148,7 +210,8 @@ log_timer(LogReference, Subs, StartTime) ->
                                 MicroS ->
                                     {"ms", MicroS div 1000}
                             end,
-            io:format(LogText ++ " with time taken ~w " ++ Unit ++ "~n",
+            io:format(LogReference ++ " " ++ LogText ++ " with time taken ~w "
+                            ++ Unit ++ "~n",
                         Subs ++ [Time]);
         false ->
             ok

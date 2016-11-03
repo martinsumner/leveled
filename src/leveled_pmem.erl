@@ -69,8 +69,7 @@ add_to_index(L0Index, L0Size, LevelMinus1, LedgerSQN, TreeList) ->
                                                 {infinity, 0, L0Index},
                                                 LM1List),
     NewL0Size = length(LM1List) + L0Size,
-    io:format("Rolled L0 cache to size ~w in ~w microseconds~n",
-                [NewL0Size, timer:now_diff(os:timestamp(), SW)]),
+    leveled_log:log_timer("PM001", [NewL0Size], SW),
     if
         MinSQN > LedgerSQN ->
             {MaxSQN,
@@ -90,8 +89,7 @@ to_list(Slots, FetchFun) ->
                                 end,
                             [],
                             SlotList),
-    io:format("L0 cache converted to list of size ~w in ~w microseconds~n",
-                [length(FullList), timer:now_diff(os:timestamp(), SW)]),
+    leveled_log:log_timer("PM002", [length(FullList)], SW),
     FullList.
 
 

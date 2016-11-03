@@ -248,8 +248,7 @@ handle_call({fetch, Key, SQN}, _From, State) ->
         {{SQN, Key}, {Value, _IndexSpecs}} ->
             {reply, {ok, Value}, State};
         Other ->
-            io:format("Unexpected failure to fetch value for" ++
-                        "Key=~w SQN=~w with reason ~w~n", [Key, SQN, Other]),
+            leveled_log:log("I0001", [Key, SQN, Other]),
             {reply, not_present, State}
     end;
 handle_call({get, Key, SQN}, _From, State) ->
@@ -263,15 +262,14 @@ handle_call({load_pcl, StartSQN, FilterFun, Penciller}, _From, State) ->
 handle_call({register_snapshot, Requestor}, _From , State) ->
     Rs = [{Requestor,
             State#state.manifest_sqn}|State#state.registered_snapshots],
-    io:format("Journal snapshot ~w registered at SQN ~w~n",
-                    [Requestor, State#state.manifest_sqn]),
+    leveled_log:log("I0002", [Requestor, State#state.manifest_sqn]),
     {reply, {State#state.manifest,
                 State#state.active_journaldb},
                 State#state{registered_snapshots=Rs}};
 handle_call({release_snapshot, Snapshot}, _From , State) ->
     Rs = lists:keydelete(Snapshot, 1, State#state.registered_snapshots),
-    io:format("Journal snapshot ~w released~n", [Snapshot]),
-    io:format("Remaining journal snapshots are ~w~n", [Rs]),
+    leveled_log:log("I0003", [Snapshot]),
+    leveled_log:log("I0004", [length(Rs)]),
     {reply, ok, State#state{registered_snapshots=Rs}};
 handle_call({confirm_delete, ManSQN}, _From, State) ->
     Reply = lists:foldl(fun({_R, SnapSQN}, Bool) ->
@@ -300,7 +298,7 @@ handle_call({update_manifest,
                         ManifestSnippet),
     NewManifestSQN = State#state.manifest_sqn + 1,
     manifest_printer(Man1),
-    ok = simple_manifest_writer(Man1, NewManifestSQN, State#state.root_path),
+    simple_manifest_writer(Man1, NewManifestSQN, State#state.root_path),
     {reply,
         {ok, NewManifestSQN},
         State#state{manifest=Man1,
@@ -327,12 +325,7 @@ handle_call(compaction_complete, _From, State) ->
 handle_call(compaction_pending, _From, State) ->
     {reply, State#state.compaction_pending, State};
 handle_call(close, _From, State) ->
-    case State#state.compaction_pending of
-        true ->
-            {reply, pause, State};
-        false ->
-            {stop, normal, ok, State}
-    end.
+    {stop, normal, ok, State}.
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -345,13 +338,13 @@ terminate(Reason, State) ->
         true ->
             ok = ink_releasesnapshot(State#state.source_inker, self());
         false ->    
-            io:format("Inker closing journal for reason ~w~n", [Reason]),
-            io:format("Close triggered with journal_sqn=~w and manifest_sqn=~w~n",
-                            [State#state.journal_sqn, State#state.manifest_sqn]),
-            io:format("Manifest when closing is: ~n"),
+            leveled_log:log("I0005", [Reason]),
+            leveled_log:log("I0006", [State#state.journal_sqn,
+                                        State#state.manifest_sqn]),
             leveled_iclerk:clerk_stop(State#state.clerk),
             lists:foreach(fun({Snap, _SQN}) -> ok = ink_close(Snap) end,
                             State#state.registered_snapshots),
+            leveled_log:log("I0007", []),
             manifest_printer(State#state.manifest),
             ok = close_allmanifest(State#state.manifest)
     end.
@@ -425,9 +418,7 @@ put_object(LedgerKey, Object, KeyChanges, State) ->
             ok = leveled_cdb:cdb_put(NewJournalP,
                                         JournalKey,
                                         JournalBin),
-            io:format("Put to new active journal " ++
-                            "with manifest write took ~w microseconds~n",
-                        [timer:now_diff(os:timestamp(),SW)]),
+            leveled_log:log_timer("I0008", [], SW),
             {rolling,
                 State#state{journal_sqn=NewSQN,
                                 manifest=NewManifest,
@@ -489,14 +480,14 @@ build_manifest(ManifestFilenames,
     % the manifest (must also increment the manifest SQN).
     UpdManifestSQN = if
                             length(OpenManifest) > length(Manifest)  ->
-                                io:format("Updated manifest on startup: ~n"),
+                                leveled_log:log("I0009", []),
                                 manifest_printer(OpenManifest),
                                 simple_manifest_writer(OpenManifest,
                                                         ManifestSQN + 1,
                                                         RootPath),
                                 ManifestSQN + 1;
                             true ->
-                                io:format("Unchanged manifest on startup: ~n"),
+                                leveled_log:log("I0010", []),
                                 manifest_printer(OpenManifest),
                                 ManifestSQN
                         end,
@@ -512,7 +503,7 @@ close_allmanifest([H|ManifestT]) ->
 
 
 open_all_manifest([], RootPath, CDBOpts) ->
-    io:format("Manifest is empty, starting from manifest SQN 1~n"),
+    leveled_log:log("I0011", []),
     add_to_manifest([], start_new_activejournal(1, RootPath, CDBOpts));
 open_all_manifest(Man0, RootPath, CDBOpts) ->
     Man1 = lists:reverse(lists:sort(Man0)),
@@ -521,8 +512,7 @@ open_all_manifest(Man0, RootPath, CDBOpts) ->
     PendingHeadFN = HeadFN ++ "." ++ ?PENDING_FILEX,
     Man2 = case filelib:is_file(CompleteHeadFN) of
                 true ->
-                    io:format("Head manifest entry ~s is complete~n",
-                                [HeadFN]),
+                    leveled_log:log("I0012", [HeadFN]),
                     {ok, HeadR} = leveled_cdb:cdb_open_reader(CompleteHeadFN),
                     {LastSQN, _Type, _PK} = leveled_cdb:cdb_lastkey(HeadR),
                     add_to_manifest(add_to_manifest(ManifestTail,
@@ -569,7 +559,7 @@ add_to_manifest(Manifest, Entry) ->
 
 remove_from_manifest(Manifest, Entry) ->
     {SQN, FN, _PidR} = Entry,
-    io:format("File ~s to be removed from manifest~n", [FN]),
+    leveled_log:log("I0013", [FN]),
     lists:keydelete(SQN, 1, Manifest).
 
 find_in_manifest(SQN, [{LowSQN, _FN, Pid}|_Tail]) when SQN >= LowSQN ->
@@ -623,7 +613,7 @@ load_from_sequence(MinSQN, FilterFun, Penciller, [{_LowSQN, FN, Pid}|Rest]) ->
 
 load_between_sequence(MinSQN, MaxSQN, FilterFun, Penciller,
                                 CDBpid, StartPos, FN, Rest) ->
-    io:format("Loading from filename ~s from SQN ~w~n", [FN, MinSQN]),
+    leveled_log:log("I0014", [FN, MinSQN]),
     InitAcc = {MinSQN, MaxSQN, gb_trees:empty()},
     Res = case leveled_cdb:cdb_scan(CDBpid, FilterFun, InitAcc, StartPos) of
                 {eof, {AccMinSQN, _AccMaxSQN, AccKL}} ->
@@ -698,8 +688,7 @@ filepath(CompactFilePath, NewSQN, compact_journal) ->
 
 simple_manifest_reader(SQN, RootPath) ->
     ManifestPath = filepath(RootPath, manifest_dir),
-    io:format("Opening manifest file at ~s with SQN ~w~n",
-                [ManifestPath, SQN]),
+    leveled_log:log("I0015", [ManifestPath, SQN]),
     {ok, MBin} = file:read_file(filename:join(ManifestPath,
                                                 integer_to_list(SQN)
                                                 ++ ".man")),
@@ -715,13 +704,8 @@ simple_manifest_writer(Manifest, ManSQN, RootPath) ->
     MBin = term_to_binary(lists:map(fun({SQN, FN, _PID}) -> {SQN, FN} end,
                                         Manifest), [compressed]),
     case filelib:is_file(NewFN) of
-        true ->
-            io:format("Error - trying to write manifest for"
-                        ++ " ManifestSQN=~w which already exists~n", [ManSQN]),
-            error;
         false ->
-            io:format("Writing new version of manifest for "
-                        ++ " manifestSQN=~w~n", [ManSQN]),
+            leveled_log:log("I0016", [ManSQN]),
             ok = file:write_file(TmpFN, MBin),
             ok = file:rename(TmpFN, NewFN),
             ok
@@ -729,8 +713,7 @@ simple_manifest_writer(Manifest, ManSQN, RootPath) ->
     
 manifest_printer(Manifest) ->
     lists:foreach(fun({SQN, FN, _PID}) ->
-                         io:format("At SQN=~w journal has filename ~s~n",
-                                            [SQN, FN]) end,
+                         leveled_log:log("I0017", [SQN, FN]) end,
                     Manifest).
 
 initiate_penciller_snapshot(Bookie) ->

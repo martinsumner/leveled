@@ -159,8 +159,6 @@
 -define(CACHE_SIZE, 2000).
 -define(JOURNAL_FP, "journal").
 -define(LEDGER_FP, "ledger").
--define(SHUTDOWN_WAITS, 60).
--define(SHUTDOWN_PAUSE, 10000).
 -define(SNAPSHOT_TIMEOUT, 300000).
 -define(CHECKJOURNAL_PROB, 0.2).
 
@@ -394,8 +392,7 @@ handle_info(_Info, State) ->
 
 terminate(Reason, State) ->
     leveled_log:log("B0003", [Reason]),
-    WaitList = lists:duplicate(?SHUTDOWN_WAITS, ?SHUTDOWN_PAUSE),
-    ok = shutdown_wait(WaitList, State#state.inker),
+    ok = leveled_inker:ink_close(State#state.inker),
     ok = leveled_penciller:pcl_close(State#state.penciller).
 
 code_change(_OldVsn, State, _Extra) ->
@@ -552,21 +549,7 @@ snapshot_store(State, SnapType) ->
         ledger ->
             {ok, {LedgerSnapshot, State#state.ledger_cache},
                     null}
-    end.
-
-shutdown_wait([], _Inker) ->
-    false;
-shutdown_wait([TopPause|Rest], Inker) ->
-    case leveled_inker:ink_close(Inker) of
-        ok ->
-            ok;
-        pause ->
-            io:format("Inker shutdown stil waiting for process to complete" ++
-                        " with further wait of ~w~n", [lists:sum(Rest)]),
-            ok = timer:sleep(TopPause),
-            shutdown_wait(Rest, Inker)
-    end.
-    
+    end.    
 
 set_options(Opts) ->
     MaxJournalSize = get_opt(max_journalsize, Opts, 10000000000),

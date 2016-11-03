@@ -715,7 +715,7 @@ checkready(Pid) ->
 %% to an immediate return as expected.  With 32K keys in the TreeList it could
 %% take around 35-40ms.
 %%
-%% To avoid blocking this gen_server, the SFT file cna request each item of the
+%% To avoid blocking this gen_server, the SFT file can request each item of the
 %% cache one at a time.
 %%
 %% The Wait is set to false to use a cast when calling this in normal operation
@@ -1416,6 +1416,10 @@ simple_server_test() ->
                                                     null},
                                                 1)),
     ok = pcl_close(PclSnap),
+    
+    % Ignore a fake pending mnaifest on startup
+    ok = file:write_file(RootPath ++ "/" ++ ?MANIFEST_FP ++ "nonzero_99.pnd",
+                            term_to_binary("Hello")),
     
     {ok, PclSnap2} = pcl_start(SnapOpts),
     ok = pcl_loadsnapshot(PclSnap2, gb_trees:empty()),

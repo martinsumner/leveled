@@ -175,27 +175,20 @@ handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
                                                 C#candidate.journal}
                                             end,
                                         BestRun1),
-            io:format("Clerk updating Inker as compaction complete of " ++
-                        "~w files~n", [length(FilesToDelete)]),
-            {ok, ManSQN} = leveled_inker:ink_updatemanifest(Inker,
-                                                            ManifestSlice,
-                                                            FilesToDelete),
-            ok = leveled_inker:ink_compactioncomplete(Inker),
-            io:format("Clerk has completed compaction process~n"),
-            case PromptDelete of
+            leveled_log:log("IC002", [length(FilesToDelete)]),
+            case is_process_alive(Inker) of
                 true ->
-                    lists:foreach(fun({_SQN, _FN, J2D}) ->
-                                        leveled_cdb:cdb_deletepending(J2D,
-                                                                        ManSQN,
-                                                                        Inker)
-                                        end,
-                                    FilesToDelete),
+                    update_inker(Inker,
+                                    ManifestSlice,
+                                    FilesToDelete,
+                                    PromptDelete),
                     {noreply, State};
                 false ->
-                    {noreply, State}
+                    leveled_log:log("IC001", []),
+                    {stop, normal, State}
             end;
         Score ->
-            io:format("No compaction run as highest score=~w~n", [Score]),
+            leveled_log:log("IC003", [Score]),
             ok = leveled_inker:ink_compactioncomplete(Inker),
             {noreply, State}
     end;
@@ -245,7 +238,7 @@ check_single_file(CDB, FilterFun, FilterServer, MaxSQN, SampleSize, BatchSize) -
                 _ ->
                     100 * ActiveSize / (ActiveSize + ReplacedSize)
             end,
-    io:format("Score for filename ~s is ~w~n", [FN, Score]),
+    leveled_log:log("IC004", [FN, Score]),
     Score.
 
 scan_all_files(Manifest, FilterFun, FilterServer, MaxSQN) ->
@@ -352,12 +345,10 @@ score_run(Run, MaxRunLength) ->
 
 
 print_compaction_run(BestRun, MaxRunLength) ->
-    io:format("Compaction to be performed on ~w files with score of ~w~n",
-                    [length(BestRun), score_run(BestRun, MaxRunLength)]),
+    leveled_log:log("IC005", [length(BestRun),
+                                score_run(BestRun, MaxRunLength)]),
     lists:foreach(fun(File) ->
-                        io:format("Filename ~s is part of compaction run~n",
-                                    [File#candidate.filename])
-                                        
+                        leveled_log:log("IC006", [File#candidate.filename])
                         end,
                     BestRun).
 
@@ -366,6 +357,24 @@ sort_run(RunOfFiles) ->
                     Cand1#candidate.low_sqn =< Cand2#candidate.low_sqn end,
     lists:sort(CompareFun, RunOfFiles).
 
+update_inker(Inker, ManifestSlice, FilesToDelete, PromptDelete) ->
+    {ok, ManSQN} = leveled_inker:ink_updatemanifest(Inker,
+                                                    ManifestSlice,
+                                                    FilesToDelete),
+    ok = leveled_inker:ink_compactioncomplete(Inker),
+    leveled_log:log("IC007", []),
+    case PromptDelete of
+        true ->
+            lists:foreach(fun({_SQN, _FN, J2D}) ->
+                                leveled_cdb:cdb_deletepending(J2D,
+                                                                ManSQN,
+                                                                Inker)
+                                end,
+                            FilesToDelete),
+                            ok;
+        false ->
+            ok
+    end.
 
 compact_files(BestRun, CDBopts, FilterFun, FilterServer, MaxSQN, RStrategy) ->
     BatchesOfPositions = get_all_positions(BestRun, []),
@@ -418,8 +427,7 @@ get_all_positions([], PositionBatches) ->
 get_all_positions([HeadRef|RestOfBest], PositionBatches) ->
     SrcJournal = HeadRef#candidate.journal,
     Positions = leveled_cdb:cdb_getpositions(SrcJournal, all),
-    io:format("Compaction source ~s has yielded ~w positions~n",
-                [HeadRef#candidate.filename, length(Positions)]),
+    leveled_log:log("IC008", [HeadRef#candidate.filename, length(Positions)]),
     Batches = split_positions_into_batches(lists:sort(Positions),
                                             SrcJournal,
                                             []),
@@ -480,9 +488,7 @@ write_values(KVCList, CDBopts, Journal0, ManSlice0) ->
                                 FN = leveled_inker:filepath(FP,
                                                             SQN,
                                                             compact_journal),
-                                io:format("Generate journal for compaction"
-                                                ++ " with filename ~s~n",
-                                            [FN]),
+                                leveled_log:log("IC009", [FN]),
                                 leveled_cdb:cdb_open_writer(FN,
                                                             CDBopts);
                             _ ->
