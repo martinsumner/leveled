@@ -290,7 +290,12 @@ pcl_pushmem(Pid, DumpList) ->
     gen_server:call(Pid, {push_mem, DumpList}, infinity).
 
 pcl_fetchlevelzero(Pid, Slot) ->
-    gen_server:call(Pid, {fetch_levelzero, Slot}, infinity).
+    %% Timeout to cause crash of L0 file when it can't get the close signal
+    %% as it is deadlocked making this call.
+    %%
+    %% If the timeout gets hit outside of close scenario the Penciller will
+    %% be stuck in L0 pending
+    gen_server:call(Pid, {fetch_levelzero, Slot}, 10000).
     
 pcl_fetch(Pid, Key) ->
     gen_server:call(Pid, {fetch, Key}, infinity).
@@ -1661,12 +1666,16 @@ coverage_test() ->
     clean_testdir(RootPath),
     {ok, PCL} = pcl_start(#penciller_options{root_path=RootPath,
                                                 max_inmemory_tablesize=1000}),
-    Key1 = {{o,"Bucket0001", "Key0001", null}, {1, {active, infinity}, null}},
-    KL1 = leveled_sft:generate_randomkeys({1000, 2}),
-    ok = maybe_pause_push(PCL, [Key1]),
+    Key1 = {{o,"Bucket0001", "Key0001", null}, {1001, {active, infinity}, null}},
+    KL1 = leveled_sft:generate_randomkeys({1000, 1}),
+    
+    ok = maybe_pause_push(PCL, KL1 ++ [Key1]),
+    %% Added together, as split apart there will be a race between the close
+    %% call to the penciller and the second fetch of the cache entry
     ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001", null})),
-    ok = maybe_pause_push(PCL, KL1),
+    
     ok = pcl_close(PCL),
+    
     ManifestFP = filepath(RootPath, manifest),
     file:write_file(ManifestFP ++ "/yeszero_123.man", term_to_binary("hello")),
     {ok, PCLr} = pcl_start(#penciller_options{root_path=RootPath,

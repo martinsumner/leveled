@@ -270,7 +270,7 @@ sft_clear(Pid) ->
     gen_server:call(Pid, clear, infinity).
 
 sft_close(Pid) ->
-    gen_server:call(Pid, close, infinity).
+    gen_server:call(Pid, close, 1000).
 
 sft_deleteconfirmed(Pid) ->
     gen_server:cast(Pid, close).
