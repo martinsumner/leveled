@@ -221,7 +221,9 @@ journal_compaction_bustedjournal(_Config) ->
     ok = leveled_bookie:book_close(Bookie1),
     
     CDBFiles = testutil:find_journals(RootPath),
-    lists:foreach(fun(FN) -> testutil:corrupt_journal(RootPath, FN, 100) end,
+    lists:foreach(fun(FN) ->
+                        testutil:corrupt_journal(RootPath, FN, 100, 2048, 1000)
+                        end,
                     CDBFiles),
     
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
