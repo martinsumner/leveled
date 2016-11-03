@@ -659,9 +659,7 @@ sequencenumbers_fromfilenames(Filenames, Regex, IntName) ->
                                 nomatch ->
                                     Acc;
                                 {match, [Int]} when is_list(Int) ->
-                                    Acc ++ [list_to_integer(Int)];       
-                                _ ->
-                                    Acc
+                                    Acc ++ [list_to_integer(Int)]
                             end end,
                             [],
                             Filenames).
@@ -898,6 +896,11 @@ empty_manifest_test() ->
     timer:sleep(1000),
     ?assertMatch(1, length(ink_getmanifest(Ink1))),
     ok = ink_close(Ink1),
+    
+    % Add pending manifest to be ignored
+    FN = filepath(RootPath, manifest_dir) ++ "999.pnd",
+    ok = file:write_file(FN, term_to_binary("Hello")),
+    
     {ok, Ink2} = ink_start(#inker_options{root_path=RootPath,
                                             cdb_options=CDBopts}),
     ?assertMatch(not_present, ink_fetch(Ink2, "Key1", 1)),
