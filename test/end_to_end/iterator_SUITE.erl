@@ -11,27 +11,30 @@
             rotating_objects/1]).
 
 all() -> [
-            small_load_with2i,
-            query_count,
-            rotating_objects
+            small_load_with2i %,
+            % query_count,
+            % rotating_objects
             ].
 
 
 small_load_with2i(_Config) ->
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = [{root_path, RootPath},
-                    {max_journalsize, 50000000}],
+                    {max_journalsize, 5000000}],
+                    % low journal size to make sure > 1 created
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
     testutil:check_forobject(Bookie1, TestObject),
     testutil:check_formissingobject(Bookie1, "Bucket1", "Key2"),
     testutil:check_forobject(Bookie1, TestObject),
+    ObjectGen = testutil:get_compressiblevalue_andinteger(),
+    IndexGen = testutil:get_randomindexes_generator(8),
     ObjL1 = testutil:generate_objects(10000,
                                         uuid,
                                         [],
-                                        testutil:get_compressiblevalue(),
-                                        testutil:get_randomindexes_generator(8)),
+                                        ObjectGen,
+                                        IndexGen),
     lists:foreach(fun({_RN, Obj, Spc}) ->
                         leveled_bookie:book_riakput(Bookie1, Obj, Spc) end,
                     ObjL1),
@@ -74,7 +77,34 @@ small_load_with2i(_Config) ->
     true = 9900 == length(KeyHashList2),
     true = 9900 == length(KeyHashList3),
     
+    SumIntegerFun = fun(_B, _K, V, Acc) ->
+                                [C] = V#r_object.contents,
+                                {I, _Bin} = C#r_content.value,
+                                Acc + I
+                                end,
+    {async, Sum1} = leveled_bookie:book_returnfolder(Bookie1,
+                                                        {foldobjects_bybucket,
+                                                            ?RIAK_TAG,
+                                                            "Bucket",
+                                                            {SumIntegerFun,
+                                                                0}}),
+    Total1 = Sum1(),
+    true = Total1 > 100000, 
+    
     ok = leveled_bookie:book_close(Bookie1),
+    
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
+    
+    {async, Sum2} = leveled_bookie:book_returnfolder(Bookie2,
+                                                        {foldobjects_bybucket,
+                                                            ?RIAK_TAG,
+                                                            "Bucket",
+                                                            {SumIntegerFun,
+                                                                0}}),
+    Total2 = Sum2(),
+    true = Total2 == Total1, 
+    
+    ok = leveled_bookie:book_close(Bookie2),
     testutil:reset_filestructure().
 
 

@@ -528,16 +528,22 @@ foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun) ->
     {ok,
         {LedgerSnapshot, LedgerCache},
         JournalSnapshot} = snapshot_store(State, store),
+    {FoldFun, InitAcc} = case is_tuple(FoldObjectsFun) of
+                                true ->
+                                    FoldObjectsFun;
+                                false ->
+                                    {FoldObjectsFun, []}
+                            end,
     Folder = fun() ->
                 leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
-                AccFun = accumulate_objects(FoldObjectsFun, JournalSnapshot, Tag),
+                AccFun = accumulate_objects(FoldFun, JournalSnapshot, Tag),
                 Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
                                                         StartKey,
                                                         EndKey,
                                                         AccFun,
-                                                        []),
+                                                        InitAcc),
                 ok = leveled_penciller:pcl_close(LedgerSnapshot),
                 ok = leveled_inker:ink_close(JournalSnapshot),
                 Acc

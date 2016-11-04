@@ -21,6 +21,7 @@
             get_key/1,
             get_value/1,
             get_compressiblevalue/0,
+            get_compressiblevalue_andinteger/0,
             get_randomindexes_generator/1,
             name_list/0,
             load_objects/5,
@@ -146,6 +147,9 @@ generate_compressibleobjects(Count, KeyNumber) ->
     V = get_compressiblevalue(),
     generate_objects(Count, KeyNumber, [], V).
 
+
+get_compressiblevalue_andinteger() ->
+    {random:uniform(1000), get_compressiblevalue()}.
 
 get_compressiblevalue() ->
     S1 = "111111111111111",
