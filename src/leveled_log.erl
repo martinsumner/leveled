@@ -47,7 +47,7 @@
     {"P0006",
         {info, "Orphaned reply after timeout on L0 file write ~s"}},
     {"P0007",
-        {info, "Sent release message for cloned Penciller following close for "
+        {debug, "Sent release message for cloned Penciller following close for "
                 ++ "reason ~w"}},
     {"P0008",
         {info, "Penciller closing for reason ~w"}},
@@ -105,7 +105,7 @@
     {"PC005",
         {info, "Penciller's Clerk ~w shutdown now complete for reason ~w"}},
     {"PC006",
-        {info, "Work prompted but none needed ~w"}},
+        {info, "Work prompted but none needed"}},
     {"PC007",
         {info, "Clerk prompting Penciller regarding manifest change"}},
     {"PC008",
@@ -249,10 +249,12 @@ log(LogReference, Subs) ->
     {ok, {LogLevel, LogText}} = dict:find(LogReference, ?LOGBASE),
     case lists:member(LogLevel, ?LOG_LEVEL) of
         true ->
-            io:format(LogReference ++ " " ++ LogText ++ "~n", Subs);
+            io:format(LogReference ++ " ~w " ++ LogText ++ "~n",
+                        [self()|Subs]);
         false ->
             ok
     end.
+
 
 log_timer(LogReference, Subs, StartTime) ->
     {ok, {LogLevel, LogText}} = dict:find(LogReference, ?LOGBASE),
@@ -265,12 +267,14 @@ log_timer(LogReference, Subs, StartTime) ->
                                 MicroS ->
                                     {"ms", MicroS div 1000}
                             end,
-            io:format(LogReference ++ " " ++ LogText ++ " with time taken ~w "
-                            ++ Unit ++ "~n",
-                        Subs ++ [Time]);
+            io:format(LogReference ++ " ~w " ++ LogText
+                            ++ " with time taken ~w " ++ Unit ++ "~n",
+                        [self()|Subs] ++ [Time]);
         false ->
             ok
     end.
+
+
 
 
 
@@ -283,7 +287,7 @@ log_timer(LogReference, Subs, StartTime) ->
 -ifdef(TEST).
 
 log_test() ->
-    ?assertMatch(ok, log("D0001", [])),
-    ?assertMatch(ok, log_timer("D0001", [], os:timestamp())).
+    log("D0001", []),
+    log_timer("D0001", [], os:timestamp()).
 
 -endif.

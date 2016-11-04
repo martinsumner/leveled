@@ -162,7 +162,7 @@ code_change(_OldVsn, State, _Extra) ->
 requestandhandle_work(State) ->
     case leveled_penciller:pcl_workforclerk(State#state.owner) of
         none ->
-            leveled_log:log("PC006", [self()]),
+            leveled_log:log("PC006", []),
             {false, ?MAX_TIMEOUT};
         WI ->
             {NewManifest, FilesToDelete} = merge(WI),
