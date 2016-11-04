@@ -312,7 +312,7 @@ handle_call({sft_new, Filename, KL1, KL2, LevelR}, _From, _State) ->
     end;
 handle_call({sft_open, Filename}, _From, _State) ->
     {_Handle, FileMD} = open_file(#state{filename=Filename}),
-    io:format("Opened filename with name ~s~n", [Filename]),
+    leveled_log:log("SFT01", [Filename]),
     {reply,
         {ok,
             {FileMD#state.smallest_key, FileMD#state.highest_key}},
@@ -343,7 +343,7 @@ handle_call(background_complete, _From, State) ->
                 State}
     end;
 handle_call({set_for_delete, Penciller}, _From, State) ->
-    io:format("File ~s has been set for delete~n", [State#state.filename]),
+    leveled_log:log("SFT02", [State#state.filename]),
     {reply,
         ok,
         State#state{ready_for_delete=true,
@@ -356,8 +356,7 @@ handle_cast({sft_newfroml0cache, Filename, Slots, FetchFun}, _State) ->
     SW = os:timestamp(),
     Inp1 = leveled_pmem:to_list(Slots, FetchFun),
     {ok, State} = create_levelzero(Inp1, Filename),
-    io:format("File creation of L0 file ~s took ~w microseconds~n",
-                        [Filename, timer:now_diff(os:timestamp(), SW)]),
+    leveled_log:log_timer("SFT03", [Filename], SW),
     {noreply, State};
 handle_cast(close, State) ->
     {stop, normal, State}.
@@ -365,8 +364,7 @@ handle_cast(close, State) ->
 handle_info(timeout, State) ->
     case State#state.ready_for_delete of
         true ->
-            io:format("File ~s prompting for delete status check~n",
-                        [State#state.filename]),
+            leveled_log:log("SFT05", [State#state.filename]),
             ok = leveled_penciller:pcl_confirmdelete(State#state.penciller,
                                                         State#state.filename),
             {noreply, State, ?DELETE_TIMEOUT};
@@ -375,12 +373,10 @@ handle_info(timeout, State) ->
     end.
 
 terminate(Reason, State) ->
-    io:format("Exit called for reason ~w on filename ~s~n",
-                [Reason, State#state.filename]),
+    leveled_log:log("SFT05", [Reason, State#state.filename]),
     case State#state.ready_for_delete of
         true ->
-            io:format("Exit called and now clearing ~s~n",
-                        [State#state.filename]),
+            leveled_log:log("SFT06", [State#state.filename]),
             ok = file:close(State#state.handle),
             ok = case filelib:is_file(State#state.filename) of
                         true ->
@@ -418,7 +414,7 @@ create_levelzero(ListForFile, Filename) ->
     {TmpFilename, PrmFilename} = generate_filenames(Filename),
     {Handle, FileMD} = create_file(TmpFilename),
     InputSize = length(ListForFile),
-    io:format("Creating file with input of size ~w~n", [InputSize]),
+    leveled_log:log("SFT07", [InputSize]),
     Rename = {true, TmpFilename, PrmFilename},
     {ReadHandle,
         UpdFileMD,
@@ -451,7 +447,7 @@ generate_filenames(RootFilename) ->
 %% Start a bare file with an initial header and no further details
 %% Return the {Handle, metadata record}
 create_file(FileName) when is_list(FileName) ->
-    io:format("Opening file with filename ~s~n", [FileName]),
+    leveled_log:log("SFT01", [FileName]),
     ok = filelib:ensure_dir(FileName),
     {ok, Handle} = file:open(FileName, [binary, raw, read, write]),
     Header = create_header(initial),
@@ -529,16 +525,14 @@ complete_file(Handle, FileMD, KL1, KL2, LevelR, Rename) ->
     {ReadHandle, UpdFileMD, KeyRemainders}.
 
 rename_file(OldName, NewName) ->
-    io:format("Renaming file from ~s to ~s~n", [OldName, NewName]),
+    leveled_log:log("SFT08", [OldName, NewName]),
     case filelib:is_file(NewName) of
         true ->
-            io:format("Filename ~s already exists~n",
-                            [NewName]),
+            leveled_log:log("SFT09", [NewName]),
             AltName = filename:join(filename:dirname(NewName),
                                     filename:basename(NewName))
                         ++ ?DISCARD_EXT,
-            io:format("Rename rogue filename ~s to ~s~n",
-                            [NewName, AltName]),
+            leveled_log:log("SFT10", [NewName, AltName]),
             ok = file:rename(NewName, AltName);
         false ->
             ok
@@ -1257,7 +1251,7 @@ check_for_segments(SegFilter, SegmentList, CRCCheck) ->
                                             [0, 0, 0, 0],
                                             0, Count, []) of
                 {error_so_maybe_present, Reason} ->
-                    io:format("Segment filter failed due to ~s~n", [Reason]),
+                    leveled_log:log("SFT11", [Reason]),
                     error_so_maybe_present;
                 {OutputCheck, BlockList} when OutputCheck == CheckSum,
                                                 BlockList == [] ->
@@ -1265,9 +1259,7 @@ check_for_segments(SegFilter, SegmentList, CRCCheck) ->
                 {OutputCheck, BlockList} when OutputCheck == CheckSum ->
                     {maybe_present, BlockList};
                 {OutputCheck, _} ->
-                    io:format("Segment filter failed due to CRC check~n
-                                    ~w did not match ~w~n",
-                            [OutputCheck, CheckSum]),
+                    leveled_log:log("SFT12", [OutputCheck, CheckSum]),
                     error_so_maybe_present
             end;
         false ->
@@ -1276,7 +1268,7 @@ check_for_segments(SegFilter, SegmentList, CRCCheck) ->
                                             lists:max(SegmentList),
                                             0, Count, []) of
                 {error_so_maybe_present, Reason} ->
-                    io:format("Segment filter failed due to ~s~n", [Reason]),
+                    leveled_log:log("SFT13", [Reason]),
                     error_so_maybe_present;
                 BlockList when BlockList == [] ->
                     not_present;

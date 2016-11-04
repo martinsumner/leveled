@@ -185,7 +185,35 @@
     {"PM001",
         {info, "Indexed new cache entry with total L0 cache size now ~w"}},
     {"PM002",
-        {info, "Completed dump of L0 cache to list of size ~w"}}
+        {info, "Completed dump of L0 cache to list of size ~w"}},
+    
+    
+    {"SFT01",
+        {info, "Opened filename with name ~s"}},
+    {"SFT02",
+        {info, "File ~s has been set for delete"}},
+    {"SFT03",
+        {info, "File creation of L0 file ~s"}},
+    {"SFT04",
+        {info, "File ~s prompting for delete status check"}},
+    {"SFT05",
+        {info, "Exit called for reason ~w on filename ~s"}},
+    {"SFT06",
+        {info, "Exit called and now clearing ~s"}},
+    {"SFT07",
+        {info, "Creating file with input of size ~w"}},
+    {"SFT08",
+        {info, "Renaming file from ~s to ~s"}},
+    {"SFT09",
+        {warn, "Filename ~s already exists"}},
+    {"SFT10",
+        {warn, "Rename rogue filename ~s to ~s"}},
+    {"SFT11",
+        {error, "Segment filter failed due to ~s"}},
+    {"SFT12",
+        {error, "Segment filter failed due to CRC check ~w did not match ~w"}},
+    {"SFT13",
+        {error, "Segment filter failed due to ~s"}}
     
         ])).
 
