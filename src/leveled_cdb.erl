@@ -116,7 +116,7 @@
 
 cdb_open_writer(Filename) ->
     %% No options passed
-    cdb_open_writer(Filename, #cdb_options{}).
+    cdb_open_writer(Filename, #cdb_options{binary_mode=true}).
 
 cdb_open_writer(Filename, Opts) ->
     {ok, Pid} = gen_fsm:start(?MODULE, [Opts], []),
@@ -124,7 +124,10 @@ cdb_open_writer(Filename, Opts) ->
     {ok, Pid}.
 
 cdb_open_reader(Filename) ->
-    {ok, Pid} = gen_fsm:start(?MODULE, [#cdb_options{}], []),
+    cdb_open_reader(Filename, #cdb_options{binary_mode=true}).
+
+cdb_open_reader(Filename, Opts) ->
+    {ok, Pid} = gen_fsm:start(?MODULE, [Opts], []),
     ok = gen_fsm:sync_send_event(Pid, {open_reader, Filename}, infinity),
     {ok, Pid}.
 
@@ -1637,7 +1640,8 @@ emptyvalue_fromdict_test() ->
     ok = file:delete("../test/from_dict_test_ev.cdb").
 
 find_lastkey_test() ->
-    {ok, P1} = cdb_open_writer("../test/lastkey.pnd"),
+    {ok, P1} = cdb_open_writer("../test/lastkey.pnd",
+                                #cdb_options{binary_mode=false}),
     ok = cdb_put(P1, "Key1", "Value1"),
     ok = cdb_put(P1, "Key3", "Value3"),
     ok = cdb_put(P1, "Key2", "Value2"),
@@ -1645,7 +1649,8 @@ find_lastkey_test() ->
     ?assertMatch("Key1", cdb_firstkey(P1)),
     probably = cdb_keycheck(P1, "Key2"),
     ok = cdb_close(P1),
-    {ok, P2} = cdb_open_writer("../test/lastkey.pnd"),
+    {ok, P2} = cdb_open_writer("../test/lastkey.pnd",
+                                #cdb_options{binary_mode=false}),
     ?assertMatch("Key2", cdb_lastkey(P2)),
     probably = cdb_keycheck(P2, "Key2"),
     {ok, F2} = cdb_complete(P2),
@@ -1658,13 +1663,14 @@ find_lastkey_test() ->
     ok = file:delete("../test/lastkey.cdb").
 
 get_keys_byposition_simple_test() ->
-    {ok, P1} = cdb_open_writer("../test/poskey.pnd"),
+    {ok, P1} = cdb_open_writer("../test/poskey.pnd",
+                                #cdb_options{binary_mode=false}),
     ok = cdb_put(P1, "Key1", "Value1"),
     ok = cdb_put(P1, "Key3", "Value3"),
     ok = cdb_put(P1, "Key2", "Value2"),
     KeyList = ["Key1", "Key2", "Key3"],
     {ok, F2} = cdb_complete(P1),
-    {ok, P2} = cdb_open_reader(F2),
+    {ok, P2} = cdb_open_reader(F2, #cdb_options{binary_mode=false}),
     PositionList = cdb_getpositions(P2, all),
     io:format("Position list of ~w~n", [PositionList]),
     ?assertMatch(3, length(PositionList)),
@@ -1699,7 +1705,8 @@ generate_sequentialkeys(Count, KVList) ->
 
 get_keys_byposition_manykeys_test() ->
     KeyCount = 1024,
-    {ok, P1} = cdb_open_writer("../test/poskeymany.pnd"),
+    {ok, P1} = cdb_open_writer("../test/poskeymany.pnd",
+                                #cdb_options{binary_mode=false}),
     KVList = generate_sequentialkeys(KeyCount, []),
     lists:foreach(fun({K, V}) -> cdb_put(P1, K, V) end, KVList),
     SW1 = os:timestamp(),
@@ -1707,7 +1714,7 @@ get_keys_byposition_manykeys_test() ->
     SW2 = os:timestamp(),
     io:format("CDB completed in ~w microseconds~n",
                 [timer:now_diff(SW2, SW1)]),
-    {ok, P2} = cdb_open_reader(F2),
+    {ok, P2} = cdb_open_reader(F2, #cdb_options{binary_mode=false}),
     SW3 = os:timestamp(),
     io:format("CDB opened for read in ~w microseconds~n",
                 [timer:now_diff(SW3, SW2)]),
@@ -1729,9 +1736,10 @@ get_keys_byposition_manykeys_test() ->
 
 
 nokeys_test() ->
-    {ok, P1} = cdb_open_writer("../test/nohash_emptyfile.pnd"),
+    {ok, P1} = cdb_open_writer("../test/nohash_emptyfile.pnd",
+                                #cdb_options{binary_mode=false}),
     {ok, F2} = cdb_complete(P1),
-    {ok, P2} = cdb_open_reader(F2),
+    {ok, P2} = cdb_open_reader(F2, #cdb_options{binary_mode=false}),
     io:format("FirstKey is ~s~n", [cdb_firstkey(P2)]),
     io:format("LastKey is ~s~n", [cdb_lastkey(P2)]),
     ?assertMatch(empty, cdb_firstkey(P2)),
@@ -1741,7 +1749,8 @@ nokeys_test() ->
 
 mput_test() ->
     KeyCount = 1024,
-    {ok, P1} = cdb_open_writer("../test/nohash_keysinfile.pnd"),
+    {ok, P1} = cdb_open_writer("../test/nohash_keysinfile.pnd",
+                                #cdb_options{binary_mode=false}),
     KVList = generate_sequentialkeys(KeyCount, []),
     ok = cdb_mput(P1, KVList),
     ?assertMatch({"Key1", "Value1"}, cdb_get(P1, "Key1")),
@@ -1749,7 +1758,7 @@ mput_test() ->
     ?assertMatch(missing, cdb_get(P1, "Key1025")),
     ?assertMatch(missing, cdb_get(P1, "Key1026")),
     {ok, F2} = cdb_complete(P1),
-    {ok, P2} = cdb_open_reader(F2),
+    {ok, P2} = cdb_open_reader(F2, #cdb_options{binary_mode=false}),
     ?assertMatch("Key1", cdb_firstkey(P2)),
     ?assertMatch("Key1024", cdb_lastkey(P2)),
     ?assertMatch({"Key1", "Value1"}, cdb_get(P2, "Key1")),
@@ -1760,7 +1769,8 @@ mput_test() ->
     ok = file:delete(F2).
 
 state_test() ->
-    {ok, P1} = cdb_open_writer("../test/state_test.pnd"),
+    {ok, P1} = cdb_open_writer("../test/state_test.pnd",
+                                #cdb_options{binary_mode=false}),
     KVList = generate_sequentialkeys(1000, []),
     ok = cdb_mput(P1, KVList),
     ?assertMatch(probably, cdb_keycheck(P1, "Key1")),
@@ -1778,7 +1788,8 @@ state_test() ->
 
 corruptfile_test() ->
     file:delete("../test/corrupt_test.pnd"),
-    {ok, P1} = cdb_open_writer("../test/corrupt_test.pnd"),
+    {ok, P1} = cdb_open_writer("../test/corrupt_test.pnd",
+                                #cdb_options{binary_mode=false}),
     KVList = generate_sequentialkeys(100, []),
     ok = cdb_mput(P1, []), % Not relevant to this test, but needs testing
     lists:foreach(fun({K, V}) -> cdb_put(P1, K, V) end, KVList),
@@ -1796,7 +1807,8 @@ corrupt_testfile_at_offset(Offset) ->
     file:position(F1, EofPos - Offset),
     ok = file:truncate(F1),
     ok = file:close(F1),
-    {ok, P2} = cdb_open_writer("../test/corrupt_test.pnd"),
+    {ok, P2} = cdb_open_writer("../test/corrupt_test.pnd",
+                                #cdb_options{binary_mode=false}),
     ?assertMatch(probably, cdb_keycheck(P2, "Key1")),
     ?assertMatch({"Key1", "Value1"}, cdb_get(P2, "Key1")),
     ?assertMatch(missing, cdb_get(P2, "Key100")),

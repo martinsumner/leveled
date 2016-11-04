@@ -780,4 +780,45 @@ compare_candidate_test() ->
     ?assertMatch([Candidate1, Candidate2, Candidate3, Candidate4],
                 sort_run([Candidate3, Candidate2, Candidate4, Candidate1])).       
 
+compact_singlefile_totwosmallfiles_test() ->
+    RP = "../test/journal",
+    CP = "../test/journal/journal_file/post_compact/",
+    ok = filelib:ensure_dir(CP),
+    FN1 = leveled_inker:filepath(RP, 1, new_journal),
+    CDBoptsLarge = #cdb_options{binary_mode=true, max_size=30000000},
+    {ok, CDB1} = leveled_cdb:cdb_open_writer(FN1, CDBoptsLarge),
+    lists:foreach(fun(X) ->
+                        LK = test_ledgerkey("Key" ++ integer_to_list(X)),
+                        Value = term_to_binary({crypto:rand_bytes(1024), []}),
+                        ok = leveled_cdb:cdb_put(CDB1,
+                                                    {X, ?INKT_STND, LK},
+                                                    Value)
+                        end,
+                    lists:seq(1, 1000)),
+    {ok, NewName} = leveled_cdb:cdb_complete(CDB1),
+    {ok, CDBr} = leveled_cdb:cdb_open_reader(NewName),
+    CDBoptsSmall = #cdb_options{binary_mode=true, max_size=400000, file_path=CP},
+    BestRun1 = [#candidate{low_sqn=1,
+                            filename=leveled_cdb:cdb_filename(CDBr),
+                            journal=CDBr,
+                            compaction_perc=50.0}],
+    FakeFilterFun = fun(_FS, _LK, SQN) -> SQN rem 2 == 0 end,
+    
+    {ManifestSlice, PromptDelete} = compact_files(BestRun1,
+                                                    CDBoptsSmall,
+                                                    FakeFilterFun,
+                                                    null,
+                                                    900,
+                                                    [{?STD_TAG, recovr}]),
+    ?assertMatch(2, length(ManifestSlice)),
+    ?assertMatch(true, PromptDelete),
+    lists:foreach(fun({_SQN, _FN, CDB}) ->
+                        ok = leveled_cdb:cdb_deletepending(CDB),
+                        ok = leveled_cdb:cdb_destroy(CDB)
+                        end,
+                    ManifestSlice),
+    ok = leveled_cdb:cdb_deletepending(CDBr),
+    ok = leveled_cdb:cdb_destroy(CDBr).
+    
+
 -endif.
