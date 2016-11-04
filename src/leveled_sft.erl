@@ -362,14 +362,12 @@ handle_cast(close, State) ->
     {stop, normal, State}.
 
 handle_info(timeout, State) ->
-    case State#state.ready_for_delete of
-        true ->
+    if
+        State#state.ready_for_delete == true ->
             leveled_log:log("SFT05", [timeout, State#state.filename]),
             ok = leveled_penciller:pcl_confirmdelete(State#state.penciller,
                                                         State#state.filename),
-            {noreply, State, ?DELETE_TIMEOUT};
-        false ->
-            {noreply, State}
+            {noreply, State, ?DELETE_TIMEOUT}
     end.
 
 terminate(Reason, State) ->
@@ -378,19 +376,9 @@ terminate(Reason, State) ->
         true ->
             leveled_log:log("SFT06", [State#state.filename]),
             ok = file:close(State#state.handle),
-            ok = case filelib:is_file(State#state.filename) of
-                        true ->
-                            file:delete(State#state.filename);
-                        false ->
-                            ok
-                    end;
+            ok = file:delete(State#state.filename);
         _ ->
-            case State#state.handle of
-                undefined ->
-                    ok;
-                Handle ->
-                    file:close(Handle)
-            end
+            ok = file:close(Handle)
     end.
 
 code_change(_OldVsn, State, _Extra) ->

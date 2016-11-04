@@ -129,9 +129,7 @@ handle_call({manifest_change, confirm, Closing}, From, State) ->
             {noreply,
                 State#state{work_item=null, change_pending=false},
                 ?MIN_TIMEOUT}
-    end;
-handle_call(close, _From, State) ->
-    {stop, normal, ok, State}.
+    end.
 
 handle_cast(prompt, State) ->
     {noreply, State, ?MIN_TIMEOUT}.
