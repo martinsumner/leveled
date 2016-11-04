@@ -273,7 +273,7 @@ handle_call({release_snapshot, Snapshot}, _From , State) ->
     {reply, ok, State#state{registered_snapshots=Rs}};
 handle_call({confirm_delete, ManSQN}, _From, State) ->
     Reply = lists:foldl(fun({_R, SnapSQN}, Bool) ->
-                                case SnapSQN < ManSQN of
+                                case SnapSQN >= ManSQN of
                                     true ->
                                         Bool;
                                     false ->

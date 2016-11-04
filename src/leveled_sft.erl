@@ -364,7 +364,7 @@ handle_cast(close, State) ->
 handle_info(timeout, State) ->
     case State#state.ready_for_delete of
         true ->
-            leveled_log:log("SFT05", [State#state.filename]),
+            leveled_log:log("SFT05", [timeout, State#state.filename]),
             ok = leveled_penciller:pcl_confirmdelete(State#state.penciller,
                                                         State#state.filename),
             {noreply, State, ?DELETE_TIMEOUT};

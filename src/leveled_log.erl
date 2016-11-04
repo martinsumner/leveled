@@ -42,8 +42,8 @@
     {"P0004",
         {info, "Remaining ledger snapshots are ~w"}},
     {"P0005",
-        {info, "Delete confirmed as file ~s is removed from " ++ "
-                unreferenced files"}},
+        {info, "Delete confirmed as file ~s is removed from " ++ 
+                "unreferenced files"}},
     {"P0006",
         {info, "Orphaned reply after timeout on L0 file write ~s"}},
     {"P0007",
@@ -233,7 +233,7 @@ log_timer(LogReference, Subs, StartTime) ->
         true ->
             MicroS = timer:now_diff(os:timestamp(), StartTime),
             {Unit, Time} = case MicroS of
-                                MicroS when MicroS < 10000 ->
+                                MicroS when MicroS < 1000 ->
                                     {"microsec", MicroS};
                                 MicroS ->
                                     {"ms", MicroS div 1000}

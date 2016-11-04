@@ -450,6 +450,15 @@ space_clear_ondelete(_Config) ->
     {ok, FNsA_J} = file:list_dir(RootPath ++ "/journal/journal_files"),
     io:format("Bookie created ~w journal files and ~w ledger files~n",
                     [length(FNsA_J), length(FNsA_L)]),
+    
+    % Get an iterator to lock the inker during compaction
+    FoldObjectsFun = fun(B, K, V, Acc) -> [{B, K, testutil:riak_hash(V)}|Acc]
+                                            end,
+    {async, HTreeF1} = leveled_bookie:book_returnfolder(Book1,
+                                                        {foldobjects_allkeys,
+                                                            ?RIAK_TAG,
+                                                            FoldObjectsFun}),
+    % Delete the keys
     SW2 = os:timestamp(),
     lists:foreach(fun({Bucket, Key}) ->
                         ok = leveled_bookie:book_riakdelete(Book1,
@@ -460,6 +469,9 @@ space_clear_ondelete(_Config) ->
                     KL1),
     io:format("Deletion took ~w microseconds for 80K keys~n",
                                 [timer:now_diff(os:timestamp(), SW2)]),
+    
+    
+    
     ok = leveled_bookie:book_compactjournal(Book1, 30000),
     F = fun leveled_bookie:book_islastcompactionpending/1,
     lists:foldl(fun(X, Pending) ->
@@ -474,11 +486,17 @@ space_clear_ondelete(_Config) ->
                         end end,
                     true,
                     lists:seq(1, 15)),
-    io:format("Waiting for journal deletes~n"),
-    timer:sleep(20000), 
+    io:format("Waiting for journal deletes - blocked~n"),
+    timer:sleep(20000),
+    KeyHashList1 = HTreeF1(),
+    io:format("Key Hash List returned of length ~w~n", [length(KeyHashList1)]),
+    true = length(KeyHashList1) == 80000,
+    io:format("Waiting for journal deletes - unblocked~n"),
+    timer:sleep(20000),
     {ok, FNsB_L} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
     {ok, FNsB_J} = file:list_dir(RootPath ++ "/journal/journal_files"),
-    {ok, FNsB_PC} = file:list_dir(RootPath ++ "/journal/journal_files/post_compact"),
+    {ok, FNsB_PC} = file:list_dir(RootPath
+                                    ++ "/journal/journal_files/post_compact"),
     PointB_Journals = length(FNsB_J) + length(FNsB_PC),
     io:format("Bookie has ~w journal files and ~w ledger files " ++
                     "after deletes~n",
