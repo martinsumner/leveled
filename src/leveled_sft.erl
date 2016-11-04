@@ -201,7 +201,6 @@
                 filename = "not set" :: string(),
                 handle :: file:fd(),
                 background_complete = false :: boolean(),
-                background_failure :: tuple(),
                 oversized_file = false :: boolean(),
                 ready_for_delete = false ::boolean(),
                 penciller :: pid()}).
@@ -334,16 +333,14 @@ handle_call(close, _From, State) ->
 handle_call(clear, _From, State) ->
     {stop, normal, ok, State#state{ready_for_delete=true}};
 handle_call(background_complete, _From, State) ->
-    case State#state.background_complete of
-        true ->
+    if
+        State#state.background_complete == true ->
             {reply,
                 {ok,
                     State#state.filename,
                     State#state.smallest_key,
                     State#state.highest_key},
-                State};
-        false ->
-            {reply, {error, State#state.background_failure}, State}
+                State}
     end;
 handle_call({set_for_delete, Penciller}, _From, State) ->
     io:format("File ~s has been set for delete~n", [State#state.filename]),
@@ -419,25 +416,20 @@ statecheck_onreply(Reply, State) ->
 
 create_levelzero(ListForFile, Filename) ->
     {TmpFilename, PrmFilename} = generate_filenames(Filename),
-    case create_file(TmpFilename) of
-        {error, Reason} ->
-            {error,
-                #state{background_complete=false, background_failure=Reason}};
-        {Handle, FileMD} ->
-            InputSize = length(ListForFile),
-            io:format("Creating file with input of size ~w~n", [InputSize]),
-            Rename = {true, TmpFilename, PrmFilename},
-            {ReadHandle,
-                UpdFileMD,
-                {[], []}} = complete_file(Handle, FileMD,
-                                            ListForFile, [],
-                                            #level{level=0}, Rename),
-            {ok,
-                UpdFileMD#state{handle=ReadHandle,
-                                filename=PrmFilename,
-                                background_complete=true,
-                                oversized_file=InputSize>?MAX_KEYS}}
-    end.
+    {Handle, FileMD} = create_file(TmpFilename),
+    InputSize = length(ListForFile),
+    io:format("Creating file with input of size ~w~n", [InputSize]),
+    Rename = {true, TmpFilename, PrmFilename},
+    {ReadHandle,
+        UpdFileMD,
+        {[], []}} = complete_file(Handle, FileMD,
+                                    ListForFile, [],
+                                    #level{level=0}, Rename),
+    {ok,
+        UpdFileMD#state{handle=ReadHandle,
+                        filename=PrmFilename,
+                        background_complete=true,
+                        oversized_file=InputSize>?MAX_KEYS}}.
 
 
 generate_filenames(RootFilename) ->
@@ -461,19 +453,13 @@ generate_filenames(RootFilename) ->
 create_file(FileName) when is_list(FileName) ->
     io:format("Opening file with filename ~s~n", [FileName]),
     ok = filelib:ensure_dir(FileName),
-    case file:open(FileName, [binary, raw, read, write]) of
-        {ok, Handle} ->
-            Header = create_header(initial),
-            {ok, _} = file:position(Handle, bof),
-            ok = file:write(Handle, Header),
-            {ok, StartPos} = file:position(Handle, cur),
-            FileMD = #state{next_position=StartPos, filename=FileName},
-            {Handle, FileMD};
-        {error, Reason} ->
-            io:format("Error opening filename ~s with reason ~w",
-                        [FileName, Reason]),
-            {error, Reason}
-    end.
+    {ok, Handle} = file:open(FileName, [binary, raw, read, write]),
+    Header = create_header(initial),
+    {ok, _} = file:position(Handle, bof),
+    ok = file:write(Handle, Header),
+    {ok, StartPos} = file:position(Handle, cur),
+    FileMD = #state{next_position=StartPos, filename=FileName},
+    {Handle, FileMD}.
 
 
 create_header(initial) ->

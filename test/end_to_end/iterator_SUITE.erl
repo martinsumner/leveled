@@ -11,9 +11,9 @@
             rotating_objects/1]).
 
 all() -> [
-            small_load_with2i %,
-            % query_count,
-            % rotating_objects
+            small_load_with2i,
+            query_count,
+            rotating_objects
             ].
 
 
