@@ -213,7 +213,34 @@
     {"SFT12",
         {error, "Segment filter failed due to CRC check ~w did not match ~w"}},
     {"SFT13",
-        {error, "Segment filter failed due to ~s"}}
+        {error, "Segment filter failed due to ~s"}},
+    
+    
+    {"CDB01",
+        {info, "Opening file for writing with filename ~s"}},
+    {"CDB02",
+        {info, "Opening file for reading with filename ~s"}},
+    {"CDB03",
+        {info, "Re-opening file for reading with filename ~s"}},
+    {"CDB04",
+        {info, "Deletion confirmed for file ~s at ManifestSQN ~w"}},
+    {"CDB05",
+        {info, "Closing of filename ~s for Reason ~w"}},
+    {"CDB06",
+        {info, "File to be truncated at last position of ~w with end of "
+                ++ "file at ~w"}},
+    {"CDB07",
+        {info, "Hashtree computed"}},
+    {"CDB08",
+        {info, "Renaming file from ~s to ~s for which existence is ~w"}},
+    {"CDB09",
+        {info, "Failure to read Key/Value at Position ~w in scan"}},
+    {"CDB10",
+        {info, "CRC check failed due to mismatch"}},
+    {"CDB11",
+        {info, "CRC check failed due to size"}},
+    {"CDB12",
+        {inof, "HashTree written"}}
     
         ])).
 

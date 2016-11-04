@@ -233,7 +233,7 @@ init([Opts]) ->
         #state{max_size=MaxSize, binary_mode=Opts#cdb_options.binary_mode}}.
 
 starting({open_writer, Filename}, _From, State) ->
-    io:format("Opening file for writing with filename ~s~n", [Filename]),
+    leveled_log:log("CDB01", [Filename]),
     {LastPosition, HashTree, LastKey} = open_active_file(Filename),
     {ok, Handle} = file:open(Filename, [sync | ?WRITE_OPS]),
     {reply, ok, writer, State#state{handle=Handle,
@@ -242,7 +242,7 @@ starting({open_writer, Filename}, _From, State) ->
                                         filename=Filename,
                                         hashtree=HashTree}};
 starting({open_reader, Filename}, _From, State) ->
-    io:format("Opening file for reading with filename ~s~n", [Filename]),
+    leveled_log:log("CDB02", [Filename]),
     {Handle, Index, LastKey} = open_for_readonly(Filename),
     {reply, ok, reader, State#state{handle=Handle,
                                         last_key=LastKey,
@@ -329,7 +329,7 @@ rolling({return_hashtable, IndexList, HashTreeBin}, _From, State) ->
     ok = write_top_index_table(Handle, BasePos, IndexList),
     file:close(Handle),
     ok = rename_for_read(State#state.filename, NewName),
-    io:format("Opening file for reading with filename ~s~n", [NewName]),
+    leveled_log:log("CDB03", [NewName]),
     {NewHandle, Index, LastKey} = open_for_readonly(NewName),
     case State#state.deferred_delete of
         true ->
@@ -449,9 +449,8 @@ delete_pending(timeout, State) ->
                     case leveled_inker:ink_confirmdelete(State#state.inker,
                                                             ManSQN) of
                         true ->
-                            io:format("Deletion confirmed for file ~s "
-                                            ++ "at ManifestSQN ~w~n",
-                                        [State#state.filename, ManSQN]),
+                            leveled_log:log("CDB04", [State#state.filename,
+                                                        ManSQN]),
                             {stop, normal, State};
                         false ->
                             {next_state,
@@ -517,8 +516,7 @@ handle_info(_Msg, StateName, State) ->
     {next_state, StateName, State}.
 
 terminate(Reason, StateName, State) ->
-    io:format("Closing of filename ~s for Reason ~w~n",
-                [State#state.filename, Reason]),
+    leveled_log:log("CDB05", [State#state.filename, Reason]),
     case {State#state.handle, StateName} of
         {undefined, _} ->
             ok;
@@ -574,9 +572,7 @@ open_active_file(FileName) when is_list(FileName) ->
         {ok, LastPosition} ->
             ok = file:close(Handle);
         {ok, EndPosition} ->
-            LogDetails = [LastPosition, EndPosition],
-            io:format("File to be truncated at last position of ~w " 
-                        "with end of file at ~w~n", LogDetails),
+            leveled_log:log("CDB06", [LastPosition, EndPosition]),
             {ok, _LastPosition} = file:position(Handle, LastPosition),
             ok = file:truncate(Handle),
             ok = file:close(Handle)
@@ -738,8 +734,7 @@ hashtable_calc(HashTree, StartPos) ->
                                                     StartPos,
                                                     [],
                                                     <<>>),
-    io:format("HashTree computed in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SWC)]),
+    leveled_log:log_timer("CDB07", [], SWC),
     {IndexList, HashTreeBin}.
 
 %%%%%%%%%%%%%%%%%%%%
@@ -751,10 +746,7 @@ determine_new_filename(Filename) ->
     
 rename_for_read(Filename, NewName) ->
     %% Rename file
-    io:format("Renaming file from ~s to ~s " ++ 
-                "for which existence is ~w~n",
-                [Filename, NewName,
-                    filelib:is_file(NewName)]),
+    leveled_log:log("CDB08", [Filename, NewName, filelib:is_file(NewName)]),
     file:rename(Filename, NewName).
 
 open_for_readonly(Filename) ->
@@ -933,8 +925,7 @@ startup_filter(Key, ValueAsBin, Position, {Hashtree, LastKey}, _ExtractFun) ->
 scan_over_file(Handle, Position, FilterFun, Output, LastKey) ->
     case saferead_keyvalue(Handle) of
         false ->
-            io:format("Failure to read Key/Value at Position ~w"
-                            ++ " in scan~n", [Position]),
+            leveled_log:log("CDB09", [Position]),
             {Position, Output};
         {Key, ValueAsBin, KeyLength, ValueLength} ->
             NewPosition = case Key of
@@ -1020,11 +1011,11 @@ crccheck_value(Value) when byte_size(Value) >4 ->
         Hash -> 
             true;
         _ -> 
-            io:format("CRC check failed due to mismatch ~n"),
+            leveled_log:log("CDB10", []),
             false
         end;
 crccheck_value(_) ->
-    io:format("CRC check failed due to size ~n"),
+    leveled_log:log("CDB11", []),
     false.
 
 %% Run a crc check filling out any values which don't fit on byte boundary
@@ -1157,8 +1148,7 @@ perform_write_hash_tables(Handle, HashTreeBin, StartPos) ->
     ok = file:write(Handle, HashTreeBin),
     {ok, EndPos} = file:position(Handle, cur),
     ok = file:advise(Handle, StartPos, EndPos - StartPos, will_need),
-    io:format("HashTree written in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SWW)]),
+    leveled_log:log_timer("CDB12", [], SWW),
     ok.
 
 
