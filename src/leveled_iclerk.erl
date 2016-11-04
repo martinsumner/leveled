@@ -762,13 +762,7 @@ compact_empty_file_test() ->
     LedgerSrv1 = [{8, {o, "Bucket", "Key1", null}},
                     {2, {o, "Bucket", "Key2", null}},
                     {3, {o, "Bucket", "Key3", null}}],
-    LedgerFun1 = fun(Srv, Key, ObjSQN) ->
-                    case lists:keyfind(ObjSQN, 1, Srv) of
-                        {ObjSQN, Key} ->
-                            true;
-                        _ ->
-                            false
-                    end end,
+    LedgerFun1 = fun(_Srv, _Key, _ObjSQN) -> false end,
     Score1 = check_single_file(CDB2, LedgerFun1, LedgerSrv1, 9, 8, 4),
     ?assertMatch(100.0, Score1).
 

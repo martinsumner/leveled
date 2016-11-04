@@ -378,7 +378,7 @@ terminate(Reason, State) ->
             ok = file:close(State#state.handle),
             ok = file:delete(State#state.filename);
         _ ->
-            ok = file:close(Handle)
+            ok = file:close(State#state.handle)
     end.
 
 code_change(_OldVsn, State, _Extra) ->
