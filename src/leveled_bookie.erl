@@ -372,7 +372,23 @@ handle_call({return_folder, FolderType}, _From, State) ->
         {foldobjects_allkeys, Tag, FoldObjectsFun} ->
             {reply,
                 foldobjects_allkeys(State, Tag, FoldObjectsFun),
+                State};
+        {foldobjects_bybucket, Tag, Bucket, FoldObjectsFun} ->
+            {reply,
+                foldobjects_bybucket(State, Tag, Bucket, FoldObjectsFun),
+                State};
+        {foldobjects_byindex,
+                Tag,
+                Bucket,
+                {Field, FromTerm, ToTerm},
+                FoldObjectsFun} ->
+            {reply,
+                foldobjects_byindex(State,
+                                    Tag, Bucket,
+                                    Field, FromTerm, ToTerm,
+                                    FoldObjectsFun),
                 State}
+        
     end;
 handle_call({compact_journal, Timeout}, _From, State) ->
     ok = leveled_inker:ink_compactjournal(State#state.inker,
@@ -492,6 +508,23 @@ hashtree_query(State, Tag, JournalCheck) ->
 
 
 foldobjects_allkeys(State, Tag, FoldObjectsFun) ->
+    StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
+    EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
+    foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun).
+
+foldobjects_bybucket(State, Tag, Bucket, FoldObjectsFun) ->
+    StartKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
+    EndKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
+    foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun).
+
+foldobjects_byindex(State, Tag, Bucket, Field, FromTerm, ToTerm, FoldObjectsFun) ->
+    StartKey = leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG, Field,
+                                            FromTerm),
+    EndKey =  leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG, Field,
+                                            ToTerm),
+    foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun).
+
+foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun) ->
     {ok,
         {LedgerSnapshot, LedgerCache},
         JournalSnapshot} = snapshot_store(State, store),
@@ -499,9 +532,7 @@ foldobjects_allkeys(State, Tag, FoldObjectsFun) ->
                 leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
-                StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
-                EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
-                AccFun = accumulate_objects(FoldObjectsFun, JournalSnapshot),
+                AccFun = accumulate_objects(FoldObjectsFun, JournalSnapshot, Tag),
                 Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
                                                         StartKey,
                                                         EndKey,
@@ -512,6 +543,7 @@ foldobjects_allkeys(State, Tag, FoldObjectsFun) ->
                 Acc
                 end,
     {async, Folder}.
+
 
 allkey_query(State, Tag) ->
     {ok,
@@ -643,14 +675,18 @@ accumulate_hashes(JournalCheck, InkerClone) ->
                 end,
     AccFun.
 
-accumulate_objects(FoldObjectsFun, InkerClone) ->
+accumulate_objects(FoldObjectsFun, InkerClone, Tag) ->
     Now = leveled_codec:integer_now(),
     AccFun  = fun(LK, V, Acc) ->
                     case leveled_codec:is_active(LK, V, Now) of
                         true ->
                             SQN = leveled_codec:strip_to_seqonly({LK, V}),
-                            {B, K} = leveled_codec:from_ledgerkey(LK),
-                            R = leveled_inker:ink_fetch(InkerClone, LK, SQN),
+                            {B, K} = case leveled_codec:from_ledgerkey(LK) of
+                                            {B0, K0} -> {B0, K0};
+                                            {B0, K0, _T0} -> {B0, K0}
+                                        end,
+                            QK = leveled_codec:to_ledgerkey(B, K, Tag),
+                            R = leveled_inker:ink_fetch(InkerClone, QK, SQN),
                             case R of
                                 {ok, Value} ->
                                     FoldObjectsFun(B, K, Value, Acc);
@@ -662,6 +698,9 @@ accumulate_objects(FoldObjectsFun, InkerClone) ->
                     end
                 end,
     AccFun.
+
+
+
 
 check_presence(Key, Value, InkerClone) ->
     {LedgerKey, SQN} = leveled_codec:strip_to_keyseqonly({Key, Value}),

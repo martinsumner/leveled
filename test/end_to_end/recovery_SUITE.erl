@@ -103,7 +103,8 @@ aae_bustedjournal(_Config) ->
     % Will need to remove the file or corrupt the hashtree to get presence to
     % fail
     
-    FoldObjectsFun = fun(B, K, V, Acc) -> [{B, K, riak_hash(V)}|Acc] end,
+    FoldObjectsFun = fun(B, K, V, Acc) -> [{B, K, testutil:riak_hash(V)}|Acc]
+                                            end,
     SW = os:timestamp(),
     {async, HashTreeF3} = leveled_bookie:book_returnfolder(Bookie2,
                                                             {foldobjects_allkeys,
@@ -188,15 +189,6 @@ aae_bustedjournal(_Config) ->
     
     ok = leveled_bookie:book_close(Bookie5),
     testutil:reset_filestructure().
-
-
-riak_hash(Obj=#r_object{}) ->
-    Vclock = vclock(Obj),
-    UpdObj = set_vclock(Obj, lists:sort(Vclock)),
-    erlang:phash2(term_to_binary(UpdObj)).
-
-set_vclock(Object=#r_object{}, VClock) -> Object#r_object{vclock=VClock}.
-vclock(#r_object{vclock=VClock}) -> VClock.
 
 
 journal_compaction_bustedjournal(_Config) ->

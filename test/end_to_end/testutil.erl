@@ -32,7 +32,8 @@
             corrupt_journal/5,
             restore_file/2,
             restore_topending/2,
-            find_journals/1]).
+            find_journals/1,
+            riak_hash/1]).
 
 -define(RETURN_TERMS, {true, undefined}).
 
@@ -424,3 +425,12 @@ find_journals(RootPath) ->
                                 [],
                                 FNsA_J),
     CDBFiles.
+
+
+riak_hash(Obj=#r_object{}) ->
+    Vclock = vclock(Obj),
+    UpdObj = set_vclock(Obj, lists:sort(Vclock)),
+    erlang:phash2(term_to_binary(UpdObj)).
+
+set_vclock(Object=#r_object{}, VClock) -> Object#r_object{vclock=VClock}.
+vclock(#r_object{vclock=VClock}) -> VClock.

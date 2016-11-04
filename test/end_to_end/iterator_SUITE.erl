@@ -6,17 +6,18 @@
 -define(KEY_ONLY, {false, undefined}).
 
 -export([all/0]).
--export([simple_load_with2i/1,
+-export([small_load_with2i/1,
             query_count/1,
             rotating_objects/1]).
 
 all() -> [
-            simple_load_with2i,
+            small_load_with2i,
             query_count,
-            rotating_objects].
+            rotating_objects
+            ].
 
 
-simple_load_with2i(_Config) ->
+small_load_with2i(_Config) ->
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = [{root_path, RootPath},
                     {max_journalsize, 50000000}],
@@ -37,6 +38,42 @@ simple_load_with2i(_Config) ->
     ChkList1 = lists:sublist(lists:sort(ObjL1), 100),
     testutil:check_forlist(Bookie1, ChkList1),
     testutil:check_forobject(Bookie1, TestObject),
+    
+    %% Delete the objects from the ChkList removing the indexes
+    lists:foreach(fun({_RN, Obj, Spc}) ->
+                        DSpc = lists:map(fun({add, F, T}) -> {remove, F, T}
+                                                                end,
+                                            Spc),
+                        {B, K} = leveled_codec:riakto_keydetails(Obj),
+                        leveled_bookie:book_riakdelete(Bookie1, B, K, DSpc)
+                        end,
+                    ChkList1),
+    %% Get the Buckets Keys and Hashes for the whole bucket
+    FoldObjectsFun = fun(B, K, V, Acc) -> [{B, K, testutil:riak_hash(V)}|Acc]
+                                            end,
+    {async, HTreeF1} = leveled_bookie:book_returnfolder(Bookie1,
+                                                        {foldobjects_allkeys,
+                                                            ?RIAK_TAG,
+                                                            FoldObjectsFun}),
+    KeyHashList1 = HTreeF1(),
+    {async, HTreeF2} = leveled_bookie:book_returnfolder(Bookie1,
+                                                        {foldobjects_bybucket,
+                                                            ?RIAK_TAG,
+                                                            "Bucket",
+                                                            FoldObjectsFun}),
+    KeyHashList2 = HTreeF2(),
+    {async, HTreeF3} = leveled_bookie:book_returnfolder(Bookie1,
+                                                        {foldobjects_byindex,
+                                                            ?RIAK_TAG,
+                                                            "Bucket",
+                                                            {"idx1_bin",
+                                                                "#", "~"},
+                                                            FoldObjectsFun}),
+    KeyHashList3 = HTreeF3(),
+    true = 9901 == length(KeyHashList1), % also includes the test object
+    true = 9900 == length(KeyHashList2),
+    true = 9900 == length(KeyHashList3),
+    
     ok = leveled_bookie:book_close(Bookie1),
     testutil:reset_filestructure().
 
