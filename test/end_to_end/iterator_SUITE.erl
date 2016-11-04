@@ -340,7 +340,7 @@ count_termsonindex(Bucket, IdxField, Book, QType) ->
                         Acc + Items
                         end,
                     0,
-                    lists:seq(1901, 2218)).
+                    lists:seq(190, 221)).
 
 
 rotating_objects(_Config) ->
