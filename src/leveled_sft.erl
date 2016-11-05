@@ -245,7 +245,8 @@ sft_newfroml0cache(Filename, Slots, FetchFun, Options) ->
                             {sft_newfroml0cache,
                                 Filename,
                                 Slots,
-                                FetchFun}),
+                                FetchFun,
+                                Options#sft_options.penciller}),
             {ok, Pid, noreply}
     end.
 
@@ -352,12 +353,21 @@ handle_call({set_for_delete, Penciller}, _From, State) ->
 handle_call(get_maxsqn, _From, State) ->
     statecheck_onreply(State#state.highest_sqn, State).
 
-handle_cast({sft_newfroml0cache, Filename, Slots, FetchFun}, _State) ->
+handle_cast({sft_newfroml0cache, Filename, Slots, FetchFun, PCL}, _State) ->
     SW = os:timestamp(),
     Inp1 = leveled_pmem:to_list(Slots, FetchFun),
     {ok, State} = create_levelzero(Inp1, Filename),
     leveled_log:log_timer("SFT03", [Filename], SW),
-    {noreply, State};
+    case PCL of
+        undefined ->
+            {noreply, State};
+        _ ->
+            ok = leveled_penciller:pcl_confirml0complete(PCL,
+                                                            Filename,
+                                                            State#state.smallest_key,
+                                                            State#state.highest_key),
+            {noreply, State}
+    end;
 handle_cast(close, State) ->
     {stop, normal, State}.
 

@@ -93,6 +93,8 @@
         {info, "Rename of manifest from ~s ~w to ~s ~w"}},
     {"P0028",
         {info, "Adding cleared file ~s to deletion list"}},
+    {"P0029",
+        {info, "L0 completion confirmed and will transition to not pending"}},
     
     {"PC001",
         {info, "Penciller's clerk ~w started with owner ~w"}},

@@ -17,7 +17,8 @@
 
 -record(sft_options,
                         {wait = true :: boolean(),
-                        expire_tombstones = false :: boolean()}).
+                        expire_tombstones = false :: boolean(),
+                        penciller :: pid()}).
 
 -record(penciller_work,
                         {next_sqn :: integer(),
