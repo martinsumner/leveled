@@ -487,7 +487,8 @@ handle_cast({levelzero_complete, FN, StartKey, EndKey}, State) ->
                             levelzero_constructor=undefined,
                             levelzero_index=leveled_pmem:new_index(),
                             levelzero_size=0,
-                            manifest=UpdMan}}.
+                            manifest=UpdMan,
+                            persisted_sqn=State#state.ledger_sqn}}.
 
 
 handle_info({_Ref, {ok, SrcFN, _StartKey, _EndKey}}, State) ->
@@ -531,10 +532,10 @@ terminate(Reason, State) ->
                         State
                 end,
     case {UpdState#state.levelzero_pending,
-            get_item(0, State#state.manifest, []),
-            State#state.levelzero_size} of
+            get_item(0, UpdState#state.manifest, []),
+            UpdState#state.levelzero_size} of
         {true, [], _} ->
-            ok = leveled_sft:sft_close(State#state.levelzero_constructor);
+            ok = leveled_sft:sft_close(UpdState#state.levelzero_constructor);
         {false, [], 0} ->
            leveled_log:log("P0009", []);
         {false, [], _N} ->

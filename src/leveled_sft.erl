@@ -362,10 +362,10 @@ handle_cast({sft_newfroml0cache, Filename, Slots, FetchFun, PCL}, _State) ->
         undefined ->
             {noreply, State};
         _ ->
-            ok = leveled_penciller:pcl_confirml0complete(PCL,
-                                                            Filename,
-                                                            State#state.smallest_key,
-                                                            State#state.highest_key),
+            leveled_penciller:pcl_confirml0complete(PCL,
+                                                    Filename,
+                                                    State#state.smallest_key,
+                                                    State#state.highest_key),
             {noreply, State}
     end;
 handle_cast(close, State) ->
