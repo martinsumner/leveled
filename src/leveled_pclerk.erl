@@ -37,7 +37,7 @@
 %% prompt erasing of the removed files).
 %%
 %% The clerk will not request work on timeout if the committing of a manifest
-%5 change is pending confirmation.
+%% change is pending confirmation.
 %%
 %% -------- TIMEOUTS ---------
 %%
@@ -67,7 +67,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(MAX_TIMEOUT, 2000).
--define(MIN_TIMEOUT, 200).
+-define(MIN_TIMEOUT, 50).
 
 -record(state, {owner :: pid(),
                 change_pending=false :: boolean(),
