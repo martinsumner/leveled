@@ -35,8 +35,6 @@
     
     {"P0001",
         {info, "Ledger snapshot ~w registered"}},
-    {"P0002",
-        {info, "Handling of push completed with L0 cache size now ~w"}},
     {"P0003",
         {info, "Ledger snapshot ~w released"}},
     {"P0004",

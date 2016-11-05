@@ -376,23 +376,20 @@ handle_call({push_mem, PushedTree}, From, State=#state{is_snapshot=Snap})
     %
     % Check the approximate size of the cache.  If it is over the maximum size,
     % trigger a backgroun L0 file write and update state of levelzero_pending.
-    
-    SW = os:timestamp(),
-    S = case State#state.levelzero_pending of
-            true ->
-                log_pushmem_reply(From, {returned, "L-0 persist pending"}, SW),
-                State;
-            false ->
-                log_pushmem_reply(From, {ok, "L0 memory updated"}, SW),
-                update_levelzero(State#state.levelzero_index,
-                                    State#state.levelzero_size,
-                                    PushedTree,
-                                    State#state.ledger_sqn,
-                                    State#state.levelzero_cache,
-                                    State)
-        end,
-    leveled_log:log_timer("P0002", [S#state.levelzero_size], SW),
-    {noreply, S};
+    case State#state.levelzero_pending of
+        true ->
+            leveled_log:log("P0018", [returned, "L-0 persist pending"]),
+            {reply, returned, State};
+        false ->
+            leveled_log:log("P0018", [ok, "L0 memory updated"]),
+            gen_server:reply(From, ok),
+            {noreply, update_levelzero(State#state.levelzero_index,
+                                        State#state.levelzero_size,
+                                        PushedTree,
+                                        State#state.ledger_sqn,
+                                        State#state.levelzero_cache,
+                                        State)}
+    end;
 handle_call({fetch, Key}, _From, State) ->
     {reply,
         fetch_mem(Key,
@@ -648,10 +645,6 @@ start_from_file(PCLopts) ->
     end.
 
 
-log_pushmem_reply(From, Reply, SW) ->
-    leveled_log:log_timer("P0018", [element(1,Reply), element(2,Reply)], SW),
-    gen_server:reply(From, element(1, Reply)).
-
 
 update_levelzero(L0Index, L0Size, PushedTree, LedgerSQN, L0Cache, State) ->
     Update = leveled_pmem:add_to_index(L0Index,
@@ -683,15 +676,6 @@ update_levelzero(L0Index, L0Size, PushedTree, LedgerSQN, L0Cache, State) ->
                         ledger_sqn=LedgerSQN}
     end.
 
-
-
-checkready(Pid) ->
-    try
-        leveled_sft:sft_checkready(Pid)
-    catch
-        exit:{timeout, _} ->
-            timeout
-    end.
 
 %% Casting a large object (the levelzero cache) to the gen_server did not lead
 %% to an immediate return as expected.  With 32K keys in the TreeList it could
@@ -1660,5 +1644,15 @@ coverage_test() ->
     ?assertMatch(Key1, pcl_fetch(PCLr, {o,"Bucket0001", "Key0001", null})),
     ok = pcl_close(PCLr),
     clean_testdir(RootPath).
+
+
+checkready(Pid) ->
+    try
+        leveled_sft:sft_checkready(Pid)
+    catch
+        exit:{timeout, _} ->
+            timeout
+    end.
+
 
 -endif.
