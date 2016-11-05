@@ -388,7 +388,12 @@ terminate(Reason, State) ->
             ok = file:close(State#state.handle),
             ok = file:delete(State#state.filename);
         _ ->
-            ok = file:close(State#state.handle)
+            case State#state.handle of
+                undefined ->
+                    ok;
+                Handle ->
+                    ok = file:close(Handle)
+            end
     end.
 
 code_change(_OldVsn, State, _Extra) ->
