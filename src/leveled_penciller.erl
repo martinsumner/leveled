@@ -788,8 +788,7 @@ return_work(State, From) ->
     case length(WorkQ) of
         L when L > 0 ->
             [{SrcLevel, Manifest}|OtherWork] = WorkQ,
-            Backlog = length(OtherWork),
-            leveled_log:log("P0020", [SrcLevel, From, Backlog]),
+            leveled_log:log("P0020", [SrcLevel, From, length(OtherWork)]),
             IsBasement = if
                                 SrcLevel + 1 == BasementL ->
                                     true;
