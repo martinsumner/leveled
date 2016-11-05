@@ -161,7 +161,7 @@
 -define(LEDGER_FP, "ledger").
 -define(SNAPSHOT_TIMEOUT, 300000).
 -define(CHECKJOURNAL_PROB, 0.2).
--define(SLOWOFFER_DELAY, 10).
+-define(SLOWOFFER_DELAY, 5).
 
 -record(state, {inker :: pid(),
                 penciller :: pid(),

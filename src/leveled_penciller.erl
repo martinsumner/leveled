@@ -16,7 +16,7 @@
 %% may lose data but only in sequence from a particular sequence number.  On
 %% startup the Penciller will inform the Bookie of the highest sequence number
 %% it has, and the Bookie should load any missing data from that point out of
-%5 the journal.
+%% the journal.
 %%
 %% -------- LEDGER ---------
 %%
@@ -493,8 +493,7 @@ handle_cast({levelzero_complete, FN, StartKey, EndKey}, State) ->
                             persisted_sqn=State#state.ledger_sqn}}.
 
 
-handle_info({_Ref, {ok, SrcFN, _StartKey, _EndKey}}, State) ->
-    leveled_log:log("P0006", [SrcFN]),
+handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(Reason, State=#state{is_snapshot=Snap}) when Snap == true ->
@@ -1201,8 +1200,6 @@ update_deletions([ClearedFile|Tail], MSN, UnreferencedFiles) ->
 
 confirm_delete(Filename, UnreferencedFiles, RegisteredSnapshots) ->
     case lists:keyfind(Filename, 1, UnreferencedFiles) of
-        false ->
-            false;
         {Filename, Pid, MSN} ->
             LowSQN = lists:foldl(fun({_, SQN}, MinSQN) -> min(SQN, MinSQN) end,
                                     infinity,
