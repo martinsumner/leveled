@@ -363,7 +363,7 @@ handle_cast({sft_newfroml0cache, Filename, Slots, FetchFun, PCL}, _State) ->
             {noreply, State};
         _ ->
             leveled_penciller:pcl_confirml0complete(PCL,
-                                                    Filename,
+                                                    State#state.filename,
                                                     State#state.smallest_key,
                                                     State#state.highest_key),
             {noreply, State}
@@ -388,12 +388,7 @@ terminate(Reason, State) ->
             ok = file:close(State#state.handle),
             ok = file:delete(State#state.filename);
         _ ->
-            case State#state.handle of
-                undefined ->
-                    ok;
-                Handle ->
-                    ok = file:close(Handle)
-            end
+            ok = file:close(State#state.handle)
     end.
 
 code_change(_OldVsn, State, _Extra) ->
