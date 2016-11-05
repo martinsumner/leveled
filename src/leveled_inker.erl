@@ -122,7 +122,7 @@
 -define(JOURNAL_FILEX, "cdb").
 -define(MANIFEST_FILEX, "man").
 -define(PENDING_FILEX, "pnd").
--define(LOADING_PAUSE, 5000).
+-define(LOADING_PAUSE, 1000).
 -define(LOADING_BATCH, 1000).
 
 -record(state, {manifest = [] :: list(),
