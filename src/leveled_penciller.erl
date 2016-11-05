@@ -787,15 +787,16 @@ return_work(State, From) ->
     {WorkQ, BasementL} = assess_workqueue([], 0, State#state.manifest, 0),
     case length(WorkQ) of
         L when L > 0 ->
-            [{SrcLevel, Manifest}|OtherWork] = WorkQ,
-            leveled_log:log("P0020", [SrcLevel, From, length(OtherWork)]),
+            Excess = lists:foldl(fun({_, _, OH}, Acc) -> Acc+OH end, 0, WorkQ),
+            [{SrcLevel, Manifest, _Overhead}|_OtherWork] = WorkQ,
+            leveled_log:log("P0020", [SrcLevel, From, Excess]),
             IsBasement = if
                                 SrcLevel + 1 == BasementL ->
                                     true;
                                 true ->
                                     false
                             end,
-            Backlog = L >= ?WORKQUEUE_BACKLOG_TOLERANCE,
+            Backlog = Excess >= ?WORKQUEUE_BACKLOG_TOLERANCE,
             case State#state.levelzero_pending of
                 true ->
                     % Once the L0 file is completed there will be more work
@@ -1095,8 +1096,9 @@ assess_workqueue(WorkQ, LevelToAssess, Man, BasementLevel) ->
 maybe_append_work(WorkQ, Level, Manifest,
                     MaxFiles, FileCount)
                         when FileCount > MaxFiles ->
-    leveled_log:log("P0024", [FileCount - MaxFiles, Level]),
-    lists:append(WorkQ, [{Level, Manifest}]);
+    Overhead = FileCount - MaxFiles,
+    leveled_log:log("P0024", [Overhead, Level]),
+    lists:append(WorkQ, [{Level, Manifest, Overhead}]);
 maybe_append_work(WorkQ, _Level, _Manifest,
                     _MaxFiles, _FileCount) ->
     WorkQ.
@@ -1246,7 +1248,7 @@ compaction_work_assessment_test() ->
             {{o, "B2", "K3", null}, {o, "B4", "K4", null}, dummy_pid}],
     Manifest = [{0, L0}, {1, L1}],
     {WorkQ1, 1} = assess_workqueue([], 0, Manifest, 0),
-    ?assertMatch(WorkQ1, [{0, Manifest}]),
+    ?assertMatch([{0, Manifest, 1}], WorkQ1),
     L1Alt = lists:append(L1,
                         [{{o, "B5", "K0001", null}, {o, "B5", "K9999", null},
                             dummy_pid},
@@ -1264,7 +1266,7 @@ compaction_work_assessment_test() ->
                             dummy_pid}]),
     Manifest3 = [{0, []}, {1, L1Alt}],
     {WorkQ3, 1} = assess_workqueue([], 0, Manifest3, 0),
-    ?assertMatch(WorkQ3, [{1, Manifest3}]).
+    ?assertMatch([{1, Manifest3, 1}], WorkQ3).
 
 confirm_delete_test() ->
     Filename = 'test.sft',

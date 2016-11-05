@@ -73,7 +73,7 @@
         {info, "Rolling level zero to filename ~s"}},
     {"P0020",
         {info, "Work at Level ~w to be scheduled for ~w with ~w "
-                ++ "queue items outstanding"}},
+                ++ "queue items outstanding at all levels"}},
     {"P0021",
         {info, "Allocation of work blocked as L0 pending"}},
     {"P0022",
