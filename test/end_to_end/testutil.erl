@@ -2,7 +2,11 @@
 
 -include("../include/leveled.hrl").
 
--export([reset_filestructure/0,
+-export([book_riakput/3,
+            book_riakdelete/4,
+            book_riakget/3,
+            book_riakhead/3,
+            reset_filestructure/0,
             reset_filestructure/1,
             check_bucket_stats/2,
             check_forlist/2,
@@ -37,6 +41,24 @@
             riak_hash/1]).
 
 -define(RETURN_TERMS, {true, undefined}).
+
+
+
+book_riakput(Pid, RiakObject, IndexSpecs) ->
+    {Bucket, Key} = leveled_codec:riakto_keydetails(RiakObject),
+    leveled_book:book_put(Pid, Bucket, Key, RiakObject, IndexSpecs, ?RIAK_TAG).
+
+book_riakdelete(Pid, Bucket, Key, IndexSpecs) ->
+    leveled_book:book_put(Pid, Bucket, Key, delete, IndexSpecs, ?RIAK_TAG).
+
+book_riakget(Pid, Bucket, Key) ->
+    leveled_book:book_get(Pid, Bucket, Key, ?RIAK_TAG).
+
+book_riakhead(Pid, Bucket, Key) ->
+    leveled_book:book_head(Pid, Bucket, Key, ?RIAK_TAG).
+
+
+
 
 
 reset_filestructure() ->
@@ -81,9 +103,9 @@ check_forlist(Bookie, ChkList, Log) ->
                         true ->
                             ok
                     end,
-                    R = leveled_bookie:book_riakget(Bookie,
-                                                    Obj#r_object.bucket,
-                                                    Obj#r_object.key),
+                    R = book_riakget(Bookie,
+                                        Obj#r_object.bucket,
+                                        Obj#r_object.key),
                     ok = case R of
                                 {ok, Obj} ->
                                     ok;
@@ -100,21 +122,21 @@ check_forlist(Bookie, ChkList, Log) ->
 check_formissinglist(Bookie, ChkList) ->
     SW = os:timestamp(),
     lists:foreach(fun({_RN, Obj, _Spc}) ->
-                    R = leveled_bookie:book_riakget(Bookie,
-                                                        Obj#r_object.bucket,
-                                                        Obj#r_object.key),
+                    R = book_riakget(Bookie,
+                                        Obj#r_object.bucket,
+                                        Obj#r_object.key),
                     R = not_found end,
                 ChkList),
     io:format("Miss check took ~w microseconds checking list of length ~w~n",
                     [timer:now_diff(os:timestamp(), SW), length(ChkList)]).
 
 check_forobject(Bookie, TestObject) ->
-    {ok, TestObject} = leveled_bookie:book_riakget(Bookie,
-                                                    TestObject#r_object.bucket,
-                                                    TestObject#r_object.key),
-    {ok, HeadObject} = leveled_bookie:book_riakhead(Bookie,
-                                                    TestObject#r_object.bucket,
-                                                    TestObject#r_object.key),
+    {ok, TestObject} = book_riakget(Bookie,
+                                        TestObject#r_object.bucket,
+                                        TestObject#r_object.key),
+    {ok, HeadObject} = book_riakhead(Bookie,
+                                        TestObject#r_object.bucket,
+                                        TestObject#r_object.key),
     ok = case {HeadObject#r_object.bucket,
                     HeadObject#r_object.key,
                     HeadObject#r_object.vclock} of
@@ -125,8 +147,8 @@ check_forobject(Bookie, TestObject) ->
             end.
 
 check_formissingobject(Bookie, Bucket, Key) ->
-    not_found = leveled_bookie:book_riakget(Bookie, Bucket, Key),
-    not_found = leveled_bookie:book_riakhead(Bookie, Bucket, Key).
+    not_found = book_riakget(Bookie, Bucket, Key),
+    not_found = book_riakhead(Bookie, Bucket, Key).
 
 
 generate_testobject() ->
@@ -236,7 +258,7 @@ load_objects(ChunkSize, GenList, Bookie, TestObject, Generator) ->
                     ObjListA = Generator(ChunkSize, KN),
                     StartWatchA = os:timestamp(),
                     lists:foreach(fun({_RN, Obj, Spc}) ->
-                            leveled_bookie:book_riakput(Bookie, Obj, Spc)
+                            book_riakput(Bookie, Obj, Spc)
                             end,
                         ObjListA),
                     Time = timer:now_diff(os:timestamp(), StartWatchA),
@@ -289,7 +311,7 @@ check_indexed_objects(Book, B, KSpecL, V) ->
     % Check all objects match, return what should be the results of an all
     % index query
     IdxR = lists:map(fun({K, Spc}) ->
-                            {ok, O} = leveled_bookie:book_riakget(Book, B, K),
+                            {ok, O} = book_riakget(Book, B, K),
                             V = testutil:get_value(O),
                             {add,
                                 "idx1_bin",
@@ -333,9 +355,7 @@ put_indexed_objects(Book, Bucket, Count) ->
                                         IndexGen,
                                         Bucket),
     KSpecL = lists:map(fun({_RN, Obj, Spc}) ->
-                            leveled_bookie:book_riakput(Book,
-                                                        Obj,
-                                                        Spc),
+                            book_riakput(Book, Obj, Spc),
                             {testutil:get_key(Obj), Spc}
                             end,
                         ObjL1),
@@ -364,9 +384,7 @@ put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i) ->
                                                                     V,
                                                                     IndexGen,
                                                                     AddSpc),
-                                ok = leveled_bookie:book_riakput(Book,
-                                                                    O,
-                                                                    AltSpc),
+                                ok = book_riakput(Book, O, AltSpc),
                                 {K, AltSpc} end,
                             KSpecL),
     {RplKSpecL, V}.

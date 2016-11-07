@@ -27,7 +27,7 @@ simple_put_fetch_head_delete(_Config) ->
     StartOpts1 = [{root_path, RootPath}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
-    ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
+    ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
     testutil:check_forobject(Bookie1, TestObject),
     testutil:check_formissingobject(Bookie1, "Bucket1", "Key2"),
     ok = leveled_bookie:book_close(Bookie1),
@@ -37,7 +37,7 @@ simple_put_fetch_head_delete(_Config) ->
     testutil:check_forobject(Bookie2, TestObject),
     ObjList1 = testutil:generate_objects(5000, 2),
     lists:foreach(fun({_RN, Obj, Spc}) ->
-                        leveled_bookie:book_riakput(Bookie2, Obj, Spc) end,
+                        testutil:book_riakput(Bookie2, Obj, Spc) end,
                     ObjList1),
     ChkList1 = lists:sublist(lists:sort(ObjList1), 100),
     testutil:check_forlist(Bookie2, ChkList1),
@@ -72,7 +72,7 @@ many_put_fetch_head(_Config) ->
     StartOpts1 = [{root_path, RootPath}, {max_pencillercachesize, 16000}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
-    ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
+    ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
     testutil:check_forobject(Bookie1, TestObject),
     ok = leveled_bookie:book_close(Bookie1),
     StartOpts2 = [{root_path, RootPath},
@@ -89,7 +89,7 @@ many_put_fetch_head(_Config) ->
     testutil:check_forlist(Bookie2, CL1A),
     ObjList2A = testutil:generate_objects(5000, 2),
     lists:foreach(fun({_RN, Obj, Spc}) ->
-                        leveled_bookie:book_riakput(Bookie2, Obj, Spc) end,
+                        testutil:book_riakput(Bookie2, Obj, Spc) end,
                     ObjList2A),
     ChkList2A = lists:sublist(lists:sort(ObjList2A), 1000),
     testutil:check_forlist(Bookie2, ChkList2A),
@@ -113,11 +113,11 @@ journal_compaction(_Config) ->
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     ok = leveled_bookie:book_compactjournal(Bookie1, 30000),
     {TestObject, TestSpec} = testutil:generate_testobject(),
-    ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
+    ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
     testutil:check_forobject(Bookie1, TestObject),
     ObjList1 = testutil:generate_objects(20000, 2),
     lists:foreach(fun({_RN, Obj, Spc}) ->
-                        leveled_bookie:book_riakput(Bookie1, Obj, Spc) end,
+                        testutil:book_riakput(Bookie1, Obj, Spc) end,
                     ObjList1),
     ChkList1 = lists:sublist(lists:sort(ObjList1), 10000),
     testutil:check_forlist(Bookie1, ChkList1),
@@ -129,7 +129,7 @@ journal_compaction(_Config) ->
                                 {"MDK1", "MDV1"}},
     {TestObject2, TestSpec2} = testutil:generate_testobject(B2, K2,
                                                             V2, Spec2, MD),
-    ok = leveled_bookie:book_riakput(Bookie1, TestObject2, TestSpec2),
+    ok = testutil:book_riakput(Bookie1, TestObject2, TestSpec2),
     ok = leveled_bookie:book_compactjournal(Bookie1, 30000),
     testutil:check_forlist(Bookie1, ChkList1),
     testutil:check_forobject(Bookie1, TestObject),
@@ -140,17 +140,17 @@ journal_compaction(_Config) ->
     %% Delete some of the objects
     ObjListD = testutil:generate_objects(10000, 2),
     lists:foreach(fun({_R, O, _S}) ->
-                        ok = leveled_bookie:book_riakdelete(Bookie1,
-                                                            O#r_object.bucket,
-                                                            O#r_object.key,
-                                                            [])
+                        ok = testutil:book_riakdelete(Bookie1,
+                                                        O#r_object.bucket,
+                                                        O#r_object.key,
+                                                        [])
                         end,
                     ObjListD),
     
     %% Now replace all the other objects
     ObjList2 = testutil:generate_objects(40000, 10002),
     lists:foreach(fun({_RN, Obj, Spc}) ->
-                        leveled_bookie:book_riakput(Bookie1, Obj, Spc) end,
+                        testutil:book_riakput(Bookie1, Obj, Spc) end,
                     ObjList2),
     ok = leveled_bookie:book_compactjournal(Bookie1, 30000),
     
@@ -184,10 +184,10 @@ fetchput_snapshot(_Config) ->
     StartOpts1 = [{root_path, RootPath}, {max_journalsize, 30000000}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
-    ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
+    ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
     ObjList1 = testutil:generate_objects(5000, 2),
     lists:foreach(fun({_RN, Obj, Spc}) ->
-                        leveled_bookie:book_riakput(Bookie1, Obj, Spc) end,
+                        testutil:book_riakput(Bookie1, Obj, Spc) end,
                     ObjList1),
     SnapOpts1 = [{snapshot_bookie, Bookie1}],
     {ok, SnapBookie1} = leveled_bookie:book_start(SnapOpts1),
@@ -212,7 +212,7 @@ fetchput_snapshot(_Config) ->
     
     ObjList2 = testutil:generate_objects(5000, 2),
     lists:foreach(fun({_RN, Obj, Spc}) ->
-                        leveled_bookie:book_riakput(Bookie2, Obj, Spc) end,
+                        testutil:book_riakput(Bookie2, Obj, Spc) end,
                     ObjList2),
     io:format("Replacement objects put~n"),
     
@@ -226,7 +226,7 @@ fetchput_snapshot(_Config) ->
     {ok, FNsA} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
     ObjList3 = testutil:generate_objects(15000, 5002),
     lists:foreach(fun({_RN, Obj, Spc}) ->
-                        leveled_bookie:book_riakput(Bookie2, Obj, Spc) end,
+                        testutil:book_riakput(Bookie2, Obj, Spc) end,
                     ObjList3),
     ChkList3 = lists:sublist(lists:sort(ObjList3), 100),
     testutil:check_forlist(Bookie2, ChkList3),
@@ -291,7 +291,7 @@ load_and_count(_Config) ->
     StartOpts1 = [{root_path, RootPath}, {max_journalsize, 50000000}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
-    ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
+    ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
     testutil:check_forobject(Bookie1, TestObject),
     io:format("Loading initial small objects~n"),
     G1 = fun testutil:generate_smallobjects/2,
@@ -374,7 +374,7 @@ load_and_count_withdelete(_Config) ->
     StartOpts1 = [{root_path, RootPath}, {max_journalsize, 50000000}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
-    ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
+    ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
     testutil:check_forobject(Bookie1, TestObject),
     io:format("Loading initial small objects~n"),
     G1 = fun testutil:generate_smallobjects/2,
@@ -396,8 +396,8 @@ load_and_count_withdelete(_Config) ->
     testutil:check_forobject(Bookie1, TestObject),
     {BucketD, KeyD} = leveled_codec:riakto_keydetails(TestObject),
     {_, 1} = testutil:check_bucket_stats(Bookie1, BucketD),
-    ok = leveled_bookie:book_riakdelete(Bookie1, BucketD, KeyD, []),
-    not_found = leveled_bookie:book_riakget(Bookie1, BucketD, KeyD),
+    ok = testutil:book_riakdelete(Bookie1, BucketD, KeyD, []),
+    not_found = testutil:book_riakget(Bookie1, BucketD, KeyD),
     {_, 0} = testutil:check_bucket_stats(Bookie1, BucketD),
     io:format("Loading larger compressible objects~n"),
     G2 = fun testutil:generate_compressibleobjects/2,
@@ -416,7 +416,7 @@ load_and_count_withdelete(_Config) ->
                         Acc + 5000 end,
                         100000,
                         lists:seq(1, 20)),
-    not_found = leveled_bookie:book_riakget(Bookie1, BucketD, KeyD),
+    not_found = testutil:book_riakget(Bookie1, BucketD, KeyD),
     ok = leveled_bookie:book_close(Bookie1),
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
     testutil:check_formissingobject(Bookie2, BucketD, KeyD),
@@ -461,10 +461,10 @@ space_clear_ondelete(_Config) ->
     % Delete the keys
     SW2 = os:timestamp(),
     lists:foreach(fun({Bucket, Key}) ->
-                        ok = leveled_bookie:book_riakdelete(Book1,
-                                                            Bucket,
-                                                            Key,
-                                                            [])
+                        ok = testutil:book_riakdelete(Book1,
+                                                        Bucket,
+                                                        Key,
+                                                        [])
                         end,
                     KL1),
     io:format("Deletion took ~w microseconds for 80K keys~n",

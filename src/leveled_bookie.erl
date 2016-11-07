@@ -134,10 +134,6 @@
         code_change/3,
         book_start/1,
         book_start/3,
-        book_riakput/3,
-        book_riakdelete/4,
-        book_riakget/3,
-        book_riakhead/3,
         book_put/5,
         book_put/6,
         book_tempput/7,
@@ -184,9 +180,6 @@ book_start(RootPath, LedgerCacheSize, JournalSize) ->
 book_start(Opts) ->
     gen_server:start(?MODULE, [Opts], []).
 
-book_riakput(Pid, RiakObject, IndexSpecs) ->
-    {Bucket, Key} = leveled_codec:riakto_keydetails(RiakObject),
-    book_put(Pid, Bucket, Key, RiakObject, IndexSpecs, ?RIAK_TAG).
 
 book_tempput(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) when is_integer(TTL) ->
     book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL).
@@ -197,20 +190,11 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs) ->
 book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag) ->
     book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, infinity).
 
-book_riakdelete(Pid, Bucket, Key, IndexSpecs) ->
-    book_put(Pid, Bucket, Key, delete, IndexSpecs, ?RIAK_TAG).
-
 book_delete(Pid, Bucket, Key, IndexSpecs) ->
     book_put(Pid, Bucket, Key, delete, IndexSpecs, ?STD_TAG).
 
-book_riakget(Pid, Bucket, Key) ->
-    book_get(Pid, Bucket, Key, ?RIAK_TAG).
-
 book_get(Pid, Bucket, Key) ->
     book_get(Pid, Bucket, Key, ?STD_TAG).
-
-book_riakhead(Pid, Bucket, Key) ->
-    book_head(Pid, Bucket, Key, ?RIAK_TAG).
 
 book_head(Pid, Bucket, Key) ->
     book_head(Pid, Bucket, Key, ?STD_TAG).
@@ -933,12 +917,12 @@ single_key_test() ->
                                 {"MDK1", "MDV1"}},
     Content = #r_content{metadata=MD, value=V1},
     Object = #r_object{bucket=B1, key=K1, contents=[Content], vclock=[{'a',1}]},
-    ok = book_riakput(Bookie1, Object, Spec1),
-    {ok, F1} = book_riakget(Bookie1, B1, K1),
+    ok = book_put(Bookie1, B1, K1, Object, Spec1, ?RIAK_TAG),
+    {ok, F1} = book_get(Bookie1, B1, K1, ?RIAK_TAG),
     ?assertMatch(F1, Object),
     ok = book_close(Bookie1),
     {ok, Bookie2} = book_start([{root_path, RootPath}]),
-    {ok, F2} = book_riakget(Bookie2, B1, K1),
+    {ok, F2} = book_get(Bookie2, B1, K1, ?RIAK_TAG),
     ?assertMatch(F2, Object),
     ok = book_close(Bookie2),
     reset_filestructure().
@@ -960,41 +944,53 @@ multi_key_test() ->
                                 {"MDK2", "MDV2"}},
     C2 = #r_content{metadata=MD2, value=V2},
     Obj2 = #r_object{bucket=B2, key=K2, contents=[C2], vclock=[{'a',1}]},
-    ok = book_riakput(Bookie1, Obj1, Spec1),
+    ok = book_put(Bookie1, B1, K1, Obj1, Spec1, ?RIAK_TAG),
     ObjL1 = generate_multiple_robjects(100, 3),
     SW1 = os:timestamp(),
-    lists:foreach(fun({O, S}) -> ok = book_riakput(Bookie1, O, S) end, ObjL1),
+    lists:foreach(fun({O, S}) ->
+                        {B, K} = leveled_codec:riakto_keydetails(O),
+                        ok = book_put(Bookie1, B, K, O, S, ?RIAK_TAG)
+                        end,
+                    ObjL1),
     io:format("PUT of 100 objects completed in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(),SW1)]),
-    ok = book_riakput(Bookie1, Obj2, Spec2),
-    {ok, F1A} = book_riakget(Bookie1, B1, K1),
+    ok = book_put(Bookie1, B2, K2, Obj2, Spec2, ?RIAK_TAG),
+    {ok, F1A} = book_get(Bookie1, B1, K1, ?RIAK_TAG),
     ?assertMatch(F1A, Obj1),
-    {ok, F2A} = book_riakget(Bookie1, B2, K2),
+    {ok, F2A} = book_get(Bookie1, B2, K2, ?RIAK_TAG),
     ?assertMatch(F2A, Obj2),
     ObjL2 = generate_multiple_robjects(100, 103),
     SW2 = os:timestamp(),
-    lists:foreach(fun({O, S}) -> ok = book_riakput(Bookie1, O, S) end, ObjL2),
+    lists:foreach(fun({O, S}) ->
+                        {B, K} = leveled_codec:riakto_keydetails(O),
+                        ok = book_put(Bookie1, B, K, O, S, ?RIAK_TAG)
+                        end,
+                    ObjL2),
     io:format("PUT of 100 objects completed in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(),SW2)]),
-    {ok, F1B} = book_riakget(Bookie1, B1, K1),
+    {ok, F1B} = book_get(Bookie1, B1, K1, ?RIAK_TAG),
     ?assertMatch(F1B, Obj1),
-    {ok, F2B} = book_riakget(Bookie1, B2, K2),
+    {ok, F2B} = book_get(Bookie1, B2, K2, ?RIAK_TAG),
     ?assertMatch(F2B, Obj2),
     ok = book_close(Bookie1),
     % Now reopen the file, and confirm that a fetch is still possible
     {ok, Bookie2} = book_start([{root_path, RootPath}]),
-    {ok, F1C} = book_riakget(Bookie2, B1, K1),
+    {ok, F1C} = book_get(Bookie2, B1, K1, ?RIAK_TAG),
     ?assertMatch(F1C, Obj1),
-    {ok, F2C} = book_riakget(Bookie2, B2, K2),
+    {ok, F2C} = book_get(Bookie2, B2, K2, ?RIAK_TAG),
     ?assertMatch(F2C, Obj2),
     ObjL3 = generate_multiple_robjects(100, 203),
     SW3 = os:timestamp(),
-    lists:foreach(fun({O, S}) -> ok = book_riakput(Bookie2, O, S) end, ObjL3),
+    lists:foreach(fun({O, S}) ->
+                        {B, K} = leveled_codec:riakto_keydetails(O),
+                        ok = book_put(Bookie2, B, K, O, S, ?RIAK_TAG)
+                        end,
+                    ObjL3),
     io:format("PUT of 100 objects completed in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(),SW3)]),
-    {ok, F1D} = book_riakget(Bookie2, B1, K1),
+    {ok, F1D} = book_get(Bookie2, B1, K1, ?RIAK_TAG),
     ?assertMatch(F1D, Obj1),
-    {ok, F2D} = book_riakget(Bookie2, B2, K2),
+    {ok, F2D} = book_get(Bookie2, B2, K2, ?RIAK_TAG),
     ?assertMatch(F2D, Obj2),
     ok = book_close(Bookie2),
     reset_filestructure().
