@@ -48,21 +48,21 @@
 
 book_riakput(Pid, RiakObject, IndexSpecs) ->
     {Bucket, Key} = leveled_codec:riakto_keydetails(RiakObject),
-    leveled_book:book_put(Pid, Bucket, Key, RiakObject, IndexSpecs, ?RIAK_TAG).
+    leveled_bookie:book_put(Pid, Bucket, Key, RiakObject, IndexSpecs, ?RIAK_TAG).
 
 book_riakdelete(Pid, Bucket, Key, IndexSpecs) ->
-    leveled_book:book_put(Pid, Bucket, Key, delete, IndexSpecs, ?RIAK_TAG).
+    leveled_bookie:book_put(Pid, Bucket, Key, delete, IndexSpecs, ?RIAK_TAG).
 
 book_riakget(Pid, Bucket, Key) ->
-    leveled_book:book_get(Pid, Bucket, Key, ?RIAK_TAG).
+    leveled_bookie:book_get(Pid, Bucket, Key, ?RIAK_TAG).
 
 book_riakhead(Pid, Bucket, Key) ->
-    leveled_book:book_head(Pid, Bucket, Key, ?RIAK_TAG).
+    leveled_bookie:book_head(Pid, Bucket, Key, ?RIAK_TAG).
 
 
 riakload(Bookie, ObjectList) ->
     lists:foreach(fun({_RN, Obj, Spc}) ->
-                            R = book_riakput(Bookie,Obj, Spc),
+                            R = book_riakput(Bookie, Obj, Spc),
                             case R of
                                 ok -> ok;
                                 pause -> timer:sleep(?SLOWOFFER_DELAY)
