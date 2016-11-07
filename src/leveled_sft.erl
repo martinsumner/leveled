@@ -1908,7 +1908,7 @@ key_dominates_test() ->
 
 corrupted_sft_test() ->
     Filename = "../test/bigcorrupttest1.sft",
-    {KL1, KL2} = {lists:ukeysort(1, generate_randomkeys(10000)), []},
+    {KL1, KL2} = {lists:ukeysort(1, generate_randomkeys(2000)), []},
     {InitHandle, InitFileMD} = create_file(Filename),
     {Handle, _FileMD, _Rems} = complete_file(InitHandle,
                                                 InitFileMD,
