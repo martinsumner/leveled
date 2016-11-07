@@ -35,10 +35,6 @@
 %% - L1 TO L7: May contain multiple processes managing non-overlapping sft
 %% files.  Compaction work should be sheduled if the number of files exceeds
 %% the target size of the level, where the target size is 8 ^ n.
-%% - L Minus 1: Used to cache the last ledger cache push for use in queries
-%% whilst the Penciller awaits a callback from the roll_clerk with the new
-%% merged L0 file containing the L-1 updates.
-%%
 %%
 %% The most recent revision of a Key can be found by checking each level until
 %% the key is found.  To check a level the correct file must be sought from the
@@ -59,33 +55,28 @@
 %%
 %% When the clerk picks work it will take the current manifest, and the
 %% Penciller assumes the manifest sequence number is to be incremented.
-%% When the clerk has completed the work it cna request that the manifest
+%% When the clerk has completed the work it can request that the manifest
 %% change be committed by the Penciller.  The commit is made through changing
 %% the filename of the new manifest - so the Penciller is not held up by the
 %% process of wiritng a file, just altering file system metadata.
-%%
-%% The manifest is locked by a clerk taking work, or by there being a need to
-%% write a file to Level 0.  If the manifest is locked, then new keys can still
-%% be added in memory - however, the response to that push will be to "pause",
-%% that is to say the Penciller will ask the Bookie to slowdown.
 %%
 %% ---------- PUSH ----------
 %%
 %% The Penciller must support the PUSH of a dump of keys from the Bookie.  The
 %% call to PUSH should be immediately acknowledged, and then work should be
-%% completed to merge the tree into the L0 tree (with the tree being cached as
-%% a Level -1 tree so as not to block reads whilst it waits.
+%% completed to merge the tree into the L0 tree.
 %%
 %% The Penciller MUST NOT accept a new PUSH if the Clerk has commenced the
-%% conversion of the current ETS table into a SFT file, but not completed this
+%% conversion of the current L0 tree into a SFT file, but not completed this
 %% change.  The Penciller in this case returns the push, and the Bookie should
-%% continue to gorw the cache before trying again.
+%% continue to grow the cache before trying again.
 %%
 %% ---------- FETCH ----------
 %%
-%% On request to fetch a key the Penciller should look first in the L0 ETS 
-%% table, and then look in the SFT files Level by Level, consulting the
-%% Manifest to determine which file should be checked at each level.
+%% On request to fetch a key the Penciller should look first in the in-memory
+%% L0 tree, then look in the SFT files Level by Level (including level 0),
+%% consulting the Manifest to determine which file should be checked at each
+%% level.
 %%
 %% ---------- SNAPSHOT ----------
 %%
@@ -153,61 +144,13 @@
 %%
 %% The writing of L0 files do not require the involvement of the clerk.
 %% The L0 files are prompted directly by the penciller when the in-memory tree
-%% has reached capacity.  When there is a next push into memory the Penciller
-%% calls to check that the file is now active (which may pause if the write is
-%% ongoing the acceptence of the push), and if so it can clear the L0 tree
-%% and build a new tree from an empty tree and the keys from the latest push.
+%% has reached capacity.  This places the penciller in a levelzero_pending
+%% state, and in this state it must return new pushes.  Once the SFT file has
+%% been completed it will confirm completion to the penciller which can then
+%% revert the levelzero_pending state, add the file to the manifest and clear
+%% the current level zero in-memory view.
 %%
-%% Only a single L0 file may exist at any one moment in time.  If pushes are
-%% received when memory is over the maximum size, the pushes must be kept into
-%% memory.
-%%
-%% 1 - A L0 file is prompted to be created at ManifestSQN n
-%% 2 - The next push to memory will be stalled until the L0 write is reported
-%% as completed (as the memory needs to be flushed)
-%% 3 - The completion of the L0 file will cause a prompt to be cast to the
-%% clerk for them to look for work
-%% 4 - On completion of the merge (of the L0 file into L1, as this will be the
-%% highest priority work), the clerk will create a new manifest file at
-%% manifest SQN n+1
-%% 5 - The clerk will prompt the penciller about the change, and the Penciller
-%% will then commit the change (by renaming the manifest file to be active, and
-%% advancing the in-memory state of the manifest and manifest SQN)
-%% 6 - The Penciller having committed the change will cast back to the Clerk
-%% to inform the Clerk that the chnage has been committed, and so it can carry
-%% on requetsing new work
-%% 7 - If the Penciller now receives a Push to over the max size, a new L0 file
-%% can now be created with the ManifestSQN of n+1
-%%
-%% ---------- NOTES ON THE (NON) USE OF ETS ----------
-%%
-%% Insertion into ETS is very fast, and so using ETS does not slow the PUT
-%% path.  However, an ETS table is mutable, so it does complicate the
-%% snapshotting of the Ledger.
-%%
-%% Originally the solution had used an ETS table for insertion speed as the L0
-%% cache.  Insertion speed was an order or magnitude faster than gb_trees.  To
-%% resolving issues of trying to have fast start-up snapshots though led to
-%% keeping a seperate set of trees alongside the ETS table to be used by
-%% snapshots.
-%%
-%% The next strategy was to perform the expensive operation (merging the
-%% Ledger cache into the Level0 cache), within a dedicated Penciller's clerk,
-%% known as the roll_clerk.  This may take 30-40ms, but during this period
-%% the Penciller will keep a Level -1 cache of the unmerged elements which
-%% it will wipe once the roll_clerk returns with an updated L0 cache.
-%%
-%% This was still a bit complicated, and did a lot of processing to
-%% making updates to the large L0 cache - which will have created a lot of GC
-%% effort required.  The processing was inefficient
-%%
-%% The current paproach is to simply append each new tree pushed to a list, and
-%% use an array of hashes to index for the presence of objects in the list.
-%% When attempting to iterate, the caches are all merged for the range relevant
-%% to the given iterator only.  The main downside to the approahc is that the
-%% Penciller cna no longer accurately measure the size of the L0 cache (as it
-%% cannot determine how many replacements there are in the Cache - so it may
-%% prematurely write a smaller than necessary L0 file.
+
 
 -module(leveled_penciller).
 
