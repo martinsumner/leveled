@@ -822,8 +822,14 @@ write_keys(Handle,
                                 [{LowKey_Slot, SegFilter, LengthList}]),
     UpdSlots = <<SerialisedSlots/binary, SerialisedSlot/binary>>,
     SNExtremes = {min(LSN_Slot, LSN), max(HSN_Slot, HSN)},
-    FinalKey = case LastKey_Slot of null -> LastKey; _ -> LastKey_Slot end,
-    FirstKey = case LowKey of null -> LowKey_Slot; _ -> LowKey end,
+    FinalKey = case LastKey_Slot of
+                    null -> LastKey;
+                    _ -> LastKey_Slot
+                end,
+    FirstKey = case LowKey of
+                    null -> LowKey_Slot;
+                    _ -> LowKey
+                end,
     case Status of
         partial ->
             UpdHandle = WriteFun(slots , {Handle, UpdSlots}),
@@ -1900,6 +1906,43 @@ key_dominates_test() ->
                     key_dominates([KV7|KL2], [KV2], {true, 1})).
 
 
+corrupted_sft_test() ->
+    Filename = "../test/bigcorrupttest1.sft",
+    {KL1, KL2} = {lists:ukeysort(1, generate_randomkeys(10000)), []},
+    {InitHandle, InitFileMD} = create_file(Filename),
+    {Handle, _FileMD, _Rems} = complete_file(InitHandle,
+                                                InitFileMD,
+                                                KL1, KL2,
+                                                #level{level=1}),
+    {ok, Lengths} = file:pread(Handle, 12, 12),
+    <<BlocksLength:32/integer,
+        IndexLength:32/integer,
+        FilterLength:32/integer>> = Lengths,
+    ok = file:close(Handle),
+    
+    {ok, Corrupter} = file:open(Filename , [binary, raw, read, write]),
+    lists:foreach(fun(X) ->
+                        case X * 5 of
+                            Y when Y < FilterLength ->
+                                Position = ?HEADER_LEN + X * 5
+                                            + BlocksLength + IndexLength,
+                                file:pwrite(Corrupter,
+                                            Position,
+                                            <<0:8/integer>>);
+                            _ ->
+                                ok
+                        end
+                        end,
+                    lists:seq(1, 100)),
+    ok = file:close(Corrupter),
+    
+    {ok, SFTr, _KeyExtremes} = sft_open(Filename),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sft_get(SFTr, K))
+                        end,
+                    KL1),
+    ok = sft_clear(SFTr).
+
 big_iterator_test() ->
     Filename = "../test/bigtest1.sft",
     {KL1, KL2} = {lists:sort(generate_randomkeys(10000)), []},
@@ -1907,26 +1950,32 @@ big_iterator_test() ->
     {Handle, FileMD, {KL1Rem, KL2Rem}} = complete_file(InitHandle, InitFileMD,
                                                         KL1, KL2,
                                                         #level{level=1}),
-    io:format("Remainder lengths are ~w and ~w ~n", [length(KL1Rem), length(KL2Rem)]),
-    {complete, Result1} = fetch_range_keysonly(Handle,
-                                                    FileMD,
-                                                    {o, "Bucket0000", "Key0000", null},
-                                                    {o, "Bucket9999", "Key9999", null},
-                                                    256),
+    io:format("Remainder lengths are ~w and ~w ~n", [length(KL1Rem),
+                                                        length(KL2Rem)]),
+    {complete,
+        Result1} = fetch_range_keysonly(Handle,
+                                            FileMD,
+                                            {o, "Bucket0000", "Key0000", null},
+                                            {o, "Bucket9999", "Key9999", null},
+                                            256),
     NumFoundKeys1 = length(Result1),
     NumAddedKeys = 10000 - length(KL1Rem),
     ?assertMatch(NumFoundKeys1, NumAddedKeys),
-    {partial, Result2, _} = fetch_range_keysonly(Handle,
-                                                    FileMD,
-                                                    {o, "Bucket0000", "Key0000", null},
-                                                    {o, "Bucket9999", "Key9999", null},
-                                                    32),
+    {partial,
+        Result2,
+        _} = fetch_range_keysonly(Handle,
+                                    FileMD,
+                                    {o, "Bucket0000", "Key0000", null},
+                                    {o, "Bucket9999", "Key9999", null},
+                                    32),
     ?assertMatch(32 * 128, length(Result2)),
-    {partial, Result3, _} = fetch_range_keysonly(Handle,
-                                                    FileMD,
-                                                    {o, "Bucket0000", "Key0000", null},
-                                                    {o, "Bucket9999", "Key9999", null},
-                                                    4),
+    {partial,
+        Result3,
+        _} = fetch_range_keysonly(Handle,
+                                    FileMD,
+                                    {o, "Bucket0000", "Key0000", null},
+                                    {o, "Bucket9999", "Key9999", null},
+                                    4),
     ?assertMatch(4 * 128, length(Result3)),
     ok = file:close(Handle),
     ok = file:delete(Filename).
