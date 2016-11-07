@@ -6,7 +6,7 @@
 %% only in a sequential Journal.
 %% - Different file formats are used for Journal (based on constant
 %% database), and the ledger (sft, based on sst)
-%% - It is not intended to be general purpose, but be specifically suited for
+%% - It is not intended to be general purpose, but be primarily suited for
 %% use as a Riak backend in specific circumstances (relatively large values,
 %% and frequent use of iterators)
 %% - The Journal is an extended nursery log in leveldb terms.  It is keyed
@@ -39,28 +39,17 @@
 %% - IndexSpecs - a set of secondary key changes associated with the
 %% transaction
 %%
-%% The Bookie takes the place request and passes it first to the Inker to add
-%% the request to the ledger.
+%% The Bookie takes the request and passes it first to the Inker to add the
+%% request to the journal.
 %%
 %% The inker will pass the PK/Value/IndexSpecs to the current (append only)
 %% CDB journal file to persist the change.  The call should return either 'ok'
 %% or 'roll'. -'roll' indicates that the CDB file has insufficient capacity for
-%% this write.
+%% this write, and a new journal file should be created (with appropriate
+%% manifest changes to be made).
 %%
-%% (Note that storing the IndexSpecs will create some duplication with the
-%% Metadata wrapped up within the Object value.  This Value and the IndexSpecs
-%% are compressed before storage, so this should provide some mitigation for
-%% the duplication).
-%%
-%% In resonse to a 'roll', the inker should:
-%% - start a new active journal file with an open_write_request, and then;
-%% - call to PUT the object in this file;
-%% - reply to the bookie, but then in the background
-%% - close the previously active journal file (writing the hashtree), and move
-%% it to the historic journal
-%%
-%% The inker will also return the SQN which the change has been made at, as
-%% well as the object size on disk within the Journal.
+%% The inker will return the SQN which the change has been made at, as well as
+%% the object size on disk within the Journal.
 %%
 %% Once the object has been persisted to the Journal, the Ledger can be updated.
 %% The Ledger is updated by the Bookie applying a function (extract_metadata/4)
@@ -68,30 +57,32 @@
 %% of the Value and also taking the Primary Key, the IndexSpecs, the Sequence
 %% Number in the Journal and the Object Size (returned from the Inker).
 %%
-%% The Bookie should generate a series of ledger key changes from this
-%% information, using a function passed in at startup.  For Riak this will be
-%% of the form:
-%% {{o_rkv, Bucket, Key, SubKey|null},
-%%      SQN,
-%%      {Hash, Size, {Riak_Metadata}},
-%%      {active, TS}|{tomb, TS}} or
-%% {{i, Bucket, {IndexTerm, IndexField}, Key},
-%%      SQN,
-%%      null,
-%%      {active, TS}|{tomb, TS}}
+%% A set of Ledger Key changes are then generated and placed in the Bookie's
+%% Ledger Key cache (a gb_tree).
 %%
-%% Recent Ledger changes are retained initially in the Bookies' memory (in a
-%% small generally balanced tree).  Periodically, the current table is pushed to
-%% the Penciller for eventual persistence, and a new table is started.
+%% The PUT can now be acknowledged.  In the background the Bookie may then
+%% choose to push the cache to the Penciller for eventual persistence within
+%% the ledger.  This push will either be acccepted or returned (if the
+%% Penciller has a backlog of key changes).  The back-pressure should lead to
+%% the Bookie entering into a slow-offer status whereby the next PUT will be
+%% acknowledged by a PAUSE signal - with the expectation that the this will
+%% lead to a back-off behaviour.
 %%
-%% This completes the non-deferrable work associated with a PUT
+%% -------- GET, HEAD --------
+%%
+%% The Bookie supports both GET and HEAD requests, with the HEAD request
+%% returning only the metadata and not the actual object value.  The HEAD
+%% requets cna be serviced by reference to the Ledger Cache and the Penciller.
+%%
+%% GET requests first follow the path of a HEAD request, and if an object is
+%% found, then fetch the value from the Journal via the Inker.
 %%
 %% -------- Snapshots (Key & Metadata Only) --------
 %%
 %% If there is a snapshot request (e.g. to iterate over the keys) the Bookie
 %% may request a clone of the Penciller, or the Penciller and the Inker.
 %%
-%% The clone is seeded with the manifest.  Teh clone should be registered with
+%% The clone is seeded with the manifest.  The clone should be registered with
 %% the real Inker/Penciller, so that the real Inker/Penciller may prevent the
 %% deletion of files still in use by a snapshot clone.
 %%
@@ -104,7 +95,7 @@
 %% -------- Special Ops --------
 %%
 %% e.g. Get all for SegmentID/Partition
-%%
+%% TODO
 %%
 %%
 %% -------- On Startup --------
