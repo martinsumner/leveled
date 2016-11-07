@@ -6,7 +6,7 @@
 %% only in a sequential Journal.
 %% - Different file formats are used for Journal (based on constant
 %% database), and the ledger (sft, based on sst)
-%% - It is not intended to be general purpose, but be specifically suited for
+%% - It is not intended to be general purpose, but be primarily suited for
 %% use as a Riak backend in specific circumstances (relatively large values,
 %% and frequent use of iterators)
 %% - The Journal is an extended nursery log in leveldb terms.  It is keyed
@@ -15,7 +15,7 @@
 %% the value is the metadata of the object including the sequence number
 %%
 %%
-%% -------- The actors ---------
+%% -------- Actors ---------
 %% 
 %% The store is fronted by a Bookie, who takes support from different actors:
 %% - An Inker who persists new data into the journal, and returns items from
@@ -39,28 +39,17 @@
 %% - IndexSpecs - a set of secondary key changes associated with the
 %% transaction
 %%
-%% The Bookie takes the place request and passes it first to the Inker to add
-%% the request to the ledger.
+%% The Bookie takes the request and passes it first to the Inker to add the
+%% request to the journal.
 %%
 %% The inker will pass the PK/Value/IndexSpecs to the current (append only)
 %% CDB journal file to persist the change.  The call should return either 'ok'
 %% or 'roll'. -'roll' indicates that the CDB file has insufficient capacity for
-%% this write.
+%% this write, and a new journal file should be created (with appropriate
+%% manifest changes to be made).
 %%
-%% (Note that storing the IndexSpecs will create some duplication with the
-%% Metadata wrapped up within the Object value.  This Value and the IndexSpecs
-%% are compressed before storage, so this should provide some mitigation for
-%% the duplication).
-%%
-%% In resonse to a 'roll', the inker should:
-%% - start a new active journal file with an open_write_request, and then;
-%% - call to PUT the object in this file;
-%% - reply to the bookie, but then in the background
-%% - close the previously active journal file (writing the hashtree), and move
-%% it to the historic journal
-%%
-%% The inker will also return the SQN which the change has been made at, as
-%% well as the object size on disk within the Journal.
+%% The inker will return the SQN which the change has been made at, as well as
+%% the object size on disk within the Journal.
 %%
 %% Once the object has been persisted to the Journal, the Ledger can be updated.
 %% The Ledger is updated by the Bookie applying a function (extract_metadata/4)
@@ -68,30 +57,32 @@
 %% of the Value and also taking the Primary Key, the IndexSpecs, the Sequence
 %% Number in the Journal and the Object Size (returned from the Inker).
 %%
-%% The Bookie should generate a series of ledger key changes from this
-%% information, using a function passed in at startup.  For Riak this will be
-%% of the form:
-%% {{o_rkv, Bucket, Key, SubKey|null},
-%%      SQN,
-%%      {Hash, Size, {Riak_Metadata}},
-%%      {active, TS}|{tomb, TS}} or
-%% {{i, Bucket, {IndexTerm, IndexField}, Key},
-%%      SQN,
-%%      null,
-%%      {active, TS}|{tomb, TS}}
+%% A set of Ledger Key changes are then generated and placed in the Bookie's
+%% Ledger Key cache (a gb_tree).
 %%
-%% Recent Ledger changes are retained initially in the Bookies' memory (in a
-%% small generally balanced tree).  Periodically, the current table is pushed to
-%% the Penciller for eventual persistence, and a new table is started.
+%% The PUT can now be acknowledged.  In the background the Bookie may then
+%% choose to push the cache to the Penciller for eventual persistence within
+%% the ledger.  This push will either be acccepted or returned (if the
+%% Penciller has a backlog of key changes).  The back-pressure should lead to
+%% the Bookie entering into a slow-offer status whereby the next PUT will be
+%% acknowledged by a PAUSE signal - with the expectation that the this will
+%% lead to a back-off behaviour.
 %%
-%% This completes the non-deferrable work associated with a PUT
+%% -------- GET, HEAD --------
 %%
-%% -------- Snapshots (Key & Metadata Only) --------
+%% The Bookie supports both GET and HEAD requests, with the HEAD request
+%% returning only the metadata and not the actual object value.  The HEAD
+%% requets cna be serviced by reference to the Ledger Cache and the Penciller.
+%%
+%% GET requests first follow the path of a HEAD request, and if an object is
+%% found, then fetch the value from the Journal via the Inker.
+%%
+%% -------- Snapshots/Clones --------
 %%
 %% If there is a snapshot request (e.g. to iterate over the keys) the Bookie
 %% may request a clone of the Penciller, or the Penciller and the Inker.
 %%
-%% The clone is seeded with the manifest.  Teh clone should be registered with
+%% The clone is seeded with the manifest.  The clone should be registered with
 %% the real Inker/Penciller, so that the real Inker/Penciller may prevent the
 %% deletion of files still in use by a snapshot clone.
 %%
@@ -100,12 +91,6 @@
 %% can only be deleted from the Ledger if it is no longer in the manifest, and
 %% there are no registered iterators from before the point the file was
 %% removed from the manifest.
-%%
-%% -------- Special Ops --------
-%%
-%% e.g. Get all for SegmentID/Partition
-%%
-%%
 %%
 %% -------- On Startup --------
 %%
@@ -134,16 +119,14 @@
         code_change/3,
         book_start/1,
         book_start/3,
-        book_riakput/3,
-        book_riakdelete/4,
-        book_riakget/3,
-        book_riakhead/3,
         book_put/5,
         book_put/6,
         book_tempput/7,
         book_delete/4,
         book_get/3,
+        book_get/4,
         book_head/3,
+        book_head/4,
         book_returnfolder/2,
         book_snapshotstore/3,
         book_snapshotledger/3,
@@ -161,7 +144,6 @@
 -define(LEDGER_FP, "ledger").
 -define(SNAPSHOT_TIMEOUT, 300000).
 -define(CHECKJOURNAL_PROB, 0.2).
--define(SLOWOFFER_DELAY, 5).
 
 -record(state, {inker :: pid(),
                 penciller :: pid(),
@@ -184,9 +166,6 @@ book_start(RootPath, LedgerCacheSize, JournalSize) ->
 book_start(Opts) ->
     gen_server:start(?MODULE, [Opts], []).
 
-book_riakput(Pid, RiakObject, IndexSpecs) ->
-    {Bucket, Key} = leveled_codec:riakto_keydetails(RiakObject),
-    book_put(Pid, Bucket, Key, RiakObject, IndexSpecs, ?RIAK_TAG).
 
 book_tempput(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) when is_integer(TTL) ->
     book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL).
@@ -197,20 +176,11 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs) ->
 book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag) ->
     book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, infinity).
 
-book_riakdelete(Pid, Bucket, Key, IndexSpecs) ->
-    book_put(Pid, Bucket, Key, delete, IndexSpecs, ?RIAK_TAG).
-
 book_delete(Pid, Bucket, Key, IndexSpecs) ->
     book_put(Pid, Bucket, Key, delete, IndexSpecs, ?STD_TAG).
 
-book_riakget(Pid, Bucket, Key) ->
-    book_get(Pid, Bucket, Key, ?RIAK_TAG).
-
 book_get(Pid, Bucket, Key) ->
     book_get(Pid, Bucket, Key, ?STD_TAG).
-
-book_riakhead(Pid, Bucket, Key) ->
-    book_head(Pid, Bucket, Key, ?RIAK_TAG).
 
 book_head(Pid, Bucket, Key) ->
     book_head(Pid, Bucket, Key, ?STD_TAG).
@@ -293,11 +263,10 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State) ->
     % will beocme more frequent
     case State#state.slow_offer of
         true ->
-            timer:sleep(?SLOWOFFER_DELAY);
+            gen_server:reply(From, pause);
         false ->
-            ok
+            gen_server:reply(From, ok)
     end,
-    gen_server:reply(From, ok),
     case  maybepush_ledgercache(State#state.cache_size,
                                             Cache0,
                                             State#state.penciller) of
@@ -933,12 +902,12 @@ single_key_test() ->
                                 {"MDK1", "MDV1"}},
     Content = #r_content{metadata=MD, value=V1},
     Object = #r_object{bucket=B1, key=K1, contents=[Content], vclock=[{'a',1}]},
-    ok = book_riakput(Bookie1, Object, Spec1),
-    {ok, F1} = book_riakget(Bookie1, B1, K1),
+    ok = book_put(Bookie1, B1, K1, Object, Spec1, ?RIAK_TAG),
+    {ok, F1} = book_get(Bookie1, B1, K1, ?RIAK_TAG),
     ?assertMatch(F1, Object),
     ok = book_close(Bookie1),
     {ok, Bookie2} = book_start([{root_path, RootPath}]),
-    {ok, F2} = book_riakget(Bookie2, B1, K1),
+    {ok, F2} = book_get(Bookie2, B1, K1, ?RIAK_TAG),
     ?assertMatch(F2, Object),
     ok = book_close(Bookie2),
     reset_filestructure().
@@ -960,41 +929,53 @@ multi_key_test() ->
                                 {"MDK2", "MDV2"}},
     C2 = #r_content{metadata=MD2, value=V2},
     Obj2 = #r_object{bucket=B2, key=K2, contents=[C2], vclock=[{'a',1}]},
-    ok = book_riakput(Bookie1, Obj1, Spec1),
+    ok = book_put(Bookie1, B1, K1, Obj1, Spec1, ?RIAK_TAG),
     ObjL1 = generate_multiple_robjects(100, 3),
     SW1 = os:timestamp(),
-    lists:foreach(fun({O, S}) -> ok = book_riakput(Bookie1, O, S) end, ObjL1),
+    lists:foreach(fun({O, S}) ->
+                        {B, K} = leveled_codec:riakto_keydetails(O),
+                        ok = book_put(Bookie1, B, K, O, S, ?RIAK_TAG)
+                        end,
+                    ObjL1),
     io:format("PUT of 100 objects completed in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(),SW1)]),
-    ok = book_riakput(Bookie1, Obj2, Spec2),
-    {ok, F1A} = book_riakget(Bookie1, B1, K1),
+    ok = book_put(Bookie1, B2, K2, Obj2, Spec2, ?RIAK_TAG),
+    {ok, F1A} = book_get(Bookie1, B1, K1, ?RIAK_TAG),
     ?assertMatch(F1A, Obj1),
-    {ok, F2A} = book_riakget(Bookie1, B2, K2),
+    {ok, F2A} = book_get(Bookie1, B2, K2, ?RIAK_TAG),
     ?assertMatch(F2A, Obj2),
     ObjL2 = generate_multiple_robjects(100, 103),
     SW2 = os:timestamp(),
-    lists:foreach(fun({O, S}) -> ok = book_riakput(Bookie1, O, S) end, ObjL2),
+    lists:foreach(fun({O, S}) ->
+                        {B, K} = leveled_codec:riakto_keydetails(O),
+                        ok = book_put(Bookie1, B, K, O, S, ?RIAK_TAG)
+                        end,
+                    ObjL2),
     io:format("PUT of 100 objects completed in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(),SW2)]),
-    {ok, F1B} = book_riakget(Bookie1, B1, K1),
+    {ok, F1B} = book_get(Bookie1, B1, K1, ?RIAK_TAG),
     ?assertMatch(F1B, Obj1),
-    {ok, F2B} = book_riakget(Bookie1, B2, K2),
+    {ok, F2B} = book_get(Bookie1, B2, K2, ?RIAK_TAG),
     ?assertMatch(F2B, Obj2),
     ok = book_close(Bookie1),
     % Now reopen the file, and confirm that a fetch is still possible
     {ok, Bookie2} = book_start([{root_path, RootPath}]),
-    {ok, F1C} = book_riakget(Bookie2, B1, K1),
+    {ok, F1C} = book_get(Bookie2, B1, K1, ?RIAK_TAG),
     ?assertMatch(F1C, Obj1),
-    {ok, F2C} = book_riakget(Bookie2, B2, K2),
+    {ok, F2C} = book_get(Bookie2, B2, K2, ?RIAK_TAG),
     ?assertMatch(F2C, Obj2),
     ObjL3 = generate_multiple_robjects(100, 203),
     SW3 = os:timestamp(),
-    lists:foreach(fun({O, S}) -> ok = book_riakput(Bookie2, O, S) end, ObjL3),
+    lists:foreach(fun({O, S}) ->
+                        {B, K} = leveled_codec:riakto_keydetails(O),
+                        ok = book_put(Bookie2, B, K, O, S, ?RIAK_TAG)
+                        end,
+                    ObjL3),
     io:format("PUT of 100 objects completed in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(),SW3)]),
-    {ok, F1D} = book_riakget(Bookie2, B1, K1),
+    {ok, F1D} = book_get(Bookie2, B1, K1, ?RIAK_TAG),
     ?assertMatch(F1D, Obj1),
-    {ok, F2D} = book_riakget(Bookie2, B2, K2),
+    {ok, F2D} = book_get(Bookie2, B2, K2, ?RIAK_TAG),
     ?assertMatch(F2D, Obj2),
     ok = book_close(Bookie2),
     reset_filestructure().

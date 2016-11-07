@@ -47,7 +47,7 @@ aae_bustedjournal(_Config) ->
                     {max_journalsize, 20000000}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts),
     {TestObject, TestSpec} = testutil:generate_testobject(),
-    ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
+    ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
     testutil:check_forobject(Bookie1, TestObject),
     GenList = [2],
     _CLs = testutil:load_objects(20000, GenList, Bookie1, TestObject,
@@ -64,7 +64,7 @@ aae_bustedjournal(_Config) ->
     KeyList = KeyF(),
     20001 = length(KeyList),
     HeadCount = lists:foldl(fun({B, K}, Acc) ->
-                                    case leveled_bookie:book_riakhead(Bookie2,
+                                    case testutil:book_riakhead(Bookie2,
                                                                         B,
                                                                         K) of
                                         {ok, _} -> Acc + 1;
@@ -75,7 +75,7 @@ aae_bustedjournal(_Config) ->
                                 KeyList),
     20001 = HeadCount,
     GetCount = lists:foldl(fun({B, K}, Acc) ->
-                                    case leveled_bookie:book_riakget(Bookie2,
+                                    case testutil:book_riakget(Bookie2,
                                                                         B,
                                                                         K) of
                                         {ok, _} -> Acc + 1;
@@ -199,16 +199,16 @@ journal_compaction_bustedjournal(_Config) ->
                     {max_run_length, 10}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
-    ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
+    ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
     testutil:check_forobject(Bookie1, TestObject),
     ObjList1 = testutil:generate_objects(50000, 2),
     lists:foreach(fun({_RN, Obj, Spc}) ->
-                        leveled_bookie:book_riakput(Bookie1, Obj, Spc) end,
+                        testutil:book_riakput(Bookie1, Obj, Spc) end,
                     ObjList1),
     %% Now replace all the objects
     ObjList2 = testutil:generate_objects(50000, 2),
     lists:foreach(fun({_RN, Obj, Spc}) ->
-                        leveled_bookie:book_riakput(Bookie1, Obj, Spc) end,
+                        testutil:book_riakput(Bookie1, Obj, Spc) end,
                     ObjList2),
     ok = leveled_bookie:book_close(Bookie1),
     

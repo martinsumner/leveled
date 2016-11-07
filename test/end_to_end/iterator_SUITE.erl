@@ -24,7 +24,7 @@ small_load_with2i(_Config) ->
                     % low journal size to make sure > 1 created
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
-    ok = leveled_bookie:book_riakput(Bookie1, TestObject, TestSpec),
+    ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
     testutil:check_forobject(Bookie1, TestObject),
     testutil:check_formissingobject(Bookie1, "Bucket1", "Key2"),
     testutil:check_forobject(Bookie1, TestObject),
@@ -35,9 +35,7 @@ small_load_with2i(_Config) ->
                                         [],
                                         ObjectGen,
                                         IndexGen),
-    lists:foreach(fun({_RN, Obj, Spc}) ->
-                        leveled_bookie:book_riakput(Bookie1, Obj, Spc) end,
-                    ObjL1),
+    testutil:riakload(Bookie1, ObjL1),
     ChkList1 = lists:sublist(lists:sort(ObjL1), 100),
     testutil:check_forlist(Bookie1, ChkList1),
     testutil:check_forobject(Bookie1, TestObject),
@@ -48,7 +46,7 @@ small_load_with2i(_Config) ->
                                                                 end,
                                             Spc),
                         {B, K} = leveled_codec:riakto_keydetails(Obj),
-                        leveled_bookie:book_riakdelete(Bookie1, B, K, DSpc)
+                        testutil:book_riakdelete(Bookie1, B, K, DSpc)
                         end,
                     ChkList1),
     %% Get the Buckets Keys and Hashes for the whole bucket
@@ -116,7 +114,7 @@ query_count(_Config) ->
                                                             "Value1",
                                                             [],
                                                             {"MDK1", "MDV1"}),
-    ok = leveled_bookie:book_riakput(Book1, TestObject, TestSpec),
+    ok = testutil:book_riakput(Book1, TestObject, TestSpec),
     testutil:check_forobject(Book1, TestObject),
     testutil:check_formissingobject(Book1, "Bucket1", "Key2"),
     testutil:check_forobject(Book1, TestObject),
@@ -129,12 +127,7 @@ query_count(_Config) ->
                                                             [],
                                                             V,
                                                             Indexes),
-                        lists:foreach(fun({_RN, Obj, Spc}) ->
-                                            leveled_bookie:book_riakput(Book1,
-                                                                        Obj,
-                                                                        Spc)
-                                            end,
-                                        ObjL1),
+                        testutil:riakload(Book1, ObjL1),
                         io:format("Put of 10000 objects with 8 index entries "
                                         ++
                                         "each completed in ~w microseconds~n",
@@ -243,7 +236,7 @@ query_count(_Config) ->
     V9 = testutil:get_compressiblevalue(),
     Indexes9 = testutil:get_randomindexes_generator(8),
     [{_RN, Obj9, Spc9}] = testutil:generate_objects(1, uuid, [], V9, Indexes9),
-    ok = leveled_bookie:book_riakput(Book2, Obj9, Spc9),
+    ok = testutil:book_riakput(Book2, Obj9, Spc9),
     R9 = lists:map(fun({add, IdxF, IdxT}) ->
                         R = leveled_bookie:book_returnfolder(Book2,
                                                             {index_query,
@@ -261,7 +254,7 @@ query_count(_Config) ->
                     Spc9),
     Spc9Del = lists:map(fun({add, IdxF, IdxT}) -> {remove, IdxF, IdxT} end,
                         Spc9),
-    ok = leveled_bookie:book_riakput(Book2, Obj9, Spc9Del),
+    ok = testutil:book_riakput(Book2, Obj9, Spc9Del),
     lists:foreach(fun({IdxF, IdxT, X}) ->
                         R = leveled_bookie:book_returnfolder(Book2,
                                                             {index_query,
@@ -294,7 +287,7 @@ query_count(_Config) ->
                         end
                         end,
                     R9),
-    ok = leveled_bookie:book_riakput(Book3, Obj9, Spc9),
+    ok = testutil:book_riakput(Book3, Obj9, Spc9),
     ok = leveled_bookie:book_close(Book3),
     {ok, Book4} = leveled_bookie:book_start(RootPath, 2000, 50000000),
     lists:foreach(fun({IdxF, IdxT, X}) ->
