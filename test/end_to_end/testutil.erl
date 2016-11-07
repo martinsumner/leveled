@@ -391,7 +391,10 @@ put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i) ->
                                                                     V,
                                                                     IndexGen,
                                                                     AddSpc),
-                                ok = book_riakput(Book, O, AltSpc),
+                                case book_riakput(Book, O, AltSpc) of
+                                    ok - > ok;
+                                    pause -> timer:sleep(?SLOWOFFER_DELAY)
+                                end,
                                 {K, AltSpc} end,
                             KSpecL),
     {RplKSpecL, V}.
