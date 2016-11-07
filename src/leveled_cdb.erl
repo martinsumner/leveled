@@ -1774,6 +1774,49 @@ state_test() ->
     ?assertMatch({"Key1", "Value1"}, cdb_get(P1, "Key1")),
     ok = cdb_close(P1).
 
+hashclash_test() ->
+    {ok, P1} = cdb_open_writer("../test/hashclash_test.pnd",
+                                #cdb_options{binary_mode=false}),
+    Key1 = "Key4184465780",
+    Key99 = "Key4254669179",
+    KeyNF = "Key9070567319",
+    ?assertMatch(22, hash(Key1)),
+    ?assertMatch(22, hash(Key99)),
+    ?assertMatch(22, hash(KeyNF)),
+    
+    ok = cdb_mput(P1, [{Key1, 1}, {Key99, 99}]),
+    
+    ?assertMatch(probably, cdb_keycheck(P1, Key1)),
+    ?assertMatch(probably, cdb_keycheck(P1, Key99)),
+    ?assertMatch(probably, cdb_keycheck(P1, KeyNF)),
+    
+    ?assertMatch({Key1, 1}, cdb_get(P1, Key1)),
+    ?assertMatch({Key99, 99}, cdb_get(P1, Key99)),
+    ?assertMatch(missing, cdb_get(P1, KeyNF)),
+    
+    {ok, FN} = cdb_complete(P1),
+    {ok, P2} = cdb_open_reader(FN),
+    
+    ?assertMatch(probably, cdb_keycheck(P2, Key1)),
+    ?assertMatch(probably, cdb_keycheck(P2, Key99)),
+    ?assertMatch(probably, cdb_keycheck(P2, KeyNF)),
+    
+    ?assertMatch({Key1, 1}, cdb_get(P2, Key1)),
+    ?assertMatch({Key99, 99}, cdb_get(P2, Key99)),
+    ?assertMatch(missing, cdb_get(P2, KeyNF)),
+    
+    ok = cdb_deletepending(P2),
+    
+    ?assertMatch(probably, cdb_keycheck(P2, Key1)),
+    ?assertMatch(probably, cdb_keycheck(P2, Key99)),
+    ?assertMatch(probably, cdb_keycheck(P2, KeyNF)),
+    
+    ?assertMatch({Key1, 1}, cdb_get(P2, Key1)),
+    ?assertMatch({Key99, 99}, cdb_get(P2, Key99)),
+    ?assertMatch(missing, cdb_get(P2, KeyNF)),
+    
+    ok = cdb_close(P2).
+
 corruptfile_test() ->
     file:delete("../test/corrupt_test.pnd"),
     {ok, P1} = cdb_open_writer("../test/corrupt_test.pnd",

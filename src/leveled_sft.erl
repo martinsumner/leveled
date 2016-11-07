@@ -391,8 +391,6 @@ delete_pending({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
                                                         ScanWidth),
                                             self()),
     {reply, Reply, delete_pending, State, ?DELETE_TIMEOUT};
-delete_pending(get_maxsqn, _From, State) ->
-    {reply, State#state.highest_sqn, delete_pending, State, ?DELETE_TIMEOUT};
 delete_pending(close, _From, State) ->
     leveled_log:log("SFT06", [State#state.filename]),
     ok = file:close(State#state.handle),
@@ -418,7 +416,6 @@ handle_event(_Msg, StateName, State) ->
 
 handle_info(_Msg, StateName, State) ->
     {next_state, StateName, State}.
-
 
 terminate(Reason, _StateName, State) ->
     leveled_log:log("SFT05", [Reason, State#state.filename]).
@@ -1980,6 +1977,40 @@ big_iterator_test() ->
     ok = file:close(Handle),
     ok = file:delete(Filename).
 
+hashclash_test() ->
+    Filename = "../test/hashclash.sft",
+    Key1 = {o, "Bucket", "Key838068", null},
+    Key99 = {o, "Bucket", "Key898982", null},
+    KeyNF = {o, "Bucket", "Key539122", null},
+    ?assertMatch(4, hash_for_segmentid({keyonly, Key1})),
+    ?assertMatch(4, hash_for_segmentid({keyonly, Key99})),
+    ?assertMatch(4, hash_for_segmentid({keyonly, KeyNF})),
+    KeyList = lists:foldl(fun(X, Acc) ->
+                                Key = {o,
+                                        "Bucket",
+                                        "Key8400" ++ integer_to_list(X),
+                                        null},
+                                Value = {X, {active, infinity}, null},
+                                Acc ++ [{Key, Value}] end,
+                            [],
+                            lists:seq(10,98)),
+    KeyListToUse = [{Key1, {1, {active, infinity}, null}}|KeyList]
+                    ++ [{Key99, {99, {active, infinity}, null}}],
+    {InitHandle, InitFileMD} = create_file(Filename),
+    {Handle, _FileMD, _Rem} = complete_file(InitHandle, InitFileMD,
+                                                KeyListToUse, [],
+                                                #level{level=1}),
+    ok = file:close(Handle),
+    {ok, SFTr, _KeyExtremes} = sft_open(Filename),
+    ?assertMatch({Key1, {1, {active, infinity}, null}},
+                    sft_get(SFTr, Key1)),
+    ?assertMatch({Key99, {99, {active, infinity}, null}},
+                    sft_get(SFTr, Key99)),
+    ?assertMatch(not_present,
+                    sft_get(SFTr, KeyNF)),
+    
+    ok = sft_clear(SFTr).
+
 filename_test() ->
     FN1 = "../tmp/filename",
     FN2 = "../tmp/filename.pnd",
@@ -1991,5 +2022,10 @@ filename_test() ->
     ?assertMatch({"../tmp/subdir/file_name.pnd",
                         "../tmp/subdir/file_name.sft"},
                     generate_filenames(FN3)).
+
+nonsense_coverage_test() ->
+    {ok, Pid} = gen_fsm:start(?MODULE, [], []),
+    undefined = gen_fsm:sync_send_all_state_event(Pid, nonsense),
+    ok = gen_fsm:send_all_state_event(Pid, nonsense).
 
 -endif.
