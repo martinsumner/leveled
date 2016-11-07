@@ -1,21 +1,19 @@
+%% -------- CDB File Clerk ---------
 %%
 %% This is a modified version of the cdb module provided by Tom Whitcomb.  
 %%
 %% - https://github.com/thomaswhitcomb/erlang-cdb
 %%
+%% The CDB module is an implementation of the constant database format
+%% described by DJ Bernstein
+%%
+%% - https://cr.yp.to/cdb.html
+%%
 %% The primary differences are: 
 %% - Support for incrementally writing a CDB file while keeping the hash table 
 %% in memory
-%% - The ability to scan a database and accumulate all the Key, Values to 
-%% rebuild in-memory tables on startup 
 %% - The ability to scan a database in blocks of sequence numbers
-%%
-%% This is to be used in eleveledb, and in this context: 
-%% - Keys will be a combinatio of the PrimaryKey and the Sequence Number
-%% - Values will be a serialised version on the whole object, and the
-%% IndexChanges associated with the transaction
-%% Where the IndexChanges are all the Key changes required to be added to the
-%% ledger to complete the changes (the addition of postings and tombstones).
+%% - The applictaion of a CRC chekc by default to all values
 %%
 %% This module provides functions to create and query a CDB (constant database).
 %% A CDB implements a two-level hashtable which provides fast {key,value} 
