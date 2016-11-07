@@ -35,9 +35,7 @@ small_load_with2i(_Config) ->
                                         [],
                                         ObjectGen,
                                         IndexGen),
-    lists:foreach(fun({_RN, Obj, Spc}) ->
-                        testutil:book_riakput(Bookie1, Obj, Spc) end,
-                    ObjL1),
+    testutil:riakload(Bookie1, ObjL1),
     ChkList1 = lists:sublist(lists:sort(ObjL1), 100),
     testutil:check_forlist(Bookie1, ChkList1),
     testutil:check_forobject(Bookie1, TestObject),
@@ -129,12 +127,7 @@ query_count(_Config) ->
                                                             [],
                                                             V,
                                                             Indexes),
-                        lists:foreach(fun({_RN, Obj, Spc}) ->
-                                            testutil:book_riakput(Book1,
-                                                                        Obj,
-                                                                        Spc)
-                                            end,
-                                        ObjL1),
+                        testutil:riakload(Book1, ObjL1),
                         io:format("Put of 10000 objects with 8 index entries "
                                         ++
                                         "each completed in ~w microseconds~n",

@@ -157,7 +157,6 @@
 -define(LEDGER_FP, "ledger").
 -define(SNAPSHOT_TIMEOUT, 300000).
 -define(CHECKJOURNAL_PROB, 0.2).
--define(SLOWOFFER_DELAY, 5).
 
 -record(state, {inker :: pid(),
                 penciller :: pid(),
@@ -277,11 +276,10 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State) ->
     % will beocme more frequent
     case State#state.slow_offer of
         true ->
-            timer:sleep(?SLOWOFFER_DELAY);
+            gen_server:reply(From, pause);
         false ->
-            ok
+            gen_server:reply(From, ok)
     end,
-    gen_server:reply(From, ok),
     case  maybepush_ledgercache(State#state.cache_size,
                                             Cache0,
                                             State#state.penciller) of

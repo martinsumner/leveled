@@ -6,6 +6,7 @@
             book_riakdelete/4,
             book_riakget/3,
             book_riakhead/3,
+            riakload/2,
             reset_filestructure/0,
             reset_filestructure/1,
             check_bucket_stats/2,
@@ -41,6 +42,7 @@
             riak_hash/1]).
 
 -define(RETURN_TERMS, {true, undefined}).
+-define(SLOWOFFER_DELAY, 5).
 
 
 
@@ -58,7 +60,15 @@ book_riakhead(Pid, Bucket, Key) ->
     leveled_book:book_head(Pid, Bucket, Key, ?RIAK_TAG).
 
 
-
+riakload(Bookie, ObjectList) ->
+    lists:foreach(fun({_RN, Obj, Spc}) ->
+                            R = book_riakput(Bookie,Obj, Spc),
+                            case R of
+                                ok -> ok;
+                                pause -> timer:sleep(?SLOWOFFER_DELAY)
+                            end
+                            end,
+                    ObjectList).
 
 
 reset_filestructure() ->
@@ -257,10 +267,7 @@ load_objects(ChunkSize, GenList, Bookie, TestObject, Generator) ->
     lists:map(fun(KN) ->
                     ObjListA = Generator(ChunkSize, KN),
                     StartWatchA = os:timestamp(),
-                    lists:foreach(fun({_RN, Obj, Spc}) ->
-                            book_riakput(Bookie, Obj, Spc)
-                            end,
-                        ObjListA),
+                    riakload(Bookie, ObjListA),
                     Time = timer:now_diff(os:timestamp(), StartWatchA),
                     io:format("~w objects loaded in ~w seconds~n",
                                 [ChunkSize, Time/1000000]),
