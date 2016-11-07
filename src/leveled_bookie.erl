@@ -15,7 +15,7 @@
 %% the value is the metadata of the object including the sequence number
 %%
 %%
-%% -------- The actors ---------
+%% -------- Actors ---------
 %% 
 %% The store is fronted by a Bookie, who takes support from different actors:
 %% - An Inker who persists new data into the journal, and returns items from
@@ -77,7 +77,7 @@
 %% GET requests first follow the path of a HEAD request, and if an object is
 %% found, then fetch the value from the Journal via the Inker.
 %%
-%% -------- Snapshots (Key & Metadata Only) --------
+%% -------- Snapshots/Clones --------
 %%
 %% If there is a snapshot request (e.g. to iterate over the keys) the Bookie
 %% may request a clone of the Penciller, or the Penciller and the Inker.
@@ -91,12 +91,6 @@
 %% can only be deleted from the Ledger if it is no longer in the manifest, and
 %% there are no registered iterators from before the point the file was
 %% removed from the manifest.
-%%
-%% -------- Special Ops --------
-%%
-%% e.g. Get all for SegmentID/Partition
-%% TODO
-%%
 %%
 %% -------- On Startup --------
 %%
