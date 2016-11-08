@@ -7,8 +7,9 @@ LeveledDB is an experimental Key/Value store based on the Log-Structured Merge T
 The specific goals of this implementation are:
 
 - Be simple and straight-forward to understand and extend
-- Support objects which have keys, secondary indexes, a value and potentially metadata which provides key summary information about the value
+- Support objects which have keys, secondary indexes, a value and potentially some metadata which provides a useful subset of the information in the value
 - Support a HEAD request which has a lower cost than a GET request, so that requests requiring access only to metadata can gain efficiency by saving the full cost of returning the entire value
+- Tries to reduce write amplification when compared with LevelDB, to reduce disk contention but also make rsync style backup strategies more efficient
 
 The system context for the store at conception is as a Riak backend store with a complete set of backend capabilities, but one intended to be use with relatively frequent iterators, and values of non-trivial size (e.g. > 4KB).
 
@@ -24,7 +25,7 @@ The store is written in Erlang using the actor model, the primary actors being:
 
 ### The Bookie
 
-The Bookie provides the public interface of the store, liaising with the Inker and the Penciller to resolve requests to put new objects, and fetch those objects.  The Bookie keeps a copy of key changes and metadata associated with recent modifications, but otherwise has no direct access to state within the store.  The Bookie can provide clones of the Penciller and the Inker to support queries which scan across more than one object in the store.
+The Bookie provides the public interface of the store, liaising with the Inker and the Penciller to resolve requests to put new objects, and fetch those objects.  The Bookie keeps a copy of key changes and metadata associated with recent modifications, but otherwise has no direct access to state within the store.  The Bookie can replicate clones of the Penciller and the Inker to support queries which scan across more than one object in the store.
 
 ### The Inker
 
@@ -32,7 +33,7 @@ The Inker is responsible for keeping the Journal of all changes which have been 
 
 Changes to the store should be acknowledged if and only if they have been persisted to the Journal.  The Inker can efficiently find value in the store by looking up the journal file using the sequence number of change in a Manifest it maintains mapping sequence number ranges to Journal files.
 
-The Inker can also scan the Journal from a particular sequence number, for example to recover another actor's lost state following a shutdown.
+The Inker can also scan the Journal from a particular sequence number, for example to recover the Penciller's lost in-memory state following a shutdown.
 
 ### The Penciller
 
@@ -54,16 +55,40 @@ Every file within the store has is owned by its own dedicated process (modelled 
 
 The Files themselves are ignorant to their context within the store - a file in the Ledger does not know what level of the Tree it resides in.  The state of the store is represented by the Manifest which maintains a picture of the store, and contains the process IDs of the file clerks which represent the files.
 
-Cloning of the store does not require any file-system level activity - a clone simply needs to know the manifest so that it can independently make requests of the File Clerk processes.
+Cloning of the store does not require any file-system level activity - a clone simply needs to know the manifest so that it can independently make requests of the File Clerk processes, and register itself with the Inker/Penciller so that those files are not deleted whilst the clone is active.
 
 The Journal files use a constant database format almost exactly replicating the CDB format originally designed by DJ Bernstein.  The Ledger files use a bespoke format with is based on Google's SST format, with the primary difference being that the bloom filters used to protect against unnecessary lookups are based on the Riak Segment IDs of the key, and use single-hash rice-encoded sets rather using the traditional bloom filter size-optimisation model of extending the number of hashes used to reduce the false-positive rate.
+
+File clerks spend a short initial portion of their life in a writable state, but once they have left a writing state they will for the remainder of their life-cycle be in an immutable read-only state.
+
+## Paths
+
+The PUT path for new objects and object changes depends on the Bookie interacting with the Inker to ensure that the change has been persisted with the Journal, the Ledger is updated in batches after the PUT has been completed.
+
+The HEAD path needs the Bookie to look in his cache of recent Ledger changes, and if the change is not present consult with the Penciller.
+
+The GET path follows the HEAD path, but once the sequence number has been determined through the response from the Ledger the object itself is fetched from the journal via the Inker.
+
+All other queries (folds over indexes, keys and objects) are managed by cloning either the Penciller, or the Penciller and the Inker.
 
 ## Trade-Offs
 
 Further information of specific design trade-off decisions is provided:
 
 - Not memory mapping
+- Backup and Recovery
 - Memory management
 - The Penciller memory
-- The use of Bloom filters
-- Stalling or pausing
+- File formats
+- Stalling, pausing and back-pressure
+- Riak Anti-Entropy
+- Riak and HEAD requests
+- Riak and alternative queries
+
+## Naming Things is Hard
+
+The naming of actors within the model is very loosely based on the slang associated with an on-course Bookmaker.  
+
+## Learning
+
+The project was started in part as a learning exercise.  This is my first Erlang project, and has been used to try and familiarise myself with Erlang concepts.  However, there are undoubtedly many lessons still to be learned about how to write good Erlang OTP applications.
