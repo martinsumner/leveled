@@ -2026,6 +2026,13 @@ filename_test() ->
 nonsense_coverage_test() ->
     {ok, Pid} = gen_fsm:start(?MODULE, [], []),
     undefined = gen_fsm:sync_send_all_state_event(Pid, nonsense),
-    ok = gen_fsm:send_all_state_event(Pid, nonsense).
+    ok = gen_fsm:send_all_state_event(Pid, nonsense),
+    ?assertMatch({next_state, reader, #state{}}, handle_info(nonsense,
+                                                                reader,
+                                                                #state{})),
+    ?assertMatch({ok, reader, #state{}}, code_change(nonsense,
+                                                        reader,
+                                                        #state{},
+                                                        nonsense)).
 
 -endif.

@@ -1098,9 +1098,9 @@ search_hash_table(Handle, [Entry|RestOfEntries], Hash, Key, QuickCheck) ->
                 _ ->
                     KV 
             end;
-        0 ->
-            % Hash is 0 so key must be missing as 0 found before Hash matched
-            missing;
+        %0 ->
+        %    % Hash is 0 so key must be missing as 0 found before Hash matched
+        %    missing;
         _ ->
             search_hash_table(Handle, RestOfEntries, Hash, Key, QuickCheck)
     end.
@@ -1840,5 +1840,16 @@ corrupt_testfile_at_offset(Offset) ->
     ok = cdb_put(P2, "Key100", "Value100"),
     ?assertMatch({"Key100", "Value100"}, cdb_get(P2, "Key100")),
     ok = cdb_close(P2).
+
+nonsense_coverage_test() ->
+    {ok, Pid} = gen_fsm:start(?MODULE, [#cdb_options{}], []),
+    ok = gen_fsm:send_all_state_event(Pid, nonsense),
+    ?assertMatch({next_state, reader, #state{}}, handle_info(nonsense,
+                                                                reader,
+                                                                #state{})),
+    ?assertMatch({ok, reader, #state{}}, code_change(nonsense,
+                                                        reader,
+                                                        #state{},
+                                                        nonsense)).
 
 -endif.
