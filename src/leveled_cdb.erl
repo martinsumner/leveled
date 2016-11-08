@@ -178,6 +178,7 @@ cdb_destroy(Pid) ->
     gen_fsm:send_event(Pid, destroy).
 
 cdb_deletepending(Pid) ->
+    % Only used in unit tests
     cdb_deletepending(Pid, 0, no_poll).
 
 cdb_deletepending(Pid, ManSQN, Inker) ->
@@ -437,28 +438,21 @@ delete_pending({key_check, Key}, _From, State) ->
         State,
         ?DELETE_TIMEOUT}.
 
-delete_pending(timeout, State) ->
-    case State#state.delete_point of
-        0 ->
-            {next_state, delete_pending, State};
-        ManSQN ->
-            case is_process_alive(State#state.inker) of
+delete_pending(timeout, State=#state(delete_point=ManSQN) when ManSQN > 0 ->
+    case is_process_alive(State#state.inker) of
+        true ->
+            case leveled_inker:ink_confirmdelete(State#state.inker, ManSQN) of
                 true ->
-                    case leveled_inker:ink_confirmdelete(State#state.inker,
-                                                            ManSQN) of
-                        true ->
-                            leveled_log:log("CDB04", [State#state.filename,
-                                                        ManSQN]),
-                            {stop, normal, State};
-                        false ->
-                            {next_state,
-                                delete_pending,
-                                State,
-                                ?DELETE_TIMEOUT}
-                    end;
+                    leveled_log:log("CDB04", [State#state.filename, ManSQN]),
+                    {stop, normal, State};
                 false ->
-                    {stop, normal, State}
-            end
+                    {next_state,
+                        delete_pending,
+                        State,
+                        ?DELETE_TIMEOUT}
+            end;
+        false ->
+            {stop, normal, State}
     end;
 delete_pending(destroy, State) ->
     ok = file:close(State#state.handle),
