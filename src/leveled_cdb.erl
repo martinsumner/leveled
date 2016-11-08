@@ -1324,14 +1324,10 @@ dump(FileName) ->
         case read_next_term(Handle, VL, crc) of
             {_, Value} ->
                 {ok, CurrLoc} = file:position(Handle, cur),
-                Return =
-                    case get(Handle, Key) of
-                        {Key,Value} -> {Key ,Value};
-                        X ->  {wonky, X}
-                    end
+                {Key,Value} = get(Handle, Key)
         end,
         {ok, _} = file:position(Handle, CurrLoc),
-        [Return | Acc]
+        [{Key,Value} | Acc]
     end,
     lists:foldr(Fn1, [], lists:seq(0, NumberOfPairs-1)).
 
@@ -1813,7 +1809,7 @@ corruptfile_test() ->
     lists:foreach(fun(Offset) -> corrupt_testfile_at_offset(Offset) end,
                     lists:seq(1, 40)),
     ok = file:delete("../test/corrupt_test.pnd").
-    
+
 corrupt_testfile_at_offset(Offset) ->
     {ok, F1} = file:open("../test/corrupt_test.pnd", ?WRITE_OPS),
     {ok, EofPos} = file:position(F1, eof),
@@ -1823,6 +1819,30 @@ corrupt_testfile_at_offset(Offset) ->
     {ok, P2} = cdb_open_writer("../test/corrupt_test.pnd",
                                 #cdb_options{binary_mode=false}),
     ?assertMatch(probably, cdb_keycheck(P2, "Key1")),
+    ?assertMatch({"Key1", "Value1"}, cdb_get(P2, "Key1")),
+    ?assertMatch(missing, cdb_get(P2, "Key100")),
+    ok = cdb_put(P2, "Key100", "Value100"),
+    ?assertMatch({"Key100", "Value100"}, cdb_get(P2, "Key100")),
+    ok = cdb_close(P2).
+
+crc_corrupt_writer_test() ->
+    file:delete("../test/corruptwrt_test.pnd"),
+    {ok, P1} = cdb_open_writer("../test/corruptwrt_test.pnd",
+                                #cdb_options{binary_mode=false}),
+    KVList = generate_sequentialkeys(100, []),
+    ok = cdb_mput(P1, KVList),
+    ?assertMatch(probably, cdb_keycheck(P1, "Key1")),
+    ?assertMatch({"Key1", "Value1"}, cdb_get(P1, "Key1")),
+    ?assertMatch({"Key100", "Value100"}, cdb_get(P1, "Key100")),
+    ok = cdb_close(P1),
+    {ok, Handle} = file:open("../test/corruptwrt_test.pnd", ?WRITE_OPS),
+    {ok, EofPos} = file:position(Handle, eof),
+    % zero the last byte of the last value
+    ok = file:pwrite(Handle, EofPos - 5, <<0:8/integer>>),
+    ok = file:close(Handle),
+    {ok, P2} = cdb_open_writer("../test/corruptwrt_test.pnd",
+                                #cdb_options{binary_mode=false}),
+                                ?assertMatch(probably, cdb_keycheck(P2, "Key1")),
     ?assertMatch({"Key1", "Value1"}, cdb_get(P2, "Key1")),
     ?assertMatch(missing, cdb_get(P2, "Key100")),
     ok = cdb_put(P2, "Key100", "Value100"),
