@@ -438,7 +438,7 @@ delete_pending({key_check, Key}, _From, State) ->
         State,
         ?DELETE_TIMEOUT}.
 
-delete_pending(timeout, State=#state(delete_point=ManSQN) when ManSQN > 0 ->
+delete_pending(timeout, State=#state{delete_point=ManSQN}) when ManSQN > 0 ->
     case is_process_alive(State#state.inker) of
         true ->
             case leveled_inker:ink_confirmdelete(State#state.inker, ManSQN) of
