@@ -79,6 +79,7 @@
             cdb_complete/1,
             cdb_roll/1,
             cdb_returnhashtable/3,
+            cdb_checkhashtable/1,
             cdb_destroy/1,
             cdb_deletepending/1,
             cdb_deletepending/3,
@@ -149,21 +150,7 @@ cdb_directfetch(Pid, PositionList, Info) ->
     gen_fsm:sync_send_event(Pid, {direct_fetch, PositionList, Info}, infinity).
 
 cdb_close(Pid) ->
-    cdb_close(Pid, ?PENDING_ROLL_WAIT).
-
-cdb_close(Pid, WaitsLeft) ->
-    if
-        WaitsLeft > 0 ->
-            case gen_fsm:sync_send_all_state_event(Pid, cdb_close, infinity) of
-                pending_roll ->
-                    timer:sleep(1),
-                    cdb_close(Pid, WaitsLeft - 1);
-                R ->
-                    R
-            end;
-        true ->
-            gen_fsm:sync_send_event(Pid, cdb_kill, infinity)
-    end.
+    gen_fsm:sync_send_all_state_event(Pid, cdb_close, infinity).
 
 cdb_complete(Pid) ->
     gen_fsm:sync_send_event(Pid, cdb_complete, infinity).
@@ -173,6 +160,9 @@ cdb_roll(Pid) ->
 
 cdb_returnhashtable(Pid, IndexList, HashTreeBin) ->
     gen_fsm:sync_send_event(Pid, {return_hashtable, IndexList, HashTreeBin}, infinity).
+
+cdb_checkhashtable(Pid) ->
+    gen_fsm:sync_send_event(Pid, check_hashtable).
 
 cdb_destroy(Pid) ->
     gen_fsm:send_event(Pid, destroy).
@@ -342,10 +332,11 @@ rolling({return_hashtable, IndexList, HashTreeBin}, _From, State) ->
                                             filename=NewName,
                                             hash_index=Index}}
     end;
-rolling(cdb_kill, _From, State) ->
-    {stop, killed, ok, State}.
+rolling(check_hashtable, _From, State) ->
+    {reply, false, rolling, State}.
 
-
+rolling(timeout, State) ->
+    {stop, normal, State};
 rolling({delete_pending, ManSQN, Inker}, State) ->
     {next_state,
         rolling,
@@ -408,7 +399,9 @@ reader({direct_fetch, PositionList, Info}, _From, State) ->
     end;
 reader(cdb_complete, _From, State) ->
     ok = file:close(State#state.handle),
-    {stop, normal, {ok, State#state.filename}, State#state{handle=undefined}}.
+    {stop, normal, {ok, State#state.filename}, State#state{handle=undefined}};
+reader(check_hashtable, _From, State) ->
+    {reply, true, reader, State}.
 
 
 reader({delete_pending, 0, no_poll}, State) ->
@@ -455,8 +448,6 @@ delete_pending(timeout, State=#state{delete_point=ManSQN}) when ManSQN > 0 ->
             {stop, normal, State}
     end;
 delete_pending(destroy, State) ->
-    ok = file:close(State#state.handle),
-    ok = file:delete(State#state.filename),
     {stop, normal, State}.
 
 
@@ -495,11 +486,8 @@ handle_sync_event(cdb_firstkey, _From, StateName, State) ->
     {reply, FirstKey, StateName, State};
 handle_sync_event(cdb_filename, _From, StateName, State) ->
     {reply, State#state.filename, StateName, State};
-handle_sync_event(cdb_close, _From, rolling, State) ->
-    {reply, pending_roll, rolling, State};
 handle_sync_event(cdb_close, _From, _StateName, State) ->
-    ok = file:close(State#state.handle),
-    {stop, normal, ok, State#state{handle=undefined}}.
+    {stop, normal, ok, State}.
 
 handle_event(_Msg, StateName, State) ->
     {next_state, StateName, State}.

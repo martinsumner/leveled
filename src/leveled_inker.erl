@@ -747,8 +747,18 @@ build_dummy_journal(KeyConvertF) ->
     ok = leveled_cdb:cdb_put(J1, {1, stnd, K1}, term_to_binary({V1, []})),
     ok = leveled_cdb:cdb_put(J1, {2, stnd, K2}, term_to_binary({V2, []})),
     ok = leveled_cdb:cdb_roll(J1),
-    _LK = leveled_cdb:cdb_lastkey(J1),
-    ok = leveled_cdb:cdb_close(J1),
+    lists:foldl(fun(X, Closed) ->
+                        case Closed of
+                            true -> true;
+                            false ->
+                                case leveled_cdb:cdb_checkhashtable(J1) of
+                                    true -> leveled_cdb:cdb_close(J1), true;
+                                    false -> timer:sleep(X), false
+                                end
+                        end
+                        end,
+                    false,
+                    lists:seq(1, 5)),
     F2 = filename:join(JournalFP, "nursery_3.pnd"),
     {ok, J2} = leveled_cdb:cdb_open_writer(F2),
     {K1, V3} = {KeyConvertF("Key1"), "TestValue3"},
