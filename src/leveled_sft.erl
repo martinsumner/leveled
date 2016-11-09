@@ -1773,20 +1773,12 @@ big_create_file_test() ->
     ?assertMatch(Result1, {K1, {Sq1, St1, V1}}),
     ?assertMatch(Result2, {K2, {Sq2, St2, V2}}),
     SubList = lists:sublist(KL2, 1000),
-    FailedFinds = lists:foldl(fun(K, Acc) ->
-                                    {Kn, {_, _, _}} = K,
-                                    Rn = fetch_keyvalue(Handle, FileMD, Kn),
-                                    case Rn of
-                                        {Kn, {_, _, _}} ->
-                                            Acc;
-                                        _ ->
-                                            Acc + 1
-                                    end
-                                end,
-                                0,
-                                SubList),
-    io:format("FailedFinds of ~w~n", [FailedFinds]),
-    ?assertMatch(FailedFinds, 0),
+    lists:foreach(fun(K) ->
+                        {Kn, {_, _, _}} = K,
+                        Rn = fetch_keyvalue(Handle, FileMD, Kn),
+                        ?assertMatch({Kn, {_, _, _}}, Rn)
+                    end,
+                    SubList),
     Result3 = fetch_keyvalue(Handle,
                                 FileMD,
                                 {o, "Bucket1024", "Key1024Alt", null}),
