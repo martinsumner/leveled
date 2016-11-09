@@ -3,12 +3,14 @@
 -include("include/leveled.hrl").
 -export([all/0]).
 -export([retain_strategy/1,
+            recovr_strategy/1,
             aae_bustedjournal/1,
             journal_compaction_bustedjournal/1
             ]).
 
 all() -> [
             retain_strategy,
+            recovr_strategy,
             aae_bustedjournal,
             journal_compaction_bustedjournal
             ].
@@ -39,6 +41,49 @@ retain_strategy(_Config) ->
                                                 {"Bucket6", Spcl6, LastV6}]),
     testutil:reset_filestructure().
 
+
+recovr_strategy(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    BookOpts = [{root_path, RootPath},
+                    {cache_size, 1000},
+                    {max_journalsize, 5000000},
+                    {reload_strategy, [{?RIAK_TAG, recovr}]}],
+    
+    R6 = rotating_object_check(BookOpts, "Bucket6", 6400),
+    {ok, AllSpcL, V4} = R6,
+    leveled_penciller:clean_testdir(proplists:get_value(root_path, BookOpts) ++
+                                    "/ledger"),
+    {ok, Book1} = leveled_bookie:book_start(BookOpts),
+    
+    lists:foreach(fun({K, _SpcL}) -> 
+                        {ok, OH} = testutil:book_riakhead(Book1, "Bucket6", K),
+                        K = OH#r_object.key,
+                        {ok, OG} = testutil:book_riakget(Book1, "Bucket6", K),
+                        V = testutil:get_value(OG),
+                        true = V == V4
+                        end,
+                    lists:nthtail(6400, AllSpcL)),
+    {async, TFolder} = leveled_bookie:book_returnfolder(Book1,
+                                                        {index_query,
+                                                            "Bucket6",
+                                                            {"idx1_bin",
+                                                            "#", "~"},
+                                                            {true,
+                                                                undefined}}),
+    KeyTermList = TFolder(),
+    {async, KFolder} = leveled_bookie:book_returnfolder(Book1,
+                                                        {index_query,
+                                                            "Bucket6",
+                                                            {"idx1_bin",
+                                                            "#", "~"},
+                                                            {false,
+                                                                undefined}}),
+    KeyList = lists:usort(KFolder()),
+    io:format("KeyList ~w KeyTermList ~w~n",
+                [length(KeyList), length(KeyTermList)]),
+    true = length(KeyList) == 6400,
+    true = length(KeyList) < length(KeyTermList),
+    true = length(KeyTermList) < 25600.
 
 
 aae_bustedjournal(_Config) ->

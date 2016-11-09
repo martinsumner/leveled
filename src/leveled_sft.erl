@@ -1913,9 +1913,7 @@ corrupted_sft_test() ->
                                             + BlocksLength + IndexLength,
                                 file:pwrite(Corrupter,
                                             Position,
-                                            <<0:8/integer>>);
-                            _ ->
-                                ok
+                                            <<0:8/integer>>)
                         end
                         end,
                     lists:seq(1, 100)),
