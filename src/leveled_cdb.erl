@@ -885,12 +885,13 @@ startup_scan_over_file(Handle, Position) ->
 %% cdb file, and returns at the end the hashtree and the final Key seen in the
 %% journal
 
-startup_filter(Key, ValueAsBin, Position, {Hashtree, LastKey}, _ExtractFun) ->
+startup_filter(Key, ValueAsBin, Position, {Hashtree, _LastKey}, _ExtractFun) ->
     case crccheck_value(ValueAsBin) of
         true ->
-            {loop, {put_hashtree(Key, Position, Hashtree), Key}};
-        false ->
-            {stop, {Hashtree, LastKey}}
+            % This function is preceeded by a "safe read" of the key and value
+            % and so the crccheck should always be true, as a failed check
+            % should not reach this stage
+            {loop, {put_hashtree(Key, Position, Hashtree), Key}}
     end.
 
 
