@@ -335,8 +335,6 @@ rolling({return_hashtable, IndexList, HashTreeBin}, _From, State) ->
 rolling(check_hashtable, _From, State) ->
     {reply, false, rolling, State}.
 
-rolling(timeout, State) ->
-    {stop, normal, State};
 rolling({delete_pending, ManSQN, Inker}, State) ->
     {next_state,
         rolling,
