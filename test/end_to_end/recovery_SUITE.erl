@@ -9,10 +9,10 @@
             ]).
 
 all() -> [
-            retain_strategy,
-            recovr_strategy,
-            aae_bustedjournal,
-            journal_compaction_bustedjournal
+            % retain_strategy,
+            recovr_strategy %,
+            % aae_bustedjournal,
+            % journal_compaction_bustedjournal
             ].
 
 retain_strategy(_Config) ->
@@ -54,6 +54,13 @@ recovr_strategy(_Config) ->
     leveled_penciller:clean_testdir(proplists:get_value(root_path, BookOpts) ++
                                     "/ledger"),
     {ok, Book1} = leveled_bookie:book_start(BookOpts),
+    
+    {TestObject, TestSpec} = testutil:generate_testobject(),
+    ok = testutil:book_riakput(Book1, TestObject, TestSpec),
+    ok = testutil:book_riakdelete(Book1,
+                                    TestObject#r_object.bucket,
+                                    TestObject#r_object.key,
+                                    []),
     
     lists:foreach(fun({K, _SpcL}) -> 
                         {ok, OH} = testutil:book_riakhead(Book1, "Bucket6", K),
