@@ -722,13 +722,8 @@ fetch_block(Handle, LengthList, BlockNmb, StartOfSlot) ->
     binary_to_term(BlockToCheckBin).
 
 %% Need to deal with either Key or {next, Key}
-get_nearestkey(KVList, all) ->
-    case KVList of
-        [] ->
-            not_found;
-        [H|_Tail] ->
-            H
-    end;
+get_nearestkey([H|_Tail], all) ->
+    H;
 get_nearestkey(KVList, Key) ->
     case Key of
         {next, K} ->
@@ -1031,16 +1026,16 @@ create_slot(KL1, KL2, LevelR, BlockCount, SegLists, SerialisedSlot, LengthList,
             {null, LSN, HSN, LastKey, Status};
         {null, _} ->
             [NewLowKeyV|_] = BlockKeyList,
+            NewLastKey = lists:last([{keyonly, LastKey}|BlockKeyList]),
             {leveled_codec:strip_to_keyonly(NewLowKeyV),
                 min(LSN, LSNb), max(HSN, HSNb),
-                leveled_codec:strip_to_keyonly(last(BlockKeyList,
-                                                    {last, LastKey})),
+                leveled_codec:strip_to_keyonly(NewLastKey),
                 Status};
         {_, _} ->
+            NewLastKey = lists:last([{keyonly, LastKey}|BlockKeyList]),
             {LowKey,
                 min(LSN, LSNb), max(HSN, HSNb),
-                leveled_codec:strip_to_keyonly(last(BlockKeyList,
-                                                    {last, LastKey})),
+                leveled_codec:strip_to_keyonly(NewLastKey),
                 Status}
     end,
     SerialisedBlock = serialise_block(BlockKeyList),
@@ -1049,13 +1044,6 @@ create_slot(KL1, KL2, LevelR, BlockCount, SegLists, SerialisedSlot, LengthList,
     create_slot(KL1b, KL2b, LevelR, BlockCount - 1, SegLists ++ [SegmentList],
                 SerialisedSlot2, LengthList ++ [BlockLength],
                 TrackingMetadata).
-
-
-last([], {last, LastKey}) -> {keyonly, LastKey};
-last([E|Es], PrevLast) -> last(E, Es, PrevLast).
-
-last(_, [E|Es], PrevLast) -> last(E, Es, PrevLast);
-last(E, [], _) -> E.
 
 serialise_block(BlockKeyList) ->
     term_to_binary(BlockKeyList, [{compressed, ?COMPRESSION_LEVEL}]).
@@ -2022,6 +2010,13 @@ filename_test() ->
     ?assertMatch({"../tmp/subdir/file_name.pnd",
                         "../tmp/subdir/file_name.sft"},
                     generate_filenames(FN3)).
+
+empty_file_test() ->
+    {ok, Pid, _Reply} = sft_new("../test/emptyfile.pnd", [], [], 1),
+    ?assertMatch(not_present, sft_get(Pid, "Key1")),
+    ?assertMatch([], sft_getkvrange(Pid, all, all, 16)),
+    ok = sft_clear(Pid).
+    
 
 nonsense_coverage_test() ->
     {ok, Pid} = gen_fsm:start(?MODULE, [], []),
