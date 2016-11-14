@@ -95,7 +95,7 @@ wait_for_compaction(Bookie) ->
                             true ->
                                 io:format("Loop ~w waiting for journal "
                                     ++ "compaction to complete~n", [X]),
-                                timer:sleep(20000),
+                                timer:sleep(5000),
                                 F(Bookie)
                         end end,
                     true,

@@ -146,21 +146,51 @@ journal_compaction(_Config) ->
     testutil:riakload(Bookie1, ObjList2),
     
     ok = leveled_bookie:book_compactjournal(Bookie1, 30000),
+    
     testutil:wait_for_compaction(Bookie1),
+    % Start snapshot - should not stop deletions
+    {ok,
+        {PclClone, _LdgCache},
+            InkClone} = leveled_bookie:book_snapshotstore(Bookie1,
+                                                            self(),
+                                                            300000),
+    % Wait 2 seconds for files to be deleted
+    WasteFP = RootPath ++ "/journal/journal_files/waste",
+    lists:foldl(fun(X, Found) ->
+                        case Found of
+                            true ->
+                                Found;
+                            false ->
+                                {ok, Files} = file:list_dir(WasteFP),
+                                if
+                                    length(Files) > 0 ->
+                                        io:format("Deleted files found~n"),
+                                        true;
+                                    length(Files) == 0 ->
+                                        timer:sleep(X),
+                                        false
+                                end
+                        end
+                        end,
+                    false,
+                    [2000,2000,2000,2000,2000,2000]),
+    {ok, ClearedJournals} = file:list_dir(WasteFP),
+    io:format("~w ClearedJournals found~n", [length(ClearedJournals)]),
+    true = length(ClearedJournals) > 0,
     
     ChkList3 = lists:sublist(lists:sort(ObjList2), 500),
     testutil:check_forlist(Bookie1, ChkList3),
+    
+    ok = leveled_penciller:pcl_close(PclClone),
+    ok = leveled_inker:ink_close(InkClone),
+    
     ok = leveled_bookie:book_close(Bookie1),
     % Restart
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
     testutil:check_forobject(Bookie2, TestObject),
     testutil:check_forlist(Bookie2, ChkList3),
-    ok = leveled_bookie:book_close(Bookie2),
     
-    WasteFP = RootPath ++ "/journal/journal_files/waste",
-    {ok, ClearedJournals} = file:list_dir(WasteFP),
-    io:format("~w ClearedJournals found~n", [length(ClearedJournals)]),
-    true = length(ClearedJournals) > 0,
+    ok = leveled_bookie:book_close(Bookie2),
     
     StartOpts2 = [{root_path, RootPath},
                     {max_journalsize, 10000000},

@@ -163,10 +163,11 @@ ink_registersnapshot(Pid, Requestor) ->
     gen_server:call(Pid, {register_snapshot, Requestor}, infinity).
 
 ink_releasesnapshot(Pid, Snapshot) ->
-    gen_server:call(Pid, {release_snapshot, Snapshot}, infinity).
+    gen_server:cast(Pid, {release_snapshot, Snapshot}).
 
 ink_confirmdelete(Pid, ManSQN) ->
-    gen_server:call(Pid, {confirm_delete, ManSQN}, 1000).
+    io:format("Confirm delete request received~n"),
+    gen_server:call(Pid, {confirm_delete, ManSQN}).
 
 ink_close(Pid) ->
     gen_server:call(Pid, close, infinity).
@@ -267,12 +268,8 @@ handle_call({register_snapshot, Requestor}, _From , State) ->
     {reply, {State#state.manifest,
                 State#state.active_journaldb},
                 State#state{registered_snapshots=Rs}};
-handle_call({release_snapshot, Snapshot}, _From , State) ->
-    Rs = lists:keydelete(Snapshot, 1, State#state.registered_snapshots),
-    leveled_log:log("I0003", [Snapshot]),
-    leveled_log:log("I0004", [length(Rs)]),
-    {reply, ok, State#state{registered_snapshots=Rs}};
 handle_call({confirm_delete, ManSQN}, _From, State) ->
+    io:format("Confirm delete request to be processed~n"),
     Reply = lists:foldl(fun({_R, SnapSQN}, Bool) ->
                                 case SnapSQN >= ManSQN of
                                     true ->
@@ -282,6 +279,7 @@ handle_call({confirm_delete, ManSQN}, _From, State) ->
                                 end end,
                             true,
                             State#state.registered_snapshots),
+    io:format("Confirm delete request complete with reply ~w~n", [Reply]),
     {reply, Reply, State};
 handle_call(get_manifest, _From, State) ->
     {reply, State#state.manifest, State};
@@ -328,8 +326,11 @@ handle_call(compaction_pending, _From, State) ->
 handle_call(close, _From, State) ->
     {stop, normal, ok, State}.
 
-handle_cast(_Msg, State) ->
-    {noreply, State}.
+handle_cast({release_snapshot, Snapshot}, State) ->
+    Rs = lists:keydelete(Snapshot, 1, State#state.registered_snapshots),
+    leveled_log:log("I0003", [Snapshot]),
+    leveled_log:log("I0004", [length(Rs)]),
+    {noreply, State#state{registered_snapshots=Rs}}.
 
 handle_info(_Info, State) ->
     {noreply, State}.

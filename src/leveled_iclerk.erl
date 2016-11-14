@@ -203,10 +203,7 @@ handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
                     update_inker(Inker,
                                     ManifestSlice,
                                     FilesToDelete),
-                    {noreply, State};
-                false ->
-                    leveled_log:log("IC001", []),
-                    {stop, normal, State}
+                    {noreply, State}
             end;
         Score ->
             leveled_log:log("IC003", [Score]),
@@ -223,8 +220,10 @@ handle_cast(stop, State) ->
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(_Reason, _State) ->
-    ok.
+terminate(normal, _State) ->
+    ok;
+terminate(Reason, _State) ->
+    leveled_log:log("IC001", Reason).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.

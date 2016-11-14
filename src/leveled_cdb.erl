@@ -502,8 +502,8 @@ terminate(Reason, StateName, State) ->
         {undefined, _, _} ->
             ok;
         {Handle, delete_pending, undefined} ->
-            file:close(Handle),
-            file:delete(Handle);
+            ok = file:close(Handle),
+            ok = file:delete(State#state.filename);
         {Handle, delete_pending, WasteFP} ->
             file:close(Handle),
             Components = filename:split(State#state.filename),

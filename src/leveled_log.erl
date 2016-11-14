@@ -163,8 +163,7 @@
         {info, "At SQN=~w journal has filename ~s"}},
     
     {"IC001",
-        {info, "Inker no longer alive so Clerk to abandon work "
-                ++ "leaving garbage"}},
+        {info, "Closed for reason ~w so maybe leaving garbage"}},
     {"IC002",
         {info, "Clerk updating Inker as compaction complete of ~w files"}},
     {"IC003",
