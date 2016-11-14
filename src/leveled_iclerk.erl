@@ -842,6 +842,9 @@ compact_singlefile_totwosmallfiles_test() ->
                     ManifestSlice),
     ok = leveled_cdb:cdb_deletepending(CDBr),
     ok = leveled_cdb:cdb_destroy(CDBr).
-    
+
+coverage_cheat_test() ->
+    {noreply, _State0} = handle_info(timeout, #state{}),
+    {ok, _State1} = code_change(null, #state{}, null).    
 
 -endif.

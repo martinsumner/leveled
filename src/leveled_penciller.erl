@@ -1622,7 +1622,7 @@ commit_manifest_test() ->
     clean_testdir(State#state.root_path).
 
 
-coverage_test() ->
+badmanifest_test() ->
     RootPath = "../test/ledger",
     clean_testdir(RootPath),
     {ok, PCL} = pcl_start(#penciller_options{root_path=RootPath,
@@ -1656,5 +1656,8 @@ checkready(Pid) ->
             timeout
     end.
 
+coverage_cheat_test() ->
+    {noreply, _State0} = handle_info(timeout, #state{}),
+    {ok, _State1} = code_change(null, #state{}, null).
 
 -endif.

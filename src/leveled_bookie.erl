@@ -1169,5 +1169,10 @@ foldobjects_vs_hashtree_test() ->
     ok = book_close(Bookie1),
     reset_filestructure().
 
+coverage_cheat_test() ->
+    {noreply, _State0} = handle_info(timeout, #state{}),
+    {ok, _State1} = code_change(null, #state{}, null),
+    {noreply, _State2} = handle_cast(null, #state{}).
+
 
 -endif.

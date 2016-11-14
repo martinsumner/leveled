@@ -931,6 +931,9 @@ empty_manifest_test() ->
     ?assertMatch("Value1", V),
     ink_close(Ink2),
     clean_testdir(RootPath).
-    
+
+coverage_cheat_test() ->
+    {noreply, _State0} = handle_info(timeout, #state{}),
+    {ok, _State1} = code_change(null, #state{}, null).
 
 -endif.
