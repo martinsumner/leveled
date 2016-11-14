@@ -845,6 +845,7 @@ compact_singlefile_totwosmallfiles_test() ->
 
 coverage_cheat_test() ->
     {noreply, _State0} = handle_info(timeout, #state{}),
-    {ok, _State1} = code_change(null, #state{}, null).    
+    {ok, _State1} = code_change(null, #state{}, null),
+    {reply, not_supported, _State2} = handle_call(null, null, #state{}).    
 
 -endif.
