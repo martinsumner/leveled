@@ -241,7 +241,7 @@ pcl_fetchlevelzero(Pid, Slot) ->
     %%
     %% If the timeout gets hit outside of close scenario the Penciller will
     %% be stuck in L0 pending
-    gen_server:call(Pid, {fetch_levelzero, Slot}, 10000).
+    gen_server:call(Pid, {fetch_levelzero, Slot}, 60000).
     
 pcl_fetch(Pid, Key) ->
     gen_server:call(Pid, {fetch, Key}, infinity).
@@ -478,15 +478,13 @@ terminate(Reason, State) ->
     case {UpdState#state.levelzero_pending,
             get_item(0, UpdState#state.manifest, []),
             UpdState#state.levelzero_size} of
-        {true, [], _} ->
-            ok = leveled_sft:sft_close(UpdState#state.levelzero_constructor);
         {false, [], 0} ->
            leveled_log:log("P0009", []);
         {false, [], _N} ->
             L0Pid = roll_memory(UpdState, true),
             ok = leveled_sft:sft_close(L0Pid);
-        _ ->
-            leveled_log:log("P0010", [])
+        StatusTuple ->
+            leveled_log:log("P0010", [StatusTuple])
     end,
     
     % Tidy shutdown of individual files
@@ -1576,12 +1574,61 @@ create_file_test() ->
     {ok, Bin} = file:read_file("../test/new_file.sft.discarded"),
     ?assertMatch("hello", binary_to_term(Bin)).
 
+commit_manifest_test() ->
+    Sent_WI = #penciller_work{next_sqn=1,
+                                src_level=0,
+                                start_time=os:timestamp()},
+    Resp_WI = #penciller_work{next_sqn=1,
+                                src_level=0},
+    State = #state{ongoing_work=[Sent_WI],
+                    root_path = "test"},
+    ManifestFP = "test" ++ "/" ++ ?MANIFEST_FP ++ "/",
+    ok = filelib:ensure_dir(ManifestFP),
+    ok = file:write_file(ManifestFP ++ "nonzero_1.pnd",
+                            term_to_binary("dummy data")),
+    
+    L1_0 = [{1, [#manifest_entry{filename="1.sft"}]}],
+    Resp_WI0 = Resp_WI#penciller_work{new_manifest=L1_0,
+                                        unreferenced_files=[]},
+    {ok, State0} = commit_manifest_change(Resp_WI0, State),
+    ?assertMatch(0, State#state.manifest_sqn),
+    ?assertMatch(1, State0#state.manifest_sqn),
+    ?assertMatch([], get_item(0, State0#state.manifest, [])),
+    
+    L0Entry = [#manifest_entry{filename="0.sft"}],
+    ManifestPlus = [{0, L0Entry}|State0#state.manifest],
+    
+    NxtSent_WI = #penciller_work{next_sqn=2,
+                                    src_level=1,
+                                    start_time=os:timestamp()},
+    NxtResp_WI = #penciller_work{next_sqn=2,
+                                 src_level=1},
+    State1 = State0#state{ongoing_work=[NxtSent_WI],
+                            manifest = ManifestPlus},
+    
+    ok = file:write_file(ManifestFP ++ "nonzero_2.pnd",
+                            term_to_binary("dummy data")),
+    
+    L2_0 = [#manifest_entry{filename="2.sft"}],
+    NxtResp_WI0 = NxtResp_WI#penciller_work{new_manifest=[{2, L2_0}],
+                                           unreferenced_files=[]},
+    {ok, State2} = commit_manifest_change(NxtResp_WI0, State1),
+    
+    ?assertMatch(1, State1#state.manifest_sqn),
+    ?assertMatch(2, State2#state.manifest_sqn),
+    ?assertMatch(L0Entry, get_item(0, State2#state.manifest, [])),
+    ?assertMatch(L2_0, get_item(2, State2#state.manifest, [])),
+    
+    clean_testdir(State#state.root_path).
+
+
 coverage_test() ->
     RootPath = "../test/ledger",
     clean_testdir(RootPath),
     {ok, PCL} = pcl_start(#penciller_options{root_path=RootPath,
                                                 max_inmemory_tablesize=1000}),
-    Key1 = {{o,"Bucket0001", "Key0001", null}, {1001, {active, infinity}, null}},
+    Key1 = {{o,"Bucket0001", "Key0001", null},
+                {1001, {active, infinity}, null}},
     KL1 = leveled_sft:generate_randomkeys({1000, 1}),
     
     ok = maybe_pause_push(PCL, KL1 ++ [Key1]),
@@ -1589,16 +1636,17 @@ coverage_test() ->
     %% call to the penciller and the second fetch of the cache entry
     ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001", null})),
     
+    timer:sleep(100), % Avoids confusion if L0 file not written before close
     ok = pcl_close(PCL),
     
     ManifestFP = filepath(RootPath, manifest),
-    ok = file:write_file(filename:join(ManifestFP, "yeszero_123.man"), term_to_binary("hello")),
+    ok = file:write_file(filename:join(ManifestFP, "yeszero_123.man"),
+                            term_to_binary("hello")),
     {ok, PCLr} = pcl_start(#penciller_options{root_path=RootPath,
                                                 max_inmemory_tablesize=1000}),
     ?assertMatch(Key1, pcl_fetch(PCLr, {o,"Bucket0001", "Key0001", null})),
     ok = pcl_close(PCLr),
     clean_testdir(RootPath).
-
 
 checkready(Pid) ->
     try

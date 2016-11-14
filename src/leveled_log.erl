@@ -52,7 +52,7 @@
     {"P0009",
         {info, "Level 0 cache empty at close of Penciller"}},
     {"P0010",
-        {info, "No level zero action on close of Penciller"}},
+        {info, "No level zero action on close of Penciller ~w"}},
     {"P0011",
         {info, "Shutdown complete for Penciller"}},
     {"P0012",
