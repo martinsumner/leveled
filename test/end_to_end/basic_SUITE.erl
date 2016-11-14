@@ -144,21 +144,9 @@ journal_compaction(_Config) ->
     %% Now replace all the other objects
     ObjList2 = testutil:generate_objects(40000, 10002),
     testutil:riakload(Bookie1, ObjList2),
-    ok = leveled_bookie:book_compactjournal(Bookie1, 30000),
     
-    F = fun leveled_bookie:book_islastcompactionpending/1,
-    lists:foldl(fun(X, Pending) ->
-                        case Pending of
-                            false ->
-                                false;
-                            true ->
-                                io:format("Loop ~w waiting for journal "
-                                    ++ "compaction to complete~n", [X]),
-                                timer:sleep(20000),
-                                F(Bookie1)
-                        end end,
-                    true,
-                    lists:seq(1, 15)),
+    ok = leveled_bookie:book_compactjournal(Bookie1, 30000),
+    testutil:wait_for_compaction(Bookie1),
     
     ChkList3 = lists:sublist(lists:sort(ObjList2), 500),
     testutil:check_forlist(Bookie1, ChkList3),
@@ -168,6 +156,25 @@ journal_compaction(_Config) ->
     testutil:check_forobject(Bookie2, TestObject),
     testutil:check_forlist(Bookie2, ChkList3),
     ok = leveled_bookie:book_close(Bookie2),
+    
+    WasteFP = RootPath ++ "/journal/journal_files/waste",
+    {ok, ClearedJournals} = file:list_dir(WasteFP),
+    io:format("~w ClearedJournals found~n", [length(ClearedJournals)]),
+    true = length(ClearedJournals) > 0,
+    
+    StartOpts2 = [{root_path, RootPath},
+                    {max_journalsize, 10000000},
+                    {max_run_length, 1},
+                    {waste_retention_period, 1}],
+    {ok, Bookie3} = leveled_bookie:book_start(StartOpts2),
+    ok = leveled_bookie:book_compactjournal(Bookie3, 30000),
+    testutil:wait_for_compaction(Bookie3),
+    ok = leveled_bookie:book_close(Bookie3),
+    
+    {ok, ClearedJournalsPC} = file:list_dir(WasteFP),
+    io:format("~w ClearedJournals found~n", [length(ClearedJournalsPC)]),
+    true = length(ClearedJournalsPC) == 0,
+    
     testutil:reset_filestructure(10000).
 
 

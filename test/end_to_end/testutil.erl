@@ -39,7 +39,8 @@
             restore_file/2,
             restore_topending/2,
             find_journals/1,
-            riak_hash/1]).
+            riak_hash/1,
+            wait_for_compaction/1]).
 
 -define(RETURN_TERMS, {true, undefined}).
 -define(SLOWOFFER_DELAY, 5).
@@ -85,7 +86,20 @@ reset_filestructure(Wait) ->
     leveled_penciller:clean_testdir(RootPath ++ "/ledger"),
     RootPath.
 
-
+wait_for_compaction(Bookie) ->
+    F = fun leveled_bookie:book_islastcompactionpending/1,
+    lists:foldl(fun(X, Pending) ->
+                        case Pending of
+                            false ->
+                                false;
+                            true ->
+                                io:format("Loop ~w waiting for journal "
+                                    ++ "compaction to complete~n", [X]),
+                                timer:sleep(20000),
+                                F(Bookie)
+                        end end,
+                    true,
+                    lists:seq(1, 15)).
 
 check_bucket_stats(Bookie, Bucket) ->
     FoldSW1 = os:timestamp(),

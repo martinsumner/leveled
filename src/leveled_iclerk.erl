@@ -41,6 +41,17 @@
 %% as a way of directly representing a change, and where anti-entropy can
 %% recover from a loss.
 %%
+%% -------- Removing Compacted Files ---------
+%%
+%% Once a compaction job is complete, and the manifest change has been
+%% committed, the individual journal files will get a deletion prompt.  The
+%% Journal processes should copy the file to the waste folder, before erasing
+%% themselves.
+%%
+%% The Inker will have a waste duration setting, and before running compaction
+%% should delete all over-age items (using the file modified date) from the
+%% waste.
+%%
 %% -------- Tombstone Reaping ---------
 %%
 %% Value compaction does not remove tombstones from the database, and so a
@@ -54,7 +65,7 @@
 %% before the tombstone.  If no ushc objects exist for that tombstone, it can
 %% now be reaped as part of the compaction job.
 %%
-%% Other tombstones cannot be reaped, as otherwis eon laoding a ledger an old
+%% Other tombstones cannot be reaped, as otherwise on laoding a ledger an old
 %% version of the object may re-emerge.
 
 -module(leveled_iclerk).
@@ -88,10 +99,13 @@
 -define(MAXRUN_COMPACTION_TARGET, 80.0).
 -define(CRC_SIZE, 4).
 -define(DEFAULT_RELOAD_STRATEGY, leveled_codec:inker_reload_strategy([])).
+-define(DEFAULT_WASTE_RETENTION_PERIOD, 86400).
 
 -record(state, {inker :: pid(),
                     max_run_length :: integer(),
                     cdb_options,
+                    waste_retention_period :: integer(),
+                    waste_path :: string(),
                     reload_strategy = ?DEFAULT_RELOAD_STRATEGY :: list()}).
 
 -record(candidate, {low_sqn :: integer(),
@@ -129,32 +143,41 @@ clerk_stop(Pid) ->
 
 init([IClerkOpts]) ->
     ReloadStrategy = IClerkOpts#iclerk_options.reload_strategy,
-    case IClerkOpts#iclerk_options.max_run_length of
-        undefined ->
-            {ok, #state{max_run_length = ?MAX_COMPACTION_RUN,
+    CDBopts = IClerkOpts#iclerk_options.cdb_options,
+    WP = CDBopts#cdb_options.waste_path,
+    WRP = case IClerkOpts#iclerk_options.waste_retention_period of
+                undefined ->
+                    ?DEFAULT_WASTE_RETENTION_PERIOD;
+                WRP0 ->
+                    WRP0
+            end,
+    MRL = case IClerkOpts#iclerk_options.max_run_length of
+                undefined ->
+                    ?MAX_COMPACTION_RUN;
+                MRL0 ->
+                    MRL0
+            end,
+            
+    {ok, #state{max_run_length = MRL,
                         inker = IClerkOpts#iclerk_options.inker,
-                        cdb_options = IClerkOpts#iclerk_options.cdb_options,
-                        reload_strategy = ReloadStrategy}};
-        MRL ->
-            {ok, #state{max_run_length = MRL,
-                        inker = IClerkOpts#iclerk_options.inker,
-                        cdb_options = IClerkOpts#iclerk_options.cdb_options,
-                        reload_strategy = ReloadStrategy}}
-    end.
+                        cdb_options = CDBopts,
+                        reload_strategy = ReloadStrategy,
+                        waste_path = WP,
+                        waste_retention_period = WRP}}.
 
 handle_call(_Msg, _From, State) ->
     {reply, not_supported, State}.
 
 handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
                 State) ->
+    % Empty the waste folder
+    clear_waste(State),
     % Need to fetch manifest at start rather than have it be passed in
     % Don't want to process a queued call waiting on an old manifest
     [_Active|Manifest] = leveled_inker:ink_getmanifest(Inker),
     MaxRunLength = State#state.max_run_length,
     {FilterServer, MaxSQN} = InitiateFun(Checker),
     CDBopts = State#state.cdb_options,
-    FP = CDBopts#cdb_options.file_path,
-    ok = filelib:ensure_dir(FP),
     
     Candidates = scan_all_files(Manifest, FilterFun, FilterServer, MaxSQN),
     BestRun0 = assess_candidates(Candidates, MaxRunLength),
@@ -511,9 +534,25 @@ generate_manifest_entry(ActiveJournal) ->
     [{StartSQN, NewFN, PidR}].
                         
                     
-    
+clear_waste(State) ->
+    WP = State#state.waste_path,
+    WRP = State#state.waste_retention_period,
+    {ok, ClearedJournals} = file:list_dir(WP),
+    N = calendar:datetime_to_gregorian_seconds(calendar:local_time()),
+    lists:foreach(fun(DelJ) ->
+                        LMD = filelib:last_modified(WP ++ DelJ),
+                        case N - calendar:datetime_to_gregorian_seconds(LMD) of
+                            LMD_Delta when LMD_Delta >= WRP ->
+                                ok = file:delete(WP ++ DelJ),
+                                leveled_log:log("IC010", [WP ++ DelJ]);
+                            LMD_Delta ->
+                                leveled_log:log("IC011", [WP ++ DelJ,
+                                                            LMD_Delta]),
+                                ok
+                        end
+                        end,
+                    ClearedJournals).
 
-    
     
 
 %%%============================================================================
@@ -544,6 +583,21 @@ score_compare_test() ->
     Run2 = [#candidate{compaction_perc = 75.0}],
     ?assertMatch(Run1, choose_best_assessment(Run1, Run2, 4)),
     ?assertMatch(Run2, choose_best_assessment(Run1 ++ Run2, Run2, 4)).
+
+file_gc_test() ->
+    State = #state{waste_path="test/waste/",
+                    waste_retention_period=1},
+    ok = filelib:ensure_dir(State#state.waste_path),
+    file:write_file(State#state.waste_path ++ "1.cdb", term_to_binary("Hello")),
+    timer:sleep(1100),
+    file:write_file(State#state.waste_path ++ "2.cdb", term_to_binary("Hello")),
+    clear_waste(State),
+    {ok, ClearedJournals} = file:list_dir(State#state.waste_path),
+    ?assertMatch(["2.cdb"], ClearedJournals),
+    timer:sleep(1100),
+    clear_waste(State),
+    {ok, ClearedJournals2} = file:list_dir(State#state.waste_path),
+    ?assertMatch([], ClearedJournals2).
 
 find_bestrun_test() ->
 %% Tests dependent on these defaults

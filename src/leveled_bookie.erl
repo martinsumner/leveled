@@ -576,11 +576,14 @@ snapshot_store(State, SnapType) ->
 set_options(Opts) ->
     MaxJournalSize = get_opt(max_journalsize, Opts, 10000000000),
     
+    WRP = get_opt(waste_retention_period, Opts),
+    
     AltStrategy = get_opt(reload_strategy, Opts, []),
     ReloadStrategy = leveled_codec:inker_reload_strategy(AltStrategy),
     
     PCLL0CacheSize = get_opt(max_pencillercachesize, Opts),
     RootPath = get_opt(root_path, Opts),
+    
     JournalFP = RootPath ++ "/" ++ ?JOURNAL_FP,
     LedgerFP = RootPath ++ "/" ++ ?LEDGER_FP,
     ok =filelib:ensure_dir(JournalFP),
@@ -589,6 +592,7 @@ set_options(Opts) ->
     {#inker_options{root_path = JournalFP,
                         reload_strategy = ReloadStrategy,
                         max_run_length = get_opt(max_run_length, Opts),
+                        waste_retention_period = WRP,
                         cdb_options = #cdb_options{max_size=MaxJournalSize,
                                                     binary_mode=true}},
         #penciller_options{root_path = LedgerFP,

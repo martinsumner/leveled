@@ -119,6 +119,7 @@
 -define(MANIFEST_FP, "journal_manifest").
 -define(FILES_FP, "journal_files").
 -define(COMPACT_FP, "post_compact").
+-define(WASTE_FP, "waste").
 -define(JOURNAL_FILEX, "cdb").
 -define(MANIFEST_FILEX, "man").
 -define(PENDING_FILEX, "pnd").
@@ -360,20 +361,26 @@ code_change(_OldVsn, State, _Extra) ->
 start_from_file(InkOpts) ->
     RootPath = InkOpts#inker_options.root_path,
     CDBopts = InkOpts#inker_options.cdb_options,
+    
     JournalFP = filepath(RootPath, journal_dir),
     filelib:ensure_dir(JournalFP),
     CompactFP = filepath(RootPath, journal_compact_dir),
     filelib:ensure_dir(CompactFP),
-    
+    WasteFP = filepath(RootPath, journal_waste_dir),
+    filelib:ensure_dir(WasteFP),
     ManifestFP = filepath(RootPath, manifest_dir),
     ok = filelib:ensure_dir(ManifestFP),
+    
     {ok, ManifestFilenames} = file:list_dir(ManifestFP),
     
-    IClerkCDBOpts = CDBopts#cdb_options{file_path = CompactFP},
+    IClerkCDBOpts = CDBopts#cdb_options{file_path = CompactFP,
+                                        waste_path = WasteFP},
     ReloadStrategy = InkOpts#inker_options.reload_strategy,
     MRL = InkOpts#inker_options.max_run_length,
+    WRP = InkOpts#inker_options.waste_retention_period,
     IClerkOpts = #iclerk_options{inker = self(),
                                     cdb_options=IClerkCDBOpts,
+                                    waste_retention_period = WRP,
                                     reload_strategy = ReloadStrategy,
                                     max_run_length = MRL},
     {ok, Clerk} = leveled_iclerk:clerk_new(IClerkOpts),
@@ -389,7 +396,7 @@ start_from_file(InkOpts) ->
                     journal_sqn = JournalSQN,
                     active_journaldb = ActiveJournal,
                     root_path = RootPath,
-                    cdb_options = CDBopts,
+                    cdb_options = CDBopts#cdb_options{waste_path=WasteFP},
                     clerk = Clerk}}.
 
 
@@ -670,7 +677,9 @@ filepath(RootPath, journal_dir) ->
 filepath(RootPath, manifest_dir) ->
     RootPath ++ "/" ++ ?MANIFEST_FP ++ "/";
 filepath(RootPath, journal_compact_dir) ->
-    filepath(RootPath, journal_dir) ++ "/" ++ ?COMPACT_FP ++ "/".
+    filepath(RootPath, journal_dir) ++ "/" ++ ?COMPACT_FP ++ "/";
+filepath(RootPath, journal_waste_dir) ->
+    filepath(RootPath, journal_dir) ++ "/" ++ ?WASTE_FP ++ "/".
 
 filepath(RootPath, NewSQN, new_journal) ->
     filename:join(filepath(RootPath, journal_dir),

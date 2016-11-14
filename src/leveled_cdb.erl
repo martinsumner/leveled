@@ -106,7 +106,8 @@
                 binary_mode = false :: boolean(),
                 delete_point = 0 :: integer(),
                 inker :: pid(),
-                deferred_delete = false :: boolean()}).
+                deferred_delete = false :: boolean(),
+                waste_path :: string()}).
 
 
 %%%============================================================================
@@ -219,7 +220,9 @@ init([Opts]) ->
                 end,
     {ok,
         starting,
-        #state{max_size=MaxSize, binary_mode=Opts#cdb_options.binary_mode}}.
+        #state{max_size=MaxSize,
+                binary_mode=Opts#cdb_options.binary_mode,
+                waste_path=Opts#cdb_options.waste_path}}.
 
 starting({open_writer, Filename}, _From, State) ->
     leveled_log:log("CDB01", [Filename]),
@@ -495,13 +498,18 @@ handle_info(_Msg, StateName, State) ->
 
 terminate(Reason, StateName, State) ->
     leveled_log:log("CDB05", [State#state.filename, Reason]),
-    case {State#state.handle, StateName} of
-        {undefined, _} ->
+    case {State#state.handle, StateName, State#state.waste_path} of
+        {undefined, _, _} ->
             ok;
-        {Handle, delete_pending} ->
+        {Handle, delete_pending, undefined} ->
             file:close(Handle),
-            file:delete(State#state.filename);
-        {Handle, _} ->
+            file:delete(Handle);
+        {Handle, delete_pending, WasteFP} ->
+            file:close(Handle),
+            Components = filename:split(State#state.filename),
+            NewName = WasteFP ++ lists:last(Components),
+            file:rename(State#state.filename, NewName);
+        {Handle, _, _} ->
             file:close(Handle)
     end.
 

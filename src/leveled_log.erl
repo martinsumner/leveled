@@ -181,6 +181,10 @@
         {info, "Compaction source ~s has yielded ~w positions"}},
     {"IC009",
         {info, "Generate journal for compaction with filename ~s"}},
+    {"IC010",
+        {info, "Clearing journal with filename ~s"}},
+    {"IC011",
+        {info, "Not clearing filename ~s as modified delta is only ~w seconds"}},
     
     {"PM001",
         {info, "Indexed new cache entry with total L0 cache size now ~w"}},
