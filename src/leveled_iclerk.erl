@@ -185,13 +185,12 @@ handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
         Score when Score > 0.0 ->
             BestRun1 = sort_run(BestRun0),
             print_compaction_run(BestRun1, MaxRunLength),
-            {ManifestSlice,
-                PromptDelete} = compact_files(BestRun1,
-                                                CDBopts,
-                                                FilterFun,
-                                                FilterServer,
-                                                MaxSQN,
-                                                State#state.reload_strategy),
+            ManifestSlice = compact_files(BestRun1,
+                                            CDBopts,
+                                            FilterFun,
+                                            FilterServer,
+                                            MaxSQN,
+                                            State#state.reload_strategy),
             FilesToDelete = lists:map(fun(C) ->
                                             {C#candidate.low_sqn,
                                                 C#candidate.filename,
@@ -203,8 +202,7 @@ handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
                 true ->
                     update_inker(Inker,
                                     ManifestSlice,
-                                    FilesToDelete,
-                                    PromptDelete),
+                                    FilesToDelete),
                     {noreply, State};
                 false ->
                     leveled_log:log("IC001", []),
@@ -380,24 +378,19 @@ sort_run(RunOfFiles) ->
                     Cand1#candidate.low_sqn =< Cand2#candidate.low_sqn end,
     lists:sort(CompareFun, RunOfFiles).
 
-update_inker(Inker, ManifestSlice, FilesToDelete, PromptDelete) ->
+update_inker(Inker, ManifestSlice, FilesToDelete) ->
     {ok, ManSQN} = leveled_inker:ink_updatemanifest(Inker,
                                                     ManifestSlice,
                                                     FilesToDelete),
     ok = leveled_inker:ink_compactioncomplete(Inker),
     leveled_log:log("IC007", []),
-    case PromptDelete of
-        true ->
-            lists:foreach(fun({_SQN, _FN, J2D}) ->
-                                leveled_cdb:cdb_deletepending(J2D,
-                                                                ManSQN,
-                                                                Inker)
-                                end,
-                            FilesToDelete),
-                            ok;
-        false ->
-            ok
-    end.
+    lists:foreach(fun({_SQN, _FN, J2D}) ->
+                        leveled_cdb:cdb_deletepending(J2D,
+                                                        ManSQN,
+                                                        Inker)
+                        end,
+                    FilesToDelete),
+                    ok.
 
 compact_files(BestRun, CDBopts, FilterFun, FilterServer, MaxSQN, RStrategy) ->
     BatchesOfPositions = get_all_positions(BestRun, []),
@@ -408,42 +401,34 @@ compact_files(BestRun, CDBopts, FilterFun, FilterServer, MaxSQN, RStrategy) ->
                                 FilterServer,
                                 MaxSQN,
                                 RStrategy,
-                                [],
-                                true).
+                                []).
 
 
 compact_files([], _CDBopts, null, _FilterFun, _FilterServer, _MaxSQN,
-                            _RStrategy, ManSlice0, PromptDelete0) ->
-    {ManSlice0, PromptDelete0};
+                            _RStrategy, ManSlice0) ->
+    ManSlice0;
 compact_files([], _CDBopts, ActiveJournal0, _FilterFun, _FilterServer, _MaxSQN,
-                            _RStrategy, ManSlice0, PromptDelete0) ->
+                            _RStrategy, ManSlice0) ->
     ManSlice1 = ManSlice0 ++ generate_manifest_entry(ActiveJournal0),
-    {ManSlice1, PromptDelete0};
+    ManSlice1;
 compact_files([Batch|T], CDBopts, ActiveJournal0,
                             FilterFun, FilterServer, MaxSQN, 
-                            RStrategy, ManSlice0, PromptDelete0) ->
+                            RStrategy, ManSlice0) ->
     {SrcJournal, PositionList} = Batch,
     KVCs0 = leveled_cdb:cdb_directfetch(SrcJournal,
                                         PositionList,
                                         key_value_check),
-    R0 = filter_output(KVCs0,
-                        FilterFun,
-                        FilterServer,
-                        MaxSQN,
-                        RStrategy),
-    {KVCs1, PromptDelete1} = R0,
-    PromptDelete2 = case {PromptDelete0, PromptDelete1} of
-                        {true, true} ->
-                            true;
-                        _ ->
-                            false
-                    end,
+    KVCs1 = filter_output(KVCs0,
+                            FilterFun,
+                            FilterServer,
+                            MaxSQN,
+                            RStrategy),
     {ActiveJournal1, ManSlice1} = write_values(KVCs1,
                                                 CDBopts, 
                                                 ActiveJournal0,
                                                 ManSlice0),
     compact_files(T, CDBopts, ActiveJournal1, FilterFun, FilterServer, MaxSQN,
-                                RStrategy, ManSlice1, PromptDelete2).
+                                RStrategy, ManSlice1).
 
 get_all_positions([], PositionBatches) ->
     PositionBatches;
@@ -471,28 +456,26 @@ split_positions_into_batches(Positions, Journal, Batches) ->
 
 
 filter_output(KVCs, FilterFun, FilterServer, MaxSQN, ReloadStrategy) ->
-    lists:foldl(fun(KVC0, {Acc, PromptDelete}) ->
+    lists:foldl(fun(KVC0, Acc) ->
                     R = leveled_codec:compact_inkerkvc(KVC0, ReloadStrategy),
                     case R of
                         skip ->
-                            {Acc, PromptDelete};
+                            Acc;
                         {TStrat, KVC1} ->
                             {K, _V, CrcCheck} = KVC0,
                             {SQN, LedgerKey} = leveled_codec:from_journalkey(K),
                             KeyValid = FilterFun(FilterServer, LedgerKey, SQN),
                             case {KeyValid, CrcCheck, SQN > MaxSQN, TStrat} of
-                                {true, true, _, _} ->
-                                    {Acc ++ [KVC0], PromptDelete};
-                                {false, true, true, _} ->
-                                    {Acc ++ [KVC0], PromptDelete};
                                 {false, true, false, retain} ->
-                                    {Acc ++ [KVC1], PromptDelete};
+                                    Acc ++ [KVC1];
                                 {false, true, false, _} ->
-                                    {Acc, PromptDelete}
+                                    Acc;
+                                _ ->
+                                    Acc ++ [KVC0]
                             end
                     end
                     end,
-                {[], true},
+                [],
                 KVCs).
     
 
@@ -734,15 +717,12 @@ compact_single_file_recovr_test() ->
         LedgerFun1,
         CompactFP,
         CDB} = compact_single_file_setup(),
-    R1 = compact_files([Candidate],
-                        #cdb_options{file_path=CompactFP},
-                        LedgerFun1,
-                        LedgerSrv1,
-                        9,
-                        [{?STD_TAG, recovr}]),
-    {ManSlice1, PromptDelete1} = R1,
-    ?assertMatch(true, PromptDelete1),
-    [{LowSQN, FN, PidR}] = ManSlice1,
+    [{LowSQN, FN, PidR}] = compact_files([Candidate],
+                                            #cdb_options{file_path=CompactFP},
+                                            LedgerFun1,
+                                            LedgerSrv1,
+                                            9,
+                                            [{?STD_TAG, recovr}]),
     io:format("FN of ~s~n", [FN]),
     ?assertMatch(2, LowSQN),
     ?assertMatch(probably,
@@ -773,15 +753,12 @@ compact_single_file_retain_test() ->
         LedgerFun1,
         CompactFP,
         CDB} = compact_single_file_setup(),
-    R1 = compact_files([Candidate],
-                        #cdb_options{file_path=CompactFP},
-                        LedgerFun1,
-                        LedgerSrv1,
-                        9,
-                        [{?STD_TAG, retain}]),
-    {ManSlice1, PromptDelete1} = R1,
-    ?assertMatch(true, PromptDelete1),
-    [{LowSQN, FN, PidR}] = ManSlice1,
+    [{LowSQN, FN, PidR}] = compact_files([Candidate],
+                                            #cdb_options{file_path=CompactFP},
+                                            LedgerFun1,
+                                            LedgerSrv1,
+                                            9,
+                                            [{?STD_TAG, retain}]),
     io:format("FN of ~s~n", [FN]),
     ?assertMatch(1, LowSQN),
     ?assertMatch(probably,
@@ -852,14 +829,13 @@ compact_singlefile_totwosmallfiles_test() ->
                             compaction_perc=50.0}],
     FakeFilterFun = fun(_FS, _LK, SQN) -> SQN rem 2 == 0 end,
     
-    {ManifestSlice, PromptDelete} = compact_files(BestRun1,
-                                                    CDBoptsSmall,
-                                                    FakeFilterFun,
-                                                    null,
-                                                    900,
-                                                    [{?STD_TAG, recovr}]),
+    ManifestSlice = compact_files(BestRun1,
+                                    CDBoptsSmall,
+                                    FakeFilterFun,
+                                    null,
+                                    900,
+                                    [{?STD_TAG, recovr}]),
     ?assertMatch(2, length(ManifestSlice)),
-    ?assertMatch(true, PromptDelete),
     lists:foreach(fun({_SQN, _FN, CDB}) ->
                         ok = leveled_cdb:cdb_deletepending(CDB),
                         ok = leveled_cdb:cdb_destroy(CDB)
