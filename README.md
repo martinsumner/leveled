@@ -75,6 +75,7 @@ All other queries (folds over indexes, keys and objects) are managed by cloning 
 
 Further information of specific design trade-off decisions is provided:
 
+- What is a log-structured merge tree?
 - Memory management
 - Backup and Recovery
 - The Penciller memory
