@@ -349,6 +349,10 @@ handle_call({return_folder, FolderType}, _From, State) ->
             {reply,
                 allkey_query(State, Tag),
                 State};
+        {keylist, Tag, Bucket} ->
+            {reply,
+                bucketkey_query(State, Tag, Bucket),
+                State};
         {hashtree_query, Tag, JournalCheck} ->
             {reply,
                 hashtree_query(State, Tag, JournalCheck),
@@ -535,7 +539,7 @@ foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun) ->
     {async, Folder}.
 
 
-allkey_query(State, Tag) ->
+bucketkey_query(State, Tag, Bucket) ->
     {ok,
         {LedgerSnapshot, LedgerCache},
         _JournalSnapshot} = snapshot_store(State, ledger),
@@ -543,8 +547,8 @@ allkey_query(State, Tag) ->
                 leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
-                SK = leveled_codec:to_ledgerkey(null, null, Tag),
-                EK = leveled_codec:to_ledgerkey(null, null, Tag),
+                SK = leveled_codec:to_ledgerkey(Bucket, null, Tag),
+                EK = leveled_codec:to_ledgerkey(Bucket, null, Tag),
                 AccFun = accumulate_keys(),
                 Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
                                                         SK,
@@ -555,6 +559,9 @@ allkey_query(State, Tag) ->
                 lists:reverse(Acc)
                 end,
     {async, Folder}.
+
+allkey_query(State, Tag) ->
+    bucketkey_query(State, Tag, null).
 
 
 snapshot_store(State, SnapType) ->

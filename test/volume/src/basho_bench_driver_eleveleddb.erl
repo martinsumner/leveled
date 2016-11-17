@@ -27,7 +27,7 @@
 -export([new/1,
          run/4]).
 
--include("basho_bench.hrl").
+% -include("basho_bench.hrl").
 
 -record(state, {
           instance
@@ -37,7 +37,7 @@ get_instances() ->
     case basho_bench_config:get(eleveleddb_instances, undefined) of
         undefined ->
             Instances = start_instances(),
-            ?INFO("Instances started ~w~n", [Instances]),
+            % ?INFO("Instances started ~w~n", [Instances]),
             basho_bench_config:set(eleveleddb_instances, Instances),
             Instances;
         Instances ->
@@ -48,11 +48,11 @@ get_instances() ->
 start_instances() ->
     BaseDir = basho_bench_config:get(eleveleddb_dir, "."),
     Num = basho_bench_config:get(eleveleddb_num_instances, 1),
-    ?INFO("Starting up ~p eleveleddb instances under ~s .\n",
-          [Num, BaseDir]),
+    % ?INFO("Starting up ~p eleveleddb instances under ~s .\n",
+    %       [Num, BaseDir]),
     Refs = [begin
                 Dir = filename:join(BaseDir, "instance." ++ integer_to_list(N)),
-                ?INFO("Opening eleveleddb instance in ~s\n", [Dir]),
+                % ?INFO("Opening eleveleddb instance in ~s\n", [Dir]),
                 {ok, Ref} = leveled_bookie:book_start(Dir, 2000, 500000000),
                 Ref
             end || N <- lists:seq(1, Num)],
@@ -62,7 +62,7 @@ new(Id) ->
     Instances = get_instances(),
     Count = size(Instances),
     Idx = ((Id - 1) rem Count) + 1,
-    ?INFO("Worker ~p using instance ~p.\n", [Id, Idx]),
+    % ?INFO("Worker ~p using instance ~p.\n", [Id, Idx]),
     State = #state{instance = element(Idx, Instances)},
     {ok, State}.
 
