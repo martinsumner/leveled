@@ -223,7 +223,7 @@ handle_info(_Info, State) ->
 terminate(normal, _State) ->
     ok;
 terminate(Reason, _State) ->
-    leveled_log:log("IC001", Reason).
+    leveled_log:log("IC001", [Reason]).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -846,6 +846,7 @@ compact_singlefile_totwosmallfiles_test() ->
 coverage_cheat_test() ->
     {noreply, _State0} = handle_info(timeout, #state{}),
     {ok, _State1} = code_change(null, #state{}, null),
-    {reply, not_supported, _State2} = handle_call(null, null, #state{}).    
+    {reply, not_supported, _State2} = handle_call(null, null, #state{}),
+    terminate(error, #state{}).    
 
 -endif.

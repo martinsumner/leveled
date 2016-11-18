@@ -866,12 +866,7 @@ get_opt(Key, Opts) ->
 get_opt(Key, Opts, Default) ->
     case proplists:get_value(Key, Opts) of
         undefined ->
-            case application:get_env(?MODULE, Key) of
-                {ok, Value} ->
-                    Value;
-                undefined ->
-                    Default
-            end;
+            Default;
         Value ->
             Value
     end.

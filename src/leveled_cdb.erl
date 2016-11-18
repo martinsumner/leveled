@@ -1682,18 +1682,29 @@ get_keys_byposition_manykeys_test() ->
                                 #cdb_options{binary_mode=false}),
     KVList = generate_sequentialkeys(KeyCount, []),
     lists:foreach(fun({K, V}) -> cdb_put(P1, K, V) end, KVList),
-    SW1 = os:timestamp(),
+    ok = cdb_roll(P1),
+    % Should not return posiitons when rolling
+    ?assertMatch([], cdb_getpositions(P1, 10)), 
+    lists:foldl(fun(X, Complete) ->
+                        case Complete of
+                            true ->
+                                true;
+                            false ->
+                                case cdb_checkhashtable(P1) of
+                                    true ->
+                                        true;
+                                    false ->
+                                        timer:sleep(X),
+                                        false
+                                end
+                        end end,
+                        false,
+                        lists:seq(1, 20)),
+    ?assertMatch(10, length(cdb_getpositions(P1, 10))),
     {ok, F2} = cdb_complete(P1),
-    SW2 = os:timestamp(),
-    io:format("CDB completed in ~w microseconds~n",
-                [timer:now_diff(SW2, SW1)]),
+    
     {ok, P2} = cdb_open_reader(F2, #cdb_options{binary_mode=false}),
-    SW3 = os:timestamp(),
-    io:format("CDB opened for read in ~w microseconds~n",
-                [timer:now_diff(SW3, SW2)]),
     PositionList = cdb_getpositions(P2, all),
-    io:format("Positions fetched in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SW3)]),
     L1 = length(PositionList),
     ?assertMatch(L1, KeyCount),
     

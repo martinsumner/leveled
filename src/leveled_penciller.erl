@@ -321,15 +321,14 @@ handle_call({push_mem, PushedTree}, From, State=#state{is_snapshot=Snap})
     %
     % Check the approximate size of the cache.  If it is over the maximum size,
     % trigger a backgroun L0 file write and update state of levelzero_pending.
-    case {State#state.levelzero_pending, State#state.work_backlog} of
-        {true, _} ->
-            leveled_log:log("P0018", [returned, "L-0 persist pending"]),
+    case State#state.levelzero_pending or State#state.work_backlog of
+        true ->
+            leveled_log:log("P0018", [returned,
+                                        State#state.levelzero_pending,
+                                        State#state.work_backlog]),
             {reply, returned, State};
-        {false, true} ->
-            leveled_log:log("P0018", [returned, "Merge tree work backlog"]),
-            {reply, returned, State};
-        {false, false} ->
-            leveled_log:log("P0018", [ok, "L0 memory updated"]),
+        false ->
+            leveled_log:log("P0018", [ok, false, false]),
             gen_server:reply(From, ok),
             {noreply, update_levelzero(State#state.levelzero_index,
                                         State#state.levelzero_size,

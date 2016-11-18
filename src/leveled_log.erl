@@ -68,7 +68,8 @@
     {"P0017",
         {info, "No L0 file found"}},
     {"P0018",
-        {info, "Respone to push_mem of ~w ~s"}},
+        {info, "Response to push_mem of ~w with "
+                    ++ "L0 pending ~w and merge backlog ~w"}},
     {"P0019",
         {info, "Rolling level zero to filename ~s"}},
     {"P0020",
