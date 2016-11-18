@@ -459,7 +459,8 @@ space_clear_ondelete(_Config) ->
                             no_check,
                             G2),
     
-    AllKeyQuery = {keylist, o_rkv, {fun testutil:foldkeysfun/3, []}},
+    FoldKeysFun= fun(B, K, Acc) -> Acc ++ {B, K} end,
+    AllKeyQuery = {keylist, o_rkv, {FoldKeysFun, []}},
     {async, F1} = leveled_bookie:book_returnfolder(Book1, AllKeyQuery),
     SW1 = os:timestamp(),
     KL1 = F1(),
