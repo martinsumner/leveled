@@ -336,24 +336,24 @@ handle_call({return_folder, FolderType}, _From, State) ->
                 bucket_stats(State, Bucket, ?RIAK_TAG),
                 State};
         {index_query,
-                Bucket,
+                Constraint,
                 {FoldKeysFun, Acc},
                 {IdxField, StartValue, EndValue},
                 {ReturnTerms, TermRegex}} ->
             {reply,
                 index_query(State,
-                                Bucket,
+                                Constraint,
                                 {FoldKeysFun, Acc},
                                 {IdxField, StartValue, EndValue},
                                 {ReturnTerms, TermRegex}),
                 State};
-        {keylist, Tag} ->
+        {keylist, Tag, {FoldKeysFun, Acc}} ->
             {reply,
-                allkey_query(State, Tag),
+                allkey_query(State, Tag, {FoldKeysFun, Acc}),
                 State};
-        {keylist, Tag, Bucket} ->
+        {keylist, Tag, Bucket, {FoldKeysFun, Acc}} ->
             {reply,
-                bucketkey_query(State, Tag, Bucket),
+                bucketkey_query(State, Tag, Bucket, {FoldKeysFun, Acc}),
                 State};
         {hashtree_query, Tag, JournalCheck} ->
             {reply,
@@ -431,21 +431,34 @@ bucket_stats(State, Bucket, Tag) ->
     {async, Folder}.
 
 index_query(State,
-                Bucket,
+                Constraint,
                 {FoldKeysFun, InitAcc},
                 {IdxField, StartValue, EndValue},
                 {ReturnTerms, TermRegex}) ->
     {ok,
         {LedgerSnapshot, LedgerCache},
         _JournalSnapshot} = snapshot_store(State, ledger),
+    {Bucket, StartObjKey} =
+        case Constraint of
+            {B, SK} ->
+                {B, SK};
+            B ->
+                {B, null}
+        end,
     Folder = fun() ->
                 leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
-                StartKey = leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG,
-                                                        IdxField, StartValue),
-                EndKey = leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG,
-                                                        IdxField, EndValue),
+                StartKey = leveled_codec:to_ledgerkey(Bucket,
+                                                        StartObjKey,
+                                                        ?IDX_TAG,
+                                                        IdxField,
+                                                        StartValue),
+                EndKey = leveled_codec:to_ledgerkey(Bucket,
+                                                        null,
+                                                        ?IDX_TAG,
+                                                        IdxField,
+                                                        EndValue),
                 AddFun = case ReturnTerms of
                                 true ->
                                     fun add_terms/2;
@@ -542,7 +555,7 @@ foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun) ->
     {async, Folder}.
 
 
-bucketkey_query(State, Tag, Bucket) ->
+bucketkey_query(State, Tag, Bucket, {FoldKeysFun, InitAcc}) ->
     {ok,
         {LedgerSnapshot, LedgerCache},
         _JournalSnapshot} = snapshot_store(State, ledger),
@@ -552,19 +565,19 @@ bucketkey_query(State, Tag, Bucket) ->
                                                             LedgerCache),
                 SK = leveled_codec:to_ledgerkey(Bucket, null, Tag),
                 EK = leveled_codec:to_ledgerkey(Bucket, null, Tag),
-                AccFun = accumulate_keys(),
+                AccFun = accumulate_keys(FoldKeysFun),
                 Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
                                                         SK,
                                                         EK,
                                                         AccFun,
-                                                        []),
+                                                        InitAcc),
                 ok = leveled_penciller:pcl_close(LedgerSnapshot),
                 lists:reverse(Acc)
                 end,
     {async, Folder}.
 
-allkey_query(State, Tag) ->
-    bucketkey_query(State, Tag, null).
+allkey_query(State, Tag, {FoldKeysFun, InitAcc}) ->
+    bucketkey_query(State, Tag, null, {FoldKeysFun, InitAcc}).
 
 
 snapshot_store(State, SnapType) ->
@@ -715,14 +728,15 @@ check_presence(Key, Value, InkerClone) ->
             false
     end.
 
-accumulate_keys() ->
+accumulate_keys(FoldKeysFun) ->
     Now = leveled_codec:integer_now(),
-    AccFun = fun(Key, Value, KeyList) ->
+    AccFun = fun(Key, Value, Acc) ->
                     case leveled_codec:is_active(Key, Value, Now) of
                         true ->
-                            [leveled_codec:from_ledgerkey(Key)|KeyList];
+                            {B, K} = leveled_codec:from_ledgerkey(Key),
+                            FoldKeysFun(B, K, Acc);
                         false ->
-                            KeyList
+                            Acc
                     end
                 end,
     AccFun.

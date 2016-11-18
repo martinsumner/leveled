@@ -11,9 +11,9 @@
             rotating_objects/1]).
 
 all() -> [
-            small_load_with2i,
-            query_count,
-            rotating_objects
+            small_load_with2i %,
+            % query_count,
+            % rotating_objects
             ].
 
 
@@ -39,6 +39,26 @@ small_load_with2i(_Config) ->
     ChkList1 = lists:sublist(lists:sort(ObjL1), 100),
     testutil:check_forlist(Bookie1, ChkList1),
     testutil:check_forobject(Bookie1, TestObject),
+    
+    % Find all keys index, and then just the last key
+    IdxQ1 = {index_query,
+                "Bucket",
+                {fun testutil:foldkeysfun/3, []},
+                {"idx1_bin", "#", "~"},
+                {true, undefined}},
+    {async, IdxFolder} = leveled_bookie:book_returnfolder(Bookie1, IdxQ1),
+    KeyList1 = lists:usort(IdxFolder()),
+    true = 10000 == length(KeyList1),
+    {LastTerm, LastKey} = lists:last(KeyList1),
+    IdxQ2 = {index_query,
+                {"Bucket", LastKey},
+                {fun testutil:foldkeysfun/3, []},
+                {"idx1_bin", LastTerm, "~"},
+                {false, undefined}},
+    {async, IdxFolderLK} = leveled_bookie:book_returnfolder(Bookie1, IdxQ2),
+    KeyList2 = lists:usort(IdxFolderLK()),
+    io:format("List should be last key ~w ~w~n", [LastKey, KeyList2]),
+    true = 1 == length(KeyList2),
     
     %% Delete the objects from the ChkList removing the indexes
     lists:foreach(fun({_RN, Obj, Spc}) ->

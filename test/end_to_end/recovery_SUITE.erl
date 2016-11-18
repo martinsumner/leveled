@@ -105,8 +105,8 @@ aae_bustedjournal(_Config) ->
     testutil:corrupt_journal(RootPath, HeadF, 1000, 2048, 1000),
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts),
     
-    {async, KeyF} = leveled_bookie:book_returnfolder(Bookie2,
-                                                        {keylist, ?RIAK_TAG}),
+    AllKeyQuery = {keylist, o_rkv, {fun testutil:foldkeysfun/3, []}},
+    {async, KeyF} = leveled_bookie:book_returnfolder(Bookie2, AllKeyQuery),
     KeyList = KeyF(),
     20001 = length(KeyList),
     HeadCount = lists:foldl(fun({B, K}, Acc) ->

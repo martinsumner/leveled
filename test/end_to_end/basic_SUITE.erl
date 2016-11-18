@@ -459,7 +459,8 @@ space_clear_ondelete(_Config) ->
                             no_check,
                             G2),
     
-    {async, F1} = leveled_bookie:book_returnfolder(Book1, {keylist, o_rkv}),
+    AllKeyQuery = {keylist, o_rkv, {fun testutil:foldkeysfun/3, []}},
+    {async, F1} = leveled_bookie:book_returnfolder(Book1, AllKeyQuery),
     SW1 = os:timestamp(),
     KL1 = F1(),
     ok = case length(KL1) of
@@ -525,7 +526,7 @@ space_clear_ondelete(_Config) ->
                     "after deletes~n",
                 [PointB_Journals, length(FNsB_L)]),
     
-    {async, F2} = leveled_bookie:book_returnfolder(Book1, {keylist, o_rkv}),
+    {async, F2} = leveled_bookie:book_returnfolder(Book1, AllKeyQuery),
     SW3 = os:timestamp(),
     KL2 = F2(),
     ok = case length(KL2) of
@@ -537,7 +538,7 @@ space_clear_ondelete(_Config) ->
     ok = leveled_bookie:book_close(Book1),
     
     {ok, Book2} = leveled_bookie:book_start(StartOpts1),
-    {async, F3} = leveled_bookie:book_returnfolder(Book2, {keylist, o_rkv}),
+    {async, F3} = leveled_bookie:book_returnfolder(Book2, AllKeyQuery),
     SW4 = os:timestamp(),
     KL3 = F3(),
     ok = case length(KL3) of

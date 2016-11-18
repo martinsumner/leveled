@@ -432,10 +432,8 @@ rotating_object_check(RootPath, B, NumberOfObjects) ->
     ok = testutil:check_indexed_objects(Book2, B, KSpcL3, V3),
     {KSpcL4, V4} = testutil:put_altered_indexed_objects(Book2, B, KSpcL3),
     ok = testutil:check_indexed_objects(Book2, B, KSpcL4, V4),
-    {async, BList} = leveled_bookie:book_returnfolder(Book2,
-                                                        {keylist,
-                                                            ?RIAK_TAG,
-                                                            B}),
+    Query = {keylist, ?RIAK_TAG, B, {fun foldkeysfun/3, []}},
+    {async, BList} = leveled_bookie:book_returnfolder(Book2, Query),
     true = NumberOfObjects == length(BList()),
     ok = leveled_bookie:book_close(Book2),
     ok.
