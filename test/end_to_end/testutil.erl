@@ -40,7 +40,8 @@
             restore_topending/2,
             find_journals/1,
             riak_hash/1,
-            wait_for_compaction/1]).
+            wait_for_compaction/1,
+            foldkeysfun/3]).
 
 -define(RETURN_TERMS, {true, undefined}).
 -define(SLOWOFFER_DELAY, 5).
@@ -328,6 +329,8 @@ get_randomdate() ->
                                     [Year, Month, Day, Hour, Minute, Second])).
 
 
+foldkeysfun(_Bucket, Item, Acc) -> Acc ++ [Item].
+
 check_indexed_objects(Book, B, KSpecL, V) ->
     % Check all objects match, return what should be the results of an all
     % index query
@@ -343,6 +346,7 @@ check_indexed_objects(Book, B, KSpecL, V) ->
     R = leveled_bookie:book_returnfolder(Book,
                                             {index_query,
                                                 B,
+                                                {fun foldkeysfun/3, []},
                                                 {"idx1_bin",
                                                     "0",
                                                     "~"},

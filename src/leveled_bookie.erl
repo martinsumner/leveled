@@ -337,11 +337,13 @@ handle_call({return_folder, FolderType}, _From, State) ->
                 State};
         {index_query,
                 Bucket,
+                {FoldKeysFun, Acc},
                 {IdxField, StartValue, EndValue},
                 {ReturnTerms, TermRegex}} ->
             {reply,
                 index_query(State,
                                 Bucket,
+                                {FoldKeysFun, Acc},
                                 {IdxField, StartValue, EndValue},
                                 {ReturnTerms, TermRegex}),
                 State};
@@ -430,6 +432,7 @@ bucket_stats(State, Bucket, Tag) ->
 
 index_query(State,
                 Bucket,
+                {FoldKeysFun, InitAcc},
                 {IdxField, StartValue, EndValue},
                 {ReturnTerms, TermRegex}) ->
     {ok,
@@ -445,16 +448,16 @@ index_query(State,
                                                         IdxField, EndValue),
                 AddFun = case ReturnTerms of
                                 true ->
-                                    fun add_terms/3;
+                                    fun add_terms/2;
                                 _ ->
-                                    fun add_keys/3
+                                    fun add_keys/2
                             end,
-                AccFun = accumulate_index(TermRegex, AddFun),
+                AccFun = accumulate_index(TermRegex, AddFun, FoldKeysFun),
                 Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
                                                         StartKey,
                                                         EndKey,
                                                         AccFun,
-                                                        []),
+                                                        InitAcc),
                 ok = leveled_penciller:pcl_close(LedgerSnapshot),
                 Acc
                 end,
@@ -724,23 +727,23 @@ accumulate_keys() ->
                 end,
     AccFun.
 
-add_keys(ObjKey, _IdxValue, Acc) ->
-    Acc ++ [ObjKey].
+add_keys(ObjKey, _IdxValue) ->
+    ObjKey.
 
-add_terms(ObjKey, IdxValue, Acc) ->
-    Acc ++ [{IdxValue, ObjKey}].
+add_terms(ObjKey, IdxValue) ->
+    {IdxValue, ObjKey}.
 
-accumulate_index(TermRe, AddFun) ->
+accumulate_index(TermRe, AddFun, FoldKeysFun) ->
     Now = leveled_codec:integer_now(),
     case TermRe of
         undefined ->
             fun(Key, Value, Acc) ->
                 case leveled_codec:is_active(Key, Value, Now) of
                     true ->
-                        {_Bucket,
+                        {Bucket,
                             ObjKey,
                             IdxValue} = leveled_codec:from_ledgerkey(Key),
-                        AddFun(ObjKey, IdxValue, Acc);
+                        FoldKeysFun(Bucket, AddFun(ObjKey, IdxValue), Acc);
                     false ->
                         Acc
                 end end;
@@ -748,14 +751,16 @@ accumulate_index(TermRe, AddFun) ->
             fun(Key, Value, Acc) ->
                 case leveled_codec:is_active(Key, Value, Now) of
                     true ->
-                        {_Bucket,
+                        {Bucket,
                             ObjKey,
                             IdxValue} = leveled_codec:from_ledgerkey(Key),
                         case re:run(IdxValue, TermRe) of
                             nomatch ->
                                 Acc;
                             _ ->
-                                AddFun(ObjKey, IdxValue, Acc)
+                                FoldKeysFun(Bucket,
+                                            AddFun(ObjKey, IdxValue),
+                                            Acc)
                         end;
                     false ->
                         Acc
@@ -1031,10 +1036,12 @@ ttl_test() ->
                                                 {bucket_stats, "Bucket"}),
     {_Size, Count} = BucketFolder(),
     ?assertMatch(100, Count),
+    FoldKeysFun = fun(_B, Item, FKFAcc) -> FKFAcc ++ [Item] end,
     {async,
         IndexFolder} = book_returnfolder(Bookie1,
                                             {index_query,
                                             "Bucket",
+                                            {FoldKeysFun, []},
                                             {"idx1_bin", "f8", "f9"},
                                             {false, undefined}}),
     KeyList = IndexFolder(),
@@ -1045,6 +1052,7 @@ ttl_test() ->
         IndexFolderTR} = book_returnfolder(Bookie1,
                                             {index_query,
                                             "Bucket",
+                                            {FoldKeysFun, []},
                                             {"idx1_bin", "f8", "f9"},
                                             {true, Regex}}),
     TermKeyList = IndexFolderTR(),
@@ -1057,6 +1065,7 @@ ttl_test() ->
         IndexFolderTR2} = book_returnfolder(Bookie2,
                                             {index_query,
                                             "Bucket",
+                                            {FoldKeysFun, []},
                                             {"idx1_bin", "f7", "f9"},
                                             {false, Regex}}),
     KeyList2 = IndexFolderTR2(),
