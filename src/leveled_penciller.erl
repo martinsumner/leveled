@@ -169,6 +169,7 @@
         pcl_fetchlevelzero/2,
         pcl_fetch/2,
         pcl_fetchkeys/5,
+        pcl_fetchnextkey/5,
         pcl_checksequencenumber/3,
         pcl_workforclerk/1,
         pcl_promptmanifestchange/2,
@@ -218,6 +219,7 @@
                 is_snapshot = false :: boolean(),
                 snapshot_fully_loaded = false :: boolean(),
                 source_penciller :: pid(),
+                levelzero_astree :: gb_trees:tree(),
                 
                 ongoing_work = [] :: list(),
                 work_backlog = false :: boolean()}).
@@ -248,7 +250,12 @@ pcl_fetch(Pid, Key) ->
 
 pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc) ->
     gen_server:call(Pid,
-                    {fetch_keys, StartKey, EndKey, AccFun, InitAcc},
+                    {fetch_keys, StartKey, EndKey, AccFun, InitAcc, -1},
+                    infinity).
+
+pcl_fetchnextkey(Pid, StartKey, EndKey, AccFun, InitAcc) ->
+    gen_server:call(Pid,
+                    {fetch_keys, StartKey, EndKey, AccFun, InitAcc, 1},
                     infinity).
 
 pcl_checksequencenumber(Pid, Key, SQN) ->
@@ -352,20 +359,29 @@ handle_call({check_sqn, Key, SQN}, _From, State) ->
                                     State#state.levelzero_cache),
                         SQN),
         State};
-handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc},
+handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
                 _From,
                 State=#state{snapshot_fully_loaded=Ready})
                                                         when Ready == true ->
-    L0AsTree = leveled_pmem:merge_trees(StartKey,
-                                        EndKey,
-                                        State#state.levelzero_cache,
-                                        gb_trees:empty()),
+    L0AsTree =
+        case State#state.levelzero_astree of
+            undefined ->
+                leveled_pmem:merge_trees(StartKey,
+                                            EndKey,
+                                            State#state.levelzero_cache,
+                                            gb_trees:empty());
+            Tree ->
+                Tree
+        end,
     L0iter = gb_trees:iterator(L0AsTree),
     SFTiter = initiate_rangequery_frommanifest(StartKey,
                                                 EndKey,
                                                 State#state.manifest),
-    Acc = keyfolder(L0iter, SFTiter, StartKey, EndKey, {AccFun, InitAcc}),
-    {reply, Acc, State};
+    Acc = keyfolder({L0iter, SFTiter},
+                        {StartKey, EndKey},
+                        {AccFun, InitAcc},
+                        MaxKeys),
+    {reply, Acc, State#state{levelzero_astree = L0AsTree}};
 handle_call(work_for_clerk, From, State) ->
     {UpdState, Work} = return_work(State, From),
     {reply, Work, UpdState};
@@ -956,37 +972,56 @@ find_nextkey(QueryArray, LCnt, {BestKeyLevel, BestKV}, QueryFunT) ->
     end.
 
 
-keyfolder(null, SFTiterator, StartKey, EndKey, {AccFun, Acc}) ->
-    case find_nextkey(SFTiterator, StartKey, EndKey) of
+keyfolder(IMMiter, SFTiter, StartKey, EndKey, {AccFun, Acc}) ->
+    keyfolder({IMMiter, SFTiter}, {StartKey, EndKey}, {AccFun, Acc}, -1).
+
+keyfolder(_Iterators, _KeyRange, {_AccFun, Acc}, MaxKeys) when MaxKeys == 0 ->
+    Acc;
+keyfolder({null, SFTiter}, KeyRange, {AccFun, Acc}, MaxKeys) ->
+    {StartKey, EndKey} = KeyRange,
+    case find_nextkey(SFTiter, StartKey, EndKey) of
         no_more_keys ->
             Acc;
-        {NxtSFTiterator, {SFTKey, SFTVal}} ->
+        {NxSFTiter, {SFTKey, SFTVal}} ->
             Acc1 = AccFun(SFTKey, SFTVal, Acc),
-            keyfolder(null, NxtSFTiterator, StartKey, EndKey, {AccFun, Acc1})
+            keyfolder({null, NxSFTiter}, KeyRange, {AccFun, Acc1}, MaxKeys - 1)
     end;
-keyfolder(IMMiterator, SFTiterator, StartKey, EndKey, {AccFun, Acc}) ->
+keyfolder({IMMiterator, SFTiterator}, KeyRange, {AccFun, Acc}, MaxKeys) ->
+    {StartKey, EndKey} = KeyRange,
     case gb_trees:next(IMMiterator) of
         none ->
             % There are no more keys in the in-memory iterator, so now
             % iterate only over the remaining keys in the SFT iterator
-            keyfolder(null, SFTiterator, StartKey, EndKey, {AccFun, Acc});
-        {IMMKey, IMMVal, NxtIMMiterator} ->
+            keyfolder({null, SFTiterator}, KeyRange, {AccFun, Acc}, MaxKeys);
+        {IMMKey, _IMMVal, NxIMMiterator} when IMMKey < StartKey ->
+            % Normally everything is pre-filterd, but the IMM iterator can
+            % be re-used and do may be behind the StartKey if the StartKey has
+            % advanced from the previous use
+            keyfolder({NxIMMiterator, SFTiterator},
+                        KeyRange,
+                        {AccFun, Acc},
+                        MaxKeys);
+        {IMMKey, IMMVal, NxIMMiterator} ->
             case leveled_codec:endkey_passed(EndKey, IMMKey) of
                 true ->
                     % There are no more keys in-range in the in-memory
                     % iterator, so take action as if this iterator is empty
                     % (see above)
-                    keyfolder(null, SFTiterator,
-                                    StartKey, EndKey, {AccFun, Acc});
+                    keyfolder({null, SFTiterator},
+                                KeyRange,
+                                {AccFun, Acc},
+                                MaxKeys);
                 false ->
                     case find_nextkey(SFTiterator, StartKey, EndKey) of
                         no_more_keys ->
                             % No more keys in range in the persisted store, so use the
                             % in-memory KV as the next
                             Acc1 = AccFun(IMMKey, IMMVal, Acc),
-                            keyfolder(NxtIMMiterator, SFTiterator,
-                                            StartKey, EndKey, {AccFun, Acc1});
-                        {NxtSFTiterator, {SFTKey, SFTVal}} ->
+                            keyfolder({NxIMMiterator, SFTiterator},
+                                        KeyRange,
+                                        {AccFun, Acc1},
+                                        MaxKeys - 1);
+                        {NxSFTiterator, {SFTKey, SFTVal}} ->
                             % There is a next key, so need to know which is the
                             % next key between the two (and handle two keys
                             % with different sequence numbers).  
@@ -996,19 +1031,22 @@ keyfolder(IMMiterator, SFTiterator, StartKey, EndKey, {AccFun, Acc}) ->
                                                                     SFTVal}) of
                                 left_hand_first ->
                                     Acc1 = AccFun(IMMKey, IMMVal, Acc),
-                                    keyfolder(NxtIMMiterator, SFTiterator,
-                                                    StartKey, EndKey,
-                                                    {AccFun, Acc1});
+                                    keyfolder({NxIMMiterator, SFTiterator},
+                                                KeyRange,
+                                                {AccFun, Acc1},
+                                                MaxKeys - 1);
                                 right_hand_first ->
                                     Acc1 = AccFun(SFTKey, SFTVal, Acc),
-                                    keyfolder(IMMiterator, NxtSFTiterator,
-                                                    StartKey, EndKey,
-                                                    {AccFun, Acc1});
+                                    keyfolder({IMMiterator, NxSFTiterator},
+                                                KeyRange,
+                                                {AccFun, Acc1},
+                                                MaxKeys - 1);
                                 left_hand_dominant ->
                                     Acc1 = AccFun(IMMKey, IMMVal, Acc),
-                                    keyfolder(NxtIMMiterator, NxtSFTiterator,
-                                                    StartKey, EndKey,
-                                                    {AccFun, Acc1})
+                                    keyfolder({NxIMMiterator, NxSFTiterator},
+                                                KeyRange,
+                                                {AccFun, Acc1},
+                                                MaxKeys - 1)
                             end
                     end
             end

@@ -335,6 +335,10 @@ handle_call({return_folder, FolderType}, _From, State) ->
             {reply,
                 bucket_stats(State, Bucket, ?RIAK_TAG),
                 State};
+        {binary_bucketlist, Tag, {FoldKeysFun, Acc}} ->
+            {reply,
+                binary_bucketlist(State, Tag, {FoldKeysFun, Acc}),
+                State};
         {index_query,
                 Constraint,
                 {FoldKeysFun, Acc},
@@ -429,6 +433,53 @@ bucket_stats(State, Bucket, Tag) ->
                 Acc
                 end,
     {async, Folder}.
+
+
+binary_bucketlist(State, Tag, {FoldKeysFun, InitAcc}) ->
+    % List buckets for tag, assuming bucket names are all binary type
+    {ok,
+        {LedgerSnapshot, LedgerCache},
+        _JournalSnapshot} = snapshot_store(State, ledger),
+    Folder = fun() ->
+                leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
+                ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
+                                                            LedgerCache),
+                BucketAcc = get_nextbucket(null,
+                                            Tag,
+                                            LedgerSnapshot,
+                                            []),
+                ok = leveled_penciller:pcl_close(LedgerSnapshot),
+                lists:foldl(fun({B, K}, Acc) -> FoldKeysFun(B, K, Acc) end,
+                                InitAcc,
+                                BucketAcc)
+                end,
+    {async, Folder}.
+
+get_nextbucket(NextBucket, Tag, LedgerSnapshot, BKList) ->
+    StartKey = leveled_codec:to_ledgerkey(NextBucket, null, Tag),
+    EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
+    ExtractFun = fun(LK, _V, _Acc) -> leveled_codec:from_ledgerkey(LK) end,
+    BK = leveled_penciller:pcl_fetchnextkey(LedgerSnapshot,
+                                                StartKey,
+                                                EndKey,
+                                                ExtractFun,
+                                                null),
+    case BK of
+        null ->
+            leveled_log:log("B0008",[]),
+            BKList;
+        {B, K} when is_binary(B) ->
+            leveled_log:log("B0009",[B]),
+            get_nextbucket(<<B/binary, 0>>,
+                            Tag,
+                            LedgerSnapshot,
+                            [{B, K}|BKList]);
+        NB ->
+            leveled_log:log("B0010",[NB]),
+            []
+        
+    end.
+            
 
 index_query(State,
                 Constraint,

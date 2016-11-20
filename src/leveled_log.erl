@@ -32,6 +32,12 @@
         {info, "Reached end of load batch with SQN ~w"}},
     {"B0007",
         {info, "Skipping as exceeded MaxSQN ~w with SQN ~w"}},
+    {"B0008",
+        {info, "Bucket list finds no more results"}},
+    {"B0009",
+        {info, "Bucket list finds Bucket ~w"}},
+    {"B0010",
+        {info, "Bucket list finds non-binary Bucket ~w"}},
     
     {"P0001",
         {info, "Ledger snapshot ~w registered"}},
