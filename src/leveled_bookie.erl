@@ -448,7 +448,7 @@ bucket_stats(State, Bucket, Tag) ->
     {async, Folder}.
 
 
-binary_bucketlist(State, Tag, {FoldKeysFun, InitAcc}) ->
+binary_bucketlist(State, Tag, {FoldBucketsFun, InitAcc}) ->
     % List buckets for tag, assuming bucket names are all binary type
     {ok,
         {LedgerSnapshot, LedgerCache},
@@ -462,7 +462,7 @@ binary_bucketlist(State, Tag, {FoldKeysFun, InitAcc}) ->
                                             LedgerSnapshot,
                                             []),
                 ok = leveled_penciller:pcl_close(LedgerSnapshot),
-                lists:foldl(fun({B, K}, Acc) -> FoldKeysFun(B, K, Acc) end,
+                lists:foldl(fun({B, _K}, Acc) -> FoldBucketsFun(B, Acc) end,
                                 InitAcc,
                                 BucketAcc)
                 end,

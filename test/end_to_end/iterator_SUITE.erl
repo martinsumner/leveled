@@ -113,7 +113,7 @@ small_load_with2i(_Config) ->
     Total2 = Sum2(),
     true = Total2 == Total1, 
     
-    FoldBucketsFun = fun(B, _K, Acc) -> sets:add_element(B, Acc) end,
+    FoldBucketsFun = fun(B, Acc) -> sets:add_element(B, Acc) end,
     % Should not find any buckets - as there is a non-binary bucket, and no
     % binary ones
     BucketListQuery = {binary_bucketlist,
@@ -322,7 +322,7 @@ query_count(_Config) ->
                     R9),
     testutil:check_forobject(Book4, TestObject),
     
-    FoldBucketsFun = fun(B, _K, Acc) -> sets:add_element(B, Acc) end,
+    FoldBucketsFun = fun(B, Acc) -> sets:add_element(B, Acc) end,
     BucketListQuery = {binary_bucketlist,
                         ?RIAK_TAG,
                         {FoldBucketsFun, sets:new()}},
