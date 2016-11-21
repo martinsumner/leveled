@@ -62,8 +62,7 @@ simple_put_fetch_head_delete(_Config) ->
     ok = leveled_bookie:book_close(Bookie3),
     {ok, Bookie4} = leveled_bookie:book_start(StartOpts2),
     not_found = leveled_bookie:book_get(Bookie4, "Bucket1", "Key2"),
-    ok = leveled_bookie:book_close(Bookie4),
-    testutil:reset_filestructure().
+    ok = leveled_bookie:book_destroy(Bookie4).
 
 many_put_fetch_head(_Config) ->
     RootPath = testutil:reset_filestructure(),
@@ -98,8 +97,7 @@ many_put_fetch_head(_Config) ->
     {ok, Bookie3} = leveled_bookie:book_start(StartOpts2),
     testutil:check_forlist(Bookie3, ChkList2A),
     testutil:check_forobject(Bookie3, TestObject),
-    ok = leveled_bookie:book_close(Bookie3),
-    testutil:reset_filestructure().
+    ok = leveled_bookie:book_destroy(Bookie3).
 
 journal_compaction(_Config) ->
     RootPath = testutil:reset_filestructure(),

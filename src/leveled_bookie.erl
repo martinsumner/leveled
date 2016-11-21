@@ -132,7 +132,8 @@
         book_snapshotledger/3,
         book_compactjournal/2,
         book_islastcompactionpending/1,
-        book_close/1]).
+        book_close/1,
+        book_destroy/1]).
 
 -export([get_opt/2,
             get_opt/3]).  
@@ -213,6 +214,9 @@ book_islastcompactionpending(Pid) ->
 
 book_close(Pid) ->
     gen_server:call(Pid, close, infinity).
+
+book_destroy(Pid) ->
+    gen_server:call(Pid, destroy, infinity).
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -392,7 +396,8 @@ handle_call({compact_journal, Timeout}, _From, State) ->
 handle_call(confirm_compact, _From, State) ->
     {reply, leveled_inker:ink_compactionpending(State#state.inker), State};
 handle_call(close, _From, State) ->
-    {stop, normal, ok, State}.
+    {stop, normal, ok, State};
+    {stop, destroy, ok, State}.
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -400,6 +405,13 @@ handle_cast(_Msg, State) ->
 handle_info(_Info, State) ->
     {noreply, State}.
 
+terminate(destroy, State) ->
+    leveled_log:log("B0011", []),
+    {ok, InkPathList} = leveled_inker:ink_doom(State#state.inker),
+    {ok, PCLPathList} = leveled_penciller:pcl_doom(State#state.penciller),
+    lists:foreach(fun(DirPath) -> delete_path(DirPath) end, InkPathList),
+    lists:foreach(fun(DirPath) -> delete_path(DirPath) end, PCLPathList),
+    ok;
 terminate(Reason, State) ->
     leveled_log:log("B0003", [Reason]),
     ok = leveled_inker:ink_close(State#state.inker),
@@ -477,7 +489,6 @@ get_nextbucket(NextBucket, Tag, LedgerSnapshot, BKList) ->
         NB ->
             leveled_log:log("B0010",[NB]),
             []
-        
     end.
             
 
@@ -922,6 +933,11 @@ get_opt(Key, Opts, Default) ->
             Value
     end.
 
+delete_path(DirPath) ->
+    ok = filelib:ensure_dir(DirPath),
+    {ok, Files} = file:list_dir(DirPath),
+    [file:delete(filename:join([DirPath, File])) || File <- Files],
+    file:del_dir(DirPath).
 
 %%%============================================================================
 %%% Test

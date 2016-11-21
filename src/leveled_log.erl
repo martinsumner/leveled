@@ -38,6 +38,8 @@
         {info, "Bucket list finds Bucket ~w"}},
     {"B0010",
         {info, "Bucket list finds non-binary Bucket ~w"}},
+    {"B0011",
+        {warn, "Call to destroy the store and so all files to be removed"}},
     
     {"P0001",
         {info, "Ledger snapshot ~w registered"}},
@@ -100,6 +102,8 @@
         {info, "Adding cleared file ~s to deletion list"}},
     {"P0029",
         {info, "L0 completion confirmed and will transition to not pending"}},
+    {"P0030",
+        {warn, "We're doomed - intention recorded to destroy all files"}},
     
     {"PC001",
         {info, "Penciller's clerk ~w started with owner ~w"}},
@@ -168,6 +172,8 @@
         {info, "Writing new version of manifest for manifestSQN=~w"}},
     {"I0017",
         {info, "At SQN=~w journal has filename ~s"}},
+    {"I0018",
+        {warn, "We're doomed - intention recorded to destroy all files"}},
     
     {"IC001",
         {info, "Closed for reason ~w so maybe leaving garbage"}},

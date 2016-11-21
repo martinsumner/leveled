@@ -108,6 +108,7 @@
         ink_updatemanifest/3,
         ink_print_manifest/1,
         ink_close/1,
+        ink_doom/1,
         build_dummy_journal/0,
         simple_manifest_reader/2,
         clean_testdir/1,
@@ -171,6 +172,9 @@ ink_confirmdelete(Pid, ManSQN) ->
 
 ink_close(Pid) ->
     gen_server:call(Pid, close, infinity).
+
+ink_doom(Pid) ->
+    gen_server:call(Pid, doom, 60000).
 
 ink_loadpcl(Pid, MinSQN, FilterFun, Penciller) ->
     gen_server:call(Pid, {load_pcl, MinSQN, FilterFun, Penciller}, infinity).
@@ -324,7 +328,14 @@ handle_call(compaction_complete, _From, State) ->
 handle_call(compaction_pending, _From, State) ->
     {reply, State#state.compaction_pending, State};
 handle_call(close, _From, State) ->
-    {stop, normal, ok, State}.
+    {stop, normal, ok, State};
+handle_call(doom, _From, State) ->
+    FPs = [filepath(State#state.root_path, journal_dir),
+            filepath(State#state.root_path, manifest_dir),
+            filepath(State#state.root_path, journal_compact_dir),
+            filepath(State#state.root_path, journal_waste_dir)],
+    leveled_log:log("I0018", []),
+    {stop, normal, {ok, FPs}, State}.
 
 handle_cast({release_snapshot, Snapshot}, State) ->
     Rs = lists:keydelete(Snapshot, 1, State#state.registered_snapshots),

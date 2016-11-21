@@ -176,6 +176,7 @@
         pcl_confirml0complete/4,
         pcl_confirmdelete/2,
         pcl_close/1,
+        pcl_doom/1,
         pcl_registersnapshot/2,
         pcl_releasesnapshot/2,
         pcl_loadsnapshot/2,
@@ -289,6 +290,8 @@ pcl_loadsnapshot(Pid, Increment) ->
 pcl_close(Pid) ->
     gen_server:call(Pid, close, 60000).
 
+pcl_doom(Pid) ->
+    gen_server:call(Pid, doom, 60000).
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -405,8 +408,12 @@ handle_call({load_snapshot, BookieIncrTree}, _From, State) ->
 handle_call({fetch_levelzero, Slot}, _From, State) ->
     {reply, lists:nth(Slot, State#state.levelzero_cache), State};
 handle_call(close, _From, State) ->
-    {stop, normal, ok, State}.
-
+    {stop, normal, ok, State};
+handle_call(doom, _From, State) ->
+    leveled_log:log("P0030", []),
+    ManifestFP = State#state.root_path ++ "/" ++ ?MANIFEST_FP ++ "/",
+    FilesFP = State#state.root_path ++ "/" ++ ?FILES_FP ++ "/",
+    {stop, normal, {ok, [ManifestFP, FilesFP]}, State}.
 
 handle_cast({manifest_change, WI}, State) ->
     {ok, UpdState} = commit_manifest_change(WI, State),
@@ -518,6 +525,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%%============================================================================
 %%% Internal functions
 %%%============================================================================
+
 
 start_from_file(PCLopts) ->
     RootPath = PCLopts#penciller_options.root_path,
