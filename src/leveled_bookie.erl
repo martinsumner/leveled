@@ -397,6 +397,7 @@ handle_call(confirm_compact, _From, State) ->
     {reply, leveled_inker:ink_compactionpending(State#state.inker), State};
 handle_call(close, _From, State) ->
     {stop, normal, ok, State};
+handle_call(destroy, _From, State=#state{is_snapshot=Snp}) when Snp == false ->
     {stop, destroy, ok, State}.
 
 handle_cast(_Msg, State) ->
