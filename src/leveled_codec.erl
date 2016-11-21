@@ -69,8 +69,9 @@
 %% https://github.com/afiskon/erlang-uuid-v4/blob/master/src/uuid.erl
 generate_uuid() ->
     <<A:32, B:16, C:16, D:16, E:48>> = crypto:rand_bytes(16),
-    io_lib:format("~8.16.0b-~4.16.0b-4~3.16.0b-~4.16.0b-~12.16.0b", 
-                        [A, B, C band 16#0fff, D band 16#3fff bor 16#8000, E]).
+    L = io_lib:format("~8.16.0b-~4.16.0b-4~3.16.0b-~4.16.0b-~12.16.0b", 
+                        [A, B, C band 16#0fff, D band 16#3fff bor 16#8000, E]),
+    binary_to_list(list_to_binary(L)).
 
 inker_reload_strategy(AltList) ->
     ReloadStrategy0 = [{?RIAK_TAG, retain}, {?STD_TAG, retain}],

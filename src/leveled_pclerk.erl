@@ -459,4 +459,7 @@ select_merge_file_test() ->
     ?assertMatch(FileRef, {{o, "B1", "K1"}, {o, "B3", "K3"}, dummy_pid}),
     ?assertMatch(NewManifest, [{0, []}, {1, L1}]).
 
+coverage_cheat_test() ->
+    {ok, _State1} = code_change(null, #state{}, null).
+
 -endif.

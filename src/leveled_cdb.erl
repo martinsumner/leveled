@@ -1,21 +1,19 @@
+%% -------- CDB File Clerk ---------
 %%
 %% This is a modified version of the cdb module provided by Tom Whitcomb.  
 %%
 %% - https://github.com/thomaswhitcomb/erlang-cdb
 %%
+%% The CDB module is an implementation of the constant database format
+%% described by DJ Bernstein
+%%
+%% - https://cr.yp.to/cdb.html
+%%
 %% The primary differences are: 
 %% - Support for incrementally writing a CDB file while keeping the hash table 
 %% in memory
-%% - The ability to scan a database and accumulate all the Key, Values to 
-%% rebuild in-memory tables on startup 
 %% - The ability to scan a database in blocks of sequence numbers
-%%
-%% This is to be used in eleveledb, and in this context: 
-%% - Keys will be a combinatio of the PrimaryKey and the Sequence Number
-%% - Values will be a serialised version on the whole object, and the
-%% IndexChanges associated with the transaction
-%% Where the IndexChanges are all the Key changes required to be added to the
-%% ledger to complete the changes (the addition of postings and tombstones).
+%% - The applictaion of a CRC chekc by default to all values
 %%
 %% This module provides functions to create and query a CDB (constant database).
 %% A CDB implements a two-level hashtable which provides fast {key,value} 
@@ -81,6 +79,7 @@
             cdb_complete/1,
             cdb_roll/1,
             cdb_returnhashtable/3,
+            cdb_checkhashtable/1,
             cdb_destroy/1,
             cdb_deletepending/1,
             cdb_deletepending/3,
@@ -107,7 +106,8 @@
                 binary_mode = false :: boolean(),
                 delete_point = 0 :: integer(),
                 inker :: pid(),
-                deferred_delete = false :: boolean()}).
+                deferred_delete = false :: boolean(),
+                waste_path :: string()}).
 
 
 %%%============================================================================
@@ -151,21 +151,7 @@ cdb_directfetch(Pid, PositionList, Info) ->
     gen_fsm:sync_send_event(Pid, {direct_fetch, PositionList, Info}, infinity).
 
 cdb_close(Pid) ->
-    cdb_close(Pid, ?PENDING_ROLL_WAIT).
-
-cdb_close(Pid, WaitsLeft) ->
-    if
-        WaitsLeft > 0 ->
-            case gen_fsm:sync_send_all_state_event(Pid, cdb_close, infinity) of
-                pending_roll ->
-                    timer:sleep(1),
-                    cdb_close(Pid, WaitsLeft - 1);
-                R ->
-                    R
-            end;
-        true ->
-            gen_fsm:sync_send_event(Pid, cdb_kill, infinity)
-    end.
+    gen_fsm:sync_send_all_state_event(Pid, cdb_close, infinity).
 
 cdb_complete(Pid) ->
     gen_fsm:sync_send_event(Pid, cdb_complete, infinity).
@@ -176,10 +162,14 @@ cdb_roll(Pid) ->
 cdb_returnhashtable(Pid, IndexList, HashTreeBin) ->
     gen_fsm:sync_send_event(Pid, {return_hashtable, IndexList, HashTreeBin}, infinity).
 
+cdb_checkhashtable(Pid) ->
+    gen_fsm:sync_send_event(Pid, check_hashtable).
+
 cdb_destroy(Pid) ->
     gen_fsm:send_event(Pid, destroy).
 
 cdb_deletepending(Pid) ->
+    % Only used in unit tests
     cdb_deletepending(Pid, 0, no_poll).
 
 cdb_deletepending(Pid, ManSQN, Inker) ->
@@ -230,7 +220,9 @@ init([Opts]) ->
                 end,
     {ok,
         starting,
-        #state{max_size=MaxSize, binary_mode=Opts#cdb_options.binary_mode}}.
+        #state{max_size=MaxSize,
+                binary_mode=Opts#cdb_options.binary_mode,
+                waste_path=Opts#cdb_options.waste_path}}.
 
 starting({open_writer, Filename}, _From, State) ->
     leveled_log:log("CDB01", [Filename]),
@@ -343,9 +335,8 @@ rolling({return_hashtable, IndexList, HashTreeBin}, _From, State) ->
                                             filename=NewName,
                                             hash_index=Index}}
     end;
-rolling(cdb_kill, _From, State) ->
-    {stop, killed, ok, State}.
-
+rolling(check_hashtable, _From, State) ->
+    {reply, false, rolling, State}.
 
 rolling({delete_pending, ManSQN, Inker}, State) ->
     {next_state,
@@ -409,7 +400,9 @@ reader({direct_fetch, PositionList, Info}, _From, State) ->
     end;
 reader(cdb_complete, _From, State) ->
     ok = file:close(State#state.handle),
-    {stop, normal, {ok, State#state.filename}, State#state{handle=undefined}}.
+    {stop, normal, {ok, State#state.filename}, State#state{handle=undefined}};
+reader(check_hashtable, _From, State) ->
+    {reply, true, reader, State}.
 
 
 reader({delete_pending, 0, no_poll}, State) ->
@@ -439,32 +432,23 @@ delete_pending({key_check, Key}, _From, State) ->
         State,
         ?DELETE_TIMEOUT}.
 
-delete_pending(timeout, State) ->
-    case State#state.delete_point of
-        0 ->
-            {next_state, delete_pending, State};
-        ManSQN ->
-            case is_process_alive(State#state.inker) of
+delete_pending(timeout, State=#state{delete_point=ManSQN}) when ManSQN > 0 ->
+    case is_process_alive(State#state.inker) of
+        true ->
+            case leveled_inker:ink_confirmdelete(State#state.inker, ManSQN) of
                 true ->
-                    case leveled_inker:ink_confirmdelete(State#state.inker,
-                                                            ManSQN) of
-                        true ->
-                            leveled_log:log("CDB04", [State#state.filename,
-                                                        ManSQN]),
-                            {stop, normal, State};
-                        false ->
-                            {next_state,
-                                delete_pending,
-                                State,
-                                ?DELETE_TIMEOUT}
-                    end;
+                    leveled_log:log("CDB04", [State#state.filename, ManSQN]),
+                    {stop, normal, State};
                 false ->
-                    {stop, normal, State}
-            end
+                    {next_state,
+                        delete_pending,
+                        State,
+                        ?DELETE_TIMEOUT}
+            end;
+        false ->
+            {stop, normal, State}
     end;
 delete_pending(destroy, State) ->
-    ok = file:close(State#state.handle),
-    ok = file:delete(State#state.filename),
     {stop, normal, State}.
 
 
@@ -503,11 +487,8 @@ handle_sync_event(cdb_firstkey, _From, StateName, State) ->
     {reply, FirstKey, StateName, State};
 handle_sync_event(cdb_filename, _From, StateName, State) ->
     {reply, State#state.filename, StateName, State};
-handle_sync_event(cdb_close, _From, rolling, State) ->
-    {reply, pending_roll, rolling, State};
 handle_sync_event(cdb_close, _From, _StateName, State) ->
-    ok = file:close(State#state.handle),
-    {stop, normal, ok, State#state{handle=undefined}}.
+    {stop, normal, ok, State}.
 
 handle_event(_Msg, StateName, State) ->
     {next_state, StateName, State}.
@@ -517,13 +498,18 @@ handle_info(_Msg, StateName, State) ->
 
 terminate(Reason, StateName, State) ->
     leveled_log:log("CDB05", [State#state.filename, Reason]),
-    case {State#state.handle, StateName} of
-        {undefined, _} ->
+    case {State#state.handle, StateName, State#state.waste_path} of
+        {undefined, _, _} ->
             ok;
-        {Handle, delete_pending} ->
+        {Handle, delete_pending, undefined} ->
+            ok = file:close(Handle),
+            ok = file:delete(State#state.filename);
+        {Handle, delete_pending, WasteFP} ->
             file:close(Handle),
-            file:delete(State#state.filename);
-        {Handle, _} ->
+            Components = filename:split(State#state.filename),
+            NewName = WasteFP ++ lists:last(Components),
+            file:rename(State#state.filename, NewName);
+        {Handle, _, _} ->
             file:close(Handle)
     end.
 
@@ -907,12 +893,13 @@ startup_scan_over_file(Handle, Position) ->
 %% cdb file, and returns at the end the hashtree and the final Key seen in the
 %% journal
 
-startup_filter(Key, ValueAsBin, Position, {Hashtree, LastKey}, _ExtractFun) ->
+startup_filter(Key, ValueAsBin, Position, {Hashtree, _LastKey}, _ExtractFun) ->
     case crccheck_value(ValueAsBin) of
         true ->
-            {loop, {put_hashtree(Key, Position, Hashtree), Key}};
-        false ->
-            {stop, {Hashtree, LastKey}}
+            % This function is preceeded by a "safe read" of the key and value
+            % and so the crccheck should always be true, as a failed check
+            % should not reach this stage
+            {loop, {put_hashtree(Key, Position, Hashtree), Key}}
     end.
 
 
@@ -1106,9 +1093,9 @@ search_hash_table(Handle, [Entry|RestOfEntries], Hash, Key, QuickCheck) ->
                 _ ->
                     KV 
             end;
-        0 ->
-            % Hash is 0 so key must be missing as 0 found before Hash matched
-            missing;
+        %0 ->
+        %    % Hash is 0 so key must be missing as 0 found before Hash matched
+        %    missing;
         _ ->
             search_hash_table(Handle, RestOfEntries, Hash, Key, QuickCheck)
     end.
@@ -1344,14 +1331,10 @@ dump(FileName) ->
         case read_next_term(Handle, VL, crc) of
             {_, Value} ->
                 {ok, CurrLoc} = file:position(Handle, cur),
-                Return =
-                    case get(Handle, Key) of
-                        {Key,Value} -> {Key ,Value};
-                        X ->  {wonky, X}
-                    end
+                {Key,Value} = get(Handle, Key)
         end,
         {ok, _} = file:position(Handle, CurrLoc),
-        [Return | Acc]
+        [{Key,Value} | Acc]
     end,
     lists:foldr(Fn1, [], lists:seq(0, NumberOfPairs-1)).
 
@@ -1699,18 +1682,29 @@ get_keys_byposition_manykeys_test() ->
                                 #cdb_options{binary_mode=false}),
     KVList = generate_sequentialkeys(KeyCount, []),
     lists:foreach(fun({K, V}) -> cdb_put(P1, K, V) end, KVList),
-    SW1 = os:timestamp(),
+    ok = cdb_roll(P1),
+    % Should not return posiitons when rolling
+    ?assertMatch([], cdb_getpositions(P1, 10)), 
+    lists:foldl(fun(X, Complete) ->
+                        case Complete of
+                            true ->
+                                true;
+                            false ->
+                                case cdb_checkhashtable(P1) of
+                                    true ->
+                                        true;
+                                    false ->
+                                        timer:sleep(X),
+                                        false
+                                end
+                        end end,
+                        false,
+                        lists:seq(1, 20)),
+    ?assertMatch(10, length(cdb_getpositions(P1, 10))),
     {ok, F2} = cdb_complete(P1),
-    SW2 = os:timestamp(),
-    io:format("CDB completed in ~w microseconds~n",
-                [timer:now_diff(SW2, SW1)]),
+    
     {ok, P2} = cdb_open_reader(F2, #cdb_options{binary_mode=false}),
-    SW3 = os:timestamp(),
-    io:format("CDB opened for read in ~w microseconds~n",
-                [timer:now_diff(SW3, SW2)]),
     PositionList = cdb_getpositions(P2, all),
-    io:format("Positions fetched in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SW3)]),
     L1 = length(PositionList),
     ?assertMatch(L1, KeyCount),
     
@@ -1776,6 +1770,49 @@ state_test() ->
     ?assertMatch({"Key1", "Value1"}, cdb_get(P1, "Key1")),
     ok = cdb_close(P1).
 
+hashclash_test() ->
+    {ok, P1} = cdb_open_writer("../test/hashclash_test.pnd",
+                                #cdb_options{binary_mode=false}),
+    Key1 = "Key4184465780",
+    Key99 = "Key4254669179",
+    KeyNF = "Key9070567319",
+    ?assertMatch(22, hash(Key1)),
+    ?assertMatch(22, hash(Key99)),
+    ?assertMatch(22, hash(KeyNF)),
+    
+    ok = cdb_mput(P1, [{Key1, 1}, {Key99, 99}]),
+    
+    ?assertMatch(probably, cdb_keycheck(P1, Key1)),
+    ?assertMatch(probably, cdb_keycheck(P1, Key99)),
+    ?assertMatch(probably, cdb_keycheck(P1, KeyNF)),
+    
+    ?assertMatch({Key1, 1}, cdb_get(P1, Key1)),
+    ?assertMatch({Key99, 99}, cdb_get(P1, Key99)),
+    ?assertMatch(missing, cdb_get(P1, KeyNF)),
+    
+    {ok, FN} = cdb_complete(P1),
+    {ok, P2} = cdb_open_reader(FN),
+    
+    ?assertMatch(probably, cdb_keycheck(P2, Key1)),
+    ?assertMatch(probably, cdb_keycheck(P2, Key99)),
+    ?assertMatch(probably, cdb_keycheck(P2, KeyNF)),
+    
+    ?assertMatch({Key1, 1}, cdb_get(P2, Key1)),
+    ?assertMatch({Key99, 99}, cdb_get(P2, Key99)),
+    ?assertMatch(missing, cdb_get(P2, KeyNF)),
+    
+    ok = cdb_deletepending(P2),
+    
+    ?assertMatch(probably, cdb_keycheck(P2, Key1)),
+    ?assertMatch(probably, cdb_keycheck(P2, Key99)),
+    ?assertMatch(probably, cdb_keycheck(P2, KeyNF)),
+    
+    ?assertMatch({Key1, 1}, cdb_get(P2, Key1)),
+    ?assertMatch({Key99, 99}, cdb_get(P2, Key99)),
+    ?assertMatch(missing, cdb_get(P2, KeyNF)),
+    
+    ok = cdb_close(P2).
+
 corruptfile_test() ->
     file:delete("../test/corrupt_test.pnd"),
     {ok, P1} = cdb_open_writer("../test/corrupt_test.pnd",
@@ -1790,7 +1827,7 @@ corruptfile_test() ->
     lists:foreach(fun(Offset) -> corrupt_testfile_at_offset(Offset) end,
                     lists:seq(1, 40)),
     ok = file:delete("../test/corrupt_test.pnd").
-    
+
 corrupt_testfile_at_offset(Offset) ->
     {ok, F1} = file:open("../test/corrupt_test.pnd", ?WRITE_OPS),
     {ok, EofPos} = file:position(F1, eof),
@@ -1805,5 +1842,40 @@ corrupt_testfile_at_offset(Offset) ->
     ok = cdb_put(P2, "Key100", "Value100"),
     ?assertMatch({"Key100", "Value100"}, cdb_get(P2, "Key100")),
     ok = cdb_close(P2).
+
+crc_corrupt_writer_test() ->
+    file:delete("../test/corruptwrt_test.pnd"),
+    {ok, P1} = cdb_open_writer("../test/corruptwrt_test.pnd",
+                                #cdb_options{binary_mode=false}),
+    KVList = generate_sequentialkeys(100, []),
+    ok = cdb_mput(P1, KVList),
+    ?assertMatch(probably, cdb_keycheck(P1, "Key1")),
+    ?assertMatch({"Key1", "Value1"}, cdb_get(P1, "Key1")),
+    ?assertMatch({"Key100", "Value100"}, cdb_get(P1, "Key100")),
+    ok = cdb_close(P1),
+    {ok, Handle} = file:open("../test/corruptwrt_test.pnd", ?WRITE_OPS),
+    {ok, EofPos} = file:position(Handle, eof),
+    % zero the last byte of the last value
+    ok = file:pwrite(Handle, EofPos - 5, <<0:8/integer>>),
+    ok = file:close(Handle),
+    {ok, P2} = cdb_open_writer("../test/corruptwrt_test.pnd",
+                                #cdb_options{binary_mode=false}),
+                                ?assertMatch(probably, cdb_keycheck(P2, "Key1")),
+    ?assertMatch({"Key1", "Value1"}, cdb_get(P2, "Key1")),
+    ?assertMatch(missing, cdb_get(P2, "Key100")),
+    ok = cdb_put(P2, "Key100", "Value100"),
+    ?assertMatch({"Key100", "Value100"}, cdb_get(P2, "Key100")),
+    ok = cdb_close(P2).
+
+nonsense_coverage_test() ->
+    {ok, Pid} = gen_fsm:start(?MODULE, [#cdb_options{}], []),
+    ok = gen_fsm:send_all_state_event(Pid, nonsense),
+    ?assertMatch({next_state, reader, #state{}}, handle_info(nonsense,
+                                                                reader,
+                                                                #state{})),
+    ?assertMatch({ok, reader, #state{}}, code_change(nonsense,
+                                                        reader,
+                                                        #state{},
+                                                        nonsense)).
 
 -endif.

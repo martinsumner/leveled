@@ -142,16 +142,22 @@
 
 -module(leveled_sft).
 
--behaviour(gen_server).
+-behaviour(gen_fsm).
 -include("include/leveled.hrl").
 
 -export([init/1,
-        handle_call/3,
-        handle_cast/2,
-        handle_info/2,
-        terminate/2,
-        code_change/3,
-        sft_new/4,
+        handle_sync_event/4,
+        handle_event/3,
+        handle_info/3,
+        terminate/3,
+        code_change/4,
+        starting/2,
+        starting/3,
+        reader/3,
+        delete_pending/3,
+        delete_pending/2]).
+
+-export([sft_new/4,
         sft_newfroml0cache/4,
         sft_open/1,
         sft_get/2,
@@ -161,8 +167,9 @@
         sft_checkready/1,
         sft_setfordelete/2,
         sft_deleteconfirmed/1,
-        sft_getmaxsequencenumber/1,
-        generate_randomkeys/1]).
+        sft_getmaxsequencenumber/1]).
+
+-export([generate_randomkeys/1]).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -202,7 +209,6 @@
                 handle :: file:fd(),
                 background_complete = false :: boolean(),
                 oversized_file = false :: boolean(),
-                ready_for_delete = false ::boolean(),
                 penciller :: pid()}).
 
 
@@ -221,65 +227,68 @@ sft_new(Filename, KL1, KL2, LevelInfo) ->
                                 LevelInfo
                         end
                 end,
-    {ok, Pid} = gen_server:start(?MODULE, [], []),
-    Reply = gen_server:call(Pid,
-                            {sft_new, Filename, KL1, KL2, LevelR},
-                            infinity),
+    {ok, Pid} = gen_fsm:start(?MODULE, [], []),
+    Reply = gen_fsm:sync_send_event(Pid,
+                                    {sft_new, Filename, KL1, KL2, LevelR},
+                                    infinity),
     {ok, Pid, Reply}.
 
 sft_newfroml0cache(Filename, Slots, FetchFun, Options) ->
-    {ok, Pid} = gen_server:start(?MODULE, [], []),
+    {ok, Pid} = gen_fsm:start(?MODULE, [], []),
     case Options#sft_options.wait of
         true ->
             KL1 = leveled_pmem:to_list(Slots, FetchFun),
-            Reply = gen_server:call(Pid,
-                                    {sft_new,
-                                        Filename,
-                                        KL1,
-                                        [],
-                                        #level{level=0}},
-                                    infinity),
+            Reply = gen_fsm:sync_send_event(Pid,
+                                            {sft_new,
+                                                Filename,
+                                                KL1,
+                                                [],
+                                                #level{level=0}},
+                                            infinity),
             {ok, Pid, Reply};
         false ->
-            gen_server:cast(Pid,
-                            {sft_newfroml0cache,
-                                Filename,
-                                Slots,
-                                FetchFun,
-                                Options#sft_options.penciller}),
+            gen_fsm:send_event(Pid,
+                                {sft_newfroml0cache,
+                                    Filename,
+                                    Slots,
+                                    FetchFun,
+                                    Options#sft_options.penciller}),
             {ok, Pid, noreply}
     end.
 
 sft_open(Filename) ->
-    {ok, Pid} = gen_server:start(?MODULE, [], []),
-    case gen_server:call(Pid, {sft_open, Filename}, infinity) of
+    {ok, Pid} = gen_fsm:start(?MODULE, [], []),
+    case gen_fsm:sync_send_event(Pid, {sft_open, Filename}, infinity) of
         {ok, {SK, EK}} ->
             {ok, Pid, {SK, EK}}
     end.
 
 sft_setfordelete(Pid, Penciller) ->
-    gen_server:call(Pid, {set_for_delete, Penciller}, infinity).
+    gen_fsm:sync_send_event(Pid, {set_for_delete, Penciller}, infinity).
 
 sft_get(Pid, Key) ->
-    gen_server:call(Pid, {get_kv, Key}, infinity).
+    gen_fsm:sync_send_event(Pid, {get_kv, Key}, infinity).
 
 sft_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
-    gen_server:call(Pid, {get_kvrange, StartKey, EndKey, ScanWidth}, infinity).
+    gen_fsm:sync_send_event(Pid,
+                            {get_kvrange, StartKey, EndKey, ScanWidth},
+                            infinity).
 
 sft_clear(Pid) ->
-    gen_server:call(Pid, clear, infinity).
+    gen_fsm:sync_send_event(Pid, {set_for_delete, false}, infinity),
+    gen_fsm:sync_send_event(Pid, close, 1000).
 
 sft_close(Pid) ->
-    gen_server:call(Pid, close, 1000).
+    gen_fsm:sync_send_event(Pid, close, 1000).
 
 sft_deleteconfirmed(Pid) ->
-    gen_server:cast(Pid, close).
+    gen_fsm:send_event(Pid, close).
 
 sft_checkready(Pid) ->
-    gen_server:call(Pid, background_complete, 20).
+    gen_fsm:sync_send_event(Pid, background_complete, 20).
 
 sft_getmaxsequencenumber(Pid) ->
-    gen_server:call(Pid, get_maxsqn, infinity).
+    gen_fsm:sync_send_event(Pid, get_maxsqn, infinity).
 
 
 
@@ -288,52 +297,75 @@ sft_getmaxsequencenumber(Pid) ->
 %%%============================================================================
 
 init([]) ->
-    {ok, #state{}}.
+    {ok, starting, #state{}}.
 
-handle_call({sft_new, Filename, KL1, [], _LevelR=#level{level=L}},
-                _From,
-                _State) when L == 0 ->
+starting({sft_new, Filename, KL1, [], _LevelR=#level{level=L}}, _From, _State)
+                                                                when L == 0 ->
     {ok, State} = create_levelzero(KL1, Filename),
     {reply,
-        {{[], []},
-            State#state.smallest_key,
-            State#state.highest_key},
+        {{[], []}, State#state.smallest_key, State#state.highest_key},
+        reader,
         State};
-handle_call({sft_new, Filename, KL1, KL2, LevelR}, _From, _State) ->
+starting({sft_new, Filename, KL1, KL2, LevelR}, _From, _State) ->
     case create_file(Filename) of
         {Handle, FileMD} ->
             {ReadHandle, UpdFileMD, KeyRemainders} = complete_file(Handle,
                                                                     FileMD,
                                                                     KL1, KL2,
                                                                     LevelR),
-            {reply, {KeyRemainders,
-                        UpdFileMD#state.smallest_key,
-                        UpdFileMD#state.highest_key},
-                    UpdFileMD#state{handle=ReadHandle, filename=Filename}}
+            {reply,
+                {KeyRemainders,
+                    UpdFileMD#state.smallest_key,
+                    UpdFileMD#state.highest_key},
+                reader,
+                UpdFileMD#state{handle=ReadHandle, filename=Filename}}
     end;
-handle_call({sft_open, Filename}, _From, _State) ->
+starting({sft_open, Filename}, _From, _State) ->
     {_Handle, FileMD} = open_file(#state{filename=Filename}),
     leveled_log:log("SFT01", [Filename]),
     {reply,
-        {ok,
-            {FileMD#state.smallest_key, FileMD#state.highest_key}},
-                FileMD};
-handle_call({get_kv, Key}, _From, State) ->
+        {ok, {FileMD#state.smallest_key, FileMD#state.highest_key}},
+        reader,
+        FileMD}.
+
+starting({sft_newfroml0cache, Filename, Slots, FetchFun, PCL}, _State) ->
+    SW = os:timestamp(),
+    Inp1 = leveled_pmem:to_list(Slots, FetchFun),
+    {ok, State} = create_levelzero(Inp1, Filename),
+    leveled_log:log_timer("SFT03", [Filename], SW),
+    case PCL of
+        undefined ->
+            {next_state, reader, State};
+        _ ->
+            leveled_penciller:pcl_confirml0complete(PCL,
+                                                    State#state.filename,
+                                                    State#state.smallest_key,
+                                                    State#state.highest_key),
+            {next_state, reader, State}
+    end.
+
+
+reader({get_kv, Key}, _From, State) ->
     Reply = fetch_keyvalue(State#state.handle, State, Key),
-    statecheck_onreply(Reply, State);
-handle_call({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
+    {reply, Reply, reader, State};
+reader({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
     Reply = pointer_append_queryresults(fetch_range_kv(State#state.handle,
                                                         State,
                                                         StartKey,
                                                         EndKey,
                                                         ScanWidth),
                                             self()),
-    statecheck_onreply(Reply, State);
-handle_call(close, _From, State) ->
-    {stop, normal, ok, State};
-handle_call(clear, _From, State) ->
-    {stop, normal, ok, State#state{ready_for_delete=true}};
-handle_call(background_complete, _From, State) ->
+    {reply, Reply, reader, State};
+reader(get_maxsqn, _From, State) ->
+    {reply, State#state.highest_sqn, reader, State};
+reader({set_for_delete, Penciller}, _From, State) ->
+    leveled_log:log("SFT02", [State#state.filename]),
+    {reply,
+        ok,
+        delete_pending,
+        State#state{penciller=Penciller},
+        ?DELETE_TIMEOUT};
+reader(background_complete, _From, State) ->
     if
         State#state.background_complete == true ->
             {reply,
@@ -341,67 +373,57 @@ handle_call(background_complete, _From, State) ->
                     State#state.filename,
                     State#state.smallest_key,
                     State#state.highest_key},
+                reader,
                 State}
     end;
-handle_call({set_for_delete, Penciller}, _From, State) ->
-    leveled_log:log("SFT02", [State#state.filename]),
-    {reply,
-        ok,
-        State#state{ready_for_delete=true,
-                            penciller=Penciller},
-        ?DELETE_TIMEOUT};
-handle_call(get_maxsqn, _From, State) ->
-    statecheck_onreply(State#state.highest_sqn, State).
+reader(close, _From, State) ->
+    ok = file:close(State#state.handle),
+    {stop, normal, ok, State}.
 
-handle_cast({sft_newfroml0cache, Filename, Slots, FetchFun, PCL}, _State) ->
-    SW = os:timestamp(),
-    Inp1 = leveled_pmem:to_list(Slots, FetchFun),
-    {ok, State} = create_levelzero(Inp1, Filename),
-    leveled_log:log_timer("SFT03", [Filename], SW),
-    case PCL of
-        undefined ->
-            {noreply, State};
-        _ ->
-            leveled_penciller:pcl_confirml0complete(PCL,
-                                                    State#state.filename,
-                                                    State#state.smallest_key,
-                                                    State#state.highest_key),
-            {noreply, State}
-    end;
-handle_cast(close, State) ->
+delete_pending({get_kv, Key}, _From, State) ->
+    Reply = fetch_keyvalue(State#state.handle, State, Key),
+    {reply, Reply, delete_pending, State, ?DELETE_TIMEOUT};
+delete_pending({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
+    Reply = pointer_append_queryresults(fetch_range_kv(State#state.handle,
+                                                        State,
+                                                        StartKey,
+                                                        EndKey,
+                                                        ScanWidth),
+                                            self()),
+    {reply, Reply, delete_pending, State, ?DELETE_TIMEOUT};
+delete_pending(close, _From, State) ->
+    leveled_log:log("SFT06", [State#state.filename]),
+    ok = file:close(State#state.handle),
+    ok = file:delete(State#state.filename),
+    {stop, normal, ok, State}.
+
+delete_pending(timeout, State) ->
+    leveled_log:log("SFT05", [timeout, State#state.filename]),
+    ok = leveled_penciller:pcl_confirmdelete(State#state.penciller,
+                                               State#state.filename),
+    {next_state, delete_pending, State, ?DELETE_TIMEOUT};
+delete_pending(close, State) ->
+    leveled_log:log("SFT06", [State#state.filename]),
+    ok = file:close(State#state.handle),
+    ok = file:delete(State#state.filename),
     {stop, normal, State}.
 
-handle_info(timeout, State) ->
-    if
-        State#state.ready_for_delete == true ->
-            leveled_log:log("SFT05", [timeout, State#state.filename]),
-            ok = leveled_penciller:pcl_confirmdelete(State#state.penciller,
-                                                        State#state.filename),
-            {noreply, State, ?DELETE_TIMEOUT}
-    end.
+handle_sync_event(_Msg, _From, StateName, State) ->
+    {reply, undefined, StateName, State}.
 
-terminate(Reason, State) ->
-    leveled_log:log("SFT05", [Reason, State#state.filename]),
-    case State#state.ready_for_delete of
-        true ->
-            leveled_log:log("SFT06", [State#state.filename]),
-            ok = file:close(State#state.handle),
-            ok = file:delete(State#state.filename);
-        _ ->
-            ok = file:close(State#state.handle)
-    end.
+handle_event(_Msg, StateName, State) ->
+    {next_state, StateName, State}.
 
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
+handle_info(_Msg, StateName, State) ->
+    {next_state, StateName, State}.
+
+terminate(Reason, _StateName, State) ->
+    leveled_log:log("SFT05", [Reason, State#state.filename]).
+
+code_change(_OldVsn, StateName, State, _Extra) ->
+    {ok, StateName, State}.
 
 
-statecheck_onreply(Reply, State) ->
-    case State#state.ready_for_delete of
-        true ->
-            {reply, Reply, State, ?DELETE_TIMEOUT};
-        false ->
-            {reply, Reply, State}
-    end.
 
 %%%============================================================================
 %%% Internal functions
@@ -700,13 +722,8 @@ fetch_block(Handle, LengthList, BlockNmb, StartOfSlot) ->
     binary_to_term(BlockToCheckBin).
 
 %% Need to deal with either Key or {next, Key}
-get_nearestkey(KVList, all) ->
-    case KVList of
-        [] ->
-            not_found;
-        [H|_Tail] ->
-            H
-    end;
+get_nearestkey([H|_Tail], all) ->
+    H;
 get_nearestkey(KVList, Key) ->
     case Key of
         {next, K} ->
@@ -797,8 +814,14 @@ write_keys(Handle,
                                 [{LowKey_Slot, SegFilter, LengthList}]),
     UpdSlots = <<SerialisedSlots/binary, SerialisedSlot/binary>>,
     SNExtremes = {min(LSN_Slot, LSN), max(HSN_Slot, HSN)},
-    FinalKey = case LastKey_Slot of null -> LastKey; _ -> LastKey_Slot end,
-    FirstKey = case LowKey of null -> LowKey_Slot; _ -> LowKey end,
+    FinalKey = case LastKey_Slot of
+                    null -> LastKey;
+                    _ -> LastKey_Slot
+                end,
+    FirstKey = case LowKey of
+                    null -> LowKey_Slot;
+                    _ -> LowKey
+                end,
     case Status of
         partial ->
             UpdHandle = WriteFun(slots , {Handle, UpdSlots}),
@@ -1003,16 +1026,16 @@ create_slot(KL1, KL2, LevelR, BlockCount, SegLists, SerialisedSlot, LengthList,
             {null, LSN, HSN, LastKey, Status};
         {null, _} ->
             [NewLowKeyV|_] = BlockKeyList,
+            NewLastKey = lists:last([{keyonly, LastKey}|BlockKeyList]),
             {leveled_codec:strip_to_keyonly(NewLowKeyV),
                 min(LSN, LSNb), max(HSN, HSNb),
-                leveled_codec:strip_to_keyonly(last(BlockKeyList,
-                                                    {last, LastKey})),
+                leveled_codec:strip_to_keyonly(NewLastKey),
                 Status};
         {_, _} ->
+            NewLastKey = lists:last([{keyonly, LastKey}|BlockKeyList]),
             {LowKey,
                 min(LSN, LSNb), max(HSN, HSNb),
-                leveled_codec:strip_to_keyonly(last(BlockKeyList,
-                                                    {last, LastKey})),
+                leveled_codec:strip_to_keyonly(NewLastKey),
                 Status}
     end,
     SerialisedBlock = serialise_block(BlockKeyList),
@@ -1021,13 +1044,6 @@ create_slot(KL1, KL2, LevelR, BlockCount, SegLists, SerialisedSlot, LengthList,
     create_slot(KL1b, KL2b, LevelR, BlockCount - 1, SegLists ++ [SegmentList],
                 SerialisedSlot2, LengthList ++ [BlockLength],
                 TrackingMetadata).
-
-
-last([], {last, LastKey}) -> {keyonly, LastKey};
-last([E|Es], PrevLast) -> last(E, Es, PrevLast).
-
-last(_, [E|Es], PrevLast) -> last(E, Es, PrevLast);
-last(E, [], _) -> E.
 
 serialise_block(BlockKeyList) ->
     term_to_binary(BlockKeyList, [{compressed, ?COMPRESSION_LEVEL}]).
@@ -1757,20 +1773,12 @@ big_create_file_test() ->
     ?assertMatch(Result1, {K1, {Sq1, St1, V1}}),
     ?assertMatch(Result2, {K2, {Sq2, St2, V2}}),
     SubList = lists:sublist(KL2, 1000),
-    FailedFinds = lists:foldl(fun(K, Acc) ->
-                                    {Kn, {_, _, _}} = K,
-                                    Rn = fetch_keyvalue(Handle, FileMD, Kn),
-                                    case Rn of
-                                        {Kn, {_, _, _}} ->
-                                            Acc;
-                                        _ ->
-                                            Acc + 1
-                                    end
-                                end,
-                                0,
-                                SubList),
-    io:format("FailedFinds of ~w~n", [FailedFinds]),
-    ?assertMatch(FailedFinds, 0),
+    lists:foreach(fun(K) ->
+                        {Kn, {_, _, _}} = K,
+                        Rn = fetch_keyvalue(Handle, FileMD, Kn),
+                        ?assertMatch({Kn, {_, _, _}}, Rn)
+                    end,
+                    SubList),
     Result3 = fetch_keyvalue(Handle,
                                 FileMD,
                                 {o, "Bucket1024", "Key1024Alt", null}),
@@ -1875,6 +1883,41 @@ key_dominates_test() ->
                     key_dominates([KV7|KL2], [KV2], {true, 1})).
 
 
+corrupted_sft_test() ->
+    Filename = "../test/bigcorrupttest1.sft",
+    {KL1, KL2} = {lists:ukeysort(1, generate_randomkeys(2000)), []},
+    {InitHandle, InitFileMD} = create_file(Filename),
+    {Handle, _FileMD, _Rems} = complete_file(InitHandle,
+                                                InitFileMD,
+                                                KL1, KL2,
+                                                #level{level=1}),
+    {ok, Lengths} = file:pread(Handle, 12, 12),
+    <<BlocksLength:32/integer,
+        IndexLength:32/integer,
+        FilterLength:32/integer>> = Lengths,
+    ok = file:close(Handle),
+    
+    {ok, Corrupter} = file:open(Filename , [binary, raw, read, write]),
+    lists:foreach(fun(X) ->
+                        case X * 5 of
+                            Y when Y < FilterLength ->
+                                Position = ?HEADER_LEN + X * 5
+                                            + BlocksLength + IndexLength,
+                                file:pwrite(Corrupter,
+                                            Position,
+                                            <<0:8/integer>>)
+                        end
+                        end,
+                    lists:seq(1, 100)),
+    ok = file:close(Corrupter),
+    
+    {ok, SFTr, _KeyExtremes} = sft_open(Filename),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sft_get(SFTr, K))
+                        end,
+                    KL1),
+    ok = sft_clear(SFTr).
+
 big_iterator_test() ->
     Filename = "../test/bigtest1.sft",
     {KL1, KL2} = {lists:sort(generate_randomkeys(10000)), []},
@@ -1882,29 +1925,69 @@ big_iterator_test() ->
     {Handle, FileMD, {KL1Rem, KL2Rem}} = complete_file(InitHandle, InitFileMD,
                                                         KL1, KL2,
                                                         #level{level=1}),
-    io:format("Remainder lengths are ~w and ~w ~n", [length(KL1Rem), length(KL2Rem)]),
-    {complete, Result1} = fetch_range_keysonly(Handle,
-                                                    FileMD,
-                                                    {o, "Bucket0000", "Key0000", null},
-                                                    {o, "Bucket9999", "Key9999", null},
-                                                    256),
+    io:format("Remainder lengths are ~w and ~w ~n", [length(KL1Rem),
+                                                        length(KL2Rem)]),
+    {complete,
+        Result1} = fetch_range_keysonly(Handle,
+                                            FileMD,
+                                            {o, "Bucket0000", "Key0000", null},
+                                            {o, "Bucket9999", "Key9999", null},
+                                            256),
     NumFoundKeys1 = length(Result1),
     NumAddedKeys = 10000 - length(KL1Rem),
     ?assertMatch(NumFoundKeys1, NumAddedKeys),
-    {partial, Result2, _} = fetch_range_keysonly(Handle,
-                                                    FileMD,
-                                                    {o, "Bucket0000", "Key0000", null},
-                                                    {o, "Bucket9999", "Key9999", null},
-                                                    32),
+    {partial,
+        Result2,
+        _} = fetch_range_keysonly(Handle,
+                                    FileMD,
+                                    {o, "Bucket0000", "Key0000", null},
+                                    {o, "Bucket9999", "Key9999", null},
+                                    32),
     ?assertMatch(32 * 128, length(Result2)),
-    {partial, Result3, _} = fetch_range_keysonly(Handle,
-                                                    FileMD,
-                                                    {o, "Bucket0000", "Key0000", null},
-                                                    {o, "Bucket9999", "Key9999", null},
-                                                    4),
+    {partial,
+        Result3,
+        _} = fetch_range_keysonly(Handle,
+                                    FileMD,
+                                    {o, "Bucket0000", "Key0000", null},
+                                    {o, "Bucket9999", "Key9999", null},
+                                    4),
     ?assertMatch(4 * 128, length(Result3)),
     ok = file:close(Handle),
     ok = file:delete(Filename).
+
+hashclash_test() ->
+    Filename = "../test/hashclash.sft",
+    Key1 = {o, "Bucket", "Key838068", null},
+    Key99 = {o, "Bucket", "Key898982", null},
+    KeyNF = {o, "Bucket", "Key539122", null},
+    ?assertMatch(4, hash_for_segmentid({keyonly, Key1})),
+    ?assertMatch(4, hash_for_segmentid({keyonly, Key99})),
+    ?assertMatch(4, hash_for_segmentid({keyonly, KeyNF})),
+    KeyList = lists:foldl(fun(X, Acc) ->
+                                Key = {o,
+                                        "Bucket",
+                                        "Key8400" ++ integer_to_list(X),
+                                        null},
+                                Value = {X, {active, infinity}, null},
+                                Acc ++ [{Key, Value}] end,
+                            [],
+                            lists:seq(10,98)),
+    KeyListToUse = [{Key1, {1, {active, infinity}, null}}|KeyList]
+                    ++ [{Key99, {99, {active, infinity}, null}}],
+    {InitHandle, InitFileMD} = create_file(Filename),
+    {Handle, _FileMD, _Rem} = complete_file(InitHandle, InitFileMD,
+                                                KeyListToUse, [],
+                                                #level{level=1}),
+    ok = file:close(Handle),
+    {ok, SFTr, _KeyExtremes} = sft_open(Filename),
+    ?assertMatch({Key1, {1, {active, infinity}, null}},
+                    sft_get(SFTr, Key1)),
+    ?assertMatch({Key99, {99, {active, infinity}, null}},
+                    sft_get(SFTr, Key99)),
+    ?assertMatch(not_present,
+                    sft_get(SFTr, KeyNF)),
+    
+    ok = sft_clear(SFTr).
 
 filename_test() ->
     FN1 = "../tmp/filename",
@@ -1917,5 +2000,24 @@ filename_test() ->
     ?assertMatch({"../tmp/subdir/file_name.pnd",
                         "../tmp/subdir/file_name.sft"},
                     generate_filenames(FN3)).
+
+empty_file_test() ->
+    {ok, Pid, _Reply} = sft_new("../test/emptyfile.pnd", [], [], 1),
+    ?assertMatch(not_present, sft_get(Pid, "Key1")),
+    ?assertMatch([], sft_getkvrange(Pid, all, all, 16)),
+    ok = sft_clear(Pid).
+    
+
+nonsense_coverage_test() ->
+    {ok, Pid} = gen_fsm:start(?MODULE, [], []),
+    undefined = gen_fsm:sync_send_all_state_event(Pid, nonsense),
+    ok = gen_fsm:send_all_state_event(Pid, nonsense),
+    ?assertMatch({next_state, reader, #state{}}, handle_info(nonsense,
+                                                                reader,
+                                                                #state{})),
+    ?assertMatch({ok, reader, #state{}}, code_change(nonsense,
+                                                        reader,
+                                                        #state{},
+                                                        nonsense)).
 
 -endif.

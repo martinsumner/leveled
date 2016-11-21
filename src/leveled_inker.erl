@@ -108,6 +108,7 @@
         ink_updatemanifest/3,
         ink_print_manifest/1,
         ink_close/1,
+        ink_doom/1,
         build_dummy_journal/0,
         simple_manifest_reader/2,
         clean_testdir/1,
@@ -119,6 +120,7 @@
 -define(MANIFEST_FP, "journal_manifest").
 -define(FILES_FP, "journal_files").
 -define(COMPACT_FP, "post_compact").
+-define(WASTE_FP, "waste").
 -define(JOURNAL_FILEX, "cdb").
 -define(MANIFEST_FILEX, "man").
 -define(PENDING_FILEX, "pnd").
@@ -162,13 +164,17 @@ ink_registersnapshot(Pid, Requestor) ->
     gen_server:call(Pid, {register_snapshot, Requestor}, infinity).
 
 ink_releasesnapshot(Pid, Snapshot) ->
-    gen_server:call(Pid, {release_snapshot, Snapshot}, infinity).
+    gen_server:cast(Pid, {release_snapshot, Snapshot}).
 
 ink_confirmdelete(Pid, ManSQN) ->
-    gen_server:call(Pid, {confirm_delete, ManSQN}, 1000).
+    io:format("Confirm delete request received~n"),
+    gen_server:call(Pid, {confirm_delete, ManSQN}).
 
 ink_close(Pid) ->
     gen_server:call(Pid, close, infinity).
+
+ink_doom(Pid) ->
+    gen_server:call(Pid, doom, 60000).
 
 ink_loadpcl(Pid, MinSQN, FilterFun, Penciller) ->
     gen_server:call(Pid, {load_pcl, MinSQN, FilterFun, Penciller}, infinity).
@@ -266,12 +272,8 @@ handle_call({register_snapshot, Requestor}, _From , State) ->
     {reply, {State#state.manifest,
                 State#state.active_journaldb},
                 State#state{registered_snapshots=Rs}};
-handle_call({release_snapshot, Snapshot}, _From , State) ->
-    Rs = lists:keydelete(Snapshot, 1, State#state.registered_snapshots),
-    leveled_log:log("I0003", [Snapshot]),
-    leveled_log:log("I0004", [length(Rs)]),
-    {reply, ok, State#state{registered_snapshots=Rs}};
 handle_call({confirm_delete, ManSQN}, _From, State) ->
+    io:format("Confirm delete request to be processed~n"),
     Reply = lists:foldl(fun({_R, SnapSQN}, Bool) ->
                                 case SnapSQN >= ManSQN of
                                     true ->
@@ -281,6 +283,7 @@ handle_call({confirm_delete, ManSQN}, _From, State) ->
                                 end end,
                             true,
                             State#state.registered_snapshots),
+    io:format("Confirm delete request complete with reply ~w~n", [Reply]),
     {reply, Reply, State};
 handle_call(get_manifest, _From, State) ->
     {reply, State#state.manifest, State};
@@ -325,10 +328,20 @@ handle_call(compaction_complete, _From, State) ->
 handle_call(compaction_pending, _From, State) ->
     {reply, State#state.compaction_pending, State};
 handle_call(close, _From, State) ->
-    {stop, normal, ok, State}.
+    {stop, normal, ok, State};
+handle_call(doom, _From, State) ->
+    FPs = [filepath(State#state.root_path, journal_dir),
+            filepath(State#state.root_path, manifest_dir),
+            filepath(State#state.root_path, journal_compact_dir),
+            filepath(State#state.root_path, journal_waste_dir)],
+    leveled_log:log("I0018", []),
+    {stop, normal, {ok, FPs}, State}.
 
-handle_cast(_Msg, State) ->
-    {noreply, State}.
+handle_cast({release_snapshot, Snapshot}, State) ->
+    Rs = lists:keydelete(Snapshot, 1, State#state.registered_snapshots),
+    leveled_log:log("I0003", [Snapshot]),
+    leveled_log:log("I0004", [length(Rs)]),
+    {noreply, State#state{registered_snapshots=Rs}}.
 
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -360,20 +373,26 @@ code_change(_OldVsn, State, _Extra) ->
 start_from_file(InkOpts) ->
     RootPath = InkOpts#inker_options.root_path,
     CDBopts = InkOpts#inker_options.cdb_options,
+    
     JournalFP = filepath(RootPath, journal_dir),
     filelib:ensure_dir(JournalFP),
     CompactFP = filepath(RootPath, journal_compact_dir),
     filelib:ensure_dir(CompactFP),
-    
+    WasteFP = filepath(RootPath, journal_waste_dir),
+    filelib:ensure_dir(WasteFP),
     ManifestFP = filepath(RootPath, manifest_dir),
     ok = filelib:ensure_dir(ManifestFP),
+    
     {ok, ManifestFilenames} = file:list_dir(ManifestFP),
     
-    IClerkCDBOpts = CDBopts#cdb_options{file_path = CompactFP},
+    IClerkCDBOpts = CDBopts#cdb_options{file_path = CompactFP,
+                                        waste_path = WasteFP},
     ReloadStrategy = InkOpts#inker_options.reload_strategy,
     MRL = InkOpts#inker_options.max_run_length,
+    WRP = InkOpts#inker_options.waste_retention_period,
     IClerkOpts = #iclerk_options{inker = self(),
                                     cdb_options=IClerkCDBOpts,
+                                    waste_retention_period = WRP,
                                     reload_strategy = ReloadStrategy,
                                     max_run_length = MRL},
     {ok, Clerk} = leveled_iclerk:clerk_new(IClerkOpts),
@@ -389,7 +408,7 @@ start_from_file(InkOpts) ->
                     journal_sqn = JournalSQN,
                     active_journaldb = ActiveJournal,
                     root_path = RootPath,
-                    cdb_options = CDBopts,
+                    cdb_options = CDBopts#cdb_options{waste_path=WasteFP},
                     clerk = Clerk}}.
 
 
@@ -670,7 +689,9 @@ filepath(RootPath, journal_dir) ->
 filepath(RootPath, manifest_dir) ->
     RootPath ++ "/" ++ ?MANIFEST_FP ++ "/";
 filepath(RootPath, journal_compact_dir) ->
-    filepath(RootPath, journal_dir) ++ "/" ++ ?COMPACT_FP ++ "/".
+    filepath(RootPath, journal_dir) ++ "/" ++ ?COMPACT_FP ++ "/";
+filepath(RootPath, journal_waste_dir) ->
+    filepath(RootPath, journal_dir) ++ "/" ++ ?WASTE_FP ++ "/".
 
 filepath(RootPath, NewSQN, new_journal) ->
     filename:join(filepath(RootPath, journal_dir),
@@ -747,8 +768,18 @@ build_dummy_journal(KeyConvertF) ->
     ok = leveled_cdb:cdb_put(J1, {1, stnd, K1}, term_to_binary({V1, []})),
     ok = leveled_cdb:cdb_put(J1, {2, stnd, K2}, term_to_binary({V2, []})),
     ok = leveled_cdb:cdb_roll(J1),
-    _LK = leveled_cdb:cdb_lastkey(J1),
-    ok = leveled_cdb:cdb_close(J1),
+    lists:foldl(fun(X, Closed) ->
+                        case Closed of
+                            true -> true;
+                            false ->
+                                case leveled_cdb:cdb_checkhashtable(J1) of
+                                    true -> leveled_cdb:cdb_close(J1), true;
+                                    false -> timer:sleep(X), false
+                                end
+                        end
+                        end,
+                    false,
+                    lists:seq(1, 5)),
     F2 = filename:join(JournalFP, "nursery_3.pnd"),
     {ok, J2} = leveled_cdb:cdb_open_writer(F2),
     {K1, V3} = {KeyConvertF("Key1"), "TestValue3"},
@@ -888,10 +919,13 @@ empty_manifest_test() ->
     {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,
                                             cdb_options=CDBopts}),
     ?assertMatch(not_present, ink_fetch(Ink1, "Key1", 1)),
+    
+    CheckFun = fun(L, K, SQN) -> lists:member({SQN, K}, L) end,
+    ?assertMatch(false, CheckFun([], "key", 1)),
     ok = ink_compactjournal(Ink1,
                             [],
                             fun(X) -> {X, 55} end,
-                            fun(L, K, SQN) -> lists:member({SQN, K}, L) end,
+                            CheckFun,
                             5000),
     timer:sleep(1000),
     ?assertMatch(1, length(ink_getmanifest(Ink1))),
@@ -911,6 +945,9 @@ empty_manifest_test() ->
     ?assertMatch("Value1", V),
     ink_close(Ink2),
     clean_testdir(RootPath).
-    
+
+coverage_cheat_test() ->
+    {noreply, _State0} = handle_info(timeout, #state{}),
+    {ok, _State1} = code_change(null, #state{}, null).
 
 -endif.

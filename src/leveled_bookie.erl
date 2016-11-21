@@ -132,7 +132,8 @@
         book_snapshotledger/3,
         book_compactjournal/2,
         book_islastcompactionpending/1,
-        book_close/1]).
+        book_close/1,
+        book_destroy/1]).
 
 -export([get_opt/2,
             get_opt/3]).  
@@ -213,6 +214,9 @@ book_islastcompactionpending(Pid) ->
 
 book_close(Pid) ->
     gen_server:call(Pid, close, infinity).
+
+book_destroy(Pid) ->
+    gen_server:call(Pid, destroy, infinity).
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -335,19 +339,29 @@ handle_call({return_folder, FolderType}, _From, State) ->
             {reply,
                 bucket_stats(State, Bucket, ?RIAK_TAG),
                 State};
+        {binary_bucketlist, Tag, {FoldKeysFun, Acc}} ->
+            {reply,
+                binary_bucketlist(State, Tag, {FoldKeysFun, Acc}),
+                State};
         {index_query,
-                Bucket,
+                Constraint,
+                {FoldKeysFun, Acc},
                 {IdxField, StartValue, EndValue},
                 {ReturnTerms, TermRegex}} ->
             {reply,
                 index_query(State,
-                                Bucket,
+                                Constraint,
+                                {FoldKeysFun, Acc},
                                 {IdxField, StartValue, EndValue},
                                 {ReturnTerms, TermRegex}),
                 State};
-        {keylist, Tag} ->
+        {keylist, Tag, {FoldKeysFun, Acc}} ->
             {reply,
-                allkey_query(State, Tag),
+                allkey_query(State, Tag, {FoldKeysFun, Acc}),
+                State};
+        {keylist, Tag, Bucket, {FoldKeysFun, Acc}} ->
+            {reply,
+                bucketkey_query(State, Tag, Bucket, {FoldKeysFun, Acc}),
                 State};
         {hashtree_query, Tag, JournalCheck} ->
             {reply,
@@ -382,7 +396,9 @@ handle_call({compact_journal, Timeout}, _From, State) ->
 handle_call(confirm_compact, _From, State) ->
     {reply, leveled_inker:ink_compactionpending(State#state.inker), State};
 handle_call(close, _From, State) ->
-    {stop, normal, ok, State}.
+    {stop, normal, ok, State};
+handle_call(destroy, _From, State=#state{is_snapshot=Snp}) when Snp == false ->
+    {stop, destroy, ok, State}.
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -390,6 +406,13 @@ handle_cast(_Msg, State) ->
 handle_info(_Info, State) ->
     {noreply, State}.
 
+terminate(destroy, State) ->
+    leveled_log:log("B0011", []),
+    {ok, InkPathList} = leveled_inker:ink_doom(State#state.inker),
+    {ok, PCLPathList} = leveled_penciller:pcl_doom(State#state.penciller),
+    lists:foreach(fun(DirPath) -> delete_path(DirPath) end, InkPathList),
+    lists:foreach(fun(DirPath) -> delete_path(DirPath) end, PCLPathList),
+    ok;
 terminate(Reason, State) ->
     leveled_log:log("B0003", [Reason]),
     ok = leveled_inker:ink_close(State#state.inker),
@@ -424,10 +447,9 @@ bucket_stats(State, Bucket, Tag) ->
                 end,
     {async, Folder}.
 
-index_query(State,
-                Bucket,
-                {IdxField, StartValue, EndValue},
-                {ReturnTerms, TermRegex}) ->
+
+binary_bucketlist(State, Tag, {FoldBucketsFun, InitAcc}) ->
+    % List buckets for tag, assuming bucket names are all binary type
     {ok,
         {LedgerSnapshot, LedgerCache},
         _JournalSnapshot} = snapshot_store(State, ledger),
@@ -435,22 +457,83 @@ index_query(State,
                 leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
-                StartKey = leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG,
-                                                        IdxField, StartValue),
-                EndKey = leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG,
-                                                        IdxField, EndValue),
+                BucketAcc = get_nextbucket(null,
+                                            Tag,
+                                            LedgerSnapshot,
+                                            []),
+                ok = leveled_penciller:pcl_close(LedgerSnapshot),
+                lists:foldl(fun({B, _K}, Acc) -> FoldBucketsFun(B, Acc) end,
+                                InitAcc,
+                                BucketAcc)
+                end,
+    {async, Folder}.
+
+get_nextbucket(NextBucket, Tag, LedgerSnapshot, BKList) ->
+    StartKey = leveled_codec:to_ledgerkey(NextBucket, null, Tag),
+    EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
+    ExtractFun = fun(LK, _V, _Acc) -> leveled_codec:from_ledgerkey(LK) end,
+    BK = leveled_penciller:pcl_fetchnextkey(LedgerSnapshot,
+                                                StartKey,
+                                                EndKey,
+                                                ExtractFun,
+                                                null),
+    case BK of
+        null ->
+            leveled_log:log("B0008",[]),
+            BKList;
+        {B, K} when is_binary(B) ->
+            leveled_log:log("B0009",[B]),
+            get_nextbucket(<<B/binary, 0>>,
+                            Tag,
+                            LedgerSnapshot,
+                            [{B, K}|BKList]);
+        NB ->
+            leveled_log:log("B0010",[NB]),
+            []
+    end.
+            
+
+index_query(State,
+                Constraint,
+                {FoldKeysFun, InitAcc},
+                {IdxField, StartValue, EndValue},
+                {ReturnTerms, TermRegex}) ->
+    {ok,
+        {LedgerSnapshot, LedgerCache},
+        _JournalSnapshot} = snapshot_store(State, ledger),
+    {Bucket, StartObjKey} =
+        case Constraint of
+            {B, SK} ->
+                {B, SK};
+            B ->
+                {B, null}
+        end,
+    Folder = fun() ->
+                leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
+                ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
+                                                            LedgerCache),
+                StartKey = leveled_codec:to_ledgerkey(Bucket,
+                                                        StartObjKey,
+                                                        ?IDX_TAG,
+                                                        IdxField,
+                                                        StartValue),
+                EndKey = leveled_codec:to_ledgerkey(Bucket,
+                                                        null,
+                                                        ?IDX_TAG,
+                                                        IdxField,
+                                                        EndValue),
                 AddFun = case ReturnTerms of
                                 true ->
-                                    fun add_terms/3;
+                                    fun add_terms/2;
                                 _ ->
-                                    fun add_keys/3
+                                    fun add_keys/2
                             end,
-                AccFun = accumulate_index(TermRegex, AddFun),
+                AccFun = accumulate_index(TermRegex, AddFun, FoldKeysFun),
                 Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
                                                         StartKey,
                                                         EndKey,
                                                         AccFun,
-                                                        []),
+                                                        InitAcc),
                 ok = leveled_penciller:pcl_close(LedgerSnapshot),
                 Acc
                 end,
@@ -535,7 +618,7 @@ foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun) ->
     {async, Folder}.
 
 
-allkey_query(State, Tag) ->
+bucketkey_query(State, Tag, Bucket, {FoldKeysFun, InitAcc}) ->
     {ok,
         {LedgerSnapshot, LedgerCache},
         _JournalSnapshot} = snapshot_store(State, ledger),
@@ -543,18 +626,21 @@ allkey_query(State, Tag) ->
                 leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
-                SK = leveled_codec:to_ledgerkey(null, null, Tag),
-                EK = leveled_codec:to_ledgerkey(null, null, Tag),
-                AccFun = accumulate_keys(),
+                SK = leveled_codec:to_ledgerkey(Bucket, null, Tag),
+                EK = leveled_codec:to_ledgerkey(Bucket, null, Tag),
+                AccFun = accumulate_keys(FoldKeysFun),
                 Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
                                                         SK,
                                                         EK,
                                                         AccFun,
-                                                        []),
+                                                        InitAcc),
                 ok = leveled_penciller:pcl_close(LedgerSnapshot),
                 lists:reverse(Acc)
                 end,
     {async, Folder}.
+
+allkey_query(State, Tag, {FoldKeysFun, InitAcc}) ->
+    bucketkey_query(State, Tag, null, {FoldKeysFun, InitAcc}).
 
 
 snapshot_store(State, SnapType) ->
@@ -576,11 +662,14 @@ snapshot_store(State, SnapType) ->
 set_options(Opts) ->
     MaxJournalSize = get_opt(max_journalsize, Opts, 10000000000),
     
+    WRP = get_opt(waste_retention_period, Opts),
+    
     AltStrategy = get_opt(reload_strategy, Opts, []),
     ReloadStrategy = leveled_codec:inker_reload_strategy(AltStrategy),
     
     PCLL0CacheSize = get_opt(max_pencillercachesize, Opts),
     RootPath = get_opt(root_path, Opts),
+    
     JournalFP = RootPath ++ "/" ++ ?JOURNAL_FP,
     LedgerFP = RootPath ++ "/" ++ ?LEDGER_FP,
     ok =filelib:ensure_dir(JournalFP),
@@ -589,6 +678,7 @@ set_options(Opts) ->
     {#inker_options{root_path = JournalFP,
                         reload_strategy = ReloadStrategy,
                         max_run_length = get_opt(max_run_length, Opts),
+                        waste_retention_period = WRP,
                         cdb_options = #cdb_options{max_size=MaxJournalSize,
                                                     binary_mode=true}},
         #penciller_options{root_path = LedgerFP,
@@ -701,35 +791,36 @@ check_presence(Key, Value, InkerClone) ->
             false
     end.
 
-accumulate_keys() ->
+accumulate_keys(FoldKeysFun) ->
     Now = leveled_codec:integer_now(),
-    AccFun = fun(Key, Value, KeyList) ->
+    AccFun = fun(Key, Value, Acc) ->
                     case leveled_codec:is_active(Key, Value, Now) of
                         true ->
-                            [leveled_codec:from_ledgerkey(Key)|KeyList];
+                            {B, K} = leveled_codec:from_ledgerkey(Key),
+                            FoldKeysFun(B, K, Acc);
                         false ->
-                            KeyList
+                            Acc
                     end
                 end,
     AccFun.
 
-add_keys(ObjKey, _IdxValue, Acc) ->
-    Acc ++ [ObjKey].
+add_keys(ObjKey, _IdxValue) ->
+    ObjKey.
 
-add_terms(ObjKey, IdxValue, Acc) ->
-    Acc ++ [{IdxValue, ObjKey}].
+add_terms(ObjKey, IdxValue) ->
+    {IdxValue, ObjKey}.
 
-accumulate_index(TermRe, AddFun) ->
+accumulate_index(TermRe, AddFun, FoldKeysFun) ->
     Now = leveled_codec:integer_now(),
     case TermRe of
         undefined ->
             fun(Key, Value, Acc) ->
                 case leveled_codec:is_active(Key, Value, Now) of
                     true ->
-                        {_Bucket,
+                        {Bucket,
                             ObjKey,
                             IdxValue} = leveled_codec:from_ledgerkey(Key),
-                        AddFun(ObjKey, IdxValue, Acc);
+                        FoldKeysFun(Bucket, AddFun(ObjKey, IdxValue), Acc);
                     false ->
                         Acc
                 end end;
@@ -737,14 +828,16 @@ accumulate_index(TermRe, AddFun) ->
             fun(Key, Value, Acc) ->
                 case leveled_codec:is_active(Key, Value, Now) of
                     true ->
-                        {_Bucket,
+                        {Bucket,
                             ObjKey,
                             IdxValue} = leveled_codec:from_ledgerkey(Key),
                         case re:run(IdxValue, TermRe) of
                             nomatch ->
                                 Acc;
                             _ ->
-                                AddFun(ObjKey, IdxValue, Acc)
+                                FoldKeysFun(Bucket,
+                                            AddFun(ObjKey, IdxValue),
+                                            Acc)
                         end;
                     false ->
                         Acc
@@ -836,16 +929,16 @@ get_opt(Key, Opts) ->
 get_opt(Key, Opts, Default) ->
     case proplists:get_value(Key, Opts) of
         undefined ->
-            case application:get_env(?MODULE, Key) of
-                {ok, Value} ->
-                    Value;
-                undefined ->
-                    Default
-            end;
+            Default;
         Value ->
             Value
     end.
 
+delete_path(DirPath) ->
+    ok = filelib:ensure_dir(DirPath),
+    {ok, Files} = file:list_dir(DirPath),
+    [file:delete(filename:join([DirPath, File])) || File <- Files],
+    file:del_dir(DirPath).
 
 %%%============================================================================
 %%% Test
@@ -930,28 +1023,28 @@ multi_key_test() ->
     C2 = #r_content{metadata=MD2, value=V2},
     Obj2 = #r_object{bucket=B2, key=K2, contents=[C2], vclock=[{'a',1}]},
     ok = book_put(Bookie1, B1, K1, Obj1, Spec1, ?RIAK_TAG),
-    ObjL1 = generate_multiple_robjects(100, 3),
+    ObjL1 = generate_multiple_robjects(20, 3),
     SW1 = os:timestamp(),
     lists:foreach(fun({O, S}) ->
                         {B, K} = leveled_codec:riakto_keydetails(O),
                         ok = book_put(Bookie1, B, K, O, S, ?RIAK_TAG)
                         end,
                     ObjL1),
-    io:format("PUT of 100 objects completed in ~w microseconds~n",
+    io:format("PUT of 20 objects completed in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(),SW1)]),
     ok = book_put(Bookie1, B2, K2, Obj2, Spec2, ?RIAK_TAG),
     {ok, F1A} = book_get(Bookie1, B1, K1, ?RIAK_TAG),
     ?assertMatch(F1A, Obj1),
     {ok, F2A} = book_get(Bookie1, B2, K2, ?RIAK_TAG),
     ?assertMatch(F2A, Obj2),
-    ObjL2 = generate_multiple_robjects(100, 103),
+    ObjL2 = generate_multiple_robjects(20, 23),
     SW2 = os:timestamp(),
     lists:foreach(fun({O, S}) ->
                         {B, K} = leveled_codec:riakto_keydetails(O),
                         ok = book_put(Bookie1, B, K, O, S, ?RIAK_TAG)
                         end,
                     ObjL2),
-    io:format("PUT of 100 objects completed in ~w microseconds~n",
+    io:format("PUT of 20 objects completed in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(),SW2)]),
     {ok, F1B} = book_get(Bookie1, B1, K1, ?RIAK_TAG),
     ?assertMatch(F1B, Obj1),
@@ -964,14 +1057,14 @@ multi_key_test() ->
     ?assertMatch(F1C, Obj1),
     {ok, F2C} = book_get(Bookie2, B2, K2, ?RIAK_TAG),
     ?assertMatch(F2C, Obj2),
-    ObjL3 = generate_multiple_robjects(100, 203),
+    ObjL3 = generate_multiple_robjects(20, 43),
     SW3 = os:timestamp(),
     lists:foreach(fun({O, S}) ->
                         {B, K} = leveled_codec:riakto_keydetails(O),
                         ok = book_put(Bookie2, B, K, O, S, ?RIAK_TAG)
                         end,
                     ObjL3),
-    io:format("PUT of 100 objects completed in ~w microseconds~n",
+    io:format("PUT of 20 objects completed in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(),SW3)]),
     {ok, F1D} = book_get(Bookie2, B1, K1, ?RIAK_TAG),
     ?assertMatch(F1D, Obj1),
@@ -1020,10 +1113,12 @@ ttl_test() ->
                                                 {bucket_stats, "Bucket"}),
     {_Size, Count} = BucketFolder(),
     ?assertMatch(100, Count),
+    FoldKeysFun = fun(_B, Item, FKFAcc) -> FKFAcc ++ [Item] end,
     {async,
         IndexFolder} = book_returnfolder(Bookie1,
                                             {index_query,
                                             "Bucket",
+                                            {FoldKeysFun, []},
                                             {"idx1_bin", "f8", "f9"},
                                             {false, undefined}}),
     KeyList = IndexFolder(),
@@ -1034,6 +1129,7 @@ ttl_test() ->
         IndexFolderTR} = book_returnfolder(Bookie1,
                                             {index_query,
                                             "Bucket",
+                                            {FoldKeysFun, []},
                                             {"idx1_bin", "f8", "f9"},
                                             {true, Regex}}),
     TermKeyList = IndexFolderTR(),
@@ -1046,6 +1142,7 @@ ttl_test() ->
         IndexFolderTR2} = book_returnfolder(Bookie2,
                                             {index_query,
                                             "Bucket",
+                                            {FoldKeysFun, []},
                                             {"idx1_bin", "f7", "f9"},
                                             {false, Regex}}),
     KeyList2 = IndexFolderTR2(),
@@ -1164,6 +1261,11 @@ foldobjects_vs_hashtree_test() ->
     
     ok = book_close(Bookie1),
     reset_filestructure().
+
+coverage_cheat_test() ->
+    {noreply, _State0} = handle_info(timeout, #state{}),
+    {ok, _State1} = code_change(null, #state{}, null),
+    {noreply, _State2} = handle_cast(null, #state{}).
 
 
 -endif.

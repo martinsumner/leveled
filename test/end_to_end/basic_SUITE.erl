@@ -62,8 +62,7 @@ simple_put_fetch_head_delete(_Config) ->
     ok = leveled_bookie:book_close(Bookie3),
     {ok, Bookie4} = leveled_bookie:book_start(StartOpts2),
     not_found = leveled_bookie:book_get(Bookie4, "Bucket1", "Key2"),
-    ok = leveled_bookie:book_close(Bookie4),
-    testutil:reset_filestructure().
+    ok = leveled_bookie:book_destroy(Bookie4).
 
 many_put_fetch_head(_Config) ->
     RootPath = testutil:reset_filestructure(),
@@ -98,8 +97,7 @@ many_put_fetch_head(_Config) ->
     {ok, Bookie3} = leveled_bookie:book_start(StartOpts2),
     testutil:check_forlist(Bookie3, ChkList2A),
     testutil:check_forobject(Bookie3, TestObject),
-    ok = leveled_bookie:book_close(Bookie3),
-    testutil:reset_filestructure().
+    ok = leveled_bookie:book_destroy(Bookie3).
 
 journal_compaction(_Config) ->
     RootPath = testutil:reset_filestructure(),
@@ -144,30 +142,67 @@ journal_compaction(_Config) ->
     %% Now replace all the other objects
     ObjList2 = testutil:generate_objects(40000, 10002),
     testutil:riakload(Bookie1, ObjList2),
+    
     ok = leveled_bookie:book_compactjournal(Bookie1, 30000),
     
-    F = fun leveled_bookie:book_islastcompactionpending/1,
-    lists:foldl(fun(X, Pending) ->
-                        case Pending of
-                            false ->
-                                false;
+    testutil:wait_for_compaction(Bookie1),
+    % Start snapshot - should not stop deletions
+    {ok,
+        {PclClone, _LdgCache},
+            InkClone} = leveled_bookie:book_snapshotstore(Bookie1,
+                                                            self(),
+                                                            300000),
+    % Wait 2 seconds for files to be deleted
+    WasteFP = RootPath ++ "/journal/journal_files/waste",
+    lists:foldl(fun(X, Found) ->
+                        case Found of
                             true ->
-                                io:format("Loop ~w waiting for journal "
-                                    ++ "compaction to complete~n", [X]),
-                                timer:sleep(20000),
-                                F(Bookie1)
-                        end end,
-                    true,
-                    lists:seq(1, 15)),
+                                Found;
+                            false ->
+                                {ok, Files} = file:list_dir(WasteFP),
+                                if
+                                    length(Files) > 0 ->
+                                        io:format("Deleted files found~n"),
+                                        true;
+                                    length(Files) == 0 ->
+                                        timer:sleep(X),
+                                        false
+                                end
+                        end
+                        end,
+                    false,
+                    [2000,2000,2000,2000,2000,2000]),
+    {ok, ClearedJournals} = file:list_dir(WasteFP),
+    io:format("~w ClearedJournals found~n", [length(ClearedJournals)]),
+    true = length(ClearedJournals) > 0,
     
     ChkList3 = lists:sublist(lists:sort(ObjList2), 500),
     testutil:check_forlist(Bookie1, ChkList3),
+    
+    ok = leveled_penciller:pcl_close(PclClone),
+    ok = leveled_inker:ink_close(InkClone),
+    
     ok = leveled_bookie:book_close(Bookie1),
     % Restart
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
     testutil:check_forobject(Bookie2, TestObject),
     testutil:check_forlist(Bookie2, ChkList3),
+    
     ok = leveled_bookie:book_close(Bookie2),
+    
+    StartOpts2 = [{root_path, RootPath},
+                    {max_journalsize, 10000000},
+                    {max_run_length, 1},
+                    {waste_retention_period, 1}],
+    {ok, Bookie3} = leveled_bookie:book_start(StartOpts2),
+    ok = leveled_bookie:book_compactjournal(Bookie3, 30000),
+    testutil:wait_for_compaction(Bookie3),
+    ok = leveled_bookie:book_close(Bookie3),
+    
+    {ok, ClearedJournalsPC} = file:list_dir(WasteFP),
+    io:format("~w ClearedJournals found~n", [length(ClearedJournalsPC)]),
+    true = length(ClearedJournalsPC) == 0,
+    
     testutil:reset_filestructure(10000).
 
 
@@ -422,7 +457,9 @@ space_clear_ondelete(_Config) ->
                             no_check,
                             G2),
     
-    {async, F1} = leveled_bookie:book_returnfolder(Book1, {keylist, o_rkv}),
+    FoldKeysFun = fun(B, K, Acc) -> Acc ++ [{B, K}] end,
+    AllKeyQuery = {keylist, o_rkv, {FoldKeysFun, []}},
+    {async, F1} = leveled_bookie:book_returnfolder(Book1, AllKeyQuery),
     SW1 = os:timestamp(),
     KL1 = F1(),
     ok = case length(KL1) of
@@ -488,7 +525,7 @@ space_clear_ondelete(_Config) ->
                     "after deletes~n",
                 [PointB_Journals, length(FNsB_L)]),
     
-    {async, F2} = leveled_bookie:book_returnfolder(Book1, {keylist, o_rkv}),
+    {async, F2} = leveled_bookie:book_returnfolder(Book1, AllKeyQuery),
     SW3 = os:timestamp(),
     KL2 = F2(),
     ok = case length(KL2) of
@@ -500,7 +537,7 @@ space_clear_ondelete(_Config) ->
     ok = leveled_bookie:book_close(Book1),
     
     {ok, Book2} = leveled_bookie:book_start(StartOpts1),
-    {async, F3} = leveled_bookie:book_returnfolder(Book2, {keylist, o_rkv}),
+    {async, F3} = leveled_bookie:book_returnfolder(Book2, AllKeyQuery),
     SW4 = os:timestamp(),
     KL3 = F3(),
     ok = case length(KL3) of

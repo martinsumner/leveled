@@ -46,6 +46,7 @@
 -record(cdb_options,
                         {max_size :: integer(),
                         file_path :: string(),
+                        waste_path :: string(),
                         binary_mode = false :: boolean()}).
 
 -record(inker_options,
@@ -55,6 +56,7 @@
                         start_snapshot = false :: boolean(),
                         source_inker :: pid(),
                         reload_strategy = [] :: list(),
+                        waste_retention_period :: integer(),
                         max_run_length}).
 
 -record(penciller_options,
@@ -66,7 +68,8 @@
 -record(iclerk_options,
                         {inker :: pid(),
                         max_run_length :: integer(),
-                        cdb_options :: #cdb_options{},
+                        cdb_options = #cdb_options{} :: #cdb_options{},
+                        waste_retention_period :: integer(),
                         reload_strategy = [] :: list()}).
 
 -record(r_content, {

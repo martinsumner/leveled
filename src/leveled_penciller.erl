@@ -169,12 +169,14 @@
         pcl_fetchlevelzero/2,
         pcl_fetch/2,
         pcl_fetchkeys/5,
+        pcl_fetchnextkey/5,
         pcl_checksequencenumber/3,
         pcl_workforclerk/1,
         pcl_promptmanifestchange/2,
         pcl_confirml0complete/4,
         pcl_confirmdelete/2,
         pcl_close/1,
+        pcl_doom/1,
         pcl_registersnapshot/2,
         pcl_releasesnapshot/2,
         pcl_loadsnapshot/2,
@@ -218,6 +220,7 @@
                 is_snapshot = false :: boolean(),
                 snapshot_fully_loaded = false :: boolean(),
                 source_penciller :: pid(),
+                levelzero_astree :: gb_trees:tree(),
                 
                 ongoing_work = [] :: list(),
                 work_backlog = false :: boolean()}).
@@ -241,14 +244,19 @@ pcl_fetchlevelzero(Pid, Slot) ->
     %%
     %% If the timeout gets hit outside of close scenario the Penciller will
     %% be stuck in L0 pending
-    gen_server:call(Pid, {fetch_levelzero, Slot}, 10000).
+    gen_server:call(Pid, {fetch_levelzero, Slot}, 60000).
     
 pcl_fetch(Pid, Key) ->
     gen_server:call(Pid, {fetch, Key}, infinity).
 
 pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc) ->
     gen_server:call(Pid,
-                    {fetch_keys, StartKey, EndKey, AccFun, InitAcc},
+                    {fetch_keys, StartKey, EndKey, AccFun, InitAcc, -1},
+                    infinity).
+
+pcl_fetchnextkey(Pid, StartKey, EndKey, AccFun, InitAcc) ->
+    gen_server:call(Pid,
+                    {fetch_keys, StartKey, EndKey, AccFun, InitAcc, 1},
                     infinity).
 
 pcl_checksequencenumber(Pid, Key, SQN) ->
@@ -282,6 +290,8 @@ pcl_loadsnapshot(Pid, Increment) ->
 pcl_close(Pid) ->
     gen_server:call(Pid, close, 60000).
 
+pcl_doom(Pid) ->
+    gen_server:call(Pid, doom, 60000).
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -321,15 +331,14 @@ handle_call({push_mem, PushedTree}, From, State=#state{is_snapshot=Snap})
     %
     % Check the approximate size of the cache.  If it is over the maximum size,
     % trigger a backgroun L0 file write and update state of levelzero_pending.
-    case {State#state.levelzero_pending, State#state.work_backlog} of
-        {true, _} ->
-            leveled_log:log("P0018", [returned, "L-0 persist pending"]),
+    case State#state.levelzero_pending or State#state.work_backlog of
+        true ->
+            leveled_log:log("P0018", [returned,
+                                        State#state.levelzero_pending,
+                                        State#state.work_backlog]),
             {reply, returned, State};
-        {false, true} ->
-            leveled_log:log("P0018", [returned, "Merge tree work backlog"]),
-            {reply, returned, State};
-        {false, false} ->
-            leveled_log:log("P0018", [ok, "L0 memory updated"]),
+        false ->
+            leveled_log:log("P0018", [ok, false, false]),
             gen_server:reply(From, ok),
             {noreply, update_levelzero(State#state.levelzero_index,
                                         State#state.levelzero_size,
@@ -353,20 +362,29 @@ handle_call({check_sqn, Key, SQN}, _From, State) ->
                                     State#state.levelzero_cache),
                         SQN),
         State};
-handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc},
+handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
                 _From,
                 State=#state{snapshot_fully_loaded=Ready})
                                                         when Ready == true ->
-    L0AsTree = leveled_pmem:merge_trees(StartKey,
-                                        EndKey,
-                                        State#state.levelzero_cache,
-                                        gb_trees:empty()),
+    L0AsTree =
+        case State#state.levelzero_astree of
+            undefined ->
+                leveled_pmem:merge_trees(StartKey,
+                                            EndKey,
+                                            State#state.levelzero_cache,
+                                            gb_trees:empty());
+            Tree ->
+                Tree
+        end,
     L0iter = gb_trees:iterator(L0AsTree),
     SFTiter = initiate_rangequery_frommanifest(StartKey,
                                                 EndKey,
                                                 State#state.manifest),
-    Acc = keyfolder(L0iter, SFTiter, StartKey, EndKey, {AccFun, InitAcc}),
-    {reply, Acc, State};
+    Acc = keyfolder({L0iter, SFTiter},
+                        {StartKey, EndKey},
+                        {AccFun, InitAcc},
+                        MaxKeys),
+    {reply, Acc, State#state{levelzero_astree = L0AsTree}};
 handle_call(work_for_clerk, From, State) ->
     {UpdState, Work} = return_work(State, From),
     {reply, Work, UpdState};
@@ -390,8 +408,12 @@ handle_call({load_snapshot, BookieIncrTree}, _From, State) ->
 handle_call({fetch_levelzero, Slot}, _From, State) ->
     {reply, lists:nth(Slot, State#state.levelzero_cache), State};
 handle_call(close, _From, State) ->
-    {stop, normal, ok, State}.
-
+    {stop, normal, ok, State};
+handle_call(doom, _From, State) ->
+    leveled_log:log("P0030", []),
+    ManifestFP = State#state.root_path ++ "/" ++ ?MANIFEST_FP ++ "/",
+    FilesFP = State#state.root_path ++ "/" ++ ?FILES_FP ++ "/",
+    {stop, normal, {ok, [ManifestFP, FilesFP]}, State}.
 
 handle_cast({manifest_change, WI}, State) ->
     {ok, UpdState} = commit_manifest_change(WI, State),
@@ -478,15 +500,13 @@ terminate(Reason, State) ->
     case {UpdState#state.levelzero_pending,
             get_item(0, UpdState#state.manifest, []),
             UpdState#state.levelzero_size} of
-        {true, [], _} ->
-            ok = leveled_sft:sft_close(UpdState#state.levelzero_constructor);
         {false, [], 0} ->
            leveled_log:log("P0009", []);
         {false, [], _N} ->
             L0Pid = roll_memory(UpdState, true),
             ok = leveled_sft:sft_close(L0Pid);
-        _ ->
-            leveled_log:log("P0010", [])
+        StatusTuple ->
+            leveled_log:log("P0010", [StatusTuple])
     end,
     
     % Tidy shutdown of individual files
@@ -505,6 +525,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%%============================================================================
 %%% Internal functions
 %%%============================================================================
+
 
 start_from_file(PCLopts) ->
     RootPath = PCLopts#penciller_options.root_path,
@@ -959,37 +980,56 @@ find_nextkey(QueryArray, LCnt, {BestKeyLevel, BestKV}, QueryFunT) ->
     end.
 
 
-keyfolder(null, SFTiterator, StartKey, EndKey, {AccFun, Acc}) ->
-    case find_nextkey(SFTiterator, StartKey, EndKey) of
+keyfolder(IMMiter, SFTiter, StartKey, EndKey, {AccFun, Acc}) ->
+    keyfolder({IMMiter, SFTiter}, {StartKey, EndKey}, {AccFun, Acc}, -1).
+
+keyfolder(_Iterators, _KeyRange, {_AccFun, Acc}, MaxKeys) when MaxKeys == 0 ->
+    Acc;
+keyfolder({null, SFTiter}, KeyRange, {AccFun, Acc}, MaxKeys) ->
+    {StartKey, EndKey} = KeyRange,
+    case find_nextkey(SFTiter, StartKey, EndKey) of
         no_more_keys ->
             Acc;
-        {NxtSFTiterator, {SFTKey, SFTVal}} ->
+        {NxSFTiter, {SFTKey, SFTVal}} ->
             Acc1 = AccFun(SFTKey, SFTVal, Acc),
-            keyfolder(null, NxtSFTiterator, StartKey, EndKey, {AccFun, Acc1})
+            keyfolder({null, NxSFTiter}, KeyRange, {AccFun, Acc1}, MaxKeys - 1)
     end;
-keyfolder(IMMiterator, SFTiterator, StartKey, EndKey, {AccFun, Acc}) ->
+keyfolder({IMMiterator, SFTiterator}, KeyRange, {AccFun, Acc}, MaxKeys) ->
+    {StartKey, EndKey} = KeyRange,
     case gb_trees:next(IMMiterator) of
         none ->
             % There are no more keys in the in-memory iterator, so now
             % iterate only over the remaining keys in the SFT iterator
-            keyfolder(null, SFTiterator, StartKey, EndKey, {AccFun, Acc});
-        {IMMKey, IMMVal, NxtIMMiterator} ->
+            keyfolder({null, SFTiterator}, KeyRange, {AccFun, Acc}, MaxKeys);
+        {IMMKey, _IMMVal, NxIMMiterator} when IMMKey < StartKey ->
+            % Normally everything is pre-filterd, but the IMM iterator can
+            % be re-used and do may be behind the StartKey if the StartKey has
+            % advanced from the previous use
+            keyfolder({NxIMMiterator, SFTiterator},
+                        KeyRange,
+                        {AccFun, Acc},
+                        MaxKeys);
+        {IMMKey, IMMVal, NxIMMiterator} ->
             case leveled_codec:endkey_passed(EndKey, IMMKey) of
                 true ->
                     % There are no more keys in-range in the in-memory
                     % iterator, so take action as if this iterator is empty
                     % (see above)
-                    keyfolder(null, SFTiterator,
-                                    StartKey, EndKey, {AccFun, Acc});
+                    keyfolder({null, SFTiterator},
+                                KeyRange,
+                                {AccFun, Acc},
+                                MaxKeys);
                 false ->
                     case find_nextkey(SFTiterator, StartKey, EndKey) of
                         no_more_keys ->
                             % No more keys in range in the persisted store, so use the
                             % in-memory KV as the next
                             Acc1 = AccFun(IMMKey, IMMVal, Acc),
-                            keyfolder(NxtIMMiterator, SFTiterator,
-                                            StartKey, EndKey, {AccFun, Acc1});
-                        {NxtSFTiterator, {SFTKey, SFTVal}} ->
+                            keyfolder({NxIMMiterator, SFTiterator},
+                                        KeyRange,
+                                        {AccFun, Acc1},
+                                        MaxKeys - 1);
+                        {NxSFTiterator, {SFTKey, SFTVal}} ->
                             % There is a next key, so need to know which is the
                             % next key between the two (and handle two keys
                             % with different sequence numbers).  
@@ -999,19 +1039,22 @@ keyfolder(IMMiterator, SFTiterator, StartKey, EndKey, {AccFun, Acc}) ->
                                                                     SFTVal}) of
                                 left_hand_first ->
                                     Acc1 = AccFun(IMMKey, IMMVal, Acc),
-                                    keyfolder(NxtIMMiterator, SFTiterator,
-                                                    StartKey, EndKey,
-                                                    {AccFun, Acc1});
+                                    keyfolder({NxIMMiterator, SFTiterator},
+                                                KeyRange,
+                                                {AccFun, Acc1},
+                                                MaxKeys - 1);
                                 right_hand_first ->
                                     Acc1 = AccFun(SFTKey, SFTVal, Acc),
-                                    keyfolder(IMMiterator, NxtSFTiterator,
-                                                    StartKey, EndKey,
-                                                    {AccFun, Acc1});
+                                    keyfolder({IMMiterator, NxSFTiterator},
+                                                KeyRange,
+                                                {AccFun, Acc1},
+                                                MaxKeys - 1);
                                 left_hand_dominant ->
                                     Acc1 = AccFun(IMMKey, IMMVal, Acc),
-                                    keyfolder(NxtIMMiterator, NxtSFTiterator,
-                                                    StartKey, EndKey,
-                                                    {AccFun, Acc1})
+                                    keyfolder({NxIMMiterator, NxSFTiterator},
+                                                KeyRange,
+                                                {AccFun, Acc1},
+                                                MaxKeys - 1)
                             end
                     end
             end
@@ -1576,12 +1619,61 @@ create_file_test() ->
     {ok, Bin} = file:read_file("../test/new_file.sft.discarded"),
     ?assertMatch("hello", binary_to_term(Bin)).
 
-coverage_test() ->
+commit_manifest_test() ->
+    Sent_WI = #penciller_work{next_sqn=1,
+                                src_level=0,
+                                start_time=os:timestamp()},
+    Resp_WI = #penciller_work{next_sqn=1,
+                                src_level=0},
+    State = #state{ongoing_work = [Sent_WI],
+                    root_path = "test",
+                    manifest_sqn = 0},
+    ManifestFP = "test" ++ "/" ++ ?MANIFEST_FP ++ "/",
+    ok = filelib:ensure_dir(ManifestFP),
+    ok = file:write_file(ManifestFP ++ "nonzero_1.pnd",
+                            term_to_binary("dummy data")),
+    
+    L1_0 = [{1, [#manifest_entry{filename="1.sft"}]}],
+    Resp_WI0 = Resp_WI#penciller_work{new_manifest=L1_0,
+                                        unreferenced_files=[]},
+    {ok, State0} = commit_manifest_change(Resp_WI0, State),
+    ?assertMatch(1, State0#state.manifest_sqn),
+    ?assertMatch([], get_item(0, State0#state.manifest, [])),
+    
+    L0Entry = [#manifest_entry{filename="0.sft"}],
+    ManifestPlus = [{0, L0Entry}|State0#state.manifest],
+    
+    NxtSent_WI = #penciller_work{next_sqn=2,
+                                    src_level=1,
+                                    start_time=os:timestamp()},
+    NxtResp_WI = #penciller_work{next_sqn=2,
+                                 src_level=1},
+    State1 = State0#state{ongoing_work=[NxtSent_WI],
+                            manifest = ManifestPlus},
+    
+    ok = file:write_file(ManifestFP ++ "nonzero_2.pnd",
+                            term_to_binary("dummy data")),
+    
+    L2_0 = [#manifest_entry{filename="2.sft"}],
+    NxtResp_WI0 = NxtResp_WI#penciller_work{new_manifest=[{2, L2_0}],
+                                           unreferenced_files=[]},
+    {ok, State2} = commit_manifest_change(NxtResp_WI0, State1),
+    
+    ?assertMatch(1, State1#state.manifest_sqn),
+    ?assertMatch(2, State2#state.manifest_sqn),
+    ?assertMatch(L0Entry, get_item(0, State2#state.manifest, [])),
+    ?assertMatch(L2_0, get_item(2, State2#state.manifest, [])),
+    
+    clean_testdir(State#state.root_path).
+
+
+badmanifest_test() ->
     RootPath = "../test/ledger",
     clean_testdir(RootPath),
     {ok, PCL} = pcl_start(#penciller_options{root_path=RootPath,
                                                 max_inmemory_tablesize=1000}),
-    Key1 = {{o,"Bucket0001", "Key0001", null}, {1001, {active, infinity}, null}},
+    Key1 = {{o,"Bucket0001", "Key0001", null},
+                {1001, {active, infinity}, null}},
     KL1 = leveled_sft:generate_randomkeys({1000, 1}),
     
     ok = maybe_pause_push(PCL, KL1 ++ [Key1]),
@@ -1589,16 +1681,17 @@ coverage_test() ->
     %% call to the penciller and the second fetch of the cache entry
     ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001", null})),
     
+    timer:sleep(100), % Avoids confusion if L0 file not written before close
     ok = pcl_close(PCL),
     
     ManifestFP = filepath(RootPath, manifest),
-    ok = file:write_file(filename:join(ManifestFP, "yeszero_123.man"), term_to_binary("hello")),
+    ok = file:write_file(filename:join(ManifestFP, "yeszero_123.man"),
+                            term_to_binary("hello")),
     {ok, PCLr} = pcl_start(#penciller_options{root_path=RootPath,
                                                 max_inmemory_tablesize=1000}),
     ?assertMatch(Key1, pcl_fetch(PCLr, {o,"Bucket0001", "Key0001", null})),
     ok = pcl_close(PCLr),
     clean_testdir(RootPath).
-
 
 checkready(Pid) ->
     try
@@ -1608,5 +1701,8 @@ checkready(Pid) ->
             timeout
     end.
 
+coverage_cheat_test() ->
+    {noreply, _State0} = handle_info(timeout, #state{}),
+    {ok, _State1} = code_change(null, #state{}, null).
 
 -endif.

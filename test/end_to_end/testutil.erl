@@ -39,7 +39,9 @@
             restore_file/2,
             restore_topending/2,
             find_journals/1,
-            riak_hash/1]).
+            riak_hash/1,
+            wait_for_compaction/1,
+            foldkeysfun/3]).
 
 -define(RETURN_TERMS, {true, undefined}).
 -define(SLOWOFFER_DELAY, 5).
@@ -85,7 +87,20 @@ reset_filestructure(Wait) ->
     leveled_penciller:clean_testdir(RootPath ++ "/ledger"),
     RootPath.
 
-
+wait_for_compaction(Bookie) ->
+    F = fun leveled_bookie:book_islastcompactionpending/1,
+    lists:foldl(fun(X, Pending) ->
+                        case Pending of
+                            false ->
+                                false;
+                            true ->
+                                io:format("Loop ~w waiting for journal "
+                                    ++ "compaction to complete~n", [X]),
+                                timer:sleep(5000),
+                                F(Bookie)
+                        end end,
+                    true,
+                    lists:seq(1, 15)).
 
 check_bucket_stats(Bookie, Bucket) ->
     FoldSW1 = os:timestamp(),
@@ -216,6 +231,17 @@ generate_objects(Count, KeyNumber, ObjL, Value, IndexGen) ->
 
 generate_objects(0, _KeyNumber, ObjL, _Value, _IndexGen, _Bucket) ->
     ObjL;
+generate_objects(Count, binary_uuid, ObjL, Value, IndexGen, Bucket) ->
+    {Obj1, Spec1} = set_object(list_to_binary(Bucket),
+                                list_to_binary(leveled_codec:generate_uuid()),
+                                Value,
+                                IndexGen),
+    generate_objects(Count - 1,
+                        binary_uuid,
+                        ObjL ++ [{random:uniform(), Obj1, Spec1}],
+                        Value,
+                        IndexGen,
+                        Bucket);
 generate_objects(Count, uuid, ObjL, Value, IndexGen, Bucket) ->
     {Obj1, Spec1} = set_object(Bucket,
                                 leveled_codec:generate_uuid(),
@@ -314,6 +340,8 @@ get_randomdate() ->
                                     [Year, Month, Day, Hour, Minute, Second])).
 
 
+foldkeysfun(_Bucket, Item, Acc) -> Acc ++ [Item].
+
 check_indexed_objects(Book, B, KSpecL, V) ->
     % Check all objects match, return what should be the results of an all
     % index query
@@ -329,6 +357,7 @@ check_indexed_objects(Book, B, KSpecL, V) ->
     R = leveled_bookie:book_returnfolder(Book,
                                             {index_query,
                                                 B,
+                                                {fun foldkeysfun/3, []},
                                                 {"idx1_bin",
                                                     "0",
                                                     "~"},
@@ -391,7 +420,10 @@ put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i) ->
                                                                     V,
                                                                     IndexGen,
                                                                     AddSpc),
-                                ok = book_riakput(Book, O, AltSpc),
+                                case book_riakput(Book, O, AltSpc) of
+                                    ok -> ok;
+                                    pause -> timer:sleep(?SLOWOFFER_DELAY)
+                                end,
                                 {K, AltSpc} end,
                             KSpecL),
     {RplKSpecL, V}.
@@ -411,6 +443,9 @@ rotating_object_check(RootPath, B, NumberOfObjects) ->
     ok = testutil:check_indexed_objects(Book2, B, KSpcL3, V3),
     {KSpcL4, V4} = testutil:put_altered_indexed_objects(Book2, B, KSpcL3),
     ok = testutil:check_indexed_objects(Book2, B, KSpcL4, V4),
+    Query = {keylist, ?RIAK_TAG, B, {fun foldkeysfun/3, []}},
+    {async, BList} = leveled_bookie:book_returnfolder(Book2, Query),
+    true = NumberOfObjects == length(BList()),
     ok = leveled_bookie:book_close(Book2),
     ok.
     
