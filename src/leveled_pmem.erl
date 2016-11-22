@@ -52,6 +52,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(SLOT_WIDTH, {4096, 12}).
+-define(SKIP_WIDTH, 128).
 
 
 %%%============================================================================
@@ -145,6 +146,72 @@ merge_trees(StartKey, EndKey, TreeList, LevelMinus1) ->
                         merge_nexttree(Tree, TreeAcc, StartKey, EndKey) end,
                     gb_trees:empty(),
                     lists:append(TreeList, [LevelMinus1])).
+
+%%%============================================================================
+%%% SkipList
+%%%============================================================================
+
+
+generate_skiplist(Dict) ->
+    KVL = lists:ukeysort(1, dict:to_list(Dict)),
+    Slots = length(KVL) div ?SKIP_WIDTH,
+    SkipList0 = lists:map(fun(X) ->
+                                N = X * ?SKIP_WIDTH,
+                                {K, _V} = lists:nth(N, KVL),
+                                {K, lists:sublist(KVL,
+                                                    N - ?SKIP_WIDTH + 1,
+                                                    ?SKIP_WIDTH)}
+                                end,
+                            lists:seq(1, length(KVL) div ?SKIP_WIDTH)),
+    case Slots * ?SKIP_WIDTH < length(KVL) of
+        true ->
+            {LastK, _V} = lists:last(KVL),
+            SkipList0 ++ [{LastK, lists:nthtail(Slots * ?SKIP_WIDTH, KVL)}];
+        false ->
+            SkipList0
+    end.
+
+
+fetchkey_from_skiplist(SkipList, Key) ->
+    SubList = lists:foldl(fun({SkipKey, SL}, Acc) ->
+                        case {Acc, SkipKey} of
+                            {null, SkipKey} when SkipKey >= Key ->
+                                SL;
+                            _ ->
+                                Acc
+                        end end,
+                    null,
+                    SkipList),
+    case SubList of
+        null ->
+            not_found;
+        SubList -> 
+            case lists:keyfind(Key, 1, SubList) of
+                false ->
+                    not_found;
+                {Key, V} ->
+                    {Key, V}
+            end
+    end.
+
+fetchrange_from_skiplist(SkipList, StartKey, EndKey) ->
+    R = lists:foldl(fun({SkipKey, SL}, {Continue, Acc}) ->
+                            case Continue of
+                                true ->
+                                    case SkipKey of
+                                        SkipKey when StartKey >= SkipKey ->
+                                            {true, Acc};
+                                        SkipKey when EndKey < SkipKey ->
+                                            {false, Acc ++ SL}
+                                    end;
+                                false ->
+                                    {false, Acc}
+                            end end,
+                        {true, []},
+                        SkipList),
+    {_Bool, SubList} = R,
+    SubList.
+
 
 %%%============================================================================
 %%% Internal Functions
@@ -277,6 +344,74 @@ compare_method_test() ->
                 [timer:now_diff(os:timestamp(), SWb), Sz1]),
     ?assertMatch(Sz0, Sz1).
 
-
+skiplist_test() ->
+    KL = gb_trees:to_list(generate_randomkeys(1, 4000, 1, 200)),
+    D = lists:foldl(fun({K, V}, Acc) -> dict:store(K, V, Acc) end,
+                        dict:new(),
+                        KL),
+    SWa = os:timestamp(),
+    SkipList = generate_skiplist(D),
+    io:format("Generating skip list with 4000 keys in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWa)]),
+    
+    CheckList1 = lists:sublist(KL, 1200, 100),
+    CheckList2 = lists:sublist(KL, 1600, 100),
+    CheckList3 = lists:sublist(KL, 2000, 100),
+    CheckList4 = lists:sublist(KL, 2400, 100),
+    CheckList5 = lists:sublist(KL, 2800, 100),
+    CheckList6 = lists:sublist(KL, 1, 10),
+    CheckList7 = lists:nthtail(3800, KL),
+    CheckAll = CheckList1 ++ CheckList2 ++ CheckList3 ++
+                    CheckList4 ++ CheckList5 ++ CheckList6 ++ CheckList7,
+    
+    SWb = os:timestamp(),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V},
+                                        fetchkey_from_skiplist(SkipList, K))
+                        end,
+                    CheckAll),
+    io:format("Finding 520 keys took ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWb)]),
+    
+    SWc = os:timestamp(),
+    KR1 = fetchrange_from_skiplist(SkipList,
+                                    lists:nth(1, CheckList1),
+                                    lists:last(CheckList1)),
+    ?assertMatch(true, length(KR1) >= 100),
+    ?assertMatch(true, length(KR1) < 400),
+    KR2 = fetchrange_from_skiplist(SkipList,
+                                    lists:nth(1, CheckList2),
+                                    lists:last(CheckList2)),
+    ?assertMatch(true, length(KR2) >= 100),
+    ?assertMatch(true, length(KR2) < 400),
+    KR3 = fetchrange_from_skiplist(SkipList,
+                                    lists:nth(1, CheckList3),
+                                    lists:last(CheckList3)),
+    ?assertMatch(true, length(KR3) >= 100),
+    ?assertMatch(true, length(KR3) < 400),
+    KR4 = fetchrange_from_skiplist(SkipList,
+                                    lists:nth(1, CheckList4),
+                                    lists:last(CheckList4)),
+    ?assertMatch(true, length(KR4) >= 100),
+    ?assertMatch(true, length(KR4) < 400),
+    KR5 = fetchrange_from_skiplist(SkipList,
+                                    lists:nth(1, CheckList5),
+                                    lists:last(CheckList5)),
+    ?assertMatch(true, length(KR5) >= 100),
+    ?assertMatch(true, length(KR5) < 400),
+    KR6 = fetchrange_from_skiplist(SkipList,
+                                    lists:nth(1, CheckList6),
+                                    lists:last(CheckList6)),
+    ?assertMatch(true, length(KR6) >= 10),
+    ?assertMatch(true, length(KR6) < 200),
+    KR7 = fetchrange_from_skiplist(SkipList,
+                                    lists:nth(1, CheckList7),
+                                    lists:last(CheckList7)),
+    ?assertMatch(true, length(KR7) >= 10),
+    ?assertMatch(true, length(KR7) < 200),
+    io:format("Finding 7 ranges took ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWc)]),
+    
+    ?assertMatch(true, false).
 
 -endif.
