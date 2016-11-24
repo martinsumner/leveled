@@ -355,8 +355,14 @@ generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
 generate_randomkeys(_Seqn, 0, Acc, _BucketLow, _BucketHigh) ->
     Acc;
 generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
-    BNumber = string:right(integer_to_list(BucketLow + random:uniform(BRange)),
-                                            4, $0),
+    BNumber =
+        case BRange of
+            0 ->
+                string:right(integer_to_list(BucketLow), 4, $0);
+            _ ->
+                BRand = random:uniform(BRange),
+                string:right(integer_to_list(BucketLow + BRand), 4, $0)
+        end,
     KNumber = string:right(integer_to_list(random:uniform(1000)), 4, $0),
     {K, V} = {{o, "Bucket" ++ BNumber, "Key" ++ KNumber, null},
                 {Seqn, {active, infinity}, null}},
@@ -517,7 +523,19 @@ skiplist_test() ->
                             element(1, lists:last(CheckList8))),
     CompareL8 = length(lists:usort(CheckList8)),
     ?assertMatch(CompareL8, length(KR8)),
-    io:format(user, "Finding 8 ranges took ~w microseconds~n",
+    
+    KL_OOR1 = gb_trees:to_list(generate_randomkeys(1, 4, 201, 202)),
+    KR9 = skiplist_range(SkipList,
+                            element(1, lists:nth(1, KL_OOR1)),
+                            element(1, lists:last(KL_OOR1))),
+    ?assertMatch([], KR9),
+    KL_OOR2 = gb_trees:to_list(generate_randomkeys(1, 4, 0, 0)),
+    KR10 = skiplist_range(SkipList,
+                            element(1, lists:nth(1, KL_OOR2)),
+                            element(1, lists:last(KL_OOR2))),
+    ?assertMatch([], KR10),
+    
+    io:format(user, "Finding 10 ranges took ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SWc)]).
 
 hash_index_test() ->
