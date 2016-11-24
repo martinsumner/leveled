@@ -536,7 +536,16 @@ skiplist_test() ->
     ?assertMatch([], KR10),
     
     io:format(user, "Finding 10 ranges took ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SWc)]).
+                [timer:now_diff(os:timestamp(), SWc)]),
+                
+    AltKL = gb_trees:to_list(generate_randomkeys(1, 1000, 1, 200)),
+    SWd = os:timestamp(),
+    lists:foreach(fun({K, _V}) ->
+                        skiplist_get(SkipList, K)
+                        end,
+                    AltKL),
+    io:format(user, "Finding 1000 mainly missing keys took ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWd)]).
 
 hash_index_test() ->
     KeyCount = 4000,
