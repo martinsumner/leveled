@@ -158,8 +158,7 @@ merge_trees(StartKey, EndKey, TreeList, LevelMinus1) ->
 %%%============================================================================
 
 
-addkey_to_index(HashIndex, Key, Count) ->
-    {Hash, Slot} = hash_to_slot(Key),
+addhash_to_index(HashIndex, Hash, Slot, Count) ->
     L = array:get(Slot, HashIndex),
     case lists:member(Hash, L) of
         true ->
@@ -197,7 +196,7 @@ merge_indexes_singleslot(HashList, IndexSlot, MergedIndex, L0Slot, Count) ->
                                         HashList),
     {array:set(IndexSlot, UpdHL, MergedIndex), UpdCount}.
 
-load_dynamic_skiplist(SkipList, Key, Value, Hash) ->
+skiplist_put(SkipList, Key, Value, Hash) ->
     {MarkerKey, SubList} = lists:foldl(fun({Marker, SL}, Acc) ->
                                         case Acc of
                                             false ->
@@ -223,7 +222,7 @@ load_dynamic_skiplist(SkipList, Key, Value, Hash) ->
             lists:keyreplace(MarkerKey, 1, SkipList, {MarkerKey, UpdSubList})
     end.
             
-generate_balanced_skiplist(UnsortedKVL) ->
+skiplist_generate(UnsortedKVL) ->
     KVL = lists:ukeysort(1, UnsortedKVL),
     Slots = length(KVL) div ?SKIP_WIDTH,
     SkipList0 = lists:map(fun(X) ->
@@ -242,7 +241,7 @@ generate_balanced_skiplist(UnsortedKVL) ->
             SkipList0
     end.
 
-fetchkey_from_skiplist(SkipList, Key) ->
+skiplist_get(SkipList, Key) ->
     SubList = lists:foldl(fun({SkipKey, SL}, Acc) ->
                         case {Acc, SkipKey} of
                             {null, SkipKey} when SkipKey >= Key ->
@@ -264,32 +263,52 @@ fetchkey_from_skiplist(SkipList, Key) ->
             end
     end.
 
-fetchrange_from_skiplist(SkipList, StartKey, EndKey) ->
-    R = lists:foldl(fun({SkipKey, SL}, {Continue, Acc}) ->
-                            % io:format("SkipKey ~w StartKey ~w EndKey ~w~n", [SkipKey, StartKey, EndKey]),
-                            case Continue of
-                                true ->
-                                    case StartKey > SkipKey of
-                                        true ->
-                                            % io:format("StartKey after SkipKey~n"),
-                                            {true, Acc};
-                                        false ->
-                                            case leveled_codec:endkey_passed(EndKey, SkipKey) of
-                                                true ->
-                                                    % io:format("EndKey after SkipKey~n"),
-                                                    {false, Acc ++ SL};
-                                                false ->
-                                                    % io:format("EndKey before SkipKey~n"),
-                                                    {true, Acc ++ SL}
-                                            end
-                                    end;
-                                false ->
-                                    {false, Acc}
-                            end end,
-                        {true, []},
-                        SkipList),
-    {_Bool, SubList} = R,
+skiplist_range(SkipList, Start, End) ->
+    R = lists:foldl(fun({Mark, SL}, {PassedStart, PassedEnd, Acc, PrevList}) ->
+                        
+                case {PassedStart, PassedEnd} of
+                    {true, true} ->
+                        {true, true, Acc, null};
+                    {false, false} ->
+                        case Start > Mark of
+                            true ->
+                                {false, false, Acc, SL};
+                            false ->
+                                RHS = splitlist_start(Start, PrevList ++ SL),
+                                case leveled_codec:endkey_passed(End, Mark) of
+                                    true ->
+                                        EL = splitlist_end(End, RHS),
+                                        {true, true, EL, null};
+                                    false ->
+                                        {true, false, RHS, null}
+                                end
+                        end;
+                    {true, false} ->
+                        case leveled_codec:endkey_passed(End, Mark) of
+                            true ->
+                                EL = splitlist_end(End, SL),
+                                {true, true, Acc ++ EL, null};
+                            false ->
+                                {true, false, Acc ++ SL, null}
+                        end
+                end end,
+                    
+                    {false, false, [], []},
+                    SkipList),
+    {_Bool1, _Bool2, SubList, _PrevList} = R,
     SubList.
+
+splitlist_start(StartKey, SL) ->
+    {_LHS, RHS} = lists:splitwith(fun({K, _V}) -> K < StartKey end, SL),
+    RHS.
+
+splitlist_end(EndKey, SL) ->
+    {LHS, _RHS} = lists:splitwith(fun({K, _V}) ->
+                                        not leveled_codec:endkey_passed(EndKey, K)
+                                        end,
+                                    SL),
+    LHS.
+
 
 
 %%%============================================================================
@@ -433,7 +452,7 @@ skiplist_test() ->
                 [timer:now_diff(os:timestamp(), SWaD)]),
                 
     SWa = os:timestamp(),
-    SkipList = generate_balanced_skiplist(KL),
+    SkipList = skiplist_generate(KL),
     io:format(user, "Generating skip list with 4000 keys in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SWa)]),
     
@@ -444,56 +463,61 @@ skiplist_test() ->
     CheckList5 = lists:sublist(KL, 2800, 100),
     CheckList6 = lists:sublist(KL, 1, 10),
     CheckList7 = lists:nthtail(3800, KL),
+    CheckList8 = lists:sublist(KL, 3000, 1),
     CheckAll = CheckList1 ++ CheckList2 ++ CheckList3 ++
                     CheckList4 ++ CheckList5 ++ CheckList6 ++ CheckList7,
     
     SWb = os:timestamp(),
     lists:foreach(fun({K, V}) ->
-                        ?assertMatch({K, V},
-                                        fetchkey_from_skiplist(SkipList, K))
+                        ?assertMatch({K, V}, skiplist_get(SkipList, K))
                         end,
                     CheckAll),
     io:format(user, "Finding 520 keys took ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SWb)]),
     
     SWc = os:timestamp(),
-    KR1 = fetchrange_from_skiplist(SkipList,
-                                    element(1, lists:nth(1, CheckList1)),
-                                    element(1, lists:last(CheckList1))),
+    KR1 = skiplist_range(SkipList,
+                            element(1, lists:nth(1, CheckList1)),
+                            element(1, lists:last(CheckList1))),
     io:format("Result length ~w ~n", [length(KR1)]),
-    ?assertMatch(true, length(KR1) >= 100),
-    ?assertMatch(true, length(KR1) < 400),
-    KR2 = fetchrange_from_skiplist(SkipList,
-                                    element(1, lists:nth(1, CheckList2)),
-                                    element(1, lists:last(CheckList2))),
-    ?assertMatch(true, length(KR2) >= 100),
-    ?assertMatch(true, length(KR2) < 400),
-    KR3 = fetchrange_from_skiplist(SkipList,
-                                    element(1, lists:nth(1, CheckList3)),
-                                    element(1, lists:last(CheckList3))),
-    ?assertMatch(true, length(KR3) >= 100),
-    ?assertMatch(true, length(KR3) < 400),
-    KR4 = fetchrange_from_skiplist(SkipList,
-                                    element(1, lists:nth(1, CheckList4)),
-                                    element(1, lists:last(CheckList4))),
-    ?assertMatch(true, length(KR4) >= 100),
-    ?assertMatch(true, length(KR4) < 400),
-    KR5 = fetchrange_from_skiplist(SkipList,
-                                    element(1, lists:nth(1, CheckList5)),
-                                    element(1, lists:last(CheckList5))),
-    ?assertMatch(true, length(KR5) >= 100),
-    ?assertMatch(true, length(KR5) < 400),
-    KR6 = fetchrange_from_skiplist(SkipList,
-                                    element(1, lists:nth(1, CheckList6)),
-                                    element(1, lists:last(CheckList6))),
-    ?assertMatch(true, length(KR6) >= 10),
-    ?assertMatch(true, length(KR6) < 200),
-    KR7 = fetchrange_from_skiplist(SkipList,
-                                    element(1, lists:nth(1, CheckList7)),
-                                    element(1, lists:last(CheckList7))),
-    ?assertMatch(true, length(KR7) >= 10),
-    ?assertMatch(true, length(KR7) < 200),
-    io:format(user, "Finding 7 ranges took ~w microseconds~n",
+    CompareL1 = length(lists:usort(CheckList1)),
+    ?assertMatch(CompareL1, length(KR1)),
+    KR2 = skiplist_range(SkipList,
+                            element(1, lists:nth(1, CheckList2)),
+                            element(1, lists:last(CheckList2))),
+    CompareL2 = length(lists:usort(CheckList2)),
+    ?assertMatch(CompareL2, length(KR2)),
+    KR3 = skiplist_range(SkipList,
+                            element(1, lists:nth(1, CheckList3)),
+                            element(1, lists:last(CheckList3))),
+    CompareL3 = length(lists:usort(CheckList3)),
+    ?assertMatch(CompareL3, length(KR3)),
+    KR4 = skiplist_range(SkipList,
+                            element(1, lists:nth(1, CheckList4)),
+                            element(1, lists:last(CheckList4))),
+    CompareL4 = length(lists:usort(CheckList4)),
+    ?assertMatch(CompareL4, length(KR4)),
+    KR5 = skiplist_range(SkipList,
+                            element(1, lists:nth(1, CheckList5)),
+                            element(1, lists:last(CheckList5))),
+    CompareL5 = length(lists:usort(CheckList5)),
+    ?assertMatch(CompareL5, length(KR5)),
+    KR6 = skiplist_range(SkipList,
+                            element(1, lists:nth(1, CheckList6)),
+                            element(1, lists:last(CheckList6))),
+    CompareL6 = length(lists:usort(CheckList6)),
+    ?assertMatch(CompareL6, length(KR6)),
+    KR7 = skiplist_range(SkipList,
+                            element(1, lists:nth(1, CheckList7)),
+                            element(1, lists:last(CheckList7))),
+    CompareL7 = length(lists:usort(CheckList7)),
+    ?assertMatch(CompareL7, length(KR7)),
+    KR8 = skiplist_range(SkipList,
+                            element(1, lists:nth(1, CheckList8)),
+                            element(1, lists:last(CheckList8))),
+    CompareL8 = length(lists:usort(CheckList8)),
+    ?assertMatch(CompareL8, length(KR8)),
+    io:format(user, "Finding 8 ranges took ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SWc)]).
 
 hash_index_test() ->
@@ -513,11 +537,13 @@ hash_index_test() ->
                     CheckList4 ++ CheckList5 ++ CheckList6 ++ CheckList7,
     
     SWa = os:timestamp(),
-    SkipList1 = 
-        lists:foldl(fun({K, V}, Acc) ->
-                            {H, _Slot} = hash_to_slot(K),
-                            load_dynamic_skiplist(Acc, K, V, H) end,
-                        ?EMPTY_SKIPLIST,
+    {HashIndex1, SkipList1, _TC} = 
+        lists:foldl(fun({K, V}, {HI, SL, C}) ->
+                            {H, S} = hash_to_slot(K),
+                            {UpdHI, UpdC} = addhash_to_index(HI, H, S, C),
+                            UpdSL = skiplist_put(SL, K, V, H),
+                            {UpdHI, UpdSL, UpdC} end,
+                        {HI0, ?EMPTY_SKIPLIST, 0},
                         KL0),
     io:format(user, "Dynamic load of skiplist took ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SWa)]),
@@ -535,7 +561,7 @@ hash_index_test() ->
     SWb = os:timestamp(),
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({K, V},
-                                        fetchkey_from_skiplist(SkipList1, K))
+                                        skiplist_get(SkipList1, K))
                         end,
                     CheckAll),
     io:format(user, "Fetching ~w keys from skiplist took ~w microseconds~n",
@@ -543,7 +569,8 @@ hash_index_test() ->
     
     SWc = os:timestamp(),
     {HI1, _C1} = lists:foldl(fun({K, _V}, {HI, C}) ->
-                                    addkey_to_index(HI, K, C) end,
+                                    {H, S} = hash_to_slot(K),
+                                    addhash_to_index(HI, H, S, C) end,
                                 {HI0, 0},
                                 KL0),
     io:format(user, "Adding ~w keys to hashindex took ~w microseconds~n",
@@ -561,7 +588,8 @@ hash_index_test() ->
     SWe = os:timestamp(),
     HI2 = new_index(),
     {HI3, _C2} = lists:foldl(fun({K, _V}, {HI, C}) ->
-                                    addkey_to_index(HI, K, C) end,
+                                    {H, S} = hash_to_slot(K),
+                                    addhash_to_index(HI, H, S, C) end,
                                 {HI2, 0},
                                 KL1),
     io:format(user, "Adding ~w keys to hashindex took ~w microseconds~n",
@@ -576,7 +604,8 @@ hash_index_test() ->
     SWg = os:timestamp(),
     HI4 = new_index(),
     {HI5, _C3} = lists:foldl(fun({K, _V}, {HI, C}) ->
-                                    addkey_to_index(HI, K, C) end,
+                                    {H, S} = hash_to_slot(K),
+                                    addhash_to_index(HI, H, S, C) end,
                                 {HI4, 0},
                                 KL1),
     io:format(user, "Adding ~w keys to hashindex took ~w microseconds~n",
