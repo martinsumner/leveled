@@ -107,7 +107,8 @@
                 delete_point = 0 :: integer(),
                 inker :: pid(),
                 deferred_delete = false :: boolean(),
-                waste_path :: string()}).
+                waste_path :: string(),
+                sync_strategy = none}).
 
 
 %%%============================================================================
@@ -222,12 +223,14 @@ init([Opts]) ->
         starting,
         #state{max_size=MaxSize,
                 binary_mode=Opts#cdb_options.binary_mode,
-                waste_path=Opts#cdb_options.waste_path}}.
+                waste_path=Opts#cdb_options.waste_path,
+                sync_strategy=Opts#cdb_options.sync_strategy}}.
 
 starting({open_writer, Filename}, _From, State) ->
     leveled_log:log("CDB01", [Filename]),
     {LastPosition, HashTree, LastKey} = open_active_file(Filename),
-    {ok, Handle} = file:open(Filename, [sync | ?WRITE_OPS]),
+    WriteOps = set_writeops(State#state.sync_strategy),
+    {ok, Handle} = file:open(Filename, WriteOps),
     {reply, ok, writer, State#state{handle=Handle,
                                         last_position=LastPosition,
                                         last_key=LastKey,
@@ -519,6 +522,23 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %%%============================================================================
 %%% Internal functions
 %%%============================================================================
+
+%% Assumption is that sync should be used - it is a transaction log.
+%%
+%% When running the Riak-specific version on Erlang 16, it sets the sync flag
+%% using the o_sync keyword (as it is in posix).  If using a non-Basho OTP 16
+%% sync is not possible so none will need to be passed.  This is not
+%% recommended, but is allowed here to make it simpler to test against
+%% off-the-shelf OTP 16
+set_writeops(SyncStrategy) ->
+    case SyncStrategy of
+        sync ->
+            [sync | ?WRITE_OPS];
+        riak_sync ->
+            [o_sync | ?WRITE_OPS];
+        none ->
+            ?WRITE_OPS
+    end.
 
 
 %% from_dict(FileName,ListOfKeyValueTuples)
@@ -1866,6 +1886,9 @@ crc_corrupt_writer_test() ->
     ok = cdb_put(P2, "Key100", "Value100"),
     ?assertMatch({"Key100", "Value100"}, cdb_get(P2, "Key100")),
     ok = cdb_close(P2).
+
+riak_writeops_test() ->
+    ?assertMatch([o_sync, binary, raw, read, write], set_writeops(riak_sync)).
 
 nonsense_coverage_test() ->
     {ok, Pid} = gen_fsm:start(?MODULE, [#cdb_options{}], []),

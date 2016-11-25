@@ -20,7 +20,8 @@ all() -> [
 small_load_with2i(_Config) ->
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = [{root_path, RootPath},
-                    {max_journalsize, 5000000}],
+                    {max_journalsize, 5000000},
+                    {sync_strategy, testutil:sync_strategy()}],
                     % low journal size to make sure > 1 created
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
@@ -128,7 +129,10 @@ small_load_with2i(_Config) ->
 
 query_count(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    {ok, Book1} = leveled_bookie:book_start(RootPath, 2000, 50000000),
+    {ok, Book1} = leveled_bookie:book_start(RootPath,
+                                            2000,
+                                            50000000,
+                                            testutil:sync_strategy()),
     BucketBin = list_to_binary("Bucket"),
     {TestObject, TestSpec} = testutil:generate_testobject(BucketBin,
                                                             "Key1",
@@ -177,7 +181,10 @@ query_count(_Config) ->
                                         Book1,
                                         ?KEY_ONLY),
     ok = leveled_bookie:book_close(Book1),
-    {ok, Book2} = leveled_bookie:book_start(RootPath, 1000, 50000000),
+    {ok, Book2} = leveled_bookie:book_start(RootPath,
+                                            1000,
+                                            50000000,
+                                            testutil:sync_strategy()),
     Index1Count = count_termsonindex(BucketBin,
                                         "idx1_bin",
                                         Book2,
@@ -288,7 +295,10 @@ query_count(_Config) ->
                         end,
                     R9),
     ok = leveled_bookie:book_close(Book2),
-    {ok, Book3} = leveled_bookie:book_start(RootPath, 2000, 50000000),
+    {ok, Book3} = leveled_bookie:book_start(RootPath,
+                                            2000,
+                                            50000000,
+                                            testutil:sync_strategy()),
     lists:foreach(fun({IdxF, IdxT, X}) ->
                         Q = {index_query,
                                 BucketBin,
@@ -305,7 +315,10 @@ query_count(_Config) ->
                     R9),
     ok = testutil:book_riakput(Book3, Obj9, Spc9),
     ok = leveled_bookie:book_close(Book3),
-    {ok, Book4} = leveled_bookie:book_start(RootPath, 2000, 50000000),
+    {ok, Book4} = leveled_bookie:book_start(RootPath,
+                                            2000,
+                                            50000000,
+                                            testutil:sync_strategy()),
     lists:foreach(fun({IdxF, IdxT, X}) ->
                         Q = {index_query,
                                 BucketBin,
@@ -365,7 +378,10 @@ query_count(_Config) ->
     
     ok = leveled_bookie:book_close(Book4),
     
-    {ok, Book5} = leveled_bookie:book_start(RootPath, 2000, 50000000),
+    {ok, Book5} = leveled_bookie:book_start(RootPath,
+                                            2000,
+                                            50000000,
+                                            testutil:sync_strategy()),
     {async, BLF3} = leveled_bookie:book_returnfolder(Book5, BucketListQuery),
     SW_QC = os:timestamp(),
     BucketSet3 = BLF3(),

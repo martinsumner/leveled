@@ -118,7 +118,7 @@
         terminate/2,
         code_change/3,
         book_start/1,
-        book_start/3,
+        book_start/4,
         book_put/5,
         book_put/6,
         book_tempput/7,
@@ -159,10 +159,11 @@
 %%% API
 %%%============================================================================
 
-book_start(RootPath, LedgerCacheSize, JournalSize) ->
+book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy) ->
     book_start([{root_path, RootPath},
                     {cache_size, LedgerCacheSize},
-                    {max_journalsize, JournalSize}]).
+                    {max_journalsize, JournalSize},
+                    {sync_strategy, SyncStrategy}]).
 
 book_start(Opts) ->
     gen_server:start(?MODULE, [Opts], []).
@@ -661,7 +662,7 @@ snapshot_store(State, SnapType) ->
 
 set_options(Opts) ->
     MaxJournalSize = get_opt(max_journalsize, Opts, 10000000000),
-    
+    SyncStrat = get_opt(sync_strategy, Opts, sync),
     WRP = get_opt(waste_retention_period, Opts),
     
     AltStrategy = get_opt(reload_strategy, Opts, []),
@@ -680,7 +681,8 @@ set_options(Opts) ->
                         max_run_length = get_opt(max_run_length, Opts),
                         waste_retention_period = WRP,
                         cdb_options = #cdb_options{max_size=MaxJournalSize,
-                                                    binary_mode=true}},
+                                                    binary_mode=true,
+                                                    sync_strategy=SyncStrat}},
         #penciller_options{root_path = LedgerFP,
                             max_inmemory_tablesize = PCLL0CacheSize}}.
 

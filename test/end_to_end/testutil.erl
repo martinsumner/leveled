@@ -41,12 +41,25 @@
             find_journals/1,
             riak_hash/1,
             wait_for_compaction/1,
-            foldkeysfun/3]).
+            foldkeysfun/3,
+            sync_strategy/0]).
 
 -define(RETURN_TERMS, {true, undefined}).
 -define(SLOWOFFER_DELAY, 5).
 
 
+
+sync_strategy() ->
+    case erlang:system_info(otp_release) of
+        "17" ->
+            sync;
+        "18" ->
+            sync;
+        "19" ->
+            sync;
+        "16" ->
+            none
+    end.
 
 book_riakput(Pid, RiakObject, IndexSpecs) ->
     {Bucket, Key} = leveled_codec:riakto_keydetails(RiakObject),
@@ -431,7 +444,8 @@ put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i) ->
 rotating_object_check(RootPath, B, NumberOfObjects) ->
     BookOpts = [{root_path, RootPath},
                     {cache_size, 1000},
-                    {max_journalsize, 5000000}],
+                    {max_journalsize, 5000000},
+                    {sync_strategy, sync_strategy()}],
     {ok, Book1} = leveled_bookie:book_start(BookOpts),
     {KSpcL1, V1} = testutil:put_indexed_objects(Book1, B, NumberOfObjects),
     ok = testutil:check_indexed_objects(Book1, B, KSpcL1, V1),

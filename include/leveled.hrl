@@ -47,7 +47,8 @@
                         {max_size :: integer(),
                         file_path :: string(),
                         waste_path :: string(),
-                        binary_mode = false :: boolean()}).
+                        binary_mode = false :: boolean(),
+                        sync_strategy = sync}).
 
 -record(inker_options,
                         {cdb_max_size :: integer(),
