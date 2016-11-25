@@ -213,7 +213,7 @@
                 levelzero_pending = false :: boolean(),
                 levelzero_constructor :: pid(),
                 levelzero_cache = [] :: list(), % a list of skiplists
-                levelzero_index :: array:array(),
+                levelzero_index :: array(),
                 levelzero_size = 0 :: integer(),
                 levelzero_maxcachesize :: integer(),
                 
