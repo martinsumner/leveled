@@ -149,7 +149,7 @@
 -record(state, {inker :: pid(),
                 penciller :: pid(),
                 cache_size :: integer(),
-                ledger_cache :: gb_trees:tree(),
+                ledger_cache :: list(), % a skiplist
                 is_snapshot :: boolean(),
                 slow_offer = false :: boolean()}).
 
@@ -233,14 +233,14 @@ init([Opts]) ->
             {ok, #state{inker=Inker,
                         penciller=Penciller,
                         cache_size=CacheSize,
-                        ledger_cache=gb_trees:empty(),
+                        ledger_cache=leveled_skiplist:empty(),
                         is_snapshot=false}};
         Bookie ->
             {ok,
                 {Penciller, LedgerCache},
                 Inker} = book_snapshotstore(Bookie, self(), ?SNAPSHOT_TIMEOUT),
             ok = leveled_penciller:pcl_loadsnapshot(Penciller,
-                                                    gb_trees:empty()),
+                                                    leveled_skiplist:empty()),
             leveled_log:log("B0002", [Inker, Penciller]),
             {ok, #state{penciller=Penciller,
                         inker=Inker,
@@ -431,7 +431,7 @@ bucket_stats(State, Bucket, Tag) ->
         {LedgerSnapshot, LedgerCache},
         _JournalSnapshot} = snapshot_store(State, ledger),
     Folder = fun() ->
-                leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
+                leveled_log:log("B0004", [leveled_skiplist:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
                 StartKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
@@ -454,7 +454,7 @@ binary_bucketlist(State, Tag, {FoldBucketsFun, InitAcc}) ->
         {LedgerSnapshot, LedgerCache},
         _JournalSnapshot} = snapshot_store(State, ledger),
     Folder = fun() ->
-                leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
+                leveled_log:log("B0004", [leveled_skiplist:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
                 BucketAcc = get_nextbucket(null,
@@ -509,7 +509,7 @@ index_query(State,
                 {B, null}
         end,
     Folder = fun() ->
-                leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
+                leveled_log:log("B0004", [leveled_skiplist:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
                 StartKey = leveled_codec:to_ledgerkey(Bucket,
@@ -551,7 +551,7 @@ hashtree_query(State, Tag, JournalCheck) ->
         {LedgerSnapshot, LedgerCache},
         JournalSnapshot} = snapshot_store(State, SnapType),
     Folder = fun() ->
-                leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
+                leveled_log:log("B0004", [leveled_skiplist:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
                 StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
@@ -602,7 +602,7 @@ foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun) ->
                                     {FoldObjectsFun, []}
                             end,
     Folder = fun() ->
-                leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
+                leveled_log:log("B0004", [leveled_skiplist:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
                 AccFun = accumulate_objects(FoldFun, JournalSnapshot, Tag),
@@ -623,7 +623,7 @@ bucketkey_query(State, Tag, Bucket, {FoldKeysFun, InitAcc}) ->
         {LedgerSnapshot, LedgerCache},
         _JournalSnapshot} = snapshot_store(State, ledger),
     Folder = fun() ->
-                leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
+                leveled_log:log("B0004", [leveled_skiplist:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
                 SK = leveled_codec:to_ledgerkey(Bucket, null, Tag),
@@ -697,7 +697,7 @@ startup(InkerOpts, PencillerOpts) ->
 
 
 fetch_head(Key, Penciller, LedgerCache) ->
-    case gb_trees:lookup(Key, LedgerCache) of
+    case leveled_skiplist:lookup(Key, LedgerCache) of
         {value, Head} ->
             Head;
         none ->
@@ -863,18 +863,18 @@ preparefor_ledgercache(_Type, LedgerKey, SQN, Obj, Size, {IndexSpecs, TTL}) ->
 
 
 addto_ledgercache(Changes, Cache) ->
-    lists:foldl(fun({K, V}, Acc) -> gb_trees:enter(K, V, Acc) end,
+    lists:foldl(fun({K, V}, Acc) -> leveled_skiplist:enter(K, V, Acc) end,
                     Cache,
                     Changes).
 
 maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
-    CacheSize = gb_trees:size(Cache),
+    CacheSize = leveled_skiplist:size(Cache),
     TimeToPush = maybe_withjitter(CacheSize, MaxCacheSize),
     if
         TimeToPush ->
             case leveled_penciller:pcl_pushmem(Penciller, Cache) of
                 ok ->
-                    {ok, gb_trees:empty()};
+                    {ok, leveled_skiplist:empty()};
                 returned ->
                     {returned, Cache}
             end;

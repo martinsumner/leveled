@@ -212,7 +212,7 @@
                 
                 levelzero_pending = false :: boolean(),
                 levelzero_constructor :: pid(),
-                levelzero_cache = [] :: list(), % a list of gb_trees
+                levelzero_cache = [] :: list(), % a list of skiplists
                 levelzero_index :: array:array(),
                 levelzero_size = 0 :: integer(),
                 levelzero_maxcachesize :: integer(),
@@ -220,7 +220,7 @@
                 is_snapshot = false :: boolean(),
                 snapshot_fully_loaded = false :: boolean(),
                 source_penciller :: pid(),
-                levelzero_astree :: gb_trees:tree(),
+                levelzero_astree :: list(), % skiplist
                 
                 ongoing_work = [] :: list(),
                 work_backlog = false :: boolean()}).
@@ -366,25 +366,24 @@ handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
                 _From,
                 State=#state{snapshot_fully_loaded=Ready})
                                                         when Ready == true ->
-    L0AsTree =
+    L0AsList =
         case State#state.levelzero_astree of
             undefined ->
                 leveled_pmem:merge_trees(StartKey,
                                             EndKey,
                                             State#state.levelzero_cache,
-                                            gb_trees:empty());
-            Tree ->
-                Tree
+                                            leveled_skiplist:empty());
+            List ->
+                List
         end,
-    L0iter = gb_trees:iterator(L0AsTree),
     SFTiter = initiate_rangequery_frommanifest(StartKey,
                                                 EndKey,
                                                 State#state.manifest),
-    Acc = keyfolder({L0iter, SFTiter},
+    Acc = keyfolder({L0AsList, SFTiter},
                         {StartKey, EndKey},
                         {AccFun, InitAcc},
                         MaxKeys),
-    {reply, Acc, State#state{levelzero_astree = L0AsTree}};
+    {reply, Acc, State#state{levelzero_astree = L0AsList}};
 handle_call(work_for_clerk, From, State) ->
     {UpdState, Work} = return_work(State, From),
     {reply, Work, UpdState};
@@ -985,77 +984,73 @@ keyfolder(IMMiter, SFTiter, StartKey, EndKey, {AccFun, Acc}) ->
 
 keyfolder(_Iterators, _KeyRange, {_AccFun, Acc}, MaxKeys) when MaxKeys == 0 ->
     Acc;
-keyfolder({null, SFTiter}, KeyRange, {AccFun, Acc}, MaxKeys) ->
+keyfolder({[], SFTiter}, KeyRange, {AccFun, Acc}, MaxKeys) ->
     {StartKey, EndKey} = KeyRange,
     case find_nextkey(SFTiter, StartKey, EndKey) of
         no_more_keys ->
             Acc;
         {NxSFTiter, {SFTKey, SFTVal}} ->
             Acc1 = AccFun(SFTKey, SFTVal, Acc),
-            keyfolder({null, NxSFTiter}, KeyRange, {AccFun, Acc1}, MaxKeys - 1)
+            keyfolder({[], NxSFTiter}, KeyRange, {AccFun, Acc1}, MaxKeys - 1)
     end;
-keyfolder({IMMiterator, SFTiterator}, KeyRange, {AccFun, Acc}, MaxKeys) ->
+keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SFTiterator}, KeyRange,
+                                                    {AccFun, Acc}, MaxKeys) ->
     {StartKey, EndKey} = KeyRange,
-    case gb_trees:next(IMMiterator) of
-        none ->
-            % There are no more keys in the in-memory iterator, so now
-            % iterate only over the remaining keys in the SFT iterator
-            keyfolder({null, SFTiterator}, KeyRange, {AccFun, Acc}, MaxKeys);
-        {IMMKey, _IMMVal, NxIMMiterator} when IMMKey < StartKey ->
+    case {IMMKey < StartKey, leveled_codec:endkey_passed(EndKey, IMMKey)} of
+        {true, _} ->
+    
             % Normally everything is pre-filterd, but the IMM iterator can
-            % be re-used and do may be behind the StartKey if the StartKey has
+            % be re-used and so may be behind the StartKey if the StartKey has
             % advanced from the previous use
             keyfolder({NxIMMiterator, SFTiterator},
                         KeyRange,
                         {AccFun, Acc},
                         MaxKeys);
-        {IMMKey, IMMVal, NxIMMiterator} ->
-            case leveled_codec:endkey_passed(EndKey, IMMKey) of
-                true ->
-                    % There are no more keys in-range in the in-memory
-                    % iterator, so take action as if this iterator is empty
-                    % (see above)
-                    keyfolder({null, SFTiterator},
+        {false, true} ->
+            % There are no more keys in-range in the in-memory
+            % iterator, so take action as if this iterator is empty
+            % (see above)
+            keyfolder({[], SFTiterator},
+                        KeyRange,
+                        {AccFun, Acc},
+                        MaxKeys);
+        {false, false} ->
+            case find_nextkey(SFTiterator, StartKey, EndKey) of
+                no_more_keys ->
+                    % No more keys in range in the persisted store, so use the
+                    % in-memory KV as the next
+                    Acc1 = AccFun(IMMKey, IMMVal, Acc),
+                    keyfolder({NxIMMiterator, SFTiterator},
                                 KeyRange,
-                                {AccFun, Acc},
-                                MaxKeys);
-                false ->
-                    case find_nextkey(SFTiterator, StartKey, EndKey) of
-                        no_more_keys ->
-                            % No more keys in range in the persisted store, so use the
-                            % in-memory KV as the next
+                                {AccFun, Acc1},
+                                MaxKeys - 1);
+                {NxSFTiterator, {SFTKey, SFTVal}} ->
+                    % There is a next key, so need to know which is the
+                    % next key between the two (and handle two keys
+                    % with different sequence numbers).  
+                    case leveled_codec:key_dominates({IMMKey,
+                                                            IMMVal},
+                                                        {SFTKey,
+                                                            SFTVal}) of
+                        left_hand_first ->
                             Acc1 = AccFun(IMMKey, IMMVal, Acc),
                             keyfolder({NxIMMiterator, SFTiterator},
                                         KeyRange,
                                         {AccFun, Acc1},
                                         MaxKeys - 1);
-                        {NxSFTiterator, {SFTKey, SFTVal}} ->
-                            % There is a next key, so need to know which is the
-                            % next key between the two (and handle two keys
-                            % with different sequence numbers).  
-                            case leveled_codec:key_dominates({IMMKey,
-                                                                    IMMVal},
-                                                                {SFTKey,
-                                                                    SFTVal}) of
-                                left_hand_first ->
-                                    Acc1 = AccFun(IMMKey, IMMVal, Acc),
-                                    keyfolder({NxIMMiterator, SFTiterator},
-                                                KeyRange,
-                                                {AccFun, Acc1},
-                                                MaxKeys - 1);
-                                right_hand_first ->
-                                    Acc1 = AccFun(SFTKey, SFTVal, Acc),
-                                    keyfolder({IMMiterator, NxSFTiterator},
-                                                KeyRange,
-                                                {AccFun, Acc1},
-                                                MaxKeys - 1);
-                                left_hand_dominant ->
-                                    Acc1 = AccFun(IMMKey, IMMVal, Acc),
-                                    keyfolder({NxIMMiterator, NxSFTiterator},
-                                                KeyRange,
-                                                {AccFun, Acc1},
-                                                MaxKeys - 1)
-                            end
+                        right_hand_first ->
+                            Acc1 = AccFun(SFTKey, SFTVal, Acc),
+                            keyfolder({[{IMMKey, IMMVal}|NxIMMiterator],
+                                            NxSFTiterator},
+                                        KeyRange,
+                                        {AccFun, Acc1},
+                                        MaxKeys - 1);
+                        left_hand_dominant ->
+                            Acc1 = AccFun(IMMKey, IMMVal, Acc),
+                            keyfolder({NxIMMiterator, NxSFTiterator},
+                                        KeyRange,
+                                        {AccFun, Acc1},
+                                        MaxKeys - 1)
                     end
             end
     end.    
@@ -1267,8 +1262,8 @@ confirm_delete_test() ->
 
 
 maybe_pause_push(PCL, KL) ->
-    T0 = gb_trees:empty(),
-    T1 = lists:foldl(fun({K, V}, Acc) -> gb_trees:enter(K, V, Acc) end,
+    T0 = leveled_skiplist:empty(),
+    T1 = lists:foldl(fun({K, V}, Acc) -> leveled_skiplist:enter(K, V, Acc) end,
                         T0,
                         KL),
     case pcl_pushmem(PCL, T1) of
@@ -1335,7 +1330,7 @@ simple_server_test() ->
     SnapOpts = #penciller_options{start_snapshot = true,
                                     source_penciller = PCLr},
     {ok, PclSnap} = pcl_start(SnapOpts),
-    ok = pcl_loadsnapshot(PclSnap, gb_trees:empty()),
+    ok = pcl_loadsnapshot(PclSnap, leveled_skiplist:empty()),
     ?assertMatch(Key1, pcl_fetch(PclSnap, {o,"Bucket0001", "Key0001", null})),
     ?assertMatch(Key2, pcl_fetch(PclSnap, {o,"Bucket0002", "Key0002", null})),
     ?assertMatch(Key3, pcl_fetch(PclSnap, {o,"Bucket0003", "Key0003", null})),
@@ -1384,7 +1379,7 @@ simple_server_test() ->
                             term_to_binary("Hello")),
     
     {ok, PclSnap2} = pcl_start(SnapOpts),
-    ok = pcl_loadsnapshot(PclSnap2, gb_trees:empty()),
+    ok = pcl_loadsnapshot(PclSnap2, leveled_skiplist:empty()),
     ?assertMatch(false, pcl_checksequencenumber(PclSnap2,
                                                 {o,
                                                     "Bucket0001",
@@ -1543,16 +1538,16 @@ foldwithimm_simple_test() ->
         {3, [{{o, "Bucket1", "Key3"}, {3, {active, infinity}, null}}]},
         {5, [{{o, "Bucket1", "Key5"}, {2, {active, infinity}, null}}]}
     ],
-    IMM0 = gb_trees:enter({o, "Bucket1", "Key6"},
-                                {7, {active, infinity}, null},
-                            gb_trees:empty()),
-    IMM1 = gb_trees:enter({o, "Bucket1", "Key1"},
-                                {8, {active, infinity}, null},
-                            IMM0),
-    IMM2 = gb_trees:enter({o, "Bucket1", "Key8"},
-                                {9, {active, infinity}, null},
-                            IMM1),
-    IMMiter = gb_trees:iterator_from({o, "Bucket1", "Key1"}, IMM2),
+    IMM0 = leveled_skiplist:enter({o, "Bucket1", "Key6"},
+                                        {7, {active, infinity}, null},
+                                    leveled_skiplist:empty()),
+    IMM1 = leveled_skiplist:enter({o, "Bucket1", "Key1"},
+                                        {8, {active, infinity}, null},
+                                    IMM0),
+    IMM2 = leveled_skiplist:enter({o, "Bucket1", "Key8"},
+                                        {9, {active, infinity}, null},
+                                    IMM1),
+    IMMiter = leveled_skiplist:to_range(IMM2, {o, "Bucket1", "Key1"}),
     AccFun = fun(K, V, Acc) -> SQN = leveled_codec:strip_to_seqonly({K, V}),
                                 Acc ++ [{K, SQN}] end,
     Acc = keyfolder(IMMiter,
@@ -1564,10 +1559,10 @@ foldwithimm_simple_test() ->
                     {{o, "Bucket1", "Key5"}, 2},
                     {{o, "Bucket1", "Key6"}, 7}], Acc),
     
-    IMM1A = gb_trees:enter({o, "Bucket1", "Key1"},
-                                {8, {active, infinity}, null},
-                            gb_trees:empty()),
-    IMMiterA = gb_trees:iterator_from({o, "Bucket1", "Key1"}, IMM1A),
+    IMM1A = leveled_skiplist:enter({o, "Bucket1", "Key1"},
+                                        {8, {active, infinity}, null},
+                                    leveled_skiplist:empty()),
+    IMMiterA = leveled_skiplist:to_range(IMM1A, {o, "Bucket1", "Key1"}),
     AccA = keyfolder(IMMiterA,
                     QueryArray,
                     {o, "Bucket1", "Key1"}, {o, "Bucket1", "Key6"},
@@ -1576,10 +1571,10 @@ foldwithimm_simple_test() ->
                     {{o, "Bucket1", "Key3"}, 3},
                     {{o, "Bucket1", "Key5"}, 2}], AccA),
     
-    IMM3 = gb_trees:enter({o, "Bucket1", "Key4"},
-                                {10, {active, infinity}, null},
-                            IMM2),
-    IMMiterB = gb_trees:iterator_from({o, "Bucket1", "Key1"}, IMM3),
+    IMM3 = leveled_skiplist:enter({o, "Bucket1", "Key4"},
+                                     {10, {active, infinity}, null},
+                                    IMM2),
+    IMMiterB = leveled_skiplist:to_range(IMM3, {o, "Bucket1", "Key1"}),
     AccB = keyfolder(IMMiterB,
                     QueryArray,
                     {o, "Bucket1", "Key1"}, {o, "Bucket1", "Key6"},
@@ -1594,7 +1589,7 @@ create_file_test() ->
     Filename = "../test/new_file.sft",
     ok = file:write_file(Filename, term_to_binary("hello")),
     KVL = lists:usort(leveled_sft:generate_randomkeys(10000)),
-    Tree = gb_trees:from_orddict(KVL),
+    Tree = leveled_skiplist:from_list(KVL),
     FetchFun = fun(Slot) -> lists:nth(Slot, [Tree]) end,
     {ok,
         SP,
