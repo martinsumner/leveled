@@ -213,7 +213,8 @@
                 levelzero_pending = false :: boolean(),
                 levelzero_constructor :: pid(),
                 levelzero_cache = [] :: list(), % a list of skiplists
-                levelzero_index :: array(),
+                levelzero_index, 
+                % is an array - but cannot specif due to OTP compatability 
                 levelzero_size = 0 :: integer(),
                 levelzero_maxcachesize :: integer(),
                 
