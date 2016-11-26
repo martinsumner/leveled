@@ -347,6 +347,21 @@ skiplist_timingtest(KL, SkipList) ->
                 [timer:now_diff(os:timestamp(), SWg)]),
     ?assertMatch(KL, FlatList).
 
+define_kv(X) ->
+    {{o, "Bucket", "Key" ++ X, null}, {X, {active, infinity}, null}}.
+
+skiplist_roundsize_test() ->
+    KVL = lists:map(fun(X) -> define_kv(X) end, lists:seq(1, 800)),
+    SkipList = from_list(KVL),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({value, V}, lookup(K, SkipList)) end,
+                    KVL),
+    lists:foreach(fun(X) -> R = to_range(SkipList,
+                                        define_kv(X * 32 + 1),
+                                        define_kv((X + 1) * 32)),
+                            L = lists:sublist(KVL, X * 32 + 1, 32),
+                            ?assertMatch(L, R) end,
+                        lists:seq(0, 24)).
 
 
 -endif.
