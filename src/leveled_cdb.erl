@@ -230,6 +230,7 @@ starting({open_writer, Filename}, _From, State) ->
     leveled_log:log("CDB01", [Filename]),
     {LastPosition, HashTree, LastKey} = open_active_file(Filename),
     WriteOps = set_writeops(State#state.sync_strategy),
+    leveled_log:log("CDB13", [WriteOps]),
     {ok, Handle} = file:open(Filename, WriteOps),
     {reply, ok, writer, State#state{handle=Handle,
                                         last_position=LastPosition,
