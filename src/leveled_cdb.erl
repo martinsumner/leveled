@@ -536,7 +536,7 @@ set_writeops(SyncStrategy) ->
         sync ->
             [sync | ?WRITE_OPS];
         riak_sync ->
-            [o_sync | ?WRITE_OPS];
+            [sync | ?WRITE_OPS];
         none ->
             ?WRITE_OPS
     end.
