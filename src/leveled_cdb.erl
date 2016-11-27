@@ -266,6 +266,13 @@ writer({put_kv, Key, Value}, _From, State) ->
             %% Key and value could not be written
             {reply, roll, writer, State};
         {UpdHandle, NewPosition, HashTree} ->
+            ok =
+                case State#state.sync_strategy of
+                    riak_sync ->
+                        file:datasync(UpdHandle);
+                    _ ->
+                        ok
+                end,
             {reply, ok, writer, State#state{handle=UpdHandle,
                                                 last_position=NewPosition,
                                                 last_key=Key,
@@ -525,17 +532,17 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 
 %% Assumption is that sync should be used - it is a transaction log.
 %%
-%% When running the Riak-specific version on Erlang 16, it sets the sync flag
-%% using the o_sync keyword (as it is in posix).  If using a non-Basho OTP 16
-%% sync is not possible so none will need to be passed.  This is not
-%% recommended, but is allowed here to make it simpler to test against
-%% off-the-shelf OTP 16
+%% However this flag is not supported in OTP 16.  Bitcask appears to pass an
+%% o_sync flag, but this isn't supported either (maybe it works with the
+%% bitcask nif fileops).
+%%
+%% To get round this will try and datasync on each PUT with riak_sync
 set_writeops(SyncStrategy) ->
     case SyncStrategy of
         sync ->
             [sync | ?WRITE_OPS];
         riak_sync ->
-            [o_sync | ?WRITE_OPS];
+            ?WRITE_OPS;
         none ->
             ?WRITE_OPS
     end.
@@ -1886,9 +1893,6 @@ crc_corrupt_writer_test() ->
     ok = cdb_put(P2, "Key100", "Value100"),
     ?assertMatch({"Key100", "Value100"}, cdb_get(P2, "Key100")),
     ok = cdb_close(P2).
-
-riak_writeops_test() ->
-    ?assertMatch([o_sync, binary, raw, read, write], set_writeops(riak_sync)).
 
 nonsense_coverage_test() ->
     {ok, Pid} = gen_fsm:start(?MODULE, [#cdb_options{}], []),
