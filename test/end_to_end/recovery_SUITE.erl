@@ -89,7 +89,9 @@ recovr_strategy(_Config) ->
                 [length(KeyList), length(KeyTermList)]),
     true = length(KeyList) == 6400,
     true = length(KeyList) < length(KeyTermList),
-    true = length(KeyTermList) < 25600.
+    true = length(KeyTermList) < 25600,
+    ok = leveled_bookie:book_close(Book1),
+    testutil:reset_filestructure().
 
 
 aae_bustedjournal(_Config) ->
