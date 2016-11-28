@@ -124,7 +124,7 @@ journal_compaction(_Config) ->
                                 "Key1",
                                 "Value1",
                                 [],
-                                {"MDK1", "MDV1"}},
+                                [{"MDK1", "MDV1"}]},
     {TestObject2, TestSpec2} = testutil:generate_testobject(B2, K2,
                                                             V2, Spec2, MD),
     ok = testutil:book_riakput(Bookie1, TestObject2, TestSpec2),
@@ -428,7 +428,8 @@ load_and_count_withdelete(_Config) ->
                         0,
                         lists:seq(1, 20)),
     testutil:check_forobject(Bookie1, TestObject),
-    {BucketD, KeyD} = leveled_codec:riakto_keydetails(TestObject),
+    {BucketD, KeyD} = {TestObject#r_object.bucket,
+                            TestObject#r_object.key},
     {_, 1} = testutil:check_bucket_stats(Bookie1, BucketD),
     ok = testutil:book_riakdelete(Bookie1, BucketD, KeyD, []),
     not_found = testutil:book_riakget(Bookie1, BucketD, KeyD),
@@ -490,8 +491,8 @@ space_clear_ondelete(_Config) ->
                     [length(FNsA_J), length(FNsA_L)]),
     
     % Get an iterator to lock the inker during compaction
-    FoldObjectsFun = fun(B, K, V, Acc) -> [{B, K, testutil:riak_hash(V)}|Acc]
-                                            end,
+    FoldObjectsFun = fun(B, K, ObjBin, Acc) ->
+                            [{B, K, erlang:phash2(ObjBin)}|Acc] end,
     {async, HTreeF1} = leveled_bookie:book_returnfolder(Book1,
                                                         {foldobjects_allkeys,
                                                             ?RIAK_TAG,

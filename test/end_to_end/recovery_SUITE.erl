@@ -67,10 +67,12 @@ recovr_strategy(_Config) ->
     
     lists:foreach(fun({K, _SpcL}) -> 
                         {ok, OH} = testutil:book_riakhead(Book1, "Bucket6", K),
-                        K = OH#r_object.key,
+                        VCH = testutil:get_vclock(OH),
                         {ok, OG} = testutil:book_riakget(Book1, "Bucket6", K),
                         V = testutil:get_value(OG),
-                        true = V == V4
+                        VCG = testutil:get_vclock(OG),
+                        true = V == V4,
+                        true = VCH == VCG
                         end,
                     lists:nthtail(6400, AllSpcL)),
     Q = fun(RT) -> {index_query,
@@ -154,7 +156,7 @@ aae_bustedjournal(_Config) ->
     % Will need to remove the file or corrupt the hashtree to get presence to
     % fail
     
-    FoldObjectsFun = fun(B, K, V, Acc) -> [{B, K, testutil:riak_hash(V)}|Acc]
+    FoldObjectsFun = fun(B, K, V, Acc) -> [{B, K, erlang:phash2(V)}|Acc]
                                             end,
     SW = os:timestamp(),
     {async, HashTreeF3} = leveled_bookie:book_returnfolder(Bookie2,

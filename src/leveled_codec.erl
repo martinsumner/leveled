@@ -60,9 +60,12 @@
         get_size/2,
         get_keyandhash/2,
         convert_indexspecs/5,
-        riakto_keydetails/1,
         generate_uuid/0,
-        integer_now/0]).         
+        integer_now/0,
+        riak_extract_metadata/2]).         
+
+-define(V1_VERS, 1).
+-define(MAGIC, 53). % riak_kv -> riak_object
 
 
 %% Credit to
@@ -325,44 +328,67 @@ get_keyandhash(LK, Value) ->
 
 
 build_metadata_object(PrimaryKey, MD) ->
-    {Tag, Bucket, Key, null} = PrimaryKey,
+    {Tag, _Bucket, _Key, null} = PrimaryKey,
     case Tag of
         ?RIAK_TAG ->
-            riak_metadata_object(Bucket, Key, MD);
+            {SibMetaBinList, Vclock, _Hash, _Size} = MD,
+            riak_metadata_to_binary(Vclock, SibMetaBinList);
         ?STD_TAG ->
             MD
     end.
 
 
-
-
-riak_metadata_object(Bucket, Key, MD) ->
-    {RMD, VC, _Hash, _Size} = MD,
-    Contents = lists:foldl(fun(X, Acc) -> Acc ++ [#r_content{metadata=X}] end,
-                            [],
-                            RMD),
-    #r_object{contents=Contents, bucket=Bucket, key=Key, vclock=VC}.
-
 riak_extract_metadata(delete, Size) ->
     {delete, null, null, Size};
-riak_extract_metadata(Obj, Size) ->
-    {get_metadatas(Obj), vclock(Obj), riak_hash(Obj), Size}.
+riak_extract_metadata(ObjBin, Size) ->
+    {Vclock, SibMetaBinList} = riak_metadata_from_binary(ObjBin),
+    {SibMetaBinList, Vclock, erlang:phash2(ObjBin), Size}.
 
-riak_hash(Obj=#r_object{}) ->
-    Vclock = vclock(Obj),
-    UpdObj = set_vclock(Obj, lists:sort(Vclock)),
-    erlang:phash2(term_to_binary(UpdObj)).
+%% <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
+%%%     VclockBin/binary, SibCount:32/integer, SibsBin/binary>>.
 
-riakto_keydetails(Object) ->
-    {Object#r_object.bucket, Object#r_object.key}.
+riak_metadata_to_binary(Vclock, SibMetaBinList) ->
+    VclockBin = term_to_binary(Vclock),
+    VclockLen = byte_size(VclockBin),
+    SibCount = length(SibMetaBinList),
+    SibsBin = slimbin_contents(SibMetaBinList),
+    <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
+            VclockBin:VclockLen/binary, SibCount:32/integer, SibsBin/binary>>.
+    
+% Fixes the value length for each sibling to be zero, and so includes no value
+slimbin_content(MetaBin) ->
+    MetaLen = byte_size(MetaBin),
+    <<0:32/integer,  MetaLen:32/integer, MetaBin:MetaLen/binary>>.
 
-get_metadatas(#r_object{contents=Contents}) ->
-    [Content#r_content.metadata || Content <- Contents].
+slimbin_contents(SibMetaBinList) ->
+    F = fun(MetaBin, Acc) ->
+                <<Acc/binary, (slimbin_content(MetaBin))/binary>>
+        end,
+    lists:foldl(F, <<>>, SibMetaBinList).
 
-set_vclock(Object=#r_object{}, VClock) -> Object#r_object{vclock=VClock}.
-
-vclock(#r_object{vclock=VClock}) -> VClock.
-
+riak_metadata_from_binary(V1Binary) ->
+    <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
+            Rest/binary>> = V1Binary,
+    <<VclockBin:VclockLen/binary, SibCount:32/integer, SibsBin/binary>> = Rest,
+    SibMetaBinList =
+        case SibCount of
+            0 ->
+                [];
+            SC when is_integer(SC) ->
+                get_metadata_from_siblings(SibsBin, SibCount, [])
+        end,
+    {binary_to_term(VclockBin), SibMetaBinList}.
+    
+get_metadata_from_siblings(<<>>, 0, SibMetaBinList) ->
+    SibMetaBinList;
+get_metadata_from_siblings(<<ValLen:32/integer, Rest0/binary>>,
+                            SibCount,
+                            SibMetaBinList) ->
+    <<_ValBin:ValLen/binary, MetaLen:32/integer, Rest1/binary>> = Rest0,
+    <<MetaBin:MetaLen/binary, Rest2/binary>> = Rest1,
+    get_metadata_from_siblings(Rest2,
+                                SibCount - 1,
+                                [MetaBin|SibMetaBinList]).
 
 
 

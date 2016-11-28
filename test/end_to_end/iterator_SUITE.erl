@@ -66,12 +66,12 @@ small_load_with2i(_Config) ->
                         DSpc = lists:map(fun({add, F, T}) -> {remove, F, T}
                                                                 end,
                                             Spc),
-                        {B, K} = leveled_codec:riakto_keydetails(Obj),
+                        {B, K} = {Obj#r_object.bucket, Obj#r_object.key},
                         testutil:book_riakdelete(Bookie1, B, K, DSpc)
                         end,
                     ChkList1),
     %% Get the Buckets Keys and Hashes for the whole bucket
-    FoldObjectsFun = fun(B, K, V, Acc) -> [{B, K, testutil:riak_hash(V)}|Acc]
+    FoldObjectsFun = fun(B, K, V, Acc) -> [{B, K, erlang:phash2(V)}|Acc]
                                             end,
     {async, HTreeF1} = leveled_bookie:book_returnfolder(Bookie1,
                                                         {foldobjects_allkeys,
@@ -96,9 +96,8 @@ small_load_with2i(_Config) ->
     true = 9900 == length(KeyHashList2),
     true = 9900 == length(KeyHashList3),
     
-    SumIntFun = fun(_B, _K, V, Acc) ->
-                        [C] = V#r_object.contents,
-                        {I, _Bin} = C#r_content.value,
+    SumIntFun = fun(_B, _K, Obj, Acc) ->
+                        {I, _Bin} = testutil:get_value(Obj),
                         Acc + I
                         end,
     BucketObjQ = {foldobjects_bybucket, ?RIAK_TAG, "Bucket", {SumIntFun, 0}},
@@ -138,7 +137,7 @@ query_count(_Config) ->
                                                             "Key1",
                                                             "Value1",
                                                             [],
-                                                            {"MDK1", "MDV1"}),
+                                                            [{"MDK1", "MDV1"}]),
     ok = testutil:book_riakput(Book1, TestObject, TestSpec),
     testutil:check_forobject(Book1, TestObject),
     testutil:check_formissingobject(Book1, "Bucket1", "Key2"),
