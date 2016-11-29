@@ -28,7 +28,7 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(SKIP_WIDTH, 32).
+-define(SKIP_WIDTH, 64).
 -define(INFINITY_KEY, {null, null, null, null, null}).
 -define(EMPTY_SKIPLIST, [{?INFINITY_KEY, []}]).
 
@@ -56,15 +56,28 @@ enter(Key, Value, SkipList) ->
                                     SkipList),
     case Hash rem ?SKIP_WIDTH of
         0 ->
-            {LHS, RHS} = lists:splitwith(fun({K, _V}) -> K < Key end, SubList),
+            {LHS, RHS} = lists:splitwith(fun({K, _V}) -> K =< Key end, SubList),
             SkpL1 = lists:keyreplace(MarkerKey, 1, SkipList, {MarkerKey, RHS}),
             SkpL2 = [{Key, lists:ukeysort(1, [{Key, Value}|LHS])}|SkpL1],
             lists:ukeysort(1, SkpL2);
         _ ->
-            UpdSubList = lists:ukeysort(1, [{Key, Value}|SubList]),
+            {LHS, RHS} = lists:splitwith(fun({K, _V}) -> K < Key end, SubList),
+            UpdSubList =
+                case RHS of
+                    [] ->
+                        LHS ++ [{Key, Value}];
+                    [{FirstKey, _V}|RHSTail] ->
+                        case FirstKey of
+                            Key ->
+                                LHS ++ [{Key, Value}] ++ RHSTail;
+                            _ ->
+                                LHS ++ [{Key, Value}] ++ RHS
+                        end
+                end,        
             lists:keyreplace(MarkerKey, 1, SkipList, {MarkerKey, UpdSubList})
     end.
             
+
 from_list(UnsortedKVL) ->
     KVL = lists:ukeysort(1, UnsortedKVL),
     Slots = length(KVL) div ?SKIP_WIDTH,
