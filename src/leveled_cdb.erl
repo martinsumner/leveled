@@ -392,23 +392,32 @@ reader({get_positions, SampleSize}, _From, State) ->
     end;
 reader({direct_fetch, PositionList, Info}, _From, State) ->
     H = State#state.handle,
-    case Info of
-        key_only ->
-            KeyList = lists:map(fun(P) ->
-                                        extract_key(H, P) end,
-                                    PositionList),
-            {reply, KeyList, reader, State};
-        key_size ->
-            KeySizeList = lists:map(fun(P) ->
-                                            extract_key_size(H, P) end,
-                                        PositionList),
-            {reply, KeySizeList, reader, State};
-        key_value_check ->
-            KVCList = lists:map(fun(P) ->
-                                        extract_key_value_check(H, P) end,
-                                    PositionList),
-            {reply, KVCList, reader, State}
-    end;
+    FilterFalseKey = fun(Tpl) -> case element(1, Tpl) of
+                                        false ->
+                                            false;
+                                        _Key ->
+                                            {true, Tpl}
+                                    end end,
+    Reply =
+        case Info of
+            key_only ->
+                FM = lists:filtermap(
+                        fun(P) ->
+                                FilterFalseKey(extract_key(H, P)) end,
+                            PositionList),
+                lists:map(fun(T) -> element(1, T) end, FM);
+            key_size ->
+                lists:filtermap(
+                    fun(P) ->
+                            FilterFalseKey(extract_key_size(H, P)) end,
+                        PositionList);
+            key_value_check ->
+                lists:filtermap(
+                    fun(P) ->
+                            FilterFalseKey(extract_key_value_check(H, P)) end,
+                        PositionList)
+        end,
+    {reply, Reply, reader, State};
 reader(cdb_complete, _From, State) ->
     ok = file:close(State#state.handle),
     {stop, normal, {ok, State#state.filename}, State#state{handle=undefined}};
@@ -493,7 +502,8 @@ handle_sync_event(cdb_firstkey, _From, StateName, State) ->
                         ?BASE_POSITION ->
                             empty;
                         _ ->
-                            extract_key(State#state.handle, ?BASE_POSITION)
+                            element(1, extract_key(State#state.handle,
+                                                    ?BASE_POSITION))
                     end,
     {reply, FirstKey, StateName, State};
 handle_sync_event(cdb_filename, _From, StateName, State) ->
@@ -893,17 +903,17 @@ extract_kvpair(Handle, [Position|Rest], Key) ->
 extract_key(Handle, Position) ->
     {ok, _} = file:position(Handle, Position),
     {KeyLength, _ValueLength} = read_next_2_integers(Handle),
-    read_next_term(Handle, KeyLength).
+    {safe_read_next_term(Handle, KeyLength)}.
 
 extract_key_size(Handle, Position) ->
     {ok, _} = file:position(Handle, Position),
     {KeyLength, ValueLength} = read_next_2_integers(Handle),
-    {read_next_term(Handle, KeyLength), ValueLength}.
+    {safe_read_next_term(Handle, KeyLength), ValueLength}.
 
 extract_key_value_check(Handle, Position) ->
     {ok, _} = file:position(Handle, Position),
     {KeyLength, ValueLength} = read_next_2_integers(Handle),
-    K = read_next_term(Handle, KeyLength),
+    K = safe_read_next_term(Handle, KeyLength),
     {Check, V} = read_next_term(Handle, ValueLength, crc),
     {K, V, Check}.
 
@@ -1676,21 +1686,20 @@ get_keys_byposition_simple_test() ->
     io:format("Position list of ~w~n", [PositionList]),
     ?assertMatch(3, length(PositionList)),
     R1 = cdb_directfetch(P2, PositionList, key_only),
+    io:format("R1 ~w~n", [R1]),
     ?assertMatch(3, length(R1)),
     lists:foreach(fun(Key) ->
-                        Check = lists:member(Key, KeyList),
-                        ?assertMatch(Check, true) end,
+                        ?assertMatch(true, lists:member(Key, KeyList)) end,
                     R1),
     R2 = cdb_directfetch(P2, PositionList, key_size),
     ?assertMatch(3, length(R2)),
     lists:foreach(fun({Key, _Size}) ->
-                        Check = lists:member(Key, KeyList),
-                        ?assertMatch(Check, true) end,
+                        ?assertMatch(true, lists:member(Key, KeyList)) end,
                     R2),
     R3 = cdb_directfetch(P2, PositionList, key_value_check),
     ?assertMatch(3, length(R3)),
     lists:foreach(fun({Key, Value, Check}) ->
-                        ?assertMatch(Check, true),
+                        ?assertMatch(true, Check),
                         {K, V} = cdb_get(P2, Key),
                         ?assertMatch(K, Key),
                         ?assertMatch(V, Value) end,
