@@ -344,7 +344,7 @@ splitlist_end(EndKey, SL) ->
 generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
     generate_randomkeys(Seqn,
                         Count,
-                        gb_trees:empty(),
+                        [],
                         BucketRangeLow,
                         BucketRangeHigh).
 
@@ -364,22 +364,39 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
                 {Seqn, {active, infinity}, null}},
     generate_randomkeys(Seqn + 1,
                         Count - 1,
-                        gb_trees:enter(K, V, Acc),
+                        [{K, V}|Acc],
                         BucketLow,
                         BRange).
 
+skiplist_small_test() ->
+    % Check nothing bad happens with very small lists
+    lists:foreach(fun(N) -> dotest_skiplist_small(N) end, lists:seq(1, 32)).
+
+
+dotest_skiplist_small(N) ->
+    KL = generate_randomkeys(1, N, 1, 2),
+    SkipList1 = 
+        lists:foldl(fun({K, V}, SL) ->
+                            enter(K, V, SL)
+                            end,
+                        empty(),
+                        KL),
+    lists:foreach(fun({K, V}) -> ?assertMatch({value, V}, lookup(K, SkipList1))
+                                    end,
+                    lists:ukeysort(1, lists:reverse(KL))).
+
 skiplist_test() ->
     N = 8000,
-    KL = gb_trees:to_list(generate_randomkeys(1, N, 1, N div 5)),
+    KL = generate_randomkeys(1, N, 1, N div 5),
                 
     SWaGSL = os:timestamp(),
-    SkipList = from_list(KL),
+    SkipList = from_list(lists:reverse(KL)),
     io:format(user, "Generating skip list with ~w keys in ~w microseconds~n" ++
                         "Top level key count of ~w~n",
                 [N, timer:now_diff(os:timestamp(), SWaGSL), length(SkipList)]),
     io:format(user, "Second tier key counts of ~w~n",
                 [lists:map(fun({_L, SL}) -> length(SL) end, SkipList)]),
-    KLSorted = lists:ukeysort(1, KL),
+    KLSorted = lists:ukeysort(1, lists:reverse(KL)),
     
     SWaGSL2 = os:timestamp(),
     SkipList = from_sortedlist(KLSorted),
@@ -402,10 +419,10 @@ skiplist_test() ->
                 [lists:map(fun({_L, SL}) -> length(SL) end, SkipList1)]),
     
     io:format(user, "~nRunning timing tests for generated skiplist:~n", []),
-    skiplist_timingtest(KL, SkipList, N),
-    
+    skiplist_timingtest(KLSorted, SkipList, N),
+
     io:format(user, "~nRunning timing tests for dynamic skiplist:~n", []),
-    skiplist_timingtest(KL, SkipList1, N).
+    skiplist_timingtest(KLSorted, SkipList1, N).
     
     
 skiplist_timingtest(KL, SkipList, N) ->
@@ -455,21 +472,18 @@ skiplist_timingtest(KL, SkipList, N) ->
     RangeFun(SkipList, CheckList7, true),
     RangeFun(SkipList, CheckList8, true),
     
-    KL_OOR1 = gb_trees:to_list(generate_randomkeys(1,
-                                                    4,
-                                                    N div 5 + 1,
-                                                    N div 5 + 10)),
+    KL_OOR1 = generate_randomkeys(1, 4, N div 5 + 1, N div 5 + 10),
     KR9 = RangeFun(SkipList, KL_OOR1, false),
     ?assertMatch([], KR9),
     
-    KL_OOR2 = gb_trees:to_list(generate_randomkeys(1, 4, 0, 0)),
+    KL_OOR2 = generate_randomkeys(1, 4, 0, 0),
     KR10 = RangeFun(SkipList, KL_OOR2, false),
     ?assertMatch([], KR10),
     
     io:format(user, "Finding 10 ranges took ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SWc)]),
             
-    AltKL1 = gb_trees:to_list(generate_randomkeys(1, 1000, 1, 200)),
+    AltKL1 = generate_randomkeys(1, 1000, 1, 200),
     SWd = os:timestamp(),
     lists:foreach(fun({K, _V}) ->
                         lookup(K, SkipList)
@@ -477,10 +491,7 @@ skiplist_timingtest(KL, SkipList, N) ->
                     AltKL1),
     io:format(user, "Getting 1000 mainly missing keys took ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SWd)]),
-    AltKL2 = gb_trees:to_list(generate_randomkeys(1,
-                                                    1000,
-                                                    N div 5 + 1,
-                                                    N div 5 + 300)),
+    AltKL2 = generate_randomkeys(1, 1000, N div 5 + 1, N div 5 + 300),
     SWe = os:timestamp(),
     lists:foreach(fun({K, _V}) ->
                         none = lookup(K, SkipList)
@@ -489,7 +500,7 @@ skiplist_timingtest(KL, SkipList, N) ->
     io:format(user, "Getting 1000 missing keys above range took ~w " ++
                         "microseconds~n",
                 [timer:now_diff(os:timestamp(), SWe)]),
-    AltKL3 = gb_trees:to_list(generate_randomkeys(1, 1000, 0, 0)),
+    AltKL3 = generate_randomkeys(1, 1000, 0, 0),
     SWf = os:timestamp(),
     lists:foreach(fun({K, _V}) ->
                         none = lookup(K, SkipList)
