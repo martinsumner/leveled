@@ -28,9 +28,10 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(SKIP_WIDTH, 64).
+-define(SKIP_WIDTH, 16).
 -define(INFINITY_KEY, {null, null, null, null, null}).
 -define(EMPTY_SKIPLIST, [{?INFINITY_KEY, []}]).
+-define(EMPTY_SKIPLIST_TWOLEVEL, [{?INFINITY_KEY, ?EMPTY_SKIPLIST}]).
 
 
 %%%============================================================================
@@ -39,6 +40,35 @@
 
 
 enter(Key, Value, SkipList) ->
+    Hash = erlang:phash2(Key),
+    {MarkerKey, SubSkipList} =
+        lists:foldl(fun({Marker, SL}, Acc) ->
+                            case Acc of
+                                false ->
+                                    case Marker >= Key of
+                                        true ->
+                                           {Marker, SL};
+                                        false ->
+                                            Acc
+                                    end;
+                                _ ->
+                                    Acc
+                            end end,
+                        false,
+                        SkipList),
+    UpdSubSkipList = enter_ground(Key, Value, SubSkipList),
+    case Hash rem (?SKIP_WIDTH * ?SKIP_WIDTH) of
+        0 ->
+            % 
+            {LHS, RHS} = lists:splitwith(fun({K, _V}) -> K =< Key end, UpdSubSkipList),
+            SkpL1 = lists:keyreplace(MarkerKey, 1, SkipList, {MarkerKey, RHS}),
+            lists:ukeysort(1, [{Key, LHS}|SkpL1]);
+        _ ->
+            % Need to replace Marker Key with sublist
+            lists:keyreplace(MarkerKey, 1, SkipList, {MarkerKey, UpdSubSkipList})
+    end.
+
+enter_ground(Key, Value, SkipList) ->
     Hash = erlang:phash2(Key),
     {MarkerKey, SubList} = lists:foldl(fun({Marker, SL}, Acc) ->
                                         case Acc of
@@ -80,6 +110,34 @@ enter(Key, Value, SkipList) ->
 
 from_list(UnsortedKVL) ->
     KVL = lists:ukeysort(1, UnsortedKVL),
+    SkipWidth = ?SKIP_WIDTH * ?SKIP_WIDTH,
+    LoftSlots = length(KVL) div SkipWidth,
+    case LoftSlots of
+        0 ->
+            {K, _V} = lists:last(KVL),
+            [{K, from_list_ground(KVL, true)}];
+        _ ->
+            SkipList0 =
+                lists:map(fun(X) ->
+                                N = X * SkipWidth,
+                                {K, _V} = lists:nth(N, KVL),
+                                SL = lists:sublist(KVL,
+                                                    N - SkipWidth + 1,
+                                                    SkipWidth),
+                                {K, from_list_ground(SL, true)}
+                                end,
+                            lists:seq(1, LoftSlots)),
+            case LoftSlots * SkipWidth < length(KVL) of
+                true ->
+                    {LastK, _V} = lists:last(KVL),
+                    TailList = lists:nthtail(LoftSlots * SkipWidth, KVL),
+                    SkipList0 ++ [{LastK, from_list_ground(TailList, true)}];
+                false ->
+                    SkipList0
+            end
+    end.
+    
+from_list_ground(KVL, true) ->
     Slots = length(KVL) div ?SKIP_WIDTH,
     SkipList0 = lists:map(fun(X) ->
                                 N = X * ?SKIP_WIDTH,
@@ -96,6 +154,7 @@ from_list(UnsortedKVL) ->
         false ->
             SkipList0
     end.
+    
 
 lookup(Key, SkipList) ->
     SubList = lists:foldl(fun({SkipKey, SL}, Acc) ->
@@ -110,6 +169,23 @@ lookup(Key, SkipList) ->
     case SubList of
         null ->
             none;
+        _ ->
+            lookup_ground(Key, SubList)
+    end.
+
+lookup_ground(Key, SkipList) ->
+    SubList = lists:foldl(fun({SkipKey, SL}, Acc) ->
+                                case {Acc, SkipKey} of
+                                    {null, SkipKey} when SkipKey >= Key ->
+                                        SL;
+                                    _ ->
+                                        Acc
+                                end end,
+                            null,
+                            SkipList),
+    case SubList of
+        null ->
+            none;
         SubList -> 
             case lists:keyfind(Key, 1, SubList) of
                 false ->
@@ -119,7 +195,13 @@ lookup(Key, SkipList) ->
             end
     end.
 
+
 to_list(SkipList) ->
+    lists:foldl(fun({_Mark, SL}, Acc) -> Acc ++ to_list_ground(SL) end,
+                [],
+                SkipList).
+
+to_list_ground(SkipList) ->
     lists:foldl(fun({_Mark, SL}, Acc) -> Acc ++ SL end, [], SkipList).
 
 %% Rather than support iterator_from like gb_trees, will just an output a key
@@ -128,6 +210,46 @@ to_range(SkipList, Start) ->
     to_range(SkipList, Start, ?INFINITY_KEY).
 
 to_range(SkipList, Start, End) ->
+    R = lists:foldl(fun({Mark, SL}, {PassedStart, PassedEnd, Acc, PrevList}) ->
+                        
+                case {PassedStart, PassedEnd} of
+                    {true, true} ->
+                        {true, true, Acc, null};
+                    {false, false} ->
+                        case Start > Mark of
+                            true ->
+                                {false, false, Acc, SL};
+                            false ->
+                                SkipLRange = to_range_ground(PrevList,
+                                                                Start,
+                                                                End) ++
+                                                to_range_ground(SL,
+                                                                Start,
+                                                                End),
+                                case leveled_codec:endkey_passed(End, Mark) of
+                                    true ->
+                                        {true, true, SkipLRange, null};
+                                    false ->
+                                        {true, false, SkipLRange, null}
+                                end
+                        end;
+                    {true, false} ->
+                        SkipLRange = to_range_ground(SL, Start, End),
+                        case leveled_codec:endkey_passed(End, Mark) of
+                            true ->
+                                {true, true, Acc ++ SkipLRange, null};
+                            false ->
+                                {true, false, Acc ++ SkipLRange, null}
+                        end
+                end end,
+                    
+                    {false, false, [], []},
+                    SkipList),
+    {_Bool1, _Bool2, SubList, _PrevList} = R,
+    SubList.
+
+
+to_range_ground(SkipList, Start, End) ->
     R = lists:foldl(fun({Mark, SL}, {PassedStart, PassedEnd, Acc, PrevList}) ->
                         
                 case {PassedStart, PassedEnd} of
@@ -163,10 +285,17 @@ to_range(SkipList, Start, End) ->
     SubList.
 
 empty() ->
-    ?EMPTY_SKIPLIST.
+    ?EMPTY_SKIPLIST_TWOLEVEL.
 
 size(SkipList) ->
+    lists:foldl(fun({_Mark, SL}, Acc) -> size_ground(SL) + Acc end,
+                    0,
+                    SkipList).
+
+size_ground(SkipList) ->
     lists:foldl(fun({_Mark, SL}, Acc) -> length(SL) + Acc end, 0, SkipList).
+
+
 
 %%%============================================================================
 %%% Internal Functions
@@ -230,35 +359,37 @@ skiplist_test() ->
     SkipList = from_list(KL),
     io:format(user, "Generating skip list with 4000 keys in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SWaGSL)]),
+
+    
     SWaDSL = os:timestamp(),
     SkipList1 = 
         lists:foldl(fun({K, V}, SL) ->
                             enter(K, V, SL)
                             end,
-                        ?EMPTY_SKIPLIST,
+                        empty(),
                         KL),
     io:format(user, "Dynamic load of skiplist took ~w microseconds~n~n",
                 [timer:now_diff(os:timestamp(), SWaDSL)]),
-    
+
+      
     io:format(user, "~nRunning timing tests for generated skiplist:~n", []),
     skiplist_timingtest(KL, SkipList),
     
     io:format(user, "~nRunning timing tests for dynamic skiplist:~n", []),
-    skiplist_timingtest(KL, SkipList1),
-    io:format(user, "~n", []).
+    skiplist_timingtest(KL, SkipList1).
     
     
 skiplist_timingtest(KL, SkipList) ->
     io:format(user, "Timing tests on skiplist of size ~w~n",
                 [leveled_skiplist:size(SkipList)]),
-    CheckList1 = lists:sublist(KL, 1200, 100),
-    CheckList2 = lists:sublist(KL, 1600, 100),
-    CheckList3 = lists:sublist(KL, 2000, 100),
-    CheckList4 = lists:sublist(KL, 2400, 100),
-    CheckList5 = lists:sublist(KL, 2800, 100),
+    CheckList1 = lists:sublist(KL, 1200, 200),
+    CheckList2 = lists:sublist(KL, 1600, 200),
+    CheckList3 = lists:sublist(KL, 2000, 200),
+    CheckList4 = lists:sublist(KL, 2400, 200),
+    CheckList5 = lists:sublist(KL, 2800, 200),
     CheckList6 = lists:sublist(KL, 1, 10),
     CheckList7 = lists:nthtail(3800, KL),
-    CheckList8 = lists:sublist(KL, 3000, 1),
+    CheckList8 = lists:sublist(KL, 2000, 1),
     CheckAll = CheckList1 ++ CheckList2 ++ CheckList3 ++
                     CheckList4 ++ CheckList5 ++ CheckList6 ++ CheckList7,
     
@@ -267,66 +398,45 @@ skiplist_timingtest(KL, SkipList) ->
                         ?assertMatch({value, V}, lookup(K, SkipList))
                         end,
                     CheckAll),
-    io:format(user, "Finding 520 keys took ~w microseconds~n",
+    io:format(user, "Finding 1020 keys took ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SWb)]),
     
+    RangeFun =
+        fun(SkipListToQuery, CheckListForQ, Assert) ->
+            KR =
+                to_range(SkipListToQuery,
+                            element(1, lists:nth(1, CheckListForQ)),
+                            element(1, lists:last(CheckListForQ))),
+            case Assert of
+                true ->
+                    CompareL = length(lists:usort(CheckListForQ)),
+                    ?assertMatch(CompareL, length(KR));
+                false ->
+                    KR
+            end
+            end,
+    
     SWc = os:timestamp(),
-    KR1 = to_range(SkipList,
-                    element(1, lists:nth(1, CheckList1)),
-                    element(1, lists:last(CheckList1))),
-    io:format("Result length ~w ~n", [length(KR1)]),
-    CompareL1 = length(lists:usort(CheckList1)),
-    ?assertMatch(CompareL1, length(KR1)),
-    KR2 = to_range(SkipList,
-                    element(1, lists:nth(1, CheckList2)),
-                    element(1, lists:last(CheckList2))),
-    CompareL2 = length(lists:usort(CheckList2)),
-    ?assertMatch(CompareL2, length(KR2)),
-    KR3 = to_range(SkipList,
-                    element(1, lists:nth(1, CheckList3)),
-                    element(1, lists:last(CheckList3))),
-    CompareL3 = length(lists:usort(CheckList3)),
-    ?assertMatch(CompareL3, length(KR3)),
-    KR4 = to_range(SkipList,
-                    element(1, lists:nth(1, CheckList4)),
-                    element(1, lists:last(CheckList4))),
-    CompareL4 = length(lists:usort(CheckList4)),
-    ?assertMatch(CompareL4, length(KR4)),
-    KR5 = to_range(SkipList,
-                    element(1, lists:nth(1, CheckList5)),
-                    element(1, lists:last(CheckList5))),
-    CompareL5 = length(lists:usort(CheckList5)),
-    ?assertMatch(CompareL5, length(KR5)),
-    KR6 = to_range(SkipList,
-                    element(1, lists:nth(1, CheckList6)),
-                    element(1, lists:last(CheckList6))),
-    CompareL6 = length(lists:usort(CheckList6)),
-    ?assertMatch(CompareL6, length(KR6)),
-    KR7 = to_range(SkipList,
-                    element(1, lists:nth(1, CheckList7)),
-                    element(1, lists:last(CheckList7))),
-    CompareL7 = length(lists:usort(CheckList7)),
-    ?assertMatch(CompareL7, length(KR7)),
-    KR8 = to_range(SkipList,
-                    element(1, lists:nth(1, CheckList8)),
-                    element(1, lists:last(CheckList8))),
-    CompareL8 = length(lists:usort(CheckList8)),
-    ?assertMatch(CompareL8, length(KR8)),
+    RangeFun(SkipList, CheckList1, true),
+    RangeFun(SkipList, CheckList2, true),
+    RangeFun(SkipList, CheckList3, true),
+    RangeFun(SkipList, CheckList4, true),
+    RangeFun(SkipList, CheckList5, true),
+    RangeFun(SkipList, CheckList6, true),
+    RangeFun(SkipList, CheckList7, true),
+    RangeFun(SkipList, CheckList8, true),
     
     KL_OOR1 = gb_trees:to_list(generate_randomkeys(1, 4, 201, 202)),
-    KR9 = to_range(SkipList,
-                    element(1, lists:nth(1, KL_OOR1)),
-                    element(1, lists:last(KL_OOR1))),
+    KR9 = RangeFun(SkipList, KL_OOR1, false),
     ?assertMatch([], KR9),
+    
     KL_OOR2 = gb_trees:to_list(generate_randomkeys(1, 4, 0, 0)),
-    KR10 = to_range(SkipList,
-                        element(1, lists:nth(1, KL_OOR2)),
-                        element(1, lists:last(KL_OOR2))),
+    KR10 = RangeFun(SkipList, KL_OOR2, false),
     ?assertMatch([], KR10),
     
     io:format(user, "Finding 10 ranges took ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SWc)]),
-                
+            
     AltKL1 = gb_trees:to_list(generate_randomkeys(1, 1000, 1, 200)),
     SWd = os:timestamp(),
     lists:foreach(fun({K, _V}) ->
