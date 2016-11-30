@@ -7,9 +7,9 @@
 %% Used instead of gb_trees to retain compatability of OTP16 (and Riak's
 %% ongoing dependency on OTP16)
 %%
-%% Not a proper skip list.  Only supports a single depth.  Good enough for the
+%% Not a proper skip list.  Only supports a fixed depth.  Good enough for the
 %% purposes of leveled.  Also uses peculiar enkey_passed function within
-%% leveled
+%% leveled.  Not tested beyond a depth of 2.
 
 -module(leveled_skiplist).
 
