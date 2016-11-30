@@ -381,7 +381,11 @@ dotest_skiplist_small(N) ->
                             end,
                         empty(),
                         KL),
+    SkipList2 = from_list(lists:reverse(KL)),
     lists:foreach(fun({K, V}) -> ?assertMatch({value, V}, lookup(K, SkipList1))
+                                    end,
+                    lists:ukeysort(1, lists:reverse(KL))),
+    lists:foreach(fun({K, V}) -> ?assertMatch({value, V}, lookup(K, SkipList2))
                                     end,
                     lists:ukeysort(1, lists:reverse(KL))).
 
