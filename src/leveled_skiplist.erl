@@ -173,16 +173,11 @@ from_list(KVL, Width, Level) ->
 
 lookup(Key, SkipList, 1) ->
     SubList = get_sublist(Key, SkipList),
-    case SubList of
-        null ->
+    case lists:keyfind(Key, 1, SubList) of
+        false ->
             none;
-        SubList -> 
-            case lists:keyfind(Key, 1, SubList) of
-                false ->
-                    none;
-                {Key, V} ->
-                    {value, V}
-            end
+        {Key, V} ->
+            {value, V}
     end;
 lookup(Key, SkipList, Level) ->
     SubList = get_sublist(Key, SkipList),
@@ -525,7 +520,7 @@ define_kv(X) ->
         {X, {active, infinity}, null}}.
 
 skiplist_roundsize_test() ->
-    KVL = lists:map(fun(X) -> define_kv(X) end, lists:seq(1, 4000)),
+    KVL = lists:map(fun(X) -> define_kv(X) end, lists:seq(1, 4096)),
     SkipList = from_list(KVL),
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({value, V}, lookup(K, SkipList)) end,
