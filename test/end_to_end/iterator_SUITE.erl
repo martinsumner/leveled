@@ -6,16 +6,68 @@
 -define(KEY_ONLY, {false, undefined}).
 
 -export([all/0]).
--export([small_load_with2i/1,
+-export([single_object_with2i/1,
+            small_load_with2i/1,
             query_count/1,
             rotating_objects/1]).
 
 all() -> [
+            single_object_with2i,
             small_load_with2i,
             query_count,
             rotating_objects
             ].
 
+
+single_object_with2i(_Config) ->
+    % Load a single object with an integer and a binary
+    % index and query for it
+    RootPath = testutil:reset_filestructure(),
+    StartOpts1 = [{root_path, RootPath},
+                    {max_journalsize, 5000000},
+                    {sync_strategy, testutil:sync_strategy()}],
+                    % low journal size to make sure > 1 created
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+    {TestObject, _TestSpec} = testutil:generate_testobject(),
+    TestSpec = [{add, list_to_binary("integer_int"), 100},
+                {add, list_to_binary("binary_bin"), <<100:32/integer>>}],
+    ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
+    
+    IdxQ1 = {index_query,
+                "Bucket1",
+                {fun testutil:foldkeysfun/3, []},
+                {list_to_binary("binary_bin"),
+                    <<99:32/integer>>, <<101:32/integer>>},
+                {true, undefined}},
+    {async, IdxFolder1} = leveled_bookie:book_returnfolder(Bookie1, IdxQ1),
+    R1 = IdxFolder1(),
+    io:format("R1 of ~w~n", [R1]),
+    true = [{<<100:32/integer>>,"Key1"}] == R1,
+    
+    IdxQ2 = {index_query,
+                "Bucket1",
+                {fun testutil:foldkeysfun/3, []},
+                {list_to_binary("integer_int"),
+                    99, 101},
+                {true, undefined}},
+    {async, IdxFolder2} = leveled_bookie:book_returnfolder(Bookie1, IdxQ2),
+    R2 = IdxFolder2(),
+    io:format("R2 of ~w~n", [R2]),
+    true = [{100,"Key1"}] == R2,
+    
+    IdxQ3 = {index_query,
+                {"Bucket1", "Key1"},
+                {fun testutil:foldkeysfun/3, []},
+                {list_to_binary("integer_int"),
+                    99, 101},
+                {true, undefined}},
+    {async, IdxFolder3} = leveled_bookie:book_returnfolder(Bookie1, IdxQ3),
+    R3 = IdxFolder3(),
+    io:format("R2 of ~w~n", [R3]),
+    true = [{100,"Key1"}] == R3,
+    
+    ok = leveled_bookie:book_close(Bookie1),
+    testutil:reset_filestructure().
 
 small_load_with2i(_Config) ->
     RootPath = testutil:reset_filestructure(),
