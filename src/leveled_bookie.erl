@@ -636,7 +636,7 @@ bucketkey_query(State, Tag, Bucket, {FoldKeysFun, InitAcc}) ->
                                                         AccFun,
                                                         InitAcc),
                 ok = leveled_penciller:pcl_close(LedgerSnapshot),
-                lists:reverse(Acc)
+                Acc
                 end,
     {async, Folder}.
 
