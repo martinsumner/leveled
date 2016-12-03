@@ -256,7 +256,9 @@
     {"CDB11",
         {info, "CRC check failed due to size"}},
     {"CDB12",
-        {inof, "HashTree written"}}
+        {info, "HashTree written"}},
+    {"CDB13",
+        {info, "Write options of ~w"}}
     
         ])).
 

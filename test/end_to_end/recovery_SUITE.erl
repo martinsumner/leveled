@@ -20,10 +20,12 @@ retain_strategy(_Config) ->
     BookOpts = [{root_path, RootPath},
                     {cache_size, 1000},
                     {max_journalsize, 5000000},
+                    {sync_strategy, testutil:sync_strategy()},
                     {reload_strategy, [{?RIAK_TAG, retain}]}],
     BookOptsAlt = [{root_path, RootPath},
                     {cache_size, 1000},
                     {max_journalsize, 100000},
+                    {sync_strategy, testutil:sync_strategy()},
                     {reload_strategy, [{?RIAK_TAG, retain}]},
                     {max_run_length, 8}],
     {ok, Spcl3, LastV3} = rotating_object_check(BookOpts, "Bucket3", 800),
@@ -47,6 +49,7 @@ recovr_strategy(_Config) ->
     BookOpts = [{root_path, RootPath},
                     {cache_size, 1000},
                     {max_journalsize, 5000000},
+                    {sync_strategy, testutil:sync_strategy()},
                     {reload_strategy, [{?RIAK_TAG, recovr}]}],
     
     R6 = rotating_object_check(BookOpts, "Bucket6", 6400),
@@ -64,10 +67,12 @@ recovr_strategy(_Config) ->
     
     lists:foreach(fun({K, _SpcL}) -> 
                         {ok, OH} = testutil:book_riakhead(Book1, "Bucket6", K),
-                        K = OH#r_object.key,
+                        VCH = testutil:get_vclock(OH),
                         {ok, OG} = testutil:book_riakget(Book1, "Bucket6", K),
                         V = testutil:get_value(OG),
-                        true = V == V4
+                        VCG = testutil:get_vclock(OG),
+                        true = V == V4,
+                        true = VCH == VCG
                         end,
                     lists:nthtail(6400, AllSpcL)),
     Q = fun(RT) -> {index_query,
@@ -84,13 +89,16 @@ recovr_strategy(_Config) ->
                 [length(KeyList), length(KeyTermList)]),
     true = length(KeyList) == 6400,
     true = length(KeyList) < length(KeyTermList),
-    true = length(KeyTermList) < 25600.
+    true = length(KeyTermList) < 25600,
+    ok = leveled_bookie:book_close(Book1),
+    testutil:reset_filestructure().
 
 
 aae_bustedjournal(_Config) ->
     RootPath = testutil:reset_filestructure(),
     StartOpts = [{root_path, RootPath},
-                    {max_journalsize, 20000000}],
+                    {max_journalsize, 20000000},
+                    {sync_strategy, testutil:sync_strategy()}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
@@ -150,7 +158,7 @@ aae_bustedjournal(_Config) ->
     % Will need to remove the file or corrupt the hashtree to get presence to
     % fail
     
-    FoldObjectsFun = fun(B, K, V, Acc) -> [{B, K, testutil:riak_hash(V)}|Acc]
+    FoldObjectsFun = fun(B, K, V, Acc) -> [{B, K, erlang:phash2(V)}|Acc]
                                             end,
     SW = os:timestamp(),
     {async, HashTreeF3} = leveled_bookie:book_returnfolder(Bookie2,
@@ -243,7 +251,8 @@ journal_compaction_bustedjournal(_Config) ->
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = [{root_path, RootPath},
                     {max_journalsize, 10000000},
-                    {max_run_length, 10}],
+                    {max_run_length, 10},
+                    {sync_strategy, testutil:sync_strategy()}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),

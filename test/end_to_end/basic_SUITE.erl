@@ -24,7 +24,8 @@ all() -> [
 
 simple_put_fetch_head_delete(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = [{root_path, RootPath}],
+    StartOpts1 = [{root_path, RootPath},
+                    {sync_strategy, testutil:sync_strategy()}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
@@ -32,7 +33,8 @@ simple_put_fetch_head_delete(_Config) ->
     testutil:check_formissingobject(Bookie1, "Bucket1", "Key2"),
     ok = leveled_bookie:book_close(Bookie1),
     StartOpts2 = [{root_path, RootPath},
-                    {max_journalsize, 3000000}],
+                    {max_journalsize, 3000000},
+                    {sync_strategy, testutil:sync_strategy()}],
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
     testutil:check_forobject(Bookie2, TestObject),
     ObjList1 = testutil:generate_objects(5000, 2),
@@ -66,7 +68,9 @@ simple_put_fetch_head_delete(_Config) ->
 
 many_put_fetch_head(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = [{root_path, RootPath}, {max_pencillercachesize, 16000}],
+    StartOpts1 = [{root_path, RootPath},
+                    {max_pencillercachesize, 16000},
+                    {sync_strategy, riak_sync}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
@@ -74,7 +78,8 @@ many_put_fetch_head(_Config) ->
     ok = leveled_bookie:book_close(Bookie1),
     StartOpts2 = [{root_path, RootPath},
                     {max_journalsize, 1000000000},
-                    {max_pencillercachesize, 32000}],
+                    {max_pencillercachesize, 32000},
+                    {sync_strategy, testutil:sync_strategy()}],
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
     testutil:check_forobject(Bookie2, TestObject),
     GenList = [2, 20002, 40002, 60002, 80002,
@@ -103,7 +108,8 @@ journal_compaction(_Config) ->
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = [{root_path, RootPath},
                     {max_journalsize, 10000000},
-                    {max_run_length, 1}],
+                    {max_run_length, 1},
+                    {sync_strategy, testutil:sync_strategy()}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     ok = leveled_bookie:book_compactjournal(Bookie1, 30000),
     {TestObject, TestSpec} = testutil:generate_testobject(),
@@ -118,7 +124,7 @@ journal_compaction(_Config) ->
                                 "Key1",
                                 "Value1",
                                 [],
-                                {"MDK1", "MDV1"}},
+                                [{"MDK1", "MDV1"}]},
     {TestObject2, TestSpec2} = testutil:generate_testobject(B2, K2,
                                                             V2, Spec2, MD),
     ok = testutil:book_riakput(Bookie1, TestObject2, TestSpec2),
@@ -193,7 +199,8 @@ journal_compaction(_Config) ->
     StartOpts2 = [{root_path, RootPath},
                     {max_journalsize, 10000000},
                     {max_run_length, 1},
-                    {waste_retention_period, 1}],
+                    {waste_retention_period, 1},
+                    {sync_strategy, testutil:sync_strategy()}],
     {ok, Bookie3} = leveled_bookie:book_start(StartOpts2),
     ok = leveled_bookie:book_compactjournal(Bookie3, 30000),
     testutil:wait_for_compaction(Bookie3),
@@ -208,7 +215,9 @@ journal_compaction(_Config) ->
 
 fetchput_snapshot(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = [{root_path, RootPath}, {max_journalsize, 30000000}],
+    StartOpts1 = [{root_path, RootPath},
+                    {max_journalsize, 30000000},
+                    {sync_strategy, none}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
@@ -309,7 +318,9 @@ load_and_count(_Config) ->
     % Use artificially small files, and the load keys, counting they're all
     % present
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = [{root_path, RootPath}, {max_journalsize, 50000000}],
+    StartOpts1 = [{root_path, RootPath},
+                    {max_journalsize, 50000000},
+                    {sync_strategy, testutil:sync_strategy()}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
@@ -392,7 +403,9 @@ load_and_count(_Config) ->
 
 load_and_count_withdelete(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = [{root_path, RootPath}, {max_journalsize, 50000000}],
+    StartOpts1 = [{root_path, RootPath},
+                    {max_journalsize, 50000000},
+                    {sync_strategy, testutil:sync_strategy()}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
@@ -415,7 +428,8 @@ load_and_count_withdelete(_Config) ->
                         0,
                         lists:seq(1, 20)),
     testutil:check_forobject(Bookie1, TestObject),
-    {BucketD, KeyD} = leveled_codec:riakto_keydetails(TestObject),
+    {BucketD, KeyD} = {TestObject#r_object.bucket,
+                            TestObject#r_object.key},
     {_, 1} = testutil:check_bucket_stats(Bookie1, BucketD),
     ok = testutil:book_riakdelete(Bookie1, BucketD, KeyD, []),
     not_found = testutil:book_riakget(Bookie1, BucketD, KeyD),
@@ -448,7 +462,9 @@ load_and_count_withdelete(_Config) ->
 
 space_clear_ondelete(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = [{root_path, RootPath}, {max_journalsize, 20000000}],
+    StartOpts1 = [{root_path, RootPath},
+                    {max_journalsize, 20000000},
+                    {sync_strategy, testutil:sync_strategy()}],
     {ok, Book1} = leveled_bookie:book_start(StartOpts1),
     G2 = fun testutil:generate_compressibleobjects/2,
     testutil:load_objects(20000,
@@ -475,8 +491,8 @@ space_clear_ondelete(_Config) ->
                     [length(FNsA_J), length(FNsA_L)]),
     
     % Get an iterator to lock the inker during compaction
-    FoldObjectsFun = fun(B, K, V, Acc) -> [{B, K, testutil:riak_hash(V)}|Acc]
-                                            end,
+    FoldObjectsFun = fun(B, K, ObjBin, Acc) ->
+                            [{B, K, erlang:phash2(ObjBin)}|Acc] end,
     {async, HTreeF1} = leveled_bookie:book_returnfolder(Book1,
                                                         {foldobjects_allkeys,
                                                             ?RIAK_TAG,

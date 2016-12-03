@@ -118,7 +118,7 @@
         terminate/2,
         code_change/3,
         book_start/1,
-        book_start/3,
+        book_start/4,
         book_put/5,
         book_put/6,
         book_tempput/7,
@@ -149,7 +149,7 @@
 -record(state, {inker :: pid(),
                 penciller :: pid(),
                 cache_size :: integer(),
-                ledger_cache :: gb_trees:tree(),
+                ledger_cache :: list(), % a skiplist
                 is_snapshot :: boolean(),
                 slow_offer = false :: boolean()}).
 
@@ -159,10 +159,11 @@
 %%% API
 %%%============================================================================
 
-book_start(RootPath, LedgerCacheSize, JournalSize) ->
+book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy) ->
     book_start([{root_path, RootPath},
                     {cache_size, LedgerCacheSize},
-                    {max_journalsize, JournalSize}]).
+                    {max_journalsize, JournalSize},
+                    {sync_strategy, SyncStrategy}]).
 
 book_start(Opts) ->
     gen_server:start(?MODULE, [Opts], []).
@@ -233,14 +234,14 @@ init([Opts]) ->
             {ok, #state{inker=Inker,
                         penciller=Penciller,
                         cache_size=CacheSize,
-                        ledger_cache=gb_trees:empty(),
+                        ledger_cache=leveled_skiplist:empty(),
                         is_snapshot=false}};
         Bookie ->
             {ok,
                 {Penciller, LedgerCache},
                 Inker} = book_snapshotstore(Bookie, self(), ?SNAPSHOT_TIMEOUT),
             ok = leveled_penciller:pcl_loadsnapshot(Penciller,
-                                                    gb_trees:empty()),
+                                                    leveled_skiplist:empty()),
             leveled_log:log("B0002", [Inker, Penciller]),
             {ok, #state{penciller=Penciller,
                         inker=Inker,
@@ -431,7 +432,7 @@ bucket_stats(State, Bucket, Tag) ->
         {LedgerSnapshot, LedgerCache},
         _JournalSnapshot} = snapshot_store(State, ledger),
     Folder = fun() ->
-                leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
+                leveled_log:log("B0004", [leveled_skiplist:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
                 StartKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
@@ -454,7 +455,7 @@ binary_bucketlist(State, Tag, {FoldBucketsFun, InitAcc}) ->
         {LedgerSnapshot, LedgerCache},
         _JournalSnapshot} = snapshot_store(State, ledger),
     Folder = fun() ->
-                leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
+                leveled_log:log("B0004", [leveled_skiplist:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
                 BucketAcc = get_nextbucket(null,
@@ -509,7 +510,7 @@ index_query(State,
                 {B, null}
         end,
     Folder = fun() ->
-                leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
+                leveled_log:log("B0004", [leveled_skiplist:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
                 StartKey = leveled_codec:to_ledgerkey(Bucket,
@@ -551,7 +552,7 @@ hashtree_query(State, Tag, JournalCheck) ->
         {LedgerSnapshot, LedgerCache},
         JournalSnapshot} = snapshot_store(State, SnapType),
     Folder = fun() ->
-                leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
+                leveled_log:log("B0004", [leveled_skiplist:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
                 StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
@@ -602,7 +603,7 @@ foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun) ->
                                     {FoldObjectsFun, []}
                             end,
     Folder = fun() ->
-                leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
+                leveled_log:log("B0004", [leveled_skiplist:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
                 AccFun = accumulate_objects(FoldFun, JournalSnapshot, Tag),
@@ -623,7 +624,7 @@ bucketkey_query(State, Tag, Bucket, {FoldKeysFun, InitAcc}) ->
         {LedgerSnapshot, LedgerCache},
         _JournalSnapshot} = snapshot_store(State, ledger),
     Folder = fun() ->
-                leveled_log:log("B0004", [gb_trees:size(LedgerCache)]),
+                leveled_log:log("B0004", [leveled_skiplist:size(LedgerCache)]),
                 ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot,
                                                             LedgerCache),
                 SK = leveled_codec:to_ledgerkey(Bucket, null, Tag),
@@ -635,7 +636,7 @@ bucketkey_query(State, Tag, Bucket, {FoldKeysFun, InitAcc}) ->
                                                         AccFun,
                                                         InitAcc),
                 ok = leveled_penciller:pcl_close(LedgerSnapshot),
-                lists:reverse(Acc)
+                Acc
                 end,
     {async, Folder}.
 
@@ -661,7 +662,7 @@ snapshot_store(State, SnapType) ->
 
 set_options(Opts) ->
     MaxJournalSize = get_opt(max_journalsize, Opts, 10000000000),
-    
+    SyncStrat = get_opt(sync_strategy, Opts, sync),
     WRP = get_opt(waste_retention_period, Opts),
     
     AltStrategy = get_opt(reload_strategy, Opts, []),
@@ -680,7 +681,8 @@ set_options(Opts) ->
                         max_run_length = get_opt(max_run_length, Opts),
                         waste_retention_period = WRP,
                         cdb_options = #cdb_options{max_size=MaxJournalSize,
-                                                    binary_mode=true}},
+                                                    binary_mode=true,
+                                                    sync_strategy=SyncStrat}},
         #penciller_options{root_path = LedgerFP,
                             max_inmemory_tablesize = PCLL0CacheSize}}.
 
@@ -697,7 +699,7 @@ startup(InkerOpts, PencillerOpts) ->
 
 
 fetch_head(Key, Penciller, LedgerCache) ->
-    case gb_trees:lookup(Key, LedgerCache) of
+    case leveled_skiplist:lookup(Key, LedgerCache) of
         {value, Head} ->
             Head;
         none ->
@@ -863,18 +865,18 @@ preparefor_ledgercache(_Type, LedgerKey, SQN, Obj, Size, {IndexSpecs, TTL}) ->
 
 
 addto_ledgercache(Changes, Cache) ->
-    lists:foldl(fun({K, V}, Acc) -> gb_trees:enter(K, V, Acc) end,
+    lists:foldl(fun({K, V}, Acc) -> leveled_skiplist:enter(K, V, Acc) end,
                     Cache,
                     Changes).
 
 maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
-    CacheSize = gb_trees:size(Cache),
+    CacheSize = leveled_skiplist:size(Cache),
     TimeToPush = maybe_withjitter(CacheSize, MaxCacheSize),
     if
         TimeToPush ->
             case leveled_penciller:pcl_pushmem(Penciller, Cache) of
                 ok ->
-                    {ok, gb_trees:empty()};
+                    {ok, leveled_skiplist:empty()};
                 returned ->
                     {returned, Cache}
             end;
@@ -966,112 +968,6 @@ generate_multiple_objects(Count, KeyNumber, ObjL) ->
                                 KeyNumber + 1,
                                 ObjL ++ [{Key, Value, IndexSpec}]).
 
-
-generate_multiple_robjects(Count, KeyNumber) ->
-    generate_multiple_robjects(Count, KeyNumber, []).
-    
-generate_multiple_robjects(0, _KeyNumber, ObjL) ->
-    ObjL;
-generate_multiple_robjects(Count, KeyNumber, ObjL) ->
-    Obj = {"Bucket",
-            "Key" ++ integer_to_list(KeyNumber),
-            crypto:rand_bytes(1024),
-            [],
-            [{"MDK", "MDV" ++ integer_to_list(KeyNumber)},
-                {"MDK2", "MDV" ++ integer_to_list(KeyNumber)}]},
-    {B1, K1, V1, Spec1, MD} = Obj,
-    Content = #r_content{metadata=MD, value=V1},
-    Obj1 = #r_object{bucket=B1, key=K1, contents=[Content], vclock=[{'a',1}]},
-    generate_multiple_robjects(Count - 1, KeyNumber + 1, ObjL ++ [{Obj1, Spec1}]).
-
-
-single_key_test() ->
-    RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath}]),
-    {B1, K1, V1, Spec1, MD} = {"Bucket1",
-                                "Key1",
-                                "Value1",
-                                [],
-                                {"MDK1", "MDV1"}},
-    Content = #r_content{metadata=MD, value=V1},
-    Object = #r_object{bucket=B1, key=K1, contents=[Content], vclock=[{'a',1}]},
-    ok = book_put(Bookie1, B1, K1, Object, Spec1, ?RIAK_TAG),
-    {ok, F1} = book_get(Bookie1, B1, K1, ?RIAK_TAG),
-    ?assertMatch(F1, Object),
-    ok = book_close(Bookie1),
-    {ok, Bookie2} = book_start([{root_path, RootPath}]),
-    {ok, F2} = book_get(Bookie2, B1, K1, ?RIAK_TAG),
-    ?assertMatch(F2, Object),
-    ok = book_close(Bookie2),
-    reset_filestructure().
-
-multi_key_test() ->
-    RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath}]),
-    {B1, K1, V1, Spec1, MD1} = {"Bucket",
-                                "Key1",
-                                "Value1",
-                                [],
-                                {"MDK1", "MDV1"}},
-    C1 = #r_content{metadata=MD1, value=V1},
-    Obj1 = #r_object{bucket=B1, key=K1, contents=[C1], vclock=[{'a',1}]},
-    {B2, K2, V2, Spec2, MD2} = {"Bucket",
-                                "Key2",
-                                "Value2",
-                                [],
-                                {"MDK2", "MDV2"}},
-    C2 = #r_content{metadata=MD2, value=V2},
-    Obj2 = #r_object{bucket=B2, key=K2, contents=[C2], vclock=[{'a',1}]},
-    ok = book_put(Bookie1, B1, K1, Obj1, Spec1, ?RIAK_TAG),
-    ObjL1 = generate_multiple_robjects(20, 3),
-    SW1 = os:timestamp(),
-    lists:foreach(fun({O, S}) ->
-                        {B, K} = leveled_codec:riakto_keydetails(O),
-                        ok = book_put(Bookie1, B, K, O, S, ?RIAK_TAG)
-                        end,
-                    ObjL1),
-    io:format("PUT of 20 objects completed in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(),SW1)]),
-    ok = book_put(Bookie1, B2, K2, Obj2, Spec2, ?RIAK_TAG),
-    {ok, F1A} = book_get(Bookie1, B1, K1, ?RIAK_TAG),
-    ?assertMatch(F1A, Obj1),
-    {ok, F2A} = book_get(Bookie1, B2, K2, ?RIAK_TAG),
-    ?assertMatch(F2A, Obj2),
-    ObjL2 = generate_multiple_robjects(20, 23),
-    SW2 = os:timestamp(),
-    lists:foreach(fun({O, S}) ->
-                        {B, K} = leveled_codec:riakto_keydetails(O),
-                        ok = book_put(Bookie1, B, K, O, S, ?RIAK_TAG)
-                        end,
-                    ObjL2),
-    io:format("PUT of 20 objects completed in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(),SW2)]),
-    {ok, F1B} = book_get(Bookie1, B1, K1, ?RIAK_TAG),
-    ?assertMatch(F1B, Obj1),
-    {ok, F2B} = book_get(Bookie1, B2, K2, ?RIAK_TAG),
-    ?assertMatch(F2B, Obj2),
-    ok = book_close(Bookie1),
-    % Now reopen the file, and confirm that a fetch is still possible
-    {ok, Bookie2} = book_start([{root_path, RootPath}]),
-    {ok, F1C} = book_get(Bookie2, B1, K1, ?RIAK_TAG),
-    ?assertMatch(F1C, Obj1),
-    {ok, F2C} = book_get(Bookie2, B2, K2, ?RIAK_TAG),
-    ?assertMatch(F2C, Obj2),
-    ObjL3 = generate_multiple_robjects(20, 43),
-    SW3 = os:timestamp(),
-    lists:foreach(fun({O, S}) ->
-                        {B, K} = leveled_codec:riakto_keydetails(O),
-                        ok = book_put(Bookie2, B, K, O, S, ?RIAK_TAG)
-                        end,
-                    ObjL3),
-    io:format("PUT of 20 objects completed in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(),SW3)]),
-    {ok, F1D} = book_get(Bookie2, B1, K1, ?RIAK_TAG),
-    ?assertMatch(F1D, Obj1),
-    {ok, F2D} = book_get(Bookie2, B2, K2, ?RIAK_TAG),
-    ?assertMatch(F2D, Obj2),
-    ok = book_close(Bookie2),
-    reset_filestructure().
     
 ttl_test() ->
     RootPath = reset_filestructure(),

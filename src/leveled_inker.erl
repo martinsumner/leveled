@@ -633,7 +633,7 @@ load_from_sequence(MinSQN, FilterFun, Penciller, [{_LowSQN, FN, Pid}|Rest]) ->
 load_between_sequence(MinSQN, MaxSQN, FilterFun, Penciller,
                                 CDBpid, StartPos, FN, Rest) ->
     leveled_log:log("I0014", [FN, MinSQN]),
-    InitAcc = {MinSQN, MaxSQN, gb_trees:empty()},
+    InitAcc = {MinSQN, MaxSQN, leveled_skiplist:empty()},
     Res = case leveled_cdb:cdb_scan(CDBpid, FilterFun, InitAcc, StartPos) of
                 {eof, {AccMinSQN, _AccMaxSQN, AccKL}} ->
                     ok = push_to_penciller(Penciller, AccKL),

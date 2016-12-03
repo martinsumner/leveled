@@ -1,0 +1,9 @@
+%% -*- erlang -*-
+
+%%%% leveled
+
+%% @doc A path under which bitcask data files will be stored.
+{mapping, "leveled.data_root", "leveled.data_root", [
+  {default, "$(platform_data_dir)/leveled"},
+  {datatype, directory}
+]}.
