@@ -140,11 +140,12 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(CACHE_SIZE, 2000).
+-define(CACHE_SIZE, 1800).
 -define(JOURNAL_FP, "journal").
 -define(LEDGER_FP, "ledger").
 -define(SNAPSHOT_TIMEOUT, 300000).
 -define(CHECKJOURNAL_PROB, 0.2).
+-define(CACHE_SIZE_JITTER, 360).
 
 -record(state, {inker :: pid(),
                 penciller :: pid(),
@@ -229,7 +230,8 @@ init([Opts]) ->
             % Start from file not snapshot
             {InkerOpts, PencillerOpts} = set_options(Opts),
             {Inker, Penciller} = startup(InkerOpts, PencillerOpts),
-            CacheSize = get_opt(cache_size, Opts, ?CACHE_SIZE),
+            CacheSize = get_opt(cache_size, Opts, ?CACHE_SIZE)
+                        + random:uniform(?CACHE_SIZE_JITTER),
             leveled_log:log("B0001", [Inker, Penciller]),
             {ok, #state{inker=Inker,
                         penciller=Penciller,
