@@ -146,7 +146,7 @@
 -define(SNAPSHOT_TIMEOUT, 300000).
 -define(CHECKJOURNAL_PROB, 0.2).
 -define(CACHE_SIZE_JITTER, 20).
--define(JOURNAL_SIZE_JITTER, 10)
+-define(JOURNAL_SIZE_JITTER, 10).
 
 -record(state, {inker :: pid(),
                 penciller :: pid(),
