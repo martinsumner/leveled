@@ -231,7 +231,7 @@ init([Opts]) ->
             {InkerOpts, PencillerOpts} = set_options(Opts),
             {Inker, Penciller} = startup(InkerOpts, PencillerOpts),
             CacheSize = get_opt(cache_size, Opts, ?CACHE_SIZE)
-                        + random:uniform(?CACHE_SIZE_JITTER),
+                        + erlang:phash2(self()) band ?CACHE_SIZE_JITTER,
             leveled_log:log("B0001", [Inker, Penciller]),
             {ok, #state{inker=Inker,
                         penciller=Penciller,
