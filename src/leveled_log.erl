@@ -116,7 +116,7 @@
     {"PC005",
         {info, "Penciller's Clerk ~w shutdown now complete for reason ~w"}},
     {"PC006",
-        {info, "Work prompted but none needed"}},
+        {debug, "Work prompted but none needed"}},
     {"PC007",
         {info, "Clerk prompting Penciller regarding manifest change"}},
     {"PC008",
