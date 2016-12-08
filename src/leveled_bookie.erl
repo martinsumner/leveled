@@ -231,7 +231,7 @@ init([Opts]) ->
             % Start from file not snapshot
             {InkerOpts, PencillerOpts} = set_options(Opts),
             {Inker, Penciller} = startup(InkerOpts, PencillerOpts),
-            CacheJitter = ?CACHE_SIZE div ?CACHE_SIZE_JITTER,
+            CacheJitter = ?CACHE_SIZE div (100 div ?CACHE_SIZE_JITTER),
             CacheSize = get_opt(cache_size, Opts, ?CACHE_SIZE)
                         + erlang:phash2(self()) band CacheJitter,
             leveled_log:log("B0001", [Inker, Penciller]),
@@ -666,7 +666,7 @@ snapshot_store(State, SnapType) ->
 
 set_options(Opts) ->
     MaxJournalSize0 = get_opt(max_journalsize, Opts, 10000000000),
-    JournalSizeJitter = MaxJournalSize0 div ?JOURNAL_SIZE_JITTER,
+    JournalSizeJitter = MaxJournalSize0 div (100 div ?JOURNAL_SIZE_JITTER),
     MaxJournalSize = MaxJournalSize0 -
                         erlang:phash2(self()) band JournalSizeJitter,
     
