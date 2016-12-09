@@ -233,7 +233,7 @@ init([Opts]) ->
             {Inker, Penciller} = startup(InkerOpts, PencillerOpts),
             CacheJitter = ?CACHE_SIZE div (100 div ?CACHE_SIZE_JITTER),
             CacheSize = get_opt(cache_size, Opts, ?CACHE_SIZE)
-                        + erlang:phash2(self()) band CacheJitter,
+                        + erlang:phash2(self()) rem CacheJitter,
             leveled_log:log("B0001", [Inker, Penciller]),
             {ok, #state{inker=Inker,
                         penciller=Penciller,
@@ -668,7 +668,7 @@ set_options(Opts) ->
     MaxJournalSize0 = get_opt(max_journalsize, Opts, 10000000000),
     JournalSizeJitter = MaxJournalSize0 div (100 div ?JOURNAL_SIZE_JITTER),
     MaxJournalSize = MaxJournalSize0 -
-                        erlang:phash2(self()) band JournalSizeJitter,
+                        erlang:phash2(self()) rem JournalSizeJitter,
     
     SyncStrat = get_opt(sync_strategy, Opts, sync),
     WRP = get_opt(waste_retention_period, Opts),
