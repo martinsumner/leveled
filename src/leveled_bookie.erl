@@ -151,7 +151,7 @@
 -record(state, {inker :: pid(),
                 penciller :: pid(),
                 cache_size :: integer(),
-                ledger_cache :: dict:dict(), % a skiplist
+                ledger_cache, % a skiplist
                 is_snapshot :: boolean(),
                 slow_offer = false :: boolean()}).
 
