@@ -198,7 +198,7 @@
 -define(MAX_TABLESIZE, 32000).
 -define(PROMPT_WAIT_ONL0, 5).
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
-
+-define(COIN_SIDECOUNT, 4).
 
 -record(state, {manifest = [] :: list(),
 				manifest_sqn = 0 :: integer(),
@@ -217,6 +217,7 @@
                 % is an array - but cannot specif due to OTP compatability 
                 levelzero_size = 0 :: integer(),
                 levelzero_maxcachesize :: integer(),
+                levelzero_cointoss = false :: boolean(),
                 
                 is_snapshot = false :: boolean(),
                 snapshot_fully_loaded = false :: boolean(),
@@ -537,10 +538,17 @@ start_from_file(PCLopts) ->
                     end,
     
     {ok, MergeClerk} = leveled_pclerk:clerk_new(self()),
+    
+    CoinToss = PCLopts#penciller_options.levelzero_cointoss,
+    % Used to randomly defer the writing of L0 file.  Intended to help with
+    % vnode syncronisation issues (e.g. stop them all by default merging to
+    % level zero concurrently)
+    
     InitState = #state{clerk=MergeClerk,
                         root_path=RootPath,
                         levelzero_index = leveled_pmem:new_index(),
-                        levelzero_maxcachesize=MaxTableSize},
+                        levelzero_maxcachesize=MaxTableSize,
+                        levelzero_cointoss=CoinToss},
     
     %% Open manifest
     ManifestPath = InitState#state.root_path ++ "/" ++ ?MANIFEST_FP ++ "/",
@@ -629,8 +637,20 @@ update_levelzero(L0Index, L0Size, PushedTree, LedgerSQN, L0Cache, State) ->
                                     ledger_sqn=MaxSQN},
             CacheTooBig = NewL0Size > State#state.levelzero_maxcachesize,
             Level0Free = length(get_item(0, State#state.manifest, [])) == 0,
-            case {CacheTooBig, Level0Free} of
-                {true, true}  ->
+            RandomFactor =
+                case State#state.levelzero_cointoss of
+                    true ->
+                        case random:uniform(?COIN_SIDECOUNT) of
+                            1 ->
+                                true;
+                            _ ->
+                                false
+                        end;
+                    false ->
+                        true
+                end,
+            case {CacheTooBig, Level0Free, RandomFactor} of
+                {true, true, true}  ->
                     L0Constructor = roll_memory(UpdState, false),        
                     UpdState#state{levelzero_pending=true,
                                     levelzero_constructor=L0Constructor};

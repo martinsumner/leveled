@@ -146,7 +146,7 @@
 -define(SNAPSHOT_TIMEOUT, 300000).
 -define(CHECKJOURNAL_PROB, 0.2).
 -define(CACHE_SIZE_JITTER, 25).
--define(JOURNAL_SIZE_JITTER, 10).
+-define(JOURNAL_SIZE_JITTER, 20).
 
 -record(state, {inker :: pid(),
                 penciller :: pid(),
@@ -692,7 +692,8 @@ set_options(Opts) ->
                                                     binary_mode=true,
                                                     sync_strategy=SyncStrat}},
         #penciller_options{root_path = LedgerFP,
-                            max_inmemory_tablesize = PCLL0CacheSize}}.
+                            max_inmemory_tablesize = PCLL0CacheSize,
+                            levelzero_cointoss = true}}.
 
 startup(InkerOpts, PencillerOpts) ->
     {ok, Inker} = leveled_inker:ink_start(InkerOpts),

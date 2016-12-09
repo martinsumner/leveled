@@ -64,7 +64,8 @@
                         {root_path :: string(),
                         max_inmemory_tablesize :: integer(),
                         start_snapshot = false :: boolean(),
-                        source_penciller :: pid()}).
+                        source_penciller :: pid(),
+                        levelzero_cointoss = false :: boolean}).
 
 -record(iclerk_options,
                         {inker :: pid(),

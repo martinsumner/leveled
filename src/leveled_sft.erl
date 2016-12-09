@@ -192,6 +192,8 @@
 -define(DELETE_TIMEOUT, 10000).
 -define(MAX_KEYS, ?SLOT_COUNT * ?BLOCK_COUNT * ?BLOCK_SIZE).
 -define(DISCARD_EXT, ".discarded").
+-define(WRITE_OPS, [binary, raw, read, write, delayed_write]).
+-define(READ_OPS, [binary, raw, read]).
 
 -record(state, {version = ?CURRENT_VERSION :: tuple(),
                 slot_index :: list(),
@@ -469,7 +471,7 @@ generate_filenames(RootFilename) ->
 create_file(FileName) when is_list(FileName) ->
     leveled_log:log("SFT01", [FileName]),
     ok = filelib:ensure_dir(FileName),
-    {ok, Handle} = file:open(FileName, [binary, raw, read, write]),
+    {ok, Handle} = file:open(FileName, ?WRITE_OPS),
     Header = create_header(initial),
     {ok, _} = file:position(Handle, bof),
     ok = file:write(Handle, Header),
