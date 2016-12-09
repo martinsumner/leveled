@@ -222,7 +222,7 @@
                 is_snapshot = false :: boolean(),
                 snapshot_fully_loaded = false :: boolean(),
                 source_penciller :: pid(),
-                levelzero_astree :: list(), % skiplist
+                levelzero_astree :: list(),
                 
                 ongoing_work = [] :: list(),
                 work_backlog = false :: boolean()}).

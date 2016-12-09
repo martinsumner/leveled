@@ -23,6 +23,7 @@
         to_range/2,
         to_range/3,
         lookup/2,
+        lookup/3,
         empty/0,
         size/1
         ]).      
@@ -32,50 +33,98 @@
 -define(SKIP_WIDTH, 16).
 -define(LIST_HEIGHT, 2).
 -define(INFINITY_KEY, {null, null, null, null, null}).
-
+-define(BITARRAY_SIZE, 2048).
 
 %%%============================================================================
 %%% SkipList API
 %%%============================================================================
 
 enter(Key, Value, SkipList) ->
-    enter(Key, Value, SkipList, ?SKIP_WIDTH, ?LIST_HEIGHT).
+    Hash = erlang:phash2(Key),
+    SkipList0 = add_to_array(Hash, SkipList),
+    NewListPart = enter(Key, Value, Hash,
+                        dict:fetch(?SKIP_WIDTH, SkipList0),
+                        ?SKIP_WIDTH, ?LIST_HEIGHT),
+    dict:store(?SKIP_WIDTH, NewListPart, SkipList0).
 
 from_list(UnsortedKVL) ->
     KVL = lists:ukeysort(1, UnsortedKVL),
-    from_list(KVL, ?SKIP_WIDTH, ?LIST_HEIGHT).
+    from_sortedlist(KVL).
 
 from_sortedlist(SortedKVL) ->
-    from_list(SortedKVL, ?SKIP_WIDTH, ?LIST_HEIGHT).
+    SL0 = lists:foldr(fun({K, _V}, SkipL) ->
+                            H = erlang:phash2(K),
+                            add_to_array(H, SkipL) end,
+                        empty(),
+                        SortedKVL),
+    dict:store(?SKIP_WIDTH,
+                from_list(SortedKVL, ?SKIP_WIDTH, ?LIST_HEIGHT),
+                SL0).
 
 lookup(Key, SkipList) ->
-    lookup(Key, SkipList, ?LIST_HEIGHT).
+    lookup(Key, erlang:phash2(Key), SkipList).
+    
+lookup(Key, Hash, SkipList) ->
+    {Slot, Bit} = hash_toslotbit(Hash),
+    RestLen = ?BITARRAY_SIZE - Bit - 1,
+    <<_Head:Bit/bitstring,
+        B:1/bitstring,
+        _Rest:RestLen/bitstring>> = dict:fetch(Slot, SkipList),
+    case B of
+        <<0:1>> ->
+            none;
+        <<1:1>> ->
+            list_lookup(Key, dict:fetch(?SKIP_WIDTH, SkipList), ?LIST_HEIGHT)
+    end.
 
 
 %% Rather than support iterator_from like gb_trees, will just an output a key
 %% sorted list for the desired range, which can the be iterated over as normal
 to_range(SkipList, Start) ->
-    to_range(SkipList, Start, ?INFINITY_KEY, ?LIST_HEIGHT).
+    to_range(dict:fetch(?SKIP_WIDTH, SkipList), Start, ?INFINITY_KEY, ?LIST_HEIGHT).
 
 to_range(SkipList, Start, End) ->
-    to_range(SkipList, Start, End, ?LIST_HEIGHT).
+    to_range(dict:fetch(?SKIP_WIDTH, SkipList), Start, End, ?LIST_HEIGHT).
 
 to_list(SkipList) ->
-    to_list(SkipList, ?LIST_HEIGHT).
+    to_list(dict:fetch(?SKIP_WIDTH, SkipList), ?LIST_HEIGHT).
 
 empty() ->
-    empty([], ?LIST_HEIGHT).
+    FoldFun =
+        fun(X, Acc) -> dict:store(X, <<0:?BITARRAY_SIZE>>, Acc) end,
+    lists:foldl(FoldFun,
+                    dict:store(?SKIP_WIDTH,
+                                empty([], ?LIST_HEIGHT),
+                                dict:new()),
+                    lists:seq(0, ?SKIP_WIDTH - 1)).
+
+
 
 size(SkipList) ->
-    size(SkipList, ?LIST_HEIGHT).
+    size(dict:fetch(?SKIP_WIDTH, SkipList), ?LIST_HEIGHT).
+
 
 
 %%%============================================================================
 %%% SkipList Base Functions
 %%%============================================================================
 
-enter(Key, Value, SkipList, Width, 1) ->
-    Hash = erlang:phash2(Key),
+hash_toslotbit(Hash) ->
+    Slot = Hash band (?SKIP_WIDTH - 1),
+    Bit = (Hash bsr ?SKIP_WIDTH) band (?BITARRAY_SIZE - 1),
+    {Slot, Bit}.
+
+
+add_to_array(Hash, SkipList) ->
+    {Slot, Bit} = hash_toslotbit(Hash),
+    RestLen = ?BITARRAY_SIZE - Bit - 1,
+    <<Head:Bit/bitstring,
+        _B:1/bitstring,
+        Rest:RestLen/bitstring>> = dict:fetch(Slot, SkipList),
+    BitArray = <<Head/bitstring, 1:1, Rest/bitstring>>,
+    dict:store(Slot, BitArray, SkipList).
+
+enter(Key, Value, Hash, SkipList, Width, 1) ->
     {MarkerKey, SubList} = find_mark(Key, SkipList),
     case Hash rem Width of
         0 ->
@@ -101,11 +150,10 @@ enter(Key, Value, SkipList, Width, 1) ->
                 end,        
             lists:keyreplace(MarkerKey, 1, SkipList, {MarkerKey, UpdSubList})
     end;
-enter(Key, Value, SkipList, Width, Level) ->
-    Hash = erlang:phash2(Key),
+enter(Key, Value, Hash, SkipList, Width, Level) ->
     HashMatch = width(Level, Width),
     {MarkerKey, SubSkipList} = find_mark(Key, SkipList),
-    UpdSubSkipList = enter(Key, Value, SubSkipList, Width, Level - 1),
+    UpdSubSkipList = enter(Key, Value, Hash, SubSkipList, Width, Level - 1),
     case Hash rem HashMatch of
         0 ->
             % 
@@ -171,7 +219,7 @@ from_list(KVL, Width, Level) ->
     end.
 
 
-lookup(Key, SkipList, 1) ->
+list_lookup(Key, SkipList, 1) ->
     SubList = get_sublist(Key, SkipList),
     case lists:keyfind(Key, 1, SubList) of
         false ->
@@ -179,13 +227,13 @@ lookup(Key, SkipList, 1) ->
         {Key, V} ->
             {value, V}
     end;
-lookup(Key, SkipList, Level) ->
+list_lookup(Key, SkipList, Level) ->
     SubList = get_sublist(Key, SkipList),
     case SubList of
         null ->
             none;
         _ ->
-            lookup(Key, SubList, Level - 1)
+            list_lookup(Key, SubList, Level - 1)
     end.
 
 
@@ -385,16 +433,19 @@ dotest_skiplist_small(N) ->
                     lists:ukeysort(1, lists:reverse(KL))).
 
 skiplist_test() ->
-    N = 8000,
+    N = 4000,
     KL = generate_randomkeys(1, N, 1, N div 5),
                 
     SWaGSL = os:timestamp(),
     SkipList = from_list(lists:reverse(KL)),
     io:format(user, "Generating skip list with ~w keys in ~w microseconds~n" ++
                         "Top level key count of ~w~n",
-                [N, timer:now_diff(os:timestamp(), SWaGSL), length(SkipList)]),
+                [N,
+                    timer:now_diff(os:timestamp(), SWaGSL),
+                    length(dict:fetch(?SKIP_WIDTH, SkipList))]),
     io:format(user, "Second tier key counts of ~w~n",
-                [lists:map(fun({_L, SL}) -> length(SL) end, SkipList)]),
+                [lists:map(fun({_L, SL}) -> length(SL) end,
+                    dict:fetch(?SKIP_WIDTH, SkipList))]),
     KLSorted = lists:ukeysort(1, lists:reverse(KL)),
     
     SWaGSL2 = os:timestamp(),
@@ -413,9 +464,12 @@ skiplist_test() ->
     io:format(user, "Dynamic load of skiplist with ~w keys took ~w " ++
                         "microseconds~n" ++
                         "Top level key count of ~w~n",
-                [N, timer:now_diff(os:timestamp(), SWaDSL), length(SkipList1)]),
+                [N,
+                    timer:now_diff(os:timestamp(), SWaDSL),
+                    length(dict:fetch(?SKIP_WIDTH, SkipList1))]),
        io:format(user, "Second tier key counts of ~w~n",
-                [lists:map(fun({_L, SL}) -> length(SL) end, SkipList1)]),
+                [lists:map(fun({_L, SL}) -> length(SL) end,
+                    dict:fetch(?SKIP_WIDTH, SkipList1))]),
     
     io:format(user, "~nRunning timing tests for generated skiplist:~n", []),
     skiplist_timingtest(KLSorted, SkipList, N),
@@ -482,13 +536,13 @@ skiplist_timingtest(KL, SkipList, N) ->
     io:format(user, "Finding 10 ranges took ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SWc)]),
             
-    AltKL1 = generate_randomkeys(1, 1000, 1, 200),
+    AltKL1 = generate_randomkeys(1, 2000, 1, 200),
     SWd = os:timestamp(),
     lists:foreach(fun({K, _V}) ->
                         lookup(K, SkipList)
                         end,
                     AltKL1),
-    io:format(user, "Getting 1000 mainly missing keys took ~w microseconds~n",
+    io:format(user, "Getting 2000 mainly missing keys took ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SWd)]),
     AltKL2 = generate_randomkeys(1, 1000, N div 5 + 1, N div 5 + 300),
     SWe = os:timestamp(),
