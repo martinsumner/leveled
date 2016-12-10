@@ -51,42 +51,55 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(SLOT_WIDTH, {4096, 12}).
-
 
 %%%============================================================================
 %%% API
 %%%============================================================================
 
+add_to_index(snap, L0Size, LevelMinus1, LedgerSQN, TreeList) ->
+    FoldFun = fun({K, V}, {AccMinSQN, AccMaxSQN, AccCount}) ->
+                    SQN = leveled_codec:strip_to_seqonly({K, V}),
+                    {min(SQN, AccMinSQN),
+                        max(SQN, AccMaxSQN),
+                        AccCount + 1}
+                    end,
+    LM1List = leveled_skiplist:to_list(LevelMinus1),
+    StartingT = {infinity, 0, L0Size},
+    {MinSQN, MaxSQN, NewL0Size} = lists:foldl(FoldFun, StartingT, LM1List),
+    if
+        MinSQN > LedgerSQN ->
+            {MaxSQN,
+                NewL0Size,
+                snap,
+                lists:append(TreeList, [LevelMinus1])}
+    end;
 add_to_index(L0Index, L0Size, LevelMinus1, LedgerSQN, TreeList) ->
     SW = os:timestamp(),
     SlotInTreeList = length(TreeList) + 1,
-    FoldFun = fun({K, V}, {AccMinSQN, AccMaxSQN, AccCount, HashIndex}) ->
+    FoldFun = fun({K, V}, {AccMinSQN, AccMaxSQN, AccCount}) ->
                     SQN = leveled_codec:strip_to_seqonly({K, V}),
-                    {Hash, Slot} = hash_to_slot(K),
-                    L = array:get(Slot, HashIndex),
-                    Count0 = case lists:keymember(Hash, 1, L) of
-                                    true ->
-                                        AccCount;
-                                    false ->
-                                        AccCount + 1
+                    Hash = erlang:phash2(K),
+                    Count0 = case ets:lookup(L0Index, Hash) of
+                                    [] ->
+                                        ets:insert(L0Index, {Hash, [SlotInTreeList]}),
+                                        AccCount + 1;
+                                    [{Hash, L}] ->
+                                        ets:insert(L0Index, {Hash, [SlotInTreeList|L]}),
+                                        AccCount
                                 end,
                     {min(SQN, AccMinSQN),
                         max(SQN, AccMaxSQN),
-                        Count0,
-                        array:set(Slot, [{Hash, SlotInTreeList}|L], HashIndex)}
+                        Count0}
                     end,
     LM1List = leveled_skiplist:to_list(LevelMinus1),
-    StartingT = {infinity, 0, L0Size, L0Index},
-    {MinSQN, MaxSQN, NewL0Size, UpdL0Index} = lists:foldl(FoldFun,
-                                                            StartingT,
-                                                            LM1List),
+    StartingT = {infinity, 0, L0Size},
+    {MinSQN, MaxSQN, NewL0Size} = lists:foldl(FoldFun, StartingT, LM1List),
     leveled_log:log_timer("PM001", [NewL0Size], SW),
     if
         MinSQN > LedgerSQN ->
             {MaxSQN,
                 NewL0Size,
-                UpdL0Index,
+                L0Index,
                 lists:append(TreeList, [LevelMinus1])}
     end.
     
@@ -106,38 +119,20 @@ to_list(Slots, FetchFun) ->
 
 
 new_index() ->
-    array:new(element(1, ?SLOT_WIDTH), [{default, []}, fixed]).
+    ets:new(index, [set, private]).
 
-
+check_levelzero(_Key, _L0Index, []) ->
+    {false, not_found};
+check_levelzero(Key, snap, TreeList) ->
+    check_slotlist(Key, lists:seq(1, length(TreeList)), TreeList);
 check_levelzero(Key, L0Index, TreeList) ->
-    {Hash, Slot} = hash_to_slot(Key),
-    CheckList = array:get(Slot, L0Index),
-    SlotList = lists:foldl(fun({H0, S0}, SL) ->
-                                case H0 of
-                                    Hash ->
-                                        [S0|SL];
-                                    _ ->
-                                        SL
-                                end
-                                end,
-                            [],
-                            CheckList),
-    lists:foldl(fun(SlotToCheck, {Found, KV}) ->
-                        case Found of
-                            true ->
-                                {Found, KV};
-                            false ->
-                                CheckTree = lists:nth(SlotToCheck, TreeList),
-                                case leveled_skiplist:lookup(Key, CheckTree) of
-                                    none ->
-                                        {Found, KV};
-                                    {value, Value} ->
-                                        {true, {Key, Value}}
-                                end
-                        end
-                        end,
-                    {false, not_found},
-                    lists:reverse(lists:usort(SlotList))).
+    Hash = erlang:phash2(Key),
+    case ets:lookup(L0Index, Hash) of
+        [] ->
+            {false, not_found};
+        [{Hash, SlotList}] ->
+            check_slotlist(Key, SlotList, TreeList)
+    end.
 
 
 merge_trees(StartKey, EndKey, SkipListList, LevelMinus1) ->
@@ -153,11 +148,25 @@ merge_trees(StartKey, EndKey, SkipListList, LevelMinus1) ->
 %%% Internal Functions
 %%%============================================================================
 
-
-hash_to_slot(Key) ->
-    H = erlang:phash2(Key),
-    {H bsr element(2, ?SLOT_WIDTH), H band (element(1, ?SLOT_WIDTH) - 1)}.
-
+check_slotlist(Key, CheckList, TreeList) ->
+    SlotCheckFun =
+                fun(SlotToCheck, {Found, KV}) ->
+                    case Found of
+                        true ->
+                            {Found, KV};
+                        false ->
+                            CheckTree = lists:nth(SlotToCheck, TreeList),
+                            case leveled_skiplist:lookup(Key, CheckTree) of
+                                none ->
+                                    {Found, KV};
+                                {value, Value} ->
+                                    {true, {Key, Value}}
+                            end
+                    end
+                    end,
+    lists:foldl(SlotCheckFun,
+                    {false, not_found},
+                    lists:reverse(lists:usort(CheckList))).
 
 %%%============================================================================
 %%% Test
@@ -231,8 +240,15 @@ compare_method_test() ->
                             end,
                         [],
                         TestList),
+    S2 = lists:foldl(fun({Key, _V}, Acc) ->
+                            R0 = check_levelzero(Key, snap, TreeList),
+                            [R0|Acc]
+                            end,
+                        [],
+                        TestList),
     
     ?assertMatch(S0, S1),
+    ?assertMatch(S0, S2),
     
     StartKey = {o, "Bucket0100", null, null},
     EndKey = {o, "Bucket0200", null, null},

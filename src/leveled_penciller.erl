@@ -395,7 +395,7 @@ handle_call({register_snapshot, Snapshot}, _From, State) ->
     Rs = [{Snapshot, State#state.manifest_sqn}|State#state.registered_snapshots],
     {reply, {ok, State}, State#state{registered_snapshots = Rs}};
 handle_call({load_snapshot, BookieIncrTree}, _From, State) ->
-    L0D = leveled_pmem:add_to_index(State#state.levelzero_index,
+    L0D = leveled_pmem:add_to_index(snap,
                                         State#state.levelzero_size,
                                         BookieIncrTree,
                                         State#state.ledger_sqn,
