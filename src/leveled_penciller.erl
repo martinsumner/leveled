@@ -1283,7 +1283,7 @@ confirm_delete_test() ->
 
 
 maybe_pause_push(PCL, KL) ->
-    T0 = leveled_skiplist:empty(),
+    T0 = leveled_skiplist:empty(true),
     T1 = lists:foldl(fun({K, V}, Acc) -> leveled_skiplist:enter(K, V, Acc) end,
                         T0,
                         KL),

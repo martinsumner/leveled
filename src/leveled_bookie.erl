@@ -238,14 +238,14 @@ init([Opts]) ->
             {ok, #state{inker=Inker,
                         penciller=Penciller,
                         cache_size=CacheSize,
-                        ledger_cache=leveled_skiplist:empty(),
+                        ledger_cache=leveled_skiplist:empty(true),
                         is_snapshot=false}};
         Bookie ->
             {ok,
                 {Penciller, LedgerCache},
                 Inker} = book_snapshotstore(Bookie, self(), ?SNAPSHOT_TIMEOUT),
             ok = leveled_penciller:pcl_loadsnapshot(Penciller,
-                                                    leveled_skiplist:empty()),
+                                                    leveled_skiplist:empty(true)),
             leveled_log:log("B0002", [Inker, Penciller]),
             {ok, #state{penciller=Penciller,
                         inker=Inker,
@@ -885,7 +885,7 @@ maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
         TimeToPush ->
             case leveled_penciller:pcl_pushmem(Penciller, Cache) of
                 ok ->
-                    {ok, leveled_skiplist:empty()};
+                    {ok, leveled_skiplist:empty(true)};
                 returned ->
                     {returned, Cache}
             end;
