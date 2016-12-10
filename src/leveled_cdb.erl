@@ -860,30 +860,14 @@ close_file(Handle, HashTree, BasePos) ->
 get_hashtree(Key, HashTree) ->
     Hash = hash(Key),
     Index = hash_to_index(Hash),
-    Tree = array:get(Index, HashTree),
-    case leveled_skiplist:lookup(Hash, Tree) of 
-        {value, List} ->
-            List;
-        _ ->
-            []
-    end.
+    lookup_positions(HashTree, Index, Hash).
 
 %% Add to hash tree - this is an array of 256 skiplists that contains the Hash 
 %% and position of objects which have been added to an open CDB file
 put_hashtree(Key, Position, HashTree) ->
   Hash = hash(Key),
   Index = hash_to_index(Hash),
-  Tree = array:get(Index, HashTree),
-  case leveled_skiplist:lookup(Hash, Tree) of 
-      none ->
-          array:set(Index,
-                    leveled_skiplist:enter(Hash, [Position], Tree),
-                    HashTree);
-      {value, L} ->
-          array:set(Index,
-                    leveled_skiplist:enter(Hash, [Position|L], Tree),
-                    HashTree)
-  end. 
+  add_position_tohashtree(HashTree, Index, Hash, Position). 
 
 %% Function to extract a Key-Value pair given a file handle and a position
 %% Will confirm that the key matches and do a CRC check
@@ -924,7 +908,7 @@ extract_key_value_check(Handle, Position) ->
 %% Scan through the file until there is a failure to crc check an input, and 
 %% at that point return the position and the key dictionary scanned so far
 startup_scan_over_file(Handle, Position) ->
-    HashTree = array:new(256, {default, leveled_skiplist:empty()}),
+    HashTree = new_hashtree(),
     scan_over_file(Handle,
                     Position,
                     fun startup_filter/5,
@@ -1152,7 +1136,7 @@ search_hash_table(Handle, [Entry|RestOfEntries], Hash, Key, QuickCheck) ->
 % key/value binary in the file.
 write_key_value_pairs(Handle, KeyValueList) ->
     {ok, Position} = file:position(Handle, cur),
-    HashTree = array:new(256, {default, leveled_skiplist:empty()}),
+    HashTree = new_hashtree(),
     write_key_value_pairs(Handle, KeyValueList, {Position, HashTree}).
 
 write_key_value_pairs(_, [], Acc) ->
@@ -1184,12 +1168,11 @@ perform_write_hash_tables(Handle, HashTreeBin, StartPos) ->
 write_hash_tables([], _HashTree, _CurrPos, IndexList, HashTreeBin) ->
     {IndexList, HashTreeBin};
 write_hash_tables([Index|Rest], HashTree, CurrPos, IndexList, HashTreeBin) ->
-    Tree = array:get(Index, HashTree),
-    case leveled_skiplist:size(Tree) of 
-        0 ->
+    case is_empty(HashTree, Index) of 
+        true ->
             write_hash_tables(Rest, HashTree, CurrPos, IndexList, HashTreeBin);
-        _ ->
-            HashList = leveled_skiplist:to_list(Tree),
+        false ->
+            HashList = to_list(HashTree, Index),
             BinList = build_binaryhashlist(HashList, []),
             IndexLength = length(BinList) * 2,
             SlotList = lists:duplicate(IndexLength, <<0:32, 0:32>>),
@@ -1345,6 +1328,47 @@ multi_key_value_to_record(KVList, BinaryMode, LastPosition) ->
                     {[], <<>>, empty},
                     KVList).
 
+%%%============================================================================
+%%% HashTree Implementation
+%%%============================================================================
+
+lookup_positions(HashTree, Index, Hash) ->
+    Tree = array:get(Index, HashTree),
+    case leveled_skiplist:lookup(Hash, Tree) of 
+        {value, List} ->
+            List;
+        _ ->
+            []
+    end.
+
+add_position_tohashtree(HashTree, Index, Hash, Position) ->
+    Tree = array:get(Index, HashTree),
+    case leveled_skiplist:lookup(Hash, Tree) of 
+        none ->
+            array:set(Index,
+                        leveled_skiplist:enter(Hash, [Position], Tree),
+                        HashTree);
+        {value, L} ->
+            array:set(Index,
+                        leveled_skiplist:enter(Hash, [Position|L], Tree),
+                        HashTree)
+    end.
+
+new_hashtree() ->
+    array:new(256, {default, leveled_skiplist:empty()}).
+
+is_empty(HashTree, Index) ->
+    Tree = array:get(Index, HashTree),
+    case leveled_skiplist:size(Tree) of
+        0 ->
+            true;
+        _ ->
+            false
+    end.
+
+to_list(HashTree, Index) ->
+    Tree = array:get(Index, HashTree),
+    leveled_skiplist:to_list(Tree).
 
 %%%%%%%%%%%%%%%%
 % T E S T 
