@@ -598,7 +598,7 @@ skiplist_timingtest(KL, SkipList, N, Bloom) ->
     case Bloom of
         true ->
             HashList = lists:map(fun(_X) ->
-                                        random:uniform(4296967295) end,
+                                        random:uniform(4294967295) end,
                                     lists:seq(1, 2000)),
             SWh = os:timestamp(),
             lists:foreach(fun(X) ->

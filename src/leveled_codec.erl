@@ -74,8 +74,7 @@
 %%
 %% Hash function contains mysterious constants, some explanation here as to
 %% what they are -
-%% http://stackoverflow.com/ ++
-%% questions/10696223/reason-for-5381-number-in-djb-hash-function
+%% http://stackoverflow.com/questions/10696223/reason-for-5381-number-in-djb-hash-function
 
 magic_hash({?RIAK_TAG, Bucket, Key, _SubKey}) ->
     magic_hash({Bucket, Key});
