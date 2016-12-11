@@ -198,7 +198,7 @@
 -define(PENDING_FILEX, "pnd").
 -define(MEMTABLE, mem).
 -define(MAX_TABLESIZE, 25000). % This is less than max - but COIN_SIDECOUNT
--define(SUPER_MAX_TABLE_SIZE, 45000)
+-define(SUPER_MAX_TABLE_SIZE, 45000).
 -define(PROMPT_WAIT_ONL0, 5).
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
 -define(COIN_SIDECOUNT, 4).
