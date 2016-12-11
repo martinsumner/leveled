@@ -47,8 +47,6 @@ enter(Key, Bloom) ->
     Hash = leveled_codec:magic_hash(Key),
     enter({hash, Hash}, Bloom).
 
-check({hash, _Hash}, undefined) ->
-    true;
 check({hash, Hash}, Bloom) ->
     {H0, Bit1, Bit2} = split_hash(Hash),
     Slot = H0 rem dict:size(Bloom),
