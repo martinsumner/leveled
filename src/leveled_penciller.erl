@@ -201,7 +201,7 @@
 -define(SUPER_MAX_TABLE_SIZE, 40000).
 -define(PROMPT_WAIT_ONL0, 5).
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
--define(COIN_SIDECOUNT, 3).
+-define(COIN_SIDECOUNT, 5).
 
 -record(state, {manifest = [] :: list(),
 				manifest_sqn = 0 :: integer(),
