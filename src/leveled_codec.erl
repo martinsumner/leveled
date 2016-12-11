@@ -246,7 +246,7 @@ check_forinkertype(_LedgerKey, _Object) ->
 create_value_for_journal(Value) ->
     case Value of
         {Object, KeyChanges} ->
-            term_to_binary({Object, KeyChanges});
+            term_to_binary({Object, KeyChanges}, [compressed]);
         Value when is_binary(Value) ->
             Value
     end.

@@ -179,7 +179,7 @@
 -define(DWORD_SIZE, 8).
 -define(CURRENT_VERSION, {0,1}).
 -define(SLOT_COUNT, 256).
--define(SLOT_GROUPWRITE_COUNT, 128).
+-define(SLOT_GROUPWRITE_COUNT, 64).
 -define(BLOCK_SIZE, 32).
 -define(BLOCK_COUNT, 4).
 -define(FOOTERPOS_HEADERPOS, 2).
@@ -970,16 +970,25 @@ create_block(KeyList1, KeyList2,
                                     when length(BlockKeyList)==?BLOCK_SIZE ->
     case {KeyList1, KeyList2} of
         {[], []} ->
-            {BlockKeyList, complete, {LSN, HSN}, SegmentList,
+            {lists:reverse(BlockKeyList),
+                complete,
+                {LSN, HSN},
+                lists:reverse(SegmentList),
                 Bloom,
                 [], []};
         _ ->
-            {BlockKeyList, full, {LSN, HSN}, SegmentList,
+            {lists:reverse(BlockKeyList),
+                full,
+                {LSN, HSN},
+                lists:reverse(SegmentList),
                 Bloom,
                 KeyList1, KeyList2}
     end;
 create_block([], [], BlockKeyList, {LSN, HSN}, SegmentList, _LevelR, Bloom) ->
-    {BlockKeyList, partial, {LSN, HSN}, SegmentList,
+    {lists:reverse(BlockKeyList),
+        partial,
+        {LSN, HSN},
+        lists:reverse(SegmentList),
         Bloom,
         [], []};
 create_block(KeyList1, KeyList2,
@@ -992,10 +1001,8 @@ create_block(KeyList1, KeyList2,
             {SQN, _St, MH, _MD} = leveled_codec:striphead_to_details(V),
             {UpdLSN, UpdHSN} = update_sequencenumbers(SQN, LSN, HSN),
             UpdBloom = leveled_tinybloom:enter({hash, MH}, Bloom),
-            NewBlockKeyList = lists:append(BlockKeyList,
-                                            [TopKey]),
-            NewSegmentList = lists:append(SegmentList,
-                                            [hash_for_segmentid(TopKey)]),
+            NewBlockKeyList = [TopKey|BlockKeyList],
+            NewSegmentList = [hash_for_segmentid(TopKey)|SegmentList],
             create_block(Rem1, Rem2,
                             NewBlockKeyList, {UpdLSN, UpdHSN},
                             NewSegmentList, LevelR, UpdBloom);
@@ -1061,13 +1068,13 @@ create_slot(KL1, KL2, LevelR, BlockCount, Bloom,
             {null, LSN, HSN, LastKey, Status};
         {null, _} ->
             [NewLowKeyV|_] = BlockKeyList,
-            NewLastKey = lists:last([{keyonly, LastKey}|BlockKeyList]),
+            NewLastKey = last_key(BlockKeyList, {keyonly, LastKey}),
             {leveled_codec:strip_to_keyonly(NewLowKeyV),
                 min(LSN, LSNb), max(HSN, HSNb),
                 leveled_codec:strip_to_keyonly(NewLastKey),
                 Status};
         {_, _} ->
-            NewLastKey = lists:last([{keyonly, LastKey}|BlockKeyList]),
+            NewLastKey = last_key(BlockKeyList, {keyonly, LastKey}),
             {LowKey,
                 min(LSN, LSNb), max(HSN, HSNb),
                 leveled_codec:strip_to_keyonly(NewLastKey),
@@ -1081,8 +1088,13 @@ create_slot(KL1, KL2, LevelR, BlockCount, Bloom,
                     SegList2, SerialisedSlot2, LengthList ++ [BlockLength],
                     TrackingMetadata).
 
+last_key([], LastKey) ->
+    LastKey;
+last_key(BlockKeyList, _LastKey) ->
+    lists:last(BlockKeyList).
+
 serialise_block(BlockKeyList) ->
-    term_to_binary(BlockKeyList).
+    term_to_binary(BlockKeyList, [compressed]).
 
 
 %% Compare the keys at the head of the list, and either skip that "best" key or
