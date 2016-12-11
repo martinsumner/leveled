@@ -22,6 +22,8 @@
         from_sortedlist/2,
         to_list/1,
         enter/3,
+        enter/4,
+        enter_nolookup/3,
         to_range/2,
         to_range/3,
         lookup/2,
@@ -43,17 +45,31 @@
 %%%============================================================================
 
 enter(Key, Value, SkipList) ->
-    Hash = erlang:phash2(Key),
-    case is_list(SkipList) of
-        true ->
-            enter(Key, Value, Hash, SkipList, ?SKIP_WIDTH, ?LIST_HEIGHT);
-        false ->
-            SkipList0 = add_to_array(Hash, SkipList),
-            NewListPart = enter(Key, Value, Hash,
-                                dict:fetch(?SKIP_WIDTH, SkipList0),
-                                ?SKIP_WIDTH, ?LIST_HEIGHT),
-            dict:store(?SKIP_WIDTH, NewListPart, SkipList0)
-    end.
+    Hash = leveled_codec:magic_hash(Key),
+    enter(Key, Hash, Value, SkipList).
+
+enter(Key, Hash, Value, SkipList) ->
+    Bloom0 =
+        case element(1, SkipList) of
+            list_only ->
+                list_only;
+            Bloom ->
+                leveled_tinybloom:enter({hash, Hash}, Bloom)
+        end,
+    {Bloom0,
+        enter(Key, Value, Hash,
+                element(2, SkipList),
+                ?SKIP_WIDTH, ?LIST_HEIGHT)}.
+
+%% Can iterate over a key entered this way, but never lookup the key
+%% used for index terms
+%% The key may still be a marker key - and the much cheaper native hash
+%% is used to dtermine this, avoiding the more expensive magic hash
+enter_nolookup(Key, Value, SkipList) ->
+    {element(1, SkipList),
+        enter(Key, Value, erlang:phash2(Key),
+                element(2, SkipList),
+                ?SKIP_WIDTH, ?LIST_HEIGHT)}.
 
 from_list(UnsortedKVL) ->
     from_list(UnsortedKVL, false).
@@ -66,71 +82,45 @@ from_sortedlist(SortedKVL) ->
     from_sortedlist(SortedKVL, false).
 
 from_sortedlist(SortedKVL, BloomProtect) ->
-    case BloomProtect of
-        true ->
-            SL0 = lists:foldr(fun({K, _V}, SkipL) ->
-                                    H = erlang:phash2(K),
-                                    add_to_array(H, SkipL) end,
-                                empty(true),
-                                SortedKVL),
-            dict:store(?SKIP_WIDTH,
-                        from_list(SortedKVL, ?SKIP_WIDTH, ?LIST_HEIGHT),
-                        SL0);
-        false ->
-            from_list(SortedKVL, ?SKIP_WIDTH, ?LIST_HEIGHT)
-    end.
+    Bloom0 =
+        case BloomProtect of
+            true ->
+                lists:foldr(fun({K, _V}, Bloom) ->
+                                        leveled_tinybloom:enter(K, Bloom) end,
+                                    leveled_tinybloom:empty(?SKIP_WIDTH),
+                                    SortedKVL);
+            false ->
+                list_only
+    end,
+    {Bloom0, from_list(SortedKVL, ?SKIP_WIDTH, ?LIST_HEIGHT)}.
 
 lookup(Key, SkipList) ->
-    case is_list(SkipList) of
-        true ->
-            list_lookup(Key, SkipList, ?LIST_HEIGHT);
-        false ->
-            lookup(Key, erlang:phash2(Key), SkipList)
+    case element(1, SkipList) of
+        list_only ->
+            list_lookup(Key, element(2, SkipList), ?LIST_HEIGHT);
+        _ ->
+            lookup(Key, leveled_codec:magic_hash(Key), SkipList)
     end.
     
 lookup(Key, Hash, SkipList) ->
-    {Slot, Bit} = hash_toslotbit(Hash),
-    RestLen = ?BITARRAY_SIZE - Bit - 1,
-    <<_Head:Bit/bitstring,
-        B:1/bitstring,
-        _Rest:RestLen/bitstring>> = dict:fetch(Slot, SkipList),
-    case B of
-        <<0:1>> ->
+    case leveled_tinybloom:check({hash, Hash}, element(1, SkipList)) of
+        false ->
             none;
-        <<1:1>> ->
-            list_lookup(Key, dict:fetch(?SKIP_WIDTH, SkipList), ?LIST_HEIGHT)
+        true ->
+            list_lookup(Key, element(2, SkipList), ?LIST_HEIGHT)
     end.
 
 
 %% Rather than support iterator_from like gb_trees, will just an output a key
 %% sorted list for the desired range, which can the be iterated over as normal
 to_range(SkipList, Start) ->
-    case is_list(SkipList) of
-        true ->
-            to_range(SkipList, Start, ?INFINITY_KEY, ?LIST_HEIGHT);
-        false ->
-            to_range(dict:fetch(?SKIP_WIDTH, SkipList),
-                        Start, ?INFINITY_KEY,
-                        ?LIST_HEIGHT)
-    end.
+    to_range(element(2, SkipList), Start, ?INFINITY_KEY, ?LIST_HEIGHT).
 
 to_range(SkipList, Start, End) ->
-    case is_list(SkipList) of
-        true ->
-            to_range(SkipList, Start, End, ?LIST_HEIGHT);
-        false ->
-            to_range(dict:fetch(?SKIP_WIDTH, SkipList),
-                        Start, End,
-                        ?LIST_HEIGHT)
-    end.
+    to_range(element(2, SkipList), Start, End, ?LIST_HEIGHT).
 
 to_list(SkipList) ->
-    case is_list(SkipList) of
-        true ->
-            to_list(SkipList, ?LIST_HEIGHT);
-        false ->
-            to_list(dict:fetch(?SKIP_WIDTH, SkipList), ?LIST_HEIGHT)
-    end.
+    to_list(element(2, SkipList), ?LIST_HEIGHT).
 
 empty() ->
     empty(false).
@@ -138,45 +128,19 @@ empty() ->
 empty(BloomProtect) ->
     case BloomProtect of
         true ->
-            FoldFun =
-                fun(X, Acc) -> dict:store(X, <<0:?BITARRAY_SIZE>>, Acc) end,
-            lists:foldl(FoldFun,
-                            dict:store(?SKIP_WIDTH,
-                                        empty([], ?LIST_HEIGHT),
-                                        dict:new()),
-                            lists:seq(0, ?SKIP_WIDTH - 1));
+            {leveled_tinybloom:empty(?SKIP_WIDTH),
+                empty([], ?LIST_HEIGHT)};
         false ->
-            empty([], ?LIST_HEIGHT)
+            {list_only, empty([], ?LIST_HEIGHT)}
     end.
 
 size(SkipList) ->
-    case is_list(SkipList) of
-        true ->
-            size(SkipList, ?LIST_HEIGHT);
-        false ->
-            size(dict:fetch(?SKIP_WIDTH, SkipList), ?LIST_HEIGHT)
-    end.
-
+    size(element(2, SkipList), ?LIST_HEIGHT).
 
 
 %%%============================================================================
 %%% SkipList Base Functions
 %%%============================================================================
-
-hash_toslotbit(Hash) ->
-    Slot = Hash band (?SKIP_WIDTH - 1),
-    Bit = (Hash bsr ?SKIP_WIDTH) band (?BITARRAY_SIZE - 1),
-    {Slot, Bit}.
-
-
-add_to_array(Hash, SkipList) ->
-    {Slot, Bit} = hash_toslotbit(Hash),
-    RestLen = ?BITARRAY_SIZE - Bit - 1,
-    <<Head:Bit/bitstring,
-        _B:1/bitstring,
-        Rest:RestLen/bitstring>> = dict:fetch(Slot, SkipList),
-    BitArray = <<Head/bitstring, 1:1, Rest/bitstring>>,
-    dict:store(Slot, BitArray, SkipList).
 
 enter(Key, Value, Hash, SkipList, Width, 1) ->
     {MarkerKey, SubList} = find_mark(Key, SkipList),
@@ -488,68 +452,30 @@ dotest_skiplist_small(N) ->
 
 skiplist_withbloom_test() ->
     io:format(user, "~n~nBloom protected skiplist test:~n~n", []),
-    N = 4000,
-    KL = generate_randomkeys(1, N, 1, N div 5),
-                
-    SWaGSL = os:timestamp(),
-    SkipList = from_list(lists:reverse(KL), true),
-    io:format(user, "Generating skip list with ~w keys in ~w microseconds~n" ++
-                        "Top level key count of ~w~n",
-                [N,
-                    timer:now_diff(os:timestamp(), SWaGSL),
-                    length(dict:fetch(?SKIP_WIDTH, SkipList))]),
-    io:format(user, "Second tier key counts of ~w~n",
-                [lists:map(fun({_L, SL}) -> length(SL) end,
-                    dict:fetch(?SKIP_WIDTH, SkipList))]),
-    KLSorted = lists:ukeysort(1, lists:reverse(KL)),
+    skiplist_tester(true).
     
-    SWaGSL2 = os:timestamp(),
-    SkipList = from_sortedlist(KLSorted, true),
-    io:format(user, "Generating skip list with ~w sorted keys in ~w " ++
-                        "microseconds~n",
-                [N, timer:now_diff(os:timestamp(), SWaGSL2)]),
-
-    SWaDSL = os:timestamp(),
-    SkipList1 = 
-        lists:foldl(fun({K, V}, SL) ->
-                            enter(K, V, SL)
-                            end,
-                        empty(true),
-                        KL),
-    io:format(user, "Dynamic load of skiplist with ~w keys took ~w " ++
-                        "microseconds~n" ++
-                        "Top level key count of ~w~n",
-                [N,
-                    timer:now_diff(os:timestamp(), SWaDSL),
-                    length(dict:fetch(?SKIP_WIDTH, SkipList1))]),
-       io:format(user, "Second tier key counts of ~w~n",
-                [lists:map(fun({_L, SL}) -> length(SL) end,
-                    dict:fetch(?SKIP_WIDTH, SkipList1))]),
-    
-    io:format(user, "~nRunning timing tests for generated skiplist:~n", []),
-    skiplist_timingtest(KLSorted, SkipList, N),
-
-    io:format(user, "~nRunning timing tests for dynamic skiplist:~n", []),
-    skiplist_timingtest(KLSorted, SkipList1, N).
-
 skiplist_nobloom_test() ->
     io:format(user, "~n~nBloom free skiplist test:~n~n", []),
+    skiplist_tester(false).
+    
+skiplist_tester(Bloom) ->
     N = 4000,
     KL = generate_randomkeys(1, N, 1, N div 5),
                 
     SWaGSL = os:timestamp(),
-    SkipList = from_list(lists:reverse(KL)),
+    SkipList = from_list(lists:reverse(KL), Bloom),
     io:format(user, "Generating skip list with ~w keys in ~w microseconds~n" ++
                         "Top level key count of ~w~n",
                 [N,
                     timer:now_diff(os:timestamp(), SWaGSL),
-                    length(SkipList)]),
+                    length(element(2, SkipList))]),
     io:format(user, "Second tier key counts of ~w~n",
-                [lists:map(fun({_L, SL}) -> length(SL) end, SkipList)]),
+                [lists:map(fun({_L, SL}) -> length(SL) end,
+                    element(2, SkipList))]),
     KLSorted = lists:ukeysort(1, lists:reverse(KL)),
     
     SWaGSL2 = os:timestamp(),
-    SkipList = from_sortedlist(KLSorted),
+    SkipList = from_sortedlist(KLSorted, Bloom),
     io:format(user, "Generating skip list with ~w sorted keys in ~w " ++
                         "microseconds~n",
                 [N, timer:now_diff(os:timestamp(), SWaGSL2)]),
@@ -559,25 +485,26 @@ skiplist_nobloom_test() ->
         lists:foldl(fun({K, V}, SL) ->
                             enter(K, V, SL)
                             end,
-                        empty(),
+                        empty(Bloom),
                         KL),
     io:format(user, "Dynamic load of skiplist with ~w keys took ~w " ++
                         "microseconds~n" ++
                         "Top level key count of ~w~n",
                 [N,
                     timer:now_diff(os:timestamp(), SWaDSL),
-                    length(SkipList1)]),
+                    length(element(2, SkipList1))]),
        io:format(user, "Second tier key counts of ~w~n",
-                [lists:map(fun({_L, SL}) -> length(SL) end, SkipList1)]),
+                [lists:map(fun({_L, SL}) -> length(SL) end,
+                    element(2, SkipList1))]),
     
     io:format(user, "~nRunning timing tests for generated skiplist:~n", []),
-    skiplist_timingtest(KLSorted, SkipList, N),
+    skiplist_timingtest(KLSorted, SkipList, N, Bloom),
 
     io:format(user, "~nRunning timing tests for dynamic skiplist:~n", []),
-    skiplist_timingtest(KLSorted, SkipList1, N).
+    skiplist_timingtest(KLSorted, SkipList1, N, Bloom).
 
     
-skiplist_timingtest(KL, SkipList, N) ->
+skiplist_timingtest(KL, SkipList, N, Bloom) ->
     io:format(user, "Timing tests on skiplist of size ~w~n",
                 [leveled_skiplist:size(SkipList)]),
     CheckList1 = lists:sublist(KL, N div 4, 200),
@@ -666,7 +593,24 @@ skiplist_timingtest(KL, SkipList, N) ->
     FlatList = to_list(SkipList),
     io:format(user, "Flattening skiplist took ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SWg)]),
-    ?assertMatch(KL, FlatList).
+    ?assertMatch(KL, FlatList),
+    
+    case Bloom of
+        true ->
+            HashList = lists:map(fun(_X) ->
+                                        random:uniform(4296967295) end,
+                                    lists:seq(1, 2000)),
+            SWh = os:timestamp(),
+            lists:foreach(fun(X) ->
+                                lookup(X, X, SkipList) end,
+                            HashList),
+            io:format(user,
+                        "Getting 2000 missing keys when hash was known " ++
+                            "took ~w microseconds~n",
+                        [timer:now_diff(os:timestamp(), SWh)]);
+        false ->
+            ok
+    end.
 
 define_kv(X) ->
     {{o, "Bucket", "Key" ++ string:right(integer_to_list(X), 6), null},
@@ -688,5 +632,21 @@ skiplist_roundsize_test() ->
                             ?assertMatch(L, R) end,
                         lists:seq(0, 24)).
 
+skiplist_nolookup_test() ->
+    N = 4000,
+    KL = generate_randomkeys(1, N, 1, N div 5),
+    SkipList = lists:foldl(fun({K, V}, Acc) ->
+                                enter_nolookup(K, V, Acc) end,
+                            empty(true),
+                            KL),
+    KLSorted = lists:ukeysort(1, lists:reverse(KL)),
+    lists:foreach(fun({K, _V}) ->
+                        ?assertMatch(none, lookup(K, SkipList)) end,
+                        KL),
+    ?assertMatch(KLSorted, to_list(SkipList)).
+
+empty_skiplist_size_test() ->
+    ?assertMatch(0, leveled_skiplist:size(empty(false))),
+    ?assertMatch(0, leveled_skiplist:size(empty(true))).
 
 -endif.

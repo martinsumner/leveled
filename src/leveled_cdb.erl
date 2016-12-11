@@ -1272,27 +1272,13 @@ write_top_index_table(Handle, BasePos, List) ->
 
 %% To make this compatible with original Bernstein format this endian flip
 %% and also the use of the standard hash function required.
-%%
-%% Hash function contains mysterious constants, some explanation here as to
-%% what they are -
-%% http://stackoverflow.com/ ++
-%% questions/10696223/reason-for-5381-number-in-djb-hash-function
   
 endian_flip(Int) ->
     <<X:32/unsigned-little-integer>> = <<Int:32>>,
     X.
 
 hash(Key) ->
-    BK = term_to_binary(Key),
-    H = 5381,
-    hash1(H, BK) band 16#FFFFFFFF.
-
-hash1(H, <<>>) -> 
-    H;
-hash1(H, <<B:8/integer, Rest/bytes>>) ->
-    H1 = H * 33,
-    H2 = H1 bxor B,
-    hash1(H2, Rest).
+    leveled_codec:magic_hash(Key).
 
 % Get the least significant 8 bits from the hash.
 hash_to_index(Hash) ->

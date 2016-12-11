@@ -633,13 +633,13 @@ load_from_sequence(MinSQN, FilterFun, Penciller, [{_LowSQN, FN, Pid}|Rest]) ->
 load_between_sequence(MinSQN, MaxSQN, FilterFun, Penciller,
                                 CDBpid, StartPos, FN, Rest) ->
     leveled_log:log("I0014", [FN, MinSQN]),
-    InitAcc = {MinSQN, MaxSQN, leveled_skiplist:empty(true)},
+    InitAcc = {MinSQN, MaxSQN, leveled_bookie:empty_ledgercache()},
     Res = case leveled_cdb:cdb_scan(CDBpid, FilterFun, InitAcc, StartPos) of
-                {eof, {AccMinSQN, _AccMaxSQN, AccKL}} ->
-                    ok = push_to_penciller(Penciller, AccKL),
+                {eof, {AccMinSQN, _AccMaxSQN, AccLC}} ->
+                    ok = push_to_penciller(Penciller, AccLC),
                     {ok, AccMinSQN};
-                {LastPosition, {_AccMinSQN, _AccMaxSQN, AccKL}} ->
-                    ok = push_to_penciller(Penciller, AccKL),
+                {LastPosition, {_AccMinSQN, _AccMaxSQN, AccLC}} ->
+                    ok = push_to_penciller(Penciller, AccLC),
                     NextSQN = MaxSQN + 1,
                     load_between_sequence(NextSQN,
                                             NextSQN + ?LOADING_BATCH,
@@ -657,14 +657,13 @@ load_between_sequence(MinSQN, MaxSQN, FilterFun, Penciller,
             ok
     end.
 
-push_to_penciller(Penciller, KeyTree) ->
+push_to_penciller(Penciller, LedgerCache) ->
     % The push to penciller must start as a tree to correctly de-duplicate
     % the list by order before becoming a de-duplicated list for loading
-    R = leveled_penciller:pcl_pushmem(Penciller, KeyTree),
-    case R of
+    case leveled_bookie:push_ledgercache(Penciller, LedgerCache) of
         returned ->
             timer:sleep(?LOADING_PAUSE),
-            push_to_penciller(Penciller, KeyTree);
+            push_to_penciller(Penciller, LedgerCache);
         ok ->
             ok
     end.
@@ -739,7 +738,7 @@ initiate_penciller_snapshot(Bookie) ->
     {ok,
         {LedgerSnap, LedgerCache},
         _} = leveled_bookie:book_snapshotledger(Bookie, self(), undefined),
-    ok = leveled_penciller:pcl_loadsnapshot(LedgerSnap, LedgerCache),
+    leveled_bookie:load_snapshot(LedgerSnap, LedgerCache),
     MaxSQN = leveled_penciller:pcl_getstartupsequencenumber(LedgerSnap),
     {LedgerSnap, MaxSQN}.
 

@@ -165,7 +165,7 @@
     {"I0013",
         {info, "File ~s to be removed from manifest"}},
     {"I0014",
-        {info, "On startup oading from filename ~s from SQN ~w"}},
+        {info, "On startup loading from filename ~s from SQN ~w"}},
     {"I0015",
         {info, "Opening manifest file at ~s with SQN ~w"}},
     {"I0016",

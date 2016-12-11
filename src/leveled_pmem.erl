@@ -42,9 +42,8 @@
 -include("include/leveled.hrl").
 
 -export([
-        add_to_index/5,
+        add_to_cache/4,
         to_list/2,
-        new_index/0,
         check_levelzero/3,
         merge_trees/4
         ]).      
@@ -56,53 +55,20 @@
 %%% API
 %%%============================================================================
 
-add_to_index(snap, L0Size, LevelMinus1, LedgerSQN, TreeList) ->
-    FoldFun = fun({K, V}, {AccMinSQN, AccMaxSQN, AccCount}) ->
-                    SQN = leveled_codec:strip_to_seqonly({K, V}),
-                    {min(SQN, AccMinSQN),
-                        max(SQN, AccMaxSQN),
-                        AccCount + 1}
-                    end,
-    LM1List = leveled_skiplist:to_list(LevelMinus1),
-    StartingT = {infinity, 0, L0Size},
-    {MinSQN, MaxSQN, NewL0Size} = lists:foldl(FoldFun, StartingT, LM1List),
-    if
-        MinSQN > LedgerSQN ->
-            {MaxSQN,
-                NewL0Size,
-                snap,
-                lists:append(TreeList, [LevelMinus1])}
-    end;
-add_to_index(L0Index, L0Size, LevelMinus1, LedgerSQN, TreeList) ->
-    SW = os:timestamp(),
-    SlotInTreeList = length(TreeList) + 1,
-    FoldFun = fun({K, V}, {AccMinSQN, AccMaxSQN, AccCount}) ->
-                    SQN = leveled_codec:strip_to_seqonly({K, V}),
-                    Hash = erlang:phash2(K),
-                    Count0 = case ets:lookup(L0Index, Hash) of
-                                    [] ->
-                                        ets:insert(L0Index, {Hash, [SlotInTreeList]}),
-                                        AccCount + 1;
-                                    [{Hash, L}] ->
-                                        ets:insert(L0Index, {Hash, [SlotInTreeList|L]}),
-                                        AccCount
-                                end,
-                    {min(SQN, AccMinSQN),
-                        max(SQN, AccMaxSQN),
-                        Count0}
-                    end,
-    LM1List = leveled_skiplist:to_list(LevelMinus1),
-    StartingT = {infinity, 0, L0Size},
-    {MinSQN, MaxSQN, NewL0Size} = lists:foldl(FoldFun, StartingT, LM1List),
-    leveled_log:log_timer("PM001", [NewL0Size], SW),
-    if
-        MinSQN > LedgerSQN ->
-            {MaxSQN,
-                NewL0Size,
-                L0Index,
-                lists:append(TreeList, [LevelMinus1])}
+add_to_cache(L0Size, {LevelMinus1, MinSQN, MaxSQN}, LedgerSQN, TreeList) ->
+    LM1Size = leveled_skiplist:size(LevelMinus1),
+    case LM1Size of
+        0 ->
+            {LedgerSQN, L0Size, TreeList};
+        _ ->
+            if
+                MinSQN >= LedgerSQN ->
+                    {MaxSQN,
+                        L0Size + LM1Size,
+                        lists:append(TreeList, [LevelMinus1])}
+            end
     end.
-    
+
 
 to_list(Slots, FetchFun) ->
     SW = os:timestamp(),
@@ -118,21 +84,13 @@ to_list(Slots, FetchFun) ->
     FullList.
 
 
-new_index() ->
-    ets:new(index, [set, private]).
+check_levelzero(Key, TreeList) ->
+    check_levelzero(Key, leveled_codec:magic_hash(Key), TreeList).
 
-check_levelzero(_Key, _L0Index, []) ->
+check_levelzero(_Key, _Hash, []) ->
     {false, not_found};
-check_levelzero(Key, snap, TreeList) ->
-    check_slotlist(Key, lists:seq(1, length(TreeList)), TreeList);
-check_levelzero(Key, L0Index, TreeList) ->
-    Hash = erlang:phash2(Key),
-    case ets:lookup(L0Index, Hash) of
-        [] ->
-            {false, not_found};
-        [{Hash, SlotList}] ->
-            check_slotlist(Key, SlotList, TreeList)
-    end.
+check_levelzero(Key, Hash, TreeList) ->
+    check_slotlist(Key, Hash, lists:seq(1, length(TreeList)), TreeList).
 
 
 merge_trees(StartKey, EndKey, SkipListList, LevelMinus1) ->
@@ -148,7 +106,7 @@ merge_trees(StartKey, EndKey, SkipListList, LevelMinus1) ->
 %%% Internal Functions
 %%%============================================================================
 
-check_slotlist(Key, CheckList, TreeList) ->
+check_slotlist(Key, Hash, CheckList, TreeList) ->
     SlotCheckFun =
                 fun(SlotToCheck, {Found, KV}) ->
                     case Found of
@@ -156,7 +114,7 @@ check_slotlist(Key, CheckList, TreeList) ->
                             {Found, KV};
                         false ->
                             CheckTree = lists:nth(SlotToCheck, TreeList),
-                            case leveled_skiplist:lookup(Key, CheckTree) of
+                            case leveled_skiplist:lookup(Key, Hash, CheckTree) of
                                 none ->
                                     {Found, KV};
                                 {value, Value} ->
@@ -166,7 +124,7 @@ check_slotlist(Key, CheckList, TreeList) ->
                     end,
     lists:foldl(SlotCheckFun,
                     {false, not_found},
-                    lists:reverse(lists:usort(CheckList))).
+                    lists:reverse(CheckList)).
 
 %%%============================================================================
 %%% Test
@@ -177,7 +135,7 @@ check_slotlist(Key, CheckList, TreeList) ->
 generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
     generate_randomkeys(Seqn,
                         Count,
-                        leveled_skiplist:empty(),
+                        leveled_skiplist:empty(true),
                         BucketRangeLow,
                         BucketRangeHigh).
 
@@ -197,58 +155,59 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
 
 
 compare_method_test() ->
-    R = lists:foldl(fun(_X, {LedgerSQN, L0Size, L0Index, L0TreeList}) ->
+    R = lists:foldl(fun(_X, {LedgerSQN, L0Size, L0TreeList}) ->
                             LM1 = generate_randomkeys(LedgerSQN + 1,
                                                         2000, 1, 500),
-                            add_to_index(L0Index, L0Size, LM1, LedgerSQN,
-                                                            L0TreeList)
+                            add_to_cache(L0Size,
+                                            {LM1,
+                                                LedgerSQN + 1,
+                                                LedgerSQN + 2000},
+                                            LedgerSQN,
+                                            L0TreeList)
                             end,
-                        {0, 0, new_index(), []},
+                        {0, 0, []},
                         lists:seq(1, 16)),
     
-    {SQN, Size, Index, TreeList} = R,
+    {SQN, Size, TreeList} = R,
     ?assertMatch(32000, SQN),
     ?assertMatch(true, Size =< 32000),
     
     TestList = leveled_skiplist:to_list(generate_randomkeys(1, 2000, 1, 800)),
 
-    S0 = lists:foldl(fun({Key, _V}, Acc) ->
-    R0 = lists:foldr(fun(Tree, {Found, KV}) ->
-                            case Found of
-                                true ->
-                                    {true, KV};
-                                false ->
-                                    L0 = leveled_skiplist:lookup(Key, Tree),
-                                    case L0 of
-                                        none ->
-                                            {false, not_found};
-                                        {value, Value} ->
-                                            {true, {Key, Value}}
-                                    end
+    FindKeyFun =
+        fun(Key) ->
+                fun(Tree, {Found, KV}) ->
+                    case Found of
+                        true ->
+                            {true, KV};
+                        false ->
+                            L0 = leveled_skiplist:lookup(Key, Tree),
+                            case L0 of
+                                none ->
+                                    {false, not_found};
+                                {value, Value} ->
+                                    {true, {Key, Value}}
                             end
-                            end,
-                        {false, not_found},
-                        TreeList),
-    [R0|Acc]
-    end,
-    [],
-    TestList),
+                    end
+                end
+            end,
     
-    S1 = lists:foldl(fun({Key, _V}, Acc) ->
-                            R0 = check_levelzero(Key, Index, TreeList),
-                            [R0|Acc]
-                            end,
+    S0 = lists:foldl(fun({Key, _V}, Acc) ->
+                            R0 = lists:foldr(FindKeyFun(Key),
+                                                {false, not_found},
+                                                TreeList),
+                            [R0|Acc] end,
                         [],
                         TestList),
-    S2 = lists:foldl(fun({Key, _V}, Acc) ->
-                            R0 = check_levelzero(Key, snap, TreeList),
+    
+    S1 = lists:foldl(fun({Key, _V}, Acc) ->
+                            R0 = check_levelzero(Key, TreeList),
                             [R0|Acc]
                             end,
                         [],
                         TestList),
     
     ?assertMatch(S0, S1),
-    ?assertMatch(S0, S2),
     
     StartKey = {o, "Bucket0100", null, null},
     EndKey = {o, "Bucket0200", null, null},

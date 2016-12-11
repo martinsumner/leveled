@@ -363,11 +363,11 @@ generate_randomkeys(Count, Acc, BucketLow, BRange) ->
     BNumber = string:right(integer_to_list(BucketLow + random:uniform(BRange)),
                                             4, $0),
     KNumber = string:right(integer_to_list(random:uniform(1000)), 4, $0),
-    RandKey = {{o,
-                "Bucket" ++ BNumber,
-                "Key" ++ KNumber},
-                {Count + 1,
-                {active, infinity}, null}},
+    K = {o, "Bucket" ++ BNumber, "Key" ++ KNumber},
+    RandKey = {K, {Count + 1,
+                    {active, infinity},
+                    leveled_codec:magic_hash(K),
+                    null}},
     generate_randomkeys(Count - 1, [RandKey|Acc], BucketLow, BRange).
 
 choose_pid_toquery([ManEntry|_T], Key) when
