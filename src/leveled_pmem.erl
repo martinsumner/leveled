@@ -45,7 +45,10 @@
         add_to_cache/4,
         to_list/2,
         check_levelzero/3,
-        merge_trees/4
+        merge_trees/4,
+        add_to_index/2,
+        new_index/0,
+        check_index/2
         ]).      
 
 -include_lib("eunit/include/eunit.hrl").
@@ -69,6 +72,29 @@ add_to_cache(L0Size, {LevelMinus1, MinSQN, MaxSQN}, LedgerSQN, TreeList) ->
             end
     end.
 
+add_to_index(LevelMinus1, L0Index) ->
+    IndexAddFun =
+        fun({_K, V}) ->
+            {_, _, Hash, _} = leveled_codec:striphead_to_details(V),
+            case Hash of
+                no_lookup ->
+                    ok;
+                _ ->
+                    ets:insert(L0Index, {Hash})
+            end
+            end,
+    lists:foreach(IndexAddFun, leveled_skiplist:to_list(LevelMinus1)).
+
+new_index() ->
+    ets:new(l0index, [private, set]).
+
+check_index(Hash, L0Index) ->
+    case ets:lookup(L0Index, Hash) of
+        [{Hash}] ->
+            true;
+        [] ->
+            false
+    end.
 
 to_list(Slots, FetchFun) ->
     SW = os:timestamp(),

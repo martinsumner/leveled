@@ -104,6 +104,8 @@
         {info, "L0 completion confirmed and will transition to not pending"}},
     {"P0030",
         {warn, "We're doomed - intention recorded to destroy all files"}},
+    {"P0031",
+        {info, "Completion of update to levelzero"}},
     
     {"PC001",
         {info, "Penciller's clerk ~w started with owner ~w"}},
