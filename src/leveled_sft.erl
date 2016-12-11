@@ -1094,7 +1094,7 @@ last_key(BlockKeyList, _LastKey) ->
     lists:last(BlockKeyList).
 
 serialise_block(BlockKeyList) ->
-    term_to_binary(BlockKeyList, [compressed]).
+    term_to_binary(BlockKeyList, [{compressed, ?COMPRESSION_LEVEL}]).
 
 
 %% Compare the keys at the head of the list, and either skip that "best" key or
