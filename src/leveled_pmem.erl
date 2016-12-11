@@ -48,6 +48,7 @@
         merge_trees/4,
         add_to_index/2,
         new_index/0,
+        clear_index/1,
         check_index/2
         ]).      
 
