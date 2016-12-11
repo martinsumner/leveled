@@ -161,7 +161,6 @@
         sft_newfroml0cache/4,
         sft_open/1,
         sft_get/2,
-        sft_getbloom/1,
         sft_getkvrange/4,
         sft_close/1,
         sft_clear/1,
@@ -213,8 +212,7 @@
                 handle :: file:fd(),
                 background_complete = false :: boolean(),
                 oversized_file = false :: boolean(),
-                penciller :: pid(),
-                bloom}).
+                penciller :: pid()}).
 
 
 %%%============================================================================
@@ -270,9 +268,6 @@ sft_open(Filename) ->
 
 sft_setfordelete(Pid, Penciller) ->
     gen_fsm:sync_send_event(Pid, {set_for_delete, Penciller}, infinity).
-
-sft_getbloom(Pid) ->
-    gen_fsm:sync_send_event(Pid, get_bloom, infinity).
 
 sft_get(Pid, Key) ->
     gen_fsm:sync_send_event(Pid, {get_kv, Key}, infinity).
@@ -348,9 +343,8 @@ starting({sft_newfroml0cache, Filename, Slots, FetchFun, PCL}, _State) ->
             leveled_penciller:pcl_confirml0complete(PCL,
                                                     State#state.filename,
                                                     State#state.smallest_key,
-                                                    State#state.highest_key,
-                                                    State#state.bloom),
-            {next_state, reader, State#state{bloom=none}}
+                                                    State#state.highest_key),
+            {next_state, reader, State}
     end.
 
 
@@ -384,12 +378,6 @@ reader(background_complete, _From, State) ->
                     State#state.highest_key},
                 reader,
                 State}
-    end;
-reader(get_bloom, _From, State) ->
-    Bloom = State#state.bloom,
-    if
-        Bloom /= none ->
-            {reply, {ok, Bloom}, reader, State#state{bloom=none}}
     end;
 reader(close, _From, State) ->
     ok = file:close(State#state.handle),
@@ -523,7 +511,7 @@ open_file(FileMD) ->
         Slen:32/integer>> = HeaderLengths,
     {ok, SummaryBin} = file:pread(Handle,
                                     ?HEADER_LEN + Blen + Ilen + Flen, Slen),
-    {{LowSQN, HighSQN}, {LowKey, HighKey}, Bloom} = binary_to_term(SummaryBin),
+    {{LowSQN, HighSQN}, {LowKey, HighKey}, _Bloom} = binary_to_term(SummaryBin),
     {ok, SlotIndexBin} = file:pread(Handle, ?HEADER_LEN + Blen, Ilen),
     SlotIndex = binary_to_term(SlotIndexBin),
     {Handle, FileMD#state{slot_index=SlotIndex,
@@ -536,8 +524,7 @@ open_file(FileMD) ->
                            filter_pointer=?HEADER_LEN + Blen + Ilen,
                            summ_pointer=?HEADER_LEN + Blen + Ilen + Flen,
                            summ_length=Slen,
-                           handle=Handle,
-                           bloom=Bloom}}.
+                           handle=Handle}}.
     
 %% Take a file handle with a previously created header and complete it based on
 %% the two key lists KL1 and KL2

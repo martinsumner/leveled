@@ -320,7 +320,6 @@ do_merge(KL1, KL2, {SrcLevel, IsB}, {Filepath, MSN}, FileCounter, OutList) ->
                                             KL1,
                                             KL2,
                                             LevelR),
-    {ok, Bloom} = leveled_sft:sft_getbloom(Pid),
     case Reply of
         {{[], []}, null, _} ->
             leveled_log:log("PC013", [FileName]),
@@ -332,7 +331,6 @@ do_merge(KL1, KL2, {SrcLevel, IsB}, {Filepath, MSN}, FileCounter, OutList) ->
                                     [#manifest_entry{start_key=SmallestKey,
                                                         end_key=HighestKey,
                                                         owner=Pid,
-                                                        bloom=Bloom,
                                                         filename=FileName}]),
             leveled_log:log_timer("PC015", [], TS1),
             do_merge(KL1Rem, KL2Rem,
