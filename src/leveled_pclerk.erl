@@ -394,6 +394,9 @@ find_randomkeys(FList, Count, Source) ->
 
 
 merge_file_test() ->
+    {timeout, 10, merge_file_test_towrap()}.
+
+merge_file_test_towrap() ->
     KL1_L1 = lists:sort(generate_randomkeys(16000, 0, 1000)),
     {ok, PidL1_1, _} = leveled_sft:sft_new("../test/KL1_L1.sft",
                                             KL1_L1, [], 1),
