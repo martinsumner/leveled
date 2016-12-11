@@ -197,10 +197,10 @@
 -define(CURRENT_FILEX, "crr").
 -define(PENDING_FILEX, "pnd").
 -define(MEMTABLE, mem).
--define(MAX_TABLESIZE, 32000).
+-define(MAX_TABLESIZE, 28000). % This is less than max - but COIN_SIDECOUNT
 -define(PROMPT_WAIT_ONL0, 5).
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
--define(COIN_SIDECOUNT, 2).
+-define(COIN_SIDECOUNT, 4).
 
 -record(state, {manifest = [] :: list(),
 				manifest_sqn = 0 :: integer(),
