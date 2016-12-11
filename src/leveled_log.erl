@@ -198,8 +198,6 @@
     {"IC011",
         {info, "Not clearing filename ~s as modified delta is only ~w seconds"}},
     
-    {"PM001",
-        {info, "Indexed new cache entry with total L0 cache size now ~w"}},
     {"PM002",
         {info, "Completed dump of L0 cache to list of size ~w"}},
     

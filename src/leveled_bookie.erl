@@ -728,15 +728,22 @@ startup(InkerOpts, PencillerOpts) ->
 
 
 fetch_head(Key, Penciller, LedgerCache) ->
-    case leveled_skiplist:lookup(Key, LedgerCache#ledger_cache.skiplist) of
-        {value, Head} ->
-            Head;
-        none ->
-            case leveled_penciller:pcl_fetch(Penciller, Key) of
-                {Key, Head} ->
+    Hash = leveled_codec:magic_hash(Key),
+    if
+        Hash /= no_lookup ->
+            L0R = leveled_skiplist:lookup(Key,
+                                            Hash,
+                                            LedgerCache#ledger_cache.skiplist),
+            case L0R of
+                {value, Head} ->
                     Head;
-                not_present ->
-                    not_present
+                none ->
+                    case leveled_penciller:pcl_fetch(Penciller, Key, Hash) of
+                        {Key, Head} ->
+                            Head;
+                        not_present ->
+                            not_present
+                    end
             end
     end.
 
