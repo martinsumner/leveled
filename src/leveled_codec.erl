@@ -226,7 +226,9 @@ compact_inkerkvc({{SQN, ?INKT_STND, LK}, V, CrcCheck}, Strategy) ->
             {TagStrat, {{SQN, ?INKT_KEYD, LK}, {null, KeyDeltas}, CrcCheck}}; 
         TagStrat ->
             {TagStrat, null}
-    end.
+    end;
+compact_inkerkvc(_KVC, _Strategy) ->
+    skip.
 
 split_inkvalue(VBin) ->
     case is_binary(VBin) of

@@ -238,19 +238,26 @@ check_single_file(CDB, FilterFun, FilterServer, MaxSQN, SampleSize, BatchSize) -
     FN = leveled_cdb:cdb_filename(CDB),
     PositionList = leveled_cdb:cdb_getpositions(CDB, SampleSize),
     KeySizeList = fetch_inbatches(PositionList, BatchSize, CDB, []),
-    R0 = lists:foldl(fun(KS, {ActSize, RplSize}) ->
-                            {{SQN, _Type, PK}, Size} = KS,
-                            Check = FilterFun(FilterServer, PK, SQN),
-                            case {Check, SQN > MaxSQN} of
-                                {true, _} ->
-                                    {ActSize + Size - ?CRC_SIZE, RplSize};
-                                {false, true} ->
-                                    {ActSize + Size - ?CRC_SIZE, RplSize};
-                                _ ->
-                                    {ActSize, RplSize + Size - ?CRC_SIZE}
-                            end end,
-                        {0, 0},
-                        KeySizeList),
+    
+    FoldFunForSizeCompare =
+        fun(KS, {ActSize, RplSize}) ->
+            case KS of
+                {{SQN, _Type, PK}, Size} ->
+                    Check = FilterFun(FilterServer, PK, SQN),
+                    case {Check, SQN > MaxSQN} of
+                        {true, _} ->
+                            {ActSize + Size - ?CRC_SIZE, RplSize};
+                        {false, true} ->
+                            {ActSize + Size - ?CRC_SIZE, RplSize};
+                        _ ->
+                            {ActSize, RplSize + Size - ?CRC_SIZE}
+                    end;
+                _ ->
+                    {ActSize, RplSize}
+            end
+            end,
+            
+    R0 = lists:foldl(FoldFunForSizeCompare, {0, 0}, KeySizeList),
     {ActiveSize, ReplacedSize} = R0,
     Score = case ActiveSize + ReplacedSize of
                 0 ->
