@@ -363,11 +363,11 @@ generate_randomkeys(Count, Acc, BucketLow, BRange) ->
     BNumber = string:right(integer_to_list(BucketLow + random:uniform(BRange)),
                                             4, $0),
     KNumber = string:right(integer_to_list(random:uniform(1000)), 4, $0),
-    RandKey = {{o,
-                "Bucket" ++ BNumber,
-                "Key" ++ KNumber},
-                {Count + 1,
-                {active, infinity}, null}},
+    K = {o, "Bucket" ++ BNumber, "Key" ++ KNumber},
+    RandKey = {K, {Count + 1,
+                    {active, infinity},
+                    leveled_codec:magic_hash(K),
+                    null}},
     generate_randomkeys(Count - 1, [RandKey|Acc], BucketLow, BRange).
 
 choose_pid_toquery([ManEntry|_T], Key) when
@@ -392,19 +392,19 @@ find_randomkeys(FList, Count, Source) ->
 
 
 merge_file_test() ->
-    KL1_L1 = lists:sort(generate_randomkeys(16000, 0, 1000)),
+    KL1_L1 = lists:sort(generate_randomkeys(8000, 0, 1000)),
     {ok, PidL1_1, _} = leveled_sft:sft_new("../test/KL1_L1.sft",
                                             KL1_L1, [], 1),
-    KL1_L2 = lists:sort(generate_randomkeys(16000, 0, 250)),
+    KL1_L2 = lists:sort(generate_randomkeys(8000, 0, 250)),
     {ok, PidL2_1, _} = leveled_sft:sft_new("../test/KL1_L2.sft",
                                             KL1_L2, [], 2),
-    KL2_L2 = lists:sort(generate_randomkeys(16000, 250, 250)),
+    KL2_L2 = lists:sort(generate_randomkeys(8000, 250, 250)),
     {ok, PidL2_2, _} = leveled_sft:sft_new("../test/KL2_L2.sft",
                                             KL2_L2, [], 2),
-    KL3_L2 = lists:sort(generate_randomkeys(16000, 500, 250)),
+    KL3_L2 = lists:sort(generate_randomkeys(8000, 500, 250)),
     {ok, PidL2_3, _} = leveled_sft:sft_new("../test/KL3_L2.sft",
                                             KL3_L2, [], 2),
-    KL4_L2 = lists:sort(generate_randomkeys(16000, 750, 250)),
+    KL4_L2 = lists:sort(generate_randomkeys(8000, 750, 250)),
     {ok, PidL2_4, _} = leveled_sft:sft_new("../test/KL4_L2.sft",
                                             KL4_L2, [], 2),
     Result = perform_merge({PidL1_1, "../test/KL1_L1.sft"},

@@ -860,26 +860,14 @@ close_file(Handle, HashTree, BasePos) ->
 get_hashtree(Key, HashTree) ->
     Hash = hash(Key),
     Index = hash_to_index(Hash),
-    Tree = array:get(Index, HashTree),
-    case gb_trees:lookup(Hash, Tree) of 
-        {value, List} ->
-            List;
-        _ ->
-            []
-    end.
+    lookup_positions(HashTree, Index, Hash).
 
-%% Add to hash tree - this is an array of 256 gb_trees that contains the Hash 
+%% Add to hash tree - this is an array of 256 skiplists that contains the Hash 
 %% and position of objects which have been added to an open CDB file
 put_hashtree(Key, Position, HashTree) ->
   Hash = hash(Key),
   Index = hash_to_index(Hash),
-  Tree = array:get(Index, HashTree),
-  case gb_trees:lookup(Hash, Tree) of 
-      none ->
-          array:set(Index, gb_trees:insert(Hash, [Position], Tree), HashTree);
-      {value, L} ->
-          array:set(Index, gb_trees:update(Hash, [Position|L], Tree), HashTree)
-  end. 
+  add_position_tohashtree(HashTree, Index, Hash, Position). 
 
 %% Function to extract a Key-Value pair given a file handle and a position
 %% Will confirm that the key matches and do a CRC check
@@ -920,7 +908,7 @@ extract_key_value_check(Handle, Position) ->
 %% Scan through the file until there is a failure to crc check an input, and 
 %% at that point return the position and the key dictionary scanned so far
 startup_scan_over_file(Handle, Position) ->
-    HashTree = array:new(256, {default, gb_trees:empty()}),
+    HashTree = new_hashtree(),
     scan_over_file(Handle,
                     Position,
                     fun startup_filter/5,
@@ -1148,7 +1136,7 @@ search_hash_table(Handle, [Entry|RestOfEntries], Hash, Key, QuickCheck) ->
 % key/value binary in the file.
 write_key_value_pairs(Handle, KeyValueList) ->
     {ok, Position} = file:position(Handle, cur),
-    HashTree = array:new(256, {default, gb_trees:empty()}),
+    HashTree = new_hashtree(),
     write_key_value_pairs(Handle, KeyValueList, {Position, HashTree}).
 
 write_key_value_pairs(_, [], Acc) ->
@@ -1180,12 +1168,11 @@ perform_write_hash_tables(Handle, HashTreeBin, StartPos) ->
 write_hash_tables([], _HashTree, _CurrPos, IndexList, HashTreeBin) ->
     {IndexList, HashTreeBin};
 write_hash_tables([Index|Rest], HashTree, CurrPos, IndexList, HashTreeBin) ->
-    Tree = array:get(Index, HashTree),
-    case gb_trees:keys(Tree) of 
-        [] ->
+    case is_empty(HashTree, Index) of 
+        true ->
             write_hash_tables(Rest, HashTree, CurrPos, IndexList, HashTreeBin);
-        _ ->
-            HashList = gb_trees:to_list(Tree),
+        false ->
+            HashList = to_list(HashTree, Index),
             BinList = build_binaryhashlist(HashList, []),
             IndexLength = length(BinList) * 2,
             SlotList = lists:duplicate(IndexLength, <<0:32, 0:32>>),
@@ -1285,27 +1272,13 @@ write_top_index_table(Handle, BasePos, List) ->
 
 %% To make this compatible with original Bernstein format this endian flip
 %% and also the use of the standard hash function required.
-%%
-%% Hash function contains mysterious constants, some explanation here as to
-%% what they are -
-%% http://stackoverflow.com/ ++
-%% questions/10696223/reason-for-5381-number-in-djb-hash-function
   
 endian_flip(Int) ->
     <<X:32/unsigned-little-integer>> = <<Int:32>>,
     X.
 
 hash(Key) ->
-    BK = term_to_binary(Key),
-    H = 5381,
-    hash1(H, BK) band 16#FFFFFFFF.
-
-hash1(H, <<>>) -> 
-    H;
-hash1(H, <<B:8/integer, Rest/bytes>>) ->
-    H1 = H * 33,
-    H2 = H1 bxor B,
-    hash1(H2, Rest).
+    leveled_codec:magic_hash(Key).
 
 % Get the least significant 8 bits from the hash.
 hash_to_index(Hash) ->
@@ -1341,6 +1314,47 @@ multi_key_value_to_record(KVList, BinaryMode, LastPosition) ->
                     {[], <<>>, empty},
                     KVList).
 
+%%%============================================================================
+%%% HashTree Implementation
+%%%============================================================================
+
+lookup_positions(HashTree, Index, Hash) ->
+    Tree = array:get(Index, HashTree),
+    case leveled_skiplist:lookup(Hash, Tree) of 
+        {value, List} ->
+            List;
+        _ ->
+            []
+    end.
+
+add_position_tohashtree(HashTree, Index, Hash, Position) ->
+    Tree = array:get(Index, HashTree),
+    case leveled_skiplist:lookup(Hash, Tree) of 
+        none ->
+            array:set(Index,
+                        leveled_skiplist:enter(Hash, [Position], Tree),
+                        HashTree);
+        {value, L} ->
+            array:set(Index,
+                        leveled_skiplist:enter(Hash, [Position|L], Tree),
+                        HashTree)
+    end.
+
+new_hashtree() ->
+    array:new(256, {default, leveled_skiplist:empty()}).
+
+is_empty(HashTree, Index) ->
+    Tree = array:get(Index, HashTree),
+    case leveled_skiplist:size(Tree) of
+        0 ->
+            true;
+        _ ->
+            false
+    end.
+
+to_list(HashTree, Index) ->
+    Tree = array:get(Index, HashTree),
+    leveled_skiplist:to_list(Tree).
 
 %%%%%%%%%%%%%%%%
 % T E S T 
@@ -1402,16 +1416,16 @@ write_key_value_pairs_1_test() ->
     Index1 = hash_to_index(Hash1),
     Hash2 = hash("key2"),
     Index2 = hash_to_index(Hash2),
-    R0 = array:new(256, {default, gb_trees:empty()}),
+    R0 = array:new(256, {default, leveled_skiplist:empty()}),
     R1 = array:set(Index1,
-                    gb_trees:insert(Hash1,
-                                        [0],
-                                        array:get(Index1, R0)),
+                    leveled_skiplist:enter(Hash1,
+                                            [0],
+                                            array:get(Index1, R0)),
                     R0),
     R2 = array:set(Index2,
-                    gb_trees:insert(Hash2,
-                                        [30],
-                                        array:get(Index2, R1)),
+                    leveled_skiplist:enter(Hash2,
+                                            [30],
+                                            array:get(Index2, R1)),
                     R1),
     io:format("HashTree is ~w~n", [HashTree]),
     io:format("Expected HashTree is ~w~n", [R2]),
@@ -1421,16 +1435,16 @@ write_key_value_pairs_1_test() ->
 
 write_hash_tables_1_test() ->
     {ok, Handle} = file:open("../test/testx.cdb", [write]),
-    R0 = array:new(256, {default, gb_trees:empty()}),
+    R0 = array:new(256, {default, leveled_skiplist:empty()}),
     R1 = array:set(64,
-                    gb_trees:insert(6383014720,
-                                    [18],
-                                    array:get(64, R0)),
+                    leveled_skiplist:enter(6383014720,
+                                            [18],
+                                            array:get(64, R0)),
                     R0),
     R2 = array:set(67,
-                    gb_trees:insert(6383014723,
-                                    [0],
-                                    array:get(67, R1)),
+                    leveled_skiplist:enter(6383014723,
+                                            [0],
+                                            array:get(67, R1)),
                     R1),
     Result = write_hash_tables(Handle, R2),
     io:format("write hash tables result of ~w ~n", [Result]),

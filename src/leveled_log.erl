@@ -104,6 +104,8 @@
         {info, "L0 completion confirmed and will transition to not pending"}},
     {"P0030",
         {warn, "We're doomed - intention recorded to destroy all files"}},
+    {"P0031",
+        {info, "Completion of update to levelzero"}},
     
     {"PC001",
         {info, "Penciller's clerk ~w started with owner ~w"}},
@@ -165,7 +167,7 @@
     {"I0013",
         {info, "File ~s to be removed from manifest"}},
     {"I0014",
-        {info, "On startup oading from filename ~s from SQN ~w"}},
+        {info, "On startup loading from filename ~s from SQN ~w"}},
     {"I0015",
         {info, "Opening manifest file at ~s with SQN ~w"}},
     {"I0016",
@@ -198,8 +200,6 @@
     {"IC011",
         {info, "Not clearing filename ~s as modified delta is only ~w seconds"}},
     
-    {"PM001",
-        {info, "Indexed new cache entry with total L0 cache size now ~w"}},
     {"PM002",
         {info, "Completed dump of L0 cache to list of size ~w"}},
     

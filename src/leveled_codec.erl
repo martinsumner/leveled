@@ -39,6 +39,7 @@
         strip_to_statusonly/1,
         strip_to_keyseqstatusonly/1,
         strip_to_keyseqonly/1,
+        strip_to_seqnhashonly/1,
         striphead_to_details/1,
         is_active/3,
         endkey_passed/2,
@@ -62,10 +63,36 @@
         convert_indexspecs/5,
         generate_uuid/0,
         integer_now/0,
-        riak_extract_metadata/2]).         
+        riak_extract_metadata/2,
+        magic_hash/1]).         
 
 -define(V1_VERS, 1).
 -define(MAGIC, 53). % riak_kv -> riak_object
+
+%% Use DJ Bernstein magic hash function. Note, this is more expensive than
+%% phash2 but provides a much more balanced result.
+%%
+%% Hash function contains mysterious constants, some explanation here as to
+%% what they are -
+%% http://stackoverflow.com/questions/10696223/reason-for-5381-number-in-djb-hash-function
+
+magic_hash({?RIAK_TAG, Bucket, Key, _SubKey}) ->
+    magic_hash({Bucket, Key});
+magic_hash({?STD_TAG, Bucket, Key, _SubKey}) ->
+    magic_hash({Bucket, Key});
+magic_hash({?IDX_TAG, _B, _Idx, _Key}) ->
+    no_lookup;
+magic_hash(AnyKey) ->
+    BK = term_to_binary(AnyKey),
+    H = 5381,
+    hash1(H, BK) band 16#FFFFFFFF.
+
+hash1(H, <<>>) -> 
+    H;
+hash1(H, <<B:8/integer, Rest/bytes>>) ->
+    H1 = H * 33,
+    H2 = H1 bxor B,
+    hash1(H2, Rest).
 
 
 %% Credit to
@@ -87,15 +114,18 @@ inker_reload_strategy(AltList) ->
 strip_to_keyonly({keyonly, K}) -> K;
 strip_to_keyonly({K, _V}) -> K.
 
-strip_to_keyseqstatusonly({K, {SeqN, St, _MD}}) -> {K, SeqN, St}.
+strip_to_keyseqstatusonly({K, {SeqN, St, _, _MD}}) -> {K, SeqN, St}.
 
-strip_to_statusonly({_, {_, St, _}}) -> St.
+strip_to_statusonly({_, {_, St, _, _}}) -> St.
 
-strip_to_seqonly({_, {SeqN, _, _}}) -> SeqN.
+strip_to_seqonly({_, {SeqN, _, _, _}}) -> SeqN.
 
-strip_to_keyseqonly({LK, {SeqN, _, _}}) -> {LK, SeqN}.
+strip_to_keyseqonly({LK, {SeqN, _, _, _}}) -> {LK, SeqN}.
 
-striphead_to_details({SeqN, St, MD}) -> {SeqN, St, MD}.
+strip_to_seqnhashonly({_, {SeqN, _, MH, _}}) -> {SeqN, MH}.
+
+striphead_to_details({SeqN, St, MH, MD}) -> {SeqN, St, MH, MD}.
+
 
 key_dominates(LeftKey, RightKey) ->
     case {LeftKey, RightKey} of
@@ -103,10 +133,10 @@ key_dominates(LeftKey, RightKey) ->
             left_hand_first;
         {{LK, _LVAL}, {RK, _RVAL}} when RK < LK ->
             right_hand_first;
-        {{LK, {LSN, _LST, _LMD}}, {RK, {RSN, _RST, _RMD}}}
+        {{LK, {LSN, _LST, _LMH, _LMD}}, {RK, {RSN, _RST, _RMH, _RMD}}}
                                                 when LK == RK, LSN >= RSN ->
             left_hand_dominant;
-        {{LK, {LSN, _LST, _LMD}}, {RK, {RSN, _RST, _RMD}}}
+        {{LK, {LSN, _LST, _LMH, _LMD}}, {RK, {RSN, _RST, _RMH, _RMD}}}
                                                 when LK == RK, LSN < RSN ->
             right_hand_dominant
     end.
@@ -195,7 +225,9 @@ compact_inkerkvc({{SQN, ?INKT_STND, LK}, V, CrcCheck}, Strategy) ->
             {TagStrat, {{SQN, ?INKT_KEYD, LK}, {null, KeyDeltas}, CrcCheck}}; 
         TagStrat ->
             {TagStrat, null}
-    end.
+    end;
+compact_inkerkvc(_KVC, _Strategy) ->
+    skip.
 
 split_inkvalue(VBin) ->
     case is_binary(VBin) of
@@ -217,8 +249,6 @@ create_value_for_journal(Value) ->
         Value when is_binary(Value) ->
             Value
     end.
-
-
 
 hash(Obj) ->
     erlang:phash2(term_to_binary(Obj)).
@@ -273,7 +303,7 @@ convert_indexspecs(IndexSpecs, Bucket, Key, SQN, TTL) ->
                                 end,
                         {to_ledgerkey(Bucket, Key, ?IDX_TAG,
                                 IdxField, IdxValue),
-                            {SQN, Status, null}}
+                            {SQN, Status, no_lookup, null}}
                     end,
                 IndexSpecs).
 
@@ -285,9 +315,11 @@ generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS) ->
                     _ ->
                         {active, TS}
                 end,
-    {Bucket,
-        Key,
-        {PrimaryKey, {SQN, Status, extract_metadata(Obj, Size, Tag)}}}.
+    Value = {SQN,
+                Status,
+                magic_hash(PrimaryKey),
+                extract_metadata(Obj, Size, Tag)},
+    {Bucket, Key, {PrimaryKey, Value}}.
 
 
 integer_now() ->
@@ -304,7 +336,7 @@ extract_metadata(Obj, Size, ?STD_TAG) ->
 
 get_size(PK, Value) ->
     {Tag, _Bucket, _Key, _} = PK,
-    {_, _, MD} = Value,
+    {_, _, _, MD} = Value,
     case Tag of
         ?RIAK_TAG ->
             {_RMD, _VC, _Hash, Size} = MD,
@@ -316,7 +348,7 @@ get_size(PK, Value) ->
     
 get_keyandhash(LK, Value) ->
     {Tag, Bucket, Key, _} = LK,
-    {_, _, MD} = Value,
+    {_, _, _, MD} = Value,
     case Tag of
         ?RIAK_TAG ->
             {_RMD, _VC, Hash, _Size} = MD,
@@ -331,8 +363,8 @@ build_metadata_object(PrimaryKey, MD) ->
     {Tag, _Bucket, _Key, null} = PrimaryKey,
     case Tag of
         ?RIAK_TAG ->
-            {SibMetaBinList, Vclock, _Hash, _Size} = MD,
-            riak_metadata_to_binary(Vclock, SibMetaBinList);
+            {SibCount, Vclock, _Hash, _Size} = MD,
+            riak_metadata_to_binary(Vclock, SibCount);
         ?STD_TAG ->
             MD
     end.
@@ -341,55 +373,24 @@ build_metadata_object(PrimaryKey, MD) ->
 riak_extract_metadata(delete, Size) ->
     {delete, null, null, Size};
 riak_extract_metadata(ObjBin, Size) ->
-    {Vclock, SibMetaBinList} = riak_metadata_from_binary(ObjBin),
-    {SibMetaBinList, Vclock, erlang:phash2(ObjBin), Size}.
+    {Vclock, SibCount} = riak_metadata_from_binary(ObjBin),
+    {SibCount, Vclock, erlang:phash2(ObjBin), Size}.
 
 %% <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
 %%%     VclockBin/binary, SibCount:32/integer, SibsBin/binary>>.
 
-riak_metadata_to_binary(Vclock, SibMetaBinList) ->
+riak_metadata_to_binary(Vclock, SibCount) ->
     VclockBin = term_to_binary(Vclock),
     VclockLen = byte_size(VclockBin),
-    SibCount = length(SibMetaBinList),
-    SibsBin = slimbin_contents(SibMetaBinList),
     <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
-            VclockBin:VclockLen/binary, SibCount:32/integer, SibsBin/binary>>.
+            VclockBin:VclockLen/binary, SibCount:32/integer>>.
     
-% Fixes the value length for each sibling to be zero, and so includes no value
-slimbin_content(MetaBin) ->
-    MetaLen = byte_size(MetaBin),
-    <<0:32/integer,  MetaLen:32/integer, MetaBin:MetaLen/binary>>.
-
-slimbin_contents(SibMetaBinList) ->
-    F = fun(MetaBin, Acc) ->
-                <<Acc/binary, (slimbin_content(MetaBin))/binary>>
-        end,
-    lists:foldl(F, <<>>, SibMetaBinList).
-
 riak_metadata_from_binary(V1Binary) ->
     <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
             Rest/binary>> = V1Binary,
-    <<VclockBin:VclockLen/binary, SibCount:32/integer, SibsBin/binary>> = Rest,
-    SibMetaBinList =
-        case SibCount of
-            0 ->
-                [];
-            SC when is_integer(SC) ->
-                get_metadata_from_siblings(SibsBin, SibCount, [])
-        end,
-    {binary_to_term(VclockBin), SibMetaBinList}.
-    
-get_metadata_from_siblings(<<>>, 0, SibMetaBinList) ->
-    SibMetaBinList;
-get_metadata_from_siblings(<<ValLen:32/integer, Rest0/binary>>,
-                            SibCount,
-                            SibMetaBinList) ->
-    <<_ValBin:ValLen/binary, MetaLen:32/integer, Rest1/binary>> = Rest0,
-    <<MetaBin:MetaLen/binary, Rest2/binary>> = Rest1,
-    get_metadata_from_siblings(Rest2,
-                                SibCount - 1,
-                                [MetaBin|SibMetaBinList]).
-
+    <<VclockBin:VclockLen/binary, SibCount:32/integer, _Rest/binary>> = Rest,
+    {binary_to_term(VclockBin), SibCount}.
+   
 
 
 
@@ -406,11 +407,14 @@ indexspecs_test() ->
                     {remove, "t1_bin", "abdc456"}],
     Changes = convert_indexspecs(IndexSpecs, "Bucket", "Key2", 1, infinity),
     ?assertMatch({{i, "Bucket", {"t1_int", 456}, "Key2"},
-                    {1, {active, infinity}, null}}, lists:nth(1, Changes)),
+                        {1, {active, infinity}, no_lookup, null}},
+                    lists:nth(1, Changes)),
     ?assertMatch({{i, "Bucket", {"t1_bin", "adbc123"}, "Key2"},
-                    {1, {active, infinity}, null}}, lists:nth(2, Changes)),
+                        {1, {active, infinity}, no_lookup, null}},
+                    lists:nth(2, Changes)),
     ?assertMatch({{i, "Bucket", {"t1_bin", "abdc456"}, "Key2"},
-                    {1, tomb, null}}, lists:nth(3, Changes)).
+                        {1, tomb, no_lookup, null}},
+                    lists:nth(3, Changes)).
 
 endkey_passed_test() ->
     TestKey = {i, null, null, null},

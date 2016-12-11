@@ -189,9 +189,12 @@
 -define(HEADER_LEN, 56).
 -define(ITERATOR_SCANWIDTH, 1).
 -define(MERGE_SCANWIDTH, 32).
+-define(BLOOM_WIDTH, 48).
 -define(DELETE_TIMEOUT, 10000).
 -define(MAX_KEYS, ?SLOT_COUNT * ?BLOCK_COUNT * ?BLOCK_SIZE).
 -define(DISCARD_EXT, ".discarded").
+-define(WRITE_OPS, [binary, raw, read, write, delayed_write]).
+-define(READ_OPS, [binary, raw, read]).
 
 -record(state, {version = ?CURRENT_VERSION :: tuple(),
                 slot_index :: list(),
@@ -469,7 +472,7 @@ generate_filenames(RootFilename) ->
 create_file(FileName) when is_list(FileName) ->
     leveled_log:log("SFT01", [FileName]),
     ok = filelib:ensure_dir(FileName),
-    {ok, Handle} = file:open(FileName, [binary, raw, read, write]),
+    {ok, Handle} = file:open(FileName, ?WRITE_OPS),
     Header = create_header(initial),
     {ok, _} = file:position(Handle, bof),
     ok = file:write(Handle, Header),
@@ -508,7 +511,7 @@ open_file(FileMD) ->
         Slen:32/integer>> = HeaderLengths,
     {ok, SummaryBin} = file:pread(Handle,
                                     ?HEADER_LEN + Blen + Ilen + Flen, Slen),
-    {{LowSQN, HighSQN}, {LowKey, HighKey}} = binary_to_term(SummaryBin),
+    {{LowSQN, HighSQN}, {LowKey, HighKey}, _Bloom} = binary_to_term(SummaryBin),
     {ok, SlotIndexBin} = file:pread(Handle, ?HEADER_LEN + Blen, Ilen),
     SlotIndex = binary_to_term(SlotIndexBin),
     {Handle, FileMD#state{slot_index=SlotIndex,
@@ -529,10 +532,11 @@ complete_file(Handle, FileMD, KL1, KL2, LevelR) ->
     complete_file(Handle, FileMD, KL1, KL2, LevelR, false).
 
 complete_file(Handle, FileMD, KL1, KL2, LevelR, Rename) ->
+    EmptyBloom = leveled_tinybloom:empty(?BLOOM_WIDTH),
     {ok, KeyRemainders} = write_keys(Handle,
                                         maybe_expand_pointer(KL1),
                                         maybe_expand_pointer(KL2),
-                                        [], <<>>,
+                                        [], <<>>, EmptyBloom,
                                         LevelR,
                                         fun sftwrite_function/2),
     {ReadHandle, UpdFileMD} = case Rename of
@@ -767,12 +771,12 @@ get_nextkeyaftermatch([_KTuple|T], KeyToFind, PrevV) ->
 
 write_keys(Handle,
             KL1, KL2,
-            SlotIndex, SerialisedSlots,
+            SlotIndex, SerialisedSlots, InitialBloom,
             LevelR, WriteFun) ->
     write_keys(Handle,
                     KL1, KL2,
                     {0, 0},
-                    SlotIndex, SerialisedSlots,
+                    SlotIndex, SerialisedSlots, InitialBloom,
                     {infinity, 0}, null, {last, null},
                     LevelR, WriteFun).
 
@@ -780,7 +784,7 @@ write_keys(Handle,
 write_keys(Handle,
             KL1, KL2,
             {SlotCount, SlotTotal},
-            SlotIndex, SerialisedSlots,
+            SlotIndex, SerialisedSlots, Bloom,
             {LSN, HSN}, LowKey, LastKey,
             LevelR, WriteFun)
                     when SlotCount =:= ?SLOT_GROUPWRITE_COUNT ->
@@ -789,26 +793,27 @@ write_keys(Handle,
         reached ->
             {complete_keywrite(UpdHandle,
                                 SlotIndex,
-                                {LSN, HSN}, {LowKey, LastKey},
+                                {{LSN, HSN}, {LowKey, LastKey}, Bloom},
                                 WriteFun),
                 {KL1, KL2}};
         continue ->
             write_keys(UpdHandle,
                         KL1, KL2,
                         {0, SlotTotal},
-                        SlotIndex, <<>>,
+                        SlotIndex, <<>>, Bloom,
                         {LSN, HSN}, LowKey, LastKey,
                         LevelR, WriteFun)
     end;
 write_keys(Handle,
             KL1, KL2,
             {SlotCount, SlotTotal},
-            SlotIndex, SerialisedSlots,
+            SlotIndex, SerialisedSlots, Bloom,
             {LSN, HSN}, LowKey, LastKey,
             LevelR, WriteFun) ->
-    SlotOutput = create_slot(KL1, KL2, LevelR),
+    SlotOutput = create_slot(KL1, KL2, LevelR, Bloom),
     {{LowKey_Slot, SegFilter, SerialisedSlot, LengthList},
         {{LSN_Slot, HSN_Slot}, LastKey_Slot, Status},
+        UpdBloom,
         KL1rem, KL2rem} = SlotOutput,
     UpdSlotIndex = lists:append(SlotIndex,
                                 [{LowKey_Slot, SegFilter, LengthList}]),
@@ -827,34 +832,34 @@ write_keys(Handle,
             UpdHandle = WriteFun(slots , {Handle, UpdSlots}),
             {complete_keywrite(UpdHandle,
                                 UpdSlotIndex,
-                                SNExtremes, {FirstKey, FinalKey},
+                                {SNExtremes, {FirstKey, FinalKey}, UpdBloom},
                                 WriteFun),
                 {KL1rem, KL2rem}};
         full ->
             write_keys(Handle,
                         KL1rem, KL2rem,
                         {SlotCount + 1, SlotTotal + 1},
-                        UpdSlotIndex, UpdSlots,
+                        UpdSlotIndex, UpdSlots, UpdBloom,
                         SNExtremes, FirstKey, FinalKey,
                         LevelR, WriteFun);
         complete ->
             UpdHandle = WriteFun(slots , {Handle, UpdSlots}),
             {complete_keywrite(UpdHandle,
                                 UpdSlotIndex,
-                                SNExtremes, {FirstKey, FinalKey},
+                                {SNExtremes, {FirstKey, FinalKey}, UpdBloom},
                                 WriteFun),
                 {KL1rem, KL2rem}}
     end.
         
 
-complete_keywrite(Handle, SlotIndex,
-                    SNExtremes, {FirstKey, FinalKey},
+complete_keywrite(Handle,
+                    SlotIndex,
+                    {SNExtremes, {FirstKey, FinalKey}, Bloom},
                     WriteFun) ->
     ConvSlotIndex = convert_slotindex(SlotIndex),
     WriteFun(finalise, {Handle,
                         ConvSlotIndex,
-                        SNExtremes,
-                        {FirstKey, FinalKey}}).
+                        {SNExtremes, {FirstKey, FinalKey}, Bloom}}).
 
 
 %% Take a slot index, and remove the SegFilters replacing with pointers
@@ -882,16 +887,15 @@ sftwrite_function(slots, {Handle, SerialisedSlots}) ->
     Handle;
 sftwrite_function(finalise,
                     {Handle,
-                    {SlotFilters, PointerIndex},
-                    SNExtremes,
-                    KeyExtremes}) ->
+                        {SlotFilters, PointerIndex},
+                        {SNExtremes, KeyExtremes, Bloom}}) ->
     {ok, Position} = file:position(Handle, cur),
     
     BlocksLength = Position - ?HEADER_LEN,
     Index = term_to_binary(PointerIndex),
     IndexLength = byte_size(Index),
     FilterLength = byte_size(SlotFilters),
-    Summary = term_to_binary({SNExtremes, KeyExtremes}),
+    Summary = term_to_binary({SNExtremes, KeyExtremes, Bloom}),
     SummaryLength = byte_size(Summary),
     %% Write Index, Filter and Summary
     ok = file:write(Handle, <<Index/binary,
@@ -945,39 +949,54 @@ maxslots_bylevel(SlotTotal, _Level) ->
 %% Also this should return a partial block if the KeyLists have been exhausted
 %% but the block is full
 
-create_block(KeyList1, KeyList2, LevelR) ->
-    create_block(KeyList1, KeyList2, [], {infinity, 0}, [], LevelR).
+create_block(KeyList1, KeyList2, LevelR, Bloom) ->
+    create_block(KeyList1, KeyList2, [], {infinity, 0}, [], LevelR, Bloom).
 
 create_block(KeyList1, KeyList2,
-                BlockKeyList, {LSN, HSN}, SegmentList, _LevelR)
+                BlockKeyList, {LSN, HSN}, SegmentList, _LevelR, Bloom)
                                     when length(BlockKeyList)==?BLOCK_SIZE ->
     case {KeyList1, KeyList2} of
         {[], []} ->
-            {BlockKeyList, complete, {LSN, HSN}, SegmentList, [], []};
+            {lists:reverse(BlockKeyList),
+                complete,
+                {LSN, HSN},
+                SegmentList,
+                Bloom,
+                [], []};
         _ ->
-            {BlockKeyList, full, {LSN, HSN}, SegmentList, KeyList1, KeyList2}
+            {lists:reverse(BlockKeyList),
+                full,
+                {LSN, HSN},
+                SegmentList,
+                Bloom,
+                KeyList1, KeyList2}
     end;
-create_block([], [],
-                BlockKeyList, {LSN, HSN}, SegmentList, _LevelR) ->
-    {BlockKeyList, partial, {LSN, HSN}, SegmentList, [], []};
+create_block([], [], BlockKeyList, {LSN, HSN}, SegmentList, _LevelR, Bloom) ->
+    {lists:reverse(BlockKeyList),
+        partial,
+        {LSN, HSN},
+        SegmentList,
+        Bloom,
+        [], []};
 create_block(KeyList1, KeyList2,
-                BlockKeyList, {LSN, HSN}, SegmentList, LevelR) ->
+                BlockKeyList, {LSN, HSN}, SegmentList, LevelR, Bloom) ->
     case key_dominates(KeyList1,
                         KeyList2,
                         {LevelR#level.is_basement, LevelR#level.timestamp}) of
         {{next_key, TopKey}, Rem1, Rem2} ->
-            {UpdLSN, UpdHSN} = update_sequencenumbers(TopKey, LSN, HSN),
-            NewBlockKeyList = lists:append(BlockKeyList,
-                                            [TopKey]),
-            NewSegmentList = lists:append(SegmentList,
-                                            [hash_for_segmentid(TopKey)]), 
+            {_K, V} = TopKey,
+            {SQN, _St, MH, _MD} = leveled_codec:striphead_to_details(V),
+            {UpdLSN, UpdHSN} = update_sequencenumbers(SQN, LSN, HSN),
+            UpdBloom = leveled_tinybloom:enter({hash, MH}, Bloom),
+            NewBlockKeyList = [TopKey|BlockKeyList],
+            NewSegmentList = [hash_for_segmentid(TopKey)|SegmentList],
             create_block(Rem1, Rem2,
                             NewBlockKeyList, {UpdLSN, UpdHSN},
-                            NewSegmentList, LevelR);
+                            NewSegmentList, LevelR, UpdBloom);
         {skipped_key, Rem1, Rem2} ->
             create_block(Rem1, Rem2,
                             BlockKeyList, {LSN, HSN},
-                            SegmentList, LevelR)
+                            SegmentList, LevelR, Bloom)
     end.
 
 
@@ -994,45 +1013,55 @@ create_block(KeyList1, KeyList2,
 %% - Remainder of any KeyLists used to make the slot
 
 
-create_slot(KeyList1, KeyList2, Level)  ->
-    create_slot(KeyList1, KeyList2, Level, ?BLOCK_COUNT, [], <<>>, [],
-                                    {null, infinity, 0, null, full}).
+create_slot(KeyList1, KeyList2, Level, Bloom)  ->
+    create_slot(KeyList1, KeyList2, Level, ?BLOCK_COUNT, Bloom,
+                    [], <<>>, [],
+                    {null, infinity, 0, null, full}).
 
 %% Keep adding blocks to the slot until either the block count is reached or
 %% there is a partial block
 
-create_slot(KL1, KL2, _, 0, SegLists, SerialisedSlot, LengthList,
-                                    {LowKey, LSN, HSN, LastKey, Status}) ->
+create_slot(KL1, KL2, _, 0, Bloom,
+                SegLists, SerialisedSlot, LengthList,
+                {LowKey, LSN, HSN, LastKey, Status}) ->
     {{LowKey, generate_segment_filter(SegLists), SerialisedSlot, LengthList},
         {{LSN, HSN}, LastKey, Status},
+        Bloom,
         KL1, KL2};
-create_slot(KL1, KL2, _, _, SegLists, SerialisedSlot, LengthList,
-                                    {LowKey, LSN, HSN, LastKey, partial}) ->
+create_slot(KL1, KL2, _, _, Bloom,
+                SegLists, SerialisedSlot, LengthList,
+                {LowKey, LSN, HSN, LastKey, partial}) ->
     {{LowKey, generate_segment_filter(SegLists), SerialisedSlot, LengthList},
         {{LSN, HSN}, LastKey, partial},
+        Bloom,
         KL1, KL2};
-create_slot(KL1, KL2, _, _, SegLists, SerialisedSlot, LengthList,
-                                    {LowKey, LSN, HSN, LastKey, complete}) ->
+create_slot(KL1, KL2, _, _, Bloom,
+                SegLists, SerialisedSlot, LengthList,
+                {LowKey, LSN, HSN, LastKey, complete}) ->
     {{LowKey, generate_segment_filter(SegLists), SerialisedSlot, LengthList},
         {{LSN, HSN}, LastKey, partial},
+        Bloom,
         KL1, KL2};
-create_slot(KL1, KL2, LevelR, BlockCount, SegLists, SerialisedSlot, LengthList,
-                                    {LowKey, LSN, HSN, LastKey, _Status}) ->
+create_slot(KL1, KL2, LevelR, BlockCount, Bloom,
+                SegLists, SerialisedSlot, LengthList,
+                {LowKey, LSN, HSN, LastKey, _Status}) ->
     {BlockKeyList, Status,
         {LSNb, HSNb},
-        SegmentList, KL1b, KL2b} = create_block(KL1, KL2, LevelR),
+        SegmentList,
+        UpdBloom,
+        KL1b, KL2b} = create_block(KL1, KL2, LevelR, Bloom),
     TrackingMetadata = case {LowKey, BlockKeyList} of
         {null, []} ->
             {null, LSN, HSN, LastKey, Status};
         {null, _} ->
             [NewLowKeyV|_] = BlockKeyList,
-            NewLastKey = lists:last([{keyonly, LastKey}|BlockKeyList]),
+            NewLastKey = last_key(BlockKeyList, {keyonly, LastKey}),
             {leveled_codec:strip_to_keyonly(NewLowKeyV),
                 min(LSN, LSNb), max(HSN, HSNb),
                 leveled_codec:strip_to_keyonly(NewLastKey),
                 Status};
         {_, _} ->
-            NewLastKey = lists:last([{keyonly, LastKey}|BlockKeyList]),
+            NewLastKey = last_key(BlockKeyList, {keyonly, LastKey}),
             {LowKey,
                 min(LSN, LSNb), max(HSN, HSNb),
                 leveled_codec:strip_to_keyonly(NewLastKey),
@@ -1041,9 +1070,15 @@ create_slot(KL1, KL2, LevelR, BlockCount, SegLists, SerialisedSlot, LengthList,
     SerialisedBlock = serialise_block(BlockKeyList),
     BlockLength = byte_size(SerialisedBlock),
     SerialisedSlot2 = <<SerialisedSlot/binary, SerialisedBlock/binary>>,
-    create_slot(KL1b, KL2b, LevelR, BlockCount - 1, SegLists ++ [SegmentList],
-                SerialisedSlot2, LengthList ++ [BlockLength],
-                TrackingMetadata).
+    SegList2 = SegLists ++ [SegmentList],
+    create_slot(KL1b, KL2b, LevelR, BlockCount - 1, UpdBloom,
+                    SegList2, SerialisedSlot2, LengthList ++ [BlockLength],
+                    TrackingMetadata).
+
+last_key([], LastKey) ->
+    LastKey;
+last_key(BlockKeyList, _LastKey) ->
+    lists:last(BlockKeyList).
 
 serialise_block(BlockKeyList) ->
     term_to_binary(BlockKeyList, [{compressed, ?COMPRESSION_LEVEL}]).
@@ -1131,8 +1166,6 @@ pointer_append_queryresults(Results, QueryPid) ->
 
     
 %% Update the sequence numbers
-update_sequencenumbers(Item, LSN, HSN) when is_tuple(Item) ->
-    update_sequencenumbers(leveled_codec:strip_to_seqonly(Item), LSN, HSN);    
 update_sequencenumbers(SN, infinity, 0) ->
     {SN, SN};
 update_sequencenumbers(SN, LSN, HSN) when SN < LSN ->
@@ -1398,12 +1431,15 @@ generate_randomkeys(Count) ->
 generate_randomkeys(0, _SQN, Acc) ->
     lists:reverse(Acc);
 generate_randomkeys(Count, SQN, Acc) ->
-    RandKey = {{o,
-                    lists:concat(["Bucket", random:uniform(1024)]),
-                    lists:concat(["Key", random:uniform(1024)]),
-                    null},
+    K = {o,
+            lists:concat(["Bucket", random:uniform(1024)]),
+            lists:concat(["Key", random:uniform(1024)]),
+            null},
+    RandKey = {K,
                 {SQN,
-                {active, infinity}, null}},
+                {active, infinity},
+                leveled_codec:magic_hash(K),
+                null}},
     generate_randomkeys(Count - 1, SQN + 1, [RandKey|Acc]).
     
 generate_sequentialkeys(Count, Start) ->
@@ -1413,96 +1449,114 @@ generate_sequentialkeys(Target, Incr, Acc) when Incr =:= Target ->
     Acc;
 generate_sequentialkeys(Target, Incr, Acc) ->
     KeyStr = string:right(integer_to_list(Incr), 8, $0),
-    NextKey = {{o,
-                    "BucketSeq",
-                    lists:concat(["Key", KeyStr]),
-                    null},
+    K = {o, "BucketSeq", lists:concat(["Key", KeyStr]), null},
+    NextKey = {K,
                 {5,
-                {active, infinity}, null}},
+                {active, infinity},
+                leveled_codec:magic_hash(K),
+                null}},
     generate_sequentialkeys(Target, Incr + 1, [NextKey|Acc]).
 
 simple_create_block_test() ->
-    KeyList1 = [{{o, "Bucket1", "Key1", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key3", null}, {2, {active, infinity}, null}}],
-    KeyList2 = [{{o, "Bucket1", "Key2", null}, {3, {active, infinity}, null}}],
-    {MergedKeyList, ListStatus, SN, _, _, _} = create_block(KeyList1,
-                                                            KeyList2,
-                                                            #level{level=1}),
+    KeyList1 = [{{o, "Bucket1", "Key1", null},
+                        {1, {active, infinity}, no_lookup, null}},
+                    {{o, "Bucket1", "Key3", null},
+                        {2, {active, infinity}, no_lookup, null}}],
+    KeyList2 = [{{o, "Bucket1", "Key2", null},
+                        {3, {active, infinity}, no_lookup, null}}],
+    BlockOutput = create_block(KeyList1,
+                                KeyList2,
+                                #level{level=1},
+                                leveled_tinybloom:empty(4)),
+    {MergedKeyList, ListStatus, SN, _, _, _, _} = BlockOutput,
     ?assertMatch(partial, ListStatus),
     [H1|T1] = MergedKeyList,
-    ?assertMatch(H1, {{o, "Bucket1", "Key1", null}, {1, {active, infinity}, null}}),
+    ?assertMatch({{o, "Bucket1", "Key1", null},
+                    {1, {active, infinity}, no_lookup, null}}, H1),
     [H2|T2] = T1,
-    ?assertMatch(H2, {{o, "Bucket1", "Key2", null}, {3, {active, infinity}, null}}),
-    ?assertMatch(T2, [{{o, "Bucket1", "Key3", null}, {2, {active, infinity}, null}}]),
+    ?assertMatch({{o, "Bucket1", "Key2", null},
+                    {3, {active, infinity}, no_lookup, null}}, H2),
+    ?assertMatch([{{o, "Bucket1", "Key3", null},
+                    {2, {active, infinity}, no_lookup, null}}], T2),
     ?assertMatch(SN, {1,3}).
 
 dominate_create_block_test() ->
-    KeyList1 = [{{o, "Bucket1", "Key1", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key2", null}, {2, {active, infinity}, null}}],
-    KeyList2 = [{{o, "Bucket1", "Key2", null}, {3, {tomb, infinity}, null}}],
-    {MergedKeyList, ListStatus, SN, _, _, _} = create_block(KeyList1,
-                                                            KeyList2,
-                                                            #level{level=1}),
+    KeyList1 = [{{o, "Bucket1", "Key1", null},
+                        {1, {active, infinity}, no_lookup, null}},
+                {{o, "Bucket1", "Key2", null},
+                        {2, {active, infinity}, no_lookup, null}}],
+    KeyList2 = [{{o, "Bucket1", "Key2", null},
+                        {3, {tomb, infinity}, no_lookup, null}}],
+    BlockOutput = create_block(KeyList1,
+                                KeyList2,
+                                #level{level=1},
+                                leveled_tinybloom:empty(4)),
+    {MergedKeyList, ListStatus, SN, _, _, _, _} = BlockOutput,
     ?assertMatch(partial, ListStatus),
     [K1, K2] = MergedKeyList,
-    ?assertMatch(K1, {{o, "Bucket1", "Key1", null}, {1, {active, infinity}, null}}),
-    ?assertMatch(K2, {{o, "Bucket1", "Key2", null}, {3, {tomb, infinity}, null}}),
+    ?assertMatch(K1, lists:nth(1, KeyList1)),
+    ?assertMatch(K2, lists:nth(1, KeyList2)),
     ?assertMatch(SN, {1,3}).
 
 sample_keylist() ->
-    KeyList1 = [{{o, "Bucket1", "Key1", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key3", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key5", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key7", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key9", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket2", "Key1", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket2", "Key3", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket2", "Key5", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket2", "Key7", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket2", "Key9", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket3", "Key1", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket3", "Key3", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket3", "Key5", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket3", "Key7", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket3", "Key9", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket4", "Key1", null}, {1, {active, infinity}, null}}],
-    KeyList2 = [{{o, "Bucket1", "Key2", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key4", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key6", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key8", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key9a", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key9b", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key9c", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket1", "Key9d", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket2", "Key2", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket2", "Key4", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket2", "Key6", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket2", "Key8", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket3", "Key2", null}, {1, {active, infinity}, null}},
-    {{o, "Bucket3", "Key4", null}, {3, {active, infinity}, null}},
-    {{o, "Bucket3", "Key6", null}, {2, {active, infinity}, null}},
-    {{o, "Bucket3", "Key8", null}, {1, {active, infinity}, null}}],
+    KeyList1 =
+        [{{o, "Bucket1", "Key1", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket1", "Key3", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket1", "Key5", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket1", "Key7", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket1", "Key9", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket2", "Key1", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket2", "Key3", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket2", "Key5", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket2", "Key7", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket2", "Key9", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket3", "Key1", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket3", "Key3", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket3", "Key5", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket3", "Key7", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket3", "Key9", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket4", "Key1", null}, {1, {active, infinity}, 0, null}}],
+    KeyList2 =
+        [{{o, "Bucket1", "Key2", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket1", "Key4", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket1", "Key6", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket1", "Key8", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket1", "Key9a", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket1", "Key9b", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket1", "Key9c", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket1", "Key9d", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket2", "Key2", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket2", "Key4", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket2", "Key6", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket2", "Key8", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket3", "Key2", null}, {1, {active, infinity}, 0, null}},
+        {{o, "Bucket3", "Key4", null}, {3, {active, infinity}, 0, null}},
+        {{o, "Bucket3", "Key6", null}, {2, {active, infinity}, 0, null}},
+        {{o, "Bucket3", "Key8", null}, {1, {active, infinity}, 0, null}}],
     {KeyList1, KeyList2}.
 
 alternating_create_block_test() ->
     {KeyList1, KeyList2} = sample_keylist(),
-    {MergedKeyList, ListStatus, _, _, _, _} = create_block(KeyList1,
-                                                            KeyList2,
-                                                            #level{level=1}),
+    BlockOutput = create_block(KeyList1,
+                                KeyList2,
+                                #level{level=1},
+                                leveled_tinybloom:empty(4)),
+    {MergedKeyList, ListStatus, _SN, _, _, _, _} = BlockOutput,
     BlockSize = length(MergedKeyList),
     ?assertMatch(BlockSize, 32),
     ?assertMatch(ListStatus, complete),
     K1 = lists:nth(1, MergedKeyList),
-    ?assertMatch(K1, {{o, "Bucket1", "Key1", null}, {1, {active, infinity}, null}}),
+    ?assertMatch(K1, {{o, "Bucket1", "Key1", null}, {1, {active, infinity}, 0, null}}),
     K11 = lists:nth(11, MergedKeyList),
-    ?assertMatch(K11, {{o, "Bucket1", "Key9b", null}, {1, {active, infinity}, null}}),
+    ?assertMatch(K11, {{o, "Bucket1", "Key9b", null}, {1, {active, infinity}, 0, null}}),
     K32 = lists:nth(32, MergedKeyList),
-    ?assertMatch(K32, {{o, "Bucket4", "Key1", null}, {1, {active, infinity}, null}}),
-    HKey = {{o, "Bucket1", "Key0", null}, {1, {active, infinity}, null}},
-    {_, ListStatus2, _, _, _, _} = create_block([HKey|KeyList1],
-                                                    KeyList2,
-                                                    #level{level=1}),
-    ?assertMatch(ListStatus2, full).
+    ?assertMatch(K32, {{o, "Bucket4", "Key1", null}, {1, {active, infinity}, 0, null}}),
+    HKey = {{o, "Bucket1", "Key0", null}, {1, {active, infinity}, 0, null}},
+    {_, LStatus2, _, _, _, _, _} = create_block([HKey|KeyList1],
+                                                KeyList2,
+                                                #level{level=1},
+                                                leveled_tinybloom:empty(4)),
+    ?assertMatch(full, LStatus2).
 
 
 merge_seglists_test() ->
@@ -1639,9 +1693,13 @@ merge_seglists_test() ->
     
 createslot_stage1_test() ->
     {KeyList1, KeyList2} = sample_keylist(),
-    Out = create_slot(KeyList1, KeyList2, #level{level=1}),
+    Out = create_slot(KeyList1,
+                        KeyList2,
+                        #level{level=1},
+                        leveled_tinybloom:empty(4)),
     {{LowKey, SegFilter, _SerialisedSlot, _LengthList},
         {{LSN, HSN}, LastKey, Status},
+        _UpdBloom,
         KL1, KL2} = Out,
     ?assertMatch(LowKey, {o, "Bucket1", "Key1", null}),
     ?assertMatch(LastKey, {o, "Bucket4", "Key1", null}),
@@ -1662,9 +1720,11 @@ createslot_stage1_test() ->
 createslot_stage2_test() ->
     Out = create_slot(lists:sort(generate_randomkeys(100)),
                         lists:sort(generate_randomkeys(100)),
-                        #level{level=1}),
+                        #level{level=1},
+                        leveled_tinybloom:empty(4)),
     {{_LowKey, _SegFilter, SerialisedSlot, LengthList},
         {{_LSN, _HSN}, _LastKey, Status},
+        _UpdBloom,
         _KL1, _KL2} = Out,
     ?assertMatch(Status, full),
     Sum1 = lists:foldl(fun(X, Sum) -> Sum + X end, 0, LengthList),
@@ -1675,9 +1735,11 @@ createslot_stage2_test() ->
 createslot_stage3_test() ->
     Out = create_slot(lists:sort(generate_sequentialkeys(100, 1)),
                         lists:sort(generate_sequentialkeys(100, 101)),
-                        #level{level=1}),
+                        #level{level=1},
+                        leveled_tinybloom:empty(4)),
     {{LowKey, SegFilter, SerialisedSlot, LengthList},
         {{_LSN, _HSN}, LastKey, Status},
+        _UpdBloom,
         KL1, KL2} = Out,
     ?assertMatch(Status, full),
     Sum1 = lists:foldl(fun(X, Sum) -> Sum + X end, 0, LengthList),
@@ -1713,17 +1775,19 @@ createslot_stage3_test() ->
 
 testwrite_function(slots, {Handle, SerialisedSlots}) ->
     lists:append(Handle, [SerialisedSlots]);
-testwrite_function(finalise, {Handle, C_SlotIndex, SNExtremes, KeyExtremes}) ->
-    {Handle, C_SlotIndex, SNExtremes, KeyExtremes}.
+testwrite_function(finalise,
+                    {Handle, C_SlotIndex, {SNExtremes, KeyExtremes, Bloom}}) ->
+    {Handle, C_SlotIndex, SNExtremes, KeyExtremes, Bloom}.
 
 writekeys_stage1_test() ->
     {KL1, KL2} = sample_keylist(),
     {FunOut, {_KL1Rem, _KL2Rem}} = write_keys([],
                                                 KL1, KL2,
                                                 [], <<>>,
+                                                leveled_tinybloom:empty(4),
                                                 #level{level=1},
                                                 fun testwrite_function/2),
-    {Handle, {_, PointerIndex}, SNExtremes, KeyExtremes} = FunOut,
+    {Handle, {_, PointerIndex}, SNExtremes, KeyExtremes, _Bloom} = FunOut,
     ?assertMatch(SNExtremes, {1,3}),
     ?assertMatch(KeyExtremes, {{o, "Bucket1", "Key1", null},
                                 {o, "Bucket4", "Key1", null}}),
@@ -1750,7 +1814,7 @@ initial_create_file_test() ->
     Result1 = fetch_keyvalue(UpdHandle, UpdFileMD, {o, "Bucket1", "Key8", null}),
     io:format("Result is ~w~n", [Result1]),
     ?assertMatch(Result1, {{o, "Bucket1", "Key8", null},
-                            {1, {active, infinity}, null}}),
+                            {1, {active, infinity}, 0, null}}),
     Result2 = fetch_keyvalue(UpdHandle, UpdFileMD, {o, "Bucket1", "Key88", null}),
     io:format("Result is ~w~n", [Result2]),
     ?assertMatch(Result2, not_present),
@@ -1766,17 +1830,17 @@ big_create_file_test() ->
                                                             InitFileMD,
                                                             KL1, KL2,
                                                             #level{level=1}),
-    [{K1, {Sq1, St1, V1}}|_] = KL1,
-    [{K2, {Sq2, St2, V2}}|_] = KL2,
+    [{K1, {Sq1, St1, MH1, V1}}|_] = KL1,
+    [{K2, {Sq2, St2, MH2, V2}}|_] = KL2,
     Result1 = fetch_keyvalue(Handle, FileMD, K1),
     Result2 = fetch_keyvalue(Handle, FileMD, K2),
-    ?assertMatch(Result1, {K1, {Sq1, St1, V1}}),
-    ?assertMatch(Result2, {K2, {Sq2, St2, V2}}),
+    ?assertMatch(Result1, {K1, {Sq1, St1, MH1, V1}}),
+    ?assertMatch(Result2, {K2, {Sq2, St2, MH2, V2}}),
     SubList = lists:sublist(KL2, 1000),
-    lists:foreach(fun(K) ->
-                        {Kn, {_, _, _}} = K,
+    lists:foreach(fun(KV) ->
+                        {Kn, _} = KV,
                         Rn = fetch_keyvalue(Handle, FileMD, Kn),
-                        ?assertMatch({Kn, {_, _, _}}, Rn)
+                        ?assertMatch({Kn, _}, Rn)
                     end,
                     SubList),
     Result3 = fetch_keyvalue(Handle,
@@ -1832,13 +1896,13 @@ initial_iterator_test() ->
     ok = file:delete(Filename).
 
 key_dominates_test() ->
-    KV1 = {{o, "Bucket", "Key1", null}, {5, {active, infinity}, []}},
-    KV2 = {{o, "Bucket", "Key3", null}, {6, {active, infinity}, []}},
-    KV3 = {{o, "Bucket", "Key2", null}, {3, {active, infinity}, []}},
-    KV4 = {{o, "Bucket", "Key4", null}, {7, {active, infinity}, []}},
-    KV5 = {{o, "Bucket", "Key1", null}, {4, {active, infinity}, []}},
-    KV6 = {{o, "Bucket", "Key1", null}, {99, {tomb, 999}, []}},
-    KV7 = {{o, "Bucket", "Key1", null}, {99, tomb, []}},
+    KV1 = {{o, "Bucket", "Key1", null}, {5, {active, infinity}, 0, []}},
+    KV2 = {{o, "Bucket", "Key3", null}, {6, {active, infinity}, 0, []}},
+    KV3 = {{o, "Bucket", "Key2", null}, {3, {active, infinity}, 0, []}},
+    KV4 = {{o, "Bucket", "Key4", null}, {7, {active, infinity}, 0, []}},
+    KV5 = {{o, "Bucket", "Key1", null}, {4, {active, infinity}, 0, []}},
+    KV6 = {{o, "Bucket", "Key1", null}, {99, {tomb, 999}, 0, []}},
+    KV7 = {{o, "Bucket", "Key1", null}, {99, tomb, 0, []}},
     KL1 = [KV1, KV2],
     KL2 = [KV3, KV4],
     ?assertMatch({{next_key, KV1}, [KV2], KL2},
@@ -1968,21 +2032,21 @@ hashclash_test() ->
                                         "Bucket",
                                         "Key8400" ++ integer_to_list(X),
                                         null},
-                                Value = {X, {active, infinity}, null},
+                                Value = {X, {active, infinity}, 0, null},
                                 Acc ++ [{Key, Value}] end,
                             [],
                             lists:seq(10,98)),
-    KeyListToUse = [{Key1, {1, {active, infinity}, null}}|KeyList]
-                    ++ [{Key99, {99, {active, infinity}, null}}],
+    KeyListToUse = [{Key1, {1, {active, infinity}, 0, null}}|KeyList]
+                    ++ [{Key99, {99, {active, infinity}, 0, null}}],
     {InitHandle, InitFileMD} = create_file(Filename),
     {Handle, _FileMD, _Rem} = complete_file(InitHandle, InitFileMD,
                                                 KeyListToUse, [],
                                                 #level{level=1}),
     ok = file:close(Handle),
     {ok, SFTr, _KeyExtremes} = sft_open(Filename),
-    ?assertMatch({Key1, {1, {active, infinity}, null}},
+    ?assertMatch({Key1, {1, {active, infinity}, 0, null}},
                     sft_get(SFTr, Key1)),
-    ?assertMatch({Key99, {99, {active, infinity}, null}},
+    ?assertMatch({Key99, {99, {active, infinity}, 0, null}},
                     sft_get(SFTr, Key99)),
     ?assertMatch(not_present,
                     sft_get(SFTr, KeyNF)),

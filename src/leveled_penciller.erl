@@ -168,9 +168,11 @@
         pcl_pushmem/2,
         pcl_fetchlevelzero/2,
         pcl_fetch/2,
+        pcl_fetch/3,
         pcl_fetchkeys/5,
         pcl_fetchnextkey/5,
         pcl_checksequencenumber/3,
+        pcl_checksequencenumber/4,
         pcl_workforclerk/1,
         pcl_promptmanifestchange/2,
         pcl_confirml0complete/4,
@@ -195,10 +197,11 @@
 -define(CURRENT_FILEX, "crr").
 -define(PENDING_FILEX, "pnd").
 -define(MEMTABLE, mem).
--define(MAX_TABLESIZE, 32000).
+-define(MAX_TABLESIZE, 28000). % This is less than max - but COIN_SIDECOUNT
+-define(SUPER_MAX_TABLE_SIZE, 40000).
 -define(PROMPT_WAIT_ONL0, 5).
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
-
+-define(COIN_SIDECOUNT, 5).
 
 -record(state, {manifest = [] :: list(),
 				manifest_sqn = 0 :: integer(),
@@ -213,15 +216,15 @@
                 levelzero_pending = false :: boolean(),
                 levelzero_constructor :: pid(),
                 levelzero_cache = [] :: list(), % a list of skiplists
-                levelzero_index, 
-                % is an array - but cannot specif due to OTP compatability 
                 levelzero_size = 0 :: integer(),
                 levelzero_maxcachesize :: integer(),
+                levelzero_cointoss = false :: boolean(),
+                levelzero_index, % may be none or an ETS table reference
                 
                 is_snapshot = false :: boolean(),
                 snapshot_fully_loaded = false :: boolean(),
                 source_penciller :: pid(),
-                levelzero_astree :: list(), % skiplist
+                levelzero_astree :: list(),
                 
                 ongoing_work = [] :: list(),
                 work_backlog = false :: boolean()}).
@@ -235,9 +238,9 @@
 pcl_start(PCLopts) ->
     gen_server:start(?MODULE, [PCLopts], []).
 
-pcl_pushmem(Pid, DumpList) ->
+pcl_pushmem(Pid, LedgerCache) ->
     %% Bookie to dump memory onto penciller
-    gen_server:call(Pid, {push_mem, DumpList}, infinity).
+    gen_server:call(Pid, {push_mem, LedgerCache}, infinity).
 
 pcl_fetchlevelzero(Pid, Slot) ->
     %% Timeout to cause crash of L0 file when it can't get the close signal
@@ -248,7 +251,14 @@ pcl_fetchlevelzero(Pid, Slot) ->
     gen_server:call(Pid, {fetch_levelzero, Slot}, 60000).
     
 pcl_fetch(Pid, Key) ->
-    gen_server:call(Pid, {fetch, Key}, infinity).
+    Hash = leveled_codec:magic_hash(Key),
+    if
+        Hash /= no_lookup ->
+            gen_server:call(Pid, {fetch, Key, Hash}, infinity)
+    end.
+
+pcl_fetch(Pid, Key, Hash) ->
+    gen_server:call(Pid, {fetch, Key, Hash}, infinity).
 
 pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc) ->
     gen_server:call(Pid,
@@ -261,7 +271,14 @@ pcl_fetchnextkey(Pid, StartKey, EndKey, AccFun, InitAcc) ->
                     infinity).
 
 pcl_checksequencenumber(Pid, Key, SQN) ->
-    gen_server:call(Pid, {check_sqn, Key, SQN}, infinity).
+    Hash = leveled_codec:magic_hash(Key),
+    if
+        Hash /= no_lookup ->
+            gen_server:call(Pid, {check_sqn, Key, Hash, SQN}, infinity)
+    end.
+
+pcl_checksequencenumber(Pid, Key, Hash, SQN) ->
+    gen_server:call(Pid, {check_sqn, Key, Hash, SQN}, infinity).
 
 pcl_workforclerk(Pid) ->
     gen_server:call(Pid, work_for_clerk, infinity).
@@ -312,8 +329,9 @@ init([PCLopts]) ->
     end.    
     
 
-handle_call({push_mem, PushedTree}, From, State=#state{is_snapshot=Snap})
-                                                        when Snap == false ->
+handle_call({push_mem, {PushedTree, MinSQN, MaxSQN}},
+                From,
+                State=#state{is_snapshot=Snap}) when Snap == false ->
     % The push_mem process is as follows:
     %
     % 1 - Receive a gb_tree containing the latest Key/Value pairs (note that
@@ -341,26 +359,27 @@ handle_call({push_mem, PushedTree}, From, State=#state{is_snapshot=Snap})
         false ->
             leveled_log:log("P0018", [ok, false, false]),
             gen_server:reply(From, ok),
-            {noreply, update_levelzero(State#state.levelzero_index,
-                                        State#state.levelzero_size,
-                                        PushedTree,
+            {noreply, update_levelzero(State#state.levelzero_size,
+                                        {PushedTree, MinSQN, MaxSQN},
                                         State#state.ledger_sqn,
                                         State#state.levelzero_cache,
                                         State)}
     end;
-handle_call({fetch, Key}, _From, State) ->
+handle_call({fetch, Key, Hash}, _From, State) ->
     {reply,
         fetch_mem(Key,
+                    Hash,
                     State#state.manifest,
-                    State#state.levelzero_index,
-                    State#state.levelzero_cache),
+                    State#state.levelzero_cache,
+                    State#state.levelzero_index),
         State};
-handle_call({check_sqn, Key, SQN}, _From, State) ->
+handle_call({check_sqn, Key, Hash, SQN}, _From, State) ->
     {reply,
         compare_to_sqn(fetch_mem(Key,
+                                    Hash,
                                     State#state.manifest,
-                                    State#state.levelzero_index,
-                                    State#state.levelzero_cache),
+                                    State#state.levelzero_cache,
+                                    State#state.levelzero_index),
                         SQN),
         State};
 handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
@@ -393,16 +412,15 @@ handle_call(get_startup_sqn, _From, State) ->
 handle_call({register_snapshot, Snapshot}, _From, State) ->
     Rs = [{Snapshot, State#state.manifest_sqn}|State#state.registered_snapshots],
     {reply, {ok, State}, State#state{registered_snapshots = Rs}};
-handle_call({load_snapshot, BookieIncrTree}, _From, State) ->
-    L0D = leveled_pmem:add_to_index(State#state.levelzero_index,
-                                        State#state.levelzero_size,
-                                        BookieIncrTree,
+handle_call({load_snapshot, {BookieIncrTree, MinSQN, MaxSQN}}, _From, State) ->
+    L0D = leveled_pmem:add_to_cache(State#state.levelzero_size,
+                                        {BookieIncrTree, MinSQN, MaxSQN},
                                         State#state.ledger_sqn,
                                         State#state.levelzero_cache),
-    {LedgerSQN, L0Size, L0Index, L0Cache} = L0D,
+    {LedgerSQN, L0Size, L0Cache} = L0D,
     {reply, ok, State#state{levelzero_cache=L0Cache,
-                                levelzero_index=L0Index,
                                 levelzero_size=L0Size,
+                                levelzero_index=none,
                                 ledger_sqn=LedgerSQN,
                                 snapshot_fully_loaded=true}};
 handle_call({fetch_levelzero, Slot}, _From, State) ->
@@ -448,11 +466,11 @@ handle_cast({levelzero_complete, FN, StartKey, EndKey}, State) ->
                                 filename=FN},
     UpdMan = lists:keystore(0, 1, State#state.manifest, {0, [ManEntry]}),
     % Prompt clerk to ask about work - do this for every L0 roll
+    leveled_pmem:clear_index(State#state.levelzero_index),
     ok = leveled_pclerk:clerk_prompt(State#state.clerk),
     {noreply, State#state{levelzero_cache=[],
                             levelzero_pending=false,
                             levelzero_constructor=undefined,
-                            levelzero_index=leveled_pmem:new_index(),
                             levelzero_size=0,
                             manifest=UpdMan,
                             persisted_sqn=State#state.ledger_sqn}}.
@@ -537,10 +555,17 @@ start_from_file(PCLopts) ->
                     end,
     
     {ok, MergeClerk} = leveled_pclerk:clerk_new(self()),
+    
+    CoinToss = PCLopts#penciller_options.levelzero_cointoss,
+    % Used to randomly defer the writing of L0 file.  Intended to help with
+    % vnode syncronisation issues (e.g. stop them all by default merging to
+    % level zero concurrently)
+    
     InitState = #state{clerk=MergeClerk,
                         root_path=RootPath,
-                        levelzero_index = leveled_pmem:new_index(),
-                        levelzero_maxcachesize=MaxTableSize},
+                        levelzero_maxcachesize=MaxTableSize,
+                        levelzero_cointoss=CoinToss,
+                        levelzero_index=leveled_pmem:new_index()},
     
     %% Open manifest
     ManifestPath = InitState#state.root_path ++ "/" ++ ?MANIFEST_FP ++ "/",
@@ -614,32 +639,51 @@ start_from_file(PCLopts) ->
 
 
 
-update_levelzero(L0Index, L0Size, PushedTree, LedgerSQN, L0Cache, State) ->
-    Update = leveled_pmem:add_to_index(L0Index,
-                                        L0Size,
-                                        PushedTree,
+update_levelzero(L0Size, {PushedTree, MinSQN, MaxSQN},
+                                                LedgerSQN, L0Cache, State) ->
+    SW = os:timestamp(),
+    Update = leveled_pmem:add_to_cache(L0Size,
+                                        {PushedTree, MinSQN, MaxSQN},
                                         LedgerSQN,
                                         L0Cache),
-    {MaxSQN, NewL0Size, UpdL0Index, UpdL0Cache} = Update,
+    leveled_pmem:add_to_index(PushedTree, State#state.levelzero_index),
+    
+    {UpdMaxSQN, NewL0Size, UpdL0Cache} = Update,
     if
-        MaxSQN >= LedgerSQN ->
+        UpdMaxSQN >= LedgerSQN ->
             UpdState = State#state{levelzero_cache=UpdL0Cache,
-                                    levelzero_index=UpdL0Index,
                                     levelzero_size=NewL0Size,
-                                    ledger_sqn=MaxSQN},
+                                    ledger_sqn=UpdMaxSQN},
             CacheTooBig = NewL0Size > State#state.levelzero_maxcachesize,
+            CacheMuchTooBig = NewL0Size > ?SUPER_MAX_TABLE_SIZE,
             Level0Free = length(get_item(0, State#state.manifest, [])) == 0,
-            case {CacheTooBig, Level0Free} of
-                {true, true}  ->
-                    L0Constructor = roll_memory(UpdState, false),        
+            RandomFactor =
+                case State#state.levelzero_cointoss of
+                    true ->
+                        case random:uniform(?COIN_SIDECOUNT) of
+                            1 ->
+                                true;
+                            _ ->
+                                false
+                        end;
+                    false ->
+                        true
+                end,
+            JitterCheck = RandomFactor or CacheMuchTooBig,
+            case {CacheTooBig, Level0Free, JitterCheck} of
+                {true, true, true}  ->
+                    L0Constructor = roll_memory(UpdState, false),
+                    leveled_log:log_timer("P0031", [], SW),
                     UpdState#state{levelzero_pending=true,
                                     levelzero_constructor=L0Constructor};
                 _ ->
+                    leveled_log:log_timer("P0031", [], SW),
                     UpdState
             end;
+        
         NewL0Size == L0Size ->
+            leveled_log:log_timer("P0031", [], SW),
             State#state{levelzero_cache=L0Cache,
-                        levelzero_index=L0Index,
                         levelzero_size=L0Size,
                         ledger_sqn=LedgerSQN}
     end.
@@ -687,13 +731,21 @@ levelzero_filename(State) ->
     FileName.
 
 
-fetch_mem(Key, Manifest, L0Index, L0Cache) ->
-    L0Check = leveled_pmem:check_levelzero(Key, L0Index, L0Cache),
+
+fetch_mem(Key, Hash, Manifest, L0Cache, none) ->
+    L0Check = leveled_pmem:check_levelzero(Key, Hash, L0Cache),
     case L0Check of
         {false, not_found} ->
             fetch(Key, Manifest, 0, fun leveled_sft:sft_get/2);
         {true, KV} ->
             KV
+    end;
+fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
+    case leveled_pmem:check_index(Hash, L0Index) of
+        true ->
+            fetch_mem(Key, Hash, Manifest, L0Cache, none);
+        false ->
+            fetch(Key, Manifest, 0, fun leveled_sft:sft_get/2)
     end.
 
 fetch(_Key, _Manifest, ?MAX_LEVELS + 1, _FetchFun) ->
@@ -706,8 +758,8 @@ fetch(Key, Manifest, Level, FetchFun) ->
                                     Key >= File#manifest_entry.start_key,
                                     File#manifest_entry.end_key >= Key ->
                                 File#manifest_entry.owner;
-                            PidFound ->
-                                PidFound
+                            FoundDetails ->
+                                FoundDetails
                         end end,
                         not_present,
                         LevelManifest) of
@@ -1263,9 +1315,13 @@ confirm_delete_test() ->
 
 
 maybe_pause_push(PCL, KL) ->
-    T0 = leveled_skiplist:empty(),
-    T1 = lists:foldl(fun({K, V}, Acc) -> leveled_skiplist:enter(K, V, Acc) end,
-                        T0,
+    T0 = leveled_skiplist:empty(true),
+    T1 = lists:foldl(fun({K, V}, {AccSL, MinSQN, MaxSQN}) ->
+                            SL = leveled_skiplist:enter(K, V, AccSL),
+                            SQN = leveled_codec:strip_to_seqonly({K, V}),
+                            {SL, min(SQN, MinSQN), max(SQN, MaxSQN)}
+                            end,
+                        {T0, infinity, 0},
                         KL),
     case pcl_pushmem(PCL, T1) of
         returned ->
@@ -1275,23 +1331,32 @@ maybe_pause_push(PCL, KL) ->
             ok
     end.
 
+%% old test data doesn't have the magic hash
+add_missing_hash({K, {SQN, ST, MD}}) ->
+    {K, {SQN, ST, leveled_codec:magic_hash(K), MD}}.
+
+
 simple_server_test() ->
     RootPath = "../test/ledger",
     clean_testdir(RootPath),
     {ok, PCL} = pcl_start(#penciller_options{root_path=RootPath,
                                                 max_inmemory_tablesize=1000}),
-    Key1 = {{o,"Bucket0001", "Key0001", null},
-                {1, {active, infinity}, null}},
+    Key1_Pre = {{o,"Bucket0001", "Key0001", null},
+                    {1, {active, infinity}, null}},
+    Key1 = add_missing_hash(Key1_Pre),
     KL1 = leveled_sft:generate_randomkeys({1000, 2}),
-    Key2 = {{o,"Bucket0002", "Key0002", null},
+    Key2_Pre = {{o,"Bucket0002", "Key0002", null},
                 {1002, {active, infinity}, null}},
+    Key2 = add_missing_hash(Key2_Pre),
     KL2 = leveled_sft:generate_randomkeys({900, 1003}),
     % Keep below the max table size by having 900 not 1000
-    Key3 = {{o,"Bucket0003", "Key0003", null},
+    Key3_Pre = {{o,"Bucket0003", "Key0003", null},
                 {2003, {active, infinity}, null}},
+    Key3 = add_missing_hash(Key3_Pre),
     KL3 = leveled_sft:generate_randomkeys({1000, 2004}), 
-    Key4 = {{o,"Bucket0004", "Key0004", null},
+    Key4_Pre = {{o,"Bucket0004", "Key0004", null},
                 {3004, {active, infinity}, null}},
+    Key4 = add_missing_hash(Key4_Pre),
     KL4 = leveled_sft:generate_randomkeys({1000, 3005}),
     ok = maybe_pause_push(PCL, [Key1]),
     ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001", null})),
@@ -1331,7 +1396,8 @@ simple_server_test() ->
     SnapOpts = #penciller_options{start_snapshot = true,
                                     source_penciller = PCLr},
     {ok, PclSnap} = pcl_start(SnapOpts),
-    ok = pcl_loadsnapshot(PclSnap, leveled_skiplist:empty()),
+    leveled_bookie:load_snapshot(PclSnap,
+                                    leveled_bookie:empty_ledgercache()),
     ?assertMatch(Key1, pcl_fetch(PclSnap, {o,"Bucket0001", "Key0001", null})),
     ?assertMatch(Key2, pcl_fetch(PclSnap, {o,"Bucket0002", "Key0002", null})),
     ?assertMatch(Key3, pcl_fetch(PclSnap, {o,"Bucket0003", "Key0003", null})),
@@ -1363,7 +1429,9 @@ simple_server_test() ->
     % Add some more keys and confirm that check sequence number still
     % sees the old version in the previous snapshot, but will see the new version
     % in a new snapshot
-    Key1A = {{o,"Bucket0001", "Key0001", null}, {4005, {active, infinity}, null}},
+    Key1A_Pre = {{o,"Bucket0001", "Key0001", null},
+                    {4005, {active, infinity}, null}},
+    Key1A = add_missing_hash(Key1A_Pre),
     KL1A = leveled_sft:generate_randomkeys({2000, 4006}),
     ok = maybe_pause_push(PCLr, [Key1A]),
     ok = maybe_pause_push(PCLr, KL1A),
@@ -1380,7 +1448,7 @@ simple_server_test() ->
                             term_to_binary("Hello")),
     
     {ok, PclSnap2} = pcl_start(SnapOpts),
-    ok = pcl_loadsnapshot(PclSnap2, leveled_skiplist:empty()),
+    leveled_bookie:load_snapshot(PclSnap2, leveled_bookie:empty_ledgercache()),
     ?assertMatch(false, pcl_checksequencenumber(PclSnap2,
                                                 {o,
                                                     "Bucket0001",
@@ -1486,23 +1554,26 @@ simple_findnextkey_test() ->
 
 sqnoverlap_findnextkey_test() ->
     QueryArray = [
-    {2, [{{o, "Bucket1", "Key1"}, {5, {active, infinity}, null}},
-            {{o, "Bucket1", "Key5"}, {4, {active, infinity}, null}}]},
-    {3, [{{o, "Bucket1", "Key3"}, {3, {active, infinity}, null}}]},
-    {5, [{{o, "Bucket1", "Key5"}, {2, {active, infinity}, null}}]}
+    {2, [{{o, "Bucket1", "Key1"}, {5, {active, infinity}, 0, null}},
+            {{o, "Bucket1", "Key5"}, {4, {active, infinity}, 0, null}}]},
+    {3, [{{o, "Bucket1", "Key3"}, {3, {active, infinity}, 0, null}}]},
+    {5, [{{o, "Bucket1", "Key5"}, {2, {active, infinity}, 0, null}}]}
     ],
     {Array2, KV1} = find_nextkey(QueryArray,
                                     {o, "Bucket1", "Key0"},
                                     {o, "Bucket1", "Key5"}),
-    ?assertMatch({{o, "Bucket1", "Key1"}, {5, {active, infinity}, null}}, KV1),
+    ?assertMatch({{o, "Bucket1", "Key1"}, {5, {active, infinity}, 0, null}},
+                    KV1),
     {Array3, KV2} = find_nextkey(Array2,
                                     {o, "Bucket1", "Key0"},
                                     {o, "Bucket1", "Key5"}),
-    ?assertMatch({{o, "Bucket1", "Key3"}, {3, {active, infinity}, null}}, KV2),
+    ?assertMatch({{o, "Bucket1", "Key3"}, {3, {active, infinity}, 0, null}},
+                    KV2),
     {Array4, KV3} = find_nextkey(Array3,
                                     {o, "Bucket1", "Key0"},
                                     {o, "Bucket1", "Key5"}),
-    ?assertMatch({{o, "Bucket1", "Key5"}, {4, {active, infinity}, null}}, KV3),
+    ?assertMatch({{o, "Bucket1", "Key5"}, {4, {active, infinity}, 0, null}},
+                    KV3),
     ER = find_nextkey(Array4,
                         {o, "Bucket1", "Key0"},
                         {o, "Bucket1", "Key5"}),
@@ -1510,23 +1581,26 @@ sqnoverlap_findnextkey_test() ->
 
 sqnoverlap_otherway_findnextkey_test() ->
     QueryArray = [
-    {2, [{{o, "Bucket1", "Key1"}, {5, {active, infinity}, null}},
-            {{o, "Bucket1", "Key5"}, {1, {active, infinity}, null}}]},
-    {3, [{{o, "Bucket1", "Key3"}, {3, {active, infinity}, null}}]},
-    {5, [{{o, "Bucket1", "Key5"}, {2, {active, infinity}, null}}]}
+    {2, [{{o, "Bucket1", "Key1"}, {5, {active, infinity}, 0, null}},
+            {{o, "Bucket1", "Key5"}, {1, {active, infinity}, 0, null}}]},
+    {3, [{{o, "Bucket1", "Key3"}, {3, {active, infinity}, 0, null}}]},
+    {5, [{{o, "Bucket1", "Key5"}, {2, {active, infinity}, 0, null}}]}
     ],
     {Array2, KV1} = find_nextkey(QueryArray,
                                     {o, "Bucket1", "Key0"},
                                     {o, "Bucket1", "Key5"}),
-    ?assertMatch({{o, "Bucket1", "Key1"}, {5, {active, infinity}, null}}, KV1),
+    ?assertMatch({{o, "Bucket1", "Key1"}, {5, {active, infinity}, 0, null}},
+                    KV1),
     {Array3, KV2} = find_nextkey(Array2,
                                     {o, "Bucket1", "Key0"},
                                     {o, "Bucket1", "Key5"}),
-    ?assertMatch({{o, "Bucket1", "Key3"}, {3, {active, infinity}, null}}, KV2),
+    ?assertMatch({{o, "Bucket1", "Key3"}, {3, {active, infinity}, 0, null}},
+                    KV2),
     {Array4, KV3} = find_nextkey(Array3,
                                     {o, "Bucket1", "Key0"},
                                     {o, "Bucket1", "Key5"}),
-    ?assertMatch({{o, "Bucket1", "Key5"}, {2, {active, infinity}, null}}, KV3),
+    ?assertMatch({{o, "Bucket1", "Key5"}, {2, {active, infinity}, 0, null}},
+                    KV3),
     ER = find_nextkey(Array4,
                         {o, "Bucket1", "Key0"},
                         {o, "Bucket1", "Key5"}),
@@ -1534,19 +1608,19 @@ sqnoverlap_otherway_findnextkey_test() ->
 
 foldwithimm_simple_test() ->
     QueryArray = [
-        {2, [{{o, "Bucket1", "Key1"}, {5, {active, infinity}, null}},
-                {{o, "Bucket1", "Key5"}, {1, {active, infinity}, null}}]},
-        {3, [{{o, "Bucket1", "Key3"}, {3, {active, infinity}, null}}]},
-        {5, [{{o, "Bucket1", "Key5"}, {2, {active, infinity}, null}}]}
+        {2, [{{o, "Bucket1", "Key1"}, {5, {active, infinity}, 0, null}},
+                {{o, "Bucket1", "Key5"}, {1, {active, infinity}, 0, null}}]},
+        {3, [{{o, "Bucket1", "Key3"}, {3, {active, infinity}, 0, null}}]},
+        {5, [{{o, "Bucket1", "Key5"}, {2, {active, infinity}, 0, null}}]}
     ],
     IMM0 = leveled_skiplist:enter({o, "Bucket1", "Key6"},
-                                        {7, {active, infinity}, null},
+                                        {7, {active, infinity}, 0, null},
                                     leveled_skiplist:empty()),
     IMM1 = leveled_skiplist:enter({o, "Bucket1", "Key1"},
-                                        {8, {active, infinity}, null},
+                                        {8, {active, infinity}, 0, null},
                                     IMM0),
     IMM2 = leveled_skiplist:enter({o, "Bucket1", "Key8"},
-                                        {9, {active, infinity}, null},
+                                        {9, {active, infinity}, 0, null},
                                     IMM1),
     IMMiter = leveled_skiplist:to_range(IMM2, {o, "Bucket1", "Key1"}),
     AccFun = fun(K, V, Acc) -> SQN = leveled_codec:strip_to_seqonly({K, V}),
@@ -1561,7 +1635,7 @@ foldwithimm_simple_test() ->
                     {{o, "Bucket1", "Key6"}, 7}], Acc),
     
     IMM1A = leveled_skiplist:enter({o, "Bucket1", "Key1"},
-                                        {8, {active, infinity}, null},
+                                        {8, {active, infinity}, 0, null},
                                     leveled_skiplist:empty()),
     IMMiterA = leveled_skiplist:to_range(IMM1A, {o, "Bucket1", "Key1"}),
     AccA = keyfolder(IMMiterA,
@@ -1573,7 +1647,7 @@ foldwithimm_simple_test() ->
                     {{o, "Bucket1", "Key5"}, 2}], AccA),
     
     IMM3 = leveled_skiplist:enter({o, "Bucket1", "Key4"},
-                                     {10, {active, infinity}, null},
+                                     {10, {active, infinity}, 0, null},
                                     IMM2),
     IMMiterB = leveled_skiplist:to_range(IMM3, {o, "Bucket1", "Key1"}),
     AccB = keyfolder(IMMiterB,
@@ -1668,14 +1742,15 @@ badmanifest_test() ->
     clean_testdir(RootPath),
     {ok, PCL} = pcl_start(#penciller_options{root_path=RootPath,
                                                 max_inmemory_tablesize=1000}),
-    Key1 = {{o,"Bucket0001", "Key0001", null},
+    Key1_pre = {{o,"Bucket0001", "Key0001", null},
                 {1001, {active, infinity}, null}},
+    Key1 = add_missing_hash(Key1_pre),
     KL1 = leveled_sft:generate_randomkeys({1000, 1}),
     
     ok = maybe_pause_push(PCL, KL1 ++ [Key1]),
     %% Added together, as split apart there will be a race between the close
     %% call to the penciller and the second fetch of the cache entry
-    ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001", null})),
+    ?assertMatch(Key1, pcl_fetch(PCL, {o, "Bucket0001", "Key0001", null})),
     
     timer:sleep(100), % Avoids confusion if L0 file not written before close
     ok = pcl_close(PCL),
