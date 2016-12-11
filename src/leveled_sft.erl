@@ -973,14 +973,14 @@ create_block(KeyList1, KeyList2,
             {lists:reverse(BlockKeyList),
                 complete,
                 {LSN, HSN},
-                lists:reverse(SegmentList),
+                SegmentList,
                 Bloom,
                 [], []};
         _ ->
             {lists:reverse(BlockKeyList),
                 full,
                 {LSN, HSN},
-                lists:reverse(SegmentList),
+                SegmentList,
                 Bloom,
                 KeyList1, KeyList2}
     end;
@@ -988,7 +988,7 @@ create_block([], [], BlockKeyList, {LSN, HSN}, SegmentList, _LevelR, Bloom) ->
     {lists:reverse(BlockKeyList),
         partial,
         {LSN, HSN},
-        lists:reverse(SegmentList),
+        SegmentList,
         Bloom,
         [], []};
 create_block(KeyList1, KeyList2,
