@@ -197,7 +197,8 @@
 -define(CURRENT_FILEX, "crr").
 -define(PENDING_FILEX, "pnd").
 -define(MEMTABLE, mem).
--define(MAX_TABLESIZE, 28000). % This is less than max - but COIN_SIDECOUNT
+-define(MAX_TABLESIZE, 25000). % This is less than max - but COIN_SIDECOUNT
+-define(SUPER_MAX_TABLE_SIZE, 45000)
 -define(PROMPT_WAIT_ONL0, 5).
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
 -define(COIN_SIDECOUNT, 4).
@@ -645,6 +646,7 @@ update_levelzero(L0Size, {PushedTree, MinSQN, MaxSQN},
                                     levelzero_size=NewL0Size,
                                     ledger_sqn=UpdMaxSQN},
             CacheTooBig = NewL0Size > State#state.levelzero_maxcachesize,
+            CacheMuchTooBig = NewL0Size > ?SUPER_MAX_TABLE_SIZE,
             Level0Free = length(get_item(0, State#state.manifest, [])) == 0,
             RandomFactor =
                 case State#state.levelzero_cointoss of
@@ -658,7 +660,7 @@ update_levelzero(L0Size, {PushedTree, MinSQN, MaxSQN},
                     false ->
                         true
                 end,
-            case {CacheTooBig, Level0Free, RandomFactor} of
+            case {CacheTooBig, Level0Free, RandomFactor or CacheMuchTooBig} of
                 {true, true, true}  ->
                     L0Constructor = roll_memory(UpdState, false),        
                     UpdState#state{levelzero_pending=true,
