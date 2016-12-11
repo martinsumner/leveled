@@ -1082,7 +1082,7 @@ create_slot(KL1, KL2, LevelR, BlockCount, Bloom,
                     TrackingMetadata).
 
 serialise_block(BlockKeyList) ->
-    term_to_binary(BlockKeyList, [{compressed, ?COMPRESSION_LEVEL}]).
+    term_to_binary(BlockKeyList).
 
 
 %% Compare the keys at the head of the list, and either skip that "best" key or
