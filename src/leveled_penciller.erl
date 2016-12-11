@@ -175,7 +175,7 @@
         pcl_checksequencenumber/4,
         pcl_workforclerk/1,
         pcl_promptmanifestchange/2,
-        pcl_confirml0complete/4,
+        pcl_confirml0complete/5,
         pcl_confirmdelete/2,
         pcl_close/1,
         pcl_doom/1,
@@ -285,8 +285,8 @@ pcl_workforclerk(Pid) ->
 pcl_promptmanifestchange(Pid, WI) ->
     gen_server:cast(Pid, {manifest_change, WI}).
 
-pcl_confirml0complete(Pid, FN, StartKey, EndKey) ->
-    gen_server:cast(Pid, {levelzero_complete, FN, StartKey, EndKey}).
+pcl_confirml0complete(Pid, FN, StartKey, EndKey, Bloom) ->
+    gen_server:cast(Pid, {levelzero_complete, FN, StartKey, EndKey, Bloom}).
 
 pcl_confirmdelete(Pid, FileName) ->
     gen_server:cast(Pid, {confirm_delete, FileName}).
@@ -454,10 +454,11 @@ handle_cast({confirm_delete, FileName}, State=#state{is_snapshot=Snap})
         _ ->
             {noreply, State}
     end;
-handle_cast({levelzero_complete, FN, StartKey, EndKey}, State) ->
+handle_cast({levelzero_complete, FN, StartKey, EndKey, Bloom}, State) ->
     leveled_log:log("P0029", []),
     ManEntry = #manifest_entry{start_key=StartKey,
                                 end_key=EndKey,
+                                bloom=Bloom,
                                 owner=State#state.levelzero_constructor,
                                 filename=FN},
     UpdMan = lists:keystore(0, 1, State#state.manifest, {0, [ManEntry]}),
@@ -721,34 +722,40 @@ fetch_mem(Key, Hash, Manifest, L0Cache) ->
     L0Check = leveled_pmem:check_levelzero(Key, Hash, L0Cache),
     case L0Check of
         {false, not_found} ->
-            fetch(Key, Manifest, 0, fun leveled_sft:sft_get/2);
+            fetch(Key, Hash, Manifest, 0, fun leveled_sft:sft_get/2);
         {true, KV} ->
             KV
     end.
 
-fetch(_Key, _Manifest, ?MAX_LEVELS + 1, _FetchFun) ->
+fetch(_Key, _Hash, _Manifest, ?MAX_LEVELS + 1, _FetchFun) ->
     not_present;
-fetch(Key, Manifest, Level, FetchFun) ->
+fetch(Key, Hash, Manifest, Level, FetchFun) ->
     LevelManifest = get_item(Level, Manifest, []),
     case lists:foldl(fun(File, Acc) ->
                         case Acc of
                             not_present when
                                     Key >= File#manifest_entry.start_key,
                                     File#manifest_entry.end_key >= Key ->
-                                File#manifest_entry.owner;
-                            PidFound ->
-                                PidFound
+                                {File#manifest_entry.owner,
+                                    File#manifest_entry.bloom};
+                            FoundDetails ->
+                                FoundDetails
                         end end,
                         not_present,
                         LevelManifest) of
         not_present ->
-            fetch(Key, Manifest, Level + 1, FetchFun);
-        FileToCheck ->
-            case FetchFun(FileToCheck, Key) of
-                not_present ->
-                    fetch(Key, Manifest, Level + 1, FetchFun);
-                ObjectFound ->
-                    ObjectFound
+            fetch(Key, Hash, Manifest, Level + 1, FetchFun);
+        {FileToCheck, Bloom} ->
+            case leveled_tinybloom:check({hash, Hash}, Bloom) of
+                true ->
+                    case FetchFun(FileToCheck, Key) of
+                        not_present ->
+                            fetch(Key, Hash, Manifest, Level + 1, FetchFun);
+                        ObjectFound ->
+                            ObjectFound
+                    end;
+                false ->
+                    fetch(Key, Hash, Manifest, Level + 1, FetchFun)
             end
     end.
     

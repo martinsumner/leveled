@@ -41,6 +41,7 @@
                         {start_key :: tuple(),
                         end_key :: tuple(),
                         owner :: pid(),
+                        bloom,
                         filename :: string()}).
 
 -record(cdb_options,

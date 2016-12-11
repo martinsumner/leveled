@@ -33,6 +33,8 @@ empty(Width) when Width =< 256 ->
     FoldFun = fun(X, Acc) -> dict:store(X, <<0:4096>>, Acc) end,
     lists:foldl(FoldFun, dict:new(), lists:seq(0, Width - 1)).
 
+enter({hash, no_lookup}, Bloom) ->
+    Bloom;
 enter({hash, Hash}, Bloom) ->
     {H0, Bit1, Bit2} = split_hash(Hash),
     Slot = H0 rem dict:size(Bloom),
@@ -45,6 +47,8 @@ enter(Key, Bloom) ->
     Hash = leveled_codec:magic_hash(Key),
     enter({hash, Hash}, Bloom).
 
+check({hash, _Hash}, undefined) ->
+    true;
 check({hash, Hash}, Bloom) ->
     {H0, Bit1, Bit2} = split_hash(Hash),
     Slot = H0 rem dict:size(Bloom),
