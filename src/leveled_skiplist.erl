@@ -57,7 +57,7 @@ enter(Key, Hash, Value, SkipList) ->
                 leveled_tinybloom:enter({hash, Hash}, Bloom)
         end,
     {Bloom0,
-        enter(Key, Value, Hash,
+        enter(Key, Value, erlang:phash2(Key),
                 element(2, SkipList),
                 ?SKIP_WIDTH, ?LIST_HEIGHT)}.
 
