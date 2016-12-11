@@ -88,6 +88,9 @@ add_to_index(LevelMinus1, L0Index) ->
 new_index() ->
     ets:new(l0index, [private, set]).
 
+clear_index(L0Index) ->
+    ets:delete_all_objects(L0Index).
+
 check_index(Hash, L0Index) ->
     case ets:lookup(L0Index, Hash) of
         [{Hash}] ->

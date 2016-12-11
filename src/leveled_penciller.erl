@@ -467,12 +467,12 @@ handle_cast({levelzero_complete, FN, StartKey, EndKey, Bloom}, State) ->
                                 filename=FN},
     UpdMan = lists:keystore(0, 1, State#state.manifest, {0, [ManEntry]}),
     % Prompt clerk to ask about work - do this for every L0 roll
+    leveled_pmem:clear_index(State#state.levelzero_index),
     ok = leveled_pclerk:clerk_prompt(State#state.clerk),
     {noreply, State#state{levelzero_cache=[],
                             levelzero_pending=false,
                             levelzero_constructor=undefined,
                             levelzero_size=0,
-                            levelzero_index=leveled_pmem:new_index(),
                             manifest=UpdMan,
                             persisted_sqn=State#state.ledger_sqn}}.
 
