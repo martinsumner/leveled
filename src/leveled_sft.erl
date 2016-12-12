@@ -836,7 +836,7 @@ write_keys(Handle, KL1, KL2, LevelR, WriteFun, WState,
             {complete_keywrite(Handle0, WState0, WriteFun), {[], []}};
         {full, KL1Rem, KL2Rem} ->
             write_keys(Handle, KL1Rem, KL2Rem, LevelR, WriteFun, WState,
-                        {SlotC + 1, SlotT, SlotLists ++ [BlockKeyLists]})
+                        {SlotC + 1, SlotT + 1, SlotLists ++ [BlockKeyLists]})
     end.
     
 
