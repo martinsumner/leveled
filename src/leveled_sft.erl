@@ -401,7 +401,7 @@ reader(close, _From, State) ->
     ok = file:close(State#state.handle),
     {stop, normal, ok, State}.
 
-delete_pending({get_kv, Key}, _From, State) ->
+delete_pending({get_kv, Key, Hash}, _From, State) ->
     Reply =
         case leveled_tinybloom:check({hash, Hash}, State#state.bloom) of
             false ->
