@@ -402,7 +402,13 @@ reader(close, _From, State) ->
     {stop, normal, ok, State}.
 
 delete_pending({get_kv, Key}, _From, State) ->
-    Reply = fetch_keyvalue(State#state.handle, State, Key),
+    Reply =
+        case leveled_tinybloom:check({hash, Hash}, State#state.bloom) of
+            false ->
+                not_present;
+            true ->
+                fetch_keyvalue(State#state.handle, State, Key)
+        end,
     {reply, Reply, delete_pending, State, ?DELETE_TIMEOUT};
 delete_pending({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
     Reply = pointer_append_queryresults(fetch_range_kv(State#state.handle,
