@@ -736,7 +736,7 @@ fetch_mem(Key, Hash, Manifest, L0Cache, none) ->
     L0Check = leveled_pmem:check_levelzero(Key, Hash, L0Cache),
     case L0Check of
         {false, not_found} ->
-            fetch(Key, Manifest, 0, fun leveled_sft:sft_get/2);
+            fetch(Key, Hash, Manifest, 0, fun leveled_sft:sft_get/3);
         {true, KV} ->
             KV
     end;
@@ -745,12 +745,12 @@ fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
         true ->
             fetch_mem(Key, Hash, Manifest, L0Cache, none);
         false ->
-            fetch(Key, Manifest, 0, fun leveled_sft:sft_get/2)
+            fetch(Key, Hash, Manifest, 0, fun leveled_sft:sft_get/3)
     end.
 
-fetch(_Key, _Manifest, ?MAX_LEVELS + 1, _FetchFun) ->
+fetch(_Key, _Hash, _Manifest, ?MAX_LEVELS + 1, _FetchFun) ->
     not_present;
-fetch(Key, Manifest, Level, FetchFun) ->
+fetch(Key, Hash, Manifest, Level, FetchFun) ->
     LevelManifest = get_item(Level, Manifest, []),
     case lists:foldl(fun(File, Acc) ->
                         case Acc of
@@ -764,11 +764,11 @@ fetch(Key, Manifest, Level, FetchFun) ->
                         not_present,
                         LevelManifest) of
         not_present ->
-            fetch(Key, Manifest, Level + 1, FetchFun);
+            fetch(Key, Hash, Manifest, Level + 1, FetchFun);
         FileToCheck ->
-            case FetchFun(FileToCheck, Key) of
+            case FetchFun(FileToCheck, Key, Hash) of
                 not_present ->
-                    fetch(Key, Manifest, Level + 1, FetchFun);
+                    fetch(Key, Hash, Manifest, Level + 1, FetchFun);
                 ObjectFound ->
                     ObjectFound
             end
