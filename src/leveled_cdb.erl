@@ -1172,8 +1172,8 @@ write_hash_tables([Index|Rest], HashTree, CurrPos, IndexList, HashTreeBin) ->
         true ->
             write_hash_tables(Rest, HashTree, CurrPos, IndexList, HashTreeBin);
         false ->
-            HashList = to_list(HashTree, Index),
-            BinList = build_binaryhashlist(HashList, []),
+            BinList = to_binarylist(HashTree, Index),
+            % BinList = build_binaryhashlist(HashList, []),
             IndexLength = length(BinList) * 2,
             SlotList = lists:duplicate(IndexLength, <<0:32, 0:32>>),
     
@@ -1195,26 +1195,6 @@ write_hash_tables([Index|Rest], HashTree, CurrPos, IndexList, HashTreeBin) ->
                                 NewSlotBin)
     end.
 
-%% The list created from the original HashTree may have duplicate positions 
-%% e.g. {Key, [Value1, Value2]}.  Before any writing is done it is necessary
-%% to know the actual number of hashes - or the Slot may not be sized correctly
-%%
-%% This function creates {Hash, Binary} pairs on a list where there is a unique
-%% entry for eveyr Key/Value
-build_binaryhashlist([], BinList) ->
-    BinList;
-build_binaryhashlist([{Hash, [Position|TailP]}|TailKV], BinList) ->
-    HashLE = endian_flip(Hash),
-    PosLE = endian_flip(Position),
-    NewBin = <<HashLE:32, PosLE:32>>,
-    case TailP of 
-        [] ->
-            build_binaryhashlist(TailKV,
-                                    [{Hash, NewBin}|BinList]);
-        _ ->
-            build_binaryhashlist([{Hash, TailP}|TailKV],
-                                    [{Hash, NewBin}|BinList])
-    end.
 
 %% Slot is zero based because it comes from a REM
 find_open_slot(List, Hash) ->
@@ -1319,42 +1299,33 @@ multi_key_value_to_record(KVList, BinaryMode, LastPosition) ->
 %%%============================================================================
 
 lookup_positions(HashTree, Index, Hash) ->
-    Tree = array:get(Index, HashTree),
-    case leveled_skiplist:lookup(Hash, Tree) of 
-        {value, List} ->
-            List;
-        _ ->
-            []
-    end.
+    ConvertObjFun = fun({{_Idx, _H}, P}) -> P end,
+    lists:map(ConvertObjFun, ets:lookup(HashTree, {Index, Hash})).
 
 add_position_tohashtree(HashTree, Index, Hash, Position) ->
-    Tree = array:get(Index, HashTree),
-    case leveled_skiplist:lookup(Hash, Tree) of 
-        none ->
-            array:set(Index,
-                        leveled_skiplist:enter(Hash, [Position], Tree),
-                        HashTree);
-        {value, L} ->
-            array:set(Index,
-                        leveled_skiplist:enter(Hash, [Position|L], Tree),
-                        HashTree)
-    end.
+    ets:insert(HashTree, {{Index, Hash}, Position}),
+    HashTree.
 
 new_hashtree() ->
-    array:new(256, {default, leveled_skiplist:empty()}).
+    ets:new(hashtree, [bag]).
 
 is_empty(HashTree, Index) ->
-    Tree = array:get(Index, HashTree),
-    case leveled_skiplist:size(Tree) of
-        0 ->
+    case ets:match(HashTree, {{Index, '_'}, '_'}) of
+        '$end_of_table' ->
             true;
         _ ->
             false
     end.
 
-to_list(HashTree, Index) ->
-    Tree = array:get(Index, HashTree),
-    leveled_skiplist:to_list(Tree).
+to_binarylist(HashTree, Index) ->
+    ConvertObjFun =
+        fun({{_Idx, Hash}, Position}) ->
+            HashLE = endian_flip(Hash),
+            PosLE = endian_flip(Position),
+            NewBin = <<HashLE:32, PosLE:32>>,
+            {Hash, NewBin}
+        end,
+    lists:map(ConvertObjFun, ets:match_object(HashTree, {{Index, '_'}, '_'})).
 
 %%%%%%%%%%%%%%%%
 % T E S T 
@@ -1405,51 +1376,6 @@ to_dict(FileName) ->
     dict:from_list(KeyValueList).
     
 
-
-
-write_key_value_pairs_1_test() ->
-    {ok,Handle} = file:open("../test/test.cdb",[write]),
-    {_, HashTree} = write_key_value_pairs(Handle,
-                                            [{"key1","value1"},
-                                                {"key2","value2"}]),
-    Hash1 = hash("key1"),
-    Index1 = hash_to_index(Hash1),
-    Hash2 = hash("key2"),
-    Index2 = hash_to_index(Hash2),
-    R0 = array:new(256, {default, leveled_skiplist:empty()}),
-    R1 = array:set(Index1,
-                    leveled_skiplist:enter(Hash1,
-                                            [0],
-                                            array:get(Index1, R0)),
-                    R0),
-    R2 = array:set(Index2,
-                    leveled_skiplist:enter(Hash2,
-                                            [30],
-                                            array:get(Index2, R1)),
-                    R1),
-    io:format("HashTree is ~w~n", [HashTree]),
-    io:format("Expected HashTree is ~w~n", [R2]),
-    ?assertMatch(R2, HashTree),
-    ok = file:delete("../test/test.cdb").
-
-
-write_hash_tables_1_test() ->
-    {ok, Handle} = file:open("../test/testx.cdb", [write]),
-    R0 = array:new(256, {default, leveled_skiplist:empty()}),
-    R1 = array:set(64,
-                    leveled_skiplist:enter(6383014720,
-                                            [18],
-                                            array:get(64, R0)),
-                    R0),
-    R2 = array:set(67,
-                    leveled_skiplist:enter(6383014723,
-                                            [0],
-                                            array:get(67, R1)),
-                    R1),
-    Result = write_hash_tables(Handle, R2),
-    io:format("write hash tables result of ~w ~n", [Result]),
-    ?assertMatch(Result,[{67,16,2},{64,0,2}]),
-    ok = file:delete("../test/testx.cdb").
 
 find_open_slot_1_test() ->
     List = [<<1:32,1:32>>,<<0:32,0:32>>,<<1:32,1:32>>,<<1:32,1:32>>],
