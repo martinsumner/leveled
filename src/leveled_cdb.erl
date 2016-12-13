@@ -753,11 +753,7 @@ end.
 hashtable_calc(HashTree, StartPos) ->
     Seq = lists:seq(0, 255),
     SWC = os:timestamp(),
-    {IndexList, HashTreeBin} = write_hash_tables(Seq,
-                                                    HashTree,
-                                                    StartPos,
-                                                    [],
-                                                    <<>>),
+    {IndexList, HashTreeBin} = write_hash_tables(Seq, HashTree, StartPos),
     leveled_log:log_timer("CDB07", [], SWC),
     {IndexList, HashTreeBin}.
 
@@ -805,8 +801,8 @@ find_lastkey(Handle, IndexCache) ->
 
 scan_index(Handle, IndexCache, {ScanFun, InitAcc}) ->
     lists:foldl(fun({_X, {Pos, Count}}, Acc) ->
-                        ScanFun(Handle, Pos, Count, Acc)
-                        end,
+                            ScanFun(Handle, Pos, Count, Acc)
+                            end,
                         InitAcc,
                         IndexCache).
 
@@ -1165,68 +1161,11 @@ perform_write_hash_tables(Handle, HashTreeBin, StartPos) ->
     ok.
 
 
-write_hash_tables([], _HashTree, _CurrPos, IndexList, HashTreeBin) ->
-    {IndexList, HashTreeBin};
-write_hash_tables([Index|Rest], HashTree, CurrPos, IndexList, HashTreeBin) ->
-    case is_empty(HashTree, Index) of 
-        true ->
-            write_hash_tables(Rest, HashTree, CurrPos, IndexList, HashTreeBin);
-        false ->
-            BinList = to_binarylist(HashTree, Index),
-            % BinList = build_binaryhashlist(HashList, []),
-            IndexLength = length(BinList) * 2,
-            SlotList = lists:duplicate(IndexLength, <<0:32, 0:32>>),
-    
-            Fn = fun({Hash, Binary}, AccSlotList) ->
-                Slot1 = find_open_slot(AccSlotList, Hash),
-                {L1, [<<0:32, 0:32>>|L2]} = lists:split(Slot1, AccSlotList),
-                lists:append(L1, [Binary|L2])
-            end,
-            
-            NewSlotList = lists:foldl(Fn, SlotList, BinList),
-            NewSlotBin = lists:foldl(fun(X, Acc) ->
-                                            <<Acc/binary, X/binary>> end,
-                                        HashTreeBin,
-                                        NewSlotList),
-            write_hash_tables(Rest,
-                                HashTree,
-                                CurrPos + length(NewSlotList) * ?DWORD_SIZE,
-                                [{Index, CurrPos, IndexLength}|IndexList],
-                                NewSlotBin)
-    end.
-
-
-%% Slot is zero based because it comes from a REM
-find_open_slot(List, Hash) ->
-    Len = length(List),
-    Slot = hash_to_slot(Hash, Len),
-    Seq = lists:seq(1, Len),
-    {CL1, CL2} = lists:split(Slot, Seq),
-    {L1, L2} = lists:split(Slot, List),
-    find_open_slot1(lists:append(CL2, CL1), lists:append(L2, L1)).
-  
-find_open_slot1([Slot|_RestOfSlots], [<<0:32,0:32>>|_RestOfEntries]) -> 
-    Slot - 1;
-find_open_slot1([_|RestOfSlots], [_|RestOfEntries]) -> 
-    find_open_slot1(RestOfSlots, RestOfEntries).
-
-
 %% Write the top most 255 doubleword entries.  First word is the 
 %% file pointer to a hashtable and the second word is the number of entries 
 %% in the hash table
 %% The List passed in should be made up of {Index, Position, Count} tuples
-write_top_index_table(Handle, BasePos, List) ->
-  % fold function to find any missing index tuples, and add one a replacement 
-  % in this case with a count of 0.  Also orders the list by index
-    FnMakeIndex = fun(I) ->
-        case lists:keysearch(I, 1, List) of
-            {value, Tuple} ->
-                Tuple;
-            false ->
-                {I, BasePos, 0}
-        end
-    end,
-    % Fold function to write the index entries
+write_top_index_table(Handle, BasePos, IndexList) ->
     FnWriteIndex = fun({_Index, Pos, Count}, {AccBin, CurrPos}) ->
         case Count == 0 of
             true ->
@@ -1240,11 +1179,9 @@ write_top_index_table(Handle, BasePos, List) ->
         {<<AccBin/binary, PosLE:32, CountLE:32>>, NextPos}
     end,
     
-    Seq = lists:seq(0, 255),
-    CompleteList = lists:keysort(1, lists:map(FnMakeIndex, Seq)),
     {IndexBin, _Pos} = lists:foldl(FnWriteIndex,
                                     {<<>>, BasePos},
-                                    CompleteList),
+                                    IndexList),
     {ok, _} = file:position(Handle, 0),
     ok = file:write(Handle, IndexBin),
     ok = file:advise(Handle, 0, ?DWORD_SIZE * 256, will_need),
@@ -1317,15 +1254,110 @@ is_empty(HashTree, Index) ->
             false
     end.
 
-to_binarylist(HashTree, Index) ->
+to_slotmap(HashTree, Index) ->
+    ObjList = ets:match_object(HashTree, {{Index, '_'}, '_'}),
+    IndexLength = length(ObjList) * 2,
     ConvertObjFun =
         fun({{_Idx, Hash}, Position}) ->
             HashLE = endian_flip(Hash),
             PosLE = endian_flip(Position),
             NewBin = <<HashLE:32, PosLE:32>>,
-            {Hash, NewBin}
+            {hash_to_slot(Hash, IndexLength), NewBin}
         end,
-    lists:map(ConvertObjFun, ets:match_object(HashTree, {{Index, '_'}, '_'})).
+    lists:keysort(1, lists:map(ConvertObjFun, ObjList)).
+
+
+build_hashtree_binary(SlotMap, IndexLength) ->
+    build_hashtree_binary(SlotMap, IndexLength, 0, <<>>).
+
+build_hashtree_binary([], IdxLen, _SlotPos, Bin) ->
+    case byte_size(Bin) div ?DWORD_SIZE of
+        IdxLen ->
+            Bin;
+        N when N < IdxLen ->
+            ZeroLen = (IdxLen - N) * 64,
+            <<Bin/binary, 0:ZeroLen>>
+        end;
+build_hashtree_binary([{TopSlot, TopBin}|SlotMapTail], IdxLen, SlotPos, Bin) ->
+    case TopSlot of
+        SlotPos ->
+            UpdBin = <<Bin/binary, TopBin/binary>>,
+            build_hashtree_binary(SlotMapTail,
+                                    IdxLen,
+                                    SlotPos + 1,
+                                    UpdBin);
+        N when N > SlotPos ->
+            Delta = N - SlotPos,
+            DeltaLen = Delta * 64,
+            UpdBin = <<Bin/binary, 0:DeltaLen, TopBin/binary>>,
+            build_hashtree_binary(SlotMapTail,
+                                    IdxLen,
+                                    SlotPos + Delta + 1,
+                                    UpdBin);
+        N when N < SlotPos, SlotPos < IdxLen ->
+            UpdBin = <<Bin/binary, TopBin/binary>>,
+            build_hashtree_binary(SlotMapTail,
+                                    IdxLen,
+                                    SlotPos + 1,
+                                    UpdBin);
+        N when N < SlotPos, SlotPos >= IdxLen ->
+            % Need to wrap round and put in the first empty slot from the
+            % beginning
+            Pos = find_firstzero(Bin, 0) * 64,
+            UpdBin =
+                case Pos of
+                    0 ->
+                        <<0:64, Tail/binary>> = Bin,
+                        <<TopBin/binary, Tail/binary>>;
+                    _P ->
+                        <<Head:Pos, 0:64, Tail/binary>> = Bin,
+                        <<Head:Pos, TopBin/binary, Tail/binary>>
+                end,
+            build_hashtree_binary(SlotMapTail,
+                                    IdxLen,
+                                    SlotPos + 1,
+                                    UpdBin)
+    end.
+
+
+find_firstzero(<<N:64/integer, TailBin/binary>>, Pos) ->
+    case N of
+        0 ->
+            Pos;
+        _ ->
+            find_firstzero(TailBin, Pos + 1)
+    end.
+    
+
+write_hash_tables(Indexes, HashTree, CurrPos) ->
+    write_hash_tables(Indexes, HashTree, CurrPos, CurrPos, [], <<>>).
+
+write_hash_tables([], _HashTree, _CurrPos, _BasePos, IndexList, HashTreeBin) ->
+    IL = lists:reverse(IndexList),
+    {IL, HashTreeBin};
+write_hash_tables([Index|Rest], HashTree, CurrPos, BasePos,
+                                                    IndexList, HashTreeBin) ->
+    case is_empty(HashTree, Index) of 
+        true ->
+            write_hash_tables(Rest,
+                                HashTree,
+                                CurrPos,
+                                BasePos,
+                                [{Index, BasePos, 0}|IndexList],
+                                HashTreeBin);
+        false ->
+            SlotMap = to_slotmap(HashTree, Index),
+            IndexLength = length(SlotMap) * 2,
+            NewSlotBin = build_hashtree_binary(SlotMap, IndexLength),
+            write_hash_tables(Rest,
+                                HashTree,
+                                CurrPos + IndexLength * ?DWORD_SIZE,
+                                BasePos,
+                                [{Index, CurrPos, IndexLength}|IndexList],
+                                <<HashTreeBin/binary, NewSlotBin/binary>>)
+    end.
+
+
 
 %%%%%%%%%%%%%%%%
 % T E S T 
@@ -1374,33 +1406,46 @@ dump(FileName) ->
 to_dict(FileName) ->
     KeyValueList = dump(FileName),
     dict:from_list(KeyValueList).
-    
 
 
-find_open_slot_1_test() ->
-    List = [<<1:32,1:32>>,<<0:32,0:32>>,<<1:32,1:32>>,<<1:32,1:32>>],
-    Slot = find_open_slot(List,0),
-    ?assertMatch(Slot,1).
+build_hashtree_bunchedatend_binary_test() ->
+    SlotMap = [{1, <<10:32, 0:32>>},
+                {4, <<11:32, 100:32>>},
+                {8, <<12:32, 200:32>>},
+                {8, <<13:32, 300:32>>},
+                {14, <<14:32, 400:32>>},
+                {14, <<15:32, 500:32>>},
+                {15, <<16:32, 600:32>>},
+                {15, <<17:32, 700:32>>}],
+    Bin = build_hashtree_binary(SlotMap, 16),
+    ExpBinP1 = <<16:32, 600:32, 10:32, 0:32, 17:32, 700:32, 0:64>>,
+    ExpBinP2 = <<11:32, 100:32, 0:192, 12:32, 200:32, 13:32, 300:32, 0:256>>,
+    ExpBinP3 = <<14:32, 400:32, 15:32, 500:32>>,
+    ExpBin = <<ExpBinP1/binary, ExpBinP2/binary, ExpBinP3/binary>>,
+    ?assertMatch(ExpBin, Bin).
 
-find_open_slot_2_test() ->
-    List = [<<0:32,0:32>>,<<0:32,0:32>>,<<1:32,1:32>>,<<1:32,1:32>>],
-    Slot = find_open_slot(List,0),
-    ?assertMatch(Slot,0).
+build_hashtree_bunchedatstart_binary_test() ->
+    SlotMap = [{1, <<10:32, 0:32>>},
+                {2, <<11:32, 100:32>>},
+                {3, <<12:32, 200:32>>},
+                {4, <<13:32, 300:32>>},
+                {5, <<14:32, 400:32>>},
+                {6, <<15:32, 500:32>>},
+                {7, <<16:32, 600:32>>},
+                {8, <<17:32, 700:32>>}],
+    Bin = build_hashtree_binary(SlotMap, 16),
+    ExpBinP1 = <<0:64, 10:32, 0:32, 11:32, 100:32, 12:32, 200:32>>,
+    ExpBinP2 = <<13:32, 300:32, 14:32, 400:32, 15:32, 500:32, 16:32, 600:32>>,
+    ExpBinP3 = <<17:32, 700:32, 0:448>>,
+    ExpBin = <<ExpBinP1/binary, ExpBinP2/binary, ExpBinP3/binary>>,
+    ExpSize = byte_size(ExpBin),
+    ?assertMatch(ExpSize, byte_size(Bin)),
+    ?assertMatch(ExpBin, Bin).
 
-find_open_slot_3_test() ->
-    List = [<<1:32,1:32>>,<<1:32,1:32>>,<<1:32,1:32>>,<<0:32,0:32>>],
-    Slot = find_open_slot(List,2),
-    ?assertMatch(Slot,3).
+find_firstzero_test() ->
+    Bin = <<1:64/integer, 0:64/integer, 89:64/integer, 72:64/integer>>,
+    ?assertMatch(1, find_firstzero(Bin, 0)).
 
-find_open_slot_4_test() ->
-    List = [<<0:32,0:32>>,<<1:32,1:32>>,<<1:32,1:32>>,<<1:32,1:32>>],
-    Slot = find_open_slot(List,1),
-    ?assertMatch(Slot,0).
-
-find_open_slot_5_test() ->
-    List = [<<1:32,1:32>>,<<1:32,1:32>>,<<0:32,0:32>>,<<1:32,1:32>>],
-    Slot = find_open_slot(List,3),
-    ?assertMatch(Slot,2).
 
 full_1_test() ->
     List1 = lists:sort([{"key1","value1"},{"key2","value2"}]),
@@ -1683,7 +1728,7 @@ get_keys_byposition_manykeys_test() ->
     {ok, P2} = cdb_open_reader(F2, #cdb_options{binary_mode=false}),
     PositionList = cdb_getpositions(P2, all),
     L1 = length(PositionList),
-    ?assertMatch(L1, KeyCount),
+    ?assertMatch(KeyCount, L1),
     
     SampleList1 = cdb_getpositions(P2, 10),
     ?assertMatch(10, length(SampleList1)),
