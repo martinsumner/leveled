@@ -258,8 +258,13 @@
     {"CDB12",
         {info, "HashTree written"}},
     {"CDB13",
-        {info, "Write options of ~w"}}
-    
+        {info, "Write options of ~w"}},
+    {"CDB14",
+        {info, "Microsecond timings for hashtree build of "
+                ++ "to_list ~w sort ~w build ~w"}},
+    {"CDB15",
+        {info, "Cycle count of ~w in hashtable search higher than expected"
+                ++ " in search for hash ~w with result ~w"}}
         ])).
 
 
