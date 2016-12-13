@@ -258,7 +258,10 @@
     {"CDB12",
         {info, "HashTree written"}},
     {"CDB13",
-        {info, "Write options of ~w"}}
+        {info, "Write options of ~w"}},
+    {"CDB14",
+        {info, "Microsecond imings for hashtree build of "
+                ++ "to_list ~w sort ~w build ~w"}}
     
         ])).
 

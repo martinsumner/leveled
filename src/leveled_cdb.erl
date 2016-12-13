@@ -1330,12 +1330,12 @@ write_hash_tables(Indexes, HashTree, CurrPos) ->
     write_hash_tables(Indexes, HashTree, CurrPos, CurrPos, [], [], {0, 0, 0}).
 
 write_hash_tables([], _HashTree, _CurrPos, _BasePos, 
-                                            IndexList, HT_BinList, {T1, T2, T3}) ->
-    io:format("CDB99 ~w T1 ~w T2 ~w T3 ~w~n", [self(), T1, T2, T3]),
+                                        IndexList, HT_BinList, {T1, T2, T3}) ->
+    leveled_log:log("CDB14", [T1, T2, T3]),
     IL = lists:reverse(IndexList),
     {IL, list_to_binary(HT_BinList)};
 write_hash_tables([Index|Rest], HashTree, CurrPos, BasePos,
-                                            IndexList, HT_BinList, Timers) ->
+                                        IndexList, HT_BinList, Timers) ->
     SW1 = os:timestamp(),
     SlotMap = to_slotmap(HashTree, Index),
     T1 = timer:now_diff(os:timestamp(), SW1) + element(1, Timers),
