@@ -1236,36 +1236,45 @@ multi_key_value_to_record(KVList, BinaryMode, LastPosition) ->
 %%%============================================================================
 
 lookup_positions(HashTree, Index, Hash) ->
-    ConvertObjFun = fun({{_Idx, _H}, P}) -> P end,
-    lists:map(ConvertObjFun, ets:lookup(HashTree, {Index, Hash})).
+    lookup_positions(HashTree, Index, Hash, -1, []).
+
+lookup_positions(HashTree, Index, Hash, Pos, PosList) ->
+    case ets:next(HashTree, {Index, Hash, Pos}) of 
+        {Index, Hash, NewPos} ->
+            lookup_positions(HashTree, Index, Hash, NewPos, [NewPos|PosList]);
+        _ ->
+            PosList
+    end.
 
 add_position_tohashtree(HashTree, Index, Hash, Position) ->
-    ets:insert(HashTree, {{Index, Hash}, Position}),
+    ets:insert(HashTree, {{Index, Hash, Position}}),
     HashTree.
 
 new_hashtree() ->
-    ets:new(hashtree, [bag]).
+    ets:new(hashtree, [ordered_set]).
 
-is_empty(HashTree, Index) ->
-    case ets:match(HashTree, {{Index, '_'}, '_'}) of
-        '$end_of_table' ->
-            true;
+to_list(HashTree, Index) ->
+    to_list(HashTree, Index, {0, -1}, []).
+
+to_list(HashTree, Index, {LastHash, LastPos}, Acc) ->
+    case ets:next(HashTree, {Index, LastHash, LastPos}) of 
+        {Index, Hash, Pos} ->
+            to_list(HashTree, Index, {Hash, Pos}, [{Hash, Pos}|Acc]);
         _ ->
-            false
+            Acc
     end.
 
 to_slotmap(HashTree, Index) ->
-    ObjList = ets:match_object(HashTree, {{Index, '_'}, '_'}),
-    IndexLength = length(ObjList) * 2,
+    HPList = to_list(HashTree, Index),
+    IndexLength = length(HPList),
     ConvertObjFun =
-        fun({{_Idx, Hash}, Position}) ->
+        fun({Hash, Position}) ->
             HashLE = endian_flip(Hash),
             PosLE = endian_flip(Position),
             NewBin = <<HashLE:32, PosLE:32>>,
             {hash_to_slot(Hash, IndexLength), NewBin}
         end,
-    lists:keysort(1, lists:map(ConvertObjFun, ObjList)).
-
+    lists:map(ConvertObjFun, HPList).
 
 build_hashtree_binary(SlotMap, IndexLength) ->
     build_hashtree_binary(SlotMap, IndexLength, 0, []).
@@ -1318,31 +1327,42 @@ find_firstzero(Bin, Pos) ->
     
 
 write_hash_tables(Indexes, HashTree, CurrPos) ->
-    write_hash_tables(Indexes, HashTree, CurrPos, CurrPos, [], []).
+    write_hash_tables(Indexes, HashTree, CurrPos, CurrPos, [], [], {0, 0, 0}).
 
-write_hash_tables([], _HashTree, _CurrPos, _BasePos, IndexList, HT_BinList) ->
+write_hash_tables([], _HashTree, _CurrPos, _BasePos, 
+                                            IndexList, HT_BinList, {T1, T2, T3}) ->
+    io:format("CDB99 ~w T1 ~w T2 ~w T3 ~w~n", [self(), T1, T2, T3]),
     IL = lists:reverse(IndexList),
     {IL, list_to_binary(HT_BinList)};
 write_hash_tables([Index|Rest], HashTree, CurrPos, BasePos,
-                                                    IndexList, HT_BinList) ->
-    case is_empty(HashTree, Index) of 
-        true ->
+                                            IndexList, HT_BinList, Timers) ->
+    SW1 = os:timestamp(),
+    SlotMap = to_slotmap(HashTree, Index),
+    T1 = timer:now_diff(os:timestamp(), SW1) + element(1, Timers),
+    case SlotMap of 
+        [] ->
             write_hash_tables(Rest,
                                 HashTree,
                                 CurrPos,
                                 BasePos,
                                 [{Index, BasePos, 0}|IndexList],
-                                HT_BinList);
-        false ->
-            SlotMap = to_slotmap(HashTree, Index),
+                                HT_BinList,
+                                Timers);
+        _ ->
+            SW2 = os:timestamp(),
             IndexLength = length(SlotMap) * 2,
-            NewSlotBin = build_hashtree_binary(SlotMap, IndexLength),
+            SortedMap = lists:keysort(1, SlotMap),
+            T2 = timer:now_diff(os:timestamp(), SW2) + element(2, Timers),
+            SW3 = os:timestamp(),
+            NewSlotBin = build_hashtree_binary(SortedMap, IndexLength),
+            T3 = timer:now_diff(os:timestamp(), SW3) + element(3, Timers),
             write_hash_tables(Rest,
                                 HashTree,
                                 CurrPos + IndexLength * ?DWORD_SIZE,
                                 BasePos,
                                 [{Index, CurrPos, IndexLength}|IndexList],
-                                HT_BinList ++ NewSlotBin)
+                                HT_BinList ++ NewSlotBin,
+                                {T1, T2, T3})
     end.
 
 
