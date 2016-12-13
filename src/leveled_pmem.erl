@@ -102,14 +102,16 @@ check_index(Hash, L0Index) ->
 
 to_list(Slots, FetchFun) ->
     SW = os:timestamp(),
-    SlotList = lists:reverse(lists:seq(1, Slots)),
-    FullList = lists:foldl(fun(Slot, Acc) ->
-                                Tree = FetchFun(Slot),
-                                L = leveled_skiplist:to_list(Tree),
-                                lists:ukeymerge(1, Acc, L)
-                                end,
-                            [],
-                            SlotList),
+    Tab = ets:new(temp_l0, [private, ordered_set]),
+    SlotList = lists:seq(1, Slots),
+    lists:foreach(fun(Slot) ->
+                        Tree = FetchFun(Slot),
+                        L = leveled_skiplist:to_list(Tree),
+                        ets:insert(Tab, L)
+                        end,
+                    SlotList),
+    FullList = ets:tab2list(Tab),
+    true = ets:delete(Tab),
     leveled_log:log_timer("PM002", [length(FullList)], SW),
     FullList.
 
