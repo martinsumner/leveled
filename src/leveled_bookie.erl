@@ -143,7 +143,7 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(CACHE_SIZE, 2000).
+-define(CACHE_SIZE, 2500).
 -define(JOURNAL_FP, "journal").
 -define(LEDGER_FP, "ledger").
 -define(SNAPSHOT_TIMEOUT, 300000).
