@@ -263,7 +263,8 @@
         {info, "Microsecond timings for hashtree build of "
                 ++ "to_list ~w sort ~w build ~w"}},
     {"CDB15",
-        {info, "Cycle count of ~w in hashtable search higher than expected~n"}}
+        {info, "Cycle count of ~w in hashtable search higher than expected"
+                ++ " in search for hash ~w with result ~w"}}
         ])).
 
 

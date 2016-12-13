@@ -681,7 +681,7 @@ get(Handle, Key, Cache, QuickCheck) when is_tuple(Handle) ->
         _ ->
             % Get starting slot in hashtable
             {ok, FirstHashPosition} = file:position(Handle, {bof, HashTable}),
-            Slot = hash_to_slot(Hash, Count),  
+            Slot = hash_to_slot(Hash, Count),
             {ok, _} = file:position(Handle, {cur, Slot * ?DWORD_SIZE}),
             LastHashPosition = HashTable + ((Count-1) * ?DWORD_SIZE),
             LocList = lists:seq(FirstHashPosition,
@@ -1095,8 +1095,8 @@ read_integerpairs(<<Int1:32, Int2:32, Rest/binary>>, Pairs) ->
 search_hash_table(Handle, Entries, Hash, Key, QuickCheck) ->
     search_hash_table(Handle, Entries, Hash, Key, QuickCheck, 0).
 
-search_hash_table(_Handle, [], _Hash, _Key, _QuickCheck, CycleCount) -> 
-    log_cyclecount(CycleCount),
+search_hash_table(_Handle, [], Hash, _Key, _QuickCheck, CycleCount) -> 
+    log_cyclecount(CycleCount, Hash, missing),
     missing;
 search_hash_table(Handle, [Entry|RestOfEntries], Hash, Key,
                                                     QuickCheck, CycleCount) ->
@@ -1119,7 +1119,7 @@ search_hash_table(Handle, [Entry|RestOfEntries], Hash, Key,
                                         QuickCheck,
                                         CycleCount + 1);
                 _ ->
-                    log_cyclecount(CycleCount),
+                    log_cyclecount(CycleCount, Hash, found),
                     KV 
             end;
         %0 ->
@@ -1130,10 +1130,10 @@ search_hash_table(Handle, [Entry|RestOfEntries], Hash, Key,
                                                     QuickCheck, CycleCount + 1)
     end.
 
-log_cyclecount(CycleCount) ->
+log_cyclecount(CycleCount, Hash, Result) ->
     if
         CycleCount > 8 ->
-            leveled_log:log("CDB15", [CycleCount]);
+            leveled_log:log("CDB15", [CycleCount, Hash, Result]);
         true ->
             ok
     end.
@@ -1282,7 +1282,7 @@ to_list(HashTree, Index, {LastHash, LastPos}, Acc) ->
 
 to_slotmap(HashTree, Index) ->
     HPList = to_list(HashTree, Index),
-    IndexLength = length(HPList),
+    IndexLength = length(HPList) * 2,
     ConvertObjFun =
         fun({Hash, Position}) ->
             HashLE = endian_flip(Hash),
@@ -1466,6 +1466,23 @@ build_hashtree_bunchedatstart_binary_test() ->
     ?assertMatch(ExpSize, byte_size(Bin)),
     ?assertMatch(ExpBin, Bin).
 
+
+build_hashtree_test() ->
+    SlotMap = [{3, <<2424914688:32, 100:32>>},
+                {3, <<2424917760:32, 200:32>>},
+                {7, <<2424915712:32, 300:32>>},
+                {9, <<2424903936:32, 400:32>>},
+                {9, <<2424907008:32, 500:32>>},
+                {10, <<2424913408:32, 600:32>>}],
+    BinList = build_hashtree_binary(SlotMap, 12),
+    ExpOut = [<<0:64>>, <<0:64>>, <<0:64>>, <<2424914688:32, 100:32>>] ++
+                [<<2424917760:32, 200:32>>, <<0:64>>, <<0:64>>] ++
+                [<<2424915712:32, 300:32>>, <<0:64>>] ++
+                [<<2424903936:32, 400:32>>, <<2424907008:32, 500:32>>] ++
+                [<<2424913408:32, 600:32>>],
+    ?assertMatch(ExpOut, BinList).
+
+
 find_firstzero_test() ->
     Bin = [<<1:64/integer>>, <<0:64/integer>>,
                 <<89:64/integer>>, <<89:64/integer>>,
@@ -1477,6 +1494,32 @@ find_firstzero_test() ->
                 <<89:64/integer>>, <<89:64/integer>>], LHS),
     ?assertMatch([<<71:64/integer>>, <<72:64/integer>>], RHS).
 
+
+cyclecount_test() ->
+    io:format("~n~nStarting cycle count test~n"),
+    KVL1 = generate_sequentialkeys(5000, []),
+    KVL2 = lists:foldl(fun({K, V}, Acc) ->
+                            H = hash(K),
+                            I = hash_to_index(H),
+                            case I of
+                                0 ->
+                                    [{K, V}|Acc];
+                                _ ->
+                                    Acc
+                            end end,
+                        [],
+                        KVL1),
+    {ok, P1} = cdb_open_writer("../test/cycle_count.pnd",
+                                #cdb_options{binary_mode=false}),
+    ok = cdb_mput(P1, KVL2),
+    {ok, F2} = cdb_complete(P1),
+    {ok, P2} = cdb_open_reader(F2, #cdb_options{binary_mode=false}),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, cdb_get(P2, K)) end,
+                    KVL2),
+    ok = cdb_close(P2),
+    ok = file:delete("../test/cycle_count.cdb").
+    
 
 full_1_test() ->
     List1 = lists:sort([{"key1","value1"},{"key2","value2"}]),
@@ -1822,6 +1865,7 @@ state_test() ->
     ?assertMatch(probably, cdb_keycheck(P1, "Key1")),
     ?assertMatch({"Key1", "Value1"}, cdb_get(P1, "Key1")),
     ok = cdb_close(P1).
+
 
 hashclash_test() ->
     {ok, P1} = cdb_open_writer("../test/hashclash_test.pnd",
