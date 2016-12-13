@@ -1092,9 +1092,14 @@ read_integerpairs(<<Int1:32, Int2:32, Rest/binary>>, Pairs) ->
 %% false - don't check the CRC before returning key & value
 %% loose_presence - confirm that the hash of the key is present
 
-search_hash_table(_Handle, [], _Hash, _Key, _QuickCheck) -> 
+search_hash_table(Handle, Entries, Hash, Key, QuickCheck) ->
+    search_hash_table(Handle, Entries, Hash, Key, QuickCheck, 0).
+
+search_hash_table(_Handle, [], _Hash, _Key, _QuickCheck, CycleCount) -> 
+    log_cyclecount(CycleCount),
     missing;
-search_hash_table(Handle, [Entry|RestOfEntries], Hash, Key, QuickCheck) ->
+search_hash_table(Handle, [Entry|RestOfEntries], Hash, Key,
+                                                    QuickCheck, CycleCount) ->
     {ok, _} = file:position(Handle, Entry),
     {StoredHash, DataLoc} = read_next_2_integers(Handle),
     case StoredHash of
@@ -1111,15 +1116,26 @@ search_hash_table(Handle, [Entry|RestOfEntries], Hash, Key, QuickCheck) ->
                                         RestOfEntries,
                                         Hash,
                                         Key,
-                                        QuickCheck);
+                                        QuickCheck,
+                                        CycleCount + 1);
                 _ ->
+                    log_cyclecount(CycleCount),
                     KV 
             end;
         %0 ->
         %    % Hash is 0 so key must be missing as 0 found before Hash matched
         %    missing;
         _ ->
-            search_hash_table(Handle, RestOfEntries, Hash, Key, QuickCheck)
+            search_hash_table(Handle, RestOfEntries, Hash, Key,
+                                                    QuickCheck, CycleCount + 1)
+    end.
+
+log_cyclecount(CycleCount) ->
+    if
+        CycleCount > 8 ->
+            leveled_log:log("CDB15", [CycleCount]);
+        true ->
+            ok
     end.
 
 % Write Key and Value tuples into the CDB.  Each tuple consists of a

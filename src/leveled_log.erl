@@ -260,9 +260,10 @@
     {"CDB13",
         {info, "Write options of ~w"}},
     {"CDB14",
-        {info, "Microsecond imings for hashtree build of "
-                ++ "to_list ~w sort ~w build ~w"}}
-    
+        {info, "Microsecond timings for hashtree build of "
+                ++ "to_list ~w sort ~w build ~w"}},
+    {"CDB15",
+        {info, "Cycle count of ~w in hashtable search higher than expected~n"}}
         ])).
 
 
