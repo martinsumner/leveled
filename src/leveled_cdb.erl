@@ -1268,75 +1268,63 @@ to_slotmap(HashTree, Index) ->
 
 
 build_hashtree_binary(SlotMap, IndexLength) ->
-    build_hashtree_binary(SlotMap, IndexLength, 0, <<>>).
+    build_hashtree_binary(SlotMap, IndexLength, 0, []).
 
-build_hashtree_binary([], IdxLen, _SlotPos, Bin) ->
-    case byte_size(Bin) div ?DWORD_SIZE of
+build_hashtree_binary([], IdxLen, SlotPos, Bin) ->
+    case SlotPos of
         IdxLen ->
-            Bin;
+            lists:reverse(Bin);
         N when N < IdxLen ->
             ZeroLen = (IdxLen - N) * 64,
-            <<Bin/binary, 0:ZeroLen>>
-        end;
+            lists:reverse([<<0:ZeroLen>>|Bin])
+    end;
 build_hashtree_binary([{TopSlot, TopBin}|SlotMapTail], IdxLen, SlotPos, Bin) ->
     case TopSlot of
-        SlotPos ->
-            UpdBin = <<Bin/binary, TopBin/binary>>,
-            build_hashtree_binary(SlotMapTail,
-                                    IdxLen,
-                                    SlotPos + 1,
-                                    UpdBin);
         N when N > SlotPos ->
-            Delta = N - SlotPos,
-            DeltaLen = Delta * 64,
-            UpdBin = <<Bin/binary, 0:DeltaLen, TopBin/binary>>,
+            D = N - SlotPos,
+            Bridge = lists:duplicate(D, <<0:64>>) ++ Bin,
+            UpdBin = [<<TopBin/binary>>|Bridge],
             build_hashtree_binary(SlotMapTail,
                                     IdxLen,
-                                    SlotPos + Delta + 1,
+                                    SlotPos + D + 1,
                                     UpdBin);
-        N when N < SlotPos, SlotPos < IdxLen ->
-            UpdBin = <<Bin/binary, TopBin/binary>>,
+        N when N =< SlotPos, SlotPos < IdxLen ->
+            UpdBin = [<<TopBin/binary>>|Bin],
             build_hashtree_binary(SlotMapTail,
                                     IdxLen,
                                     SlotPos + 1,
                                     UpdBin);
-        N when N < SlotPos, SlotPos >= IdxLen ->
+        N when N < SlotPos, SlotPos == IdxLen ->
             % Need to wrap round and put in the first empty slot from the
             % beginning
-            Pos = find_firstzero(Bin, 0) * 64,
-            UpdBin =
-                case Pos of
-                    0 ->
-                        <<0:64, Tail/binary>> = Bin,
-                        <<TopBin/binary, Tail/binary>>;
-                    _P ->
-                        <<Head:Pos, 0:64, Tail/binary>> = Bin,
-                        <<Head:Pos, TopBin/binary, Tail/binary>>
-                end,
+            Pos = find_firstzero(Bin, length(Bin)),
+            {LHS, [<<0:64>>|RHS]} = lists:split(Pos - 1, Bin),
+            UpdBin = lists:append(LHS, [TopBin|RHS]),
             build_hashtree_binary(SlotMapTail,
                                     IdxLen,
-                                    SlotPos + 1,
+                                    SlotPos,
                                     UpdBin)
     end.
 
 
-find_firstzero(<<N:64/integer, TailBin/binary>>, Pos) ->
-    case N of
-        0 ->
+% Search from the tail of the list to find the first zero
+find_firstzero(Bin, Pos) ->
+    case lists:nth(Pos, Bin) of
+        <<0:64>> ->
             Pos;
         _ ->
-            find_firstzero(TailBin, Pos + 1)
+            find_firstzero(Bin, Pos - 1)
     end.
     
 
 write_hash_tables(Indexes, HashTree, CurrPos) ->
-    write_hash_tables(Indexes, HashTree, CurrPos, CurrPos, [], <<>>).
+    write_hash_tables(Indexes, HashTree, CurrPos, CurrPos, [], []).
 
-write_hash_tables([], _HashTree, _CurrPos, _BasePos, IndexList, HashTreeBin) ->
+write_hash_tables([], _HashTree, _CurrPos, _BasePos, IndexList, HT_BinList) ->
     IL = lists:reverse(IndexList),
-    {IL, HashTreeBin};
+    {IL, list_to_binary(HT_BinList)};
 write_hash_tables([Index|Rest], HashTree, CurrPos, BasePos,
-                                                    IndexList, HashTreeBin) ->
+                                                    IndexList, HT_BinList) ->
     case is_empty(HashTree, Index) of 
         true ->
             write_hash_tables(Rest,
@@ -1344,7 +1332,7 @@ write_hash_tables([Index|Rest], HashTree, CurrPos, BasePos,
                                 CurrPos,
                                 BasePos,
                                 [{Index, BasePos, 0}|IndexList],
-                                HashTreeBin);
+                                HT_BinList);
         false ->
             SlotMap = to_slotmap(HashTree, Index),
             IndexLength = length(SlotMap) * 2,
@@ -1354,7 +1342,7 @@ write_hash_tables([Index|Rest], HashTree, CurrPos, BasePos,
                                 CurrPos + IndexLength * ?DWORD_SIZE,
                                 BasePos,
                                 [{Index, CurrPos, IndexLength}|IndexList],
-                                <<HashTreeBin/binary, NewSlotBin/binary>>)
+                                HT_BinList ++ NewSlotBin)
     end.
 
 
@@ -1417,7 +1405,7 @@ build_hashtree_bunchedatend_binary_test() ->
                 {14, <<15:32, 500:32>>},
                 {15, <<16:32, 600:32>>},
                 {15, <<17:32, 700:32>>}],
-    Bin = build_hashtree_binary(SlotMap, 16),
+    Bin = list_to_binary(build_hashtree_binary(SlotMap, 16)),
     ExpBinP1 = <<16:32, 600:32, 10:32, 0:32, 17:32, 700:32, 0:64>>,
     ExpBinP2 = <<11:32, 100:32, 0:192, 12:32, 200:32, 13:32, 300:32, 0:256>>,
     ExpBinP3 = <<14:32, 400:32, 15:32, 500:32>>,
@@ -1433,7 +1421,7 @@ build_hashtree_bunchedatstart_binary_test() ->
                 {6, <<15:32, 500:32>>},
                 {7, <<16:32, 600:32>>},
                 {8, <<17:32, 700:32>>}],
-    Bin = build_hashtree_binary(SlotMap, 16),
+    Bin = list_to_binary(build_hashtree_binary(SlotMap, 16)),
     ExpBinP1 = <<0:64, 10:32, 0:32, 11:32, 100:32, 12:32, 200:32>>,
     ExpBinP2 = <<13:32, 300:32, 14:32, 400:32, 15:32, 500:32, 16:32, 600:32>>,
     ExpBinP3 = <<17:32, 700:32, 0:448>>,
@@ -1443,8 +1431,15 @@ build_hashtree_bunchedatstart_binary_test() ->
     ?assertMatch(ExpBin, Bin).
 
 find_firstzero_test() ->
-    Bin = <<1:64/integer, 0:64/integer, 89:64/integer, 72:64/integer>>,
-    ?assertMatch(1, find_firstzero(Bin, 0)).
+    Bin = [<<1:64/integer>>, <<0:64/integer>>,
+                <<89:64/integer>>, <<89:64/integer>>,
+                <<0:64/integer>>,
+                <<71:64/integer>>, <<72:64/integer>>],
+    ?assertMatch(5, find_firstzero(Bin, length(Bin))),
+    {LHS, [<<0:64>>|RHS]} = lists:split(4, Bin),
+    ?assertMatch([<<1:64/integer>>, <<0:64/integer>>,
+                <<89:64/integer>>, <<89:64/integer>>], LHS),
+    ?assertMatch([<<71:64/integer>>, <<72:64/integer>>], RHS).
 
 
 full_1_test() ->
