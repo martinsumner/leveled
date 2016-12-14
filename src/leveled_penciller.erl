@@ -197,8 +197,8 @@
 -define(CURRENT_FILEX, "crr").
 -define(PENDING_FILEX, "pnd").
 -define(MEMTABLE, mem).
--define(MAX_TABLESIZE, 16000). % This is less than max - but COIN_SIDECOUNT
--define(SUPER_MAX_TABLE_SIZE, 22000).
+-define(MAX_TABLESIZE, 28000). % This is less than max - but COIN_SIDECOUNT
+-define(SUPER_MAX_TABLE_SIZE, 40000).
 -define(PROMPT_WAIT_ONL0, 5).
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
 -define(COIN_SIDECOUNT, 5).
