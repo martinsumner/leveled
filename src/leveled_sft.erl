@@ -178,7 +178,7 @@
 -define(DWORD_SIZE, 8).
 -define(CURRENT_VERSION, {0,1}).
 -define(SLOT_COUNT, 256).
--define(SLOT_GROUPWRITE_COUNT, 64).
+-define(SLOT_GROUPWRITE_COUNT, 16).
 -define(BLOCK_SIZE, 32).
 -define(BLOCK_COUNT, 4).
 -define(FOOTERPOS_HEADERPOS, 2).
