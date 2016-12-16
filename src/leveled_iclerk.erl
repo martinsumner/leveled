@@ -519,8 +519,13 @@ write_values(KVCList, CDBopts, Journal0, ManSlice0) ->
 generate_manifest_entry(ActiveJournal) ->
     {ok, NewFN} = leveled_cdb:cdb_complete(ActiveJournal),
     {ok, PidR} = leveled_cdb:cdb_open_reader(NewFN),
-    {StartSQN, _Type, _PK} = leveled_cdb:cdb_firstkey(PidR),
-    [{StartSQN, NewFN, PidR}].
+    case leveled_cdb:cdb_firstkey(PidR) of
+        {StartSQN, _Type, _PK} ->
+            [{StartSQN, NewFN, PidR}];
+        empty ->
+            leveled_log:log("IC013", [NewFN]),
+            []
+    end.
                         
                     
 clear_waste(State) ->

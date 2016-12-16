@@ -247,10 +247,16 @@ aae_bustedjournal(_Config) ->
 
 
 journal_compaction_bustedjournal(_Config) ->
+    % Different circumstances will be created in different runs
+    busted_journal_test(10000000),
+    busted_journal_test(7777777).
+    
+
+busted_journal_test(MaxJournalSize) ->
     % Simply confirms that none of this causes a crash
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = [{root_path, RootPath},
-                    {max_journalsize, 10000000},
+                    {max_journalsize, MaxJournalSize},
                     {max_run_length, 10},
                     {sync_strategy, testutil:sync_strategy()}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
