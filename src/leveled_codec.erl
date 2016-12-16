@@ -218,13 +218,18 @@ compact_inkerkvc({{SQN, ?INKT_KEYD, LK}, V, CrcCheck}, Strategy) ->
     end;
 compact_inkerkvc({{SQN, ?INKT_STND, LK}, V, CrcCheck}, Strategy) ->
     {Tag, _, _, _} = LK,
-    {Tag, TagStrat} = lists:keyfind(Tag, 1, Strategy),
-    case TagStrat of
-        retain ->
-            {_V, KeyDeltas} = split_inkvalue(V),    
-            {TagStrat, {{SQN, ?INKT_KEYD, LK}, {null, KeyDeltas}, CrcCheck}}; 
-        TagStrat ->
-            {TagStrat, null}
+    case lists:keyfind(Tag, 1, Strategy) of
+        {Tag, TagStrat} ->
+            case TagStrat of
+                retain ->
+                    {_V, KeyDeltas} = split_inkvalue(V),    
+                    {TagStrat, {{SQN, ?INKT_KEYD, LK}, {null, KeyDeltas}, CrcCheck}}; 
+                TagStrat ->
+                    {TagStrat, null}
+            end;
+        false ->
+            leveled_log:log("IC012", [Tag, Strategy]),
+            skip
     end;
 compact_inkerkvc(_KVC, _Strategy) ->
     skip.

@@ -199,6 +199,11 @@
         {info, "Clearing journal with filename ~s"}},
     {"IC011",
         {info, "Not clearing filename ~s as modified delta is only ~w seconds"}},
+    {"IC012",
+        {warn, "Tag ~w not found in Strategy ~w - maybe corrupted"}},
+    {"IC013",
+        {warn, "File with name ~s to be ignored in manifest as scanning for "
+                ++ "first key returned empty - maybe corrupted"}},
     
     {"PM002",
         {info, "Completed dump of L0 cache to list of size ~w"}},
@@ -264,7 +269,9 @@
                 ++ "to_list ~w sort ~w build ~w"}},
     {"CDB15",
         {info, "Cycle count of ~w in hashtable search higher than expected"
-                ++ " in search for hash ~w with result ~w"}}
+                ++ " in search for hash ~w with result ~w"}},
+    {"CDB16",
+        {info, "CDB scan from start ~w in file with end ~w and last_key ~w"}}
         ])).
 
 

@@ -476,6 +476,7 @@ handle_sync_event({cdb_scan, FilterFun, Acc, StartPos},
                     _From,
                     StateName,
                     State) ->
+    {ok, EndPos0} = file:position(State#state.handle, eof),
     {ok, StartPos0} = case StartPos of
                             undefined ->
                                 file:position(State#state.handle,
@@ -483,28 +484,38 @@ handle_sync_event({cdb_scan, FilterFun, Acc, StartPos},
                             StartPos ->
                                 {ok, StartPos}
                         end,
-    case check_last_key(State#state.last_key) of
-        ok ->
+    file:position(State#state.handle, StartPos0),
+    MaybeEnd = (check_last_key(State#state.last_key) == empty) or
+                    (StartPos0 >= (EndPos0 - ?DWORD_SIZE)),
+    case MaybeEnd of
+        true ->
+            {reply, {eof, Acc}, StateName, State};
+        false ->
             {LastPosition, Acc2} = scan_over_file(State#state.handle,
                                                     StartPos0,
                                                     FilterFun,
                                                     Acc,
                                                     State#state.last_key),
-            {reply, {LastPosition, Acc2}, StateName, State};
-        empty ->
-            {reply, {eof, Acc}, StateName, State}
+            {reply, {LastPosition, Acc2}, StateName, State}
     end;
 handle_sync_event(cdb_lastkey, _From, StateName, State) ->
     {reply, State#state.last_key, StateName, State};
 handle_sync_event(cdb_firstkey, _From, StateName, State) ->
     {ok, EOFPos} = file:position(State#state.handle, eof),
-    FirstKey = case EOFPos of
-                        ?BASE_POSITION ->
-                            empty;
-                        _ ->
-                            element(1, extract_key(State#state.handle,
-                                                    ?BASE_POSITION))
-                    end,
+    FilterFun = fun(Key, _V, _P, _O, _Fun) -> {stop, Key} end,
+    FirstKey =
+        case EOFPos of
+            ?BASE_POSITION ->
+                empty;
+            _ ->
+                file:position(State#state.handle, ?BASE_POSITION),
+                {_Pos, FirstScanKey} = scan_over_file(State#state.handle,
+                                                        ?BASE_POSITION,
+                                                        FilterFun,
+                                                        empty,
+                                                        State#state.last_key),
+                FirstScanKey
+        end,
     {reply, FirstKey, StateName, State};
 handle_sync_event(cdb_filename, _From, StateName, State) ->
     {reply, State#state.filename, StateName, State};
@@ -905,11 +916,13 @@ extract_key_value_check(Handle, Position) ->
 %% at that point return the position and the key dictionary scanned so far
 startup_scan_over_file(Handle, Position) ->
     HashTree = new_hashtree(),
-    scan_over_file(Handle,
-                    Position,
-                    fun startup_filter/5,
-                    {HashTree, empty},
-                    empty).
+    {eof, Output} = scan_over_file(Handle,
+                                    Position,
+                                    fun startup_filter/5,
+                                    {HashTree, empty},
+                                    empty),
+    {ok, FinalPos} = file:position(Handle, cur),
+    {FinalPos, Output}.
 
 %% Specific filter to be used at startup to build a hashtree for an incomplete
 %% cdb file, and returns at the end the hashtree and the final Key seen in the
@@ -935,7 +948,7 @@ scan_over_file(Handle, Position, FilterFun, Output, LastKey) ->
     case saferead_keyvalue(Handle) of
         false ->
             leveled_log:log("CDB09", [Position]),
-            {Position, Output};
+            {eof, Output};
         {Key, ValueAsBin, KeyLength, ValueLength} ->
             NewPosition = case Key of
                                 LastKey ->
@@ -1710,6 +1723,7 @@ emptyvalue_fromdict_test() ->
     ok = file:delete("../test/from_dict_test_ev.cdb").
 
 find_lastkey_test() ->
+    file:delete("../test/lastkey.pnd"),
     {ok, P1} = cdb_open_writer("../test/lastkey.pnd",
                                 #cdb_options{binary_mode=false}),
     ok = cdb_put(P1, "Key1", "Value1"),
