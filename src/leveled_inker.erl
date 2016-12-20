@@ -432,7 +432,7 @@ put_object(LedgerKey, Object, KeyChanges, State) ->
                 State#state{journal_sqn=NewSQN, put_timing=UpdPutTimings},
                 byte_size(JournalBin)};
         roll ->
-            SW = os:timestamp(),
+            SWroll = os:timestamp(),
             CDBopts = State#state.cdb_options,
             ManEntry = start_new_activejournal(NewSQN,
                                                 State#state.root_path,
@@ -445,7 +445,7 @@ put_object(LedgerKey, Object, KeyChanges, State) ->
             ok = leveled_cdb:cdb_put(NewJournalP,
                                         JournalKey,
                                         JournalBin),
-            leveled_log:log_timer("I0008", [], SW),
+            leveled_log:log_timer("I0008", [], SWroll),
             {rolling,
                 State#state{journal_sqn=NewSQN,
                                 manifest=NewManifest,
