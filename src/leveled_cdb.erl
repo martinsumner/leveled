@@ -95,6 +95,7 @@
 -define(WRITE_OPS, [binary, raw, read, write]).
 -define(PENDING_ROLL_WAIT, 30).
 -define(DELETE_TIMEOUT, 10000).
+-define(PUT_TIMING_LOGPOINT, 10000).
 
 -record(state, {hashtree,
                 last_position :: integer(),
@@ -108,7 +109,8 @@
                 inker :: pid(),
                 deferred_delete = false :: boolean(),
                 waste_path :: string(),
-                sync_strategy = none}).
+                sync_strategy = none,
+                put_timing = {0, {0, 0}, {0, 0}} :: tuple()}).
 
 
 %%%============================================================================
@@ -256,12 +258,14 @@ writer({key_check, Key}, _From, State) ->
         writer,
         State};
 writer({put_kv, Key, Value}, _From, State) ->
+    SW = os:timestamp(),
     Result = put(State#state.handle,
                     Key,
                     Value,
                     {State#state.last_position, State#state.hashtree},
                     State#state.binary_mode,
                     State#state.max_size),
+    T0 = timer:now_diff(os:timestamp(), SW),
     case Result of
         roll ->
             %% Key and value could not be written
@@ -274,10 +278,13 @@ writer({put_kv, Key, Value}, _From, State) ->
                     _ ->
                         ok
                 end,
+            T1 = timer:now_diff(os:timestamp(), SW) - T0,
+            Timings = update_put_timings(State#state.put_timing, T0, T1),
             {reply, ok, writer, State#state{handle=UpdHandle,
                                                 last_position=NewPosition,
                                                 last_key=Key,
-                                                hashtree=HashTree}}
+                                                hashtree=HashTree,
+                                                put_timing=Timings}}
     end;
 writer({mput_kv, []}, _From, State) ->
     {reply, ok, writer, State};
@@ -771,6 +778,14 @@ hashtable_calc(HashTree, StartPos) ->
 %%%%%%%%%%%%%%%%%%%%
 %% Internal functions
 %%%%%%%%%%%%%%%%%%%%
+
+update_put_timings({?PUT_TIMING_LOGPOINT, {Total0, Total1}, {Max0, Max1}},
+                                                                    T0, T1) ->
+    leveled_log:log("CDB17",
+                    [?PUT_TIMING_LOGPOINT, Total0, Total1, Max0, Max1]),
+    {1, {T0, T1}, {T0, T1}};
+update_put_timings({N, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
+    {N + 1, {Total0 + T0, Total1 + T1}, {max(Max0, T0), max(Max1, T1)}}.
 
 determine_new_filename(Filename) ->
     filename:rootname(Filename, ".pnd") ++ ".cdb".

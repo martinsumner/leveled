@@ -40,6 +40,9 @@
         {info, "Bucket list finds non-binary Bucket ~w"}},
     {"B0011",
         {warn, "Call to destroy the store and so all files to be removed"}},
+    {"B0012",
+        {info, "After ~w PUTs total inker time is ~w total ledger time is ~w "
+                ++ "and max inker time is ~w and max ledger time is ~w"}},
     
     {"P0001",
         {info, "Ledger snapshot ~w registered"}},
@@ -176,6 +179,9 @@
         {info, "At SQN=~w journal has filename ~s"}},
     {"I0018",
         {warn, "We're doomed - intention recorded to destroy all files"}},
+    {"I0019",
+        {info, "After ~w PUTs total prepare time is ~w total cdb time is ~w "
+                ++ "and max prepare time is ~w and max cdb time is ~w"}},
     
     {"IC001",
         {info, "Closed for reason ~w so maybe leaving garbage"}},
@@ -271,7 +277,10 @@
         {info, "Cycle count of ~w in hashtable search higher than expected"
                 ++ " in search for hash ~w with result ~w"}},
     {"CDB16",
-        {info, "CDB scan from start ~w in file with end ~w and last_key ~w"}}
+        {info, "CDB scan from start ~w in file with end ~w and last_key ~w"}},
+    {"CDB17",
+        {info, "After ~w PUTs total write time is ~w total sync time is ~w "
+                ++ "and max write time is ~w and max sync time is ~w"}}
         ])).
 
 

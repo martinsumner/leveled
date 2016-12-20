@@ -126,6 +126,7 @@
 -define(PENDING_FILEX, "pnd").
 -define(LOADING_PAUSE, 1000).
 -define(LOADING_BATCH, 1000).
+-define(PUT_TIMING_LOGPOINT, 10000).
 
 -record(state, {manifest = [] :: list(),
 				manifest_sqn = 0 :: integer(),
@@ -138,7 +139,8 @@
                 clerk :: pid(),
                 compaction_pending = false :: boolean(),
                 is_snapshot = false :: boolean(),
-                source_inker :: pid()}).
+                source_inker :: pid(),
+                put_timing = {0, {0, 0}, {0, 0}} ::tuple()}).
 
 
 %%%============================================================================
@@ -414,15 +416,21 @@ start_from_file(InkOpts) ->
 
 put_object(LedgerKey, Object, KeyChanges, State) ->
     NewSQN = State#state.journal_sqn + 1,
+    SW= os:timestamp(),
     {JournalKey, JournalBin} = leveled_codec:to_inkerkv(LedgerKey,
                                                             NewSQN,
                                                             Object,
                                                             KeyChanges),
+    T0 = timer:now_diff(os:timestamp(), SW),
     case leveled_cdb:cdb_put(State#state.active_journaldb,
                                 JournalKey,
                                 JournalBin) of
         ok ->
-            {ok, State#state{journal_sqn=NewSQN}, byte_size(JournalBin)};
+            T1 = timer:now_diff(os:timestamp(), SW) - T0,
+            UpdPutTimings = update_put_timings(State#state.put_timing, T0, T1),
+            {ok,
+                State#state{journal_sqn=NewSQN, put_timing=UpdPutTimings},
+                byte_size(JournalBin)};
         roll ->
             SW = os:timestamp(),
             CDBopts = State#state.cdb_options,
@@ -741,6 +749,15 @@ initiate_penciller_snapshot(Bookie) ->
     leveled_bookie:load_snapshot(LedgerSnap, LedgerCache),
     MaxSQN = leveled_penciller:pcl_getstartupsequencenumber(LedgerSnap),
     {LedgerSnap, MaxSQN}.
+
+update_put_timings({?PUT_TIMING_LOGPOINT, {Total0, Total1}, {Max0, Max1}},
+                                                                    T0, T1) ->
+    leveled_log:log("I0019",
+                    [?PUT_TIMING_LOGPOINT, Total0, Total1, Max0, Max1]),
+    {1, {T0, T1}, {T0, T1}};
+update_put_timings({N, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
+    {N + 1, {Total0 + T0, Total1 + T1}, {max(Max0, T0), max(Max1, T1)}}.
+
 
 %%%============================================================================
 %%% Test

@@ -472,11 +472,11 @@ stringcheck_test() ->
 %% Test below proved that the overhead of performing hashes was trivial
 %% Maybe 5 microseconds per hash
 
-hashperf_test() ->
-    OL = lists:map(fun(_X) -> crypto:rand_bytes(8192) end, lists:seq(1, 10000)),
-    SW = os:timestamp(),
-    _HL = lists:map(fun(Obj) -> erlang:phash2(Obj) end, OL),
-    io:format(user, "10000 object hashes in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SW)]).
+%hashperf_test() ->
+%    OL = lists:map(fun(_X) -> crypto:rand_bytes(8192) end, lists:seq(1, 10000)),
+%    SW = os:timestamp(),
+%    _HL = lists:map(fun(Obj) -> erlang:phash2(Obj) end, OL),
+%    io:format(user, "10000 object hashes in ~w microseconds~n",
+%                [timer:now_diff(os:timestamp(), SW)]).
 
 -endif.
