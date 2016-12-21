@@ -202,6 +202,7 @@
 -define(PROMPT_WAIT_ONL0, 5).
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
 -define(COIN_SIDECOUNT, 5).
+-define(SLOW_FETCH, 10000).
 
 -record(state, {manifest = [] :: list(),
 				manifest_sqn = 0 :: integer(),
@@ -736,7 +737,7 @@ fetch_mem(Key, Hash, Manifest, L0Cache, none) ->
     L0Check = leveled_pmem:check_levelzero(Key, Hash, L0Cache),
     case L0Check of
         {false, not_found} ->
-            fetch(Key, Hash, Manifest, 0, fun leveled_sft:sft_get/3);
+            fetch(Key, Hash, Manifest, 0, fun timed_sft_get/3);
         {true, KV} ->
             KV
     end;
@@ -745,7 +746,7 @@ fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
         true ->
             fetch_mem(Key, Hash, Manifest, L0Cache, none);
         false ->
-            fetch(Key, Hash, Manifest, 0, fun leveled_sft:sft_get/3)
+            fetch(Key, Hash, Manifest, 0, fun timed_sft_get/3)
     end.
 
 fetch(_Key, _Hash, _Manifest, ?MAX_LEVELS + 1, _FetchFun) ->
@@ -772,6 +773,21 @@ fetch(Key, Hash, Manifest, Level, FetchFun) ->
                 ObjectFound ->
                     ObjectFound
             end
+    end.
+    
+timed_sft_get(PID, Key, Hash) ->
+    SW = os:timestamp(),
+    R = leveled_sft:sft_get(PID, Key, Hash),
+    T0 = timer:now_diff(os:timestamp(), SW),
+    case {T0, R} of
+        {T, R} when T < ?SLOW_FETCH ->
+            R;
+        {T, not_present} ->
+            leveled_log:log("PC016", [PID, T, not_present]),
+            not_present;
+        {T, R} ->
+            leveled_log:log("PC016", [PID, T, found]),
+            R
     end.
     
 

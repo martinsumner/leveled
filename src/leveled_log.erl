@@ -142,6 +142,8 @@
         {info, "Empty file ~s to be cleared"}},
     {"PC015",
         {info, "File created"}},
+    {"PC016",
+        {info, "Slow fetch from SFT ~w of ~w microseconds with result ~w"}},
     
     {"I0001",
         {info, "Unexpected failure to fetch value for Key=~w SQN=~w "
@@ -243,7 +245,8 @@
         {error, "Segment filter failed due to CRC check ~w did not match ~w"}},
     {"SFT13",
         {error, "Segment filter failed due to ~s"}},
-    
+    {"SFT14",
+        {info, "Range fetch from SFT PID ~w"}},
     
     {"CDB01",
         {info, "Opening file for writing with filename ~s"}},

@@ -1100,7 +1100,9 @@ maybe_expand_pointer([H|Tail]) ->
     case H of
         {next, SFTPid, StartKey} ->
             %% io:format("Scanning further on PID ~w ~w~n", [SFTPid, StartKey]),
+            SW = os:timestamp(),
             Acc = sft_getkvrange(SFTPid, StartKey, all, ?MERGE_SCANWIDTH),
+            leveled_log:log_timer("SFT14", [SFTPid], SW),
             lists:append(Acc, Tail);
         _ ->
             [H|Tail]
