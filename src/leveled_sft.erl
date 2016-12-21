@@ -757,7 +757,7 @@ maybe_scan_entire_block(_Block, all, all) ->
     true;
 maybe_scan_entire_block(Block, StartKey, all) ->
     [FirstKey|_Tail] = Block,
-    leveled_codec:strip_to_keyonly(FirstKey) >= StartKey;
+    leveled_codec:strip_to_keyonly(FirstKey) > StartKey;
 maybe_scan_entire_block(Block, StartKey, EndKey) ->
     [FirstKey|_Tail] = Block,
     LastKey = leveled_codec:strip_to_keyonly(lists:last(Block)),
