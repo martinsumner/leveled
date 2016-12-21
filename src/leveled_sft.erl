@@ -644,6 +644,8 @@ acc_list_keysonly(null, empty) ->
     [];
 acc_list_keysonly(null, RList) ->
     RList;
+acc_list_keysonly(R, RList) when is_list(R) ->
+    lists:foldl(fun acc_list_keysonly/2, RList, R);
 acc_list_keysonly(R, RList) ->
     lists:append(RList, [leveled_codec:strip_to_keyseqstatusonly(R)]).
 
@@ -651,6 +653,8 @@ acc_list_kv(null, empty) ->
     [];
 acc_list_kv(null, RList) ->
     RList;
+acc_list_kv(R, RList) when is_list(R) ->
+    RList ++ R;
 acc_list_kv(R, RList) ->
     lists:append(RList, [R]).
 
@@ -713,7 +717,13 @@ fetch_range(Handle, FileMD, StartKey, NearestKey, EndKey,
                         Pointer,
                         Acc) ->
     Block = fetch_block(Handle, LengthList, BlockNumber, Pointer),
-    Results = scan_block(Block, StartKey, EndKey, AccFun, Acc),
+    Results = 
+        case maybe_scan_entire_block(Block, StartKey, EndKey) of
+            true ->
+                {partial, AccFun(Block, Acc), StartKey};
+            false ->
+                scan_block(Block, StartKey, EndKey, AccFun, Acc)
+        end,
     case Results of
         {partial, Acc1, StartKey} ->
             %% Move on to the next block
@@ -740,6 +750,25 @@ scan_block([HeadKV|T], StartKey, EndKey, AccFun, Acc) ->
             scan_block(T, StartKey, EndKey, AccFun, AccFun(HeadKV, Acc))
     end.
 
+
+maybe_scan_entire_block([], _, _) ->
+    true;
+maybe_scan_entire_block(_Block, all, all) ->
+    true;
+maybe_scan_entire_block(Block, StartKey, all) ->
+    [FirstKey|_Tail] = Block,
+    leveled_codec:strip_to_keyonly(FirstKey) >= StartKey;
+maybe_scan_entire_block(Block, StartKey, EndKey) ->
+    [FirstKey|_Tail] = Block,
+    LastKey = leveled_codec:strip_to_keyonly(lists:last(Block)),
+    FromStart = leveled_codec:strip_to_keyonly(FirstKey) >= StartKey,
+    ToEnd = leveled_codec:endkey_passed(EndKey, LastKey),
+    case {FromStart, ToEnd} of
+        {true, true} ->
+            true;
+        _ ->
+            false
+    end.
 
 fetch_keyvalue_fromblock([], _Key, _LengthList, _Handle, _StartOfSlot) ->
     not_present;

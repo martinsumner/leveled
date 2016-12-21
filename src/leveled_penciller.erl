@@ -202,7 +202,7 @@
 -define(PROMPT_WAIT_ONL0, 5).
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
 -define(COIN_SIDECOUNT, 5).
--define(SLOW_FETCH, 10000).
+-define(SLOW_FETCH, 20000).
 
 -record(state, {manifest = [] :: list(),
 				manifest_sqn = 0 :: integer(),
