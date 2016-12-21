@@ -761,7 +761,7 @@ maybe_scan_entire_block(Block, StartKey, all) ->
 maybe_scan_entire_block(Block, StartKey, EndKey) ->
     [FirstKey|_Tail] = Block,
     LastKey = leveled_codec:strip_to_keyonly(lists:last(Block)),
-    FromStart = leveled_codec:strip_to_keyonly(FirstKey) >= StartKey,
+    FromStart = leveled_codec:strip_to_keyonly(FirstKey) > StartKey,
     ToEnd = leveled_codec:endkey_passed(EndKey, LastKey),
     case {FromStart, ToEnd} of
         {true, true} ->
