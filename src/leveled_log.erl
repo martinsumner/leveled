@@ -43,6 +43,8 @@
     {"B0012",
         {info, "After ~w PUTs total inker time is ~w total ledger time is ~w "
                 ++ "and max inker time is ~w and max ledger time is ~w"}},
+    {"B0013",
+        {warn, "Long running task took ~w microseconds with task of type ~w"}},
     
     {"P0001",
         {info, "Ledger snapshot ~w registered"}},

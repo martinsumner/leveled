@@ -288,6 +288,7 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State) ->
         false ->
             gen_server:reply(From, ok)
     end,
+    maybe_longrunning(SW, overall_put),
     case maybepush_ledgercache(State#state.cache_size,
                                     Cache0,
                                     State#state.penciller) of
@@ -471,6 +472,14 @@ update_put_timings({?PUT_TIMING_LOGPOINT, {Total0, Total1}, {Max0, Max1}},
     {1, {T0, T1}, {T0, T1}};
 update_put_timings({N, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
     {N + 1, {Total0 + T0, Total1 + T1}, {max(Max0, T0), max(Max1, T1)}}.
+
+maybe_longrunning(SW, Aspect) ->
+    case timer:now_diff(os:timestamp(), SW) of
+        N when N > 80000 ->
+            leveled_log:log("B0013", [N, Aspect]);
+        _ ->
+            ok
+    end.
 
 
 cache_size(LedgerCache) ->
@@ -747,6 +756,7 @@ startup(InkerOpts, PencillerOpts) ->
 
 
 fetch_head(Key, Penciller, LedgerCache) ->
+    SW = os:timestamp(),
     Hash = leveled_codec:magic_hash(Key),
     if
         Hash /= no_lookup ->
@@ -755,20 +765,25 @@ fetch_head(Key, Penciller, LedgerCache) ->
                                             LedgerCache#ledger_cache.skiplist),
             case L0R of
                 {value, Head} ->
+                    maybe_longrunning(SW, local_head),
                     Head;
                 none ->
                     case leveled_penciller:pcl_fetch(Penciller, Key, Hash) of
                         {Key, Head} ->
+                            maybe_longrunning(SW, pcl_head),
                             Head;
                         not_present ->
+                            maybe_longrunning(SW, pcl_head),
                             not_present
                     end
             end
     end.
 
 fetch_value(Key, SQN, Inker) ->
+    SW = os:timestamp(),
     case leveled_inker:ink_fetch(Inker, Key, SQN) of
         {ok, Value} ->
+            maybe_longrunning(SW, inker_fetch),
             Value;
         not_present ->
             not_present
