@@ -13,7 +13,7 @@
             head_timings/4]).         
 
 -define(PUT_TIMING_LOGPOINT, 10000).
--define(HEAD_TIMING_LOGPOINT, 10000).
+-define(HEAD_TIMING_LOGPOINT, 100000).
 -define(LOG_LEVEL, [info, warn, error, critical]).
 
 -define(LOGBASE, dict:from_list([
