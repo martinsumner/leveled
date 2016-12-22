@@ -240,7 +240,7 @@ starting({open_writer, Filename}, _From, State) ->
                                         hashtree=HashTree}};
 starting({open_reader, Filename}, _From, State) ->
     leveled_log:log("CDB02", [Filename]),
-    {Handle, Index, LastKey} = open_for_readonly(Filename),
+    {Handle, Index, LastKey} = open_for_readonly(Filename, false),
     {reply, ok, reader, State#state{handle=Handle,
                                         last_key=LastKey,
                                         filename=Filename,
@@ -333,6 +333,7 @@ rolling({key_check, Key}, _From, State) ->
 rolling({get_positions, _SampleSize}, _From, State) ->
     {reply, [], rolling, State};
 rolling({return_hashtable, IndexList, HashTreeBin}, _From, State) ->
+    SW = os:timestamp(),
     Handle = State#state.handle,
     {ok, BasePos} = file:position(Handle, State#state.last_position), 
     NewName = determine_new_filename(State#state.filename),
@@ -341,7 +342,8 @@ rolling({return_hashtable, IndexList, HashTreeBin}, _From, State) ->
     file:close(Handle),
     ok = rename_for_read(State#state.filename, NewName),
     leveled_log:log("CDB03", [NewName]),
-    {NewHandle, Index, LastKey} = open_for_readonly(NewName),
+    {NewHandle, Index, LastKey} = open_for_readonly(NewName,
+                                                    State#state.last_key),
     case State#state.deferred_delete of
         true ->
             {reply, ok, delete_pending, State#state{handle=NewHandle,
@@ -349,6 +351,7 @@ rolling({return_hashtable, IndexList, HashTreeBin}, _From, State) ->
                                                     filename=NewName,
                                                     hash_index=Index}};
         false ->
+            leveled_log:log_timer("CDB18", [], SW),
             {reply, ok, reader, State#state{handle=NewHandle,
                                             last_key=LastKey,
                                             filename=NewName,
@@ -788,10 +791,16 @@ rename_for_read(Filename, NewName) ->
     leveled_log:log("CDB08", [Filename, NewName, filelib:is_file(NewName)]),
     file:rename(Filename, NewName).
 
-open_for_readonly(Filename) ->
+open_for_readonly(Filename, LastKeyKnown) ->
     {ok, Handle} = file:open(Filename, [binary, raw, read]),
     Index = load_index(Handle),
-    LastKey = find_lastkey(Handle, Index),
+    LastKey =
+        case LastKeyKnown of
+            false ->
+                find_lastkey(Handle, Index);
+            LastKeyKnown ->
+                LastKeyKnown
+        end,
     {Handle, Index, LastKey}.
 
 load_index(Handle) ->
