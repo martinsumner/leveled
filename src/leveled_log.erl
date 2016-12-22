@@ -17,6 +17,7 @@
 -define(HEAD_TIMING_LOGPOINT, 100000).
 -define(GET_TIMING_LOGPOINT, 50000).
 -define(LOG_LEVEL, [info, warn, error, critical]).
+-define(SAMPLE_RATE, 16#F).
 
 -define(LOGBASE, dict:from_list([
 
@@ -53,7 +54,7 @@
     {"B0013",
         {warn, "Long running task took ~w microseconds with task of type ~w"}},
     {"B0014",
-        {info, "Get timing for result ~w is count ~w total ~w and max ~w"}},
+        {info, "Get timing for result ~w is sample ~w total ~w and max ~w"}},
     
     {"P0001",
         {info, "Ledger snapshot ~w registered"}},
@@ -121,7 +122,7 @@
     {"P0031",
         {info, "Completion of update to levelzero"}},
     {"P0032",
-        {info, "Head timing for result ~w is count ~w total ~w and max ~w"}},
+        {info, "Head timing for result ~w is sample ~w total ~w and max ~w"}},
     
     {"PC001",
         {info, "Penciller's clerk ~w started with owner ~w"}},
@@ -349,10 +350,18 @@ put_timing(_Actor, {N, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
 %% Make a log of penciller head timings split out by level and result - one
 %% log for every HEAD_TIMING_LOGPOINT puts
 %% Returns a tuple of {Count, TimingDict} to be stored on the process state
-
-head_timing(HeadTimer, SW, Level, R) ->
+head_timing(undefined, SW, Level, R) ->
     T0 = timer:now_diff(os:timestamp(), SW),
-    head_timing_int(HeadTimer, T0, Level, R).
+    head_timing_int(undefined, T0, Level, R);
+head_timing({N, HeadTimingD}, SW, Level, R) ->
+    case N band ?SAMPLE_RATE of
+        0 ->
+            T0 = timer:now_diff(os:timestamp(), SW),
+            head_timing_int({N, HeadTimingD}, T0, Level, R);
+        _ ->
+            % Not to be sampled this time
+            {N + 1, HeadTimingD}
+    end.
 
 head_timing_int(undefined, T0, Level, R) -> 
     Key = head_key(R, Level),
@@ -389,9 +398,20 @@ head_key(found, Level) when Level > 2 ->
 head_keylist() ->
     [not_present, found_lower, found_0, found_1, found_2].
 
-get_timing(GetTimer, SW, TimerType) ->
+
+
+get_timing(undefined, SW, TimerType) ->
     T0 = timer:now_diff(os:timestamp(), SW),
-    get_timing_int(GetTimer, T0, TimerType).
+    get_timing_int(undefined, T0, TimerType);
+get_timing({N, GetTimerD}, SW, TimerType) ->
+    case N band ?SAMPLE_RATE of
+        0 ->
+            T0 = timer:now_diff(os:timestamp(), SW),
+            get_timing_int({N, GetTimerD}, T0, TimerType);
+        _ ->
+            % Not to be sampled this time
+            {N + 1, GetTimerD}
+    end.
 
 get_timing_int(undefined, T0, TimerType) ->
     NewDFun = fun(K, Acc) ->
@@ -432,12 +452,13 @@ log_test() ->
 
 head_timing_test() ->
     SW = os:timestamp(),
-    HeadTimer0 = head_timing(undefined, SW, 2, found),
-    HeadTimer1 = head_timing(HeadTimer0, SW, 2, found),
-    HeadTimer2 = head_timing(HeadTimer1, SW, 3, found),
-    {N, D} = HeadTimer2,
-    ?assertMatch(3, N),
-    ?assertMatch(2, lists:nth(1, dict:fetch(found_2, D))),
+    HeadTimer0 = lists:foldl(fun(_X, Acc) -> head_timing(Acc, SW, 2, found) end,
+                                undefined,
+                                lists:seq(0, 47)),
+    HeadTimer1 = head_timing(HeadTimer0, SW, 3, found),
+    {N, D} = HeadTimer1,
+    ?assertMatch(49, N),
+    ?assertMatch(3, lists:nth(1, dict:fetch(found_2, D))),
     ?assertMatch(1, lists:nth(1, dict:fetch(found_lower, D))).
 
 -endif.
