@@ -114,7 +114,7 @@
     {"P0027",
         {info, "Rename of manifest from ~s ~w to ~s ~w"}},
     {"P0028",
-        {info, "Adding cleared file ~s to deletion list"}},
+        {debug, "Adding cleared file ~s to deletion list"}},
     {"P0029",
         {info, "L0 completion confirmed and will transition to not pending"}},
     {"P0030",
@@ -258,7 +258,7 @@
     {"SFT13",
         {error, "Segment filter failed due to ~s"}},
     {"SFT14",
-        {info, "Range fetch from SFT PID ~w"}},
+        {debug, "Range fetch from SFT PID ~w"}},
     
     {"CDB01",
         {info, "Opening file for writing with filename ~s"}},
