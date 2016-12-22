@@ -162,7 +162,8 @@
                 ledger_cache = #ledger_cache{},
                 is_snapshot :: boolean(),
                 slow_offer = false :: boolean(),
-                put_timing :: tuple()}).
+                put_timing :: tuple(),
+                get_timing :: tuple()}).
 
 
 %%%============================================================================
@@ -278,7 +279,7 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State) ->
                                         {IndexSpecs, TTL}),
     Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
     T1 = timer:now_diff(os:timestamp(), SW) - T0,
-    PutTimes = leveled_log:put_timings(bookie, State#state.put_timing, T0, T1),
+    PutTimes = leveled_log:put_timing(bookie, State#state.put_timing, T0, T1),
     % If the previous push to memory was returned then punish this PUT with a
     % delay.  If the back-pressure in the Penciller continues, these delays
     % will beocme more frequent
@@ -303,26 +304,35 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State) ->
     end;
 handle_call({get, Bucket, Key, Tag}, _From, State) ->
     LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
+    SWh = os:timestamp(),
     case fetch_head(LedgerKey,
                     State#state.penciller,
                     State#state.ledger_cache) of
         not_present ->
-            {reply, not_found, State};
+            GT0 = leveled_log:get_timing(State#state.get_timing, 
+                                            SWh,
+                                            head_not_present),
+            {reply, not_found, State#state{get_timing=GT0}};
         Head ->
+            GT0 = leveled_log:get_timing(State#state.get_timing, 
+                                            SWh,
+                                            head_found),
+            SWg = os:timestamp(),
             {Seqn, Status, _MH, _MD} = leveled_codec:striphead_to_details(Head),
             case Status of
                 tomb ->
                     {reply, not_found, State};
                 {active, TS} ->
                     Active = TS >= leveled_codec:integer_now(),
-                    case {Active,
-                            fetch_value(LedgerKey, Seqn, State#state.inker)} of
+                    Object = fetch_value(LedgerKey, Seqn, State#state.inker),
+                    GT1 = leveled_log:get_timing(GT0, SWg, fetch),
+                    case {Active, Object} of
                         {_, not_present} ->
-                            {reply, not_found, State};
+                            {reply, not_found, State#state{get_timing=GT1}};
                         {true, Object} ->
-                            {reply, {ok, Object}, State};
+                            {reply, {ok, Object}, State#state{get_timing=GT1}};
                         _ ->
-                            {reply, not_found, State}
+                            {reply, not_found, State#state{get_timing=GT1}}
                     end
             end
     end;

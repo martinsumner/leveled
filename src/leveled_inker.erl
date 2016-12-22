@@ -426,7 +426,7 @@ put_object(LedgerKey, Object, KeyChanges, State) ->
                                 JournalBin) of
         ok ->
             T1 = timer:now_diff(os:timestamp(), SW) - T0,
-            UpdPutTimes = leveled_log:put_timings(inker,
+            UpdPutTimes = leveled_log:put_timing(inker,
                                                     State#state.put_timing,
                                                     T0, T1),
             {ok,

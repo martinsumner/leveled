@@ -739,9 +739,9 @@ timed_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, HeadTimer) ->
     UpdHeadTimer =
         case R of
             not_present ->
-                leveled_log:head_timings(HeadTimer, SW, Level, not_present);
+                leveled_log:head_timing(HeadTimer, SW, Level, not_present);
             _ ->
-                leveled_log:head_timings(HeadTimer, SW, Level, found)
+                leveled_log:head_timing(HeadTimer, SW, Level, found)
         end,
     {R, UpdHeadTimer}.
 

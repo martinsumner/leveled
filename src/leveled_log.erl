@@ -9,11 +9,13 @@
 
 -export([log/2,
             log_timer/3,
-            put_timings/4,
-            head_timings/4]).         
+            put_timing/4,
+            head_timing/4,
+            get_timing/3]).         
 
--define(PUT_TIMING_LOGPOINT, 10000).
+-define(PUT_TIMING_LOGPOINT, 20000).
 -define(HEAD_TIMING_LOGPOINT, 100000).
+-define(GET_TIMING_LOGPOINT, 50000).
 -define(LOG_LEVEL, [info, warn, error, critical]).
 
 -define(LOGBASE, dict:from_list([
@@ -50,6 +52,8 @@
                 ++ "and max inker time is ~w and max ledger time is ~w"}},
     {"B0013",
         {warn, "Long running task took ~w microseconds with task of type ~w"}},
+    {"B0014",
+        {info, "Get timing for result ~w is count ~w total ~w and max ~w"}},
     
     {"P0001",
         {info, "Ledger snapshot ~w registered"}},
@@ -328,9 +332,9 @@ log_timer(LogReference, Subs, StartTime) ->
 %% Make a log of put timings split out by actor - one log for every
 %% PUT_TIMING_LOGPOINT puts
 
-put_timings(_Actor, undefined, T0, T1) ->
+put_timing(_Actor, undefined, T0, T1) ->
     {1, {T0, T1}, {T0, T1}};
-put_timings(Actor, {?PUT_TIMING_LOGPOINT, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
+put_timing(Actor, {?PUT_TIMING_LOGPOINT, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
     LogRef =
         case Actor of
             bookie -> "B0012";
@@ -338,19 +342,19 @@ put_timings(Actor, {?PUT_TIMING_LOGPOINT, {Total0, Total1}, {Max0, Max1}}, T0, T
             journal -> "CDB17"
         end,
     log(LogRef, [?PUT_TIMING_LOGPOINT, Total0, Total1, Max0, Max1]),
-    put_timings(Actor, undefined, T0, T1);
-put_timings(_Actor, {N, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
+    put_timing(Actor, undefined, T0, T1);
+put_timing(_Actor, {N, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
     {N + 1, {Total0 + T0, Total1 + T1}, {max(Max0, T0), max(Max1, T1)}}.
 
 %% Make a log of penciller head timings split out by level and result - one
 %% log for every HEAD_TIMING_LOGPOINT puts
 %% Returns a tuple of {Count, TimingDict} to be stored on the process state
 
-head_timings(HeadTimer, SW, Level, R) ->
+head_timing(HeadTimer, SW, Level, R) ->
     T0 = timer:now_diff(os:timestamp(), SW),
-    head_timings_int(HeadTimer, T0, Level, R).
+    head_timing_int(HeadTimer, T0, Level, R).
 
-head_timings_int(undefined, T0, Level, R) -> 
+head_timing_int(undefined, T0, Level, R) -> 
     Key = head_key(R, Level),
     NewDFun = fun(K, Acc) ->
                 case K of
@@ -360,11 +364,11 @@ head_timings_int(undefined, T0, Level, R) ->
                         dict:store(K, [0, 0, 0], Acc)
                 end end,
     {1, lists:foldl(NewDFun, dict:new(), head_keylist())};
-head_timings_int({?HEAD_TIMING_LOGPOINT, HeadTimingD}, T0, Level, R) ->
+head_timing_int({?HEAD_TIMING_LOGPOINT, HeadTimingD}, T0, Level, R) ->
     LogFun  = fun(K) -> log("P0032", [K|dict:fetch(K, HeadTimingD)]) end,
     lists:foreach(LogFun, head_keylist()),
-    head_timings_int(undefined, T0, Level, R);
-head_timings_int({N, HeadTimingD}, T0, Level, R) ->
+    head_timing_int(undefined, T0, Level, R);
+head_timing_int({N, HeadTimingD}, T0, Level, R) ->
     Key = head_key(R, Level),
     [Count0, Total0, Max0] = dict:fetch(Key, HeadTimingD),
     {N + 1,
@@ -385,6 +389,35 @@ head_key(found, Level) when Level > 2 ->
 head_keylist() ->
     [not_present, found_lower, found_0, found_1, found_2].
 
+get_timing(GetTimer, SW, TimerType) ->
+    T0 = timer:now_diff(os:timestamp(), SW),
+    get_timing_int(GetTimer, T0, TimerType).
+
+get_timing_int(undefined, T0, TimerType) ->
+    NewDFun = fun(K, Acc) ->
+                case K of
+                    TimerType ->
+                        dict:store(K, [1, T0, T0], Acc);
+                    _ ->
+                        dict:store(K, [0, 0, 0], Acc)
+                end end,
+    {1, lists:foldl(NewDFun, dict:new(), get_keylist())};
+get_timing_int({?GET_TIMING_LOGPOINT, GetTimerD}, T0, TimerType) ->
+    LogFun  = fun(K) -> log("B0014", [K|dict:fetch(K, GetTimerD)]) end,
+    lists:foreach(LogFun, get_keylist()),
+    get_timing_int(undefined, T0, TimerType);
+get_timing_int({N, GetTimerD}, T0, TimerType) ->
+    [Count0, Total0, Max0] = dict:fetch(TimerType, GetTimerD),
+    {N + 1, 
+        dict:store(TimerType, 
+                    [Count0 + 1, Total0 + T0, max(Max0, T0)], 
+                    GetTimerD)}.
+
+
+
+get_keylist() ->
+    [head_not_present, head_found, fetch].
+
 %%%============================================================================
 %%% Test
 %%%============================================================================
@@ -399,9 +432,9 @@ log_test() ->
 
 head_timing_test() ->
     SW = os:timestamp(),
-    HeadTimer0 = head_timings(undefined, SW, 2, found),
-    HeadTimer1 = head_timings(HeadTimer0, SW, 2, found),
-    HeadTimer2 = head_timings(HeadTimer1, SW, 3, found),
+    HeadTimer0 = head_timing(undefined, SW, 2, found),
+    HeadTimer1 = head_timing(HeadTimer0, SW, 2, found),
+    HeadTimer2 = head_timing(HeadTimer1, SW, 3, found),
     {N, D} = HeadTimer2,
     ?assertMatch(3, N),
     ?assertMatch(2, lists:nth(1, dict:fetch(found_2, D))),

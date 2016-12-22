@@ -278,7 +278,7 @@ writer({put_kv, Key, Value}, _From, State) ->
                         ok
                 end,
             T1 = timer:now_diff(os:timestamp(), SW) - T0,
-            Timings = leveled_log:put_timings(journal,
+            Timings = leveled_log:put_timing(journal,
                                                 State#state.put_timing,
                                                 T0, T1),
             {reply, ok, writer, State#state{handle=UpdHandle,
