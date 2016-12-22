@@ -150,6 +150,7 @@
 -define(CHECKJOURNAL_PROB, 0.2).
 -define(CACHE_SIZE_JITTER, 25).
 -define(JOURNAL_SIZE_JITTER, 20).
+-define(LONG_RUNNING, 80000).
 
 -record(ledger_cache, {skiplist = leveled_skiplist:empty(true) :: tuple(),
                         min_sqn = infinity :: integer()|infinity,
@@ -160,7 +161,9 @@
                 cache_size :: integer(),
                 ledger_cache = #ledger_cache{},
                 is_snapshot :: boolean(),
-                slow_offer = false :: boolean()}).
+                slow_offer = false :: boolean(),
+                put_timing :: tuple(),
+                get_timing :: tuple()}).
 
 
 %%%============================================================================
@@ -262,10 +265,12 @@ init([Opts]) ->
 
 handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State) ->
     LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
+    SW = os:timestamp(),
     {ok, SQN, ObjSize} = leveled_inker:ink_put(State#state.inker,
                                                 LedgerKey,
                                                 Object,
                                                 {IndexSpecs, TTL}),
+    T0 = timer:now_diff(os:timestamp(), SW),
     Changes = preparefor_ledgercache(no_type_assigned,
                                         LedgerKey,
                                         SQN,
@@ -273,6 +278,8 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State) ->
                                         ObjSize,
                                         {IndexSpecs, TTL}),
     Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
+    T1 = timer:now_diff(os:timestamp(), SW) - T0,
+    PutTimes = leveled_log:put_timing(bookie, State#state.put_timing, T0, T1),
     % If the previous push to memory was returned then punish this PUT with a
     % delay.  If the back-pressure in the Penciller continues, these delays
     % will beocme more frequent
@@ -282,36 +289,50 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State) ->
         false ->
             gen_server:reply(From, ok)
     end,
+    maybe_longrunning(SW, overall_put),
     case maybepush_ledgercache(State#state.cache_size,
                                     Cache0,
                                     State#state.penciller) of
         {ok, NewCache} ->
-            {noreply, State#state{ledger_cache=NewCache, slow_offer=false}};
+            {noreply, State#state{ledger_cache=NewCache,
+                                    put_timing=PutTimes,
+                                    slow_offer=false}};
         {returned, NewCache} ->
-            {noreply, State#state{ledger_cache=NewCache, slow_offer=true}}
+            {noreply, State#state{ledger_cache=NewCache,
+                                    put_timing=PutTimes,
+                                    slow_offer=true}}
     end;
 handle_call({get, Bucket, Key, Tag}, _From, State) ->
     LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
+    SWh = os:timestamp(),
     case fetch_head(LedgerKey,
                     State#state.penciller,
                     State#state.ledger_cache) of
         not_present ->
-            {reply, not_found, State};
+            GT0 = leveled_log:get_timing(State#state.get_timing, 
+                                            SWh,
+                                            head_not_present),
+            {reply, not_found, State#state{get_timing=GT0}};
         Head ->
+            GT0 = leveled_log:get_timing(State#state.get_timing, 
+                                            SWh,
+                                            head_found),
+            SWg = os:timestamp(),
             {Seqn, Status, _MH, _MD} = leveled_codec:striphead_to_details(Head),
             case Status of
                 tomb ->
                     {reply, not_found, State};
                 {active, TS} ->
                     Active = TS >= leveled_codec:integer_now(),
-                    case {Active,
-                            fetch_value(LedgerKey, Seqn, State#state.inker)} of
+                    Object = fetch_value(LedgerKey, Seqn, State#state.inker),
+                    GT1 = leveled_log:get_timing(GT0, SWg, fetch),
+                    case {Active, Object} of
                         {_, not_present} ->
-                            {reply, not_found, State};
+                            {reply, not_found, State#state{get_timing=GT1}};
                         {true, Object} ->
-                            {reply, {ok, Object}, State};
+                            {reply, {ok, Object}, State#state{get_timing=GT1}};
                         _ ->
-                            {reply, not_found, State}
+                            {reply, not_found, State#state{get_timing=GT1}}
                     end
             end
     end;
@@ -453,6 +474,16 @@ push_ledgercache(Penciller, Cache) ->
 %%%============================================================================
 %%% Internal functions
 %%%============================================================================
+
+
+
+maybe_longrunning(SW, Aspect) ->
+    case timer:now_diff(os:timestamp(), SW) of
+        N when N > ?LONG_RUNNING ->
+            leveled_log:log("B0013", [N, Aspect]);
+        _ ->
+            ok
+    end.
 
 cache_size(LedgerCache) ->
     leveled_skiplist:size(LedgerCache#ledger_cache.skiplist).
@@ -728,6 +759,7 @@ startup(InkerOpts, PencillerOpts) ->
 
 
 fetch_head(Key, Penciller, LedgerCache) ->
+    SW = os:timestamp(),
     Hash = leveled_codec:magic_hash(Key),
     if
         Hash /= no_lookup ->
@@ -736,20 +768,25 @@ fetch_head(Key, Penciller, LedgerCache) ->
                                             LedgerCache#ledger_cache.skiplist),
             case L0R of
                 {value, Head} ->
+                    maybe_longrunning(SW, local_head),
                     Head;
                 none ->
                     case leveled_penciller:pcl_fetch(Penciller, Key, Hash) of
                         {Key, Head} ->
+                            maybe_longrunning(SW, pcl_head),
                             Head;
                         not_present ->
+                            maybe_longrunning(SW, pcl_head),
                             not_present
                     end
             end
     end.
 
 fetch_value(Key, SQN, Inker) ->
+    SW = os:timestamp(),
     case leveled_inker:ink_fetch(Inker, Key, SQN) of
         {ok, Value} ->
+            maybe_longrunning(SW, inker_fetch),
             Value;
         not_present ->
             not_present

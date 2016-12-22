@@ -8,9 +8,17 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -export([log/2,
-            log_timer/3]).         
+            log_timer/3,
+            put_timing/4,
+            head_timing/4,
+            get_timing/3]).         
 
+-define(PUT_TIMING_LOGPOINT, 20000).
+-define(HEAD_TIMING_LOGPOINT, 160000).
+-define(GET_TIMING_LOGPOINT, 160000).
 -define(LOG_LEVEL, [info, warn, error, critical]).
+-define(SAMPLE_RATE, 16#F).
+
 -define(LOGBASE, dict:from_list([
 
     {"G0001",
@@ -40,6 +48,13 @@
         {info, "Bucket list finds non-binary Bucket ~w"}},
     {"B0011",
         {warn, "Call to destroy the store and so all files to be removed"}},
+    {"B0012",
+        {info, "After ~w PUTs total inker time is ~w total ledger time is ~w "
+                ++ "and max inker time is ~w and max ledger time is ~w"}},
+    {"B0013",
+        {warn, "Long running task took ~w microseconds with task of type ~w"}},
+    {"B0014",
+        {info, "Get timing for result ~w is sample ~w total ~w and max ~w"}},
     
     {"P0001",
         {info, "Ledger snapshot ~w registered"}},
@@ -99,13 +114,15 @@
     {"P0027",
         {info, "Rename of manifest from ~s ~w to ~s ~w"}},
     {"P0028",
-        {info, "Adding cleared file ~s to deletion list"}},
+        {debug, "Adding cleared file ~s to deletion list"}},
     {"P0029",
         {info, "L0 completion confirmed and will transition to not pending"}},
     {"P0030",
         {warn, "We're doomed - intention recorded to destroy all files"}},
     {"P0031",
         {info, "Completion of update to levelzero"}},
+    {"P0032",
+        {info, "Head timing for result ~w is sample ~w total ~w and max ~w"}},
     
     {"PC001",
         {info, "Penciller's clerk ~w started with owner ~w"}},
@@ -137,6 +154,8 @@
         {info, "Empty file ~s to be cleared"}},
     {"PC015",
         {info, "File created"}},
+    {"PC016",
+        {info, "Slow fetch from SFT ~w of ~w microseconds with result ~w"}},
     
     {"I0001",
         {info, "Unexpected failure to fetch value for Key=~w SQN=~w "
@@ -176,6 +195,9 @@
         {info, "At SQN=~w journal has filename ~s"}},
     {"I0018",
         {warn, "We're doomed - intention recorded to destroy all files"}},
+    {"I0019",
+        {info, "After ~w PUTs total prepare time is ~w total cdb time is ~w "
+                ++ "and max prepare time is ~w and max cdb time is ~w"}},
     
     {"IC001",
         {info, "Closed for reason ~w so maybe leaving garbage"}},
@@ -216,7 +238,7 @@
     {"SFT03",
         {info, "File creation of L0 file ~s"}},
     {"SFT04",
-        {info, "File ~s prompting for delete status check"}},
+        {debug, "File ~s prompting for delete status check"}},
     {"SFT05",
         {info, "Exit called for reason ~w on filename ~s"}},
     {"SFT06",
@@ -235,7 +257,8 @@
         {error, "Segment filter failed due to CRC check ~w did not match ~w"}},
     {"SFT13",
         {error, "Segment filter failed due to ~s"}},
-    
+    {"SFT14",
+        {debug, "Range fetch from SFT PID ~w"}},
     
     {"CDB01",
         {info, "Opening file for writing with filename ~s"}},
@@ -271,7 +294,10 @@
         {info, "Cycle count of ~w in hashtable search higher than expected"
                 ++ " in search for hash ~w with result ~w"}},
     {"CDB16",
-        {info, "CDB scan from start ~w in file with end ~w and last_key ~w"}}
+        {info, "CDB scan from start ~w in file with end ~w and last_key ~w"}},
+    {"CDB17",
+        {info, "After ~w PUTs total write time is ~w total sync time is ~w "
+                ++ "and max write time is ~w and max sync time is ~w"}}
         ])).
 
 
@@ -304,9 +330,140 @@ log_timer(LogReference, Subs, StartTime) ->
             ok
     end.
 
+%% Make a log of put timings split out by actor - one log for every
+%% PUT_TIMING_LOGPOINT puts
+
+put_timing(_Actor, undefined, T0, T1) ->
+    {1, {T0, T1}, {T0, T1}};
+put_timing(Actor, {?PUT_TIMING_LOGPOINT, {Total0, Total1}, {Max0, Max1}},
+                                                                    T0, T1) ->
+    RN = random:uniform(?HEAD_TIMING_LOGPOINT),
+    case RN > ?HEAD_TIMING_LOGPOINT div 2 of
+        true ->
+            % log at the timing point less than half the time
+            LogRef =
+                case Actor of
+                    bookie -> "B0012";
+                    inker -> "I0019";
+                    journal -> "CDB17"
+                end,
+            log(LogRef, [?PUT_TIMING_LOGPOINT, Total0, Total1, Max0, Max1]),
+            put_timing(Actor, undefined, T0, T1);
+        false ->
+            % Log some other random time
+            put_timing(Actor, {RN, {Total0, Total1}, {Max0, Max1}}, T0, T1)
+    end;
+put_timing(_Actor, {N, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
+    {N + 1, {Total0 + T0, Total1 + T1}, {max(Max0, T0), max(Max1, T1)}}.
+
+%% Make a log of penciller head timings split out by level and result - one
+%% log for every HEAD_TIMING_LOGPOINT puts
+%% Returns a tuple of {Count, TimingDict} to be stored on the process state
+head_timing(undefined, SW, Level, R) ->
+    T0 = timer:now_diff(os:timestamp(), SW),
+    head_timing_int(undefined, T0, Level, R);
+head_timing({N, HeadTimingD}, SW, Level, R) ->
+    case N band ?SAMPLE_RATE of
+        0 ->
+            T0 = timer:now_diff(os:timestamp(), SW),
+            head_timing_int({N, HeadTimingD}, T0, Level, R);
+        _ ->
+            % Not to be sampled this time
+            {N + 1, HeadTimingD}
+    end.
+
+head_timing_int(undefined, T0, Level, R) -> 
+    Key = head_key(R, Level),
+    NewDFun = fun(K, Acc) ->
+                case K of
+                    Key ->
+                        dict:store(K, [1, T0, T0], Acc);
+                    _ ->
+                        dict:store(K, [0, 0, 0], Acc)
+                end end,
+    {1, lists:foldl(NewDFun, dict:new(), head_keylist())};
+head_timing_int({?HEAD_TIMING_LOGPOINT, HeadTimingD}, T0, Level, R) ->
+    RN = random:uniform(?HEAD_TIMING_LOGPOINT),
+    case RN > ?HEAD_TIMING_LOGPOINT div 2 of
+        true ->
+            % log at the timing point less than half the time
+            LogFun  = fun(K) -> log("P0032", [K|dict:fetch(K, HeadTimingD)]) end,
+            lists:foreach(LogFun, head_keylist()),
+            head_timing_int(undefined, T0, Level, R);
+        false ->
+            % Log some other time - reset to RN not 0 to stagger logs out over
+            % time between the vnodes
+            head_timing_int({RN, HeadTimingD}, T0, Level, R)
+    end;
+head_timing_int({N, HeadTimingD}, T0, Level, R) ->
+    Key = head_key(R, Level),
+    [Count0, Total0, Max0] = dict:fetch(Key, HeadTimingD),
+    {N + 1,
+        dict:store(Key, [Count0 + 1, Total0 + T0, max(Max0, T0)],
+        HeadTimingD)}.
+                                    
+head_key(not_present, _Level) ->
+    not_present;
+head_key(found, 0) ->
+    found_0;
+head_key(found, 1) ->
+    found_1;
+head_key(found, 2) ->
+    found_2;
+head_key(found, Level) when Level > 2 ->
+    found_lower.
+
+head_keylist() ->
+    [not_present, found_lower, found_0, found_1, found_2].
 
 
 
+get_timing(undefined, SW, TimerType) ->
+    T0 = timer:now_diff(os:timestamp(), SW),
+    get_timing_int(undefined, T0, TimerType);
+get_timing({N, GetTimerD}, SW, TimerType) ->
+    case N band ?SAMPLE_RATE of
+        0 ->
+            T0 = timer:now_diff(os:timestamp(), SW),
+            get_timing_int({N, GetTimerD}, T0, TimerType);
+        _ ->
+            % Not to be sampled this time
+            {N + 1, GetTimerD}
+    end.
+
+get_timing_int(undefined, T0, TimerType) ->
+    NewDFun = fun(K, Acc) ->
+                case K of
+                    TimerType ->
+                        dict:store(K, [1, T0, T0], Acc);
+                    _ ->
+                        dict:store(K, [0, 0, 0], Acc)
+                end end,
+    {1, lists:foldl(NewDFun, dict:new(), get_keylist())};
+get_timing_int({?GET_TIMING_LOGPOINT, GetTimerD}, T0, TimerType) ->
+    RN = random:uniform(?GET_TIMING_LOGPOINT),
+    case RN > ?GET_TIMING_LOGPOINT div 2 of
+        true ->
+            % log at the timing point less than half the time
+            LogFun  = fun(K) -> log("B0014", [K|dict:fetch(K, GetTimerD)]) end,
+            lists:foreach(LogFun, get_keylist()),
+            get_timing_int(undefined, T0, TimerType);
+        false ->
+            % Log some other time - reset to RN not 0 to stagger logs out over
+            % time between the vnodes
+            get_timing_int({RN, GetTimerD}, T0, TimerType)
+    end;
+get_timing_int({N, GetTimerD}, T0, TimerType) ->
+    [Count0, Total0, Max0] = dict:fetch(TimerType, GetTimerD),
+    {N + 1, 
+        dict:store(TimerType, 
+                    [Count0 + 1, Total0 + T0, max(Max0, T0)], 
+                    GetTimerD)}.
+
+
+
+get_keylist() ->
+    [head_not_present, head_found, fetch].
 
 %%%============================================================================
 %%% Test
@@ -319,5 +476,16 @@ log_timer(LogReference, Subs, StartTime) ->
 log_test() ->
     log("D0001", []),
     log_timer("D0001", [], os:timestamp()).
+
+head_timing_test() ->
+    SW = os:timestamp(),
+    HeadTimer0 = lists:foldl(fun(_X, Acc) -> head_timing(Acc, SW, 2, found) end,
+                                undefined,
+                                lists:seq(0, 47)),
+    HeadTimer1 = head_timing(HeadTimer0, SW, 3, found),
+    {N, D} = HeadTimer1,
+    ?assertMatch(49, N),
+    ?assertMatch(3, lists:nth(1, dict:fetch(found_2, D))),
+    ?assertMatch(1, lists:nth(1, dict:fetch(found_lower, D))).
 
 -endif.

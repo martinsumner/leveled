@@ -202,6 +202,7 @@
 -define(PROMPT_WAIT_ONL0, 5).
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
 -define(COIN_SIDECOUNT, 5).
+-define(SLOW_FETCH, 20000).
 
 -record(state, {manifest = [] :: list(),
 				manifest_sqn = 0 :: integer(),
@@ -227,7 +228,9 @@
                 levelzero_astree :: list(),
                 
                 ongoing_work = [] :: list(),
-                work_backlog = false :: boolean()}).
+                work_backlog = false :: boolean(),
+                
+                head_timing :: tuple()}).
 
 
 %%%============================================================================
@@ -366,20 +369,20 @@ handle_call({push_mem, {PushedTree, MinSQN, MaxSQN}},
                                         State)}
     end;
 handle_call({fetch, Key, Hash}, _From, State) ->
-    {reply,
-        fetch_mem(Key,
-                    Hash,
-                    State#state.manifest,
-                    State#state.levelzero_cache,
-                    State#state.levelzero_index),
-        State};
+    {R, HeadTimer} = timed_fetch_mem(Key,
+                                        Hash,
+                                        State#state.manifest,
+                                        State#state.levelzero_cache,
+                                        State#state.levelzero_index,
+                                        State#state.head_timing),
+    {reply, R, State#state{head_timing=HeadTimer}};
 handle_call({check_sqn, Key, Hash, SQN}, _From, State) ->
     {reply,
-        compare_to_sqn(fetch_mem(Key,
-                                    Hash,
-                                    State#state.manifest,
-                                    State#state.levelzero_cache,
-                                    State#state.levelzero_index),
+        compare_to_sqn(plain_fetch_mem(Key,
+                                        Hash,
+                                        State#state.manifest,
+                                        State#state.levelzero_cache,
+                                        State#state.levelzero_index),
                         SQN),
         State};
 handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
@@ -730,26 +733,40 @@ levelzero_filename(State) ->
                 ++ integer_to_list(MSN) ++ "_0_0",
     FileName.
 
+timed_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, HeadTimer) ->
+    SW = os:timestamp(),
+    {R, Level} = fetch_mem(Key, Hash, Manifest, L0Cache, L0Index),
+    UpdHeadTimer =
+        case R of
+            not_present ->
+                leveled_log:head_timing(HeadTimer, SW, Level, not_present);
+            _ ->
+                leveled_log:head_timing(HeadTimer, SW, Level, found)
+        end,
+    {R, UpdHeadTimer}.
 
+plain_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
+    R = fetch_mem(Key, Hash, Manifest, L0Cache, L0Index),
+    element(1, R).
 
 fetch_mem(Key, Hash, Manifest, L0Cache, none) ->
     L0Check = leveled_pmem:check_levelzero(Key, Hash, L0Cache),
     case L0Check of
         {false, not_found} ->
-            fetch(Key, Hash, Manifest, 0, fun leveled_sft:sft_get/3);
+            fetch(Key, Hash, Manifest, 0, fun timed_sft_get/3);
         {true, KV} ->
-            KV
+            {KV, 0}
     end;
 fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
     case leveled_pmem:check_index(Hash, L0Index) of
         true ->
             fetch_mem(Key, Hash, Manifest, L0Cache, none);
         false ->
-            fetch(Key, Hash, Manifest, 0, fun leveled_sft:sft_get/3)
+            fetch(Key, Hash, Manifest, 0, fun timed_sft_get/3)
     end.
 
 fetch(_Key, _Hash, _Manifest, ?MAX_LEVELS + 1, _FetchFun) ->
-    not_present;
+    {not_present, basement};
 fetch(Key, Hash, Manifest, Level, FetchFun) ->
     LevelManifest = get_item(Level, Manifest, []),
     case lists:foldl(fun(File, Acc) ->
@@ -770,8 +787,23 @@ fetch(Key, Hash, Manifest, Level, FetchFun) ->
                 not_present ->
                     fetch(Key, Hash, Manifest, Level + 1, FetchFun);
                 ObjectFound ->
-                    ObjectFound
+                    {ObjectFound, Level}
             end
+    end.
+    
+timed_sft_get(PID, Key, Hash) ->
+    SW = os:timestamp(),
+    R = leveled_sft:sft_get(PID, Key, Hash),
+    T0 = timer:now_diff(os:timestamp(), SW),
+    case {T0, R} of
+        {T, R} when T < ?SLOW_FETCH ->
+            R;
+        {T, not_present} ->
+            leveled_log:log("PC016", [PID, T, not_present]),
+            not_present;
+        {T, R} ->
+            leveled_log:log("PC016", [PID, T, found]),
+            R
     end.
     
 

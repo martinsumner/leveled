@@ -138,7 +138,8 @@
                 clerk :: pid(),
                 compaction_pending = false :: boolean(),
                 is_snapshot = false :: boolean(),
-                source_inker :: pid()}).
+                source_inker :: pid(),
+                put_timing :: tuple()}).
 
 
 %%%============================================================================
@@ -414,17 +415,25 @@ start_from_file(InkOpts) ->
 
 put_object(LedgerKey, Object, KeyChanges, State) ->
     NewSQN = State#state.journal_sqn + 1,
+    SW= os:timestamp(),
     {JournalKey, JournalBin} = leveled_codec:to_inkerkv(LedgerKey,
                                                             NewSQN,
                                                             Object,
                                                             KeyChanges),
+    T0 = timer:now_diff(os:timestamp(), SW),
     case leveled_cdb:cdb_put(State#state.active_journaldb,
                                 JournalKey,
                                 JournalBin) of
         ok ->
-            {ok, State#state{journal_sqn=NewSQN}, byte_size(JournalBin)};
+            T1 = timer:now_diff(os:timestamp(), SW) - T0,
+            UpdPutTimes = leveled_log:put_timing(inker,
+                                                    State#state.put_timing,
+                                                    T0, T1),
+            {ok,
+                State#state{journal_sqn=NewSQN, put_timing=UpdPutTimes},
+                byte_size(JournalBin)};
         roll ->
-            SW = os:timestamp(),
+            SWroll = os:timestamp(),
             CDBopts = State#state.cdb_options,
             ManEntry = start_new_activejournal(NewSQN,
                                                 State#state.root_path,
@@ -437,7 +446,7 @@ put_object(LedgerKey, Object, KeyChanges, State) ->
             ok = leveled_cdb:cdb_put(NewJournalP,
                                         JournalKey,
                                         JournalBin),
-            leveled_log:log_timer("I0008", [], SW),
+            leveled_log:log_timer("I0008", [], SWroll),
             {rolling,
                 State#state{journal_sqn=NewSQN,
                                 manifest=NewManifest,
@@ -741,6 +750,7 @@ initiate_penciller_snapshot(Bookie) ->
     leveled_bookie:load_snapshot(LedgerSnap, LedgerCache),
     MaxSQN = leveled_penciller:pcl_getstartupsequencenumber(LedgerSnap),
     {LedgerSnap, MaxSQN}.
+
 
 %%%============================================================================
 %%% Test

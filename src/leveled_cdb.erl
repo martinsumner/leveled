@@ -108,7 +108,8 @@
                 inker :: pid(),
                 deferred_delete = false :: boolean(),
                 waste_path :: string(),
-                sync_strategy = none}).
+                sync_strategy = none,
+                put_timing :: tuple()}).
 
 
 %%%============================================================================
@@ -256,12 +257,14 @@ writer({key_check, Key}, _From, State) ->
         writer,
         State};
 writer({put_kv, Key, Value}, _From, State) ->
+    SW = os:timestamp(),
     Result = put(State#state.handle,
                     Key,
                     Value,
                     {State#state.last_position, State#state.hashtree},
                     State#state.binary_mode,
                     State#state.max_size),
+    T0 = timer:now_diff(os:timestamp(), SW),
     case Result of
         roll ->
             %% Key and value could not be written
@@ -274,10 +277,15 @@ writer({put_kv, Key, Value}, _From, State) ->
                     _ ->
                         ok
                 end,
+            T1 = timer:now_diff(os:timestamp(), SW) - T0,
+            Timings = leveled_log:put_timing(journal,
+                                                State#state.put_timing,
+                                                T0, T1),
             {reply, ok, writer, State#state{handle=UpdHandle,
                                                 last_position=NewPosition,
                                                 last_key=Key,
-                                                hashtree=HashTree}}
+                                                hashtree=HashTree,
+                                                put_timing=Timings}}
     end;
 writer({mput_kv, []}, _From, State) ->
     {reply, ok, writer, State};
