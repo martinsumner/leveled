@@ -395,4 +395,14 @@ log_test() ->
     log("D0001", []),
     log_timer("D0001", [], os:timestamp()).
 
+head_timing_test() ->
+    SW = os:timestamp(),
+    HeadTimer0 = head_timings(undefined, SW, 2, found),
+    HeadTimer1 = head_timings(HeadTimer0, SW, 2, found),
+    HeadTimer2 = head_timings(HeadTimer1, SW, 3, found),
+    {N, D} = HeadTimer2,
+    ?assertMatch(3, N),
+    ?assertMatch(2, lists:nth(1, dict:fetch(found_2, D))),
+    ?assertMatch(1, lists:nth(1, dict:fetch(found_lower, D))).
+
 -endif.
