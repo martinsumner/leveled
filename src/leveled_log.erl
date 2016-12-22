@@ -14,8 +14,8 @@
             get_timing/3]).         
 
 -define(PUT_TIMING_LOGPOINT, 20000).
--define(HEAD_TIMING_LOGPOINT, 100000).
--define(GET_TIMING_LOGPOINT, 50000).
+-define(HEAD_TIMING_LOGPOINT, 160000).
+-define(GET_TIMING_LOGPOINT, 160000).
 -define(LOG_LEVEL, [info, warn, error, critical]).
 -define(SAMPLE_RATE, 16#F).
 
@@ -374,9 +374,18 @@ head_timing_int(undefined, T0, Level, R) ->
                 end end,
     {1, lists:foldl(NewDFun, dict:new(), head_keylist())};
 head_timing_int({?HEAD_TIMING_LOGPOINT, HeadTimingD}, T0, Level, R) ->
-    LogFun  = fun(K) -> log("P0032", [K|dict:fetch(K, HeadTimingD)]) end,
-    lists:foreach(LogFun, head_keylist()),
-    head_timing_int(undefined, T0, Level, R);
+    RN = random:uniform(?HEAD_TIMING_LOGPOINT),
+    case RN > ?HEAD_TIMING_LOGPOINT div 2 of
+        true ->
+            % log at the timing point less than half the time
+            LogFun  = fun(K) -> log("P0032", [K|dict:fetch(K, HeadTimingD)]) end,
+            lists:foreach(LogFun, head_keylist()),
+            head_timing_int(undefined, T0, Level, R);
+        false ->
+            % Log some other time - reset to RN not 0 to stagger logs out over
+            % time between the vnodes
+            head_timing_int({RN, HeadTimingD}, T0, Level, R)
+    end;
 head_timing_int({N, HeadTimingD}, T0, Level, R) ->
     Key = head_key(R, Level),
     [Count0, Total0, Max0] = dict:fetch(Key, HeadTimingD),
@@ -423,9 +432,18 @@ get_timing_int(undefined, T0, TimerType) ->
                 end end,
     {1, lists:foldl(NewDFun, dict:new(), get_keylist())};
 get_timing_int({?GET_TIMING_LOGPOINT, GetTimerD}, T0, TimerType) ->
-    LogFun  = fun(K) -> log("B0014", [K|dict:fetch(K, GetTimerD)]) end,
-    lists:foreach(LogFun, get_keylist()),
-    get_timing_int(undefined, T0, TimerType);
+    RN = random:uniform(?GET_TIMING_LOGPOINT),
+    case RN > ?GET_TIMING_LOGPOINT div 2 of
+        true ->
+            % log at the timing point less than half the time
+            LogFun  = fun(K) -> log("B0014", [K|dict:fetch(K, GetTimerD)]) end,
+            lists:foreach(LogFun, get_keylist()),
+            get_timing_int(undefined, T0, TimerType);
+        false ->
+            % Log some other time - reset to RN not 0 to stagger logs out over
+            % time between the vnodes
+            get_timing_int({RN, GetTimerD}, T0, TimerType)
+    end;
 get_timing_int({N, GetTimerD}, T0, TimerType) ->
     [Count0, Total0, Max0] = dict:fetch(TimerType, GetTimerD),
     {N + 1, 
