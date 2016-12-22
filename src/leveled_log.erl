@@ -335,15 +335,24 @@ log_timer(LogReference, Subs, StartTime) ->
 
 put_timing(_Actor, undefined, T0, T1) ->
     {1, {T0, T1}, {T0, T1}};
-put_timing(Actor, {?PUT_TIMING_LOGPOINT, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
-    LogRef =
-        case Actor of
-            bookie -> "B0012";
-            inker -> "I0019";
-            journal -> "CDB17"
-        end,
-    log(LogRef, [?PUT_TIMING_LOGPOINT, Total0, Total1, Max0, Max1]),
-    put_timing(Actor, undefined, T0, T1);
+put_timing(Actor, {?PUT_TIMING_LOGPOINT, {Total0, Total1}, {Max0, Max1}},
+                                                                    T0, T1) ->
+    RN = random:uniform(?HEAD_TIMING_LOGPOINT),
+    case RN > ?HEAD_TIMING_LOGPOINT div 2 of
+        true ->
+            % log at the timing point less than half the time
+            LogRef =
+                case Actor of
+                    bookie -> "B0012";
+                    inker -> "I0019";
+                    journal -> "CDB17"
+                end,
+            log(LogRef, [?PUT_TIMING_LOGPOINT, Total0, Total1, Max0, Max1]),
+            put_timing(Actor, undefined, T0, T1);
+        false ->
+            % Log some other random time
+            put_timing(Actor, {RN, {Total0, Total1}, {Max0, Max1}}, T0, T1)
+    end;
 put_timing(_Actor, {N, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
     {N + 1, {Total0 + T0, Total1 + T1}, {max(Max0, T0), max(Max1, T1)}}.
 
