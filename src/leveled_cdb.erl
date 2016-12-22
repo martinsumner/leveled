@@ -109,7 +109,7 @@
                 deferred_delete = false :: boolean(),
                 waste_path :: string(),
                 sync_strategy = none,
-                put_timing = {0, {0, 0}, {0, 0}} :: tuple()}).
+                put_timing :: tuple()}).
 
 
 %%%============================================================================

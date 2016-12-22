@@ -162,7 +162,7 @@
                 ledger_cache = #ledger_cache{},
                 is_snapshot :: boolean(),
                 slow_offer = false :: boolean(),
-                put_timing = {0, {0, 0}, {0, 0}} :: tuple()}).
+                put_timing :: tuple()}).
 
 
 %%%============================================================================

@@ -139,7 +139,7 @@
                 compaction_pending = false :: boolean(),
                 is_snapshot = false :: boolean(),
                 source_inker :: pid(),
-                put_timing = {0, {0, 0}, {0, 0}} ::tuple()}).
+                put_timing :: tuple()}).
 
 
 %%%============================================================================

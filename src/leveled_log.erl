@@ -328,6 +328,8 @@ log_timer(LogReference, Subs, StartTime) ->
 %% Make a log of put timings split out by actor - one log for every
 %% PUT_TIMING_LOGPOINT puts
 
+put_timings(_Actor, undefined, T0, T1) ->
+    {1, {T0, T1}, {T0, T1}};
 put_timings(Actor, {?PUT_TIMING_LOGPOINT, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
     LogRef =
         case Actor of
@@ -336,7 +338,7 @@ put_timings(Actor, {?PUT_TIMING_LOGPOINT, {Total0, Total1}, {Max0, Max1}}, T0, T
             journal -> "CDB17"
         end,
     log(LogRef, [?PUT_TIMING_LOGPOINT, Total0, Total1, Max0, Max1]),
-    {1, {T0, T1}, {T0, T1}};
+    put_timings(Actor, undefined, T0, T1);
 put_timings(_Actor, {N, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
     {N + 1, {Total0 + T0, Total1 + T1}, {max(Max0, T0), max(Max1, T1)}}.
 
