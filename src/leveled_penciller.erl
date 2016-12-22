@@ -228,7 +228,9 @@
                 levelzero_astree :: list(),
                 
                 ongoing_work = [] :: list(),
-                work_backlog = false :: boolean()}).
+                work_backlog = false :: boolean(),
+                
+                head_timing :: tuple()}).
 
 
 %%%============================================================================
@@ -367,20 +369,20 @@ handle_call({push_mem, {PushedTree, MinSQN, MaxSQN}},
                                         State)}
     end;
 handle_call({fetch, Key, Hash}, _From, State) ->
-    {reply,
-        fetch_mem(Key,
-                    Hash,
-                    State#state.manifest,
-                    State#state.levelzero_cache,
-                    State#state.levelzero_index),
-        State};
+    {R, HeadTimer} = timed_fetch_mem(Key,
+                                        Hash,
+                                        State#state.manifest,
+                                        State#state.levelzero_cache,
+                                        State#state.levelzero_index,
+                                        State#state.head_timing),
+    {reply, R, State#state{head_timing=HeadTimer}};
 handle_call({check_sqn, Key, Hash, SQN}, _From, State) ->
     {reply,
-        compare_to_sqn(fetch_mem(Key,
-                                    Hash,
-                                    State#state.manifest,
-                                    State#state.levelzero_cache,
-                                    State#state.levelzero_index),
+        compare_to_sqn(plain_fetch_mem(Key,
+                                        Hash,
+                                        State#state.manifest,
+                                        State#state.levelzero_cache,
+                                        State#state.levelzero_index),
                         SQN),
         State};
 handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
@@ -731,7 +733,21 @@ levelzero_filename(State) ->
                 ++ integer_to_list(MSN) ++ "_0_0",
     FileName.
 
+timed_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, HeadTimer) ->
+    SW = os:timestamp(),
+    {R, Level} = fetch_mem(Key, Hash, Manifest, L0Cache, L0Index),
+    UpdHeadTimer =
+        case R of
+            not_present ->
+                leveled_log:head_timings(HeadTimer, SW, Level, not_present);
+            _ ->
+                leveled_log:head_timings(HeadTimer, SW, Level, found)
+        end,
+    {R, UpdHeadTimer}.
 
+plain_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
+    R = fetch_mem(Key, Hash, Manifest, L0Cache, L0Index),
+    element(1, R).
 
 fetch_mem(Key, Hash, Manifest, L0Cache, none) ->
     L0Check = leveled_pmem:check_levelzero(Key, Hash, L0Cache),
@@ -739,7 +755,7 @@ fetch_mem(Key, Hash, Manifest, L0Cache, none) ->
         {false, not_found} ->
             fetch(Key, Hash, Manifest, 0, fun timed_sft_get/3);
         {true, KV} ->
-            KV
+            {KV, 0}
     end;
 fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
     case leveled_pmem:check_index(Hash, L0Index) of
@@ -750,7 +766,7 @@ fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
     end.
 
 fetch(_Key, _Hash, _Manifest, ?MAX_LEVELS + 1, _FetchFun) ->
-    not_present;
+    {not_present, basement};
 fetch(Key, Hash, Manifest, Level, FetchFun) ->
     LevelManifest = get_item(Level, Manifest, []),
     case lists:foldl(fun(File, Acc) ->
@@ -771,7 +787,7 @@ fetch(Key, Hash, Manifest, Level, FetchFun) ->
                 not_present ->
                     fetch(Key, Hash, Manifest, Level + 1, FetchFun);
                 ObjectFound ->
-                    ObjectFound
+                    {ObjectFound, Level}
             end
     end.
     

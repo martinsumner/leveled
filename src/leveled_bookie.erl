@@ -150,7 +150,7 @@
 -define(CHECKJOURNAL_PROB, 0.2).
 -define(CACHE_SIZE_JITTER, 25).
 -define(JOURNAL_SIZE_JITTER, 20).
--define(PUT_TIMING_LOGPOINT, 10000).
+-define(LONG_RUNNING, 80000).
 
 -record(ledger_cache, {skiplist = leveled_skiplist:empty(true) :: tuple(),
                         min_sqn = infinity :: integer()|infinity,
@@ -278,7 +278,7 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State) ->
                                         {IndexSpecs, TTL}),
     Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
     T1 = timer:now_diff(os:timestamp(), SW) - T0,
-    PutTimings = update_put_timings(State#state.put_timing, T0, T1),
+    PutTimes = leveled_log:put_timings(bookie, State#state.put_timing, T0, T1),
     % If the previous push to memory was returned then punish this PUT with a
     % delay.  If the back-pressure in the Penciller continues, these delays
     % will beocme more frequent
@@ -294,11 +294,11 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State) ->
                                     State#state.penciller) of
         {ok, NewCache} ->
             {noreply, State#state{ledger_cache=NewCache,
-                                    put_timing=PutTimings,
+                                    put_timing=PutTimes,
                                     slow_offer=false}};
         {returned, NewCache} ->
             {noreply, State#state{ledger_cache=NewCache,
-                                    put_timing=PutTimings,
+                                    put_timing=PutTimes,
                                     slow_offer=true}}
     end;
 handle_call({get, Bucket, Key, Tag}, _From, State) ->
@@ -465,22 +465,15 @@ push_ledgercache(Penciller, Cache) ->
 %%% Internal functions
 %%%============================================================================
 
-update_put_timings({?PUT_TIMING_LOGPOINT, {Total0, Total1}, {Max0, Max1}},
-                                                                    T0, T1) ->
-    leveled_log:log("B0012",
-                    [?PUT_TIMING_LOGPOINT, Total0, Total1, Max0, Max1]),
-    {1, {T0, T1}, {T0, T1}};
-update_put_timings({N, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
-    {N + 1, {Total0 + T0, Total1 + T1}, {max(Max0, T0), max(Max1, T1)}}.
+
 
 maybe_longrunning(SW, Aspect) ->
     case timer:now_diff(os:timestamp(), SW) of
-        N when N > 80000 ->
+        N when N > ?LONG_RUNNING ->
             leveled_log:log("B0013", [N, Aspect]);
         _ ->
             ok
     end.
-
 
 cache_size(LedgerCache) ->
     leveled_skiplist:size(LedgerCache#ledger_cache.skiplist).

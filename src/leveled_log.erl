@@ -8,9 +8,14 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -export([log/2,
-            log_timer/3]).         
+            log_timer/3,
+            put_timings/4,
+            head_timings/4]).         
 
+-define(PUT_TIMING_LOGPOINT, 10000).
+-define(HEAD_TIMING_LOGPOINT, 10000).
 -define(LOG_LEVEL, [info, warn, error, critical]).
+
 -define(LOGBASE, dict:from_list([
 
     {"G0001",
@@ -111,6 +116,8 @@
         {warn, "We're doomed - intention recorded to destroy all files"}},
     {"P0031",
         {info, "Completion of update to levelzero"}},
+    {"P0032",
+        {info, "Head timing for result ~w is count ~w total ~w and max ~w"}},
     
     {"PC001",
         {info, "Penciller's clerk ~w started with owner ~w"}},
@@ -226,7 +233,7 @@
     {"SFT03",
         {info, "File creation of L0 file ~s"}},
     {"SFT04",
-        {info, "File ~s prompting for delete status check"}},
+        {debug, "File ~s prompting for delete status check"}},
     {"SFT05",
         {info, "Exit called for reason ~w on filename ~s"}},
     {"SFT06",
@@ -318,9 +325,63 @@ log_timer(LogReference, Subs, StartTime) ->
             ok
     end.
 
+%% Make a log of put timings split out by actor - one log for every
+%% PUT_TIMING_LOGPOINT puts
 
+put_timings(Actor, {?PUT_TIMING_LOGPOINT, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
+    LogRef =
+        case Actor of
+            bookie -> "B0012";
+            inker -> "I0019";
+            journal -> "CDB17"
+        end,
+    log(LogRef, [?PUT_TIMING_LOGPOINT, Total0, Total1, Max0, Max1]),
+    {1, {T0, T1}, {T0, T1}};
+put_timings(_Actor, {N, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
+    {N + 1, {Total0 + T0, Total1 + T1}, {max(Max0, T0), max(Max1, T1)}}.
 
+%% Make a log of penciller head timings split out by level and result - one
+%% log for every HEAD_TIMING_LOGPOINT puts
+%% Returns a tuple of {Count, TimingDict} to be stored on the process state
 
+head_timings(HeadTimer, SW, Level, R) ->
+    T0 = timer:now_diff(os:timestamp(), SW),
+    head_timings_int(HeadTimer, T0, Level, R).
+
+head_timings_int(undefined, T0, Level, R) -> 
+    Key = head_key(R, Level),
+    NewDFun = fun(K, Acc) ->
+                case K of
+                    Key ->
+                        dict:store(K, [1, T0, T0], Acc);
+                    _ ->
+                        dict:store(K, [0, 0, 0], Acc)
+                end end,
+    {1, lists:foldl(NewDFun, dict:new(), head_keylist())};
+head_timings_int({?HEAD_TIMING_LOGPOINT, HeadTimingD}, T0, Level, R) ->
+    LogFun  = fun(K) -> log("P0032", [K|dict:fetch(K, HeadTimingD)]) end,
+    lists:foreach(LogFun, head_keylist()),
+    head_timings_int(undefined, T0, Level, R);
+head_timings_int({N, HeadTimingD}, T0, Level, R) ->
+    Key = head_key(R, Level),
+    [Count0, Total0, Max0] = dict:fetch(Key, HeadTimingD),
+    {N + 1,
+        dict:store(Key, [Count0 + 1, Total0 + T0, max(Max0, T0)],
+        HeadTimingD)}.
+                                    
+head_key(not_present, _Level) ->
+    not_present;
+head_key(found, 0) ->
+    found_0;
+head_key(found, 1) ->
+    found_1;
+head_key(found, 2) ->
+    found_2;
+head_key(found, Level) when Level > 2 ->
+    found_lower.
+
+head_keylist() ->
+    [not_present, found_lower, found_0, found_1, found_2].
 
 %%%============================================================================
 %%% Test

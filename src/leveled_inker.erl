@@ -126,7 +126,6 @@
 -define(PENDING_FILEX, "pnd").
 -define(LOADING_PAUSE, 1000).
 -define(LOADING_BATCH, 1000).
--define(PUT_TIMING_LOGPOINT, 10000).
 
 -record(state, {manifest = [] :: list(),
 				manifest_sqn = 0 :: integer(),
@@ -427,9 +426,11 @@ put_object(LedgerKey, Object, KeyChanges, State) ->
                                 JournalBin) of
         ok ->
             T1 = timer:now_diff(os:timestamp(), SW) - T0,
-            UpdPutTimings = update_put_timings(State#state.put_timing, T0, T1),
+            UpdPutTimes = leveled_log:put_timings(inker,
+                                                    State#state.put_timing,
+                                                    T0, T1),
             {ok,
-                State#state{journal_sqn=NewSQN, put_timing=UpdPutTimings},
+                State#state{journal_sqn=NewSQN, put_timing=UpdPutTimes},
                 byte_size(JournalBin)};
         roll ->
             SWroll = os:timestamp(),
@@ -749,14 +750,6 @@ initiate_penciller_snapshot(Bookie) ->
     leveled_bookie:load_snapshot(LedgerSnap, LedgerCache),
     MaxSQN = leveled_penciller:pcl_getstartupsequencenumber(LedgerSnap),
     {LedgerSnap, MaxSQN}.
-
-update_put_timings({?PUT_TIMING_LOGPOINT, {Total0, Total1}, {Max0, Max1}},
-                                                                    T0, T1) ->
-    leveled_log:log("I0019",
-                    [?PUT_TIMING_LOGPOINT, Total0, Total1, Max0, Max1]),
-    {1, {T0, T1}, {T0, T1}};
-update_put_timings({N, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
-    {N + 1, {Total0 + T0, Total1 + T1}, {max(Max0, T0), max(Max1, T1)}}.
 
 
 %%%============================================================================
