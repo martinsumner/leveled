@@ -73,33 +73,55 @@ check(Key, Bloom) ->
     check({hash, Hash}, Bloom).
 
 tiny_empty() ->
-    <<0:2048>>.
+    <<0:4096>>.
 
 tiny_enter({hash, no_lookup}, Bloom) ->
     Bloom;
 tiny_enter({hash, Hash}, Bloom) ->
-    {Half, Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
+    {Q, Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
     AddFun = fun(Bit, Arr0) -> add_to_array(Bit, Arr0, 1024) end,
-    case Half of
+    case Q of
         0 ->
-            <<Bin1:1024/bitstring, Bin2:1024/bitstring>> = Bloom,
+            <<Bin1:1024/bitstring, Bin2:3072/bitstring>> = Bloom,
             NewBin = lists:foldl(AddFun, Bin1, [Bit0, Bit1, Bit2]),
             <<NewBin/bitstring, Bin2/bitstring>>;
         1 ->
-            <<Bin1:1024/bitstring, Bin2:1024/bitstring>> = Bloom,
+            <<Bin1:1024/bitstring,
+                Bin2:1024/bitstring,
+                Bin3:2048/bitstring>> = Bloom,
+            NewBin = lists:foldl(AddFun, Bin2, [Bit0, Bit1, Bit2]),
+            <<Bin1/bitstring, NewBin/bitstring, Bin3/bitstring>>;
+        2 ->
+            <<Bin1:2048/bitstring,
+                Bin2:1024/bitstring,
+                Bin3:1024/bitstring>> = Bloom,
+            NewBin = lists:foldl(AddFun, Bin2, [Bit0, Bit1, Bit2]),
+            <<Bin1/bitstring, NewBin/bitstring, Bin3/bitstring>>;
+        3 ->
+            <<Bin1:3072/bitstring, Bin2:1024/bitstring>> = Bloom,
             NewBin = lists:foldl(AddFun, Bin2, [Bit0, Bit1, Bit2]),
             <<Bin1/bitstring, NewBin/bitstring>>
     end.
 
 tiny_check({hash, Hash}, FullBloom) ->
-    {Half, Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
+    {Q, Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
     Bloom =
-        case Half of
+        case Q of
             0 ->
-                <<Bin1:1024/bitstring, _Bin2:1024/bitstring>> = FullBloom,
+                <<Bin1:1024/bitstring, _Bin2:3072/bitstring>> = FullBloom,
                 Bin1;
             1 ->
-                <<_Bin1:1024/bitstring, Bin2:1024/bitstring>> = FullBloom,
+                <<_Bin1:1024/bitstring,
+                    Bin2:1024/bitstring,
+                    _Bin3:2048/bitstring>> = FullBloom,
+                Bin2;
+            2 ->
+                <<_Bin1:2048/bitstring,
+                    Bin2:1024/bitstring,
+                    _Bin3:1024/bitstring>> = FullBloom,
+                Bin2;
+            3 ->
+                <<_Bin1:3072/bitstring, Bin2:1024/bitstring>> = FullBloom,
                 Bin2
         end,
     case getbit(Bit0, Bloom, 1024) of
@@ -132,11 +154,11 @@ split_hash(Hash) ->
 
 split_hash_for_tinybloom(Hash) ->
     % Tiny bloom can make k=3 from one hash
-    Half = Hash band 1,
-    H0 = (Hash bsr 1) band 1023,
-    H1 = (Hash bsr 11) band 1023,
-    H2 = (Hash bsr 21) band 1023,
-    {Half, H0, H1, H2}.
+    Q = Hash band 3,
+    H0 = (Hash bsr 2) band 1023,
+    H1 = (Hash bsr 12) band 1023,
+    H2 = (Hash bsr 22) band 1023,
+    {Q, H0, H1, H2}.
 
 add_to_array(Bit, BitArray, ArrayLength) ->
     RestLen = ArrayLength - Bit - 1,
@@ -212,7 +234,7 @@ simple_test() ->
     ?assertMatch(true, FP < (N div 4)).
 
 tiny_test() ->
-    N = 256,
+    N = 512,
     K = 32, % more checks out then in K * checks
     KLin = lists:map(fun(X) -> "Key_" ++
                                 integer_to_list(X) ++
