@@ -73,18 +73,35 @@ check(Key, Bloom) ->
     check({hash, Hash}, Bloom).
 
 tiny_empty() ->
-    <<0:1024>>.
+    <<0:2048>>.
 
 tiny_enter({hash, no_lookup}, Bloom) ->
     Bloom;
 tiny_enter({hash, Hash}, Bloom) ->
-    {Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
-    FoldFun =
-        fun(K, Arr) -> add_to_array(K, Arr, 1024) end,
-    lists:foldl(FoldFun, Bloom, lists:usort([Bit0, Bit1, Bit2])).
+    {Half, Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
+    AddFun = fun(Bit, Arr0) -> add_to_array(Bit, Arr0, 1024) end,
+    case Half of
+        0 ->
+            <<Bin1:1024/bitstring, Bin2:1024/bitstring>> = Bloom,
+            NewBin = lists:foldl(AddFun, Bin1, [Bit0, Bit1, Bit2]),
+            <<NewBin/bitstring, Bin2/bitstring>>;
+        1 ->
+            <<Bin1:1024/bitstring, Bin2:1024/bitstring>> = Bloom,
+            NewBin = lists:foldl(AddFun, Bin2, [Bit0, Bit1, Bit2]),
+            <<Bin1/bitstring, NewBin/bitstring>>
+    end.
 
-tiny_check({hash, Hash}, Bloom) ->
-    {Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
+tiny_check({hash, Hash}, FullBloom) ->
+    {Half, Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
+    Bloom =
+        case Half of
+            0 ->
+                <<Bin1:1024/bitstring, _Bin2:1024/bitstring>> = FullBloom,
+                Bin1;
+            1 ->
+                <<_Bin1:1024/bitstring, Bin2:1024/bitstring>> = FullBloom,
+                Bin2
+        end,
     case getbit(Bit0, Bloom, 1024) of
         <<0:1>> ->
             false;
@@ -114,10 +131,12 @@ split_hash(Hash) ->
     {H0, H1, H2}.
 
 split_hash_for_tinybloom(Hash) ->
-    H0 = Hash band 1023,
-    H1 = (Hash bsr 10) band 1023,
-    H2 = (Hash bsr 20) band 1023,
-    {H0, H1, H2}.
+    % Tiny bloom can make k=3 from one hash
+    Half = Hash band 1,
+    H0 = (Hash bsr 1) band 1023,
+    H1 = (Hash bsr 11) band 1023,
+    H2 = (Hash bsr 21) band 1023,
+    {Half, H0, H1, H2}.
 
 add_to_array(Bit, BitArray, ArrayLength) ->
     RestLen = ArrayLength - Bit - 1,
@@ -193,7 +212,7 @@ simple_test() ->
     ?assertMatch(true, FP < (N div 4)).
 
 tiny_test() ->
-    N = 128,
+    N = 256,
     K = 32, % more checks out then in K * checks
     KLin = lists:map(fun(X) -> "Key_" ++
                                 integer_to_list(X) ++

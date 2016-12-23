@@ -9,7 +9,7 @@
 
 -include("include/leveled.hrl").
 
--define(SLOT_SIZE, 128).
+-define(SLOT_SIZE, 256).
 -define(COMPRESSION_LEVEL, 1).
 
 -include_lib("eunit/include/eunit.hrl").
@@ -110,8 +110,8 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
 
 
 simple_slotbin_test() ->
-    KVList0 = generate_randomkeys(1, 256, 1, 4),
-    KVList1 = lists:sublist(lists:ukeysort(1, KVList0), 1, 128),
+    KVList0 = generate_randomkeys(1, ?SLOT_SIZE * 2, 1, 4),
+    KVList1 = lists:sublist(lists:ukeysort(1, KVList0), 1, ?SLOT_SIZE),
     ExtractHashFun =
         fun({K, V}) ->
             {_SQN, H} = leveled_codec:strip_to_seqnhashonly({K, V}),
