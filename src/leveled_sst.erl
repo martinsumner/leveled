@@ -27,11 +27,18 @@
 
 
 build_slot(KVList, HashList) when length(KVList) =< ?SLOT_SIZE ->
+    SW = os:timestamp(),
     SkipList = leveled_skiplist:to_sstlist(KVList),
+    io:format(user, "Changed to skiplist in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SW)]),
     Bloom = lists:foldr(fun leveled_tinybloom:tiny_enter/2,
                         leveled_tinybloom:tiny_empty(),
                         HashList),
+    io:format(user, "Bloom added in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SW)]),
     SlotBin = term_to_binary(SkipList, [{compressed, ?COMPRESSION_LEVEL}]),
+    io:format(user, "Converted to binary in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SW)]),
     {SlotBin, Bloom}.
 
 is_check_slot_required(_Hash, none) ->
@@ -113,8 +120,8 @@ simple_slotbin_test() ->
     
     SW0 = os:timestamp(),
     {SlotBin0, Bloom0} = build_slot(KVList1, HashList),
-    io:format(user, "~nSlot built in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SW0)]),
+    io:format(user, "~nSlot built in ~w microseconds with size ~w~n",
+                [timer:now_diff(os:timestamp(), SW0), byte_size(SlotBin0)]),
     
     SW1 = os:timestamp(),
     lists:foreach(fun(H) -> ?assertMatch(true,
