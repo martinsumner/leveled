@@ -2,7 +2,7 @@
 %%
 %% For sheltering relatively expensive lookups with a probabilistic check
 %%
-%% Uses multiple 256 byte blooms.  Can sensibly hold up to 1000 keys per array.
+%% Uses multiple 512 byte blooms.  Can sensibly hold up to 1000 keys per array.
 %% Even at 1000 keys should still offer only a 20% false positive
 %%
 %% Restricted to no more than 256 arrays - so can't handle more than 250K keys
@@ -19,8 +19,12 @@
 -export([
         enter/2,
         check/2,
-        empty/1
+        empty/1,
+        tiny_enter/2,
+        tiny_check/2,
+        tiny_empty/0
         ]).      
+
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -39,7 +43,9 @@ enter({hash, Hash}, Bloom) ->
     {H0, Bit1, Bit2} = split_hash(Hash),
     Slot = H0 rem dict:size(Bloom),
     BitArray0 = dict:fetch(Slot, Bloom),
-    BitArray1 = lists:foldl(fun add_to_array/2,
+    FoldFun =
+        fun(K, Arr) -> add_to_array(K, Arr, 4096) end,
+    BitArray1 = lists:foldl(FoldFun,
                                 BitArray0,
                                 lists:usort([Bit1, Bit2])),
     dict:store(Slot, BitArray1, Bloom);
@@ -51,11 +57,11 @@ check({hash, Hash}, Bloom) ->
     {H0, Bit1, Bit2} = split_hash(Hash),
     Slot = H0 rem dict:size(Bloom),
     BitArray = dict:fetch(Slot, Bloom),
-    case getbit(Bit1, BitArray) of
+    case getbit(Bit1, BitArray, 4096) of
         <<0:1>> ->
             false;
         <<1:1>> ->
-            case getbit(Bit2, BitArray) of
+            case getbit(Bit2, BitArray, 4096) of
                 <<0:1>> ->
                     false;
                 <<1:1>> ->
@@ -65,6 +71,37 @@ check({hash, Hash}, Bloom) ->
 check(Key, Bloom) ->
     Hash = leveled_codec:magic_hash(Key),
     check({hash, Hash}, Bloom).
+
+tiny_empty() ->
+    <<0:1024>>.
+
+tiny_enter({hash, no_lookup}, Bloom) ->
+    Bloom;
+tiny_enter({hash, Hash}, Bloom) ->
+    {Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
+    FoldFun =
+        fun(K, Arr) -> add_to_array(K, Arr, 1024) end,
+    lists:foldl(FoldFun, Bloom, lists:usort([Bit0, Bit1, Bit2])).
+
+tiny_check({hash, Hash}, Bloom) ->
+    {Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
+    case getbit(Bit0, Bloom, 1024) of
+        <<0:1>> ->
+            false;
+        <<1:1>> ->
+            case getbit(Bit1, Bloom, 1024) of
+                <<0:1>> ->
+                    false;
+                <<1:1>> ->
+                    case getbit(Bit2, Bloom, 1024) of
+                        <<0:1>> ->
+                            false;
+                        <<1:1>> ->
+                            true
+                    end
+            end
+    end.
+
 
 %%%============================================================================
 %%% Internal Functions
@@ -76,15 +113,21 @@ split_hash(Hash) ->
     H2 = Hash bsr 20,
     {H0, H1, H2}.
 
-add_to_array(Bit, BitArray) ->
-    RestLen = 4096 - Bit - 1,
+split_hash_for_tinybloom(Hash) ->
+    H0 = Hash band 1023,
+    H1 = (Hash bsr 10) band 1023,
+    H2 = (Hash bsr 20) band 1023,
+    {H0, H1, H2}.
+
+add_to_array(Bit, BitArray, ArrayLength) ->
+    RestLen = ArrayLength - Bit - 1,
     <<Head:Bit/bitstring,
         _B:1/bitstring,
         Rest:RestLen/bitstring>> = BitArray,
     <<Head/bitstring, 1:1, Rest/bitstring>>.
 
-getbit(Bit, BitArray) ->
-    RestLen = 4096 - Bit - 1,
+getbit(Bit, BitArray, ArrayLength) ->
+    RestLen = ArrayLength - Bit - 1,
     <<_Head:Bit/bitstring,
         B:1/bitstring,
         _Rest:RestLen/bitstring>> = BitArray,
@@ -148,6 +191,56 @@ simple_test() ->
                     "with ~w false positive rate~n",
                 [N, timer:now_diff(os:timestamp(), SW3), FP / N]),
     ?assertMatch(true, FP < (N div 4)).
+
+tiny_test() ->
+    N = 128,
+    K = 32, % more checks out then in K * checks
+    KLin = lists:map(fun(X) -> "Key_" ++
+                                integer_to_list(X) ++
+                                integer_to_list(random:uniform(100)) ++
+                                binary_to_list(crypto:rand_bytes(2))
+                                end,
+                        lists:seq(1, N)),
+    KLout = lists:map(fun(X) ->
+                            "NotKey_" ++
+                            integer_to_list(X) ++
+                            integer_to_list(random:uniform(100)) ++
+                            binary_to_list(crypto:rand_bytes(2))
+                            end,
+                        lists:seq(1, N * K)),
     
+    HashIn = lists:map(fun(X) ->
+                            {hash, leveled_codec:magic_hash(X)} end,
+                            KLin),
+    HashOut = lists:map(fun(X) ->
+                            {hash, leveled_codec:magic_hash(X)} end,
+                            KLout),
+       
+    SW1 = os:timestamp(),
+    Bloom = lists:foldr(fun tiny_enter/2, tiny_empty(), HashIn),
+    io:format(user,
+                "~nAdding ~w hashes to tiny bloom took ~w microseconds~n",
+                [N, timer:now_diff(os:timestamp(), SW1)]),
+    
+    SW2 = os:timestamp(),
+    lists:foreach(fun(X) ->
+                    ?assertMatch(true, tiny_check(X, Bloom)) end, HashIn),
+    io:format(user,
+                "~nChecking ~w hashes in tiny bloom took ~w microseconds~n",
+                [N, timer:now_diff(os:timestamp(), SW2)]),
+    
+    SW3 = os:timestamp(),
+    FP = lists:foldr(fun(X, Acc) -> case tiny_check(X, Bloom) of
+                                        true -> Acc + 1;
+                                        false -> Acc
+                                    end end,
+                        0,
+                        HashOut),
+    io:format(user,
+                "~nChecking ~w hashes out of tiny bloom took ~w microseconds "
+                    ++ "with ~w false positive rate~n",
+                [N * K, timer:now_diff(os:timestamp(), SW3), FP / (N * K)]),
+    ?assertMatch(true, FP < ((N * K) div 8)).
+
 
 -endif.
