@@ -9,10 +9,16 @@
 
 -include("include/leveled.hrl").
 
--define(SLOT_SIZE, 256).
+-define(SLOT_SIZE, 128).
 -define(COMPRESSION_LEVEL, 1).
 
 -include_lib("eunit/include/eunit.hrl").
+
+-record(slot_index_value, {slot_id :: integer(),
+                            bloom :: dict:dict(),
+                            cache :: tuple(),
+                            start_position :: integer(),
+                            length :: integer()}).
 
 %%%============================================================================
 %%% API
@@ -25,20 +31,45 @@
 %%% Internal Functions
 %%%============================================================================
 
+build_all_slots(KVList, BasePosition) ->
+    build_all_slots(KVList, BasePosition, [], 1, []).
+
+build_all_slots([], _Start, AllHashes, _SlotID, SlotIndex) ->
+    {SlotIndex, AllHashes};
+build_all_slots(KVList, StartPosition, AllHashes, SlotID, SlotIndex) ->
+    {SlotList, KVRem} = lists:split(?SLOT_SIZE, KVList),
+    {LastKey, _V} = lists:tail(SlotList),
+    ExtractHashFun =
+        fun({K, V}, Acc) ->
+            {_SQN, H} = leveled_codec:strip_to_seqnhashonly({K, V}),
+            case H of
+                no_lookup ->
+                    Acc;
+                H ->
+                    [{hash, H}|Acc]
+            end
+            end,
+    HashList = lists:foldr(ExtractHashFun, [], KVList),
+    {SlotBin, Bloom} = build_slot(KVList, HashList),
+    Length = byte_size(SlotBin),
+    SlotIndexV = #slot_index_value{slot_id = SlotID,
+                                    bloom = Bloom,
+                                    start_position = StartPosition,
+                                    length = Length},
+    build_all_slots(KVRem,
+                    StartPosition + Length,
+                    HashList ++ AllHashes,
+                    SlotID + 1,
+                    [{LastKey, SlotIndexV}|SlotIndex]).
+
+
 
 build_slot(KVList, HashList) when length(KVList) =< ?SLOT_SIZE ->
-    SW = os:timestamp(),
     SkipList = leveled_skiplist:to_sstlist(KVList),
-    io:format(user, "Changed to skiplist in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SW)]),
     Bloom = lists:foldr(fun leveled_tinybloom:tiny_enter/2,
                         leveled_tinybloom:tiny_empty(),
                         HashList),
-    io:format(user, "Bloom added in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SW)]),
     SlotBin = term_to_binary(SkipList, [{compressed, ?COMPRESSION_LEVEL}]),
-    io:format(user, "Converted to binary in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SW)]),
     {SlotBin, Bloom}.
 
 is_check_slot_required(_Hash, none) ->
@@ -117,10 +148,10 @@ simple_slotbin_test() ->
             {_SQN, H} = leveled_codec:strip_to_seqnhashonly({K, V}),
             {hash, H} end,
     HashList = lists:map(ExtractHashFun, KVList1),
-    
+    io:format(user, "~nSkiplist with bloom timing test~n", []),
     SW0 = os:timestamp(),
     {SlotBin0, Bloom0} = build_slot(KVList1, HashList),
-    io:format(user, "~nSlot built in ~w microseconds with size ~w~n",
+    io:format(user, "Slot built in ~w microseconds with size ~w~n",
                 [timer:now_diff(os:timestamp(), SW0), byte_size(SlotBin0)]),
     
     SW1 = os:timestamp(),
@@ -133,8 +164,26 @@ simple_slotbin_test() ->
                                             lookup_in_slot(K, SlotBin0))
                                             end,
                     KVList1),
-    io:format(user, "~nSlot checked for all keys in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SW1)]).
+    io:format(user, "Slot checked for all keys in ~w microsconds~n",
+                [timer:now_diff(os:timestamp(), SW1)]),
+    
+    io:format(user, "~ngb_tree comparison~n", []),
+    SW2 = os:timestamp(),
+    Bloom = lists:foldr(fun leveled_tinybloom:tiny_enter/2,
+                        leveled_tinybloom:tiny_empty(),
+                        HashList),
+    Tree0 = gb_trees:from_orddict(KVList1),
+    TreeBin = term_to_binary(Tree0, [{compressed, ?COMPRESSION_LEVEL}]),
+    io:format(user, "Bloom and Tree created for all keys in ~w microsconds~n",
+                [timer:now_diff(os:timestamp(), SW2)]),
+    SW3 = os:timestamp(),
+    lists:foreach(fun({K, V}) ->
+                            ?assertMatch({value, V},
+                                            gb_trees:lookup(K, binary_to_term(TreeBin)))
+                                            end,
+                    KVList1),
+    io:format(user, "Tree checked for all keys in ~w microsconds~n",
+                [timer:now_diff(os:timestamp(), SW3)]).
 
 
 -endif.
