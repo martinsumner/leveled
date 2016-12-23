@@ -164,8 +164,13 @@ simple_slotbin_test() ->
                                             lookup_in_slot(K, SlotBin0))
                                             end,
                     KVList1),
-    io:format(user, "Slot checked for all keys in ~w microsconds~n",
+    io:format(user, "Slot checked for all keys in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SW1)]),
+    SW5 = os:timestamp(),
+    leveled_skiplist:to_list(binary_to_term(SlotBin0)),
+    io:format(user, "Skiplist flattened in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SW5)]),
+    
     
     io:format(user, "~ngb_tree comparison~n", []),
     SW2 = os:timestamp(),
@@ -174,16 +179,21 @@ simple_slotbin_test() ->
                         HashList),
     Tree0 = gb_trees:from_orddict(KVList1),
     TreeBin = term_to_binary(Tree0, [{compressed, ?COMPRESSION_LEVEL}]),
-    io:format(user, "Bloom and Tree created for all keys in ~w microsconds~n",
-                [timer:now_diff(os:timestamp(), SW2)]),
+    io:format(user, "Bloom and Tree created for all keys in ~w microseconds " ++
+                "with size ~w~n",
+                [timer:now_diff(os:timestamp(), SW2), byte_size(TreeBin)]),
     SW3 = os:timestamp(),
     lists:foreach(fun({K, V}) ->
                             ?assertMatch({value, V},
                                             gb_trees:lookup(K, binary_to_term(TreeBin)))
                                             end,
                     KVList1),
-    io:format(user, "Tree checked for all keys in ~w microsconds~n",
-                [timer:now_diff(os:timestamp(), SW3)]).
+    io:format(user, "Tree checked for all keys in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SW3)]),
+    SW4 = os:timestamp(),
+    gb_trees:to_list(binary_to_term(TreeBin)),
+    io:format(user, "Tree flattened in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SW4)]).
 
 
 -endif.
