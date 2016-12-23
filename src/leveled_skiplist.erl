@@ -38,7 +38,7 @@
 
 -define(SKIP_WIDTH, 16).
 -define(LIST_HEIGHT, 2).
--define(SST_WIDTH, 8).
+-define(SST_WIDTH, 16).
 -define(INFINITY_KEY, {null, null, null, null, null}).
 -define(BITARRAY_SIZE, 2048).
 

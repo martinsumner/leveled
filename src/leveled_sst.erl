@@ -9,7 +9,7 @@
 
 -include("include/leveled.hrl").
 
--define(SLOT_SIZE, 512).
+-define(SLOT_SIZE, 256).
 -define(COMPRESSION_LEVEL, 1).
 
 -include_lib("eunit/include/eunit.hrl").
