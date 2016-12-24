@@ -577,7 +577,7 @@ simple_persisted_test() ->
     [{FirstKey, _FV}|_Rest] = KVList1,
     {LastKey, _LV} = lists:last(KVList1),
     {ok, Pid, {FirstKey, LastKey}} = sst_new(Filename, 1, KVList1),
-    SW = os:timestamp(),
+    SW1 = os:timestamp(),
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({K, V}, sst_get(Pid, K)),
                         ?assertMatch({K, V}, sst_get(Pid, K))
@@ -586,7 +586,27 @@ simple_persisted_test() ->
     io:format(user,
                 "Checking for ~w keys (twice) in file with cache hit took ~w "
                     ++ "microseconds~n",
-                [length(KVList1), timer:now_diff(os:timestamp(), SW)]),
+                [length(KVList1), timer:now_diff(os:timestamp(), SW1)]),
+    KVList2 = generate_randomkeys(1, ?SLOT_SIZE * 8 + 100, 1, 4),
+    MapFun =
+        fun({K, V}, Acc) ->
+            In = lists:keymember(K, 1, KVList1),
+            case {K > FirstKey, LastKey > K, In} of
+                {true, true, false} ->
+                    [{K, V}|Acc];
+                _ ->
+                    Acc
+            end
+        end,
+    KVList3 = lists:foldl(MapFun, [], KVList2),
+    SW2 = os:timestamp(),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch(not_present, sst_get(Pid, K))
+                        end,
+                    KVList3),
+    io:format(user,
+                "Checking for ~w missing keys took ~w microseconds~n",
+                [length(KVList3), timer:now_diff(os:timestamp(), SW2)]),
     ok = sst_close(Pid),
     ok = file:delete(Filename ++ ".sst").
 
