@@ -230,17 +230,17 @@ fetch(LedgerKey, Hash, State) ->
             {not_present, summary_bloom, null};
         true ->
             Slot = lookup_slot(LedgerKey, Summary#summary.index),
-            CacheEntry = array:get(Slot#slot_index_value.slot_id,
+            SlotBloom = Slot#slot_index_value.bloom,
+            case is_check_slot_required({hash, Hash}, SlotBloom) of
+                false ->
+                    {not_present, slot_bloom, null};
+                true ->
+                    CacheEntry = array:get(Slot#slot_index_value.slot_id,
                                     State#state.cache),
-            case CacheEntry of
-                {LedgerKey, CachedValue} ->
-                    {{LedgerKey, CachedValue}, cache_entry, null};
-                _ ->
-                    SlotBloom = Slot#slot_index_value.bloom,
-                    case is_check_slot_required({hash, Hash}, SlotBloom) of
-                        false ->
-                            {not_present, slot_bloom, null};
-                        true ->
+                    case CacheEntry of
+                        {LedgerKey, CachedValue} ->
+                            {{LedgerKey, CachedValue}, cache_entry, null};
+                        _ ->
                             SlotLook = lookup_in_slot(LedgerKey,
                                                         {pointer,
                                                             State#state.handle,
