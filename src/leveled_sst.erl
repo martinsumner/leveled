@@ -277,7 +277,7 @@ read_file(Filename, State) ->
         end,
     SlotLengths = lists:foldr(SlotLengthFetchFun, [], Summary#summary.index),
     SlotCount = length(SlotLengths),
-    SkipL = leveled_skiplist:from_list(Summary#summary.index),
+    SkipL = leveled_skiplist:from_sortedlist(Summary#summary.index),
     UpdSummary = Summary#summary{index = SkipL},
     leveled_log:log("SST03", [Filename, Summary#summary.size, SlotCount]),
     State#state{summary = UpdSummary,
@@ -367,6 +367,7 @@ build_all_slots(KVL, Count, Start, AllHashes, SlotID, SlotIndex, SlotsBin) ->
                                     bloom = Bloom,
                                     start_position = Start,
                                     length = Length},
+    io:format("slot_id ~w at ~w and length ~w~n", [SlotID, Start, Length]),
     build_all_slots(KVRem,
                     Count - 1,
                     Start + Length,
@@ -390,7 +391,8 @@ is_check_slot_required(Hash, Bloom) ->
     leveled_tinybloom:tiny_check(Hash, Bloom).
 
 lookup_slot(Key, SkipList) ->
-    leveled_skiplist:key_above(SkipList, Key).
+    {_Mark, Slot} = leveled_skiplist:key_above(SkipList, Key),
+    Slot.
 
 lookup_in_slot(Key, {pointer, Handle, Slot}) ->
     SlotBin = read_slot(Handle, Slot),
@@ -505,11 +507,33 @@ simple_slotbinsummary_test() ->
     KVList0 = generate_randomkeys(1, ?SLOT_SIZE * 8 + 100, 1, 4),
     KVList1 = lists:ukeysort(1, KVList0),
     [{FirstKey, _V}|_Rest] = KVList1,
-    {SlotIndex, AllHashes, _SlotsBin} = build_all_slots(KVList1),
-    _SummaryBin = build_table_summary(SlotIndex,
+    {FirstKey, _L, SlotIndex, AllHashes, SlotsBin} = build_all_slots(KVList1),
+    SummaryBin = build_table_summary(SlotIndex,
                                         AllHashes,
                                         2,
                                         FirstKey,
-                                        length(KVList1)).
+                                        length(KVList1)),
+    Summary = read_table_summary(SummaryBin),
+    SummaryIndex = leveled_skiplist:from_sortedlist(Summary#summary.index),
+    FetchFun =
+        fun({Key, Value}) ->
+            Slot = lookup_slot(Key, SummaryIndex),
+            StartPos = Slot#slot_index_value.start_position,
+            Length = Slot#slot_index_value.length,
+            io:format("lookup slot id ~w from ~w length ~w~n",
+                        [Slot#slot_index_value.slot_id, StartPos, Length]),
+            <<_Pre:StartPos/binary,
+                SlotBin:Length/binary,
+                _Post/binary>> = <<0:64/integer, SlotsBin/binary>>,
+            <<SlotCRC:32/integer, SlotBinNoCRC/binary>> = SlotBin,
+            ?assertMatch(SlotCRC, erlang:crc32(SlotBinNoCRC)),
+            {value, V} = lookup_in_slot(Key, SlotBinNoCRC),
+            ?assertMatch(Value, V)
+            end,
+    SW = os:timestamp(),
+    lists:foreach(FetchFun, KVList1),
+    io:format(user,
+                "Checking for ~w keys in slots took ~w microseconds~n",
+                [length(KVList1), timer:now_diff(os:timestamp(), SW)]).
 
 -endif.
