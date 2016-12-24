@@ -28,6 +28,7 @@
         to_range/3,
         lookup/2,
         lookup/3,
+        key_above/2,
         empty/0,
         empty/1,
         size/1
@@ -121,6 +122,9 @@ to_range(SkipList, Start, End) ->
 
 to_list(SkipList) ->
     to_list(element(2, SkipList), ?LIST_HEIGHT).
+
+key_above(SkipList, Key) ->
+    key_above(element(2, SkipList), Key, ?LIST_HEIGHT).
 
 empty() ->
     empty(false).
@@ -335,6 +339,36 @@ to_range(SkipList, Start, End, Level) ->
     {_Bool1, _Bool2, SubList, _PrevList} = R,
     SubList.
 
+key_above(SkipList, Key, 0) ->
+    FindFun = fun({Mark, V}, Found) ->
+                    case Found of
+                        false ->
+                            case Key =< Mark of
+                                true ->
+                                    {Mark, V};
+                                false ->
+                                    false
+                            end;
+                        _ ->
+                            Found
+                    end
+                    end,
+    lists:foldl(FindFun, false, SkipList);
+key_above(SkipList, Key, Level) ->
+    FindFun = fun({Mark, SL}, Found) ->
+                    case Found of
+                        false ->
+                            case Key =< Mark of
+                                true ->
+                                    key_above(SL, Key, Level - 1);
+                                false ->
+                                    false
+                            end;
+                        _ ->
+                            Found
+                    end
+                    end,
+    lists:foldl(FindFun, false, SkipList).
 
 empty(SkipList, 1) ->
     [{?INFINITY_KEY, SkipList}];
@@ -644,6 +678,22 @@ skiplist_nolookup_test() ->
                         ?assertMatch(none, lookup(K, SkipList)) end,
                         KL),
     ?assertMatch(KLSorted, to_list(SkipList)).
+
+skiplist_keybefore_test() ->
+    N = 128,
+    KL = generate_randomkeys(1, N, 1, N div 5),
+    SkipList = lists:foldl(fun({K, V}, Acc) ->
+                                enter_nolookup(K, V, Acc) end,
+                            empty(true),
+                            KL),
+    KLSorted = lists:ukeysort(1, lists:reverse(KL)),
+    SW = os:timestamp(),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, key_above(SkipList, K)) end,
+                    KLSorted),
+    io:format(user, "~nFinding self in keys above ~w microseconds for ~w finds~n",
+                    [timer:now_diff(os:timestamp(), SW), N]).
+    
 
 empty_skiplist_size_test() ->
     ?assertMatch(0, leveled_skiplist:size(empty(false))),

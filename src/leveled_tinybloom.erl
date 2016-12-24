@@ -82,6 +82,7 @@ tiny_enter({hash, Hash}, Bloom) ->
     AddFun = fun(Bit, Arr0) -> add_to_array(Bit, Arr0, 1024) end,
     lists:foldl(AddFun, Bloom, [Bit0, Bit1, Bit2]).
 
+
 tiny_check({hash, Hash}, Bloom) ->
     {_Q, Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
     case getbit(Bit0, Bloom, 1024) of

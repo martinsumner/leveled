@@ -45,7 +45,7 @@
 %% key size at all levels.
 %% Slot Bloom has 8 bits per key - 0.03 fpr
 %%
-%% All blooms are base don the DJ Bernstein magic hash which proved to give
+%% All blooms are based on the DJ Bernstein magic hash which proved to give
 %% the predicted fpr in tests (unlike phash2 which has significantly higher
 %% fpr).  Due to the cost of producing the magic hash, it is read from the
 %% value not reproduced each time. If the value is set to no_lookup no bloom
@@ -55,6 +55,8 @@
 
 -module(leveled_sst).
 
+-behaviour(gen_fsm).
+
 -include("include/leveled.hrl").
 
 -define(SLOT_SIZE, 128).
@@ -63,23 +65,234 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+-export([init/1,
+        handle_sync_event/4,
+        handle_event/3,
+        handle_info/3,
+        terminate/3,
+        code_change/4,
+        starting/3,
+        reader/3]).
+
+-export([sst_new/3,
+            sst_open/1,
+            sst_get/2,
+            sst_get/3,
+            sst_close/1]).
+
+-export([generate_randomkeys/1]).
+
+
+
 -record(slot_index_value, {slot_id :: integer(),
                             bloom :: dict:dict(),
                             start_position :: integer(),
                             length :: integer()}).
 
+-record(summary,    {first_key :: tuple(),
+                        last_key :: tuple(),
+                        index :: list(), % leveled_skiplist
+                        bloom :: tuple(), % leveled_tinybloom
+                        size :: integer()}).
+
+-record(state,      {summary,
+                        handle :: file:fd(),
+                        sst_timings :: tuple(),
+                        slot_lengths :: list(),
+                        filename,
+                        cache}).
+
+
 %%%============================================================================
 %%% API
 %%%============================================================================
 
+sst_open(Filename) ->
+    {ok, Pid} = gen_fsm:start(?MODULE, [], []),
+    case gen_fsm:sync_send_event(Pid, {sst_open, Filename}, infinity) of
+        {ok, {SK, EK}} ->
+            {ok, Pid, {SK, EK}}
+    end.
 
+sst_new(Filename, Level, KVList) ->
+    {ok, Pid} = gen_fsm:start(?MODULE, [], []),
+    case gen_fsm:sync_send_event(Pid,
+                                    {sst_new, Filename, Level, KVList},
+                                    infinity) of
+        {ok, {SK, EK}} ->
+            {ok, Pid, {SK, EK}}
+    end.
+
+%sft_newlevelzero(Filename, Slots, FetchFun, Wait, Penciller) ->
+%    {ok, Pid} = gen_fsm:start(?MODULE, [], []),
+%    case Wait of
+%        true ->
+%            KL1 = leveled_pmem:to_list(Slots, FetchFun),
+%            Reply = gen_fsm:sync_send_event(Pid,
+%                                            {sft_new,
+%                                                Filename,
+%                                                0,
+%                                                KL1},
+%                                            infinity),
+%            {ok, Pid, Reply};
+%        false ->
+%            gen_fsm:send_event(Pid,
+%                                {sft_newlevelzero,
+%                                    Filename,
+%                                    Slots,
+%                                    FetchFun,
+%                                    Penciller}),
+%            {ok, Pid, noreply}
+%    end.
+
+sst_get(Pid, LedgerKey) ->
+    sst_get(Pid, LedgerKey, leveled_codec:magic_hash(LedgerKey)).
+
+sst_get(Pid, LedgerKey, Hash) ->
+    gen_fsm:sync_send_event(Pid, {get_kv, LedgerKey, Hash}, infinity).
+
+sst_close(Pid) ->
+    gen_fsm:sync_send_event(Pid, close, 2000).
+
+
+%%%============================================================================
+%%% gen_server callbacks
+%%%============================================================================
+
+init([]) ->
+    {ok, starting, #state{}}.
+
+starting({sft_open, Filename}, _From, State) ->
+    UpdState = read_file(Filename, State),
+    Summary = UpdState#state.summary,
+    {reply,
+        {ok, {Summary#summary.first_key, Summary#summary.last_key}},
+        reader,
+        UpdState};
+starting({sft_new, Filename, Level, KVList}, _From, State) ->
+    {FirstKey, L, SlotIndex, AllHashes, SlotsBin} = build_all_slots(KVList),
+    SummaryBin = build_table_summary(SlotIndex, AllHashes, Level, FirstKey, L),
+    ok = write_file(Filename, SummaryBin, SlotsBin),
+    UpdState = read_file(Filename, State),
+    Summary = UpdState#state.summary,
+    {reply,
+        {ok, {Summary#summary.first_key, Summary#summary.last_key}},
+        reader,
+        UpdState}.
+
+reader({get_kv, LedgerKey, Hash}, _From, State) ->
+    SW = os:timestamp(),
+    {Result, Stage, SlotID} = fetch(LedgerKey, Hash, State),
+    UpdTimings = leveled_log:sst_timing(State#state.sst_timings, SW, Stage),
+    case {Result, Stage} of
+        {not_present, slot_crc_wonky} ->
+            leveled_log:log("SST02", [State#state.filename, SlotID]),
+            {reply, Result, reader, State#state{sst_timings = UpdTimings}};
+        {not_present, _} ->
+            {reply, Result, reader, State#state{sst_timings = UpdTimings}};
+        {KV, slot_lookup_hit} ->
+            UpdCache = array:set(SlotID, KV, State#state.cache),
+            {reply, Result, reader, State#state{cache = UpdCache,
+                                                sst_timings = UpdTimings}}
+    end.
+
+handle_sync_event(_Msg, _From, StateName, State) ->
+    {reply, undefined, StateName, State}.
+
+handle_event(_Msg, StateName, State) ->
+    {next_state, StateName, State}.
+
+handle_info(_Msg, StateName, State) ->
+    {next_state, StateName, State}.
+
+terminate(Reason, _StateName, State) ->
+    leveled_log:log("SST04", [Reason, State#state.filename]).
+
+code_change(_OldVsn, StateName, State, _Extra) ->
+    {ok, StateName, State}.
 
 
 %%%============================================================================
 %%% Internal Functions
 %%%============================================================================
 
-build_table_summary(SlotIndex, AllHashes, Level) ->
+fetch(LedgerKey, Hash, State) ->
+    Summary = State#state.summary,
+    case leveled_tinybloom:check({hash, Hash}, Summary#summary.bloom) of
+        false ->
+            {not_present, summary_bloom, null};
+        true ->
+            Slot = lookup_slot(LedgerKey, Summary#summary.index),
+            CacheEntry = array:get(Slot#slot_index_value.slot_id,
+                                    State#state.cache),
+            case CacheEntry of
+                {LedgerKey, CachedValue} ->
+                    {{LedgerKey, CachedValue}, cache_entry};
+                _ ->
+                    SlotBloom = Slot#slot_index_value.bloom,
+                    case is_check_slot_required({hash, Hash}, SlotBloom) of
+                        false ->
+                            {not_present, slot_bloom, null};
+                        true ->
+                            SlotLook = lookup_in_slot(LedgerKey,
+                                                        {pointer,
+                                                            State#state.handle,
+                                                            Slot}),
+                            case SlotLook of
+                                crc_wonky ->
+                                    {not_present,
+                                        slot_crc_wonky,
+                                        Slot#slot_index_value.slot_id};    
+                                none ->
+                                    {not_present,
+                                        slot_lookup_miss,
+                                        null};
+                                KV ->
+                                    {KV,
+                                        slot_lookup_hit,
+                                        Slot#slot_index_value.slot_id}
+                            end
+                    end
+            end
+    end.
+
+
+write_file(Filename, SummaryBin, SlotsBin) ->
+    SummaryLength = byte_size(SummaryBin),
+    SlotsLength = byte_size(SlotsBin),
+    file:write_file(Filename,
+                    <<SlotsLength:32/integer,
+                        SummaryLength:32/integer,    
+                        SlotsBin/binary,
+                        SummaryBin/binary>>,
+                    [raw]).
+
+read_file(Filename, State) ->
+    {Handle, SummaryBin} = open_reader(Filename),
+    Summary = read_table_summary(SummaryBin),
+    SlotLengthFetchFun =
+        fun({_K, V}, Acc) ->
+                [{V#slot_index_value.slot_id,
+                    V#slot_index_value.length}|Acc]
+        end,
+    SlotLengths = lists:foldr(SlotLengthFetchFun, [], Summary#summary.index),
+    SlotCount = length(SlotLengths),
+    SkipL = leveled_skiplist:from_list(Summary#summary.index),
+    UpdSummary = Summary#summary{index = SkipL},
+    leveled_log:log("SST03", [Filename, Summary#summary.size, SlotCount]),
+    State#state{summary = UpdSummary,
+                slot_lengths = SlotLengths,
+                handle = Handle,
+                cache = array:new({size, SlotCount})}.
+
+open_reader(Filename) ->
+    {ok, Handle} = file:open(Filename, [binary, raw, read]),
+    {ok, Lengths} = file:pread(Handle, {bof, 0}, 8),
+    <<SlotsLength:32/integer, SummaryLength:32/integer>> = Lengths,
+    {ok, SummaryBin} = file:pread(Handle, {cur, SlotsLength}, SummaryLength),
+    {Handle, SummaryBin}.
+
+build_table_summary(SlotIndex, AllHashes, Level, FirstKey, L) ->
     BloomSlots =
         case lists:keyfind(Level, 1, ?LEVEL_BLOOM_SLOTS) of
             {Level, N} ->
@@ -90,9 +303,13 @@ build_table_summary(SlotIndex, AllHashes, Level) ->
     Bloom = lists:foldr(fun leveled_tinybloom:enter/2,
                             leveled_tinybloom:empty(BloomSlots),
                             AllHashes),
-    SkipSlot = leveled_skiplist:from_sortedlist(lists:reverse(SlotIndex)),
-    SummBin = term_to_binary({SkipSlot, Bloom},
-                                [{compressed, ?COMPRESSION_LEVEL}]),
+    [{LastKey, _LastV}|_Rest] = SlotIndex,
+    Summary = #summary{first_key = FirstKey,
+                        last_key = LastKey,
+                        size = L,
+                        index = lists:reverse(SlotIndex),
+                        bloom = Bloom},
+    SummBin = term_to_binary(Summary, [{compressed, ?COMPRESSION_LEVEL}]),
     SummCRC = erlang:crc32(SummBin),
     <<SummCRC:32/integer, SummBin/binary>>.
 
@@ -101,17 +318,25 @@ read_table_summary(BinWithCheck) ->
     CRCCheck = erlang:crc32(SummBin),
     if
         CRCCheck == SummCRC ->
-            % If not might it should be possible to rebuild from all the slots
+            % If not might it might be possible to rebuild from all the slots
             binary_to_term(SummBin)
     end.
 
-build_all_slots(KVList, BasePosition) ->
+build_all_slots(KVList) ->
     L = length(KVList),
     % The length is not a constant time command and the list may be large,
-    % but otherwise lenght must be called each iteration to avoid exception
+    % but otherwise length must be called each iteration to avoid exception
     % on split or sublist
+    [{FirstKey, _FirstV}|_Rest] = KVList,
     SlotCount = L div ?SLOT_SIZE,
-    build_all_slots(KVList, SlotCount, BasePosition, [], 1, [], <<>>).
+    {SlotIndex, AllHashes, SlotsBin} = build_all_slots(KVList,
+                                                        SlotCount,
+                                                        8,
+                                                        [],
+                                                        1,
+                                                        [],
+                                                        <<>>),
+    {FirstKey, L, SlotIndex, AllHashes, SlotsBin}.
 
 build_all_slots([], _Count, _Start, AllHashes, _SlotID, SlotIndex, SlotsBin) ->
     {SlotIndex, AllHashes, SlotsBin};
@@ -164,20 +389,38 @@ is_check_slot_required(_Hash, none) ->
 is_check_slot_required(Hash, Bloom) ->
     leveled_tinybloom:tiny_check(Hash, Bloom).
 
-lookup_in_slot(Key, {pointer, Handle, Pos, Length}) ->
-    lookup_in_slot(Key, read_slot(Handle, Pos, Length));
+lookup_slot(Key, SkipList) ->
+    leveled_skiplist:key_above(SkipList, Key).
+
+lookup_in_slot(Key, {pointer, Handle, Slot}) ->
+    SlotBin = read_slot(Handle, Slot),
+    case SlotBin of
+        crc_wonky ->
+            crc_wonky;
+        _ ->
+            lookup_in_slot(Key, SlotBin)
+    end;
 lookup_in_slot(Key, SlotBin) ->
     Tree = binary_to_term(SlotBin),
     gb_trees:lookup(Key, Tree).
 
-all_from_slot({pointer, Handle, Pos, Length}) ->
-    all_from_slot(read_slot(Handle, Pos, Length));
+all_from_slot({pointer, Handle, Slot}) ->
+    all_from_slot(read_slot(Handle, Slot));
 all_from_slot(SlotBin) ->
     SkipList = binary_to_term(SlotBin),
     gb_trees:to_list(SkipList).
 
-read_slot(_Handle, _Pos, _Length) ->
-    not_implemented.
+read_slot(Handle, Slot) ->
+    {ok, SlotBin} = file:pread(Handle,
+                                Slot#slot_index_value.start_position,
+                                Slot#slot_index_value.length),
+    <<SlotCRC:32/integer, Slot/binary>> = SlotBin,
+    case erlang:crc32(Slot) of
+        SlotCRC ->
+            Slot;
+        _ ->
+            crc_wonky
+    end.
 
 
 %%%============================================================================
@@ -185,6 +428,13 @@ read_slot(_Handle, _Pos, _Length) ->
 %%%============================================================================
 
 -ifdef(TEST).
+
+generate_randomkeys({Count, StartSQN}) ->
+    BucketNumber = random:uniform(1024),
+    generate_randomkeys(Count, StartSQN, [], BucketNumber, BucketNumber);
+generate_randomkeys(Count) ->
+    BucketNumber = random:uniform(1024),
+    generate_randomkeys(Count, 0, [], BucketNumber, BucketNumber).
 
 generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
     generate_randomkeys(Seqn,
@@ -254,7 +504,12 @@ simple_slotbin_test() ->
 simple_slotbinsummary_test() ->
     KVList0 = generate_randomkeys(1, ?SLOT_SIZE * 8 + 100, 1, 4),
     KVList1 = lists:ukeysort(1, KVList0),
-    {SlotIndex, AllHashes, SlotsBin} = build_all_slots(KVList1, 0),
-    _SummaryBin = build_table_summary(SlotIndex, AllHashes, 2).
+    [{FirstKey, _V}|_Rest] = KVList1,
+    {SlotIndex, AllHashes, _SlotsBin} = build_all_slots(KVList1),
+    _SummaryBin = build_table_summary(SlotIndex,
+                                        AllHashes,
+                                        2,
+                                        FirstKey,
+                                        length(KVList1)).
 
 -endif.
