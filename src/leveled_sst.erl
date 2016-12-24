@@ -3,8 +3,7 @@
 %% A FSM module intended to wrap a persisted, ordered view of Keys and Values
 %%
 %% The persisted view is built from a list (which may be created by merging
-%% multiple lists).
-%%
+%% multiple lists).  The list is built first, then the view is created in bulk.
 %%
 %% -------- Slots ---------
 %%
@@ -21,7 +20,7 @@
 %% flatten back to list - 164 microseconds
 %%
 %% GBTree:
-%% build and serialise tree 402 microseconds
+%% build and serialise tree 1433 microseconds
 %% de-serialise and check * 128 - 15263 microseconds
 %% flatten back to list - 175 microseconds
 %%
@@ -30,6 +29,28 @@
 %% the size of the slot, wherease the serialisation time is relatively constant
 %% with growth.  So bigger slots would be quicker to build, but the penalty for
 %% that speed is too high at lookup time.
+%%
+%% -------- Blooms ---------
+%%
+%% There are two different tiny blooms for each table.  One is split by the
+%% first byte of the hash, and consists of two hashes (derived from the
+%% remainder of the hash).  This is the top bloom, and the size vaires by
+%% level.
+%% Level 0 has 8 bits per key - 0.05 fpr
+%% Level 1 has 6 bits per key - 0.08 fpr
+%% Other Levels have 4 bits per key - 0.15 fpr
+%%
+%% If this level is passed, then each slot has its own bloom based on the
+%% same hash, but now split into three hashes and having a fixed 8 bit per
+%% key size at all levels.
+%% Slot Bloom has 8 bits per key - 0.03 fpr
+%%
+%% All blooms are base don the DJ Bernstein magic hash which proved to give
+%% the predicted fpr in tests (unlike phash2 which has significantly higher
+%% fpr).  Due to the cost of producing the magic hash, it is read from the
+%% value not reproduced each time. If the value is set to no_lookup no bloom
+%% entry is added, and if all hashes are no_lookup in the slot then no bloom
+%% is produced.
 
 
 -module(leveled_sst).
@@ -38,6 +59,7 @@
 
 -define(SLOT_SIZE, 128).
 -define(COMPRESSION_LEVEL, 1).
+-define(LEVEL_BLOOM_SLOTS, [{0, 64}, {1, 48}, {default, 32}]).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -57,6 +79,20 @@
 %%% Internal Functions
 %%%============================================================================
 
+build_table_summary(SlotIndex, AllHashes, Level) ->
+    BloomSlots =
+        case lists:keyfind(Level, ?LEVEL_BLOOM_SLOTS) of
+            {Level, N} ->
+                N;
+            false ->
+                element(2, lists:keyfind(default, ?LEVEL_BLOOM_SLOTS))
+        end,
+    Bloom = lists:foldr(fun leveled_tinybloom:enter/2,
+                            leveled_bloom:empty(BloomSlots),
+                            AllHashes),
+    SkipSlot = leveled_skiplist:from_sortedlist(lists:reverse(SlotIndex)),
+    term_to_binary({SkipSlot, Bloom}, [{comprressed, ?COMPRESSION_LEVEL}]).
+
 build_all_slots(KVList, BasePosition) ->
     build_all_slots(KVList, BasePosition, [], 1, []).
 
@@ -75,8 +111,8 @@ build_all_slots(KVList, StartPosition, AllHashes, SlotID, SlotIndex) ->
                     [{hash, H}|Acc]
             end
             end,
-    HashList = lists:foldr(ExtractHashFun, [], KVList),
-    {SlotBin, Bloom} = build_slot(KVList, HashList),
+    HashList = lists:foldr(ExtractHashFun, [], SlotList),
+    {SlotBin, Bloom} = build_slot(SlotList, HashList),
     Length = byte_size(SlotBin),
     SlotIndexV = #slot_index_value{slot_id = SlotID,
                                     bloom = Bloom,
@@ -89,7 +125,7 @@ build_all_slots(KVList, StartPosition, AllHashes, SlotID, SlotIndex) ->
                     [{LastKey, SlotIndexV}|SlotIndex]).
 
 
-build_slot(KVList, HashList) when length(KVList) =< ?SLOT_SIZE ->
+build_slot(KVList, HashList) ->
     Tree = gb_trees:from_orddict(KVList),
     Bloom = lists:foldr(fun leveled_tinybloom:tiny_enter/2,
                         leveled_tinybloom:tiny_empty(),

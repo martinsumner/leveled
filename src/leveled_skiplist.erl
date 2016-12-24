@@ -18,7 +18,6 @@
 -export([
         from_list/1,
         from_list/2,
-        to_sstlist/1,
         from_sortedlist/1,
         from_sortedlist/2,
         to_list/1,
@@ -38,7 +37,6 @@
 
 -define(SKIP_WIDTH, 16).
 -define(LIST_HEIGHT, 2).
--define(SST_WIDTH, 16).
 -define(INFINITY_KEY, {null, null, null, null, null}).
 -define(BITARRAY_SIZE, 2048).
 
@@ -95,9 +93,6 @@ from_sortedlist(SortedKVL, BloomProtect) ->
                 list_only
     end,
     {Bloom0, from_list(SortedKVL, ?SKIP_WIDTH, ?LIST_HEIGHT)}.
-
-to_sstlist(SortedKVL) ->
-    {list_only, from_list(SortedKVL, ?SST_WIDTH, ?LIST_HEIGHT)}.
 
 lookup(Key, SkipList) ->
     case element(1, SkipList) of
