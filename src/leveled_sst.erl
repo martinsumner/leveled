@@ -62,6 +62,7 @@
 -define(SLOT_SIZE, 128).
 -define(COMPRESSION_LEVEL, 1).
 -define(LEVEL_BLOOM_SLOTS, [{0, 64}, {1, 48}, {default, 32}]).
+-define(DISCARD_EXT, ".discarded").
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -162,18 +163,19 @@ sst_close(Pid) ->
 init([]) ->
     {ok, starting, #state{}}.
 
-starting({sft_open, Filename}, _From, State) ->
+starting({sst_open, Filename}, _From, State) ->
     UpdState = read_file(Filename, State),
     Summary = UpdState#state.summary,
     {reply,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}},
         reader,
         UpdState};
-starting({sft_new, Filename, Level, KVList}, _From, State) ->
+starting({sst_new, Filename, Level, KVList}, _From, State) ->
     {FirstKey, L, SlotIndex, AllHashes, SlotsBin} = build_all_slots(KVList),
     SummaryBin = build_table_summary(SlotIndex, AllHashes, Level, FirstKey, L),
-    ok = write_file(Filename, SummaryBin, SlotsBin),
-    UpdState = read_file(Filename, State),
+    ActualFilename = write_file(Filename, SummaryBin, SlotsBin),
+    UpdState = read_file(ActualFilename,
+                            State#state{filename=ActualFilename}),
     Summary = UpdState#state.summary,
     {reply,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}},
@@ -193,8 +195,13 @@ reader({get_kv, LedgerKey, Hash}, _From, State) ->
         {KV, slot_lookup_hit} ->
             UpdCache = array:set(SlotID, KV, State#state.cache),
             {reply, Result, reader, State#state{cache = UpdCache,
-                                                sst_timings = UpdTimings}}
-    end.
+                                                sst_timings = UpdTimings}};
+        _ ->
+            {reply, Result, reader, State#state{sst_timings = UpdTimings}}
+    end;
+reader(close, _From, State) ->
+    ok = file:close(State#state.handle),
+    {stop, normal, ok, State}.
 
 handle_sync_event(_Msg, _From, StateName, State) ->
     {reply, undefined, StateName, State}.
@@ -227,7 +234,7 @@ fetch(LedgerKey, Hash, State) ->
                                     State#state.cache),
             case CacheEntry of
                 {LedgerKey, CachedValue} ->
-                    {{LedgerKey, CachedValue}, cache_entry};
+                    {{LedgerKey, CachedValue}, cache_entry, null};
                 _ ->
                     SlotBloom = Slot#slot_index_value.bloom,
                     case is_check_slot_required({hash, Hash}, SlotBloom) of
@@ -247,8 +254,8 @@ fetch(LedgerKey, Hash, State) ->
                                     {not_present,
                                         slot_lookup_miss,
                                         null};
-                                KV ->
-                                    {KV,
+                                {value, V} ->
+                                    {{LedgerKey, V},
                                         slot_lookup_hit,
                                         Slot#slot_index_value.slot_id}
                             end
@@ -260,12 +267,25 @@ fetch(LedgerKey, Hash, State) ->
 write_file(Filename, SummaryBin, SlotsBin) ->
     SummaryLength = byte_size(SummaryBin),
     SlotsLength = byte_size(SlotsBin),
-    file:write_file(Filename,
+    {PendingName, FinalName} = generate_filenames(Filename),
+    file:write_file(PendingName,
                     <<SlotsLength:32/integer,
                         SummaryLength:32/integer,    
                         SlotsBin/binary,
                         SummaryBin/binary>>,
-                    [raw]).
+                    [raw]),
+    case filelib:is_file(FinalName) of
+        true ->
+            AltName = filename:join(filename:dirname(FinalName),
+                                    filename:basename(FinalName))
+                        ++ ?DISCARD_EXT,
+            leveled_log:log("SST05", [FinalName, AltName]),
+            ok = file:rename(FinalName, AltName);
+        false ->
+            ok
+    end,
+    file:rename(PendingName, FinalName),
+    FinalName.
 
 read_file(Filename, State) ->
     {Handle, SummaryBin} = open_reader(Filename),
@@ -283,13 +303,13 @@ read_file(Filename, State) ->
     State#state{summary = UpdSummary,
                 slot_lengths = SlotLengths,
                 handle = Handle,
-                cache = array:new({size, SlotCount})}.
+                cache = array:new({size, SlotCount + 1})}.
 
 open_reader(Filename) ->
     {ok, Handle} = file:open(Filename, [binary, raw, read]),
-    {ok, Lengths} = file:pread(Handle, {bof, 0}, 8),
+    {ok, Lengths} = file:pread(Handle, 0, 8),
     <<SlotsLength:32/integer, SummaryLength:32/integer>> = Lengths,
-    {ok, SummaryBin} = file:pread(Handle, {cur, SlotsLength}, SummaryLength),
+    {ok, SummaryBin} = file:pread(Handle, SlotsLength + 8, SummaryLength),
     {Handle, SummaryBin}.
 
 build_table_summary(SlotIndex, AllHashes, Level, FirstKey, L) ->
@@ -367,7 +387,6 @@ build_all_slots(KVL, Count, Start, AllHashes, SlotID, SlotIndex, SlotsBin) ->
                                     bloom = Bloom,
                                     start_position = Start,
                                     length = Length},
-    io:format("slot_id ~w at ~w and length ~w~n", [SlotID, Start, Length]),
     build_all_slots(KVRem,
                     Count - 1,
                     Start + Length,
@@ -416,13 +435,28 @@ read_slot(Handle, Slot) ->
     {ok, SlotBin} = file:pread(Handle,
                                 Slot#slot_index_value.start_position,
                                 Slot#slot_index_value.length),
-    <<SlotCRC:32/integer, Slot/binary>> = SlotBin,
-    case erlang:crc32(Slot) of
+    <<SlotCRC:32/integer, SlotNoCRC/binary>> = SlotBin,
+    case erlang:crc32(SlotNoCRC) of
         SlotCRC ->
-            Slot;
+            SlotNoCRC;
         _ ->
             crc_wonky
     end.
+
+
+generate_filenames(RootFilename) ->
+    Ext = filename:extension(RootFilename),
+    Components = filename:split(RootFilename),
+    case Ext of
+        [] ->
+            {filename:join(Components) ++ ".pnd",
+                filename:join(Components) ++ ".sst"};
+        Ext ->
+            DN = filename:dirname(RootFilename),
+            FP_NOEXT = filename:basename(RootFilename, Ext),
+            {filename:join(DN, FP_NOEXT) ++ ".pnd",
+                filename:join(DN, FP_NOEXT) ++ ".sst"}
+    end.    
 
 
 %%%============================================================================
@@ -535,5 +569,25 @@ simple_slotbinsummary_test() ->
     io:format(user,
                 "Checking for ~w keys in slots took ~w microseconds~n",
                 [length(KVList1), timer:now_diff(os:timestamp(), SW)]).
+
+simple_persisted_test() ->
+    Filename = "../test/simple_test",
+    KVList0 = generate_randomkeys(1, ?SLOT_SIZE * 8 + 100, 1, 4),
+    KVList1 = lists:ukeysort(1, KVList0),
+    [{FirstKey, _FV}|_Rest] = KVList1,
+    {LastKey, _LV} = lists:last(KVList1),
+    {ok, Pid, {FirstKey, LastKey}} = sst_new(Filename, 1, KVList1),
+    SW = os:timestamp(),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sst_get(Pid, K)),
+                        ?assertMatch({K, V}, sst_get(Pid, K))
+                        end,
+                    KVList1),
+    io:format(user,
+                "Checking for ~w keys (twice) in file with cache hit took ~w "
+                    ++ "microseconds~n",
+                [length(KVList1), timer:now_diff(os:timestamp(), SW)]),
+    ok = sst_close(Pid),
+    ok = file:delete(Filename ++ ".sst").
 
 -endif.

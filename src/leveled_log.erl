@@ -241,6 +241,8 @@
         {info, "Opening SST file with filename ~s keys ~w and slots ~w"}},
     {"SST04",
         {info, "Exit called for reason ~w on filename ~s"}},
+    {"SST05",
+        {warn, "Rename rogue filename ~s to ~s"}},
     
     {"SFT01",
         {info, "Opened filename with name ~s"}},
