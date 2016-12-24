@@ -587,21 +587,21 @@ simple_persisted_test() ->
                 "Checking for ~w keys (twice) in file with cache hit took ~w "
                     ++ "microseconds~n",
                 [length(KVList1), timer:now_diff(os:timestamp(), SW1)]),
-    KVList2 = generate_randomkeys(1, ?SLOT_SIZE * 8 + 100, 1, 4),
+    KVList2 = generate_randomkeys(1, ?SLOT_SIZE * 20 + 100, 1, 4),
     MapFun =
         fun({K, V}, Acc) ->
             In = lists:keymember(K, 1, KVList1),
             case {K > FirstKey, LastKey > K, In} of
                 {true, true, false} ->
-                    [{K, V}|Acc];
+                    [{K, leveled_codec:magic_hash(K), V}|Acc];
                 _ ->
                     Acc
             end
         end,
     KVList3 = lists:foldl(MapFun, [], KVList2),
     SW2 = os:timestamp(),
-    lists:foreach(fun({K, V}) ->
-                        ?assertMatch(not_present, sst_get(Pid, K))
+    lists:foreach(fun({K, H, _V}) ->
+                        ?assertMatch(not_present, sst_get(Pid, K, H))
                         end,
                     KVList3),
     io:format(user,
