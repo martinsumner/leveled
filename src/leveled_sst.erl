@@ -81,26 +81,49 @@
 
 build_table_summary(SlotIndex, AllHashes, Level) ->
     BloomSlots =
-        case lists:keyfind(Level, ?LEVEL_BLOOM_SLOTS) of
+        case lists:keyfind(Level, 1, ?LEVEL_BLOOM_SLOTS) of
             {Level, N} ->
                 N;
             false ->
-                element(2, lists:keyfind(default, ?LEVEL_BLOOM_SLOTS))
+                element(2, lists:keyfind(default, 1, ?LEVEL_BLOOM_SLOTS))
         end,
     Bloom = lists:foldr(fun leveled_tinybloom:enter/2,
-                            leveled_bloom:empty(BloomSlots),
+                            leveled_tinybloom:empty(BloomSlots),
                             AllHashes),
     SkipSlot = leveled_skiplist:from_sortedlist(lists:reverse(SlotIndex)),
-    term_to_binary({SkipSlot, Bloom}, [{comprressed, ?COMPRESSION_LEVEL}]).
+    SummBin = term_to_binary({SkipSlot, Bloom},
+                                [{compressed, ?COMPRESSION_LEVEL}]),
+    SummCRC = erlang:crc32(SummBin),
+    <<SummCRC:32/integer, SummBin/binary>>.
+
+read_table_summary(BinWithCheck) ->
+    <<SummCRC:32/integer, SummBin/binary>> = BinWithCheck,
+    CRCCheck = erlang:crc32(SummBin),
+    if
+        CRCCheck == SummCRC ->
+            % If not might it should be possible to rebuild from all the slots
+            binary_to_term(SummBin)
+    end.
 
 build_all_slots(KVList, BasePosition) ->
-    build_all_slots(KVList, BasePosition, [], 1, []).
+    L = length(KVList),
+    % The length is not a constant time command and the list may be large,
+    % but otherwise lenght must be called each iteration to avoid exception
+    % on split or sublist
+    SlotCount = L div ?SLOT_SIZE,
+    build_all_slots(KVList, SlotCount, BasePosition, [], 1, [], <<>>).
 
-build_all_slots([], _Start, AllHashes, _SlotID, SlotIndex) ->
-    {SlotIndex, AllHashes};
-build_all_slots(KVList, StartPosition, AllHashes, SlotID, SlotIndex) ->
-    {SlotList, KVRem} = lists:split(?SLOT_SIZE, KVList),
-    {LastKey, _V} = lists:tail(SlotList),
+build_all_slots([], _Count, _Start, AllHashes, _SlotID, SlotIndex, SlotsBin) ->
+    {SlotIndex, AllHashes, SlotsBin};
+build_all_slots(KVL, Count, Start, AllHashes, SlotID, SlotIndex, SlotsBin) ->
+    {SlotList, KVRem} =
+        case Count of
+            0 ->
+                {lists:sublist(KVL, ?SLOT_SIZE), []};
+            _N ->
+                lists:split(?SLOT_SIZE, KVL)
+        end,
+    {LastKey, _V} = lists:last(SlotList),
     ExtractHashFun =
         fun({K, V}, Acc) ->
             {_SQN, H} = leveled_codec:strip_to_seqnhashonly({K, V}),
@@ -113,16 +136,19 @@ build_all_slots(KVList, StartPosition, AllHashes, SlotID, SlotIndex) ->
             end,
     HashList = lists:foldr(ExtractHashFun, [], SlotList),
     {SlotBin, Bloom} = build_slot(SlotList, HashList),
-    Length = byte_size(SlotBin),
+    SlotCRC = erlang:crc32(SlotBin),
+    Length = byte_size(SlotBin) + 4,
     SlotIndexV = #slot_index_value{slot_id = SlotID,
                                     bloom = Bloom,
-                                    start_position = StartPosition,
+                                    start_position = Start,
                                     length = Length},
     build_all_slots(KVRem,
-                    StartPosition + Length,
+                    Count - 1,
+                    Start + Length,
                     HashList ++ AllHashes,
                     SlotID + 1,
-                    [{LastKey, SlotIndexV}|SlotIndex]).
+                    [{LastKey, SlotIndexV}|SlotIndex],
+                    <<SlotsBin/binary, SlotCRC:32/integer, SlotBin/binary>>).
 
 
 build_slot(KVList, HashList) ->
@@ -150,9 +176,8 @@ all_from_slot(SlotBin) ->
     SkipList = binary_to_term(SlotBin),
     gb_trees:to_list(SkipList).
 
-
 read_slot(_Handle, _Pos, _Length) ->
-    not_yet_implemented.
+    not_implemented.
 
 
 %%%============================================================================
@@ -225,5 +250,11 @@ simple_slotbin_test() ->
     io:format(user, "Slot flattened in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SW2)]).
     
-    
+
+simple_slotbinsummary_test() ->
+    KVList0 = generate_randomkeys(1, ?SLOT_SIZE * 8 + 100, 1, 4),
+    KVList1 = lists:ukeysort(1, KVList0),
+    {SlotIndex, AllHashes, SlotsBin} = build_all_slots(KVList1, 0),
+    _SummaryBin = build_table_summary(SlotIndex, AllHashes, 2).
+
 -endif.
