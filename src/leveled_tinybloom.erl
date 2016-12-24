@@ -73,35 +73,17 @@ check(Key, Bloom) ->
     check({hash, Hash}, Bloom).
 
 tiny_empty() ->
-    <<0:2048>>.
+    <<0:1024>>.
 
 tiny_enter({hash, no_lookup}, Bloom) ->
     Bloom;
 tiny_enter({hash, Hash}, Bloom) ->
-    {Q, Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
+    {_Q, Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
     AddFun = fun(Bit, Arr0) -> add_to_array(Bit, Arr0, 1024) end,
-    case Q of
-        N when N < 2 ->
-            <<Bin1:1024/bitstring, Bin2:1024/bitstring>> = Bloom,
-            NewBin = lists:foldl(AddFun, Bin1, [Bit0, Bit1, Bit2]),
-            <<NewBin/bitstring, Bin2/bitstring>>;
-        _N ->
-            <<Bin1:1024/bitstring, Bin2:1024/bitstring>> = Bloom,
-            NewBin = lists:foldl(AddFun, Bin2, [Bit0, Bit1, Bit2]),
-            <<Bin1/bitstring, NewBin/bitstring>>
-    end.
+    lists:foldl(AddFun, Bloom, [Bit0, Bit1, Bit2]).
 
-tiny_check({hash, Hash}, FullBloom) ->
-    {Q, Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
-    Bloom =
-        case Q of
-            N when N < 2 ->
-                <<Bin1:1024/bitstring, _Bin2:1024/bitstring>> = FullBloom,
-                Bin1;
-            _N ->
-                <<_Bin1:1024/bitstring, Bin2:1024/bitstring>> = FullBloom,
-                Bin2
-        end,
+tiny_check({hash, Hash}, Bloom) ->
+    {_Q, Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
     case getbit(Bit0, Bloom, 1024) of
         <<0:1>> ->
             false;

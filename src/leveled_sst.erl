@@ -3,7 +3,34 @@
 %% A FSM module intended to wrap a persisted, ordered view of Keys and Values
 %%
 %% The persisted view is built from a list (which may be created by merging
-%% multiple lists)
+%% multiple lists).
+%%
+%%
+%% -------- Slots ---------
+%%
+%% The view is built from sublists referred to as slot.  Each slot is up to 128
+%% keys and values in size.  The slots are each themselves a gb_tree.  The
+%% gb_tree is slightly slower than the skiplist at fetch time, and doesn't
+%% support directly the useful to_range function.  However the from_orddict
+%% capability is much faster than from_sortedlist in skiplist, saving on CPU
+%% at sst build time:
+%%
+%% Skiplist:
+%% build and serialise slot 3233 microseconds
+%% de-serialise and check * 128 - 14669 microseconds
+%% flatten back to list - 164 microseconds
+%%
+%% GBTree:
+%% build and serialise tree 402 microseconds
+%% de-serialise and check * 128 - 15263 microseconds
+%% flatten back to list - 175 microseconds
+%%
+%% The performance advantage at lookup time is no negligible as the time to
+%% de-deserialise for each check is dominant.  This time grows linearly with
+%% the size of the slot, wherease the serialisation time is relatively constant
+%% with growth.  So bigger slots would be quicker to build, but the penalty for
+%% that speed is too high at lookup time.
+
 
 -module(leveled_sst).
 
@@ -16,7 +43,6 @@
 
 -record(slot_index_value, {slot_id :: integer(),
                             bloom :: dict:dict(),
-                            cache :: tuple(),
                             start_position :: integer(),
                             length :: integer()}).
 
@@ -63,13 +89,12 @@ build_all_slots(KVList, StartPosition, AllHashes, SlotID, SlotIndex) ->
                     [{LastKey, SlotIndexV}|SlotIndex]).
 
 
-
 build_slot(KVList, HashList) when length(KVList) =< ?SLOT_SIZE ->
-    SkipList = leveled_skiplist:to_sstlist(KVList),
+    Tree = gb_trees:from_orddict(KVList),
     Bloom = lists:foldr(fun leveled_tinybloom:tiny_enter/2,
                         leveled_tinybloom:tiny_empty(),
                         HashList),
-    SlotBin = term_to_binary(SkipList, [{compressed, ?COMPRESSION_LEVEL}]),
+    SlotBin = term_to_binary(Tree, [{compressed, ?COMPRESSION_LEVEL}]),
     {SlotBin, Bloom}.
 
 is_check_slot_required(_Hash, none) ->
@@ -80,20 +105,14 @@ is_check_slot_required(Hash, Bloom) ->
 lookup_in_slot(Key, {pointer, Handle, Pos, Length}) ->
     lookup_in_slot(Key, read_slot(Handle, Pos, Length));
 lookup_in_slot(Key, SlotBin) ->
-    SkipList = binary_to_term(SlotBin),
-    leveled_skiplist:lookup(Key, SkipList).
-
-range_from_slot(StartKey, EndKey, {pointer, Handle, Pos, Length}) ->
-    range_from_slot(StartKey, EndKey, read_slot(Handle, Pos, Length));
-range_from_slot(StartKey, EndKey, SlotBin) ->
-    SkipList = binary_to_term(SlotBin),
-    leveled_skiplist:to_range(SkipList, StartKey, EndKey).
+    Tree = binary_to_term(SlotBin),
+    gb_trees:lookup(Key, Tree).
 
 all_from_slot({pointer, Handle, Pos, Length}) ->
     all_from_slot(read_slot(Handle, Pos, Length));
 all_from_slot(SlotBin) ->
     SkipList = binary_to_term(SlotBin),
-    leveled_skiplist:to_list(SkipList).
+    gb_trees:to_list(SkipList).
 
 
 read_slot(_Handle, _Pos, _Length) ->
@@ -148,7 +167,6 @@ simple_slotbin_test() ->
             {_SQN, H} = leveled_codec:strip_to_seqnhashonly({K, V}),
             {hash, H} end,
     HashList = lists:map(ExtractHashFun, KVList1),
-    io:format(user, "~nSkiplist with bloom timing test~n", []),
     SW0 = os:timestamp(),
     {SlotBin0, Bloom0} = build_slot(KVList1, HashList),
     io:format(user, "Slot built in ~w microseconds with size ~w~n",
@@ -166,34 +184,10 @@ simple_slotbin_test() ->
                     KVList1),
     io:format(user, "Slot checked for all keys in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SW1)]),
-    SW5 = os:timestamp(),
-    leveled_skiplist:to_list(binary_to_term(SlotBin0)),
-    io:format(user, "Skiplist flattened in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SW5)]),
-    
-    
-    io:format(user, "~ngb_tree comparison~n", []),
     SW2 = os:timestamp(),
-    Bloom = lists:foldr(fun leveled_tinybloom:tiny_enter/2,
-                        leveled_tinybloom:tiny_empty(),
-                        HashList),
-    Tree0 = gb_trees:from_orddict(KVList1),
-    TreeBin = term_to_binary(Tree0, [{compressed, ?COMPRESSION_LEVEL}]),
-    io:format(user, "Bloom and Tree created for all keys in ~w microseconds " ++
-                "with size ~w~n",
-                [timer:now_diff(os:timestamp(), SW2), byte_size(TreeBin)]),
-    SW3 = os:timestamp(),
-    lists:foreach(fun({K, V}) ->
-                            ?assertMatch({value, V},
-                                            gb_trees:lookup(K, binary_to_term(TreeBin)))
-                                            end,
-                    KVList1),
-    io:format(user, "Tree checked for all keys in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SW3)]),
-    SW4 = os:timestamp(),
-    gb_trees:to_list(binary_to_term(TreeBin)),
-    io:format(user, "Tree flattened in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SW4)]).
-
-
+    ?assertMatch(KVList1, all_from_slot(SlotBin0)),
+    io:format(user, "Slot flattened in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SW2)]).
+    
+    
 -endif.
