@@ -308,18 +308,11 @@ do_merge(KL1, KL2, {SrcLevel, IsB}, {Filepath, MSN}, FileCounter, OutList) ->
                                             [SrcLevel + 1, FileCounter])),
     leveled_log:log("PC012", [MSN, FileName]),
     TS1 = os:timestamp(),
-    LevelR = case IsB of
-                    true ->
-                        #level{level = SrcLevel + 1,
-                                is_basement = true,
-                                timestamp = leveled_codec:integer_now()};
-                    false ->
-                        SrcLevel + 1
-                end,    
-    {ok, Pid, Reply} = leveled_sft:sft_new(FileName,
+    {ok, Pid, Reply} = leveled_sst:sst_new(FileName,
                                             KL1,
                                             KL2,
-                                            LevelR),
+                                            IsB,
+                                            SrcLevel + 1),
     case Reply of
         {{[], []}, null, _} ->
             leveled_log:log("PC013", [FileName]),
