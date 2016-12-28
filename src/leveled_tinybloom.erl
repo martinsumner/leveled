@@ -78,13 +78,13 @@ tiny_empty() ->
 tiny_enter({hash, no_lookup}, Bloom) ->
     Bloom;
 tiny_enter({hash, Hash}, Bloom) ->
-    {_Q, Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
+    {Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
     AddFun = fun(Bit, Arr0) -> add_to_array(Bit, Arr0, 1024) end,
     lists:foldl(AddFun, Bloom, [Bit0, Bit1, Bit2]).
 
 
 tiny_check({hash, Hash}, Bloom) ->
-    {_Q, Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
+    {Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
     case getbit(Bit0, Bloom, 1024) of
         <<0:1>> ->
             false;
@@ -115,11 +115,10 @@ split_hash(Hash) ->
 
 split_hash_for_tinybloom(Hash) ->
     % Tiny bloom can make k=3 from one hash
-    Q = Hash band 3,
-    H0 = (Hash bsr 2) band 1023,
-    H1 = (Hash bsr 12) band 1023,
+    H0 = Hash band 1023,
+    H1 = (Hash bsr 11) band 1023,
     H2 = (Hash bsr 22) band 1023,
-    {Q, H0, H1, H2}.
+    {H0, H1, H2}.
 
 add_to_array(Bit, BitArray, ArrayLength) ->
     RestLen = ArrayLength - Bit - 1,

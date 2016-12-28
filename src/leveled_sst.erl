@@ -79,6 +79,8 @@
             sst_open/1,
             sst_get/2,
             sst_get/3,
+            sst_getkvrange/4,
+            sst_getslots/2,
             sst_close/1]).
 
 -export([generate_randomkeys/1]).
@@ -152,8 +154,20 @@ sst_get(Pid, LedgerKey) ->
 sst_get(Pid, LedgerKey, Hash) ->
     gen_fsm:sync_send_event(Pid, {get_kv, LedgerKey, Hash}, infinity).
 
+sst_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
+    gen_fsm:sync_send_event(Pid,
+                            {get_kvrange, StartKey, EndKey, ScanWidth},
+                            infinity).
+
+sst_getslots(Pid, SlotList) ->
+    gen_fsm:sync_send_event(Pid, {get_slots, SlotList}, infinity).
+    
 sst_close(Pid) ->
     gen_fsm:sync_send_event(Pid, close, 2000).
+
+%% Used in unit tests to force the printing of timings
+sst_printtimings(Pid) ->
+    gen_fsm:sync_send_event(Pid, print_timings, 1000).
 
 
 %%%============================================================================
@@ -199,6 +213,23 @@ reader({get_kv, LedgerKey, Hash}, _From, State) ->
         _ ->
             {reply, Result, reader, State#state{sst_timings = UpdTimings}}
     end;
+reader({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
+    {reply,
+        fetch_range(StartKey, EndKey, ScanWidth, State),
+        reader,
+        State};
+reader({get_slots, SlotList}, _From, State) ->
+    Handle = State#state.handle,
+    FetchFun =
+        fun({pointer, S, SK, EK}, Acc) ->
+            Acc ++ trim_slot({pointer, Handle, S}, SK, EK) end,
+    {reply,
+        lists:foldl(FetchFun, [], SlotList),
+        reader,
+        State};
+reader(print_timings, _From, State) ->
+    io:format(user, "Timings of ~w~n", [State#state.sst_timings]),
+    {reply, ok, reader, State#state{sst_timings = undefined}};
 reader(close, _From, State) ->
     ok = file:close(State#state.handle),
     {stop, normal, ok, State}.
@@ -262,6 +293,76 @@ fetch(LedgerKey, Hash, State) ->
                     end
             end
     end.
+
+fetch_range(StartKey, EndKey, ScanWidth, State) ->
+    Summary = State#state.summary,
+    Handle = State#state.handle,
+    {Slots, LTrim, RTrim} = lookup_slots(StartKey,
+                                            EndKey,
+                                            Summary#summary.index),
+    Self = self(),
+    SL = length(Slots),
+    ExpandedSlots = 
+        case SL of
+            0 ->
+                [];
+            1 ->
+                [Slot] = Slots,
+                case {LTrim, RTrim} of
+                    {true, true} ->
+                        [{pointer, Self, Slot, StartKey, EndKey}];
+                    {true, false} ->
+                        [{pointer, Self, Slot, StartKey, all}];
+                    {false, true} ->
+                        [{pointer, Self, Slot, all, EndKey}];
+                    {false, false} ->
+                        [{pointer, Self, Slot, all, all}]
+                end;
+            N ->
+                {LSlot, MidSlots, RSlot} = 
+                    case N of
+                        2 ->
+                            [Slot1, Slot2] = Slots,
+                            {Slot1, [], Slot2};
+                        N ->
+                            [Slot1|_Rest] = Slots,
+                            SlotN = lists:last(Slots),
+                            {Slot1, lists:sublist(Slots, 2, N - 2), SlotN}
+                    end,
+                MidSlotPointers = lists:map(fun(S) ->
+                                                {pointer, Self, S, all, all}
+                                                end,
+                                            MidSlots),
+                case {LTrim, RTrim} of
+                    {true, true} ->
+                        [{pointer, Self, LSlot, StartKey, all}] ++
+                            MidSlotPointers ++
+                            [{pointer, Self, RSlot, all, EndKey}];
+                    {true, false} ->
+                        [{pointer, Self, LSlot, StartKey, all}] ++
+                            MidSlotPointers ++
+                            [{pointer, Self, RSlot, all, all}];
+                    {false, true} ->
+                        [{pointer, Self, LSlot, all, all}] ++
+                            MidSlotPointers ++
+                            [{pointer, Self, RSlot, all, EndKey}];
+                    {false, false} ->
+                        [{pointer, Self, LSlot, all, all}] ++
+                            MidSlotPointers ++
+                            [{pointer, Self, RSlot, all, all}]
+                end
+        end,
+    {SlotsToFetch, SlotsToPoint} = 
+        case ScanWidth of
+            SW when SW >= SL ->
+                {ExpandedSlots, []};
+            _ ->
+                lists:split(ScanWidth, ExpandedSlots)
+        end,
+    FetchFun =
+        fun({pointer, _Self, S, SK, EK}, Acc) ->
+            Acc ++ trim_slot({pointer, Handle, S}, SK, EK) end,
+    lists:foldl(FetchFun, [], SlotsToFetch) ++ SlotsToPoint.
 
 
 write_file(Filename, SummaryBin, SlotsBin) ->
@@ -409,6 +510,34 @@ is_check_slot_required(_Hash, none) ->
 is_check_slot_required(Hash, Bloom) ->
     leveled_tinybloom:tiny_check(Hash, Bloom).
 
+%% Returns a section from the summary index and two booleans to indicate if
+%% the first slot needs trimming, or the last slot
+lookup_slots(StartKey, EndKey, SkipList) ->
+    SlotsOnlyFun = fun({_K, V}) -> V end,
+    {KSL, LTrim, RTrim} = lookup_slots_int(StartKey, EndKey, SkipList),
+    {lists:map(SlotsOnlyFun, KSL), LTrim, RTrim}.
+
+lookup_slots_int(all, all, SkipList) ->
+    {leveled_skiplist:to_list(SkipList), false, false};
+lookup_slots_int(StartKey, all, SkipList) ->
+    L = leveled_skiplist:to_list(SkipList),
+    LTrimFun = fun({K, _V}) -> K < StartKey end,
+    {_LDrop, RKeep0} = lists:splitwith(LTrimFun, L),
+    [{FirstKey, _V}|_Rest] = RKeep0,
+    LTrim = FirstKey < StartKey,
+    {RKeep0, LTrim, false};
+lookup_slots_int(StartKey, EndKey, SkipList) ->
+    L0 = leveled_skiplist:to_range(SkipList, StartKey, EndKey),
+    {LastKey, _LastVal} = lists:last(L0),
+    case LastKey of
+        EndKey ->
+            {L0, true, false};
+        _ ->
+            LTail = leveled_skiplist:key_above(SkipList, EndKey),
+            {L0 ++ [LTail], true, true}
+    end.
+        
+
 lookup_slot(Key, SkipList) ->
     {_Mark, Slot} = leveled_skiplist:key_above(SkipList, Key),
     Slot.
@@ -425,12 +554,6 @@ lookup_in_slot(Key, SlotBin) ->
     Tree = binary_to_term(SlotBin),
     gb_trees:lookup(Key, Tree).
 
-all_from_slot({pointer, Handle, Slot}) ->
-    all_from_slot(read_slot(Handle, Slot));
-all_from_slot(SlotBin) ->
-    SkipList = binary_to_term(SlotBin),
-    gb_trees:to_list(SkipList).
-
 read_slot(Handle, Slot) ->
     {ok, SlotBin} = file:pread(Handle,
                                 Slot#slot_index_value.start_position,
@@ -442,6 +565,48 @@ read_slot(Handle, Slot) ->
         _ ->
             crc_wonky
     end.
+
+trim_slot({pointer, Handle, Slot}, all, all) ->
+    case read_slot(Handle, Slot) of
+        crc_wonky ->
+            [];
+        SlotBin ->
+            trim_slot(SlotBin, all, all)
+    end;
+trim_slot(SlotBinary, all, all) ->
+    Tree = binary_to_term(SlotBinary),
+    gb_trees:to_list(Tree);
+trim_slot({pointer, Handle, Slot}, StartKey, EndKey) ->
+    case read_slot(Handle, Slot) of
+        crc_wonky ->
+            [];
+        SlotBin ->
+            trim_slot(SlotBin, StartKey, EndKey)
+    end;
+trim_slot(SlotBinary, StartKey, EndKey) ->
+    Tree = binary_to_term(SlotBinary),
+    L = gb_trees:to_list(Tree),
+    LTrimFun = fun({K, _V}) ->
+                        K < StartKey end,
+    RTrimFun = fun({K, _V}) -> 
+                        not leveled_codec:endkey_passed(EndKey, K) end,
+    LTrimL =
+        case StartKey of
+            all ->
+                L;
+            _ ->
+                {_LDrop, RKeep} = lists:splitwith(LTrimFun, L),
+                RKeep
+        end,
+    RTrimL =
+        case EndKey of
+            all ->
+                LTrimL;
+            _ ->
+                {LKeep, _RDrop} = lists:splitwith(RTrimFun, L),
+                LKeep
+        end,
+    RTrimL.
 
 
 generate_filenames(RootFilename) ->
@@ -490,7 +655,7 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
                 BRand = random:uniform(BRange),
                 string:right(integer_to_list(BucketLow + BRand), 4, $0)
         end,
-    KNumber = string:right(integer_to_list(random:uniform(1000)), 4, $0),
+    KNumber = string:right(integer_to_list(random:uniform(1000)), 6, $0),
     LedgerKey = leveled_codec:to_ledgerkey("Bucket" ++ BNumber,
                                             "Key" ++ KNumber,
                                             o),
@@ -532,7 +697,7 @@ simple_slotbin_test() ->
     io:format(user, "Slot checked for all keys in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SW1)]),
     SW2 = os:timestamp(),
-    ?assertMatch(KVList1, all_from_slot(SlotBin0)),
+    ?assertMatch(KVList1, trim_slot(SlotBin0, all, all)),
     io:format(user, "Slot flattened in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SW2)]).
     
@@ -572,7 +737,7 @@ simple_slotbinsummary_test() ->
 
 simple_persisted_test() ->
     Filename = "../test/simple_test",
-    KVList0 = generate_randomkeys(1, ?SLOT_SIZE * 8 + 100, 1, 4),
+    KVList0 = generate_randomkeys(1, ?SLOT_SIZE * 16, 1, 20),
     KVList1 = lists:ukeysort(1, KVList0),
     [{FirstKey, _FV}|_Rest] = KVList1,
     {LastKey, _LV} = lists:last(KVList1),
@@ -587,7 +752,8 @@ simple_persisted_test() ->
                 "Checking for ~w keys (twice) in file with cache hit took ~w "
                     ++ "microseconds~n",
                 [length(KVList1), timer:now_diff(os:timestamp(), SW1)]),
-    KVList2 = generate_randomkeys(1, ?SLOT_SIZE * 20 + 100, 1, 4),
+    ok = sst_printtimings(Pid),
+    KVList2 = generate_randomkeys(1, ?SLOT_SIZE * 16, 1, 20),
     MapFun =
         fun({K, V}, Acc) ->
             In = lists:keymember(K, 1, KVList1),
@@ -607,6 +773,37 @@ simple_persisted_test() ->
     io:format(user,
                 "Checking for ~w missing keys took ~w microseconds~n",
                 [length(KVList3), timer:now_diff(os:timestamp(), SW2)]),
+    ok = sst_printtimings(Pid),
+    FetchList1 = sst_getkvrange(Pid, all, all, 2),
+    FoldFun = fun(X, Acc) ->
+                    case X of
+                        {pointer, P, S, SK, EK} ->
+                            Acc ++ sst_getslots(P, [{pointer, S, SK, EK}]);
+                        _ ->
+                            Acc ++ [X]
+                    end end,
+    FetchedList1 = lists:foldl(FoldFun, [], FetchList1),
+    ?assertMatch(KVList1, FetchedList1),
+    
+    {TenthKey, _v10} = lists:nth(10, KVList1),
+    {Three000Key, _v300} = lists:nth(300, KVList1),
+    io:format("Looking for 291 elements between ~s ~s and ~s ~s~n",
+                [element(2, TenthKey),
+                    element(3, TenthKey),
+                    element(2, Three000Key),
+                    element(3, Three000Key)]),
+    SubKVList1 = lists:sublist(KVList1, 10, 291),
+    SubKVList1L = length(SubKVList1),
+    FetchList2 = sst_getkvrange(Pid, TenthKey, Three000Key, 2),
+    FetchedList2 = lists:foldl(FoldFun, [], FetchList2),
+    io:format("Found elements between ~s ~s and ~s ~s~n",
+                [element(2, element(1, lists:nth(1, FetchedList2))),
+                    element(3, element(1, lists:nth(1, FetchedList2))),
+                    element(2, element(1, lists:last(FetchedList2))),
+                    element(3, element(1, lists:last(FetchedList2)))]),
+    ?assertMatch(SubKVList1L, length(FetchedList2)),
+    ?assertMatch(SubKVList1, FetchedList2),
+    
     ok = sst_close(Pid),
     ok = file:delete(Filename ++ ".sst").
 

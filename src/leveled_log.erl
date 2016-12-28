@@ -19,7 +19,7 @@
 -define(GET_LOGPOINT, 160000).
 -define(SST_LOGPOINT, 200000).
 -define(LOG_LEVEL, [info, warn, error, critical]).
--define(SAMPLE_RATE, 16#F).
+-define(SAMPLE_RATE, 1).
 
 -define(LOGBASE, dict:from_list([
 
@@ -377,7 +377,7 @@ head_timing(undefined, SW, Level, R) ->
     T0 = timer:now_diff(os:timestamp(), SW),
     head_timing_int(undefined, T0, Level, R);
 head_timing({N, HeadTimingD}, SW, Level, R) ->
-    case N band ?SAMPLE_RATE of
+    case N band (?SAMPLE_RATE - 1) of
         0 ->
             T0 = timer:now_diff(os:timestamp(), SW),
             head_timing_int({N, HeadTimingD}, T0, Level, R);
@@ -440,7 +440,7 @@ sst_timing(undefined, SW, TimerType) ->
                     ?SST_LOGPOINT,
                     "SST01");
 sst_timing({N, SSTTimerD}, SW, TimerType) ->
-    case N band ?SAMPLE_RATE of
+    case N band (?SAMPLE_RATE - 1) of
         0 ->
             T0 = timer:now_diff(os:timestamp(), SW),
             gen_timing_int({N, SSTTimerD},
@@ -468,7 +468,7 @@ get_timing(undefined, SW, TimerType) ->
                     ?GET_LOGPOINT,
                     "B0014");
 get_timing({N, GetTimerD}, SW, TimerType) ->
-    case N band ?SAMPLE_RATE of
+    case N band (?SAMPLE_RATE - 1) of
         0 ->
             T0 = timer:now_diff(os:timestamp(), SW),
             gen_timing_int({N, GetTimerD},
