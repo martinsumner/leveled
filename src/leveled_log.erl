@@ -19,7 +19,7 @@
 -define(GET_LOGPOINT, 160000).
 -define(SST_LOGPOINT, 200000).
 -define(LOG_LEVEL, [info, warn, error, critical]).
--define(SAMPLE_RATE, 1).
+-define(SAMPLE_RATE, 15).
 
 -define(LOGBASE, dict:from_list([
 
