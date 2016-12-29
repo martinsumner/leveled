@@ -572,8 +572,11 @@ start_from_file(PCLopts) ->
                         levelzero_index=leveled_pmem:new_index()},
     
     %% Open manifest
-    ManifestPath = InitState#state.root_path ++ "/" ++ ?MANIFEST_FP ++ "/",
+    ManifestPath = filepath(InitState#state.root_path, manifest) ++ "/",
+    SSTPath = filepath(InitState#state.root_path, files) ++ "/",
     ok = filelib:ensure_dir(ManifestPath),
+    ok = filelib:ensure_dir(SSTPath),
+
     {ok, Filenames} = file:list_dir(ManifestPath),
     CurrRegex = "nonzero_(?<MSN>[0-9]+)\\." ++ ?CURRENT_FILEX,
     ValidManSQNs = lists:foldl(fun(FN, Acc) ->
