@@ -224,6 +224,7 @@ starting({sst_open, Filename}, _From, State) ->
         reader,
         UpdState};
 starting({sst_new, Filename, Level, KVList, MaxSQN}, _From, State) ->
+    SW = os:timestamp(),
     {FirstKey, L, SlotIndex, AllHashes, SlotsBin} = build_all_slots(KVList),
     SummaryBin = build_table_summary(SlotIndex,
                                         AllHashes,
@@ -234,7 +235,9 @@ starting({sst_new, Filename, Level, KVList, MaxSQN}, _From, State) ->
     ActualFilename = write_file(Filename, SummaryBin, SlotsBin),
     UpdState = read_file(ActualFilename, State),
     Summary = UpdState#state.summary,
-    leveled_log:log("SST08", [ActualFilename, Level, Summary#summary.max_sqn]),
+    leveled_log:log_timer("SST08",
+                            [ActualFilename, Level, Summary#summary.max_sqn],
+                            SW),
     {reply,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}},
         reader,
@@ -242,6 +245,7 @@ starting({sst_new, Filename, Level, KVList, MaxSQN}, _From, State) ->
 
 starting({sst_newlevelzero, Filename, Slots, FetchFun, Penciller, MaxSQN},
                                                                     State) ->
+    SW = os:timestamp(),
     KVList = leveled_pmem:to_list(Slots, FetchFun),
     {FirstKey, L, SlotIndex, AllHashes, SlotsBin} = build_all_slots(KVList),
     SummaryBin = build_table_summary(SlotIndex,
@@ -253,7 +257,9 @@ starting({sst_newlevelzero, Filename, Slots, FetchFun, Penciller, MaxSQN},
     ActualFilename = write_file(Filename, SummaryBin, SlotsBin),
     UpdState = read_file(ActualFilename, State),
     Summary = UpdState#state.summary,
-    leveled_log:log("SST08", [ActualFilename, 0, Summary#summary.max_sqn]),
+    leveled_log:log_timer("SST08",
+                            [ActualFilename, 0, Summary#summary.max_sqn],
+                            SW),
     case Penciller of
         undefined ->
             {next_state, reader, UpdState};
