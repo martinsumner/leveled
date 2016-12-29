@@ -503,7 +503,6 @@ write_file(Filename, SummaryBin, SlotsBin) ->
     SummaryLength = byte_size(SummaryBin),
     SlotsLength = byte_size(SlotsBin),
     {PendingName, FinalName} = generate_filenames(Filename),
-    DirName = filename:dirname(PendingName),
     ok = file:write_file(PendingName,
                             <<SlotsLength:32/integer,
                                 SummaryLength:32/integer,    
