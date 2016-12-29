@@ -672,18 +672,23 @@ lookup_slots_int(StartKey, all, SkipList) ->
     LTrim = FirstKey < StartKey,
     {RKeep0, LTrim, false};
 lookup_slots_int(StartKey, EndKey, SkipList) ->
-    L0 = leveled_skiplist:to_range(SkipList, StartKey, EndKey),
-    {LastKey, _LastVal} = lists:last(L0),
-    case LastKey of
-        EndKey ->
-            {L0, true, false};
-        _ ->
-            LTail = leveled_skiplist:key_above_notequals(SkipList, LastKey),
-            case LTail of
-                false ->
+    case leveled_skiplist:to_range(SkipList, StartKey, EndKey) of
+        [] ->
+            {[], false, false};
+        L0 ->
+            {LastKey, _LastVal} = lists:last(L0),
+            case LastKey of
+                EndKey ->
                     {L0, true, false};
                 _ ->
-                    {L0 ++ [LTail], true, true}
+                    LTail = leveled_skiplist:key_above_notequals(SkipList,
+                                                                    LastKey),
+                    case LTail of
+                        false ->
+                            {L0, true, false};
+                        _ ->
+                            {L0 ++ [LTail], true, true}
+                    end
             end
     end.
         
