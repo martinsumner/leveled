@@ -673,6 +673,32 @@ skiplist_keybefore_test() ->
     io:format(user, "~nFinding self in keys above ~w microseconds for ~w finds~n",
                     [timer:now_diff(os:timestamp(), SW), N]).
     
+skiplist_range_test() ->
+    N = 150,
+    KL = generate_randomkeys(1, N, 1, N div 5),
+    
+    KLSL1 = lists:sublist(lists:ukeysort(1, KL), 128),
+    SkipList1 = from_list(KLSL1),
+    {LastK1, V1} = lists:last(KLSL1),
+    R1 = to_range(SkipList1, LastK1, LastK1),
+    ?assertMatch([{LastK1, V1}], R1),
+    
+    KLSL2 = lists:sublist(lists:ukeysort(1, KL), 127),
+    SkipList2 = from_list(KLSL2),
+    {LastK2, V2} = lists:last(KLSL2),
+    R2 = to_range(SkipList2, LastK2, LastK2),
+    ?assertMatch([{LastK2, V2}], R2),
+    
+    KLSL3 = lists:sublist(lists:ukeysort(1, KL), 129),
+    SkipList3 = from_list(KLSL3),
+    {LastK3, V3} = lists:last(KLSL3),
+    R3 = to_range(SkipList3, LastK3, LastK3),
+    ?assertMatch([{LastK3, V3}], R3),
+    
+    {FirstK4, V4} = lists:nth(1, KLSL3),
+    R4 = to_range(SkipList3, FirstK4, FirstK4),
+    ?assertMatch([{FirstK4, V4}], R4).
+
 
 empty_skiplist_size_test() ->
     ?assertMatch(0, leveled_skiplist:size(empty(false))),

@@ -674,7 +674,8 @@ lookup_slots_int(StartKey, all, SkipList) ->
 lookup_slots_int(StartKey, EndKey, SkipList) ->
     case leveled_skiplist:to_range(SkipList, StartKey, EndKey) of
         [] ->
-            {[], false, false};
+            BestKey = leveled_skiplist:key_above(SkipList, StartKey),
+            {[BestKey], true, true};
         L0 ->
             {LastKey, _LastVal} = lists:last(L0),
             case LastKey of
@@ -788,7 +789,7 @@ trim_slot(SlotBinary, StartKey, EndKey) ->
             all ->
                 LTrimL;
             _ ->
-                {LKeep, _RDrop} = lists:splitwith(RTrimFun, L),
+                {LKeep, _RDrop} = lists:splitwith(RTrimFun, LTrimL),
                 LKeep
         end,
     RTrimL.
@@ -1175,6 +1176,14 @@ simple_persisted_test() ->
     io:format("Length expected ~w~n", [SubKVListA3L]),
     ?assertMatch(SubKVListA3L, length(FetchedListB3)),
     ?assertMatch(SubKVListA3, FetchedListB3),
+    
+    io:format("Eight hundredth key ~w~n", [Eight000Key]),
+    FetchListB4 = sst_getkvrange(Pid,
+                                    Eight000Key,
+                                    Eight000Key,
+                                    4),
+    FetchedListB4 = lists:foldl(FoldFun, [], FetchListB4),
+    ?assertMatch([{Eight000Key, _v800}], FetchedListB4),
     
     ok = sst_close(Pid),
     ok = file:delete(Filename ++ ".sst").
