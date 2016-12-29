@@ -312,26 +312,21 @@ do_merge(KL1, KL2, {SrcLevel, IsB}, {Filepath, MSN}, MaxSQN,
                                             [SrcLevel + 1, FileCounter])),
     leveled_log:log("PC012", [MSN, FileName]),
     TS1 = os:timestamp(),
-    {ok, Pid, Reply} = leveled_sst:sst_new(FileName,
-                                            KL1,
-                                            KL2,
-                                            IsB,
-                                            SrcLevel + 1,
-                                            MaxSQN),
-    case Reply of
+    case leveled_sst:sst_new(FileName, KL1, KL2, IsB, SrcLevel + 1, MaxSQN) of
         empty ->
             leveled_log:log("PC013", [FileName]),
             OutList;                        
-        {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} ->
-            ExtMan = lists:append(OutList,
-                                    [#manifest_entry{start_key=SmallestKey,
-                                                        end_key=HighestKey,
-                                                        owner=Pid,
-                                                        filename=FileName}]),
-            leveled_log:log_timer("PC015", [], TS1),
-            do_merge(KL1Rem, KL2Rem,
-                        {SrcLevel, IsB}, {Filepath, MSN}, MaxSQN, 
-                        FileCounter + 1, ExtMan)
+        {ok, Pid, Reply} ->
+            {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} = Reply,
+                ExtMan = lists:append(OutList,
+                                        [#manifest_entry{start_key=SmallestKey,
+                                                            end_key=HighestKey,
+                                                            owner=Pid,
+                                                            filename=FileName}]),
+                leveled_log:log_timer("PC015", [], TS1),
+                do_merge(KL1Rem, KL2Rem,
+                            {SrcLevel, IsB}, {Filepath, MSN}, MaxSQN, 
+                            FileCounter + 1, ExtMan)
     end.
 
 
