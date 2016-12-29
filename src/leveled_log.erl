@@ -152,8 +152,6 @@
         {info, "File to be created as part of MSN=~w Filename=~s"}},
     {"PC013",
         {warn, "Merge resulted in empty file ~s"}},
-    {"PC014",
-        {info, "Empty file ~s to be cleared"}},
     {"PC015",
         {info, "File created"}},
     {"PC016",

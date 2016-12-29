@@ -146,16 +146,21 @@ sst_new(Filename, Level, KVList, MaxSQN) ->
 
 sst_new(Filename, KL1, KL2, IsBasement, Level, MaxSQN) ->
     {{Rem1, Rem2}, MergedList} = merge_lists(KL1, KL2, {IsBasement, Level}),
-    {ok, Pid} = gen_fsm:start(?MODULE, [], []),
-    case gen_fsm:sync_send_event(Pid,
-                                    {sst_new,
-                                        Filename,
-                                        Level,
-                                        MergedList,
-                                        MaxSQN},
-                                    infinity) of
-        {ok, {SK, EK}} ->
-            {ok, Pid, {{Rem1, Rem2}, SK, EK}}
+    case MergedList of
+        [] ->
+            empty;
+        _ ->
+            {ok, Pid} = gen_fsm:start(?MODULE, [], []),
+            case gen_fsm:sync_send_event(Pid,
+                                            {sst_new,
+                                                Filename,
+                                                Level,
+                                                MergedList,
+                                                MaxSQN},
+                                            infinity) of
+                {ok, {SK, EK}} ->
+                    {ok, Pid, {{Rem1, Rem2}, SK, EK}}
+            end
     end.
 
 sst_newlevelzero(Filename, Slots, FetchFun, Penciller, MaxSQN) ->

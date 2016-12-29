@@ -319,10 +319,8 @@ do_merge(KL1, KL2, {SrcLevel, IsB}, {Filepath, MSN}, MaxSQN,
                                             SrcLevel + 1,
                                             MaxSQN),
     case Reply of
-        {{[], []}, null, _} ->
+        empty ->
             leveled_log:log("PC013", [FileName]),
-            leveled_log:log("PC014", [FileName]),
-            ok = leveled_sst:sst_clear(Pid),
             OutList;                        
         {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} ->
             ExtMan = lists:append(OutList,
