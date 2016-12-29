@@ -911,11 +911,7 @@ maybe_expand_pointer(List) ->
     List.
     
 
-expand_list_by_pointer({pointer, SSTPid, Slot, StartKey, EndKey}, Tail, 1) ->
-    AccPointers = [{pointer, Slot, StartKey, EndKey}],
-    ExpPointers = leveled_sst:sst_getslots(SSTPid, AccPointers),
-    lists:append(ExpPointers, Tail);
-expand_list_by_pointer({pointer, SSTPid, Slot, StartKey, all}, Tail, Width) ->
+expand_list_by_pointer({pointer, SSTPid, Slot, StartKey, EndKey}, Tail, Width) ->
     FoldFun =
         fun(X, {Pointers, Remainder}) ->
             case length(Pointers) of
@@ -930,7 +926,7 @@ expand_list_by_pointer({pointer, SSTPid, Slot, StartKey, all}, Tail, Width) ->
                     {Pointers, Remainder ++ [X]}
             end
             end,
-    InitAcc = {[{pointer, Slot, StartKey, all}], []},
+    InitAcc = {[{pointer, Slot, StartKey, EndKey}], []},
     {AccPointers, AccTail} = lists:foldl(FoldFun, InitAcc, Tail),
     ExpPointers = leveled_sst:sst_getslots(SSTPid, AccPointers),
     lists:append(ExpPointers, AccTail);
