@@ -1003,17 +1003,22 @@ experimental_test() ->
                 "Created slot in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SWA0)]),
     
-    % {TestK1, TestV1} = lists:nth(16, KVL1),
+    {TestK1, TestV1} = lists:nth(16, KVL1),
     {TestK2, TestV2} = lists:nth(64, KVL1),
-    % {TestK3, TestV3} = lists:nth(96, KVL1),
+    {TestK3, TestV3} = lists:nth(96, KVL1),
+    test_slot(SlotBin, TestK1, TestV1),
+    test_slot(SlotBin, TestK2, TestV2),
+    test_slot(SlotBin, TestK3, TestV3).
+    
+
+
+test_slot(SlotBin, Key, Value) ->
     SWA1 = os:timestamp(),
     Slot0 = binary_to_term(SlotBin),
-    {value, TestV2} = gb_trees:lookup(TestK2, Slot0),
+    {value, Value} = gb_trees:lookup(Key, Slot0),
     io:format(user,
                 "Looked in slot in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SWA1)]).
-    
-    
     
 
 merge_test() ->
