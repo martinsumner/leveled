@@ -1098,7 +1098,7 @@ simple_slotbinsummary_test() ->
 
 simple_persisted_test() ->
     Filename = "../test/simple_test",
-    KVList0 = generate_randomkeys(1, ?SLOT_SIZE * 16, 1, 20),
+    KVList0 = generate_randomkeys(1, ?SLOT_SIZE * 32, 1, 20),
     KVList1 = lists:ukeysort(1, KVList0),
     [{FirstKey, _FV}|_Rest] = KVList1,
     {LastKey, _LV} = lists:last(KVList1),
@@ -1117,7 +1117,7 @@ simple_persisted_test() ->
                     ++ "microseconds~n",
                 [length(KVList1), timer:now_diff(os:timestamp(), SW1)]),
     ok = sst_printtimings(Pid),
-    KVList2 = generate_randomkeys(1, ?SLOT_SIZE * 16, 1, 20),
+    KVList2 = generate_randomkeys(1, ?SLOT_SIZE * 32, 1, 20),
     MapFun =
         fun({K, V}, Acc) ->
             In = lists:keymember(K, 1, KVList1),
