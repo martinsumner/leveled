@@ -20,8 +20,8 @@
         enter/2,
         check/2,
         empty/1,
-        tiny_enter/2,
-        tiny_check/2,
+        tiny_enter/3,
+        tiny_check/3,
         tiny_empty/0
         ]).      
 
@@ -75,16 +75,16 @@ check(Key, Bloom) ->
 tiny_empty() ->
     <<0:1024>>.
 
-tiny_enter({hash, no_lookup}, Bloom) ->
+tiny_enter({hash, no_lookup}, _Key, Bloom) ->
     Bloom;
-tiny_enter({hash, Hash}, Bloom) ->
-    {Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
+tiny_enter({hash, Hash}, Key, Bloom) ->
+    {Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash, Key),
     AddFun = fun(Bit, Arr0) -> add_to_array(Bit, Arr0, 1024) end,
     lists:foldl(AddFun, Bloom, [Bit0, Bit1, Bit2]).
 
 
-tiny_check({hash, Hash}, Bloom) ->
-    {Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash),
+tiny_check({hash, Hash}, Key, Bloom) ->
+    {Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash, Key),
     case getbit(Bit0, Bloom, 1024) of
         <<0:1>> ->
             false;
@@ -113,8 +113,9 @@ split_hash(Hash) ->
     H2 = Hash bsr 20,
     {H0, H1, H2}.
 
-split_hash_for_tinybloom(Hash) ->
+split_hash_for_tinybloom(MagicHash, Key) ->
     % Tiny bloom can make k=3 from one hash
+    Hash = MagicHash bxor erlang:phash2(Key),
     H0 = Hash band 1023,
     H1 = (Hash bsr 11) band 1023,
     H2 = (Hash bsr 22) band 1023,
@@ -194,8 +195,8 @@ simple_test() ->
     ?assertMatch(true, FP < (N div 4)).
 
 tiny_test() ->
-    N = 256,
-    K = 32, % more checks out then in K * checks
+    N = 128,
+    K = 64, % more checks out than in K * checks
     KLin = lists:map(fun(X) -> "Key_" ++
                                 integer_to_list(X) ++
                                 integer_to_list(random:uniform(100)) ++
@@ -211,27 +212,29 @@ tiny_test() ->
                         lists:seq(1, N * K)),
     
     HashIn = lists:map(fun(X) ->
-                            {hash, leveled_codec:magic_hash(X)} end,
+                            {{hash, leveled_codec:magic_hash(X)}, X} end,
                             KLin),
     HashOut = lists:map(fun(X) ->
-                            {hash, leveled_codec:magic_hash(X)} end,
+                            {{hash, leveled_codec:magic_hash(X)}, X} end,
                             KLout),
        
     SW1 = os:timestamp(),
-    Bloom = lists:foldr(fun tiny_enter/2, tiny_empty(), HashIn),
+    Bloom = lists:foldr(fun({H0, K0}, B) -> tiny_enter(H0, K0, B) end,
+                        tiny_empty(),
+                        HashIn),
     io:format(user,
                 "~nAdding ~w hashes to tiny bloom took ~w microseconds~n",
                 [N, timer:now_diff(os:timestamp(), SW1)]),
     
     SW2 = os:timestamp(),
-    lists:foreach(fun(X) ->
-                    ?assertMatch(true, tiny_check(X, Bloom)) end, HashIn),
+    lists:foreach(fun({H1, K1}) ->
+                    ?assertMatch(true, tiny_check(H1, K1, Bloom)) end, HashIn),
     io:format(user,
                 "~nChecking ~w hashes in tiny bloom took ~w microseconds~n",
                 [N, timer:now_diff(os:timestamp(), SW2)]),
     
     SW3 = os:timestamp(),
-    FP = lists:foldr(fun(X, Acc) -> case tiny_check(X, Bloom) of
+    FP = lists:foldr(fun({H3, K3}, Acc) -> case tiny_check(H3, K3, Bloom) of
                                         true -> Acc + 1;
                                         false -> Acc
                                     end end,

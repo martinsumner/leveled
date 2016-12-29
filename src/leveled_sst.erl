@@ -401,13 +401,14 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 
 fetch(LedgerKey, Hash, State) ->
     Summary = State#state.summary,
-    case leveled_tinybloom:check({hash, Hash}, Summary#summary.bloom) of
+    case leveled_tinybloom:check({hash, Hash},
+                                    Summary#summary.bloom) of
         false ->
             {not_present, summary_bloom, null};
         true ->
             Slot = lookup_slot(LedgerKey, Summary#summary.index),
             SlotBloom = Slot#slot_index_value.bloom,
-            case is_check_slot_required({hash, Hash}, SlotBloom) of
+            case is_check_slot_required({hash, Hash}, LedgerKey, SlotBloom) of
                 false ->
                     {not_present, slot_bloom, null};
                 true ->
@@ -570,7 +571,9 @@ build_table_summary(SlotIndex, AllHashes, Level, FirstKey, L, MaxSQN) ->
             false ->
                 element(2, lists:keyfind(default, 1, ?LEVEL_BLOOM_SLOTS))
         end,
-    Bloom = lists:foldr(fun leveled_tinybloom:enter/2,
+    BloomAddFun =
+        fun({H, _K}, Bloom) -> leveled_tinybloom:enter(H, Bloom) end,
+    Bloom = lists:foldr(BloomAddFun,
                             leveled_tinybloom:empty(BloomSlots),
                             AllHashes),
     [{LastKey, _LastV}|_Rest] = SlotIndex,
@@ -627,7 +630,7 @@ build_all_slots(KVL, Count, Start, AllHashes, SlotID, SlotIndex, SlotsBin) ->
                 no_lookup ->
                     Acc;
                 H ->
-                    [{hash, H}|Acc]
+                    [{{hash, H}, K}|Acc]
             end
             end,
     HashList = lists:foldr(ExtractHashFun, [], SlotList),
@@ -649,16 +652,18 @@ build_all_slots(KVL, Count, Start, AllHashes, SlotID, SlotIndex, SlotsBin) ->
 
 build_slot(KVList, HashList) ->
     Tree = gb_trees:from_orddict(KVList),
-    Bloom = lists:foldr(fun leveled_tinybloom:tiny_enter/2,
+    BloomAddFun =
+        fun({H, K}, Bloom) -> leveled_tinybloom:tiny_enter(H, K, Bloom) end,
+    Bloom = lists:foldr(BloomAddFun,
                         leveled_tinybloom:tiny_empty(),
                         HashList),
     SlotBin = term_to_binary(Tree, [{compressed, ?COMPRESSION_LEVEL}]),
     {SlotBin, Bloom}.
 
-is_check_slot_required(_Hash, none) ->
+is_check_slot_required(_Hash, _Key, none) ->
     true;
-is_check_slot_required(Hash, Bloom) ->
-    leveled_tinybloom:tiny_check(Hash, Bloom).
+is_check_slot_required(Hash, Key, Bloom) ->
+    leveled_tinybloom:tiny_check(Hash, Key, Bloom).
 
 %% Returns a section from the summary index and two booleans to indicate if
 %% the first slot needs trimming, or the last slot
@@ -1030,7 +1035,7 @@ simple_slotbin_test() ->
     ExtractHashFun =
         fun({K, V}) ->
             {_SQN, H} = leveled_codec:strip_to_seqnhashonly({K, V}),
-            {hash, H} end,
+            {{hash, H}, K} end,
     HashList = lists:map(ExtractHashFun, KVList1),
     SW0 = os:timestamp(),
     {SlotBin0, Bloom0} = build_slot(KVList1, HashList),
@@ -1038,8 +1043,10 @@ simple_slotbin_test() ->
                 [timer:now_diff(os:timestamp(), SW0), byte_size(SlotBin0)]),
     
     SW1 = os:timestamp(),
-    lists:foreach(fun(H) -> ?assertMatch(true,
-                                            is_check_slot_required(H, Bloom0))
+    lists:foreach(fun({H, K}) -> ?assertMatch(true,
+                                            is_check_slot_required(H,
+                                                                    K,
+                                                                    Bloom0))
                                             end,
                     HashList),
     lists:foreach(fun({K, V}) ->
