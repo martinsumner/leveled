@@ -100,7 +100,7 @@
 
 
 -record(slot_index_value, {slot_id :: integer(),
-                            bloom :: dict:dict(),
+                            bloom,
                             start_position :: integer(),
                             length :: integer()}).
 
