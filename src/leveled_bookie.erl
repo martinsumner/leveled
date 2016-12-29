@@ -1186,7 +1186,10 @@ hashtree_query_test() ->
                                                 {hashtree_query,
                                                     ?STD_TAG,
                                                     false}),
-    ?assertMatch(KeyHashList, HTFolder2()),
+    L0 = length(KeyHashList),
+    HTR2 =  HTFolder2(),
+    ?assertMatch(L0, length(HTR2)),
+    ?assertMatch(KeyHashList, HTR2),
     ok = book_close(Bookie2),
     reset_filestructure().
 

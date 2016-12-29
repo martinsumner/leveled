@@ -19,7 +19,7 @@
 -define(GET_LOGPOINT, 160000).
 -define(SST_LOGPOINT, 200000).
 -define(LOG_LEVEL, [info, warn, error, critical]).
--define(SAMPLE_RATE, 15).
+-define(SAMPLE_RATE, 16).
 
 -define(LOGBASE, dict:from_list([
 
@@ -96,7 +96,7 @@
         {info, "Response to push_mem of ~w with "
                     ++ "L0 pending ~w and merge backlog ~w"}},
     {"P0019",
-        {info, "Rolling level zero to filename ~s"}},
+        {info, "Rolling level zero to filename ~s at ledger sqn ~w"}},
     {"P0020",
         {info, "Work at Level ~w to be scheduled for ~w with ~w "
                 ++ "queue items outstanding at all levels"}},
@@ -238,11 +238,18 @@
         {error, "False result returned from SST with filename ~s as "
                     ++ "slot ~w has failed crc check"}},
     {"SST03",
-        {info, "Opening SST file with filename ~s keys ~w and slots ~w"}},
+        {info, "Opening SST file with filename ~s keys ~w slots ~w and"
+                ++ " max sqn ~w"}},
     {"SST04",
         {info, "Exit called for reason ~w on filename ~s"}},
     {"SST05",
         {warn, "Rename rogue filename ~s to ~s"}},
+    {"SST06",
+        {info, "File ~s has been set for delete"}},
+    {"SST07",
+        {info, "Exit called and now clearing ~s"}},
+    {"SST08",
+        {info, "Completed creation of ~s at level ~w with max sqn ~w"}},
     
     {"SFT01",
         {info, "Opened filename with name ~s"}},

@@ -9,7 +9,7 @@
 %%
 %% -------- COMMITTING MANIFEST CHANGES ---------
 %%
-%% Once the Penciller has taken a manifest change, the SFT file owners which no
+%% Once the Penciller has taken a manifest change, the SST file owners which no
 %% longer form part of the manifest will be marked for delete.  By marking for
 %% deletion, the owners will poll to confirm when it is safe for them to be
 %% deleted.
@@ -225,7 +225,7 @@ merge(WI) ->
 mark_for_delete([], _Penciller) ->
     ok;
 mark_for_delete([Head|Tail], Penciller) ->
-    ok = leveled_sft:sft_setfordelete(Head#manifest_entry.owner, Penciller),
+    ok = leveled_sst:sst_setfordelete(Head#manifest_entry.owner, Penciller),
     mark_for_delete(Tail, Penciller).
     
 
@@ -268,13 +268,13 @@ select_filetomerge(SrcLevel, Manifest) ->
     
     
 
-%% Assumption is that there is a single SFT from a higher level that needs
-%% to be merged into multiple SFTs at a lower level.  This should create an
-%% entirely new set of SFTs, and the calling process can then update the
+%% Assumption is that there is a single SST from a higher level that needs
+%% to be merged into multiple SSTs at a lower level.  This should create an
+%% entirely new set of SSTs, and the calling process can then update the
 %% manifest.
 %%
 %% Once the FileToMerge has been emptied, the remainder of the candidate list
-%% needs to be placed in a remainder SFT that may be of a sub-optimal (small)
+%% needs to be placed in a remainder SST that may be of a sub-optimal (small)
 %% size.  This stops the need to perpetually roll over the whole level if the
 %% level consists of already full files.  Some smartness may be required when
 %% selecting the candidate list so that small files just outside the candidate
@@ -293,18 +293,22 @@ perform_merge({SrcPid, SrcFN}, CandidateList, LevelInfo, {Filepath, MSN}) ->
     PointerList = lists:map(fun(P) ->
                                 {next, P#manifest_entry.owner, all} end,
                             CandidateList),
+    MaxSQN = leveled_sst:sst_getmaxsequencenumber(SrcPid),
     do_merge([{next, SrcPid, all}],
                 PointerList,
                 LevelInfo,
                 {Filepath, MSN},
+                MaxSQN,
                 0,
                 []).
 
-do_merge([], [], {SrcLevel, _IsB}, {_Filepath, MSN}, FileCounter, OutList) ->
+do_merge([], [], {SrcLevel, _IsB}, {_Filepath, MSN}, _MaxSQN,
+                                                    FileCounter, OutList) ->
     leveled_log:log("PC011", [MSN, SrcLevel, FileCounter]),
     OutList;
-do_merge(KL1, KL2, {SrcLevel, IsB}, {Filepath, MSN}, FileCounter, OutList) ->
-    FileName = lists:flatten(io_lib:format(Filepath ++ "_~w_~w.sft",
+do_merge(KL1, KL2, {SrcLevel, IsB}, {Filepath, MSN}, MaxSQN,
+                                                    FileCounter, OutList) ->
+    FileName = lists:flatten(io_lib:format(Filepath ++ "_~w_~w.sst",
                                             [SrcLevel + 1, FileCounter])),
     leveled_log:log("PC012", [MSN, FileName]),
     TS1 = os:timestamp(),
@@ -312,12 +316,13 @@ do_merge(KL1, KL2, {SrcLevel, IsB}, {Filepath, MSN}, FileCounter, OutList) ->
                                             KL1,
                                             KL2,
                                             IsB,
-                                            SrcLevel + 1),
+                                            SrcLevel + 1,
+                                            MaxSQN),
     case Reply of
         {{[], []}, null, _} ->
             leveled_log:log("PC013", [FileName]),
             leveled_log:log("PC014", [FileName]),
-            ok = leveled_sft:sft_clear(Pid),
+            ok = leveled_sst:sst_clear(Pid),
             OutList;                        
         {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} ->
             ExtMan = lists:append(OutList,
@@ -327,7 +332,7 @@ do_merge(KL1, KL2, {SrcLevel, IsB}, {Filepath, MSN}, FileCounter, OutList) ->
                                                         filename=FileName}]),
             leveled_log:log_timer("PC015", [], TS1),
             do_merge(KL1Rem, KL2Rem,
-                        {SrcLevel, IsB}, {Filepath, MSN},
+                        {SrcLevel, IsB}, {Filepath, MSN}, MaxSQN, 
                         FileCounter + 1, ExtMan)
     end.
 
@@ -377,7 +382,7 @@ find_randomkeys(FList, Count, Source) ->
     KV1 = lists:nth(random:uniform(length(Source)), Source),
     K1 = leveled_codec:strip_to_keyonly(KV1),
     P1 = choose_pid_toquery(FList, K1),
-    FoundKV = leveled_sft:sft_get(P1, K1),
+    FoundKV = leveled_sst:sst_get(P1, K1),
     Found = leveled_codec:strip_to_keyonly(FoundKV),
     io:format("success finding ~w in ~w~n", [K1, P1]),
     ?assertMatch(K1, Found),
@@ -386,21 +391,31 @@ find_randomkeys(FList, Count, Source) ->
 
 merge_file_test() ->
     KL1_L1 = lists:sort(generate_randomkeys(8000, 0, 1000)),
-    {ok, PidL1_1, _} = leveled_sft:sft_new("../test/KL1_L1.sft",
-                                            KL1_L1, [], 1),
+    {ok, PidL1_1, _} = leveled_sst:sst_new("../test/KL1_L1.sst",
+                                            1,
+                                            KL1_L1,
+                                            undefined),
     KL1_L2 = lists:sort(generate_randomkeys(8000, 0, 250)),
-    {ok, PidL2_1, _} = leveled_sft:sft_new("../test/KL1_L2.sft",
-                                            KL1_L2, [], 2),
+    {ok, PidL2_1, _} = leveled_sst:sst_new("../test/KL1_L2.sst",
+                                            2,
+                                            KL1_L2,
+                                            undefined),
     KL2_L2 = lists:sort(generate_randomkeys(8000, 250, 250)),
-    {ok, PidL2_2, _} = leveled_sft:sft_new("../test/KL2_L2.sft",
-                                            KL2_L2, [], 2),
+    {ok, PidL2_2, _} = leveled_sst:sst_new("../test/KL2_L2.sst",
+                                            2,
+                                            KL2_L2,
+                                            undefined),
     KL3_L2 = lists:sort(generate_randomkeys(8000, 500, 250)),
-    {ok, PidL2_3, _} = leveled_sft:sft_new("../test/KL3_L2.sft",
-                                            KL3_L2, [], 2),
+    {ok, PidL2_3, _} = leveled_sst:sst_new("../test/KL3_L2.sst",
+                                            2,
+                                            KL3_L2,
+                                            undefined),
     KL4_L2 = lists:sort(generate_randomkeys(8000, 750, 250)),
-    {ok, PidL2_4, _} = leveled_sft:sft_new("../test/KL4_L2.sft",
-                                            KL4_L2, [], 2),
-    Result = perform_merge({PidL1_1, "../test/KL1_L1.sft"},
+    {ok, PidL2_4, _} = leveled_sst:sst_new("../test/KL4_L2.sst",
+                                            2,
+                                            KL4_L2,
+                                            undefined),
+    Result = perform_merge({PidL1_1, "../test/KL1_L1.sst"},
                             [#manifest_entry{owner=PidL2_1},
                                 #manifest_entry{owner=PidL2_2},
                                 #manifest_entry{owner=PidL2_3},
@@ -422,13 +437,13 @@ merge_file_test() ->
     ok = find_randomkeys(Result, 50, KL3_L2),
     io:format("Finding keys in KL4_L2~n"),
     ok = find_randomkeys(Result, 50, KL4_L2),
-    leveled_sft:sft_clear(PidL1_1),
-    leveled_sft:sft_clear(PidL2_1),
-    leveled_sft:sft_clear(PidL2_2),
-    leveled_sft:sft_clear(PidL2_3),
-    leveled_sft:sft_clear(PidL2_4),
+    leveled_sst:sst_clear(PidL1_1),
+    leveled_sst:sst_clear(PidL2_1),
+    leveled_sst:sst_clear(PidL2_2),
+    leveled_sst:sst_clear(PidL2_3),
+    leveled_sst:sst_clear(PidL2_4),
     lists:foreach(fun(ManEntry) ->
-                    leveled_sft:sft_clear(ManEntry#manifest_entry.owner) end,
+                    leveled_sst:sst_clear(ManEntry#manifest_entry.owner) end,
                     Result).
 
 select_merge_candidates_test() ->

@@ -65,6 +65,7 @@
 -define(LEVEL_BLOOM_SLOTS, [{0, 64}, {1, 48}, {default, 32}]).
 -define(MERGE_SCANWIDTH, 16).
 -define(DISCARD_EXT, ".discarded").
+-define(DELETE_TIMEOUT, 10000).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -74,21 +75,28 @@
         handle_info/3,
         terminate/3,
         code_change/4,
+        starting/2,
         starting/3,
-        reader/3]).
+        reader/3,
+        delete_pending/2,
+        delete_pending/3]).
 
--export([sst_new/3,
-            sst_new/5,
-            sst_newlevelzero/4,
+-export([sst_new/4,
+            sst_new/6,
+            sst_newlevelzero/5,
             sst_open/1,
             sst_get/2,
             sst_get/3,
             sst_getkvrange/4,
             sst_getslots/2,
+            sst_getmaxsequencenumber/1,
+            sst_setfordelete/2,
+            sst_clear/1,
+            sst_checkready/1,
+            sst_deleteconfirmed/1,
             sst_close/1]).
 
--export([generate_randomkeys/1]).
-
+-export([expand_list_by_pointer/3]).
 
 
 -record(slot_index_value, {slot_id :: integer(),
@@ -100,12 +108,14 @@
                         last_key :: tuple(),
                         index :: list(), % leveled_skiplist
                         bloom :: tuple(), % leveled_tinybloom
-                        size :: integer()}).
+                        size :: integer(),
+                        max_sqn :: integer()}).
 
 -record(state,      {summary,
                         handle :: file:fd(),
                         sst_timings :: tuple(),
                         slot_lengths :: list(),
+                        penciller :: pid(),
                         filename,
                         cache}).
 
@@ -121,33 +131,42 @@ sst_open(Filename) ->
             {ok, Pid, {SK, EK}}
     end.
 
-sst_new(Filename, Level, KVList) ->
+sst_new(Filename, Level, KVList, MaxSQN) ->
     {ok, Pid} = gen_fsm:start(?MODULE, [], []),
     case gen_fsm:sync_send_event(Pid,
-                                    {sst_new, Filename, Level, KVList},
+                                    {sst_new,
+                                        Filename,
+                                        Level,
+                                        KVList,
+                                        MaxSQN},
                                     infinity) of
         {ok, {SK, EK}} ->
             {ok, Pid, {SK, EK}}
     end.
 
-sst_new(Filename, KL1, KL2, IsBasement, Level) ->
+sst_new(Filename, KL1, KL2, IsBasement, Level, MaxSQN) ->
     {{Rem1, Rem2}, MergedList} = merge_lists(KL1, KL2, {IsBasement, Level}),
     {ok, Pid} = gen_fsm:start(?MODULE, [], []),
     case gen_fsm:sync_send_event(Pid,
-                                    {sst_new, Filename, Level, MergedList},
+                                    {sst_new,
+                                        Filename,
+                                        Level,
+                                        MergedList,
+                                        MaxSQN},
                                     infinity) of
         {ok, {SK, EK}} ->
             {ok, Pid, {{Rem1, Rem2}, SK, EK}}
     end.
 
-sst_newlevelzero(Filename, Slots, FetchFun, Penciller) ->
+sst_newlevelzero(Filename, Slots, FetchFun, Penciller, MaxSQN) ->
     {ok, Pid} = gen_fsm:start(?MODULE, [], []),
     gen_fsm:send_event(Pid,
                         {sst_newlevelzero,
                             Filename,
                             Slots,
                             FetchFun,
-                            Penciller}),
+                            Penciller,
+                            MaxSQN}),
     {ok, Pid, noreply}.
 
 sst_get(Pid, LedgerKey) ->
@@ -163,6 +182,24 @@ sst_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
 
 sst_getslots(Pid, SlotList) ->
     gen_fsm:sync_send_event(Pid, {get_slots, SlotList}, infinity).
+
+sst_getmaxsequencenumber(Pid) ->
+    gen_fsm:sync_send_event(Pid, get_maxsequencenumber, infinity).
+
+sst_setfordelete(Pid, Penciller) ->
+    gen_fsm:sync_send_event(Pid, {set_for_delete, Penciller}, infinity).
+
+sst_clear(Pid) ->
+    gen_fsm:sync_send_event(Pid, {set_for_delete, false}, infinity),
+    gen_fsm:sync_send_event(Pid, close, 1000).
+
+sst_deleteconfirmed(Pid) ->
+    gen_fsm:send_event(Pid, close).
+
+sst_checkready(Pid) ->
+    %% Only used in test
+    gen_fsm:sync_send_event(Pid, background_complete, 100).
+
 
 sst_close(Pid) ->
     gen_fsm:sync_send_event(Pid, close, 2000).
@@ -186,31 +223,48 @@ starting({sst_open, Filename}, _From, State) ->
         {ok, {Summary#summary.first_key, Summary#summary.last_key}},
         reader,
         UpdState};
-starting({sst_new, Filename, Level, KVList}, _From, State) ->
+starting({sst_new, Filename, Level, KVList, MaxSQN}, _From, State) ->
     {FirstKey, L, SlotIndex, AllHashes, SlotsBin} = build_all_slots(KVList),
-    SummaryBin = build_table_summary(SlotIndex, AllHashes, Level, FirstKey, L),
+    SummaryBin = build_table_summary(SlotIndex,
+                                        AllHashes,
+                                        Level,
+                                        FirstKey,
+                                        L,
+                                        MaxSQN),
     ActualFilename = write_file(Filename, SummaryBin, SlotsBin),
-    UpdState = read_file(ActualFilename,
-                            State#state{filename=ActualFilename}),
+    UpdState = read_file(ActualFilename, State),
     Summary = UpdState#state.summary,
+    leveled_log:log("SST08", [ActualFilename, Level, Summary#summary.max_sqn]),
     {reply,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}},
         reader,
         UpdState}.
 
-starting({sst_newlevelzero, Filename, Slots, FetchFun, Penciller}, State) ->
+starting({sst_newlevelzero, Filename, Slots, FetchFun, Penciller, MaxSQN},
+                                                                    State) ->
     KVList = leveled_pmem:to_list(Slots, FetchFun),
     {FirstKey, L, SlotIndex, AllHashes, SlotsBin} = build_all_slots(KVList),
-    SummaryBin = build_table_summary(SlotIndex, AllHashes, 0, FirstKey, L),
+    SummaryBin = build_table_summary(SlotIndex,
+                                        AllHashes,
+                                        0,
+                                        FirstKey,
+                                        L,
+                                        MaxSQN),
     ActualFilename = write_file(Filename, SummaryBin, SlotsBin),
-    UpdState = read_file(ActualFilename,
-                            State#state{filename=ActualFilename}),
+    UpdState = read_file(ActualFilename, State),
     Summary = UpdState#state.summary,
-    leveled_penciller:pcl_confirml0complete(Penciller,
-                                                UpdState#state.filename,
-                                                Summary#summary.first_key,
-                                                Summary#summary.last_key),
-    {next_state, reader, UpdState}.
+    leveled_log:log("SST08", [ActualFilename, 0, Summary#summary.max_sqn]),
+    case Penciller of
+        undefined ->
+            {next_state, reader, UpdState};
+        _ ->
+            leveled_penciller:pcl_confirml0complete(Penciller,
+                                                    UpdState#state.filename,
+                                                    Summary#summary.first_key,
+                                                    Summary#summary.last_key),
+            {next_state, reader, UpdState}
+    end.
+
 
 reader({get_kv, LedgerKey, Hash}, _From, State) ->
     SW = os:timestamp(),
@@ -240,12 +294,69 @@ reader({get_slots, SlotList}, _From, State) ->
         fun({SlotBin, SK, EK}, Acc) ->
             Acc ++ trim_slot(SlotBin, SK, EK) end,
     {reply, lists:foldl(FoldFun, [], SlotBins), reader, State};
+reader(get_maxsequencenumber, _From, State) ->
+    Summary = State#state.summary,
+    {reply, Summary#summary.max_sqn, reader, State};
 reader(print_timings, _From, State) ->
     io:format(user, "Timings of ~w~n", [State#state.sst_timings]),
     {reply, ok, reader, State#state{sst_timings = undefined}};
+reader({set_for_delete, Penciller}, _From, State) ->
+    leveled_log:log("SST06", [State#state.filename]),
+    {reply,
+        ok,
+        delete_pending,
+        State#state{penciller=Penciller},
+        ?DELETE_TIMEOUT};
+reader(background_complete, _From, State) ->
+    Summary = State#state.summary,
+    {reply,
+        {ok,
+            State#state.filename,
+            Summary#summary.first_key,
+            Summary#summary.last_key},
+        reader,
+        State};
 reader(close, _From, State) ->
     ok = file:close(State#state.handle),
     {stop, normal, ok, State}.
+
+
+delete_pending({get_kv, LedgerKey, Hash}, _From, State) ->
+    {Result, Stage, SlotID} = fetch(LedgerKey, Hash, State),
+    case {Result, Stage} of
+        {not_present, slot_crc_wonky} ->
+            leveled_log:log("SST02", [State#state.filename, SlotID]),
+            {reply, Result, reader, State, ?DELETE_TIMEOUT};
+        {not_present, _} ->
+            {reply, Result, reader, State, ?DELETE_TIMEOUT};
+        {KV, slot_lookup_hit} ->
+            UpdCache = array:set(SlotID, KV, State#state.cache),
+            UpdState = State#state{cache = UpdCache},
+            {reply, Result, reader, UpdState, ?DELETE_TIMEOUT};
+        _ ->
+            {reply, Result, reader, State, ?DELETE_TIMEOUT}
+    end;
+delete_pending({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
+    {reply,
+        fetch_range(StartKey, EndKey, ScanWidth, State),
+        reader,
+        State,
+        ?DELETE_TIMEOUT};
+delete_pending(close, _From, State) ->
+    leveled_log:log("SST07", [State#state.filename]),
+    ok = file:close(State#state.handle),
+    ok = file:delete(State#state.filename),
+    {stop, normal, ok, State}.
+
+delete_pending(timeout, State) ->
+    ok = leveled_penciller:pcl_confirmdelete(State#state.penciller,
+                                               State#state.filename),
+    {next_state, delete_pending, State, ?DELETE_TIMEOUT};
+delete_pending(close, State) ->
+    leveled_log:log("SST07", [State#state.filename]),
+    ok = file:close(State#state.handle),
+    ok = file:delete(State#state.filename),
+    {stop, normal, State}.
 
 handle_sync_event(_Msg, _From, StateName, State) ->
     {reply, undefined, StateName, State}.
@@ -413,10 +524,14 @@ read_file(Filename, State) ->
     SlotCount = length(SlotLengths),
     SkipL = leveled_skiplist:from_sortedlist(Summary#summary.index),
     UpdSummary = Summary#summary{index = SkipL},
-    leveled_log:log("SST03", [Filename, Summary#summary.size, SlotCount]),
+    leveled_log:log("SST03", [Filename,
+                                Summary#summary.size,
+                                SlotCount,
+                                Summary#summary.max_sqn]),
     State#state{summary = UpdSummary,
                 slot_lengths = SlotLengths,
                 handle = Handle,
+                filename = Filename,
                 cache = array:new({size, SlotCount + 1})}.
 
 open_reader(Filename) ->
@@ -426,7 +541,7 @@ open_reader(Filename) ->
     {ok, SummaryBin} = file:pread(Handle, SlotsLength + 8, SummaryLength),
     {Handle, SummaryBin}.
 
-build_table_summary(SlotIndex, AllHashes, Level, FirstKey, L) ->
+build_table_summary(SlotIndex, AllHashes, Level, FirstKey, L, MaxSQN) ->
     BloomSlots =
         case lists:keyfind(Level, 1, ?LEVEL_BLOOM_SLOTS) of
             {Level, N} ->
@@ -442,7 +557,8 @@ build_table_summary(SlotIndex, AllHashes, Level, FirstKey, L) ->
                         last_key = LastKey,
                         size = L,
                         index = lists:reverse(SlotIndex),
-                        bloom = Bloom},
+                        bloom = Bloom,
+                        max_sqn = MaxSQN},
     SummBin = term_to_binary(Summary, [{compressed, ?COMPRESSION_LEVEL}]),
     SummCRC = erlang:crc32(SummBin),
     <<SummCRC:32/integer, SummBin/binary>>.
@@ -546,8 +662,13 @@ lookup_slots_int(StartKey, EndKey, SkipList) ->
         EndKey ->
             {L0, true, false};
         _ ->
-            LTail = leveled_skiplist:key_above(SkipList, EndKey),
-            {L0 ++ [LTail], true, true}
+            LTail = leveled_skiplist:key_above_notequals(SkipList, LastKey),
+            case LTail of
+                false ->
+                    {L0, true, false};
+                _ ->
+                    {L0 ++ [LTail], true, true}
+            end
     end.
         
 
@@ -751,13 +872,29 @@ key_dominates_expanded([H1|T1], [H2|T2], Level) ->
 
 maybe_expand_pointer([]) ->
     [];
-maybe_expand_pointer([{pointer, SFTPid, Slot, StartKey, all}|Tail]) ->
+maybe_expand_pointer([{pointer, SSTPid, Slot, StartKey, all}|Tail]) ->
+    expand_list_by_pointer({pointer, SSTPid, Slot, StartKey, all},
+                            Tail,
+                            ?MERGE_SCANWIDTH);
+maybe_expand_pointer([{next, SSTPid, StartKey}|Tail]) ->
+    expand_list_by_pointer({next, SSTPid, StartKey, all},
+                            Tail,
+                            ?MERGE_SCANWIDTH);
+maybe_expand_pointer(List) ->
+    List.
+    
+
+expand_list_by_pointer({pointer, SSTPid, Slot, StartKey, EndKey}, Tail, 1) ->
+    AccPointers = [{pointer, Slot, StartKey, EndKey}],
+    ExpPointers = leveled_sst:sst_getslots(SSTPid, AccPointers),
+    lists:append(ExpPointers, Tail);
+expand_list_by_pointer({pointer, SSTPid, Slot, StartKey, all}, Tail, Width) ->
     FoldFun =
         fun(X, {Pointers, Remainder}) ->
             case length(Pointers) of
-                L when L < ?MERGE_SCANWIDTH ->    
+                L when L < Width ->    
                     case X of
-                        {pointer, SFTPid, S, SK, EK} ->
+                        {pointer, SSTPid, S, SK, EK} ->
                             {Pointers ++ [{pointer, S, SK, EK}], Remainder};
                         _ ->
                             {Pointers, Remainder ++ [X]}
@@ -768,16 +905,11 @@ maybe_expand_pointer([{pointer, SFTPid, Slot, StartKey, all}|Tail]) ->
             end,
     InitAcc = {[{pointer, Slot, StartKey, all}], []},
     {AccPointers, AccTail} = lists:foldl(FoldFun, InitAcc, Tail),
-    SW = os:timestamp(),
-    ExpPointers = sst_getslots(SFTPid, AccPointers),
-    leveled_log:log_timer("SFT14", [SFTPid], SW),
+    ExpPointers = leveled_sst:sst_getslots(SSTPid, AccPointers),
     lists:append(ExpPointers, AccTail);
-maybe_expand_pointer([{next, SFTPid, StartKey}|Tail]) ->
-    ExpPointer = sst_getkvrange(SFTPid, StartKey, all, ?MERGE_SCANWIDTH),
-    maybe_expand_pointer(ExpPointer ++ Tail);
-maybe_expand_pointer(List) ->
-    List.
-    
+expand_list_by_pointer({next, SSTPid, StartKey, EndKey}, Tail, Width) ->
+    ExpPointer = leveled_sst:sst_getkvrange(SSTPid, StartKey, EndKey, Width),
+    ExpPointer ++ Tail.
 
 
 
@@ -786,13 +918,6 @@ maybe_expand_pointer(List) ->
 %%%============================================================================
 
 -ifdef(TEST).
-
-generate_randomkeys({Count, StartSQN}) ->
-    BucketNumber = random:uniform(1024),
-    generate_randomkeys(Count, StartSQN, [], BucketNumber, BucketNumber);
-generate_randomkeys(Count) ->
-    BucketNumber = random:uniform(1024),
-    generate_randomkeys(Count, 0, [], BucketNumber, BucketNumber).
 
 generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
     generate_randomkeys(Seqn,
@@ -834,8 +959,8 @@ merge_test() ->
     KVL2 = lists:ukeysort(1, generate_randomkeys(1, N, 1, 20)),
     KVL3 = lists:ukeymerge(1, KVL1, KVL2),
     SW0 = os:timestamp(),
-    {ok, P1, {FK1, LK1}} = sst_new("../test/level1_src", 1, KVL1),
-    {ok, P2, {FK2, LK2}} = sst_new("../test/level2_src", 2, KVL2),
+    {ok, P1, {FK1, LK1}} = sst_new("../test/level1_src", 1, KVL1, 6000),
+    {ok, P2, {FK2, LK2}} = sst_new("../test/level2_src", 2, KVL2, 3000),
     ExpFK1 = element(1, lists:nth(1, KVL1)),
     ExpLK1 = element(1, lists:last(KVL1)),
     ExpFK2 = element(1, lists:nth(1, KVL2)),
@@ -850,7 +975,8 @@ merge_test() ->
                                                     ML1,
                                                     ML2,
                                                     false,
-                                                    2),
+                                                    2,
+                                                    N * 2),
     ?assertMatch([], Rem1),
     ?assertMatch([], Rem2),
     ?assertMatch(true, FK3 == min(FK1, FK2)),
@@ -915,7 +1041,8 @@ simple_slotbinsummary_test() ->
                                         AllHashes,
                                         2,
                                         FirstKey,
-                                        length(KVList1)),
+                                        length(KVList1),
+                                        undefined),
     Summary = read_table_summary(SummaryBin),
     SummaryIndex = leveled_skiplist:from_sortedlist(Summary#summary.index),
     FetchFun =
@@ -945,7 +1072,10 @@ simple_persisted_test() ->
     KVList1 = lists:ukeysort(1, KVList0),
     [{FirstKey, _FV}|_Rest] = KVList1,
     {LastKey, _LV} = lists:last(KVList1),
-    {ok, Pid, {FirstKey, LastKey}} = sst_new(Filename, 1, KVList1),
+    {ok, Pid, {FirstKey, LastKey}} = sst_new(Filename,
+                                                1,
+                                                KVList1,
+                                                length(KVList1)),
     SW1 = os:timestamp(),
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({K, V}, sst_get(Pid, K)),
@@ -1014,7 +1144,71 @@ simple_persisted_test() ->
     ?assertMatch(SubKVListA1L, length(FetchedListB2)),
     ?assertMatch(SubKVListA1, FetchedListB2),
     
+    FetchListB3 = sst_getkvrange(Pid,
+                                    Eight000Key,
+                                    {o, null, null, null},
+                                    4),
+    FetchedListB3 = lists:foldl(FoldFun, [], FetchListB3),
+    SubKVListA3 = lists:nthtail(800 - 1, KVList1),
+    SubKVListA3L = length(SubKVListA3),
+    io:format("Length expected ~w~n", [SubKVListA3L]),
+    ?assertMatch(SubKVListA3L, length(FetchedListB3)),
+    ?assertMatch(SubKVListA3, FetchedListB3),
+    
     ok = sst_close(Pid),
     ok = file:delete(Filename ++ ".sst").
+
+key_dominates_test() ->
+    KV1 = {{o, "Bucket", "Key1", null}, {5, {active, infinity}, 0, []}},
+    KV2 = {{o, "Bucket", "Key3", null}, {6, {active, infinity}, 0, []}},
+    KV3 = {{o, "Bucket", "Key2", null}, {3, {active, infinity}, 0, []}},
+    KV4 = {{o, "Bucket", "Key4", null}, {7, {active, infinity}, 0, []}},
+    KV5 = {{o, "Bucket", "Key1", null}, {4, {active, infinity}, 0, []}},
+    KV6 = {{o, "Bucket", "Key1", null}, {99, {tomb, 999}, 0, []}},
+    KV7 = {{o, "Bucket", "Key1", null}, {99, tomb, 0, []}},
+    KL1 = [KV1, KV2],
+    KL2 = [KV3, KV4],
+    ?assertMatch({{next_key, KV1}, [KV2], KL2},
+                    key_dominates(KL1, KL2, {undefined, 1})),
+    ?assertMatch({{next_key, KV1}, KL2, [KV2]},
+                    key_dominates(KL2, KL1, {undefined, 1})),
+    ?assertMatch({skipped_key, KL2, KL1},
+                    key_dominates([KV5|KL2], KL1, {undefined, 1})),
+    ?assertMatch({{next_key, KV1}, [KV2], []},
+                    key_dominates(KL1, [], {undefined, 1})),
+    ?assertMatch({skipped_key, [KV6|KL2], [KV2]},
+                    key_dominates([KV6|KL2], KL1, {undefined, 1})),
+    ?assertMatch({{next_key, KV6}, KL2, [KV2]},
+                    key_dominates([KV6|KL2], [KV2], {undefined, 1})),
+    ?assertMatch({skipped_key, [KV6|KL2], [KV2]},
+                    key_dominates([KV6|KL2], KL1, {true, 1})),
+    ?assertMatch({skipped_key, [KV6|KL2], [KV2]},
+                    key_dominates([KV6|KL2], KL1, {true, 1000})),
+    ?assertMatch({{next_key, KV6}, KL2, [KV2]},
+                    key_dominates([KV6|KL2], [KV2], {true, 1})),
+    ?assertMatch({skipped_key, KL2, [KV2]},
+                    key_dominates([KV6|KL2], [KV2], {true, 1000})),
+    ?assertMatch({skipped_key, [], []},
+                    key_dominates([KV6], [], {true, 1000})),
+    ?assertMatch({skipped_key, [], []},
+                    key_dominates([], [KV6], {true, 1000})),
+    ?assertMatch({{next_key, KV6}, [], []},
+                    key_dominates([KV6], [], {true, 1})),
+    ?assertMatch({{next_key, KV6}, [], []},
+                    key_dominates([], [KV6], {true, 1})),
+    ?assertMatch({skipped_key, [], []},
+                    key_dominates([KV7], [], {true, 1})),
+    ?assertMatch({skipped_key, [], []},
+                    key_dominates([], [KV7], {true, 1})),
+    ?assertMatch({skipped_key, [KV7|KL2], [KV2]},
+                    key_dominates([KV7|KL2], KL1, {undefined, 1})),
+    ?assertMatch({{next_key, KV7}, KL2, [KV2]},
+                    key_dominates([KV7|KL2], [KV2], {undefined, 1})),
+    ?assertMatch({skipped_key, [KV7|KL2], [KV2]},
+                    key_dominates([KV7|KL2], KL1, {true, 1})),
+    ?assertMatch({skipped_key, KL2, [KV2]},
+                    key_dominates([KV7|KL2], [KV2], {true, 1})).
+
+
 
 -endif.

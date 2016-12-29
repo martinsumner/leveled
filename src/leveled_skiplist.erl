@@ -29,6 +29,7 @@
         lookup/2,
         lookup/3,
         key_above/2,
+        key_above_notequals/2,
         empty/0,
         empty/1,
         size/1
@@ -123,8 +124,15 @@ to_range(SkipList, Start, End) ->
 to_list(SkipList) ->
     to_list(element(2, SkipList), ?LIST_HEIGHT).
 
+%% If a mark is found that matches the key, will return that mark
 key_above(SkipList, Key) ->
-    key_above(element(2, SkipList), Key, ?LIST_HEIGHT).
+    TestFun = fun(Mark, K) -> Mark >= K end,
+    key_above(element(2, SkipList), Key, ?LIST_HEIGHT, TestFun).
+
+%% If a mark is found that matches the key, will return the next mark
+key_above_notequals(SkipList, Key) ->
+    TestFun = fun(Mark, K) -> Mark > K end,
+    key_above(element(2, SkipList), Key, ?LIST_HEIGHT, TestFun).
 
 empty() ->
     empty(false).
@@ -321,11 +329,11 @@ sublist_above(SkipList, StartKey, Level, StartIncl) ->
             sublist_above(SL, StartKey, Level - 1, StartIncl)
     end.
 
-key_above(SkipList, Key, 0) ->
+key_above(SkipList, Key, 0, TestFun) ->
     FindFun = fun({Mark, V}, Found) ->
                     case Found of
                         false ->
-                            case Key =< Mark of
+                            case TestFun(Mark, Key) of
                                 true ->
                                     {Mark, V};
                                 false ->
@@ -336,13 +344,13 @@ key_above(SkipList, Key, 0) ->
                     end
                     end,
     lists:foldl(FindFun, false, SkipList);
-key_above(SkipList, Key, Level) ->
+key_above(SkipList, Key, Level, TestFun) ->
     FindFun = fun({Mark, SL}, Found) ->
                     case Found of
                         false ->
-                            case Key =< Mark of
+                            case TestFun(Mark, Key) of
                                 true ->
-                                    key_above(SL, Key, Level - 1);
+                                    key_above(SL, Key, Level - 1, TestFun);
                                 false ->
                                     false
                             end;
