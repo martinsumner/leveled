@@ -326,20 +326,30 @@ delete_pending({get_kv, LedgerKey, Hash}, _From, State) ->
     case {Result, Stage} of
         {not_present, slot_crc_wonky} ->
             leveled_log:log("SST02", [State#state.filename, SlotID]),
-            {reply, Result, reader, State, ?DELETE_TIMEOUT};
+            {reply, Result, delete_pending, State, ?DELETE_TIMEOUT};
         {not_present, _} ->
-            {reply, Result, reader, State, ?DELETE_TIMEOUT};
+            {reply, Result, delete_pending, State, ?DELETE_TIMEOUT};
         {KV, slot_lookup_hit} ->
             UpdCache = array:set(SlotID, KV, State#state.cache),
             UpdState = State#state{cache = UpdCache},
-            {reply, Result, reader, UpdState, ?DELETE_TIMEOUT};
+            {reply, Result, delete_pending, UpdState, ?DELETE_TIMEOUT};
         _ ->
-            {reply, Result, reader, State, ?DELETE_TIMEOUT}
+            {reply, Result, delete_pending, State, ?DELETE_TIMEOUT}
     end;
 delete_pending({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
     {reply,
         fetch_range(StartKey, EndKey, ScanWidth, State),
-        reader,
+        delete_pending,
+        State,
+        ?DELETE_TIMEOUT};
+delete_pending({get_slots, SlotList}, _From, State) ->
+    SlotBins = read_slots(State#state.handle, SlotList),
+    FoldFun =
+        fun({SlotBin, SK, EK}, Acc) ->
+            Acc ++ trim_slot(SlotBin, SK, EK) end,
+    {reply,
+        lists:foldl(FoldFun, [], SlotBins),
+        delete_pending,
         State,
         ?DELETE_TIMEOUT};
 delete_pending(close, _From, State) ->
