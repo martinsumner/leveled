@@ -203,6 +203,7 @@
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
 -define(COIN_SIDECOUNT, 5).
 -define(SLOW_FETCH, 20000).
+-define(ITERATOR_SCANWIDTH, 4).
 
 -record(state, {manifest = [] :: list(),
 				manifest_sqn = 0 :: integer(),
@@ -962,7 +963,7 @@ find_nextkey(QueryArray, StartKey, EndKey) ->
                     {null, null},
                     StartKey,
                     EndKey,
-                    1).
+                    ?ITERATOR_SCANWIDTH).
 
 find_nextkey(_QueryArray, LCnt, {null, null}, _StartKey, _EndKey, _Width)
                                             when LCnt > ?MAX_LEVELS ->
