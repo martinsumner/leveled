@@ -983,41 +983,390 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
 
 experimental_test() ->
     io:format(user, "~nExperimental timing test:~n", []),
-    N = 128,
-    KVL1 = lists:ukeysort(1, generate_randomkeys(1, N, 1, 2)),
+    N = 150,
+    KVL0 = lists:ukeysort(1, generate_randomkeys(1, N, 1, 4)),
+    KVL1 = lists:sublist(KVL0, 128),
+    KVL2 = generate_randomkeys(1, N, 1, 4),
+    KVLnot0 = lists:foldr(fun({K, V}, Acc) -> 
+                                case lists:keymember(K, 1, KVL1) of 
+                                    true ->
+                                        Acc;
+                                    false ->
+                                        [{K, leveled_codec:magic_hash(K), V}|Acc]
+                                end end,
+                            [],
+                            KVL2),
+    KVLnot1 = lists:sublist(KVLnot0, 8),
+
     ExtractHashFun =
         fun({K, V}) ->
             {_SQN, H} = leveled_codec:strip_to_seqnhashonly({K, V}),
             {{hash, H}, K} end,
-    HashList = lists:map(ExtractHashFun, KVL1),
-    
-    SWA0 = os:timestamp(),
-    Tree = gb_trees:from_orddict(KVL1),
     BloomAddFun =
         fun({H, K}, Bloom) -> leveled_tinybloom:tiny_enter(H, K, Bloom) end,
-    _Bloom = lists:foldr(BloomAddFun,
+    AltHashFoldFun =
+        fun({K, V}, {HashLAcc, PosBAcc}) ->
+            {_SQN, H} = leveled_codec:strip_to_seqnhashonly({K, V}),
+            PosH = H band 65535,
+            {[{{hash, H}, K}|HashLAcc], <<PosH:16/integer, PosBAcc/binary>>} 
+        end,
+    AltAltHashFoldFun =
+        fun({K, V}, {HashLAcc, PosBAcc, PosC}) ->
+            {_SQN, H} = leveled_codec:strip_to_seqnhashonly({K, V}),
+            Slot = H rem 256,
+            PosH = (H bsr 8) band 65535,
+            {[{{hash, H}, K}|HashLAcc], 
+                [{Slot, <<PosH:16/integer, PosC:8/integer>>}|PosBAcc], 
+                PosC + 1} 
+        end,
+
+    
+    SWA0 = os:timestamp(),
+    HashList = lists:map(ExtractHashFun, KVL1),
+    Tree = gb_trees:from_orddict(KVL1),
+    _BloomA = lists:foldr(BloomAddFun,
                         leveled_tinybloom:tiny_empty(),
                         HashList),
-    SlotBin = term_to_binary(Tree, [{compressed, ?COMPRESSION_LEVEL}]),
+    SlotBinA = term_to_binary(Tree, [{compressed, ?COMPRESSION_LEVEL}]),
     io:format(user,
                 "Created slot in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SWA0)]),
     
-    {TestK1, TestV1} = lists:nth(16, KVL1),
-    {TestK2, TestV2} = lists:nth(64, KVL1),
-    {TestK3, TestV3} = lists:nth(96, KVL1),
-    test_slot(SlotBin, TestK1, TestV1),
-    test_slot(SlotBin, TestK2, TestV2),
-    test_slot(SlotBin, TestK3, TestV3).
+    {TestK1, TestV1} = lists:nth(20, KVL1),
+    MH1 = leveled_codec:magic_hash(TestK1),
+    {TestK2, TestV2} = lists:nth(40, KVL1),
+    MH2 = leveled_codec:magic_hash(TestK2),
+    {TestK3, TestV3} = lists:nth(60, KVL1),
+    MH3 = leveled_codec:magic_hash(TestK3),
+    {TestK4, TestV4} = lists:nth(80, KVL1),
+    MH4 = leveled_codec:magic_hash(TestK4),
+    {TestK5, TestV5} = lists:nth(100, KVL1),
+    MH5 = leveled_codec:magic_hash(TestK5),
+
+    test_slot(SlotBinA, TestK1, TestV1),
+    test_slot(SlotBinA, TestK2, TestV2),
+    test_slot(SlotBinA, TestK3, TestV3),
+    test_slot(SlotBinA, TestK4, TestV4),
+    test_slot(SlotBinA, TestK5, TestV5),
+    lists:foreach(fun({NotK, _H, _V}) -> 
+                        test_not_slot(SlotBinA, NotK) end, 
+                    KVLnot1),
+
+    SWB0 = os:timestamp(),
+    {Alt1HashList, Pos1Bin} = lists:foldr(AltHashFoldFun, {[], <<>>}, KVL1),
+    _BloomB = lists:foldr(BloomAddFun,
+                            leveled_tinybloom:tiny_empty(),
+                            Alt1HashList),
+    Alt1SlotBinB = term_to_binary(KVL1, [{compressed, ?COMPRESSION_LEVEL}]),
+    io:format(user,
+                "Alt1-method created slot in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWB0)]),
+
+    alt1_test_slot(Alt1SlotBinB, Pos1Bin, MH1, TestK1, TestV1),
+    alt1_test_slot(Alt1SlotBinB, Pos1Bin, MH2, TestK2, TestV2),
+    alt1_test_slot(Alt1SlotBinB, Pos1Bin, MH3, TestK3, TestV3),
+    alt1_test_slot(Alt1SlotBinB, Pos1Bin, MH4, TestK4, TestV4),
+    alt1_test_slot(Alt1SlotBinB, Pos1Bin, MH5, TestK5, TestV5),
+    lists:foreach(fun({NotK, NotMH, _V}) -> 
+                        alt1_test_not_slot(Alt1SlotBinB, Pos1Bin, NotMH, NotK) end, 
+                    KVLnot1),
+
+    SWC0 = os:timestamp(),
+    {KVL1A, KVL1B} = lists:split(64, KVL1),
+    {Alt2HashListA, Pos2BinA} = lists:foldr(AltHashFoldFun, {[], <<>>}, KVL1A),
+    {Alt2HashList, Pos2BinB} = lists:foldr(AltHashFoldFun, {Alt2HashListA, <<>>}, KVL1B),
+    _BloomB = lists:foldr(BloomAddFun,
+                            leveled_tinybloom:tiny_empty(),
+                            Alt2HashList),
+    Alt2SlotBinB_A = term_to_binary(KVL1A, [{compressed, ?COMPRESSION_LEVEL}]),
+    Alt2SlotBinB_B = term_to_binary(KVL1B, [{compressed, ?COMPRESSION_LEVEL}]),
+    Alt2Tester = [{Alt2SlotBinB_A, Pos2BinA}, {Alt2SlotBinB_B, Pos2BinB}],
+    io:format(user,
+                "Alt2-method created slot in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWC0)]),
+
     
+    alt2_test_slot(Alt2Tester, MH1, TestK1, TestV1, "Alt2"),
+    alt2_test_slot(Alt2Tester, MH2, TestK2, TestV2, "Alt2"),
+    alt2_test_slot(Alt2Tester, MH3, TestK3, TestV3, "Alt2"),
+    alt2_test_slot(Alt2Tester, MH4, TestK4, TestV4, "Alt2"),
+    alt2_test_slot(Alt2Tester, MH5, TestK5, TestV5, "Alt2"),
+    lists:foreach(fun({NotK, NotMH, _V}) -> 
+                        alt2_test_not_slot(Alt2Tester, NotMH, NotK, "Alt2") end, 
+                    KVLnot1),
+
+    SWD0 = os:timestamp(),
+    {KVL1A32, KVL1_96} = lists:split(32, KVL1),
+    {KVL1B32, KVL1_64} = lists:split(32, KVL1_96),
+    {KVL1C32, KVL1D32} = lists:split(32, KVL1_64),
+    {Alt3HashListA, Pos3BinA} = lists:foldr(AltHashFoldFun, {[], <<>>}, KVL1A32),
+    {Alt3HashListB, Pos3BinB} = lists:foldr(AltHashFoldFun, {Alt3HashListA, <<>>}, KVL1B32),
+    {Alt3HashListC, Pos3BinC} = lists:foldr(AltHashFoldFun, {Alt3HashListB, <<>>}, KVL1C32),
+    {Alt3HashList, Pos3BinD} = lists:foldr(AltHashFoldFun, {Alt3HashListC, <<>>}, KVL1D32),
+    _BloomB = lists:foldr(BloomAddFun,
+                            leveled_tinybloom:tiny_empty(),
+                            Alt3HashList),
+    Alt3SlotBinB_A = term_to_binary(KVL1A32, [{compressed, ?COMPRESSION_LEVEL}]),
+    Alt3SlotBinB_B = term_to_binary(KVL1B32, [{compressed, ?COMPRESSION_LEVEL}]),
+    Alt3SlotBinB_C = term_to_binary(KVL1C32, [{compressed, ?COMPRESSION_LEVEL}]),
+    Alt3SlotBinB_D = term_to_binary(KVL1D32, [{compressed, ?COMPRESSION_LEVEL}]),
+    Alt3Tester = [{Alt3SlotBinB_A, Pos3BinA}, {Alt3SlotBinB_B, Pos3BinB},
+                    {Alt3SlotBinB_C, Pos3BinC}, {Alt3SlotBinB_D, Pos3BinD}],
+    io:format(user,
+                "Alt3-method created slot in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWD0)]),
+
+    
+    alt2_test_slot(Alt3Tester, MH1, TestK1, TestV1, "Alt3"),
+    alt2_test_slot(Alt3Tester, MH2, TestK2, TestV2, "Alt3"),
+    alt2_test_slot(Alt3Tester, MH3, TestK3, TestV3, "Alt3"),
+    alt2_test_slot(Alt3Tester, MH4, TestK4, TestV4, "Alt3"),
+    alt2_test_slot(Alt3Tester, MH5, TestK5, TestV5, "Alt3"),
+    lists:foreach(fun({NotK, NotMH, _V}) -> 
+                        alt2_test_not_slot(Alt3Tester, NotMH, NotK, "Alt3") end, 
+                    KVLnot1),
+
+    SWE0 = os:timestamp(),
+    {KVL1A32, KVL1_96} = lists:split(32, KVL1),
+    {KVL1B32, KVL1_64} = lists:split(32, KVL1_96),
+    {KVL1C32, KVL1D32} = lists:split(32, KVL1_64),
+    io:format("final block length ~w~n", [length(KVL1D32)]),
+    {Alt4HashListA, PosTLA, 32} = lists:foldl(AltAltHashFoldFun, {[], [], 0}, KVL1A32),
+    {Alt4HashListB, PosTLB, 64} = lists:foldl(AltAltHashFoldFun, {Alt3HashListA, PosTLA, 32}, KVL1B32),
+    {Alt4HashListC, PosTLC, 96} = lists:foldl(AltAltHashFoldFun, {Alt3HashListB, PosTLB, 64}, KVL1C32),
+    {Alt4HashList, PosTLall, 128} = lists:foldl(AltAltHashFoldFun, {Alt3HashListC, PosTLC, 96}, KVL1D32),
+    _BloomB = lists:foldr(BloomAddFun,
+                            leveled_tinybloom:tiny_empty(),
+                            Alt3HashList),
+    Alt3SlotBinB_A = term_to_binary(KVL1A32, [{compressed, ?COMPRESSION_LEVEL}]),
+    Alt3SlotBinB_B = term_to_binary(KVL1B32, [{compressed, ?COMPRESSION_LEVEL}]),
+    Alt3SlotBinB_C = term_to_binary(KVL1C32, [{compressed, ?COMPRESSION_LEVEL}]),
+    Alt3SlotBinB_D = term_to_binary(KVL1D32, [{compressed, ?COMPRESSION_LEVEL}]),
+    SortedSlotList = lists:keysort(1, PosTLall),
+    PosBinList = build_hashtree_binary(SortedSlotList, 256, 0, []),
+    Alt4PosBin = list_to_binary(PosBinList),
+
+
+    Alt4Tester = {Alt3SlotBinB_A, Alt3SlotBinB_B, Alt3SlotBinB_C, Alt3SlotBinB_D},
+    io:format(user,
+                "Alt4-method created slot in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWE0)]),
+
+    alt4_test_slot(Alt4Tester, Alt4PosBin, TestK1, MH1, TestV1, "Alt4"),
+    alt4_test_slot(Alt4Tester, Alt4PosBin, TestK2, MH2, TestV2, "Alt4"),
+    alt4_test_slot(Alt4Tester, Alt4PosBin, TestK3, MH3, TestV3, "Alt4"),
+    alt4_test_slot(Alt4Tester, Alt4PosBin, TestK4, MH4, TestV4, "Alt4"),
+    alt4_test_slot(Alt4Tester, Alt4PosBin, TestK5, MH5, TestV5, "Alt4").
+
+
+alt4_test_slot(Alt4Tester, PosBin, Key, Hash, Value, M) ->
+    io:format("looking for key ~s ~s~n", [element(2, Key), element(3, Key)]),
+    SW = os:timestamp(),
+    Slot = Hash rem 256,
+    PosH = (Hash bsr 8) band 65535,
+    PosList = find_pos_byslot(PosBin, Slot, PosH, []),
+    io:format("PosList ~w~n", [PosList]),
+    FindKVFun = 
+        fun(Pos, Found) ->
+            case Found of
+                not_present ->
+                    Block = (Pos div 32) + 1,
+                    BlockPos = (Pos rem 32) + 1,
+                    io:format("Looking Block ~w position ~w~n", [Block, BlockPos]),
+                    CheckBlock = element(Block, Alt4Tester),
+                    {K, V} = lists:nth(BlockPos, binary_to_term(CheckBlock)),
+                    io:format("K of ~s ~s~n", [element(2, K), element(3, K)]),
+                    case K of
+                        Key ->
+                            {value, V};
+                        _ ->
+                            not_present
+                    end;
+                _ ->
+                    Found
+            end end,
+    {value, Value} = lists:foldl(FindKVFun, not_present, PosList),
+    io:format(user,
+                M ++ "-method found in slot in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SW)]).
+
+
+find_pos_byslot(PosBin, Slot, PosH, PosList) ->
+    Start = Slot * 3,
+    <<_LHS:Start/binary, Hash:16/integer, Pos:8/integer, _Rest/binary>> = PosBin,
+    case Hash of 
+        PosH ->
+            find_pos_byslot(PosBin, (Slot + 1) rem 256, PosH, [Pos|PosList]);
+        0 ->
+            PosList;
+        _ ->
+            find_pos_byslot(PosBin, (Slot + 1) rem 256, PosH, PosList)
+    end.
+
+
+
+build_hashtree_binary([], IdxLen, SlotPos, Bin) ->
+    case SlotPos of
+        IdxLen ->
+            lists:reverse(Bin);
+        N when N < IdxLen ->
+            ZeroLen = (IdxLen - N) * 24,
+            lists:reverse([<<0:ZeroLen>>|Bin])
+    end;
+build_hashtree_binary([{TopSlot, TopBin}|SlotMapTail], IdxLen, SlotPos, Bin) ->
+    case TopSlot of
+        N when N > SlotPos ->
+            D = N - SlotPos,
+            Bridge = lists:duplicate(D, <<0:24>>) ++ Bin,
+            UpdBin = [<<TopBin/binary>>|Bridge],
+            build_hashtree_binary(SlotMapTail,
+                                    IdxLen,
+                                    SlotPos + D + 1,
+                                    UpdBin);
+        N when N =< SlotPos, SlotPos < IdxLen ->
+            UpdBin = [<<TopBin/binary>>|Bin],
+            build_hashtree_binary(SlotMapTail,
+                                    IdxLen,
+                                    SlotPos + 1,
+                                    UpdBin);
+        N when N < SlotPos, SlotPos == IdxLen ->
+            % Need to wrap round and put in the first empty slot from the
+            % beginning
+            Pos = find_firstzero(Bin, length(Bin)),
+            {LHS, [<<0:24>>|RHS]} = lists:split(Pos - 1, Bin),
+            UpdBin = lists:append(LHS, [TopBin|RHS]),
+            build_hashtree_binary(SlotMapTail,
+                                    IdxLen,
+                                    SlotPos,
+                                    UpdBin)
+    end.
+
+% Search from the tail of the list to find the first zero
+find_firstzero(Bin, Pos) ->
+    case lists:nth(Pos, Bin) of
+        <<0:24>> ->
+            Pos;
+        _ ->
+            find_firstzero(Bin, Pos - 1)
+    end.
+
+
+
+
+alt2_test_not_slot(TesterList, Hash, Key, M) ->
+    SWB1 = os:timestamp(),
+    not_present = alt2_test_slot_int(TesterList, Hash, Key, not_present),
+    io:format(user,
+                M ++ "-method missed in slot in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWB1)]).
+
+
+alt2_test_slot(TesterList, Hash, Key, Value, M) ->
+    SWB1 = os:timestamp(),
+    {value, Value} = alt2_test_slot_int(TesterList, Hash, Key, not_present),
+    io:format(user,
+                M ++ "-method found in slot in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWB1)]).
+
+alt2_test_slot_int([], _Hash, _Key, Result) ->
+    Result;
+alt2_test_slot_int([{SlotBin, PosBin}|Rest], Hash, Key, not_present) ->
+    H2F = Hash band 65535,
+    PosL = posbin_finder(PosBin, H2F, [], 1),
+    case PosL of 
+        [] ->
+            alt2_test_slot_int(Rest, Hash, Key, not_present);
+        _ ->
+            Slot = binary_to_term(SlotBin),
+            FindFun =
+                fun(P, Acc) ->
+                    case Acc of 
+                        not_present ->
+                            case lists:nth(P, Slot) of
+                                {Key, V} ->
+                                    {value, V};
+                                _ ->
+                                    not_present
+                            end;
+                        _ ->
+                            Acc
+                    end end,
+            Out = lists:foldr(FindFun, not_present, PosL),
+            alt2_test_slot_int(Rest, Hash, Key, Out)
+    end;
+alt2_test_slot_int(_Testers, _Hash, _Key, Result) ->
+    Result.
+
+
+alt1_test_not_slot(SlotBin, PosBin, Hash, Key) ->
+    SWB1 = os:timestamp(),
+    not_present = alt1_test_slot_int(SlotBin, PosBin, Hash, Key),
+    io:format(user,
+                "Alt1-method missed in slot in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWB1)]).
+
+
+alt1_test_slot(SlotBin, PosBin, Hash, Key, Value) ->
+    SWB1 = os:timestamp(),
+    {value, Value} = alt1_test_slot_int(SlotBin, PosBin, Hash, Key),
+    io:format(user,
+                "Alt1-method found in slot in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWB1)]).
+
+alt1_test_slot_int(SlotBin, PosBin, Hash, Key) ->
+    Slot0 = binary_to_term(SlotBin),
+    % io:format(user,
+    %             "Alt-method fraction on b_to_t ~w microseconds~n",
+    %             [timer:now_diff(os:timestamp(), SWB1)]),
+
+    H2F = Hash band 65535,
+    PosL = posbin_finder(PosBin, H2F, [], 1),
+    FindFun =
+        fun(P, Acc) ->
+            case Acc of 
+                not_present ->
+                    case lists:nth(P, Slot0) of
+                        {Key, V} ->
+                            {value, V};
+                        _ ->
+                            not_present
+                    end;
+                _ ->
+                    Acc
+            end end,
+    lists:foldr(FindFun, not_present, PosL).
+    
+
+
+posbin_finder(<<>>, _Hash, FoundL, _PosC) ->
+    FoundL;
+posbin_finder(<<Hash:16/integer, Rest/binary>>, Hash, FoundL, PosC) ->
+    posbin_finder(Rest, Hash, [PosC|FoundL], PosC + 1);
+posbin_finder(<<_Hash:16/integer, Rest/binary>>, Hash, FoundL, PosC) ->
+    posbin_finder(Rest, Hash, FoundL, PosC + 1).
+
 
 
 test_slot(SlotBin, Key, Value) ->
     SWA1 = os:timestamp(),
     Slot0 = binary_to_term(SlotBin),
+    % io:format(user,
+    %             "Fraction on b_to_t ~w microseconds~n",
+    %             [timer:now_diff(os:timestamp(), SWA1)]),
     {value, Value} = gb_trees:lookup(Key, Slot0),
     io:format(user,
-                "Looked in slot in ~w microseconds~n",
+                "Found in slot in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWA1)]).
+
+test_not_slot(SlotBin, Key) ->
+    SWA1 = os:timestamp(),
+    Slot0 = binary_to_term(SlotBin),
+    % io:format(user,
+    %             "Fraction on b_to_t ~w microseconds~n",
+    %             [timer:now_diff(os:timestamp(), SWA1)]),
+    none = gb_trees:lookup(Key, Slot0),
+    io:format(user,
+                "Missed in slot in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SWA1)]).
     
 
