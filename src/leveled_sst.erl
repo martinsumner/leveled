@@ -981,6 +981,41 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
                         BRange).
 
 
+experimental_test() ->
+    io:format(user, "~nExperimental timing test:~n", []),
+    N = 128,
+    KVL1 = lists:ukeysort(1, generate_randomkeys(1, N, 1, 2)),
+    ExtractHashFun =
+        fun({K, V}) ->
+            {_SQN, H} = leveled_codec:strip_to_seqnhashonly({K, V}),
+            {{hash, H}, K} end,
+    HashList = lists:map(ExtractHashFun, KVL1),
+    
+    SWA0 = os:timestamp(),
+    Tree = gb_trees:from_orddict(KVL1),
+    BloomAddFun =
+        fun({H, K}, Bloom) -> leveled_tinybloom:tiny_enter(H, K, Bloom) end,
+    _Bloom = lists:foldr(BloomAddFun,
+                        leveled_tinybloom:tiny_empty(),
+                        HashList),
+    SlotBin = term_to_binary(Tree, [{compressed, ?COMPRESSION_LEVEL}]),
+    io:format(user,
+                "Created slot in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWA0)]),
+    
+    % {TestK1, TestV1} = lists:nth(16, KVL1),
+    {TestK2, TestV2} = lists:nth(64, KVL1),
+    % {TestK3, TestV3} = lists:nth(96, KVL1),
+    SWA1 = os:timestamp(),
+    Slot0 = binary_to_term(SlotBin),
+    {value, TestV2} = gb_trees:lookup(TestK2, Slot0),
+    io:format(user,
+                "Looked in slot in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWA1)]).
+    
+    
+    
+
 merge_test() ->
     N = 3000,
     KVL1 = lists:ukeysort(1, generate_randomkeys(N + 1, N, 1, 20)),
