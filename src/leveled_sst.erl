@@ -728,8 +728,8 @@ read_slot(Handle, Slot) ->
     end.
 
 read_slots(Handle, SlotList) ->
-    [{pointer, FirstSlot, _SK, _EK}|_Rest] = SlotList,
-    {pointer, LastSlot, _SK, _EK} = lists:last(SlotList),
+    [{pointer, FirstSlot, _SK1, _EK1}|_Rest] = SlotList,
+    {pointer, LastSlot, _SKL, _EKL} = lists:last(SlotList),
     StartPos = FirstSlot#slot_index_value.start_position,
     Length = LastSlot#slot_index_value.start_position
                 + LastSlot#slot_index_value.length
