@@ -19,10 +19,7 @@
 -export([
         enter/2,
         check/2,
-        empty/1,
-        tiny_enter/3,
-        tiny_check/3,
-        tiny_empty/0
+        empty/1
         ]).      
 
 
@@ -40,67 +37,45 @@ empty(Width) when Width =< 256 ->
 enter({hash, no_lookup}, Bloom) ->
     Bloom;
 enter({hash, Hash}, Bloom) ->
-    {H0, Bit1, Bit2} = split_hash(Hash),
-    Slot = H0 rem dict:size(Bloom),
+    {Slot0, Q, Bit1, Bit2, Bit3} = split_hash(Hash),
+    Slot = Slot0 rem dict:size(Bloom),
     BitArray0 = dict:fetch(Slot, Bloom),
+    {Pre, SplitArray0, Post} = split_array(BitArray0, Q),
     FoldFun =
-        fun(K, Arr) -> add_to_array(K, Arr, 4096) end,
-    BitArray1 = lists:foldl(FoldFun,
-                                BitArray0,
-                                lists:usort([Bit1, Bit2])),
-    dict:store(Slot, BitArray1, Bloom);
+        fun(Bit, Arr) -> add_to_array(Bit, Arr, 1024) end,
+    SplitArray1 = lists:foldl(FoldFun,
+                                SplitArray0,
+                                lists:usort([Bit1, Bit2, Bit3])),
+    dict:store(Slot, <<Pre/binary, SplitArray1/binary, Post/binary>>, Bloom);
 enter(Key, Bloom) ->
     Hash = leveled_codec:magic_hash(Key),
     enter({hash, Hash}, Bloom).
 
 check({hash, Hash}, Bloom) ->
-    {H0, Bit1, Bit2} = split_hash(Hash),
-    Slot = H0 rem dict:size(Bloom),
+    {Slot0, Q, Bit1, Bit2, Bit3} = split_hash(Hash),
+    Slot = Slot0 rem dict:size(Bloom),
     BitArray = dict:fetch(Slot, Bloom),
-    case getbit(Bit1, BitArray, 4096) of
+    {_Pre, SplitArray, _Post} = split_array(BitArray, Q),
+    
+    case getbit(Bit1, SplitArray, 1024) of
         <<0:1>> ->
             false;
         <<1:1>> ->
-            case getbit(Bit2, BitArray, 4096) of
+            case getbit(Bit2, SplitArray, 1024) of
                 <<0:1>> ->
                     false;
                 <<1:1>> ->
-                    true
-            end
-    end;
-check(Key, Bloom) ->
-    Hash = leveled_codec:magic_hash(Key),
-    check({hash, Hash}, Bloom).
-
-tiny_empty() ->
-    <<0:1024>>.
-
-tiny_enter({hash, no_lookup}, _Key, Bloom) ->
-    Bloom;
-tiny_enter({hash, Hash}, Key, Bloom) ->
-    {Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash, Key),
-    AddFun = fun(Bit, Arr0) -> add_to_array(Bit, Arr0, 1024) end,
-    lists:foldl(AddFun, Bloom, [Bit0, Bit1, Bit2]).
-
-
-tiny_check({hash, Hash}, Key, Bloom) ->
-    {Bit0, Bit1, Bit2} = split_hash_for_tinybloom(Hash, Key),
-    case getbit(Bit0, Bloom, 1024) of
-        <<0:1>> ->
-            false;
-        <<1:1>> ->
-            case getbit(Bit1, Bloom, 1024) of
-                <<0:1>> ->
-                    false;
-                <<1:1>> ->
-                    case getbit(Bit2, Bloom, 1024) of
+                    case getbit(Bit3, SplitArray, 1024) of
                         <<0:1>> ->
                             false;
                         <<1:1>> ->
                             true
                     end
             end
-    end.
+    end;
+check(Key, Bloom) ->
+    Hash = leveled_codec:magic_hash(Key),
+    check({hash, Hash}, Bloom).
 
 
 %%%============================================================================
@@ -108,18 +83,32 @@ tiny_check({hash, Hash}, Key, Bloom) ->
 %%%============================================================================
 
 split_hash(Hash) ->
-    H0 = Hash band 255,
-    H1 = (Hash bsr 8) band 4095,
-    H2 = Hash bsr 20,
-    {H0, H1, H2}.
+    SlotH1 = Hash band 255,
+    SlotH2 = (Hash bsr 8) band 255,
+    SlotH3 = (Hash bsr 16) band 255,
+    SlotH4 = (Hash bsr 24) band 255,
+    Slot = (SlotH1 bxor SlotH2) bxor (SlotH3 bxor SlotH4),
+    Q1 = Hash band 3,
+    H1 = (Hash bsr 2) band 1023,
+    H2 = (Hash bsr 12) band 1023,
+    H3 = (Hash bsr 22) band 1023,
+    {Slot, Q1, H1, H2, H3}.
 
-split_hash_for_tinybloom(MagicHash, Key) ->
-    % Tiny bloom can make k=3 from one hash
-    Hash = MagicHash bxor erlang:phash2(Key),
-    H0 = Hash band 1023,
-    H1 = (Hash bsr 11) band 1023,
-    H2 = (Hash bsr 22) band 1023,
-    {H0, H1, H2}.
+split_array(Bin, Q) ->
+    case Q of
+        0 ->
+            <<ToUse:128/binary, Post/binary>> = Bin,
+            {<<>>, ToUse, Post};
+        1 ->
+            <<Pre:128/binary, ToUse:128/binary, Post/binary>> = Bin,
+            {Pre, ToUse, Post};
+        2 ->
+            <<Pre:256/binary, ToUse:128/binary, Post/binary>> = Bin,
+            {Pre, ToUse, Post};
+        3 ->
+            <<Pre:384/binary, ToUse:128/binary>> = Bin,
+            {Pre, ToUse, <<>>}
+    end.
 
 add_to_array(Bit, BitArray, ArrayLength) ->
     RestLen = ArrayLength - Bit - 1,
@@ -194,57 +183,6 @@ simple_test() ->
                 [N, timer:now_diff(os:timestamp(), SW3), FP / N]),
     ?assertMatch(true, FP < (N div 4)).
 
-tiny_test() ->
-    N = 128,
-    K = 64, % more checks out than in K * checks
-    KLin = lists:map(fun(X) -> "Key_" ++
-                                integer_to_list(X) ++
-                                integer_to_list(random:uniform(100)) ++
-                                binary_to_list(crypto:rand_bytes(2))
-                                end,
-                        lists:seq(1, N)),
-    KLout = lists:map(fun(X) ->
-                            "NotKey_" ++
-                            integer_to_list(X) ++
-                            integer_to_list(random:uniform(100)) ++
-                            binary_to_list(crypto:rand_bytes(2))
-                            end,
-                        lists:seq(1, N * K)),
-    
-    HashIn = lists:map(fun(X) ->
-                            {{hash, leveled_codec:magic_hash(X)}, X} end,
-                            KLin),
-    HashOut = lists:map(fun(X) ->
-                            {{hash, leveled_codec:magic_hash(X)}, X} end,
-                            KLout),
-       
-    SW1 = os:timestamp(),
-    Bloom = lists:foldr(fun({H0, K0}, B) -> tiny_enter(H0, K0, B) end,
-                        tiny_empty(),
-                        HashIn),
-    io:format(user,
-                "~nAdding ~w hashes to tiny bloom took ~w microseconds~n",
-                [N, timer:now_diff(os:timestamp(), SW1)]),
-    
-    SW2 = os:timestamp(),
-    lists:foreach(fun({H1, K1}) ->
-                    ?assertMatch(true, tiny_check(H1, K1, Bloom)) end, HashIn),
-    io:format(user,
-                "~nChecking ~w hashes in tiny bloom took ~w microseconds~n",
-                [N, timer:now_diff(os:timestamp(), SW2)]),
-    
-    SW3 = os:timestamp(),
-    FP = lists:foldr(fun({H3, K3}, Acc) -> case tiny_check(H3, K3, Bloom) of
-                                        true -> Acc + 1;
-                                        false -> Acc
-                                    end end,
-                        0,
-                        HashOut),
-    io:format(user,
-                "~nChecking ~w hashes out of tiny bloom took ~w microseconds "
-                    ++ "with ~w false positive rate~n",
-                [N * K, timer:now_diff(os:timestamp(), SW3), FP / (N * K)]),
-    ?assertMatch(true, FP < ((N * K) div 8)).
 
 
 -endif.
