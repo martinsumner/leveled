@@ -51,6 +51,7 @@ enter(Key, Bloom) ->
     Hash = leveled_codec:magic_hash(Key),
     enter({hash, Hash}, Bloom).
 
+
 check({hash, Hash}, Bloom) ->
     {Slot0, Q, Bit1, Bit2, Bit3} = split_hash(Hash),
     Slot = Slot0 rem dict:size(Bloom),
@@ -83,16 +84,23 @@ check(Key, Bloom) ->
 %%%============================================================================
 
 split_hash(Hash) ->
+    Slot = split_for_slot(Hash),
+    {Q1, H1, H2, H3} = split_for_bits(Hash),
+    {Slot, Q1, H1, H2, H3}.
+
+split_for_slot(Hash) ->
     SlotH1 = Hash band 255,
     SlotH2 = (Hash bsr 8) band 255,
     SlotH3 = (Hash bsr 16) band 255,
     SlotH4 = (Hash bsr 24) band 255,
-    Slot = (SlotH1 bxor SlotH2) bxor (SlotH3 bxor SlotH4),
+    (SlotH1 bxor SlotH2) bxor (SlotH3 bxor SlotH4).
+
+split_for_bits(Hash) ->
     Q1 = Hash band 3,
     H1 = (Hash bsr 2) band 1023,
     H2 = (Hash bsr 12) band 1023,
     H3 = (Hash bsr 22) band 1023,
-    {Slot, Q1, H1, H2, H3}.
+    {Q1, H1, H2, H3}.
 
 split_array(Bin, Q) ->
     case Q of
@@ -113,9 +121,14 @@ split_array(Bin, Q) ->
 add_to_array(Bit, BitArray, ArrayLength) ->
     RestLen = ArrayLength - Bit - 1,
     <<Head:Bit/bitstring,
-        _B:1/bitstring,
+        B:1/integer,
         Rest:RestLen/bitstring>> = BitArray,
-    <<Head/bitstring, 1:1, Rest/bitstring>>.
+    case B of
+        0 ->
+            <<Head/bitstring, 1:1, Rest/bitstring>>;
+        1 ->
+            BitArray
+    end.
 
 getbit(Bit, BitArray, ArrayLength) ->
     RestLen = ArrayLength - Bit - 1,
