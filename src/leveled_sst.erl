@@ -8,49 +8,58 @@
 %% -------- Slots ---------
 %%
 %% The view is built from sublists referred to as slot.  Each slot is up to 128
-%% keys and values in size.  The slots are each themselves a gb_tree.  The
-%% gb_tree is slightly slower than the skiplist at fetch time, and doesn't
-%% support directly the useful to_range function.  However the from_orddict
-%% capability is much faster than from_sortedlist in skiplist, saving on CPU
-%% at sst build time:
+%% keys and values in size.  Three strategis have been benchmarked for the 
+%% slot: a skiplist, a gb-tree, four blocks of flat lists with an index. 
 %%
 %% Skiplist:
-%% build and serialise slot 3233 microseconds
+%% build and serialise slot - 3233 microseconds
 %% de-serialise and check * 128 - 14669 microseconds
 %% flatten back to list - 164 microseconds
 %%
 %% GBTree:
-%% build and serialise tree 1433 microseconds
+%% build and serialise tree - 1433 microseconds
 %% de-serialise and check * 128 - 15263 microseconds
 %% flatten back to list - 175 microseconds
 %%
-%% The performance advantage at lookup time is no negligible as the time to
-%% de-deserialise for each check is dominant.  This time grows linearly with
-%% the size of the slot, wherease the serialisation time is relatively constant
-%% with growth.  So bigger slots would be quicker to build, but the penalty for
-%% that speed is too high at lookup time.
+%% Indexed Blocks:
+%% build and serialise slot 342 microseconds
+%% de-deriaise and check * 128 - 6746 microseconds
+%% flatten back to list - 187 microseconds
+%%
+%% The negative side of using Indexed Blocks is the storage of the index.  In 
+%% the original implementation this was stored on fadvised disk (the index in 
+%% this case was a rice-encoded view of which block the object is in).  In this
+%% implementation it is cached in memory -requiring 2-bytes per key to be kept
+%% in memory.
 %%
 %% -------- Blooms ---------
 %%
-%% There are two different tiny blooms for each table.  One is split by the
+%% There is a summary bloom for the table.  the summary bloom is split by the
 %% first byte of the hash, and consists of two hashes (derived from the
-%% remainder of the hash).  This is the top bloom, and the size vaires by
+%% remainder of the hash).  This is the top bloom, and the size varies by
 %% level.
 %% Level 0 has 8 bits per key - 0.05 fpr
 %% Level 1 has 6 bits per key - 0.08 fpr
 %% Other Levels have 4 bits per key - 0.15 fpr
 %%
-%% If this level is passed, then each slot has its own bloom based on the
-%% same hash, but now split into three hashes and having a fixed 8 bit per
-%% key size at all levels.
-%% Slot Bloom has 8 bits per key - 0.03 fpr
+%% With the indexed block implementation of the slot a second slot-level bloom 
+%% is unnecessary (as the index itself yields a 0.003 % fpr).
 %%
-%% All blooms are based on the DJ Bernstein magic hash which proved to give
-%% the predicted fpr in tests (unlike phash2 which has significantly higher
-%% fpr).  Due to the cost of producing the magic hash, it is read from the
-%% value not reproduced each time. If the value is set to no_lookup no bloom
-%% entry is added, and if all hashes are no_lookup in the slot then no bloom
-%% is produced.
+%% -------- Summary ---------
+%%
+%% Each file has a summary - which is the 128 keys at the top of each slot in 
+%% a skiplist, with some basic metadata about the slot stored as the value.
+%%
+%% The summary is stored seperately to the slots (wihtin the same file).
+%%
+%% -------- CRC Checks ---------
+%%
+%% Every attempt to either read a summary or a slot off disk will also include 
+%% a CRC check.  If the CRC check fails non-presence is assumed (the data 
+%% within is assumed to be entirely lost).  The data can be recovered by either
+%% using a recoverable strategy in transaction log compaction, and triggering
+%% the transaction log replay; or by using a higher level for of anti-entropy
+%% (i.e. make Riak responsible).
 
 
 -module(leveled_sst).
@@ -60,8 +69,9 @@
 -include("include/leveled.hrl").
 
 -define(MAX_SLOTS, 256).
--define(SLOT_SIZE, 128).
+-define(SLOT_SIZE, 128). % This is not configurable
 -define(COMPRESSION_LEVEL, 1).
+-define(BINARY_SETTINGS, [{compressed, ?COMPRESSION_LEVEL}]).
 -define(LEVEL_BLOOM_SLOTS, [{0, 64}, {1, 48}, {default, 32}]).
 -define(MERGE_SCANWIDTH, 16).
 -define(DISCARD_EXT, ".discarded").
@@ -100,16 +110,15 @@
 
 
 -record(slot_index_value, {slot_id :: integer(),
-                            bloom,
                             start_position :: integer(),
                             length :: integer()}).
 
 -record(summary,    {first_key :: tuple(),
                         last_key :: tuple(),
                         index :: list(), % leveled_skiplist
-                        bloom :: tuple(), % leveled_tinybloom
                         size :: integer(),
-                        max_sqn :: integer()}).
+                        max_sqn :: integer(),
+                        bloom}).
 
 -record(state,      {summary,
                         handle :: file:fd(),
@@ -117,7 +126,8 @@
                         slot_lengths :: list(),
                         penciller :: pid(),
                         filename,
-                        cache}).
+                        lastfetch_cache,
+                        blockindex_cache}).
 
 
 %%%============================================================================
@@ -230,12 +240,17 @@ starting({sst_open, Filename}, _From, State) ->
         UpdState};
 starting({sst_new, Filename, Level, KVList, MaxSQN}, _From, State) ->
     SW = os:timestamp(),
-    {FirstKey, L, SlotIndex, AllHashes, SlotsBin} = build_all_slots(KVList),
+    {FirstKey, 
+        Length, 
+        SlotIndex, 
+        AllHashes, 
+        BlockIndex, 
+        SlotsBin} = build_all_slots(KVList),
     SummaryBin = build_table_summary(SlotIndex,
                                         AllHashes,
                                         Level,
                                         FirstKey,
-                                        L,
+                                        Length,
                                         MaxSQN),
     ActualFilename = write_file(Filename, SummaryBin, SlotsBin),
     UpdState = read_file(ActualFilename, State),
@@ -246,18 +261,23 @@ starting({sst_new, Filename, Level, KVList, MaxSQN}, _From, State) ->
     {reply,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}},
         reader,
-        UpdState}.
+        UpdState#state{blockindex_cache = BlockIndex}}.
 
 starting({sst_newlevelzero, Filename, Slots, FetchFun, Penciller, MaxSQN},
                                                                     State) ->
     SW = os:timestamp(),
     KVList = leveled_pmem:to_list(Slots, FetchFun),
-    {FirstKey, L, SlotIndex, AllHashes, SlotsBin} = build_all_slots(KVList),
+    {FirstKey, 
+        Length, 
+        SlotIndex, 
+        AllHashes, 
+        BlockIndex, 
+        SlotsBin} = build_all_slots(KVList),
     SummaryBin = build_table_summary(SlotIndex,
                                         AllHashes,
                                         0,
                                         FirstKey,
-                                        L,
+                                        Length,
                                         MaxSQN),
     ActualFilename = write_file(Filename, SummaryBin, SlotsBin),
     UpdState = read_file(ActualFilename, State),
@@ -267,32 +287,29 @@ starting({sst_newlevelzero, Filename, Slots, FetchFun, Penciller, MaxSQN},
                             SW),
     case Penciller of
         undefined ->
-            {next_state, reader, UpdState};
+            {next_state, reader, UpdState#state{blockindex_cache = BlockIndex}};
         _ ->
             leveled_penciller:pcl_confirml0complete(Penciller,
                                                     UpdState#state.filename,
                                                     Summary#summary.first_key,
                                                     Summary#summary.last_key),
-            {next_state, reader, UpdState}
+            {next_state, reader, UpdState#state{blockindex_cache = BlockIndex}}
     end.
 
 
 reader({get_kv, LedgerKey, Hash}, _From, State) ->
     SW = os:timestamp(),
-    {Result, Stage, SlotID} = fetch(LedgerKey, Hash, State),
+    {Result, Stage, SlotID, UpdState} = fetch(LedgerKey, Hash, State),
     UpdTimings = leveled_log:sst_timing(State#state.sst_timings, SW, Stage),
     case {Result, Stage} of
-        {not_present, slot_crc_wonky} ->
-            leveled_log:log("SST02", [State#state.filename, SlotID]),
-            {reply, Result, reader, State#state{sst_timings = UpdTimings}};
         {not_present, _} ->
-            {reply, Result, reader, State#state{sst_timings = UpdTimings}};
+            {reply, Result, reader, UpdState#state{sst_timings = UpdTimings}};
         {KV, slot_lookup_hit} ->
-            UpdCache = array:set(SlotID, KV, State#state.cache),
-            {reply, Result, reader, State#state{cache = UpdCache,
-                                                sst_timings = UpdTimings}};
+            UpdCache = array:set(SlotID - 1, KV, State#state.lastfetch_cache),
+            {reply, Result, reader, UpdState#state{lastfetch_cache = UpdCache,
+                                                    sst_timings = UpdTimings}};
         _ ->
-            {reply, Result, reader, State#state{sst_timings = UpdTimings}}
+            {reply, Result, reader, UpdState#state{sst_timings = UpdTimings}}
     end;
 reader({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
     {reply,
@@ -301,10 +318,11 @@ reader({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
         State};
 reader({get_slots, SlotList}, _From, State) ->
     SlotBins = read_slots(State#state.handle, SlotList),
-    FoldFun =
+    FetchFun =
         fun({SlotBin, SK, EK}, Acc) ->
-            Acc ++ trim_slot(SlotBin, SK, EK) end,
-    {reply, lists:foldl(FoldFun, [], SlotBins), reader, State};
+            Acc ++ binaryslot_trimmedlist(SlotBin, SK, EK)
+        end,
+    {reply, lists:foldl(FetchFun, [], SlotBins), reader, State};
 reader(get_maxsequencenumber, _From, State) ->
     Summary = State#state.summary,
     {reply, Summary#summary.max_sqn, reader, State};
@@ -333,16 +351,13 @@ reader(close, _From, State) ->
 
 
 delete_pending({get_kv, LedgerKey, Hash}, _From, State) ->
-    {Result, Stage, SlotID} = fetch(LedgerKey, Hash, State),
+    {Result, Stage, SlotID, UpdState} = fetch(LedgerKey, Hash, State),
     case {Result, Stage} of
-        {not_present, slot_crc_wonky} ->
-            leveled_log:log("SST02", [State#state.filename, SlotID]),
-            {reply, Result, delete_pending, State, ?DELETE_TIMEOUT};
         {not_present, _} ->
             {reply, Result, delete_pending, State, ?DELETE_TIMEOUT};
         {KV, slot_lookup_hit} ->
-            UpdCache = array:set(SlotID, KV, State#state.cache),
-            UpdState = State#state{cache = UpdCache},
+            UpdCache = array:set(SlotID - 1, KV, State#state.lastfetch_cache),
+            UpdState = State#state{lastfetch_cache = UpdCache},
             {reply, Result, delete_pending, UpdState, ?DELETE_TIMEOUT};
         _ ->
             {reply, Result, delete_pending, State, ?DELETE_TIMEOUT}
@@ -355,11 +370,12 @@ delete_pending({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
         ?DELETE_TIMEOUT};
 delete_pending({get_slots, SlotList}, _From, State) ->
     SlotBins = read_slots(State#state.handle, SlotList),
-    FoldFun =
+    FetchFun =
         fun({SlotBin, SK, EK}, Acc) ->
-            Acc ++ trim_slot(SlotBin, SK, EK) end,
-    {reply,
-        lists:foldl(FoldFun, [], SlotBins),
+            Acc ++ binaryslot_trimmedlist(SlotBin, SK, EK)
+        end,
+    {reply, 
+        lists:foldl(FetchFun, [], SlotBins),
         delete_pending,
         State,
         ?DELETE_TIMEOUT};
@@ -404,41 +420,59 @@ fetch(LedgerKey, Hash, State) ->
     case leveled_tinybloom:check({hash, Hash},
                                     Summary#summary.bloom) of
         false ->
-            {not_present, summary_bloom, null};
+            {not_present, summary_bloom, null, State};
         true ->
             Slot = lookup_slot(LedgerKey, Summary#summary.index),
-            SlotBloom = Slot#slot_index_value.bloom,
-            case is_check_slot_required({hash, Hash}, LedgerKey, SlotBloom) of
-                false ->
-                    {not_present, slot_bloom, null};
-                true ->
-                    CacheEntry = array:get(Slot#slot_index_value.slot_id,
-                                    State#state.cache),
-                    case CacheEntry of
-                        {LedgerKey, CachedValue} ->
-                            {{LedgerKey, CachedValue}, cache_entry, null};
+            SlotID = Slot#slot_index_value.slot_id,
+            CachedBlockIdx = array:get(SlotID - 1, 
+                                        State#state.blockindex_cache),
+            case CachedBlockIdx of 
+                none ->
+                    SlotBin = read_slot(State#state.handle, Slot),
+                    {Result, BlockIdx} = binaryslot_get(SlotBin, 
+                                                        LedgerKey, 
+                                                        Hash, 
+                                                        none),
+                    BlockIndexCache = array:set(SlotID - 1, 
+                                                BlockIdx,
+                                                State#state.blockindex_cache),
+                    {Result, 
+                        slot_fetch, 
+                        Slot#slot_index_value.slot_id,
+                        State#state{blockindex_cache = BlockIndexCache}};
+                _ ->
+                    PosList = find_pos(CachedBlockIdx, 
+                                        double_hash(Hash, LedgerKey), 
+                                        [], 
+                                        0),
+                    case PosList of 
+                        [] ->
+                            {not_present,
+                                slot_bloom, 
+                                SlotID,
+                                State};
                         _ ->
-                            SlotLook = lookup_in_slot(LedgerKey,
-                                                        {pointer,
-                                                            State#state.handle,
-                                                            Slot}),
-                            case SlotLook of
-                                crc_wonky ->
-                                    {not_present,
-                                        slot_crc_wonky,
-                                        Slot#slot_index_value.slot_id};    
-                                none ->
-                                    {not_present,
-                                        slot_lookup_miss,
-                                        null};
-                                {value, V} ->
-                                    {{LedgerKey, V},
-                                        slot_lookup_hit,
-                                        Slot#slot_index_value.slot_id}
+                            LastKV = array:get(SlotID - 1,
+                                                State#state.lastfetch_cache),
+                            case LastKV of 
+                                {LedgerKey, _} ->
+                                    {LastKV, slot_cache, SlotID, State};
+                                _ ->
+                                    SlotBin = read_slot(State#state.handle, 
+                                                        Slot),
+                                    Result = binaryslot_get(SlotBin, 
+                                                            LedgerKey, 
+                                                            Hash, 
+                                                            {true, PosList}),
+                                    {element(1, Result), 
+                                        slot_fetch,
+                                        SlotID,
+                                        State}
                             end
-                    end
+                    end 
             end
     end.
+
 
 fetch_range(StartKey, EndKey, ScanWidth, State) ->
     Summary = State#state.summary,
@@ -505,10 +539,14 @@ fetch_range(StartKey, EndKey, ScanWidth, State) ->
             _ ->
                 lists:split(ScanWidth, ExpandedSlots)
         end,
+
+    SlotsToFetchBinList = read_slots(Handle, SlotsToFetch),
+
     FetchFun =
-        fun({pointer, _Self, S, SK, EK}, Acc) ->
-            Acc ++ trim_slot({pointer, Handle, S}, SK, EK) end,
-    lists:foldl(FetchFun, [], SlotsToFetch) ++ SlotsToPoint.
+        fun({SlotBin, SK, EK}, Acc) ->
+            Acc ++ binaryslot_trimmedlist(SlotBin, SK, EK)
+        end,
+    lists:foldl(FetchFun, [], SlotsToFetchBinList) ++ SlotsToPoint.
 
 
 write_file(Filename, SummaryBin, SlotsBin) ->
@@ -544,17 +582,29 @@ read_file(Filename, State) ->
         end,
     SlotLengths = lists:foldr(SlotLengthFetchFun, [], Summary#summary.index),
     SlotCount = length(SlotLengths),
+    UpdState = 
+        case State#state.blockindex_cache of 
+            undefined ->
+                BlockIndexCache = array:new([{size, SlotCount}, 
+                                                {default, none}]),
+                LastFetchCache = array:new([{size, SlotCount}]),
+                State#state{blockindex_cache = BlockIndexCache,
+                                lastfetch_cache = LastFetchCache};
+            _ ->
+                LastFetchCache = array:new([{size, SlotCount}]),
+                State#state{lastfetch_cache = LastFetchCache}
+        end,
+
     SkipL = leveled_skiplist:from_sortedlist(Summary#summary.index),
     UpdSummary = Summary#summary{index = SkipL},
     leveled_log:log("SST03", [Filename,
                                 Summary#summary.size,
                                 SlotCount,
                                 Summary#summary.max_sqn]),
-    State#state{summary = UpdSummary,
+    UpdState#state{summary = UpdSummary,
                 slot_lengths = SlotLengths,
                 handle = Handle,
-                filename = Filename,
-                cache = array:new({size, SlotCount + 1})}.
+                filename = Filename}.
 
 open_reader(Filename) ->
     {ok, Handle} = file:open(Filename, [binary, raw, read]),
@@ -583,7 +633,7 @@ build_table_summary(SlotIndex, AllHashes, Level, FirstKey, L, MaxSQN) ->
                         index = lists:reverse(SlotIndex),
                         bloom = Bloom,
                         max_sqn = MaxSQN},
-    SummBin = term_to_binary(Summary, [{compressed, ?COMPRESSION_LEVEL}]),
+    SummBin = term_to_binary(Summary, ?BINARY_SETTINGS),
     SummCRC = erlang:crc32(SummBin),
     <<SummCRC:32/integer, SummBin/binary>>.
 
@@ -602,68 +652,44 @@ build_all_slots(KVList) ->
     % but otherwise length must be called each iteration to avoid exception
     % on split or sublist
     [{FirstKey, _FirstV}|_Rest] = KVList,
-    SlotCount = L div ?SLOT_SIZE,
-    {SlotIndex, AllHashes, SlotsBin} = build_all_slots(KVList,
-                                                        SlotCount,
-                                                        8,
-                                                        [],
-                                                        1,
-                                                        [],
-                                                        <<>>),
-    {FirstKey, L, SlotIndex, AllHashes, SlotsBin}.
+    SlotCount = L div ?SLOT_SIZE + 1,
+    BuildResponse = build_all_slots(KVList,
+                                    SlotCount,
+                                    8,
+                                    [],
+                                    1,
+                                    [],
+                                    array:new([{size, SlotCount}, 
+                                                {default, none}]),
+                                    <<>>),
+    {SlotIndex, AllHashes, BlockIndex, SlotsBin} = BuildResponse,
+    {FirstKey, L, SlotIndex, AllHashes, BlockIndex, SlotsBin}.
 
-build_all_slots([], _Count, _Start, AllHashes, _SlotID, SlotIndex, SlotsBin) ->
-    {SlotIndex, AllHashes, SlotsBin};
-build_all_slots(KVL, Count, Start, AllHashes, SlotID, SlotIndex, SlotsBin) ->
+build_all_slots([], _SC, _Pos, Hashes, _SlotID, SlotIdx, BlockIdxA, SlotsBin) ->
+    {SlotIdx, Hashes, BlockIdxA, SlotsBin};
+build_all_slots(KVL, SC, Pos, Hashes, SlotID, SlotIdx, BlockIdxA, SlotsBin) ->
     {SlotList, KVRem} =
-        case Count of
-            0 ->
+        case SC of
+            1 ->
                 {lists:sublist(KVL, ?SLOT_SIZE), []};
             _N ->
                 lists:split(?SLOT_SIZE, KVL)
         end,
     {LastKey, _V} = lists:last(SlotList),
-    ExtractHashFun =
-        fun({K, V}, Acc) ->
-            {_SQN, H} = leveled_codec:strip_to_seqnhashonly({K, V}),
-            case H of
-                no_lookup ->
-                    Acc;
-                H ->
-                    [{{hash, H}, K}|Acc]
-            end
-            end,
-    HashList = lists:foldr(ExtractHashFun, [], SlotList),
-    {SlotBin, Bloom} = build_slot(SlotList, HashList),
-    SlotCRC = erlang:crc32(SlotBin),
-    Length = byte_size(SlotBin) + 4,
+    {HashList, BlockIndex, SlotBin} = generate_binary_slot(SlotList),
+    Length = byte_size(SlotBin),
     SlotIndexV = #slot_index_value{slot_id = SlotID,
-                                    bloom = Bloom,
-                                    start_position = Start,
+                                    start_position = Pos,
                                     length = Length},
     build_all_slots(KVRem,
-                    Count - 1,
-                    Start + Length,
-                    HashList ++ AllHashes,
+                    SC - 1,
+                    Pos + Length,
+                    HashList ++ Hashes,
                     SlotID + 1,
-                    [{LastKey, SlotIndexV}|SlotIndex],
-                    <<SlotsBin/binary, SlotCRC:32/integer, SlotBin/binary>>).
+                    [{LastKey, SlotIndexV}|SlotIdx],
+                    array:set(SlotID - 1, BlockIndex, BlockIdxA),
+                    <<SlotsBin/binary, SlotBin/binary>>).
 
-
-build_slot(KVList, HashList) ->
-    Tree = gb_trees:from_orddict(KVList),
-    BloomAddFun =
-        fun({H, K}, Bloom) -> leveled_tinybloom:tiny_enter(H, K, Bloom) end,
-    Bloom = lists:foldr(BloomAddFun,
-                        leveled_tinybloom:tiny_empty(),
-                        HashList),
-    SlotBin = term_to_binary(Tree, [{compressed, ?COMPRESSION_LEVEL}]),
-    {SlotBin, Bloom}.
-
-is_check_slot_required(_Hash, _Key, none) ->
-    true;
-is_check_slot_required(Hash, Key, Bloom) ->
-    leveled_tinybloom:tiny_check(Hash, Key, Bloom).
 
 %% Returns a section from the summary index and two booleans to indicate if
 %% the first slot needs trimming, or the last slot
@@ -708,102 +734,45 @@ lookup_slot(Key, SkipList) ->
     {_Mark, Slot} = leveled_skiplist:key_above(SkipList, Key),
     Slot.
 
-lookup_in_slot(Key, {pointer, Handle, Slot}) ->
-    SlotBin = read_slot(Handle, Slot),
-    case SlotBin of
-        crc_wonky ->
-            crc_wonky;
-        _ ->
-            lookup_in_slot(Key, SlotBin)
-    end;
-lookup_in_slot(Key, SlotBin) ->
-    Tree = binary_to_term(SlotBin),
-    gb_trees:lookup(Key, Tree).
-
 read_slot(Handle, Slot) ->
     {ok, SlotBin} = file:pread(Handle,
                                 Slot#slot_index_value.start_position,
                                 Slot#slot_index_value.length),
-    <<SlotCRC:32/integer, SlotNoCRC/binary>> = SlotBin,
-    case erlang:crc32(SlotNoCRC) of
-        SlotCRC ->
-            SlotNoCRC;
-        _ ->
-            crc_wonky
-    end.
+    SlotBin.
 
 read_slots(Handle, SlotList) ->
-    [{pointer, FirstSlot, _SK1, _EK1}|_Rest] = SlotList,
-    {pointer, LastSlot, _SKL, _EKL} = lists:last(SlotList),
-    StartPos = FirstSlot#slot_index_value.start_position,
-    Length = LastSlot#slot_index_value.start_position
-                + LastSlot#slot_index_value.length
-                - StartPos,
-    {ok, MultiSlotBin} = file:pread(Handle, StartPos, Length),
-    read_off_binary(MultiSlotBin, SlotList, []).
+    PointerMapFun =
+        fun(Pointer) ->
+            {Slot, SK, EK} = 
+                case Pointer of 
+                    {pointer, _Pid, Slot0, SK0, EK0} ->
+                        {Slot0, SK0, EK0};
+                    {pointer, Slot0, SK0, EK0} ->
+                        {Slot0, SK0, EK0}
+                end,
 
-read_off_binary(<<>>, [], SplitBins) ->
-    SplitBins;
-read_off_binary(MultiSlotBin, [TopSlot|Rest], SplitBins) ->
-    {pointer, Slot, SK, EK} = TopSlot,
-    Length = Slot#slot_index_value.length - 4,
-    <<SlotCRC:32/integer,
-        SlotBin:Length/binary,
-        RestBin/binary>> = MultiSlotBin,
-    case erlang:crc32(SlotBin) of
-        SlotCRC ->
-            read_off_binary(RestBin,
-                            Rest,
-                            SplitBins ++ [{SlotBin, SK, EK}]);
-        _ ->
-            read_off_binary(RestBin,
-                            Rest,
-                            SplitBins ++ [])
-    end.
-
-
-trim_slot({pointer, Handle, Slot}, all, all) ->
-    case read_slot(Handle, Slot) of
-        crc_wonky ->
-            [];
-        SlotBin ->
-            trim_slot(SlotBin, all, all)
-    end;
-trim_slot(SlotBinary, all, all) ->
-    Tree = binary_to_term(SlotBinary),
-    gb_trees:to_list(Tree);
-trim_slot({pointer, Handle, Slot}, StartKey, EndKey) ->
-    case read_slot(Handle, Slot) of
-        crc_wonky ->
-            [];
-        SlotBin ->
-            trim_slot(SlotBin, StartKey, EndKey)
-    end;
-trim_slot(SlotBinary, StartKey, EndKey) ->
-    Tree = binary_to_term(SlotBinary),
-    L = gb_trees:to_list(Tree),
-    LTrimFun = fun({K, _V}) ->
-                        K < StartKey end,
-    RTrimFun = fun({K, _V}) -> 
-                        not leveled_codec:endkey_passed(EndKey, K) end,
-    LTrimL =
-        case StartKey of
-            all ->
-                L;
-            _ ->
-                {_LDrop, RKeep} = lists:splitwith(LTrimFun, L),
-                RKeep
+            {Slot#slot_index_value.start_position, 
+                Slot#slot_index_value.length,
+                SK, 
+                EK}
         end,
-    RTrimL =
-        case EndKey of
-            all ->
-                LTrimL;
-            _ ->
-                {LKeep, _RDrop} = lists:splitwith(RTrimFun, LTrimL),
-                LKeep
-        end,
-    RTrimL.
+    
+    LengthList = lists:map(PointerMapFun, SlotList),
+    StartPos = element(1, lists:nth(1, LengthList)),
+    EndPos = element(1, lists:last(LengthList)) 
+                + element(2, lists:last(LengthList)),
+    {ok, MultiSlotBin} = file:pread(Handle, StartPos, EndPos - StartPos),
 
+    BinSplitMapFun = 
+        fun({SP, L, SK, EK}) -> 
+                    Start = SP - StartPos,
+                    <<_Pre:Start/binary, 
+                        SlotBin:L/binary, 
+                        _Post/binary>> = MultiSlotBin,
+                    {SlotBin, SK, EK}
+        end,
+    
+    lists:map(BinSplitMapFun, LengthList).
 
 generate_filenames(RootFilename) ->
     Ext = filename:extension(RootFilename),
@@ -818,6 +787,331 @@ generate_filenames(RootFilename) ->
             {filename:join(DN, FP_NOEXT) ++ ".pnd",
                 filename:join(DN, FP_NOEXT) ++ ".sst"}
     end.    
+
+
+%%%============================================================================
+%%% Slot Implementation
+%%%============================================================================
+
+%% Implementing a slot has gone through numerous iterations.  One of the most
+%% critical considerations has been the cost of the binary_to_term and 
+%% term_to_binary calls for different sizes of slots and different data types.
+%%
+%% Microbenchmarking indicated that flat lists were the fastest.  However, the 
+%% lists need scanning at query time - and so give longer lookups.  Bigger slots
+%% did better at term_to_binary time.  However term_to_binary is an often
+%% repeated task, and this is better with smaller slots.  
+%%
+%% The outcome has been to divide the slot into four small blocks to minimise 
+%% the binary_to_term time.  A binary index is provided for the slot for all 
+%% Keys that are directly fetchable (i.e. standard keys not index keys).
+%%
+%% The division and use of a list saves about 100 microseconds per fetch when 
+%% compared to using a 128-member gb:tree.
+%%
+%% The binary index is cacheable and doubles as a not_present filter, as it is
+%% based on a 17-bit hash (so 0.0039 fpr).
+
+
+generate_binary_slot(KVL) ->
+    
+    HashFoldFun =
+        fun({K, V}, {HashListAcc, PosBinAcc, NoHashCount}) ->
+            
+            {_SQN, H1} = leveled_codec:strip_to_seqnhashonly({K, V}),
+            case is_integer(H1) of 
+                true ->
+                    PosH1 = double_hash(H1, K),
+                    case NoHashCount of 
+                        0 ->
+                            {[{{hash, H1}, K}|HashListAcc], 
+                                <<1:1/integer, 
+                                    PosH1:15/integer, 
+                                    PosBinAcc/binary>>,
+                                0};
+                        N ->
+                            % The No Hash Count is an integer between 0 and 127
+                            % and so at read time should count NHC + 1
+                            NHC = N - 1,
+                            {[{{hash, H1}, K}|HashListAcc], 
+                                <<1:1/integer,
+                                    PosH1:15/integer, 
+                                    0:1/integer,
+                                    NHC:7/integer, 
+                                    PosBinAcc/binary>>,
+                                0}
+                    end;
+                false ->
+                    {HashListAcc, PosBinAcc, NoHashCount + 1}
+            end
+         
+         end,
+
+    {HashList, PosBinIndex0, NHC} = lists:foldr(HashFoldFun, 
+                                                {[], <<>>, 0}, 
+                                                KVL),
+    PosBinIndex1 = 
+        case NHC of
+            0 ->
+                PosBinIndex0;
+            _ ->
+                N = NHC - 1,
+                <<0:1/integer, N:7/integer, PosBinIndex0/binary>>
+        end,
+
+
+    {B1, B2, B3, B4} = 
+        case length(KVL) of 
+            L when L =< 32 ->
+                {term_to_binary(KVL, ?BINARY_SETTINGS),
+                    <<0:0>>, 
+                    <<0:0>>, 
+                    <<0:0>>};
+            L when L =< 64 ->
+                {KVLA_32, KVLB_32} = lists:split(32, KVL),
+                {term_to_binary(KVLA_32, ?BINARY_SETTINGS),
+                    term_to_binary(KVLB_32, ?BINARY_SETTINGS),
+                    <<0:0>>, 
+                    <<0:0>>};
+            L when L =< 96 ->
+                {KVLA_32, KVLB_64} = lists:split(32, KVL),
+                {KVLB_32, KVLC_32} = lists:split(32, KVLB_64),
+                {term_to_binary(KVLA_32, ?BINARY_SETTINGS),
+                    term_to_binary(KVLB_32, ?BINARY_SETTINGS),
+                    term_to_binary(KVLC_32, ?BINARY_SETTINGS),
+                    <<0:0>>};
+            L when L =< 128 ->
+                {KVLA_32, KVLB_96} = lists:split(32, KVL),
+                {KVLB_32, KVLC_64} = lists:split(32, KVLB_96),
+                {KVLC_32, KVLD_32} = lists:split(32, KVLC_64),
+                {term_to_binary(KVLA_32, ?BINARY_SETTINGS),
+                    term_to_binary(KVLB_32, ?BINARY_SETTINGS),
+                    term_to_binary(KVLC_32, ?BINARY_SETTINGS),
+                    term_to_binary(KVLD_32, ?BINARY_SETTINGS)}
+        end,
+
+    B1P = byte_size(PosBinIndex1),
+    B1L = byte_size(B1),
+    B2L = byte_size(B2),
+    B3L = byte_size(B3),
+    B4L = byte_size(B4),
+    Lengths = <<B1P:32/integer, 
+                B1L:32/integer, 
+                B2L:32/integer, 
+                B3L:32/integer, 
+                B4L:32/integer>>,
+    SlotBin = <<Lengths/binary, 
+                PosBinIndex1/binary, 
+                B1/binary, B2/binary, B3/binary, B4/binary>>,
+    CRC32 = erlang:crc32(SlotBin),
+    FullBin = <<CRC32:32/integer, SlotBin/binary>>,
+
+    {HashList, PosBinIndex1, FullBin}.
+
+
+binaryslot_get(FullBin, Key, Hash, CachedPosLookup) ->
+    case crc_check_slot(FullBin) of 
+        {Lengths, Rest} ->
+            B1P = element(1, Lengths),
+            case CachedPosLookup of 
+                {true, PosList} ->
+                    <<_PosBinIndex:B1P/binary, Blocks/binary>> = Rest,
+                    {fetch_value(PosList, Lengths, Blocks, Key), none};
+                none ->
+                    <<PosBinIndex:B1P/binary, Blocks/binary>> = Rest,
+                    PosList = find_pos(PosBinIndex, 
+                                        double_hash(Hash, Key), 
+                                        [], 
+                                        0),
+                    {fetch_value(PosList, Lengths, Blocks, Key), PosBinIndex}
+            end;
+        crc_wonky ->
+            {not_present, none}
+    end.
+
+binaryslot_tolist(FullBin) ->
+    BlockFetchFun = 
+        fun(Length, {Acc, Bin}) ->
+            case Length of 
+                0 ->
+                    {Acc, Bin};
+                _ ->
+                    <<Block:Length/binary, Rest/binary>> = Bin,
+                    {Acc ++ binary_to_term(Block), Rest}
+            end
+        end,
+
+    {Out, _Rem} = 
+        case crc_check_slot(FullBin) of 
+            {Lengths, RestBin} ->
+                {B1P, B1L, B2L, B3L, B4L} = Lengths,
+                <<_PosBinIndex:B1P/binary, Blocks/binary>> = RestBin,
+                lists:foldl(BlockFetchFun, {[], Blocks}, [B1L, B2L, B3L, B4L]);
+            crc_wonky ->
+                {[], <<>>}
+        end,
+    Out.
+
+
+binaryslot_trimmedlist(FullBin, all, all) ->
+    binaryslot_tolist(FullBin);
+binaryslot_trimmedlist(FullBin, StartKey, EndKey) ->
+    LTrimFun = fun({K, _V}) -> K < StartKey end,
+    RTrimFun = fun({K, _V}) -> not leveled_codec:endkey_passed(EndKey, K) end,
+    BlockFetchFun = 
+        fun(Length, {Acc, Bin}) ->
+            case Length of 
+                0 ->
+                    {Acc, Bin};
+                _ ->
+                    <<Block:Length/binary, Rest/binary>> = Bin,
+                    BlockList = binary_to_term(Block),
+                    {FirstKey, _FV} = lists:nth(1, BlockList),
+                    {LastKey, _LV} = lists:last(BlockList),
+                    TrimBools = trim_booleans(FirstKey, LastKey, 
+                                                StartKey, EndKey),
+                    case TrimBools of 
+                        {true, _, _, _} ->
+                            {Acc, Rest};
+                        {false, true, _, _} ->
+                            {Acc ++ BlockList, Rest};
+                        {false, false, true, false} ->
+                            {_LDrop, RKeep} = lists:splitwith(LTrimFun, 
+                                                                BlockList),
+                            {Acc ++ RKeep, Rest};
+                        {false, false, false, true} ->
+                            {LKeep, _RDrop} = lists:splitwith(RTrimFun, 
+                                                                BlockList),
+                            {Acc ++ LKeep, Rest};
+                        {false, false, true, true} ->
+                            {_LDrop, RKeep} = lists:splitwith(LTrimFun, 
+                                                                BlockList),
+                            {LKeep, _RDrop} = lists:splitwith(RTrimFun, RKeep),
+                            {Acc ++ LKeep, Rest}
+                    end
+
+            end
+        end,
+
+    {Out, _Rem} = 
+        case crc_check_slot(FullBin) of 
+            {Lengths, RestBin} ->
+                {B1P, B1L, B2L, B3L, B4L} = Lengths,
+                <<_PosBinIndex:B1P/binary, Blocks/binary>> = RestBin,
+                lists:foldl(BlockFetchFun, {[], Blocks}, [B1L, B2L, B3L, B4L]);
+            crc_wonky ->
+                {[], <<>>}
+        end,
+    Out.
+
+
+trim_booleans(FirstKey, _LastKey, StartKey, all) ->
+    FirstKeyPassedStart = FirstKey > StartKey,
+    case FirstKeyPassedStart of 
+        true ->
+            {false, true, false, false};
+        false ->
+            {false, false, true, false}
+    end;
+trim_booleans(_FirstKey, LastKey, all, EndKey) ->
+    LastKeyPassedEnd = leveled_codec:endkey_passed(EndKey, LastKey),
+    case LastKeyPassedEnd of 
+        true ->
+            {false, false, false, true};
+        false ->
+            {false, true, false, false}
+        end;
+trim_booleans(FirstKey, LastKey, StartKey, EndKey) ->
+    FirstKeyPassedStart = FirstKey > StartKey,
+    PreRange = LastKey < StartKey,
+    PostRange = leveled_codec:endkey_passed(EndKey, FirstKey),
+    OutOfRange = PreRange or PostRange,
+    LastKeyPassedEnd = leveled_codec:endkey_passed(EndKey, LastKey),
+    case OutOfRange of 
+        true ->
+            {true, false, false, false};
+        false ->
+            case {FirstKeyPassedStart, LastKeyPassedEnd} of 
+                {true, false} ->
+                    {false, true, false, false};
+                {false, false} ->
+                    {false, false, true, false};
+                {true, true} ->
+                    {false, false, false, true};
+                {false, true} ->
+                    {false, false, true, true}
+            end 
+    end.
+
+
+
+
+crc_check_slot(FullBin) ->
+    <<CRC32:32/integer, SlotBin/binary>> = FullBin,
+    case erlang:crc32(SlotBin) of 
+        CRC32 ->
+            <<B1P:32/integer, 
+                B1L:32/integer, 
+                B2L:32/integer, 
+                B3L:32/integer, 
+                B4L:32/integer,
+                Rest/binary>> = SlotBin,
+            Lengths = {B1P, B1L, B2L, B3L, B4L},
+            {Lengths, Rest};
+        _ ->
+            crc_wonky
+    end.
+
+double_hash(Hash, Key) ->
+    H2 = erlang:phash2(Key),
+    (Hash bxor H2) band 32767.
+
+fetch_value([], _Lengths, _Blocks, _Key) ->
+    not_present;
+fetch_value([Pos|Rest], Lengths, Blocks, Key) ->
+    BlockNumber = (Pos div 32) + 1,
+    BlockPos = (Pos rem 32) + 1,
+    BlockL = 
+        case BlockNumber of 
+            1 ->
+                B1L = element(2, Lengths),
+                <<Block:B1L/binary, _Rest/binary>> = Blocks,
+                binary_to_term(Block);
+            2 ->
+                B1L = element(2, Lengths),
+                B2L = element(3, Lengths),
+                <<_Pass:B1L/binary, Block:B2L/binary, _Rest/binary>> = Blocks,
+                binary_to_term(Block);
+            3 ->
+                PreL = element(2, Lengths) + element(3, Lengths),
+                B3L = element(4, Lengths),
+                <<_Pass:PreL/binary, Block:B3L/binary, _Rest/binary>> = Blocks,
+                binary_to_term(Block);
+            4 ->
+                {_B1P, B1L, B2L, B3L, B4L} = Lengths,
+                PreL = B1L + B2L + B3L,
+                <<_Pass:PreL/binary, Block:B4L/binary>> = Blocks,
+                binary_to_term(Block)
+        end,
+
+    {K, V} = lists:nth(BlockPos, BlockL),
+    case K of 
+        Key ->
+            {K, V};
+        _ ->
+            fetch_value(Rest, Lengths, Blocks, Key)
+    end.
+
+find_pos(<<>>, _Hash, PosList, _Count) ->
+    PosList;
+find_pos(<<1:1/integer, Hash:15/integer, T/binary>>, Hash, PosList, Count) ->
+    find_pos(T, Hash, PosList ++ [Count], Count + 1);
+find_pos(<<1:1/integer, _Miss:15/integer, T/binary>>, Hash, PosList, Count) ->
+    find_pos(T, Hash, PosList, Count + 1);
+find_pos(<<0:1/integer, NHC:7/integer, T/binary>>, Hash, PosList, Count) ->
+    find_pos(T, Hash, PosList, Count + NHC + 1).
+
+
 
 %%%============================================================================
 %%% Merge Functions
@@ -981,57 +1275,43 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
                         BRange).
 
 
-experimental_test() ->
-    io:format(user, "~nExperimental timing test:~n", []),
+generate_indexkeys(Count) ->
+    generate_indexkeys(Count, []).
+
+generate_indexkeys(0, IndexList) ->
+    IndexList;
+generate_indexkeys(Count, IndexList) ->
+    IndexSpecs = [{add, "t1_int", random:uniform(80000)}],
+    Changes = leveled_codec:convert_indexspecs(IndexSpecs, 
+                                                "Bucket", 
+                                                "Key" ++ integer_to_list(Count), 
+                                                Count, 
+                                                infinity),
+    generate_indexkeys(Count - 1, IndexList ++ Changes).
+
+
+indexed_list_test() ->
+    io:format(user, "~nIndexed list timing test:~n", []),
     N = 150,
     KVL0 = lists:ukeysort(1, generate_randomkeys(1, N, 1, 4)),
     KVL1 = lists:sublist(KVL0, 128),
-    KVL2 = generate_randomkeys(1, N, 1, 4),
-    KVLnot0 = lists:foldr(fun({K, V}, Acc) -> 
-                                case lists:keymember(K, 1, KVL1) of 
-                                    true ->
-                                        Acc;
-                                    false ->
-                                        [{K, leveled_codec:magic_hash(K), V}|Acc]
-                                end end,
-                            [],
-                            KVL2),
-    KVLnot1 = lists:sublist(KVLnot0, 8),
 
-    ExtractHashFun =
-        fun({K, V}) ->
-            {_SQN, H} = leveled_codec:strip_to_seqnhashonly({K, V}),
-            {{hash, H}, K} end,
-    BloomAddFun =
-        fun({H, K}, Bloom) -> leveled_tinybloom:tiny_enter(H, K, Bloom) end,
-    AltHashFoldFun =
-        fun({K, V}, {HashLAcc, PosBAcc}) ->
-            {_SQN, H} = leveled_codec:strip_to_seqnhashonly({K, V}),
-            PosH = H band 65535,
-            {[{{hash, H}, K}|HashLAcc], <<PosH:16/integer, PosBAcc/binary>>} 
-        end,
-    AltAltHashFoldFun =
-        fun({K, V}, {HashLAcc, PosBAcc, PosC}) ->
-            {_SQN, H} = leveled_codec:strip_to_seqnhashonly({K, V}),
-            Slot = H rem 256,
-            PosH = (H bsr 8) band 65535,
-            {[{{hash, H}, K}|HashLAcc], 
-                [{Slot, <<PosH:16/integer, PosC:8/integer>>}|PosBAcc], 
-                PosC + 1} 
-        end,
+    % BloomAddFun =
+    %     fun({H, K}, {Bloom, Total, Max}) -> 
+    %             SW = os:timestamp(),
+    %             Bloom0 = leveled_tinybloom:tiny_enter(H, K, Bloom),
+    %             T0 = timer:now_diff(os:timestamp(), SW),
+    %             {Bloom0, Total + T0, max(T0, Max)}
 
-    
-    SWA0 = os:timestamp(),
-    HashList = lists:map(ExtractHashFun, KVL1),
-    Tree = gb_trees:from_orddict(KVL1),
-    _BloomA = lists:foldr(BloomAddFun,
-                        leveled_tinybloom:tiny_empty(),
-                        HashList),
-    SlotBinA = term_to_binary(Tree, [{compressed, ?COMPRESSION_LEVEL}]),
+    %         end,
+
+    SW0 = os:timestamp(),
+
+    {_HashList, _PosBinIndex1, FullBin} = generate_binary_slot(KVL1),
     io:format(user,
-                "Created slot in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SWA0)]),
-    
+                "Indexed list created slot in ~w microseconds of size ~w~n",
+                [timer:now_diff(os:timestamp(), SW0), byte_size(FullBin)]),
+
     {TestK1, TestV1} = lists:nth(20, KVL1),
     MH1 = leveled_codec:magic_hash(TestK1),
     {TestK2, TestV2} = lists:nth(40, KVL1),
@@ -1043,331 +1323,125 @@ experimental_test() ->
     {TestK5, TestV5} = lists:nth(100, KVL1),
     MH5 = leveled_codec:magic_hash(TestK5),
 
-    test_slot(SlotBinA, TestK1, TestV1),
-    test_slot(SlotBinA, TestK2, TestV2),
-    test_slot(SlotBinA, TestK3, TestV3),
-    test_slot(SlotBinA, TestK4, TestV4),
-    test_slot(SlotBinA, TestK5, TestV5),
-    lists:foreach(fun({NotK, _H, _V}) -> 
-                        test_not_slot(SlotBinA, NotK) end, 
-                    KVLnot1),
-
-    SWB0 = os:timestamp(),
-    {Alt1HashList, Pos1Bin} = lists:foldr(AltHashFoldFun, {[], <<>>}, KVL1),
-    _BloomB = lists:foldr(BloomAddFun,
-                            leveled_tinybloom:tiny_empty(),
-                            Alt1HashList),
-    Alt1SlotBinB = term_to_binary(KVL1, [{compressed, ?COMPRESSION_LEVEL}]),
-    io:format(user,
-                "Alt1-method created slot in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SWB0)]),
-
-    alt1_test_slot(Alt1SlotBinB, Pos1Bin, MH1, TestK1, TestV1),
-    alt1_test_slot(Alt1SlotBinB, Pos1Bin, MH2, TestK2, TestV2),
-    alt1_test_slot(Alt1SlotBinB, Pos1Bin, MH3, TestK3, TestV3),
-    alt1_test_slot(Alt1SlotBinB, Pos1Bin, MH4, TestK4, TestV4),
-    alt1_test_slot(Alt1SlotBinB, Pos1Bin, MH5, TestK5, TestV5),
-    lists:foreach(fun({NotK, NotMH, _V}) -> 
-                        alt1_test_not_slot(Alt1SlotBinB, Pos1Bin, NotMH, NotK) end, 
-                    KVLnot1),
-
-    SWC0 = os:timestamp(),
-    {KVL1A, KVL1B} = lists:split(64, KVL1),
-    {Alt2HashListA, Pos2BinA} = lists:foldr(AltHashFoldFun, {[], <<>>}, KVL1A),
-    {Alt2HashList, Pos2BinB} = lists:foldr(AltHashFoldFun, {Alt2HashListA, <<>>}, KVL1B),
-    _BloomB = lists:foldr(BloomAddFun,
-                            leveled_tinybloom:tiny_empty(),
-                            Alt2HashList),
-    Alt2SlotBinB_A = term_to_binary(KVL1A, [{compressed, ?COMPRESSION_LEVEL}]),
-    Alt2SlotBinB_B = term_to_binary(KVL1B, [{compressed, ?COMPRESSION_LEVEL}]),
-    Alt2Tester = [{Alt2SlotBinB_A, Pos2BinA}, {Alt2SlotBinB_B, Pos2BinB}],
-    io:format(user,
-                "Alt2-method created slot in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SWC0)]),
-
-    
-    alt2_test_slot(Alt2Tester, MH1, TestK1, TestV1, "Alt2"),
-    alt2_test_slot(Alt2Tester, MH2, TestK2, TestV2, "Alt2"),
-    alt2_test_slot(Alt2Tester, MH3, TestK3, TestV3, "Alt2"),
-    alt2_test_slot(Alt2Tester, MH4, TestK4, TestV4, "Alt2"),
-    alt2_test_slot(Alt2Tester, MH5, TestK5, TestV5, "Alt2"),
-    lists:foreach(fun({NotK, NotMH, _V}) -> 
-                        alt2_test_not_slot(Alt2Tester, NotMH, NotK, "Alt2") end, 
-                    KVLnot1),
-
-    SWD0 = os:timestamp(),
-    {KVL1A32, KVL1_96} = lists:split(32, KVL1),
-    {KVL1B32, KVL1_64} = lists:split(32, KVL1_96),
-    {KVL1C32, KVL1D32} = lists:split(32, KVL1_64),
-    {Alt3HashListA, Pos3BinA} = lists:foldr(AltHashFoldFun, {[], <<>>}, KVL1A32),
-    {Alt3HashListB, Pos3BinB} = lists:foldr(AltHashFoldFun, {Alt3HashListA, <<>>}, KVL1B32),
-    {Alt3HashListC, Pos3BinC} = lists:foldr(AltHashFoldFun, {Alt3HashListB, <<>>}, KVL1C32),
-    {Alt3HashList, Pos3BinD} = lists:foldr(AltHashFoldFun, {Alt3HashListC, <<>>}, KVL1D32),
-    _BloomB = lists:foldr(BloomAddFun,
-                            leveled_tinybloom:tiny_empty(),
-                            Alt3HashList),
-    Alt3SlotBinB_A = term_to_binary(KVL1A32, [{compressed, ?COMPRESSION_LEVEL}]),
-    Alt3SlotBinB_B = term_to_binary(KVL1B32, [{compressed, ?COMPRESSION_LEVEL}]),
-    Alt3SlotBinB_C = term_to_binary(KVL1C32, [{compressed, ?COMPRESSION_LEVEL}]),
-    Alt3SlotBinB_D = term_to_binary(KVL1D32, [{compressed, ?COMPRESSION_LEVEL}]),
-    Alt3Tester = [{Alt3SlotBinB_A, Pos3BinA}, {Alt3SlotBinB_B, Pos3BinB},
-                    {Alt3SlotBinB_C, Pos3BinC}, {Alt3SlotBinB_D, Pos3BinD}],
-    io:format(user,
-                "Alt3-method created slot in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SWD0)]),
-
-    
-    alt2_test_slot(Alt3Tester, MH1, TestK1, TestV1, "Alt3"),
-    alt2_test_slot(Alt3Tester, MH2, TestK2, TestV2, "Alt3"),
-    alt2_test_slot(Alt3Tester, MH3, TestK3, TestV3, "Alt3"),
-    alt2_test_slot(Alt3Tester, MH4, TestK4, TestV4, "Alt3"),
-    alt2_test_slot(Alt3Tester, MH5, TestK5, TestV5, "Alt3"),
-    lists:foreach(fun({NotK, NotMH, _V}) -> 
-                        alt2_test_not_slot(Alt3Tester, NotMH, NotK, "Alt3") end, 
-                    KVLnot1),
-
-    SWE0 = os:timestamp(),
-    {KVL1A32, KVL1_96} = lists:split(32, KVL1),
-    {KVL1B32, KVL1_64} = lists:split(32, KVL1_96),
-    {KVL1C32, KVL1D32} = lists:split(32, KVL1_64),
-    io:format("final block length ~w~n", [length(KVL1D32)]),
-    {Alt4HashListA, PosTLA, 32} = lists:foldl(AltAltHashFoldFun, {[], [], 0}, KVL1A32),
-    {Alt4HashListB, PosTLB, 64} = lists:foldl(AltAltHashFoldFun, {Alt3HashListA, PosTLA, 32}, KVL1B32),
-    {Alt4HashListC, PosTLC, 96} = lists:foldl(AltAltHashFoldFun, {Alt3HashListB, PosTLB, 64}, KVL1C32),
-    {Alt4HashList, PosTLall, 128} = lists:foldl(AltAltHashFoldFun, {Alt3HashListC, PosTLC, 96}, KVL1D32),
-    _BloomB = lists:foldr(BloomAddFun,
-                            leveled_tinybloom:tiny_empty(),
-                            Alt3HashList),
-    Alt3SlotBinB_A = term_to_binary(KVL1A32, [{compressed, ?COMPRESSION_LEVEL}]),
-    Alt3SlotBinB_B = term_to_binary(KVL1B32, [{compressed, ?COMPRESSION_LEVEL}]),
-    Alt3SlotBinB_C = term_to_binary(KVL1C32, [{compressed, ?COMPRESSION_LEVEL}]),
-    Alt3SlotBinB_D = term_to_binary(KVL1D32, [{compressed, ?COMPRESSION_LEVEL}]),
-    SortedSlotList = lists:keysort(1, PosTLall),
-    PosBinList = build_hashtree_binary(SortedSlotList, 256, 0, []),
-    Alt4PosBin = list_to_binary(PosBinList),
+    test_binary_slot(FullBin, TestK1, MH1, {TestK1, TestV1}),
+    test_binary_slot(FullBin, TestK2, MH2, {TestK2, TestV2}),
+    test_binary_slot(FullBin, TestK3, MH3, {TestK3, TestV3}),
+    test_binary_slot(FullBin, TestK4, MH4, {TestK4, TestV4}),
+    test_binary_slot(FullBin, TestK5, MH5, {TestK5, TestV5}).
 
 
-    Alt4Tester = {Alt3SlotBinB_A, Alt3SlotBinB_B, Alt3SlotBinB_C, Alt3SlotBinB_D},
-    io:format(user,
-                "Alt4-method created slot in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SWE0)]),
+indexed_list_mixedkeys_test() ->
+    KVL0 = lists:ukeysort(1, generate_randomkeys(1, 50, 1, 4)),
+    KVL1 = lists:sublist(KVL0, 33),
+    Keys = lists:ukeysort(1, generate_indexkeys(60) ++ KVL1),
 
-    alt4_test_slot(Alt4Tester, Alt4PosBin, TestK1, MH1, TestV1, "Alt4"),
-    alt4_test_slot(Alt4Tester, Alt4PosBin, TestK2, MH2, TestV2, "Alt4"),
-    alt4_test_slot(Alt4Tester, Alt4PosBin, TestK3, MH3, TestV3, "Alt4"),
-    alt4_test_slot(Alt4Tester, Alt4PosBin, TestK4, MH4, TestV4, "Alt4"),
-    alt4_test_slot(Alt4Tester, Alt4PosBin, TestK5, MH5, TestV5, "Alt4").
+    {_HashList, _PosBinIndex1, FullBin} = generate_binary_slot(Keys),
 
+    {TestK1, TestV1} = lists:nth(4, KVL1),
+    MH1 = leveled_codec:magic_hash(TestK1),
+    {TestK2, TestV2} = lists:nth(8, KVL1),
+    MH2 = leveled_codec:magic_hash(TestK2),
+    {TestK3, TestV3} = lists:nth(12, KVL1),
+    MH3 = leveled_codec:magic_hash(TestK3),
+    {TestK4, TestV4} = lists:nth(16, KVL1),
+    MH4 = leveled_codec:magic_hash(TestK4),
+    {TestK5, TestV5} = lists:nth(20, KVL1),
+    MH5 = leveled_codec:magic_hash(TestK5),
 
-alt4_test_slot(Alt4Tester, PosBin, Key, Hash, Value, M) ->
-    io:format("looking for key ~s ~s~n", [element(2, Key), element(3, Key)]),
-    SW = os:timestamp(),
-    Slot = Hash rem 256,
-    PosH = (Hash bsr 8) band 65535,
-    PosList = find_pos_byslot(PosBin, Slot, PosH, []),
-    io:format("PosList ~w~n", [PosList]),
-    FindKVFun = 
-        fun(Pos, Found) ->
-            case Found of
-                not_present ->
-                    Block = (Pos div 32) + 1,
-                    BlockPos = (Pos rem 32) + 1,
-                    io:format("Looking Block ~w position ~w~n", [Block, BlockPos]),
-                    CheckBlock = element(Block, Alt4Tester),
-                    {K, V} = lists:nth(BlockPos, binary_to_term(CheckBlock)),
-                    io:format("K of ~s ~s~n", [element(2, K), element(3, K)]),
-                    case K of
-                        Key ->
-                            {value, V};
-                        _ ->
-                            not_present
-                    end;
-                _ ->
-                    Found
-            end end,
-    {value, Value} = lists:foldl(FindKVFun, not_present, PosList),
-    io:format(user,
-                M ++ "-method found in slot in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SW)]).
+    test_binary_slot(FullBin, TestK1, MH1, {TestK1, TestV1}),
+    test_binary_slot(FullBin, TestK2, MH2, {TestK2, TestV2}),
+    test_binary_slot(FullBin, TestK3, MH3, {TestK3, TestV3}),
+    test_binary_slot(FullBin, TestK4, MH4, {TestK4, TestV4}),
+    test_binary_slot(FullBin, TestK5, MH5, {TestK5, TestV5}).
 
-
-find_pos_byslot(PosBin, Slot, PosH, PosList) ->
-    Start = Slot * 3,
-    <<_LHS:Start/binary, Hash:16/integer, Pos:8/integer, _Rest/binary>> = PosBin,
-    case Hash of 
-        PosH ->
-            find_pos_byslot(PosBin, (Slot + 1) rem 256, PosH, [Pos|PosList]);
-        0 ->
-            PosList;
-        _ ->
-            find_pos_byslot(PosBin, (Slot + 1) rem 256, PosH, PosList)
-    end.
-
-
-
-build_hashtree_binary([], IdxLen, SlotPos, Bin) ->
-    case SlotPos of
-        IdxLen ->
-            lists:reverse(Bin);
-        N when N < IdxLen ->
-            ZeroLen = (IdxLen - N) * 24,
-            lists:reverse([<<0:ZeroLen>>|Bin])
-    end;
-build_hashtree_binary([{TopSlot, TopBin}|SlotMapTail], IdxLen, SlotPos, Bin) ->
-    case TopSlot of
-        N when N > SlotPos ->
-            D = N - SlotPos,
-            Bridge = lists:duplicate(D, <<0:24>>) ++ Bin,
-            UpdBin = [<<TopBin/binary>>|Bridge],
-            build_hashtree_binary(SlotMapTail,
-                                    IdxLen,
-                                    SlotPos + D + 1,
-                                    UpdBin);
-        N when N =< SlotPos, SlotPos < IdxLen ->
-            UpdBin = [<<TopBin/binary>>|Bin],
-            build_hashtree_binary(SlotMapTail,
-                                    IdxLen,
-                                    SlotPos + 1,
-                                    UpdBin);
-        N when N < SlotPos, SlotPos == IdxLen ->
-            % Need to wrap round and put in the first empty slot from the
-            % beginning
-            Pos = find_firstzero(Bin, length(Bin)),
-            {LHS, [<<0:24>>|RHS]} = lists:split(Pos - 1, Bin),
-            UpdBin = lists:append(LHS, [TopBin|RHS]),
-            build_hashtree_binary(SlotMapTail,
-                                    IdxLen,
-                                    SlotPos,
-                                    UpdBin)
-    end.
-
-% Search from the tail of the list to find the first zero
-find_firstzero(Bin, Pos) ->
-    case lists:nth(Pos, Bin) of
-        <<0:24>> ->
-            Pos;
-        _ ->
-            find_firstzero(Bin, Pos - 1)
-    end.
-
-
-
-
-alt2_test_not_slot(TesterList, Hash, Key, M) ->
-    SWB1 = os:timestamp(),
-    not_present = alt2_test_slot_int(TesterList, Hash, Key, not_present),
-    io:format(user,
-                M ++ "-method missed in slot in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SWB1)]).
-
-
-alt2_test_slot(TesterList, Hash, Key, Value, M) ->
-    SWB1 = os:timestamp(),
-    {value, Value} = alt2_test_slot_int(TesterList, Hash, Key, not_present),
-    io:format(user,
-                M ++ "-method found in slot in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SWB1)]).
-
-alt2_test_slot_int([], _Hash, _Key, Result) ->
-    Result;
-alt2_test_slot_int([{SlotBin, PosBin}|Rest], Hash, Key, not_present) ->
-    H2F = Hash band 65535,
-    PosL = posbin_finder(PosBin, H2F, [], 1),
-    case PosL of 
-        [] ->
-            alt2_test_slot_int(Rest, Hash, Key, not_present);
-        _ ->
-            Slot = binary_to_term(SlotBin),
-            FindFun =
-                fun(P, Acc) ->
-                    case Acc of 
-                        not_present ->
-                            case lists:nth(P, Slot) of
-                                {Key, V} ->
-                                    {value, V};
-                                _ ->
-                                    not_present
-                            end;
-                        _ ->
-                            Acc
-                    end end,
-            Out = lists:foldr(FindFun, not_present, PosL),
-            alt2_test_slot_int(Rest, Hash, Key, Out)
-    end;
-alt2_test_slot_int(_Testers, _Hash, _Key, Result) ->
-    Result.
-
-
-alt1_test_not_slot(SlotBin, PosBin, Hash, Key) ->
-    SWB1 = os:timestamp(),
-    not_present = alt1_test_slot_int(SlotBin, PosBin, Hash, Key),
-    io:format(user,
-                "Alt1-method missed in slot in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SWB1)]).
-
-
-alt1_test_slot(SlotBin, PosBin, Hash, Key, Value) ->
-    SWB1 = os:timestamp(),
-    {value, Value} = alt1_test_slot_int(SlotBin, PosBin, Hash, Key),
-    io:format(user,
-                "Alt1-method found in slot in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SWB1)]).
-
-alt1_test_slot_int(SlotBin, PosBin, Hash, Key) ->
-    Slot0 = binary_to_term(SlotBin),
+indexed_list_allindexkeys_test() ->
+    Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(150)), 128),
+    {_HashList, PosBinIndex1, FullBin} = generate_binary_slot(Keys),
+    ?assertMatch(<<127:8/integer>>, PosBinIndex1),
+    % SW = os:timestamp(),
+    BinToList = binaryslot_tolist(FullBin),
     % io:format(user,
-    %             "Alt-method fraction on b_to_t ~w microseconds~n",
-    %             [timer:now_diff(os:timestamp(), SWB1)]),
+    %             "Indexed list flattened in ~w microseconds ~n",
+    %             [timer:now_diff(os:timestamp(), SW)]),
+    ?assertMatch(Keys, BinToList),
+    ?assertMatch(Keys, binaryslot_trimmedlist(FullBin, all, all)).
 
-    H2F = Hash band 65535,
-    PosL = posbin_finder(PosBin, H2F, [], 1),
-    FindFun =
-        fun(P, Acc) ->
-            case Acc of 
-                not_present ->
-                    case lists:nth(P, Slot0) of
-                        {Key, V} ->
-                            {value, V};
-                        _ ->
-                            not_present
-                    end;
-                _ ->
-                    Acc
-            end end,
-    lists:foldr(FindFun, not_present, PosL).
+
+indexed_list_allindexkeys_trimmed_test() ->
+    Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(150)), 128),
+    {_HashList, PosBinIndex1, FullBin} = generate_binary_slot(Keys),
+    ?assertMatch(<<127:8/integer>>, PosBinIndex1),
+    ?assertMatch(Keys, binaryslot_trimmedlist(FullBin, 
+                                                {i, 
+                                                    "Bucket", 
+                                                    {"t1_int", 0},
+                                                    null}, 
+                                                {i, 
+                                                    "Bucket", 
+                                                    {"t1_int", 99999},
+                                                    null})),
     
+    {SK1, _} = lists:nth(10, Keys),
+    {EK1, _} = lists:nth(100, Keys),
+    R1 = lists:sublist(Keys, 10, 91),
+    O1 = binaryslot_trimmedlist(FullBin, SK1, EK1),
+    ?assertMatch(91, length(O1)),
+    ?assertMatch(R1, O1),
+
+    {SK2, _} = lists:nth(10, Keys),
+    {EK2, _} = lists:nth(20, Keys),
+    R2 = lists:sublist(Keys, 10, 11),
+    O2 = binaryslot_trimmedlist(FullBin, SK2, EK2),
+    ?assertMatch(11, length(O2)),
+    ?assertMatch(R2, O2),
+
+    {SK3, _} = lists:nth(127, Keys),
+    {EK3, _} = lists:nth(128, Keys),
+    R3 = lists:sublist(Keys, 127, 2),
+    O3 = binaryslot_trimmedlist(FullBin, SK3, EK3),
+    ?assertMatch(2, length(O3)),
+    ?assertMatch(R3, O3).
 
 
-posbin_finder(<<>>, _Hash, FoundL, _PosC) ->
-    FoundL;
-posbin_finder(<<Hash:16/integer, Rest/binary>>, Hash, FoundL, PosC) ->
-    posbin_finder(Rest, Hash, [PosC|FoundL], PosC + 1);
-posbin_finder(<<_Hash:16/integer, Rest/binary>>, Hash, FoundL, PosC) ->
-    posbin_finder(Rest, Hash, FoundL, PosC + 1).
+indexed_list_mixedkeys_bitflip_test() ->
+    KVL0 = lists:ukeysort(1, generate_randomkeys(1, 50, 1, 4)),
+    KVL1 = lists:sublist(KVL0, 33),
+    Keys = lists:ukeysort(1, generate_indexkeys(60) ++ KVL1),
+
+    {_HashList, _PosBinIndex1, FullBin} = generate_binary_slot(Keys),
+    L = byte_size(FullBin),
+    Byte1 = random:uniform(L),
+    <<PreB1:Byte1/binary, A:8/integer, PostByte1/binary>> = FullBin,
+    FullBin0 = 
+        case A of 
+            0 ->
+                <<PreB1:Byte1/binary, 255:8/integer, PostByte1/binary>>;
+            _ ->
+                <<PreB1:Byte1/binary, 0:8/integer, PostByte1/binary>>
+        end,
+    
+    {TestK1, _TestV1} = lists:nth(20, KVL1),
+    MH1 = leveled_codec:magic_hash(TestK1),
+
+    test_binary_slot(FullBin0, TestK1, MH1, not_present),
+    ToList = binaryslot_tolist(FullBin0),
+    ?assertMatch([], ToList),
+
+    {SK1, _} = lists:nth(10, Keys),
+    {EK1, _} = lists:nth(50, Keys),
+    O1 = binaryslot_trimmedlist(FullBin0, SK1, EK1),
+    ?assertMatch(0, length(O1)),
+    ?assertMatch([], O1).
 
 
 
-test_slot(SlotBin, Key, Value) ->
-    SWA1 = os:timestamp(),
-    Slot0 = binary_to_term(SlotBin),
-    % io:format(user,
-    %             "Fraction on b_to_t ~w microseconds~n",
-    %             [timer:now_diff(os:timestamp(), SWA1)]),
-    {value, Value} = gb_trees:lookup(Key, Slot0),
-    io:format(user,
-                "Found in slot in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SWA1)]).
+test_binary_slot(FullBin, Key, Hash, ExpectedValue) ->
+    % SW = os:timestamp(),
+    {ReturnedValue, _} = binaryslot_get(FullBin, Key, Hash, none),
+    ?assertMatch(ExpectedValue, ReturnedValue).
+    % io:format(user, "Fetch success in ~w microseconds ~n",
+    %             [timer:now_diff(os:timestamp(), SW)]).
 
-test_not_slot(SlotBin, Key) ->
-    SWA1 = os:timestamp(),
-    Slot0 = binary_to_term(SlotBin),
-    % io:format(user,
-    %             "Fraction on b_to_t ~w microseconds~n",
-    %             [timer:now_diff(os:timestamp(), SWA1)]),
-    none = gb_trees:lookup(Key, Slot0),
-    io:format(user,
-                "Missed in slot in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SWA1)]).
     
 
 merge_test() ->
@@ -1417,73 +1491,7 @@ merge_test() ->
     ok = file:delete("../test/level1_src.sst"),
     ok = file:delete("../test/level2_src.sst"),
     ok = file:delete("../test/level2_merge.sst").
-
-simple_slotbin_test() ->
-    KVList0 = generate_randomkeys(1, ?SLOT_SIZE * 2, 1, 4),
-    KVList1 = lists:sublist(lists:ukeysort(1, KVList0), 1, ?SLOT_SIZE),
-    ExtractHashFun =
-        fun({K, V}) ->
-            {_SQN, H} = leveled_codec:strip_to_seqnhashonly({K, V}),
-            {{hash, H}, K} end,
-    HashList = lists:map(ExtractHashFun, KVList1),
-    SW0 = os:timestamp(),
-    {SlotBin0, Bloom0} = build_slot(KVList1, HashList),
-    io:format(user, "Slot built in ~w microseconds with size ~w~n",
-                [timer:now_diff(os:timestamp(), SW0), byte_size(SlotBin0)]),
     
-    SW1 = os:timestamp(),
-    lists:foreach(fun({H, K}) -> ?assertMatch(true,
-                                            is_check_slot_required(H,
-                                                                    K,
-                                                                    Bloom0))
-                                            end,
-                    HashList),
-    lists:foreach(fun({K, V}) ->
-                            ?assertMatch({value, V},
-                                            lookup_in_slot(K, SlotBin0))
-                                            end,
-                    KVList1),
-    io:format(user, "Slot checked for all keys in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SW1)]),
-    SW2 = os:timestamp(),
-    ?assertMatch(KVList1, trim_slot(SlotBin0, all, all)),
-    io:format(user, "Slot flattened in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SW2)]).
-    
-
-simple_slotbinsummary_test() ->
-    KVList0 = generate_randomkeys(1, ?SLOT_SIZE * 16, 1, 20),
-    KVList1 = lists:ukeysort(1, KVList0),
-    [{FirstKey, _V}|_Rest] = KVList1,
-    {FirstKey, _L, SlotIndex, AllHashes, SlotsBin} = build_all_slots(KVList1),
-    SummaryBin = build_table_summary(SlotIndex,
-                                        AllHashes,
-                                        2,
-                                        FirstKey,
-                                        length(KVList1),
-                                        undefined),
-    Summary = read_table_summary(SummaryBin),
-    SummaryIndex = leveled_skiplist:from_sortedlist(Summary#summary.index),
-    FetchFun =
-        fun({Key, Value}) ->
-            Slot = lookup_slot(Key, SummaryIndex),
-            StartPos = Slot#slot_index_value.start_position,
-            Length = Slot#slot_index_value.length,
-            io:format("lookup slot id ~w from ~w length ~w~n",
-                        [Slot#slot_index_value.slot_id, StartPos, Length]),
-            <<_Pre:StartPos/binary,
-                SlotBin:Length/binary,
-                _Post/binary>> = <<0:64/integer, SlotsBin/binary>>,
-            <<SlotCRC:32/integer, SlotBinNoCRC/binary>> = SlotBin,
-            ?assertMatch(SlotCRC, erlang:crc32(SlotBinNoCRC)),
-            {value, V} = lookup_in_slot(Key, SlotBinNoCRC),
-            ?assertMatch(Value, V)
-            end,
-    SW = os:timestamp(),
-    lists:foreach(FetchFun, KVList1),
-    io:format(user,
-                "Checking for ~w keys in slots took ~w microseconds~n",
-                [length(KVList1), timer:now_diff(os:timestamp(), SW)]).
 
 simple_persisted_test() ->
     Filename = "../test/simple_test",
@@ -1531,7 +1539,9 @@ simple_persisted_test() ->
     FoldFun = fun(X, Acc) ->
                     case X of
                         {pointer, P, S, SK, EK} ->
-                            Acc ++ sst_getslots(P, [{pointer, S, SK, EK}]);
+                            io:format("Get slot ~w with Acc at ~w~n", 
+                                        [S, length(Acc)]),
+                            Acc ++ sst_getslots(P, [{pointer, P, S, SK, EK}]);
                         _ ->
                             Acc ++ [X]
                     end end,

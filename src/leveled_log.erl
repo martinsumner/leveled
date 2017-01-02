@@ -431,8 +431,7 @@ sst_timing({N, SSTTimerD}, SW, TimerType) ->
     end.
 
 sst_keylist() ->
-    [summary_bloom, cache_entry,
-        slot_bloom, slot_crc_wonky, slot_lookup_miss, slot_lookup_hit].
+    [summary_bloom, slot_cache, slot_bloom, slot_fetch].
 
 
 get_timing(undefined, SW, TimerType) ->
