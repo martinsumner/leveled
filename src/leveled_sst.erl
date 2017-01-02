@@ -72,7 +72,7 @@
 -define(SLOT_SIZE, 128). % This is not configurable
 -define(COMPRESSION_LEVEL, 1).
 -define(BINARY_SETTINGS, [{compressed, ?COMPRESSION_LEVEL}]).
--define(LEVEL_BLOOM_SLOTS, [{0, 64}, {1, 48}, {default, 32}]).
+-define(LEVEL_BLOOM_BITS, [{0, 12}, {1, 10}, {2, 8}, {default, 6}]).
 -define(MERGE_SCANWIDTH, 16).
 -define(DISCARD_EXT, ".discarded").
 -define(DELETE_TIMEOUT, 10000).
@@ -614,13 +614,14 @@ open_reader(Filename) ->
     {Handle, SummaryBin}.
 
 build_table_summary(SlotIndex, AllHashes, Level, FirstKey, L, MaxSQN) ->
-    BloomSlots =
-        case lists:keyfind(Level, 1, ?LEVEL_BLOOM_SLOTS) of
+    BloomBits =
+        case lists:keyfind(Level, 1, ?LEVEL_BLOOM_BITS) of
             {Level, N} ->
                 N;
             false ->
-                element(2, lists:keyfind(default, 1, ?LEVEL_BLOOM_SLOTS))
+                element(2, lists:keyfind(default, 1, ?LEVEL_BLOOM_BITS))
         end,
+    BloomSlots = (length(AllHashes) * BloomBits) div 4096,
     BloomAddFun =
         fun({H, _K}, Bloom) -> leveled_tinybloom:enter(H, Bloom) end,
     Bloom = lists:foldr(BloomAddFun,

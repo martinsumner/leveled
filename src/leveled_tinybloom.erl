@@ -133,7 +133,7 @@ getbit(Bit, BitArray, ArrayLength) ->
 
 simple_test() ->
     N = 4000,
-    W = 4,
+    W = 6,
     KLin = lists:map(fun(X) -> "Key_" ++
                                 integer_to_list(X) ++
                                 integer_to_list(random:uniform(100)) ++
