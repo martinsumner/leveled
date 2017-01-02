@@ -621,7 +621,7 @@ build_table_summary(SlotIndex, AllHashes, Level, FirstKey, L, MaxSQN) ->
             false ->
                 element(2, lists:keyfind(default, 1, ?LEVEL_BLOOM_BITS))
         end,
-    BloomSlots = (length(AllHashes) * BloomBits) div 4096,
+    BloomSlots = max((length(AllHashes) * BloomBits) div 4096, 1),
     BloomAddFun =
         fun({H, _K}, Bloom) -> leveled_tinybloom:enter(H, Bloom) end,
     Bloom = lists:foldr(BloomAddFun,
