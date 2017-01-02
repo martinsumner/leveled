@@ -1060,6 +1060,7 @@ crc_check_slot(FullBin) ->
             Lengths = {B1P, B1L, B2L, B3L, B4L},
             {Lengths, Rest};
         _ ->
+            leveled_log:log("SST09", []),
             crc_wonky
     end.
 

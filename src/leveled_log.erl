@@ -17,7 +17,7 @@
 -define(PUT_LOGPOINT, 20000).
 -define(HEAD_LOGPOINT, 160000).
 -define(GET_LOGPOINT, 160000).
--define(SST_LOGPOINT, 200000).
+-define(SST_LOGPOINT, 20000).
 -define(LOG_LEVEL, [info, warn, error, critical]).
 -define(SAMPLE_RATE, 16).
 
@@ -248,6 +248,8 @@
         {info, "Exit called and now clearing ~s"}},
     {"SST08",
         {info, "Completed creation of ~s at level ~w with max sqn ~w"}},
+    {"SST09",
+        {warn, "Read request exposes slot with bad CRC"}},
     
     {"CDB01",
         {info, "Opening file for writing with filename ~s"}},
