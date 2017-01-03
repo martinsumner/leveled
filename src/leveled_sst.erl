@@ -241,11 +241,9 @@ starting({sst_new, Filename, Level, KVList, MaxSQN}, _From, State) ->
     {FirstKey, 
         Length, 
         SlotIndex, 
-        AllHashes, 
         BlockIndex, 
         SlotsBin} = build_all_slots(KVList),
     SummaryBin = build_table_summary(SlotIndex,
-                                        AllHashes,
                                         Level,
                                         FirstKey,
                                         Length,
@@ -268,11 +266,9 @@ starting({sst_newlevelzero, Filename, Slots, FetchFun, Penciller, MaxSQN},
     {FirstKey, 
         Length, 
         SlotIndex, 
-        AllHashes, 
         BlockIndex, 
         SlotsBin} = build_all_slots(KVList),
     SummaryBin = build_table_summary(SlotIndex,
-                                        AllHashes,
                                         0,
                                         FirstKey,
                                         Length,
@@ -570,7 +566,7 @@ open_reader(Filename) ->
     {ok, SummaryBin} = file:pread(Handle, SlotsLength + 8, SummaryLength),
     {Handle, SummaryBin}.
 
-build_table_summary(SlotIndex, _AllHashes, _Level, FirstKey, L, MaxSQN) ->
+build_table_summary(SlotIndex, _Level, FirstKey, L, MaxSQN) ->
     [{LastKey, _LastV}|_Rest] = SlotIndex,
     Summary = #summary{first_key = FirstKey,
                         last_key = LastKey,
@@ -600,18 +596,17 @@ build_all_slots(KVList) ->
     BuildResponse = build_all_slots(KVList,
                                     SlotCount,
                                     8,
-                                    [],
                                     1,
                                     [],
                                     array:new([{size, SlotCount}, 
                                                 {default, none}]),
                                     <<>>),
-    {SlotIndex, AllHashes, BlockIndex, SlotsBin} = BuildResponse,
-    {FirstKey, L, SlotIndex, AllHashes, BlockIndex, SlotsBin}.
+    {SlotIndex, BlockIndex, SlotsBin} = BuildResponse,
+    {FirstKey, L, SlotIndex, BlockIndex, SlotsBin}.
 
-build_all_slots([], _SC, _Pos, Hashes, _SlotID, SlotIdx, BlockIdxA, SlotsBin) ->
-    {SlotIdx, Hashes, BlockIdxA, SlotsBin};
-build_all_slots(KVL, SC, Pos, Hashes, SlotID, SlotIdx, BlockIdxA, SlotsBin) ->
+build_all_slots([], _SC, _Pos, _SlotID, SlotIdx, BlockIdxA, SlotsBin) ->
+    {SlotIdx, BlockIdxA, SlotsBin};
+build_all_slots(KVL, SC, Pos, SlotID, SlotIdx, BlockIdxA, SlotsBin) ->
     {SlotList, KVRem} =
         case SC of
             1 ->
@@ -620,7 +615,7 @@ build_all_slots(KVL, SC, Pos, Hashes, SlotID, SlotIdx, BlockIdxA, SlotsBin) ->
                 lists:split(?SLOT_SIZE, KVL)
         end,
     {LastKey, _V} = lists:last(SlotList),
-    {HashList, BlockIndex, SlotBin} = generate_binary_slot(SlotList),
+    {BlockIndex, SlotBin} = generate_binary_slot(SlotList),
     Length = byte_size(SlotBin),
     SlotIndexV = #slot_index_value{slot_id = SlotID,
                                     start_position = Pos,
@@ -628,7 +623,6 @@ build_all_slots(KVL, SC, Pos, Hashes, SlotID, SlotIdx, BlockIdxA, SlotsBin) ->
     build_all_slots(KVRem,
                     SC - 1,
                     Pos + Length,
-                    HashList ++ Hashes,
                     SlotID + 1,
                     [{LastKey, SlotIndexV}|SlotIdx],
                     array:set(SlotID - 1, BlockIndex, BlockIdxA),
@@ -760,7 +754,7 @@ generate_filenames(RootFilename) ->
 generate_binary_slot(KVL) ->
     
     HashFoldFun =
-        fun({K, V}, {HashListAcc, PosBinAcc, NoHashCount}) ->
+        fun({K, V}, {PosBinAcc, NoHashCount}) ->
             
             {_SQN, H1} = leveled_codec:strip_to_seqnhashonly({K, V}),
             case is_integer(H1) of 
@@ -768,8 +762,7 @@ generate_binary_slot(KVL) ->
                     PosH1 = double_hash(H1, K),
                     case NoHashCount of 
                         0 ->
-                            {[{{hash, H1}, K}|HashListAcc], 
-                                <<1:1/integer, 
+                            {<<1:1/integer, 
                                     PosH1:15/integer, 
                                     PosBinAcc/binary>>,
                                 0};
@@ -777,8 +770,7 @@ generate_binary_slot(KVL) ->
                             % The No Hash Count is an integer between 0 and 127
                             % and so at read time should count NHC + 1
                             NHC = N - 1,
-                            {[{{hash, H1}, K}|HashListAcc], 
-                                <<1:1/integer,
+                            {<<1:1/integer,
                                     PosH1:15/integer, 
                                     0:1/integer,
                                     NHC:7/integer, 
@@ -786,14 +778,12 @@ generate_binary_slot(KVL) ->
                                 0}
                     end;
                 false ->
-                    {HashListAcc, PosBinAcc, NoHashCount + 1}
+                    {PosBinAcc, NoHashCount + 1}
             end
          
          end,
 
-    {HashList, PosBinIndex0, NHC} = lists:foldr(HashFoldFun, 
-                                                {[], <<>>, 0}, 
-                                                KVL),
+    {PosBinIndex0, NHC} = lists:foldr(HashFoldFun, {<<>>, 0}, KVL),
     PosBinIndex1 = 
         case NHC of
             0 ->
@@ -850,7 +840,7 @@ generate_binary_slot(KVL) ->
     CRC32 = erlang:crc32(SlotBin),
     FullBin = <<CRC32:32/integer, SlotBin/binary>>,
 
-    {HashList, PosBinIndex1, FullBin}.
+    {PosBinIndex1, FullBin}.
 
 
 binaryslot_get(FullBin, Key, Hash, CachedPosLookup) ->
@@ -1252,7 +1242,7 @@ indexed_list_test() ->
 
     SW0 = os:timestamp(),
 
-    {_HashList, _PosBinIndex1, FullBin} = generate_binary_slot(KVL1),
+    {_PosBinIndex1, FullBin} = generate_binary_slot(KVL1),
     io:format(user,
                 "Indexed list created slot in ~w microseconds of size ~w~n",
                 [timer:now_diff(os:timestamp(), SW0), byte_size(FullBin)]),
@@ -1280,7 +1270,7 @@ indexed_list_mixedkeys_test() ->
     KVL1 = lists:sublist(KVL0, 33),
     Keys = lists:ukeysort(1, generate_indexkeys(60) ++ KVL1),
 
-    {_HashList, _PosBinIndex1, FullBin} = generate_binary_slot(Keys),
+    {PosBinIndex1, FullBin} = generate_binary_slot(Keys),
 
     {TestK1, TestV1} = lists:nth(4, KVL1),
     MH1 = leveled_codec:magic_hash(TestK1),
@@ -1301,7 +1291,7 @@ indexed_list_mixedkeys_test() ->
 
 indexed_list_allindexkeys_test() ->
     Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(150)), 128),
-    {_HashList, PosBinIndex1, FullBin} = generate_binary_slot(Keys),
+    {PosBinIndex1, FullBin} = generate_binary_slot(Keys),
     ?assertMatch(<<127:8/integer>>, PosBinIndex1),
     % SW = os:timestamp(),
     BinToList = binaryslot_tolist(FullBin),
@@ -1314,7 +1304,7 @@ indexed_list_allindexkeys_test() ->
 
 indexed_list_allindexkeys_trimmed_test() ->
     Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(150)), 128),
-    {_HashList, PosBinIndex1, FullBin} = generate_binary_slot(Keys),
+    {PosBinIndex1, FullBin} = generate_binary_slot(Keys),
     ?assertMatch(<<127:8/integer>>, PosBinIndex1),
     ?assertMatch(Keys, binaryslot_trimmedlist(FullBin, 
                                                 {i, 
@@ -1353,7 +1343,7 @@ indexed_list_mixedkeys_bitflip_test() ->
     KVL1 = lists:sublist(KVL0, 33),
     Keys = lists:ukeysort(1, generate_indexkeys(60) ++ KVL1),
 
-    {_HashList, _PosBinIndex1, FullBin} = generate_binary_slot(Keys),
+    {_PosBinIndex1, FullBin} = generate_binary_slot(Keys),
     L = byte_size(FullBin),
     Byte1 = random:uniform(L),
     <<PreB1:Byte1/binary, A:8/integer, PostByte1/binary>> = FullBin,
