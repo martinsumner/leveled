@@ -29,7 +29,6 @@
 %%% Bloom API
 %%%============================================================================
 
-
 empty(Width) when Width =< 256 ->
     FoldFun = fun(X, Acc) -> dict:store(X, <<0:4096>>, Acc) end,
     lists:foldl(FoldFun, dict:new(), lists:seq(0, Width - 1)).
@@ -37,7 +36,7 @@ empty(Width) when Width =< 256 ->
 enter({hash, no_lookup}, Bloom) ->
     Bloom;
 enter({hash, Hash}, Bloom) ->
-    {Slot0, Q, Bit1, Bit2, Bit3} = split_hash(Hash),
+    {Slot0, Q, Bit1, Bit2} = split_hash(Hash),
     Slot = Slot0 rem dict:size(Bloom),
     BitArray0 = dict:fetch(Slot, Bloom),
     {Pre, SplitArray0, Post} = split_array(BitArray0, Q),
@@ -45,7 +44,7 @@ enter({hash, Hash}, Bloom) ->
         fun(Bit, Arr) -> add_to_array(Bit, Arr, 1024) end,
     SplitArray1 = lists:foldl(FoldFun,
                                 SplitArray0,
-                                lists:usort([Bit1, Bit2, Bit3])),
+                                [Bit1, Bit2]),
     dict:store(Slot, <<Pre/binary, SplitArray1/binary, Post/binary>>, Bloom);
 enter(Key, Bloom) ->
     Hash = leveled_codec:magic_hash(Key),
@@ -53,7 +52,7 @@ enter(Key, Bloom) ->
 
 
 check({hash, Hash}, Bloom) ->
-    {Slot0, Q, Bit1, Bit2, Bit3} = split_hash(Hash),
+    {Slot0, Q, Bit1, Bit2} = split_hash(Hash),
     Slot = Slot0 rem dict:size(Bloom),
     BitArray = dict:fetch(Slot, Bloom),
     {_Pre, SplitArray, _Post} = split_array(BitArray, Q),
@@ -66,12 +65,7 @@ check({hash, Hash}, Bloom) ->
                 <<0:1>> ->
                     false;
                 <<1:1>> ->
-                    case getbit(Bit3, SplitArray, 1024) of
-                        <<0:1>> ->
-                            false;
-                        <<1:1>> ->
-                            true
-                    end
+                    true
             end
     end;
 check(Key, Bloom) ->
@@ -85,22 +79,17 @@ check(Key, Bloom) ->
 
 split_hash(Hash) ->
     Slot = split_for_slot(Hash),
-    {Q1, H1, H2, H3} = split_for_bits(Hash),
-    {Slot, Q1, H1, H2, H3}.
+    {Q1, H1, H2} = split_for_bits(Hash),
+    {Slot, Q1, H1, H2}.
 
 split_for_slot(Hash) ->
-    SlotH1 = Hash band 255,
-    SlotH2 = (Hash bsr 8) band 255,
-    SlotH3 = (Hash bsr 16) band 255,
-    SlotH4 = (Hash bsr 24) band 255,
-    (SlotH1 bxor SlotH2) bxor (SlotH3 bxor SlotH4).
+    Hash band 255.
 
 split_for_bits(Hash) ->
-    Q1 = Hash band 3,
-    H1 = (Hash bsr 2) band 1023,
-    H2 = (Hash bsr 12) band 1023,
-    H3 = (Hash bsr 22) band 1023,
-    {Q1, H1, H2, H3}.
+    H1 = (Hash bsr 8) band 1023,
+    H2 = (Hash bsr 18) band 1023,
+    Q1 = (Hash bsr 28) band 3,
+    {Q1, H1, H2}.
 
 split_array(Bin, Q) ->
     case Q of
