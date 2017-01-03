@@ -125,7 +125,6 @@
                         slot_lengths :: list(),
                         penciller :: pid(),
                         filename,
-                        lastfetch_cache,
                         blockindex_cache}).
 
 
@@ -298,18 +297,9 @@ starting({sst_newlevelzero, Filename, Slots, FetchFun, Penciller, MaxSQN},
 
 reader({get_kv, LedgerKey, Hash}, _From, State) ->
     SW = os:timestamp(),
-    {Result, Stage, SlotID, UpdState} = fetch(LedgerKey, Hash, State),
+    {Result, Stage, _SlotID, UpdState} = fetch(LedgerKey, Hash, State),
     UpdTimings = leveled_log:sst_timing(State#state.sst_timings, SW, Stage),
-    case {Result, Stage} of
-        {not_present, _} ->
-            {reply, Result, reader, UpdState#state{sst_timings = UpdTimings}};
-        {_KV, slot_cache} ->
-            {reply, Result, reader, UpdState#state{sst_timings = UpdTimings}};
-        {KV, _} ->
-            UpdCache = array:set(SlotID - 1, KV, State#state.lastfetch_cache),
-            {reply, Result, reader, UpdState#state{lastfetch_cache = UpdCache,
-                                                    sst_timings = UpdTimings}}
-    end;
+    {reply, Result, reader, UpdState#state{sst_timings = UpdTimings}};
 reader({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
     {reply,
         fetch_range(StartKey, EndKey, ScanWidth, State),
@@ -350,17 +340,8 @@ reader(close, _From, State) ->
 
 
 delete_pending({get_kv, LedgerKey, Hash}, _From, State) ->
-    {Result, Stage, SlotID, UpdState} = fetch(LedgerKey, Hash, State),
-    case {Result, Stage} of
-        {not_present, _} ->
-            {reply, Result, delete_pending, State, ?DELETE_TIMEOUT};
-        {KV, slot_lookup_hit} ->
-            UpdCache = array:set(SlotID - 1, KV, State#state.lastfetch_cache),
-            UpdState = State#state{lastfetch_cache = UpdCache},
-            {reply, Result, delete_pending, UpdState, ?DELETE_TIMEOUT};
-        _ ->
-            {reply, Result, delete_pending, State, ?DELETE_TIMEOUT}
-    end;
+    {Result, _Stage, _SlotID, UpdState} = fetch(LedgerKey, Hash, State),
+    {reply, Result, delete_pending, UpdState, ?DELETE_TIMEOUT};
 delete_pending({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
     {reply,
         fetch_range(StartKey, EndKey, ScanWidth, State),
@@ -443,19 +424,12 @@ fetch(LedgerKey, Hash, State) ->
                 [] ->
                     {not_present, slot_bloom,  SlotID, State};
                 _ ->
-                    LastKV = array:get(SlotID - 1,
-                                        State#state.lastfetch_cache),
-                    case LastKV of 
-                        {LedgerKey, _} ->
-                            {LastKV, slot_cache, SlotID, State};
-                        _ ->
-                            SlotBin = read_slot(State#state.handle, Slot),
-                            Result = binaryslot_get(SlotBin, 
-                                                    LedgerKey, 
-                                                    Hash, 
-                                                    {true, PosList}),
-                            {element(1, Result), slot_fetch, SlotID, State}
-                    end
+                    SlotBin = read_slot(State#state.handle, Slot),
+                    Result = binaryslot_get(SlotBin, 
+                                            LedgerKey, 
+                                            Hash, 
+                                            {true, PosList}),
+                    {element(1, Result), slot_fetch, SlotID, State}
             end 
     end.
 
@@ -573,12 +547,9 @@ read_file(Filename, State) ->
             undefined ->
                 BlockIndexCache = array:new([{size, SlotCount}, 
                                                 {default, none}]),
-                LastFetchCache = array:new([{size, SlotCount}]),
-                State#state{blockindex_cache = BlockIndexCache,
-                                lastfetch_cache = LastFetchCache};
+                State#state{blockindex_cache = BlockIndexCache};
             _ ->
-                LastFetchCache = array:new([{size, SlotCount}]),
-                State#state{lastfetch_cache = LastFetchCache}
+                State
         end,
 
     SkipL = leveled_skiplist:from_sortedlist(Summary#summary.index),
