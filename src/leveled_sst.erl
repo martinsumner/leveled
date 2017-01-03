@@ -303,12 +303,12 @@ reader({get_kv, LedgerKey, Hash}, _From, State) ->
     case {Result, Stage} of
         {not_present, _} ->
             {reply, Result, reader, UpdState#state{sst_timings = UpdTimings}};
-        {KV, slot_lookup_hit} ->
+        {_KV, slot_cache} ->
+            {reply, Result, reader, UpdState#state{sst_timings = UpdTimings}};
+        {KV, _} ->
             UpdCache = array:set(SlotID - 1, KV, State#state.lastfetch_cache),
             {reply, Result, reader, UpdState#state{lastfetch_cache = UpdCache,
-                                                    sst_timings = UpdTimings}};
-        _ ->
-            {reply, Result, reader, UpdState#state{sst_timings = UpdTimings}}
+                                                    sst_timings = UpdTimings}}
     end;
 reader({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
     {reply,
@@ -1477,6 +1477,15 @@ simple_persisted_test() ->
                                                 1,
                                                 KVList1,
                                                 length(KVList1)),
+    SW0 = os:timestamp(),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sst_get(Pid, K))
+                        end,
+                    KVList1),
+    io:format(user,
+                "Checking for ~w keys (once) in file with cache hit took ~w "
+                    ++ "microseconds~n",
+                [length(KVList1), timer:now_diff(os:timestamp(), SW0)]),
     SW1 = os:timestamp(),
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({K, V}, sst_get(Pid, K)),
