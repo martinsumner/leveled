@@ -45,7 +45,7 @@ enter({hash, Hash}, Bloom) ->
         fun(Bit, Arr) -> add_to_array(Bit, Arr, 1024) end,
     SplitArray1 = lists:foldl(FoldFun,
                                 SplitArray0,
-                                [Bit1, Bit2, Bit3]),
+                                lists:usort([Bit1, Bit2, Bit3])),
     dict:store(Slot, <<Pre/binary, SplitArray1/binary, Post/binary>>, Bloom);
 enter(Key, Bloom) ->
     Hash = leveled_codec:magic_hash(Key),

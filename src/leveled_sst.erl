@@ -1270,7 +1270,7 @@ indexed_list_mixedkeys_test() ->
     KVL1 = lists:sublist(KVL0, 33),
     Keys = lists:ukeysort(1, generate_indexkeys(60) ++ KVL1),
 
-    {PosBinIndex1, FullBin} = generate_binary_slot(Keys),
+    {_PosBinIndex1, FullBin} = generate_binary_slot(Keys),
 
     {TestK1, TestV1} = lists:nth(4, KVL1),
     MH1 = leveled_codec:magic_hash(TestK1),
