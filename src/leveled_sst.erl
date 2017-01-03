@@ -72,7 +72,7 @@
 -define(SLOT_SIZE, 128). % This is not configurable
 -define(COMPRESSION_LEVEL, 1).
 -define(BINARY_SETTINGS, [{compressed, ?COMPRESSION_LEVEL}]).
--define(LEVEL_BLOOM_BITS, [{0, 8}, {1, 10}, {2, 8}, {default, 6}]).
+% -define(LEVEL_BLOOM_BITS, [{0, 8}, {1, 10}, {2, 8}, {default, 6}]).
 -define(MERGE_SCANWIDTH, 16).
 -define(DISCARD_EXT, ".discarded").
 -define(DELETE_TIMEOUT, 10000).
@@ -117,8 +117,7 @@
                         last_key :: tuple(),
                         index :: list(), % leveled_skiplist
                         size :: integer(),
-                        max_sqn :: integer(),
-                        bloom}).
+                        max_sqn :: integer()}).
 
 -record(state,      {summary,
                         handle :: file:fd(),
@@ -417,60 +416,47 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 
 fetch(LedgerKey, Hash, State) ->
     Summary = State#state.summary,
-    case leveled_tinybloom:check({hash, Hash},
-                                    Summary#summary.bloom) of
-        false ->
-            {not_present, summary_bloom, null, State};
-        true ->
-            Slot = lookup_slot(LedgerKey, Summary#summary.index),
-            SlotID = Slot#slot_index_value.slot_id,
-            CachedBlockIdx = array:get(SlotID - 1, 
+    Slot = lookup_slot(LedgerKey, Summary#summary.index),
+    SlotID = Slot#slot_index_value.slot_id,
+    CachedBlockIdx = array:get(SlotID - 1, 
+                                State#state.blockindex_cache),
+    case CachedBlockIdx of 
+        none ->
+            SlotBin = read_slot(State#state.handle, Slot),
+            {Result, BlockIdx} = binaryslot_get(SlotBin, 
+                                                LedgerKey, 
+                                                Hash, 
+                                                none),
+            BlockIndexCache = array:set(SlotID - 1, 
+                                        BlockIdx,
                                         State#state.blockindex_cache),
-            case CachedBlockIdx of 
-                none ->
-                    SlotBin = read_slot(State#state.handle, Slot),
-                    {Result, BlockIdx} = binaryslot_get(SlotBin, 
-                                                        LedgerKey, 
-                                                        Hash, 
-                                                        none),
-                    BlockIndexCache = array:set(SlotID - 1, 
-                                                BlockIdx,
-                                                State#state.blockindex_cache),
-                    {Result, 
-                        slot_fetch, 
-                        Slot#slot_index_value.slot_id,
-                        State#state{blockindex_cache = BlockIndexCache}};
+            {Result, 
+                slot_fetch, 
+                Slot#slot_index_value.slot_id,
+                State#state{blockindex_cache = BlockIndexCache}};
+        _ ->
+            PosList = find_pos(CachedBlockIdx, 
+                                double_hash(Hash, LedgerKey), 
+                                [], 
+                                0),
+            case PosList of 
+                [] ->
+                    {not_present, slot_bloom,  SlotID, State};
                 _ ->
-                    PosList = find_pos(CachedBlockIdx, 
-                                        double_hash(Hash, LedgerKey), 
-                                        [], 
-                                        0),
-                    case PosList of 
-                        [] ->
-                            {not_present,
-                                slot_bloom, 
-                                SlotID,
-                                State};
+                    LastKV = array:get(SlotID - 1,
+                                        State#state.lastfetch_cache),
+                    case LastKV of 
+                        {LedgerKey, _} ->
+                            {LastKV, slot_cache, SlotID, State};
                         _ ->
-                            LastKV = array:get(SlotID - 1,
-                                                State#state.lastfetch_cache),
-                            case LastKV of 
-                                {LedgerKey, _} ->
-                                    {LastKV, slot_cache, SlotID, State};
-                                _ ->
-                                    SlotBin = read_slot(State#state.handle, 
-                                                        Slot),
-                                    Result = binaryslot_get(SlotBin, 
-                                                            LedgerKey, 
-                                                            Hash, 
-                                                            {true, PosList}),
-                                    {element(1, Result), 
-                                        slot_fetch,
-                                        SlotID,
-                                        State}
-                            end
-                    end 
-            end
+                            SlotBin = read_slot(State#state.handle, Slot),
+                            Result = binaryslot_get(SlotBin, 
+                                                    LedgerKey, 
+                                                    Hash, 
+                                                    {true, PosList}),
+                            {element(1, Result), slot_fetch, SlotID, State}
+                    end
+            end 
     end.
 
 
@@ -613,26 +599,12 @@ open_reader(Filename) ->
     {ok, SummaryBin} = file:pread(Handle, SlotsLength + 8, SummaryLength),
     {Handle, SummaryBin}.
 
-build_table_summary(SlotIndex, AllHashes, Level, FirstKey, L, MaxSQN) ->
-    BloomBits =
-        case lists:keyfind(Level, 1, ?LEVEL_BLOOM_BITS) of
-            {Level, N} ->
-                N;
-            false ->
-                element(2, lists:keyfind(default, 1, ?LEVEL_BLOOM_BITS))
-        end,
-    BloomSlots = max((length(AllHashes) * BloomBits) div 4096, 1),
-    BloomAddFun =
-        fun({H, _K}, Bloom) -> leveled_tinybloom:enter(H, Bloom) end,
-    Bloom = lists:foldr(BloomAddFun,
-                            leveled_tinybloom:empty(BloomSlots),
-                            AllHashes),
+build_table_summary(SlotIndex, _AllHashes, _Level, FirstKey, L, MaxSQN) ->
     [{LastKey, _LastV}|_Rest] = SlotIndex,
     Summary = #summary{first_key = FirstKey,
                         last_key = LastKey,
                         size = L,
                         index = lists:reverse(SlotIndex),
-                        bloom = Bloom,
                         max_sqn = MaxSQN},
     SummBin = term_to_binary(Summary, ?BINARY_SETTINGS),
     SummCRC = erlang:crc32(SummBin),
