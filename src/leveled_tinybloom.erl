@@ -36,32 +36,30 @@ empty(Width) when Width =< 256 ->
 enter({hash, no_lookup}, Bloom) ->
     Bloom;
 enter({hash, Hash}, Bloom) ->
-    {Slot0, Q, Bit1, Bit2} = split_hash(Hash),
+    {Slot0, Bit1, Bit2} = split_hash(Hash),
     Slot = Slot0 rem dict:size(Bloom),
     BitArray0 = dict:fetch(Slot, Bloom),
-    {Pre, SplitArray0, Post} = split_array(BitArray0, Q),
     FoldFun =
-        fun(Bit, Arr) -> add_to_array(Bit, Arr, 1024) end,
-    SplitArray1 = lists:foldl(FoldFun,
-                                SplitArray0,
+        fun(Bit, Arr) -> add_to_array(Bit, Arr, 4096) end,
+    BitArray1 = lists:foldl(FoldFun,
+                                BitArray0,
                                 [Bit1, Bit2]),
-    dict:store(Slot, <<Pre/binary, SplitArray1/binary, Post/binary>>, Bloom);
+    dict:store(Slot, <<BitArray1/binary>>, Bloom);
 enter(Key, Bloom) ->
     Hash = leveled_codec:magic_hash(Key),
     enter({hash, Hash}, Bloom).
 
 
 check({hash, Hash}, Bloom) ->
-    {Slot0, Q, Bit1, Bit2} = split_hash(Hash),
+    {Slot0, Bit1, Bit2} = split_hash(Hash),
     Slot = Slot0 rem dict:size(Bloom),
     BitArray = dict:fetch(Slot, Bloom),
-    {_Pre, SplitArray, _Post} = split_array(BitArray, Q),
     
-    case getbit(Bit1, SplitArray, 1024) of
+    case getbit(Bit1, BitArray, 4096) of
         <<0:1>> ->
             false;
         <<1:1>> ->
-            case getbit(Bit2, SplitArray, 1024) of
+            case getbit(Bit2, BitArray, 4096) of
                 <<0:1>> ->
                     false;
                 <<1:1>> ->
@@ -79,33 +77,16 @@ check(Key, Bloom) ->
 
 split_hash(Hash) ->
     Slot = split_for_slot(Hash),
-    {Q1, H1, H2} = split_for_bits(Hash),
-    {Slot, Q1, H1, H2}.
+    {H1, H2} = split_for_bits(Hash),
+    {Slot, H1, H2}.
 
 split_for_slot(Hash) ->
     Hash band 255.
 
 split_for_bits(Hash) ->
-    H1 = (Hash bsr 8) band 1023,
-    H2 = (Hash bsr 18) band 1023,
-    Q1 = (Hash bsr 28) band 3,
-    {Q1, H1, H2}.
-
-split_array(Bin, Q) ->
-    case Q of
-        0 ->
-            <<ToUse:128/binary, Post/binary>> = Bin,
-            {<<>>, ToUse, Post};
-        1 ->
-            <<Pre:128/binary, ToUse:128/binary, Post/binary>> = Bin,
-            {Pre, ToUse, Post};
-        2 ->
-            <<Pre:256/binary, ToUse:128/binary, Post/binary>> = Bin,
-            {Pre, ToUse, Post};
-        3 ->
-            <<Pre:384/binary, ToUse:128/binary>> = Bin,
-            {Pre, ToUse, <<>>}
-    end.
+    H1 = (Hash bsr 8) band 4095,
+    H2 = (Hash bsr 20) band 4095,
+    {H1, H2}.
 
 add_to_array(Bit, BitArray, ArrayLength) ->
     RestLen = ArrayLength - Bit - 1,
