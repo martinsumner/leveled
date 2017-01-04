@@ -74,6 +74,7 @@
 -define(BINARY_SETTINGS, [{compressed, ?COMPRESSION_LEVEL}]).
 % -define(LEVEL_BLOOM_BITS, [{0, 8}, {1, 10}, {2, 8}, {default, 6}]).
 -define(MERGE_SCANWIDTH, 16).
+-define(INDEX_MARKER_WIDTH, 16).
 -define(DISCARD_EXT, ".discarded").
 -define(DELETE_TIMEOUT, 10000).
 
@@ -115,14 +116,13 @@
 
 -record(summary,    {first_key :: tuple(),
                         last_key :: tuple(),
-                        index :: list(), % leveled_skiplist
+                        index :: tuple(), 
                         size :: integer(),
                         max_sqn :: integer()}).
 
 -record(state,      {summary,
                         handle :: file:fd(),
                         sst_timings :: tuple(),
-                        slot_lengths :: list(),
                         penciller :: pid(),
                         filename,
                         blockindex_cache}).
@@ -530,14 +530,8 @@ write_file(Filename, SummaryBin, SlotsBin) ->
 
 read_file(Filename, State) ->
     {Handle, SummaryBin} = open_reader(Filename),
-    Summary = read_table_summary(SummaryBin),
-    SlotLengthFetchFun =
-        fun({_K, V}, Acc) ->
-                [{V#slot_index_value.slot_id,
-                    V#slot_index_value.length}|Acc]
-        end,
-    SlotLengths = lists:foldr(SlotLengthFetchFun, [], Summary#summary.index),
-    SlotCount = length(SlotLengths),
+    {Summary, SlotList} = read_table_summary(SummaryBin),
+    SlotCount = length(SlotList),
     UpdState = 
         case State#state.blockindex_cache of 
             undefined ->
@@ -547,17 +541,15 @@ read_file(Filename, State) ->
             _ ->
                 State
         end,
-
-    SkipL = leveled_skiplist:from_sortedlist(Summary#summary.index),
-    UpdSummary = Summary#summary{index = SkipL},
+    SlotIndex = from_list(SlotList),
+    UpdSummary = Summary#summary{index = SlotIndex},
     leveled_log:log("SST03", [Filename,
                                 Summary#summary.size,
                                 SlotCount,
                                 Summary#summary.max_sqn]),
     UpdState#state{summary = UpdSummary,
-                slot_lengths = SlotLengths,
-                handle = Handle,
-                filename = Filename}.
+                    handle = Handle,
+                    filename = Filename}.
 
 open_reader(Filename) ->
     {ok, Handle} = file:open(Filename, [binary, raw, read]),
@@ -566,14 +558,14 @@ open_reader(Filename) ->
     {ok, SummaryBin} = file:pread(Handle, SlotsLength + 8, SummaryLength),
     {Handle, SummaryBin}.
 
-build_table_summary(SlotIndex, _Level, FirstKey, L, MaxSQN) ->
-    [{LastKey, _LastV}|_Rest] = SlotIndex,
+build_table_summary(SlotList, _Level, FirstKey, L, MaxSQN) ->
+    [{LastKey, _LastV}|_Rest] = SlotList,
     Summary = #summary{first_key = FirstKey,
                         last_key = LastKey,
                         size = L,
-                        index = lists:reverse(SlotIndex),
                         max_sqn = MaxSQN},
-    SummBin = term_to_binary(Summary, ?BINARY_SETTINGS),
+    SummBin = term_to_binary({Summary, lists:reverse(SlotList)},
+                                ?BINARY_SETTINGS),
     SummCRC = erlang:crc32(SummBin),
     <<SummCRC:32/integer, SummBin/binary>>.
 
@@ -628,50 +620,6 @@ build_all_slots(KVL, SC, Pos, SlotID, SlotIdx, BlockIdxA, SlotsBin) ->
                     array:set(SlotID - 1, BlockIndex, BlockIdxA),
                     <<SlotsBin/binary, SlotBin/binary>>).
 
-
-%% Returns a section from the summary index and two booleans to indicate if
-%% the first slot needs trimming, or the last slot
-lookup_slots(StartKey, EndKey, SkipList) ->
-    SlotsOnlyFun = fun({_K, V}) -> V end,
-    {KSL, LTrim, RTrim} = lookup_slots_int(StartKey, EndKey, SkipList),
-    {lists:map(SlotsOnlyFun, KSL), LTrim, RTrim}.
-
-lookup_slots_int(all, all, SkipList) ->
-    {leveled_skiplist:to_list(SkipList), false, false};
-lookup_slots_int(StartKey, all, SkipList) ->
-    L = leveled_skiplist:to_list(SkipList),
-    LTrimFun = fun({K, _V}) -> K < StartKey end,
-    {_LDrop, RKeep0} = lists:splitwith(LTrimFun, L),
-    [{FirstKey, _V}|_Rest] = RKeep0,
-    LTrim = FirstKey < StartKey,
-    {RKeep0, LTrim, false};
-lookup_slots_int(StartKey, EndKey, SkipList) ->
-    case leveled_skiplist:to_range(SkipList, StartKey, EndKey) of
-        [] ->
-            BestKey = leveled_skiplist:key_above(SkipList, StartKey),
-            {[BestKey], true, true};
-        L0 ->
-            {LastKey, _LastVal} = lists:last(L0),
-            case LastKey of
-                EndKey ->
-                    {L0, true, false};
-                _ ->
-                    LTail = leveled_skiplist:key_above_notequals(SkipList,
-                                                                    LastKey),
-                    case LTail of
-                        false ->
-                            {L0, true, false};
-                        _ ->
-                            {L0 ++ [LTail], true, true}
-                    end
-            end
-    end.
-        
-
-lookup_slot(Key, SkipList) ->
-    {_Mark, Slot} = leveled_skiplist:key_above(SkipList, Key),
-    Slot.
-
 read_slot(Handle, Slot) ->
     {ok, SlotBin} = file:pread(Handle,
                                 Slot#slot_index_value.start_position,
@@ -725,6 +673,103 @@ generate_filenames(RootFilename) ->
             {filename:join(DN, FP_NOEXT) ++ ".pnd",
                 filename:join(DN, FP_NOEXT) ++ ".sst"}
     end.    
+
+
+%%%============================================================================
+%%% SlotIndex Implementation
+%%%============================================================================
+
+%% The Slot Index is stored as a flat (sorted) list of {Key, Slot} where Key
+%% is the last key within the slot.
+%%
+%% This implementation of the SlotIndex stores it as a tuple with the original
+%% list as the second element and a list of mark points as the first element
+%% containing every 16th key.  The Mark points are stored as {Mark, Index},
+%% where the Index correspnds with the nth point in the original list that the
+%% Mark occurs.
+
+from_list(SlotList) ->
+    L = length(SlotList),
+    MarkerList = set_marks(lists:reverse(SlotList),
+                            {?INDEX_MARKER_WIDTH,  L rem ?INDEX_MARKER_WIDTH},
+                            L,
+                            []),
+    {MarkerList, SlotList}.
+
+set_marks([], _MarkInfo, 0, MarkerList) ->
+    MarkerList;
+set_marks([{Key, _Slot}|Rest], {MarkerWidth, MarkPoint}, Count, MarkerList) ->
+    case Count rem MarkerWidth of
+        MarkPoint ->
+            set_marks(Rest,
+                        {MarkerWidth, MarkPoint},
+                        Count - 1,
+                        [{Key, Count}|MarkerList]);
+        _ ->
+            set_marks(Rest,
+                        {MarkerWidth, MarkPoint},
+                        Count - 1,
+                        MarkerList)
+    end.
+
+find_mark(Key, [{Mark, Pos}|_Rest]) when Mark >= Key ->
+    Pos;
+find_mark(Key, [_H|T]) ->
+    find_mark(Key, T).
+
+lookup_slot(Key, {MarkerList, SlotList}) ->
+    Pos = find_mark(Key, MarkerList),
+    SubList = lists:sublist(SlotList, max(1, Pos - ?INDEX_MARKER_WIDTH), Pos),
+    Slot = find_mark(Key, SubList),
+    Slot.
+
+%% Returns a section from the summary index and two booleans to indicate if
+%% the first slot needs trimming, or the last slot
+lookup_slots(StartKey, EndKey, {_MarkerList, SlotList}) ->
+    SlotsOnlyFun = fun({_K, V}) -> V end,
+    {KSL, LTrim, RTrim} = lookup_slots_int(StartKey, EndKey, SlotList),
+    {lists:map(SlotsOnlyFun, KSL), LTrim, RTrim}.
+
+lookup_slots_int(all, all, SlotList) ->
+    {SlotList, false, false};
+lookup_slots_int(StartKey, all, SlotList) ->
+    LTrimFun = fun({K, _V}) -> K < StartKey end,
+    {_LDrop, RKeep0} = lists:splitwith(LTrimFun, SlotList),
+    {RKeep0, true, false};
+lookup_slots_int(StartKey, EndKey, SlotList) ->
+    {RKeep, true, false} = lookup_slots_int(StartKey, all, SlotList),
+    [LeftMost|RKeep0] = RKeep,
+    {LeftMostK, LeftMostV} = LeftMost,
+    RTrimFun = fun({K, _V}) -> not leveled_codec:endkey_passed(EndKey, K) end,
+    case leveled_codec:endkey_passed(EndKey, LeftMostK) of
+        true ->
+            {[{LeftMostK, LeftMostV}],
+                true,
+                true};
+        false ->
+            case LeftMostK of
+                EndKey ->
+                    {[{LeftMostK, LeftMostV}],
+                        true,
+                        false};
+                _ ->
+                    {LKeep, RDisc} = lists:splitwith(RTrimFun, RKeep0),
+                    case RDisc of
+                        [] ->
+                            {[LeftMost|LKeep],
+                                true,
+                                true};
+                        [{RDiscK1, RDiscV1}|_Rest] when RDiscK1 == EndKey ->
+                            {[LeftMost|LKeep] ++ [{RDiscK1, RDiscV1}],
+                                true,
+                                false};
+                        [{RDiscK1, RDiscV1}|_Rest] ->
+                            {[LeftMost|LKeep] ++ [{RDiscK1, RDiscV1}],
+                                true,
+                                true}
+                    end
+            end
+    end.
 
 
 %%%============================================================================
