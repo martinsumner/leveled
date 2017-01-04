@@ -532,15 +532,8 @@ read_file(Filename, State) ->
     {Handle, SummaryBin} = open_reader(Filename),
     {Summary, SlotList} = read_table_summary(SummaryBin),
     SlotCount = length(SlotList),
-    UpdState = 
-        case State#state.blockindex_cache of 
-            undefined ->
-                BlockIndexCache = array:new([{size, SlotCount}, 
-                                                {default, none}]),
-                State#state{blockindex_cache = BlockIndexCache};
-            _ ->
-                State
-        end,
+    BlockIndexCache = array:new([{size, SlotCount}, {default, none}]),
+    UpdState = State#state{blockindex_cache = BlockIndexCache},
     SlotIndex = from_list(SlotList),
     UpdSummary = Summary#summary{index = SlotIndex},
     leveled_log:log("SST03", [Filename,
@@ -1231,14 +1224,8 @@ generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
 generate_randomkeys(_Seqn, 0, Acc, _BucketLow, _BucketHigh) ->
     Acc;
 generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
-    BNumber =
-        case BRange of
-            0 ->
-                string:right(integer_to_list(BucketLow), 4, $0);
-            _ ->
-                BRand = random:uniform(BRange),
-                string:right(integer_to_list(BucketLow + BRand), 4, $0)
-        end,
+    BRand = random:uniform(BRange),
+    BNumber = string:right(integer_to_list(BucketLow + BRand), 4, $0),
     KNumber = string:right(integer_to_list(random:uniform(1000)), 6, $0),
     LedgerKey = leveled_codec:to_ledgerkey("Bucket" ++ BNumber,
                                             "Key" ++ KNumber,
@@ -1334,6 +1321,20 @@ indexed_list_mixedkeys_test() ->
     test_binary_slot(FullBin, TestK4, MH4, {TestK4, TestV4}),
     test_binary_slot(FullBin, TestK5, MH5, {TestK5, TestV5}).
 
+indexed_list_mixedkeys2_test() ->
+    KVL0 = lists:ukeysort(1, generate_randomkeys(1, 50, 1, 4)),
+    KVL1 = lists:sublist(KVL0, 33),
+    IdxKeys1 = lists:ukeysort(1, generate_indexkeys(30)),
+    IdxKeys2 = lists:ukeysort(1, generate_indexkeys(30)),
+    % this isn't actually ordered correctly
+    Keys = IdxKeys1 ++ KVL1 ++ IdxKeys2,
+    {_PosBinIndex1, FullBin} = generate_binary_slot(Keys),
+    lists:foreach(fun({K, V}) ->
+                        MH = leveled_codec:magic_hash(K),
+                        test_binary_slot(FullBin, K, MH, {K, V})
+                        end,
+                    KVL1).
+
 indexed_list_allindexkeys_test() ->
     Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(150)), 128),
     {PosBinIndex1, FullBin} = generate_binary_slot(Keys),
@@ -1387,7 +1388,6 @@ indexed_list_mixedkeys_bitflip_test() ->
     KVL0 = lists:ukeysort(1, generate_randomkeys(1, 50, 1, 4)),
     KVL1 = lists:sublist(KVL0, 33),
     Keys = lists:ukeysort(1, generate_indexkeys(60) ++ KVL1),
-
     {_PosBinIndex1, FullBin} = generate_binary_slot(Keys),
     L = byte_size(FullBin),
     Byte1 = random:uniform(L),
@@ -1471,6 +1471,48 @@ merge_test() ->
     ok = file:delete("../test/level1_src.sst"),
     ok = file:delete("../test/level2_src.sst"),
     ok = file:delete("../test/level2_merge.sst").
+    
+
+simple_persisted_range_test() ->
+    Filename = "../test/simple_test",
+    KVList0 = generate_randomkeys(1, ?SLOT_SIZE * 16, 1, 20),
+    KVList1 = lists:ukeysort(1, KVList0),
+    [{FirstKey, _FV}|_Rest] = KVList1,
+    {LastKey, _LV} = lists:last(KVList1),
+    {ok, Pid, {FirstKey, LastKey}} = sst_new(Filename,
+                                                1,
+                                                KVList1,
+                                                length(KVList1)),
+    
+    {o, B, K, null} = LastKey,
+    SK1 = {o, B, K, 0},
+    EK1 = {o, B, K, 1},
+    FetchListA1 = sst_getkvrange(Pid, SK1, EK1, 1),
+    ?assertMatch([], FetchListA1),
+    
+    SK2 = element(1, lists:nth(127, KVList1)),
+    SK3 = element(1, lists:nth(128, KVList1)),
+    SK4 = element(1, lists:nth(129, KVList1)),
+    SK5 = element(1, lists:nth(130, KVList1)),
+    
+    EK2 = element(1, lists:nth(255, KVList1)),
+    EK3 = element(1, lists:nth(256, KVList1)),
+    EK4 = element(1, lists:nth(257, KVList1)),
+    EK5 = element(1, lists:nth(258, KVList1)),
+    
+    TestFun =
+        fun({SK, EK}) ->
+            FetchList = sst_getkvrange(Pid, SK, EK, 4),
+            ?assertMatch(SK, element(1, lists:nth(1, FetchList))),
+            ?assertMatch(EK, element(1, lists:last(FetchList)))
+        end,
+    
+    TL2 = lists:map(fun(EK) -> {SK2, EK} end, [EK2, EK3, EK4, EK5]),
+    TL3 = lists:map(fun(EK) -> {SK3, EK} end, [EK2, EK3, EK4, EK5]),
+    TL4 = lists:map(fun(EK) -> {SK4, EK} end, [EK2, EK3, EK4, EK5]),
+    TL5 = lists:map(fun(EK) -> {SK5, EK} end, [EK2, EK3, EK4, EK5]),
+    lists:foreach(TestFun, TL2 ++ TL3 ++ TL4 ++ TL5).                
+    
     
 
 simple_persisted_test() ->
@@ -1635,6 +1677,15 @@ key_dominates_test() ->
     ?assertMatch({skipped_key, KL2, [KV2]},
                     key_dominates([KV7|KL2], [KV2], {true, 1})).
 
-
+nonsense_coverage_test() ->
+    {ok, Pid} = gen_fsm:start(?MODULE, [], []),
+    ok = gen_fsm:send_all_state_event(Pid, nonsense),
+    ?assertMatch({next_state, reader, #state{}}, handle_info(nonsense,
+                                                                reader,
+                                                                #state{})),
+    ?assertMatch({ok, reader, #state{}}, code_change(nonsense,
+                                                        reader,
+                                                        #state{},
+                                                        nonsense)).
 
 -endif.

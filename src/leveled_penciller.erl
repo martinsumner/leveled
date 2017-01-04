@@ -172,7 +172,6 @@
         pcl_fetchkeys/5,
         pcl_fetchnextkey/5,
         pcl_checksequencenumber/3,
-        pcl_checksequencenumber/4,
         pcl_workforclerk/1,
         pcl_promptmanifestchange/2,
         pcl_confirml0complete/4,
@@ -280,9 +279,6 @@ pcl_checksequencenumber(Pid, Key, SQN) ->
         Hash /= no_lookup ->
             gen_server:call(Pid, {check_sqn, Key, Hash, SQN}, infinity)
     end.
-
-pcl_checksequencenumber(Pid, Key, Hash, SQN) ->
-    gen_server:call(Pid, {check_sqn, Key, Hash, SQN}, infinity).
 
 pcl_workforclerk(Pid) ->
     gen_server:call(Pid, work_for_clerk, infinity).
@@ -686,13 +682,7 @@ update_levelzero(L0Size, {PushedTree, MinSQN, MaxSQN},
                 _ ->
                     leveled_log:log_timer("P0031", [], SW),
                     UpdState
-            end;
-        
-        NewL0Size == L0Size ->
-            leveled_log:log_timer("P0031", [], SW),
-            State#state{levelzero_cache=L0Cache,
-                        levelzero_size=L0Size,
-                        ledger_sqn=LedgerSQN}
+            end
     end.
 
 

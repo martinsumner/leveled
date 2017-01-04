@@ -37,7 +37,6 @@
         strip_to_keyonly/1,
         strip_to_seqonly/1,
         strip_to_statusonly/1,
-        strip_to_keyseqstatusonly/1,
         strip_to_keyseqonly/1,
         strip_to_seqnhashonly/1,
         striphead_to_details/1,
@@ -80,8 +79,6 @@ magic_hash({?RIAK_TAG, Bucket, Key, _SubKey}) ->
     magic_hash({Bucket, Key});
 magic_hash({?STD_TAG, Bucket, Key, _SubKey}) ->
     magic_hash({Bucket, Key});
-magic_hash({?IDX_TAG, _B, _Idx, _Key}) ->
-    no_lookup;
 magic_hash(AnyKey) ->
     BK = term_to_binary(AnyKey),
     H = 5381,
@@ -111,10 +108,7 @@ inker_reload_strategy(AltList) ->
                     ReloadStrategy0,
                     AltList).
 
-strip_to_keyonly({keyonly, K}) -> K;
 strip_to_keyonly({K, _V}) -> K.
-
-strip_to_keyseqstatusonly({K, {SeqN, St, _, _MD}}) -> {K, SeqN, St}.
 
 strip_to_statusonly({_, {_, St, _, _}}) -> St.
 
