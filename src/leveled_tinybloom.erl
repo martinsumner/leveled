@@ -29,7 +29,6 @@
 %%% Bloom API
 %%%============================================================================
 
-
 empty(Width) when Width =< 256 ->
     FoldFun = fun(X, Acc) -> dict:store(X, <<0:4096>>, Acc) end,
     lists:foldl(FoldFun, dict:new(), lists:seq(0, Width - 1)).
@@ -37,41 +36,34 @@ empty(Width) when Width =< 256 ->
 enter({hash, no_lookup}, Bloom) ->
     Bloom;
 enter({hash, Hash}, Bloom) ->
-    {Slot0, Q, Bit1, Bit2, Bit3} = split_hash(Hash),
+    {Slot0, Bit1, Bit2} = split_hash(Hash),
     Slot = Slot0 rem dict:size(Bloom),
     BitArray0 = dict:fetch(Slot, Bloom),
-    {Pre, SplitArray0, Post} = split_array(BitArray0, Q),
     FoldFun =
-        fun(Bit, Arr) -> add_to_array(Bit, Arr, 1024) end,
-    SplitArray1 = lists:foldl(FoldFun,
-                                SplitArray0,
-                                lists:usort([Bit1, Bit2, Bit3])),
-    dict:store(Slot, <<Pre/binary, SplitArray1/binary, Post/binary>>, Bloom);
+        fun(Bit, Arr) -> add_to_array(Bit, Arr, 4096) end,
+    BitArray1 = lists:foldl(FoldFun,
+                                BitArray0,
+                                lists:usort([Bit1, Bit2])),
+    dict:store(Slot, <<BitArray1/binary>>, Bloom);
 enter(Key, Bloom) ->
     Hash = leveled_codec:magic_hash(Key),
     enter({hash, Hash}, Bloom).
 
 
 check({hash, Hash}, Bloom) ->
-    {Slot0, Q, Bit1, Bit2, Bit3} = split_hash(Hash),
+    {Slot0, Bit1, Bit2} = split_hash(Hash),
     Slot = Slot0 rem dict:size(Bloom),
     BitArray = dict:fetch(Slot, Bloom),
-    {_Pre, SplitArray, _Post} = split_array(BitArray, Q),
     
-    case getbit(Bit1, SplitArray, 1024) of
+    case getbit(Bit1, BitArray, 4096) of
         <<0:1>> ->
             false;
         <<1:1>> ->
-            case getbit(Bit2, SplitArray, 1024) of
+            case getbit(Bit2, BitArray, 4096) of
                 <<0:1>> ->
                     false;
                 <<1:1>> ->
-                    case getbit(Bit3, SplitArray, 1024) of
-                        <<0:1>> ->
-                            false;
-                        <<1:1>> ->
-                            true
-                    end
+                    true
             end
     end;
 check(Key, Bloom) ->
@@ -84,51 +76,17 @@ check(Key, Bloom) ->
 %%%============================================================================
 
 split_hash(Hash) ->
-    Slot = split_for_slot(Hash),
-    {Q1, H1, H2, H3} = split_for_bits(Hash),
-    {Slot, Q1, H1, H2, H3}.
-
-split_for_slot(Hash) ->
-    SlotH1 = Hash band 255,
-    SlotH2 = (Hash bsr 8) band 255,
-    SlotH3 = (Hash bsr 16) band 255,
-    SlotH4 = (Hash bsr 24) band 255,
-    (SlotH1 bxor SlotH2) bxor (SlotH3 bxor SlotH4).
-
-split_for_bits(Hash) ->
-    Q1 = Hash band 3,
-    H1 = (Hash bsr 2) band 1023,
-    H2 = (Hash bsr 12) band 1023,
-    H3 = (Hash bsr 22) band 1023,
-    {Q1, H1, H2, H3}.
-
-split_array(Bin, Q) ->
-    case Q of
-        0 ->
-            <<ToUse:128/binary, Post/binary>> = Bin,
-            {<<>>, ToUse, Post};
-        1 ->
-            <<Pre:128/binary, ToUse:128/binary, Post/binary>> = Bin,
-            {Pre, ToUse, Post};
-        2 ->
-            <<Pre:256/binary, ToUse:128/binary, Post/binary>> = Bin,
-            {Pre, ToUse, Post};
-        3 ->
-            <<Pre:384/binary, ToUse:128/binary>> = Bin,
-            {Pre, ToUse, <<>>}
-    end.
+    H0 = Hash band 255,
+    H1 = (Hash bsr 8) band 4095,
+    H2 = Hash bsr 20,
+    {H0, H1, H2}.
 
 add_to_array(Bit, BitArray, ArrayLength) ->
     RestLen = ArrayLength - Bit - 1,
     <<Head:Bit/bitstring,
-        B:1/integer,
+        _B:1/integer,
         Rest:RestLen/bitstring>> = BitArray,
-    case B of
-        0 ->
-            <<Head/bitstring, 1:1, Rest/bitstring>>;
-        1 ->
-            BitArray
-    end.
+    <<Head/bitstring, 1:1, Rest/bitstring>>.
 
 getbit(Bit, BitArray, ArrayLength) ->
     RestLen = ArrayLength - Bit - 1,
