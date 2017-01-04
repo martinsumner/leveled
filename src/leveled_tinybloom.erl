@@ -43,7 +43,7 @@ enter({hash, Hash}, Bloom) ->
         fun(Bit, Arr) -> add_to_array(Bit, Arr, 4096) end,
     BitArray1 = lists:foldl(FoldFun,
                                 BitArray0,
-                                [Bit1, Bit2]),
+                                lists:usort([Bit1, Bit2])),
     dict:store(Slot, <<BitArray1/binary>>, Bloom);
 enter(Key, Bloom) ->
     Hash = leveled_codec:magic_hash(Key),
@@ -76,29 +76,17 @@ check(Key, Bloom) ->
 %%%============================================================================
 
 split_hash(Hash) ->
-    Slot = split_for_slot(Hash),
-    {H1, H2} = split_for_bits(Hash),
-    {Slot, H1, H2}.
-
-split_for_slot(Hash) ->
-    Hash band 255.
-
-split_for_bits(Hash) ->
+    H0 = Hash band 255,
     H1 = (Hash bsr 8) band 4095,
-    H2 = (Hash bsr 20) band 4095,
-    {H1, H2}.
+    H2 = Hash bsr 20,
+    {H0, H1, H2}.
 
 add_to_array(Bit, BitArray, ArrayLength) ->
     RestLen = ArrayLength - Bit - 1,
     <<Head:Bit/bitstring,
-        B:1/integer,
+        _B:1/integer,
         Rest:RestLen/bitstring>> = BitArray,
-    case B of
-        0 ->
-            <<Head/bitstring, 1:1, Rest/bitstring>>;
-        1 ->
-            BitArray
-    end.
+    <<Head/bitstring, 1:1, Rest/bitstring>>.
 
 getbit(Bit, BitArray, ArrayLength) ->
     RestLen = ArrayLength - Bit - 1,
