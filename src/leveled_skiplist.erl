@@ -28,8 +28,6 @@
         to_range/3,
         lookup/2,
         lookup/3,
-        key_above/2,
-        key_above_notequals/2,
         empty/0,
         empty/1,
         size/1
@@ -123,16 +121,6 @@ to_range(SkipList, Start, End) ->
 
 to_list(SkipList) ->
     to_list(element(2, SkipList), ?LIST_HEIGHT).
-
-%% If a mark is found that matches the key, will return that mark
-key_above(SkipList, Key) ->
-    TestFun = fun(Mark, K) -> Mark >= K end,
-    key_above(element(2, SkipList), Key, ?LIST_HEIGHT, TestFun).
-
-%% If a mark is found that matches the key, will return the next mark
-key_above_notequals(SkipList, Key) ->
-    TestFun = fun(Mark, K) -> Mark > K end,
-    key_above(element(2, SkipList), Key, ?LIST_HEIGHT, TestFun).
 
 empty() ->
     empty(false).
@@ -328,37 +316,6 @@ sublist_above(SkipList, StartKey, Level, StartIncl) ->
         [{_K, SL}|_Rest] ->
             sublist_above(SL, StartKey, Level - 1, StartIncl)
     end.
-
-key_above(SkipList, Key, 0, TestFun) ->
-    FindFun = fun({Mark, V}, Found) ->
-                    case Found of
-                        false ->
-                            case TestFun(Mark, Key) of
-                                true ->
-                                    {Mark, V};
-                                false ->
-                                    false
-                            end;
-                        _ ->
-                            Found
-                    end
-                    end,
-    lists:foldl(FindFun, false, SkipList);
-key_above(SkipList, Key, Level, TestFun) ->
-    FindFun = fun({Mark, SL}, Found) ->
-                    case Found of
-                        false ->
-                            case TestFun(Mark, Key) of
-                                true ->
-                                    key_above(SL, Key, Level - 1, TestFun);
-                                false ->
-                                    false
-                            end;
-                        _ ->
-                            Found
-                    end
-                    end,
-    lists:foldl(FindFun, false, SkipList).
 
 empty(SkipList, 1) ->
     [{?INFINITY_KEY, SkipList}];
@@ -658,21 +615,6 @@ skiplist_nolookup_test() ->
                         KL),
     ?assertMatch(KLSorted, to_list(SkipList)).
 
-skiplist_keybefore_test() ->
-    N = 128,
-    KL = generate_randomkeys(1, N, 1, N div 5),
-    SkipList = lists:foldl(fun({K, V}, Acc) ->
-                                enter_nolookup(K, V, Acc) end,
-                            empty(true),
-                            KL),
-    KLSorted = lists:ukeysort(1, lists:reverse(KL)),
-    SW = os:timestamp(),
-    lists:foreach(fun({K, V}) ->
-                        ?assertMatch({K, V}, key_above(SkipList, K)) end,
-                    KLSorted),
-    io:format(user, "~nFinding self in keys above ~w microseconds for ~w finds~n",
-                    [timer:now_diff(os:timestamp(), SW), N]).
-    
 skiplist_range_test() ->
     N = 150,
     KL = generate_randomkeys(1, N, 1, N div 5),
