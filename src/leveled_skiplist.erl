@@ -262,79 +262,60 @@ to_list(SkipList, Level) ->
                 [],
                 SkipList).
 
-to_range(SkipList, Start, End, 1) ->
-    R = lists:foldl(fun({Mark, SL}, {PassedStart, PassedEnd, Acc, PrevList}) ->
-                        
-                case {PassedStart, PassedEnd} of
-                    {true, true} ->
-                        {true, true, Acc, null};
-                    {false, false} ->
-                        case Start > Mark of
-                            true ->
-                                {false, false, Acc, SL};
-                            false ->
-                                RHS = splitlist_start(Start, PrevList ++ SL),
-                                case leveled_codec:endkey_passed(End, Mark) of
-                                    true ->
-                                        EL = splitlist_end(End, RHS),
-                                        {true, true, EL, null};
-                                    false ->
-                                        {true, false, RHS, null}
-                                end
-                        end;
-                    {true, false} ->
-                        case leveled_codec:endkey_passed(End, Mark) of
-                            true ->
-                                EL = splitlist_end(End, SL),
-                                {true, true, Acc ++ EL, null};
-                            false ->
-                                {true, false, Acc ++ SL, null}
-                        end
-                end end,
-                    
-                    {false, false, [], []},
-                    SkipList),
-    {_Bool1, _Bool2, SubList, _PrevList} = R,
-    SubList;
-to_range(SkipList, Start, End, Level) ->
-    R = lists:foldl(fun({Mark, SL}, {PassedStart, PassedEnd, Acc, PrevList}) ->
-                        
-                case {PassedStart, PassedEnd} of
-                    {true, true} ->
-                        {true, true, Acc, null};
-                    {false, false} ->
-                        case Start > Mark of
-                            true ->
-                                {false, false, Acc, SL};
-                            false ->
-                                SkipLRange = to_range(PrevList,
-                                                        Start, End,
-                                                        Level - 1) ++
-                                                to_range(SL,
-                                                            Start, End,
-                                                            Level - 1),
-                                case leveled_codec:endkey_passed(End, Mark) of
-                                    true ->
-                                        {true, true, SkipLRange, null};
-                                    false ->
-                                        {true, false, SkipLRange, null}
-                                end
-                        end;
-                    {true, false} ->
-                        SkipLRange = to_range(SL, Start, End, Level - 1),
-                        case leveled_codec:endkey_passed(End, Mark) of
-                            true ->
-                                {true, true, Acc ++ SkipLRange, null};
-                            false ->
-                                {true, false, Acc ++ SkipLRange, null}
-                        end
-                end end,
-                    
-                    {false, false, [], []},
-                    SkipList),
-    {_Bool1, _Bool2, SubList, _PrevList} = R,
-    SubList.
 
+to_range(SkipList, StartKey, EndKey, ListHeight) ->
+    to_range(SkipList, StartKey, EndKey, ListHeight, [], true).
+
+to_range(SkipList, StartKey, EndKey, ListHeight, Acc, StartIncl) ->
+    SL = sublist_above(SkipList, StartKey, ListHeight, StartIncl),
+    case SL of
+        [] ->
+            Acc;
+        _ ->
+            {LK, _LV} = lists:last(SL),
+            case leveled_codec:endkey_passed(EndKey, LK) of
+                false ->
+                    to_range(SkipList,
+                                LK,
+                                EndKey,
+                                ListHeight,
+                                Acc ++ SL,
+                                false);
+                true ->
+                    SplitFun =
+                        fun({K, _V}) ->
+                                not leveled_codec:endkey_passed(EndKey, K) end,
+                    LHS = lists:takewhile(SplitFun, SL),
+                    Acc ++ LHS
+            end
+    end.
+
+sublist_above(SkipList, StartKey, 0, StartIncl) ->
+    TestFun =
+        fun({K, _V}) ->
+            case StartIncl of
+                true ->
+                    K < StartKey;
+                false ->
+                    K =< StartKey
+            end end,
+    lists:dropwhile(TestFun, SkipList);
+sublist_above(SkipList, StartKey, Level, StartIncl) ->
+    TestFun =
+        fun({K, _SL}) ->
+            case StartIncl of
+                true ->
+                    K < StartKey;
+                false ->
+                    K =< StartKey
+            end end,
+    RHS = lists:dropwhile(TestFun, SkipList),
+    case RHS of
+        [] ->
+            [];    
+        [{_K, SL}|_Rest] ->
+            sublist_above(SL, StartKey, Level - 1, StartIncl)
+    end.
 
 empty(SkipList, 1) ->
     [{?INFINITY_KEY, SkipList}];
@@ -384,17 +365,6 @@ get_sublist(Key, SkipList) ->
                         end end,
                     null,
                     SkipList).
-
-splitlist_start(StartKey, SL) ->
-    {_LHS, RHS} = lists:splitwith(fun({K, _V}) -> K < StartKey end, SL),
-    RHS.
-
-splitlist_end(EndKey, SL) ->
-    {LHS, _RHS} = lists:splitwith(fun({K, _V}) ->
-                                        not leveled_codec:endkey_passed(EndKey, K)
-                                        end,
-                                    SL),
-    LHS.
 
 %%%============================================================================
 %%% Test
@@ -644,6 +614,33 @@ skiplist_nolookup_test() ->
                         ?assertMatch(none, lookup(K, SkipList)) end,
                         KL),
     ?assertMatch(KLSorted, to_list(SkipList)).
+
+skiplist_range_test() ->
+    N = 150,
+    KL = generate_randomkeys(1, N, 1, N div 5),
+    
+    KLSL1 = lists:sublist(lists:ukeysort(1, KL), 128),
+    SkipList1 = from_list(KLSL1),
+    {LastK1, V1} = lists:last(KLSL1),
+    R1 = to_range(SkipList1, LastK1, LastK1),
+    ?assertMatch([{LastK1, V1}], R1),
+    
+    KLSL2 = lists:sublist(lists:ukeysort(1, KL), 127),
+    SkipList2 = from_list(KLSL2),
+    {LastK2, V2} = lists:last(KLSL2),
+    R2 = to_range(SkipList2, LastK2, LastK2),
+    ?assertMatch([{LastK2, V2}], R2),
+    
+    KLSL3 = lists:sublist(lists:ukeysort(1, KL), 129),
+    SkipList3 = from_list(KLSL3),
+    {LastK3, V3} = lists:last(KLSL3),
+    R3 = to_range(SkipList3, LastK3, LastK3),
+    ?assertMatch([{LastK3, V3}], R3),
+    
+    {FirstK4, V4} = lists:nth(1, KLSL3),
+    R4 = to_range(SkipList3, FirstK4, FirstK4),
+    ?assertMatch([{FirstK4, V4}], R4).
+
 
 empty_skiplist_size_test() ->
     ?assertMatch(0, leveled_skiplist:size(empty(false))),

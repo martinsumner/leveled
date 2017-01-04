@@ -2,7 +2,7 @@
 %%
 %% For sheltering relatively expensive lookups with a probabilistic check
 %%
-%% Uses multiple 256 byte blooms.  Can sensibly hold up to 1000 keys per array.
+%% Uses multiple 512 byte blooms.  Can sensibly hold up to 1000 keys per array.
 %% Even at 1000 keys should still offer only a 20% false positive
 %%
 %% Restricted to no more than 256 arrays - so can't handle more than 250K keys
@@ -22,12 +22,12 @@
         empty/1
         ]).      
 
+
 -include_lib("eunit/include/eunit.hrl").
 
 %%%============================================================================
 %%% Bloom API
 %%%============================================================================
-
 
 empty(Width) when Width =< 256 ->
     FoldFun = fun(X, Acc) -> dict:store(X, <<0:4096>>, Acc) end,
@@ -36,26 +36,30 @@ empty(Width) when Width =< 256 ->
 enter({hash, no_lookup}, Bloom) ->
     Bloom;
 enter({hash, Hash}, Bloom) ->
-    {H0, Bit1, Bit2} = split_hash(Hash),
-    Slot = H0 rem dict:size(Bloom),
+    {Slot0, Bit1, Bit2} = split_hash(Hash),
+    Slot = Slot0 rem dict:size(Bloom),
     BitArray0 = dict:fetch(Slot, Bloom),
-    BitArray1 = lists:foldl(fun add_to_array/2,
+    FoldFun =
+        fun(Bit, Arr) -> add_to_array(Bit, Arr, 4096) end,
+    BitArray1 = lists:foldl(FoldFun,
                                 BitArray0,
                                 lists:usort([Bit1, Bit2])),
-    dict:store(Slot, BitArray1, Bloom);
+    dict:store(Slot, <<BitArray1/binary>>, Bloom);
 enter(Key, Bloom) ->
     Hash = leveled_codec:magic_hash(Key),
     enter({hash, Hash}, Bloom).
 
+
 check({hash, Hash}, Bloom) ->
-    {H0, Bit1, Bit2} = split_hash(Hash),
-    Slot = H0 rem dict:size(Bloom),
+    {Slot0, Bit1, Bit2} = split_hash(Hash),
+    Slot = Slot0 rem dict:size(Bloom),
     BitArray = dict:fetch(Slot, Bloom),
-    case getbit(Bit1, BitArray) of
+    
+    case getbit(Bit1, BitArray, 4096) of
         <<0:1>> ->
             false;
         <<1:1>> ->
-            case getbit(Bit2, BitArray) of
+            case getbit(Bit2, BitArray, 4096) of
                 <<0:1>> ->
                     false;
                 <<1:1>> ->
@@ -65,6 +69,7 @@ check({hash, Hash}, Bloom) ->
 check(Key, Bloom) ->
     Hash = leveled_codec:magic_hash(Key),
     check({hash, Hash}, Bloom).
+
 
 %%%============================================================================
 %%% Internal Functions
@@ -76,15 +81,15 @@ split_hash(Hash) ->
     H2 = Hash bsr 20,
     {H0, H1, H2}.
 
-add_to_array(Bit, BitArray) ->
-    RestLen = 4096 - Bit - 1,
+add_to_array(Bit, BitArray, ArrayLength) ->
+    RestLen = ArrayLength - Bit - 1,
     <<Head:Bit/bitstring,
-        _B:1/bitstring,
+        _B:1/integer,
         Rest:RestLen/bitstring>> = BitArray,
     <<Head/bitstring, 1:1, Rest/bitstring>>.
 
-getbit(Bit, BitArray) ->
-    RestLen = 4096 - Bit - 1,
+getbit(Bit, BitArray, ArrayLength) ->
+    RestLen = ArrayLength - Bit - 1,
     <<_Head:Bit/bitstring,
         B:1/bitstring,
         _Rest:RestLen/bitstring>> = BitArray,
@@ -99,7 +104,7 @@ getbit(Bit, BitArray) ->
 
 simple_test() ->
     N = 4000,
-    W = 4,
+    W = 6,
     KLin = lists:map(fun(X) -> "Key_" ++
                                 integer_to_list(X) ++
                                 integer_to_list(random:uniform(100)) ++
@@ -148,6 +153,7 @@ simple_test() ->
                     "with ~w false positive rate~n",
                 [N, timer:now_diff(os:timestamp(), SW3), FP / N]),
     ?assertMatch(true, FP < (N div 4)).
-    
+
+
 
 -endif.
