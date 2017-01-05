@@ -61,6 +61,8 @@
 %%% API
 %%%============================================================================
 
+prepare_for_index(IndexArray, no_lookup) ->
+    IndexArray;
 prepare_for_index(IndexArray, Hash) ->
     {Slot, H0} = split_hash(Hash),
     Bin = array:get(Slot, IndexArray),
