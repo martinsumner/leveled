@@ -457,8 +457,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%%============================================================================
 
 load_snapshot(LedgerSnapshot, LedgerCache) ->
-    Tab = LedgerCache#ledger_cache.mem,
-    CacheToLoad = {leveled_skiplist:from_orderedset(Tab),
+    CacheToLoad = {LedgerCache#ledger_cache.loader,
                     LedgerCache#ledger_cache.min_sqn,
                     LedgerCache#ledger_cache.max_sqn},
     ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot, CacheToLoad).
@@ -704,17 +703,23 @@ snapshot_store(State, SnapType) ->
     PCLopts = #penciller_options{start_snapshot=true,
                                     source_penciller=State#state.penciller},
     {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
+    LedgerCache = readycache_forsnapshot(State#state.ledger_cache),
     case SnapType of
         store ->
             InkerOpts = #inker_options{start_snapshot=true,
                                         source_inker=State#state.inker},
             {ok, JournalSnapshot} = leveled_inker:ink_start(InkerOpts),
-            {ok, {LedgerSnapshot, State#state.ledger_cache},
-                    JournalSnapshot};
+            {ok, {LedgerSnapshot, LedgerCache}, JournalSnapshot};
         ledger ->
-            {ok, {LedgerSnapshot, State#state.ledger_cache},
-                    null}
+            {ok, {LedgerSnapshot, LedgerCache}, null}
     end.    
+
+readycache_forsnapshot(LedgerCache) ->
+    % Need to convert the Ledger Cache away from using the ETS table
+    SkipList = leveled_skiplist:from_orderedset(LedgerCache#ledger_cache.mem),
+    MinSQN = LedgerCache#ledger_cache.min_sqn,
+    MaxSQN = LedgerCache#ledger_cache.max_sqn,
+    #ledger_cache{loader=SkipList, min_sqn=MinSQN, max_sqn=MaxSQN}.
 
 set_options(Opts) ->
     MaxJournalSize0 = get_opt(max_journalsize, Opts, 10000000000),
