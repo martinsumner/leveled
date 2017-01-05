@@ -89,6 +89,8 @@ from_list(UnsortedKVL, BloomProtect) ->
 from_sortedlist(SortedKVL) ->
     from_sortedlist(SortedKVL, false).
 
+from_sortedlist([], BloomProtect) ->
+    empty(BloomProtect);
 from_sortedlist(SortedKVL, BloomProtect) ->
     Bloom0 =
         case BloomProtect of
@@ -111,11 +113,16 @@ lookup(Key, SkipList) ->
     end.
     
 lookup(Key, Hash, SkipList) ->
-    case leveled_tinybloom:check({hash, Hash}, element(1, SkipList)) of
-        false ->
-            none;
-        true ->
-            list_lookup(Key, element(2, SkipList), ?LIST_HEIGHT)
+    case element(1, SkipList) of
+        list_only ->
+            list_lookup(Key, element(2, SkipList), ?LIST_HEIGHT);
+        _ ->
+            case leveled_tinybloom:check({hash, Hash}, element(1, SkipList)) of
+                false ->
+                    none;
+                true ->
+                    list_lookup(Key, element(2, SkipList), ?LIST_HEIGHT)
+            end
     end.
 
 
@@ -210,7 +217,7 @@ from_list(KVList, SkipWidth, ListHeight) ->
         end,
     from_list(SL0, SkipWidth, ListHeight - 1).
     
-from_list([], 0, SkipList, SkipWidth) ->
+from_list([], 0, SkipList, _SkipWidth) ->
     SkipList;
 from_list(KVList, L, SkipList, SkipWidth) ->
     SubLL = min(SkipWidth, L),
@@ -523,13 +530,28 @@ skiplist_timingtest(KL, SkipList, N, Bloom) ->
                 [timer:now_diff(os:timestamp(), SWc)]),
             
     AltKL1 = generate_randomkeys(1, 2000, 1, 200),
-    SWd = os:timestamp(),
+    SWd0 = os:timestamp(),
     lists:foreach(fun({K, _V}) ->
                         lookup(K, SkipList)
                         end,
                     AltKL1),
     io:format(user, "Getting 2000 mainly missing keys took ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SWd)]),
+                [timer:now_diff(os:timestamp(), SWd0)]),
+    SWd1 = os:timestamp(),
+    lists:foreach(fun({K, _V}) ->
+                        leveled_codec:magic_hash(K)
+                        end,
+                    AltKL1),
+    io:format(user, "Generating 2000 magic hashes took ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWd1)]),
+    SWd2 = os:timestamp(),
+    lists:foreach(fun({K, _V}) ->
+                        erlang:phash2(K)
+                        end,
+                    AltKL1),
+    io:format(user, "Generating 2000 not so magic hashes took ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWd2)]),
+    
     AltKL2 = generate_randomkeys(1, 1000, N div 5 + 1, N div 5 + 300),
     SWe = os:timestamp(),
     lists:foreach(fun({K, _V}) ->

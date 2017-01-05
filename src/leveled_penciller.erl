@@ -322,6 +322,7 @@ init([PCLopts]) ->
             SrcPenciller = PCLopts#penciller_options.source_penciller,
             {ok, State} = pcl_registersnapshot(SrcPenciller, self()),
             leveled_log:log("P0001", [self()]),
+            io:format("Snapshot ledger sqn at ~w~n", [State#state.ledger_sqn]),
             {ok, State#state{is_snapshot=true, source_penciller=SrcPenciller}};
             %% Need to do something about timeout
         {_RootPath, false} ->
