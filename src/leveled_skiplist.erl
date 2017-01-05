@@ -20,6 +20,8 @@
         from_list/2,
         from_sortedlist/1,
         from_sortedlist/2,
+        from_orderedset/1,
+        from_orderedset/2,
         to_list/1,
         enter/3,
         enter/4,
@@ -70,6 +72,12 @@ enter_nolookup(Key, Value, SkipList) ->
         enter(Key, Value, erlang:phash2(Key),
                 element(2, SkipList),
                 ?SKIP_WIDTH, ?LIST_HEIGHT)}.
+
+from_orderedset(Table) ->
+    from_orderedset(Table, false).
+
+from_orderedset(Table, Bloom) ->
+    from_sortedlist(ets:tab2list(Table), Bloom).
 
 from_list(UnsortedKVL) ->
     from_list(UnsortedKVL, false).
@@ -405,7 +413,15 @@ skiplist_nobloom_test() ->
 skiplist_tester(Bloom) ->
     N = 4000,
     KL = generate_randomkeys(1, N, 1, N div 5),
-                
+    
+    OS = ets:new(test, [ordered_set, private]),
+    ets:insert(OS, KL),
+    SWaETS = os:timestamp(),
+    SkipList = from_orderedset(OS, Bloom),
+    io:format(user, "Generating skip list with ~w keys in ~w microseconds " ++
+                        "from ordered set~n",
+                [N, timer:now_diff(os:timestamp(), SWaETS)]),
+    
     SWaGSL = os:timestamp(),
     SkipList = from_list(lists:reverse(KL), Bloom),
     io:format(user, "Generating skip list with ~w keys in ~w microseconds~n" ++
