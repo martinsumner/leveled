@@ -42,11 +42,13 @@
 -include("include/leveled.hrl").
 
 -export([
+        prepare_for_index/2,
         add_to_cache/4,
         to_list/2,
         check_levelzero/3,
+        check_levelzero/4,
         merge_trees/4,
-        add_to_index/2,
+        add_to_index/3,
         new_index/0,
         clear_index/1,
         check_index/2
@@ -58,6 +60,12 @@
 %%%============================================================================
 %%% API
 %%%============================================================================
+
+prepare_for_index(IndexArray, Hash) ->
+    {Slot, H0} = split_hash(Hash),
+    Bin = array:get(Slot, IndexArray),
+    array:set(Slot, <<Bin/binary, 1:1/integer, H0:23/integer>>, IndexArray).
+
 
 add_to_cache(L0Size, {LevelMinus1, MinSQN, MaxSQN}, LedgerSQN, TreeList) ->
     LM1Size = leveled_skiplist:size(LevelMinus1),
@@ -73,32 +81,29 @@ add_to_cache(L0Size, {LevelMinus1, MinSQN, MaxSQN}, LedgerSQN, TreeList) ->
             end
     end.
 
-add_to_index(LevelMinus1, L0Index) ->
+add_to_index(LM1Array, L0Index, CacheSlot) when CacheSlot < 128 ->
     IndexAddFun =
-        fun({_K, V}) ->
-            {_, _, Hash, _} = leveled_codec:striphead_to_details(V),
-            case Hash of
-                no_lookup ->
-                    ok;
-                _ ->
-                    ets:insert(L0Index, {Hash})
-            end
-            end,
-    lists:foreach(IndexAddFun, leveled_skiplist:to_list(LevelMinus1)).
+        fun(Slot, Acc) ->
+            Bin0 = array:get(Slot, Acc),
+            BinLM1 = array:get(Slot, LM1Array),
+            array:set(Slot,
+                        <<Bin0/binary,
+                            0:1/integer, CacheSlot:7/integer,
+                            BinLM1/binary>>,
+                        Acc)
+        end,
+    lists:foldl(IndexAddFun, L0Index, lists:seq(0, 255)).
 
 new_index() ->
-    ets:new(l0index, [private, set]).
+    array:new([{size, 256}, {default, <<>>}]).
 
-clear_index(L0Index) ->
-    ets:delete_all_objects(L0Index).
+clear_index(_L0Index) ->
+    new_index().
 
 check_index(Hash, L0Index) ->
-    case ets:lookup(L0Index, Hash) of
-        [{Hash}] ->
-            true;
-        [] ->
-            false
-    end.
+    {Slot, H0} = split_hash(Hash),
+    Bin = array:get(Slot, L0Index),
+    find_pos(Bin, H0, [], 0).    
 
 to_list(Slots, FetchFun) ->
     SW = os:timestamp(),
@@ -114,13 +119,15 @@ to_list(Slots, FetchFun) ->
     FullList.
 
 
-check_levelzero(Key, TreeList) ->
-    check_levelzero(Key, leveled_codec:magic_hash(Key), TreeList).
+check_levelzero(Key, PosList, TreeList) ->
+    check_levelzero(Key, leveled_codec:magic_hash(Key), PosList, TreeList).
 
-check_levelzero(_Key, _Hash, []) ->
+check_levelzero(_Key, _Hash, _PosList, []) ->
     {false, not_found};
-check_levelzero(Key, Hash, TreeList) ->
-    check_slotlist(Key, Hash, lists:seq(1, length(TreeList)), TreeList).
+check_levelzero(_Key, _Hash, [], _TreeList) ->
+    {false, not_found};
+check_levelzero(Key, Hash, PosList, TreeList) ->
+    check_slotlist(Key, Hash, PosList, TreeList).
 
 
 merge_trees(StartKey, EndKey, SkipListList, LevelMinus1) ->
@@ -135,6 +142,22 @@ merge_trees(StartKey, EndKey, SkipListList, LevelMinus1) ->
 %%%============================================================================
 %%% Internal Functions
 %%%============================================================================
+
+
+find_pos(<<>>, _Hash, PosList, _SlotID) ->
+    PosList;
+find_pos(<<1:1/integer, Hash:23/integer, T/binary>>, Hash, PosList, SlotID) ->
+    find_pos(T, Hash, PosList ++ [SlotID], SlotID);
+find_pos(<<1:1/integer, _Miss:23/integer, T/binary>>, Hash, PosList, SlotID) ->
+    find_pos(T, Hash, PosList, SlotID);
+find_pos(<<0:1/integer, NxtSlot:7/integer, T/binary>>, Hash, PosList, _SlotID) ->
+    find_pos(T, Hash, PosList, NxtSlot).
+
+
+split_hash(Hash) ->
+    Slot = Hash band 255,
+    H0 = (Hash bsr 8) band 8388607,
+    {Slot, H0}.
 
 check_slotlist(Key, Hash, CheckList, TreeList) ->
     SlotCheckFun =
@@ -162,12 +185,21 @@ check_slotlist(Key, Hash, CheckList, TreeList) ->
 
 -ifdef(TEST).
 
+generate_randomkeys_aslist(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
+    lists:ukeysort(1,
+                    generate_randomkeys(Seqn,
+                                            Count,
+                                            [],
+                                            BucketRangeLow,
+                                            BucketRangeHigh)).
+        
 generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
-    generate_randomkeys(Seqn,
-                        Count,
-                        leveled_skiplist:empty(true),
-                        BucketRangeLow,
-                        BucketRangeHigh).
+    KVL = generate_randomkeys(Seqn,
+                                Count,
+                                [],
+                                BucketRangeLow,
+                                BucketRangeHigh),
+    leveled_skiplist:from_list(KVL).
 
 generate_randomkeys(_Seqn, 0, Acc, _BucketLow, _BucketHigh) ->
     Acc;
@@ -179,7 +211,7 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
                 {Seqn, {active, infinity}, null}},
     generate_randomkeys(Seqn + 1,
                         Count - 1,
-                        leveled_skiplist:enter(K, V, Acc),
+                        [{K, V}|Acc],
                         BucketLow,
                         BRange).
 
@@ -230,8 +262,9 @@ compare_method_test() ->
                         [],
                         TestList),
     
+    PosList = lists:seq(1, length(TreeList)),
     S1 = lists:foldl(fun({Key, _V}, Acc) ->
-                            R0 = check_levelzero(Key, TreeList),
+                            R0 = check_levelzero(Key, PosList, TreeList),
                             [R0|Acc]
                             end,
                         [],
@@ -267,6 +300,41 @@ compare_method_test() ->
                 [timer:now_diff(os:timestamp(), SWb), Sz1]),
     ?assertMatch(Sz0, Sz1).
 
+with_index_test() ->
+    IndexPrepareFun =
+        fun({K, _V}, Acc) ->
+            H = leveled_codec:magic_hash(K),
+            prepare_for_index(Acc, H)
+        end,
+    LoadFun =
+        fun(_X, {{LedgerSQN, L0Size, L0TreeList}, L0Idx, SrcList}) ->
+            LM1 = generate_randomkeys_aslist(LedgerSQN + 1, 2000, 1, 500),
+            LM1Array = lists:foldl(IndexPrepareFun, new_index(), LM1),
+            LM1SL = leveled_skiplist:from_list(LM1),
+            UpdL0Index = add_to_index(LM1Array, L0Idx, length(L0TreeList) + 1),
+            R = add_to_cache(L0Size,
+                                {LM1SL, LedgerSQN + 1, LedgerSQN + 2000},
+                                LedgerSQN,
+                                L0TreeList),
+            {R, UpdL0Index, lists:ukeymerge(1, LM1, SrcList)}
+        end,
+    
+    R0 = lists:foldl(LoadFun, {{0, 0, []}, new_index(), []}, lists:seq(1, 16)),
+    
+    {{SQN, Size, TreeList}, L0Index, SrcKVL} = R0,
+    ?assertMatch(32000, SQN),
+    ?assertMatch(true, Size =< 32000),
 
+    CheckFun =
+        fun({K, V}, {L0Idx, L0Cache}) ->
+            H = leveled_codec:magic_hash(K),
+            PosList = check_index(H, L0Idx),
+            ?assertMatch({true, {K, V}},
+                            check_slotlist(K, H, PosList, L0Cache)),
+            {L0Idx, L0Cache}
+        end,
+    
+    _R1 = lists:foldl(CheckFun, {L0Index, TreeList}, SrcKVL).
+            
 
 -endif.

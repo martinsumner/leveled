@@ -154,6 +154,7 @@
 
 -record(ledger_cache, {mem :: ets:tab(),
                         loader = leveled_skiplist:empty(false) :: tuple(),
+                        index = leveled_pmem:new_index(), % array
                         min_sqn = infinity :: integer()|infinity,
                         max_sqn = 0 :: integer()}).
 
@@ -458,6 +459,7 @@ code_change(_OldVsn, State, _Extra) ->
 
 load_snapshot(LedgerSnapshot, LedgerCache) ->
     CacheToLoad = {LedgerCache#ledger_cache.loader,
+                    LedgerCache#ledger_cache.index,
                     LedgerCache#ledger_cache.min_sqn,
                     LedgerCache#ledger_cache.max_sqn},
     ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot, CacheToLoad).
@@ -467,8 +469,9 @@ empty_ledgercache() ->
 
 push_ledgercache(Penciller, Cache) ->
     CacheToLoad = {Cache#ledger_cache.loader,
-                        Cache#ledger_cache.min_sqn,
-                        Cache#ledger_cache.max_sqn},
+                    Cache#ledger_cache.index,
+                    Cache#ledger_cache.min_sqn,
+                    Cache#ledger_cache.max_sqn},
     leveled_penciller:pcl_pushmem(Penciller, CacheToLoad).
 
 %%%============================================================================
@@ -929,41 +932,44 @@ accumulate_index(TermRe, AddFun, FoldKeysFun) ->
 preparefor_ledgercache(?INKT_KEYD,
                         LedgerKey, SQN, _Obj, _Size, {IndexSpecs, TTL}) ->
     {Bucket, Key} = leveled_codec:from_ledgerkey(LedgerKey),
-    leveled_codec:convert_indexspecs(IndexSpecs, Bucket, Key, SQN, TTL);
+    KeyChanges = leveled_codec:convert_indexspecs(IndexSpecs,
+                                                    Bucket,
+                                                    Key,
+                                                    SQN,
+                                                    TTL),
+    {no_lookup, SQN, KeyChanges};
 preparefor_ledgercache(_Type, LedgerKey, SQN, Obj, Size, {IndexSpecs, TTL}) ->
-    {Bucket, Key, PrimaryChange} = leveled_codec:generate_ledgerkv(LedgerKey,
-                                                                    SQN,
-                                                                    Obj,
-                                                                    Size,
-                                                                    TTL),
-    [PrimaryChange] ++ leveled_codec:convert_indexspecs(IndexSpecs,
-                                                        Bucket,
-                                                        Key,
-                                                        SQN,
-                                                        TTL).
+    {Bucket, Key, ObjKeyChange, H} = leveled_codec:generate_ledgerkv(LedgerKey,
+                                                                        SQN,
+                                                                        Obj,
+                                                                        Size,
+                                                                        TTL),
+    KeyChanges = [ObjKeyChange] ++ leveled_codec:convert_indexspecs(IndexSpecs,
+                                                                        Bucket,
+                                                                        Key,
+                                                                        SQN,
+                                                                        TTL),
+    {H, SQN, KeyChanges}.
 
 
-addto_ledgercache(Changes, Cache) ->
+addto_ledgercache({H, SQN, KeyChanges}, Cache) ->
+    ets:insert(Cache#ledger_cache.mem, KeyChanges),
+    UpdIndex = leveled_pmem:prepare_for_index(Cache#ledger_cache.index, H),
+    Cache#ledger_cache{index = UpdIndex,
+                        min_sqn=min(SQN, Cache#ledger_cache.min_sqn),
+                        max_sqn=max(SQN, Cache#ledger_cache.max_sqn)}.
+
+addto_ledgercache({H, SQN, KeyChanges}, Cache, loader) ->
     FoldChangesFun =
-        fun({K, V}, Cache0) ->
-            {SQN, _Hash} = leveled_codec:strip_to_seqnhashonly({K, V}),
-            true = ets:insert(Cache0#ledger_cache.mem, {K, V}),
-            Cache0#ledger_cache{min_sqn=min(SQN, Cache0#ledger_cache.min_sqn),
-                                max_sqn=max(SQN, Cache0#ledger_cache.max_sqn)}
-            end,
-    lists:foldl(FoldChangesFun, Cache, Changes).
-
-addto_ledgercache(Changes, Cache, loader) ->
-    FoldChangesFun =
-        fun({K, V}, Cache0) ->
-            {SQN, _Hash} = leveled_codec:strip_to_seqnhashonly({K, V}),
-            SL0 = Cache0#ledger_cache.loader,
-            SL1 = leveled_skiplist:enter_nolookup(K, V, SL0),
-            Cache0#ledger_cache{loader = SL1,
-                                min_sqn=min(SQN, Cache0#ledger_cache.min_sqn),
-                                max_sqn=max(SQN, Cache0#ledger_cache.max_sqn)}
-            end,
-    lists:foldl(FoldChangesFun, Cache, Changes).
+        fun({K, V}, SL0) ->
+            leveled_skiplist:enter_nolookup(K, V, SL0)
+        end,
+    UpdSL = lists:foldl(FoldChangesFun, Cache#ledger_cache.loader, KeyChanges),
+    UpdIndex = leveled_pmem:prepare_for_index(Cache#ledger_cache.index, H),
+    Cache#ledger_cache{index = UpdIndex,
+                        loader = UpdSL,
+                        min_sqn=min(SQN, Cache#ledger_cache.min_sqn),
+                        max_sqn=max(SQN, Cache#ledger_cache.max_sqn)}.
 
 
 maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
@@ -973,12 +979,13 @@ maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
     if
         TimeToPush ->
             CacheToLoad = {leveled_skiplist:from_orderedset(Tab),
+                            Cache#ledger_cache.index,
                             Cache#ledger_cache.min_sqn,
                             Cache#ledger_cache.max_sqn},
             case leveled_penciller:pcl_pushmem(Penciller, CacheToLoad) of
                 ok ->
-                    true = ets:delete_all_objects(Tab),
                     Cache0 = #ledger_cache{},
+                    true = ets:delete_all_objects(Tab),
                     {ok, Cache0#ledger_cache{mem=Tab}};
                 returned ->
                     {returned, Cache}
