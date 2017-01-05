@@ -255,7 +255,7 @@ init([Opts]) ->
             {ok,
                 {Penciller, LedgerCache},
                 Inker} = book_snapshotstore(Bookie, self(), ?SNAPSHOT_TIMEOUT),
-            ok = leveled_penciller:pcl_loadsnapshot(Penciller, LedgerCache),
+            ok = load_snapshot(Penciller, LedgerCache),
             leveled_log:log("B0002", [Inker, Penciller]),
             {ok, #state{penciller=Penciller,
                         inker=Inker,
@@ -761,7 +761,14 @@ startup(InkerOpts, PencillerOpts) ->
 
 fetch_head(Key, Penciller, LedgerCache) ->
     SW = os:timestamp(),
-    case ets:lookup(LedgerCache#ledger_cache.mem, Key) of
+    CacheResult = 
+        case LedgerCache#ledger_cache.mem of
+            undefined ->
+                [];
+            Tab ->
+                ets:lookup(Tab, Key)
+        end,
+    case CacheResult of
         [{Key, Head}] ->
             Head;
         [] ->
