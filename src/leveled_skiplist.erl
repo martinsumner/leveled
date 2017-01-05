@@ -188,53 +188,27 @@ enter(Key, Value, Hash, SkipList, Width, Level) ->
                                 {MarkerKey, UpdSubSkipList})
     end.
 
-
-from_list(KVL, Width, 1) ->
-    Slots = length(KVL) div Width,
-    SkipList0 = lists:map(fun(X) ->
-                                N = X * Width,
-                                {K, _V} = lists:nth(N, KVL),
-                                {K, lists:sublist(KVL,
-                                                    N - Width + 1,
-                                                    Width)}
-                                end,
-                            lists:seq(1, length(KVL) div Width)),
-    case Slots * Width < length(KVL) of
-        true ->
-            {LastK, _V} = lists:last(KVL),
-            SkipList0 ++ [{LastK, lists:nthtail(Slots * Width, KVL)}];
-        false ->
-            SkipList0
-    end;
-from_list(KVL, Width, Level) ->
-    SkipWidth = width(Level, Width),
-    LoftSlots = length(KVL) div SkipWidth,
-    case LoftSlots of
-        0 ->
-            {K, _V} = lists:last(KVL),
-            [{K, from_list(KVL, Width, Level - 1)}];
-        _ ->
-            SkipList0 =
-                lists:map(fun(X) ->
-                                N = X * SkipWidth,
-                                {K, _V} = lists:nth(N, KVL),
-                                SL = lists:sublist(KVL,
-                                                    N - SkipWidth + 1,
-                                                    SkipWidth),
-                                {K, from_list(SL, Width, Level - 1)}
-                                end,
-                            lists:seq(1, LoftSlots)),
-            case LoftSlots * SkipWidth < length(KVL) of
-                true ->
-                    {LastK, _V} = lists:last(KVL),
-                    TailList = lists:nthtail(LoftSlots * SkipWidth, KVL),
-                    SkipList0 ++ [{LastK, from_list(TailList,
-                                                    Width,
-                                                    Level - 1)}];
-                false ->
-                    SkipList0
-            end
-    end.
+from_list(SkipList, _SkipWidth, 0) ->
+    SkipList;
+from_list(KVList, SkipWidth, ListHeight) ->
+    L0 = length(KVList),
+    SL0 =
+        case L0 > SkipWidth of
+            true ->
+                from_list(KVList, L0, [], SkipWidth);         
+            false ->
+                {LastK, _LastSL} = lists:last(KVList),
+                [{LastK, KVList}]
+        end,
+    from_list(SL0, SkipWidth, ListHeight - 1).
+    
+from_list([], 0, SkipList, SkipWidth) ->
+    SkipList;
+from_list(KVList, L, SkipList, SkipWidth) ->
+    SubLL = min(SkipWidth, L),
+    {Head, Tail} = lists:split(SubLL, KVList),
+    {LastK, _LastV} = lists:last(Head),
+    from_list(Tail, L - SubLL, SkipList ++ [{LastK, Head}], SkipWidth).
 
 
 list_lookup(Key, SkipList, 1) ->
