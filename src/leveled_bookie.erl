@@ -720,9 +720,10 @@ snapshot_store(State, SnapType) ->
 readycache_forsnapshot(LedgerCache) ->
     % Need to convert the Ledger Cache away from using the ETS table
     SkipList = leveled_skiplist:from_orderedset(LedgerCache#ledger_cache.mem),
+    Idx = LedgerCache#ledger_cache.index,
     MinSQN = LedgerCache#ledger_cache.min_sqn,
     MaxSQN = LedgerCache#ledger_cache.max_sqn,
-    #ledger_cache{loader=SkipList, min_sqn=MinSQN, max_sqn=MaxSQN}.
+    #ledger_cache{loader=SkipList, index=Idx, min_sqn=MinSQN, max_sqn=MaxSQN}.
 
 set_options(Opts) ->
     MaxJournalSize0 = get_opt(max_journalsize, Opts, 10000000000),
