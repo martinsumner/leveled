@@ -19,23 +19,10 @@
 %% used to either point lookups at the right tree in the list, or inform the
 %% requestor it is not present avoiding any lookups.
 %%
-%% Tests show this takes one third of the time at push (when compared to
-%% merging to a single tree), and is an order of magnitude more efficient as
-%% the tree reaches peak size.  It is also an order of magnitude more
-%% efficient to use the hash index when compared to looking through all the
-%% trees.
-%%
-%% Total time for single_tree 217000 microseconds
-%% Total time for array_tree 209000 microseconds
-%% Total time for array_list 142000 microseconds
-%% Total time for array_filter 69000 microseconds
-%% List of 2000 checked without array - success count of 90 in 36000 microsecs
-%% List of 2000 checked with array - success count of 90 in 1000 microsecs
-%%
 %% The trade-off taken with the approach is that the size of the L0Cache is
-%% uncertain.  The Size count is incremented if the hash is not already
-%% present, so the size may be lower than the actual size due to hash
-%% collisions
+%% uncertain.  The Size count is incremented based on the inbound size and so
+%% does not necessarily reflect the size once the lists are merged (reflecting
+%% rotating objects)
 
 -module(leveled_pmem).
 

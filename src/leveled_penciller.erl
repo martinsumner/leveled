@@ -4,14 +4,17 @@
 %% persisted, ordered view of non-recent Keys and Metadata which have been
 %% added to the store.
 %% - The penciller maintains a manifest of all the files within the current
-%% Ledger.
+%% Ledger. 
 %% - The Penciller provides re-write (compaction) work up to be managed by
 %% the Penciller's Clerk
 %% - The Penciller can be cloned and maintains a register of clones who have
 %% requested snapshots of the Ledger
-%% - The accepts new dumps (in the form of a gb_tree) from the Bookie, and
-%% calls the Bookie once the process of pencilling this data in the Ledger is
-%% complete - and the Bookie is free to forget about the data
+%% - The accepts new dumps (in the form of a leveled_skiplist accomponied by
+%% an array of hash-listing binaries) from the Bookie, and responds either 'ok'
+%% to the bookie if the information is accepted nad the Bookie can refresh its
+%% memory, or 'returned' if the bookie must continue without refreshing as the
+%% Penciller is not currently able to accept the update (potentially due to a
+%% backlog of compaction work)
 %% - The Penciller's persistence of the ledger may not be reliable, in that it
 %% may lose data but only in sequence from a particular sequence number.  On
 %% startup the Penciller will inform the Bookie of the highest sequence number
@@ -21,14 +24,14 @@
 %% -------- LEDGER ---------
 %%
 %% The Ledger is divided into many levels
-%% - L0: New keys are received from the Bookie and merged into a single
-%% gb_tree, until that tree is the size of a SST file, and it is then persisted
+%% - L0: New keys are received from the Bookie and and kept in the levelzero
+%% cache, until that cache is the size of a SST file, and it is then persisted
 %% as a SST file at this level.  L0 SST files can be larger than the normal 
 %% maximum size - so we don't have to consider problems of either having more
 %% than one L0 file (and handling what happens on a crash between writing the
 %% files when the second may have overlapping sequence numbers), or having a
 %% remainder with overlapping in sequence numbers in memory after the file is
-%% written.   Once the persistence is completed, the L0 tree can be erased.
+%% written.   Once the persistence is completed, the L0 cache can be erased.
 %% There can be only one SST file at Level 0, so the work to merge that file
 %% to the lower level must be the highest priority, as otherwise writes to the
 %% ledger will stall, when there is next a need to persist.
@@ -64,10 +67,10 @@
 %%
 %% The Penciller must support the PUSH of a dump of keys from the Bookie.  The
 %% call to PUSH should be immediately acknowledged, and then work should be
-%% completed to merge the tree into the L0 tree.
+%% completed to merge the cache update into the L0 cache.
 %%
 %% The Penciller MUST NOT accept a new PUSH if the Clerk has commenced the
-%% conversion of the current L0 tree into a SST file, but not completed this
+%% conversion of the current L0 cache into a SST file, but not completed this
 %% change.  The Penciller in this case returns the push, and the Bookie should
 %% continue to grow the cache before trying again.
 %%
@@ -335,9 +338,9 @@ handle_call({push_mem, {PushedTree, PushedIdx, MinSQN, MaxSQN}},
                 State=#state{is_snapshot=Snap}) when Snap == false ->
     % The push_mem process is as follows:
     %
-    % 1 - Receive a gb_tree containing the latest Key/Value pairs (note that
-    % we mean value from the perspective of the Ledger, not the full value
-    % stored in the Inker)
+    % 1 - Receive a cache.  The cache has four parts: a skiplist of keys and
+    % values, an array of 256 binaries listing the hashes present in the
+    % skiplist, a min SQN and a max SQN
     %
     % 2 - Check to see if there is a levelzero file pending.  If so, the
     % update must be returned.  If not the update can be accepted
@@ -347,10 +350,10 @@ handle_call({push_mem, {PushedTree, PushedIdx, MinSQN, MaxSQN}},
     %
     % 4 - Update the cache:
     % a) Append the cache to the list
-    % b) Add hashes for all the elements to the index
+    % b) Add each of the 256 hash-listing binaries to the master L0 index array
     %
     % Check the approximate size of the cache.  If it is over the maximum size,
-    % trigger a backgroun L0 file write and update state of levelzero_pending.
+    % trigger a background L0 file write and update state of levelzero_pending.
     case State#state.levelzero_pending or State#state.work_backlog of
         true ->
             leveled_log:log("P0018", [returned,
