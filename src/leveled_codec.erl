@@ -314,11 +314,12 @@ generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS) ->
                     _ ->
                         {active, TS}
                 end,
+    Hash = magic_hash(PrimaryKey),
     Value = {SQN,
                 Status,
-                magic_hash(PrimaryKey),
+                Hash,
                 extract_metadata(Obj, Size, Tag)},
-    {Bucket, Key, {PrimaryKey, Value}}.
+    {Bucket, Key, {PrimaryKey, Value}, Hash}.
 
 
 integer_now() ->

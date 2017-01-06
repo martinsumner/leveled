@@ -4,14 +4,17 @@
 %% persisted, ordered view of non-recent Keys and Metadata which have been
 %% added to the store.
 %% - The penciller maintains a manifest of all the files within the current
-%% Ledger.
+%% Ledger. 
 %% - The Penciller provides re-write (compaction) work up to be managed by
 %% the Penciller's Clerk
 %% - The Penciller can be cloned and maintains a register of clones who have
 %% requested snapshots of the Ledger
-%% - The accepts new dumps (in the form of a gb_tree) from the Bookie, and
-%% calls the Bookie once the process of pencilling this data in the Ledger is
-%% complete - and the Bookie is free to forget about the data
+%% - The accepts new dumps (in the form of a leveled_skiplist accomponied by
+%% an array of hash-listing binaries) from the Bookie, and responds either 'ok'
+%% to the bookie if the information is accepted nad the Bookie can refresh its
+%% memory, or 'returned' if the bookie must continue without refreshing as the
+%% Penciller is not currently able to accept the update (potentially due to a
+%% backlog of compaction work)
 %% - The Penciller's persistence of the ledger may not be reliable, in that it
 %% may lose data but only in sequence from a particular sequence number.  On
 %% startup the Penciller will inform the Bookie of the highest sequence number
@@ -21,14 +24,14 @@
 %% -------- LEDGER ---------
 %%
 %% The Ledger is divided into many levels
-%% - L0: New keys are received from the Bookie and merged into a single
-%% gb_tree, until that tree is the size of a SST file, and it is then persisted
+%% - L0: New keys are received from the Bookie and and kept in the levelzero
+%% cache, until that cache is the size of a SST file, and it is then persisted
 %% as a SST file at this level.  L0 SST files can be larger than the normal 
 %% maximum size - so we don't have to consider problems of either having more
 %% than one L0 file (and handling what happens on a crash between writing the
 %% files when the second may have overlapping sequence numbers), or having a
 %% remainder with overlapping in sequence numbers in memory after the file is
-%% written.   Once the persistence is completed, the L0 tree can be erased.
+%% written.   Once the persistence is completed, the L0 cache can be erased.
 %% There can be only one SST file at Level 0, so the work to merge that file
 %% to the lower level must be the highest priority, as otherwise writes to the
 %% ledger will stall, when there is next a need to persist.
@@ -64,10 +67,10 @@
 %%
 %% The Penciller must support the PUSH of a dump of keys from the Bookie.  The
 %% call to PUSH should be immediately acknowledged, and then work should be
-%% completed to merge the tree into the L0 tree.
+%% completed to merge the cache update into the L0 cache.
 %%
 %% The Penciller MUST NOT accept a new PUSH if the Clerk has commenced the
-%% conversion of the current L0 tree into a SST file, but not completed this
+%% conversion of the current L0 cache into a SST file, but not completed this
 %% change.  The Penciller in this case returns the push, and the Bookie should
 %% continue to grow the cache before trying again.
 %%
@@ -220,7 +223,7 @@
                 levelzero_size = 0 :: integer(),
                 levelzero_maxcachesize :: integer(),
                 levelzero_cointoss = false :: boolean(),
-                levelzero_index, % may be none or an ETS table reference
+                levelzero_index, % An array
                 
                 is_snapshot = false :: boolean(),
                 snapshot_fully_loaded = false :: boolean(),
@@ -322,6 +325,7 @@ init([PCLopts]) ->
             SrcPenciller = PCLopts#penciller_options.source_penciller,
             {ok, State} = pcl_registersnapshot(SrcPenciller, self()),
             leveled_log:log("P0001", [self()]),
+            io:format("Snapshot ledger sqn at ~w~n", [State#state.ledger_sqn]),
             {ok, State#state{is_snapshot=true, source_penciller=SrcPenciller}};
             %% Need to do something about timeout
         {_RootPath, false} ->
@@ -329,14 +333,14 @@ init([PCLopts]) ->
     end.    
     
 
-handle_call({push_mem, {PushedTree, MinSQN, MaxSQN}},
+handle_call({push_mem, {PushedTree, PushedIdx, MinSQN, MaxSQN}},
                 From,
                 State=#state{is_snapshot=Snap}) when Snap == false ->
     % The push_mem process is as follows:
     %
-    % 1 - Receive a gb_tree containing the latest Key/Value pairs (note that
-    % we mean value from the perspective of the Ledger, not the full value
-    % stored in the Inker)
+    % 1 - Receive a cache.  The cache has four parts: a skiplist of keys and
+    % values, an array of 256 binaries listing the hashes present in the
+    % skiplist, a min SQN and a max SQN
     %
     % 2 - Check to see if there is a levelzero file pending.  If so, the
     % update must be returned.  If not the update can be accepted
@@ -346,10 +350,10 @@ handle_call({push_mem, {PushedTree, MinSQN, MaxSQN}},
     %
     % 4 - Update the cache:
     % a) Append the cache to the list
-    % b) Add hashes for all the elements to the index
+    % b) Add each of the 256 hash-listing binaries to the master L0 index array
     %
     % Check the approximate size of the cache.  If it is over the maximum size,
-    % trigger a backgroun L0 file write and update state of levelzero_pending.
+    % trigger a background L0 file write and update state of levelzero_pending.
     case State#state.levelzero_pending or State#state.work_backlog of
         true ->
             leveled_log:log("P0018", [returned,
@@ -359,11 +363,12 @@ handle_call({push_mem, {PushedTree, MinSQN, MaxSQN}},
         false ->
             leveled_log:log("P0018", [ok, false, false]),
             gen_server:reply(From, ok),
-            {noreply, update_levelzero(State#state.levelzero_size,
-                                        {PushedTree, MinSQN, MaxSQN},
-                                        State#state.ledger_sqn,
-                                        State#state.levelzero_cache,
-                                        State)}
+            {noreply,
+                update_levelzero(State#state.levelzero_size,
+                                    {PushedTree, PushedIdx, MinSQN, MaxSQN},
+                                    State#state.ledger_sqn,
+                                    State#state.levelzero_cache,
+                                    State)}
     end;
 handle_call({fetch, Key, Hash}, _From, State) ->
     {R, HeadTimer} = timed_fetch_mem(Key,
@@ -410,17 +415,22 @@ handle_call(work_for_clerk, From, State) ->
 handle_call(get_startup_sqn, _From, State) ->
     {reply, State#state.persisted_sqn, State};
 handle_call({register_snapshot, Snapshot}, _From, State) ->
-    Rs = [{Snapshot, State#state.manifest_sqn}|State#state.registered_snapshots],
+    Rs = [{Snapshot,
+            State#state.manifest_sqn}|State#state.registered_snapshots],
     {reply, {ok, State}, State#state{registered_snapshots = Rs}};
-handle_call({load_snapshot, {BookieIncrTree, MinSQN, MaxSQN}}, _From, State) ->
+handle_call({load_snapshot, {BookieIncrTree, BookieIdx, MinSQN, MaxSQN}},
+                                                                _From, State) ->
     L0D = leveled_pmem:add_to_cache(State#state.levelzero_size,
                                         {BookieIncrTree, MinSQN, MaxSQN},
                                         State#state.ledger_sqn,
                                         State#state.levelzero_cache),
     {LedgerSQN, L0Size, L0Cache} = L0D,
+    L0Index = leveled_pmem:add_to_index(BookieIdx,
+                                        State#state.levelzero_index,
+                                        length(L0Cache)),
     {reply, ok, State#state{levelzero_cache=L0Cache,
                                 levelzero_size=L0Size,
-                                levelzero_index=none,
+                                levelzero_index=L0Index,
                                 ledger_sqn=LedgerSQN,
                                 snapshot_fully_loaded=true}};
 handle_call({fetch_levelzero, Slot}, _From, State) ->
@@ -466,9 +476,10 @@ handle_cast({levelzero_complete, FN, StartKey, EndKey}, State) ->
                                 filename=FN},
     UpdMan = lists:keystore(0, 1, State#state.manifest, {0, [ManEntry]}),
     % Prompt clerk to ask about work - do this for every L0 roll
-    leveled_pmem:clear_index(State#state.levelzero_index),
+    UpdIndex = leveled_pmem:clear_index(State#state.levelzero_index),
     ok = leveled_pclerk:clerk_prompt(State#state.clerk),
     {noreply, State#state{levelzero_cache=[],
+                            levelzero_index=UpdIndex,
                             levelzero_pending=false,
                             levelzero_constructor=undefined,
                             levelzero_size=0,
@@ -642,20 +653,23 @@ start_from_file(PCLopts) ->
 
 
 
-update_levelzero(L0Size, {PushedTree, MinSQN, MaxSQN},
+update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
                                                 LedgerSQN, L0Cache, State) ->
     SW = os:timestamp(),
     Update = leveled_pmem:add_to_cache(L0Size,
                                         {PushedTree, MinSQN, MaxSQN},
                                         LedgerSQN,
                                         L0Cache),
-    leveled_pmem:add_to_index(PushedTree, State#state.levelzero_index),
+    UpdL0Index = leveled_pmem:add_to_index(PushedIdx,
+                                            State#state.levelzero_index,
+                                            length(L0Cache) + 1),
     
     {UpdMaxSQN, NewL0Size, UpdL0Cache} = Update,
     if
         UpdMaxSQN >= LedgerSQN ->
             UpdState = State#state{levelzero_cache=UpdL0Cache,
                                     levelzero_size=NewL0Size,
+                                    levelzero_index=UpdL0Index,
                                     ledger_sqn=UpdMaxSQN},
             CacheTooBig = NewL0Size > State#state.levelzero_maxcachesize,
             CacheMuchTooBig = NewL0Size > ?SUPER_MAX_TABLE_SIZE,
@@ -740,20 +754,14 @@ plain_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
     R = fetch_mem(Key, Hash, Manifest, L0Cache, L0Index),
     element(1, R).
 
-fetch_mem(Key, Hash, Manifest, L0Cache, none) ->
-    L0Check = leveled_pmem:check_levelzero(Key, Hash, L0Cache),
+fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
+    PosList =  leveled_pmem:check_index(Hash, L0Index),
+    L0Check = leveled_pmem:check_levelzero(Key, Hash, PosList, L0Cache),
     case L0Check of
         {false, not_found} ->
             fetch(Key, Hash, Manifest, 0, fun timed_sst_get/3);
         {true, KV} ->
             {KV, 0}
-    end;
-fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
-    case leveled_pmem:check_index(Hash, L0Index) of
-        true ->
-            fetch_mem(Key, Hash, Manifest, L0Cache, none);
-        false ->
-            fetch(Key, Hash, Manifest, 0, fun timed_sst_get/3)
     end.
 
 fetch(_Key, _Hash, _Manifest, ?MAX_LEVELS + 1, _FetchFun) ->
@@ -1373,12 +1381,15 @@ confirm_delete_test() ->
 
 maybe_pause_push(PCL, KL) ->
     T0 = leveled_skiplist:empty(true),
-    T1 = lists:foldl(fun({K, V}, {AccSL, MinSQN, MaxSQN}) ->
-                            SL = leveled_skiplist:enter(K, V, AccSL),
+    I0 = leveled_pmem:new_index(),
+    T1 = lists:foldl(fun({K, V}, {AccSL, AccIdx, MinSQN, MaxSQN}) ->
+                            UpdSL = leveled_skiplist:enter(K, V, AccSL),
                             SQN = leveled_codec:strip_to_seqonly({K, V}),
-                            {SL, min(SQN, MinSQN), max(SQN, MaxSQN)}
+                            H = leveled_codec:magic_hash(K),
+                            UpdIdx = leveled_pmem:prepare_for_index(AccIdx, H),
+                            {UpdSL, UpdIdx, min(SQN, MinSQN), max(SQN, MaxSQN)}
                             end,
-                        {T0, infinity, 0},
+                        {T0, I0, infinity, 0},
                         KL),
     case pcl_pushmem(PCL, T1) of
         returned ->

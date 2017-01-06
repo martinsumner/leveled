@@ -20,6 +20,8 @@
         from_list/2,
         from_sortedlist/1,
         from_sortedlist/2,
+        from_orderedset/1,
+        from_orderedset/2,
         to_list/1,
         enter/3,
         enter/4,
@@ -71,6 +73,12 @@ enter_nolookup(Key, Value, SkipList) ->
                 element(2, SkipList),
                 ?SKIP_WIDTH, ?LIST_HEIGHT)}.
 
+from_orderedset(Table) ->
+    from_orderedset(Table, false).
+
+from_orderedset(Table, Bloom) ->
+    from_sortedlist(ets:tab2list(Table), Bloom).
+
 from_list(UnsortedKVL) ->
     from_list(UnsortedKVL, false).
 
@@ -81,6 +89,8 @@ from_list(UnsortedKVL, BloomProtect) ->
 from_sortedlist(SortedKVL) ->
     from_sortedlist(SortedKVL, false).
 
+from_sortedlist([], BloomProtect) ->
+    empty(BloomProtect);
 from_sortedlist(SortedKVL, BloomProtect) ->
     Bloom0 =
         case BloomProtect of
@@ -103,11 +113,16 @@ lookup(Key, SkipList) ->
     end.
     
 lookup(Key, Hash, SkipList) ->
-    case leveled_tinybloom:check({hash, Hash}, element(1, SkipList)) of
-        false ->
-            none;
-        true ->
-            list_lookup(Key, element(2, SkipList), ?LIST_HEIGHT)
+    case element(1, SkipList) of
+        list_only ->
+            list_lookup(Key, element(2, SkipList), ?LIST_HEIGHT);
+        _ ->
+            case leveled_tinybloom:check({hash, Hash}, element(1, SkipList)) of
+                false ->
+                    none;
+                true ->
+                    list_lookup(Key, element(2, SkipList), ?LIST_HEIGHT)
+            end
     end.
 
 
@@ -188,53 +203,27 @@ enter(Key, Value, Hash, SkipList, Width, Level) ->
                                 {MarkerKey, UpdSubSkipList})
     end.
 
-
-from_list(KVL, Width, 1) ->
-    Slots = length(KVL) div Width,
-    SkipList0 = lists:map(fun(X) ->
-                                N = X * Width,
-                                {K, _V} = lists:nth(N, KVL),
-                                {K, lists:sublist(KVL,
-                                                    N - Width + 1,
-                                                    Width)}
-                                end,
-                            lists:seq(1, length(KVL) div Width)),
-    case Slots * Width < length(KVL) of
-        true ->
-            {LastK, _V} = lists:last(KVL),
-            SkipList0 ++ [{LastK, lists:nthtail(Slots * Width, KVL)}];
-        false ->
-            SkipList0
-    end;
-from_list(KVL, Width, Level) ->
-    SkipWidth = width(Level, Width),
-    LoftSlots = length(KVL) div SkipWidth,
-    case LoftSlots of
-        0 ->
-            {K, _V} = lists:last(KVL),
-            [{K, from_list(KVL, Width, Level - 1)}];
-        _ ->
-            SkipList0 =
-                lists:map(fun(X) ->
-                                N = X * SkipWidth,
-                                {K, _V} = lists:nth(N, KVL),
-                                SL = lists:sublist(KVL,
-                                                    N - SkipWidth + 1,
-                                                    SkipWidth),
-                                {K, from_list(SL, Width, Level - 1)}
-                                end,
-                            lists:seq(1, LoftSlots)),
-            case LoftSlots * SkipWidth < length(KVL) of
-                true ->
-                    {LastK, _V} = lists:last(KVL),
-                    TailList = lists:nthtail(LoftSlots * SkipWidth, KVL),
-                    SkipList0 ++ [{LastK, from_list(TailList,
-                                                    Width,
-                                                    Level - 1)}];
-                false ->
-                    SkipList0
-            end
-    end.
+from_list(SkipList, _SkipWidth, 0) ->
+    SkipList;
+from_list(KVList, SkipWidth, ListHeight) ->
+    L0 = length(KVList),
+    SL0 =
+        case L0 > SkipWidth of
+            true ->
+                from_list(KVList, L0, [], SkipWidth);         
+            false ->
+                {LastK, _LastSL} = lists:last(KVList),
+                [{LastK, KVList}]
+        end,
+    from_list(SL0, SkipWidth, ListHeight - 1).
+    
+from_list([], 0, SkipList, _SkipWidth) ->
+    SkipList;
+from_list(KVList, L, SkipList, SkipWidth) ->
+    SubLL = min(SkipWidth, L),
+    {Head, Tail} = lists:split(SubLL, KVList),
+    {LastK, _LastV} = lists:last(Head),
+    from_list(Tail, L - SubLL, SkipList ++ [{LastK, Head}], SkipWidth).
 
 
 list_lookup(Key, SkipList, 1) ->
@@ -431,7 +420,15 @@ skiplist_nobloom_test() ->
 skiplist_tester(Bloom) ->
     N = 4000,
     KL = generate_randomkeys(1, N, 1, N div 5),
-                
+    
+    OS = ets:new(test, [ordered_set, private]),
+    ets:insert(OS, KL),
+    SWaETS = os:timestamp(),
+    SkipList = from_orderedset(OS, Bloom),
+    io:format(user, "Generating skip list with ~w keys in ~w microseconds " ++
+                        "from ordered set~n",
+                [N, timer:now_diff(os:timestamp(), SWaETS)]),
+    
     SWaGSL = os:timestamp(),
     SkipList = from_list(lists:reverse(KL), Bloom),
     io:format(user, "Generating skip list with ~w keys in ~w microseconds~n" ++
@@ -533,13 +530,28 @@ skiplist_timingtest(KL, SkipList, N, Bloom) ->
                 [timer:now_diff(os:timestamp(), SWc)]),
             
     AltKL1 = generate_randomkeys(1, 2000, 1, 200),
-    SWd = os:timestamp(),
+    SWd0 = os:timestamp(),
     lists:foreach(fun({K, _V}) ->
                         lookup(K, SkipList)
                         end,
                     AltKL1),
     io:format(user, "Getting 2000 mainly missing keys took ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SWd)]),
+                [timer:now_diff(os:timestamp(), SWd0)]),
+    SWd1 = os:timestamp(),
+    lists:foreach(fun({K, _V}) ->
+                        leveled_codec:magic_hash(K)
+                        end,
+                    AltKL1),
+    io:format(user, "Generating 2000 magic hashes took ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWd1)]),
+    SWd2 = os:timestamp(),
+    lists:foreach(fun({K, _V}) ->
+                        erlang:phash2(K)
+                        end,
+                    AltKL1),
+    io:format(user, "Generating 2000 not so magic hashes took ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SWd2)]),
+    
     AltKL2 = generate_randomkeys(1, 1000, N div 5 + 1, N div 5 + 300),
     SWe = os:timestamp(),
     lists:foreach(fun({K, _V}) ->

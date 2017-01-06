@@ -152,7 +152,9 @@
 -define(JOURNAL_SIZE_JITTER, 20).
 -define(LONG_RUNNING, 80000).
 
--record(ledger_cache, {skiplist = leveled_skiplist:empty(true) :: tuple(),
+-record(ledger_cache, {mem :: ets:tab(),
+                        loader = leveled_skiplist:empty(false) :: tuple(),
+                        index = leveled_pmem:new_index(), % array
                         min_sqn = infinity :: integer()|infinity,
                         max_sqn = 0 :: integer()}).
 
@@ -243,22 +245,21 @@ init([Opts]) ->
             CacheJitter = ?CACHE_SIZE div (100 div ?CACHE_SIZE_JITTER),
             CacheSize = get_opt(cache_size, Opts, ?CACHE_SIZE)
                         + erlang:phash2(self()) rem CacheJitter,
+            NewETS = ets:new(mem, [ordered_set]),
             leveled_log:log("B0001", [Inker, Penciller]),
             {ok, #state{inker=Inker,
                         penciller=Penciller,
                         cache_size=CacheSize,
-                        ledger_cache=#ledger_cache{},
+                        ledger_cache=#ledger_cache{mem = NewETS},
                         is_snapshot=false}};
         Bookie ->
             {ok,
                 {Penciller, LedgerCache},
                 Inker} = book_snapshotstore(Bookie, self(), ?SNAPSHOT_TIMEOUT),
-            CacheToLoad = {leveled_skiplist:empty(true), 0, 0},
-            ok = leveled_penciller:pcl_loadsnapshot(Penciller, CacheToLoad),
+            ok = load_snapshot(Penciller, LedgerCache),
             leveled_log:log("B0002", [Inker, Penciller]),
             {ok, #state{penciller=Penciller,
                         inker=Inker,
-                        ledger_cache=LedgerCache,
                         is_snapshot=true}}
     end.
 
@@ -457,18 +458,20 @@ code_change(_OldVsn, State, _Extra) ->
 %%%============================================================================
 
 load_snapshot(LedgerSnapshot, LedgerCache) ->
-    CacheToLoad = {LedgerCache#ledger_cache.skiplist,
+    CacheToLoad = {LedgerCache#ledger_cache.loader,
+                    LedgerCache#ledger_cache.index,
                     LedgerCache#ledger_cache.min_sqn,
                     LedgerCache#ledger_cache.max_sqn},
     ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot, CacheToLoad).
 
 empty_ledgercache() ->
-    #ledger_cache{}.
+    #ledger_cache{mem = ets:new(empty, [ordered_set])}.
 
 push_ledgercache(Penciller, Cache) ->
-    CacheToLoad = {Cache#ledger_cache.skiplist,
-                        Cache#ledger_cache.min_sqn,
-                        Cache#ledger_cache.max_sqn},
+    CacheToLoad = {Cache#ledger_cache.loader,
+                    Cache#ledger_cache.index,
+                    Cache#ledger_cache.min_sqn,
+                    Cache#ledger_cache.max_sqn},
     leveled_penciller:pcl_pushmem(Penciller, CacheToLoad).
 
 %%%============================================================================
@@ -486,7 +489,7 @@ maybe_longrunning(SW, Aspect) ->
     end.
 
 cache_size(LedgerCache) ->
-    leveled_skiplist:size(LedgerCache#ledger_cache.skiplist).
+    ets:info(LedgerCache#ledger_cache.mem, size).
 
 bucket_stats(State, Bucket, Tag) ->
     {ok,
@@ -703,17 +706,24 @@ snapshot_store(State, SnapType) ->
     PCLopts = #penciller_options{start_snapshot=true,
                                     source_penciller=State#state.penciller},
     {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
+    LedgerCache = readycache_forsnapshot(State#state.ledger_cache),
     case SnapType of
         store ->
             InkerOpts = #inker_options{start_snapshot=true,
                                         source_inker=State#state.inker},
             {ok, JournalSnapshot} = leveled_inker:ink_start(InkerOpts),
-            {ok, {LedgerSnapshot, State#state.ledger_cache},
-                    JournalSnapshot};
+            {ok, {LedgerSnapshot, LedgerCache}, JournalSnapshot};
         ledger ->
-            {ok, {LedgerSnapshot, State#state.ledger_cache},
-                    null}
+            {ok, {LedgerSnapshot, LedgerCache}, null}
     end.    
+
+readycache_forsnapshot(LedgerCache) ->
+    % Need to convert the Ledger Cache away from using the ETS table
+    SkipList = leveled_skiplist:from_orderedset(LedgerCache#ledger_cache.mem),
+    Idx = LedgerCache#ledger_cache.index,
+    MinSQN = LedgerCache#ledger_cache.min_sqn,
+    MaxSQN = LedgerCache#ledger_cache.max_sqn,
+    #ledger_cache{loader=SkipList, index=Idx, min_sqn=MinSQN, max_sqn=MaxSQN}.
 
 set_options(Opts) ->
     MaxJournalSize0 = get_opt(max_journalsize, Opts, 10000000000),
@@ -760,25 +770,25 @@ startup(InkerOpts, PencillerOpts) ->
 
 fetch_head(Key, Penciller, LedgerCache) ->
     SW = os:timestamp(),
-    Hash = leveled_codec:magic_hash(Key),
-    if
-        Hash /= no_lookup ->
-            L0R = leveled_skiplist:lookup(Key,
-                                            Hash,
-                                            LedgerCache#ledger_cache.skiplist),
-            case L0R of
-                {value, Head} ->
-                    maybe_longrunning(SW, local_head),
+    CacheResult = 
+        case LedgerCache#ledger_cache.mem of
+            undefined ->
+                [];
+            Tab ->
+                ets:lookup(Tab, Key)
+        end,
+    case CacheResult of
+        [{Key, Head}] ->
+            Head;
+        [] ->
+            Hash = leveled_codec:magic_hash(Key),
+            case leveled_penciller:pcl_fetch(Penciller, Key, Hash) of
+                {Key, Head} ->
+                    maybe_longrunning(SW, pcl_head),
                     Head;
-                none ->
-                    case leveled_penciller:pcl_fetch(Penciller, Key, Hash) of
-                        {Key, Head} ->
-                            maybe_longrunning(SW, pcl_head),
-                            Head;
-                        not_present ->
-                            maybe_longrunning(SW, pcl_head),
-                            not_present
-                    end
+                not_present ->
+                    maybe_longrunning(SW, pcl_head),
+                    not_present
             end
     end.
 
@@ -923,49 +933,61 @@ accumulate_index(TermRe, AddFun, FoldKeysFun) ->
 preparefor_ledgercache(?INKT_KEYD,
                         LedgerKey, SQN, _Obj, _Size, {IndexSpecs, TTL}) ->
     {Bucket, Key} = leveled_codec:from_ledgerkey(LedgerKey),
-    leveled_codec:convert_indexspecs(IndexSpecs, Bucket, Key, SQN, TTL);
+    KeyChanges = leveled_codec:convert_indexspecs(IndexSpecs,
+                                                    Bucket,
+                                                    Key,
+                                                    SQN,
+                                                    TTL),
+    {no_lookup, SQN, KeyChanges};
 preparefor_ledgercache(_Type, LedgerKey, SQN, Obj, Size, {IndexSpecs, TTL}) ->
-    {Bucket, Key, PrimaryChange} = leveled_codec:generate_ledgerkv(LedgerKey,
-                                                                    SQN,
-                                                                    Obj,
-                                                                    Size,
-                                                                    TTL),
-    [PrimaryChange] ++ leveled_codec:convert_indexspecs(IndexSpecs,
-                                                        Bucket,
-                                                        Key,
-                                                        SQN,
-                                                        TTL).
+    {Bucket, Key, ObjKeyChange, H} = leveled_codec:generate_ledgerkv(LedgerKey,
+                                                                        SQN,
+                                                                        Obj,
+                                                                        Size,
+                                                                        TTL),
+    KeyChanges = [ObjKeyChange] ++ leveled_codec:convert_indexspecs(IndexSpecs,
+                                                                        Bucket,
+                                                                        Key,
+                                                                        SQN,
+                                                                        TTL),
+    {H, SQN, KeyChanges}.
 
 
-addto_ledgercache(Changes, Cache) ->
+addto_ledgercache({H, SQN, KeyChanges}, Cache) ->
+    ets:insert(Cache#ledger_cache.mem, KeyChanges),
+    UpdIndex = leveled_pmem:prepare_for_index(Cache#ledger_cache.index, H),
+    Cache#ledger_cache{index = UpdIndex,
+                        min_sqn=min(SQN, Cache#ledger_cache.min_sqn),
+                        max_sqn=max(SQN, Cache#ledger_cache.max_sqn)}.
+
+addto_ledgercache({H, SQN, KeyChanges}, Cache, loader) ->
     FoldChangesFun =
-        fun({K, V}, Cache0) ->
-            {SQN, Hash} = leveled_codec:strip_to_seqnhashonly({K, V}),
-            SL0 = Cache0#ledger_cache.skiplist,
-            SL1 =
-                case Hash of
-                    no_lookup ->
-                        leveled_skiplist:enter_nolookup(K, V, SL0);
-                    _ ->
-                        leveled_skiplist:enter(K, Hash, V, SL0)
-                end,
-            Cache0#ledger_cache{skiplist=SL1,
-                                min_sqn=min(SQN, Cache0#ledger_cache.min_sqn),
-                                max_sqn=max(SQN, Cache0#ledger_cache.max_sqn)}
-            end,
-    lists:foldl(FoldChangesFun, Cache, Changes).
+        fun({K, V}, SL0) ->
+            leveled_skiplist:enter_nolookup(K, V, SL0)
+        end,
+    UpdSL = lists:foldl(FoldChangesFun, Cache#ledger_cache.loader, KeyChanges),
+    UpdIndex = leveled_pmem:prepare_for_index(Cache#ledger_cache.index, H),
+    Cache#ledger_cache{index = UpdIndex,
+                        loader = UpdSL,
+                        min_sqn=min(SQN, Cache#ledger_cache.min_sqn),
+                        max_sqn=max(SQN, Cache#ledger_cache.max_sqn)}.
+
 
 maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
-    CacheSize = leveled_skiplist:size(Cache#ledger_cache.skiplist),
+    Tab = Cache#ledger_cache.mem,
+    CacheSize = ets:info(Tab, size),
     TimeToPush = maybe_withjitter(CacheSize, MaxCacheSize),
     if
         TimeToPush ->
-            CacheToLoad = {Cache#ledger_cache.skiplist,
+            CacheToLoad = {leveled_skiplist:from_orderedset(Tab),
+                            Cache#ledger_cache.index,
                             Cache#ledger_cache.min_sqn,
                             Cache#ledger_cache.max_sqn},
             case leveled_penciller:pcl_pushmem(Penciller, CacheToLoad) of
                 ok ->
-                    {ok, #ledger_cache{}};
+                    Cache0 = #ledger_cache{},
+                    true = ets:delete_all_objects(Tab),
+                    {ok, Cache0#ledger_cache{mem=Tab}};
                 returned ->
                     {returned, Cache}
             end;
@@ -1002,12 +1024,18 @@ load_fun(KeyInLedger, ValueInLedger, _Position, Acc0, ExtractFun) ->
         SQN when SQN < MaxSQN ->
             Changes = preparefor_ledgercache(Type, PK, SQN,
                                                 Obj, VSize, IndexSpecs),
-            {loop, {MinSQN, MaxSQN, addto_ledgercache(Changes, OutputTree)}};
+            {loop,
+                {MinSQN,
+                    MaxSQN,
+                    addto_ledgercache(Changes, OutputTree, loader)}};
         MaxSQN ->
             leveled_log:log("B0006", [SQN]),
             Changes = preparefor_ledgercache(Type, PK, SQN,
                                                 Obj, VSize, IndexSpecs),
-            {stop, {MinSQN, MaxSQN, addto_ledgercache(Changes, OutputTree)}};
+            {stop,
+                {MinSQN,
+                    MaxSQN,
+                    addto_ledgercache(Changes, OutputTree, loader)}};
         SQN when SQN > MaxSQN ->
             leveled_log:log("B0007", [MaxSQN, SQN]),
             {stop, Acc0}
