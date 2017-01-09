@@ -125,7 +125,12 @@
         {info, "Completion of update to levelzero"}},
     {"P0032",
         {info, "Head timing for result ~w is sample ~w total ~w and max ~w"}},
-    
+    {"P0033",
+        {error, "Corrupted manifest file at path ~s to be ignored "
+                    ++ "due to error ~w"}},
+    {"P0034",
+        {warn, "Snapshot with pid ~w timed out and so deletion will "
+                    ++ "continue regardless"}},
     {"PC001",
         {info, "Penciller's clerk ~w started with owner ~w"}},
     {"PC002",
