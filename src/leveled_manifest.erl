@@ -33,6 +33,7 @@
         new_manifest/0,
         open_manifest/1,
         save_manifest/3,
+        initiate_from_manifest/1,
         key_lookup/4,
         key_lookup/5,
         range_lookup/5,
@@ -81,6 +82,21 @@ save_manifest(Manifest, RootPath, ManSQN) ->
     ets:tab2file(Manifest,
                     FP,
                     [{extended_info, [md5sum]}, {sync, true}]).
+
+
+initiate_from_manifest(Manifest) ->
+    FlatManifest = ets:tab2list(Manifest),
+    InitiateFun =
+        fun({{_L, _EK, FN}, {_SK, ActSt, DelSt}}, {FNList, MaxSQN}) ->
+            case {ActSt, DelSt} of
+                {{active, ActSQN}, {tomb, infinity}} ->
+                    {[FN|FNList], max(ActSQN, MaxSQN)};
+                {_, {tomb, TombSQN}} ->
+                    {FNList, max(TombSQN, MaxSQN)}
+            end
+        end,
+    lists:foldl(InitiateFun, {[], 0}, FlatManifest).
+
 
 insert_manifest_entry(Manifest, ManSQN, Level, Entry) ->
     Key = {Level, Entry#manifest_entry.end_key, Entry#manifest_entry.filename},
@@ -353,26 +369,34 @@ keyquery_manifest_test() ->
     E3 = #manifest_entry{start_key={o, "Bucket1", "K3750", null},
                             end_key={o, "Bucket1", "K9930", null},
                             filename="Z3"},
+    EToRemove = #manifest_entry{start_key={o, "Bucket99", "K3750", null},
+                                end_key={o, "Bucket99", "K9930", null},
+                                filename="ZR"},
     
     
     Manifest0 = open_manifestfile(dummy, []),
     insert_manifest_entry(Manifest0, 1, 1, E1),
     insert_manifest_entry(Manifest0, 1, 1, E2),
     insert_manifest_entry(Manifest0, 1, 1, E3),
+    insert_manifest_entry(Manifest0, 1, 1, EToRemove),
+    remove_manifest_entry(Manifest0, 2, 1, EToRemove),
     
     RootPath = "../test",
     ok = filelib:ensure_dir(filepath(RootPath, manifest)),
-    ok = save_manifest(Manifest0, RootPath, 1),
+    ok = save_manifest(Manifest0, RootPath, 2),
     true = ets:delete(Manifest0),
     ?assertMatch(true, filelib:is_file(filepath(RootPath,
-                                                1,
+                                                2,
                                                 current_manifest))),
     
-    BadFP = filepath(RootPath, 2, current_manifest),
+    BadFP = filepath(RootPath, 3, current_manifest),
     ok = file:write_file(BadFP, list_to_binary("nonsense")),
     ?assertMatch(true, filelib:is_file(BadFP)),
     
     Manifest = open_manifest(RootPath),
+    {FNList, ManSQN} = initiate_from_manifest(Manifest),
+    ?assertMatch(["Z1", "Z2", "Z3"], lists:sort(FNList)),
+    ?assertMatch(2, ManSQN),
     
     K1 = {o, "Bucket1", "K0000", null},
     K2 = {o, "Bucket1", "K0001", null},
@@ -388,19 +412,19 @@ keyquery_manifest_test() ->
     K12 = {o, "Bucket1", "K9930", null},
     K13 = {o, "Bucket1", "K9931", null},
     
-    ?assertMatch(false, key_lookup(Manifest, 1, K1, 1)),
-    ?assertMatch("Z1", key_lookup(Manifest, 1, K2, 1)),
-    ?assertMatch("Z1", key_lookup(Manifest, 1, K3, 1)),
-    ?assertMatch("Z1", key_lookup(Manifest, 1, K4, 1)),
-    ?assertMatch(false, key_lookup(Manifest, 1, K5, 1)),
-    ?assertMatch("Z2", key_lookup(Manifest, 1, K6, 1)),
-    ?assertMatch("Z2", key_lookup(Manifest, 1, K7, 1)),
-    ?assertMatch("Z2", key_lookup(Manifest, 1, K8, 1)),
-    ?assertMatch(false, key_lookup(Manifest, 1, K9, 1)),
-    ?assertMatch("Z3", key_lookup(Manifest, 1, K10, 1)),
-    ?assertMatch("Z3", key_lookup(Manifest, 1, K11, 1)),
-    ?assertMatch("Z3", key_lookup(Manifest, 1, K12, 1)),
-    ?assertMatch(false, key_lookup(Manifest, 1, K13, 1)),
+    ?assertMatch(false, key_lookup(Manifest, 1, K1, 2)),
+    ?assertMatch("Z1", key_lookup(Manifest, 1, K2, 2)),
+    ?assertMatch("Z1", key_lookup(Manifest, 1, K3, 2)),
+    ?assertMatch("Z1", key_lookup(Manifest, 1, K4, 2)),
+    ?assertMatch(false, key_lookup(Manifest, 1, K5, 2)),
+    ?assertMatch("Z2", key_lookup(Manifest, 1, K6, 2)),
+    ?assertMatch("Z2", key_lookup(Manifest, 1, K7, 2)),
+    ?assertMatch("Z2", key_lookup(Manifest, 1, K8, 2)),
+    ?assertMatch(false, key_lookup(Manifest, 1, K9, 2)),
+    ?assertMatch("Z3", key_lookup(Manifest, 1, K10, 2)),
+    ?assertMatch("Z3", key_lookup(Manifest, 1, K11, 2)),
+    ?assertMatch("Z3", key_lookup(Manifest, 1, K12, 2)),
+    ?assertMatch(false, key_lookup(Manifest, 1, K13, 2)),
     
     E1_2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld4"}, "K8"},
                             end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K62"},
@@ -415,37 +439,37 @@ keyquery_manifest_test() ->
                             end_key={o, "Bucket1", "K998", null},
                             filename="Y4"},
     
-    insert_manifest_entry(Manifest, 2, 1, E1_2),
-    insert_manifest_entry(Manifest, 2, 1, E2_2),
-    insert_manifest_entry(Manifest, 2, 1, E3_2),
-    insert_manifest_entry(Manifest, 2, 1, E4_2),
+    insert_manifest_entry(Manifest, 3, 1, E1_2),
+    insert_manifest_entry(Manifest, 3, 1, E2_2),
+    insert_manifest_entry(Manifest, 3, 1, E3_2),
+    insert_manifest_entry(Manifest, 3, 1, E4_2),
     
     S1 = ets:info(Manifest, size),
     
-    remove_manifest_entry(Manifest, 2, 1, E1),
-    remove_manifest_entry(Manifest, 2, 1, E2),
-    remove_manifest_entry(Manifest, 2, 1, E3),
+    remove_manifest_entry(Manifest, 3, 1, E1),
+    remove_manifest_entry(Manifest, 3, 1, E2),
+    remove_manifest_entry(Manifest, 3, 1, E3),
     
     S2 = ets:info(Manifest, size),
     ?assertMatch(true, S2 == S1),
     
-    ?assertMatch("Y2", key_lookup(Manifest, 1, K1, 2)),
-    ?assertMatch("Y2", key_lookup(Manifest, 1, K10, 2)),
-    ?assertMatch("Y4", key_lookup(Manifest, 1, K12, 2)),
+    ?assertMatch("Y2", key_lookup(Manifest, 1, K1, 3)),
+    ?assertMatch("Y2", key_lookup(Manifest, 1, K10, 3)),
+    ?assertMatch("Y4", key_lookup(Manifest, 1, K12, 3)),
     
     S3 = ets:info(Manifest, size),
     ?assertMatch(true, S3 == S1),
     
-    ?assertMatch("Y2", key_lookup(Manifest, 1, K1, 2, {true, 2})),
-    ?assertMatch("Y2", key_lookup(Manifest, 1, K10, 2, {true, 2})),
-    ?assertMatch("Y4", key_lookup(Manifest, 1, K12, 2, {true, 2})),
+    ?assertMatch("Y2", key_lookup(Manifest, 1, K1, 3, {true, 3})),
+    ?assertMatch("Y2", key_lookup(Manifest, 1, K10, 3, {true, 3})),
+    ?assertMatch("Y4", key_lookup(Manifest, 1, K12, 3, {true, 3})),
     
     S4 = ets:info(Manifest, size),
     ?assertMatch(true, S4 == S1),
     
-    ?assertMatch("Y2", key_lookup(Manifest, 1, K1, 3, {true, 3})),
-    ?assertMatch("Y2", key_lookup(Manifest, 1, K10, 3, {true, 3})),
-    ?assertMatch("Y4", key_lookup(Manifest, 1, K12, 3, {true, 3})),
+    ?assertMatch("Y2", key_lookup(Manifest, 1, K1, 4, {true, 4})),
+    ?assertMatch("Y2", key_lookup(Manifest, 1, K10, 4, {true, 4})),
+    ?assertMatch("Y4", key_lookup(Manifest, 1, K12, 4, {true, 4})),
     
     S5 = ets:info(Manifest, size),
     ?assertMatch(true, S5 < S1).
