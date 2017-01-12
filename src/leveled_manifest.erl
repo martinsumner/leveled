@@ -87,15 +87,17 @@ save_manifest(Manifest, RootPath, ManSQN) ->
 initiate_from_manifest(Manifest) ->
     FlatManifest = ets:tab2list(Manifest),
     InitiateFun =
-        fun({{_L, _EK, FN}, {_SK, ActSt, DelSt}}, {FNList, MaxSQN}) ->
+        fun({{L, _EK, FN}, {_SK, ActSt, DelSt}}, {FNList, MaxSQN, LCount}) ->
             case {ActSt, DelSt} of
                 {{active, ActSQN}, {tomb, infinity}} ->
-                    {[FN|FNList], max(ActSQN, MaxSQN)};
+                    {[FN|FNList],
+                        max(ActSQN, MaxSQN),
+                        dict:update_counter(L, 1, LCount)};
                 {_, {tomb, TombSQN}} ->
-                    {FNList, max(TombSQN, MaxSQN)}
+                    {FNList, max(TombSQN, MaxSQN), LCount}
             end
         end,
-    lists:foldl(InitiateFun, {[], 0}, FlatManifest).
+    lists:foldl(InitiateFun, {[], 0, dict:new()}, FlatManifest).
 
 
 insert_manifest_entry(Manifest, ManSQN, Level, Entry) ->
@@ -274,6 +276,8 @@ range_lookup(Manifest, Level, {LastKey, LastFN}, SK, EK, Acc, ManSQN) ->
 
 -ifdef(TEST).
 
+
+
 rangequery_manifest_test() ->
     E1 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
                             end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K93"},
@@ -358,8 +362,7 @@ rangequery_manifest_test() ->
     ?assertMatch(["Y4"], RL3_1B).
 
 
-
-keyquery_manifest_test() ->
+startup_manifest()
     E1 = #manifest_entry{start_key={o, "Bucket1", "K0001", null},
                             end_key={o, "Bucket1", "K0990", null},
                             filename="Z1"},
@@ -369,15 +372,19 @@ keyquery_manifest_test() ->
     E3 = #manifest_entry{start_key={o, "Bucket1", "K3750", null},
                             end_key={o, "Bucket1", "K9930", null},
                             filename="Z3"},
-    EToRemove = #manifest_entry{start_key={o, "Bucket99", "K3750", null},
-                                end_key={o, "Bucket99", "K9930", null},
-                                filename="ZR"},
-    
     
     Manifest0 = open_manifestfile(dummy, []),
     insert_manifest_entry(Manifest0, 1, 1, E1),
     insert_manifest_entry(Manifest0, 1, 1, E2),
     insert_manifest_entry(Manifest0, 1, 1, E3),
+    Manifest0
+
+keyquery_manifest_test() ->
+    Manifest0 = startup_manifest(),
+    
+    EToRemove = #manifest_entry{start_key={o, "Bucket99", "K3750", null},
+                                end_key={o, "Bucket99", "K9930", null},
+                                filename="ZR"},
     insert_manifest_entry(Manifest0, 1, 1, EToRemove),
     remove_manifest_entry(Manifest0, 2, 1, EToRemove),
     
@@ -394,9 +401,10 @@ keyquery_manifest_test() ->
     ?assertMatch(true, filelib:is_file(BadFP)),
     
     Manifest = open_manifest(RootPath),
-    {FNList, ManSQN} = initiate_from_manifest(Manifest),
+    {FNList, ManSQN, LCount} = initiate_from_manifest(Manifest),
     ?assertMatch(["Z1", "Z2", "Z3"], lists:sort(FNList)),
     ?assertMatch(2, ManSQN),
+    ?assertMatch(3, dict:fetch(1, LCount)),
     
     K1 = {o, "Bucket1", "K0000", null},
     K2 = {o, "Bucket1", "K0001", null},
@@ -502,5 +510,9 @@ snapshot_test() ->
                     ready_to_delete(Snap5, 3, {MegaS0, S0, MicroS0})).
     
 
+allatlevel_test() ->
+    Manifest0 = startup_manifest(),
+    AllAtL1 = range_lookup(Manifest, 1, all, {null, null, null, null}, 1),
+    ?assertMatch(["Z1", "Z2", "Z3"], AllAtL1).
 
 -endif.

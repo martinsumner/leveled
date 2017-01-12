@@ -74,8 +74,6 @@
                 ++ "reason ~w"}},
     {"P0008",
         {info, "Penciller closing for reason ~w"}},
-    {"P0009",
-        {info, "Level 0 cache empty at close of Penciller"}},
     {"P0010",
         {info, "No level zero action on close of Penciller ~w"}},
     {"P0011",
@@ -97,9 +95,6 @@
                     ++ "L0 pending ~w and merge backlog ~w"}},
     {"P0019",
         {info, "Rolling level zero to filename ~s at ledger sqn ~w"}},
-    {"P0020",
-        {info, "Work at Level ~w to be scheduled for ~w with ~w "
-                ++ "queue items outstanding at all levels"}},
     {"P0021",
         {info, "Allocation of work blocked as L0 pending"}},
     {"P0022",
@@ -108,7 +103,8 @@
         {info, "Manifest entry of startkey ~s ~s ~s endkey ~s ~s ~s "
                 ++ "filename=~s~n"}},
     {"P0024",
-        {info, "Outstanding compaction work items of ~w at level ~w"}},
+        {info, "Outstanding compaction work items of ~w with backlog status "
+                    ++ "of ~w"}},
     {"P0025",
         {info, "Merge to sqn ~w from Level ~w completed"}},
     {"P0026",

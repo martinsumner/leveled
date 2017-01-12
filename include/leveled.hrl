@@ -24,12 +24,11 @@
                         {next_sqn :: integer(),
                         clerk :: pid(),
                         src_level :: integer(),
-                        manifest :: list(),
                         start_time :: tuple(),
                         ledger_filepath :: string(),
-                        manifest_file :: string(),
-                        new_manifest :: list(),
                         unreferenced_files :: list(),
+                        new_files :: list(),
+                        level_counts :: dict(),
                         target_is_basement = false ::boolean()}).
 
 -record(level,

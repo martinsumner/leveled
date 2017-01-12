@@ -2,10 +2,9 @@
 %%
 %% The Penciller's clerk is responsible for compaction work within the Ledger.
 %%
-%% The Clerk will periodically poll the Penciller to see if there is work for
-%% it to complete, except if the Clerk has informed the Penciller that it has
-%% readied a manifest change to be committed - in which case it will wait to
-%% be called by the Penciller.
+%% The Clerk will periodically poll the Penciller to check there is no work
+%% at level zero pending completion, and if not the Clerk will examine the
+%% manifest to see if work is necessary.
 %%
 %% -------- COMMITTING MANIFEST CHANGES ---------
 %%
@@ -18,35 +17,7 @@
 %% certain that the manifest change has been committed.  Some uncollected
 %% garbage is considered acceptable.
 %%
-%% The process of committing a manifest change is as follows:
-%%
-%% A - The Clerk completes a merge, and casts a prompt to the Penciller with
-%% a work item describing the change
-%%
-%% B - The Penciller commits the change to disk, and then calls the Clerk to
-%% confirm the manifest change
-%%
-%% C - The Clerk replies immediately to acknowledge this call, then marks the
-%% removed files for deletion
-%%
-%% Shutdown < A/B - If the Penciller starts the shutdown process before the
-%% merge is complete, in the shutdown the Penciller will call a request for the
-%% manifest change which will pick up the pending change.  It will then confirm
-%% the change, and now the Clerk will mark the files for delete before it
-%% replies to the Penciller so it can complete the shutdown process (which will
-%% prompt erasing of the removed files).
-%%
-%% The clerk will not request work on timeout if the committing of a manifest
-%% change is pending confirmation.
-%%
-%% -------- TIMEOUTS ---------
-%%
-%% The Penciller may prompt the Clerk to callback soon (i.e. reduce the
-%% Timeout) if it has urgent work ready (i.e. it has written a L0 file).
-%%
-%% There will also be a natural quick timeout once the committing of a manifest
-%% change has occurred.
-%% 
+
 
 -module(leveled_pclerk).
 
@@ -68,8 +39,10 @@
 
 -define(MAX_TIMEOUT, 2000).
 -define(MIN_TIMEOUT, 50).
+-define(END_KEY, {null, null, null, null}).
 
 -record(state, {owner :: pid(),
+                manifest, % ets table reference
                 change_pending=false :: boolean(),
                 work_item :: #penciller_work{}|null}).
 
@@ -77,19 +50,17 @@
 %%% API
 %%%============================================================================
 
-clerk_new(Owner) ->
+clerk_new(Owner, Manifest) ->
     {ok, Pid} = gen_server:start(?MODULE, [], []),
-    ok = gen_server:call(Pid, {register, Owner}, infinity),
+    ok = gen_server:call(Pid, {load, Owner, Manifest}, infinity),
     leveled_log:log("PC001", [Pid, Owner]),
     {ok, Pid}.
-
-clerk_manifestchange(Pid, Action, Closing) ->
-    gen_server:call(Pid, {manifest_change, Action, Closing}, infinity).
 
 clerk_prompt(Pid) ->
     gen_server:cast(Pid, prompt).
 
-
+clerk_close(Pid) ->
+    gen_server:cast(Pid, close).
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -98,41 +69,16 @@ clerk_prompt(Pid) ->
 init([]) ->
     {ok, #state{}}.
 
-handle_call({register, Owner}, _From, State) ->
+handle_call({load, Owner, Manifest}, _From, State) ->
     {reply,
         ok,
-        State#state{owner=Owner},
-        ?MIN_TIMEOUT};
-handle_call({manifest_change, return, true}, _From, State) ->
-    leveled_log:log("PC002", []),
-    case State#state.change_pending of
-        true ->
-            WI = State#state.work_item,
-            {reply, {ok, WI}, State};
-        false ->
-            {stop, normal, no_change, State}
-    end;
-handle_call({manifest_change, confirm, Closing}, From, State) ->
-    case Closing of
-        true ->
-            leveled_log:log("PC003", []),
-            WI = State#state.work_item,
-            ok = mark_for_delete(WI#penciller_work.unreferenced_files,
-                                           State#state.owner),
-            {stop, normal, ok, State};
-        false ->
-            leveled_log:log("PC004", []),
-            gen_server:reply(From, ok),
-            WI = State#state.work_item,
-            ok = mark_for_delete(WI#penciller_work.unreferenced_files,
-                                    State#state.owner),
-            {noreply,
-                State#state{work_item=null, change_pending=false},
-                ?MIN_TIMEOUT}
-    end.
+        State#state{owner=Owner, manifest=Manifest},
+        ?MIN_TIMEOUT}.
 
 handle_cast(prompt, State) ->
-    {noreply, State, ?MIN_TIMEOUT}.
+    {noreply, State, ?MIN_TIMEOUT};
+handle_cast(close, State) ->
+    (stop, normal, State).    
 
 handle_info(timeout, State=#state{change_pending=Pnd}) when Pnd == false ->
     case requestandhandle_work(State) of
@@ -159,26 +105,28 @@ code_change(_OldVsn, State, _Extra) ->
 
 requestandhandle_work(State) ->
     case leveled_penciller:pcl_workforclerk(State#state.owner) of
-        none ->
+        false ->
             leveled_log:log("PC006", []),
-            {false, ?MAX_TIMEOUT};
-        WI ->
-            {NewManifest, FilesToDelete} = merge(WI),
-            UpdWI = WI#penciller_work{new_manifest=NewManifest,
-                                        unreferenced_files=FilesToDelete},
+            false;
+        {SrcLevel, ManifestSQN} ->
+            {Additions, Removals} = merge(Level,
+                                            State#state.manifest,
+                                            ManifestSQN),
             leveled_log:log("PC007", []),
-            ok = leveled_penciller:pcl_promptmanifestchange(State#state.owner,
-                                                            UpdWI),
-            {true, UpdWI}
+            ok = leveled_penciller:pcl_commitmanifestchange(State#state.owner,
+                                                            SrcLevel,
+                                                            Additions,
+                                                            Removals,
+                                                            ManifestSQN),
+            true
     end.    
 
 
-merge(WI) ->
-    SrcLevel = WI#penciller_work.src_level,
-    {SrcF, UpdMFest1} = select_filetomerge(SrcLevel,
-                                                WI#penciller_work.manifest),
-    SinkFiles = get_item(SrcLevel + 1, UpdMFest1, []),
-    {Candidates, Others} = check_for_merge_candidates(SrcF, SinkFiles),
+merge(SrcLevel, Manifest, ManifestSQN) ->
+    SrcF = select_filetomerge(SrcLevel, Manifest),
+    
+    
+    Candidates = check_for_merge_candidates(SrcF, SinkFiles),
     %% TODO:
     %% Need to work out if this is the top level
     %% And then tell merge process to create files at the top level
@@ -254,17 +202,14 @@ check_for_merge_candidates(SrcF, SinkFiles) ->
 %%
 %% Hence, the initial implementation is to select files to merge at random
 
-select_filetomerge(SrcLevel, Manifest) ->
-    {SrcLevel, LevelManifest} = lists:keyfind(SrcLevel, 1, Manifest),
-    Selected = lists:nth(random:uniform(length(LevelManifest)),
-                            LevelManifest),
-    UpdManifest = lists:keyreplace(SrcLevel,
-                                    1,
-                                    Manifest,
-                                    {SrcLevel,
-                                        lists:delete(Selected,
-                                                        LevelManifest)}),
-    {Selected, UpdManifest}.
+select_filetomerge(SrcLevel, Manifest, ManifestSQN) ->
+    Level = leveled_manifest:range_lookup(Manifest,
+                                            1,
+                                            all,
+                                            ?END_KEY,
+                                            ManifestSQN),
+    
+    FN = lists:nth(random:uniform(length(Level)), Level).
     
     
 
