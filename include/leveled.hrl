@@ -20,17 +20,6 @@
                         expire_tombstones = false :: boolean(),
                         penciller :: pid()}).
 
--record(penciller_work,
-                        {next_sqn :: integer(),
-                        clerk :: pid(),
-                        src_level :: integer(),
-                        start_time :: tuple(),
-                        ledger_filepath :: string(),
-                        unreferenced_files :: list(),
-                        new_files :: list(),
-                        level_counts :: dict(),
-                        target_is_basement = false ::boolean()}).
-
 -record(level,
                         {level :: integer(),
                         is_basement = false :: boolean(),

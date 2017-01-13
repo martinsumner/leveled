@@ -148,7 +148,7 @@
     {"PC010",
         {info, "Merge to be commenced for FileToMerge=~s with MSN=~w"}},
     {"PC011",
-        {info, "Merge completed with MSN=~w Level=~w and FileCounter=~w"}},
+        {info, "Merge completed with MSN=~w to Level=~w and FileCounter=~w"}},
     {"PC012",
         {info, "File to be created as part of MSN=~w Filename=~s"}},
     {"PC013",
