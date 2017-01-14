@@ -612,7 +612,7 @@ start_from_file(PCLopts) ->
     ManSQN = leveled_manifest:get_manifest_sqn(Manifest1),
     leveled_log:log("P0035", [ManSQN]),
     %% Find any L0 files
-    L0FN = filepath(RootPath, ManSQN, new_merge_files) ++ "_0_0.sst",
+    L0FN = filepath(RootPath, ManSQN + 1, new_merge_files) ++ "_0_0.sst",
     case filelib:is_file(L0FN) of
         true ->
             leveled_log:log("P0015", [L0FN]),
