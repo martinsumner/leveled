@@ -212,7 +212,7 @@
 -define(COIN_SIDECOUNT, 5).
 -define(SLOW_FETCH, 20000).
 -define(ITERATOR_SCANWIDTH, 4).
--define(SNAPSHOT_TIMEOUT, 3600).
+-define(SNAPSHOT_TIMEOUT, 3600 * 1000).
 
 -record(state, {manifest, % a manifest record from the leveled_manifest module
                 persisted_sqn = 0 :: integer(), % The highest SQN persisted
