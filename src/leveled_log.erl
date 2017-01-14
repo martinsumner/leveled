@@ -65,8 +65,7 @@
     {"P0004",
         {info, "Remaining ledger snapshots are ~w"}},
     {"P0005",
-        {info, "Delete confirmed as file ~s is removed from " ++ 
-                "unreferenced files"}},
+        {info, "Delete confirmed as file ~s is removed from Manifest"}},
     {"P0006",
         {info, "Orphaned reply after timeout on L0 file write ~s"}},
     {"P0007",

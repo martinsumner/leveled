@@ -45,12 +45,12 @@
         add_snapshot/3,
         release_snapshot/2,
         ready_to_delete/2,
+        delete_confirmed/2,
         check_for_work/2,
         is_basement/2,
         dump_pidmap/1,
         levelzero_present/1,
-        pointer_convert/2,
-        delete_confirmed/2
+        pointer_convert/2
         ]).      
 
 -export([
@@ -298,6 +298,12 @@ ready_to_delete(Manifest, Filename) ->
                 P}
     end.
 
+delete_confirmed(Manifest, Filename) ->
+    PidMap = dict:erase(Filename, Manifest#manifest.pidmap),
+    % Would be better to clear ETS at this point rather than on lookup?
+    Manifest#manifest{pidmap = PidMap}.
+
+
 check_for_work(Manifest, Thresholds) ->
     CheckLevelFun =
         fun({Level, MaxCount}, {AccL, AccC}) ->
@@ -332,11 +338,6 @@ levelzero_present(Manifest) ->
         _ ->
             true
     end.
-
-delete_confirmed(Manifest, Filename) ->
-    PidMap = dict:erase(Filename, Manifest#manifest.pidmap),
-    % Would be better to clear ETS at this point rather than on lookup?
-    Manifest#manifest{pidmap = PidMap}.
 
 %%%============================================================================
 %%% Internal Functions
