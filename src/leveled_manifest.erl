@@ -265,7 +265,9 @@ mergefile_selector(Manifest, Level) ->
                         end_key = LastKey}.
 
 add_snapshot(Manifest, Pid, Timeout) ->
-    SnapEntry = {Pid, Manifest#manifest.manifest_sqn, Timeout},
+    {MegaNow, SecNow, _} = os:timestamp(),
+    TimeToTimeout = MegaNow * 1000000 + SecNow + Timeout,
+    SnapEntry = {Pid, Manifest#manifest.manifest_sqn, TimeToTimeout},
     SnapList0 = [SnapEntry|Manifest#manifest.snapshots],
     MinDelSQN = min(Manifest#manifest.delete_sqn, Manifest#manifest.manifest_sqn),
     Manifest#manifest{snapshots = SnapList0, delete_sqn = MinDelSQN}.
@@ -292,9 +294,10 @@ ready_to_delete(Manifest, Filename) ->
         {P, infinity} ->
             {false, P};
         {P, DeleteSQN} ->
+            {MegaNow, SecNow, _} = os:timestamp(),
             {ready_to_delete(Manifest#manifest.snapshots,
                                 DeleteSQN,
-                                os:timestamp()),
+                                MegaNow * 1000000 + SecNow),
                 P}
     end.
 
