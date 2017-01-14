@@ -193,7 +193,7 @@ do_merge([], [], SinkLevel, _SinkB, _RP, NewSQN, _MaxSQN, Counter, Man0) ->
 do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, Counter, Man0) ->
     FileName = lists:flatten(io_lib:format(RP ++ "_~w_~w.sst",
                                             [SinkLevel, Counter])),
-    leveled_log:log("PC012", [NewSQN, FileName]),
+    leveled_log:log("PC012", [NewSQN, FileName, SinkB]),
     TS1 = os:timestamp(),
     case leveled_sst:sst_new(FileName, KL1, KL2, SinkB, SinkLevel, MaxSQN) of
         empty ->
