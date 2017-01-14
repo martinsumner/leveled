@@ -126,6 +126,8 @@
     {"P0034",
         {warn, "Snapshot with pid ~w timed out and so deletion will "
                     ++ "continue regardless"}},
+    {"P0035",
+        {info, "Startup with Manifest SQN of ~w~n"}},
     {"PC001",
         {info, "Penciller's clerk ~w started with owner ~w"}},
     {"PC002",
