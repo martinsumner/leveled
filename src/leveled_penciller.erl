@@ -235,8 +235,8 @@
                 source_penciller :: pid(),
                 levelzero_astree :: list(),
                 
-                ongoing_work = [] :: list(),
-                work_backlog = false :: boolean(),
+                work_ongoing = false :: boolean(), % i.e. compaction work
+                work_backlog = false :: boolean(), % i.e. compaction work
                 
                 head_timing :: tuple()}).
 
@@ -443,13 +443,13 @@ handle_call(work_for_clerk, _From, State) ->
                     [TL|_Tail] = WL,
                     {reply,
                         {TL, State#state.manifest},
-                        State#state{work_backlog=true}};
+                        State#state{work_backlog=true, work_ongoing=true}};
                 N ->
                     leveled_log:log("P0024", [N, false]),
                     [TL|_Tail] = WL,
                     {reply,
                         {TL, State#state.manifest},
-                        State#state{work_backlog=false}}
+                        State#state{work_backlog=false, work_ongoing=true}}
             end
     end;
 handle_call(get_startup_sqn, _From, State) ->
@@ -485,7 +485,7 @@ handle_call(doom, _From, State) ->
     {stop, normal, {ok, [ManifestFP, FilesFP]}, State}.
 
 handle_cast({manifest_change, NewManifest}, State) ->
-    {noreply, State#state{manifest = NewManifest}};
+    {noreply, State#state{manifest = NewManifest, work_ongoing=false}};
 handle_cast({release_snapshot, Snapshot}, State) ->
     Manifest0 = leveled_manifest:release_snapshot(State#state.manifest,
                                                    Snapshot),
@@ -676,9 +676,10 @@ update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
                     false ->
                         true
                 end,
+            NoPendingManifestChange = not State#state.work_ongoing,
             JitterCheck = RandomFactor or CacheMuchTooBig,
-            case {CacheTooBig, L0Free, JitterCheck} of
-                {true, true, true}  ->
+            case {CacheTooBig, L0Free, JitterCheck, NoPendingManifestChange} of
+                {true, true, true, true}  ->
                     L0Constructor = roll_memory(UpdState, false),
                     leveled_log:log_timer("P0031", [], SW),
                     UpdState#state{levelzero_pending=true,
