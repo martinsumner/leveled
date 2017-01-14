@@ -52,12 +52,15 @@
         pointer_convert/2
         ]).      
 
+-export([
+        filepath/2
+        ]).
+
 -include_lib("eunit/include/eunit.hrl").
 
 -define(MANIFEST_FILEX, "man").
 -define(MANIFEST_FP, "ledger_manifest").
 -define(MAX_LEVELS, 8).
--define(END_KEY, {null, null, null, null}).
 
 -record(manifest, {table,
                         % A Multi-Version ETS table for lookup
@@ -71,7 +74,7 @@
                         % An array of level counts to speed up compation work assessment
                     snapshots :: list(),
                         % A list of snaphots (i.e. clones)
-                    delete_sqn :: integer()|infinity
+                    delete_sqn :: integer()
                         % The lowest SQN of any clone
                     }).      
 
@@ -80,7 +83,7 @@
 %%%============================================================================
 
 new_manifest() ->
-    Table = ets:new(manifest, [ordered_set]),
+    Table = ets:new(manifest, [ordered_set, public]),
     new_manifest(Table).
 
 open_manifest(RootPath) ->
@@ -101,9 +104,8 @@ open_manifest(RootPath) ->
     ValidManSQNs = lists:reverse(lists:sort(lists:foldl(ExtractSQNFun,
                                                         [],
                                                         Filenames))),
-    {ManSQN, Table} = open_manifestfile(RootPath, ValidManSQNs),
-    Manifest = new_manifest(Table),
-    Manifest#manifest{manifest_sqn = ManSQN}.
+    {ManSQN, Manifest} = open_manifestfile(RootPath, ValidManSQNs),
+    Manifest#manifest{manifest_sqn = ManSQN, delete_sqn = ManSQN}.
     
 copy_manifest(Manifest) ->
     % Copy the manifest ensuring anything only the master process should care
@@ -162,7 +164,7 @@ insert_manifest_entry(Manifest, ManSQN, Level, Entry) ->
 
 remove_manifest_entry(Manifest, ManSQN, Level, Entry) ->
     Key = {Level, Entry#manifest_entry.end_key, Entry#manifest_entry.filename},
-    [{Key, Value0}] = ets:lookup(Manifest, Key),
+    [{Key, Value0}] = ets:lookup(Manifest#manifest.table, Key),
     {StartKey, {active, ActiveSQN}, {tomb, infinity}} = Value0,
     Value1 = {StartKey, {active, ActiveSQN}, {tomb, ManSQN}},
     true = ets:insert(Manifest#manifest.table, {Key, Value1}),
@@ -205,7 +207,13 @@ key_lookup(Manifest, Level, Key) ->
 range_lookup(Manifest, Level, StartKey, EndKey) ->
     MapFun =
         fun({{_Level, _LastKey, FN}, FirstKey}) ->
-            {next, dict:fetch(FN, Manifest#manifest.pidmap), FirstKey}
+            {Pid, _SQN} = dict:fetch(FN, Manifest#manifest.pidmap),
+            case FirstKey < StartKey of
+                true ->
+                    {next, Pid, StartKey};
+                false ->
+                    {next, Pid, FirstKey}
+            end
         end,
     range_lookup(Manifest, Level, StartKey, EndKey, MapFun).
 
@@ -245,7 +253,7 @@ mergefile_selector(Manifest, Level) ->
                         Level,
                         {all, 0},
                         all,
-                        ?END_KEY,
+                        all,
                         [],
                         Manifest#manifest.manifest_sqn),
     {{Level, LastKey, FN},
@@ -267,14 +275,15 @@ release_snapshot(Manifest, Pid) ->
         fun({P, SQN, TS}, {Acc, MinSQN}) ->
             case P of
                 Pid ->
-                    Acc;
+                    {Acc, MinSQN};
                 _ ->
                     {[{P, SQN, TS}|Acc], min(SQN, MinSQN)}
             end
         end,
-    {SnapList0, DeleteSQN} = lists:foldl(FilterFun,
-                                            {[], infinity},
-                                            Manifest#manifest.snapshots),
+    {SnapList0,
+        DeleteSQN} = lists:foldl(FilterFun,
+                                    {[], Manifest#manifest.manifest_sqn},
+                                    Manifest#manifest.snapshots),
     leveled_log:log("P0004", [SnapList0]),
     Manifest#manifest{snapshots = SnapList0, delete_sqn = DeleteSQN}.
 
@@ -292,7 +301,7 @@ ready_to_delete(Manifest, Filename) ->
 check_for_work(Manifest, Thresholds) ->
     CheckLevelFun =
         fun({Level, MaxCount}, {AccL, AccC}) ->
-            case dict:fetch(Level, Manifest#manifest.level_counts) of
+            case array:get(Level, Manifest#manifest.level_counts) of
                 LC when LC > MaxCount ->
                     {[Level|AccL], AccC + LC - MaxCount};
                 _ ->
@@ -335,7 +344,7 @@ new_manifest(Table) ->
         pidmap = dict:new(), 
         level_counts = array:new([{size, ?MAX_LEVELS + 1}, {default, 0}]),
         snapshots = [],
-        delete_sqn = infinity
+        delete_sqn = 0
     }.
 
 range_lookup(Manifest, Level, StartKey, EndKey, MapFun) ->
@@ -430,7 +439,7 @@ open_manifestfile(RootPath, [TopManSQN|Rest]) ->
             open_manifestfile(RootPath, Rest);
         {ok, Table} ->
             leveled_log:log("P0012", [TopManSQN]),
-            {TopManSQN, Table}
+            {TopManSQN, new_manifest(Table)}
     end.
 
 key_lookup(Manifest, Level, KeyToFind, ManSQN, GC) ->
@@ -483,88 +492,178 @@ key_lookup(Manifest, Level, {LastKey, LastFN}, KeyToFind, ManSQN, GC) ->
 
 -ifdef(TEST).
 
-rangequery_manifest_test() ->
+initial_setup() -> 
     E1 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
                             end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K93"},
-                            filename="Z1"},
+                            filename="Z1",
+                            owner="pid_z1"},
     E2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld9"}, "K97"},
                                 end_key={o, "Bucket1", "K71", null},
-                                filename="Z2"},
+                                filename="Z2",
+                                owner="pid_z2"},
     E3 = #manifest_entry{start_key={o, "Bucket1", "K75", null},
                             end_key={o, "Bucket1", "K993", null},
-                            filename="Z3"},
+                            filename="Z3",
+                            owner="pid_z3"},
     E4 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
                             end_key={i, "Bucket1", {"Idx1", "Fld7"}, "K93"},
-                            filename="Z4"},
+                            filename="Z4",
+                            owner="pid_z4"},
     E5 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld7"}, "K97"},
                             end_key={o, "Bucket1", "K78", null},
-                            filename="Z5"},
+                            filename="Z5",
+                            owner="pid_z5"},
     E6 = #manifest_entry{start_key={o, "Bucket1", "K81", null},
                             end_key={o, "Bucket1", "K996", null},
-                            filename="Z6"},
+                            filename="Z6",
+                            owner="pid_z6"},
     
-    Manifest = new_manifest(),
-    insert_manifest_entry(Manifest, 1, 1, E1),
-    insert_manifest_entry(Manifest, 1, 1, E2),
-    insert_manifest_entry(Manifest, 1, 1, E3),
-    insert_manifest_entry(Manifest, 1, 2, E4),
-    insert_manifest_entry(Manifest, 1, 2, E5),
-    insert_manifest_entry(Manifest, 1, 2, E6),
-    
-    SK1 = {o, "Bucket1", "K711", null},
-    EK1 = {o, "Bucket1", "K999", null},
-    RL1_1 = range_lookup(Manifest, 1, SK1, EK1),
-    ?assertMatch(["Z3"], RL1_1),
-    RL1_2 = range_lookup(Manifest, 2, SK1, EK1),
-    ?assertMatch(["Z5", "Z6"], RL1_2),
-    SK2 = {i, "Bucket1", {"Idx1", "Fld8"}, null},
-    EK2 = {i, "Bucket1", {"Idx1", "Fld8"}, null},
-    RL2_1 = range_lookup(Manifest, 1, SK2, EK2),
-    ?assertMatch(["Z1"], RL2_1),
-    RL2_2 = range_lookup(Manifest, 2, SK2, EK2),
-    ?assertMatch(["Z5"], RL2_2),
-    
-    SK3 = {o, "Bucket1", "K994", null},
-    EK3 = {o, "Bucket1", "K995", null},
-    RL3_1 = range_lookup(Manifest, 1, SK3, EK3),
-    ?assertMatch([], RL3_1),
-    RL3_2 = range_lookup(Manifest, 2, SK3, EK3),
-    ?assertMatch(["Z6"], RL3_2),
-    
+    Man0 = new_manifest(),
+    % insert_manifest_entry(Manifest, ManSQN, Level, Entry)
+    Man1 = insert_manifest_entry(Man0, 1, 1, E1),
+    Man2 = insert_manifest_entry(Man1, 1, 1, E2),
+    Man3 = insert_manifest_entry(Man2, 1, 1, E3),
+    Man4 = insert_manifest_entry(Man3, 1, 2, E4),
+    Man5 = insert_manifest_entry(Man4, 1, 2, E5),
+    Man6 = insert_manifest_entry(Man5, 1, 2, E6),
+    {Man0, Man1, Man2, Man3, Man4, Man5, Man6}.
+
+changeup_setup(Man6) ->
+    E1 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
+                            end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K93"},
+                            filename="Z1",
+                            owner="pid_z1"},
+    E2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld9"}, "K97"},
+                                end_key={o, "Bucket1", "K71", null},
+                                filename="Z2",
+                                owner="pid_z2"},
+    E3 = #manifest_entry{start_key={o, "Bucket1", "K75", null},
+                            end_key={o, "Bucket1", "K993", null},
+                            filename="Z3",
+                            owner="pid_z3"},
+                            
     E1_2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld4"}, "K8"},
                             end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K62"},
+                            owner="pid_y1",
                             filename="Y1"},
     E2_2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld9"}, "K67"},
-                                end_key={o, "Bucket1", "K45", null},
-                                filename="Y2"},
+                            end_key={o, "Bucket1", "K45", null},
+                            owner="pid_y2",
+                            filename="Y2"},
     E3_2 = #manifest_entry{start_key={o, "Bucket1", "K47", null},
                             end_key={o, "Bucket1", "K812", null},
+                            owner="pid_y3",
                             filename="Y3"},
     E4_2 = #manifest_entry{start_key={o, "Bucket1", "K815", null},
                             end_key={o, "Bucket1", "K998", null},
+                            owner="pid_y4",
                             filename="Y4"},
     
-    insert_manifest_entry(Manifest, 2, 1, E1_2),
-    insert_manifest_entry(Manifest, 2, 1, E2_2),
-    insert_manifest_entry(Manifest, 2, 1, E3_2),
-    insert_manifest_entry(Manifest, 2, 1, E4_2),
-    remove_manifest_entry(Manifest, 2, 1, E1),
-    remove_manifest_entry(Manifest, 2, 1, E2),
-    remove_manifest_entry(Manifest, 2, 1, E3),
+    Man7 = insert_manifest_entry(Man6, 2, 1, E1_2),
+    Man8 = insert_manifest_entry(Man7, 2, 1, E2_2),
+    Man9 = insert_manifest_entry(Man8, 2, 1, E3_2),
+    Man10 = insert_manifest_entry(Man9, 2, 1, E4_2),
+    % remove_manifest_entry(Manifest, ManSQN, Level, Entry)
+    Man11 = remove_manifest_entry(Man10, 2, 1, E1),
+    Man12 = remove_manifest_entry(Man11, 2, 1, E2),
+    Man13 = remove_manifest_entry(Man12, 2, 1, E3),
+    {Man7, Man8, Man9, Man10, Man11, Man12, Man13}.
+
+keylookup_manifest_test() ->
+    {Man0, Man1, Man2, Man3, _Man4, _Man5, Man6} = initial_setup(),
+    LK1_1 = {o, "Bucket1", "K711", null},
+    LK1_2 = {o, "Bucket1", "K70", null},
+    LK1_3 = {o, "Bucket1", "K71", null},
+    LK1_4 = {o, "Bucket1", "K75", null},
+    LK1_5 = {o, "Bucket1", "K76", null},
     
-    RL1_1A = range_lookup(Manifest, 1, SK1, EK1),
-    ?assertMatch(["Z3"], RL1_1A),
-    RL2_1A = range_lookup(Manifest, 1, SK2, EK2),
-    ?assertMatch(["Z1"], RL2_1A),
-    RL3_1A = range_lookup(Manifest, 1, SK3, EK3),
+    ?assertMatch(false, key_lookup(Man0, 1, LK1_1)),
+    ?assertMatch(false, key_lookup(Man1, 1, LK1_1)),
+    ?assertMatch(false, key_lookup(Man2, 1, LK1_1)),
+    ?assertMatch(false, key_lookup(Man3, 1, LK1_1)),
+    ?assertMatch(false, key_lookup(Man6, 1, LK1_1)),
+    
+    ?assertMatch("pid_z2", key_lookup(Man6, 1, LK1_2)),
+    ?assertMatch("pid_z2", key_lookup(Man6, 1, LK1_3)),
+    ?assertMatch("pid_z3", key_lookup(Man6, 1, LK1_4)),
+    ?assertMatch("pid_z3", key_lookup(Man6, 1, LK1_5)),
+    
+    ?assertMatch("pid_z5", key_lookup(Man6, 2, LK1_2)),
+    ?assertMatch("pid_z5", key_lookup(Man6, 2, LK1_3)),
+    ?assertMatch("pid_z5", key_lookup(Man6, 2, LK1_4)),
+    ?assertMatch("pid_z5", key_lookup(Man6, 2, LK1_5)),
+    
+    {_Man7, _Man8, _Man9, _Man10, _Man11, _Man12,
+        Man13} = changeup_setup(Man6),
+    
+    ?assertMatch(false, key_lookup(Man0, 1, LK1_1)),
+    ?assertMatch(false, key_lookup(Man1, 1, LK1_1)),
+    ?assertMatch(false, key_lookup(Man2, 1, LK1_1)),
+    ?assertMatch(false, key_lookup(Man3, 1, LK1_1)),
+    ?assertMatch(false, key_lookup(Man6, 1, LK1_1)),
+    
+    ?assertMatch("pid_z2", key_lookup(Man6, 1, LK1_2)),
+    ?assertMatch("pid_z2", key_lookup(Man6, 1, LK1_3)),
+    io:format("Commencing failing test:~n"),
+    ?assertMatch("pid_z3", key_lookup(Man6, 1, LK1_4)),
+    ?assertMatch("pid_z3", key_lookup(Man6, 1, LK1_5)),
+    
+    ?assertMatch("pid_z5", key_lookup(Man6, 2, LK1_2)),
+    ?assertMatch("pid_z5", key_lookup(Man6, 2, LK1_3)),
+    ?assertMatch("pid_z5", key_lookup(Man6, 2, LK1_4)),
+    ?assertMatch("pid_z5", key_lookup(Man6, 2, LK1_5)),
+    
+    ?assertMatch("pid_y3", key_lookup(Man13, 1, LK1_4)),
+    ?assertMatch("pid_z5", key_lookup(Man13, 2, LK1_4)).
+
+
+rangequery_manifest_test() ->
+    {_Man0, _Man1, _Man2, _Man3, _Man4, _Man5, Man6} = initial_setup(),
+    
+    SK1 = {o, "Bucket1", "K711", null},
+    EK1 = {o, "Bucket1", "K999", null},
+    RL1_1 = range_lookup(Man6, 1, SK1, EK1),
+    ?assertMatch([{next, "pid_z3", {o, "Bucket1", "K75", null}}], RL1_1),
+    RL1_2 = range_lookup(Man6, 2, SK1, EK1),
+    ?assertMatch([{next, "pid_z5", {o, "Bucket1", "K711", null}},
+                    {next, "pid_z6", {o, "Bucket1", "K81", null}}],
+                    RL1_2),
+    SK2 = {i, "Bucket1", {"Idx1", "Fld8"}, null},
+    EK2 = {i, "Bucket1", {"Idx1", "Fld8"}, null},
+    RL2_1 = range_lookup(Man6, 1, SK2, EK2),
+    ?assertMatch([{next, "pid_z1", {i, "Bucket1", {"Idx1", "Fld8"}, null}}],
+                    RL2_1),
+    RL2_2 = range_lookup(Man6, 2, SK2, EK2),
+    ?assertMatch([{next, "pid_z5", {i, "Bucket1", {"Idx1", "Fld8"}, null}}],
+                    RL2_2),
+    
+    SK3 = {o, "Bucket1", "K994", null},
+    EK3 = {o, "Bucket1", "K995", null},
+    RL3_1 = range_lookup(Man6, 1, SK3, EK3),
+    ?assertMatch([], RL3_1),
+    RL3_2 = range_lookup(Man6, 2, SK3, EK3),
+    ?assertMatch([{next, "pid_z6", {o, "Bucket1", "K994", null}}], RL3_2),
+    
+    {_Man7, _Man8, _Man9, _Man10, _Man11, _Man12,
+        Man13} = changeup_setup(Man6),
+    
+    % Results unchanged despiter ES table change if using old manifest
+    RL1_1A = range_lookup(Man6, 1, SK1, EK1),
+    ?assertMatch([{next, "pid_z3", {o, "Bucket1", "K75", null}}], RL1_1A),
+    RL2_1A = range_lookup(Man6, 1, SK2, EK2),
+    ?assertMatch([{next, "pid_z1", {i, "Bucket1", {"Idx1", "Fld8"}, null}}],
+                    RL2_1A),
+    RL3_1A = range_lookup(Man6, 1, SK3, EK3),
     ?assertMatch([], RL3_1A),
-    
-    RL1_1B = range_lookup(Manifest, 1, SK1, EK1),
-    ?assertMatch(["Y3", "Y4"], RL1_1B),
-    RL2_1B = range_lookup(Manifest, 1, SK2, EK2),
-    ?assertMatch(["Y1"], RL2_1B),
-    RL3_1B = range_lookup(Manifest, 1, SK3, EK3),
-    ?assertMatch(["Y4"], RL3_1B).
+     
+    RL1_1B = range_lookup(Man13, 1, SK1, EK1),
+    ?assertMatch([{next, "pid_y3", {o, "Bucket1", "K711", null}},
+                    {next, "pid_y4", {o, "Bucket1", "K815", null}}], RL1_1B),
+    RL2_1B = range_lookup(Man13, 1, SK2, EK2),
+    ?assertMatch([{next, "pid_y1", {i, "Bucket1", {"Idx1", "Fld8"}, null}}],
+                    RL2_1B),
+    RL3_1B = range_lookup(Man13, 1, SK3, EK3),
+    ?assertMatch([{next, "pid_y4", {o, "Bucket1", "K994", null}}], RL3_1B).
 
 
 -endif.

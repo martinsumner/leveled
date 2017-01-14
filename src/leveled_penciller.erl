@@ -179,7 +179,7 @@
         pcl_fetchnextkey/5,
         pcl_checksequencenumber/3,
         pcl_workforclerk/1,
-        pcl_confirmmanifestchange/2,
+        pcl_manifestchange/2,
         pcl_confirml0complete/4,
         pcl_confirmdelete/2,
         pcl_close/1,
@@ -291,7 +291,7 @@ pcl_checksequencenumber(Pid, Key, SQN) ->
 pcl_workforclerk(Pid) ->
     gen_server:call(Pid, work_for_clerk, infinity).
 
-pcl_confirmmanifestchange(Pid, Manifest) ->
+pcl_manifestchange(Pid, Manifest) ->
     gen_server:cast(Pid, {manifest_change, Manifest}).
 
 pcl_confirml0complete(Pid, FN, StartKey, EndKey) ->
@@ -548,7 +548,7 @@ terminate(Reason, State) ->
     L0 = leveled_manifest:key_lookup(State#state.manifest, 0, all),
     case {State#state.levelzero_pending, L0} of
         {false, false} ->
-           L0Pid = roll_memory(State, true),
+            L0Pid = roll_memory(State, true),
             ok = leveled_sst:sst_close(L0Pid);
         StatusTuple ->
             leveled_log:log("P0010", [StatusTuple])
@@ -842,10 +842,9 @@ find_nextkey(QueryArray, LCnt, {BestKeyLevel, BestKV},
                             LCnt + 1,
                             {BKL, BKV},
                             StartKey, EndKey, Width);
-        {{next, ManifestEntry, _SK}, BKL, BKV} ->
+        {{next, Owner, _SK}, BKL, BKV} ->
             % The first key at this level is pointer to a file - need to query
             % the file to expand this level out before proceeding
-            Owner = ManifestEntry#manifest_entry.owner,
             Pointer = {next, Owner, StartKey, EndKey},
             UpdList = leveled_sst:expand_list_by_pointer(Pointer,
                                                             RestOfKeys,
@@ -1036,7 +1035,7 @@ generate_randomkeys(Count, SQN, Acc) ->
     
 
 clean_testdir(RootPath) ->
-    clean_subdir(filepath(RootPath, manifest)),
+    clean_subdir(leveled_manifest:filepath(RootPath, manifest)),
     clean_subdir(filepath(RootPath, files)).
 
 clean_subdir(DirPath) ->
@@ -1186,10 +1185,6 @@ simple_server_test() ->
                                                 1)),
     ok = pcl_close(PclSnap),
     
-    % Ignore a fake pending mnaifest on startup
-    ok = file:write_file(RootPath ++ "/" ++ ?MANIFEST_FP ++ "nonzero_99.pnd",
-                            term_to_binary("Hello")),
-    
     {ok, PclSnap2} = pcl_start(SnapOpts),
     leveled_bookie:load_snapshot(PclSnap2, leveled_bookie:empty_ledgercache()),
     ?assertMatch(false, pcl_checksequencenumber(PclSnap2,
@@ -1204,6 +1199,12 @@ simple_server_test() ->
                                                     "Key0001",
                                                     null},
                                                 4005)),
+    
+    io:format("Snap2 B2 K2 ~w~n",
+                [pcl_fetch(PclSnap2, {o, "Bucket0002", "Key0002", null})]),
+    io:format("r B2 K2 ~w~n",
+                [pcl_fetch(PCLr, {o, "Bucket0002", "Key0002", null})]),
+    
     ?assertMatch(true, pcl_checksequencenumber(PclSnap2,
                                                 {o,
                                                     "Bucket0002",
