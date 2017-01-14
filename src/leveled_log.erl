@@ -251,6 +251,8 @@
         {info, "Completed creation of ~s at level ~w with max sqn ~w"}},
     {"SST09",
         {warn, "Read request exposes slot with bad CRC"}},
+    {"SST10",
+        {info, "Expansion sought to support pointer to pid ~w status ~w"}},
     
     {"CDB01",
         {info, "Opening file for writing with filename ~s"}},

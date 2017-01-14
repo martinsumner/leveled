@@ -1203,6 +1203,7 @@ expand_list_by_pointer({pointer, SSTPid, Slot, StartKey, EndKey}, Tail, Width) -
     ExpPointers = leveled_sst:sst_getslots(SSTPid, AccPointers),
     lists:append(ExpPointers, AccTail);
 expand_list_by_pointer({next, SSTPid, StartKey, EndKey}, Tail, Width) ->
+    leveled_log:log("SST10", [SSTPid, is_pid(SSTPid)]),
     ExpPointer = leveled_sst:sst_getkvrange(SSTPid, StartKey, EndKey, Width),
     ExpPointer ++ Tail.
 

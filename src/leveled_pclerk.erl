@@ -184,7 +184,8 @@ perform_merge(Manifest, Src, SinkList, SrcLevel, RootPath, NewSQN) ->
                                                     Entry)
         end,
     Man1 = lists:foldl(RemoveFun, Man0, SinkList),
-    leveled_manifest:remove_manifest_entry(Man1, NewSQN, SrcLevel, Src).
+    Man2 = leveled_manifest:remove_manifest_entry(Man1, NewSQN, SrcLevel, Src),
+    {Man2, [Src|SinkList]}.
 
 do_merge([], [], SinkLevel, _SinkB, _RP, NewSQN, _MaxSQN, Counter, Man0) ->
     leveled_log:log("PC011", [NewSQN, SinkLevel, Counter]),
@@ -273,12 +274,12 @@ merge_file_test() ->
     
     Man0 = leveled_manifest:new_manifest(),
     Man1 = leveled_manifest:insert_manifest_entry(Man0, 1, 2, E1),
-    Man2 = leveled_manifest:insert_manifest_entry(Man1, 1, 2, E1),
-    Man3 = leveled_manifest:insert_manifest_entry(Man2, 1, 2, E1),
-    Man4 = leveled_manifest:insert_manifest_entry(Man3, 1, 2, E1),
-    Man5 = leveled_manifest:insert_manifest_entry(Man4, 2, 1, E1),
+    Man2 = leveled_manifest:insert_manifest_entry(Man1, 1, 2, E2),
+    Man3 = leveled_manifest:insert_manifest_entry(Man2, 1, 2, E3),
+    Man4 = leveled_manifest:insert_manifest_entry(Man3, 1, 2, E4),
+    Man5 = leveled_manifest:insert_manifest_entry(Man4, 2, 1, E5),
     
-    Man6 = perform_merge(Man5, E1, [E2, E3, E4, E5], 1, "../test", 3),
+    {Man6, _Dels} = perform_merge(Man5, E1, [E2, E3, E4, E5], 1, "../test", 3),
     
     ?assertMatch(3, leveled_manifest:get_manifest_sqn(Man6)).
 

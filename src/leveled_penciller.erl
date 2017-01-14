@@ -498,7 +498,9 @@ handle_cast({confirm_delete, Filename}, State=#state{is_snapshot=Snap})
         {true, Pid} ->
             leveled_log:log("P0005", [Filename]),
             ok = leveled_sst:sst_deleteconfirmed(Pid),
-            {noreply, State};
+            Man0 = leveled_manifest:delete_confirmed(State#state.manifest,
+                                                        Filename),
+            {noreply, State#state{manifest=Man0}};
         {false, _Pid} ->
             {noreply, State}
     end;
@@ -545,9 +547,10 @@ terminate(Reason, State) ->
     ok = leveled_pclerk:clerk_close(State#state.clerk),
     
     leveled_log:log("P0008", [Reason]),
-    L0 = leveled_manifest:key_lookup(State#state.manifest, 0, all),
-    case {State#state.levelzero_pending, L0} of
-        {false, false} ->
+    L0_Present = leveled_manifest:key_lookup(State#state.manifest, 0, all),
+    L0_Left = State#state.levelzero_size > 0,
+    case {State#state.levelzero_pending, L0_Present, L0_Left} of
+        {false, false, true} ->
             L0Pid = roll_memory(State, true),
             ok = leveled_sst:sst_close(L0Pid);
         StatusTuple ->
@@ -719,7 +722,7 @@ roll_memory(State, true) ->
     Constructor.
 
 levelzero_filename(State) ->
-    ManSQN = leveled_manifest:get_manifest_sqn(State#state.manifest),
+    ManSQN = leveled_manifest:get_manifest_sqn(State#state.manifest) + 1,
     FileName = State#state.root_path
                 ++ "/" ++ ?FILES_FP ++ "/"
                 ++ integer_to_list(ManSQN) ++ "_0_0",
@@ -1000,7 +1003,9 @@ keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SSTiterator}, KeyRange,
 
 
 filepath(RootPath, files) ->
-    RootPath ++ "/" ++ ?FILES_FP.
+    FP = RootPath ++ "/" ++ ?FILES_FP,
+    filelib:ensure_dir(FP ++ "/"),
+    FP.
 
 filepath(RootPath, NewMSN, new_merge_files) ->
     filepath(RootPath, files) ++ "/" ++ integer_to_list(NewMSN).
@@ -1135,11 +1140,13 @@ simple_server_test() ->
     ?assertMatch(Key2, pcl_fetch(PCLr, {o,"Bucket0002", "Key0002", null})),
     ?assertMatch(Key3, pcl_fetch(PCLr, {o,"Bucket0003", "Key0003", null})),
     ?assertMatch(Key4, pcl_fetch(PCLr, {o,"Bucket0004", "Key0004", null})),
+    
     SnapOpts = #penciller_options{start_snapshot = true,
                                     source_penciller = PCLr},
     {ok, PclSnap} = pcl_start(SnapOpts),
     leveled_bookie:load_snapshot(PclSnap,
                                     leveled_bookie:empty_ledgercache()),
+    
     ?assertMatch(Key1, pcl_fetch(PclSnap, {o,"Bucket0001", "Key0001", null})),
     ?assertMatch(Key2, pcl_fetch(PclSnap, {o,"Bucket0002", "Key0002", null})),
     ?assertMatch(Key3, pcl_fetch(PclSnap, {o,"Bucket0003", "Key0003", null})),
@@ -1171,6 +1178,7 @@ simple_server_test() ->
     % Add some more keys and confirm that check sequence number still
     % sees the old version in the previous snapshot, but will see the new version
     % in a new snapshot
+    
     Key1A_Pre = {{o,"Bucket0001", "Key0001", null},
                     {4005, {active, infinity}, null}},
     Key1A = add_missing_hash(Key1A_Pre),
@@ -1184,7 +1192,7 @@ simple_server_test() ->
                                                     null},
                                                 1)),
     ok = pcl_close(PclSnap),
-    
+     
     {ok, PclSnap2} = pcl_start(SnapOpts),
     leveled_bookie:load_snapshot(PclSnap2, leveled_bookie:empty_ledgercache()),
     ?assertMatch(false, pcl_checksequencenumber(PclSnap2,
@@ -1199,12 +1207,6 @@ simple_server_test() ->
                                                     "Key0001",
                                                     null},
                                                 4005)),
-    
-    io:format("Snap2 B2 K2 ~w~n",
-                [pcl_fetch(PclSnap2, {o, "Bucket0002", "Key0002", null})]),
-    io:format("r B2 K2 ~w~n",
-                [pcl_fetch(PCLr, {o, "Bucket0002", "Key0002", null})]),
-    
     ?assertMatch(true, pcl_checksequencenumber(PclSnap2,
                                                 {o,
                                                     "Bucket0002",

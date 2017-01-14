@@ -49,7 +49,8 @@
         is_basement/2,
         dump_pidmap/1,
         levelzero_present/1,
-        pointer_convert/2
+        pointer_convert/2,
+        delete_confirmed/2
         ]).      
 
 -export([
@@ -220,7 +221,7 @@ range_lookup(Manifest, Level, StartKey, EndKey) ->
 merge_lookup(Manifest, Level, StartKey, EndKey) ->
     MapFun =
         fun({{_Level, LastKey, FN}, FirstKey}) ->
-            Owner = dict:fetch(FN, Manifest#manifest.pidmap),
+            {Owner, _DelSQN} = dict:fetch(FN, Manifest#manifest.pidmap),
             #manifest_entry{filename = FN,
                                 owner = Owner,
                                 start_key = FirstKey,
@@ -231,10 +232,9 @@ merge_lookup(Manifest, Level, StartKey, EndKey) ->
 pointer_convert(Manifest, EntryList) ->
     MapFun =
         fun(Entry) ->
-            {next,
-                dict:fetch(Entry#manifest_entry.filename,
-                            Manifest#manifest.pidmap),
-                all}
+            {Pid, _DelSQN} = dict:fetch(Entry#manifest_entry.filename,
+                                            Manifest#manifest.pidmap),
+            {next, Pid, all}
         end,
     lists:map(MapFun, EntryList).
 
@@ -333,6 +333,11 @@ levelzero_present(Manifest) ->
             true
     end.
 
+delete_confirmed(Manifest, Filename) ->
+    PidMap = dict:erase(Filename, Manifest#manifest.pidmap),
+    % Would be better to clear ETS at this point rather than on lookup?
+    Manifest#manifest{pidmap = PidMap}.
+
 %%%============================================================================
 %%% Internal Functions
 %%%============================================================================
@@ -418,7 +423,9 @@ ready_to_delete(SnapList, FileDeleteSQN, Now) ->
     lists:foldl(FilterFun, true, SnapList).
 
 filepath(RootPath, manifest) ->
-    RootPath ++ "/" ++ ?MANIFEST_FP ++ "/".
+    MFP = RootPath ++ "/" ++ ?MANIFEST_FP ++ "/",
+    filelib:ensure_dir(MFP),
+    MFP.
 
 filepath(RootPath, NewMSN, current_manifest) ->
     filepath(RootPath, manifest)  ++ "nonzero_"
@@ -455,7 +462,7 @@ key_lookup(Manifest, Level, {LastKey, LastFN}, KeyToFind, ManSQN, GC) ->
             Active = (ManSQN >= ActiveSQN) and (ManSQN < TombSQN),
             case Active of
                 true ->
-                    InRange = KeyToFind >= FirstKey,
+                    InRange = (KeyToFind >= FirstKey) or (KeyToFind == all),
                     case InRange of
                         true ->
                             NextFN;
@@ -665,5 +672,16 @@ rangequery_manifest_test() ->
     RL3_1B = range_lookup(Man13, 1, SK3, EK3),
     ?assertMatch([{next, "pid_y4", {o, "Bucket1", "K994", null}}], RL3_1B).
 
+levelzero_present_test() ->
+    E0 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
+                            end_key={o, "Bucket1", "Key996", null},
+                            filename="Z0",
+                            owner="pid_z0"},
+     
+    Man0 = new_manifest(),
+    ?assertMatch(false, levelzero_present(Man0)),
+    % insert_manifest_entry(Manifest, ManSQN, Level, Entry)
+    Man1 = insert_manifest_entry(Man0, 1, 0, E0),
+    ?assertMatch(true, levelzero_present(Man1)).
 
 -endif.
