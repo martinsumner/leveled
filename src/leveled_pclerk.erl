@@ -62,7 +62,7 @@ clerk_prompt(Pid) ->
     gen_server:cast(Pid, prompt).
 
 clerk_close(Pid) ->
-    gen_server:cast(Pid, close).
+    gen_server:call(Pid, close, 20000).
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -72,12 +72,13 @@ init([]) ->
     {ok, #state{}}.
 
 handle_call({load, Owner, RootPath}, _From, State) ->
-    {reply, ok, State#state{owner=Owner, root_path=RootPath}, ?MIN_TIMEOUT}.
+    {reply, ok, State#state{owner=Owner, root_path=RootPath}, ?MIN_TIMEOUT};
+handle_call(close, _From, State) ->
+    {stop, normal, ok, State}.
 
 handle_cast(prompt, State) ->
-    handle_info(timeout, State);
-handle_cast(close, State) ->
-    {stop, normal, State}.    
+    handle_info(timeout, State).
+    
 
 handle_info(timeout, State) ->
     case requestandhandle_work(State) of
@@ -88,7 +89,6 @@ handle_info(timeout, State) ->
             % change
             {noreply, State, ?MIN_TIMEOUT}
     end.
-
 
 terminate(Reason, _State) ->
     leveled_log:log("PC005", [self(), Reason]).
