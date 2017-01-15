@@ -37,12 +37,13 @@
 -export([
         clerk_new/2,
         clerk_prompt/1,
+        clerk_push/2,
         clerk_close/1
         ]).      
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(MAX_TIMEOUT, 1000).
+-define(MAX_TIMEOUT, 2000).
 -define(MIN_TIMEOUT, 200).
 
 -record(state, {owner :: pid(),
@@ -61,6 +62,9 @@ clerk_new(Owner, Manifest) ->
 clerk_prompt(Pid) ->
     gen_server:cast(Pid, prompt).
 
+clerk_push(Pid, Work) ->
+    gen_server:cast(Pid, {push_work, Work}).
+
 clerk_close(Pid) ->
     gen_server:call(Pid, close, 20000).
 
@@ -77,18 +81,14 @@ handle_call(close, _From, State) ->
     {stop, normal, ok, State}.
 
 handle_cast(prompt, State) ->
-    handle_info(timeout, State).
-    
+    handle_info(timeout, State);
+handle_cast({push_work, Work}, State) ->
+    handle_work(Work, State),
+    {noreply, State, ?MIN_TIMEOUT}.
 
 handle_info(timeout, State) ->
-    case requestandhandle_work(State) of
-        false ->
-            {noreply, State, ?MAX_TIMEOUT};
-        true ->
-            % No timeout now as will wait for call to return manifest
-            % change
-            {noreply, State, ?MIN_TIMEOUT}
-    end.
+    request_work(State),
+    {noreply, State, ?MAX_TIMEOUT}.
 
 terminate(Reason, _State) ->
     leveled_log:log("PC005", [self(), Reason]).
@@ -101,24 +101,19 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%============================================================================
 
-requestandhandle_work(State) ->
-    case leveled_penciller:pcl_workforclerk(State#state.owner) of
-        none ->
-            leveled_log:log("PC006", []),
-            false;
-        {SrcLevel, Manifest} ->
-            {UpdManifest, EntriesToDelete} = merge(SrcLevel,
-                                                    Manifest,
-                                                    State#state.root_path),
-            leveled_log:log("PC007", []),
-            ok = leveled_penciller:pcl_manifestchange(State#state.owner,
-                                                            UpdManifest),
-            ok = leveled_manifest:save_manifest(UpdManifest,
-                                                    State#state.root_path),
-            ok = notify_deletions(EntriesToDelete, State#state.owner),
-            true
-    end.    
+request_work(State) ->
+    ok = leveled_penciller:pcl_workforclerk(State#state.owner).
 
+handle_work({SrcLevel, Manifest}, State) ->
+    {UpdManifest, EntriesToDelete} = merge(SrcLevel,
+                                            Manifest,
+                                            State#state.root_path),
+    leveled_log:log("PC007", []),
+    ok = leveled_penciller:pcl_manifestchange(State#state.owner,
+                                                    UpdManifest),
+    ok = leveled_manifest:save_manifest(UpdManifest,
+                                            State#state.root_path),
+    ok = notify_deletions(EntriesToDelete, State#state.owner).
 
 merge(SrcLevel, Manifest, RootPath) ->
     Src = leveled_manifest:mergefile_selector(Manifest, SrcLevel),

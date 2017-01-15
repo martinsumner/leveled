@@ -289,7 +289,7 @@ pcl_checksequencenumber(Pid, Key, SQN) ->
     end.
 
 pcl_workforclerk(Pid) ->
-    gen_server:call(Pid, work_for_clerk, infinity).
+    gen_server:cast(Pid, work_for_clerk).
 
 pcl_manifestchange(Pid, Manifest) ->
     gen_server:cast(Pid, {manifest_change, Manifest}).
@@ -428,30 +428,6 @@ handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
                         MaxKeys),
     
     {reply, Acc, State#state{levelzero_astree = L0AsList}};
-handle_call(work_for_clerk, _From, State) ->
-    case State#state.levelzero_pending of
-        true ->
-            {reply, none, State};
-        false ->
-            {WL, WC} = leveled_manifest:check_for_work(State#state.manifest,
-                                                        ?LEVEL_SCALEFACTOR),
-            case WC of
-                0 ->
-                    {reply, none, State#state{work_backlog=false}};
-                N when N > ?WORKQUEUE_BACKLOG_TOLERANCE ->
-                    leveled_log:log("P0024", [N, true]),
-                    [TL|_Tail] = WL,
-                    {reply,
-                        {TL, State#state.manifest},
-                        State#state{work_backlog=true, work_ongoing=true}};
-                N ->
-                    leveled_log:log("P0024", [N, false]),
-                    [TL|_Tail] = WL,
-                    {reply,
-                        {TL, State#state.manifest},
-                        State#state{work_backlog=false, work_ongoing=true}}
-            end
-    end;
 handle_call(get_startup_sqn, _From, State) ->
     {reply, State#state.persisted_sqn, State};
 handle_call({register_snapshot, Snapshot}, _From, State) ->
@@ -493,15 +469,24 @@ handle_cast({release_snapshot, Snapshot}, State) ->
     {noreply, State#state{manifest=Manifest0}};
 handle_cast({confirm_delete, Filename}, State=#state{is_snapshot=Snap})
                                                         when Snap == false ->    
-    R2D = leveled_manifest:ready_to_delete(State#state.manifest, Filename),
-    case R2D of
-        {true, Pid} ->
-            leveled_log:log("P0005", [Filename]),
-            ok = leveled_sst:sst_deleteconfirmed(Pid),
-            Man0 = leveled_manifest:delete_confirmed(State#state.manifest,
-                                                        Filename),
-            {noreply, State#state{manifest=Man0}};
-        {false, _Pid} ->
+    case State#state.work_ongoing of 
+        false ->
+            R2D = leveled_manifest:ready_to_delete(State#state.manifest, 
+                                                    Filename),
+            case R2D of
+                {true, Pid} ->
+                    leveled_log:log("P0005", [Filename]),
+                    ok = leveled_sst:sst_deleteconfirmed(Pid),
+                    M0 = leveled_manifest:delete_confirmed(State#state.manifest,
+                                                            Filename),
+                    {noreply, State#state{manifest=M0}};
+                {false, _Pid} ->
+                    {noreply, State}
+            end;
+        true ->
+            % If there is ongoing work, then we can't safely update the pidmap
+            % as any change will be reverted when the manifest is passed back
+            % from the Clerk
             {noreply, State}
     end;
 handle_cast({levelzero_complete, FN, StartKey, EndKey}, State) ->
@@ -524,7 +509,33 @@ handle_cast({levelzero_complete, FN, StartKey, EndKey}, State) ->
                             levelzero_constructor=undefined,
                             levelzero_size=0,
                             manifest=UpdMan,
-                            persisted_sqn=State#state.ledger_sqn}}.
+                            persisted_sqn=State#state.ledger_sqn}};
+handle_cast(work_for_clerk, State) ->
+    case State#state.levelzero_pending of
+        true ->
+            {noreply, State};
+        false ->
+            {WL, WC} = leveled_manifest:check_for_work(State#state.manifest,
+                                                        ?LEVEL_SCALEFACTOR),
+            case WC of
+                0 ->
+                    {noreply, State#state{work_backlog=false}};
+                N when N > ?WORKQUEUE_BACKLOG_TOLERANCE ->
+                    leveled_log:log("P0024", [N, true]),
+                    [TL|_Tail] = WL,
+                    ok = leveled_pclerk:clerk_push(State#state.clerk, 
+                                                    {TL, State#state.manifest}),
+                    {noreply,
+                        State#state{work_backlog=true, work_ongoing=true}};
+                N ->
+                    leveled_log:log("P0024", [N, false]),
+                    [TL|_Tail] = WL,
+                    ok = leveled_pclerk:clerk_push(State#state.clerk, 
+                                                    {TL, State#state.manifest}),
+                    {noreply,
+                        State#state{work_backlog=false, work_ongoing=true}}
+            end
+    end.
 
 
 handle_info(_Info, State) ->
