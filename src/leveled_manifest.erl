@@ -75,8 +75,10 @@
                         % An array of level counts to speed up compation work assessment
                     snapshots :: list(),
                         % A list of snaphots (i.e. clones)
-                    delete_sqn :: integer()
+                    delete_sqn :: integer()|infinity,
                         % The lowest SQN of any clone
+                    basement :: integer()
+                        % Currently the lowest level (the largest number)
                     }).      
 
 %%%============================================================================
@@ -128,8 +130,10 @@ load_manifest(Manifest, PidFun, SQNFun) ->
                                             AccMan#manifest.pidmap),
                     LC = array:get(L, AccMan#manifest.level_counts),
                     LC0 = array:set(L, LC + 1, AccMan#manifest.level_counts),
+                    Basement = max(AccMan#manifest.basement, L),
                     AccMan0 = AccMan#manifest{pidmap = PidMap0,
-                                                level_counts = LC0},
+                                                level_counts = LC0,
+                                                basement = Basement},
                     SQN = SQNFun(Pid),
                     MaxSQN0 = max(MaxSQN, SQN),
                     {MaxSQN0, AccMan0};
@@ -159,9 +163,11 @@ insert_manifest_entry(Manifest, ManSQN, Level, Entry) ->
     LC = array:get(Level, Manifest#manifest.level_counts),
     LCArray0 = array:set(Level, LC + 1, Manifest#manifest.level_counts),
     MaxManSQN = max(ManSQN, Manifest#manifest.manifest_sqn),
+    Basement = max(Level, Manifest#manifest.basement),
     Manifest#manifest{pidmap = PidMap0,
                         level_counts = LCArray0,
-                        manifest_sqn = MaxManSQN}.
+                        manifest_sqn = MaxManSQN,
+                        basement = Basement}.
 
 remove_manifest_entry(Manifest, ManSQN, Level, Entry) ->
     Key = {Level, Entry#manifest_entry.end_key, Entry#manifest_entry.filename},
@@ -185,24 +191,31 @@ get_manifest_sqn(Manifest) ->
     Manifest#manifest.manifest_sqn.
 
 key_lookup(Manifest, Level, Key) ->
-    GC =
-        case Manifest#manifest.is_clone of
-            true ->
-                false;
-            false ->
-                {true, Manifest#manifest.delete_sqn}
-        end,
-    FN = key_lookup(Manifest#manifest.table,
-                        Level,
-                        Key,
-                        Manifest#manifest.manifest_sqn,
-                        GC),
-    case FN of
-        false ->
+    case Level > Manifest#manifest.basement of
+        true ->
             false;
-        _ ->
-            {Pid, _TombSQN} = dict:fetch(FN, Manifest#manifest.pidmap),
-            Pid
+        false ->
+            GC =
+                case Manifest#manifest.is_clone of
+                    true ->
+                        false;
+                    false ->
+                        {true,
+                            min(Manifest#manifest.delete_sqn,
+                                    Manifest#manifest.manifest_sqn)}
+                end,
+            FN = key_lookup(Manifest#manifest.table,
+                                Level,
+                                Key,
+                                Manifest#manifest.manifest_sqn,
+                                GC),
+            case FN of
+                false ->
+                    false;
+                _ ->
+                    {Pid, _TombSQN} = dict:fetch(FN, Manifest#manifest.pidmap),
+                    Pid
+            end
     end.
     
 range_lookup(Manifest, Level, StartKey, EndKey) ->
@@ -284,7 +297,7 @@ release_snapshot(Manifest, Pid) ->
         end,
     {SnapList0,
         DeleteSQN} = lists:foldl(FilterFun,
-                                    {[], Manifest#manifest.manifest_sqn},
+                                    {[], infinity},
                                     Manifest#manifest.snapshots),
     leveled_log:log("P0004", [SnapList0]),
     Manifest#manifest{snapshots = SnapList0, delete_sqn = DeleteSQN}.
@@ -320,16 +333,7 @@ check_for_work(Manifest, Thresholds) ->
     lists:foldl(CheckLevelFun, {[], 0}, Thresholds).    
 
 is_basement(Manifest, Level) ->
-    CheckFun =
-        fun(L, Acc) ->
-            case array:get(L, Manifest#manifest.level_counts) of
-                0 ->
-                    Acc;
-                _N ->
-                    false
-            end
-        end,
-    lists:foldl(CheckFun, true, lists:seq(Level + 1, ?MAX_LEVELS)).
+    Level >= Manifest#manifest.basement.
 
 dump_pidmap(Manifest) ->
     dict:to_list(Manifest#manifest.pidmap).
