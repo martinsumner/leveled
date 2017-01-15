@@ -109,10 +109,14 @@ handle_work({SrcLevel, Manifest}, State) ->
                                             Manifest,
                                             State#state.root_path),
     leveled_log:log("PC007", []),
+    SWMC = os:timestamp(),
     ok = leveled_penciller:pcl_manifestchange(State#state.owner,
                                                     UpdManifest),
+    leveled_log:log_timer("PC017", [], SWMC),
+    SWSM = os:timestamp(),
     ok = leveled_manifest:save_manifest(UpdManifest,
                                             State#state.root_path),
+    leveled_log:log_timer("PC018", [], SWSM),
     ok = notify_deletions(EntriesToDelete, State#state.owner).
 
 merge(SrcLevel, Manifest, RootPath) ->
