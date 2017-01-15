@@ -143,7 +143,7 @@ save_manifest(Manifest, RootPath) ->
     FP = filepath(RootPath, Manifest#manifest.manifest_sqn, current_manifest),
     ets:tab2file(Manifest#manifest.table,
                     FP,
-                    [{extended_info, [md5sum]}, {sync, true}]).
+                    [{extended_info, [md5sum]}]).
 
 
 insert_manifest_entry(Manifest, ManSQN, Level, Entry) ->
