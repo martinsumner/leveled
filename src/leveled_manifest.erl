@@ -480,6 +480,7 @@ key_lookup(Manifest, Level, {LastKey, LastFN}, KeyToFind, ManSQN, GC) ->
                         {true, GC_SQN} ->
                             case TombSQN < GC_SQN of
                                 true ->
+                                    leveled_log:log("P0036", [element(3, K)]),
                                     ets:delete(Manifest, K);
                                 false ->
                                     ok

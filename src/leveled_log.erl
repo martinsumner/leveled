@@ -127,7 +127,10 @@
         {warn, "Snapshot with pid ~w timed out and so deletion will "
                     ++ "continue regardless"}},
     {"P0035",
-        {info, "Startup with Manifest SQN of ~w~n"}},
+        {info, "Startup with Manifest SQN of ~w"}},
+    {"P0036",
+        {info, "Garbage collection on mnaifest removes key for filename ~s"}},
+        
     {"PC001",
         {info, "Penciller's clerk ~w started with owner ~w"}},
     {"PC002",
