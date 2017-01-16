@@ -3,27 +3,7 @@
 %% The manifest is an ordered set of files for each level to be used to find
 %% which file is relevant for a given key or range lookup at a given level.
 %%
-%% It is implemented as an ETS table, primarily to optimise lookup speed, but
-%% also for the convenience of the tab2file format to support the persisting
-%% of the manifest.  However, it needs to be a multi-version table, as the 
-%% table may be accessed by both the real actor but also cloned actors too,
-%% and they need to see state at different points in time.
-%%
-%% The ets table is an ordered set.  The Key is a tuple of:
-%%
-%% {Level, LastKey, Filename}
-%%
-%% for the file.  The manifest entry will have a value of:
-%%
-%% {FirstKey, {active, aSQN}, {tomb, tSQN}}
-%%
-%% When an item is added to the manifest it is added with aSQN set to the
-%% manifets SQN which is intended to make this change current, and a tSQN
-%% of infinity.  When an item is removed the element is first altered so
-%% that the tSQN is set to the next ManifestSQN.  When the active
-%% (non-cloned) actor reads items in the manifest it should also reap any
-%% tombstone elements that have passed the lowest manifest SQN of any of
-%% the registered clones.
+
 
 -module(leveled_manifest).
 
@@ -38,19 +18,16 @@
         get_manifest_sqn/1,
         key_lookup/3,
         range_lookup/4,
-        merge_lookup/4,
         insert_manifest_entry/4,
         remove_manifest_entry/4,
+        switch_manifest_entry/4,
         mergefile_selector/2,
         add_snapshot/3,
         release_snapshot/2,
         ready_to_delete/2,
-        delete_confirmed/2,
         check_for_work/2,
         is_basement/2,
-        dump_pidmap/1,
-        levelzero_present/1,
-        pointer_convert/2
+        levelzero_present/1
         ]).      
 
 -export([
@@ -63,20 +40,18 @@
 -define(MANIFEST_FP, "ledger_manifest").
 -define(MAX_LEVELS, 8).
 
--record(manifest, {table,
-                        % A Multi-Version ETS table for lookup
-                    pidmap,
-                        % A dictionary to map filenames to {Pid, DeleteSQN}
+-record(manifest, {levels,
+                        % an array of lists or trees representing the manifest
                     manifest_sqn = 0 :: integer(),
                         % The current manifest SQN
-                    is_clone = false :: boolean(),
-                        % Is this manifest held by a clone (i.e. snapshot)
-                    level_counts,
-                        % An array of level counts to speed up compation work assessment
                     snapshots :: list(),
                         % A list of snaphots (i.e. clones)
-                    delete_sqn :: integer()|infinity,
-                        % The lowest SQN of any clone
+                    min_snapshot_sqn = 0 :: integer(),
+                        % The smallest snapshot manifest SQN in the snapshot
+                        % list
+                    pending_deletes :: dict:dict(),
+                        % a dictionary mapping keys (filenames) to SQN when
+                        % the deletion was made
                     basement :: integer()
                         % Currently the lowest level (the largest number)
                     }).      
@@ -86,8 +61,13 @@
 %%%============================================================================
 
 new_manifest() ->
-    Table = ets:new(manifest, [ordered_set, public]),
-    new_manifest(Table).
+    #manifest{
+        levels = array:new([{size, ?MAX_LEVELS + 1}, {default, []}]), 
+        manifest_sqn = 0, 
+        snapshots = [],
+        pending_deletes = dict:new(),
+        basement = 0
+    }.    
 
 open_manifest(RootPath) ->
     % Open the manifest in the file path which has the highest SQN, and will
@@ -107,149 +87,114 @@ open_manifest(RootPath) ->
     ValidManSQNs = lists:reverse(lists:sort(lists:foldl(ExtractSQNFun,
                                                         [],
                                                         Filenames))),
-    {ManSQN, Manifest} = open_manifestfile(RootPath, ValidManSQNs),
-    Manifest#manifest{manifest_sqn = ManSQN, delete_sqn = ManSQN}.
+    Manifest = open_manifestfile(RootPath, ValidManSQNs),
+    Manifest.
     
 copy_manifest(Manifest) ->
     % Copy the manifest ensuring anything only the master process should care
     % about is switched to undefined
-    #manifest{is_clone = true,
-                table = Manifest#manifest.table,
-                manifest_sqn = Manifest#manifest.manifest_sqn,
-                pidmap = Manifest#manifest.pidmap}.
+    Manifest#manifest{snapshots = undefined, pending_deletes = undefined}.
 
 load_manifest(Manifest, PidFun, SQNFun) ->
-    FlatManifest = ets:tab2list(Manifest#manifest.table),
-    InitiateFun =
-        fun({{L, _EK, FN}, {_SK, ActSt, DelSt}}, {MaxSQN, AccMan}) ->
-            case {ActSt, DelSt} of
-                {{active, _ActSQN}, {tomb, infinity}} ->
-                    Pid = PidFun(FN),
-                    PidMap0 = dict:store(FN,
-                                            {Pid, infinity},
-                                            AccMan#manifest.pidmap),
-                    LC = array:get(L, AccMan#manifest.level_counts),
-                    LC0 = array:set(L, LC + 1, AccMan#manifest.level_counts),
-                    Basement = max(AccMan#manifest.basement, L),
-                    AccMan0 = AccMan#manifest{pidmap = PidMap0,
-                                                level_counts = LC0,
-                                                basement = Basement},
-                    SQN = SQNFun(Pid),
-                    MaxSQN0 = max(MaxSQN, SQN),
-                    {MaxSQN0, AccMan0};
-                {_, {tomb, _TombSQN}} ->
-                    {MaxSQN, AccMan}
-            end
+    UpdateLevelFun =
+        fun(LevelIdx, {AccMaxSQN, AccMan}) ->
+            L0 = array:get(LevelIdx, AccMan#manifest.levels),
+            {L1, SQN1} = load_level(LevelIdx, L0, PidFun, SQNFun),
+            {max(AccMaxSQN, SQN1),
+                AccMan#manifest{levels = array:set(LevelIdx, L1, AccMan)}}
         end,
-    lists:foldl(InitiateFun, {1, Manifest}, FlatManifest).
-
+    lists:foldl(UpdateLevelFun, {0, Manifest},
+                    lists:seq(0, Manifest#manifest.basement)).
+    
 save_manifest(Manifest, RootPath) ->
     FP = filepath(RootPath, Manifest#manifest.manifest_sqn, current_manifest),
-    ets:tab2file(Manifest#manifest.table,
-                    FP,
-                    [{extended_info, [md5sum]}]).
+    ManBin = term_to_binary(Manifest),
+    CRC = erlang:crc32(ManBin),
+    ok = file:write_file(FP, <<CRC:32/integer, ManBin/binary>>).
 
+insert_manifest_entry(Manifest, ManSQN, LevelIdx, Entry) ->
+    Levels = Manifest#manifest.levels,
+    Level = array:get(LevelIdx, Levels),
+    UpdLevel = add_entry(LevelIdx, Level, Entry),
+    Basement = max(LevelIdx, Manifest#manifest.basement),
+    Manifest#manifest{levels = array:set(LevelIdx, UpdLevel, Levels),
+                        basement = Basement,
+                        manifest_sqn = ManSQN}.
 
-insert_manifest_entry(Manifest, ManSQN, Level, Entry) ->
-    Key = {Level, Entry#manifest_entry.end_key, Entry#manifest_entry.filename},
-    Pid = Entry#manifest_entry.owner,
-    Value = {Entry#manifest_entry.start_key,
-                {active, ManSQN},
-                {tomb, infinity}},
-    true = ets:insert_new(Manifest#manifest.table, {Key, Value}),
-    PidMap0 = dict:store(Entry#manifest_entry.filename,
-                            {Pid, infinity},
-                            Manifest#manifest.pidmap),
-    LC = array:get(Level, Manifest#manifest.level_counts),
-    LCArray0 = array:set(Level, LC + 1, Manifest#manifest.level_counts),
-    MaxManSQN = max(ManSQN, Manifest#manifest.manifest_sqn),
-    Basement = max(Level, Manifest#manifest.basement),
-    Manifest#manifest{pidmap = PidMap0,
-                        level_counts = LCArray0,
-                        manifest_sqn = MaxManSQN,
-                        basement = Basement}.
+remove_manifest_entry(Manifest, ManSQN, LevelIdx, Entry) ->
+    Levels = Manifest#manifest.levels,
+    Level = array:get(LevelIdx, Levels),
+    UpdLevel = remove_entry(LevelIdx, Level, Entry),
+    DelFun =
+        fun(E, Acc) ->
+            dict:store(E#manifest_entry.filename, ManSQN, Acc)
+        end,
+    Entries = 
+        case is_list(Entry) of
+            true ->
+                Entry;
+            false ->
+                [Entry]
+        end,
+    PendingDeletes = lists:foldl(DelFun,
+                                    Manifest#manifest.pending_deletes,
+                                    Entries),
+    UpdLevels = array:set(LevelIdx, UpdLevel, Levels),
+    case is_empty(LevelIdx, UpdLevel) of
+        true ->
+            Manifest#manifest{levels = UpdLevels,
+                                basement = get_basement(UpdLevels),
+                                manifest_sqn = ManSQN,
+                                pending_deletes = PendingDeletes};
+        false ->
+            Manifest#manifest{levels = UpdLevels,
+                                manifest_sqn = ManSQN,
+                                pending_deletes = PendingDeletes}
+    end.
 
-remove_manifest_entry(Manifest, ManSQN, Level, Entry) ->
-    Key = {Level, Entry#manifest_entry.end_key, Entry#manifest_entry.filename},
-    [{Key, Value0}] = ets:lookup(Manifest#manifest.table, Key),
-    {StartKey, {active, ActiveSQN}, {tomb, infinity}} = Value0,
-    Value1 = {StartKey, {active, ActiveSQN}, {tomb, ManSQN}},
-    true = ets:insert(Manifest#manifest.table, {Key, Value1}),
-    {Pid, infinity} = dict:fetch(Entry#manifest_entry.filename,
-                                    Manifest#manifest.pidmap),
-    PidMap0 = dict:store(Entry#manifest_entry.filename,
-                            {Pid, ManSQN},
-                            Manifest#manifest.pidmap),
-    LC = array:get(Level, Manifest#manifest.level_counts),
-    LCArray0 = array:set(Level, LC - 1, Manifest#manifest.level_counts),
-    MaxManSQN = max(ManSQN, Manifest#manifest.manifest_sqn),
-    Manifest#manifest{pidmap = PidMap0,
-                        level_counts = LCArray0,
-                        manifest_sqn = MaxManSQN}.
+switch_manifest_entry(Manifest, ManSQN, SrcLevel, Entry) ->
+    % Move to level below - so needs to be removed but not marked as a
+    % pending deletion
+    Levels = Manifest#manifest.levels,
+    Level = array:get(SrcLevel, Levels),
+    UpdLevel = remove_entry(SrcLevel, Level, Entry),
+    UpdLevels = array:set(SrcLevel, UpdLevel, Levels),
+    insert_manifest_entry(Manifest#manifest{levels = UpdLevels},
+                            ManSQN,
+                            SrcLevel + 1,
+                            Entry).
 
 get_manifest_sqn(Manifest) ->
     Manifest#manifest.manifest_sqn.
 
-key_lookup(Manifest, Level, Key) ->
-    case Level > Manifest#manifest.basement of
+key_lookup(Manifest, LevelIdx, Key) ->
+    case LevelIdx > Manifest#manifest.basement of
         true ->
             false;
         false ->
-            GC =
-                case Manifest#manifest.is_clone of
-                    true ->
-                        false;
-                    false ->
-                        {true,
-                            min(Manifest#manifest.delete_sqn,
-                                    Manifest#manifest.manifest_sqn)}
-                end,
-            FN = key_lookup(Manifest#manifest.table,
-                                Level,
-                                Key,
-                                Manifest#manifest.manifest_sqn,
-                                GC),
-            case FN of
-                false ->
-                    false;
-                _ ->
-                    {Pid, _TombSQN} = dict:fetch(FN, Manifest#manifest.pidmap),
-                    Pid
-            end
+            key_lookup_level(LevelIdx,
+                                array:get(LevelIdx, Manifest#manifest.levels),
+                                Key)
     end.
     
-range_lookup(Manifest, Level, StartKey, EndKey) ->
-    MapFun =
-        fun({{_Level, _LastKey, FN}, FirstKey}) ->
-            {Pid, _SQN} = dict:fetch(FN, Manifest#manifest.pidmap),
-            case FirstKey < StartKey of
-                true ->
-                    {next, Pid, StartKey};
-                false ->
-                    {next, Pid, FirstKey}
-            end
+range_lookup(Manifest, LevelIdx, StartKey, EndKey) ->
+    Range = 
+        case LevelIdx > Manifest#manifest.basement of
+            true ->
+                [];
+            false ->
+                range_lookup_level(LevelIdx,
+                                    array:get(LevelIdx,
+                                                Manifest#manifest.levels),
+                                    StartKey,
+                                    EndKey)
         end,
-    range_lookup(Manifest, Level, StartKey, EndKey, MapFun).
+    MakePointerFun =
+        fun(M) ->
+            {next, M, StartKey}
+        end,
+    lists:map(MakePointerFun, Range).
 
-merge_lookup(Manifest, Level, StartKey, EndKey) ->
-    MapFun =
-        fun({{_Level, LastKey, FN}, FirstKey}) ->
-            {Owner, _DelSQN} = dict:fetch(FN, Manifest#manifest.pidmap),
-            #manifest_entry{filename = FN,
-                                owner = Owner,
-                                start_key = FirstKey,
-                                end_key = LastKey}
-        end,
-    range_lookup(Manifest, Level, StartKey, EndKey, MapFun).
-
-pointer_convert(Manifest, EntryList) ->
-    MapFun =
-        fun(Entry) ->
-            {Pid, _DelSQN} = dict:fetch(Entry#manifest_entry.filename,
-                                            Manifest#manifest.pidmap),
-            {next, Pid, all}
-        end,
-    lists:map(MapFun, EntryList).
 
 %% An algorithm for discovering which files to merge ....
 %% We can find the most optimal file:
@@ -261,174 +206,179 @@ pointer_convert(Manifest, EntryList) ->
 %% genuinely better - eventually every file has to be compacted.
 %%
 %% Hence, the initial implementation is to select files to merge at random
-mergefile_selector(Manifest, Level) ->
-    KL = range_lookup(Manifest#manifest.table,
-                        Level,
-                        {all, 0},
-                        all,
-                        all,
-                        [],
-                        Manifest#manifest.manifest_sqn),
-    {{Level, LastKey, FN},
-        FirstKey} = lists:nth(random:uniform(length(KL)), KL),
-    {Owner, infinity} = dict:fetch(FN, Manifest#manifest.pidmap),
-    #manifest_entry{filename = FN,
-                        owner = Owner,
-                        start_key = FirstKey,
-                        end_key = LastKey}.
+mergefile_selector(Manifest, LevelIdx) ->
+    Level = array:get(LevelIdx, Manifest#manifest.levels),
+    lists:nth(random:uniform(length(Level), Level)).
 
 add_snapshot(Manifest, Pid, Timeout) ->
     {MegaNow, SecNow, _} = os:timestamp(),
     TimeToTimeout = MegaNow * 1000000 + SecNow + Timeout,
     SnapEntry = {Pid, Manifest#manifest.manifest_sqn, TimeToTimeout},
     SnapList0 = [SnapEntry|Manifest#manifest.snapshots],
-    MinDelSQN = min(Manifest#manifest.delete_sqn, Manifest#manifest.manifest_sqn),
-    Manifest#manifest{snapshots = SnapList0, delete_sqn = MinDelSQN}.
+    ManSQN = Manifest#manifest.manifest_sqn,
+    case Manifest#manifest.min_snapshot_sqn of
+        0 ->
+            
+            Manifest#manifest{snapshots = SnapList0,
+                                min_snapshot_sqn = ManSQN};
+        N ->
+            N0 = min(N, ManSQN),
+            Manifest#manifest{snapshots = SnapList0, min_snapshot_sqn = N0}
+    end.
 
 release_snapshot(Manifest, Pid) ->
     FilterFun =
         fun({P, SQN, TS}, {Acc, MinSQN}) ->
             case P of
                 Pid ->
-                    {Acc, MinSQN};
+                    {Acc, min(SQN, MinSQN)};
                 _ ->
                     {[{P, SQN, TS}|Acc], min(SQN, MinSQN)}
             end
         end,
-    {SnapList0,
-        DeleteSQN} = lists:foldl(FilterFun,
-                                    {[], infinity},
-                                    Manifest#manifest.snapshots),
+    {SnapList0, MinSnapSQN} = lists:foldl(FilterFun,
+                                            {[], infinity},
+                                            Manifest#manifest.snapshots),
     leveled_log:log("P0004", [SnapList0]),
-    Manifest#manifest{snapshots = SnapList0, delete_sqn = DeleteSQN}.
-
-ready_to_delete(Manifest, Filename) ->
-    case dict:fetch(Filename, Manifest#manifest.pidmap) of
-        {P, infinity} ->
-            {false, P};
-        {P, DeleteSQN} ->
-            {MegaNow, SecNow, _} = os:timestamp(),
-            {ready_to_delete(Manifest#manifest.snapshots,
-                                DeleteSQN,
-                                MegaNow * 1000000 + SecNow),
-                P}
+    case SnapList0 of
+        [] ->
+            Manifest#manifest{snapshots = SnapList0,
+                                min_snapshot_sqn = 0};
+        _ ->
+            Manifest#manifest{snapshots = SnapList0,
+                                min_snapshot_sqn = MinSnapSQN}
     end.
 
-delete_confirmed(Manifest, Filename) ->
-    PidMap = dict:erase(Filename, Manifest#manifest.pidmap),
-    % Would be better to clear ETS at this point rather than on lookup?
-    Manifest#manifest{pidmap = PidMap}.
-
+ready_to_delete(Manifest, Filename) ->
+    ChangeSQN = dict:fetch(Filename, Manifest#manifest.pending_deletes),
+    case Manifest#manifest.min_snapshot_sqn >= ChangeSQN of
+        true ->
+            % Every snapshot is looking at a version of history after this
+            % was removed
+            PDs = dict:erase(Filename, Manifest#manifest.pending_deletes),
+            {true, Manifest#manifest{pending_deletes = PDs}};
+        false ->
+            {false, Manifest}
+    end.
 
 check_for_work(Manifest, Thresholds) ->
     CheckLevelFun =
-        fun({Level, MaxCount}, {AccL, AccC}) ->
-            case array:get(Level, Manifest#manifest.level_counts) of
-                LC when LC > MaxCount ->
-                    {[Level|AccL], AccC + LC - MaxCount};
-                _ ->
-                    {AccL, AccC}
+        fun({LevelIdx, MaxCount}, {AccL, AccC}) ->
+            case LevelIdx > Manifest#manifest.basement of
+                true ->
+                    {AccL, AccC};
+                false ->
+                    Level = array:get(LevelIdx, Manifest#manifest.levels),
+                    S = size(LevelIdx, Level),
+                    case S > MaxCount of
+                        true ->
+                            {[LevelIdx|AccL], AccC + S - MaxCount};
+                        false ->
+                            {AccL, AccC}
+                    end
             end
         end,
-    lists:foldl(CheckLevelFun, {[], 0}, Thresholds).    
+    lists:foldr(CheckLevelFun, {[], 0}, Thresholds).    
 
 is_basement(Manifest, Level) ->
     Level >= Manifest#manifest.basement.
 
-dump_pidmap(Manifest) ->
-    dict:to_list(Manifest#manifest.pidmap).
-
 levelzero_present(Manifest) ->
-    case key_lookup(Manifest, 0, all) of
-        false ->
-            false;
-        _ ->
-            true
-    end.
+    not is_empty(0, array:get(0, Manifest#manifest.levels)).
 
 %%%============================================================================
 %%% Internal Functions
 %%%============================================================================
 
+%% All these internal functions that work on a level are also passed LeveIdx
+%% even if this is not presently relevant.  Currnetly levels are lists, but
+%% future branches may make lower levels trees or skiplists to improve fetch
+%% efficiency
 
-new_manifest(Table) ->
-    #manifest{
-        table = Table, 
-        pidmap = dict:new(), 
-        level_counts = array:new([{size, ?MAX_LEVELS + 1}, {default, 0}]),
-        snapshots = [],
-        delete_sqn = 0
-    }.
+load_level(_LevelIdx, Level, PidFun, SQNFun) ->
+    LevelLoadFun =
+        fun(ME, {L_Out, L_MaxSQN}) ->
+            FN = ME#manifest_entry.filename,
+            {ok, P, _Keys} = PidFun(FN),
+            SQN = SQNFun(P),
+            {[ME#manifest_entry{owner=P}|L_Out], max(SQN, L_MaxSQN)}
+        end,
+    lists:foldr(LevelLoadFun, {[], 0}, Level).
 
-range_lookup(Manifest, Level, StartKey, EndKey, MapFun) ->
-    KL = range_lookup(Manifest#manifest.table,
-                        Level,
-                        {StartKey, 0},
-                        StartKey,
-                        EndKey,
-                        [],
-                        Manifest#manifest.manifest_sqn),
-    lists:map(MapFun, KL).
 
-range_lookup(Manifest, Level, {LastKey, LastFN}, SK, EK, Acc, ManSQN) ->
-    case ets:next(Manifest, {Level, LastKey, LastFN}) of
-        '$end_of_table' ->
-            Acc;
-        {Level, NextKey, NextFN} ->
-            [{K, V}] = ets:lookup(Manifest, {Level, NextKey, NextFN}),
-            {FirstKey, {active, ActiveSQN}, {tomb, TombSQN}} = V,
-            Active = (ManSQN >= ActiveSQN) and (ManSQN < TombSQN),
-            case Active of
+is_empty(_LevelIdx, []) ->
+    true;
+is_empty(_LevelIdx, _Level) ->
+    false.
+
+size(_LevelIdx, Level) ->
+    length(Level).
+
+add_entry(_LevelIdx, Level, Entries) when is_list(Entries) ->
+    lists:sort(Level ++ Entries);
+add_entry(_LevelIdx, Level, Entry) ->
+    lists:sort([Entry|Level]).
+
+remove_entry(_LevelIdx, Level, Entries) when is_list(Entries) ->
+    % We're assuming we're removing a sorted sublist
+    RemLength = length(Entries),
+    RemStart = lists:nth(1, Entries),
+    remove_section(Level, RemStart#manifest_entry.start_key, RemLength - 1);
+remove_entry(_LevelIdx, Level, Entry) ->
+    remove_section(Level, Entry#manifest_entry.start_key, 0).
+
+remove_section(Level, StartKey, Length) ->
+    PredFun =
+        fun(E) ->
+            E#manifest_entry.start_key < StartKey
+        end,
+    {Pre, Rest} = lists:splitwith(PredFun, Level),
+    Post = lists:nthtail(length(Rest) - Length, Rest),
+    Pre ++ Post.
+
+
+
+key_lookup_level(_LevelIdx, [], _Key) ->
+    false;
+key_lookup_level(LevelIdx, [Entry|Rest], Key) ->
+    case Entry#manifest_entry.end_key >= Key of
+        true ->
+            case Key >= Entry#manifest_entry.start_key of
                 true ->
-                    PostEnd = leveled_codec:endkey_passed(EK, FirstKey),
-                    case PostEnd of
-                        true ->
-                            Acc;
-                        false ->
-                            range_lookup(Manifest,
-                                            Level,
-                                            {NextKey, NextFN},
-                                            SK,
-                                            EK,
-                                            Acc ++ [{K, FirstKey}],
-                                            ManSQN)
-                    end;
+                    Entry#manifest_entry.owner;
                 false ->
-                    range_lookup(Manifest,
-                                    Level,
-                                    {NextKey, NextFN},
-                                    SK,
-                                    EK,
-                                    Acc,
-                                    ManSQN)
+                    false
             end;
-        {OtherLevel, _, _} when OtherLevel > Level ->
-            Acc
+        false ->
+            key_lookup_level(LevelIdx, Rest, Key)
     end.
 
-ready_to_delete(SnapList, FileDeleteSQN, Now) ->
-    FilterFun =
-        fun({P, SnapSQN, ExpiryTS}, Acc) ->
-            case Acc of
+range_lookup_level(_LevelIdx, Level, QStartKey, QEndKey) ->
+    BeforeFun =
+        fun(M) ->
+            QStartKey > M#manifest_entry.end_key
+        end,
+    NotAfterFun =
+        fun(M) ->
+            not leveled_codec:endkey_passed(QEndKey,
+                                            M#manifest_entry.start_key)
+        end,
+    {_Before, MaybeIn} = lists:splitwith(BeforeFun, Level),
+    {In, _After} = lists:splitwith(NotAfterFun, MaybeIn),
+    In.
+
+get_basement(Levels) ->
+    GetBaseFun =
+        fun(L, Acc) ->
+            case is_empty(L, array:get(L, Levels)) of
                 false ->
-                    false;
+                    max(L, Acc);
                 true ->
-                    case FileDeleteSQN < SnapSQN of
-                        true ->
-                            % Snapshot taken after the file deletion
-                            true;
-                        false ->
-                            case Now > ExpiryTS of
-                                true ->
-                                    leveled_log:log("P0034", [P]),
-                                    true;
-                                false ->
-                                    false
-                            end
-                    end
+                    Acc
             end
         end,
-    lists:foldl(FilterFun, true, SnapList).
+    lists:foldl(GetBaseFun, 0, lists:seq(0, ?MAX_LEVELS)).
+
 
 filepath(RootPath, manifest) ->
     MFP = RootPath ++ "/" ++ ?MANIFEST_FP ++ "/",
@@ -448,59 +398,16 @@ open_manifestfile(_RootPath, [0]) ->
     {0, new_manifest()};
 open_manifestfile(RootPath, [TopManSQN|Rest]) ->
     CurrManFile = filepath(RootPath, TopManSQN, current_manifest),
-    case ets:file2tab(CurrManFile, [{verify,true}]) of
-        {error, Reason} ->
-            leveled_log:log("P0033", [CurrManFile, Reason]),
-            open_manifestfile(RootPath, Rest);
-        {ok, Table} ->
+    FileBin = file:read_file(CurrManFile),
+    <<CRC:32/integer, BinaryOfTerm/binary>> = FileBin,
+    case erlang:crc32(BinaryOfTerm) of
+        CRC ->
             leveled_log:log("P0012", [TopManSQN]),
-            {TopManSQN, new_manifest(Table)}
+            binary_to_term(BinaryOfTerm);
+        _ ->
+            leveled_log:log("P0033", [CurrManFile, "crc wonky"]),
+            open_manifestfile(RootPath, Rest)
     end.
-
-key_lookup(Manifest, Level, KeyToFind, ManSQN, GC) ->
-    key_lookup(Manifest, Level, {KeyToFind, any}, KeyToFind, ManSQN, GC).
-
-key_lookup(Manifest, Level, {LastKey, LastFN}, KeyToFind, ManSQN, GC) ->
-    case ets:next(Manifest, {Level, LastKey, LastFN}) of
-        '$end_of_table' ->
-            false;
-        {Level, NextKey, NextFN} ->
-            [{K, V}] = ets:lookup(Manifest, {Level, NextKey, NextFN}),
-            {FirstKey, {active, ActiveSQN}, {tomb, TombSQN}} = V,
-            Active = (ManSQN >= ActiveSQN) and (ManSQN < TombSQN),
-            case Active of
-                true ->
-                    InRange = (KeyToFind >= FirstKey) or (KeyToFind == all),
-                    case InRange of
-                        true ->
-                            NextFN;
-                        false ->
-                            false
-                    end;
-                false ->
-                    case GC of
-                        false ->
-                            ok;
-                        {true, GC_SQN} ->
-                            case TombSQN < GC_SQN of
-                                true ->
-                                    leveled_log:log("P0036", [element(3, K)]),
-                                    ets:delete(Manifest, K);
-                                false ->
-                                    ok
-                            end
-                    end,
-                    key_lookup(Manifest,
-                                Level,
-                                {NextKey, NextFN},
-                                KeyToFind,
-                                ManSQN,
-                                GC)
-            end;
-        {OtherLevel, _, _} when OtherLevel > Level ->
-            false
-    end.
-
 
 %%%============================================================================
 %%% Test
@@ -575,14 +482,16 @@ changeup_setup(Man6) ->
                             owner="pid_y4",
                             filename="Y4"},
     
-    Man7 = insert_manifest_entry(Man6, 2, 1, E1_2),
-    Man8 = insert_manifest_entry(Man7, 2, 1, E2_2),
-    Man9 = insert_manifest_entry(Man8, 2, 1, E3_2),
-    Man10 = insert_manifest_entry(Man9, 2, 1, E4_2),
+    Man7 = remove_manifest_entry(Man6, 2, 1, E1),
+    Man8 = remove_manifest_entry(Man7, 2, 1, E2),
+    Man9 = remove_manifest_entry(Man8, 2, 1, E3),
+    
+    Man10 = insert_manifest_entry(Man9, 2, 1, E1_2),
+    Man11 = insert_manifest_entry(Man10, 2, 1, E2_2),
+    Man12 = insert_manifest_entry(Man11, 2, 1, E3_2),
+    Man13 = insert_manifest_entry(Man12, 2, 1, E4_2),
     % remove_manifest_entry(Manifest, ManSQN, Level, Entry)
-    Man11 = remove_manifest_entry(Man10, 2, 1, E1),
-    Man12 = remove_manifest_entry(Man11, 2, 1, E2),
-    Man13 = remove_manifest_entry(Man12, 2, 1, E3),
+    
     {Man7, Man8, Man9, Man10, Man11, Man12, Man13}.
 
 keylookup_manifest_test() ->
@@ -620,7 +529,6 @@ keylookup_manifest_test() ->
     
     ?assertMatch("pid_z2", key_lookup(Man6, 1, LK1_2)),
     ?assertMatch("pid_z2", key_lookup(Man6, 1, LK1_3)),
-    io:format("Commencing failing test:~n"),
     ?assertMatch("pid_z3", key_lookup(Man6, 1, LK1_4)),
     ?assertMatch("pid_z3", key_lookup(Man6, 1, LK1_5)),
     
@@ -636,50 +544,48 @@ keylookup_manifest_test() ->
 rangequery_manifest_test() ->
     {_Man0, _Man1, _Man2, _Man3, _Man4, _Man5, Man6} = initial_setup(),
     
+    PidMapFun =
+        fun(Pointer) ->
+            {next, ME, _SK} = Pointer,
+            ME#manifest_entry.owner
+        end,
+    
     SK1 = {o, "Bucket1", "K711", null},
     EK1 = {o, "Bucket1", "K999", null},
-    RL1_1 = range_lookup(Man6, 1, SK1, EK1),
-    ?assertMatch([{next, "pid_z3", {o, "Bucket1", "K75", null}}], RL1_1),
-    RL1_2 = range_lookup(Man6, 2, SK1, EK1),
-    ?assertMatch([{next, "pid_z5", {o, "Bucket1", "K711", null}},
-                    {next, "pid_z6", {o, "Bucket1", "K81", null}}],
-                    RL1_2),
+    RL1_1 = lists:map(PidMapFun, range_lookup(Man6, 1, SK1, EK1)),
+    ?assertMatch(["pid_z3"], RL1_1),
+    RL1_2 = lists:map(PidMapFun, range_lookup(Man6, 2, SK1, EK1)),
+    ?assertMatch(["pid_z5", "pid_z6"], RL1_2),
     SK2 = {i, "Bucket1", {"Idx1", "Fld8"}, null},
     EK2 = {i, "Bucket1", {"Idx1", "Fld8"}, null},
-    RL2_1 = range_lookup(Man6, 1, SK2, EK2),
-    ?assertMatch([{next, "pid_z1", {i, "Bucket1", {"Idx1", "Fld8"}, null}}],
-                    RL2_1),
-    RL2_2 = range_lookup(Man6, 2, SK2, EK2),
-    ?assertMatch([{next, "pid_z5", {i, "Bucket1", {"Idx1", "Fld8"}, null}}],
-                    RL2_2),
+    RL2_1 = lists:map(PidMapFun, range_lookup(Man6, 1, SK2, EK2)),
+    ?assertMatch(["pid_z1"], RL2_1),
+    RL2_2 = lists:map(PidMapFun, range_lookup(Man6, 2, SK2, EK2)),
+    ?assertMatch(["pid_z5"], RL2_2),
     
     SK3 = {o, "Bucket1", "K994", null},
     EK3 = {o, "Bucket1", "K995", null},
-    RL3_1 = range_lookup(Man6, 1, SK3, EK3),
+    RL3_1 = lists:map(PidMapFun, range_lookup(Man6, 1, SK3, EK3)),
     ?assertMatch([], RL3_1),
-    RL3_2 = range_lookup(Man6, 2, SK3, EK3),
-    ?assertMatch([{next, "pid_z6", {o, "Bucket1", "K994", null}}], RL3_2),
+    RL3_2 = lists:map(PidMapFun, range_lookup(Man6, 2, SK3, EK3)),
+    ?assertMatch(["pid_z6"], RL3_2),
     
     {_Man7, _Man8, _Man9, _Man10, _Man11, _Man12,
         Man13} = changeup_setup(Man6),
     
-    % Results unchanged despiter ES table change if using old manifest
-    RL1_1A = range_lookup(Man6, 1, SK1, EK1),
-    ?assertMatch([{next, "pid_z3", {o, "Bucket1", "K75", null}}], RL1_1A),
-    RL2_1A = range_lookup(Man6, 1, SK2, EK2),
-    ?assertMatch([{next, "pid_z1", {i, "Bucket1", {"Idx1", "Fld8"}, null}}],
-                    RL2_1A),
-    RL3_1A = range_lookup(Man6, 1, SK3, EK3),
+    RL1_1A = lists:map(PidMapFun, range_lookup(Man6, 1, SK1, EK1)),
+    ?assertMatch(["pid_z3"], RL1_1A),
+    RL2_1A = lists:map(PidMapFun, range_lookup(Man6, 1, SK2, EK2)),
+    ?assertMatch(["pid_z1"], RL2_1A),
+    RL3_1A = lists:map(PidMapFun, range_lookup(Man6, 1, SK3, EK3)),
     ?assertMatch([], RL3_1A),
      
-    RL1_1B = range_lookup(Man13, 1, SK1, EK1),
-    ?assertMatch([{next, "pid_y3", {o, "Bucket1", "K711", null}},
-                    {next, "pid_y4", {o, "Bucket1", "K815", null}}], RL1_1B),
-    RL2_1B = range_lookup(Man13, 1, SK2, EK2),
-    ?assertMatch([{next, "pid_y1", {i, "Bucket1", {"Idx1", "Fld8"}, null}}],
-                    RL2_1B),
-    RL3_1B = range_lookup(Man13, 1, SK3, EK3),
-    ?assertMatch([{next, "pid_y4", {o, "Bucket1", "K994", null}}], RL3_1B).
+    RL1_1B = lists:map(PidMapFun, range_lookup(Man13, 1, SK1, EK1)),
+    ?assertMatch(["pid_y3", "pid_y4"], RL1_1B),
+    RL2_1B = lists:map(PidMapFun, range_lookup(Man13, 1, SK2, EK2)),
+    ?assertMatch(["pid_y1"], RL2_1B),
+    RL3_1B = lists:map(PidMapFun, range_lookup(Man13, 1, SK3, EK3)),
+    ?assertMatch(["pid_y4"], RL3_1B).
 
 levelzero_present_test() ->
     E0 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
