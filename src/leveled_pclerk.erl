@@ -125,15 +125,15 @@ handle_work({SrcLevel, Manifest}, State) ->
                                                     UpdManifest),
     leveled_log:log_timer("PC017", [], SWMC),
     SWSM = os:timestamp(),
-    ok = leveled_manifest:save_manifest(UpdManifest,
+    ok = leveled_pmanifest:save_manifest(UpdManifest,
                                             State#state.root_path),
     leveled_log:log_timer("PC018", [], SWSM),
-    {leveled_manifest:get_manifest_sqn(UpdManifest), EntriesToDelete}.
+    {leveled_pmanifest:get_manifest_sqn(UpdManifest), EntriesToDelete}.
 
 merge(SrcLevel, Manifest, RootPath) ->
-    Src = leveled_manifest:mergefile_selector(Manifest, SrcLevel),
-    NewSQN = leveled_manifest:get_manifest_sqn(Manifest) + 1,
-    SinkList = leveled_manifest:merge_lookup(Manifest,
+    Src = leveled_pmanifest:mergefile_selector(Manifest, SrcLevel),
+    NewSQN = leveled_pmanifest:get_manifest_sqn(Manifest) + 1,
+    SinkList = leveled_pmanifest:merge_lookup(Manifest,
                                                 SrcLevel + 1,
                                                 Src#manifest_entry.start_key,
                                                 Src#manifest_entry.end_key),
@@ -143,7 +143,7 @@ merge(SrcLevel, Manifest, RootPath) ->
         0 ->
             leveled_log:log("PC009",
                                 [Src#manifest_entry.filename, SrcLevel + 1]),
-            Man0 = leveled_manifest:switch_manifest_entry(Manifest,
+            Man0 = leveled_pmanifest:switch_manifest_entry(Manifest,
                                                             NewSQN,
                                                             SrcLevel,
                                                             Src),
@@ -172,7 +172,7 @@ perform_merge(Manifest, Src, SinkList, SrcLevel, RootPath, NewSQN) ->
     SrcList = [{next, Src, all}],
     MaxSQN = leveled_sst:sst_getmaxsequencenumber(Src#manifest_entry.owner),
     SinkLevel = SrcLevel + 1,
-    SinkBasement = leveled_manifest:is_basement(Manifest, SinkLevel),
+    SinkBasement = leveled_pmanifest:is_basement(Manifest, SinkLevel),
     Additions = do_merge(SrcList, SinkList,
                             SinkLevel, SinkBasement,
                             RootPath, NewSQN, MaxSQN,
@@ -182,16 +182,16 @@ perform_merge(Manifest, Src, SinkList, SrcLevel, RootPath, NewSQN) ->
             ME
         end,
     SinkManifestList = lists:map(RevertPointerFun, SinkList),
-    Man0 = leveled_manifest:remove_manifest_entry(Manifest,
+    Man0 = leveled_pmanifest:remove_manifest_entry(Manifest,
                                                     NewSQN,
                                                     SinkLevel,
                                                     SinkManifestList),
-    Man1 = leveled_manifest:insert_manifest_entry(Man0,
+    Man1 = leveled_pmanifest:insert_manifest_entry(Man0,
                                                     NewSQN,
                                                     SinkLevel,
                                                     Additions),
     
-    Man2 = leveled_manifest:remove_manifest_entry(Man1,
+    Man2 = leveled_pmanifest:remove_manifest_entry(Man1,
                                                     NewSQN,
                                                     SrcLevel,
                                                     Src),
@@ -297,18 +297,18 @@ merge_file_test() ->
                             end_key = lists:last(KL4_L2),
                             start_key = lists:nth(1, KL4_L2)},
     
-    Man0 = leveled_manifest:new_manifest(),
-    Man1 = leveled_manifest:insert_manifest_entry(Man0, 1, 2, E2),
-    Man2 = leveled_manifest:insert_manifest_entry(Man1, 1, 2, E3),
-    Man3 = leveled_manifest:insert_manifest_entry(Man2, 1, 2, E4),
-    Man4 = leveled_manifest:insert_manifest_entry(Man3, 1, 2, E5),
-    Man5 = leveled_manifest:insert_manifest_entry(Man4, 2, 1, E1),
+    Man0 = leveled_pmanifest:new_manifest(),
+    Man1 = leveled_pmanifest:insert_manifest_entry(Man0, 1, 2, E2),
+    Man2 = leveled_pmanifest:insert_manifest_entry(Man1, 1, 2, E3),
+    Man3 = leveled_pmanifest:insert_manifest_entry(Man2, 1, 2, E4),
+    Man4 = leveled_pmanifest:insert_manifest_entry(Man3, 1, 2, E5),
+    Man5 = leveled_pmanifest:insert_manifest_entry(Man4, 2, 1, E1),
     
     PointerList = lists:map(fun(ME) -> {next, ME, all} end,
                             [E2, E3, E4, E5]),
     {Man6, _Dels} = perform_merge(Man5, E1, PointerList, 1, "../test", 3),
     
-    ?assertMatch(3, leveled_manifest:get_manifest_sqn(Man6)).
+    ?assertMatch(3, leveled_pmanifest:get_manifest_sqn(Man6)).
 
 coverage_cheat_test() ->
     {ok, _State1} = code_change(null, #state{}, null).

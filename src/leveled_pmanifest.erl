@@ -5,7 +5,7 @@
 %%
 
 
--module(leveled_manifest).
+-module(leveled_pmanifest).
 
 -include("include/leveled.hrl").
 

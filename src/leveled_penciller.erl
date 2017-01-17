@@ -329,7 +329,7 @@ init([PCLopts]) ->
         {undefined, true} ->
             SrcPenciller = PCLopts#penciller_options.source_penciller,
             {ok, State} = pcl_registersnapshot(SrcPenciller, self()),
-            ManifestClone = leveled_manifest:copy_manifest(State#state.manifest),
+            ManifestClone = leveled_pmanifest:copy_manifest(State#state.manifest),
             leveled_log:log("P0001", [self()]),
             {ok, State#state{is_snapshot=true,
                                 source_penciller=SrcPenciller,
@@ -411,7 +411,7 @@ handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
     
     SetupFoldFun =
         fun(Level, Acc) ->
-            Pointers = leveled_manifest:range_lookup(State#state.manifest,
+            Pointers = leveled_pmanifest:range_lookup(State#state.manifest,
                                                         Level,
                                                         StartKey,
                                                         EndKey),
@@ -431,7 +431,7 @@ handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
 handle_call(get_startup_sqn, _From, State) ->
     {reply, State#state.persisted_sqn, State};
 handle_call({register_snapshot, Snapshot}, _From, State) ->
-    Manifest0 = leveled_manifest:add_snapshot(State#state.manifest,
+    Manifest0 = leveled_pmanifest:add_snapshot(State#state.manifest,
                                                 Snapshot,
                                                 ?SNAPSHOT_TIMEOUT),
     {reply, {ok, State}, State#state{manifest = Manifest0}};
@@ -461,11 +461,11 @@ handle_call(doom, _From, State) ->
     {stop, normal, {ok, [ManifestFP, FilesFP]}, State}.
 
 handle_cast({manifest_change, NewManifest}, State) ->
-    NewManSQN = leveled_manifest:get_manifest_sqn(NewManifest),
+    NewManSQN = leveled_pmanifest:get_manifest_sqn(NewManifest),
     ok = leveled_pclerk:clerk_promptdeletions(State#state.clerk, NewManSQN),
     {noreply, State#state{manifest = NewManifest, work_ongoing=false}};
 handle_cast({release_snapshot, Snapshot}, State) ->
-    Manifest0 = leveled_manifest:release_snapshot(State#state.manifest,
+    Manifest0 = leveled_pmanifest:release_snapshot(State#state.manifest,
                                                    Snapshot),
     leveled_log:log("P0003", [Snapshot]),
     {noreply, State#state{manifest=Manifest0}};
@@ -473,7 +473,7 @@ handle_cast({confirm_delete, Filename, FilePid}, State=#state{is_snapshot=Snap})
                                                         when Snap == false ->    
     case State#state.work_ongoing of 
         false ->
-            R2D = leveled_manifest:ready_to_delete(State#state.manifest, 
+            R2D = leveled_pmanifest:ready_to_delete(State#state.manifest, 
                                                     Filename),
             case R2D of
                 {true, M0} ->
@@ -495,8 +495,8 @@ handle_cast({levelzero_complete, FN, StartKey, EndKey}, State) ->
                                 end_key=EndKey,
                                 owner=State#state.levelzero_constructor,
                                 filename=FN},
-    ManifestSQN = leveled_manifest:get_manifest_sqn(State#state.manifest) + 1,
-    UpdMan = leveled_manifest:insert_manifest_entry(State#state.manifest,
+    ManifestSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest) + 1,
+    UpdMan = leveled_pmanifest:insert_manifest_entry(State#state.manifest,
                                                     ManifestSQN,
                                                     0,
                                                     ManEntry),
@@ -515,7 +515,7 @@ handle_cast(work_for_clerk, State) ->
         true ->
             {noreply, State};
         false ->
-            {WL, WC} = leveled_manifest:check_for_work(State#state.manifest,
+            {WL, WC} = leveled_pmanifest:check_for_work(State#state.manifest,
                                                         ?LEVEL_SCALEFACTOR),
             case WC of
                 0 ->
@@ -558,7 +558,7 @@ terminate(Reason, State) ->
     ok = leveled_pclerk:clerk_close(State#state.clerk),
     
     leveled_log:log("P0008", [Reason]),
-    L0_Present = leveled_manifest:key_lookup(State#state.manifest, 0, all),
+    L0_Present = leveled_pmanifest:key_lookup(State#state.manifest, 0, all),
     L0_Left = State#state.levelzero_size > 0,
     case {State#state.levelzero_pending, L0_Present, L0_Left} of
         {false, false, true} ->
@@ -573,7 +573,7 @@ terminate(Reason, State) ->
         fun(ME) ->
             ok = leveled_sst:sst_close(ME#manifest_entry.owner)
         end,
-    leveled_manifest:close_manifest(State#state.manifest, EntryCloseFun),
+    leveled_pmanifest:close_manifest(State#state.manifest, EntryCloseFun),
     leveled_log:log("P0011", []),
     ok.
 
@@ -610,18 +610,18 @@ start_from_file(PCLopts) ->
                         levelzero_index=leveled_pmem:new_index()},
     
     %% Open manifest
-    Manifest0 = leveled_manifest:open_manifest(RootPath),
+    Manifest0 = leveled_pmanifest:open_manifest(RootPath),
     OpenFun =
         fun(FN) ->
             {ok, Pid, {_FK, _LK}} = leveled_sst:sst_open(FN),
             Pid
         end,
     SQNFun = fun leveled_sst:sst_getmaxsequencenumber/1,
-    {MaxSQN, Manifest1} = leveled_manifest:load_manifest(Manifest0,
+    {MaxSQN, Manifest1} = leveled_pmanifest:load_manifest(Manifest0,
                                                             OpenFun,
                                                             SQNFun),
     leveled_log:log("P0014", [MaxSQN]),
-    ManSQN = leveled_manifest:get_manifest_sqn(Manifest1),
+    ManSQN = leveled_pmanifest:get_manifest_sqn(Manifest1),
     leveled_log:log("P0035", [ManSQN]),
     %% Find any L0 files
     L0FN = filepath(RootPath, ManSQN + 1, new_merge_files) ++ "_0_0.sst",
@@ -636,7 +636,7 @@ start_from_file(PCLopts) ->
                                         end_key = L0EndKey,
                                         filename = L0FN,
                                         owner = L0Pid},
-            Manifest2 = leveled_manifest:insert_manifest_entry(Manifest1,
+            Manifest2 = leveled_pmanifest:insert_manifest_entry(Manifest1,
                                                                 ManSQN + 1,
                                                                 0,
                                                                 L0Entry),
@@ -675,7 +675,7 @@ update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
                                     ledger_sqn=UpdMaxSQN},
             CacheTooBig = NewL0Size > State#state.levelzero_maxcachesize,
             CacheMuchTooBig = NewL0Size > ?SUPER_MAX_TABLE_SIZE,
-            L0Free = not leveled_manifest:levelzero_present(State#state.manifest),
+            L0Free = not leveled_pmanifest:levelzero_present(State#state.manifest),
             RandomFactor =
                 case State#state.levelzero_cointoss of
                     true ->
@@ -735,7 +735,7 @@ roll_memory(State, true) ->
     Constructor.
 
 levelzero_filename(State) ->
-    ManSQN = leveled_manifest:get_manifest_sqn(State#state.manifest) + 1,
+    ManSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest) + 1,
     FileName = State#state.root_path
                 ++ "/" ++ ?FILES_FP ++ "/"
                 ++ integer_to_list(ManSQN) ++ "_0_0",
@@ -770,7 +770,7 @@ fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
 fetch(_Key, _Hash, _Manifest, ?MAX_LEVELS + 1, _FetchFun) ->
     {not_present, basement};
 fetch(Key, Hash, Manifest, Level, FetchFun) ->
-    case leveled_manifest:key_lookup(Manifest, Level, Key) of
+    case leveled_pmanifest:key_lookup(Manifest, Level, Key) of
         false ->
             fetch(Key, Hash, Manifest, Level + 1, FetchFun);
         FP ->
@@ -1053,7 +1053,7 @@ generate_randomkeys(Count, SQN, Acc) ->
     
 
 clean_testdir(RootPath) ->
-    clean_subdir(leveled_manifest:filepath(RootPath, manifest)),
+    clean_subdir(leveled_pmanifest:filepath(RootPath, manifest)),
     clean_subdir(filepath(RootPath, files)).
 
 clean_subdir(DirPath) ->
