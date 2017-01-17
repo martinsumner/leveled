@@ -154,7 +154,7 @@
     {"PC011",
         {info, "Merge completed with MSN=~w to Level=~w and FileCounter=~w"}},
     {"PC012",
-        {info, "File to be created as part of MSN=~w Filename=~s "
+        {debug, "File to be created as part of MSN=~w Filename=~s "
                     ++ "IsBasement=~w"}},
     {"PC013",
         {warn, "Merge resulted in empty file ~s"}},
