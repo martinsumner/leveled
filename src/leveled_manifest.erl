@@ -239,7 +239,7 @@ release_snapshot(Manifest, Pid) ->
         fun({P, SQN, TS}, {Acc, MinSQN}) ->
             case P of
                 Pid ->
-                    {Acc, min(SQN, MinSQN)};
+                    {Acc, MinSQN};
                 _ ->
                     {[{P, SQN, TS}|Acc], min(SQN, MinSQN)}
             end
@@ -259,13 +259,17 @@ release_snapshot(Manifest, Pid) ->
 
 ready_to_delete(Manifest, Filename) ->
     ChangeSQN = dict:fetch(Filename, Manifest#manifest.pending_deletes),
-    case Manifest#manifest.min_snapshot_sqn >= ChangeSQN of
-        true ->
+    case Manifest#manifest.min_snapshot_sqn of
+        0 ->
+            % no shapshots
+            PDs = dict:erase(Filename, Manifest#manifest.pending_deletes),
+            {true, Manifest#manifest{pending_deletes = PDs}};
+        N when N >= ChangeSQN ->
             % Every snapshot is looking at a version of history after this
             % was removed
             PDs = dict:erase(Filename, Manifest#manifest.pending_deletes),
             {true, Manifest#manifest{pending_deletes = PDs}};
-        false ->
+        _N ->
             {false, Manifest}
     end.
 
@@ -622,4 +626,56 @@ levelzero_present_test() ->
     Man1 = insert_manifest_entry(Man0, 1, 0, E0),
     ?assertMatch(true, levelzero_present(Man1)).
 
+snapshot_release_test() ->
+    Man6 = element(7, initial_setup()),
+    E1 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
+                            end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K93"},
+                            filename="Z1",
+                            owner="pid_z1"},
+    E2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld9"}, "K97"},
+                                end_key={o, "Bucket1", "K71", null},
+                                filename="Z2",
+                                owner="pid_z2"},
+    E3 = #manifest_entry{start_key={o, "Bucket1", "K75", null},
+                            end_key={o, "Bucket1", "K993", null},
+                            filename="Z3",
+                            owner="pid_z3"},
+    
+    Man7 = add_snapshot(Man6, "pid_a1", 3600),
+    Man8 = remove_manifest_entry(Man7, 2, 1, E1),
+    Man9 = add_snapshot(Man8, "pid_a2", 3600),
+    Man10 = remove_manifest_entry(Man9, 3, 1, E2),
+    Man11 = add_snapshot(Man10, "pid_a3", 3600),
+    Man12 = remove_manifest_entry(Man11, 4, 1, E3),
+    Man13 = add_snapshot(Man12, "pid_a4", 3600),
+    
+    ?assertMatch(false, element(1, ready_to_delete(Man8, "Z1"))),
+    ?assertMatch(false, element(1, ready_to_delete(Man10, "Z2"))),
+    ?assertMatch(false, element(1, ready_to_delete(Man12, "Z3"))),
+    
+    Man14 = release_snapshot(Man13, "pid_a1"),
+    ?assertMatch(false, element(1, ready_to_delete(Man14, "Z2"))),
+    ?assertMatch(false, element(1, ready_to_delete(Man14, "Z3"))),
+    {Bool14, Man15} = ready_to_delete(Man14, "Z1"),
+    ?assertMatch(true, Bool14),
+    
+    %This doesn't change anything - released snaphsot not the min
+    Man16 = release_snapshot(Man15, "pid_a4"),
+    ?assertMatch(false, element(1, ready_to_delete(Man16, "Z2"))),
+    ?assertMatch(false, element(1, ready_to_delete(Man16, "Z3"))),
+    
+    Man17 = release_snapshot(Man16, "pid_a2"),
+    ?assertMatch(false, element(1, ready_to_delete(Man17, "Z3"))),
+    {Bool17, Man18} = ready_to_delete(Man17, "Z2"),
+    ?assertMatch(true, Bool17),
+    
+    Man19 = release_snapshot(Man18, "pid_a3"),
+    
+    io:format("MinSnapSQN ~w~n", [Man19#manifest.min_snapshot_sqn]),
+    
+    {Bool19, _Man20} = ready_to_delete(Man19, "Z3"),
+    ?assertMatch(true, Bool19).
+    
+    
+    
 -endif.
