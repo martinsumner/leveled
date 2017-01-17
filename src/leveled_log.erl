@@ -166,6 +166,8 @@
         {info, "Notified clerk of manifest change"}},
     {"PC018",
         {info, "Saved manifest file"}},
+    {"PC019",
+        {info, "After ~s level ~w is ~w"}},
     
     {"I0001",
         {info, "Unexpected failure to fetch value for Key=~w SQN=~w "

@@ -125,6 +125,7 @@ insert_manifest_entry(Manifest, ManSQN, LevelIdx, Entry) ->
     Levels = Manifest#manifest.levels,
     Level = array:get(LevelIdx, Levels),
     UpdLevel = add_entry(LevelIdx, Level, Entry),
+    leveled_log:log("PC019", ["insert", LevelIdx, UpdLevel]),
     Basement = max(LevelIdx, Manifest#manifest.basement),
     Manifest#manifest{levels = array:set(LevelIdx, UpdLevel, Levels),
                         basement = Basement,
@@ -134,6 +135,7 @@ remove_manifest_entry(Manifest, ManSQN, LevelIdx, Entry) ->
     Levels = Manifest#manifest.levels,
     Level = array:get(LevelIdx, Levels),
     UpdLevel = remove_entry(LevelIdx, Level, Entry),
+    leveled_log:log("PC019", ["remove", LevelIdx, UpdLevel]),
     DelFun =
         fun(E, Acc) ->
             dict:store(E#manifest_entry.filename, ManSQN, Acc)
