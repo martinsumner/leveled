@@ -123,7 +123,9 @@ close_manifest(Manifest, CloseEntryFun) ->
 
 save_manifest(Manifest, RootPath) ->
     FP = filepath(RootPath, Manifest#manifest.manifest_sqn, current_manifest),
-    ManBin = term_to_binary(Manifest),
+    ManBin = term_to_binary(Manifest#manifest{snapshots = [],
+                                                pending_deletes = dict:new(),
+                                                min_snapshot_sqn = 0}),
     CRC = erlang:crc32(ManBin),
     ok = file:write_file(FP, <<CRC:32/integer, ManBin/binary>>).
 
