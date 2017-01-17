@@ -154,7 +154,7 @@
     {"PC011",
         {info, "Merge completed with MSN=~w to Level=~w and FileCounter=~w"}},
     {"PC012",
-        {debug, "File to be created as part of MSN=~w Filename=~s "
+        {info, "File to be created as part of MSN=~w Filename=~s "
                     ++ "IsBasement=~w"}},
     {"PC013",
         {warn, "Merge resulted in empty file ~s"}},
@@ -167,7 +167,7 @@
     {"PC018",
         {info, "Saved manifest file"}},
     {"PC019",
-        {info, "After ~s level ~w is ~w"}},
+        {debug, "After ~s level ~w is ~w"}},
     
     {"I0001",
         {info, "Unexpected failure to fetch value for Key=~w SQN=~w "

@@ -332,18 +332,18 @@ add_entry(_LevelIdx, Level, Entry) ->
 remove_entry(_LevelIdx, Level, Entries) when is_list(Entries) ->
     % We're assuming we're removing a sorted sublist
     RemLength = length(Entries),
-    RemStart = lists:nth(1, Entries),
-    remove_section(Level, RemStart#manifest_entry.start_key, RemLength - 1);
+    [RemStart|_Tail] = Entries,
+    remove_section(Level, RemStart#manifest_entry.start_key, RemLength);
 remove_entry(_LevelIdx, Level, Entry) ->
-    remove_section(Level, Entry#manifest_entry.start_key, 0).
+    remove_section(Level, Entry#manifest_entry.start_key, 1).
 
-remove_section(Level, StartKey, Length) ->
+remove_section(Level, SectionStartKey, SectionLength) ->
     PredFun =
         fun(E) ->
-            E#manifest_entry.start_key < StartKey
+            E#manifest_entry.start_key < SectionStartKey
         end,
     {Pre, Rest} = lists:splitwith(PredFun, Level),
-    Post = lists:nthtail(length(Rest) - Length, Rest),
+    Post = lists:nthtail(SectionLength, Rest),
     Pre ++ Post.
 
 
