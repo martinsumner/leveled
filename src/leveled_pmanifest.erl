@@ -52,8 +52,8 @@
                         % The smallest snapshot manifest SQN in the snapshot
                         % list
                     pending_deletes :: dict:dict(),
-                        % a dictionary mapping keys (filenames) to SQN when
-                        % the deletion was made
+                        % a dictionary mapping keys (filenames) to SQN when the
+                        % deletion was made, and the original Manifest Entry
                     basement :: integer()
                         % Currently the lowest level (the largest number)
                     }).      
@@ -113,7 +113,13 @@ close_manifest(Manifest, CloseEntryFun) ->
             Level = array:get(LevelIdx, Manifest#manifest.levels),
             close_level(LevelIdx, Level, CloseEntryFun)
         end,
-    lists:foreach(CloseLevelFun, lists:seq(0, Manifest#manifest.basement)).
+    lists:foreach(CloseLevelFun, lists:seq(0, Manifest#manifest.basement)),
+    
+    ClosePDFun =
+        fun({_FN, {_SQN, ME}}) ->
+            CloseEntryFun(ME)
+        end,
+    lists:foreach(ClosePDFun, dict:to_list(Manifest#manifest.pending_deletes)).
 
 save_manifest(Manifest, RootPath) ->
     FP = filepath(RootPath, Manifest#manifest.manifest_sqn, current_manifest),
@@ -138,7 +144,9 @@ remove_manifest_entry(Manifest, ManSQN, LevelIdx, Entry) ->
     leveled_log:log("PC019", ["remove", LevelIdx, UpdLevel]),
     DelFun =
         fun(E, Acc) ->
-            dict:store(E#manifest_entry.filename, ManSQN, Acc)
+            dict:store(E#manifest_entry.filename,
+                        {ManSQN, E},
+                        Acc)
         end,
     Entries = 
         case is_list(Entry) of
@@ -258,7 +266,7 @@ release_snapshot(Manifest, Pid) ->
     end.
 
 ready_to_delete(Manifest, Filename) ->
-    ChangeSQN = dict:fetch(Filename, Manifest#manifest.pending_deletes),
+    {ChangeSQN, _ME} = dict:fetch(Filename, Manifest#manifest.pending_deletes),
     case Manifest#manifest.min_snapshot_sqn of
         0 ->
             % no shapshots
