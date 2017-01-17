@@ -181,6 +181,7 @@ perform_merge(Manifest, Src, SinkList, SrcLevel, RootPath, NewSQN) ->
         fun({next, ME, _SK}) ->
             ME
         end,
+    SinkManifestList = lists:map(RevertPointerFun, SinkList),
     Man0 = leveled_manifest:insert_manifest_entry(Manifest,
                                                     NewSQN,
                                                     SinkLevel,
@@ -188,13 +189,12 @@ perform_merge(Manifest, Src, SinkList, SrcLevel, RootPath, NewSQN) ->
     Man1 = leveled_manifest:remove_manifest_entry(Man0,
                                                     NewSQN,
                                                     SinkLevel,
-                                                    lists:map(RevertPointerFun,
-                                                                SinkList)),
+                                                    SinkManifestList),
     Man2 = leveled_manifest:remove_manifest_entry(Man1,
                                                     NewSQN,
                                                     SrcLevel,
                                                     Src),
-    {Man2, [Src|SinkList]}.
+    {Man2, [Src|SinkManifestList]}.
 
 do_merge([], [], SinkLevel, _SinkB, _RP, NewSQN, _MaxSQN, Additions) ->
     leveled_log:log("PC011", [NewSQN, SinkLevel, length(Additions)]),
