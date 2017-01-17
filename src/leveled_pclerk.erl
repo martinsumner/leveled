@@ -49,7 +49,8 @@
 
 -record(state, {owner :: pid(),
                 root_path :: string(),
-                pending_deletions = dict:new() :: dict:dict()}).
+                pending_deletions = dict:new() % OTP 16 does not like type
+                }).
 
 %%%============================================================================
 %%% API
