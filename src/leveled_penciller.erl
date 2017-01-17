@@ -161,12 +161,15 @@
 
 -include("include/leveled.hrl").
 
--export([init/1,
+-export([
+        init/1,
         handle_call/3,
         handle_cast/2,
         handle_info/2,
         terminate/2,
-        code_change/3,
+        code_change/3]).
+
+-export([
         pcl_start/1,
         pcl_pushmem/2,
         pcl_fetchlevelzero/2,
@@ -176,15 +179,18 @@
         pcl_fetchnextkey/5,
         pcl_checksequencenumber/3,
         pcl_workforclerk/1,
-        pcl_promptmanifestchange/2,
+        pcl_manifestchange/2,
         pcl_confirml0complete/4,
-        pcl_confirmdelete/2,
+        pcl_confirmdelete/3,
         pcl_close/1,
         pcl_doom/1,
         pcl_registersnapshot/2,
         pcl_releasesnapshot/2,
         pcl_loadsnapshot/2,
-        pcl_getstartupsequencenumber/1,
+        pcl_getstartupsequencenumber/1]).
+
+-export([
+        filepath/3,
         clean_testdir/1]).
 
 -include_lib("eunit/include/eunit.hrl").
@@ -206,13 +212,12 @@
 -define(COIN_SIDECOUNT, 5).
 -define(SLOW_FETCH, 20000).
 -define(ITERATOR_SCANWIDTH, 4).
+-define(SNAPSHOT_TIMEOUT, 3600).
 
--record(state, {manifest = [] :: list(),
-				manifest_sqn = 0 :: integer(),
-                ledger_sqn = 0 :: integer(), % The highest SQN added to L0
+-record(state, {manifest, % a manifest record from the leveled_manifest module
                 persisted_sqn = 0 :: integer(), % The highest SQN persisted
-                registered_snapshots = [] :: list(),
-                unreferenced_files = [] :: list(),
+                
+                ledger_sqn = 0 :: integer(), % The highest SQN added to L0
                 root_path = "../test" :: string(),
                 
                 clerk :: pid(),
@@ -230,8 +235,8 @@
                 source_penciller :: pid(),
                 levelzero_astree :: list(),
                 
-                ongoing_work = [] :: list(),
-                work_backlog = false :: boolean(),
+                work_ongoing = false :: boolean(), % i.e. compaction work
+                work_backlog = false :: boolean(), % i.e. compaction work
                 
                 head_timing :: tuple()}).
 
@@ -284,16 +289,16 @@ pcl_checksequencenumber(Pid, Key, SQN) ->
     end.
 
 pcl_workforclerk(Pid) ->
-    gen_server:call(Pid, work_for_clerk, infinity).
+    gen_server:cast(Pid, work_for_clerk).
 
-pcl_promptmanifestchange(Pid, WI) ->
-    gen_server:cast(Pid, {manifest_change, WI}).
+pcl_manifestchange(Pid, Manifest) ->
+    gen_server:cast(Pid, {manifest_change, Manifest}).
 
 pcl_confirml0complete(Pid, FN, StartKey, EndKey) ->
     gen_server:cast(Pid, {levelzero_complete, FN, StartKey, EndKey}).
 
-pcl_confirmdelete(Pid, FileName) ->
-    gen_server:cast(Pid, {confirm_delete, FileName}).
+pcl_confirmdelete(Pid, FileName, FilePid) ->
+    gen_server:cast(Pid, {confirm_delete, FileName, FilePid}).
 
 pcl_getstartupsequencenumber(Pid) ->
     gen_server:call(Pid, get_startup_sqn, infinity).
@@ -324,9 +329,11 @@ init([PCLopts]) ->
         {undefined, true} ->
             SrcPenciller = PCLopts#penciller_options.source_penciller,
             {ok, State} = pcl_registersnapshot(SrcPenciller, self()),
+            ManifestClone = leveled_pmanifest:copy_manifest(State#state.manifest),
             leveled_log:log("P0001", [self()]),
-            io:format("Snapshot ledger sqn at ~w~n", [State#state.ledger_sqn]),
-            {ok, State#state{is_snapshot=true, source_penciller=SrcPenciller}};
+            {ok, State#state{is_snapshot=true,
+                                source_penciller=SrcPenciller,
+                                manifest=ManifestClone}};
             %% Need to do something about timeout
         {_RootPath, false} ->
             start_from_file(PCLopts)
@@ -401,23 +408,33 @@ handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
             List ->
                 List
         end,
-    SSTiter = initiate_rangequery_frommanifest(StartKey,
-                                                EndKey,
-                                                State#state.manifest),
+    
+    SetupFoldFun =
+        fun(Level, Acc) ->
+            Pointers = leveled_pmanifest:range_lookup(State#state.manifest,
+                                                        Level,
+                                                        StartKey,
+                                                        EndKey),
+            case Pointers of
+                [] -> Acc;
+                PL -> Acc ++ [{Level, PL}]
+            end
+        end,
+    SSTiter = lists:foldl(SetupFoldFun, [], lists:seq(0, ?MAX_LEVELS - 1)),
+    
     Acc = keyfolder({L0AsList, SSTiter},
                         {StartKey, EndKey},
                         {AccFun, InitAcc},
                         MaxKeys),
+    
     {reply, Acc, State#state{levelzero_astree = L0AsList}};
-handle_call(work_for_clerk, From, State) ->
-    {UpdState, Work} = return_work(State, From),
-    {reply, Work, UpdState};
 handle_call(get_startup_sqn, _From, State) ->
     {reply, State#state.persisted_sqn, State};
 handle_call({register_snapshot, Snapshot}, _From, State) ->
-    Rs = [{Snapshot,
-            State#state.manifest_sqn}|State#state.registered_snapshots],
-    {reply, {ok, State}, State#state{registered_snapshots = Rs}};
+    Manifest0 = leveled_pmanifest:add_snapshot(State#state.manifest,
+                                                Snapshot,
+                                                ?SNAPSHOT_TIMEOUT),
+    {reply, {ok, State}, State#state{manifest = Manifest0}};
 handle_call({load_snapshot, {BookieIncrTree, BookieIdx, MinSQN, MaxSQN}},
                                                                 _From, State) ->
     L0D = leveled_pmem:add_to_cache(State#state.levelzero_size,
@@ -443,29 +460,33 @@ handle_call(doom, _From, State) ->
     FilesFP = State#state.root_path ++ "/" ++ ?FILES_FP ++ "/",
     {stop, normal, {ok, [ManifestFP, FilesFP]}, State}.
 
-handle_cast({manifest_change, WI}, State) ->
-    {ok, UpdState} = commit_manifest_change(WI, State),
-    ok = leveled_pclerk:clerk_manifestchange(State#state.clerk,
-                                                confirm,
-                                                false),
-    {noreply, UpdState};
+handle_cast({manifest_change, NewManifest}, State) ->
+    NewManSQN = leveled_pmanifest:get_manifest_sqn(NewManifest),
+    ok = leveled_pclerk:clerk_promptdeletions(State#state.clerk, NewManSQN),
+    {noreply, State#state{manifest = NewManifest, work_ongoing=false}};
 handle_cast({release_snapshot, Snapshot}, State) ->
-    Rs = lists:keydelete(Snapshot, 1, State#state.registered_snapshots),
+    Manifest0 = leveled_pmanifest:release_snapshot(State#state.manifest,
+                                                   Snapshot),
     leveled_log:log("P0003", [Snapshot]),
-    leveled_log:log("P0004", [Rs]),
-    {noreply, State#state{registered_snapshots=Rs}};
-handle_cast({confirm_delete, FileName}, State=#state{is_snapshot=Snap})
+    {noreply, State#state{manifest=Manifest0}};
+handle_cast({confirm_delete, Filename, FilePid}, State=#state{is_snapshot=Snap})
                                                         when Snap == false ->    
-    Reply = confirm_delete(FileName,
-                            State#state.unreferenced_files,
-                            State#state.registered_snapshots),
-    case Reply of
-        {true, Pid} ->
-            UF1 = lists:keydelete(FileName, 1, State#state.unreferenced_files),
-            leveled_log:log("P0005", [FileName]),
-            ok = leveled_sst:sst_deleteconfirmed(Pid),
-            {noreply, State#state{unreferenced_files=UF1}};
-        _ ->
+    case State#state.work_ongoing of 
+        false ->
+            R2D = leveled_pmanifest:ready_to_delete(State#state.manifest, 
+                                                    Filename),
+            case R2D of
+                {true, M0} ->
+                    leveled_log:log("P0005", [Filename]),
+                    ok = leveled_sst:sst_deleteconfirmed(FilePid),
+                    {noreply, State#state{manifest=M0}};
+                {false, _M0} ->
+                    {noreply, State}
+            end;
+        true ->
+            % If there is ongoing work, then we can't safely update the pidmap
+            % as any change will be reverted when the manifest is passed back
+            % from the Clerk
             {noreply, State}
     end;
 handle_cast({levelzero_complete, FN, StartKey, EndKey}, State) ->
@@ -474,7 +495,11 @@ handle_cast({levelzero_complete, FN, StartKey, EndKey}, State) ->
                                 end_key=EndKey,
                                 owner=State#state.levelzero_constructor,
                                 filename=FN},
-    UpdMan = lists:keystore(0, 1, State#state.manifest, {0, [ManEntry]}),
+    ManifestSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest) + 1,
+    UpdMan = leveled_pmanifest:insert_manifest_entry(State#state.manifest,
+                                                    ManifestSQN,
+                                                    0,
+                                                    ManEntry),
     % Prompt clerk to ask about work - do this for every L0 roll
     UpdIndex = leveled_pmem:clear_index(State#state.levelzero_index),
     ok = leveled_pclerk:clerk_prompt(State#state.clerk),
@@ -484,7 +509,33 @@ handle_cast({levelzero_complete, FN, StartKey, EndKey}, State) ->
                             levelzero_constructor=undefined,
                             levelzero_size=0,
                             manifest=UpdMan,
-                            persisted_sqn=State#state.ledger_sqn}}.
+                            persisted_sqn=State#state.ledger_sqn}};
+handle_cast(work_for_clerk, State) ->
+    case State#state.levelzero_pending of
+        true ->
+            {noreply, State};
+        false ->
+            {WL, WC} = leveled_pmanifest:check_for_work(State#state.manifest,
+                                                        ?LEVEL_SCALEFACTOR),
+            case WC of
+                0 ->
+                    {noreply, State#state{work_backlog=false}};
+                N when N > ?WORKQUEUE_BACKLOG_TOLERANCE ->
+                    leveled_log:log("P0024", [N, true]),
+                    [TL|_Tail] = WL,
+                    ok = leveled_pclerk:clerk_push(State#state.clerk, 
+                                                    {TL, State#state.manifest}),
+                    {noreply,
+                        State#state{work_backlog=true, work_ongoing=true}};
+                N ->
+                    leveled_log:log("P0024", [N, false]),
+                    [TL|_Tail] = WL,
+                    ok = leveled_pclerk:clerk_push(State#state.clerk, 
+                                                    {TL, State#state.manifest}),
+                    {noreply,
+                        State#state{work_backlog=false, work_ongoing=true}}
+            end
+    end.
 
 
 handle_info(_Info, State) ->
@@ -495,10 +546,6 @@ terminate(Reason, State=#state{is_snapshot=Snap}) when Snap == true ->
     leveled_log:log("P0007", [Reason]),   
     ok;
 terminate(Reason, State) ->
-    %% When a Penciller shuts down it isn't safe to try an manage the safe
-    %% finishing of any outstanding work.  The last commmitted manifest will
-    %% be used.
-    %%
     %% Level 0 files lie outside of the manifest, and so if there is no L0
     %% file present it is safe to write the current contents of memory.  If
     %% there is a L0 file present - then the memory can be dropped (it is
@@ -506,43 +553,27 @@ terminate(Reason, State) ->
     %% as presumably the ETS file has been recently flushed, hence the presence
     %% of a L0 file).
     %%
-    %% The penciller should close each file in the unreferenced files, and
-    %% then each file in the manifest, and cast a close on the clerk.
-    %% The cast may not succeed as the clerk could be synchronously calling
-    %% the penciller looking for a manifest commit
-    %%
+    %% The penciller should close each file in the manifest, and cast a close
+    %% on the clerk.
+    ok = leveled_pclerk:clerk_close(State#state.clerk),
+    
     leveled_log:log("P0008", [Reason]),
-    MC = leveled_pclerk:clerk_manifestchange(State#state.clerk,
-                                                return,
-                                                true),
-    UpdState = case MC of
-                    {ok, WI} ->
-                        {ok, NewState} = commit_manifest_change(WI, State),
-                        Clerk = State#state.clerk,
-                        ok = leveled_pclerk:clerk_manifestchange(Clerk,
-                                                                    confirm,
-                                                                    true),
-                        NewState;
-                    no_change ->
-                        State
-                end,
-    case {UpdState#state.levelzero_pending,
-            get_item(0, UpdState#state.manifest, []),
-            UpdState#state.levelzero_size} of
-        {false, [], 0} ->
-           leveled_log:log("P0009", []);
-        {false, [], _N} ->
-            L0Pid = roll_memory(UpdState, true),
+    L0_Present = leveled_pmanifest:key_lookup(State#state.manifest, 0, all),
+    L0_Left = State#state.levelzero_size > 0,
+    case {State#state.levelzero_pending, L0_Present, L0_Left} of
+        {false, false, true} ->
+            L0Pid = roll_memory(State, true),
             ok = leveled_sst:sst_close(L0Pid);
         StatusTuple ->
             leveled_log:log("P0010", [StatusTuple])
     end,
     
     % Tidy shutdown of individual files
-    ok = close_files(0, UpdState#state.manifest),
-    lists:foreach(fun({_FN, Pid, _SN}) ->
-                            ok = leveled_sst:sst_close(Pid) end,
-                    UpdState#state.unreferenced_files),
+    EntryCloseFun =
+        fun(ME) ->
+            ok = leveled_sst:sst_close(ME#manifest_entry.owner)
+        end,
+    leveled_pmanifest:close_manifest(State#state.manifest, EntryCloseFun),
     leveled_log:log("P0011", []),
     ok.
 
@@ -565,7 +596,7 @@ start_from_file(PCLopts) ->
                             M
                     end,
     
-    {ok, MergeClerk} = leveled_pclerk:clerk_new(self()),
+    {ok, MergeClerk} = leveled_pclerk:clerk_new(self(), RootPath),
     
     CoinToss = PCLopts#penciller_options.levelzero_cointoss,
     % Used to randomly defer the writing of L0 file.  Intended to help with
@@ -579,47 +610,21 @@ start_from_file(PCLopts) ->
                         levelzero_index=leveled_pmem:new_index()},
     
     %% Open manifest
-    ManifestPath = filepath(InitState#state.root_path, manifest) ++ "/",
-    SSTPath = filepath(InitState#state.root_path, files) ++ "/",
-    ok = filelib:ensure_dir(ManifestPath),
-    ok = filelib:ensure_dir(SSTPath),
-
-    {ok, Filenames} = file:list_dir(ManifestPath),
-    CurrRegex = "nonzero_(?<MSN>[0-9]+)\\." ++ ?CURRENT_FILEX,
-    ValidManSQNs = lists:foldl(fun(FN, Acc) ->
-                                    case re:run(FN,
-                                                CurrRegex,
-                                                [{capture, ['MSN'], list}]) of
-                                        nomatch ->
-                                            Acc;
-                                        {match, [Int]} when is_list(Int) ->
-                                            Acc ++ [list_to_integer(Int)]
-                                    end
-                                    end,
-                                    [],
-                                    Filenames),
-    TopManSQN = lists:foldl(fun(X, MaxSQN) -> max(X, MaxSQN) end,
-                            0,
-                            ValidManSQNs),
-    leveled_log:log("P0012", [TopManSQN]),
-    ManUpdate = case TopManSQN of
-                    0 ->
-                        leveled_log:log("P0013", []),
-                        {[], 0};
-                    _ ->
-                        CurrManFile = filepath(InitState#state.root_path,
-                                                TopManSQN,
-                                                current_manifest),
-                        {ok, Bin} = file:read_file(CurrManFile),
-                        Manifest = binary_to_term(Bin),
-                        open_all_filesinmanifest(Manifest)
-                end,
-        
-    {UpdManifest, MaxSQN} = ManUpdate,
+    Manifest0 = leveled_pmanifest:open_manifest(RootPath),
+    OpenFun =
+        fun(FN) ->
+            {ok, Pid, {_FK, _LK}} = leveled_sst:sst_open(FN),
+            Pid
+        end,
+    SQNFun = fun leveled_sst:sst_getmaxsequencenumber/1,
+    {MaxSQN, Manifest1} = leveled_pmanifest:load_manifest(Manifest0,
+                                                            OpenFun,
+                                                            SQNFun),
     leveled_log:log("P0014", [MaxSQN]),
-            
+    ManSQN = leveled_pmanifest:get_manifest_sqn(Manifest1),
+    leveled_log:log("P0035", [ManSQN]),
     %% Find any L0 files
-    L0FN = filepath(RootPath, TopManSQN, new_merge_files) ++ "_0_0.sst",
+    L0FN = filepath(RootPath, ManSQN + 1, new_merge_files) ++ "_0_0.sst",
     case filelib:is_file(L0FN) of
         true ->
             leveled_log:log("P0015", [L0FN]),
@@ -627,30 +632,27 @@ start_from_file(PCLopts) ->
                 L0Pid,
                 {L0StartKey, L0EndKey}} = leveled_sst:sst_open(L0FN),
             L0SQN = leveled_sst:sst_getmaxsequencenumber(L0Pid),
-            ManifestEntry = #manifest_entry{start_key=L0StartKey,
-                                                end_key=L0EndKey,
-                                                owner=L0Pid,
-                                                filename=L0FN},
-            UpdManifest2 = lists:keystore(0,
-                                            1,
-                                            UpdManifest,
-                                            {0, [ManifestEntry]}),
+            L0Entry = #manifest_entry{start_key = L0StartKey,
+                                        end_key = L0EndKey,
+                                        filename = L0FN,
+                                        owner = L0Pid},
+            Manifest2 = leveled_pmanifest:insert_manifest_entry(Manifest1,
+                                                                ManSQN + 1,
+                                                                0,
+                                                                L0Entry),
             leveled_log:log("P0016", [L0SQN]),
             LedgerSQN = max(MaxSQN, L0SQN),
             {ok,
-                InitState#state{manifest=UpdManifest2,
-                                    manifest_sqn=TopManSQN,
-                                    ledger_sqn=LedgerSQN,
-                                    persisted_sqn=LedgerSQN}};
+                InitState#state{manifest = Manifest2,
+                                    ledger_sqn = LedgerSQN,
+                                    persisted_sqn = LedgerSQN}};
         false ->
             leveled_log:log("P0017", []),
             {ok,
-                InitState#state{manifest=UpdManifest,
-                                    manifest_sqn=TopManSQN,
-                                    ledger_sqn=MaxSQN,
-                                    persisted_sqn=MaxSQN}}
+                InitState#state{manifest = Manifest1,
+                                    ledger_sqn = MaxSQN,
+                                    persisted_sqn = MaxSQN}}
     end.
-
 
 
 update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
@@ -673,7 +675,7 @@ update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
                                     ledger_sqn=UpdMaxSQN},
             CacheTooBig = NewL0Size > State#state.levelzero_maxcachesize,
             CacheMuchTooBig = NewL0Size > ?SUPER_MAX_TABLE_SIZE,
-            Level0Free = length(get_item(0, State#state.manifest, [])) == 0,
+            L0Free = not leveled_pmanifest:levelzero_present(State#state.manifest),
             RandomFactor =
                 case State#state.levelzero_cointoss of
                     true ->
@@ -686,9 +688,10 @@ update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
                     false ->
                         true
                 end,
+            NoPendingManifestChange = not State#state.work_ongoing,
             JitterCheck = RandomFactor or CacheMuchTooBig,
-            case {CacheTooBig, Level0Free, JitterCheck} of
-                {true, true, true}  ->
+            case {CacheTooBig, L0Free, JitterCheck, NoPendingManifestChange} of
+                {true, true, true, true}  ->
                     L0Constructor = roll_memory(UpdState, false),
                     leveled_log:log_timer("P0031", [], SW),
                     UpdState#state{levelzero_pending=true,
@@ -732,10 +735,10 @@ roll_memory(State, true) ->
     Constructor.
 
 levelzero_filename(State) ->
-    MSN = State#state.manifest_sqn,
+    ManSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest) + 1,
     FileName = State#state.root_path
                 ++ "/" ++ ?FILES_FP ++ "/"
-                ++ integer_to_list(MSN) ++ "_0_0",
+                ++ integer_to_list(ManSQN) ++ "_0_0",
     FileName.
 
 timed_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, HeadTimer) ->
@@ -767,22 +770,11 @@ fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
 fetch(_Key, _Hash, _Manifest, ?MAX_LEVELS + 1, _FetchFun) ->
     {not_present, basement};
 fetch(Key, Hash, Manifest, Level, FetchFun) ->
-    LevelManifest = get_item(Level, Manifest, []),
-    case lists:foldl(fun(File, Acc) ->
-                        case Acc of
-                            not_present when
-                                    Key >= File#manifest_entry.start_key,
-                                    File#manifest_entry.end_key >= Key ->
-                                File#manifest_entry.owner;
-                            FoundDetails ->
-                                FoundDetails
-                        end end,
-                        not_present,
-                        LevelManifest) of
-        not_present ->
+    case leveled_pmanifest:key_lookup(Manifest, Level, Key) of
+        false ->
             fetch(Key, Hash, Manifest, Level + 1, FetchFun);
-        FileToCheck ->
-            case FetchFun(FileToCheck, Key, Hash) of
+        FP ->
+            case FetchFun(FP, Key, Hash) of
                 not_present ->
                     fetch(Key, Hash, Manifest, Level + 1, FetchFun);
                 ObjectFound ->
@@ -820,135 +812,6 @@ compare_to_sqn(Obj, SQN) ->
             end
     end.
 
-
-%% Work out what the current work queue should be
-%%
-%% The work queue should have a lower level work at the front, and no work
-%% should be added to the queue if a compaction worker has already been asked
-%% to look at work at that level
-%%
-%% The full queue is calculated for logging purposes only
-
-return_work(State, From) ->
-    {WorkQ, BasementL} = assess_workqueue([], 0, State#state.manifest, 0),
-    case length(WorkQ) of
-        L when L > 0 ->
-            Excess = lists:foldl(fun({_, _, OH}, Acc) -> Acc+OH end, 0, WorkQ),
-            [{SrcLevel, Manifest, _Overhead}|_OtherWork] = WorkQ,
-            leveled_log:log("P0020", [SrcLevel, From, Excess]),
-            IsBasement = if
-                                SrcLevel + 1 == BasementL ->
-                                    true;
-                                true ->
-                                    false
-                            end,
-            Backlog = Excess >= ?WORKQUEUE_BACKLOG_TOLERANCE,
-            case State#state.levelzero_pending of
-                true ->
-                    % Once the L0 file is completed there will be more work
-                    % - so don't be busy doing other work now
-                    leveled_log:log("P0021", []),
-                    {State#state{work_backlog=Backlog}, none};
-                false ->
-                    %% No work currently outstanding
-                    %% Can allocate work
-                    NextSQN = State#state.manifest_sqn + 1,
-                    FP = filepath(State#state.root_path,
-                                    NextSQN,
-                                    new_merge_files),
-                    ManFile = filepath(State#state.root_path,
-                                    NextSQN,
-                                    pending_manifest),
-                    WI = #penciller_work{next_sqn=NextSQN,
-                                            clerk=From,
-                                            src_level=SrcLevel,
-                                            manifest=Manifest,
-                                            start_time = os:timestamp(),
-                                            ledger_filepath = FP,
-                                            manifest_file = ManFile,
-                                            target_is_basement = IsBasement},
-                    {State#state{ongoing_work=[WI], work_backlog=Backlog}, WI}
-            end;
-        _ ->
-            {State#state{work_backlog=false}, none}
-    end.
-
-
-close_files(?MAX_LEVELS - 1, _Manifest) ->
-    ok;
-close_files(Level, Manifest) ->
-    LevelList = get_item(Level, Manifest, []),
-    lists:foreach(fun(F) ->
-                        ok = leveled_sst:sst_close(F#manifest_entry.owner) end,
-                    LevelList),
-    close_files(Level + 1, Manifest).
-
-
-open_all_filesinmanifest(Manifest) ->
-    open_all_filesinmanifest({Manifest, 0}, 0).
-
-open_all_filesinmanifest(Result, ?MAX_LEVELS - 1) ->
-    Result;
-open_all_filesinmanifest({Manifest, TopSQN}, Level) ->
-    LevelList = get_item(Level, Manifest, []),
-    %% The Pids in the saved manifest related to now closed references
-    %% Need to roll over the manifest at this level starting new processes to
-    %5 replace them
-    LvlR = lists:foldl(fun(F, {FL, FL_SQN}) ->
-                            FN = F#manifest_entry.filename,
-                            {ok, P, _Keys} = leveled_sst:sst_open(FN),
-                            F_SQN = leveled_sst:sst_getmaxsequencenumber(P),
-                            {lists:append(FL,
-                                        [F#manifest_entry{owner = P}]),
-                                max(FL_SQN, F_SQN)}
-                            end,
-                            {[], 0},
-                            LevelList),
-    %% Result is tuple of revised file list for this level in manifest, and
-    %% the maximum sequence number seen at this level
-    {LvlFL, LvlSQN} = LvlR, 
-    UpdManifest = lists:keystore(Level, 1, Manifest, {Level, LvlFL}),
-    open_all_filesinmanifest({UpdManifest, max(TopSQN, LvlSQN)}, Level + 1).
-
-print_manifest(Manifest) ->
-    lists:foreach(fun(L) ->
-                        leveled_log:log("P0022", [L]),
-                        Level = get_item(L, Manifest, []),
-                        lists:foreach(fun print_manifest_entry/1, Level)
-                        end,
-                    lists:seq(0, ?MAX_LEVELS - 1)),
-    ok.
-
-print_manifest_entry(Entry) ->
-    {S1, S2, S3} = leveled_codec:print_key(Entry#manifest_entry.start_key),
-    {E1, E2, E3} = leveled_codec:print_key(Entry#manifest_entry.end_key),
-    leveled_log:log("P0023",
-                    [S1, S2, S3, E1, E2, E3, Entry#manifest_entry.filename]).
-
-initiate_rangequery_frommanifest(StartKey, EndKey, Manifest) ->
-    CompareFun = fun(M) ->
-                    C1 = StartKey > M#manifest_entry.end_key,
-                    C2 = leveled_codec:endkey_passed(EndKey,
-                                                        M#manifest_entry.start_key),
-                    not (C1 or C2) end,
-    FoldFun =
-        fun(L, AccL) ->
-            Level = get_item(L, Manifest, []),
-            FL = lists:foldl(fun(M, Acc) ->
-                                    case CompareFun(M) of
-                                        true ->
-                                            Acc ++ [{next, M, StartKey}];
-                                        false ->
-                                            Acc
-                                    end end,
-                                [],
-                                Level),
-            case FL of
-                [] -> AccL;
-                FL -> AccL ++ [{L, FL}]
-            end
-            end,
-    lists:foldl(FoldFun, [], lists:seq(0, ?MAX_LEVELS - 1)).
 
 %% Looks to find the best choice for the next key across the levels (other
 %% than in-memory table)
@@ -995,10 +858,9 @@ find_nextkey(QueryArray, LCnt, {BestKeyLevel, BestKV},
                             LCnt + 1,
                             {BKL, BKV},
                             StartKey, EndKey, Width);
-        {{next, ManifestEntry, _SK}, BKL, BKV} ->
+        {{next, Owner, _SK}, BKL, BKV} ->
             % The first key at this level is pointer to a file - need to query
             % the file to expand this level out before proceeding
-            Owner = ManifestEntry#manifest_entry.owner,
             Pointer = {next, Owner, StartKey, EndKey},
             UpdList = leveled_sst:expand_list_by_pointer(Pointer,
                                                             RestOfKeys,
@@ -1153,143 +1015,14 @@ keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SSTiterator}, KeyRange,
     end.    
 
 
-assess_workqueue(WorkQ, ?MAX_LEVELS - 1, _Man, BasementLevel) ->
-    {WorkQ, BasementLevel};
-assess_workqueue(WorkQ, LevelToAssess, Man, BasementLevel) ->
-    MaxFiles = get_item(LevelToAssess, ?LEVEL_SCALEFACTOR, 0),
-    case length(get_item(LevelToAssess, Man, [])) of
-        FileCount when FileCount > 0 ->
-            NewWQ = maybe_append_work(WorkQ,
-                                        LevelToAssess,
-                                        Man,
-                                        MaxFiles,
-                                        FileCount),
-            assess_workqueue(NewWQ, LevelToAssess + 1, Man, LevelToAssess);
-        0 ->
-            assess_workqueue(WorkQ, LevelToAssess + 1, Man, BasementLevel)
-    end.
-
-
-maybe_append_work(WorkQ, Level, Manifest,
-                    MaxFiles, FileCount)
-                        when FileCount > MaxFiles ->
-    Overhead = FileCount - MaxFiles,
-    leveled_log:log("P0024", [Overhead, Level]),
-    lists:append(WorkQ, [{Level, Manifest, Overhead}]);
-maybe_append_work(WorkQ, _Level, _Manifest,
-                    _MaxFiles, _FileCount) ->
-    WorkQ.
-
-
-get_item(Index, List, Default) ->
-    case lists:keysearch(Index, 1, List) of
-        {value, {Index, Value}} ->
-            Value;
-        false ->
-            Default
-    end.
-
-
-%% Request a manifest change
-%% The clerk should have completed the work, and created a new manifest
-%% and persisted the new view of the manifest
-%%
-%% To complete the change of manifest:
-%% - the state of the manifest file needs to be changed from pending to current
-%% - the list of unreferenced files needs to be updated on State
-%% - the current manifest needs to be update don State
-%% - the list of ongoing work needs to be cleared of this item
-
-
-commit_manifest_change(ReturnedWorkItem, State) ->
-    NewMSN = State#state.manifest_sqn +  1,
-    [SentWorkItem] = State#state.ongoing_work,
-    RootPath = State#state.root_path,
-    UnreferencedFiles = State#state.unreferenced_files,
-    
-    if
-        NewMSN == SentWorkItem#penciller_work.next_sqn ->
-            WISrcLevel = SentWorkItem#penciller_work.src_level,
-            leveled_log:log_timer("P0025",
-                                    [SentWorkItem#penciller_work.next_sqn,
-                                        WISrcLevel],
-                                    SentWorkItem#penciller_work.start_time),
-            ok = rename_manifest_files(RootPath, NewMSN),
-            FilesToDelete = ReturnedWorkItem#penciller_work.unreferenced_files,
-            UnreferencedFilesUpd = update_deletions(FilesToDelete,
-                                                        NewMSN,
-                                                        UnreferencedFiles),
-            leveled_log:log("P0026", [NewMSN]),
-            NewManifest = ReturnedWorkItem#penciller_work.new_manifest,
-            
-            CurrL0 = get_item(0, State#state.manifest, []),
-            % If the work isn't L0 work, then we may have an uncommitted
-            % manifest change at L0 - so add this back into the Manifest loop
-            % state
-            RevisedManifest = case {WISrcLevel, CurrL0} of
-                                    {0, _} ->
-                                        NewManifest;
-                                    {_, []} ->
-                                        NewManifest;
-                                    {_, [L0ManEntry]} ->
-                                        lists:keystore(0,
-                                                        1,
-                                                        NewManifest,
-                                                        {0, [L0ManEntry]})
-                                end,
-            {ok, State#state{ongoing_work=[],
-                                manifest_sqn=NewMSN,
-                                manifest=RevisedManifest,
-                                unreferenced_files=UnreferencedFilesUpd}}
-    end.
-
-
-rename_manifest_files(RootPath, NewMSN) ->
-    OldFN = filepath(RootPath, NewMSN, pending_manifest),
-    NewFN = filepath(RootPath, NewMSN, current_manifest),
-    leveled_log:log("P0027", [OldFN, filelib:is_file(OldFN),
-                                NewFN, filelib:is_file(NewFN)]),
-    ok = file:rename(OldFN,NewFN).
-
-filepath(RootPath, manifest) ->
-    RootPath ++ "/" ++ ?MANIFEST_FP;
 filepath(RootPath, files) ->
-    RootPath ++ "/" ++ ?FILES_FP.
+    FP = RootPath ++ "/" ++ ?FILES_FP,
+    filelib:ensure_dir(FP ++ "/"),
+    FP.
 
-filepath(RootPath, NewMSN, pending_manifest) ->
-    filepath(RootPath, manifest) ++ "/" ++ "nonzero_"
-                ++ integer_to_list(NewMSN) ++ "." ++ ?PENDING_FILEX;
-filepath(RootPath, NewMSN, current_manifest) ->
-    filepath(RootPath, manifest) ++ "/" ++ "nonzero_"
-                ++ integer_to_list(NewMSN) ++ "." ++ ?CURRENT_FILEX;
 filepath(RootPath, NewMSN, new_merge_files) ->
     filepath(RootPath, files) ++ "/" ++ integer_to_list(NewMSN).
  
-update_deletions([], _NewMSN, UnreferencedFiles) ->
-    UnreferencedFiles;
-update_deletions([ClearedFile|Tail], MSN, UnreferencedFiles) ->
-    leveled_log:log("P0028", [ClearedFile#manifest_entry.filename]),
-    update_deletions(Tail,
-                        MSN,
-                        lists:append(UnreferencedFiles,
-                            [{ClearedFile#manifest_entry.filename,
-                                ClearedFile#manifest_entry.owner,
-                                MSN}])).
-
-confirm_delete(Filename, UnreferencedFiles, RegisteredSnapshots) ->
-    case lists:keyfind(Filename, 1, UnreferencedFiles) of
-        {Filename, Pid, MSN} ->
-            LowSQN = lists:foldl(fun({_, SQN}, MinSQN) -> min(SQN, MinSQN) end,
-                                    infinity,
-                                    RegisteredSnapshots),
-            if
-                MSN >= LowSQN ->
-                    false;
-                true ->
-                    {true, Pid}
-            end
-    end.
-
 
 
 %%%============================================================================
@@ -1320,7 +1053,7 @@ generate_randomkeys(Count, SQN, Acc) ->
     
 
 clean_testdir(RootPath) ->
-    clean_subdir(filepath(RootPath, manifest)),
+    clean_subdir(leveled_pmanifest:filepath(RootPath, manifest)),
     clean_subdir(filepath(RootPath, files)).
 
 clean_subdir(DirPath) ->
@@ -1336,47 +1069,6 @@ clean_subdir(DirPath) ->
         false ->
             ok
     end.
-
-
-compaction_work_assessment_test() ->
-    L0 = [{{o, "B1", "K1", null}, {o, "B3", "K3", null}, dummy_pid}],
-    L1 = [{{o, "B1", "K1", null}, {o, "B2", "K2", null}, dummy_pid},
-            {{o, "B2", "K3", null}, {o, "B4", "K4", null}, dummy_pid}],
-    Manifest = [{0, L0}, {1, L1}],
-    {WorkQ1, 1} = assess_workqueue([], 0, Manifest, 0),
-    ?assertMatch([{0, Manifest, 1}], WorkQ1),
-    L1Alt = lists:append(L1,
-                        [{{o, "B5", "K0001", null}, {o, "B5", "K9999", null},
-                            dummy_pid},
-                        {{o, "B6", "K0001", null}, {o, "B6", "K9999", null},
-                            dummy_pid},
-                        {{o, "B7", "K0001", null}, {o, "B7", "K9999", null},
-                            dummy_pid},
-                        {{o, "B8", "K0001", null}, {o, "B8", "K9999", null},
-                            dummy_pid},
-                        {{o, "B9", "K0001", null}, {o, "B9", "K9999", null},
-                            dummy_pid},
-                        {{o, "BA", "K0001", null}, {o, "BA", "K9999", null},
-                            dummy_pid},
-                        {{o, "BB", "K0001", null}, {o, "BB", "K9999", null},
-                            dummy_pid}]),
-    Manifest3 = [{0, []}, {1, L1Alt}],
-    {WorkQ3, 1} = assess_workqueue([], 0, Manifest3, 0),
-    ?assertMatch([{1, Manifest3, 1}], WorkQ3).
-
-confirm_delete_test() ->
-    Filename = 'test.sst',
-    UnreferencedFiles = [{'other.sst', dummy_owner, 15},
-                            {Filename, dummy_owner, 10}],
-    RegisteredIterators1 = [{dummy_pid, 16}, {dummy_pid, 12}],
-    R1 = confirm_delete(Filename, UnreferencedFiles, RegisteredIterators1),
-    ?assertMatch(R1, {true, dummy_owner}),
-    RegisteredIterators2 = [{dummy_pid, 10}, {dummy_pid, 12}],
-    R2 = confirm_delete(Filename, UnreferencedFiles, RegisteredIterators2),
-    ?assertMatch(R2, false),
-    RegisteredIterators3 = [{dummy_pid, 9}, {dummy_pid, 12}],
-    R3 = confirm_delete(Filename, UnreferencedFiles, RegisteredIterators3),
-    ?assertMatch(R3, false).
 
 
 maybe_pause_push(PCL, KL) ->
@@ -1461,11 +1153,13 @@ simple_server_test() ->
     ?assertMatch(Key2, pcl_fetch(PCLr, {o,"Bucket0002", "Key0002", null})),
     ?assertMatch(Key3, pcl_fetch(PCLr, {o,"Bucket0003", "Key0003", null})),
     ?assertMatch(Key4, pcl_fetch(PCLr, {o,"Bucket0004", "Key0004", null})),
+    
     SnapOpts = #penciller_options{start_snapshot = true,
                                     source_penciller = PCLr},
     {ok, PclSnap} = pcl_start(SnapOpts),
     leveled_bookie:load_snapshot(PclSnap,
                                     leveled_bookie:empty_ledgercache()),
+    
     ?assertMatch(Key1, pcl_fetch(PclSnap, {o,"Bucket0001", "Key0001", null})),
     ?assertMatch(Key2, pcl_fetch(PclSnap, {o,"Bucket0002", "Key0002", null})),
     ?assertMatch(Key3, pcl_fetch(PclSnap, {o,"Bucket0003", "Key0003", null})),
@@ -1497,6 +1191,7 @@ simple_server_test() ->
     % Add some more keys and confirm that check sequence number still
     % sees the old version in the previous snapshot, but will see the new version
     % in a new snapshot
+    
     Key1A_Pre = {{o,"Bucket0001", "Key0001", null},
                     {4005, {active, infinity}, null}},
     Key1A = add_missing_hash(Key1A_Pre),
@@ -1510,11 +1205,7 @@ simple_server_test() ->
                                                     null},
                                                 1)),
     ok = pcl_close(PclSnap),
-    
-    % Ignore a fake pending mnaifest on startup
-    ok = file:write_file(RootPath ++ "/" ++ ?MANIFEST_FP ++ "nonzero_99.pnd",
-                            term_to_binary("Hello")),
-    
+     
     {ok, PclSnap2} = pcl_start(SnapOpts),
     leveled_bookie:load_snapshot(PclSnap2, leveled_bookie:empty_ledgercache()),
     ?assertMatch(false, pcl_checksequencenumber(PclSnap2,
@@ -1539,57 +1230,6 @@ simple_server_test() ->
     ok = pcl_close(PCLr),
     clean_testdir(RootPath).
 
-
-rangequery_manifest_test() ->
-    {E1,
-        E2,
-        E3} = {#manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
-                                end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K93"},
-                                filename="Z1"},
-                #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld9"}, "K97"},
-                                end_key={o, "Bucket1", "K71", null},
-                                filename="Z2"},
-                #manifest_entry{start_key={o, "Bucket1", "K75", null},
-                                end_key={o, "Bucket1", "K993", null},
-                                filename="Z3"}},
-    {E4,
-        E5,
-        E6} = {#manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
-                                end_key={i, "Bucket1", {"Idx1", "Fld7"}, "K93"},
-                                filename="Z4"},
-                #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld7"}, "K97"},
-                                end_key={o, "Bucket1", "K78", null},
-                                filename="Z5"},
-                #manifest_entry{start_key={o, "Bucket1", "K81", null},
-                                end_key={o, "Bucket1", "K996", null},
-                                filename="Z6"}},
-    Man = [{1, [E1, E2, E3]}, {2, [E4, E5, E6]}],
-    SK1 = {o, "Bucket1", "K711", null},
-    EK1 = {o, "Bucket1", "K999", null},
-    R1 = initiate_rangequery_frommanifest(SK1, EK1, Man),
-    ?assertMatch([{1, [{next, E3, SK1}]},
-                        {2, [{next, E5, SK1}, {next, E6, SK1}]}],
-                    R1),
-    SK2 = {i, "Bucket1", {"Idx1", "Fld8"}, null},
-    EK2 = {i, "Bucket1", {"Idx1", "Fld8"}, null},
-    R2 = initiate_rangequery_frommanifest(SK2, EK2, Man),
-    ?assertMatch([{1, [{next, E1, SK2}]}, {2, [{next, E5, SK2}]}], R2),
-    R3 = initiate_rangequery_frommanifest({i, "Bucket1", {"Idx0", "Fld8"}, null},
-                                            {i, "Bucket1", {"Idx0", "Fld9"}, null},
-                                            Man),
-    ?assertMatch([], R3).
-
-print_manifest_test() ->
-    M1 = #manifest_entry{start_key={i, "Bucket1", {<<"Idx1">>, "Fld1"}, "K8"},
-                                end_key={i, 4565, {"Idx1", "Fld9"}, "K93"},
-                                filename="Z1"},
-    M2 = #manifest_entry{start_key={i, self(), {null, "Fld1"}, "K8"},
-                                end_key={i, <<200:32/integer>>, {"Idx1", "Fld9"}, "K93"},
-                                filename="Z1"},
-    M3 = #manifest_entry{start_key={?STD_TAG, self(), {null, "Fld1"}, "K8"},
-                                end_key={?RIAK_TAG, <<200:32/integer>>, {"Idx1", "Fld9"}, "K93"},
-                                filename="Z1"},
-    print_manifest([{1, [M1, M2, M3]}]).
 
 simple_findnextkey_test() ->
     QueryArray = [
@@ -1756,81 +1396,6 @@ create_file_test() ->
     ok = leveled_sst:sst_clear(SP),
     {ok, Bin} = file:read_file("../test/new_file.sst.discarded"),
     ?assertMatch("hello", binary_to_term(Bin)).
-
-commit_manifest_test() ->
-    Sent_WI = #penciller_work{next_sqn=1,
-                                src_level=0,
-                                start_time=os:timestamp()},
-    Resp_WI = #penciller_work{next_sqn=1,
-                                src_level=0},
-    State = #state{ongoing_work = [Sent_WI],
-                    root_path = "test",
-                    manifest_sqn = 0},
-    ManifestFP = "test" ++ "/" ++ ?MANIFEST_FP ++ "/",
-    ok = filelib:ensure_dir(ManifestFP),
-    ok = file:write_file(ManifestFP ++ "nonzero_1.pnd",
-                            term_to_binary("dummy data")),
-    
-    L1_0 = [{1, [#manifest_entry{filename="1.sst"}]}],
-    Resp_WI0 = Resp_WI#penciller_work{new_manifest=L1_0,
-                                        unreferenced_files=[]},
-    {ok, State0} = commit_manifest_change(Resp_WI0, State),
-    ?assertMatch(1, State0#state.manifest_sqn),
-    ?assertMatch([], get_item(0, State0#state.manifest, [])),
-    
-    L0Entry = [#manifest_entry{filename="0.sst"}],
-    ManifestPlus = [{0, L0Entry}|State0#state.manifest],
-    
-    NxtSent_WI = #penciller_work{next_sqn=2,
-                                    src_level=1,
-                                    start_time=os:timestamp()},
-    NxtResp_WI = #penciller_work{next_sqn=2,
-                                 src_level=1},
-    State1 = State0#state{ongoing_work=[NxtSent_WI],
-                            manifest = ManifestPlus},
-    
-    ok = file:write_file(ManifestFP ++ "nonzero_2.pnd",
-                            term_to_binary("dummy data")),
-    
-    L2_0 = [#manifest_entry{filename="2.sst"}],
-    NxtResp_WI0 = NxtResp_WI#penciller_work{new_manifest=[{2, L2_0}],
-                                           unreferenced_files=[]},
-    {ok, State2} = commit_manifest_change(NxtResp_WI0, State1),
-    
-    ?assertMatch(1, State1#state.manifest_sqn),
-    ?assertMatch(2, State2#state.manifest_sqn),
-    ?assertMatch(L0Entry, get_item(0, State2#state.manifest, [])),
-    ?assertMatch(L2_0, get_item(2, State2#state.manifest, [])),
-    
-    clean_testdir(State#state.root_path).
-
-
-badmanifest_test() ->
-    RootPath = "../test/ledger",
-    clean_testdir(RootPath),
-    {ok, PCL} = pcl_start(#penciller_options{root_path=RootPath,
-                                                max_inmemory_tablesize=1000}),
-    Key1_pre = {{o,"Bucket0001", "Key0001", null},
-                {1001, {active, infinity}, null}},
-    Key1 = add_missing_hash(Key1_pre),
-    KL1 = generate_randomkeys({1000, 1}),
-    
-    ok = maybe_pause_push(PCL, KL1 ++ [Key1]),
-    %% Added together, as split apart there will be a race between the close
-    %% call to the penciller and the second fetch of the cache entry
-    ?assertMatch(Key1, pcl_fetch(PCL, {o, "Bucket0001", "Key0001", null})),
-    
-    timer:sleep(100), % Avoids confusion if L0 file not written before close
-    ok = pcl_close(PCL),
-    
-    ManifestFP = filepath(RootPath, manifest),
-    ok = file:write_file(filename:join(ManifestFP, "yeszero_123.man"),
-                            term_to_binary("hello")),
-    {ok, PCLr} = pcl_start(#penciller_options{root_path=RootPath,
-                                                max_inmemory_tablesize=1000}),
-    ?assertMatch(Key1, pcl_fetch(PCLr, {o,"Bucket0001", "Key0001", null})),
-    ok = pcl_close(PCLr),
-    clean_testdir(RootPath).
 
 checkready(Pid) ->
     try
