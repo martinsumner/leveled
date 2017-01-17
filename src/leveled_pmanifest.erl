@@ -51,7 +51,7 @@
                     min_snapshot_sqn = 0 :: integer(),
                         % The smallest snapshot manifest SQN in the snapshot
                         % list
-                    pending_deletes :: dict:dict(),
+                    pending_deletes, % OTP16 does not like defining type
                         % a dictionary mapping keys (filenames) to SQN when the
                         % deletion was made, and the original Manifest Entry
                     basement :: integer()
