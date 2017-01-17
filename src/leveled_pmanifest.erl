@@ -3,6 +3,16 @@
 %% The manifest is an ordered set of files for each level to be used to find
 %% which file is relevant for a given key or range lookup at a given level.
 %%
+%% This implementation is incomplete, in that it just uses a plain list at 
+%% each level.  This is fine for short-lived volume tests, but as the deeper
+%% levels are used there will be an exponential penalty.
+%%
+%% The originial intention was to swap out this implementation for a
+%% multi-version ETS table - but that became complex.  So one of two changes
+%% are pending:
+%% - Use a single version ES cache for lower levels (and not allow snapshots to
+%% access the cache)
+%% - Use a skiplist like enhanced list at lower levels.
 
 
 -module(leveled_pmanifest).
