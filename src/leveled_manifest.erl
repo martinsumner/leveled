@@ -14,10 +14,12 @@
         open_manifest/1,
         copy_manifest/1,
         load_manifest/3,
+        close_manifest/2,
         save_manifest/2,
         get_manifest_sqn/1,
         key_lookup/3,
         range_lookup/4,
+        merge_lookup/4,
         insert_manifest_entry/4,
         remove_manifest_entry/4,
         switch_manifest_entry/4,
@@ -87,8 +89,7 @@ open_manifest(RootPath) ->
     ValidManSQNs = lists:reverse(lists:sort(lists:foldl(ExtractSQNFun,
                                                         [],
                                                         Filenames))),
-    Manifest = open_manifestfile(RootPath, ValidManSQNs),
-    Manifest.
+    open_manifestfile(RootPath, ValidManSQNs).
     
 copy_manifest(Manifest) ->
     % Copy the manifest ensuring anything only the master process should care
@@ -100,12 +101,20 @@ load_manifest(Manifest, PidFun, SQNFun) ->
         fun(LevelIdx, {AccMaxSQN, AccMan}) ->
             L0 = array:get(LevelIdx, AccMan#manifest.levels),
             {L1, SQN1} = load_level(LevelIdx, L0, PidFun, SQNFun),
-            {max(AccMaxSQN, SQN1),
-                AccMan#manifest{levels = array:set(LevelIdx, L1, AccMan)}}
+            UpdLevels = array:set(LevelIdx, L1, AccMan#manifest.levels),
+            {max(AccMaxSQN, SQN1), AccMan#manifest{levels = UpdLevels}}
         end,
     lists:foldl(UpdateLevelFun, {0, Manifest},
                     lists:seq(0, Manifest#manifest.basement)).
-    
+
+close_manifest(Manifest, CloseEntryFun) ->
+    CloseLevelFun =
+        fun(LevelIdx) ->
+            Level = array:get(LevelIdx, Manifest#manifest.levels),
+            close_level(LevelIdx, Level, CloseEntryFun)
+        end,
+    lists:foreach(CloseLevelFun, lists:seq(0, Manifest#manifest.basement)).
+
 save_manifest(Manifest, RootPath) ->
     FP = filepath(RootPath, Manifest#manifest.manifest_sqn, current_manifest),
     ManBin = term_to_binary(Manifest),
@@ -176,24 +185,21 @@ key_lookup(Manifest, LevelIdx, Key) ->
                                 array:get(LevelIdx, Manifest#manifest.levels),
                                 Key)
     end.
-    
+
 range_lookup(Manifest, LevelIdx, StartKey, EndKey) ->
-    Range = 
-        case LevelIdx > Manifest#manifest.basement of
-            true ->
-                [];
-            false ->
-                range_lookup_level(LevelIdx,
-                                    array:get(LevelIdx,
-                                                Manifest#manifest.levels),
-                                    StartKey,
-                                    EndKey)
-        end,
     MakePointerFun =
         fun(M) ->
             {next, M, StartKey}
         end,
-    lists:map(MakePointerFun, Range).
+    range_lookup_int(Manifest, LevelIdx, StartKey, EndKey, MakePointerFun).
+
+merge_lookup(Manifest, LevelIdx, StartKey, EndKey) ->
+    MakePointerFun =
+        fun(M) ->
+            {next, M, all}
+        end,
+    range_lookup_int(Manifest, LevelIdx, StartKey, EndKey, MakePointerFun).
+
 
 
 %% An algorithm for discovering which files to merge ....
@@ -208,7 +214,7 @@ range_lookup(Manifest, LevelIdx, StartKey, EndKey) ->
 %% Hence, the initial implementation is to select files to merge at random
 mergefile_selector(Manifest, LevelIdx) ->
     Level = array:get(LevelIdx, Manifest#manifest.levels),
-    lists:nth(random:uniform(length(Level), Level)).
+    lists:nth(random:uniform(length(Level)), Level).
 
 add_snapshot(Manifest, Pid, Timeout) ->
     {MegaNow, SecNow, _} = os:timestamp(),
@@ -299,12 +305,14 @@ load_level(_LevelIdx, Level, PidFun, SQNFun) ->
     LevelLoadFun =
         fun(ME, {L_Out, L_MaxSQN}) ->
             FN = ME#manifest_entry.filename,
-            {ok, P, _Keys} = PidFun(FN),
+            P = PidFun(FN),
             SQN = SQNFun(P),
             {[ME#manifest_entry{owner=P}|L_Out], max(SQN, L_MaxSQN)}
         end,
     lists:foldr(LevelLoadFun, {[], 0}, Level).
 
+close_level(_LevelIdx, Level, CloseEntryFun) ->
+    lists:foreach(CloseEntryFun, Level).
 
 is_empty(_LevelIdx, []) ->
     true;
@@ -337,7 +345,6 @@ remove_section(Level, StartKey, Length) ->
     Pre ++ Post.
 
 
-
 key_lookup_level(_LevelIdx, [], _Key) ->
     false;
 key_lookup_level(LevelIdx, [Entry|Rest], Key) ->
@@ -353,6 +360,20 @@ key_lookup_level(LevelIdx, [Entry|Rest], Key) ->
             key_lookup_level(LevelIdx, Rest, Key)
     end.
 
+range_lookup_int(Manifest, LevelIdx, StartKey, EndKey, MakePointerFun) ->
+    Range = 
+        case LevelIdx > Manifest#manifest.basement of
+            true ->
+                [];
+            false ->
+                range_lookup_level(LevelIdx,
+                                    array:get(LevelIdx,
+                                                Manifest#manifest.levels),
+                                    StartKey,
+                                    EndKey)
+        end,
+    lists:map(MakePointerFun, Range).
+    
 range_lookup_level(_LevelIdx, Level, QStartKey, QEndKey) ->
     BeforeFun =
         fun(M) ->
@@ -392,13 +413,13 @@ filepath(RootPath, NewMSN, current_manifest) ->
 
 open_manifestfile(_RootPath, []) ->
     leveled_log:log("P0013", []),
-    {0, new_manifest()};
+    new_manifest();
 open_manifestfile(_RootPath, [0]) ->
     leveled_log:log("P0013", []),
-    {0, new_manifest()};
+    new_manifest();
 open_manifestfile(RootPath, [TopManSQN|Rest]) ->
     CurrManFile = filepath(RootPath, TopManSQN, current_manifest),
-    FileBin = file:read_file(CurrManFile),
+    {ok, FileBin} = file:read_file(CurrManFile),
     <<CRC:32/integer, BinaryOfTerm/binary>> = FileBin,
     case erlang:crc32(BinaryOfTerm) of
         CRC ->

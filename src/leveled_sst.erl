@@ -1175,8 +1175,8 @@ maybe_expand_pointer([{pointer, SSTPid, Slot, StartKey, all}|Tail]) ->
     expand_list_by_pointer({pointer, SSTPid, Slot, StartKey, all},
                             Tail,
                             ?MERGE_SCANWIDTH);
-maybe_expand_pointer([{next, SSTPid, StartKey}|Tail]) ->
-    expand_list_by_pointer({next, SSTPid, StartKey, all},
+maybe_expand_pointer([{next, ManEntry, StartKey}|Tail]) ->
+    expand_list_by_pointer({next, ManEntry, StartKey, all},
                             Tail,
                             ?MERGE_SCANWIDTH);
 maybe_expand_pointer(List) ->
@@ -1202,8 +1202,9 @@ expand_list_by_pointer({pointer, SSTPid, Slot, StartKey, EndKey}, Tail, Width) -
     {AccPointers, AccTail} = lists:foldl(FoldFun, InitAcc, Tail),
     ExpPointers = leveled_sst:sst_getslots(SSTPid, AccPointers),
     lists:append(ExpPointers, AccTail);
-expand_list_by_pointer({next, SSTPid, StartKey, EndKey}, Tail, Width) ->
-    leveled_log:log("SST10", [SSTPid, is_pid(SSTPid)]),
+expand_list_by_pointer({next, ManEntry, StartKey, EndKey}, Tail, Width) ->
+    SSTPid = ManEntry#manifest_entry.owner,
+    leveled_log:log("SST10", [SSTPid, is_process_alive(SSTPid)]),
     ExpPointer = leveled_sst:sst_getkvrange(SSTPid, StartKey, EndKey, Width),
     ExpPointer ++ Tail.
 

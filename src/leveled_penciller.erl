@@ -461,6 +461,8 @@ handle_call(doom, _From, State) ->
     {stop, normal, {ok, [ManifestFP, FilesFP]}, State}.
 
 handle_cast({manifest_change, NewManifest}, State) ->
+    NewManSQN = leveled_manifest:get_manifest_sqn(NewManifest),
+    ok = leveled_pclerk:clerk_promptdeletions(State#state.clerk, NewManSQN),
     {noreply, State#state{manifest = NewManifest, work_ongoing=false}};
 handle_cast({release_snapshot, Snapshot}, State) ->
     Manifest0 = leveled_manifest:release_snapshot(State#state.manifest,
@@ -569,10 +571,11 @@ terminate(Reason, State) ->
     end,
     
     % Tidy shutdown of individual files
-    lists:foreach(fun({_FN, {Pid, _DSQN}}) ->
-                        ok = leveled_sst:sst_close(Pid)
-                    end,
-                    leveled_manifest:dump_pidmap(State#state.manifest)),
+    EntryCloseFun =
+        fun(ME) ->
+            ok = leveled_sst:sst_close(ME#manifest_entry.owner)
+        end,
+    leveled_manifest:close_manifest(State#state.manifest, EntryCloseFun),
     leveled_log:log("P0011", []),
     ok.
 

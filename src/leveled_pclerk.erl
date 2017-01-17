@@ -38,7 +38,8 @@
         clerk_new/2,
         clerk_prompt/1,
         clerk_push/2,
-        clerk_close/1
+        clerk_close/1,
+        clerk_promptdeletions/2
         ]).      
 
 -include_lib("eunit/include/eunit.hrl").
@@ -47,7 +48,8 @@
 -define(MIN_TIMEOUT, 200).
 
 -record(state, {owner :: pid(),
-                root_path :: string()}).
+                root_path :: string(),
+                pending_deletions = dict:new() :: dict:dict()}).
 
 %%%============================================================================
 %%% API
@@ -61,6 +63,9 @@ clerk_new(Owner, Manifest) ->
 
 clerk_prompt(Pid) ->
     gen_server:cast(Pid, prompt).
+
+clerk_promptdeletions(Pid, ManifestSQN) ->
+    gen_server:cast(Pid, {prompt_deletions, ManifestSQN}).
 
 clerk_push(Pid, Work) ->
     gen_server:cast(Pid, {push_work, Work}).
@@ -83,8 +88,14 @@ handle_call(close, _From, State) ->
 handle_cast(prompt, State) ->
     handle_info(timeout, State);
 handle_cast({push_work, Work}, State) ->
-    handle_work(Work, State),
-    {noreply, State, ?MIN_TIMEOUT}.
+    {ManifestSQN, Deletions} = handle_work(Work, State),
+    PDs = dict:store(ManifestSQN, Deletions, State#state.pending_deletions),
+    {noreply, State#state{pending_deletions = PDs}, ?MAX_TIMEOUT};
+handle_cast({prompt_deletions, ManifestSQN}, State) ->
+    Deletions = dict:fetch(ManifestSQN, State#state.pending_deletions),
+    ok = notify_deletions(Deletions, State#state.owner),
+    UpdDeletions = dict:erase(ManifestSQN, State#state.pending_deletions),
+    {noreply, State#state{pending_deletions = UpdDeletions}, ?MIN_TIMEOUT}.
 
 handle_info(timeout, State) ->
     request_work(State),
@@ -117,7 +128,7 @@ handle_work({SrcLevel, Manifest}, State) ->
     ok = leveled_manifest:save_manifest(UpdManifest,
                                             State#state.root_path),
     leveled_log:log_timer("PC018", [], SWSM),
-    ok = notify_deletions(EntriesToDelete, State#state.owner).
+    {leveled_manifest:get_manifest_sqn(UpdManifest), EntriesToDelete}.
 
 merge(SrcLevel, Manifest, RootPath) ->
     Src = leveled_manifest:mergefile_selector(Manifest, SrcLevel),
@@ -130,21 +141,13 @@ merge(SrcLevel, Manifest, RootPath) ->
     leveled_log:log("PC008", [SrcLevel, Candidates]),
     case Candidates of
         0 ->
-            %% If no overlapping candiates, manifest change only required
-            %%
-            %% TODO: need to think still about simply renaming when at 
-            %% lower level
             leveled_log:log("PC009",
                                 [Src#manifest_entry.filename, SrcLevel + 1]),
-            Man0 = leveled_manifest:remove_manifest_entry(Manifest,
+            Man0 = leveled_manifest:switch_manifest_entry(Manifest,
                                                             NewSQN,
                                                             SrcLevel,
                                                             Src),
-            Man1 = leveled_manifest:insert_manifest_entry(Man0,
-                                                            NewSQN,
-                                                            SrcLevel + 1,
-                                                            Src),
-            {Man1, []};
+            {Man0, []};
         _ ->
             FilePath = leveled_penciller:filepath(RootPath,
                                                     NewSQN,
@@ -166,53 +169,59 @@ notify_deletions([Head|Tail], Penciller) ->
 
 perform_merge(Manifest, Src, SinkList, SrcLevel, RootPath, NewSQN) ->
     leveled_log:log("PC010", [Src#manifest_entry.filename, NewSQN]),
-    SrcList = [{next, Src#manifest_entry.owner, all}],
-    SinkPointerList = leveled_manifest:pointer_convert(Manifest, SinkList),
+    SrcList = [{next, Src, all}],
     MaxSQN = leveled_sst:sst_getmaxsequencenumber(Src#manifest_entry.owner),
     SinkLevel = SrcLevel + 1,
     SinkBasement = leveled_manifest:is_basement(Manifest, SinkLevel),
-    Man0 = do_merge(SrcList, SinkPointerList,
-                        SinkLevel, SinkBasement,
-                        RootPath, NewSQN, MaxSQN,
-                        0, Manifest),
-    RemoveFun =
-        fun(Entry, AccMan) ->
-            leveled_manifest:remove_manifest_entry(AccMan,
+    Additions = do_merge(SrcList, SinkList,
+                            SinkLevel, SinkBasement,
+                            RootPath, NewSQN, MaxSQN,
+                            []),
+    RevertPointerFun =
+        fun({next, ME, _SK}) ->
+            ME
+        end,
+    Man0 = leveled_manifest:insert_manifest_entry(Manifest,
                                                     NewSQN,
                                                     SinkLevel,
-                                                    Entry)
-        end,
-    Man1 = lists:foldl(RemoveFun, Man0, SinkList),
-    Man2 = leveled_manifest:remove_manifest_entry(Man1, NewSQN, SrcLevel, Src),
+                                                    Additions),
+    Man1 = leveled_manifest:remove_manifest_entry(Man0,
+                                                    NewSQN,
+                                                    SinkLevel,
+                                                    lists:map(RevertPointerFun,
+                                                                SinkList)),
+    Man2 = leveled_manifest:remove_manifest_entry(Man1,
+                                                    NewSQN,
+                                                    SrcLevel,
+                                                    Src),
     {Man2, [Src|SinkList]}.
 
-do_merge([], [], SinkLevel, _SinkB, _RP, NewSQN, _MaxSQN, Counter, Man0) ->
-    leveled_log:log("PC011", [NewSQN, SinkLevel, Counter]),
-    Man0;
-do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, Counter, Man0) ->
+do_merge([], [], SinkLevel, _SinkB, _RP, NewSQN, _MaxSQN, Additions) ->
+    leveled_log:log("PC011", [NewSQN, SinkLevel, length(Additions)]),
+    Additions;
+do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, Additions) ->
     FileName = lists:flatten(io_lib:format(RP ++ "_~w_~w.sst",
-                                            [SinkLevel, Counter])),
+                                            [SinkLevel, length(Additions)])),
     leveled_log:log("PC012", [NewSQN, FileName, SinkB]),
     TS1 = os:timestamp(),
     case leveled_sst:sst_new(FileName, KL1, KL2, SinkB, SinkLevel, MaxSQN) of
         empty ->
             leveled_log:log("PC013", [FileName]),
-            Man0;                        
+            do_merge([], [],
+                        SinkLevel, SinkB,
+                        RP, NewSQN, MaxSQN,
+                        Additions);                        
         {ok, Pid, Reply} ->
             {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} = Reply,
                 Entry = #manifest_entry{start_key=SmallestKey,
                                             end_key=HighestKey,
                                             owner=Pid,
                                             filename=FileName},
-                Man1 = leveled_manifest:insert_manifest_entry(Man0,
-                                                                NewSQN,
-                                                                SinkLevel,
-                                                                Entry),
                 leveled_log:log_timer("PC015", [], TS1),
                 do_merge(KL1Rem, KL2Rem,
                             SinkLevel, SinkB,
                             RP, NewSQN, MaxSQN,
-                            Counter + 1, Man1)
+                            Additions ++ [Entry])
     end.
 
 
@@ -294,7 +303,9 @@ merge_file_test() ->
     Man4 = leveled_manifest:insert_manifest_entry(Man3, 1, 2, E5),
     Man5 = leveled_manifest:insert_manifest_entry(Man4, 2, 1, E1),
     
-    {Man6, _Dels} = perform_merge(Man5, E1, [E2, E3, E4, E5], 1, "../test", 3),
+    PointerList = lists:map(fun(ME) -> {next, ME, all} end,
+                            [E2, E3, E4, E5]),
+    {Man6, _Dels} = perform_merge(Man5, E1, PointerList, 1, "../test", 3),
     
     ?assertMatch(3, leveled_manifest:get_manifest_sqn(Man6)).
 
