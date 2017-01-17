@@ -363,7 +363,8 @@ delete_pending(close, _From, State) ->
 
 delete_pending(timeout, State) ->
     ok = leveled_penciller:pcl_confirmdelete(State#state.penciller,
-                                               State#state.filename),
+                                               State#state.filename,
+                                               self()),
     {next_state, delete_pending, State, ?DELETE_TIMEOUT};
 delete_pending(close, State) ->
     leveled_log:log("SST07", [State#state.filename]),

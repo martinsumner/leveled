@@ -181,7 +181,7 @@
         pcl_workforclerk/1,
         pcl_manifestchange/2,
         pcl_confirml0complete/4,
-        pcl_confirmdelete/2,
+        pcl_confirmdelete/3,
         pcl_close/1,
         pcl_doom/1,
         pcl_registersnapshot/2,
@@ -297,8 +297,8 @@ pcl_manifestchange(Pid, Manifest) ->
 pcl_confirml0complete(Pid, FN, StartKey, EndKey) ->
     gen_server:cast(Pid, {levelzero_complete, FN, StartKey, EndKey}).
 
-pcl_confirmdelete(Pid, FileName) ->
-    gen_server:cast(Pid, {confirm_delete, FileName}).
+pcl_confirmdelete(Pid, FileName, FilePid) ->
+    gen_server:cast(Pid, {confirm_delete, FileName, FilePid}).
 
 pcl_getstartupsequencenumber(Pid) ->
     gen_server:call(Pid, get_startup_sqn, infinity).
@@ -469,20 +469,18 @@ handle_cast({release_snapshot, Snapshot}, State) ->
                                                    Snapshot),
     leveled_log:log("P0003", [Snapshot]),
     {noreply, State#state{manifest=Manifest0}};
-handle_cast({confirm_delete, Filename}, State=#state{is_snapshot=Snap})
+handle_cast({confirm_delete, Filename, FilePid}, State=#state{is_snapshot=Snap})
                                                         when Snap == false ->    
     case State#state.work_ongoing of 
         false ->
             R2D = leveled_manifest:ready_to_delete(State#state.manifest, 
                                                     Filename),
             case R2D of
-                {true, Pid} ->
+                {true, M0} ->
                     leveled_log:log("P0005", [Filename]),
-                    ok = leveled_sst:sst_deleteconfirmed(Pid),
-                    M0 = leveled_manifest:delete_confirmed(State#state.manifest,
-                                                            Filename),
+                    ok = leveled_sst:sst_deleteconfirmed(FilePid),
                     {noreply, State#state{manifest=M0}};
-                {false, _Pid} ->
+                {false, _M0} ->
                     {noreply, State}
             end;
         true ->
