@@ -363,7 +363,8 @@ delete_pending(close, _From, State) ->
 
 delete_pending(timeout, State) ->
     ok = leveled_penciller:pcl_confirmdelete(State#state.penciller,
-                                               State#state.filename),
+                                               State#state.filename,
+                                               self()),
     {next_state, delete_pending, State, ?DELETE_TIMEOUT};
 delete_pending(close, State) ->
     leveled_log:log("SST07", [State#state.filename]),
@@ -1175,8 +1176,8 @@ maybe_expand_pointer([{pointer, SSTPid, Slot, StartKey, all}|Tail]) ->
     expand_list_by_pointer({pointer, SSTPid, Slot, StartKey, all},
                             Tail,
                             ?MERGE_SCANWIDTH);
-maybe_expand_pointer([{next, SSTPid, StartKey}|Tail]) ->
-    expand_list_by_pointer({next, SSTPid, StartKey, all},
+maybe_expand_pointer([{next, ManEntry, StartKey}|Tail]) ->
+    expand_list_by_pointer({next, ManEntry, StartKey, all},
                             Tail,
                             ?MERGE_SCANWIDTH);
 maybe_expand_pointer(List) ->
@@ -1202,7 +1203,9 @@ expand_list_by_pointer({pointer, SSTPid, Slot, StartKey, EndKey}, Tail, Width) -
     {AccPointers, AccTail} = lists:foldl(FoldFun, InitAcc, Tail),
     ExpPointers = leveled_sst:sst_getslots(SSTPid, AccPointers),
     lists:append(ExpPointers, AccTail);
-expand_list_by_pointer({next, SSTPid, StartKey, EndKey}, Tail, Width) ->
+expand_list_by_pointer({next, ManEntry, StartKey, EndKey}, Tail, Width) ->
+    SSTPid = ManEntry#manifest_entry.owner,
+    leveled_log:log("SST10", [SSTPid, is_process_alive(SSTPid)]),
     ExpPointer = leveled_sst:sst_getkvrange(SSTPid, StartKey, EndKey, Width),
     ExpPointer ++ Tail.
 
@@ -1440,8 +1443,8 @@ merge_test() ->
     ?assertMatch(ExpFK2, FK2),
     ?assertMatch(ExpLK1, LK1),
     ?assertMatch(ExpLK2, LK2),
-    ML1 = [{next, P1, FK1}],
-    ML2 = [{next, P2, FK2}],
+    ML1 = [{next, #manifest_entry{owner = P1}, FK1}],
+    ML2 = [{next, #manifest_entry{owner = P2}, FK2}],
     {ok, P3, {{Rem1, Rem2}, FK3, LK3}} = sst_new("../test/level2_merge",
                                                     ML1,
                                                     ML2,

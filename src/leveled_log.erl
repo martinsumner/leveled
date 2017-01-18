@@ -65,8 +65,7 @@
     {"P0004",
         {info, "Remaining ledger snapshots are ~w"}},
     {"P0005",
-        {info, "Delete confirmed as file ~s is removed from " ++ 
-                "unreferenced files"}},
+        {info, "Delete confirmed as file ~s is removed from Manifest"}},
     {"P0006",
         {info, "Orphaned reply after timeout on L0 file write ~s"}},
     {"P0007",
@@ -74,8 +73,6 @@
                 ++ "reason ~w"}},
     {"P0008",
         {info, "Penciller closing for reason ~w"}},
-    {"P0009",
-        {info, "Level 0 cache empty at close of Penciller"}},
     {"P0010",
         {info, "No level zero action on close of Penciller ~w"}},
     {"P0011",
@@ -97,9 +94,6 @@
                     ++ "L0 pending ~w and merge backlog ~w"}},
     {"P0019",
         {info, "Rolling level zero to filename ~s at ledger sqn ~w"}},
-    {"P0020",
-        {info, "Work at Level ~w to be scheduled for ~w with ~w "
-                ++ "queue items outstanding at all levels"}},
     {"P0021",
         {info, "Allocation of work blocked as L0 pending"}},
     {"P0022",
@@ -108,7 +102,8 @@
         {info, "Manifest entry of startkey ~s ~s ~s endkey ~s ~s ~s "
                 ++ "filename=~s~n"}},
     {"P0024",
-        {info, "Outstanding compaction work items of ~w at level ~w"}},
+        {info, "Outstanding compaction work items of ~w with backlog status "
+                    ++ "of ~w"}},
     {"P0025",
         {info, "Merge to sqn ~w from Level ~w completed"}},
     {"P0026",
@@ -125,7 +120,17 @@
         {info, "Completion of update to levelzero"}},
     {"P0032",
         {info, "Head timing for result ~w is sample ~w total ~w and max ~w"}},
-    
+    {"P0033",
+        {error, "Corrupted manifest file at path ~s to be ignored "
+                    ++ "due to error ~w"}},
+    {"P0034",
+        {warn, "Snapshot with pid ~w timed out and so deletion will "
+                    ++ "continue regardless"}},
+    {"P0035",
+        {info, "Startup with Manifest SQN of ~w"}},
+    {"P0036",
+        {info, "Garbage collection on mnaifest removes key for filename ~s"}},
+        
     {"PC001",
         {info, "Penciller's clerk ~w started with owner ~w"}},
     {"PC002",
@@ -147,15 +152,22 @@
     {"PC010",
         {info, "Merge to be commenced for FileToMerge=~s with MSN=~w"}},
     {"PC011",
-        {info, "Merge completed with MSN=~w Level=~w and FileCounter=~w"}},
+        {info, "Merge completed with MSN=~w to Level=~w and FileCounter=~w"}},
     {"PC012",
-        {info, "File to be created as part of MSN=~w Filename=~s"}},
+        {info, "File to be created as part of MSN=~w Filename=~s "
+                    ++ "IsBasement=~w"}},
     {"PC013",
         {warn, "Merge resulted in empty file ~s"}},
     {"PC015",
         {info, "File created"}},
     {"PC016",
         {info, "Slow fetch from SFT ~w of ~w microseconds with result ~w"}},
+    {"PC017",
+        {info, "Notified clerk of manifest change"}},
+    {"PC018",
+        {info, "Saved manifest file"}},
+    {"PC019",
+        {debug, "After ~s level ~w is ~w"}},
     
     {"I0001",
         {info, "Unexpected failure to fetch value for Key=~w SQN=~w "
@@ -250,6 +262,8 @@
         {info, "Completed creation of ~s at level ~w with max sqn ~w"}},
     {"SST09",
         {warn, "Read request exposes slot with bad CRC"}},
+    {"SST10",
+        {info, "Expansion sought to support pointer to pid ~w status ~w"}},
     
     {"CDB01",
         {info, "Opening file for writing with filename ~s"}},

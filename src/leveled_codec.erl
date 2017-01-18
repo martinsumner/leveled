@@ -282,6 +282,8 @@ turn_to_string(Item) ->
 
 % Compare a key against a query key, only comparing elements that are non-null
 % in the Query key.  This is used for comparing against end keys in queries.
+endkey_passed(all, _) ->
+    false;
 endkey_passed({EK1, null, null, null}, {CK1, _, _, _}) ->
     EK1 < CK1;
 endkey_passed({EK1, EK2, null, null}, {CK1, CK2, _, _}) ->
