@@ -65,6 +65,7 @@
 -export([cdb_open_writer/1,
             cdb_open_writer/2,
             cdb_open_reader/1,
+            cdb_reopen_reader/2,
             cdb_get/2,
             cdb_put/3,
             cdb_mput/2,
@@ -123,6 +124,13 @@ cdb_open_writer(Filename) ->
 cdb_open_writer(Filename, Opts) ->
     {ok, Pid} = gen_fsm:start(?MODULE, [Opts], []),
     ok = gen_fsm:sync_send_event(Pid, {open_writer, Filename}, infinity),
+    {ok, Pid}.
+
+cdb_reopen_reader(Filename, LastKey) ->
+    {ok, Pid} = gen_fsm:start(?MODULE, [#cdb_options{binary_mode=true}], []),
+    ok = gen_fsm:sync_send_event(Pid,
+                                    {open_reader, Filename, LastKey},
+                                    infinity),
     {ok, Pid}.
 
 cdb_open_reader(Filename) ->
@@ -241,6 +249,13 @@ starting({open_writer, Filename}, _From, State) ->
 starting({open_reader, Filename}, _From, State) ->
     leveled_log:log("CDB02", [Filename]),
     {Handle, Index, LastKey} = open_for_readonly(Filename, false),
+    {reply, ok, reader, State#state{handle=Handle,
+                                        last_key=LastKey,
+                                        filename=Filename,
+                                        hash_index=Index}};
+starting({open_reader, Filename, LastKey}, _From, State) ->
+    leveled_log:log("CDB02", [Filename]),
+    {Handle, Index, LastKey} = open_for_readonly(Filename, LastKey),
     {reply, ok, reader, State#state{handle=Handle,
                                         last_key=LastKey,
                                         filename=Filename,

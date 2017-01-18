@@ -435,7 +435,7 @@ put_object(LedgerKey, Object, KeyChanges, State) ->
             ManEntry = start_new_activejournal(NewSQN,
                                                 State#state.root_path,
                                                 CDBopts),
-            {_, _, NewJournalP} = ManEntry,
+            {_, _, NewJournalP, _} = ManEntry,
             NewManifest = leveled_imanifest:add_entry(State#state.manifest, ManEntry),
             ok = simple_manifest_writer(NewManifest,
                                         State#state.manifest_sqn + 1,
@@ -534,29 +534,6 @@ open_all_manifest([], RootPath, CDBOpts) ->
 open_all_manifest(Man0, RootPath, CDBOpts) ->
     Man1 = lists:reverse(lists:sort(Man0)),
     [{HeadSQN, HeadFN, _IgnorePid, HeadLK}|ManifestTail] = Man1,
-    CompleteHeadFN = HeadFN ++ "." ++ ?JOURNAL_FILEX,
-    PendingHeadFN = HeadFN ++ "." ++ ?PENDING_FILEX,
-    Man2 = case filelib:is_file(CompleteHeadFN) of
-                true ->
-                    leveled_log:log("I0012", [HeadFN]),
-                    {ok, HeadR} = leveled_cdb:cdb_open_reader(CompleteHeadFN),
-                    LastKey = leveled_cdb:cdb_lastkey(HeadR),
-                    LastSQN = element(1, LastKey),
-                    ManToHead = leveled_imanifest:add_entry(ManifestTail,
-                                                            {HeadSQN,
-                                                                HeadFN,
-                                                                HeadR,
-                                                                LastKey}),
-                    NewManEntry = start_new_activejournal(LastSQN + 1,
-                                                                RootPath,
-                                                                CDBOpts),
-                    leveled_imanifest:add_entry(ManToHead, NewManEntry);
-                false ->
-                    {ok, HeadW} = leveled_cdb:cdb_open_writer(PendingHeadFN,
-                                                                CDBOpts),
-                    leveled_imanifest:add_entry(ManifestTail,
-                                                    {HeadSQN, HeadFN, HeadW, HeadLK})
-            end,
     OpenJournalFun =
         fun(ManEntry) ->
             case ManEntry of
@@ -565,7 +542,8 @@ open_all_manifest(Man0, RootPath, CDBOpts) ->
                     PFN = FN ++ "." ++ ?PENDING_FILEX,
                     case filelib:is_file(CFN) of
                         true ->
-                            {ok, Pid} = leveled_cdb:cdb_open_reader(CFN),
+                            {ok, Pid} = leveled_cdb:cdb_reopen_reader(CFN,
+                                                                        LK_RO),
                             {LowSQN, FN, Pid, LK_RO};
                         false ->
                             W = leveled_cdb:cdb_open_writer(PFN, CDBOpts),
@@ -578,7 +556,30 @@ open_all_manifest(Man0, RootPath, CDBOpts) ->
                     ManEntry
             end
         end,
-    lists:map(OpenJournalFun, Man2).
+    OpenedTail = lists:map(OpenJournalFun, ManifestTail),
+    CompleteHeadFN = HeadFN ++ "." ++ ?JOURNAL_FILEX,
+    PendingHeadFN = HeadFN ++ "." ++ ?PENDING_FILEX,
+    case filelib:is_file(CompleteHeadFN) of
+        true ->
+            leveled_log:log("I0012", [HeadFN]),
+            {ok, HeadR} = leveled_cdb:cdb_open_reader(CompleteHeadFN),
+            LastKey = leveled_cdb:cdb_lastkey(HeadR),
+            LastSQN = element(1, LastKey),
+            ManToHead = leveled_imanifest:add_entry(OpenedTail,
+                                                    {HeadSQN,
+                                                        HeadFN,
+                                                        HeadR,
+                                                        LastKey}),
+            NewManEntry = start_new_activejournal(LastSQN + 1,
+                                                        RootPath,
+                                                        CDBOpts),
+            leveled_imanifest:add_entry(ManToHead, NewManEntry);
+        false ->
+            {ok, HeadW} = leveled_cdb:cdb_open_writer(PendingHeadFN,
+                                                        CDBOpts),
+            leveled_imanifest:add_entry(OpenedTail,
+                                            {HeadSQN, HeadFN, HeadW, HeadLK})
+    end.
 
 
 start_new_activejournal(SQN, RootPath, CDBOpts) ->
@@ -591,25 +592,25 @@ start_new_activejournal(SQN, RootPath, CDBOpts) ->
 %% FilterFun{K, V, Acc} -> Penciller Key List
 %% Load the output for the CDB file into the Penciller.
 
-load_from_sequence(_MinSQN, _FilterFun, _Penciller, []) ->
+load_from_sequence(_MinSQN, _FilterFun, _PCL, []) ->
     ok;
-load_from_sequence(MinSQN, FilterFun, Penciller, [{LowSQN, FN, Pid}|Rest])
+load_from_sequence(MinSQN, FilterFun, PCL, [{LowSQN, FN, Pid, _LK}|Rest])
                                         when LowSQN >= MinSQN ->
     load_between_sequence(MinSQN,
                             MinSQN + ?LOADING_BATCH,
                             FilterFun,
-                            Penciller,
+                            PCL,
                             Pid,
                             undefined,
                             FN,
                             Rest);
-load_from_sequence(MinSQN, FilterFun, Penciller, [{_LowSQN, FN, Pid}|Rest]) ->
+load_from_sequence(MinSQN, FilterFun, PCL, [{_LowSQN, FN, Pid, _LK}|Rest]) ->
     case Rest of
         [] ->
             load_between_sequence(MinSQN,
                                     MinSQN + ?LOADING_BATCH,
                                     FilterFun,
-                                    Penciller,
+                                    PCL,
                                     Pid,
                                     undefined,
                                     FN,
@@ -618,13 +619,13 @@ load_from_sequence(MinSQN, FilterFun, Penciller, [{_LowSQN, FN, Pid}|Rest]) ->
             load_between_sequence(MinSQN,
                                     MinSQN + ?LOADING_BATCH,
                                     FilterFun,
-                                    Penciller,
+                                    PCL,
                                     Pid,
                                     undefined,
                                     FN,
                                     Rest);
         _ ->
-            load_from_sequence(MinSQN, FilterFun, Penciller, Rest)
+            load_from_sequence(MinSQN, FilterFun, PCL, Rest)
     end.
 
 
@@ -898,7 +899,7 @@ compact_journal_test() ->
                             5000),
     timer:sleep(1000),
     CompactedManifest2 = ink_getmanifest(Ink1),
-    R = lists:foldl(fun({_SQN, FN, _P}, Acc) ->
+    R = lists:foldl(fun({_SQN, FN, _P, _LK}, Acc) ->
                                 case string:str(FN, "post_compact") of
                                     N when N > 0 ->
                                         true;

@@ -194,7 +194,8 @@ handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
             FilesToDelete = lists:map(fun(C) ->
                                             {C#candidate.low_sqn,
                                                 C#candidate.filename,
-                                                C#candidate.journal}
+                                                C#candidate.journal,
+                                                undefined}
                                             end,
                                         BestRun1),
             leveled_log:log("IC002", [length(FilesToDelete)]),
@@ -274,7 +275,7 @@ scan_all_files(Manifest, FilterFun, FilterServer, MaxSQN) ->
 scan_all_files([], _FilterFun, _FilterServer, _MaxSQN, CandidateList) ->
     CandidateList;
 scan_all_files([Entry|Tail], FilterFun, FilterServer, MaxSQN, CandidateList) ->
-    {LowSQN, FN, JournalP} = Entry,
+    {LowSQN, FN, JournalP, _LK} = Entry,
     CpctPerc = check_single_file(JournalP,
                                     FilterFun,
                                     FilterServer,
@@ -390,7 +391,7 @@ update_inker(Inker, ManifestSlice, FilesToDelete) ->
                                                     FilesToDelete),
     ok = leveled_inker:ink_compactioncomplete(Inker),
     leveled_log:log("IC007", []),
-    lists:foreach(fun({_SQN, _FN, J2D}) ->
+    lists:foreach(fun({_SQN, _FN, J2D, _LK}) ->
                         leveled_cdb:cdb_deletepending(J2D,
                                                         ManSQN,
                                                         Inker)
