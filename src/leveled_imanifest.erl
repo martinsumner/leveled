@@ -11,6 +11,7 @@
 -export([
         generate_entry/1,
         add_entry/2,
+        append_lastkey/3,
         remove_entry/2,
         find_entry/2
         
@@ -37,6 +38,15 @@ add_entry(Manifest, Entry) ->
     {SQN, FN, PidR, LastKey} = Entry,
     StrippedName = filename:rootname(FN),
     lists:reverse(lists:sort([{SQN, StrippedName, PidR, LastKey}|Manifest])).
+
+append_lastkey(Manifest, Pid, LastKey) ->
+    [{SQN, Filename, PidR, LK}|ManifestTail] = Manifest,
+    case {PidR, LK} of 
+        {Pid, empty} ->
+            [{SQN, Filename, PidR, LastKey}|ManifestTail];
+        _ ->
+            Manifest
+    end.
 
 remove_entry(Manifest, Entry) ->
     {SQN, FN, _PidR, _LastKey} = Entry,
