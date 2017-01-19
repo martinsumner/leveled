@@ -194,7 +194,8 @@ handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
             FilesToDelete = lists:map(fun(C) ->
                                             {C#candidate.low_sqn,
                                                 C#candidate.filename,
-                                                C#candidate.journal}
+                                                C#candidate.journal,
+                                                undefined}
                                             end,
                                         BestRun1),
             leveled_log:log("IC002", [length(FilesToDelete)]),
@@ -274,7 +275,7 @@ scan_all_files(Manifest, FilterFun, FilterServer, MaxSQN) ->
 scan_all_files([], _FilterFun, _FilterServer, _MaxSQN, CandidateList) ->
     CandidateList;
 scan_all_files([Entry|Tail], FilterFun, FilterServer, MaxSQN, CandidateList) ->
-    {LowSQN, FN, JournalP} = Entry,
+    {LowSQN, FN, JournalP, _LK} = Entry,
     CpctPerc = check_single_file(JournalP,
                                     FilterFun,
                                     FilterServer,
@@ -390,7 +391,7 @@ update_inker(Inker, ManifestSlice, FilesToDelete) ->
                                                     FilesToDelete),
     ok = leveled_inker:ink_compactioncomplete(Inker),
     leveled_log:log("IC007", []),
-    lists:foreach(fun({_SQN, _FN, J2D}) ->
+    lists:foreach(fun({_SQN, _FN, J2D, _LK}) ->
                         leveled_cdb:cdb_deletepending(J2D,
                                                         ManSQN,
                                                         Inker)
@@ -415,7 +416,7 @@ compact_files([], _CDBopts, null, _FilterFun, _FilterServer, _MaxSQN,
     ManSlice0;
 compact_files([], _CDBopts, ActiveJournal0, _FilterFun, _FilterServer, _MaxSQN,
                             _RStrategy, ManSlice0) ->
-    ManSlice1 = ManSlice0 ++ generate_manifest_entry(ActiveJournal0),
+    ManSlice1 = ManSlice0 ++ leveled_imanifest:generate_entry(ActiveJournal0),
     ManSlice1;
 compact_files([Batch|T], CDBopts, ActiveJournal0,
                             FilterFun, FilterServer, MaxSQN, 
@@ -511,23 +512,10 @@ write_values(KVCList, CDBopts, Journal0, ManSlice0) ->
         ok ->
             {Journal1, ManSlice0};
         roll ->
-            ManSlice1 = ManSlice0 ++ generate_manifest_entry(Journal1),
+            ManSlice1 = ManSlice0 ++ leveled_imanifest:generate_entry(Journal1),
             write_values(KVCList, CDBopts, null, ManSlice1)
     end.
-    
-
-generate_manifest_entry(ActiveJournal) ->
-    {ok, NewFN} = leveled_cdb:cdb_complete(ActiveJournal),
-    {ok, PidR} = leveled_cdb:cdb_open_reader(NewFN),
-    case leveled_cdb:cdb_firstkey(PidR) of
-        {StartSQN, _Type, _PK} ->
-            [{StartSQN, NewFN, PidR}];
-        empty ->
-            leveled_log:log("IC013", [NewFN]),
-            []
-    end.
                         
-                    
 clear_waste(State) ->
     WP = State#state.waste_path,
     WRP = State#state.waste_retention_period,
@@ -728,12 +716,13 @@ compact_single_file_recovr_test() ->
         LedgerFun1,
         CompactFP,
         CDB} = compact_single_file_setup(),
-    [{LowSQN, FN, PidR}] = compact_files([Candidate],
-                                            #cdb_options{file_path=CompactFP},
-                                            LedgerFun1,
-                                            LedgerSrv1,
-                                            9,
-                                            [{?STD_TAG, recovr}]),
+    [{LowSQN, FN, PidR, _LastKey}] =
+        compact_files([Candidate],
+                        #cdb_options{file_path=CompactFP},
+                        LedgerFun1,
+                        LedgerSrv1,
+                        9,
+                        [{?STD_TAG, recovr}]),
     io:format("FN of ~s~n", [FN]),
     ?assertMatch(2, LowSQN),
     ?assertMatch(probably,
@@ -764,12 +753,13 @@ compact_single_file_retain_test() ->
         LedgerFun1,
         CompactFP,
         CDB} = compact_single_file_setup(),
-    [{LowSQN, FN, PidR}] = compact_files([Candidate],
-                                            #cdb_options{file_path=CompactFP},
-                                            LedgerFun1,
-                                            LedgerSrv1,
-                                            9,
-                                            [{?STD_TAG, retain}]),
+    [{LowSQN, FN, PidR, _LK}] =
+        compact_files([Candidate],
+                        #cdb_options{file_path=CompactFP},
+                        LedgerFun1,
+                        LedgerSrv1,
+                        9,
+                        [{?STD_TAG, retain}]),
     io:format("FN of ~s~n", [FN]),
     ?assertMatch(1, LowSQN),
     ?assertMatch(probably,
@@ -847,7 +837,7 @@ compact_singlefile_totwosmallfiles_test() ->
                                     900,
                                     [{?STD_TAG, recovr}]),
     ?assertMatch(2, length(ManifestSlice)),
-    lists:foreach(fun({_SQN, _FN, CDB}) ->
+    lists:foreach(fun({_SQN, _FN, CDB, _LK}) ->
                         ok = leveled_cdb:cdb_deletepending(CDB),
                         ok = leveled_cdb:cdb_destroy(CDB)
                         end,

@@ -263,7 +263,7 @@
     {"SST09",
         {warn, "Read request exposes slot with bad CRC"}},
     {"SST10",
-        {info, "Expansion sought to support pointer to pid ~w status ~w"}},
+        {debug, "Expansion sought to support pointer to pid ~w status ~w"}},
     
     {"CDB01",
         {info, "Opening file for writing with filename ~s"}},
