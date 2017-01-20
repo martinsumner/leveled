@@ -178,10 +178,43 @@ tree_to_list(T) ->
     gb_trees:to_list(T).
 
 tree_iterator_from(K, T) ->
-    gb_trees:iterator_from(K, T).
+    % For OTP 16 compatibility with gb_trees
+    iterator_from(K, T).
 
 tree_next(I) ->
-    gb_trees:next(I).
+    % For OTP 16 compatibility with gb_trees
+    next(I).
+
+
+iterator_from(S, {_, T}) ->
+    iterator_1_from(S, T).
+
+iterator_1_from(S, T) ->
+    iterator_from(S, T, []).
+
+iterator_from(S, {K, _, _, T}, As) when K < S ->
+    iterator_from(S, T, As);
+iterator_from(_, {_, _, nil, _} = T, As) ->
+    [T | As];
+iterator_from(S, {_, _, L, _} = T, As) ->
+    iterator_from(S, L, [T | As]);
+iterator_from(_, nil, As) ->
+    As.
+
+next([{X, V, _, T} | As]) ->
+    {X, V, iterator(T, As)};
+next([]) ->
+    none.
+
+%% The iterator structure is really just a list corresponding to
+%% the call stack of an in-order traversal. This is quite fast.
+
+iterator({_, _, nil, _} = T, As) ->
+    [T | As];
+iterator({_, _, L, _} = T, As) ->
+    iterator(L, [T | As]);
+iterator(nil, As) ->
+    As.
 
 %%%============================================================================
 %%% Test
