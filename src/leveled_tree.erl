@@ -35,7 +35,7 @@
 
 from_orderedlist(OrderedList) ->
     L = length(OrderedList),
-    {tree, L, from_orderedlist(OrderedList, empty_tree(), L)}.
+    {tree, L, from_orderedlist(OrderedList, [], L)}.
 
 from_orderedset(Table) ->
     from_orderedlist(ets:tab2list(Table)).
@@ -98,13 +98,13 @@ empty() ->
 %%%============================================================================
 
 
-from_orderedlist([], Tree, _L) ->
-    Tree;
-from_orderedlist(OrdList, Tree, L) ->
+from_orderedlist([], TmpList, _L) ->
+    gb_trees:from_orddict(TmpList);
+from_orderedlist(OrdList, TmpList, L) ->
     SubLL = min(?SKIP_WIDTH, L),
     {Head, Tail} = lists:split(SubLL, OrdList),
     {LastK, _LastV} = lists:last(Head),
-    from_orderedlist(Tail, tree_insert(LastK, Head, Tree), L - SubLL).
+    from_orderedlist(Tail, TmpList ++ [{LastK, Head}], L - SubLL).
     
 lookup_match(_Key, []) ->
     none;
@@ -174,9 +174,6 @@ lookup_range_end(EndRange, {NK0, SL0}, Iter0, Output, EndRangeFun) ->
 empty_tree() ->
     gb_trees:empty().
 
-tree_insert(K, V, T) ->
-    gb_trees:insert(K, V, T).
-
 tree_to_list(T) ->
     gb_trees:to_list(T).
 
@@ -230,6 +227,7 @@ tree_search_test() ->
     
     StartKeyFun = fun(V) -> V end,
     
+    SW = os:timestamp(),
     ?assertMatch([], search_range(0, 1, T, StartKeyFun)),
     ?assertMatch([], search_range(201, 202, T, StartKeyFun)),
     ?assertMatch([{4, 2}], search_range(2, 4, T, StartKeyFun)),
@@ -239,11 +237,13 @@ tree_search_test() ->
     ?assertMatch(50, length(search_range(2, 198, T, StartKeyFun))),
     ?assertMatch(49, length(search_range(2, 197, T, StartKeyFun))),
     ?assertMatch(49, length(search_range(4, 197, T, StartKeyFun))),
-    ?assertMatch(48, length(search_range(5, 197, T, StartKeyFun))).
+    ?assertMatch(48, length(search_range(5, 197, T, StartKeyFun))),
+    io:format(user, "10 range tests in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SW)]).
     
     
 tree_test() ->
-    N = 4000,
+    N = 2000,
     KL = lists:ukeysort(1, generate_randomkeys(1, N, 1, N div 5)),
     
     OS = ets:new(test, [ordered_set, private]),
