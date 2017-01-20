@@ -17,15 +17,16 @@
         from_orderedset/1,
         to_list/1,
         match_range/3,
-        % search_range/3,
+        search_range/4,
         match/2,
-        search/2,
-        tsize/1
+        search/3,
+        tsize/1,
+        empty/0
         ]).      
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(SKIP_WIDTH, 32).
+-define(SKIP_WIDTH, 16).
 
 
 %%%============================================================================
@@ -34,52 +35,63 @@
 
 from_orderedlist(OrderedList) ->
     L = length(OrderedList),
-    {tree, L, from_orderedlist(OrderedList, gb_trees:empty(), L)}.
+    {tree, L, from_orderedlist(OrderedList, empty_tree(), L)}.
 
 from_orderedset(Table) ->
     from_orderedlist(ets:tab2list(Table)).
 
 match(Key, {tree, _L, Tree}) ->
-    Iter = gb_trees:iterator_from(Key, Tree),
-    case gb_trees:next(Iter) of
+    Iter = tree_iterator_from(Key, Tree),
+    case tree_next(Iter) of
         none ->
             none;
         {_NK, SL, _Iter} ->
             lookup_match(Key, SL)
     end.
 
-match_range(StartKey, EndKey, {tree, _L, Tree}) ->
-    Iter0 = gb_trees:iterator_from(StartKey, Tree),
-    case gb_trees:next(Iter0) of
-        none ->
-            [];
-        {NK, SL, Iter1} ->
-            PredFun =
-                fun({K, _V}) ->
-                    K < StartKey
-                end,
-            {_LHS, RHS} = lists:splitwith(PredFun, SL),
-            lookup_match_range(EndKey, {NK, RHS}, Iter1, [])
-    end.
-    
-search(Key, {tree, _L, Tree}) ->
-    Iter = gb_trees:iterator_from(Key, Tree),
-    case gb_trees:next(Iter) of
+search(Key, {tree, _L, Tree}, StartKeyFun) ->
+    Iter = tree_iterator_from(Key, Tree),
+    case tree_next(Iter) of
         none ->
             none;
         {_NK, SL, _Iter} ->
-            lookup_best(Key, SL)
+            {K, V} = lookup_best(Key, SL),
+            case K < StartKeyFun(V) of
+                true ->
+                    none;
+                false ->
+                    {K, V}
+            end
     end.
+
+match_range(StartRange, EndRange, {tree, _L, Tree}) ->
+    EndRangeFun =
+        fun(ER, FirstRHSKey, _FirstRHSValue) ->
+            ER == FirstRHSKey
+        end,
+    lookup_range_start(StartRange, EndRange, Tree, EndRangeFun).
+
+
+search_range(StartRange, EndRange, {tree, _L, Tree}, StartKeyFun) ->
+    EndRangeFun =
+        fun(ER, _FirstRHSKey, FirstRHSValue) ->
+            StartRHSKey = StartKeyFun(FirstRHSValue),
+            ER >= StartRHSKey 
+        end,
+    lookup_range_start(StartRange, EndRange, Tree, EndRangeFun).
 
 to_list({tree, _L, Tree}) ->
     FoldFun =
         fun({_MK, SL}, Acc) ->
             Acc ++ SL
         end,
-    lists:foldl(FoldFun, [], gb_trees:to_list(Tree)).
+    lists:foldl(FoldFun, [], tree_to_list(Tree)).
 
 tsize({tree, L, _Tree}) ->
     L.
+
+empty() ->
+    {tree, 0, empty_tree()}.
 
 %%%============================================================================
 %%% Internal Functions
@@ -92,7 +104,7 @@ from_orderedlist(OrdList, Tree, L) ->
     SubLL = min(?SKIP_WIDTH, L),
     {Head, Tail} = lists:split(SubLL, OrdList),
     {LastK, _LastV} = lists:last(Head),
-    from_orderedlist(Tail, gb_trees:insert(LastK, Head, Tree), L - SubLL).
+    from_orderedlist(Tail, tree_insert(LastK, Head, Tree), L - SubLL).
     
 lookup_match(_Key, []) ->
     none;
@@ -108,30 +120,71 @@ lookup_best(Key, [{EK, EV}|_Tail]) when EK >= Key ->
 lookup_best(Key, [_Top|Tail]) ->
     lookup_best(Key, Tail).
 
-lookup_match_range(EndKey, {NK0, SL0}, Iter0, Output) ->
+lookup_range_start(StartRange, EndRange, Tree, EndRangeFun) ->
+    Iter0 = tree_iterator_from(StartRange, Tree),
+    case tree_next(Iter0) of
+        none ->
+            [];
+        {NK, SL, Iter1} ->
+            PredFun =
+                fun({K, _V}) ->
+                    K < StartRange
+                end,
+            {_LHS, RHS} = lists:splitwith(PredFun, SL),
+            lookup_range_end(EndRange, {NK, RHS}, Iter1, [], EndRangeFun)
+    end.
+
+lookup_range_end(EndRange, {NK0, SL0}, Iter0, Output, EndRangeFun) ->
     PredFun =
         fun({K, _V}) ->
-            not leveled_codec:endkey_passed(EndKey, K)
+            not leveled_codec:endkey_passed(EndRange, K)
         end,
-    case leveled_codec:endkey_passed(EndKey, NK0) of
+    case leveled_codec:endkey_passed(EndRange, NK0) of
         true ->
             {LHS, RHS} = lists:splitwith(PredFun, SL0),
             case RHS of
-                [{EndKey, FirstValue}|_Tail] ->
-                    Output ++ LHS ++ [{EndKey, FirstValue}];
-                _ ->
-                    Output ++ LHS
+                [] ->
+                    Output ++ LHS;
+                [{FirstRHSKey, FirstRHSValue}|_Rest] ->
+                    case EndRangeFun(EndRange, FirstRHSKey, FirstRHSValue) of
+                        true ->
+                            Output ++ LHS ++ [{FirstRHSKey, FirstRHSValue}];
+                        false ->
+                            Output ++ LHS
+                    end
             end;
         false ->
             UpdOutput = Output ++ SL0,
-            case gb_trees:next(Iter0) of
+            case tree_next(Iter0) of
                 none ->
                     UpdOutput;
                 {NK1, SL1, Iter1} ->
-                    lookup_match_range(EndKey, {NK1, SL1}, Iter1, UpdOutput)
+                    lookup_range_end(EndRange,
+                                        {NK1, SL1},
+                                        Iter1,
+                                        UpdOutput,
+                                        EndRangeFun)
             end 
     end.
 
+%%%============================================================================
+%%% Balance tree implementation
+%%%============================================================================
+
+empty_tree() ->
+    gb_trees:empty().
+
+tree_insert(K, V, T) ->
+    gb_trees:insert(K, V, T).
+
+tree_to_list(T) ->
+    gb_trees:to_list(T).
+
+tree_iterator_from(K, T) ->
+    gb_trees:iterator_from(K, T).
+
+tree_next(I) ->
+    gb_trees:next(I).
 
 %%%============================================================================
 %%% Test
@@ -166,6 +219,28 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
                         BucketLow,
                         BRange).
 
+
+tree_search_test() ->
+    MapFun =
+        fun(N) ->
+            {N * 4, N * 4 - 2}
+        end,
+    KL = lists:map(MapFun, lists:seq(1, 50)),
+    T = from_orderedlist(KL),
+    
+    StartKeyFun = fun(V) -> V end,
+    
+    ?assertMatch([], search_range(0, 1, T, StartKeyFun)),
+    ?assertMatch([], search_range(201, 202, T, StartKeyFun)),
+    ?assertMatch([{4, 2}], search_range(2, 4, T, StartKeyFun)),
+    ?assertMatch([{4, 2}], search_range(2, 5, T, StartKeyFun)),
+    ?assertMatch([{4, 2}, {8, 6}], search_range(2, 6, T, StartKeyFun)),
+    ?assertMatch(50, length(search_range(2, 200, T, StartKeyFun))),
+    ?assertMatch(50, length(search_range(2, 198, T, StartKeyFun))),
+    ?assertMatch(49, length(search_range(2, 197, T, StartKeyFun))),
+    ?assertMatch(49, length(search_range(4, 197, T, StartKeyFun))),
+    ?assertMatch(48, length(search_range(5, 197, T, StartKeyFun))).
+    
     
 tree_test() ->
     N = 4000,
@@ -243,13 +318,15 @@ match_fun(Tree) ->
     end.
 
 search_exactmatch_fun(Tree) ->
+    StartKeyFun = fun(_V) -> all end,
     fun({K, V}) ->
-        ?assertMatch({K, V}, search(K, Tree))
+        ?assertMatch({K, V}, search(K, Tree, StartKeyFun))
     end.
 
 search_nearmatch_fun(Tree) ->
+    StartKeyFun = fun(_V) -> all end,
     fun({K, {NK, NV}}) ->
-        ?assertMatch({NK, NV}, search(K, Tree))
+        ?assertMatch({NK, NV}, search(K, Tree, StartKeyFun))
     end.
 
 -endif.
