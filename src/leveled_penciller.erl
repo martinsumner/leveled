@@ -9,7 +9,7 @@
 %% the Penciller's Clerk
 %% - The Penciller can be cloned and maintains a register of clones who have
 %% requested snapshots of the Ledger
-%% - The accepts new dumps (in the form of a leveled_skiplist accomponied by
+%% - The accepts new dumps (in the form of a leveled_tree accomponied by
 %% an array of hash-listing binaries) from the Bookie, and responds either 'ok'
 %% to the bookie if the information is accepted nad the Bookie can refresh its
 %% memory, or 'returned' if the bookie must continue without refreshing as the
@@ -224,7 +224,7 @@
                 
                 levelzero_pending = false :: boolean(),
                 levelzero_constructor :: pid(),
-                levelzero_cache = [] :: list(), % a list of skiplists
+                levelzero_cache = [] :: list(), % a list of trees
                 levelzero_size = 0 :: integer(),
                 levelzero_maxcachesize :: integer(),
                 levelzero_cointoss = false :: boolean(),
@@ -345,9 +345,9 @@ handle_call({push_mem, {PushedTree, PushedIdx, MinSQN, MaxSQN}},
                 State=#state{is_snapshot=Snap}) when Snap == false ->
     % The push_mem process is as follows:
     %
-    % 1 - Receive a cache.  The cache has four parts: a skiplist of keys and
+    % 1 - Receive a cache.  The cache has four parts: a tree of keys and
     % values, an array of 256 binaries listing the hashes present in the
-    % skiplist, a min SQN and a max SQN
+    % tree, a min SQN and a max SQN
     %
     % 2 - Check to see if there is a levelzero file pending.  If so, the
     % update must be returned.  If not the update can be accepted
@@ -404,7 +404,7 @@ handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
                 leveled_pmem:merge_trees(StartKey,
                                             EndKey,
                                             State#state.levelzero_cache,
-                                            leveled_skiplist:empty());
+                                            leveled_tree:empty());
             List ->
                 List
         end,
@@ -1072,10 +1072,10 @@ clean_subdir(DirPath) ->
 
 
 maybe_pause_push(PCL, KL) ->
-    T0 = leveled_skiplist:empty(true),
+    T0 = [],
     I0 = leveled_pmem:new_index(),
     T1 = lists:foldl(fun({K, V}, {AccSL, AccIdx, MinSQN, MaxSQN}) ->
-                            UpdSL = leveled_skiplist:enter(K, V, AccSL),
+                            UpdSL = [{K, V}|AccSL],
                             SQN = leveled_codec:strip_to_seqonly({K, V}),
                             H = leveled_codec:magic_hash(K),
                             UpdIdx = leveled_pmem:prepare_for_index(AccIdx, H),
@@ -1083,7 +1083,10 @@ maybe_pause_push(PCL, KL) ->
                             end,
                         {T0, I0, infinity, 0},
                         KL),
-    case pcl_pushmem(PCL, T1) of
+    SL = element(1, T1),
+    Tree = leveled_tree:from_orderedlist(lists:ukeysort(1, SL)),
+    T2 = setelement(1, T1, Tree),
+    case pcl_pushmem(PCL, T2) of
         returned ->
             timer:sleep(50),
             maybe_pause_push(PCL, KL);
@@ -1315,63 +1318,63 @@ sqnoverlap_otherway_findnextkey_test() ->
 
 foldwithimm_simple_test() ->
     QueryArray = [
-        {2, [{{o, "Bucket1", "Key1"}, {5, {active, infinity}, 0, null}},
-                {{o, "Bucket1", "Key5"}, {1, {active, infinity}, 0, null}}]},
-        {3, [{{o, "Bucket1", "Key3"}, {3, {active, infinity}, 0, null}}]},
-        {5, [{{o, "Bucket1", "Key5"}, {2, {active, infinity}, 0, null}}]}
+        {2, [{{o, "Bucket1", "Key1", null},
+                    {5, {active, infinity}, 0, null}},
+                {{o, "Bucket1", "Key5", null},
+                    {1, {active, infinity}, 0, null}}]},
+        {3, [{{o, "Bucket1", "Key3", null},
+                {3, {active, infinity}, 0, null}}]},
+        {5, [{{o, "Bucket1", "Key5", null},
+                {2, {active, infinity}, 0, null}}]}
     ],
-    IMM0 = leveled_skiplist:enter({o, "Bucket1", "Key6"},
-                                        {7, {active, infinity}, 0, null},
-                                    leveled_skiplist:empty()),
-    IMM1 = leveled_skiplist:enter({o, "Bucket1", "Key1"},
-                                        {8, {active, infinity}, 0, null},
-                                    IMM0),
-    IMM2 = leveled_skiplist:enter({o, "Bucket1", "Key8"},
-                                        {9, {active, infinity}, 0, null},
-                                    IMM1),
-    IMMiter = leveled_skiplist:to_range(IMM2, {o, "Bucket1", "Key1"}),
+    KL1A = [{{o, "Bucket1", "Key6", null}, {7, {active, infinity}, 0, null}},
+            {{o, "Bucket1", "Key1", null}, {8, {active, infinity}, 0, null}},
+            {{o, "Bucket1", "Key8", null}, {9, {active, infinity}, 0, null}}],
+    IMM2 = leveled_tree:from_orderedlist(lists:ukeysort(1, KL1A)),
+    IMMiter = leveled_tree:match_range({o, "Bucket1", "Key1", null},
+                                        {o, null, null, null},
+                                        IMM2),
     AccFun = fun(K, V, Acc) -> SQN = leveled_codec:strip_to_seqonly({K, V}),
                                 Acc ++ [{K, SQN}] end,
     Acc = keyfolder(IMMiter,
                     QueryArray,
-                    {o, "Bucket1", "Key1"}, {o, "Bucket1", "Key6"},
+                    {o, "Bucket1", "Key1", null}, {o, "Bucket1", "Key6", null},
                     {AccFun, []}),
-    ?assertMatch([{{o, "Bucket1", "Key1"}, 8},
-                    {{o, "Bucket1", "Key3"}, 3},
-                    {{o, "Bucket1", "Key5"}, 2},
-                    {{o, "Bucket1", "Key6"}, 7}], Acc),
+    ?assertMatch([{{o, "Bucket1", "Key1", null}, 8},
+                    {{o, "Bucket1", "Key3", null}, 3},
+                    {{o, "Bucket1", "Key5", null}, 2},
+                    {{o, "Bucket1", "Key6", null}, 7}], Acc),
     
-    IMM1A = leveled_skiplist:enter({o, "Bucket1", "Key1"},
-                                        {8, {active, infinity}, 0, null},
-                                    leveled_skiplist:empty()),
-    IMMiterA = leveled_skiplist:to_range(IMM1A, {o, "Bucket1", "Key1"}),
+    IMMiterA = [{{o, "Bucket1", "Key1", null},
+                    {8, {active, infinity}, 0, null}}],
     AccA = keyfolder(IMMiterA,
-                    QueryArray,
-                    {o, "Bucket1", "Key1"}, {o, "Bucket1", "Key6"},
-                    {AccFun, []}),
-    ?assertMatch([{{o, "Bucket1", "Key1"}, 8},
-                    {{o, "Bucket1", "Key3"}, 3},
-                    {{o, "Bucket1", "Key5"}, 2}], AccA),
+                        QueryArray,
+                        {o, "Bucket1", "Key1", null}, {o, "Bucket1", "Key6", null},
+                        {AccFun, []}),
+    ?assertMatch([{{o, "Bucket1", "Key1", null}, 8},
+                    {{o, "Bucket1", "Key3", null}, 3},
+                    {{o, "Bucket1", "Key5", null}, 2}], AccA),
     
-    IMM3 = leveled_skiplist:enter({o, "Bucket1", "Key4"},
-                                     {10, {active, infinity}, 0, null},
-                                    IMM2),
-    IMMiterB = leveled_skiplist:to_range(IMM3, {o, "Bucket1", "Key1"}),
+    KL1B = [{{o, "Bucket1", "Key4", null}, {10, {active, infinity}, 0, null}}|KL1A],
+    IMM3 = leveled_tree:from_orderedlist(lists:ukeysort(1, KL1B)),
+    IMMiterB = leveled_tree:match_range({o, "Bucket1", "Key1", null},
+                                        {o, null, null, null},
+                                        IMM3),
     AccB = keyfolder(IMMiterB,
                     QueryArray,
-                    {o, "Bucket1", "Key1"}, {o, "Bucket1", "Key6"},
+                    {o, "Bucket1", "Key1", null}, {o, "Bucket1", "Key6", null},
                     {AccFun, []}),
-    ?assertMatch([{{o, "Bucket1", "Key1"}, 8},
-                    {{o, "Bucket1", "Key3"}, 3},
-                    {{o, "Bucket1", "Key4"}, 10},
-                    {{o, "Bucket1", "Key5"}, 2},
-                    {{o, "Bucket1", "Key6"}, 7}], AccB).
+    ?assertMatch([{{o, "Bucket1", "Key1", null}, 8},
+                    {{o, "Bucket1", "Key3", null}, 3},
+                    {{o, "Bucket1", "Key4", null}, 10},
+                    {{o, "Bucket1", "Key5", null}, 2},
+                    {{o, "Bucket1", "Key6", null}, 7}], AccB).
 
 create_file_test() ->
     Filename = "../test/new_file.sst",
     ok = file:write_file(Filename, term_to_binary("hello")),
     KVL = lists:usort(generate_randomkeys(10000)),
-    Tree = leveled_skiplist:from_list(KVL),
+    Tree = leveled_tree:from_orderedlist(KVL),
     FetchFun = fun(Slot) -> lists:nth(Slot, [Tree]) end,
     {ok,
         SP,
