@@ -26,7 +26,7 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(SKIP_WIDTH, 16).
+-define(SKIP_WIDTH, 32).
 
 
 %%%============================================================================
