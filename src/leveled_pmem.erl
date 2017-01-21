@@ -188,7 +188,7 @@ generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
                                 [],
                                 BucketRangeLow,
                                 BucketRangeHigh),
-    leveled_tree:from_orderedlist(lists:ukeysort(1, KVL)).
+    leveled_tree:from_orderedlist(lists:ukeysort(1, KVL), ?CACHE_TYPE).
 
 generate_randomkeys(_Seqn, 0, Acc, _BucketLow, _BucketHigh) ->
     Acc;
@@ -277,13 +277,13 @@ compare_method_test() ->
                             end,
                         [],
                         DumpList),
-    Tree = leveled_tree:from_orderedlist(lists:ukeysort(1, Q0)),
+    Tree = leveled_tree:from_orderedlist(lists:ukeysort(1, Q0), ?CACHE_TYPE),
     Sz0 = leveled_tree:tsize(Tree),
     io:format("Crude method took ~w microseconds resulting in tree of " ++
                     "size ~w~n",
                 [timer:now_diff(os:timestamp(), SWa), Sz0]),
     SWb = os:timestamp(),
-    Q1 = merge_trees(StartKey, EndKey, TreeList, leveled_tree:empty()),
+    Q1 = merge_trees(StartKey, EndKey, TreeList, leveled_tree:empty(?CACHE_TYPE)),
     Sz1 = length(Q1),
     io:format("Merge method took ~w microseconds resulting in tree of " ++
                     "size ~w~n",
@@ -300,7 +300,7 @@ with_index_test() ->
         fun(_X, {{LedgerSQN, L0Size, L0TreeList}, L0Idx, SrcList}) ->
             LM1 = generate_randomkeys_aslist(LedgerSQN + 1, 2000, 1, 500),
             LM1Array = lists:foldl(IndexPrepareFun, new_index(), LM1),
-            LM1SL = leveled_tree:from_orderedlist(lists:ukeysort(1, LM1)),
+            LM1SL = leveled_tree:from_orderedlist(lists:ukeysort(1, LM1), ?CACHE_TYPE),
             UpdL0Index = add_to_index(LM1Array, L0Idx, length(L0TreeList) + 1),
             R = add_to_cache(L0Size,
                                 {LM1SL, LedgerSQN + 1, LedgerSQN + 2000},

@@ -15,6 +15,8 @@
 %% Inker key type used for tombstones
 -define(INKT_TOMB, tomb).
 
+-define(CACHE_TYPE, tree).
+
 -record(sft_options,
                         {wait = true :: boolean(),
                         expire_tombstones = false :: boolean(),

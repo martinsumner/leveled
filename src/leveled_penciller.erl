@@ -404,7 +404,7 @@ handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
                 leveled_pmem:merge_trees(StartKey,
                                             EndKey,
                                             State#state.levelzero_cache,
-                                            leveled_tree:empty());
+                                            leveled_tree:empty(?CACHE_TYPE));
             List ->
                 List
         end,
@@ -1084,7 +1084,7 @@ maybe_pause_push(PCL, KL) ->
                         {T0, I0, infinity, 0},
                         KL),
     SL = element(1, T1),
-    Tree = leveled_tree:from_orderedlist(lists:ukeysort(1, SL)),
+    Tree = leveled_tree:from_orderedlist(lists:ukeysort(1, SL), ?CACHE_TYPE),
     T2 = setelement(1, T1, Tree),
     case pcl_pushmem(PCL, T2) of
         returned ->
@@ -1330,7 +1330,7 @@ foldwithimm_simple_test() ->
     KL1A = [{{o, "Bucket1", "Key6", null}, {7, {active, infinity}, 0, null}},
             {{o, "Bucket1", "Key1", null}, {8, {active, infinity}, 0, null}},
             {{o, "Bucket1", "Key8", null}, {9, {active, infinity}, 0, null}}],
-    IMM2 = leveled_tree:from_orderedlist(lists:ukeysort(1, KL1A)),
+    IMM2 = leveled_tree:from_orderedlist(lists:ukeysort(1, KL1A), ?CACHE_TYPE),
     IMMiter = leveled_tree:match_range({o, "Bucket1", "Key1", null},
                                         {o, null, null, null},
                                         IMM2),
@@ -1356,7 +1356,7 @@ foldwithimm_simple_test() ->
                     {{o, "Bucket1", "Key5", null}, 2}], AccA),
     
     KL1B = [{{o, "Bucket1", "Key4", null}, {10, {active, infinity}, 0, null}}|KL1A],
-    IMM3 = leveled_tree:from_orderedlist(lists:ukeysort(1, KL1B)),
+    IMM3 = leveled_tree:from_orderedlist(lists:ukeysort(1, KL1B), ?CACHE_TYPE),
     IMMiterB = leveled_tree:match_range({o, "Bucket1", "Key1", null},
                                         {o, null, null, null},
                                         IMM3),
@@ -1374,7 +1374,7 @@ create_file_test() ->
     Filename = "../test/new_file.sst",
     ok = file:write_file(Filename, term_to_binary("hello")),
     KVL = lists:usort(generate_randomkeys(10000)),
-    Tree = leveled_tree:from_orderedlist(KVL),
+    Tree = leveled_tree:from_orderedlist(KVL, ?CACHE_TYPE),
     FetchFun = fun(Slot) -> lists:nth(Slot, [Tree]) end,
     {ok,
         SP,

@@ -13,15 +13,17 @@
 -include("include/leveled.hrl").
 
 -export([
-        from_orderedlist/1,
-        from_orderedset/1,
+        from_orderedlist/2,
+        from_orderedset/2,
+        from_orderedlist/3,
+        from_orderedset/3,
         to_list/1,
         match_range/3,
         search_range/4,
         match/2,
         search/3,
         tsize/1,
-        empty/0
+        empty/1
         ]).      
 
 -include_lib("eunit/include/eunit.hrl").
@@ -33,12 +35,18 @@
 %%% API
 %%%============================================================================
 
-from_orderedlist(OrderedList) ->
-    L = length(OrderedList),
-    {tree, L, from_orderedlist(OrderedList, [], L)}.
+from_orderedset(Table, tree) ->
+    from_orderedlist(ets:tab2list(Table), tree, ?SKIP_WIDTH).
 
-from_orderedset(Table) ->
-    from_orderedlist(ets:tab2list(Table)).
+from_orderedset(Table, tree, SkipWidth) ->
+    from_orderedlist(ets:tab2list(Table), tree, SkipWidth).
+
+from_orderedlist(OrderedList, tree) ->
+    from_orderedlist(OrderedList, tree, ?SKIP_WIDTH).
+
+from_orderedlist(OrderedList, tree, SkipWidth) ->
+    L = length(OrderedList),
+    {tree, L, from_orderedlist(OrderedList, [], L, SkipWidth)}.
 
 match(Key, {tree, _L, Tree}) ->
     Iter = tree_iterator_from(Key, Tree),
@@ -90,7 +98,7 @@ to_list({tree, _L, Tree}) ->
 tsize({tree, L, _Tree}) ->
     L.
 
-empty() ->
+empty(tree) ->
     {tree, 0, empty_tree()}.
 
 %%%============================================================================
@@ -98,13 +106,13 @@ empty() ->
 %%%============================================================================
 
 
-from_orderedlist([], TmpList, _L) ->
+from_orderedlist([], TmpList, _L, _SkipWidth) ->
     gb_trees:from_orddict(lists:reverse(TmpList));
-from_orderedlist(OrdList, TmpList, L) ->
-    SubLL = min(?SKIP_WIDTH, L),
+from_orderedlist(OrdList, TmpList, L, SkipWidth) ->
+    SubLL = min(SkipWidth, L),
     {Head, Tail} = lists:split(SubLL, OrdList),
     {LastK, _LastV} = lists:last(Head),
-    from_orderedlist(Tail, [{LastK, Head}|TmpList], L - SubLL).
+    from_orderedlist(Tail, [{LastK, Head}|TmpList], L - SubLL, SkipWidth).
     
 lookup_match(_Key, []) ->
     none;
@@ -256,7 +264,7 @@ tree_search_test() ->
             {N * 4, N * 4 - 2}
         end,
     KL = lists:map(MapFun, lists:seq(1, 50)),
-    T = from_orderedlist(KL),
+    T = from_orderedlist(KL, tree),
     
     StartKeyFun = fun(V) -> V end,
     
@@ -274,22 +282,29 @@ tree_search_test() ->
     io:format(user, "10 range tests in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SW)]).
     
-    
+
 tree_test() ->
+    tree_test_by_width(8),
+    tree_test_by_width(16),
+    tree_test_by_width(32),
+    tree_test_by_width(4).
+
+tree_test_by_width(Width) ->
+    io:format(user, "~nTree test for width: ~w~n", [Width]),
     N = 4000,
     KL = lists:ukeysort(1, generate_randomkeys(1, N, 1, N div 5)),
     
     OS = ets:new(test, [ordered_set, private]),
     ets:insert(OS, KL),
     SWaETS = os:timestamp(),
-    Tree0 = from_orderedset(OS),
+    Tree0 = from_orderedset(OS, tree, Width),
     io:format(user, "Generating tree from ETS in ~w microseconds" ++
                         " of size ~w~n",
                 [timer:now_diff(os:timestamp(), SWaETS),
                     tsize(Tree0)]),
     
     SWaGSL = os:timestamp(),
-    Tree1 = from_orderedlist(KL),
+    Tree1 = from_orderedlist(KL, tree, Width),
     io:format(user, "Generating tree from orddict in ~w microseconds" ++
                         " of size ~w~n",
                 [timer:now_diff(os:timestamp(), SWaGSL),
