@@ -82,17 +82,7 @@ match(Key, {idxt, _L, {TLI, IDX}}) ->
             lookup_match(Key, element(ListID, TLI))
     end;
 match(Key, {skpl, _L, SkipList}) ->
-    FoldFun =
-        fun({Mark, SL}, Acc) ->
-            case {Acc, Mark} of
-                {[], Mark} when Mark >= Key ->
-                    SL;
-                _ ->
-                    Acc
-            end
-        end,
-    SL1 = lists:foldl(FoldFun, [], SkipList),
-    SL0 = lists:foldl(FoldFun, [], SL1),
+    SL0 = skpl_getsublist(Key, SkipList),
     lookup_match(Key, SL0).
 
 search(Key, {tree, _L, Tree}, StartKeyFun) ->
@@ -124,17 +114,7 @@ search(Key, {idxt, _L, {TLI, IDX}}, StartKeyFun) ->
             end
     end;
 search(Key, {skpl, _L, SkipList}, StartKeyFun) ->
-    FoldFun =
-        fun({Mark, SL}, Acc) ->
-            case {Acc, Mark} of
-                {[], Mark} when Mark >= Key ->
-                    SL;
-                _ ->
-                    Acc
-            end
-        end,
-    SL1 = lists:foldl(FoldFun, [], SkipList),
-    SL0 = lists:foldl(FoldFun, [], SL1),
+    SL0 = skpl_getsublist(Key, SkipList),
     {K, V} = lookup_best(Key, SL0),
     case K < StartKeyFun(V) of
         true ->
@@ -154,7 +134,9 @@ match_range(StartRange, EndRange, Tree) ->
 match_range(StartRange, EndRange, {tree, _L, Tree}, EndRangeFun) ->
     treelookup_range_start(StartRange, EndRange, Tree, EndRangeFun);
 match_range(StartRange, EndRange, {idxt, _L, Tree}, EndRangeFun) ->
-    idxtlookup_range_start(StartRange, EndRange, Tree, EndRangeFun).
+    idxtlookup_range_start(StartRange, EndRange, Tree, EndRangeFun);
+match_range(StartRange, EndRange, {skpl, _L, SkipList}, EndRangeFun) ->
+    skpllookup_to_range(StartRange, EndRange, SkipList, EndRangeFun).
 
 
 search_range(StartRange, EndRange, Tree, StartKeyFun) ->
@@ -167,7 +149,9 @@ search_range(StartRange, EndRange, Tree, StartKeyFun) ->
         {tree, _L, T} ->
             treelookup_range_start(StartRange, EndRange, T, EndRangeFun);
         {idxt, _L, T} ->
-            idxtlookup_range_start(StartRange, EndRange, T, EndRangeFun)
+            idxtlookup_range_start(StartRange, EndRange, T, EndRangeFun);
+        {skpl, _L, SL} ->
+            skpllookup_to_range(StartRange, EndRange, SL, EndRangeFun)
     end.
 
 
@@ -340,6 +324,88 @@ idxtlookup_range_end(EndRange, {TLI, NK0, SL0}, Iter0, Output, EndRangeFun) ->
             end 
     end.
 
+
+skpllookup_to_range(StartRange, EndRange, SkipList, EndRangeFun) ->
+    FoldFun =
+        fun({K, SL}, {PassedStart, PassedEnd, Acc}) ->
+            case {PassedStart, PassedEnd} of
+                {false, false} ->
+                    case StartRange > K of
+                        true ->
+                            {PassedStart, PassedEnd, Acc};
+                        false ->
+                            case leveled_codec:endkey_passed(EndRange, K) of
+                                true ->
+                                    {true, true, [SL|Acc]};
+                                false ->
+                                    {true, false, [SL|Acc]}
+                            end
+                    end;
+                {true, false} ->
+                    case leveled_codec:endkey_passed(EndRange, K) of
+                        true ->
+                            {true, true, [SL|Acc]};
+                        false ->
+                            {true, false, [SL|Acc]}
+                    end;
+                {true, true} ->
+                    {PassedStart, PassedEnd, Acc}
+            end
+        end,
+    Lv1List = lists:reverse(element(3,
+                                    lists:foldl(FoldFun,
+                                                {false, false, []},
+                                                SkipList))),
+    Lv0List = lists:reverse(element(3,
+                                    lists:foldl(FoldFun,
+                                                {false, false, []},
+                                                lists:append(Lv1List)))),
+    BeforeFun =
+        fun({K, _V}) ->
+            K < StartRange
+        end,
+    AfterFun =
+        fun({K, V}) ->
+            case leveled_codec:endkey_passed(EndRange, K) of
+                false ->
+                    true;
+                true ->
+                    EndRangeFun(EndRange, K, V)
+            end
+        end,
+    
+    case length(Lv0List) of
+        0 ->
+            [];
+        1 ->
+            RHS = lists:dropwhile(BeforeFun, lists:nth(1, Lv0List)),
+            lists:takewhile(AfterFun, RHS);
+        2 ->
+            RHSofLHL = lists:dropwhile(BeforeFun, lists:nth(1, Lv0List)),
+            LHSofRHL = lists:takewhile(AfterFun, lists:last(Lv0List)),
+            RHSofLHL ++ LHSofRHL;
+        L ->
+            RHSofLHL = lists:dropwhile(BeforeFun, lists:nth(1, Lv0List)),
+            LHSofRHL = lists:takewhile(AfterFun, lists:last(Lv0List)),
+            MidLists = lists:sublist(Lv0List, 2, L - 2),
+            lists:append([RHSofLHL] ++ MidLists ++ [LHSofRHL])
+    end.
+
+
+skpl_getsublist(Key, SkipList) ->
+    FoldFun =
+        fun({Mark, SL}, Acc) ->
+            case {Acc, Mark} of
+                {none, Mark} when Mark >= Key ->
+                    SL;
+                _ ->
+                    Acc
+            end
+        end,
+    SL1 = lists:foldl(FoldFun, none, SkipList),
+    lists:foldl(FoldFun, none, SL1).
+
+
 %%%============================================================================
 %%% Balance tree implementation
 %%%============================================================================
@@ -429,6 +495,9 @@ tree_search_test() ->
 idxt_search_test() ->
     search_test_by_type(idxt).
 
+skpl_search_test() ->
+    search_test_by_type(skpl).
+
 search_test_by_type(Type) ->
     MapFun =
         fun(N) ->
@@ -517,12 +586,15 @@ tree_test_by_(Width, Type, N) ->
                 [timer:now_diff(os:timestamp(), SWaSRCH2)]).
 
 
-
 tree_matchrange_test() ->
     matchrange_test_by_type(tree).
 
 idxt_matchrange_test() ->
     matchrange_test_by_type(idxt).
+
+skpl_matchrange_test() ->
+    matchrange_test_by_type(skpl).
+
 
 matchrange_test_by_type(Type) ->
     N = 4000,
@@ -543,6 +615,7 @@ matchrange_test_by_type(Type) ->
         end,
     
     KL_Length = length(KL),
+    io:format("KL_Length ~w~n", [KL_Length]),
     ?assertMatch(KL_Length, LengthR(FirstKey, FinalKey, Tree0)),
     ?assertMatch(KL_Length, LengthR(FirstKey, PenultimateKey, Tree0) + 1),
     ?assertMatch(1, LengthR(all, FirstKey, Tree0)),
