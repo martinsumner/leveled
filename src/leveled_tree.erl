@@ -29,6 +29,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(SKIP_WIDTH, 16).
+-define(WIDTH_MAP, [{64, 4}, {512, 8}, {4096, 16}, {infinity, 32}]).
 
 
 %%%============================================================================
@@ -38,9 +39,9 @@
 from_orderedset(Table, Type) ->
     from_orderedlist(ets:tab2list(Table), Type, ?SKIP_WIDTH).
 
-
 from_orderedset(Table, Type, SkipWidth) ->
     from_orderedlist(ets:tab2list(Table), Type, SkipWidth).
+
 
 from_orderedlist(OrderedList, Type) ->
     from_orderedlist(OrderedList, Type, ?SKIP_WIDTH).
@@ -50,7 +51,19 @@ from_orderedlist(OrderedList, tree, SkipWidth) ->
     {tree, L, tree_fromorderedlist(OrderedList, [], L, SkipWidth)};
 from_orderedlist(OrderedList, idxt, SkipWidth) ->
     L = length(OrderedList),
-    {idxt, L, idxt_fromorderedlist(OrderedList, {[], [], 1}, L, SkipWidth)}.
+    {idxt, L, idxt_fromorderedlist(OrderedList, {[], [], 1}, L, SkipWidth)};
+from_orderedlist(OrderedList, skpl, _SkipWidth) ->
+    L = length(OrderedList),
+    SkipWidth =
+        % Autosize the skip width
+        case L of
+            L when L > 4096 -> 32;
+            L when L > 512 -> 16;
+            L when L > 64 -> 8;
+            _ -> 4
+        end,
+    {skpl, L, skpl_fromorderedlist(OrderedList, L, SkipWidth, 2)}.
+    
 
 match(Key, {tree, _L, Tree}) ->
     Iter = tree_iterator_from(Key, Tree),
@@ -67,7 +80,20 @@ match(Key, {idxt, _L, {TLI, IDX}}) ->
             none;
         {_NK, ListID, _Iter} ->
             lookup_match(Key, element(ListID, TLI))
-    end.
+    end;
+match(Key, {skpl, _L, SkipList}) ->
+    FoldFun =
+        fun({Mark, SL}, Acc) ->
+            case {Acc, Mark} of
+                {[], Mark} when Mark >= Key ->
+                    SL;
+                _ ->
+                    Acc
+            end
+        end,
+    SL1 = lists:foldl(FoldFun, [], SkipList),
+    SL0 = lists:foldl(FoldFun, [], SL1),
+    lookup_match(Key, SL0).
 
 search(Key, {tree, _L, Tree}, StartKeyFun) ->
     Iter = tree_iterator_from(Key, Tree),
@@ -96,6 +122,25 @@ search(Key, {idxt, _L, {TLI, IDX}}, StartKeyFun) ->
                 false ->
                     {K, V}
             end
+    end;
+search(Key, {skpl, _L, SkipList}, StartKeyFun) ->
+    FoldFun =
+        fun({Mark, SL}, Acc) ->
+            case {Acc, Mark} of
+                {[], Mark} when Mark >= Key ->
+                    SL;
+                _ ->
+                    Acc
+            end
+        end,
+    SL1 = lists:foldl(FoldFun, [], SkipList),
+    SL0 = lists:foldl(FoldFun, [], SL1),
+    {K, V} = lookup_best(Key, SL0),
+    case K < StartKeyFun(V) of
+        true ->
+            none;
+        false ->
+            {K, V}
     end.
 
 
@@ -111,6 +156,7 @@ match_range(StartRange, EndRange, {tree, _L, Tree}, EndRangeFun) ->
 match_range(StartRange, EndRange, {idxt, _L, Tree}, EndRangeFun) ->
     idxtlookup_range_start(StartRange, EndRange, Tree, EndRangeFun).
 
+
 search_range(StartRange, EndRange, Tree, StartKeyFun) ->
     EndRangeFun =
         fun(ER, _FirstRHSKey, FirstRHSValue) ->
@@ -124,6 +170,7 @@ search_range(StartRange, EndRange, Tree, StartKeyFun) ->
             idxtlookup_range_start(StartRange, EndRange, T, EndRangeFun)
     end.
 
+
 to_list({tree, _L, Tree}) ->
     FoldFun =
         fun({_MK, SL}, Acc) ->
@@ -132,6 +179,7 @@ to_list({tree, _L, Tree}) ->
     lists:foldl(FoldFun, [], tree_to_list(Tree));
 to_list({idxt, _L, {TLI, _IDX}}) ->
     lists:append(tuple_to_list(TLI)).
+
 
 tsize({_Type, L, _Tree}) ->
     L.
@@ -167,6 +215,22 @@ idxt_fromorderedlist(OrdList, {TmpListElements, TmpListIdx, C}, L, SkipWidth) ->
                                 C + 1},
                             L - SubLL,
                             SkipWidth).
+
+skpl_fromorderedlist(SkipList, _L, _SkipWidth, 0) ->
+    SkipList;
+skpl_fromorderedlist(SkipList, L, SkipWidth, Height) ->
+    SkipList0 = roll_list(SkipList, L, [], SkipWidth),
+    skpl_fromorderedlist(SkipList0, length(SkipList0), SkipWidth, Height - 1).
+
+roll_list([], 0, SkipList, _SkipWidth) ->
+    lists:reverse(SkipList);
+roll_list(KVList, L, SkipList, SkipWidth) ->
+    SubLL = min(SkipWidth, L),
+    {Head, Tail} = lists:split(SubLL, KVList),
+    {LastK, _LastV} = lists:last(Head),
+    roll_list(Tail, L - SubLL, [{LastK, Head}|SkipList], SkipWidth).
+
+
 
 lookup_match(_Key, []) ->
     none;
@@ -391,16 +455,22 @@ search_test_by_type(Type) ->
     
 
 tree_timing_test() ->
-    tree_test_by_(8, tree),
-    tree_test_by_(16, tree).
+    tree_test_by_(16, tree, 4000),
+    tree_test_by_(8, tree, 1000),
+    tree_test_by_(4, tree, 128).
 
 idxt_timing_test() ->
-    tree_test_by_(16, idxt),
-    tree_test_by_(8, idxt).
+    tree_test_by_(16, idxt, 4000),
+    tree_test_by_(8, idxt, 1000),
+    tree_test_by_(4, idxt, 128).
 
-tree_test_by_(Width, Type) ->
+skpl_timing_test() ->
+    tree_test_by_(auto, skpl, 4000),
+    tree_test_by_(auto, skpl, 1000),
+    tree_test_by_(auto, skpl, 128).
+
+tree_test_by_(Width, Type, N) ->
     io:format(user, "~nTree test for type and width: ~w ~w~n", [Type, Width]),
-    N = 4000,
     KL = lists:ukeysort(1, generate_randomkeys(1, N, 1, N div 5)),
     
     OS = ets:new(test, [ordered_set, private]),
