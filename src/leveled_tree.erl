@@ -26,7 +26,7 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(SKIP_WIDTH, 32).
+-define(SKIP_WIDTH, 16).
 
 
 %%%============================================================================
@@ -99,12 +99,12 @@ empty() ->
 
 
 from_orderedlist([], TmpList, _L) ->
-    gb_trees:from_orddict(TmpList);
+    gb_trees:from_orddict(lists:reverse(TmpList));
 from_orderedlist(OrdList, TmpList, L) ->
     SubLL = min(?SKIP_WIDTH, L),
     {Head, Tail} = lists:split(SubLL, OrdList),
     {LastK, _LastV} = lists:last(Head),
-    from_orderedlist(Tail, TmpList ++ [{LastK, Head}], L - SubLL).
+    from_orderedlist(Tail, [{LastK, Head}|TmpList], L - SubLL).
     
 lookup_match(_Key, []) ->
     none;
@@ -276,7 +276,7 @@ tree_search_test() ->
     
     
 tree_test() ->
-    N = 2000,
+    N = 4000,
     KL = lists:ukeysort(1, generate_randomkeys(1, N, 1, N div 5)),
     
     OS = ets:new(test, [ordered_set, private]),
