@@ -137,7 +137,9 @@ tsize({_Type, L, _Tree}) ->
     L.
 
 empty(tree) ->
-    {tree, 0, empty_tree()}.
+    {tree, 0, empty_tree()};
+empty(idxt) ->
+    {idxt, 0, {{}, empty_tree()}}.
 
 %%%============================================================================
 %%% Internal Functions
