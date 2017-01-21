@@ -162,7 +162,17 @@ to_list({tree, _L, Tree}) ->
         end,
     lists:foldl(FoldFun, [], tree_to_list(Tree));
 to_list({idxt, _L, {TLI, _IDX}}) ->
-    lists:append(tuple_to_list(TLI)).
+    lists:append(tuple_to_list(TLI));
+to_list({skpl, _L, SkipList}) ->
+    FoldFun = 
+        fun({_M, SL}, Acc) ->
+            [SL|Acc]
+        end,
+
+    Lv1List = lists:reverse(lists:foldl(FoldFun, [], SkipList)),
+    Lv0List = lists:reverse(lists:foldl(FoldFun, [], lists:append(Lv1List))),
+    lists:append(Lv0List).
+
 
 
 tsize({_Type, L, _Tree}) ->
@@ -171,7 +181,9 @@ tsize({_Type, L, _Tree}) ->
 empty(tree) ->
     {tree, 0, empty_tree()};
 empty(idxt) ->
-    {idxt, 0, {{}, empty_tree()}}.
+    {idxt, 0, {{}, empty_tree()}};
+empty(skpl) ->
+    {skpl, 0, []}.
 
 %%%============================================================================
 %%% Internal Functions
@@ -216,14 +228,22 @@ roll_list(KVList, L, SkipList, SkipWidth) ->
 
 
 
-lookup_match(_Key, []) ->
-    none;
-lookup_match(Key, [{EK, _EV}|_Tail]) when EK > Key ->
-    none;
-lookup_match(Key, [{Key, EV}|_Tail]) ->
-    {value, EV};
-lookup_match(Key, [_Top|Tail]) ->
-    lookup_match(Key, Tail).
+% lookup_match(_Key, []) ->
+%     none;
+% lookup_match(Key, [{EK, _EV}|_Tail]) when EK > Key ->
+%     none;
+% lookup_match(Key, [{Key, EV}|_Tail]) ->
+%     {value, EV};
+% lookup_match(Key, [_Top|Tail]) ->
+%     lookup_match(Key, Tail).
+
+lookup_match(Key, KVList) ->
+    case lists:keyfind(Key, 1, KVList) of 
+        false ->
+            none;
+        {Key, Value} ->
+            {value, Value}
+    end.
 
 lookup_best(Key, [{EK, EV}|_Tail]) when EK >= Key ->
     {EK, EV};
@@ -396,15 +416,14 @@ skpl_getsublist(Key, SkipList) ->
     FoldFun =
         fun({Mark, SL}, Acc) ->
             case {Acc, Mark} of
-                {none, Mark} when Mark >= Key ->
+                {[], Mark} when Mark >= Key ->
                     SL;
                 _ ->
                     Acc
             end
         end,
-    SL1 = lists:foldl(FoldFun, none, SkipList),
-    lists:foldl(FoldFun, none, SL1).
-
+    SL1 = lists:foldl(FoldFun, [], SkipList),
+    lists:foldl(FoldFun, [], SL1).
 
 %%%============================================================================
 %%% Balance tree implementation
