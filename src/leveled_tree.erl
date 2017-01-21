@@ -457,17 +457,17 @@ search_test_by_type(Type) ->
 tree_timing_test() ->
     tree_test_by_(16, tree, 4000),
     tree_test_by_(8, tree, 1000),
-    tree_test_by_(4, tree, 128).
+    tree_test_by_(4, tree, 256).
 
 idxt_timing_test() ->
     tree_test_by_(16, idxt, 4000),
     tree_test_by_(8, idxt, 1000),
-    tree_test_by_(4, idxt, 128).
+    tree_test_by_(4, idxt, 256).
 
 skpl_timing_test() ->
     tree_test_by_(auto, skpl, 4000),
     tree_test_by_(auto, skpl, 1000),
-    tree_test_by_(auto, skpl, 128).
+    tree_test_by_(auto, skpl, 256).
 
 tree_test_by_(Width, Type, N) ->
     io:format(user, "~nTree test for type and width: ~w ~w~n", [Type, Width]),
