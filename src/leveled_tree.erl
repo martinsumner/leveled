@@ -35,18 +35,22 @@
 %%% API
 %%%============================================================================
 
-from_orderedset(Table, tree) ->
-    from_orderedlist(ets:tab2list(Table), tree, ?SKIP_WIDTH).
+from_orderedset(Table, Type) ->
+    from_orderedlist(ets:tab2list(Table), Type, ?SKIP_WIDTH).
 
-from_orderedset(Table, tree, SkipWidth) ->
-    from_orderedlist(ets:tab2list(Table), tree, SkipWidth).
 
-from_orderedlist(OrderedList, tree) ->
-    from_orderedlist(OrderedList, tree, ?SKIP_WIDTH).
+from_orderedset(Table, Type, SkipWidth) ->
+    from_orderedlist(ets:tab2list(Table), Type, SkipWidth).
+
+from_orderedlist(OrderedList, Type) ->
+    from_orderedlist(OrderedList, Type, ?SKIP_WIDTH).
 
 from_orderedlist(OrderedList, tree, SkipWidth) ->
     L = length(OrderedList),
-    {tree, L, from_orderedlist(OrderedList, [], L, SkipWidth)}.
+    {tree, L, tree_fromorderedlist(OrderedList, [], L, SkipWidth)};
+from_orderedlist(OrderedList, idxt, SkipWidth) ->
+    L = length(OrderedList),
+    {idxt, L, idxt_fromorderedlist(OrderedList, {[], [], 1}, L, SkipWidth)}.
 
 match(Key, {tree, _L, Tree}) ->
     Iter = tree_iterator_from(Key, Tree),
@@ -55,6 +59,14 @@ match(Key, {tree, _L, Tree}) ->
             none;
         {_NK, SL, _Iter} ->
             lookup_match(Key, SL)
+    end;
+match(Key, {idxt, _L, {TLI, IDX}}) ->
+    Iter = tree_iterator_from(Key, IDX),
+    case tree_next(Iter) of
+        none ->
+            none;
+        {_NK, ListID, _Iter} ->
+            lookup_match(Key, element(ListID, TLI))
     end.
 
 search(Key, {tree, _L, Tree}, StartKeyFun) ->
@@ -70,7 +82,22 @@ search(Key, {tree, _L, Tree}, StartKeyFun) ->
                 false ->
                     {K, V}
             end
+    end;
+search(Key, {idxt, _L, {TLI, IDX}}, StartKeyFun) ->
+    Iter = tree_iterator_from(Key, IDX),
+    case tree_next(Iter) of
+        none ->
+            none;
+        {_NK, ListID, _Iter} ->
+            {K, V} = lookup_best(Key, element(ListID, TLI)),
+            case K < StartKeyFun(V) of
+                true ->
+                    none;
+                false ->
+                    {K, V}
+            end
     end.
+
 
 match_range(StartRange, EndRange, {tree, _L, Tree}) ->
     EndRangeFun =
@@ -95,7 +122,7 @@ to_list({tree, _L, Tree}) ->
         end,
     lists:foldl(FoldFun, [], tree_to_list(Tree)).
 
-tsize({tree, L, _Tree}) ->
+tsize({_Type, L, _Tree}) ->
     L.
 
 empty(tree) ->
@@ -106,14 +133,28 @@ empty(tree) ->
 %%%============================================================================
 
 
-from_orderedlist([], TmpList, _L, _SkipWidth) ->
+tree_fromorderedlist([], TmpList, _L, _SkipWidth) ->
     gb_trees:from_orddict(lists:reverse(TmpList));
-from_orderedlist(OrdList, TmpList, L, SkipWidth) ->
+tree_fromorderedlist(OrdList, TmpList, L, SkipWidth) ->
     SubLL = min(SkipWidth, L),
     {Head, Tail} = lists:split(SubLL, OrdList),
     {LastK, _LastV} = lists:last(Head),
-    from_orderedlist(Tail, [{LastK, Head}|TmpList], L - SubLL, SkipWidth).
+    tree_fromorderedlist(Tail, [{LastK, Head}|TmpList], L - SubLL, SkipWidth).
     
+idxt_fromorderedlist([], {TmpListElements, TmpListIdx, _C}, _L, _SkipWidth) ->
+    {list_to_tuple(lists:reverse(TmpListElements)),
+        gb_trees:from_orddict(lists:reverse(TmpListIdx))};
+idxt_fromorderedlist(OrdList, {TmpListElements, TmpListIdx, C}, L, SkipWidth) ->
+    SubLL = min(SkipWidth, L),
+    {Head, Tail} = lists:split(SubLL, OrdList),
+    {LastK, _LastV} = lists:last(Head),
+    idxt_fromorderedlist(Tail,
+                            {[Head|TmpListElements],
+                                [{LastK, C}|TmpListIdx],
+                                C + 1},
+                            L - SubLL,
+                            SkipWidth).
+
 lookup_match(_Key, []) ->
     none;
 lookup_match(Key, [{EK, _EV}|_Tail]) when EK > Key ->
@@ -284,27 +325,29 @@ tree_search_test() ->
     
 
 tree_test() ->
-    tree_test_by_width(8),
-    tree_test_by_width(16),
-    tree_test_by_width(32),
-    tree_test_by_width(4).
+    tree_test_by_width(8, tree),
+    tree_test_by_width(16, tree),
+    tree_test_by_width(32, tree),
+    tree_test_by_width(4, tree),
+    
+    tree_test_by_width(16, idxt).
 
-tree_test_by_width(Width) ->
-    io:format(user, "~nTree test for width: ~w~n", [Width]),
+tree_test_by_width(Width, Type) ->
+    io:format(user, "~nTree test for type and width: ~w ~w~n", [Type, Width]),
     N = 4000,
     KL = lists:ukeysort(1, generate_randomkeys(1, N, 1, N div 5)),
     
     OS = ets:new(test, [ordered_set, private]),
     ets:insert(OS, KL),
     SWaETS = os:timestamp(),
-    Tree0 = from_orderedset(OS, tree, Width),
+    Tree0 = from_orderedset(OS, Type, Width),
     io:format(user, "Generating tree from ETS in ~w microseconds" ++
                         " of size ~w~n",
                 [timer:now_diff(os:timestamp(), SWaETS),
                     tsize(Tree0)]),
     
     SWaGSL = os:timestamp(),
-    Tree1 = from_orderedlist(KL, tree, Width),
+    Tree1 = from_orderedlist(KL, Type, Width),
     io:format(user, "Generating tree from orddict in ~w microseconds" ++
                         " of size ~w~n",
                 [timer:now_diff(os:timestamp(), SWaGSL),
@@ -335,8 +378,15 @@ tree_test_by_width(Width) ->
     lists:foreach(search_nearmatch_fun(Tree0), SrchKL),
     lists:foreach(search_nearmatch_fun(Tree1), SrchKL),
     io:format(user, "Search all keys twice for near match in ~w microseconds~n",
-                [timer:now_diff(os:timestamp(), SWaSRCH2)]),
+                [timer:now_diff(os:timestamp(), SWaSRCH2)]).
 
+
+
+tree_matchrange_test() ->
+    N = 4000,
+    KL = lists:ukeysort(1, generate_randomkeys(1, N, 1, N div 5)),
+    Tree0 = from_orderedlist(KL, tree),
+    
     FirstKey = element(1, lists:nth(1, KL)),
     FinalKey = element(1, lists:last(KL)),
     PenultimateKey = element(1, lists:nth(length(KL) - 1, KL)),
