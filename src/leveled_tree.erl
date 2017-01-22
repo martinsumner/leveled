@@ -29,7 +29,6 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(SKIP_WIDTH, 16).
--define(WIDTH_MAP, [{64, 4}, {512, 8}, {4096, 16}, {infinity, 32}]).
 
 
 %%%============================================================================
@@ -660,5 +659,13 @@ search_nearmatch_fun(Tree) ->
     fun({K, {NK, NV}}) ->
         ?assertMatch({NK, NV}, search(K, Tree, StartKeyFun))
     end.
+
+empty_test() ->
+    T0 = empty(tree),
+    ?assertMatch(0, tsize(T0)),
+    T1 = empty(skpl),
+    ?assertMatch(0, tsize(T1)),
+    T2 = empty(idxt),
+    ?assertMatch(0, tsize(T2)).
 
 -endif.

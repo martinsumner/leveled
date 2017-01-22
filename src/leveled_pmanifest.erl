@@ -51,6 +51,8 @@
 -define(MANIFEST_FILEX, "man").
 -define(MANIFEST_FP, "ledger_manifest").
 -define(MAX_LEVELS, 8).
+-define(TREE_TYPE, idxt).
+-define(TREE_WIDTH, 8).
 
 -record(manifest, {levels,
                         % an array of lists or trees representing the manifest
@@ -73,8 +75,16 @@
 %%%============================================================================
 
 new_manifest() ->
+    LevelArray0 = array:new([{size, ?MAX_LEVELS + 1}, {default, []}]),
+    SetLowerLevelFun =
+        fun(IDX, Acc) ->
+            array:set(IDX, leveled_tree:empty(?TREE_TYPE), Acc)
+        end,
+    LevelArray1 = lists:foldl(SetLowerLevelFun,
+                                LevelArray0,
+                                lists:seq(2, ?MAX_LEVELS)),
     #manifest{
-        levels = array:new([{size, ?MAX_LEVELS + 1}, {default, []}]), 
+        levels = LevelArray1, 
         manifest_sqn = 0, 
         snapshots = [],
         pending_deletes = dict:new(),
@@ -322,58 +332,115 @@ levelzero_present(Manifest) ->
 %%% Internal Functions
 %%%============================================================================
 
+
 %% All these internal functions that work on a level are also passed LeveIdx
 %% even if this is not presently relevant.  Currnetly levels are lists, but
 %% future branches may make lower levels trees or skiplists to improve fetch
 %% efficiency
 
-load_level(_LevelIdx, Level, PidFun, SQNFun) ->
-    LevelLoadFun =
+load_level(LevelIdx, Level, PidFun, SQNFun) ->
+    HigherLevelLoadFun =
         fun(ME, {L_Out, L_MaxSQN}) ->
             FN = ME#manifest_entry.filename,
             P = PidFun(FN),
             SQN = SQNFun(P),
             {[ME#manifest_entry{owner=P}|L_Out], max(SQN, L_MaxSQN)}
         end,
-    lists:foldr(LevelLoadFun, {[], 0}, Level).
+    LowerLevelLoadFun =
+        fun({EK, ME}, {L_Out, L_MaxSQN}) ->
+            FN = ME#manifest_entry.filename,
+            P = PidFun(FN),
+            SQN = SQNFun(P),
+            {[{EK, ME#manifest_entry{owner=P}}|L_Out], max(SQN, L_MaxSQN)}
+        end,
+    case LevelIdx =< 1 of
+        true ->
+            lists:foldr(HigherLevelLoadFun, {[], 0}, Level);
+        false ->
+            {L0, MaxSQN} = lists:foldr(LowerLevelLoadFun,
+                                        {[], 0},
+                                        leveled_tree:to_list(Level)),
+            {leveled_tree:from_orderedlist(L0), MaxSQN}
+    end.
 
+close_level(LevelIdx, Level, CloseEntryFun) when LevelIdx =< 1 ->
+    lists:foreach(CloseEntryFun, Level);
 close_level(_LevelIdx, Level, CloseEntryFun) ->
-    lists:foreach(CloseEntryFun, Level).
+    lists:foreach(CloseEntryFun, leveled_tree:to_list(Level)).
 
 is_empty(_LevelIdx, []) ->
     true;
-is_empty(_LevelIdx, _Level) ->
-    false.
+is_empty(LevelIdx, _Level) when LevelIdx =< 1 ->
+    false;
+is_empty(_LevelIdx, Level) ->
+    leveled_tree:tsize(Level) == 0.
 
+size(LevelIdx, Level) when LevelIdx =< 1 ->
+    length(Level);
 size(_LevelIdx, Level) ->
-    length(Level).
+    leveled_tree:tsize(Level).
 
-add_entry(_LevelIdx, Level, Entries) when is_list(Entries) ->
-    lists:sort(Level ++ Entries);
-add_entry(_LevelIdx, Level, Entry) ->
-    lists:sort([Entry|Level]).
+pred_fun(LevelIdx, StartKey, _EndKey) when LevelIdx =< 1 ->
+    fun(ME) ->
+        ME#manifest_entry.start_key < StartKey
+    end;
+pred_fun(_LevelIdx, _StartKey, EndKey) ->
+    fun({EK, _ME}) ->
+        EK < EndKey
+    end.
 
-remove_entry(_LevelIdx, Level, Entries) when is_list(Entries) ->
+add_entry(LevelIdx, Level, Entries) when is_list(Entries) ->
+    FirstEntry = lists:nth(1, Entries),
+    PredFun = pred_fun(LevelIdx,
+                        FirstEntry#manifest_entry.start_key,
+                        FirstEntry#manifest_entry.end_key),
+    case LevelIdx =< 1 of
+        true ->
+            {LHS, RHS} = lists:splitwith(PredFun, Level),
+            lists:append([LHS, Entries, RHS]);
+        false ->
+            {LHS, RHS} = lists:splitwith(PredFun, leveled_tree:to_list(Level)),
+            MapFun =
+                fun(ME) ->
+                    {ME#manifest_entry.end_key, ME}
+                end,
+            Entries0 = lists:map(MapFun, Entries),
+            leveled_tree:from_orderedlist(lists:append([LHS, Entries0, RHS]),
+                                            ?TREE_TYPE,
+                                            ?TREE_WIDTH)
+    end;
+add_entry(LevelIdx, Level, Entry) ->
+    add_entry(LevelIdx, Level, [Entry]).
+
+remove_entry(LevelIdx, Level, Entries) when is_list(Entries) ->
     % We're assuming we're removing a sorted sublist
     RemLength = length(Entries),
     [RemStart|_Tail] = Entries,
-    remove_section(Level, RemStart#manifest_entry.start_key, RemLength);
-remove_entry(_LevelIdx, Level, Entry) ->
-    remove_section(Level, Entry#manifest_entry.start_key, 1).
+    remove_section(LevelIdx, Level, RemStart, RemLength);
+remove_entry(LevelIdx, Level, Entry) ->
+    remove_section(LevelIdx, Level, Entry, 1).
 
-remove_section(Level, SectionStartKey, SectionLength) ->
-    PredFun =
-        fun(E) ->
-            E#manifest_entry.start_key < SectionStartKey
-        end,
-    {Pre, Rest} = lists:splitwith(PredFun, Level),
-    Post = lists:nthtail(SectionLength, Rest),
-    Pre ++ Post.
+remove_section(LevelIdx, Level, FirstEntry, SectionLength) ->
+    PredFun = pred_fun(LevelIdx,
+                        FirstEntry#manifest_entry.start_key,
+                        FirstEntry#manifest_entry.end_key),
+    case LevelIdx =< 1 of
+        true ->
+            {LHS, RHS} = lists:splitwith(PredFun, Level),
+            Post = lists:nthtail(SectionLength, RHS),
+            lists:append([LHS, Post]);
+        false ->
+            {LHS, RHS} = lists:splitwith(PredFun, leveled_tree:to_list(Level)),
+            Post = lists:nthtail(SectionLength, RHS),
+            leveled_tree:from_orderedlist(lists:append([LHS, Post]),
+                                            ?TREE_TYPE,
+                                            ?TREE_WIDTH)
+    end.
 
 
-key_lookup_level(_LevelIdx, [], _Key) ->
+key_lookup_level(LevelIdx, [], _Key) when LevelIdx =< 1 ->
     false;
-key_lookup_level(LevelIdx, [Entry|Rest], Key) ->
+key_lookup_level(LevelIdx, [Entry|Rest], Key) when LevelIdx =< 1 ->
     case Entry#manifest_entry.end_key >= Key of
         true ->
             case Key >= Entry#manifest_entry.start_key of
@@ -384,7 +451,19 @@ key_lookup_level(LevelIdx, [Entry|Rest], Key) ->
             end;
         false ->
             key_lookup_level(LevelIdx, Rest, Key)
+    end;
+key_lookup_level(_LevelIdx, Level, Key) ->
+    StartKeyFun =
+        fun(ME) ->
+            ME#manifest_entry.start_key
+        end,
+    case leveled_tree:search(Key, Level, StartKeyFun) of
+        none ->
+            false;
+        {_EK, ME} ->
+            ME#manifest_entry.owner
     end.
+
 
 range_lookup_int(Manifest, LevelIdx, StartKey, EndKey, MakePointerFun) ->
     Range = 
@@ -400,7 +479,7 @@ range_lookup_int(Manifest, LevelIdx, StartKey, EndKey, MakePointerFun) ->
         end,
     lists:map(MakePointerFun, Range).
     
-range_lookup_level(_LevelIdx, Level, QStartKey, QEndKey) ->
+range_lookup_level(LevelIdx, Level, QStartKey, QEndKey) when LevelIdx =< 1 ->
     BeforeFun =
         fun(M) ->
             QStartKey > M#manifest_entry.end_key
@@ -412,7 +491,19 @@ range_lookup_level(_LevelIdx, Level, QStartKey, QEndKey) ->
         end,
     {_Before, MaybeIn} = lists:splitwith(BeforeFun, Level),
     {In, _After} = lists:splitwith(NotAfterFun, MaybeIn),
-    In.
+    In;
+range_lookup_level(_LevelIdx, Level, QStartKey, QEndKey) ->
+    StartKeyFun =
+        fun(ME) ->
+            ME#manifest_entry.start_key
+        end,
+    Range = leveled_tree:search_range(QStartKey, QEndKey, Level, StartKeyFun),
+    MapFun =
+        fun({_EK, ME}) ->
+            ME
+        end,
+    lists:map(MapFun, Range).
+    
 
 get_basement(Levels) ->
     GetBaseFun =
@@ -455,6 +546,7 @@ open_manifestfile(RootPath, [TopManSQN|Rest]) ->
             leveled_log:log("P0033", [CurrManFile, "crc wonky"]),
             open_manifestfile(RootPath, Rest)
     end.
+
 
 %%%============================================================================
 %%% Test

@@ -15,7 +15,7 @@
 %% Inker key type used for tombstones
 -define(INKT_TOMB, tomb).
 
--define(CACHE_TYPE, skpl).
+-define(CACHE_TYPE, idxt).
 
 -record(sft_options,
                         {wait = true :: boolean(),
