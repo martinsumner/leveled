@@ -333,7 +333,7 @@ log_timer(LogReference, Subs, StartTime) ->
                                     {"ms", MicroS div 1000}
                             end,
             io:format(format_time()
-                            ++ LogReference ++ " ~w "
+                            ++ " " ++ LogReference ++ " ~w "
                             ++ LogText
                             ++ " with time taken ~w " ++ Unit ++ "~n",
                         [self()|Subs] ++ [Time]);
