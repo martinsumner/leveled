@@ -524,7 +524,7 @@ search_test_by_type(Type) ->
     T = from_orderedlist(KL, Type),
     
     StartKeyFun = fun(V) -> V end,
-    SW = os:timestamp(),
+    statistics(runtime),
     ?assertMatch([], search_range(0, 1, T, StartKeyFun)),
     ?assertMatch([], search_range(201, 202, T, StartKeyFun)),
     ?assertMatch([{4, 2}], search_range(2, 4, T, StartKeyFun)),
@@ -535,8 +535,9 @@ search_test_by_type(Type) ->
     ?assertMatch(49, length(search_range(2, 197, T, StartKeyFun))),
     ?assertMatch(49, length(search_range(4, 197, T, StartKeyFun))),
     ?assertMatch(48, length(search_range(5, 197, T, StartKeyFun))),
+    {_, T1} = statistics(runtime),
     io:format(user, "10 range tests with type ~w in ~w microseconds~n",
-                [Type, timer:now_diff(os:timestamp(), SW)]).
+                [Type, T1]).
 
 
 tree_oor_test() ->
@@ -591,20 +592,29 @@ tolist_test_by_type(Type) ->
     ?assertMatch(KL, T_Reverse).
     
 tree_timing_test() ->
-    tree_test_by_(16, tree, 4000),
+    log_tree_test_by_(16, tree, 4000),
     tree_test_by_(8, tree, 1000),
     tree_test_by_(4, tree, 256).
 
 idxt_timing_test() ->
-    tree_test_by_(16, idxt, 4000),
+    log_tree_test_by_(16, idxt, 4000),
     tree_test_by_(8, idxt, 1000),
     tree_test_by_(4, idxt, 256).
 
 skpl_timing_test() ->
     tree_test_by_(auto, skpl, 6000),
-    tree_test_by_(auto, skpl, 4000),
+    log_tree_test_by_(auto, skpl, 4000),
     tree_test_by_(auto, skpl, 1000),
     tree_test_by_(auto, skpl, 256).
+
+log_tree_test_by_(Width, Type, N) ->
+    erlang:statistics(runtime),
+    G0 = erlang:statistics(garbage_collection),
+    tree_test_by_(Width, Type, N),
+    {_, T1} = erlang:statistics(runtime),
+    G1 = erlang:statistics(garbage_collection),
+    io:format(user, "Test took ~w ms and GC transitioned from ~w to ~w~n",
+                [T1, G0, G1]).
 
 tree_test_by_(Width, Type, N) ->
     io:format(user, "~nTree test for type and width: ~w ~w~n", [Type, Width]),
