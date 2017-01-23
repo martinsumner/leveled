@@ -360,7 +360,7 @@ load_level(LevelIdx, Level, PidFun, SQNFun) ->
             {L0, MaxSQN} = lists:foldr(LowerLevelLoadFun,
                                         {[], 0},
                                         leveled_tree:to_list(Level)),
-            {leveled_tree:from_orderedlist(L0), MaxSQN}
+            {leveled_tree:from_orderedlist(L0, ?TREE_TYPE, ?TREE_WIDTH), MaxSQN}
     end.
 
 close_level(LevelIdx, Level, CloseEntryFun) when LevelIdx =< 1 ->
@@ -389,6 +389,8 @@ pred_fun(_LevelIdx, _StartKey, EndKey) ->
         EK < EndKey
     end.
 
+add_entry(_LevelIdx, Level, []) ->
+    Level;
 add_entry(LevelIdx, Level, Entries) when is_list(Entries) ->
     FirstEntry = lists:nth(1, Entries),
     PredFun = pred_fun(LevelIdx,
