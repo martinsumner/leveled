@@ -151,8 +151,6 @@ save_manifest(Manifest, RootPath) ->
     ok = file:write_file(FP, <<CRC:32/integer, ManBin/binary>>).
 
 
-replace_manifest_entry(Manifest, ManSQN, LevelIdx, Removals, []) ->
-    remove_manifest_entry(Manifest, ManSQN, LevelIdx, Removals);
 replace_manifest_entry(Manifest, ManSQN, LevelIdx, Removals, Additions) ->
     Levels = Manifest#manifest.levels,
     Level = array:get(LevelIdx, Levels),
@@ -752,6 +750,74 @@ keylookup_manifest_test() ->
     
     ?assertMatch("pid_y3", key_lookup(Man13, 1, LK1_4)),
     ?assertMatch("pid_z5", key_lookup(Man13, 2, LK1_4)).
+
+ext_keylookup_manifest_test() ->
+    RP = "../test",
+    {_Man0, _Man1, _Man2, _Man3, _Man4, _Man5, Man6} = initial_setup(),
+    save_manifest(Man6, RP),
+    
+    E7 = #manifest_entry{start_key={o, "Bucket1", "K997", null},
+                            end_key={o, "Bucket1", "K999", null},
+                            filename="Z7",
+                            owner="pid_z7"},
+    Man7 = insert_manifest_entry(Man6, 2, 2, E7),
+    save_manifest(Man7, RP),
+    ManOpen1 = open_manifest(RP),
+    ?assertMatch(2, get_manifest_sqn(ManOpen1)),
+    
+    Man7FN = filepath(RP, 2, current_manifest),
+    {ok, Bin} = file:read_file(Man7FN),
+    RandPos = random:uniform(bit_size(Bin) - 1),
+    <<Pre:RandPos/bitstring, BitToFlip:1/integer, Rest/bitstring>> = Bin,
+    Flipped = BitToFlip bxor 1,
+    ok  = file:write_file(Man7FN,
+                            <<Pre:RandPos/bitstring,
+                                Flipped:1/integer,
+                                Rest/bitstring>>),
+    
+    ?assertMatch(2, get_manifest_sqn(Man7)),
+    
+    ManOpen2 = open_manifest(RP),
+    ?assertMatch(1, get_manifest_sqn(ManOpen2)),
+    
+    E1 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
+                            end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K93"},
+                            filename="Z1",
+                            owner="pid_z1"},
+    E2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld9"}, "K97"},
+                                end_key={o, "Bucket1", "K71", null},
+                                filename="Z2",
+                                owner="pid_z2"},
+    E3 = #manifest_entry{start_key={o, "Bucket1", "K75", null},
+                            end_key={o, "Bucket1", "K993", null},
+                            filename="Z3",
+                            owner="pid_z3"},
+    
+    E1_2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld4"}, "K8"},
+                            end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K62"},
+                            owner="pid_y1",
+                            filename="Y1"},
+    E2_2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld9"}, "K67"},
+                            end_key={o, "Bucket1", "K45", null},
+                            owner="pid_y2",
+                            filename="Y2"},
+    E3_2 = #manifest_entry{start_key={o, "Bucket1", "K47", null},
+                            end_key={o, "Bucket1", "K812", null},
+                            owner="pid_y3",
+                            filename="Y3"},
+    E4_2 = #manifest_entry{start_key={o, "Bucket1", "K815", null},
+                            end_key={o, "Bucket1", "K998", null},
+                            owner="pid_y4",
+                            filename="Y4"},
+    
+    Man8 = replace_manifest_entry(ManOpen2, 2, 1, E1, E1_2),
+    Man9 = remove_manifest_entry(Man8, 2, 1, [E2, E3]),
+    Man10 = insert_manifest_entry(Man9, 2, 1, [E2_2, E3_2, E4_2]),
+    ?assertMatch(2, get_manifest_sqn(Man10)),
+    
+    LK1_4 = {o, "Bucket1", "K75", null},
+    ?assertMatch("pid_y3", key_lookup(Man10, 1, LK1_4)),
+    ?assertMatch("pid_z5", key_lookup(Man10, 2, LK1_4)).
 
 
 rangequery_manifest_test() ->

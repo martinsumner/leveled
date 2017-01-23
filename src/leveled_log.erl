@@ -15,8 +15,8 @@
             sst_timing/3]).         
 
 -define(PUT_LOGPOINT, 20000).
--define(HEAD_LOGPOINT, 160000).
--define(GET_LOGPOINT, 160000).
+-define(HEAD_LOGPOINT, 50000).
+-define(GET_LOGPOINT, 50000).
 -define(SST_LOGPOINT, 20000).
 -define(LOG_LEVEL, [info, warn, error, critical]).
 -define(SAMPLE_RATE, 16).

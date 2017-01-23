@@ -91,7 +91,7 @@ search(Key, {tree, _L, Tree}, StartKeyFun) ->
             none;
         {_NK, SL, _Iter} ->
             {K, V} = lookup_best(Key, SL),
-            case K < StartKeyFun(V) of
+            case Key < StartKeyFun(V) of
                 true ->
                     none;
                 false ->
@@ -105,7 +105,7 @@ search(Key, {idxt, _L, {TLI, IDX}}, StartKeyFun) ->
             none;
         {_NK, ListID, _Iter} ->
             {K, V} = lookup_best(Key, element(ListID, TLI)),
-            case K < StartKeyFun(V) of
+            case Key < StartKeyFun(V) of
                 true ->
                     none;
                 false ->
@@ -114,14 +114,17 @@ search(Key, {idxt, _L, {TLI, IDX}}, StartKeyFun) ->
     end;
 search(Key, {skpl, _L, SkipList}, StartKeyFun) ->
     SL0 = skpl_getsublist(Key, SkipList),
-    {K, V} = lookup_best(Key, SL0),
-    case K < StartKeyFun(V) of
-        true ->
-            none;
-        false ->
-            {K, V}
+    case lookup_best(Key, SL0) of
+        {K, V} ->
+            case Key < StartKeyFun(V) of
+                true ->
+                    none;
+                false ->
+                    {K, V}
+            end;
+        none ->
+            none
     end.
-
 
 match_range(StartRange, EndRange, Tree) ->
     EndRangeFun =
@@ -244,6 +247,8 @@ lookup_match(Key, KVList) ->
             {value, Value}
     end.
 
+lookup_best(_Key, []) ->
+    none;
 lookup_best(Key, [{EK, EV}|_Tail]) when EK >= Key ->
     {EK, EV};
 lookup_best(Key, [_Top|Tail]) ->
@@ -489,14 +494,8 @@ generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
 generate_randomkeys(_Seqn, 0, Acc, _BucketLow, _BucketHigh) ->
     Acc;
 generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
-    BNumber =
-        case BRange of
-            0 ->
-                string:right(integer_to_list(BucketLow), 4, $0);
-            _ ->
-                BRand = random:uniform(BRange),
-                string:right(integer_to_list(BucketLow + BRand), 4, $0)
-        end,
+    BRand = random:uniform(BRange),
+    BNumber = string:right(integer_to_list(BucketLow + BRand), 4, $0),
     KNumber = string:right(integer_to_list(random:uniform(1000)), 4, $0),
     {K, V} = {{o, "Bucket" ++ BNumber, "Key" ++ KNumber, null},
                 {Seqn, {active, infinity}, null}},
@@ -525,7 +524,6 @@ search_test_by_type(Type) ->
     T = from_orderedlist(KL, Type),
     
     StartKeyFun = fun(V) -> V end,
-    
     SW = os:timestamp(),
     ?assertMatch([], search_range(0, 1, T, StartKeyFun)),
     ?assertMatch([], search_range(201, 202, T, StartKeyFun)),
@@ -539,8 +537,59 @@ search_test_by_type(Type) ->
     ?assertMatch(48, length(search_range(5, 197, T, StartKeyFun))),
     io:format(user, "10 range tests with type ~w in ~w microseconds~n",
                 [Type, timer:now_diff(os:timestamp(), SW)]).
-    
 
+
+tree_oor_test() ->
+    outofrange_test_by_type(tree).
+
+idxt_oor_test() ->
+    outofrange_test_by_type(idxt).
+
+skpl_oor_test() ->
+    outofrange_test_by_type(skpl).
+
+outofrange_test_by_type(Type) ->
+    MapFun =
+        fun(N) ->
+            {N * 4, N * 4 - 2}
+        end,
+    KL = lists:map(MapFun, lists:seq(1, 50)),
+    T = from_orderedlist(KL, Type),
+
+    io:format("Out of range searches~n"),
+    ?assertMatch(none, match(0, T)),
+    ?assertMatch(none, match(5, T)),
+    ?assertMatch(none, match(97, T)),
+    ?assertMatch(none, match(197, T)),
+    ?assertMatch(none, match(201, T)),
+    
+    StartKeyFun = fun(V) -> V end,
+    
+    ?assertMatch(none, search(0, T, StartKeyFun)),
+    ?assertMatch(none, search(5, T, StartKeyFun)),
+    ?assertMatch(none, search(97, T, StartKeyFun)),
+    ?assertMatch(none, search(197, T, StartKeyFun)),
+    ?assertMatch(none, search(201, T, StartKeyFun)).
+
+tree_tolist_test() ->
+    tolist_test_by_type(tree).
+
+idxt_tolist_test() ->
+    tolist_test_by_type(idxt).
+
+skpl_tolist_test() ->
+    tolist_test_by_type(skpl).
+
+tolist_test_by_type(Type) ->
+    MapFun =
+        fun(N) ->
+            {N * 4, N * 4 - 2}
+        end,
+    KL = lists:map(MapFun, lists:seq(1, 50)),
+    T = from_orderedlist(KL, Type),
+    T_Reverse = to_list(T),
+    ?assertMatch(KL, T_Reverse).
+    
 tree_timing_test() ->
     tree_test_by_(16, tree, 4000),
     tree_test_by_(8, tree, 1000),
@@ -552,6 +601,7 @@ idxt_timing_test() ->
     tree_test_by_(4, idxt, 256).
 
 skpl_timing_test() ->
+    tree_test_by_(auto, skpl, 6000),
     tree_test_by_(auto, skpl, 4000),
     tree_test_by_(auto, skpl, 1000),
     tree_test_by_(auto, skpl, 256).
