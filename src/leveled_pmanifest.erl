@@ -475,7 +475,13 @@ replace_entry(LevelIdx, Level, Removals, Additions) ->
                         FirstEntry#manifest_entry.start_key,
                         FirstEntry#manifest_entry.end_key),
     {LHS, RHS} = lists:splitwith(PredFun, leveled_tree:to_list(Level)),
-    Post = lists:nthtail(SectionLength, RHS),
+    Post =
+        case RHS of
+            [] ->
+                [];
+            _ ->
+                lists:nthtail(SectionLength, RHS)
+        end,
     UpdList =
         case is_list(Additions) of
             true ->
@@ -766,7 +772,10 @@ ext_keylookup_manifest_test() ->
     ?assertMatch(2, get_manifest_sqn(ManOpen1)),
     
     Man7FN = filepath(RP, 2, current_manifest),
+    Man7FNAlt = filename:rootname(Man7FN) ++ ".pnd",
+    {ok, BytesCopied} = file:copy(Man7FN, Man7FNAlt),
     {ok, Bin} = file:read_file(Man7FN),
+    ?assertMatch(BytesCopied, byte_size(Bin)),
     RandPos = random:uniform(bit_size(Bin) - 1),
     <<Pre:RandPos/bitstring, BitToFlip:1/integer, Rest/bitstring>> = Bin,
     Flipped = BitToFlip bxor 1,
@@ -817,8 +826,29 @@ ext_keylookup_manifest_test() ->
     
     LK1_4 = {o, "Bucket1", "K75", null},
     ?assertMatch("pid_y3", key_lookup(Man10, 1, LK1_4)),
-    ?assertMatch("pid_z5", key_lookup(Man10, 2, LK1_4)).
-
+    ?assertMatch("pid_z5", key_lookup(Man10, 2, LK1_4)),
+    
+    E5 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld7"}, "K97"},
+                            end_key={o, "Bucket1", "K78", null},
+                            filename="Z5",
+                            owner="pid_z5"},
+    E6 = #manifest_entry{start_key={o, "Bucket1", "K81", null},
+                            end_key={o, "Bucket1", "K996", null},
+                            filename="Z6",
+                            owner="pid_z6"},
+    
+    Man11 = remove_manifest_entry(Man10, 3, 2, [E5, E6]),
+    ?assertMatch(3, get_manifest_sqn(Man11)),
+    ?assertMatch(false, key_lookup(Man11, 2, LK1_4)),
+    
+    E2_2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld9"}, "K67"},
+                            end_key={o, "Bucket1", "K45", null},
+                            owner="pid_y2",
+                            filename="Y2"},
+    
+    Man12 = replace_manifest_entry(Man11, 4, 2, E2_2, E5),
+    ?assertMatch(4, get_manifest_sqn(Man12)),
+    ?assertMatch("pid_z5", key_lookup(Man12, 2, LK1_4)).
 
 rangequery_manifest_test() ->
     {_Man0, _Man1, _Man2, _Man3, _Man4, _Man5, Man6} = initial_setup(),
