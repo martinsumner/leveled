@@ -77,6 +77,8 @@
 -define(INDEX_MARKER_WIDTH, 16).
 -define(DISCARD_EXT, ".discarded").
 -define(DELETE_TIMEOUT, 10000).
+-define(TREE_TYPE, idxt).
+-define(TREE_SIZE, 4).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -676,93 +678,37 @@ generate_filenames(RootFilename) ->
 %% The Slot Index is stored as a flat (sorted) list of {Key, Slot} where Key
 %% is the last key within the slot.
 %%
-%% This implementation of the SlotIndex stores it as a tuple with the original
-%% list as the second element and a list of mark points as the first element
-%% containing every 16th key.  The Mark points are stored as {Mark, Index},
-%% where the Index correspnds with the nth point in the original list that the
-%% Mark occurs.
+%% This implementation of the SlotIndex uses leveled_tree
 
 from_list(SlotList) ->
-    L = length(SlotList),
-    MarkerList = set_marks(lists:reverse(SlotList),
-                            {?INDEX_MARKER_WIDTH,  L rem ?INDEX_MARKER_WIDTH},
-                            L,
-                            []),
-    {MarkerList, SlotList}.
+    leveled_tree:from_orderedlist(SlotList, ?TREE_TYPE, ?TREE_SIZE).
 
-set_marks([], _MarkInfo, 0, MarkerList) ->
-    MarkerList;
-set_marks([{Key, _Slot}|Rest], {MarkerWidth, MarkPoint}, Count, MarkerList) ->
-    case Count rem MarkerWidth of
-        MarkPoint ->
-            set_marks(Rest,
-                        {MarkerWidth, MarkPoint},
-                        Count - 1,
-                        [{Key, Count}|MarkerList]);
-        _ ->
-            set_marks(Rest,
-                        {MarkerWidth, MarkPoint},
-                        Count - 1,
-                        MarkerList)
-    end.
-
-find_mark(Key, [{Mark, Pos}|_Rest]) when Mark >= Key ->
-    Pos;
-find_mark(Key, [_H|T]) ->
-    find_mark(Key, T).
-
-lookup_slot(Key, {MarkerList, SlotList}) ->
-    Pos = find_mark(Key, MarkerList),
-    SubList = lists:sublist(SlotList, max(1, Pos - ?INDEX_MARKER_WIDTH), Pos),
-    Slot = find_mark(Key, SubList),
+lookup_slot(Key, Tree) ->
+    StartKeyFun =
+        fun(_V) ->
+            all
+        end,
+    % The penciller should never ask for presence out of range - so will
+    % always return a slot (As we don't compare to StartKey)
+    {_LK, Slot} = leveled_tree:search(Key, Tree, StartKeyFun),
     Slot.
 
-%% Returns a section from the summary index and two booleans to indicate if
-%% the first slot needs trimming, or the last slot
-lookup_slots(StartKey, EndKey, {_MarkerList, SlotList}) ->
-    SlotsOnlyFun = fun({_K, V}) -> V end,
-    {KSL, LTrim, RTrim} = lookup_slots_int(StartKey, EndKey, SlotList),
-    {lists:map(SlotsOnlyFun, KSL), LTrim, RTrim}.
-
-lookup_slots_int(all, all, SlotList) ->
-    {SlotList, false, false};
-lookup_slots_int(StartKey, all, SlotList) ->
-    LTrimFun = fun({K, _V}) -> K < StartKey end,
-    {_LDrop, RKeep0} = lists:splitwith(LTrimFun, SlotList),
-    {RKeep0, true, false};
-lookup_slots_int(StartKey, EndKey, SlotList) ->
-    {RKeep, true, false} = lookup_slots_int(StartKey, all, SlotList),
-    [LeftMost|RKeep0] = RKeep,
-    {LeftMostK, LeftMostV} = LeftMost,
-    RTrimFun = fun({K, _V}) -> not leveled_codec:endkey_passed(EndKey, K) end,
-    case leveled_codec:endkey_passed(EndKey, LeftMostK) of
-        true ->
-            {[{LeftMostK, LeftMostV}],
-                true,
-                true};
-        false ->
-            case LeftMostK of
-                EndKey ->
-                    {[{LeftMostK, LeftMostV}],
-                        true,
-                        false};
-                _ ->
-                    {LKeep, RDisc} = lists:splitwith(RTrimFun, RKeep0),
-                    case RDisc of
-                        [] ->
-                            {[LeftMost|LKeep],
-                                true,
-                                true};
-                        [{RDiscK1, RDiscV1}|_Rest] when RDiscK1 == EndKey ->
-                            {[LeftMost|LKeep] ++ [{RDiscK1, RDiscV1}],
-                                true,
-                                false};
-                        [{RDiscK1, RDiscV1}|_Rest] ->
-                            {[LeftMost|LKeep] ++ [{RDiscK1, RDiscV1}],
-                                true,
-                                true}
-                    end
-            end
+lookup_slots(StartKey, EndKey, Tree) ->
+    StartKeyFun =
+        fun(_V) ->
+            all
+        end,
+    MapFun =
+        fun({_LK, Slot}) ->
+            Slot
+        end,
+    SlotList = leveled_tree:search_range(StartKey, EndKey, Tree, StartKeyFun),
+    {EK, _EndSlot} = lists:last(SlotList),
+    case EK of
+        EndKey ->
+            {lists:map(MapFun, SlotList), true, false};
+        _ ->
+            {lists:map(MapFun, SlotList), true, true}
     end.
 
 

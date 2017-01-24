@@ -673,10 +673,14 @@ load_between_sequence(MinSQN, MaxSQN, FilterFun, Penciller,
 push_to_penciller(Penciller, LedgerCache) ->
     % The push to penciller must start as a tree to correctly de-duplicate
     % the list by order before becoming a de-duplicated list for loading
+    LC0 = leveled_bookie:loadqueue_ledgercache(LedgerCache),
+    push_to_penciller_loop(Penciller, LC0).
+
+push_to_penciller_loop(Penciller, LedgerCache) ->
     case leveled_bookie:push_ledgercache(Penciller, LedgerCache) of
         returned ->
             timer:sleep(?LOADING_PAUSE),
-            push_to_penciller(Penciller, LedgerCache);
+            push_to_penciller_loop(Penciller, LedgerCache);
         ok ->
             ok
     end.

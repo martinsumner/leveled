@@ -34,7 +34,6 @@
 
 -export([
         inker_reload_strategy/1,
-        strip_to_keyonly/1,
         strip_to_seqonly/1,
         strip_to_statusonly/1,
         strip_to_keyseqonly/1,
@@ -44,7 +43,6 @@
         endkey_passed/2,
         key_dominates/2,
         maybe_reap_expiredkey/2,
-        print_key/1,
         to_ledgerkey/3,
         to_ledgerkey/5,
         from_ledgerkey/1,
@@ -107,8 +105,6 @@ inker_reload_strategy(AltList) ->
                         end,
                     ReloadStrategy0,
                     AltList).
-
-strip_to_keyonly({K, _V}) -> K.
 
 strip_to_statusonly({_, {_, St, _, _}}) -> St.
 
@@ -252,33 +248,6 @@ create_value_for_journal(Value) ->
 hash(Obj) ->
     erlang:phash2(term_to_binary(Obj)).
 
-% Return a tuple of strings to ease the printing of keys to logs
-print_key(Key) ->
-    {A_STR, B_TERM, C_TERM} = case Key of
-                                    {?STD_TAG, B, K, _SK} ->
-                                        {"Object", B, K};
-                                    {?RIAK_TAG, B, K, _SK} ->
-                                        {"RiakObject", B, K};
-                                    {?IDX_TAG, B, {F, _V}, _K} ->
-                                        {"Index", B, F}
-                                end,
-    B_STR = turn_to_string(B_TERM),
-    C_STR = turn_to_string(C_TERM),
-    {A_STR, B_STR, C_STR}.
-
-turn_to_string(Item) ->
-    if
-        is_binary(Item) == true ->
-            binary_to_list(Item);
-        is_integer(Item) == true ->
-            integer_to_list(Item);
-        is_list(Item) == true ->
-            Item;
-        true ->
-            [Output] = io_lib:format("~w", [Item]),
-            Output
-    end.
-                    
 
 % Compare a key against a query key, only comparing elements that are non-null
 % in the Query key.  This is used for comparing against end keys in queries.
@@ -461,10 +430,6 @@ endkey_passed_test() ->
     ?assertMatch(false, endkey_passed(TestKey, K1)),
     ?assertMatch(true, endkey_passed(TestKey, K2)).
 
-stringcheck_test() ->
-    ?assertMatch("Bucket", turn_to_string("Bucket")),
-    ?assertMatch("Bucket", turn_to_string(<<"Bucket">>)),
-    ?assertMatch("bucket", turn_to_string(bucket)).
 
 %% Test below proved that the overhead of performing hashes was trivial
 %% Maybe 5 microseconds per hash

@@ -139,6 +139,7 @@
             get_opt/3,
             load_snapshot/2,
             empty_ledgercache/0,
+            loadqueue_ledgercache/1,
             push_ledgercache/2]).  
 
 -include_lib("eunit/include/eunit.hrl").
@@ -153,7 +154,8 @@
 -define(LONG_RUNNING, 80000).
 
 -record(ledger_cache, {mem :: ets:tab(),
-                        loader = leveled_skiplist:empty(false) :: tuple(),
+                        loader = leveled_tree:empty(?CACHE_TYPE) :: tuple(),
+                        load_queue = [] :: list(),
                         index = leveled_pmem:new_index(), % array
                         min_sqn = infinity :: integer()|infinity,
                         max_sqn = 0 :: integer()}).
@@ -474,6 +476,11 @@ push_ledgercache(Penciller, Cache) ->
                     Cache#ledger_cache.max_sqn},
     leveled_penciller:pcl_pushmem(Penciller, CacheToLoad).
 
+loadqueue_ledgercache(Cache) ->
+    SL = lists:ukeysort(1, Cache#ledger_cache.load_queue),
+    T = leveled_tree:from_orderedlist(SL, ?CACHE_TYPE),
+    Cache#ledger_cache{load_queue = [], loader = T}.
+
 %%%============================================================================
 %%% Internal functions
 %%%============================================================================
@@ -719,11 +726,12 @@ snapshot_store(State, SnapType) ->
 
 readycache_forsnapshot(LedgerCache) ->
     % Need to convert the Ledger Cache away from using the ETS table
-    SkipList = leveled_skiplist:from_orderedset(LedgerCache#ledger_cache.mem),
+    Tree = leveled_tree:from_orderedset(LedgerCache#ledger_cache.mem,
+                                        ?CACHE_TYPE),
     Idx = LedgerCache#ledger_cache.index,
     MinSQN = LedgerCache#ledger_cache.min_sqn,
     MaxSQN = LedgerCache#ledger_cache.max_sqn,
-    #ledger_cache{loader=SkipList, index=Idx, min_sqn=MinSQN, max_sqn=MaxSQN}.
+    #ledger_cache{loader=Tree, index=Idx, min_sqn=MinSQN, max_sqn=MaxSQN}.
 
 set_options(Opts) ->
     MaxJournalSize0 = get_opt(max_journalsize, Opts, 10000000000),
@@ -961,14 +969,10 @@ addto_ledgercache({H, SQN, KeyChanges}, Cache) ->
                         max_sqn=max(SQN, Cache#ledger_cache.max_sqn)}.
 
 addto_ledgercache({H, SQN, KeyChanges}, Cache, loader) ->
-    FoldChangesFun =
-        fun({K, V}, SL0) ->
-            leveled_skiplist:enter_nolookup(K, V, SL0)
-        end,
-    UpdSL = lists:foldl(FoldChangesFun, Cache#ledger_cache.loader, KeyChanges),
+    UpdQ = KeyChanges ++ Cache#ledger_cache.load_queue,
     UpdIndex = leveled_pmem:prepare_for_index(Cache#ledger_cache.index, H),
     Cache#ledger_cache{index = UpdIndex,
-                        loader = UpdSL,
+                        load_queue = UpdQ,
                         min_sqn=min(SQN, Cache#ledger_cache.min_sqn),
                         max_sqn=max(SQN, Cache#ledger_cache.max_sqn)}.
 
@@ -979,7 +983,7 @@ maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
     TimeToPush = maybe_withjitter(CacheSize, MaxCacheSize),
     if
         TimeToPush ->
-            CacheToLoad = {leveled_skiplist:from_orderedset(Tab),
+            CacheToLoad = {leveled_tree:from_orderedset(Tab, ?CACHE_TYPE),
                             Cache#ledger_cache.index,
                             Cache#ledger_cache.min_sqn,
                             Cache#ledger_cache.max_sqn},

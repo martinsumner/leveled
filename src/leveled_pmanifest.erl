@@ -32,6 +32,7 @@
         merge_lookup/4,
         insert_manifest_entry/4,
         remove_manifest_entry/4,
+        replace_manifest_entry/5,
         switch_manifest_entry/4,
         mergefile_selector/2,
         add_snapshot/3,
@@ -51,6 +52,8 @@
 -define(MANIFEST_FILEX, "man").
 -define(MANIFEST_FP, "ledger_manifest").
 -define(MAX_LEVELS, 8).
+-define(TREE_TYPE, idxt).
+-define(TREE_WIDTH, 8).
 
 -record(manifest, {levels,
                         % an array of lists or trees representing the manifest
@@ -73,8 +76,16 @@
 %%%============================================================================
 
 new_manifest() ->
+    LevelArray0 = array:new([{size, ?MAX_LEVELS + 1}, {default, []}]),
+    SetLowerLevelFun =
+        fun(IDX, Acc) ->
+            array:set(IDX, leveled_tree:empty(?TREE_TYPE), Acc)
+        end,
+    LevelArray1 = lists:foldl(SetLowerLevelFun,
+                                LevelArray0,
+                                lists:seq(2, ?MAX_LEVELS)),
     #manifest{
-        levels = array:new([{size, ?MAX_LEVELS + 1}, {default, []}]), 
+        levels = LevelArray1, 
         manifest_sqn = 0, 
         snapshots = [],
         pending_deletes = dict:new(),
@@ -139,6 +150,30 @@ save_manifest(Manifest, RootPath) ->
     CRC = erlang:crc32(ManBin),
     ok = file:write_file(FP, <<CRC:32/integer, ManBin/binary>>).
 
+
+replace_manifest_entry(Manifest, ManSQN, LevelIdx, Removals, Additions) ->
+    Levels = Manifest#manifest.levels,
+    Level = array:get(LevelIdx, Levels),
+    UpdLevel = replace_entry(LevelIdx, Level, Removals, Additions),
+    leveled_log:log("PC019", ["insert", LevelIdx, UpdLevel]),
+    PendingDeletes = update_pendingdeletes(ManSQN,
+                                            Removals,
+                                            Manifest#manifest.pending_deletes),
+    UpdLevels = array:set(LevelIdx, UpdLevel, Levels),
+    case is_empty(LevelIdx, UpdLevel) of
+        true ->
+            Manifest#manifest{levels = UpdLevels,
+                                basement = get_basement(UpdLevels),
+                                manifest_sqn = ManSQN,
+                                pending_deletes = PendingDeletes};
+        false ->
+            Basement = max(LevelIdx, Manifest#manifest.basement),
+            Manifest#manifest{levels = UpdLevels,
+                                basement = Basement,
+                                manifest_sqn = ManSQN,
+                                pending_deletes = PendingDeletes}
+    end.
+
 insert_manifest_entry(Manifest, ManSQN, LevelIdx, Entry) ->
     Levels = Manifest#manifest.levels,
     Level = array:get(LevelIdx, Levels),
@@ -154,22 +189,9 @@ remove_manifest_entry(Manifest, ManSQN, LevelIdx, Entry) ->
     Level = array:get(LevelIdx, Levels),
     UpdLevel = remove_entry(LevelIdx, Level, Entry),
     leveled_log:log("PC019", ["remove", LevelIdx, UpdLevel]),
-    DelFun =
-        fun(E, Acc) ->
-            dict:store(E#manifest_entry.filename,
-                        {ManSQN, E},
-                        Acc)
-        end,
-    Entries = 
-        case is_list(Entry) of
-            true ->
-                Entry;
-            false ->
-                [Entry]
-        end,
-    PendingDeletes = lists:foldl(DelFun,
-                                    Manifest#manifest.pending_deletes,
-                                    Entries),
+    PendingDeletes = update_pendingdeletes(ManSQN,
+                                            Entry,
+                                            Manifest#manifest.pending_deletes),
     UpdLevels = array:set(LevelIdx, UpdLevel, Levels),
     case is_empty(LevelIdx, UpdLevel) of
         true ->
@@ -322,58 +344,181 @@ levelzero_present(Manifest) ->
 %%% Internal Functions
 %%%============================================================================
 
+
 %% All these internal functions that work on a level are also passed LeveIdx
 %% even if this is not presently relevant.  Currnetly levels are lists, but
 %% future branches may make lower levels trees or skiplists to improve fetch
 %% efficiency
 
-load_level(_LevelIdx, Level, PidFun, SQNFun) ->
-    LevelLoadFun =
+load_level(LevelIdx, Level, PidFun, SQNFun) ->
+    HigherLevelLoadFun =
         fun(ME, {L_Out, L_MaxSQN}) ->
             FN = ME#manifest_entry.filename,
             P = PidFun(FN),
             SQN = SQNFun(P),
             {[ME#manifest_entry{owner=P}|L_Out], max(SQN, L_MaxSQN)}
         end,
-    lists:foldr(LevelLoadFun, {[], 0}, Level).
+    LowerLevelLoadFun =
+        fun({EK, ME}, {L_Out, L_MaxSQN}) ->
+            FN = ME#manifest_entry.filename,
+            P = PidFun(FN),
+            SQN = SQNFun(P),
+            {[{EK, ME#manifest_entry{owner=P}}|L_Out], max(SQN, L_MaxSQN)}
+        end,
+    case LevelIdx =< 1 of
+        true ->
+            lists:foldr(HigherLevelLoadFun, {[], 0}, Level);
+        false ->
+            {L0, MaxSQN} = lists:foldr(LowerLevelLoadFun,
+                                        {[], 0},
+                                        leveled_tree:to_list(Level)),
+            {leveled_tree:from_orderedlist(L0, ?TREE_TYPE, ?TREE_WIDTH), MaxSQN}
+    end.
 
+close_level(LevelIdx, Level, CloseEntryFun) when LevelIdx =< 1 ->
+    lists:foreach(CloseEntryFun, Level);
 close_level(_LevelIdx, Level, CloseEntryFun) ->
-    lists:foreach(CloseEntryFun, Level).
+    lists:foreach(CloseEntryFun, leveled_tree:to_list(Level)).
 
 is_empty(_LevelIdx, []) ->
     true;
-is_empty(_LevelIdx, _Level) ->
-    false.
-
-size(_LevelIdx, Level) ->
-    length(Level).
-
-add_entry(_LevelIdx, Level, Entries) when is_list(Entries) ->
-    lists:sort(Level ++ Entries);
-add_entry(_LevelIdx, Level, Entry) ->
-    lists:sort([Entry|Level]).
-
-remove_entry(_LevelIdx, Level, Entries) when is_list(Entries) ->
-    % We're assuming we're removing a sorted sublist
-    RemLength = length(Entries),
-    [RemStart|_Tail] = Entries,
-    remove_section(Level, RemStart#manifest_entry.start_key, RemLength);
-remove_entry(_LevelIdx, Level, Entry) ->
-    remove_section(Level, Entry#manifest_entry.start_key, 1).
-
-remove_section(Level, SectionStartKey, SectionLength) ->
-    PredFun =
-        fun(E) ->
-            E#manifest_entry.start_key < SectionStartKey
-        end,
-    {Pre, Rest} = lists:splitwith(PredFun, Level),
-    Post = lists:nthtail(SectionLength, Rest),
-    Pre ++ Post.
-
-
-key_lookup_level(_LevelIdx, [], _Key) ->
+is_empty(LevelIdx, _Level) when LevelIdx =< 1 ->
     false;
-key_lookup_level(LevelIdx, [Entry|Rest], Key) ->
+is_empty(_LevelIdx, Level) ->
+    leveled_tree:tsize(Level) == 0.
+
+size(LevelIdx, Level) when LevelIdx =< 1 ->
+    length(Level);
+size(_LevelIdx, Level) ->
+    leveled_tree:tsize(Level).
+
+pred_fun(LevelIdx, StartKey, _EndKey) when LevelIdx =< 1 ->
+    fun(ME) ->
+        ME#manifest_entry.start_key < StartKey
+    end;
+pred_fun(_LevelIdx, _StartKey, EndKey) ->
+    fun({EK, _ME}) ->
+        EK < EndKey
+    end.
+
+add_entry(_LevelIdx, Level, []) ->
+    Level;
+add_entry(LevelIdx, Level, Entries) when is_list(Entries) ->
+    FirstEntry = lists:nth(1, Entries),
+    PredFun = pred_fun(LevelIdx,
+                        FirstEntry#manifest_entry.start_key,
+                        FirstEntry#manifest_entry.end_key),
+    case LevelIdx =< 1 of
+        true ->
+            {LHS, RHS} = lists:splitwith(PredFun, Level),
+            lists:append([LHS, Entries, RHS]);
+        false ->
+            {LHS, RHS} = lists:splitwith(PredFun, leveled_tree:to_list(Level)),
+            MapFun =
+                fun(ME) ->
+                    {ME#manifest_entry.end_key, ME}
+                end,
+            Entries0 = lists:map(MapFun, Entries),
+            leveled_tree:from_orderedlist(lists:append([LHS, Entries0, RHS]),
+                                            ?TREE_TYPE,
+                                            ?TREE_WIDTH)
+    end;
+add_entry(LevelIdx, Level, Entry) ->
+    add_entry(LevelIdx, Level, [Entry]).
+
+remove_entry(LevelIdx, Level, Entries) ->
+    % We're assuming we're removing a sorted sublist
+    {RemLength, FirstRemoval} = measure_removals(Entries),
+    remove_section(LevelIdx, Level, FirstRemoval, RemLength).
+
+measure_removals(Removals) ->
+    case is_list(Removals) of
+        true ->
+            {length(Removals), lists:nth(1, Removals)};
+        false ->
+            {1, Removals}
+    end.
+
+remove_section(LevelIdx, Level, FirstEntry, SectionLength) ->
+    PredFun = pred_fun(LevelIdx,
+                        FirstEntry#manifest_entry.start_key,
+                        FirstEntry#manifest_entry.end_key),
+    case LevelIdx =< 1 of
+        true ->
+            {LHS, RHS} = lists:splitwith(PredFun, Level),
+            Post = lists:nthtail(SectionLength, RHS),
+            lists:append([LHS, Post]);
+        false ->
+            {LHS, RHS} = lists:splitwith(PredFun, leveled_tree:to_list(Level)),
+            Post = lists:nthtail(SectionLength, RHS),
+            leveled_tree:from_orderedlist(lists:append([LHS, Post]),
+                                            ?TREE_TYPE,
+                                            ?TREE_WIDTH)
+    end.
+
+replace_entry(LevelIdx, Level, Removals, Additions) when LevelIdx =< 1 ->
+    {SectionLength, FirstEntry} = measure_removals(Removals),
+    PredFun = pred_fun(LevelIdx,
+                        FirstEntry#manifest_entry.start_key,
+                        FirstEntry#manifest_entry.end_key),
+    {LHS, RHS} = lists:splitwith(PredFun, Level),
+    Post = lists:nthtail(SectionLength, RHS),
+    case is_list(Additions) of
+        true ->
+            lists:append([LHS, Additions, Post]);
+        false ->
+            lists:append([LHS, [Additions], Post])
+    end;
+replace_entry(LevelIdx, Level, Removals, Additions) ->
+    {SectionLength, FirstEntry} = measure_removals(Removals),
+    PredFun = pred_fun(LevelIdx,
+                        FirstEntry#manifest_entry.start_key,
+                        FirstEntry#manifest_entry.end_key),
+    {LHS, RHS} = lists:splitwith(PredFun, leveled_tree:to_list(Level)),
+    Post =
+        case RHS of
+            [] ->
+                [];
+            _ ->
+                lists:nthtail(SectionLength, RHS)
+        end,
+    UpdList =
+        case is_list(Additions) of
+            true ->
+                MapFun =
+                    fun(ME) ->
+                        {ME#manifest_entry.end_key, ME}
+                    end,
+                Additions0 = lists:map(MapFun, Additions),            
+                lists:append([LHS, Additions0, Post]);
+            false ->
+                lists:append([LHS,
+                                [{Additions#manifest_entry.end_key,
+                                    Additions}],
+                                Post])
+        end,
+    leveled_tree:from_orderedlist(UpdList, ?TREE_TYPE, ?TREE_WIDTH).
+    
+
+update_pendingdeletes(ManSQN, Removals, PendingDeletes) ->
+    DelFun =
+        fun(E, Acc) ->
+            dict:store(E#manifest_entry.filename,
+                        {ManSQN, E},
+                        Acc)
+        end,
+    Entries = 
+        case is_list(Removals) of
+            true ->
+                Removals;
+            false ->
+                [Removals]
+        end,
+    lists:foldl(DelFun, PendingDeletes, Entries).
+
+key_lookup_level(LevelIdx, [], _Key) when LevelIdx =< 1 ->
+    false;
+key_lookup_level(LevelIdx, [Entry|Rest], Key) when LevelIdx =< 1 ->
     case Entry#manifest_entry.end_key >= Key of
         true ->
             case Key >= Entry#manifest_entry.start_key of
@@ -384,7 +529,19 @@ key_lookup_level(LevelIdx, [Entry|Rest], Key) ->
             end;
         false ->
             key_lookup_level(LevelIdx, Rest, Key)
+    end;
+key_lookup_level(_LevelIdx, Level, Key) ->
+    StartKeyFun =
+        fun(ME) ->
+            ME#manifest_entry.start_key
+        end,
+    case leveled_tree:search(Key, Level, StartKeyFun) of
+        none ->
+            false;
+        {_EK, ME} ->
+            ME#manifest_entry.owner
     end.
+
 
 range_lookup_int(Manifest, LevelIdx, StartKey, EndKey, MakePointerFun) ->
     Range = 
@@ -400,7 +557,7 @@ range_lookup_int(Manifest, LevelIdx, StartKey, EndKey, MakePointerFun) ->
         end,
     lists:map(MakePointerFun, Range).
     
-range_lookup_level(_LevelIdx, Level, QStartKey, QEndKey) ->
+range_lookup_level(LevelIdx, Level, QStartKey, QEndKey) when LevelIdx =< 1 ->
     BeforeFun =
         fun(M) ->
             QStartKey > M#manifest_entry.end_key
@@ -412,7 +569,19 @@ range_lookup_level(_LevelIdx, Level, QStartKey, QEndKey) ->
         end,
     {_Before, MaybeIn} = lists:splitwith(BeforeFun, Level),
     {In, _After} = lists:splitwith(NotAfterFun, MaybeIn),
-    In.
+    In;
+range_lookup_level(_LevelIdx, Level, QStartKey, QEndKey) ->
+    StartKeyFun =
+        fun(ME) ->
+            ME#manifest_entry.start_key
+        end,
+    Range = leveled_tree:search_range(QStartKey, QEndKey, Level, StartKeyFun),
+    MapFun =
+        fun({_EK, ME}) ->
+            ME
+        end,
+    lists:map(MapFun, Range).
+    
 
 get_basement(Levels) ->
     GetBaseFun =
@@ -455,6 +624,7 @@ open_manifestfile(RootPath, [TopManSQN|Rest]) ->
             leveled_log:log("P0033", [CurrManFile, "crc wonky"]),
             open_manifestfile(RootPath, Rest)
     end.
+
 
 %%%============================================================================
 %%% Test
@@ -587,6 +757,98 @@ keylookup_manifest_test() ->
     ?assertMatch("pid_y3", key_lookup(Man13, 1, LK1_4)),
     ?assertMatch("pid_z5", key_lookup(Man13, 2, LK1_4)).
 
+ext_keylookup_manifest_test() ->
+    RP = "../test",
+    {_Man0, _Man1, _Man2, _Man3, _Man4, _Man5, Man6} = initial_setup(),
+    save_manifest(Man6, RP),
+    
+    E7 = #manifest_entry{start_key={o, "Bucket1", "K997", null},
+                            end_key={o, "Bucket1", "K999", null},
+                            filename="Z7",
+                            owner="pid_z7"},
+    Man7 = insert_manifest_entry(Man6, 2, 2, E7),
+    save_manifest(Man7, RP),
+    ManOpen1 = open_manifest(RP),
+    ?assertMatch(2, get_manifest_sqn(ManOpen1)),
+    
+    Man7FN = filepath(RP, 2, current_manifest),
+    Man7FNAlt = filename:rootname(Man7FN) ++ ".pnd",
+    {ok, BytesCopied} = file:copy(Man7FN, Man7FNAlt),
+    {ok, Bin} = file:read_file(Man7FN),
+    ?assertMatch(BytesCopied, byte_size(Bin)),
+    RandPos = random:uniform(bit_size(Bin) - 1),
+    <<Pre:RandPos/bitstring, BitToFlip:1/integer, Rest/bitstring>> = Bin,
+    Flipped = BitToFlip bxor 1,
+    ok  = file:write_file(Man7FN,
+                            <<Pre:RandPos/bitstring,
+                                Flipped:1/integer,
+                                Rest/bitstring>>),
+    
+    ?assertMatch(2, get_manifest_sqn(Man7)),
+    
+    ManOpen2 = open_manifest(RP),
+    ?assertMatch(1, get_manifest_sqn(ManOpen2)),
+    
+    E1 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
+                            end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K93"},
+                            filename="Z1",
+                            owner="pid_z1"},
+    E2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld9"}, "K97"},
+                                end_key={o, "Bucket1", "K71", null},
+                                filename="Z2",
+                                owner="pid_z2"},
+    E3 = #manifest_entry{start_key={o, "Bucket1", "K75", null},
+                            end_key={o, "Bucket1", "K993", null},
+                            filename="Z3",
+                            owner="pid_z3"},
+    
+    E1_2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld4"}, "K8"},
+                            end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K62"},
+                            owner="pid_y1",
+                            filename="Y1"},
+    E2_2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld9"}, "K67"},
+                            end_key={o, "Bucket1", "K45", null},
+                            owner="pid_y2",
+                            filename="Y2"},
+    E3_2 = #manifest_entry{start_key={o, "Bucket1", "K47", null},
+                            end_key={o, "Bucket1", "K812", null},
+                            owner="pid_y3",
+                            filename="Y3"},
+    E4_2 = #manifest_entry{start_key={o, "Bucket1", "K815", null},
+                            end_key={o, "Bucket1", "K998", null},
+                            owner="pid_y4",
+                            filename="Y4"},
+    
+    Man8 = replace_manifest_entry(ManOpen2, 2, 1, E1, E1_2),
+    Man9 = remove_manifest_entry(Man8, 2, 1, [E2, E3]),
+    Man10 = insert_manifest_entry(Man9, 2, 1, [E2_2, E3_2, E4_2]),
+    ?assertMatch(2, get_manifest_sqn(Man10)),
+    
+    LK1_4 = {o, "Bucket1", "K75", null},
+    ?assertMatch("pid_y3", key_lookup(Man10, 1, LK1_4)),
+    ?assertMatch("pid_z5", key_lookup(Man10, 2, LK1_4)),
+    
+    E5 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld7"}, "K97"},
+                            end_key={o, "Bucket1", "K78", null},
+                            filename="Z5",
+                            owner="pid_z5"},
+    E6 = #manifest_entry{start_key={o, "Bucket1", "K81", null},
+                            end_key={o, "Bucket1", "K996", null},
+                            filename="Z6",
+                            owner="pid_z6"},
+    
+    Man11 = remove_manifest_entry(Man10, 3, 2, [E5, E6]),
+    ?assertMatch(3, get_manifest_sqn(Man11)),
+    ?assertMatch(false, key_lookup(Man11, 2, LK1_4)),
+    
+    E2_2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld9"}, "K67"},
+                            end_key={o, "Bucket1", "K45", null},
+                            owner="pid_y2",
+                            filename="Y2"},
+    
+    Man12 = replace_manifest_entry(Man11, 4, 2, E2_2, E5),
+    ?assertMatch(4, get_manifest_sqn(Man12)),
+    ?assertMatch("pid_z5", key_lookup(Man12, 2, LK1_4)).
 
 rangequery_manifest_test() ->
     {_Man0, _Man1, _Man2, _Man3, _Man4, _Man5, Man6} = initial_setup(),

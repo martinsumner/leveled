@@ -57,7 +57,7 @@ prepare_for_index(IndexArray, Hash) ->
 
 
 add_to_cache(L0Size, {LevelMinus1, MinSQN, MaxSQN}, LedgerSQN, TreeList) ->
-    LM1Size = leveled_skiplist:size(LevelMinus1),
+    LM1Size = leveled_tree:tsize(LevelMinus1),
     case LM1Size of
         0 ->
             {LedgerSQN, L0Size, TreeList};
@@ -99,7 +99,7 @@ to_list(Slots, FetchFun) ->
     SlotList = lists:reverse(lists:seq(1, Slots)),
     FullList = lists:foldl(fun(Slot, Acc) ->
                                 Tree = FetchFun(Slot),
-                                L = leveled_skiplist:to_list(Tree),
+                                L = leveled_tree:to_list(Tree),
                                 lists:ukeymerge(1, Acc, L)
                                 end,
                             [],
@@ -119,14 +119,14 @@ check_levelzero(Key, Hash, PosList, TreeList) ->
     check_slotlist(Key, Hash, PosList, TreeList).
 
 
-merge_trees(StartKey, EndKey, SkipListList, LevelMinus1) ->
-    lists:foldl(fun(SkipList, Acc) ->
-                        R = leveled_skiplist:to_range(SkipList,
-                                                        StartKey,
-                                                        EndKey),
+merge_trees(StartKey, EndKey, TreeList, LevelMinus1) ->
+    lists:foldl(fun(Tree, Acc) ->
+                        R = leveled_tree:match_range(StartKey,
+                                                        EndKey,
+                                                        Tree),
                         lists:ukeymerge(1, Acc, R) end,
                     [],
-                    [LevelMinus1|lists:reverse(SkipListList)]).
+                    [LevelMinus1|lists:reverse(TreeList)]).
 
 %%%============================================================================
 %%% Internal Functions
@@ -148,7 +148,7 @@ split_hash(Hash) ->
     H0 = (Hash bsr 8) band 8388607,
     {Slot, H0}.
 
-check_slotlist(Key, Hash, CheckList, TreeList) ->
+check_slotlist(Key, _Hash, CheckList, TreeList) ->
     SlotCheckFun =
                 fun(SlotToCheck, {Found, KV}) ->
                     case Found of
@@ -156,7 +156,7 @@ check_slotlist(Key, Hash, CheckList, TreeList) ->
                             {Found, KV};
                         false ->
                             CheckTree = lists:nth(SlotToCheck, TreeList),
-                            case leveled_skiplist:lookup(Key, Hash, CheckTree) of
+                            case leveled_tree:match(Key, CheckTree) of
                                 none ->
                                     {Found, KV};
                                 {value, Value} ->
@@ -188,7 +188,7 @@ generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
                                 [],
                                 BucketRangeLow,
                                 BucketRangeHigh),
-    leveled_skiplist:from_list(KVL).
+    leveled_tree:from_orderedlist(lists:ukeysort(1, KVL), ?CACHE_TYPE).
 
 generate_randomkeys(_Seqn, 0, Acc, _BucketLow, _BucketHigh) ->
     Acc;
@@ -223,7 +223,7 @@ compare_method_test() ->
     ?assertMatch(32000, SQN),
     ?assertMatch(true, Size =< 32000),
     
-    TestList = leveled_skiplist:to_list(generate_randomkeys(1, 2000, 1, 800)),
+    TestList = leveled_tree:to_list(generate_randomkeys(1, 2000, 1, 800)),
 
     FindKeyFun =
         fun(Key) ->
@@ -232,7 +232,7 @@ compare_method_test() ->
                         true ->
                             {true, KV};
                         false ->
-                            L0 = leveled_skiplist:lookup(Key, Tree),
+                            L0 = leveled_tree:match(Key, Tree),
                             case L0 of
                                 none ->
                                     {false, not_found};
@@ -270,19 +270,20 @@ compare_method_test() ->
                             P = leveled_codec:endkey_passed(EndKey, K),
                             case {K, P} of
                                 {K, false} when K >= StartKey ->
-                                    leveled_skiplist:enter(K, V, Acc);
+                                    [{K, V}|Acc];
                                 _ ->
                                     Acc
                             end
                             end,
-                        leveled_skiplist:empty(),
+                        [],
                         DumpList),
-    Sz0 = leveled_skiplist:size(Q0),
+    Tree = leveled_tree:from_orderedlist(lists:ukeysort(1, Q0), ?CACHE_TYPE),
+    Sz0 = leveled_tree:tsize(Tree),
     io:format("Crude method took ~w microseconds resulting in tree of " ++
                     "size ~w~n",
                 [timer:now_diff(os:timestamp(), SWa), Sz0]),
     SWb = os:timestamp(),
-    Q1 = merge_trees(StartKey, EndKey, TreeList, leveled_skiplist:empty()),
+    Q1 = merge_trees(StartKey, EndKey, TreeList, leveled_tree:empty(?CACHE_TYPE)),
     Sz1 = length(Q1),
     io:format("Merge method took ~w microseconds resulting in tree of " ++
                     "size ~w~n",
@@ -299,7 +300,7 @@ with_index_test() ->
         fun(_X, {{LedgerSQN, L0Size, L0TreeList}, L0Idx, SrcList}) ->
             LM1 = generate_randomkeys_aslist(LedgerSQN + 1, 2000, 1, 500),
             LM1Array = lists:foldl(IndexPrepareFun, new_index(), LM1),
-            LM1SL = leveled_skiplist:from_list(LM1),
+            LM1SL = leveled_tree:from_orderedlist(lists:ukeysort(1, LM1), ?CACHE_TYPE),
             UpdL0Index = add_to_index(LM1Array, L0Idx, length(L0TreeList) + 1),
             R = add_to_cache(L0Size,
                                 {LM1SL, LedgerSQN + 1, LedgerSQN + 2000},

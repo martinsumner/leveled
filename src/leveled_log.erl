@@ -15,8 +15,8 @@
             sst_timing/3]).         
 
 -define(PUT_LOGPOINT, 20000).
--define(HEAD_LOGPOINT, 160000).
--define(GET_LOGPOINT, 160000).
+-define(HEAD_LOGPOINT, 50000).
+-define(GET_LOGPOINT, 50000).
 -define(SST_LOGPOINT, 20000).
 -define(LOG_LEVEL, [info, warn, error, critical]).
 -define(SAMPLE_RATE, 16).
@@ -309,10 +309,12 @@
 
 
 log(LogReference, Subs) ->
-    {ok, {LogLevel, LogText}} = dict:find(LogReference, ?LOGBASE),
+    {LogLevel, LogText} = dict:fetch(LogReference, ?LOGBASE),
     case lists:member(LogLevel, ?LOG_LEVEL) of
         true ->
-            io:format(LogReference ++ " ~w " ++ LogText ++ "~n",
+            io:format(format_time()
+                        ++ " " ++ LogReference ++ " ~w "
+                        ++ LogText ++ "~n",
                         [self()|Subs]);
         false ->
             ok
@@ -320,7 +322,7 @@ log(LogReference, Subs) ->
 
 
 log_timer(LogReference, Subs, StartTime) ->
-    {ok, {LogLevel, LogText}} = dict:find(LogReference, ?LOGBASE),
+    {LogLevel, LogText} = dict:fetch(LogReference, ?LOGBASE),
     case lists:member(LogLevel, ?LOG_LEVEL) of
         true ->
             MicroS = timer:now_diff(os:timestamp(), StartTime),
@@ -330,7 +332,9 @@ log_timer(LogReference, Subs, StartTime) ->
                                 MicroS ->
                                     {"ms", MicroS div 1000}
                             end,
-            io:format(LogReference ++ " ~w " ++ LogText
+            io:format(format_time()
+                            ++ " " ++ LogReference ++ " ~w "
+                            ++ LogText
                             ++ " with time taken ~w " ++ Unit ++ "~n",
                         [self()|Subs] ++ [Time]);
         false ->
@@ -510,6 +514,17 @@ gen_timing_int({N, TimerD}, T0, TimerType, _KeyListFun, _LogPoint, _LogRef) ->
                     TimerD)}.
 
 
+format_time() ->
+    format_time(localtime_ms()).
+
+localtime_ms() ->
+    {_, _, Micro} = Now = os:timestamp(),
+    {Date, {Hours, Minutes, Seconds}} = calendar:now_to_local_time(Now),
+    {Date, {Hours, Minutes, Seconds, Micro div 1000 rem 1000}}.
+
+format_time({{Y, M, D}, {H, Mi, S, Ms}}) ->
+    io_lib:format("~b-~2..0b-~2..0b", [Y, M, D]) ++ "T" ++
+        io_lib:format("~2..0b:~2..0b:~2..0b.~3..0b", [H, Mi, S, Ms]).
 
 
 %%%============================================================================
