@@ -39,28 +39,26 @@
 
 
 create_bloom(HashList) ->
-    SlotSplit = 
-        case length(HashList) of
-            L when L > 64 ->
-                15;
-            L when L > 32 ->
-                7;
-            L when L > 16 ->
-                3;
-            _ ->
-                1
-        end,
-    case SlotSplit of
-        15 ->
+    case length(HashList) of
+        0 ->
+            <<>>;
+        L when L > 32 ->
             add_hashlist(HashList,
-                            SlotSplit,
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-        _ -> 
+                            15,
+                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                            0, 0, 0, 0, 0, 0);
+        L when L > 16 ->
             add_hashlist(HashList,
-                            array:new([{size, SlotSplit + 1}, {default, 0}]),
-                            SlotSplit)
+                            array:new([{size, 4}, {default, 0}]),
+                            3);
+        _ ->
+            add_hashlist(HashList,
+                            array:new([{size, 2}, {default, 0}]),
+                            1)
     end.
 
+check_hash(_Hash, <<>>) ->
+    false;
 check_hash(Hash, BloomBin) ->
     SlotSplit = (byte_size(BloomBin) div 4) - 1,
     {Slot, H0, H1} = split_hash(Hash, SlotSplit),
@@ -265,13 +263,18 @@ check_neg_hashes(BloomBin, HashList, Counters) ->
         end,
     lists:foldl(CheckFun, Counters, HashList).
 
+
+empty_bloom_test() ->
+    BloomBin0 = create_bloom([]),
+    ?assertMatch({0, 4},
+                    check_neg_hashes(BloomBin0, [0, 10, 100, 100000], {0, 0})).
+
 bloom_test() ->
     test_bloom(128),
     test_bloom(64),
     test_bloom(32),
     test_bloom(16),
     test_bloom(8).
-
 
 test_bloom(N) ->
     HashList1 = get_hashlist(N),
@@ -288,17 +291,15 @@ test_bloom(N) ->
     
     case N of
         128 ->
-            ?assertMatch(64, byte_size(BloomBin1)),
-            ?assertMatch(64, byte_size(BloomBin2)),
-            ?assertMatch(64, byte_size(BloomBin3)),
-            ?assertMatch(64, byte_size(BloomBin4));
+            ?assertMatch(64, byte_size(BloomBin1));
         64 ->
-            ?assertMatch(32, byte_size(BloomBin1)),
-            ?assertMatch(32, byte_size(BloomBin2)),
-            ?assertMatch(32, byte_size(BloomBin3)),
-            ?assertMatch(32, byte_size(BloomBin4));
-        _ ->
-            ok
+            ?assertMatch(64, byte_size(BloomBin1));
+        32 ->
+            ?assertMatch(16, byte_size(BloomBin1));
+        16 ->
+            ?assertMatch(8, byte_size(BloomBin1));
+        8 ->
+            ?assertMatch(8, byte_size(BloomBin1))
     end,
     
     SWb = os:timestamp(),
