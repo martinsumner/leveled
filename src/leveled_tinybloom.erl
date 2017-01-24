@@ -188,6 +188,11 @@ test_bloom(N) ->
             ?assertMatch(64, byte_size(BloomBin2)),
             ?assertMatch(64, byte_size(BloomBin3)),
             ?assertMatch(64, byte_size(BloomBin4));
+        64 ->
+            ?assertMatch(32, byte_size(BloomBin1)),
+            ?assertMatch(32, byte_size(BloomBin2)),
+            ?assertMatch(32, byte_size(BloomBin3)),
+            ?assertMatch(32, byte_size(BloomBin4));
         _ ->
             ok
     end,
