@@ -80,7 +80,6 @@ add_hashlist([], _S, S0, S1) ->
      <<S0:32/integer, S1:32/integer>>;
 add_hashlist([TopHash|T], SlotSplit, S0, S1) ->
     {Slot, H0, H1} = split_hash(TopHash, SlotSplit),
-    SW = os:timestamp(),
     Mask = get_mask(H0, H1),
     case Slot of
         0 ->
