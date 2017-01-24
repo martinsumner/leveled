@@ -9,22 +9,6 @@
 
 -include("include/leveled.hrl").
 
--define(TWO_POWER,
-            list_to_tuple(
-                lists:reverse(
-                    element(2,
-                        lists:foldl(
-                                fun(_I, {AccLast, AccList}) ->
-                                    {AccLast * 2,
-                                        [(AccLast * 2)|AccList]}
-                                end,
-                            {1, [1]},
-                            lists:seq(2, 32))
-                        )
-                    )
-                )
-            ).
-
 -include_lib("eunit/include/eunit.hrl").
 
 -export([
@@ -48,13 +32,9 @@ create_bloom(HashList) ->
                             0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                             0, 0, 0, 0, 0, 0);
         L when L > 16 ->
-            add_hashlist(HashList,
-                            array:new([{size, 4}, {default, 0}]),
-                            3);
+            add_hashlist(HashList, 3, 0, 0, 0, 0);
         _ ->
-            add_hashlist(HashList,
-                            array:new([{size, 2}, {default, 0}]),
-                            1)
+            add_hashlist(HashList, 1, 0, 0)
     end.
 
 check_hash(_Hash, <<>>) ->
@@ -87,23 +67,43 @@ split_hash(Hash, SlotSplit) ->
 get_mask(H0, H1) ->
     case H0 == H1 of
         true ->
-            element(H0 + 1, ?TWO_POWER);
+            1 bsl H0;
         false ->
-            element(H0 + 1, ?TWO_POWER) + element(H1 + 1, ?TWO_POWER)
+            (1 bsl H0) + (1 bsl H1)
     end.
 
-add_hashlist([], SlotArray, SlotSplit) ->
-    BuildBinFun =
-        fun(I, Acc) ->
-            Bloom = array:get(I, SlotArray),
-            <<Acc/binary, Bloom:32/integer>>
-        end,
-    lists:foldl(BuildBinFun, <<>>, lists:seq(0, SlotSplit));
-add_hashlist([TopHash|T], SlotArray, SlotSplit) ->
+
+%% This looks ugly and clunky, but in tests it was quicker than modifying an
+%% Erlang term like an array as it is passed around the loop
+
+add_hashlist([], _S, S0, S1) ->
+     <<S0:32/integer, S1:32/integer>>;
+add_hashlist([TopHash|T], SlotSplit, S0, S1) ->
+    {Slot, H0, H1} = split_hash(TopHash, SlotSplit),
+    SW = os:timestamp(),
+    Mask = get_mask(H0, H1),
+    case Slot of
+        0 ->
+            add_hashlist(T, SlotSplit, S0 bor Mask, S1);
+        1 ->
+            add_hashlist(T, SlotSplit, S0, S1 bor Mask)
+    end.
+
+add_hashlist([], _S, S0, S1, S2, S3) ->
+     <<S0:32/integer, S1:32/integer, S2:32/integer, S3:32/integer>>;
+add_hashlist([TopHash|T], SlotSplit, S0, S1, S2, S3) ->
     {Slot, H0, H1} = split_hash(TopHash, SlotSplit),
     Mask = get_mask(H0, H1),
-    I = array:get(Slot, SlotArray),
-    add_hashlist(T, array:set(Slot, I bor Mask, SlotArray), SlotSplit).
+    case Slot of
+        0 ->
+            add_hashlist(T, SlotSplit, S0 bor Mask, S1, S2, S3);
+        1 ->
+            add_hashlist(T, SlotSplit, S0, S1 bor Mask, S2, S3);
+        2 ->
+            add_hashlist(T, SlotSplit, S0, S1, S2 bor Mask, S3);
+        3 ->
+            add_hashlist(T, SlotSplit, S0, S1, S2, S3 bor Mask)
+    end.
 
 add_hashlist([], _S, S0, S1, S2, S3, S4, S5, S6, S7, S8, S9,
                                                     SA, SB, SC, SD, SE, SF) ->
@@ -329,11 +329,6 @@ test_bloom(N) ->
                 "Test with size ~w has microsecond timings: -"
                     ++ " build ~w check ~w neg_check ~w and fpr ~w~n",
                 [N, TSa, TSb, TSc, FPR]).
-
-twopower_test() ->
-    ?assertMatch(1, element(1, ?TWO_POWER)),
-    ?assertMatch(128, element(8, ?TWO_POWER)),
-    ?assertMatch(2147483648, element(32, ?TWO_POWER)).
 
 
 
