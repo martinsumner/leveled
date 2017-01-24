@@ -50,9 +50,16 @@ create_bloom(HashList) ->
             _ ->
                 1
         end,
-    add_hashlist(HashList,
-                    array:new([{size, SlotSplit + 1}, {default, 0}]),
-                    SlotSplit).
+    case SlotSplit of
+        15 ->
+            add_hashlist(HashList,
+                            SlotSplit,
+                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        _ -> 
+            add_hashlist(HashList,
+                            array:new([{size, SlotSplit + 1}, {default, 0}]),
+                            SlotSplit)
+    end.
 
 check_hash(Hash, BloomBin) ->
     SlotSplit = (byte_size(BloomBin) div 4) - 1,
@@ -99,6 +106,101 @@ add_hashlist([TopHash|T], SlotArray, SlotSplit) ->
     Mask = get_mask(H0, H1),
     I = array:get(Slot, SlotArray),
     add_hashlist(T, array:set(Slot, I bor Mask, SlotArray), SlotSplit).
+
+add_hashlist([], _S, S0, S1, S2, S3, S4, S5, S6, S7, S8, S9,
+                                                    SA, SB, SC, SD, SE, SF) ->
+    <<S0:32/integer, S1:32/integer, S2:32/integer, S3:32/integer,
+        S4:32/integer, S5:32/integer, S6:32/integer, S7:32/integer,
+        S8:32/integer, S9:32/integer, SA:32/integer, SB:32/integer,
+        SC:32/integer, SD:32/integer, SE:32/integer, SF:32/integer>>;
+add_hashlist([TopHash|T],
+                SlotSplit,
+                S0, S1, S2, S3, S4, S5, S6, S7, S8, S9,
+                SA, SB, SC, SD, SE, SF) ->
+    {Slot, H0, H1} = split_hash(TopHash, SlotSplit),
+    Mask = get_mask(H0, H1),
+    case Slot of
+        0 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0 bor Mask, S1, S2, S3, S4, S5, S6, S7, S8, S9,
+                            SA, SB, SC, SD, SE, SF);
+        1 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1 bor Mask, S2, S3, S4, S5, S6, S7, S8, S9,
+                            SA, SB, SC, SD, SE, SF);
+        2 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2 bor Mask, S3, S4, S5, S6, S7, S8, S9,
+                            SA, SB, SC, SD, SE, SF);
+        3 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3 bor Mask, S4, S5, S6, S7, S8, S9,
+                            SA, SB, SC, SD, SE, SF);
+        4 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4 bor Mask, S5, S6, S7, S8, S9,
+                            SA, SB, SC, SD, SE, SF);
+        5 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5 bor Mask, S6, S7, S8, S9,
+                            SA, SB, SC, SD, SE, SF);
+        6 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6 bor Mask, S7, S8, S9,
+                            SA, SB, SC, SD, SE, SF);
+        7 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7 bor Mask, S8, S9,
+                            SA, SB, SC, SD, SE, SF);
+        8 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7, S8 bor Mask, S9,
+                            SA, SB, SC, SD, SE, SF);
+        9 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7, S8, S9 bor Mask,
+                            SA, SB, SC, SD, SE, SF);
+        10 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7, S8, S9,
+                            SA bor Mask, SB, SC, SD, SE, SF);
+        11 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7, S8, S9,
+                            SA, SB bor Mask, SC, SD, SE, SF);
+        12 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7, S8, S9,
+                            SA, SB, SC bor Mask, SD, SE, SF);
+        13 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7, S8, S9,
+                            SA, SB, SC, SD bor Mask, SE, SF);
+        14 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7, S8, S9,
+                            SA, SB, SC, SD, SE bor Mask, SF);
+        15 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7, S8, S9,
+                            SA, SB, SC, SD, SE, SF bor Mask)
+    end.
 
 
 %%%============================================================================
@@ -166,7 +268,9 @@ check_neg_hashes(BloomBin, HashList, Counters) ->
 bloom_test() ->
     test_bloom(128),
     test_bloom(64),
-    test_bloom(32).
+    test_bloom(32),
+    test_bloom(16),
+    test_bloom(8).
 
 
 test_bloom(N) ->
