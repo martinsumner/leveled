@@ -451,7 +451,7 @@ sst_timing({N, SSTTimerD}, SW, TimerType) ->
     end.
 
 sst_keylist() ->
-    [slot_bloom, slot_fetch].
+    [tiny_bloom, slot_bloom, slot_fetch].
 
 
 get_timing(undefined, SW, TimerType) ->

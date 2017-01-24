@@ -114,7 +114,8 @@
 
 -record(slot_index_value, {slot_id :: integer(),
                             start_position :: integer(),
-                            length :: integer()}).
+                            length :: integer(),
+                            bloom :: binary()}).
 
 -record(summary,    {first_key :: tuple(),
                         last_key :: tuple(),
@@ -398,47 +399,51 @@ fetch(LedgerKey, Hash, State) ->
     Summary = State#state.summary,
     Slot = lookup_slot(LedgerKey, Summary#summary.index),
     SlotID = Slot#slot_index_value.slot_id,
-    CachedBlockIdx = array:get(SlotID - 1, 
-                                State#state.blockindex_cache),
-    case CachedBlockIdx of 
-        none ->
-            SlotBin = read_slot(State#state.handle, Slot),
-            {Result, BlockIdx} = binaryslot_get(SlotBin, 
-                                                LedgerKey, 
-                                                Hash, 
-                                                none),
-            BlockIndexCache = array:set(SlotID - 1, 
-                                        BlockIdx,
+    Bloom = Slot#slot_index_value.bloom,
+    case leveled_tinybloom:check_hash(Hash, Bloom) of
+        false ->
+            {not_present, tiny_bloom, SlotID, State};
+        true ->
+            CachedBlockIdx = array:get(SlotID - 1, 
                                         State#state.blockindex_cache),
-            {Result, 
-                slot_fetch, 
-                Slot#slot_index_value.slot_id,
-                State#state{blockindex_cache = BlockIndexCache}};
-        _ ->
-            PosList = find_pos(CachedBlockIdx, 
-                                double_hash(Hash, LedgerKey), 
-                                [], 
-                                0),
-            case PosList of 
-                [] ->
-                    {not_present, slot_bloom,  SlotID, State};
-                _ ->
+            case CachedBlockIdx of 
+                none ->
                     SlotBin = read_slot(State#state.handle, Slot),
-                    Result = binaryslot_get(SlotBin, 
-                                            LedgerKey, 
-                                            Hash, 
-                                            {true, PosList}),
-                    {element(1, Result), slot_fetch, SlotID, State}
-            end 
+                    {Result, BlockIdx} = binaryslot_get(SlotBin, 
+                                                        LedgerKey, 
+                                                        Hash, 
+                                                        none),
+                    BlockIndexCache = array:set(SlotID - 1, 
+                                                BlockIdx,
+                                                State#state.blockindex_cache),
+                    {Result, 
+                        slot_fetch, 
+                        Slot#slot_index_value.slot_id,
+                        State#state{blockindex_cache = BlockIndexCache}};
+                _ ->
+                    PosList = find_pos(CachedBlockIdx, 
+                                        double_hash(Hash, LedgerKey), 
+                                        [], 
+                                        0),
+                    case PosList of 
+                        [] ->
+                            {not_present, slot_bloom,  SlotID, State};
+                        _ ->
+                            SlotBin = read_slot(State#state.handle, Slot),
+                            Result = binaryslot_get(SlotBin, 
+                                                    LedgerKey, 
+                                                    Hash, 
+                                                    {true, PosList}),
+                            {element(1, Result), slot_fetch, SlotID, State}
+                    end 
+            end
     end.
 
 
 fetch_range(StartKey, EndKey, ScanWidth, State) ->
     Summary = State#state.summary,
     Handle = State#state.handle,
-    {Slots, LTrim, RTrim} = lookup_slots(StartKey,
-                                            EndKey,
-                                            Summary#summary.index),
+    {Slots, RTrim} = lookup_slots(StartKey, EndKey, Summary#summary.index),
     Self = self(),
     SL = length(Slots),
     ExpandedSlots = 
@@ -447,15 +452,11 @@ fetch_range(StartKey, EndKey, ScanWidth, State) ->
                 [];
             1 ->
                 [Slot] = Slots,
-                case {LTrim, RTrim} of
-                    {true, true} ->
+                case RTrim of
+                    true ->
                         [{pointer, Self, Slot, StartKey, EndKey}];
-                    {true, false} ->
-                        [{pointer, Self, Slot, StartKey, all}];
-                    {false, true} ->
-                        [{pointer, Self, Slot, all, EndKey}];
-                    {false, false} ->
-                        [{pointer, Self, Slot, all, all}]
+                    false ->
+                        [{pointer, Self, Slot, StartKey, all}]
                 end;
             N ->
                 {LSlot, MidSlots, RSlot} = 
@@ -472,21 +473,13 @@ fetch_range(StartKey, EndKey, ScanWidth, State) ->
                                                 {pointer, Self, S, all, all}
                                                 end,
                                             MidSlots),
-                case {LTrim, RTrim} of
-                    {true, true} ->
+                case RTrim of
+                    true ->
                         [{pointer, Self, LSlot, StartKey, all}] ++
                             MidSlotPointers ++
                             [{pointer, Self, RSlot, all, EndKey}];
-                    {true, false} ->
+                    false ->
                         [{pointer, Self, LSlot, StartKey, all}] ++
-                            MidSlotPointers ++
-                            [{pointer, Self, RSlot, all, all}];
-                    {false, true} ->
-                        [{pointer, Self, LSlot, all, all}] ++
-                            MidSlotPointers ++
-                            [{pointer, Self, RSlot, all, EndKey}];
-                    {false, false} ->
-                        [{pointer, Self, LSlot, all, all}] ++
                             MidSlotPointers ++
                             [{pointer, Self, RSlot, all, all}]
                 end
@@ -603,11 +596,13 @@ build_all_slots(KVL, SC, Pos, SlotID, SlotIdx, BlockIdxA, SlotsBin) ->
                 lists:split(?SLOT_SIZE, KVL)
         end,
     {LastKey, _V} = lists:last(SlotList),
-    {BlockIndex, SlotBin} = generate_binary_slot(SlotList),
+    {BlockIndex, SlotBin, HashList} = generate_binary_slot(SlotList),
     Length = byte_size(SlotBin),
+    Bloom = leveled_tinybloom:create_bloom(HashList),
     SlotIndexV = #slot_index_value{slot_id = SlotID,
                                     start_position = Pos,
-                                    length = Length},
+                                    length = Length,
+                                    bloom = Bloom},
     build_all_slots(KVRem,
                     SC - 1,
                     Pos + Length,
@@ -706,9 +701,9 @@ lookup_slots(StartKey, EndKey, Tree) ->
     {EK, _EndSlot} = lists:last(SlotList),
     case EK of
         EndKey ->
-            {lists:map(MapFun, SlotList), true, false};
+            {lists:map(MapFun, SlotList), false};
         _ ->
-            {lists:map(MapFun, SlotList), true, true}
+            {lists:map(MapFun, SlotList), true}
     end.
 
 
@@ -739,7 +734,7 @@ lookup_slots(StartKey, EndKey, Tree) ->
 generate_binary_slot(KVL) ->
     
     HashFoldFun =
-        fun({K, V}, {PosBinAcc, NoHashCount}) ->
+        fun({K, V}, {PosBinAcc, NoHashCount, HashAcc}) ->
             
             {_SQN, H1} = leveled_codec:strip_to_seqnhashonly({K, V}),
             case is_integer(H1) of 
@@ -750,7 +745,8 @@ generate_binary_slot(KVL) ->
                             {<<1:1/integer, 
                                     PosH1:15/integer, 
                                     PosBinAcc/binary>>,
-                                0};
+                                0,
+                                [H1|HashAcc]};
                         N ->
                             % The No Hash Count is an integer between 0 and 127
                             % and so at read time should count NHC + 1
@@ -760,15 +756,16 @@ generate_binary_slot(KVL) ->
                                     0:1/integer,
                                     NHC:7/integer, 
                                     PosBinAcc/binary>>,
-                                0}
+                                0,
+                                HashAcc}
                     end;
                 false ->
-                    {PosBinAcc, NoHashCount + 1}
+                    {PosBinAcc, NoHashCount + 1, HashAcc}
             end
          
          end,
 
-    {PosBinIndex0, NHC} = lists:foldr(HashFoldFun, {<<>>, 0}, KVL),
+    {PosBinIndex0, NHC, HashL} = lists:foldr(HashFoldFun, {<<>>, 0, []}, KVL),
     PosBinIndex1 = 
         case NHC of
             0 ->
@@ -825,7 +822,7 @@ generate_binary_slot(KVL) ->
     CRC32 = erlang:crc32(SlotBin),
     FullBin = <<CRC32:32/integer, SlotBin/binary>>,
 
-    {PosBinIndex1, FullBin}.
+    {PosBinIndex1, FullBin, HashL}.
 
 
 binaryslot_get(FullBin, Key, Hash, CachedPosLookup) ->
@@ -1212,18 +1209,9 @@ indexed_list_test() ->
     KVL0 = lists:ukeysort(1, generate_randomkeys(1, N, 1, 4)),
     KVL1 = lists:sublist(KVL0, 128),
 
-    % BloomAddFun =
-    %     fun({H, K}, {Bloom, Total, Max}) -> 
-    %             SW = os:timestamp(),
-    %             Bloom0 = leveled_tinybloom:tiny_enter(H, K, Bloom),
-    %             T0 = timer:now_diff(os:timestamp(), SW),
-    %             {Bloom0, Total + T0, max(T0, Max)}
-
-    %         end,
-
     SW0 = os:timestamp(),
 
-    {_PosBinIndex1, FullBin} = generate_binary_slot(KVL1),
+    {_PosBinIndex1, FullBin, _HL} = generate_binary_slot(KVL1),
     io:format(user,
                 "Indexed list created slot in ~w microseconds of size ~w~n",
                 [timer:now_diff(os:timestamp(), SW0), byte_size(FullBin)]),
@@ -1251,7 +1239,7 @@ indexed_list_mixedkeys_test() ->
     KVL1 = lists:sublist(KVL0, 33),
     Keys = lists:ukeysort(1, generate_indexkeys(60) ++ KVL1),
 
-    {_PosBinIndex1, FullBin} = generate_binary_slot(Keys),
+    {_PosBinIndex1, FullBin, _HL} = generate_binary_slot(Keys),
 
     {TestK1, TestV1} = lists:nth(4, KVL1),
     MH1 = leveled_codec:magic_hash(TestK1),
@@ -1277,7 +1265,7 @@ indexed_list_mixedkeys2_test() ->
     IdxKeys2 = lists:ukeysort(1, generate_indexkeys(30)),
     % this isn't actually ordered correctly
     Keys = IdxKeys1 ++ KVL1 ++ IdxKeys2,
-    {_PosBinIndex1, FullBin} = generate_binary_slot(Keys),
+    {_PosBinIndex1, FullBin, _HL} = generate_binary_slot(Keys),
     lists:foreach(fun({K, V}) ->
                         MH = leveled_codec:magic_hash(K),
                         test_binary_slot(FullBin, K, MH, {K, V})
@@ -1286,7 +1274,7 @@ indexed_list_mixedkeys2_test() ->
 
 indexed_list_allindexkeys_test() ->
     Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(150)), 128),
-    {PosBinIndex1, FullBin} = generate_binary_slot(Keys),
+    {PosBinIndex1, FullBin, _HL} = generate_binary_slot(Keys),
     ?assertMatch(<<127:8/integer>>, PosBinIndex1),
     % SW = os:timestamp(),
     BinToList = binaryslot_tolist(FullBin),
@@ -1299,7 +1287,7 @@ indexed_list_allindexkeys_test() ->
 
 indexed_list_allindexkeys_trimmed_test() ->
     Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(150)), 128),
-    {PosBinIndex1, FullBin} = generate_binary_slot(Keys),
+    {PosBinIndex1, FullBin, _HL} = generate_binary_slot(Keys),
     ?assertMatch(<<127:8/integer>>, PosBinIndex1),
     ?assertMatch(Keys, binaryslot_trimmedlist(FullBin, 
                                                 {i, 
@@ -1337,7 +1325,7 @@ indexed_list_mixedkeys_bitflip_test() ->
     KVL0 = lists:ukeysort(1, generate_randomkeys(1, 50, 1, 4)),
     KVL1 = lists:sublist(KVL0, 33),
     Keys = lists:ukeysort(1, generate_indexkeys(60) ++ KVL1),
-    {_PosBinIndex1, FullBin} = generate_binary_slot(Keys),
+    {_PosBinIndex1, FullBin, _HL} = generate_binary_slot(Keys),
     L = byte_size(FullBin),
     Byte1 = random:uniform(L),
     <<PreB1:Byte1/binary, A:8/integer, PostByte1/binary>> = FullBin,
