@@ -16,6 +16,10 @@
             check_hash/2
             ]).
 
+-define(BITS_PER_KEY, 8). % Must be 8 or 4
+-define(INTEGER_SIZE, ?BITS_PER_KEY * 8). 
+-define(BAND_MASK, ?INTEGER_SIZE - 1). 
+
 
 %%%============================================================================
 %%% API
@@ -40,11 +44,12 @@ create_bloom(HashList) ->
 check_hash(_Hash, <<>>) ->
     false;
 check_hash(Hash, BloomBin) ->
-    SlotSplit = (byte_size(BloomBin) div 4) - 1,
+    SlotSplit = (byte_size(BloomBin) div ?BITS_PER_KEY) - 1,
     {Slot, H0, H1} = split_hash(Hash, SlotSplit),
     Mask = get_mask(H0, H1),
-    Pos = Slot * 4,
-    <<_H:Pos/binary, CheckInt:32/integer, _T/binary>> = BloomBin,
+    Pos = Slot * ?BITS_PER_KEY,
+    IntSize = ?INTEGER_SIZE,
+    <<_H:Pos/binary, CheckInt:IntSize/integer, _T/binary>> = BloomBin,
     case CheckInt band Mask of
         Mask ->
             true;
@@ -58,11 +63,12 @@ check_hash(Hash, BloomBin) ->
 
 split_hash(Hash, SlotSplit) ->
     Slot = Hash band SlotSplit,
-    H0 = (Hash bsr 4) band 31,
-    H1 = (Hash bsr 9) band 31,
-    H3 = (Hash bsr 14) band 31,
-    H4 = (Hash bsr 19) band 31,
-    {Slot, H0 bxor H3, H1 bxor H4}.
+    H0 = (Hash bsr 4) band (?BAND_MASK),
+    H1 = (Hash bsr 10) band (?BAND_MASK),
+    H3 = (Hash bsr 16) band (?BAND_MASK),
+    H4 = (Hash bsr 22) band (?BAND_MASK),
+    Slot0 = (Hash bsr 28) band SlotSplit,
+    {Slot bxor Slot0, H0 bxor H3, H1 bxor H4}.
 
 get_mask(H0, H1) ->
     case H0 == H1 of
@@ -77,7 +83,8 @@ get_mask(H0, H1) ->
 %% Erlang term like an array as it is passed around the loop
 
 add_hashlist([], _S, S0, S1) ->
-     <<S0:32/integer, S1:32/integer>>;
+    IntSize = ?INTEGER_SIZE,
+    <<S0:IntSize/integer, S1:IntSize/integer>>;
 add_hashlist([TopHash|T], SlotSplit, S0, S1) ->
     {Slot, H0, H1} = split_hash(TopHash, SlotSplit),
     Mask = get_mask(H0, H1),
@@ -89,7 +96,9 @@ add_hashlist([TopHash|T], SlotSplit, S0, S1) ->
     end.
 
 add_hashlist([], _S, S0, S1, S2, S3) ->
-     <<S0:32/integer, S1:32/integer, S2:32/integer, S3:32/integer>>;
+     IntSize = ?INTEGER_SIZE,
+     <<S0:IntSize/integer, S1:IntSize/integer,
+        S2:IntSize/integer, S3:IntSize/integer>>;
 add_hashlist([TopHash|T], SlotSplit, S0, S1, S2, S3) ->
     {Slot, H0, H1} = split_hash(TopHash, SlotSplit),
     Mask = get_mask(H0, H1),
@@ -106,10 +115,15 @@ add_hashlist([TopHash|T], SlotSplit, S0, S1, S2, S3) ->
 
 add_hashlist([], _S, S0, S1, S2, S3, S4, S5, S6, S7, S8, S9,
                                                     SA, SB, SC, SD, SE, SF) ->
-    <<S0:32/integer, S1:32/integer, S2:32/integer, S3:32/integer,
-        S4:32/integer, S5:32/integer, S6:32/integer, S7:32/integer,
-        S8:32/integer, S9:32/integer, SA:32/integer, SB:32/integer,
-        SC:32/integer, SD:32/integer, SE:32/integer, SF:32/integer>>;
+    IntSize = ?INTEGER_SIZE,
+    <<S0:IntSize/integer, S1:IntSize/integer,
+        S2:IntSize/integer, S3:IntSize/integer,
+        S4:IntSize/integer, S5:IntSize/integer,
+        S6:IntSize/integer, S7:IntSize/integer,
+        S8:IntSize/integer, S9:IntSize/integer,
+        SA:IntSize/integer, SB:IntSize/integer,
+        SC:IntSize/integer, SD:IntSize/integer,
+        SE:IntSize/integer, SF:IntSize/integer>>;
 add_hashlist([TopHash|T],
                 SlotSplit,
                 S0, S1, S2, S3, S4, S5, S6, S7, S8, S9,
@@ -287,19 +301,6 @@ test_bloom(N) ->
     BloomBin3 = create_bloom(HashList3),
     BloomBin4 = create_bloom(HashList4),
     TSa = timer:now_diff(os:timestamp(), SWa),
-    
-    case N of
-        128 ->
-            ?assertMatch(64, byte_size(BloomBin1));
-        64 ->
-            ?assertMatch(64, byte_size(BloomBin1));
-        32 ->
-            ?assertMatch(16, byte_size(BloomBin1));
-        16 ->
-            ?assertMatch(8, byte_size(BloomBin1));
-        8 ->
-            ?assertMatch(8, byte_size(BloomBin1))
-    end,
     
     SWb = os:timestamp(),
     check_all_hashes(BloomBin1, HashList1),
