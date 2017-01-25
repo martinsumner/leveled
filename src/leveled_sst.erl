@@ -8,7 +8,7 @@
 %% -------- Slots ---------
 %%
 %% The view is built from sublists referred to as slot.  Each slot is up to 128
-%% keys and values in size.  Three strategis have been benchmarked for the 
+%% keys and values in size.  Three strategies have been benchmarked for the 
 %% slot: a skiplist, a gb-tree, four blocks of flat lists with an index. 
 %%
 %% Skiplist:
@@ -23,7 +23,7 @@
 %%
 %% Indexed Blocks:
 %% build and serialise slot 342 microseconds
-%% de-deriaise and check * 128 - 6746 microseconds
+%% de-deserialise and check * 128 - 6746 microseconds
 %% flatten back to list - 187 microseconds
 %%
 %% The negative side of using Indexed Blocks is the storage of the index.  In 
@@ -34,23 +34,19 @@
 %%
 %% -------- Blooms ---------
 %%
-%% There is a summary bloom for the table.  the summary bloom is split by the
-%% first byte of the hash, and consists of two hashes (derived from the
-%% remainder of the hash).  This is the top bloom, and the size varies by
-%% level.
-%% Level 0 has 8 bits per key - 0.05 fpr
-%% Level 1 has 6 bits per key - 0.08 fpr
-%% Other Levels have 4 bits per key - 0.15 fpr
+%% There is a bloom for each slot - based on two hashes and 8 bits per key.
 %%
-%% With the indexed block implementation of the slot a second slot-level bloom 
-%% is unnecessary (as the index itself yields a 0.003 % fpr).
+%% Hashing for blooms is a challenge, as the slot is a slice of an ordered
+%% list of keys with a fixed format.  It is likely that the keys may vary by
+%% only one or two ascii characters, and there is a desire to avoid the
+%% overhead of cryptographic hash functions that may be able to handle this.
 %%
 %% -------- Summary ---------
 %%
 %% Each file has a summary - which is the 128 keys at the top of each slot in 
 %% a skiplist, with some basic metadata about the slot stored as the value.
 %%
-%% The summary is stored seperately to the slots (wihtin the same file).
+%% The summary is stored seperately to the slots (within the same file).
 %%
 %% -------- CRC Checks ---------
 %%
