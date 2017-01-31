@@ -1,0 +1,104 @@
+# LevelEd - A  Log-Structured Merge Tree
+
+The following section is a brief overview of some of the motivating factors behind developing LevelEd.
+
+## Introduction
+
+LevelEd is a work-in-progress prototype of a simple Key-Value store with the following characteristics:
+
+- Optimised for workloads with larger values (e.g. > 4KB) and non-trivial proportion of PUT activity (e.g. > 20% by comparison with GET activity).
+- Supporting of values split between metadata and body, and allowing for HEAD requests which have lower overheads than GET requests.
+- Trade-offs are made to reduce the intensity of disk workloads, accepting the potential for consequent increases in CPU time and median latency.
+- Support for tagging of object types and the implementation of alternative store behaviour based on type.
+- Support for low-cost clones without locking to provide for scanning queries, specifically where there is a need to scan across keys and metadata (not values).
+- Written in Erlang as a message passing system between Actors.
+
+The store has been developed with a focus on being a potential backend to a Riak KV database, rather than as a generic store.  The primary aim of developing (yet another) Riak backend is to examine the potential to reduce the broader costs providing sustained throughput in Riak i.e. to provide equivalent throughput on cheaper hardware.  It is also anticipated in having a fully-featured pure Erlang backend may assist in evolving new features through the Riak ecosystem  which require end-to-end changes.
+
+The store is not expected to be 'faster' than leveldb (the primary fully-featured Riak backend available today), nor offer improvements in all use cases - especially where values are small.
+
+## A Paper To Love
+
+The concept of a Log Structured Merge Tree is described within the 1996 paper ["The Log Structured Merge Tree"](http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.44.2782&rep=rep1&type=pdf) by Patrick O'Neil et al.  The paper is not specific on precisely how a LSM-Tree should be implemented, proposing a series of potential options.  The paper's focus is on framing the justification for design decisions in the context of hardware economics.  
+
+The hardware economics at the time of the paper were:
+
+- COST<sub>d</sub> = cost of 1MByte of disk storage = $1
+
+- COST<sub>m</sub> = cost of 1MByte of memory storage = $100
+
+- COST<sub>P</sub> = cost of 1 page/second IO rate random pages = $25
+
+- COST<sub>pi</sub> = cost of 1 page/second IO rate multi-page block = $2.50
+
+Consideration on design trade-offs for LevelEd should likewise start with a viewpoint on the modern cost of hardware - in the context where we expect the store to be run (i.e. as multiple stores co-existing on a server, sharing workload across multiple servers).
+
+### Modern Hardware Costs
+
+Based on the experience of running Riak at scale in production for the NHS, what has been noticeable is that although on the servers we use around 50% of the cost goes on disk in almost all scenarios where the system is pushed to limits the limit first hit is in disk throughput.  
+
+The purchase costs of disk though, do not accurately reflect the running costs of disks - because disks fail, and fail often.  Also the hardware choices made by the NHS for the Spine programme, do not necessarily reflect the generic industry choices and costs.
+
+To get an up-to-date objective measure of the overall exists are, assuming data centres are run with a high degree of efficiency and savings of scale - the price list for Amazon EC2 instances can assist, by directly comparing the current prices of different instances.
+
+As at 26th January 2017, the [on-demand instance pricing](https://aws.amazon.com/ec2/pricing/on-demand/) for servers is:
+
+- c4.4xlarge - 16 CPU, 30 GB RAM, EBS only - $0.796
+
+- r4.xlarge  - 4 CPU, 30GB RAM, EBS only - $0.266
+
+- r4.4xlarge - 16 CPU, 122 GB RAM, EBS only - $1.064
+
+- i2.4xlarge - 16 CPU, 122 GB RAM, 4 X 800 GB SSD - $3.41
+
+- d2.4xlarge - 16 CPU, 122 GB RAM, 12 X 2000 GB HDD - $2.76
+
+By comparing these prices we can surmise that the relative costs are:
+
+- 1 CPU - $0.044 per hour
+
+- 1GB RAM - $0.0029 per hour
+
+- 1GB SDD - $0.0015 per hour (assumes mirroring)
+
+- 1GB HDD - $0.00015 per hour (assumes mirroring)
+
+If a natural ratio in a database server is 1 CPU: 10GB RAM: 200GB disk - this would give a proportional cost of the disk of 80% for SSD and 25% for HDD.  
+
+Compared to the figures at the time of the LSM-Tree paper actual the delta in the per-byte cost of memory and the per-byte costs of disk space has closed significantly, even when using the lowest cost disk options.  This may reflect changes in the pace of technology advancement, or just the fact that maintenance cost associated with different failure rates is now more correctly priced.  
+
+The availability of SDDs is not a silver bullet to disk i/o problems when cost is considered, as although they eliminate the additional costs of random page access through the removal of the disk movement overhead (of about 6.5ms per movement), this benefit is at an order of magnitude difference in cost compared to spinning disks, and at a cost greater than half the price of DRAM.
+
+In physical on-premise server environments there is also commonly the cost of disk controllers.  Disk controllers bend the economics of persistence through the presence of flash-backed write caches.  However, disk controllers also fail - within the NHS environment disk controller failures are the second most common device failure after individual disks.  Failures of disk controllers are also expensive to resolve, not being hot-pluggable like disks, and carrying greater risk of node data-loss due to either bad luck or bad process during the change.  It is noticeable that EC2 does not have disk controllers and given their failure rate and cost of recovery, this appears to be a sensible trade-off.
+
+In building economical efficient systems which will depend on persistence, their is a clear advantage in building systems which perform well on traditional hard-disk drives.  Given the high relative cost of SDDs, where a large volume of space is required, it is worthwhile to think about stages of storage where large volumes of space is required - can by design the database space be split into 'hot' and 'cold' spaces such that the majority of storage is in the cold space, but the majority of access is in the hot space.
+
+### eleveldb Evolution
+
+The evolution of leveledb in Riak, from the original Google-provided store to the significantly refactored eleveldb provided by Basho reflects the alternative hardware economics that the stores were designed for.  
+
+The original leveledb considered in part the hardware economics of the phone where there are clear constraints around CPU usage - due to both form-factor and battery life, and where disk space may be at a greater premium than disk IOPS.  Some of the evolution of eleveldb is down to the Riak-specific problem of needing to run multiple stores on a single server, where even load distribution may lead to a synchronisation of activity.  Much of the evolution is also about how to make better use of the continuous availability of CPU resource, in the face of the relative scarcity of disk resource.  Changes such as overlapping files at level 1, hot threads, compression improvements etc all move eleveldb in the direction of being easier on disk at the cost of CPU; and the hardware economics of servers would indicate this is a wise choice
+
+## Being Operator Friendly
+
+The LSM-Tree paper focuses on hardware trade-offs in database design.  LevelEd is focused on the job of being a backend to a Riak database, and the Riak database is opinionated on the trade-off between developer and operator productivity.  Running a Riak database imposes constraints and demands on developers - there are things the developer needs to think hard about: living without transactions, considering the resolution of siblings, manual modelling for query optimisation.  
+
+However, in return for this pain there is great reward, a reward which is gifted to the operators of the service.  Riak clusters are reliable and predictable, and operational processes are slim and straight forward - preparation for managing a Riak cluster in production needn't go much beyond rehearsing magical cure-alls of the the node stop/start and node join/leave processes.  At the NHS, where we have more than 50 Riak nodes in 24 by 365 business critical operations, it is not untypical to go more than 28-days without anyone logging on to a database node.  This is a relief for those of us who have previously lived in the world with databases with endless configuration parameters to test or blame for issues, where you always seem to be the unlucky one who suffer the outages "never seen in any other customer", where the databases come with ever more complicated infrastructure dependencies and and where DBAs need to be constantly at-hand to analyse reports, kill rogue queries and re-run the query optimiser as an answer to the latest 'blip' in performance.
+
+Developments on Riak of the past few years, in particular the introduction of CRDTs, have made some limited progress in easing the developer headaches.  No real progress has been made though in making things more operator friendly, and although operator sleep patterns are the primary beneficiary of a Riak installation, that does not mean to say that things cannot be improved.
+
+The primary operator improvements sought are:
+
+- Increased visibility of database contents.  Riak lacks efficient answers to simple questions about the bucket names which have been defined and the size and space consumed by different buckets.
+
+- Reduced variation.  Riak has unscheduled events, in particular active anti-entropy hashtree rebuilds, that will temporarily impact the performance of the cluster both during the event (due to resource pressure of the actual rebuild) and immediately after (e.g. due to page cache pollution).
+
+- More predictable capacity management.  Production systems constrained by disk throughput are hard to monitor for capacity, especially as there is no readily available measure of disk utilisation (note the often missed warning in the iostat man page - 'Device saturation occurs when this value is close to 100% for devices serving requests serially. But for devices serving requests in parallel, such as RAID arrays and modern SSDs, this number does not reflect their performance limits').  Monitoring disk-bound *nix-based systems requires the monitoring of volatile late-indicators of issues (e.g. await times), and this can be exacerbated by volatile demands on disk (e.g. due to compaction), and the ongoing risk of either individual disk failure or the overhead of individual disk recovery.
+
+- Code context switching.  Looking at code can be helpful, having the majority of the code in Erlang and then a portion of the code in C++, makes understanding and monitoring behaviour within the database that bit harder.
+
+- Backup space issues.  Managing the space consumed by backups, and the time required to produce backups, is traditionally handled through the use of delta-based backup systems such as rsync.  However, such systems are far less effective if the system to be backed up has write amplification by design.
+
+## Personal Motivation
+
+Due to my history as the tehcnical lead on the NHS spine project I have a professional interest in exploring the possibilities in improving Riak.  However, my primary personal motivation, as someone with almost no previous experience of writing an Erlang-based project, was to test out my capability to write effective code in Erlang.
