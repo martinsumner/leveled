@@ -2,21 +2,6 @@
 
 The following section is a brief overview of some of the motivating factors behind developing LevelEd.
 
-## Introduction
-
-LevelEd is a work-in-progress prototype of a simple Key-Value store with the following characteristics:
-
-- Optimised for workloads with larger values (e.g. > 4KB) and non-trivial proportion of PUT activity (e.g. > 20% by comparison with GET activity).
-- Supporting of values split between metadata and body, and allowing for HEAD requests which have lower overheads than GET requests.
-- Trade-offs are made to reduce the intensity of disk workloads, accepting the potential for consequent increases in CPU time and median latency.
-- Support for tagging of object types and the implementation of alternative store behaviour based on type.
-- Support for low-cost clones without locking to provide for scanning queries, specifically where there is a need to scan across keys and metadata (not values).
-- Written in Erlang as a message passing system between Actors.
-
-The store has been developed with a focus on being a potential backend to a Riak KV database, rather than as a generic store.  The primary aim of developing (yet another) Riak backend is to examine the potential to reduce the broader costs providing sustained throughput in Riak i.e. to provide equivalent throughput on cheaper hardware.  It is also anticipated in having a fully-featured pure Erlang backend may assist in evolving new features through the Riak ecosystem  which require end-to-end changes.
-
-The store is not expected to be 'faster' than leveldb (the primary fully-featured Riak backend available today), nor offer improvements in all use cases - especially where values are small.
-
 ## A Paper To Love
 
 The concept of a Log Structured Merge Tree is described within the 1996 paper ["The Log Structured Merge Tree"](http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.44.2782&rep=rep1&type=pdf) by Patrick O'Neil et al.  The paper is not specific on precisely how a LSM-Tree should be implemented, proposing a series of potential options.  The paper's focus is on framing the justification for design decisions in the context of hardware economics.  
