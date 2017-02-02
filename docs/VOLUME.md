@@ -32,7 +32,7 @@ leveled PUT mean(max)           | eleveldb PUT mean(max)
 :-------------------------:|:-------------------------:
 101.5ms | 2,301.6ms
 
-Tail latency under load is around in leveled is less than 5% of the comparable value in eleveldb
+Tail latency under load is around in leveled is less than 5% of the comparable value in eleveldb (note there is a significant difference in the y-axis scale between the latency charts on these graphs).
 
 leveled Results           |  eleveldb Results
 :-------------------------:|:-------------------------:
