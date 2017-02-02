@@ -1,4 +1,4 @@
-# LevelEd - A  Log-Structured Merge Tree
+# LevelEd - A Log-Structured Merge Tree
 
 The following section is a brief overview of some of the motivating factors behind developing LevelEd.
 

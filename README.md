@@ -1,4 +1,4 @@
-# LevelEd - A Pure Erlang Key-Value store
+# LevelEd - An Erlang Key-Value store
 
 ## Introduction
 
