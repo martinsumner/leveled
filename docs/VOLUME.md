@@ -11,15 +11,15 @@ This showed a [relative positive performance for leveled](VOLUME_PRERIAK.md) for
 The First test on a Riak Cluster has been based on the following configuration:
 
 - A 5 node cluster
-- Using i2.2xlarge EC2 nodes with mirrored drives (for data partition only)
+- Using i2.2xlarge EC2 nodes with mirrored SSD drives (for data partition only)
 - noop scheduler, transparent huge pages disabled, ext4 partition
 - A 64 vnode ring-size
-- 45 concurrent basho_bench threads (basho_bench run on separate disks)
+- 45 concurrent basho_bench threads (basho_bench run on separate disks) running at max
 - AAE set to passive
 - sync writes enabled (on both backends)
 - An object size of 8KB
 - A pareto distribution of requests with a keyspace of 50M keys
-- 5 GETs for each update
+- 5 GETs for each UPDATE
 - 4 hour test run
 
 This test showed a <b>73.9%</b> improvement in throughput when using LevelEd, but more importantly a huge improvement in variance in tail latency.  Through the course of the test the average of the maximum response times (in each 10s period) were
@@ -40,15 +40,15 @@ leveled Results           |  eleveldb Results
 
 ### Lies, damned lies etc
 
-To a certain extent this should not be too expected - leveled is design to reduce write amplification, without write amplification the persistent write load gives leveled an advantage.  The frequent periods of poor performance in leveldb appear to be coordinated with periods of very high await times on nodes during merge jobs, which may involve up to o(1GB) of write activity.
+To a certain extent this should not be too unexpected - leveled is design to reduce write amplification, without write amplification the persistent write load gives leveled an advantage.  The frequent periods of poor performance in leveldb appear to be coordinated with periods of very high await times on nodes during merge jobs, which may involve up to o(1GB) of write activity.
 
 Also the 5:1 ratio of GET:UPDATE is not quite that as:
 
 - each UPDATE requires an external Riak GET (as well as the internal GETs);
 
-- the empty nature of the database at the test start means that there are no actual value fetches initially (just not-present response) and only 50% of fetches get a value by the end of the test (much less for leveldb as there is less volume put during the test).
+- the empty nature of the database at the test start means that there are no actual value fetches initially (just not-present response) and only 50% of fetches get a value by the end of the test (much less for leveldb as there is less volume PUT during the test).
 
-When testing on a single node cluster (with a smaller ring size, and a smaller keyspace) the relative benefit of leveled appears to be much smaller.  One big difference between the single node testing completed and multi-node testing is that between testing the disk was switched from using a single drive to using a mirrored pair.  It is suspected that the amplified improvement between single-node test and multi-node tests is related in-part to the cost of software-based mirroring exaggerating write contention to disk.
+When testing on a single node cluster (with a smaller ring size, and a smaller keyspace) the relative benefit of leveled appears to be much smaller.  One big difference between the single node and multi-node testing undertaken is that between the tests the disk was switched from using a single drive to using a mirrored pair.  It is suspected that the amplified improvement between single-node test and multi-node tests is related in-part to the cost of software-based mirroring exaggerating write contention to disk.
 
 Leveldb achieved more work in a sense during the test, as the test was run outside of the compaction window for leveled - so the on-disk size of the leveled store was higher as no replaced values had been compacted.  Test 6 below will examine the impact of the compaction window on throughput.  
 

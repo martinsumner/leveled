@@ -10,14 +10,14 @@ The store supports all the required Riak backend capabilities.  A number of furt
 
 - A bucket size query, which requires traversal only of the Ledger and counts the keys and sums he total on-disk size of the objects within the bucket.
 
-- Support for a specific Riak tombstone tag where reaping of tombstones can be deferred (by many days) i.e. so that a 'keep' deletion strategy can be followed that will eventually garbage collect.
+- Support for a specific Riak tombstone tag where reaping of tombstones can be deferred (by many days) i.e. so that a 'sort-of-keep' deletion strategy can be followed that will eventually garbage collect without the need to hold pending full deletion state in memory.
 
 
 ## Outstanding work
 
 There is some work required before LevelEd could be considered production ready:
 
-- A strategy for supervision an restart of processes, in particular for clerks.
+- A strategy for the supervision and restart of processes, in particular for clerks.
 
 - Further functional testing within the context of Riak.
 
