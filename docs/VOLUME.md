@@ -37,7 +37,7 @@ The First test on a Riak Cluster has been based on the following configuration:
 - 5 GETs for each update
 - 4 hour test run
 
-This test showed a 73.9% improvement in throughput when using LevelEd, but more importantly a huge improvement in variance in tail latency.  Through the course of the test the average of the maximum response times (in each 10s period) were
+This test showed a <b>73.9%</b> improvement in throughput when using LevelEd, but more importantly a huge improvement in variance in tail latency.  Through the course of the test the average of the maximum response times (in each 10s period) were
 
 leveled GET mean(max)           | eleveldb GET mean(max)
 :-------------------------:|:-------------------------:
