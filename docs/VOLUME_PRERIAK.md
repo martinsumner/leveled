@@ -1,6 +1,6 @@
 # Volume Testing
 
-## Parallel Node Testing
+## Parallel Node Testing - Non-Riak
 
 Initial volume tests have been [based on standard basho_bench eleveldb test](../test/volume/single_node/examples) to run multiple stores in parallel on the same node and and subjecting them to concurrent pressure. 
 
