@@ -24,7 +24,7 @@ For more details on the store:
 
 - [Future work](docs/FUTURE.md) covers new features being implemented at present, and improvements necessary to make the system production ready.
 
-- There is also a ["Why"](WHYWHYWHYWHYWHY.md) section looking at lower level design choices and the rationale that supports them.
+- There is also a ["Why"](docs/WHY.md) section looking at lower level design choices and the rationale that supports them.
 
 ## Is this interesting?
 

@@ -25,6 +25,8 @@ There is some work required before LevelEd could be considered production ready:
 
 - Riak modifications to support the optimised Key/Clock scanning for hashtree rebuilds.
 
+- Amend compaction scheduling to ensure that all vnodes do not try to concurrently compact during a single window.
+
 - Improved handling of corrupted files.
 
 - A way of identifying the partition in each log to ease the difficulty of tracing activity when multiple stores are run in parallel.
