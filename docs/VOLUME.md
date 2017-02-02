@@ -4,29 +4,14 @@
 
 Initial volume tests have been [based on standard basho_bench eleveldb test](../test/volume/single_node/examples) to run multiple stores in parallel on the same node and and subjecting them to concurrent pressure. 
 
-This showed a relative positive performance for leveled for both population and load:
+This showed a [relative positive performance for leveled](VOLUME_PRERIAK.md) for both population and load. This also showed that although the LevelEd throughput was relatively stable it was still subject to fluctuations related to CPU constraints.  Prior to moving on to full Riak testing, a number of changes where then made to LevelEd to reduce the CPU load in particular during merge events.
 
-Populate leveled           |  Populate eleveldb
-:-------------------------:|:-------------------------:
-![](../test/volume/single_node/output/leveled_pop.png "LevelEd - Populate")  |  ![](../test/volume/single_node/output/leveldb_pop.png "LevelDB - Populate")
-
-Load leveled             |  Load eleveldb
-:-------------------------:|:-------------------------:
-![](../test/volume/single_node/output/leveled_load.png "LevelEd - Populate")  |  ![](../test/volume/single_node/output/leveldb_load.png "LevelDB - Populate")
-
-This test was a positive comparison for LevelEd, but also showed that although the LevelEd throughput was relatively stable it was still subject to fluctuations related to CPU constraints.  Prior to moving on to full Riak testing, a number of changes where then made to LevelEd to reduce the CPU load in particular during merge events.
-
-The eleveldb results may not be a fair representation of performance in that:
-
-- Within Riak it was to be expected that eleveldb would start with an appropriate default configuration that might better utilise available memory.
-- The test node use had a single desktop (SSD-based) drive, and the the 'low' points of eleveldb performance were associated with disk constraints.  Running on more genuine servers with high-performance disks may give better performance.
-
-## Riak Cluster Test - #1
+## Riak Cluster Test - 1
 
 The First test on a Riak Cluster has been based on the following configuration:
 
 - A 5 node cluster
-- Using i2.2x large nodes with mirrored drives (for data partition only)
+- Using i2.2xlarge EC2 nodes with mirrored drives (for data partition only)
 - noop scheduler, transparent huge pages disabled, ext4 partition
 - A 64 vnode ring-size
 - 45 concurrent basho_bench threads (basho_bench run on separate disks)
@@ -54,5 +39,41 @@ leveled Results           |  eleveldb Results
 ![](../test/volume/cluster_one/output/summary_leveled_5n_45t.png "LevelEd")  |  ![](../test/volume/cluster_one/output/summary_leveldb_5n_45t.png "LevelDB")
 
 
-## Riak Cluster Test - #2
+## Riak Cluster Test - 2
+
+to be completed ..
+
+As above but on d2.2xlarge EC2 nodes for HDD comparison
+
+## Riak Cluster Test - 3
+
+to be completed ..
+
+Testing with optimised GET FSM (which checks HEAD requests from r nodes, and only GET request from one node if no sibling resolution required)
+
+## Riak Cluster Test - 4
+
+to be completed ..
+
+Testing with optimised PUT FSM (switching from GET before PUT to HEAD before PUT)
+
+## Riak Cluster Test - 5
+
+to be completed ..
+
+Testing with changed hashtree logic in Riak so key/clock scan is effective
+
+## Riak Cluster Test - 6
+
+to be completed ..
+
+Testing during a journal compaction window
+
+## Riak Cluster Test - 7
+
+to be completed ..
+
+Testing for load including 2i queries
+
+
 
