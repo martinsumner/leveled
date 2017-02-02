@@ -72,7 +72,7 @@ This is not an original idea, the LSM-Tree paper specifically talked about the t
 
 > To begin with, it should be clear that the LSM-tree entries could themselves contain records rather than RIDs pointing to records elsewhere on disk. This means that the records themselves can be clustered by their keyvalue. The cost for this is larger entries and a concomitant acceleration of the rate of insert R in bytes per second and therefore of cursor movement and total I/O rate H. 
 
-The reasoning behind the use of this structure is an attempt to differentiate more clearly between a (small) hot database space (the Ledger) and a (much larger) cold database space (the non-current part of the Journal) so that through use of page cache, or faster disk the hot part of the database can be optimised for rapid access.
+The reasoning behind the use of this structure is an attempt to differentiate more clearly between a (small) hot database space (the Ledger) and a (much larger) cold database space (the non-current part of the Journal) so that through use of the page cache, or faster disk, the hot part of the database can be optimised for rapid access.
 
 In parallel to this work, there has also been work published on [WiscKey](https://www.usenix.org/system/files/conference/fast16/fast16-papers-lu.pdf) which explores precisely this trade-off.
 
@@ -94,7 +94,7 @@ The primary operator improvements sought are:
 
 - Increased visibility of database contents.  Riak lacks efficient answers to simple questions about the bucket names which have been defined and the size and space consumed by different buckets.
 
-- Reduced variation.  Riak has unscheduled events, in particular active anti-entropy hashtree rebuilds, that will temporarily impact the performance of the cluster both during the event (due to resource pressure of the actual rebuild) and immediately after (e.g. due to page cache pollution).
+- Reduced variation.  Riak has unscheduled events, in particular active anti-entropy hashtree rebuilds, that will temporarily impact the performance of the cluster both during the event (due to resource pressure of the actual rebuild) and immediately after (e.g. due to page cache pollution).  The intention is to convert object-scanning events, into events which require only Key/Metadata scanning.
 
 - More predictable capacity management.  Production systems constrained by disk throughput are hard to monitor for capacity, especially as there is no readily available measure of disk utilisation (note the often missed warning in the iostat man page - 'Device saturation occurs when this value is close to 100% for devices serving requests serially. But for devices serving requests in parallel, such as RAID arrays and modern SSDs, this number does not reflect their performance limits').  Monitoring disk-bound *nix-based systems requires the monitoring of volatile late-indicators of issues (e.g. await times), and this can be exacerbated by volatile demands on disk (e.g. due to compaction), and the ongoing risk of either individual disk failure or the overhead of individual disk recovery.
 
