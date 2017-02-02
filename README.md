@@ -32,6 +32,6 @@ At the initiation of the project I accepted that making a positive contribution 
 
 The target at inception was to do something interesting, something that articulates through working software the potential for improvement to exist by re-thinking certain key assumptions and trade-offs.
 
-[Initial volume tests](docs/VOLUME.md) indicate that it is at least interesting, with substantial improvements in both throughput and tail latency when compared to eleveldb - in scenarios expected to be optimised for leveled.  Note, to be clear, this is statement falls well short of making a general claim that it represents a 'better' Riak backend than leveldb.
+[Initial volume tests](docs/VOLUME.md) indicate that it is at least interesting, with substantial improvements in both throughput (73%) and tail latency (1:20) when compared to eleveldb - in scenarios expected to be optimised for leveled.  Note, to be clear, this is statement falls well short of making a general claim that it represents a 'better' Riak backend than leveldb.
 
 More information can be found in the [volume testing section](docs/VOLUME.md).
