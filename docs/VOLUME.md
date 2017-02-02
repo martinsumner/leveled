@@ -6,13 +6,14 @@ Initial volume tests have been [based on standard basho_bench eleveldb test](../
 
 This showed a relative positive performance for leveled for both population and load:
 
-![](../test/volume/single_node/output/leveled_pop.png "LevelEd")
-![](../test/volume/single_node/output/leveled_load.png "LevelEd")
+Populate LevelEd             |  Populate LevelDB
+:-------------------------:|:-------------------------:
+![](../test/volume/single_node/output/leveled_pop.png "LevelEd - Populate")  |  ![](../test/volume/single_node/output/leveldb_pop.png "LevelDB - Populate")
 
-By comparison the same test on leveldb:
+Load LevelEd             |  Load LevelDB
+:-------------------------:|:-------------------------:
+![](../test/volume/single_node/output/leveled_load.png "LevelEd - Populate")  |  ![](../test/volume/single_node/output/leveldb_load.png "LevelDB - Populate")
 
-![](../test/volume/single_node/output/leveldb_pop.png "Leveldb")
-![](../test/volume/single_node/output/leveldb_load.png "LevelDB")
 
 ## Riak Cluster Test - #1
 
