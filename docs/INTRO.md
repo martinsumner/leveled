@@ -102,6 +102,3 @@ The primary operator improvements sought are:
 
 - Backup space issues.  Managing the space consumed by backups, and the time required to produce backups, is traditionally handled through the use of delta-based backup systems such as rsync.  However, such systems are far less effective if the system to be backed up has write amplification by design.
 
-## Personal Motivation
-
-Due to my history as the tehcnical lead on the NHS spine project I have a professional interest in exploring the possibilities in improving Riak.  However, my primary personal motivation, as someone with almost no previous experience of writing an Erlang-based project, was to test out my capability to write effective code in Erlang.

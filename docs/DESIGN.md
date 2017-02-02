@@ -52,7 +52,7 @@ The File Clerks themselves are ignorant to their context within the store.  For 
 
 Cloning of the store does not require any file-system level activity - a clone simply needs to know the manifest so that it can independently make requests of the File Clerk processes, and register itself with the Inker/Penciller so that those files are not deleted whilst the clone is active.
 
-The Journal files use a constant database format almost exactly replicating the CDB format originally designed by DJ Bernstein.  The Ledger files use a bespoke format with is based on Google's SST format, with the primary difference being that the bloom filters used to protect against unnecessary lookups are based on the Riak Segment IDs of the key, and use single-hash rice-encoded sets rather using the traditional bloom filter size-optimisation model of extending the number of hashes used to reduce the false-positive rate.
+The Journal files use a constant database format almost exactly replicating the CDB format originally designed by DJ Bernstein.  The Ledger files use a bespoke format with is based on Google's SST format.
 
 File clerks spend a short initial portion of their life in a writable state.  Once they have left a writing state, they will for the remainder of their life-cycle, be in an immutable read-only state.
 
