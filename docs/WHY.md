@@ -54,10 +54,10 @@ Yes why, why do I have to do this?
 
 The names used in the Actor model are loosely correlated with names used for on-course bookmakers (e.g. Bookie, Clerk, Penciller).  
 
-![](pics/ascot_bookies.png "Bookies")
+![](pics/ascot_bookies.jpg "Bookies")
 
-There is no specific reason for drawing this specific link, other than the generic sense that this group represents a tight-nit group of workers passing messages from a front-man (the bookie) to keep a local view of state (a book) for a queue of clients, and where normally these groups are working in a loosely-coupled orchestration with a number of other bookmakers to form a betting market that is converging towards an eventually consistent price.
+There is no strong reason for drawing this specific link, other than the generic sense that this group represents a tight-nit group of workers passing messages from a front-man (the bookie) to keep a local view of state (a book) for a queue of clients, and where normally these groups are working in a loosely-coupled orchestration with a number of other bookmakers to form a betting market that is converging towards an eventually consistent price.
 
-![](pics/betting_market.png "Betting Market")
+![](pics/betting_market.jpg "Betting Market")
 
 There were some broad parallels between bookmakers in a market and vnodes in a Riak database, and using the actor names just stuck, even though the analogy is imperfect.
