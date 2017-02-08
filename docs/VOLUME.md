@@ -66,7 +66,7 @@ leveled Results           |  eleveldb Results
 :-------------------------:|:-------------------------:
 ![](../test/volume/cluster_two/output/summary_nosync_d2_leveled.png "LevelEd")  |  ![](../test/volume/cluster_two/output/summary_nosync_d2_leveldb.png "LevelDB")
 
-This test showed a <b>26.7%</b> improvement in throughput when using LevelEd.  The improvement in tail latency in this test had leveled at about <b>25%</b> of the tail latency of leveldb.
+This test showed a <b>26.7%</b> improvement in throughput when using leveled.  The improvement in tail latency in this test had leveled at about <b>25%</b> of the tail latency of leveldb - so still a substantial improvement, although not of the same order of magnitude as the sync_on_write test with i2.2xlarge and leveldb.
 
 This indicates that without sync_on_writes, there remains potential value in using HDD drives, with either leveldb and leveled.  It seems reasonably likely (although it remains unproven) that spinning drives with a hardware RAID and flash-backed write cache may perform reasonably even with sync on writes.
 
