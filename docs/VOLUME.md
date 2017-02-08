@@ -60,13 +60,15 @@ An identical test was run as above, but with d2.2xlarge instances, so that perfo
 
 Although append_only writes are being used, almost every write still requires a disk head movement even if the server had all reads handled by in-memory cache (as there are normally more vnodes on the server than there are disk heads).  It is clear that without a Flash-Backed Write Cache, spinning disks are unusable as the sole storage mechanism.
 
-Also tested was d2.2zlarge clusters, but without sync_on_write.  Results were:
+Also tested was this same d2.2xlarge cluster, but without sync_on_write.  Results were:
 
 leveled Results           |  eleveldb Results
 :-------------------------:|:-------------------------:
 ![](../test/volume/cluster_two/output/summary_nosync_d2_leveled.png "LevelEd")  |  ![](../test/volume/cluster_two/output/summary_nosync_d2_leveldb.png "LevelDB")
 
 This test showed a <b>26.7%</b> improvement in throughput when using LevelEd.  The improvement in tail latency in this test had leveled at about <b>25%</b> of the tail latency of leveldb.
+
+This indicates that without sync_on_writes, there remains potential value in using HDD drives, with either leveldb and leveled.  It seems reasonably likely (although it remains unproven) that spinning drives with a hardware RAID and flash-backed write cache may perform reasonably even with sync on writes.
 
 ## Riak Cluster Test - 3
 
