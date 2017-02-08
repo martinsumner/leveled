@@ -60,4 +60,6 @@ There is no strong reason for drawing this specific link, other than the generic
 
 ![](pics/betting_market.jpg "Betting Market")
 
-There were some broad parallels between bookmakers in a market and vnodes in a Riak database, and using the actor names just stuck, even though the analogy is imperfect.
+There were some broad parallels between bookmakers in a market and vnodes in a Riak database, and using the actor names just stuck, even though the analogy is imperfect.  Somehow having a visual model of these mysterious guys in top hats working away, helped me imagine the store in action.
+
+The name LevelEd owes some part to the influence of my eldest son Ed, and some part to the Yorkshire phrasing of the word Head.
