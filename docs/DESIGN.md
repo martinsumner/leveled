@@ -46,7 +46,7 @@ Both the Penciller and the Inker each make use of their own dedicated clerk for 
 
 ### File Clerks
 
-Every file within the store has is owned by its own dedicated process (modelled as a finite state machine).  Files are never created or accessed by the Inker or the Penciller, interactions with the files are managed through messages sent to the File Clerk processes which own the files.
+Every file within the store has its own dedicated process (modelled as a finite state machine).  Files are never created or accessed by the Inker or the Penciller, interactions with the files are managed through messages sent to the File Clerk processes which own the files.
 
 The File Clerks themselves are ignorant to their context within the store.  For example a file in the Ledger does not know what level of the Tree it resides in.  The state of the store is represented by the Manifest which maintains a picture of the store, and contains the process IDs of the file clerks which represent the files.
 
@@ -58,11 +58,11 @@ File clerks spend a short initial portion of their life in a writable state.  On
 
 ## Clones
 
-Both the Penciller and the Inker can be cloned, to provide a snapshot of the database at a point in time for long-running process that can be run concurrently to other database actions.  Clones are used for Journal compaction, but also for scanning queries in the penciller (for example to support 2i queries or hashtree rebuilds in Riak).
+Both the Penciller and the Inker can be cloned, to provide a snapshot of the database at a point in time. A long running process may then use this clone to query the database concurrently to other database actions.  Clones are used for Journal compaction, but also for scanning queries in the penciller (for example to support 2i queries or hashtree rebuilds in Riak).
 
-The snapshot process is simple.  The necessary loop-state is requested from the real worker, in particular the manifest and any immutable in-memory caches, and a new gen_server work is started with the loop state.  The clone registers itself as a snapshot with the real worker, with a timeout that will allow the snapshot to expire if the clone silently terminates.  The clone will then perform its work, making requests to the file workers referred to in the manifest.  Once the work is complete the clone should remove itself from the snapshot register in the real worker before closing.
+The snapshot process is simple.  The necessary loop-state is requested from the real worker, in particular the manifest and any immutable in-memory caches, and a new gen_server worker is started with the loop state.  The clone registers itself as a snapshot with the real worker, with a timeout that will allow the snapshot to expire if the clone silently terminates.  The clone will then perform its work, making requests to the file workers referred to in the manifest.  Once the work is complete the clone should remove itself from the snapshot register in the real worker before closing.
 
-The snapshot register is used by the real worker when file workers are placed in the delete_pending state after they have been replaced in the current manifest.  Checking the list of registered snapshots allows the Penciller or Inker to inform the File Clerk if they remove themselves permanently - as no remaining clones may expect them to be present (except those who have timed out).
+The snapshot register is used by the real worker when file workers are placed in the delete_pending state. File processes enter this state when they have been replaced in the current manifest, but access may still be needed by a cloned process using an older version of the manifest. The file process should poll the Penciller/Inker in this state to check if deletion can be completed, and the Penciller/Inker should check the register of snapshots to confirm that no active snapshot has a potential dependency on the file before responding to proceed with deletion.
 
 Managing the system in this way requires that ETS tables are used sparingly for holding in-memory state, and immutable and hence shareable objects are used instead.  The exception to the rule is the small in-memory state of recent additions kept by the Bookie - which must be exported to a list on every snapshot request.
 

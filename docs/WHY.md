@@ -2,7 +2,7 @@
 
 ## Why not just use RocksDB? 
 
-Well that wouldn't be interesting.
+Well that wouldn't have been as interesting.
 
 All LSM-trees which evolve off the back of leveldb are trying to improve leveldb in a particular context.  I'm considering larger values, with need for iterators and object time-to-lives, optimisations by supporting HEAD requests and also the problem of running multiple isolated nodes in parallel on a single server.  
 
@@ -42,8 +42,22 @@ From the start I decided that fadvise would be my friend, in part as:
 
 - I expect to reduce the page-cache polluting events that can occur in Riak by reducing object scanning.
 
-Ultimately though, sophisticated memory management is hard, and beyond my capability in the timescale available.
+Ultimately though, sophisticated memory management is hard, and beyond my capability in the timescale available.  
+
+The design may make some caching strategies relatively easy to implement in the future though.  Each file process has its own LoopData, and to that LoopData independent caches can be added.  This is currently used for caching bloom filters and hash index tables, but could be used in a more flexible way.
 
 ## Why make this backwards compatible with OTP16?
 
 Yes why, why do I have to do this?
+
+## Why name things this way?
+
+The names used in the Actor model are loosely correlated with names used for on-course bookmakers (e.g. Bookie, Clerk, Penciller).  
+
+![](pics/ascot_bookies.png "Bookies")
+
+There is no specific reason for drawing this specific link, other than the generic sense that this group represents a tight-nit group of workers passing messages from a front-man (the bookie) to keep a local view of state (a book) for a queue of clients, and where normally these groups are working in a loosely-coupled orchestration with a number of other bookmakers to form a betting market that is converging towards an eventually consistent price.
+
+![](pics/betting_market.png "Betting Market")
+
+There were some broad parallels between bookmakers in a market and vnodes in a Riak database, and using the actor names just stuck, even though the analogy is imperfect.

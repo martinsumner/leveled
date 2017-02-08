@@ -4,7 +4,7 @@ The following section is a brief overview of some of the motivating factors behi
 
 ## A Paper To Love
 
-The concept of a Log Structured Merge Tree is described within the 1996 paper ["The Log Structured Merge Tree"](http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.44.2782&rep=rep1&type=pdf) by Patrick O'Neil et al.  The paper is not specific on precisely how a LSM-Tree should be implemented, proposing a series of potential options.  The paper's focus is on framing the justification for design decisions in the context of hardware economics.  
+The concept of a Log Structured Merge Tree is described within the 1996 paper ["The Log Structured Merge Tree"](http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.44.2782&rep=rep1&type=pdf) by Patrick O'Neil et al.  The paper is not specific on precisely how an LSM-Tree should be implemented, proposing a series of potential options.  The paper's focus is on framing the justification for design decisions in the context of hardware economics.  
 
 The hardware economics at the time of the paper were:
 
@@ -24,13 +24,13 @@ Based on the experience of running Riak at scale in production for the NHS, what
 
 The purchase costs of disk though, do not accurately reflect the running costs of disks - because disks fail, and fail often.  Also the hardware choices made by the NHS for the Spine programme, do not necessarily reflect the generic industry choices and costs.
 
-To get an up-to-date objective measure of the overall exists are, assuming data centres are run with a high degree of efficiency and savings of scale - the price list for Amazon EC2 instances can assist, by directly comparing the current prices of different instances.
+To get an up-to-date and objective measure of what the overall costs are, the Amazon price list can assist if we assume their data centres are managed with a high-degree of efficiency due to their scale.  Assumptions on the costs of individual components can be made by examining differences between specific instance prices.
 
 As at 26th January 2017, the [on-demand instance pricing](https://aws.amazon.com/ec2/pricing/on-demand/) for servers is:
 
 - c4.4xlarge - 16 CPU, 30 GB RAM, EBS only - $0.796
 
-- r4.xlarge  - 4 CPU, 30GB RAM, EBS only - $0.266
+- r4.xlarge  - 4 CPU, 30 GB RAM, EBS only - $0.266
 
 - r4.4xlarge - 16 CPU, 122 GB RAM, EBS only - $1.064
 
