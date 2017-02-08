@@ -56,9 +56,17 @@ On the flip side, it could be argued that the 73% difference under-estimates the
 
 ## Riak Cluster Test - 2
 
-to be completed ..
+An identical test was run as above, but with d2.2xlarge instances, so that performance on spinning disks could be tested for comparison.  This however tanked with sync_on_write enabled regardless if this was tested with leveled or leveldb - with just 1,000 transactions per second supported.
 
-As above but on d2.2xlarge EC2 nodes for HDD comparison
+Although append_only writes are being used, almost every write still requires a disk head movement even if the server had all reads handled by in-memory cache (as there are normally more vnodes on the server than there are disk heads).  It is clear that without a Flash-Backed Write Cache, spinning disks are unusable as the sole storage mechanism.
+
+Also tested was d2.2zlarge clusters, but without sync_on_write.  Results were:
+
+leveled Results           |  eleveldb Results
+:-------------------------:|:-------------------------:
+![](../test/volume/cluster_two/output/summary_nosync_d2_leveled.png "LevelEd")  |  ![](../test/volume/cluster_two/output/summary_nosync_d2_leveldb.png "LevelDB")
+
+This test showed a <b>26.7%</b> improvement in throughput when using LevelEd.  The improvement in tail latency in this test had leveled at about <b>25%</b> of the tail latency of leveldb.
 
 ## Riak Cluster Test - 3
 
