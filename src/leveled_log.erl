@@ -168,7 +168,13 @@
         {info, "Saved manifest file"}},
     {"PC019",
         {debug, "After ~s level ~w is ~w"}},
-    
+    {"PC020",
+        {warn, "Empty prompt deletions at ManifestSQN=~w"}},
+    {"PC021",
+        {info, "Prompting deletions at ManifestSQN=~w"}},
+    {"PC022",
+        {info, "Storing reference to deletions at ManifestSQN=~w"}},
+        
     {"I0001",
         {info, "Unexpected failure to fetch value for Key=~w SQN=~w "
                 ++ "with reason ~w"}},
