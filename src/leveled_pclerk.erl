@@ -225,14 +225,13 @@ do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, Additions) ->
 
 
 return_deletions(ManifestSQN, PendingDeletionD) ->
-    case dict:is_empty(PendingDeletionD) of
-        true ->
-            leveled_log:log("PC020", [ManifestSQN]),
-            {[], PendingDeletionD};
-        false ->
+    case dict:find(ManifestSQN, PendingDeletionD) of
+        {ok, PendingDeletions} ->
             leveled_log:log("PC021", [ManifestSQN]),
-            {dict:fetch(ManifestSQN, PendingDeletionD),
-                dict:erase(ManifestSQN, PendingDeletionD)}
+            {PendingDeletions, dict:erase(ManifestSQN, PendingDeletionD)};
+        error ->
+            leveled_log:log("PC020", [ManifestSQN]),
+            {[], PendingDeletionD}
     end.
 
 %%%============================================================================
