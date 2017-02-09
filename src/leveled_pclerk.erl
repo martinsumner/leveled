@@ -91,12 +91,13 @@ handle_cast(prompt, State) ->
 handle_cast({push_work, Work}, State) ->
     {ManifestSQN, Deletions} = handle_work(Work, State),
     PDs = dict:store(ManifestSQN, Deletions, State#state.pending_deletions),
+    leveled_log:log("PC022", [ManifestSQN]),
     {noreply, State#state{pending_deletions = PDs}, ?MAX_TIMEOUT};
 handle_cast({prompt_deletions, ManifestSQN}, State) ->
-    Deletions = dict:fetch(ManifestSQN, State#state.pending_deletions),
+    {Deletions, UpdD} = return_deletions(ManifestSQN,
+                                            State#state.pending_deletions),
     ok = notify_deletions(Deletions, State#state.owner),
-    UpdDeletions = dict:erase(ManifestSQN, State#state.pending_deletions),
-    {noreply, State#state{pending_deletions = UpdDeletions}, ?MIN_TIMEOUT}.
+    {noreply, State#state{pending_deletions = UpdD}, ?MIN_TIMEOUT}.
 
 handle_info(timeout, State) ->
     request_work(State),
@@ -223,11 +224,29 @@ do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, Additions) ->
     end.
 
 
+return_deletions(ManifestSQN, PendingDeletionD) ->
+    case dict:is_empty(PendingDeletionD) of
+        true ->
+            leveled_log:log("PC020", [ManifestSQN]),
+            {[], PendingDeletionD};
+        false ->
+            leveled_log:log("PC021", [ManifestSQN]),
+            {dict:fetch(ManifestSQN, PendingDeletionD),
+                dict:erase(ManifestSQN, PendingDeletionD)}
+    end.
+
 %%%============================================================================
 %%% Test
 %%%============================================================================
 
 -ifdef(TEST).
+
+return_deletions_test() ->
+    % During volume tests there would occasionaly be a deletion prompt with
+    % an empty pending deletions dictionary.  Don't understand why this would
+    % happen - so we check here that at least it does not kill the clerk
+    R = {[], dict:new()},
+    ?assertMatch(R, return_deletions(20, dict:new())).
 
 generate_randomkeys(Count, BucketRangeLow, BucketRangeHigh) ->
     generate_randomkeys(Count, [], BucketRangeLow, BucketRangeHigh).
