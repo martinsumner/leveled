@@ -225,27 +225,22 @@ do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, Additions) ->
 
 
 return_deletions(ManifestSQN, PendingDeletionD) ->
-    case dict:find(ManifestSQN, PendingDeletionD) of
-        {ok, PendingDeletions} ->
-            leveled_log:log("PC021", [ManifestSQN]),
-            {PendingDeletions, dict:erase(ManifestSQN, PendingDeletionD)};
-        error ->
-            leveled_log:log("PC020", [ManifestSQN]),
-            {[], PendingDeletionD}
-    end.
+    % The returning of deletions had been seperated out as a failure to fetch
+    % here had caased crashes of the clerk.  The root cause of the failure to
+    % fetch was the same clerk being asked to do the same work twice - and this
+    % should be blocked now by the ongoing_work boolean in the Penciller
+    % LoopData
+    %
+    % So this is now allowed to crash again
+    PendingDeletions = dict:fetch(ManifestSQN, PendingDeletionD),
+    leveled_log:log("PC021", [ManifestSQN]),
+    {PendingDeletions, dict:erase(ManifestSQN, PendingDeletionD)}.
 
 %%%============================================================================
 %%% Test
 %%%============================================================================
 
 -ifdef(TEST).
-
-return_deletions_test() ->
-    % During volume tests there would occasionaly be a deletion prompt with
-    % an empty pending deletions dictionary.  Don't understand why this would
-    % happen - so we check here that at least it does not kill the clerk
-    R = {[], dict:new()},
-    ?assertMatch(R, return_deletions(20, dict:new())).
 
 generate_randomkeys(Count, BucketRangeLow, BucketRangeHigh) ->
     generate_randomkeys(Count, [], BucketRangeLow, BucketRangeHigh).
