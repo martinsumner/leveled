@@ -91,12 +91,13 @@ handle_cast(prompt, State) ->
 handle_cast({push_work, Work}, State) ->
     {ManifestSQN, Deletions} = handle_work(Work, State),
     PDs = dict:store(ManifestSQN, Deletions, State#state.pending_deletions),
+    leveled_log:log("PC022", [ManifestSQN]),
     {noreply, State#state{pending_deletions = PDs}, ?MAX_TIMEOUT};
 handle_cast({prompt_deletions, ManifestSQN}, State) ->
-    Deletions = dict:fetch(ManifestSQN, State#state.pending_deletions),
+    {Deletions, UpdD} = return_deletions(ManifestSQN,
+                                            State#state.pending_deletions),
     ok = notify_deletions(Deletions, State#state.owner),
-    UpdDeletions = dict:erase(ManifestSQN, State#state.pending_deletions),
-    {noreply, State#state{pending_deletions = UpdDeletions}, ?MIN_TIMEOUT}.
+    {noreply, State#state{pending_deletions = UpdD}, ?MIN_TIMEOUT}.
 
 handle_info(timeout, State) ->
     request_work(State),
@@ -222,6 +223,18 @@ do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, Additions) ->
                             Additions ++ [Entry])
     end.
 
+
+return_deletions(ManifestSQN, PendingDeletionD) ->
+    % The returning of deletions had been seperated out as a failure to fetch
+    % here had caased crashes of the clerk.  The root cause of the failure to
+    % fetch was the same clerk being asked to do the same work twice - and this
+    % should be blocked now by the ongoing_work boolean in the Penciller
+    % LoopData
+    %
+    % So this is now allowed to crash again
+    PendingDeletions = dict:fetch(ManifestSQN, PendingDeletionD),
+    leveled_log:log("PC021", [ManifestSQN]),
+    {PendingDeletions, dict:erase(ManifestSQN, PendingDeletionD)}.
 
 %%%============================================================================
 %%% Test
