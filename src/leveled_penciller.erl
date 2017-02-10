@@ -511,10 +511,19 @@ handle_cast({levelzero_complete, FN, StartKey, EndKey}, State) ->
                             manifest=UpdMan,
                             persisted_sqn=State#state.ledger_sqn}};
 handle_cast(work_for_clerk, State) ->
-    case State#state.levelzero_pending of
-        true ->
-            {noreply, State};
-        false ->
+    case {State#state.levelzero_pending, State#state.work_ongoing} of
+        {false, false} ->
+            % TODO - as part of supervision tree and retry work:
+            % Need to check for work_ongoing as well as levelzero_pending as
+            % there may be a race that could lead to the clerk doing the same
+            % thing twice.
+            %
+            % This has implications though if we auto-restart the pclerk in the
+            % future, without altering this state - it may never be able to
+            % request work due to ongoing work that crashed the previous clerk
+            %
+            % Perhaps the pclerk should not be restarted because of this, and
+            % the failure should ripple up
             {WL, WC} = leveled_pmanifest:check_for_work(State#state.manifest,
                                                         ?LEVEL_SCALEFACTOR),
             case WC of
@@ -534,7 +543,9 @@ handle_cast(work_for_clerk, State) ->
                                                     {TL, State#state.manifest}),
                     {noreply,
                         State#state{work_backlog=false, work_ongoing=true}}
-            end
+            end;
+        _ ->
+            {noreply, State}
     end.
 
 
