@@ -44,6 +44,8 @@ Both the Inker and the Penciller must undertake compaction work.  The Inker must
 
 Both the Penciller and the Inker each make use of their own dedicated clerk for completing this work.  The Clerk will add all new files necessary to represent the new view of that part of the store, and then update the Inker/Penciller with the new manifest that represents that view.  Once the update has been acknowledged, any removed files can be marked as delete_pending, and they will poll the Inker (if a Journal file) or Penciller (if a Ledger file) for it to confirm that no clones of the system still depend on the old snapshot of the store to be maintained.
 
+The Penciller's clerk work to compact the Ledger is effectively continuous, it will regularly poll the Penciller for compaction work, and do work whenever work is necessary.  The Inker's clerk compaction responsibility is expected to be scheduled.  The Inker's Clerk will need to determine if compaction work is necessary when scheduled, and it does this by asking each CDB file for a random sample of keys and object sizes, and the file is the scored by the Clerk for compaction based on the indication from the sample of the likely proportion of space that will be recovered.  The Inker's Clerk will compact only the most rewarding 'run' of journal files, if and only if the most rewarding run surpasses a threshold score.
+
 ### File Clerks
 
 Every file within the store has its own dedicated process (modelled as a finite state machine).  Files are never created or accessed by the Inker or the Penciller, interactions with the files are managed through messages sent to the File Clerk processes which own the files.
@@ -66,6 +68,20 @@ The snapshot register is used by the real worker when file workers are placed in
 
 Managing the system in this way requires that ETS tables are used sparingly for holding in-memory state, and immutable and hence shareable objects are used instead.  The exception to the rule is the small in-memory state of recent additions kept by the Bookie - which must be exported to a list on every snapshot request.
 
+## Types
+
+Objects in LevelEd all have a type (or tag).  The tag determines how the object will be compacted in both the Ledger and Journal, and what conversions are applied when fetching the object or when splitting the object metadata to convert from the Inker to the Journal.
+
+Three types are initially supported:
+
+- o - standard object
+
+- o_rkv - riak object
+
+- i - index term
+
+All Ledger Keys created for any type must be 4-tuples starting with the tag.  Abstraction with regards to types is currently imperfect, but the expectation is that these types will make support for application specific behaviours easier to achieve, such as behaviours which maybe required to support different [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type).
+
 ## Paths
 
 The PUT path for new objects and object changes depends on the Bookie interacting with the Inker to ensure that the change has been persisted with the Journal, the Ledger is updated in batches after the PUT has been completed.
@@ -75,4 +91,34 @@ The HEAD path needs the Bookie to look in his cache of recent Ledger changes, an
 The GET path follows the HEAD path, but once the sequence number has been determined through the response from the Ledger the object itself is fetched from the journal via the Inker.
 
 All other queries (folds over indexes, keys and objects) are managed by cloning either the Penciller, or the Penciller and the Inker.
+
+## Startup
+
+On startup the Bookie will start, and first prompt the Inker to startup.  the Inker will load the manifest and attempt to start a process for each file in the manifest, and then update the manifest with those process IDs.  The Inker will also look on disk for any CDB files more recent than the manifest, and will open those at the head of the manifest.  Once Inker startup is complete, the Bookie will prompt the Penciller to startup.
+
+The Penciller will, as with the Inker, open the manifest and then start a process for each file in the manifest to open those files.  The Penciller will also look for a persisted level-zero file which was more recent than the current manifest and open a process for this too.  As part of this process the Penciller determines the highest sequence number that has been seen in the persisted Ledger.  Once the highest sequence number has determined the Penciller will request a reload from that sequence number.
+
+To complete the reload request, the Inker will scan all the Keys/Values in the Journal from that sequence number (in batches), converting the Keys and Values into the necessary Ledger changes, and loading those changes into the Ledger via the Penciller.
+
+Once the Ledger is up-to-date with the very latest changes in the Journal, the Bookie signals that startup is complete and it is ready to receive load.
+
+## Recovery
+
+Theoretically, the entire Ledger can be restored from the Journal, if the Ledger were erased and then the Bookie was started as normal.  This was intended as a potential simplified backup solution, as this would require only the slowly mutating Journal to be backed up, and so would be suited to an incremental delta-based backup strategy and restoring to points in time.  There are some potential issues with this:
+
+- It is not clear how long scanning over the Journal would take with an empty ledger, and it would certainly be too long for the standard Riak vnode start timeout.
+
+- Some changes build over history, and so would be lost if earlier changes are lost due to compaction of out-of-date values (e.g. 2i index changes in Riak).
+
+- Journal compaction becomes more complicated if it is necessary to recover in a scenario where the head of the Journal has been corrupted (so if we have B.0, B.1 and B.2 as three versions of the object, if B.2 is lost due to corruption and B.1 is compacted then B.0 will be resurrected on recovery - so post compaction there is no point in time recovery possible).
+
+Three potential recovery strategies are supported to provide some flexibility for dealing with this:
+
+- recovr - if a value is out of date at the time of compaction, remove it.  This strategy assumes anomalies can be recovered by a global anti-entropy strategy.
+
+- retain - on compaction KeyDeltas are retained in the Journal, only values are removed.
+
+- recalc (not yet implemented) - the compaction rules assume that on recovery the key changes will be recalculated by comparing the change with the current database state.
+
+
 
