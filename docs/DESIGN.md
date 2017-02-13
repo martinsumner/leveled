@@ -82,7 +82,7 @@ Three types are initially supported:
 
 All Ledger Keys created for any type must be 4-tuples starting with the tag.  Abstraction with regards to types is currently imperfect, but the expectation is that these types will make support for application specific behaviours easier to achieve, such as behaviours which maybe required to support different [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type).
 
-## Paths
+## GET/PUT Paths
 
 The PUT path for new objects and object changes depends on the Bookie interacting with the Inker to ensure that the change has been persisted with the Journal, the Ledger is updated in batches after the PUT has been completed.
 
@@ -114,7 +114,7 @@ Theoretically, the entire Ledger can be restored from the Journal, if the Ledger
 
 Three potential recovery strategies are supported to provide some flexibility for dealing with this:
 
-- recovr - if a value is out of date at the time of compaction, remove it.  This strategy assumes anomalies can be recovered by a global anti-entropy strategy.
+- recovr - if a value is out of date at the time of compaction, remove it.  This strategy assumes anomalies can be recovered by a global anti-entropy strategy, or that the persisted part of the Ledger is never lost (the Inker's Clerk will never compact a value received after the highest persisted sequence number in the Ledger).
 
 - retain - on compaction KeyDeltas are retained in the Journal, only values are removed.
 
