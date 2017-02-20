@@ -55,7 +55,7 @@ The leveled backend has been implemented with some basic manual functional tests
 
 All standard features should (in theory) be supportable (e.g. TTL, M/R, term_regex etc) but aren't subject to end-to_end testing at present.
 
-There is a uses_r_object capability that leveled should in theory be able to support (making it unnecessary to convert to/from binary form).  However, given that only the yessir backend currently supports this capability, this hasn't been implemented in case there are potential issues in Riak with this capability.
+There is a uses_r_object capability that leveled should in theory be able to support (making it unnecessary to convert to/from binary form).  However, given that only the yessir backend currently supports this, the feature hasn't been implemented in case there are potential issues lurking within Riak when using this capability.
 
 ### Fast List-Buckets
 
@@ -90,6 +90,6 @@ So rather than doing three Key/Metadata/Body backend lookups for every request, 
 - It is more likely to detect out-of-date objects in slow nodes (as the n-r responses may still be received and added to the result set when waiting for the GET response in the second loop).
 - The database is in-theory much less likely to have [TCP Incast](http://www.snookles.com/slf-blog/2012/01/05/tcp-incast-what-is-it/) issues, hence reducing the cost of network infrastructure, and reducing the risk of running Riak in shared infrastructure environments.
 
-The feature will not at present work with legacy vclocks. 
+The feature will not at present work safely with legacy vclocks. This branch generally relies on vector clock comparison only for equality checking, and removes some of the relatively expensive whole body equality tests (either as a result of set:from_list/1 or riak_object:equal/2), which are believed to be a legacy of issues with pre-dvv clocks.
 
 In tests, the benefit of this may not be that significant - as the primary resource saved is disk/network, and so if these are not the resources under pressure, the gain may not be significant.  In tests bound by CPU not disks, only a 10% improvement has so far been measured with this feature.

@@ -14,7 +14,7 @@ The First test on a Riak Cluster has been based on the following configuration:
 - Using i2.2xlarge EC2 nodes with mirrored SSD drives (for data partition only)
 - noop scheduler, transparent huge pages disabled, ext4 partition
 - A 64 vnode ring-size
-- 45 concurrent basho_bench threads (basho_bench run on separate disks) running at max
+- 45 concurrent basho_bench threads (basho_bench run on a separate machine) running at max
 - AAE set to passive
 - sync writes enabled (on both backends)
 - An object size of 8KB
@@ -72,9 +72,54 @@ This indicates that without sync_on_writes, there remains potential value in usi
 
 ## Riak Cluster Test - 3
 
-to be completed ..
+Testing with optimised GET FSM (which checks HEAD requests from r nodes, and only GET request from one node if no sibling resolution required).
 
-Testing with optimised GET FSM (which checks HEAD requests from r nodes, and only GET request from one node if no sibling resolution required)
+The test has been based on the following configuration:
+
+- A 5 node cluster
+- Using i2.2xlarge EC2 nodes with mirrored SSD drives (for data partition only)
+- deadline scheduler, transparent huge pages disabled, ext4 partition
+- A 64 vnode ring-size
+- 100 concurrent basho_bench threads (basho_bench run on a separate machine) running at max
+- AAE set to passive
+- sync writes disabled (on both backends)
+- An object size of 8KB
+- A pareto distribution of requests with a keyspace of 50M keys
+- 5 GETs for each UPDATE
+- 6 hour test run
+
+Note the changes from the first cluster test: 
+
+- The recommended disk scheduler was used (the change was mistakenly omitted in the previous test).
+- Sync_writes were disabled (for comparison purposes with the previous test, as Basho have stated that they don't expect customers to use this feature - although some customers do use this feature).
+- More basho_bench threads were used to push the extra capacity created by removing the syncing to disk.
+- The test run was extended to six hours to confirm a change in the divergence between leveled and leveldb which occurred as the test progressed.
+
+This test showed a <b>12.5%</b> improvement in throughput when using LevelEd, across the whole test.  The difference between the backends expands as the test progresses though, so in the last hour of the test there was a <b>29.5%</b> improvement in throughput when using LevelEd. 
+
+There was again a significant improvement in variance in tail latency, although not as large a difference as seen when testing with writing to disks enabled.  Through the course of the test the average of the maximum response times (in each 10s period) were
+
+leveled GET mean(max)           | eleveldb GET mean(max)
+:-------------------------:|:-------------------------:
+250.3ms | 1,090.1ms
+
+leveled PUT mean(max)           | eleveldb PUT mean(max)
+:-------------------------:|:-------------------------:
+369.0ms | 1,817.3ms
+
+The difference in volatility is clear when graphing the test performance:
+
+leveled Results           |  eleveldb Results
+:-------------------------:|:-------------------------:
+![](../test/volume/cluster_three/output/summary_leveled_5n_100t_nosync.png "LevelEd")  |  ![](../test/volume/cluster_three/output/summary_leveldb_5n_100t_nosync.png "LevelDB")
+
+### Lies, damned lies etc
+
+Monitoring the resource utilisation between the two tests makes the difference between the two backends clearer.  Throughout the test run with the leveled backend, each node is almost exclusively constrained by CPU, with disk utilisation staying well within limits.  
+
+The leveldb backend can achieve higher throughput when it is constrained by CPU compared to leveled, but as the test runs it becomes constrained by disk busyness with increasing frequency.  When leveldb is constrained by disk throughput can still become significantly constrained even without disk syncing enabled (i.e. throughput can halve/double in adjoining 20s measurement periods).
+
+Leveled is consistently constrained by one factor, giving more predicable throughput. Leveldb performs well when constrained by CPU availability, but is much more demanding on disk, and when disk becomes the constraint throughput becomes volatile.
 
 ## Riak Cluster Test - 4
 
