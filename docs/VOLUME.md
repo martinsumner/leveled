@@ -111,7 +111,14 @@ The difference in volatility is clear when graphing the test performance:
 
 leveled Results           |  eleveldb Results
 :-------------------------:|:-------------------------:
-![](../test/volume/cluster_three/output/summary_leveled_5n_100t_nosync.png "LevelEd")  |  ![](../test/volume/cluster_three/output/summary_leveldb_5n_100t_nosync.png "LevelDB")
+![](../test/volume/cluster_three/output/summary_5n_100t_i2_nosync_leveled.png "LevelEd")  |  ![](../test/volume/cluster_three/output/summary_5n_100t_i2_nosync_leveldb.png "LevelDB")
+
+Repeating this test over 8 hours with a smaller keyspace and a uniform (not pareto) key distribution yields similar results.  This change in test parameters was done to reduce the percentage of not_founds towards the end of the test (down to about 20%).
+
+leveled Results           |  eleveldb Results
+:-------------------------:|:-------------------------:
+![](../test/volume/cluster_three/output/summary_5n_100t_i2_nosync_leveled_uniform.png "LevelEd")  |  ![](../test/volume/cluster_three/output/summary_5n_100t_i2_nosync_leveldb_uniform.png "LevelDB")
+
 
 ### Lies, damned lies etc
 
