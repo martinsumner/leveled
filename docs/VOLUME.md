@@ -32,7 +32,7 @@ leveled PUT mean(max)           | eleveldb PUT mean(max)
 :-------------------------:|:-------------------------:
 101.5ms | 2,301.6ms
 
-Tail latency under load is around in leveled is less than 5% of the comparable value in eleveldb (note there is a significant difference in the y-axis scale between the latency charts on these graphs).
+Tail latency under load is around in leveled is less than 5% of the comparable value in eleveldb.
 
 leveled Results           |  eleveldb Results
 :-------------------------:|:-------------------------:
@@ -64,7 +64,7 @@ Also tested was this same d2.2xlarge cluster, but without sync_on_write.  Result
 
 leveled Results           |  eleveldb Results
 :-------------------------:|:-------------------------:
-![](../test/volume/cluster_two/output/summary_nosync_d2_leveled.png "LevelEd")  |  ![](../test/volume/cluster_two/output/summary_nosync_d2_leveldb.png "LevelDB")
+![](../test/volume/cluster_two/output/summary_nosync_d2_leveled_fixed.png "LevelEd")  |  ![](../test/volume/cluster_two/output/summary_nosync_d2_leveldb_fixed.png "LevelDB")
 
 This test showed a <b>26.7%</b> improvement in throughput when using leveled.  The improvement in tail latency in this test had leveled at about <b>25%</b> of the tail latency of leveldb - so still a substantial improvement, although not of the same order of magnitude as the sync_on_write test with i2.2xlarge and leveldb.
 
