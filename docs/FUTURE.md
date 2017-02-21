@@ -12,6 +12,8 @@ The store supports all the required Riak backend capabilities.  A number of furt
 
 - A bucket size query, which requires traversal only of the Ledger and counts the keys and sums the total on-disk size of the objects within the bucket.
 
+- A PUT flag that allows a truer meaning to the existing DW setting, allowing flushing to disk to be prompted by the need to meet the DW flag, rather than always/never
+
 - Support for a specific Riak tombstone tag where reaping of tombstones can be deferred (by many days) i.e. so that a 'sort-of-keep' deletion strategy can be followed that will eventually garbage collect without the need to hold pending full deletion state in memory.
 
 - The potential to support Map/Reduce functions on object metadata not values, so that cache-pollution and disk i/o overheads of full object Map/Reduce can be eliminated by smarter object construction strategies that promote information designed for queries from values into metadata.

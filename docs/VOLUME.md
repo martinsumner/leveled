@@ -36,7 +36,7 @@ Tail latency under load is around in leveled is less than 5% of the comparable v
 
 leveled Results           |  eleveldb Results
 :-------------------------:|:-------------------------:
-![](../test/volume/cluster_one/output/summary_leveled_5n_45t.png "LevelEd")  |  ![](../test/volume/cluster_one/output/summary_leveldb_5n_45t.png "LevelDB")
+![](../test/volume/cluster_one/output/summary_leveled_5n_45t_fixed.png "LevelEd")  |  ![](../test/volume/cluster_one/output/summary_leveldb_5n_45t_fixed.png "LevelDB")
 
 ### Lies, damned lies etc
 
