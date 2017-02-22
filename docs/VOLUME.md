@@ -18,7 +18,7 @@ The First test on a Riak Cluster has been based on the following configuration:
 - AAE set to passive
 - sync writes enabled (on both backends)
 - An object size of 8KB
-- A pareto distribution of requests with a keyspace of 50M keys
+- A pareto distribution of requests with a keyspace of 200M keys
 - 5 GETs for each UPDATE
 - 4 hour test run
 
@@ -36,7 +36,7 @@ Tail latency under load is around in leveled is less than 5% of the comparable v
 
 leveled Results           |  eleveldb Results
 :-------------------------:|:-------------------------:
-![](../test/volume/cluster_one/output/summary_leveled_5n_45t_fixed.png "LevelEd")  |  ![](../test/volume/cluster_one/output/summary_leveldb_5n_45t_fixed.png "LevelDB")
+![](../test/volume/cluster_one/output/summary_leveled_5n_45t_ii.png "LevelEd")  |  ![](../test/volume/cluster_one/output/summary_leveldb_5n_45t_ii.png "LevelDB")
 
 ### Lies, damned lies etc
 
@@ -64,7 +64,7 @@ Also tested was this same d2.2xlarge cluster, but without sync_on_write.  Result
 
 leveled Results           |  eleveldb Results
 :-------------------------:|:-------------------------:
-![](../test/volume/cluster_two/output/summary_nosync_d2_leveled_fixed.png "LevelEd")  |  ![](../test/volume/cluster_two/output/summary_nosync_d2_leveldb_fixed.png "LevelDB")
+![](../test/volume/cluster_two/output/summary_nosync_d2_leveled_ii.png "LevelEd")  |  ![](../test/volume/cluster_two/output/summary_nosync_d2_leveldb_ii.png "LevelDB")
 
 This test showed a <b>26.7%</b> improvement in throughput when using leveled.  The improvement in tail latency in this test had leveled at about <b>25%</b> of the tail latency of leveldb - so still a substantial improvement, although not of the same order of magnitude as the sync_on_write test with i2.2xlarge and leveldb.
 
@@ -84,7 +84,7 @@ The test has been based on the following configuration:
 - AAE set to passive
 - sync writes disabled (on both backends)
 - An object size of 8KB
-- A pareto distribution of requests with a keyspace of 50M keys
+- A pareto distribution of requests with a keyspace of 200M keys
 - 5 GETs for each UPDATE
 - 6 hour test run
 
@@ -111,13 +111,13 @@ The difference in volatility is clear when graphing the test performance:
 
 leveled Results           |  eleveldb Results
 :-------------------------:|:-------------------------:
-![](../test/volume/cluster_three/output/summary_5n_100t_i2_nosync_leveled.png "LevelEd")  |  ![](../test/volume/cluster_three/output/summary_5n_100t_i2_nosync_leveldb.png "LevelDB")
+![](../test/volume/cluster_three/output/summary_5n_100t_i2_nosync_leveled_ii.png "LevelEd")  |  ![](../test/volume/cluster_three/output/summary_5n_100t_i2_nosync_leveldb_ii.png "LevelDB")
 
 Repeating this test over 8 hours with a smaller keyspace and a uniform (not pareto) key distribution yields similar results.  This change in test parameters was done to reduce the percentage of not_founds towards the end of the test (down to about 20%).
 
 leveled Results           |  eleveldb Results
 :-------------------------:|:-------------------------:
-![](../test/volume/cluster_three/output/summary_5n_100t_i2_nosync_leveled_uniform.png "LevelEd")  |  ![](../test/volume/cluster_three/output/summary_5n_100t_i2_nosync_leveldb_uniform.png "LevelDB")
+![](../test/volume/cluster_three/output/summary_5n_100t_i2_nosync_leveled_uniform_ii.png "LevelEd")  |  ![](../test/volume/cluster_three/output/summary_5n_100t_i2_nosync_leveldb_uniform_ii.png "LevelDB")
 
 
 ### Lies, damned lies etc
