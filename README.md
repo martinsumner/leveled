@@ -5,14 +5,18 @@
 LevelEd is a work-in-progress prototype of a simple Key-Value store based on the concept of Log-Structured Merge Trees, with the following characteristics:
 
 - Optimised for workloads with larger values (e.g. > 4KB).
+
 - Explicitly supports HEAD requests in addition to GET requests. 
   - Splits the storage of value between key/metadata and body, 
   - allowing for HEAD requests which have lower overheads than GET requests, and
   - queries which traverse keys/metadatas to be supported with fewer side effects on the page cache.
+
 - Support for tagging of object types and the implementation of alternative store behaviour based on type.
   - Potentially usable for objects with special retention or merge properties.
+
 - Support for low-cost clones without locking to provide for scanning queries.
   - Low cost specifically where there is a need to scan across keys and metadata (not values).
+
 - Written in Erlang as a message passing system between Actors.
 
 The store has been developed with a focus on being a potential backend to a Riak KV database, rather than as a generic store.  
