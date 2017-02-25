@@ -37,8 +37,27 @@ At the initiation of the project I accepted that making a positive contribution 
 
 The target at inception was to do something interesting, something that articulates through working software the potential for improvement to exist by re-thinking certain key assumptions and trade-offs.
 
-[Initial volume tests](docs/VOLUME.md) indicate that it is at least interesting, with substantial improvements in both throughput (73%) and tail latency (1:20) when compared to eleveldb - when using non-trivial object sizes.  The largest improvement was with syncing to disk enabled on solid-state drives, but improvement has also been discovered with this object size without sync being enabled, both on SSDs and traditional hard-disk drives.
+[Initial volume tests](docs/VOLUME.md) indicate that it is at least interesting.  With improvements in throughput multiple configurations, with the improvement becoming more marked as the test progresses (and the base data volume becomes more realistic).  
 
-The hope is that LevelEd may be able to support generally more stable and predictable throughput with larger object sizes, especially with larger key-spaces.  More importantly, in the scenarios tested the constraint on throughput is more consistently CPU-based, and not disk-based.  This potentially makes capacity planning simpler, and opens up the possibility of scaling out to equivalent throughput at much lower cost (as CPU is relatively low cost when compared to disk space at high I/O) - [offering better alignment between resource constraints and the cost of resource](docs/INTRO.md).
+The delta in the table below  is the comparison in Riak performance between Leveled and Leveldb.
+
+Test Description                 | Hardware       | Duration |Avg TPS    | Delta (Overall)  | Delta (Last Hour)
+:-------------------------------:|:--------------:|:--------:|:---------:|:----------------:|:------------------:
+8MB Object, 60 workers, sync     | 5 x i2.2xlarge | 4 hr     |           |                  |
+8MB Object, 100 workers, no_sync | 5 x i2.2xlarge | 6 hr     | 14,100.19 | <b>+ 16.15%</b>  | <b>+ 35.92%</b>
+8MB Object, 50 workers, no_sync  | 5 x d2.2xlarge | 6 hr     | 10,400.29 | <b>+  8.37%</b>  | <b>+ 23.51%</b> 
+
+Tests generally show a 5:1 improvement in tail latency for LevelEd.
+
+All tests have in common:
+
+- Target Key volume - 200M with pareto distribution of load
+- 5 GETs per 1 update 
+- RAID 10 (software) drives
+- allow_mult=false, lww=false
+- modified riak optimised for leveled used in leveled tests
+
+
+The throughput in leveled is generally CPU-bound, whereas in comparative tests for leveledb the throughput was disk bound.  This potentially makes capacity planning simpler, and opens up the possibility of scaling out to equivalent throughput at much lower cost (as CPU is relatively low cost when compared to disk space at high I/O) - [offering better alignment between resource constraints and the cost of resource](docs/INTRO.md).
 
 More information can be found in the [volume testing section](docs/VOLUME.md).
