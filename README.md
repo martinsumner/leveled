@@ -49,7 +49,7 @@ The delta in the table below  is the comparison in Riak performance between the 
 
 Test Description                  | Hardware     | Duration |Avg TPS    | Delta (Overall)  | Delta (Last Hour)
 :---------------------------------|:-------------|:--------:|----------:|-----------------:|-------------------:
-8KB value, 60 workers, sync       | 5 x i2.2x    | 4 hr     |           |                  |
+8KB value, 60 workers, sync       | 5 x i2.2x    | 4 hr     | 12,679.91 | <b>+ 70.81%</b>  | <b>+ 63.99%</b>
 8KB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,100.19 | <b>+ 16.15%</b>  | <b>+ 35.92%</b>
 8KB value, 50 workers, no_sync    | 5 x d2.2x    | 6 hr     | 10,400.29 | <b>+  8.37%</b>  | <b>+ 23.51%</b> 
 
@@ -68,7 +68,7 @@ The throughput in leveled is generally CPU-bound, whereas in comparative tests f
 
 More information can be found in the [volume testing section](docs/VOLUME.md).
 
-As a general rule though, the most interesting thing is the potential to enable [new features](docs/FUTURE.md).  The tagging of different object types, with an ability to set different rules for both compaction and metadata creation by tag is considered to be a potential enabler for changes, as well as having a separate key store which can be scanned without breaking the page cache or working against mitigation for write amplification.
+As a general rule though, the most interesting thing is the potential to enable [new features](docs/FUTURE.md).  The tagging of different object types, with an ability to set different rules for both compaction and metadata creation by tag, is a potential enabler for further change.   Further, having a separate key/metadata store which can be scanned without breaking the page cache or working against mitigation for write amplifications, is also potentially an enabler to offer features to both the developer and the operator.
 
 ## Next Steps
 
