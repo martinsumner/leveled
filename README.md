@@ -41,11 +41,11 @@ The target at inception was to do something interesting, something that articula
 
 The delta in the table below  is the comparison in Riak performance between Leveled and Leveldb.
 
-Test Description                 | Hardware       | Duration |Avg TPS    | Delta (Overall)  | Delta (Last Hour)
-:-------------------------------:|:--------------:|:--------:|:---------:|:----------------:|:------------------:
-8MB Object, 60 workers, sync     | 5 x i2.2xlarge | 4 hr     |           |                  |
-8MB Object, 100 workers, no_sync | 5 x i2.2xlarge | 6 hr     | 14,100.19 | <b>+ 16.15%</b>  | <b>+ 35.92%</b>
-8MB Object, 50 workers, no_sync  | 5 x d2.2xlarge | 6 hr     | 10,400.29 | <b>+  8.37%</b>  | <b>+ 23.51%</b> 
+Test Description                  | Hardware     | Duration |Avg TPS    | Delta (Overall)  | Delta (Last Hour)
+:---------------------------------|:-------------|:--------:|----------:|-----------------:|-------------------:
+8MB value, 60 workers, sync       | 5 x i2.2x    | 4 hr     |           |                  |
+8MB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,100.19 | <b>+ 16.15%</b>  | <b>+ 35.92%</b>
+8MB value, 50 workers, no_sync    | 5 x d2.2x    | 6 hr     | 10,400.29 | <b>+  8.37%</b>  | <b>+ 23.51%</b> 
 
 Tests generally show a 5:1 improvement in tail latency for LevelEd.
 
