@@ -39,13 +39,13 @@ For more details on the store:
 
 ## Is this interesting?
 
-At the initiation of the project I accepted that making a positive contribution to this space is hard - given the superior brainpower and experience of those that have contributed to the KV store problem space in general, and the Riak backend space in particular.
+Making a positive contribution to this space is hard - given the superior brainpower and experience of those that have contributed to the KV store problem space in general, and the Riak backend space in particular.
 
-The target at inception was to do something interesting, something that articulates through working software the potential for improvement to exist by re-thinking certain key assumptions and trade-offs.
+The target at inception was to do something interesting, to re-think certain key assumptions and trade-offs, and prove through working software the potential for improvements to be realised.
 
-[Initial volume tests](docs/VOLUME.md) indicate that it is at least interesting.  With improvements in throughput multiple configurations, with the improvement becoming more marked as the test progresses (and the base data volume becomes more realistic).  
+[Initial volume tests](docs/VOLUME.md) indicate that it is at least interesting.  With improvements in throughput for multiple configurations, with this improvement becoming more marked as the test progresses (and the base data volume becomes more realistic).  
 
-The delta in the table below  is the comparison in Riak performance between Leveled and Leveldb.
+The delta in the table below  is the comparison in Riak performance between the identical test run with a Leveled backend in comparison to Leveldb.
 
 Test Description                  | Hardware     | Duration |Avg TPS    | Delta (Overall)  | Delta (Last Hour)
 :---------------------------------|:-------------|:--------:|----------:|-----------------:|-------------------:
