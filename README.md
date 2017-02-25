@@ -23,7 +23,7 @@ The store has been developed with a focus on being a potential backend to a Riak
 
 The primary aim of developing (yet another) Riak backend is to examine the potential to reduce the broader costs providing sustained throughput in Riak i.e. to provide equivalent throughput on cheaper hardware.  It is also anticipated in having a fully-featured pure Erlang backend may assist in evolving new features through the Riak ecosystem  which require end-to-end changes, rather than requiring context switching between C++ and Erlang based components.
 
-The store is not expected to offer lower median latency than leveldb (the primary fully-featured Riak backend available today), but it is likely in some cases to offer improvements in throughput.
+The store is not expected to offer lower median latency than the Basho-enhanced leveldb, but it is likely in some cases to offer improvements in throughput, reduced tail latency and reduced volatility in performance.
 
 ## More Details
 
@@ -67,3 +67,19 @@ All tests have in common:
 The throughput in leveled is generally CPU-bound, whereas in comparative tests for leveledb the throughput was disk bound.  This potentially makes capacity planning simpler, and opens up the possibility of scaling out to equivalent throughput at much lower cost (as CPU is relatively low cost when compared to disk space at high I/O) - [offering better alignment between resource constraints and the cost of resource](docs/INTRO.md).
 
 More information can be found in the [volume testing section](docs/VOLUME.md).
+
+As a general rule though, the most interesting thing is the potential to enable [new features](docs/FUTURE.md).  The tagging of different object types, with an ability to set different rules for both compaction and metadata creation by tag is considered to be a potential enabler for changes, as well as having a separate key store which can be scanned without breaking the page cache or working against mitigation for write amplification.
+
+## Next Steps
+
+Further volume test scenarios are the immediate priority, in particular volume test scenarios with:
+
+- Alternative object sizes;
+
+- Significant use of secondary indexes;
+
+- Use of newly available [EC2 hardware](https://aws.amazon.com/about-aws/whats-new/2017/02/now-available-amazon-ec2-i3-instances-next-generation-storage-optimized-high-i-o-instances/) which potentially is a significant changes to assumptions about hardware efficiency and cost.
+
+## Feedback
+
+Please create an issue if you have any suggestions.  You can ping me @masleeds if you wish
