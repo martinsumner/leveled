@@ -49,9 +49,9 @@ The delta in the table below  is the comparison in Riak performance between Leve
 
 Test Description                  | Hardware     | Duration |Avg TPS    | Delta (Overall)  | Delta (Last Hour)
 :---------------------------------|:-------------|:--------:|----------:|-----------------:|-------------------:
-8MB value, 60 workers, sync       | 5 x i2.2x    | 4 hr     |           |                  |
-8MB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,100.19 | <b>+ 16.15%</b>  | <b>+ 35.92%</b>
-8MB value, 50 workers, no_sync    | 5 x d2.2x    | 6 hr     | 10,400.29 | <b>+  8.37%</b>  | <b>+ 23.51%</b> 
+8KB value, 60 workers, sync       | 5 x i2.2x    | 4 hr     |           |                  |
+8KB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,100.19 | <b>+ 16.15%</b>  | <b>+ 35.92%</b>
+8KB value, 50 workers, no_sync    | 5 x d2.2x    | 6 hr     | 10,400.29 | <b>+  8.37%</b>  | <b>+ 23.51%</b> 
 
 Tests generally show a 5:1 improvement in tail latency for LevelEd.
 
@@ -79,6 +79,8 @@ Further volume test scenarios are the immediate priority, in particular volume t
 - Significant use of secondary indexes;
 
 - Use of newly available [EC2 hardware](https://aws.amazon.com/about-aws/whats-new/2017/02/now-available-amazon-ec2-i3-instances-next-generation-storage-optimized-high-i-o-instances/) which potentially is a significant changes to assumptions about hardware efficiency and cost.
+
+- Create riak_test tests for new Riak features enabled by LevelEd.
 
 ## Feedback
 
