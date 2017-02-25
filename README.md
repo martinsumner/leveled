@@ -6,7 +6,9 @@ LevelEd is a work-in-progress prototype of a simple Key-Value store based on the
 
 - Optimised for workloads with larger values (e.g. > 4KB).
 - Explicitly supports HEAD requests in addition to GET requests. 
-  - Splits the storage of value between key/metadata and body, and allowing for HEAD requests which have lower overheads than GET requests, and queries which traverse keys/metadatas to be supported with fewer side effects on the page cache.
+  - Splits the storage of value between key/metadata and body, 
+  - allowing for HEAD requests which have lower overheads than GET requests, and
+  - queries which traverse keys/metadatas to be supported with fewer side effects on the page cache.
 - Support for tagging of object types and the implementation of alternative store behaviour based on type.
   - Potentially usable for objects with special retention or merge properties.
 - Support for low-cost clones without locking to provide for scanning queries.
