@@ -271,7 +271,6 @@ writer({key_check, Key}, _From, State) ->
         writer,
         State};
 writer({put_kv, Key, Value}, _From, State) ->
-    SW = os:timestamp(),
     Result = put(State#state.handle,
                     Key,
                     Value,

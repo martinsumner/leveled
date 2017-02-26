@@ -409,7 +409,6 @@ start_from_file(InkOpts) ->
 put_object(LedgerKey, Object, KeyChanges, State) ->
     NewSQN = State#state.journal_sqn + 1,
     ActiveJournal = State#state.active_journaldb,
-    SW= os:timestamp(),
     {JournalKey, JournalBin} = leveled_codec:to_inkerkv(LedgerKey,
                                                             NewSQN,
                                                             Object,
