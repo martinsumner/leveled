@@ -85,3 +85,17 @@ Further volume test scenarios are the immediate priority, in particular volume t
 ## Feedback
 
 Please create an issue if you have any suggestions.  You can ping me @masleeds if you wish
+
+## Running Leveled
+
+Unit and current tests in leveled should run with rebar3.  Leveled has been tested in OTP18, but it can be started with OTP16 to support Riak (although tests will not work as expected).  A new database can be started by running
+
+```
+{ok, Bookie} = leveled_bookie:book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy)   
+```
+
+This will start a new Bookie.  It will start and look for existing data files, under the RootPath, and start empty if none exist.  A LedgerCacheSize of 2000, a JournlaSize of 500000000 (500MB) and a SyncStrategy of recovr should work OK.
+
+The book_start method should respond once startup is complete.  The leveled_bookie module includes the full API for external use of the store.
+
+Read through the [end_to_end test suites](test/end_to_end/) for further guidance.
