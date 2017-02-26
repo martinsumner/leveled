@@ -136,8 +136,7 @@
                 clerk :: pid(),
                 compaction_pending = false :: boolean(),
                 is_snapshot = false :: boolean(),
-                source_inker :: pid(),
-                put_timing :: tuple()}).
+                source_inker :: pid()}).
 
 
 %%%============================================================================
@@ -415,17 +414,12 @@ put_object(LedgerKey, Object, KeyChanges, State) ->
                                                             NewSQN,
                                                             Object,
                                                             KeyChanges),
-    T0 = timer:now_diff(os:timestamp(), SW),
     case leveled_cdb:cdb_put(ActiveJournal,
                                 JournalKey,
                                 JournalBin) of
         ok ->
-            T1 = timer:now_diff(os:timestamp(), SW) - T0,
-            UpdPutTimes = leveled_log:put_timing(inker,
-                                                    State#state.put_timing,
-                                                    T0, T1),
             {ok,
-                State#state{journal_sqn=NewSQN, put_timing=UpdPutTimes},
+                State#state{journal_sqn=NewSQN},
                 byte_size(JournalBin)};
         roll ->
             SWroll = os:timestamp(),

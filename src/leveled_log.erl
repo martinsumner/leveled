@@ -14,9 +14,9 @@
             get_timing/3,
             sst_timing/3]).         
 
--define(PUT_LOGPOINT, 20000).
--define(HEAD_LOGPOINT, 50000).
--define(GET_LOGPOINT, 50000).
+-define(PUT_LOGPOINT, 10000).
+-define(HEAD_LOGPOINT, 20000).
+-define(GET_LOGPOINT, 20000).
 -define(SST_LOGPOINT, 20000).
 -define(LOG_LEVEL, [info, warn, error, critical]).
 -define(SAMPLE_RATE, 16).
@@ -353,15 +353,15 @@ log_timer(LogReference, Subs, StartTime) ->
 put_timing(_Actor, undefined, T0, T1) ->
     {1, {T0, T1}, {T0, T1}};
 put_timing(Actor, {?PUT_LOGPOINT, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
-    RN = random:uniform(?HEAD_LOGPOINT),
-    case RN > ?HEAD_LOGPOINT div 2 of
+    RN = random:uniform(?PUT_LOGPOINT),
+    case RN > ?PUT_LOGPOINT div 2 of
         true ->
             % log at the timing point less than half the time
             LogRef =
                 case Actor of
-                    bookie -> "B0012";
-                    inker -> "I0019";
-                    journal -> "CDB17"
+                    bookie -> "B0012" %;
+                    % inker -> "I0019";
+                    % journal -> "CDB17"
                 end,
             log(LogRef, [?PUT_LOGPOINT, Total0, Total1, Max0, Max1]),
             put_timing(Actor, undefined, T0, T1);
