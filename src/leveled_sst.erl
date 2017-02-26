@@ -1619,6 +1619,8 @@ nonsense_coverage_test() ->
     ?assertMatch({ok, reader, #state{}}, code_change(nonsense,
                                                         reader,
                                                         #state{},
-                                                        nonsense)).
+                                                        nonsense)),
+    ?assertMatch({reply, undefined, reader, #state{}},
+                    handle_sync_event("hello", self(), reader, #state{})).
 
 -endif.
