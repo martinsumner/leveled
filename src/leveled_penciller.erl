@@ -1110,6 +1110,13 @@ add_missing_hash({K, {SQN, ST, MD}}) ->
     {K, {SQN, ST, leveled_codec:magic_hash(K), MD}}.
 
 
+clean_dir_test() ->
+    % Pointless gesture to test coverage
+    RootPath = "../test/ledger",
+    ?assertMatch(ok, file:write_file(RootPath ++ "/test.bob", "hello")),
+    ?assertMatch(ok, clean_subdir(RootPath ++ "/test.bob")),
+    ?assertMatch(ok, file:delete(RootPath ++ "/test.bob")).
+
 simple_server_test() ->
     RootPath = "../test/ledger",
     clean_testdir(RootPath),
