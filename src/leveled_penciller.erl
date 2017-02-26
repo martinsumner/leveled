@@ -797,8 +797,11 @@ timed_sst_get(PID, Key, Hash) ->
     SW = os:timestamp(),
     R = leveled_sst:sst_get(PID, Key, Hash),
     T0 = timer:now_diff(os:timestamp(), SW),
+    log_slowfetch(T0, R, PID, ?SLOW_FETCH).
+
+log_slowfetch(T0, R, PID, FetchTolerance) ->
     case {T0, R} of
-        {T, R} when T < ?SLOW_FETCH ->
+        {T, R} when T < FetchTolerance ->
             R;
         {T, not_present} ->
             leveled_log:log("PC016", [PID, T, not_present]),
@@ -807,7 +810,6 @@ timed_sst_get(PID, Key, Hash) ->
             leveled_log:log("PC016", [PID, T, found]),
             R
     end.
-    
 
 compare_to_sqn(Obj, SQN) ->
     case Obj of
@@ -1417,6 +1419,9 @@ create_file_test() ->
     ok = leveled_sst:sst_clear(SP),
     {ok, Bin} = file:read_file("../test/new_file.sst.discarded"),
     ?assertMatch("hello", binary_to_term(Bin)).
+
+slow_fetch_test() ->
+    ?assertMatch(not_present, log_slowfetch(2, not_present, "fake", 1)).
 
 checkready(Pid) ->
     try
