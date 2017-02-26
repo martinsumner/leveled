@@ -4,9 +4,7 @@
 
 Initial volume tests have been [based on standard basho_bench eleveldb test](../test/volume/single_node/examples) to run multiple stores in parallel on the same node and and subjecting them to concurrent pressure. 
 
-This showed a [relative positive performance for leveled](VOLUME_PRERIAK.md) for both population and load. This also showed that although the LevelEd throughput was relatively stable it was still subject to fluctuations related to CPU constraints.  Prior to moving on to full Riak testing, a number of changes where then made to LevelEd to reduce the CPU load in particular during merge events.
-
-The aim was to try and make the burden of running LevelEd easier on disk I/O, whilst accepting that although CPU load may be higher, it should be constant and allow for predictable and less volatile performance.
+This showed a [relative positive performance for leveled](VOLUME_PRERIAK.md) for both population and load. This also showed that although the leveled throughput was relatively stable, it was still subject to fluctuations related to CPU constraints - especially as compaction of the ledger was a CPU intensive activity.  Prior to moving on to full Riak testing, a number of changes where then made to leveled to reduce the CPU load during these merge events.
 
 ## Initial Riak Cluster Tests
 
@@ -37,7 +35,7 @@ This test has the following specific characteristics
 
 Comparison charts for this test:
 
-leveled Results           |  eleveldb Results
+Riak + leveled             |  Riak + eleveldb
 :-------------------------:|:-------------------------:
 ![](../test/volume/cluster_one/output/summary_leveled_5n_60t_i2_sync.png "LevelEd")  |  ![](../test/volume/cluster_one/output/summary_leveldb_5n_60t_i2_sync.png "LevelDB")
 
@@ -52,7 +50,7 @@ This test has the following specific characteristics
 
 Comparison charts for this test:
 
-leveled Results           |  eleveldb Results
+Riak + leveled             |  Riak + eleveldb
 :-------------------------:|:-------------------------:
 ![](../test/volume/cluster_two/output/summary_leveled_5n_100t_i2_nosync.png "LevelEd")  |  ![](../test/volume/cluster_two/output/summary_leveldb_5n_100t_i2_nosync.png "LevelDB")
 
@@ -67,9 +65,12 @@ This test has the following specific characteristics
 
 Comparison charts for this test:
 
-leveled Results           |  eleveldb Results
+Riak + leveled           |  Riak + eleveldb
 :-------------------------:|:-------------------------:
 ![](../test/volume/cluster_three/output/summary_leveled_5n_50t_d2_nosync.png "LevelEd")  |  ![](../test/volume/cluster_three/output/summary_leveldb_5n_50t_d2_nosync.png "LevelDB")
+
+Note that there is a clear inflexion point when throughput starts to drop sharply at about the hour mark into the test.  
+This is the stage when the volume of data has begun to exceed the volume supportable in cache, and so disk activity begins to be required for GET operations with increasing frequency.
 
 ### Half-Size Object, SSDs, No Sync-On-Write 
 
@@ -83,9 +84,11 @@ to be completed
 
 The first thing to note about the test is the impact of the pareto distribution and the start from an empty store, on what is actually being tested.  At the start of the test there is a 0% chance of a GET request actually finding an object.  Normally, it will be 3 hours into the test before a GET request will have a 50% chance of finding an object.
 
-[](../test/volume/cluster_two/output/NotPresentPerc.jpg "Percentage of GET requests being found at different leveled levels")
+![](../test/volume/cluster_two/output/NotPresentPerc.jpg "Percentage of GET requests being found at different leveled levels")
 
-Both leveled and leveldb are optimised for finding non-presence through the use of bloom filters, so the comparison is not unduly influenced by this.  However, the workload at the end of the test is both more realistic (in that objects are found), and harder if the previous throughput had been greater.  So it is better to focus on the results at the tail of the tests, and bear in mind that workload is harder at the tail if overall throughput had been greater in the test.
+Both leveled and leveldb are optimised for finding non-presence through the use of bloom filters, so the comparison is not unduly influenced by this.  However, the workload at the end of the test is both more realistic (in that objects are found), and harder if the previous throughput had been greater (in that more objects are found).  
+
+So it is better to focus on the results at the tail of the tests, as at the tail the results are a more genuine reflection of behaviour against the advertised test parameters.
 
 Test Description                  | Hardware     | Duration |Avg TPS    | Delta (Overall)  | Delta (Last Hour)
 :---------------------------------|:-------------|:--------:|----------:|-----------------:|-------------------:
@@ -93,7 +96,7 @@ Test Description                  | Hardware     | Duration |Avg TPS    | Delta 
 8KB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,100.19 | <b>+ 16.15%</b>  | <b>+ 35.92%</b>
 8KB value, 50 workers, no_sync    | 5 x d2.2x    | 6 hr     | 10,400.29 | <b>+  8.37%</b>  | <b>+ 23.51%</b> 
 
-Leveled like bitcask will defer compaction work until a designated compaction window, and these tests were run outside of that compaction window.  So although the throughput of leveldb is lower, it has no deferred work at the end of the test.  Future tetsing work is scheduled to examine leveled throughput during a compaction window.
+Leveled, like bitcask, will defer compaction work until a designated compaction window, and these tests were run outside of that compaction window.  So although the throughput of leveldb is lower, it has no deferred work at the end of the test.  Future testing work is scheduled to examine leveled throughput during a compaction window.  
 
 As a general rule, looking at the resource utilisation during the tests, the following conclusions can be drawn:
 
@@ -102,7 +105,7 @@ As a general rule, looking at the resource utilisation during the tests, the fol
 - leveled is almost always constrained by CPU, or by the limits imposed by response latency and the number of concurrent workers.
 - Write amplification is the primary delta in disk contention between leveldb and leveled - as leveldb is amplifying the writing of values not just keys it is creating a significantly larger 'background noise' of disk activity, and that noise is sufficiently variable that it invokes response time volatility even when r and w values are less than n.
 - leveled has substantially lower tail latency, especially on PUTs.
-- leveled throughput would be increased by adding concurrent workers, and increasing the available CPU
+- leveled throughput would be increased by adding concurrent workers, and increasing the available CPU.
 - leveldb throughput would be increased by having improved disk i/o. 
 
 
