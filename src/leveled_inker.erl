@@ -537,21 +537,21 @@ open_all_manifest(Man0, RootPath, CDBOpts) ->
     [{HeadSQN, HeadFN, _IgnorePid, HeadLK}|ManifestTail] = Man1,
     OpenJournalFun =
         fun(ManEntry) ->
-            {LowSQN, FN, _, LK_RO} = ManEntry
-                CFN = FN ++ "." ++ ?JOURNAL_FILEX,
-                PFN = FN ++ "." ++ ?PENDING_FILEX,
-                case filelib:is_file(CFN) of
-                    true ->
-                        {ok, Pid} = leveled_cdb:cdb_reopen_reader(CFN,
-                                                                    LK_RO),
-                        {LowSQN, FN, Pid, LK_RO};
-                    false ->
-                        W = leveled_cdb:cdb_open_writer(PFN, CDBOpts),
-                        {ok, Pid} = W,
-                        ok = leveled_cdb:cdb_roll(Pid),
-                        LK_WR = leveled_cdb:cdb_lastkey(Pid),
-                        {LowSQN, FN, Pid, LK_WR}
-                end
+            {LowSQN, FN, _, LK_RO} = ManEntry,
+            CFN = FN ++ "." ++ ?JOURNAL_FILEX,
+            PFN = FN ++ "." ++ ?PENDING_FILEX,
+            case filelib:is_file(CFN) of
+                true ->
+                    {ok, Pid} = leveled_cdb:cdb_reopen_reader(CFN,
+                                                                LK_RO),
+                    {LowSQN, FN, Pid, LK_RO};
+                false ->
+                    W = leveled_cdb:cdb_open_writer(PFN, CDBOpts),
+                    {ok, Pid} = W,
+                    ok = leveled_cdb:cdb_roll(Pid),
+                    LK_WR = leveled_cdb:cdb_lastkey(Pid),
+                    {LowSQN, FN, Pid, LK_WR}
+            end
         end,
     OpenedTailAsList = lists:map(OpenJournalFun, ManifestTail),
     OpenedTail = leveled_imanifest:from_list(OpenedTailAsList),
