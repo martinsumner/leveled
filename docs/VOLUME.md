@@ -6,147 +6,119 @@ Initial volume tests have been [based on standard basho_bench eleveldb test](../
 
 This showed a [relative positive performance for leveled](VOLUME_PRERIAK.md) for both population and load. This also showed that although the LevelEd throughput was relatively stable it was still subject to fluctuations related to CPU constraints.  Prior to moving on to full Riak testing, a number of changes where then made to LevelEd to reduce the CPU load in particular during merge events.
 
-## Riak Cluster Test - 1
+The aim was to try and make the burden of running LevelEd easier on disk I/O, whilst accepting that although CPU load may be higher, it should be constant and allow for predictable and less volatile performance.
 
-The First test on a Riak Cluster has been based on the following configuration:
+## Initial Riak Cluster Tests
 
-- A 5 node cluster
-- Using i2.2xlarge EC2 nodes with mirrored SSD drives (for data partition only)
-- noop scheduler, transparent huge pages disabled, ext4 partition
-- A 64 vnode ring-size
-- 45 concurrent basho_bench threads (basho_bench run on a separate machine) running at max
-- AAE set to passive
-- sync writes enabled (on both backends)
-- An object size of 8KB
-- A pareto distribution of requests with a keyspace of 200M keys
-- 5 GETs for each UPDATE
-- 4 hour test run
+Testing in a Riak cluster, has been based on like-for-like comparisons between leveldb and leveled - except that leveled was run within a Riak [modified](FUTURE.md) to use HEAD not GET requests when HEAD requests are sufficient.  
 
-This test showed a <b>73.9%</b> improvement in throughput when using LevelEd, but more importantly a huge improvement in variance in tail latency.  Through the course of the test the average of the maximum response times (in each 10s period) were
+The initial testing was based on simple gets and updates, with 5 gets for every update.  
 
-leveled GET mean(max)           | eleveldb GET mean(max)
-:-------------------------:|:-------------------------:
-21.7ms | 410.2ms
+### Basic Configuration - Initial Tests
 
-leveled PUT mean(max)           | eleveldb PUT mean(max)
-:-------------------------:|:-------------------------:
-101.5ms | 2,301.6ms
-
-Tail latency under load is around in leveled is less than 5% of the comparable value in eleveldb.
-
-leveled Results           |  eleveldb Results
-:-------------------------:|:-------------------------:
-![](../test/volume/cluster_one/output/summary_leveled_5n_45t_ii.png "LevelEd")  |  ![](../test/volume/cluster_one/output/summary_leveldb_5n_45t_ii.png "LevelDB")
-
-### Lies, damned lies etc
-
-To a certain extent this should not be too unexpected - leveled is design to reduce write amplification, without write amplification the persistent write load gives leveled an advantage.  The frequent periods of poor performance in leveldb appear to be coordinated with periods of very high await times on nodes during merge jobs, which may involve up to o(1GB) of write activity.
-
-Also the 5:1 ratio of GET:UPDATE is not quite that as:
-
-- each UPDATE requires an external Riak GET (as well as the internal GETs);
-
-- the empty nature of the database at the test start means that there are no actual value fetches initially (just not-present response) and only 50% of fetches get a value by the end of the test (much less for leveldb as there is less volume PUT during the test).
-
-When testing on a single node cluster (with a smaller ring size, and a smaller keyspace) the relative benefit of leveled appears to be much smaller.  One big difference between the single node and multi-node testing undertaken is that between the tests the disk was switched from using a single drive to using a mirrored pair.  It is suspected that the amplified improvement between single-node test and multi-node tests is related in-part to the cost of software-based mirroring exaggerating write contention to disk.
-
-Leveldb achieved more work in a sense during the test, as the test was run outside of the compaction window for leveled - so the on-disk size of the leveled store was higher as no replaced values had been compacted.  Test 6 below will examine the impact of the compaction window on throughput.  
-
-On the flip side, it could be argued that the 73% difference under-estimates the difference in that the greater volume achieved meant that by the back-end of the test more GETs were requiring fetches in leveled when compared with leveldb.  Because of this, by the last ten minutes of the test, the throughput advantage had been reduced to <b>55.4%</b>.
-
-## Riak Cluster Test - 2
-
-An identical test was run as above, but with d2.2xlarge instances, so that performance on spinning disks could be tested for comparison.  This however tanked with sync_on_write enabled regardless if this was tested with leveled or leveldb - with just 1,000 transactions per second supported.
-
-Although append_only writes are being used, almost every write still requires a disk head movement even if the server had all reads handled by in-memory cache (as there are normally more vnodes on the server than there are disk heads).  It is clear that without a Flash-Backed Write Cache, spinning disks are unusable as the sole storage mechanism.
-
-Also tested was this same d2.2xlarge cluster, but without sync_on_write.  Results were:
-
-leveled Results           |  eleveldb Results
-:-------------------------:|:-------------------------:
-![](../test/volume/cluster_two/output/summary_nosync_d2_leveled_ii.png "LevelEd")  |  ![](../test/volume/cluster_two/output/summary_nosync_d2_leveldb_ii.png "LevelDB")
-
-This test showed a <b>26.7%</b> improvement in throughput when using leveled.  The improvement in tail latency in this test had leveled at about <b>25%</b> of the tail latency of leveldb - so still a substantial improvement, although not of the same order of magnitude as the sync_on_write test with i2.2xlarge and leveldb.
-
-This indicates that without sync_on_writes, there remains potential value in using HDD drives, with either leveldb and leveled.  It seems reasonably likely (although it remains unproven) that spinning drives with a hardware RAID and flash-backed write cache may perform reasonably even with sync on writes.
-
-## Riak Cluster Test - 3
-
-Testing with optimised GET FSM (which checks HEAD requests from r nodes, and only GET request from one node if no sibling resolution required).
-
-The test has been based on the following configuration:
+The configuration consistent across all tests is:
 
 - A 5 node cluster
-- Using i2.2xlarge EC2 nodes with mirrored SSD drives (for data partition only)
+- Using i2.2xlarge EC2 or d2.2xlarge nodes with mirrored/RAID10 drives (for data partition only)
 - deadline scheduler, transparent huge pages disabled, ext4 partition
-- A 64 vnode ring-size
-- 100 concurrent basho_bench threads (basho_bench run on a separate machine) running at max
+- A 64 partition ring-size
 - AAE set to passive
-- sync writes disabled (on both backends)
-- An object size of 8KB
 - A pareto distribution of requests with a keyspace of 200M keys
 - 5 GETs for each UPDATE
-- 6 hour test run
 
-Note the changes from the first cluster test: 
+### Mid-Size Object, SSDs, Sync-On-Write 
 
-- The recommended disk scheduler was used (the change was mistakenly omitted in the previous test).
-- Sync_writes were disabled (for comparison purposes with the previous test, as Basho have stated that they don't expect customers to use this feature - although some customers do use this feature).
-- More basho_bench threads were used to push the extra capacity created by removing the syncing to disk.
-- The test run was extended to six hours to confirm a change in the divergence between leveled and leveldb which occurred as the test progressed.
+This test has the following specific characteristics
 
-This test showed a <b>12.5%</b> improvement in throughput when using LevelEd, across the whole test.  The difference between the backends expands as the test progresses though, so in the last hour of the test there was a <b>29.5%</b> improvement in throughput when using LevelEd. 
+- An 8KB value size (based on crypto:rand_bytes/1 - so cannot be effectively compressed)
+- 60 concurrent basho_bench workers running at 'max'
+- i2.2xlarge instances
+- allow_mult=false, lww=false
 
-There was again a significant improvement in variance in tail latency, although not as large a difference as seen when testing with writing to disks enabled.  Through the course of the test the average of the maximum response times (in each 10s period) were
-
-leveled GET mean(max)           | eleveldb GET mean(max)
-:-------------------------:|:-------------------------:
-250.3ms | 1,090.1ms
-
-leveled PUT mean(max)           | eleveldb PUT mean(max)
-:-------------------------:|:-------------------------:
-369.0ms | 1,817.3ms
-
-The difference in volatility is clear when graphing the test performance:
+Comparison charts for this test:
 
 leveled Results           |  eleveldb Results
 :-------------------------:|:-------------------------:
-![](../test/volume/cluster_three/output/summary_5n_100t_i2_nosync_leveled_ii.png "LevelEd")  |  ![](../test/volume/cluster_three/output/summary_5n_100t_i2_nosync_leveldb_ii.png "LevelDB")
+![](../test/volume/cluster_one/output/summary_leveled_5n_60t_i2_sync.png "LevelEd")  |  ![](../test/volume/cluster_one/output/summary_leveldb_5n_60t_i2_sync.png "LevelDB")
 
-Repeating this test over 8 hours with a smaller keyspace and a uniform (not pareto) key distribution yields similar results.  This change in test parameters was done to reduce the percentage of not_founds towards the end of the test (down to about 20%).
+### Mid-Size Object, SSDs, No Sync-On-Write 
+
+This test has the following specific characteristics
+
+- An 8KB value size (based on crypto:rand_bytes/1 - so cannot be effectively compressed)
+- 100 concurrent basho_bench workers running at 'max'
+- i2.2xlarge instances
+- allow_mult=false, lww=false
+
+Comparison charts for this test:
 
 leveled Results           |  eleveldb Results
 :-------------------------:|:-------------------------:
-![](../test/volume/cluster_three/output/summary_5n_100t_i2_nosync_leveled_uniform_ii.png "LevelEd")  |  ![](../test/volume/cluster_three/output/summary_5n_100t_i2_nosync_leveldb_uniform_ii.png "LevelDB")
+![](../test/volume/cluster_two/output/summary_leveled_5n_100t_i2_nosync.png "LevelEd")  |  ![](../test/volume/cluster_two/output/summary_leveldb_5n_100t_i2_nosync.png "LevelDB")
 
+### Mid-Size Object, HDDs, No Sync-On-Write 
+
+This test has the following specific characteristics
+
+- An 8KB value size (based on crypto:rand_bytes/1 - so cannot be effectively compressed)
+- 50 concurrent basho_bench workers running at 'max'
+- d2.2xlarge instances
+- allow_mult=false, lww=false
+
+Comparison charts for this test:
+
+leveled Results           |  eleveldb Results
+:-------------------------:|:-------------------------:
+![](../test/volume/cluster_three/output/summary_leveled_5n_50t_d2_nosync.png "LevelEd")  |  ![](../test/volume/cluster_three/output/summary_leveldb_5n_50t_d2_nosync.png "LevelDB")
+
+### Half-Size Object, SSDs, No Sync-On-Write 
+
+to be completed
+
+### Double-Size Object, SSDs, No Sync-On-Write 
+
+to be completed
 
 ### Lies, damned lies etc
 
-Monitoring the resource utilisation between the two tests makes the difference between the two backends clearer.  Throughout the test run with the leveled backend, each node is almost exclusively constrained by CPU, with disk utilisation staying well within limits.  
+The first thing to note about the test is the impact of the pareto distribution and the start from an empty store, on what is actually being tested.  At the start of the test there is a 0% chance of a GET request actually finding an object.  Normally, it will be 3 hours into the test before a GET request will have a 50% chance of finding an object.
 
-The leveldb backend can achieve higher throughput when it is constrained by CPU compared to leveled, but as the test runs it becomes constrained by disk busyness with increasing frequency.  When leveldb is constrained by disk throughput can still become significantly constrained even without disk syncing enabled (i.e. throughput can halve/double in adjoining 20s measurement periods).
+[](../test/volume/cluster_two/output/NotPresentPerc.jpg "Percentage of GET requests being found at different leveled levels")
 
-Leveled is consistently constrained by one factor, giving more predicable throughput. Leveldb performs well when constrained by CPU availability, but is much more demanding on disk, and when disk becomes the constraint throughput becomes volatile.
+Both leveled and leveldb are optimised for finding non-presence through the use of bloom filters, so the comparison is not unduly influenced by this.  However, the workload at the end of the test is both more realistic (in that objects are found), and harder if the previous throughput had been greater.  So it is better to focus on the results at the tail of the tests, and bear in mind that workload is harder at the tail if overall throughput had been greater in the test.
 
-## Riak Cluster Test - 4
+Test Description                  | Hardware     | Duration |Avg TPS    | Delta (Overall)  | Delta (Last Hour)
+:---------------------------------|:-------------|:--------:|----------:|-----------------:|-------------------:
+8KB value, 60 workers, sync       | 5 x i2.2x    | 4 hr     | 12,679.91 | <b>+ 70.81%</b>  | <b>+ 63.99%</b>
+8KB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,100.19 | <b>+ 16.15%</b>  | <b>+ 35.92%</b>
+8KB value, 50 workers, no_sync    | 5 x d2.2x    | 6 hr     | 10,400.29 | <b>+  8.37%</b>  | <b>+ 23.51%</b> 
 
-to be completed ..
+Leveled like bitcask will defer compaction work until a designated compaction window, and these tests were run outside of that compaction window.  So although the throughput of leveldb is lower, it has no deferred work at the end of the test.  Future tetsing work is scheduled to examine leveled throughput during a compaction window.
 
-Testing with optimised PUT FSM (switching from GET before PUT to HEAD before PUT)
+As a general rule, looking at the resource utilisation during the tests, the following conclusions can be drawn:
 
-## Riak Cluster Test - 5
+- When unconstrained by disk I/O limits, leveldb can achieve a greater throughput rate than leveled.
+- During these tests leveldb is frequently constrained by disk I/O limits, and the frequency with which it is constrained increases the longer the test is run for.
+- leveled is almost always constrained by CPU, or by the limits imposed by response latency and the number of concurrent workers.
+- Write amplification is the primary delta in disk contention between leveldb and leveled - as leveldb is amplifying the writing of values not just keys it is creating a significantly larger 'background noise' of disk activity, and that noise is sufficiently variable that it invokes response time volatility even when r and w values are less than n.
+- leveled has substantially lower tail latency, especially on PUTs.
+- leveled throughput would be increased by adding concurrent workers, and increasing the available CPU
+- leveldb throughput would be increased by having improved disk i/o. 
+
+
+## Riak Cluster Test - Phase 2
 
 to be completed ..
 
 Testing with changed hashtree logic in Riak so key/clock scan is effective
 
-## Riak Cluster Test - 6
+## Riak Cluster Test - Phase 3
 
 to be completed ..
 
 Testing during a journal compaction window
 
-## Riak Cluster Test - 7
+## Riak Cluster Test - Phase 4
 
 to be completed ..
 
