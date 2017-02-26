@@ -1,8 +1,8 @@
-# LevelEd - An Erlang Key-Value store
+# Leveled - An Erlang Key-Value store
 
 ## Introduction
 
-LevelEd is a work-in-progress prototype of a simple Key-Value store based on the concept of Log-Structured Merge Trees, with the following characteristics:
+Leveled is a work-in-progress prototype of a simple Key-Value store based on the concept of Log-Structured Merge Trees, with the following characteristics:
 
 - Optimised for workloads with larger values (e.g. > 4KB).
 
@@ -29,7 +29,7 @@ The store is not expected to offer lower median latency than the Basho-enhanced 
 
 For more details on the store:
 
-- An [introduction](docs/INTRO.md) to LevelEd covers some context to the factors motivating design trade-offs in the store.
+- An [introduction](docs/INTRO.md) to Leveled covers some context to the factors motivating design trade-offs in the store.
 
 - The [design overview](docs/DESIGN.md) explains the actor model used and the basic flow of requests through the store.
 
@@ -80,7 +80,7 @@ Further volume test scenarios are the immediate priority, in particular volume t
 
 - Use of newly available [EC2 hardware](https://aws.amazon.com/about-aws/whats-new/2017/02/now-available-amazon-ec2-i3-instances-next-generation-storage-optimized-high-i-o-instances/) which potentially is a significant changes to assumptions about hardware efficiency and cost.
 
-- Create riak_test tests for new Riak features enabled by LevelEd.
+- Create riak_test tests for new Riak features enabled by Leveled.
 
 ## Feedback
 
