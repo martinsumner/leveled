@@ -12,7 +12,7 @@ The store supports all the required Riak backend capabilities.  A number of furt
 
 - A bucket size query, which requires traversal only of the Ledger and counts the keys and sums the total on-disk size of the objects within the bucket.
 
-- A PUT flag that allows a truer meaning to the existing DW setting, allowing flushing to disk to be prompted by the need to meet the DW flag, rather than always/never
+- A new SW count to operate in parallel to DW, where SW is the number of nodes required to have flushed to disk (not just written to buffer); with SW being configurable to 0 (no vnodes will need to sync this write), 1 (the PUT coordinator will sync, but no other vnodes) or all (all vnodes will be required to sync this write before providing a DW ack).  This will allow the expensive disk sync operation to be constrained to the writes for which it is most needed. 
 
 - Support for a specific Riak tombstone tag where reaping of tombstones can be deferred (by many days) i.e. so that a 'sort-of-keep' deletion strategy can be followed that will eventually garbage collect without the need to hold pending full deletion state in memory.
 
@@ -42,9 +42,11 @@ There is some work required before LevelEd could be considered production ready:
 
 The following Riak features have been implemented
 
-### LevelEd Backend
+### Leveled Backend
 
 Branch: [mas-leveleddb](https://github.com/martinsumner/riak_kv/tree/mas-leveleddb)
+
+Branched-From: [Basho/develop](https://github.com/basho/riak_kv)
 
 Description: 
 
@@ -71,6 +73,8 @@ Note - the technique would work in leveldb and memory backends as well (and perh
 
 Branch: [mas-leveled-getfsm](https://github.com/martinsumner/riak_kv/tree/mas-leveled-getfsm)
 
+Branched-From: [mas-leveleddb](https://github.com/martinsumner/riak_kv/tree/mas-leveleddb)
+
 Description:
 
 In standard Riak the Riak node that receives a GET request starts a riak_kv_get_fsm to handle that request.  This FSM goes through the following primary states:
@@ -95,3 +99,19 @@ So rather than doing three Key/Metadata/Body backend lookups for every request, 
 The feature will not at present work safely with legacy vclocks. This branch generally relies on vector clock comparison only for equality checking, and removes some of the relatively expensive whole body equality tests (either as a result of set:from_list/1 or riak_object:equal/2), which are believed to be a legacy of issues with pre-dvv clocks.
 
 In tests, the benefit of this may not be that significant - as the primary resource saved is disk/network, and so if these are not the resources under pressure, the gain may not be significant.  In tests bound by CPU not disks, only a 10% improvement has so far been measured with this feature.
+
+### PUT -> Using HEAD
+
+Branch: [mas-leveled-putfsm](https://github.com/martinsumner/riak_kv/tree/mas-leveled-putfsm)
+
+Branched-From: [mas-leveled-getfsm](https://github.com/martinsumner/riak_kv/tree/mas-leveled-getfsm)
+
+Description:
+
+The standard PUT process for Riak requires the PUT to be forwarded to a coordinating vnode first.  The coordinating PUT  process requires the object to be fetched from the local vnode only, and a new updated Object created.  The remaining n-1 vnodes are then sent the update object as a PUT, and once w/dw/pw nodes have responded the PUT is acknowledged.
+
+The other n-1 vnodes must also do a local GET before the vnode PUT (so as not to erase a more up-to-date value that may not have been present at the coordinating vnode).
+
+This branch changes the behaviour slightly at the non-coordinating vnodes.  These vnodes will now try a HEAD request before the local PUT (not a GET request), and if the HEAD request contains a vclock which is <strong>dominated</strong> by the updated PUT, it will not attempt to fetch the whole object for the syntactic merge.
+
+This should save two object fetches (where n=3) in most circumstances.
