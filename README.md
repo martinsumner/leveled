@@ -23,7 +23,7 @@ The store has been developed with a focus on being a potential backend to a Riak
 
 The primary aim of developing (yet another) Riak backend is to examine the potential to reduce the broader costs providing sustained throughput in Riak i.e. to provide equivalent throughput on cheaper hardware.  It is also anticipated in having a fully-featured pure Erlang backend may assist in evolving new features through the Riak ecosystem  which require end-to-end changes, rather than requiring context switching between C++ and Erlang based components.
 
-The store is not expected to offer lower median latency than the Basho-enhanced leveldb, but it is likely in some cases to offer improvements in throughput, reduced tail latency and reduced volatility in performance.
+The store is not expected to offer lower median latency than the Basho-enhanced leveldb, but it is likely in some cases to offer improvements in throughput, reduced tail latency and reduced volatility in performance.  It is expected that the likelihood of finding improvement will correlate with the average object size, and inversely correlate with the availability of Disk IOPS in the hardware configuration.
 
 ## More Details
 
