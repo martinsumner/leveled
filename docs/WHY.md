@@ -2,7 +2,7 @@
 
 ## Why not just use RocksDB? 
 
-Well that wouldn't be interesting.
+Well that wouldn't have been as interesting.
 
 All LSM-trees which evolve off the back of leveldb are trying to improve leveldb in a particular context.  I'm considering larger values, with need for iterators and object time-to-lives, optimisations by supporting HEAD requests and also the problem of running multiple isolated nodes in parallel on a single server.  
 
@@ -38,12 +38,46 @@ From the start I decided that fadvise would be my friend, in part as:
 
 - It was easier to depend on the operating system to understand and handle LRU management.
 
-- I'm expecting various persisted elements (not just values, but also key ranges) to benefit from compression, so want to maximise the volume of data holdable in memory (by caching the compressed view in the page cache).
+- I'm expecting various persisted elements (not just values, but also key ranges) to benefit from compression, so want to maximise the volume of data which can be held in memory (by caching the compressed view in the page cache).
 
 - I expect to reduce the page-cache polluting events that can occur in Riak by reducing object scanning.
 
-Ultimately though, sophisticated memory management is hard, and beyond my capability in the timescale available.
+Ultimately though, sophisticated memory management is hard, and beyond my capability in the timescale available.  
+
+The design may make some caching strategies relatively easy to implement in the future though.  Each file process has its own LoopData, and to that LoopData independent caches can be added.  This is currently used for caching bloom filters and hash index tables, but could be used in a more flexible way.
+
+## Why do the Sequence Numbers not wrap?
+
+Each update increments the sequence number, but the sequence number does not wrap around at any stage, it will grow forever.  The reasoning behind not supporting some sort of wraparound and vacuuming of the sequence number is:
+
+- There is no optimisation based on fitting into a specific size, so no immediate performance benefit from wrapping;
+- Auto-vacuuming is hard to achieve, especially without creating a novel and unexpected operational event that is hard to capacity plan for;
+- The standard Riak node transfer feature will reset the sequence number in the replacement vnode - providing a natural way to address any unexpected issue with the growth in this integer.
+
+## Why not store pointers in the Ledger?
+
+The Ledger value contains the sequence number which is necessary to lookup the value in the Journal.  However, this lookup will require a tree to be walked to find the file, and then a two-stage hashtree lookup to find the pointer in the file.  The location of value is know at the time the Ledger entry is written - so why not include a pointer at this stage?  The Journal would then be Bitcask-like relying on external pointers.
+
+The issue with this mechanism would be the added complexity in journal compaction.  When the journal is compacted it would be necessary to make a series of Ledger updates to reflect the changes in pointers - and this would require some sort of locking strategy to prevent a race between an external value update and an update to the pointer. 
+
+The [WiscKey store](https://www.usenix.org/system/files/conference/fast16/fast16-papers-lu.pdf) achieves this, without being explicit about whether it blocks updates to avoid the race.
+
+The trade-off chosen is that the operational simplicity of decoupling references between the stores is worth the cost of the additional lookup, especially as Riak changes will reduce the relative volume of value fetches (by comparison to metadata/HEAD fetches).
 
 ## Why make this backwards compatible with OTP16?
 
 Yes why, why do I have to do this?
+
+## Why name things this way?
+
+The names used in the Actor model are loosely correlated with names used for on-course bookmakers (e.g. Bookie, Clerk, Penciller).  
+
+![](pics/ascot_bookies.jpg "Bookies")
+
+There is no strong reason for drawing this specific link, other than the generic sense that this group represents a tight-nit group of workers passing messages from a front-man (the bookie) to keep a local view of state (a book) for a queue of clients, and where normally these groups are working in a loosely-coupled orchestration with a number of other bookmakers to form a betting market that is converging towards an eventually consistent price.
+
+![](pics/betting_market.jpg "Betting Market")
+
+There were some broad parallels between bookmakers in a market and vnodes in a Riak database, and using the actor names just stuck, even though the analogy is imperfect.  Somehow having a visual model of these mysterious guys in top hats working away, helped me imagine the store in action.
+
+The name LevelEd owes some part to the influence of my eldest son Ed, and some part to the Yorkshire phrasing of the word Head.

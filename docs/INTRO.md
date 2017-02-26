@@ -4,7 +4,7 @@ The following section is a brief overview of some of the motivating factors behi
 
 ## A Paper To Love
 
-The concept of a Log Structured Merge Tree is described within the 1996 paper ["The Log Structured Merge Tree"](http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.44.2782&rep=rep1&type=pdf) by Patrick O'Neil et al.  The paper is not specific on precisely how a LSM-Tree should be implemented, proposing a series of potential options.  The paper's focus is on framing the justification for design decisions in the context of hardware economics.  
+The concept of a Log Structured Merge Tree is described within the 1996 paper ["The Log Structured Merge Tree"](http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.44.2782&rep=rep1&type=pdf) by Patrick O'Neil et al.  The paper is not specific on precisely how an LSM-Tree should be implemented, proposing a series of potential options.  The paper's focus is on framing the justification for design decisions in the context of hardware economics.  
 
 The hardware economics at the time of the paper were:
 
@@ -24,13 +24,13 @@ Based on the experience of running Riak at scale in production for the NHS, what
 
 The purchase costs of disk though, do not accurately reflect the running costs of disks - because disks fail, and fail often.  Also the hardware choices made by the NHS for the Spine programme, do not necessarily reflect the generic industry choices and costs.
 
-To get an up-to-date objective measure of the overall exists are, assuming data centres are run with a high degree of efficiency and savings of scale - the price list for Amazon EC2 instances can assist, by directly comparing the current prices of different instances.
+To get an up-to-date and objective measure of what the overall costs are, the Amazon price list can assist if we assume their data centres are managed with a high-degree of efficiency due to their scale.  Assumptions on the costs of individual components can be made by examining differences between specific instance prices.
 
 As at 26th January 2017, the [on-demand instance pricing](https://aws.amazon.com/ec2/pricing/on-demand/) for servers is:
 
 - c4.4xlarge - 16 CPU, 30 GB RAM, EBS only - $0.796
 
-- r4.xlarge  - 4 CPU, 30GB RAM, EBS only - $0.266
+- r4.xlarge  - 4 CPU, 30 GB RAM, EBS only - $0.266
 
 - r4.4xlarge - 16 CPU, 122 GB RAM, EBS only - $1.064
 
@@ -54,7 +54,9 @@ Compared to the figures at the time of the LSM-Tree paper, the actual delta in t
 
 The availability of SDDs is not a silver bullet to disk i/o problems when cost is considered, as although they eliminate the additional costs of random page access through the removal of the disk head movement overhead (of about 6.5ms per shift), this benefit is at an order of magnitude difference in cost compared to spinning disks, and at a cost greater than half the price of DRAM.  SSDs have not taken the problem of managing the overheads of disk persistence away, they've simply added another dimension to the economic profiling problem.
 
-In physical on-premise server environments there is also commonly the cost of disk controllers.  Disk controllers bend the economics of persistence through the presence of flash-backed write caches.  However, disk controllers also fail - within the NHS environment disk controller failures are the second most common device failure after individual disks.  Failures of disk controllers are also expensive to resolve, not being hot-pluggable like disks, and carrying greater risk of node data-loss due to either bad luck or bad process during the change.  It is noticeable that EC2 does not have disk controllers and given their failure rate and cost of recovery, this appears to be a sensible trade-off.
+In physical on-premise server environments there is also commonly the cost of disk controllers.  Disk controllers bend the economics of persistence through the presence of flash-backed write caches.  However, disk controllers also fail - within the NHS environment disk controller failures are the second most common device failure after individual disks.  Failures of disk controllers are also expensive to resolve, not being hot-pluggable like disks, and carrying greater risk of node data-loss due to either bad luck or bad process during the change.  
+
+It is noticeable that EC2 does not have disk controllers and given their failure rate and cost of recovery, this appears to be a sensible trade-off.  However, software-only RAID has drawbacks, include the time to setup RAID (24 hours on a d2.2xlarge node), recover from a disk failure and the time to run [scheduled checks](https://www.thomas-krenn.com/en/wiki/Mdadm_checkarray).
 
 Making cost-driven decisions about storage design remains as relevant now as it was two decades ago when the LSM-Tree paper was published, especially as we can now directly see those costs reflected in hourly resource charges.
 
@@ -64,9 +66,9 @@ The evolution of leveledb in Riak, from the original Google-provided store to th
 
 The original leveledb considered in part the hardware economics of the phone where there are clear constraints around CPU usage - due to both form-factor and battery life, and where disk space may be at a greater premium than disk IOPS.  Some of the evolution of eleveldb is down to the Riak-specific problem of needing to run multiple stores on a single server, where even load distribution may lead to a synchronisation of activity.  Much of the evolution is also about how to make better use of the continuous availability of CPU resource, in the face of the relative scarcity of disk resource.  Changes such as overlapping files at level 1, hot threads, compression improvements etc all move eleveldb in the direction of being easier on disk at the cost of CPU; and the hardware economics of servers would indicate this is a wise choice
 
-### Planning for LevelEd
+### Planning for Leveled
 
-The primary design differentiation between LevelEd and LevelDB is the separation of the key store (known as the Ledger in LevelEd) and the value store (known as the journal).  The Journal is like a continuous extension of the nursery log within LevelDB, only with a gradual evolution into [CDB files](https://en.wikipedia.org/wiki/Cdb_(software)) so that file offset pointers are not required to exist permanently in memory.  The Ledger is a merge tree structure, with values substituted with metadata and a sequence number - where the sequence number can be used to find the value in the Journal.
+The primary design differentiation between LevelEd and LevelDB is the separation of the key store (known as the Ledger in Leveled) and the value store (known as the journal).  The Journal is like a continuous extension of the nursery log within LevelDB, only with a gradual evolution into [CDB files](https://en.wikipedia.org/wiki/Cdb_(software)) so that file offset pointers are not required to exist permanently in memory.  The Ledger is a merge tree structure, with values substituted with metadata and a sequence number - where the sequence number can be used to find the value in the Journal.
 
 This is not an original idea, the LSM-Tree paper specifically talked about the trade-offs of placing identifiers rather than values in the merge tree:
 
@@ -82,7 +84,7 @@ So the hypothesis that separating Keys and Values may be optimal for LSM-Trees i
 
 ## Being Operator Friendly
 
-The LSM-Tree paper focuses on hardware trade-offs in database design.  LevelEd is focused on the job of being a backend to a Riak database, and the Riak database is opinionated on the trade-off between developer and operator productivity.  Running a Riak database imposes constraints and demands on developers - there are things the developer needs to think hard about: living without transactions, considering the resolution of siblings, manual modelling for query optimisation.  
+The LSM-Tree paper focuses on hardware trade-offs in database design.  Leveled is focused on the job of being a backend to a Riak database, and the Riak database is opinionated on the trade-off between developer and operator productivity.  Running a Riak database imposes constraints and demands on developers - there are things the developer needs to think hard about: living without transactions, considering the resolution of siblings, manual modelling for query optimisation.  
 
 However, in return for this pain there is great reward, a reward which is gifted to the operators of the service.  Riak clusters are reliable and predictable, and operational processes are slim and straight forward - preparation for managing a Riak cluster in production needn't go much beyond rehearsing magical cure-alls of the the node stop/start and node join/leave processes.  At the NHS, where we have more than 50 Riak nodes in 24 by 365 business critical operations, it is not untypical to go more than 28-days without anyone logging on to a database node.  This is a relief for those of us who have previously lived in the world with databases with endless configuration parameters to test or blame for issues, where you always seem to be the unlucky one who suffer the outages "never seen in any other customer", where the databases come with ever more complicated infrastructure dependencies and and where DBAs need to be constantly at-hand to analyse reports, kill rogue queries and re-run the query optimiser as an answer to the latest 'blip' in performance.
 
