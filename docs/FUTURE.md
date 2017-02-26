@@ -12,7 +12,7 @@ The store supports all the required Riak backend capabilities.  A number of furt
 
 - A bucket size query, which requires traversal only of the Ledger and counts the keys and sums the total on-disk size of the objects within the bucket.
 
-- A PUT flag that allows a truer meaning to the existing DW setting, allowing flushing to disk to be prompted by the need to meet the DW flag, rather than always/never
+- A new SW count to operate in parallel to DW, where SW is the number of nodes required to have flushed to disk (not just written to buffer); with SW being configurable to 0 (no vnodes will need to sync this write), 1 (the PUT coordinator will sync, but no other vnodes) or all (all vnodes will be required to sync this write before providing a DW ack).  This will allow the expensive disk sync operation to be constrained to the writes for which it is most needed. 
 
 - Support for a specific Riak tombstone tag where reaping of tombstones can be deferred (by many days) i.e. so that a 'sort-of-keep' deletion strategy can be followed that will eventually garbage collect without the need to hold pending full deletion state in memory.
 
