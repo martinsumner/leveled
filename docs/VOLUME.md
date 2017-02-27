@@ -32,6 +32,7 @@ This test has the following specific characteristics
 - 60 concurrent basho_bench workers running at 'max'
 - i2.2xlarge instances
 - allow_mult=false, lww=false
+- <b>sync_on_write = on</b>
 
 Comparison charts for this test:
 
@@ -47,6 +48,7 @@ This test has the following specific characteristics
 - 100 concurrent basho_bench workers running at 'max'
 - i2.2xlarge instances
 - allow_mult=false, lww=false
+- <b>sync_on_write = off</b>
 
 Comparison charts for this test:
 
@@ -60,8 +62,9 @@ This test has the following specific characteristics
 
 - An 8KB value size (based on crypto:rand_bytes/1 - so cannot be effectively compressed)
 - 50 concurrent basho_bench workers running at 'max'
-- d2.2xlarge instances
+- <b>d2.2xlarge instances</b>
 - allow_mult=false, lww=false
+- sync_on_write = off
 
 Comparison charts for this test:
 
@@ -74,11 +77,37 @@ This is the stage when the volume of data has begun to exceed the volume support
 
 ### Half-Size Object, SSDs, No Sync-On-Write 
 
-to be completed
+This test has the following specific characteristics
+
+- A <b>4KB value size</b> (based on crypto:rand_bytes/1 - so cannot be effectively compressed)
+- 100 concurrent basho_bench workers running at 'max'
+- i2.2xlarge instances
+- allow_mult=false, lww=false
+- sync_on_write = off
+
+Comparison charts for this test:
+
+Riak + leveled           |  Riak + eleveldb
+:-------------------------:|:-------------------------:
+![](../test/volume/cluster_four/output/summary_leveled_5n_100t_i2_4KB_nosync.png "LevelEd")  |  ![](../test/volume/cluster_four/output/summary_leveldb_5n_100t_i2_4KB_nosync.png "LevelDB")
+
 
 ### Double-Size Object, SSDs, No Sync-On-Write 
 
-to be completed
+This test has the following specific characteristics
+
+- A <b>16KB value size</b> (based on crypto:rand_bytes/1 - so cannot be effectively compressed)
+- 60 concurrent basho_bench workers running at 'max'
+- i2.2xlarge instances
+- allow_mult=false, lww=false
+- sync_on_write = off
+
+Comparison charts for this test:
+
+Riak + leveled           |  Riak + eleveldb
+:-------------------------:|:-------------------------:
+![](../test/volume/cluster_five/output/summary_leveled_5n_60t_i2_16KB_nosync.png "LevelEd")  |  ![](../test/volume/cluster_five/output/summary_leveldb_5n_60t_i2_16KB_nosync.png "LevelDB")
+
 
 ### Lies, damned lies etc
 
@@ -90,11 +119,14 @@ Both leveled and leveldb are optimised for finding non-presence through the use 
 
 So it is better to focus on the results at the tail of the tests, as at the tail the results are a more genuine reflection of behaviour against the advertised test parameters.
 
+
 Test Description                  | Hardware     | Duration |Avg TPS    | Delta (Overall)  | Delta (Last Hour)
 :---------------------------------|:-------------|:--------:|----------:|-----------------:|-------------------:
 8KB value, 60 workers, sync       | 5 x i2.2x    | 4 hr     | 12,679.91 | <b>+ 70.81%</b>  | <b>+ 63.99%</b>
 8KB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,100.19 | <b>+ 16.15%</b>  | <b>+ 35.92%</b>
-8KB value, 50 workers, no_sync    | 5 x d2.2x    | 6 hr     | 10,400.29 | <b>+  8.37%</b>  | <b>+ 23.51%</b> 
+8KB value, 50 workers, no_sync    | 5 x d2.2x    | 4 hr     | 10,400.29 | <b>+  8.37%</b>  | <b>+ 23.51%</b> 
+4KB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,993.95 | - 10.44%  | - 4.48%
+16KB value, 60 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,993.95 | <b>+ 80.48%</b>  | <b>+ 113.55%</b>
 
 Leveled, like bitcask, will defer compaction work until a designated compaction window, and these tests were run outside of that compaction window.  So although the throughput of leveldb is lower, it has no deferred work at the end of the test.  Future testing work is scheduled to examine leveled throughput during a compaction window.  
 
