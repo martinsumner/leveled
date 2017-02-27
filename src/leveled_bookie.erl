@@ -1405,7 +1405,7 @@ foldobjects_vs_hashtree_test() ->
 longrunning_test() ->
     SW = os:timestamp(),
     timer:sleep(100),
-    ?assertMatch(ok, maybe_longrunning(SW, put)).
+    ok = maybe_longrunning(SW, put).
 
 coverage_cheat_test() ->
     {noreply, _State0} = handle_info(timeout, #state{}),

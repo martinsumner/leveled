@@ -30,7 +30,7 @@
 -record(manifest_entry,
                         {start_key :: tuple(),
                         end_key :: tuple(),
-                        owner :: pid(),
+                        owner :: pid()|list(),
                         filename :: string()}).
 
 -record(cdb_options,
@@ -55,7 +55,7 @@
                         max_inmemory_tablesize :: integer(),
                         start_snapshot = false :: boolean(),
                         source_penciller :: pid(),
-                        levelzero_cointoss = false :: boolean}).
+                        levelzero_cointoss = false :: boolean()}).
 
 -record(iclerk_options,
                         {inker :: pid(),
