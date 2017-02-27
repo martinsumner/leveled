@@ -4,8 +4,8 @@
 %% - Keys, Metadata and Values are not persisted together - the Keys and
 %% Metadata are kept in a tree-based ledger, whereas the values are stored
 %% only in a sequential Journal.
-%% - Different file formats are used for Journal (based on constant
-%% database), and the ledger (sft, based on sst)
+%% - Different file formats are used for Journal (based on DJ Bernstein
+%% constant database), and the ledger (based on sst)
 %% - It is not intended to be general purpose, but be primarily suited for
 %% use as a Riak backend in specific circumstances (relatively large values,
 %% and frequent use of iterators)
@@ -464,7 +464,9 @@ handle_call({head, Bucket, Key, Tag}, _From, State) ->
                 {_SeqN, {active, TS}, _MH, MD} ->
                     case TS >= leveled_codec:integer_now() of
                         true ->
-                            OMD = leveled_codec:build_metadata_object(LedgerKey, MD),
+                            OMD =
+                                leveled_codec:build_metadata_object(LedgerKey,
+                                                                    MD),
                             {reply, {ok, OMD}, State};
                         false ->
                             {reply, not_found, State}
