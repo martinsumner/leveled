@@ -136,8 +136,7 @@
                 clerk :: pid(),
                 compaction_pending = false :: boolean(),
                 is_snapshot = false :: boolean(),
-                source_inker :: pid(),
-                put_timing :: tuple()}).
+                source_inker :: pid()}).
 
 
 %%%============================================================================
@@ -410,22 +409,16 @@ start_from_file(InkOpts) ->
 put_object(LedgerKey, Object, KeyChanges, State) ->
     NewSQN = State#state.journal_sqn + 1,
     ActiveJournal = State#state.active_journaldb,
-    SW= os:timestamp(),
     {JournalKey, JournalBin} = leveled_codec:to_inkerkv(LedgerKey,
                                                             NewSQN,
                                                             Object,
                                                             KeyChanges),
-    T0 = timer:now_diff(os:timestamp(), SW),
     case leveled_cdb:cdb_put(ActiveJournal,
                                 JournalKey,
                                 JournalBin) of
         ok ->
-            T1 = timer:now_diff(os:timestamp(), SW) - T0,
-            UpdPutTimes = leveled_log:put_timing(inker,
-                                                    State#state.put_timing,
-                                                    T0, T1),
             {ok,
-                State#state{journal_sqn=NewSQN, put_timing=UpdPutTimes},
+                State#state{journal_sqn=NewSQN},
                 byte_size(JournalBin)};
         roll ->
             SWroll = os:timestamp(),
@@ -544,24 +537,20 @@ open_all_manifest(Man0, RootPath, CDBOpts) ->
     [{HeadSQN, HeadFN, _IgnorePid, HeadLK}|ManifestTail] = Man1,
     OpenJournalFun =
         fun(ManEntry) ->
-            case ManEntry of
-                {LowSQN, FN, _, LK_RO} ->
-                    CFN = FN ++ "." ++ ?JOURNAL_FILEX,
-                    PFN = FN ++ "." ++ ?PENDING_FILEX,
-                    case filelib:is_file(CFN) of
-                        true ->
-                            {ok, Pid} = leveled_cdb:cdb_reopen_reader(CFN,
-                                                                        LK_RO),
-                            {LowSQN, FN, Pid, LK_RO};
-                        false ->
-                            W = leveled_cdb:cdb_open_writer(PFN, CDBOpts),
-                            {ok, Pid} = W,
-                            ok = leveled_cdb:cdb_roll(Pid),
-                            LK_WR = leveled_cdb:cdb_lastkey(Pid),
-                            {LowSQN, FN, Pid, LK_WR}
-                    end;
-                _ ->
-                    ManEntry
+            {LowSQN, FN, _, LK_RO} = ManEntry,
+            CFN = FN ++ "." ++ ?JOURNAL_FILEX,
+            PFN = FN ++ "." ++ ?PENDING_FILEX,
+            case filelib:is_file(CFN) of
+                true ->
+                    {ok, Pid} = leveled_cdb:cdb_reopen_reader(CFN,
+                                                                LK_RO),
+                    {LowSQN, FN, Pid, LK_RO};
+                false ->
+                    W = leveled_cdb:cdb_open_writer(PFN, CDBOpts),
+                    {ok, Pid} = W,
+                    ok = leveled_cdb:cdb_roll(Pid),
+                    LK_WR = leveled_cdb:cdb_lastkey(Pid),
+                    {LowSQN, FN, Pid, LK_WR}
             end
         end,
     OpenedTailAsList = lists:map(OpenJournalFun, ManifestTail),

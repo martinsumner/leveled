@@ -606,10 +606,7 @@ filepath(RootPath, NewMSN, current_manifest) ->
                 ++ integer_to_list(NewMSN) ++ "." ++ ?MANIFEST_FILEX.
 
 
-open_manifestfile(_RootPath, []) ->
-    leveled_log:log("P0013", []),
-    new_manifest();
-open_manifestfile(_RootPath, [0]) ->
+open_manifestfile(_RootPath, L) when L == [] orelse L == [0] ->
     leveled_log:log("P0013", []),
     new_manifest();
 open_manifestfile(RootPath, [TopManSQN|Rest]) ->
@@ -666,6 +663,7 @@ initial_setup() ->
     Man4 = insert_manifest_entry(Man3, 1, 2, E4),
     Man5 = insert_manifest_entry(Man4, 1, 2, E5),
     Man6 = insert_manifest_entry(Man5, 1, 2, E6),
+    ?assertMatch(Man6, insert_manifest_entry(Man6, 1, 2, [])),
     {Man0, Man1, Man2, Man3, Man4, Man5, Man6}.
 
 changeup_setup(Man6) ->

@@ -102,6 +102,7 @@ many_put_fetch_head(_Config) ->
     {ok, Bookie3} = leveled_bookie:book_start(StartOpts2),
     testutil:check_forlist(Bookie3, ChkList2A),
     testutil:check_forobject(Bookie3, TestObject),
+    testutil:check_formissingobject(Bookie3, "Bookie1", "MissingKey0123"),
     ok = leveled_bookie:book_destroy(Bookie3).
 
 journal_compaction(_Config) ->
@@ -455,6 +456,7 @@ load_and_count_withdelete(_Config) ->
     ok = leveled_bookie:book_close(Bookie1),
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
     testutil:check_formissingobject(Bookie2, BucketD, KeyD),
+    testutil:check_formissingobject(Bookie2, "Bookie1", "MissingKey0123"),
     {_BSize, 0} = testutil:check_bucket_stats(Bookie2, BucketD),
     ok = leveled_bookie:book_close(Bookie2),
     testutil:reset_filestructure().

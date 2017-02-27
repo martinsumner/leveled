@@ -369,8 +369,6 @@ riak_metadata_from_binary(V1Binary) ->
     <<VclockBin:VclockLen/binary, SibCount:32/integer, SibsBin/binary>> = Rest,
     SibMetaBinList =
         case SibCount of
-            0 ->
-                [];
             SC when is_integer(SC) ->
                 get_metadata_from_siblings(SibsBin, SibCount, [])
         end,

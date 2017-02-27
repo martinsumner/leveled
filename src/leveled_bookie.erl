@@ -4,8 +4,8 @@
 %% - Keys, Metadata and Values are not persisted together - the Keys and
 %% Metadata are kept in a tree-based ledger, whereas the values are stored
 %% only in a sequential Journal.
-%% - Different file formats are used for Journal (based on constant
-%% database), and the ledger (sft, based on sst)
+%% - Different file formats are used for Journal (based on DJ Bernstein
+%% constant database), and the ledger (based on sst)
 %% - It is not intended to be general purpose, but be primarily suited for
 %% use as a Riak backend in specific circumstances (relatively large values,
 %% and frequent use of iterators)
@@ -32,77 +32,6 @@
 %% For the Penciller the manifest maps key ranges to files at each level of
 %% the Ledger.
 %%
-%% -------- PUT --------
-%%
-%% A PUT request consists of
-%% - A Primary Key and a Value
-%% - IndexSpecs - a set of secondary key changes associated with the
-%% transaction
-%%
-%% The Bookie takes the request and passes it first to the Inker to add the
-%% request to the journal.
-%%
-%% The inker will pass the PK/Value/IndexSpecs to the current (append only)
-%% CDB journal file to persist the change.  The call should return either 'ok'
-%% or 'roll'. -'roll' indicates that the CDB file has insufficient capacity for
-%% this write, and a new journal file should be created (with appropriate
-%% manifest changes to be made).
-%%
-%% The inker will return the SQN which the change has been made at, as well as
-%% the object size on disk within the Journal.
-%%
-%% Once the object has been persisted to the Journal, the Ledger can be updated.
-%% The Ledger is updated by the Bookie applying a function (extract_metadata/4)
-%% to the Value to return the Object Metadata, a function to generate a hash
-%% of the Value and also taking the Primary Key, the IndexSpecs, the Sequence
-%% Number in the Journal and the Object Size (returned from the Inker).
-%%
-%% A set of Ledger Key changes are then generated and placed in the Bookie's
-%% Ledger Key cache (a gb_tree).
-%%
-%% The PUT can now be acknowledged.  In the background the Bookie may then
-%% choose to push the cache to the Penciller for eventual persistence within
-%% the ledger.  This push will either be acccepted or returned (if the
-%% Penciller has a backlog of key changes).  The back-pressure should lead to
-%% the Bookie entering into a slow-offer status whereby the next PUT will be
-%% acknowledged by a PAUSE signal - with the expectation that the this will
-%% lead to a back-off behaviour.
-%%
-%% -------- GET, HEAD --------
-%%
-%% The Bookie supports both GET and HEAD requests, with the HEAD request
-%% returning only the metadata and not the actual object value.  The HEAD
-%% requets cna be serviced by reference to the Ledger Cache and the Penciller.
-%%
-%% GET requests first follow the path of a HEAD request, and if an object is
-%% found, then fetch the value from the Journal via the Inker.
-%%
-%% -------- Snapshots/Clones --------
-%%
-%% If there is a snapshot request (e.g. to iterate over the keys) the Bookie
-%% may request a clone of the Penciller, or the Penciller and the Inker.
-%%
-%% The clone is seeded with the manifest.  The clone should be registered with
-%% the real Inker/Penciller, so that the real Inker/Penciller may prevent the
-%% deletion of files still in use by a snapshot clone.
-%%
-%% Iterators should de-register themselves from the Penciller on completion.
-%% Iterators should be automatically release after a timeout period.  A file
-%% can only be deleted from the Ledger if it is no longer in the manifest, and
-%% there are no registered iterators from before the point the file was
-%% removed from the manifest.
-%%
-%% -------- On Startup --------
-%%
-%% On startup the Bookie must restart both the Inker to load the Journal, and
-%% the Penciller to load the Ledger.  Once the Penciller has started, the
-%% Bookie should request the highest sequence number in the Ledger, and then
-%% and try and rebuild any missing information from the Journal.
-%%
-%% To rebuild the Ledger it requests the Inker to scan over the files from
-%% the sequence number and re-generate the Ledger changes - pushing the changes
-%% directly back into the Ledger.
-
 
 
 -module(leveled_bookie).
@@ -174,18 +103,133 @@
 %%% API
 %%%============================================================================
 
+%% @doc Start a Leveled Key/Value store - limited options support.
+%%
+%% The most common startup parameters are extracted out from the options to
+%% provide this startup method.  This will start a KV store from the previous
+%% store at root path - or an empty one if there is no store at the path.
+%%
+%% Fiddling with the LedgerCacheSize and JournalSize may improve performance, 
+%% but these are primarily exposed to support special situations (e.g. very
+%% low memory installations), there should not be huge variance in outcomes
+%% from modifying these numbers.
+%%
+%% The sync_strategy determines if the store is going to flush writes to disk
+%% before returning an ack.  There are three settings currrently supported:
+%% - sync - sync to disk by passing the sync flag to the file writer (only
+%% works in OTP 18)
+%% - riak_sync - sync to disk by explicitly calling data_sync after the write
+%% - none - leave it to the operating system to control flushing
+%%
+%% On startup the Bookie must restart both the Inker to load the Journal, and
+%% the Penciller to load the Ledger.  Once the Penciller has started, the
+%% Bookie should request the highest sequence number in the Ledger, and then
+%% and try and rebuild any missing information from the Journal.
+%%
+%% To rebuild the Ledger it requests the Inker to scan over the files from
+%% the sequence number and re-generate the Ledger changes - pushing the changes
+%% directly back into the Ledger.
+
 book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy) ->
     book_start([{root_path, RootPath},
                     {cache_size, LedgerCacheSize},
                     {max_journalsize, JournalSize},
                     {sync_strategy, SyncStrategy}]).
 
+%% @doc Start a Leveled Key/Value store - full options support.
+%%
+%% Allows an options proplists to be passed for setting options.  There are
+%% two primary additional options this allows over book_start/4:
+%% - retain_strategy
+%% - waste_retention_period
+%%
+%% Both of these relate to compaction in the Journal.  The retain_strategy
+%% determines if a skinny record of the object should be retained following
+%% compaction, and how thta should be used when recovering lost state in the
+%% Ledger.
+%%
+%% Currently compacted records no longer in use are not removed but moved to
+%% a journal_waste folder, and the waste_retention_period determines how long
+%% this history should be kept for (for example to allow for it to be backed
+%% up before deletion)
+%%
+%% TODO:
+%% The reload_strategy is exposed as currently no firm decision has been made 
+%% about how recovery should work.  For instance if we were to trust evrything
+%% as permanent in the Ledger once it is persisted, then there would be no
+%% need to retain a skinny history of key changes in the Journal after
+%% compaction.  If, as an alternative we assume the Ledger is never permanent,
+%% and retain the skinny hisory - then backups need only be made against the
+%% Journal.  The skinny history of key changes is primarily related to the
+%% issue of supporting secondary indexes in Riak.
+%%
+%% These two strategies are referred to as recovr (assume we can recover any
+%% deltas from a lost ledger and a lost history through resilience outside of
+%% the store), or retain (retain a history of key changes, even when the object
+%% value has been compacted).  There is a third, unimplemented strategy, which
+%% is recalc - which would require when reloading the Ledger from the Journal,
+%% to recalculate the index changes based on the current state of the Ledger
+%% and the object metadata.
+
 book_start(Opts) ->
     gen_server:start(?MODULE, [Opts], []).
 
+%% @doc Put an object with an expiry time
+%%
+%% Put an item in the store but with a Time To Live - the time when the object
+%% should expire, in gregorian_sconds (add the required number of seconds to
+%% leveled_codec:integer_time/1).
+%%
+%% There exists the possibility of per object expiry times, not just whole
+%% store expiry times as has traditionally been the feature in Riak.  Care
+%% will need to be taken if implementing per-object times about the choice of
+%% reload_strategy.  If expired objects are to be compacted entirely, then the
+%% history of KeyChanges will be lost on reload.
 
-book_tempput(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) when is_integer(TTL) ->
+book_tempput(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL)
+                                                    when is_integer(TTL) ->
     book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL).
+
+%% @doc - Standard PUT
+%%
+%% A PUT request consists of
+%% - A Primary Key and a Value
+%% - IndexSpecs - a set of secondary key changes associated with the
+%% transaction
+%% - A tag indictaing the type of object.  Behaviour for metadata extraction, 
+%% and ledger compaction will vary by type.  There are three currently
+%% implemented types i (Index), o (Standard), o_rkv (Riak).  Keys added with
+%% Index tags are not fetchable (as they will not be hashed), but are
+%% extractable via range query.
+%%
+%% The Bookie takes the request and passes it first to the Inker to add the
+%% request to the journal.
+%%
+%% The inker will pass the PK/Value/IndexSpecs to the current (append only)
+%% CDB journal file to persist the change.  The call should return either 'ok'
+%% or 'roll'. -'roll' indicates that the CDB file has insufficient capacity for
+%% this write, and a new journal file should be created (with appropriate
+%% manifest changes to be made).
+%%
+%% The inker will return the SQN which the change has been made at, as well as
+%% the object size on disk within the Journal.
+%%
+%% Once the object has been persisted to the Journal, the Ledger can be updated.
+%% The Ledger is updated by the Bookie applying a function (extract_metadata/4)
+%% to the Value to return the Object Metadata, a function to generate a hash
+%% of the Value and also taking the Primary Key, the IndexSpecs, the Sequence
+%% Number in the Journal and the Object Size (returned from the Inker).
+%%
+%% A set of Ledger Key changes are then generated and placed in the Bookie's
+%% Ledger Key cache.
+%%
+%% The PUT can now be acknowledged.  In the background the Bookie may then
+%% choose to push the cache to the Penciller for eventual persistence within
+%% the ledger.  This push will either be acccepted or returned (if the
+%% Penciller has a backlog of key changes).  The back-pressure should lead to
+%% the Bookie entering into a slow-offer status whereby the next PUT will be
+%% acknowledged by a PAUSE signal - with the expectation that the this will
+%% lead to a back-off behaviour.
 
 book_put(Pid, Bucket, Key, Object, IndexSpecs) ->
     book_put(Pid, Bucket, Key, Object, IndexSpecs, ?STD_TAG).
@@ -193,8 +237,27 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs) ->
 book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag) ->
     book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, infinity).
 
+book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) ->
+    gen_server:call(Pid,
+                    {put, Bucket, Key, Object, IndexSpecs, Tag, TTL},
+                    infinity).
+
+%% @doc - Standard PUT
+%%
+%% A thin wrap around the put of a special tombstone object.  There is no
+%% immediate reclaim of space, simply the addition of a more recent tombstone.
+
 book_delete(Pid, Bucket, Key, IndexSpecs) ->
     book_put(Pid, Bucket, Key, delete, IndexSpecs, ?STD_TAG).
+
+%% @doc - GET and HAD requests
+%%
+%% The Bookie supports both GET and HEAD requests, with the HEAD request
+%% returning only the metadata and not the actual object value.  The HEAD
+%% requets cna be serviced by reference to the Ledger Cache and the Penciller.
+%%
+%% GET requests first follow the path of a HEAD request, and if an object is
+%% found, then fetch the value from the Journal via the Inker.
 
 book_get(Pid, Bucket, Key) ->
     book_get(Pid, Bucket, Key, ?STD_TAG).
@@ -202,16 +265,57 @@ book_get(Pid, Bucket, Key) ->
 book_head(Pid, Bucket, Key) ->
     book_head(Pid, Bucket, Key, ?STD_TAG).
 
-book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) ->
-    gen_server:call(Pid,
-                    {put, Bucket, Key, Object, IndexSpecs, Tag, TTL},
-                    infinity).
-
 book_get(Pid, Bucket, Key, Tag) ->
     gen_server:call(Pid, {get, Bucket, Key, Tag}, infinity).
 
 book_head(Pid, Bucket, Key, Tag) ->
     gen_server:call(Pid, {head, Bucket, Key, Tag}, infinity).
+
+%% @doc Snapshots/Clones
+%%
+%% If there is a snapshot request (e.g. to iterate over the keys) the Bookie
+%% may request a clone of the Penciller, or clones of both the Penciller and
+%% the Inker should values also need to be accessed.
+%%
+%% The clone is seeded with the manifest SQN.  The clone should be registered
+%% with the real Inker/Penciller, so that the real Inker/Penciller may prevent
+%% the deletion of files still in use by a snapshot clone.
+%%
+%% Iterators should de-register themselves from the Penciller on completion.
+%% Iterators should be automatically release after a timeout period.  A file
+%% can only be deleted from the Ledger if it is no longer in the manifest, and
+%% there are no registered iterators from before the point the file was
+%% removed from the manifest.
+%%
+%% Clones are simply new gen_servers with copies of the relevant
+%% StateData.
+%%
+%% There are a series of specific folders implemented that provide pre-canned
+%% snapshot functionality:
+%%
+%% {bucket_stats, Bucket}  -> return a key count and total object size within
+%% a bucket
+%% {riakbucket_stats, Bucket} -> as above, but for buckets with the Riak Tag
+%% {binary_bucketlist, Tag, {FoldKeysFun, Acc}} -> if we assume buckets and
+%% keys are binaries, provides a fast bucket list function
+%% {index_query,
+%%        Constraint,
+%%        {FoldKeysFun, Acc},
+%%        {IdxField, StartValue, EndValue},
+%%        {ReturnTerms, TermRegex}} -> secondray index query
+%% {keylist, Tag, {FoldKeysFun, Acc}} -> list all keys with tag
+%% {keylist, Tag, Bucket, {FoldKeysFun, Acc}} -> list all keys within given
+%% bucket
+%% {hashtree_query, Tag, JournalCheck} -> return keys and hashes for all
+%% objects with a given tag
+%% {foldobjects_bybucket, Tag, Bucket, FoldObjectsFun} -> fold over all objects
+%% in a given bucket
+%% {foldobjects_byindex,
+%%        Tag,
+%%        Bucket,
+%%        {Field, FromTerm, ToTerm},
+%%        FoldObjectsFun} -> fold over all objects with an entry in a given
+%% range on a given index
 
 book_returnfolder(Pid, FolderType) ->
     gen_server:call(Pid, {return_folder, FolderType}, infinity).
@@ -222,14 +326,28 @@ book_snapshotstore(Pid, Requestor, Timeout) ->
 book_snapshotledger(Pid, Requestor, Timeout) ->
     gen_server:call(Pid, {snapshot, Requestor, ledger, Timeout}, infinity).
 
+%% @doc Call for compaction of the Journal
+%%
+%% the scheduling of Journla compaction is called externally, so it is assumed
+%% in Riak it will be triggered by a vnode callback.
+
 book_compactjournal(Pid, Timeout) ->
     gen_server:call(Pid, {compact_journal, Timeout}, infinity).
+
+%% @doc Check on progress of the last compaction
 
 book_islastcompactionpending(Pid) ->
     gen_server:call(Pid, confirm_compact, infinity).
 
+%% @doc Clean shutdown
+%%
+%% A clean shutdown will persist all the information in the Penciller memory
+%% before closing, so shutdown is not instantaneous.
+
 book_close(Pid) ->
     gen_server:call(Pid, close, infinity).
+
+%% @doc Close and clean-out files
 
 book_destroy(Pid) ->
     gen_server:call(Pid, destroy, infinity).
@@ -353,7 +471,9 @@ handle_call({head, Bucket, Key, Tag}, _From, State) ->
                 {_SeqN, {active, TS}, _MH, MD} ->
                     case TS >= leveled_codec:integer_now() of
                         true ->
-                            OMD = leveled_codec:build_metadata_object(LedgerKey, MD),
+                            OMD =
+                                leveled_codec:build_metadata_object(LedgerKey,
+                                                                    MD),
                             {reply, {ok, OMD}, State};
                         false ->
                             {reply, not_found, State}
@@ -1281,6 +1401,11 @@ foldobjects_vs_hashtree_test() ->
     
     ok = book_close(Bookie1),
     reset_filestructure().
+
+longrunning_test() ->
+    SW = os:timestamp(),
+    timer:sleep(100),
+    ok = maybe_longrunning(SW, put).
 
 coverage_cheat_test() ->
     {noreply, _State0} = handle_info(timeout, #state{}),
