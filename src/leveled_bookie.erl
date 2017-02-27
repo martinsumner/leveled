@@ -114,6 +114,13 @@
 %% low memory installations), there should not be huge variance in outcomes
 %% from modifying these numbers.
 %%
+%% The sync_strategy determines if the store is going to flush writes to disk
+%% before returning an ack.  There are three settings currrently supported:
+%% - sync - sync to disk by passing the sync flag to the file writer (only
+%% works in OTP 18)
+%% - riak_sync - sync to disk by explicitly calling data_sync after the write
+%% - none - leave it to the operating system to control flushing
+%%
 %% On startup the Bookie must restart both the Inker to load the Journal, and
 %% the Penciller to load the Ledger.  Once the Penciller has started, the
 %% Bookie should request the highest sequence number in the Ledger, and then
