@@ -52,7 +52,7 @@ Test Description                  | Hardware     | Duration |Avg TPS    | Delta 
 8KB value, 60 workers, sync       | 5 x i2.2x    | 4 hr     | 12,679.91 | <b>+ 70.81%</b>  | <b>+ 63.99%</b>
 8KB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,100.19 | <b>+ 16.15%</b>  | <b>+ 35.92%</b>
 8KB value, 50 workers, no_sync    | 5 x d2.2x    | 4 hr     | 10,400.29 | <b>+  8.37%</b>  | <b>+ 23.51%</b> 
-4KB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 10,400.29 | <span style="color:red"><b>- 10.44%</b></span> | <span style="color:red"><b>- 4.48%</b></span>
+4KB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,993.95 | <b>- 10.44%</b>  | <b>- 4.48%</b>
 
 Tests generally show a 5:1 improvement in tail latency for LevelEd.
 
