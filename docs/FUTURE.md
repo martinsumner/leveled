@@ -115,3 +115,5 @@ The other n-1 vnodes must also do a local GET before the vnode PUT (so as not to
 This branch changes the behaviour slightly at the non-coordinating vnodes.  These vnodes will now try a HEAD request before the local PUT (not a GET request), and if the HEAD request contains a vclock which is <strong>dominated</strong> by the updated PUT, it will not attempt to fetch the whole object for the syntactic merge.
 
 This should save two object fetches (where n=3) in most circumstances.
+
+Note, although the branch name refers to the put fsm - the actual fsm is unchanged by this, all of the changes are within vnode_put

@@ -100,4 +100,4 @@ This will start a new Bookie.  It will start and look for existing data files, u
 
 The book_start method should respond once startup is complete.  The leveled_bookie module includes the full API for external use of the store.
 
-Read through the [end_to_end test suites](test/end_to_end/) for further guidance.
+Running in Riak requires one of the branches of riak_kv referenced [here](docs/FUTURE.md). There is a [Riak branch](https://github.com/martinsumner/riak/tree/mas-leveleddb) intended to support the automatic build of this, and the configuration via cuttlefish.  However, the auto-build fails due to other dependencies bringing in an alternative version of riak_kv, and the configuration via cuttlefish is broken for reasons unknown.  Building this from source as part of Riak will require a bit of fiddling around.
