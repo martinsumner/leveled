@@ -112,4 +112,15 @@ The book_start method should respond once startup is complete.  The leveled_book
 
 It should run anywhere that OTP will run - it has been tested on Ubuntu 14, MAC OS X and Windows 10.
 
-Running in Riak requires one of the branches of riak_kv referenced [here](docs/FUTURE.md). There is a [Riak branch](https://github.com/martinsumner/riak/tree/mas-leveleddb) intended to support the automatic build of this, and the configuration via cuttlefish.  However, the auto-build fails due to other dependencies bringing in an alternative version of riak_kv, and the configuration via cuttlefish is broken for reasons unknown.  Building this from source as part of Riak will require a bit of fiddling around.
+Running in Riak requires one of the branches of riak_kv referenced [here](docs/FUTURE.md). There is a [Riak branch](https://github.com/martinsumner/riak/tree/mas-leveleddb) intended to support the automatic build of this, and the configuration via cuttlefish.  However, the auto-build fails due to other dependencies (e.g. riak_search) bringing in an alternative version of riak_kv, and the configuration via cuttlefish is broken for reasons unknown.  
+
+Building this from source as part of Riak will require a bit of fiddling around.
+
+- build [riak](https://github.com/martinsumner/riak/tree/mas-leveleddb)
+- cd deps, rm -rf riak_kv
+- git clone -b mas-leveled-putfm --single-branch https://github.com/martinsumner/riak_kv.git
+- cd ..
+- make rel
+- remember to set the storage backend to leveled in riak.conf
+
+To help with the breakdown of cuttlefish, leveled parameters can be set via riak_kv/include/riak_kv_leveled.hrl - although a new make will be required for these changes to take effect.
