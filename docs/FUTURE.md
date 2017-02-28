@@ -80,7 +80,7 @@ Description:
 In standard Riak the Riak node that receives a GET request starts a riak_kv_get_fsm to handle that request.  This FSM goes through the following primary states:
 
 - prepare (get preflists etc)
-- valiidate (make sure there is sufficient vnode availability to handle the request)
+- validate (make sure there is sufficient vnode availability to handle the request)
 - execute (send the GET request to n vnodes)
 - waiting_vnode_r (loop waiting for the response from r vnodes, every time a response is received check if enough vnodes have responded, and then either finalise a response or wait for more)
 - waiting_read_repair (read repair if a responding vnode is out of date)
