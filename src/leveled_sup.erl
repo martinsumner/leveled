@@ -1,4 +1,4 @@
--module(eleveleddb_sup).
+-module(leveled_sup).
 
 -behaviour(supervisor).
 
@@ -14,6 +14,9 @@
 %% ===================================================================
 %% API functions
 %% ===================================================================
+
+%% Currently this is just to keep dialyzer happy
+%% Run the store directly using leveled_bookie:book_start/4 or bookie_start/1
 
 start_link() ->
     supervisor:start_link({local, leveled_bookie}, ?MODULE, []).

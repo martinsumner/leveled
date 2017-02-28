@@ -1,4 +1,4 @@
-{application, eleveleddb,
+{application, leveled,
  [
   {description, "Key Value store based on LSM-Tree and designed for larger values"},
   {vsn, "1"},
@@ -7,6 +7,6 @@
                   kernel,
                   stdlib
                  ]},
-  {mod, { eleveleddb_app, []}},
+  {mod, { leveled_app, []}},
   {env, [{root_path, "test"}]}
  ]}.
