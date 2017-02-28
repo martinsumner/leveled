@@ -7,7 +7,8 @@ Leveled is a <b>work-in-progress</b> prototype of a simple Key-Value store based
 - Optimised for workloads with <b>larger values</b> (e.g. > 4KB).
 
 - Explicitly supports <b>HEAD requests</b> in addition to GET requests. 
-  - Splits the storage of value between key/metadata and body, 
+  - Splits the storage of value between keys/metadata and body, 
+  - Stores keys/etadata in a merge tree and the full object in a journal of [CDB files](https://en.wikipedia.org/wiki/Cdb_(software))
   - allowing for HEAD requests which have lower overheads than GET requests, and
   - queries which traverse keys/metadatas to be supported with fewer side effects on the page cache.
 
@@ -43,7 +44,7 @@ The target at inception was to do something interesting, to re-think certain key
 
 [Initial volume tests](docs/VOLUME.md) indicate that it is at least interesting.  With improvements in throughput for multiple configurations, with this improvement becoming more marked as the test progresses (and the base data volume becomes more realistic).  
 
-The delta in the table below  is the comparison in Riak throughput between the identical test run with a leveled backend in comparison to leveldb.
+The delta in the table below  is the comparison in Riak throughput between the identical test run with a leveled backend in comparison to leveldb.  The realism of the tests increase as the test progresses - so focus is given to the throughput delta in the last hour of the test.
 
 Test Description                  | Hardware     | Duration |Avg TPS    | TPS Delta (Overall)  | TPS Delta (Last Hour)
 :---------------------------------|:-------------|:--------:|----------:|-----------------:|-------------------:
@@ -83,7 +84,7 @@ However a number of other changes are planned in the next month to (my branch of
 
 - Support for rapid rebuild of hashtrees
 
-- Fixes to priority issues
+- Fixes to [priority issues](https://github.com/martinsumner/leveled/issues)
 
 - Experiments with flexible sync on write settings
 
@@ -97,7 +98,9 @@ Please create an issue if you have any suggestions.  You can ping me <b>@masleed
 
 ## Running Leveled
 
-Unit and current tests in leveled should run with rebar3.  Leveled has been tested in OTP18, but it can be started with OTP16 to support Riak (although tests will not work as expected).  A new database can be started by running
+Unit and current tests in leveled should run with rebar3.  Leveled has been tested in OTP18, but it can be started with OTP16 to support Riak (although tests will not work as expected).  
+
+A new database can be started by running
 
 ```
 {ok, Bookie} = leveled_bookie:book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy)   
@@ -113,9 +116,10 @@ Running in Riak requires one of the branches of riak_kv referenced [here](docs/F
 
 Building this from source as part of Riak will require a bit of fiddling around.
 
-- build [riak](https://github.com/martinsumner/riak/tree/mas-leveleddb)
-- cd deps, rm -rf riak_kv
-- git clone -b mas-leveled-putfm --single-branch https://github.com/martinsumner/riak_kv.git
+- clone and build [riak](https://github.com/martinsumner/riak/tree/mas-leveleddb)
+- cd deps 
+- rm -rf riak_kv
+- git clone -b mas-leveled-putfsm --single-branch https://github.com/martinsumner/riak_kv.git
 - cd ..
 - make rel
 - remember to set the storage backend to leveled in riak.conf
