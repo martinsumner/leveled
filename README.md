@@ -93,7 +93,7 @@ More information can be found in the [future section](docs/FUTURE.md).
 
 ## Feedback
 
-Please create an issue if you have any suggestions.  You can ping me @masleeds if you wish
+Please create an issue if you have any suggestions.  You can ping me <b>@masleeds</b> if you wish
 
 ## Running Leveled
 
@@ -105,7 +105,7 @@ Unit and current tests in leveled should run with rebar3.  Leveled has been test
 
 This will start a new Bookie.  It will start and look for existing data files, under the RootPath, and start empty if none exist.  A LedgerCacheSize of 2000, a JournalSize of 500000000 (500MB) and a SyncStrategy of recovr should work OK.
 
-The book_start method should respond once startup is complete.  The leveled_bookie module includes the full API for external use of the store.
+The book_start method should respond once startup is complete.  The [leveled_bookie module](src/leveled_bookie.erl) includes the full API for external use of the store.
 
 It should run anywhere that OTP will run - it has been tested on Ubuntu 14, MAC OS X and Windows 10.
 
@@ -115,12 +115,6 @@ Building this from source as part of Riak will require a bit of fiddling around.
 
 - build [riak](https://github.com/martinsumner/riak/tree/mas-leveleddb)
 - cd deps, rm -rf riak_kv
-- git clone -b mas-leveled-putfm --single-branch https://github.com/martinsumner/riak_kv.git
-- cd ..
-- make rel
-- remember to set the storage backend to leveled in riak.conf
-
-To help with the breakdown of cuttlefish, leveled parameters can be set via riak_kv/include/riak_kv_leveled.hrl - although a new make will be required for these changes to take effect.cd deps, rm -rf riak_kv
 - git clone -b mas-leveled-putfm --single-branch https://github.com/martinsumner/riak_kv.git
 - cd ..
 - make rel
