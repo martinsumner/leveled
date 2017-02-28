@@ -171,6 +171,6 @@ Riak + leveled           |  Riak + bitcask
 :-------------------------:|:-------------------------:
 ![](../test/volume/cluster_five/output/summary_leveled_5n_60t_i2_16KB_nosync.png "LevelEd")  |  ![](../test/volume/cluster_five/output/summary_bitcask_5n_60t_i2_16KB_nosync.png "LevelDB")
 
-Over the whole test, the bitcask-backed cluster achieves <b>16.48%</b> more throughput than leveled, but in the last hour this advantage is just <b>0.34%</b>.
+In the first hour of the test, bitcask throughput is <b>39.13%</b> greater than leveled.  Over the whole test, the bitcask-backed cluster achieves <b>16.48%</b> more throughput than leveled, but in the last hour this advantage is just <b>0.34%</b>.
 
 The results for bitcask look a bit weird and lumpy though, so perhaps there's something else going on here that's contributing to the gap closing.
