@@ -2,7 +2,7 @@
 
 ## Introduction
 
-Leveled is a work-in-progress prototype of a simple Key-Value store based on the concept of Log-Structured Merge Trees, with the following characteristics:
+Leveled is a <b>work-in-progress</b> prototype of a simple Key-Value store based on the concept of Log-Structured Merge Trees, with the following characteristics:
 
 - Optimised for workloads with <b>larger values</b> (e.g. > 4KB).
 

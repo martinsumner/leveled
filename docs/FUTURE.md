@@ -40,7 +40,7 @@ There is some work required before LevelEd could be considered production ready:
 
 ## Riak Features Implemented
 
-The following Riak features have been implemented
+The following Riak features have been implemented.  Note that these features are <b>not adequately tested</b> at present.  Sufficient work has been done to support the realism of volume test metrics, with mainly manual tests and some simple eunit tests.
 
 ### Leveled Backend
 
