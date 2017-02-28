@@ -1,4 +1,4 @@
-# Leveled - An Erlang Key-Value store
+# Leveled - An Erlang Key-Value Store
 
 ## Introduction
 
@@ -14,16 +14,14 @@ Leveled is a work-in-progress prototype of a simple Key-Value store based on the
 - Support for tagging of object types and the implementation of alternative store behaviour based on type.
   - Potentially usable for objects with special retention or merge properties.
 
-- Support for low-cost clones without locking to provide for scanning queries.
+- Support for low-cost clones without locking to provide for scanning queries (e.g. secondary indexes).
   - Low cost specifically where there is a need to scan across keys and metadata (not values).
 
 - Written in Erlang as a message passing system between Actors.
 
-The store has been developed with a focus on being a potential backend to a Riak KV database, rather than as a generic store.  
+The store has been developed with a focus on being a potential backend to a Riak KV database, rather than as a generic store.  It is intended to be a fully-featured backend - including support for secondary indexes, multiple fold types and auto-expiry of objects. 
 
-The primary aim of developing (yet another) Riak backend is to examine the potential to reduce the broader costs providing sustained throughput in Riak i.e. to provide equivalent throughput on cheaper hardware.  It is also anticipated in having a fully-featured pure Erlang backend may assist in evolving new features through the Riak ecosystem  which require end-to-end changes, rather than requiring context switching between C++ and Erlang based components.
-
-The store is not expected to offer lower median latency than the Basho-enhanced leveldb, but it is likely in some cases to offer improvements in throughput, reduced tail latency and reduced volatility in performance.  It is expected that the likelihood of finding improvement will correlate with the average object size, and inversely correlate with the availability of Disk IOPS in the hardware configuration.
+An optimised version of Riak KV has been produced in parallel which will exploit the availability of HEAD requests (to access object metadata including version vectors), where a full GET is not required.  This, along with reduced write amplification when compared to leveldb, is expected to offer significant improvement in the volume and predictability of throughput for workloads with larger (> 4KB) object sizes, as well as reduced tail latency.
 
 ## More Details
 
@@ -45,7 +43,7 @@ The target at inception was to do something interesting, to re-think certain key
 
 [Initial volume tests](docs/VOLUME.md) indicate that it is at least interesting.  With improvements in throughput for multiple configurations, with this improvement becoming more marked as the test progresses (and the base data volume becomes more realistic).  
 
-The delta in the table below  is the comparison in Riak performance between the identical test run with a Leveled backend in comparison to Leveldb.
+The delta in the table below  is the comparison in Riak throughput between the identical test run with a leveled backend in comparison to leveldb.
 
 Test Description                  | Hardware     | Duration |Avg TPS    | TPS Delta (Overall)  | TPS Delta (Last Hour)
 :---------------------------------|:-------------|:--------:|----------:|-----------------:|-------------------:
@@ -55,7 +53,7 @@ Test Description                  | Hardware     | Duration |Avg TPS    | TPS De
 4KB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,993.95 | - 10.44%  | - 4.48%
 16KB value, 60 workers, no_sync   | 5 x i2.2x    | 6 hr     | 11,167.44 | <b>+ 80.48%</b>  | <b>+ 113.55%</b>
 
-Tests generally show a 5:1 improvement in tail latency for LevelEd.
+Tests generally show a 5:1 improvement in tail latency for leveled.
 
 All tests have in common:
 
@@ -64,7 +62,6 @@ All tests have in common:
 - RAID 10 (software) drives
 - allow_mult=false, lww=false
 - modified riak optimised for leveled used in leveled tests
-
 
 The throughput in leveled is generally CPU-bound, whereas in comparative tests for leveledb the throughput was disk bound.  This potentially makes capacity planning simpler, and opens up the possibility of scaling out to equivalent throughput at much lower cost (as CPU is relatively low cost when compared to disk space at high I/O) - [offering better alignment between resource constraints and the cost of resource](docs/INTRO.md).
 
@@ -80,7 +77,7 @@ Further volume test scenarios are the immediate priority, in particular volume t
 
 - Use of newly available [EC2 hardware](https://aws.amazon.com/about-aws/whats-new/2017/02/now-available-amazon-ec2-i3-instances-next-generation-storage-optimized-high-i-o-instances/) which potentially is a significant changes to assumptions about hardware efficiency and cost.
 
-- Create riak_test tests for new Riak features enabled by Leveled.
+- Create riak_test tests for new Riak features enabled by leveled.
 
 However a number of other changes are planned in the next month to (my branch of) riak_kv to better use leveled:
 
@@ -118,6 +115,12 @@ Building this from source as part of Riak will require a bit of fiddling around.
 
 - build [riak](https://github.com/martinsumner/riak/tree/mas-leveleddb)
 - cd deps, rm -rf riak_kv
+- git clone -b mas-leveled-putfm --single-branch https://github.com/martinsumner/riak_kv.git
+- cd ..
+- make rel
+- remember to set the storage backend to leveled in riak.conf
+
+To help with the breakdown of cuttlefish, leveled parameters can be set via riak_kv/include/riak_kv_leveled.hrl - although a new make will be required for these changes to take effect.cd deps, rm -rf riak_kv
 - git clone -b mas-leveled-putfm --single-branch https://github.com/martinsumner/riak_kv.git
 - cd ..
 - make rel
