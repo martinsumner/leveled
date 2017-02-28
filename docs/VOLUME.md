@@ -159,5 +159,18 @@ to be completed ..
 
 Testing for load including 2i queries
 
+## Riak Cluster Test - Phase 5
 
+For larger objects, it is interesting to compare performance with between Bitcask and leveled.  At the start of a pure push test it is not possible for leveled to operate at the same rate as bitcask - as bitcask is finding/updating pointer s through a NIF'd memory operation in C (whereas leveled needs to has two levels of indirect pointers which are being lazily persisted to disk).
 
+However, as the test progresses, there should be an advantage in that leveled is not needing to read each object from disk N times on both PUT and GET - so as the scope of the database creeps beyond that covered by the page cache, and as the frequency of disk reads starts to create an I/O bottlneck then leveled throughput will become more competitive.
+
+Here is a side-by-side on a standard Phase 1 test on i2, without sync, and with 60 threads and 16KB objects.
+
+Riak + leveled           |  Riak + bitcask
+:-------------------------:|:-------------------------:
+![](../test/volume/cluster_five/output/summary_leveled_5n_60t_i2_16KB_nosync.png "LevelEd")  |  ![](../test/volume/cluster_five/output/summary_bitcask_5n_60t_i2_16KB_nosync.png "LevelDB")
+
+In the first hour of the test, bitcask throughput is <b>39.13%</b> greater than leveled.  Over the whole test, the bitcask-backed cluster achieves <b>16.48%</b> more throughput than leveled, but in the last hour this advantage is just <b>0.34%</b>.
+
+The results for bitcask look a bit weird and lumpy though, so perhaps there's something else going on here that's contributing to the gap closing.
