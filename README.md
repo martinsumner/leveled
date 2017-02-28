@@ -1,29 +1,28 @@
-# Leveled - An Erlang Key-Value store
+# Leveled - An Erlang Key-Value Store
 
 ## Introduction
 
-Leveled is a work-in-progress prototype of a simple Key-Value store based on the concept of Log-Structured Merge Trees, with the following characteristics:
+Leveled is a <b>work-in-progress</b> prototype of a simple Key-Value store based on the concept of Log-Structured Merge Trees, with the following characteristics:
 
-- Optimised for workloads with larger values (e.g. > 4KB).
+- Optimised for workloads with <b>larger values</b> (e.g. > 4KB).
 
-- Explicitly supports HEAD requests in addition to GET requests. 
-  - Splits the storage of value between key/metadata and body, 
+- Explicitly supports <b>HEAD requests</b> in addition to GET requests. 
+  - Splits the storage of value between keys/metadata and body, 
+  - Stores keys/metadata in a merge tree and the full object in a journal of [CDB files](https://en.wikipedia.org/wiki/Cdb_(software))
   - allowing for HEAD requests which have lower overheads than GET requests, and
   - queries which traverse keys/metadatas to be supported with fewer side effects on the page cache.
 
-- Support for tagging of object types and the implementation of alternative store behaviour based on type.
+- Support for tagging of <b>object types</b> and the implementation of alternative store behaviour based on type.
   - Potentially usable for objects with special retention or merge properties.
 
-- Support for low-cost clones without locking to provide for scanning queries.
+- Support for low-cost clones without locking to provide for <b>scanning queries</b> (e.g. secondary indexes).
   - Low cost specifically where there is a need to scan across keys and metadata (not values).
 
-- Written in Erlang as a message passing system between Actors.
+- Written in <b>Erlang</b> as a message passing system between Actors.
 
-The store has been developed with a focus on being a potential backend to a Riak KV database, rather than as a generic store.  
+The store has been developed with a <b>focus on being a potential backend to a Riak KV</b> database, rather than as a generic store.  It is intended to be a fully-featured backend - including support for secondary indexes, multiple fold types and auto-expiry of objects. 
 
-The primary aim of developing (yet another) Riak backend is to examine the potential to reduce the broader costs providing sustained throughput in Riak i.e. to provide equivalent throughput on cheaper hardware.  It is also anticipated in having a fully-featured pure Erlang backend may assist in evolving new features through the Riak ecosystem  which require end-to-end changes, rather than requiring context switching between C++ and Erlang based components.
-
-The store is not expected to offer lower median latency than the Basho-enhanced leveldb, but it is likely in some cases to offer improvements in throughput, reduced tail latency and reduced volatility in performance.  It is expected that the likelihood of finding improvement will correlate with the average object size, and inversely correlate with the availability of Disk IOPS in the hardware configuration.
+An optimised version of Riak KV has been produced in parallel which will exploit the availability of HEAD requests (to access object metadata including version vectors), where a full GET is not required.  This, along with reduced write amplification when compared to leveldb, is expected to offer significant improvement in the volume and predictability of throughput for workloads with larger (> 4KB) object sizes, as well as reduced tail latency.
 
 ## More Details
 
@@ -45,7 +44,7 @@ The target at inception was to do something interesting, to re-think certain key
 
 [Initial volume tests](docs/VOLUME.md) indicate that it is at least interesting.  With improvements in throughput for multiple configurations, with this improvement becoming more marked as the test progresses (and the base data volume becomes more realistic).  
 
-The delta in the table below  is the comparison in Riak performance between the identical test run with a Leveled backend in comparison to Leveldb.
+The delta in the table below  is the comparison in Riak throughput between the identical test run with a leveled backend in comparison to leveldb.  The realism of the tests increase as the test progresses - so focus is given to the throughput delta in the last hour of the test.
 
 Test Description                  | Hardware     | Duration |Avg TPS    | TPS Delta (Overall)  | TPS Delta (Last Hour)
 :---------------------------------|:-------------|:--------:|----------:|-----------------:|-------------------:
@@ -55,7 +54,7 @@ Test Description                  | Hardware     | Duration |Avg TPS    | TPS De
 4KB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,993.95 | - 10.44%  | - 4.48%
 16KB value, 60 workers, no_sync   | 5 x i2.2x    | 6 hr     | 11,167.44 | <b>+ 80.48%</b>  | <b>+ 113.55%</b>
 
-Tests generally show a 5:1 improvement in tail latency for LevelEd.
+Tests generally show a 5:1 improvement in tail latency for leveled.
 
 All tests have in common:
 
@@ -64,7 +63,6 @@ All tests have in common:
 - RAID 10 (software) drives
 - allow_mult=false, lww=false
 - modified riak optimised for leveled used in leveled tests
-
 
 The throughput in leveled is generally CPU-bound, whereas in comparative tests for leveledb the throughput was disk bound.  This potentially makes capacity planning simpler, and opens up the possibility of scaling out to equivalent throughput at much lower cost (as CPU is relatively low cost when compared to disk space at high I/O) - [offering better alignment between resource constraints and the cost of resource](docs/INTRO.md).
 
@@ -80,13 +78,13 @@ Further volume test scenarios are the immediate priority, in particular volume t
 
 - Use of newly available [EC2 hardware](https://aws.amazon.com/about-aws/whats-new/2017/02/now-available-amazon-ec2-i3-instances-next-generation-storage-optimized-high-i-o-instances/) which potentially is a significant changes to assumptions about hardware efficiency and cost.
 
-- Create riak_test tests for new Riak features enabled by Leveled.
+- Create riak_test tests for new Riak features enabled by leveled.
 
 However a number of other changes are planned in the next month to (my branch of) riak_kv to better use leveled:
 
 - Support for rapid rebuild of hashtrees
 
-- Fixes to priority issues
+- Fixes to [priority issues](https://github.com/martinsumner/leveled/issues)
 
 - Experiments with flexible sync on write settings
 
@@ -96,11 +94,13 @@ More information can be found in the [future section](docs/FUTURE.md).
 
 ## Feedback
 
-Please create an issue if you have any suggestions.  You can ping me @masleeds if you wish
+Please create an issue if you have any suggestions.  You can ping me <b>@masleeds</b> if you wish
 
 ## Running Leveled
 
-Unit and current tests in leveled should run with rebar3.  Leveled has been tested in OTP18, but it can be started with OTP16 to support Riak (although tests will not work as expected).  A new database can be started by running
+Unit and current tests in leveled should run with rebar3.  Leveled has been tested in OTP18, but it can be started with OTP16 to support Riak (although tests will not work as expected).  
+
+A new database can be started by running
 
 ```
 {ok, Bookie} = leveled_bookie:book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy)   
@@ -108,7 +108,7 @@ Unit and current tests in leveled should run with rebar3.  Leveled has been test
 
 This will start a new Bookie.  It will start and look for existing data files, under the RootPath, and start empty if none exist.  A LedgerCacheSize of 2000, a JournalSize of 500000000 (500MB) and a SyncStrategy of recovr should work OK.
 
-The book_start method should respond once startup is complete.  The leveled_bookie module includes the full API for external use of the store.
+The book_start method should respond once startup is complete.  The [leveled_bookie module](src/leveled_bookie.erl) includes the full API for external use of the store.
 
 It should run anywhere that OTP will run - it has been tested on Ubuntu 14, MAC OS X and Windows 10.
 
@@ -116,9 +116,10 @@ Running in Riak requires one of the branches of riak_kv referenced [here](docs/F
 
 Building this from source as part of Riak will require a bit of fiddling around.
 
-- build [riak](https://github.com/martinsumner/riak/tree/mas-leveleddb)
-- cd deps, rm -rf riak_kv
-- git clone -b mas-leveled-putfm --single-branch https://github.com/martinsumner/riak_kv.git
+- clone and build [riak](https://github.com/martinsumner/riak/tree/mas-leveleddb)
+- cd deps 
+- rm -rf riak_kv
+- git clone -b mas-leveled-putfsm --single-branch https://github.com/martinsumner/riak_kv.git
 - cd ..
 - make rel
 - remember to set the storage backend to leveled in riak.conf
