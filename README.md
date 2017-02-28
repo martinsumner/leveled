@@ -4,22 +4,22 @@
 
 Leveled is a work-in-progress prototype of a simple Key-Value store based on the concept of Log-Structured Merge Trees, with the following characteristics:
 
-- Optimised for workloads with larger values (e.g. > 4KB).
+- Optimised for workloads with <b>larger values</b> (e.g. > 4KB).
 
-- Explicitly supports HEAD requests in addition to GET requests. 
+- Explicitly supports <b>HEAD requests</b> in addition to GET requests. 
   - Splits the storage of value between key/metadata and body, 
   - allowing for HEAD requests which have lower overheads than GET requests, and
   - queries which traverse keys/metadatas to be supported with fewer side effects on the page cache.
 
-- Support for tagging of object types and the implementation of alternative store behaviour based on type.
+- Support for tagging of <b>object types</b> and the implementation of alternative store behaviour based on type.
   - Potentially usable for objects with special retention or merge properties.
 
-- Support for low-cost clones without locking to provide for scanning queries (e.g. secondary indexes).
+- Support for low-cost clones without locking to provide for <b>scanning queries</b> (e.g. secondary indexes).
   - Low cost specifically where there is a need to scan across keys and metadata (not values).
 
-- Written in Erlang as a message passing system between Actors.
+- Written in <b>Erlang</b> as a message passing system between Actors.
 
-The store has been developed with a focus on being a potential backend to a Riak KV database, rather than as a generic store.  It is intended to be a fully-featured backend - including support for secondary indexes, multiple fold types and auto-expiry of objects. 
+The store has been developed with a <b>focus on being a potential backend to a Riak KV</b> database, rather than as a generic store.  It is intended to be a fully-featured backend - including support for secondary indexes, multiple fold types and auto-expiry of objects. 
 
 An optimised version of Riak KV has been produced in parallel which will exploit the availability of HEAD requests (to access object metadata including version vectors), where a full GET is not required.  This, along with reduced write amplification when compared to leveldb, is expected to offer significant improvement in the volume and predictability of throughput for workloads with larger (> 4KB) object sizes, as well as reduced tail latency.
 
