@@ -8,7 +8,7 @@ Leveled is a <b>work-in-progress</b> prototype of a simple Key-Value store based
 
 - Explicitly supports <b>HEAD requests</b> in addition to GET requests. 
   - Splits the storage of value between keys/metadata and body, 
-  - Stores keys/etadata in a merge tree and the full object in a journal of [CDB files](https://en.wikipedia.org/wiki/Cdb_(software))
+  - Stores keys/metadata in a merge tree and the full object in a journal of [CDB files](https://en.wikipedia.org/wiki/Cdb_(software))
   - allowing for HEAD requests which have lower overheads than GET requests, and
   - queries which traverse keys/metadatas to be supported with fewer side effects on the page cache.
 
