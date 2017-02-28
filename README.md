@@ -47,12 +47,13 @@ The target at inception was to do something interesting, to re-think certain key
 
 The delta in the table below  is the comparison in Riak performance between the identical test run with a Leveled backend in comparison to Leveldb.
 
-Test Description                  | Hardware     | Duration |Avg TPS    | Delta (Overall)  | Delta (Last Hour)
+Test Description                  | Hardware     | Duration |Avg TPS    | TPS Delta (Overall)  | TPS Delta (Last Hour)
 :---------------------------------|:-------------|:--------:|----------:|-----------------:|-------------------:
 8KB value, 60 workers, sync       | 5 x i2.2x    | 4 hr     | 12,679.91 | <b>+ 70.81%</b>  | <b>+ 63.99%</b>
 8KB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,100.19 | <b>+ 16.15%</b>  | <b>+ 35.92%</b>
 8KB value, 50 workers, no_sync    | 5 x d2.2x    | 4 hr     | 10,400.29 | <b>+  8.37%</b>  | <b>+ 23.51%</b> 
-4KB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,993.95 | <b>- 10.44%</b>  | <b>- 4.48%</b>
+4KB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,993.95 | - 10.44%  | - 4.48%
+16KB value, 60 workers, no_sync   | 5 x i2.2x    | 6 hr     | 11,167.44 | <b>+ 80.48%</b>  | <b>+ 113.55%</b>
 
 Tests generally show a 5:1 improvement in tail latency for LevelEd.
 
@@ -75,13 +76,23 @@ As a general rule though, the most interesting thing is the potential to enable 
 
 Further volume test scenarios are the immediate priority, in particular volume test scenarios with:
 
-- Alternative object sizes;
-
 - Significant use of secondary indexes;
 
 - Use of newly available [EC2 hardware](https://aws.amazon.com/about-aws/whats-new/2017/02/now-available-amazon-ec2-i3-instances-next-generation-storage-optimized-high-i-o-instances/) which potentially is a significant changes to assumptions about hardware efficiency and cost.
 
 - Create riak_test tests for new Riak features enabled by Leveled.
+
+However a number of other changes are planned in the next month to (my branch of) riak_kv to better use leveled:
+
+- Support for rapid rebuild of hashtrees
+
+- Fixes to priority issues
+
+- Experiments with flexible sync on write settings
+
+- A cleaner and easier build of Riak with leveled included, including cuttlefish configuration support
+
+More information can be found in the [future section](docs/FUTURE.md).
 
 ## Feedback
 
@@ -99,4 +110,17 @@ This will start a new Bookie.  It will start and look for existing data files, u
 
 The book_start method should respond once startup is complete.  The leveled_bookie module includes the full API for external use of the store.
 
-Read through the [end_to_end test suites](test/end_to_end/) for further guidance.
+It should run anywhere that OTP will run - it has been tested on Ubuntu 14, MAC OS X and Windows 10.
+
+Running in Riak requires one of the branches of riak_kv referenced [here](docs/FUTURE.md). There is a [Riak branch](https://github.com/martinsumner/riak/tree/mas-leveleddb) intended to support the automatic build of this, and the configuration via cuttlefish.  However, the auto-build fails due to other dependencies (e.g. riak_search) bringing in an alternative version of riak_kv, and the configuration via cuttlefish is broken for reasons unknown.  
+
+Building this from source as part of Riak will require a bit of fiddling around.
+
+- build [riak](https://github.com/martinsumner/riak/tree/mas-leveleddb)
+- cd deps, rm -rf riak_kv
+- git clone -b mas-leveled-putfm --single-branch https://github.com/martinsumner/riak_kv.git
+- cd ..
+- make rel
+- remember to set the storage backend to leveled in riak.conf
+
+To help with the breakdown of cuttlefish, leveled parameters can be set via riak_kv/include/riak_kv_leveled.hrl - although a new make will be required for these changes to take effect.
