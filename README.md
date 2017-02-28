@@ -76,13 +76,23 @@ As a general rule though, the most interesting thing is the potential to enable 
 
 Further volume test scenarios are the immediate priority, in particular volume test scenarios with:
 
-- Alternative object sizes;
-
 - Significant use of secondary indexes;
 
 - Use of newly available [EC2 hardware](https://aws.amazon.com/about-aws/whats-new/2017/02/now-available-amazon-ec2-i3-instances-next-generation-storage-optimized-high-i-o-instances/) which potentially is a significant changes to assumptions about hardware efficiency and cost.
 
 - Create riak_test tests for new Riak features enabled by Leveled.
+
+However a number of other changes are planned in the next month to (my branch of) riak_kv to better use leveled:
+
+- Support for rapid rebuild of hashtrees
+
+- Fixes to priority issues
+
+- Experiments with flexible sync on write settings
+
+- A cleaner and easier build of Riak with leveled included, including cuttlefish configuration support
+
+More information can be found in the [future section](docs/FUTURE.md).
 
 ## Feedback
 
@@ -99,5 +109,7 @@ Unit and current tests in leveled should run with rebar3.  Leveled has been test
 This will start a new Bookie.  It will start and look for existing data files, under the RootPath, and start empty if none exist.  A LedgerCacheSize of 2000, a JournalSize of 500000000 (500MB) and a SyncStrategy of recovr should work OK.
 
 The book_start method should respond once startup is complete.  The leveled_bookie module includes the full API for external use of the store.
+
+It should run anywhere that OTP will run - it has been tested on Ubuntu 14, MAC OS X and Windows 10.
 
 Running in Riak requires one of the branches of riak_kv referenced [here](docs/FUTURE.md). There is a [Riak branch](https://github.com/martinsumner/riak/tree/mas-leveleddb) intended to support the automatic build of this, and the configuration via cuttlefish.  However, the auto-build fails due to other dependencies bringing in an alternative version of riak_kv, and the configuration via cuttlefish is broken for reasons unknown.  Building this from source as part of Riak will require a bit of fiddling around.
