@@ -643,7 +643,7 @@ cache_size(LedgerCache) ->
 bucket_stats(State, Bucket, Tag) ->
     {ok,
         {LedgerSnapshot, LedgerCache},
-        _JournalSnapshot} = snapshot_store(State, ledger),
+        _JournalSnapshot} = snapshot_store(State, ledger, no_lookup),
     Folder = fun() ->
                 leveled_log:log("B0004", [cache_size(LedgerCache)]),
                 load_snapshot(LedgerSnapshot, LedgerCache),
@@ -665,7 +665,7 @@ binary_bucketlist(State, Tag, {FoldBucketsFun, InitAcc}) ->
     % List buckets for tag, assuming bucket names are all binary type
     {ok,
         {LedgerSnapshot, LedgerCache},
-        _JournalSnapshot} = snapshot_store(State, ledger),
+        _JournalSnapshot} = snapshot_store(State, ledger, no_lookup),
     Folder = fun() ->
                 leveled_log:log("B0004", [cache_size(LedgerCache)]),
                 load_snapshot(LedgerSnapshot, LedgerCache),
@@ -754,7 +754,7 @@ hashtree_query(State, Tag, JournalCheck) ->
                         end,
     {ok,
         {LedgerSnapshot, LedgerCache},
-        JournalSnapshot} = snapshot_store(State, SnapType),
+        JournalSnapshot} = snapshot_store(State, SnapType, no_lookup),
     Folder = fun() ->
                 leveled_log:log("B0004", [cache_size(LedgerCache)]),
                 load_snapshot(LedgerSnapshot, LedgerCache),
@@ -824,7 +824,7 @@ foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun) ->
 bucketkey_query(State, Tag, Bucket, {FoldKeysFun, InitAcc}) ->
     {ok,
         {LedgerSnapshot, LedgerCache},
-        _JournalSnapshot} = snapshot_store(State, ledger),
+        _JournalSnapshot} = snapshot_store(State, ledger, no_lookup),
     Folder = fun() ->
                 leveled_log:log("B0004", [cache_size(LedgerCache)]),
                 load_snapshot(LedgerSnapshot, LedgerCache),
@@ -863,22 +863,6 @@ snapshot_store(State, SnapType, Query) ->
             {ok, {LedgerSnapshot, LedgerCache}, null}
     end.    
 
-readycache_forsnapshot(LedgerCache, undefined) ->
-    % Need to convert the Ledger Cache away from using the ETS table
-    Tree = leveled_tree:from_orderedset(LedgerCache#ledger_cache.mem,
-                                        ?CACHE_TYPE),
-    case leveled_tree:tsize(Tree) of
-        0 ->
-            #ledger_cache{loader=empty_cache,
-                            index=empty_index,
-                            min_sqn=LedgerCache#ledger_cache.min_sqn,
-                            max_sqn=LedgerCache#ledger_cache.max_sqn};
-        _ ->
-            #ledger_cache{loader=Tree,
-                            index=LedgerCache#ledger_cache.index,
-                            min_sqn=LedgerCache#ledger_cache.min_sqn,
-                            max_sqn=LedgerCache#ledger_cache.max_sqn}
-    end;
 readycache_forsnapshot(LedgerCache, {StartKey, EndKey}) ->
     {KL, MinSQN, MaxSQN} = scan_table(LedgerCache#ledger_cache.mem,
                                         StartKey,
@@ -895,6 +879,29 @@ readycache_forsnapshot(LedgerCache, {StartKey, EndKey}) ->
                             index=empty_index,
                             min_sqn=MinSQN,
                             max_sqn=MaxSQN}
+    end;
+readycache_forsnapshot(LedgerCache, Query) ->
+    % Need to convert the Ledger Cache away from using the ETS table
+    Tree = leveled_tree:from_orderedset(LedgerCache#ledger_cache.mem,
+                                        ?CACHE_TYPE),
+    case leveled_tree:tsize(Tree) of
+        0 ->
+            #ledger_cache{loader=empty_cache,
+                            index=empty_index,
+                            min_sqn=LedgerCache#ledger_cache.min_sqn,
+                            max_sqn=LedgerCache#ledger_cache.max_sqn};
+        _ ->
+            Idx = 
+                case Query of
+                    no_lookup ->
+                        empty_index;
+                    _ ->
+                        LedgerCache#ledger_cache.index
+                end,
+            #ledger_cache{loader=Tree,
+                            index=Idx,
+                            min_sqn=LedgerCache#ledger_cache.min_sqn,
+                            max_sqn=LedgerCache#ledger_cache.max_sqn}
     end.
 
 scan_table(Table, StartKey, EndKey) ->
