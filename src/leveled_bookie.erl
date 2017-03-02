@@ -83,7 +83,8 @@
 -define(LONG_RUNNING, 80000).
 
 -record(ledger_cache, {mem :: ets:tab(),
-                        loader = leveled_tree:empty(?CACHE_TYPE) :: tuple(),
+                        loader = leveled_tree:empty(?CACHE_TYPE)
+                                    :: tuple()|empty_cache,
                         load_queue = [] :: list(),
                         index = leveled_pmem:new_index(), % array or empty_index
                         min_sqn = infinity :: integer()|infinity,
@@ -635,8 +636,6 @@ maybe_longrunning(SW, Aspect) ->
             ok
     end.
 
-cache_size(empty_cache) ->
-    0;
 cache_size(LedgerCache) ->
     ets:info(LedgerCache#ledger_cache.mem, size).
 
