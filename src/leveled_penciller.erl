@@ -312,7 +312,6 @@ pcl_releasesnapshot(Pid, Snapshot) ->
 pcl_loadsnapshot(Pid, Increment) ->
     gen_server:call(Pid, {load_snapshot, Increment}, infinity).
 
-
 pcl_close(Pid) ->
     gen_server:call(Pid, close, 60000).
 
@@ -437,14 +436,27 @@ handle_call({register_snapshot, Snapshot}, _From, State) ->
     {reply, {ok, State}, State#state{manifest = Manifest0}};
 handle_call({load_snapshot, {BookieIncrTree, BookieIdx, MinSQN, MaxSQN}},
                                                                 _From, State) ->
-    L0D = leveled_pmem:add_to_cache(State#state.levelzero_size,
-                                        {BookieIncrTree, MinSQN, MaxSQN},
-                                        State#state.ledger_sqn,
-                                        State#state.levelzero_cache),
-    {LedgerSQN, L0Size, L0Cache} = L0D,
-    L0Index = leveled_pmem:add_to_index(BookieIdx,
-                                        State#state.levelzero_index,
-                                        length(L0Cache)),
+    {LedgerSQN, L0Size, L0Cache} =
+        case BookieIncrTree of
+            empty_cache ->
+                {State#state.ledger_sqn,
+                    State#state.levelzero_size,
+                    State#state.levelzero_cache};
+            _ ->
+                leveled_pmem:add_to_cache(State#state.levelzero_size,
+                                            {BookieIncrTree, MinSQN, MaxSQN},
+                                            State#state.ledger_sqn,
+                                            State#state.levelzero_cache)
+        end,
+    L0Index =
+        case BookieIdx of
+            empty_index ->
+                State#state.levelzero_index;
+            _ ->
+                leveled_pmem:add_to_index(BookieIdx,
+                                            State#state.levelzero_index,
+                                            length(L0Cache))
+        end,
     {reply, ok, State#state{levelzero_cache=L0Cache,
                                 levelzero_size=L0Size,
                                 levelzero_index=L0Index,
