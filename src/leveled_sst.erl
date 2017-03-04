@@ -711,10 +711,11 @@ lookup_slots(StartKey, EndKey, Tree) ->
 %% critical considerations has been the cost of the binary_to_term and 
 %% term_to_binary calls for different sizes of slots and different data types.
 %%
-%% Microbenchmarking indicated that flat lists were the fastest.  However, the 
-%% lists need scanning at query time - and so give longer lookups.  Bigger slots
-%% did better at term_to_binary time.  However term_to_binary is an often
-%% repeated task, and this is better with smaller slots.  
+%% Microbenchmarking indicated that flat lists were the fastest at sst build
+%% time.  However, the lists need scanning at query time - and so give longer
+%% lookups.  Bigger slots did better at term_to_binary time.  However
+%% binary_to_term is an often repeated task, and this is better with smaller
+%% slots.  
 %%
 %% The outcome has been to divide the slot into four small blocks to minimise 
 %% the binary_to_term time.  A binary index is provided for the slot for all 
