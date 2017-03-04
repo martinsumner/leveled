@@ -11,7 +11,7 @@ To fulfil a HEAD request, the request needs to take the following path:
 
 There is a lot of activity involved in the HEAD path - but most of the activity is very quick and has minimal impact.  
 
-The biggest chunk of effort by far, spending about two-thirds of the CPU time is when a value is found within a SST file's block - and the block needs to be de-serialised (using binary_to_term), and the block (which is a 32 element list of Keys/Metadata) needs to be walked to the nth element to return the Key/Value.  This process takes around 300 microseconds in real world tests, but only 53 microseconds in local benchmark testing (possibly due to CPU cache effects).
+The biggest chunk of effort by far, spending about two-thirds of the CPU time is when a value is found within a SST file's block - and the block needs to be de-serialised (using binary_to_term), and the block (which is a 32 element list of Keys/Metadata) needs to be walked to the nth element to return the Key/Value.  This process takes around 300 microseconds in real world tests, but only 53 microseconds in local benchmark testing (possibly due to CPU cache effects, or perhaps the cost of the file:pread from the page cache).
 
 Each of these steps is now described in more detail.
 
@@ -95,4 +95,4 @@ Looking at the timings within a SST file.  Request timings from the perspective 
 - Not present after slot lookup and tiny_bloom check and block_index check - 20 microseconds
 - Found after all of the above and fetching/de-serialisation of the block - 300 microseconds
 
-Note that the fetching/de-serialising is about 6 times slower real-world tests when compared to direct local benchmark tests - the difference is assumed to be the cache advantages gained from repeatedly testing the same sst_slot when micro-benchmarking.
+Note that the fetching/de-serialising is about 6 times slower real-world tests when compared to direct local benchmark tests - the difference is assumed to be the cache advantages gained from repeatedly testing the same sst_slot when micro-benchmarking, or perhaps the cost of the file:pread from the page_cache (as it should almost always be in the page cache).
