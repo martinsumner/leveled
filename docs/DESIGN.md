@@ -86,7 +86,7 @@ All Ledger Keys created for any type must be 4-tuples starting with the tag.  Ab
 
 The PUT path for new objects and object changes depends on the Bookie interacting with the Inker to ensure that the change has been persisted with the Journal, the Ledger is updated in batches after the PUT has been completed.
 
-The HEAD path needs the Bookie to look in his cache of recent Ledger changes, and if the change is not present consult with the Penciller.
+The [HEAD path](PATHS.md) needs the Bookie to look in his cache of recent Ledger changes, and if the change is not present consult with the Penciller.
 
 The GET path follows the HEAD path, but once the sequence number has been determined through the response from the Ledger the object itself is fetched from the journal via the Inker.
 
@@ -119,6 +119,10 @@ Three potential recovery strategies are supported to provide some flexibility fo
 - retain - on compaction KeyDeltas are retained in the Journal, only values are removed.
 
 - recalc (not yet implemented) - the compaction rules assume that on recovery the key changes will be recalculated by comparing the change with the current database state.
+
+
+
+n recovery the key changes will be recalculated by comparing the change with the current database state.
 
 
 
