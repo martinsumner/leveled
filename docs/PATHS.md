@@ -7,6 +7,12 @@ To fulfil a HEAD request, the request needs to take the following path:
 - Check each persisted Level of the merge tree, and if not found
 - Return not_found
 
+## TLDR
+
+There is a lot of activity involved in the HEAD path - but most of the activity is very quick and has minimal impact.  
+
+The biggest chunk of effort by far, spending about two-thirds of the CPU time is when a value is found within a SST file's block - and the block needs to be de-serialised (using binary_to_term), and the block (which is a 32 element list of Keys/Metadata) needs to be walked to the nth element to return the Key/Value.  This process takes around 300 microseconds in real world tests, but only 53 microseconds in local benchmark testing (possibly due to CPU cache effects).
+
 Each of these steps is now described in more detail.
 
 ## The Bookie's Ledger Cache
