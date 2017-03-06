@@ -665,7 +665,6 @@ binary_bucketlist(State, Tag, {FoldBucketsFun, InitAcc}) ->
         {LedgerSnapshot, LedgerCache},
         _JournalSnapshot} = snapshot_store(State, ledger, no_lookup),
     Folder = fun() ->
-                leveled_log:log("B0004", [cache_size(LedgerCache)]),
                 load_snapshot(LedgerSnapshot, LedgerCache),
                 BucketAcc = get_nextbucket(null,
                                             Tag,
@@ -723,7 +722,6 @@ index_query(State,
         {LedgerSnapshot, LedgerCache},
         _JournalSnapshot} = snapshot_store(State, ledger, {StartKey, EndKey}),
     Folder = fun() ->
-                leveled_log:log("B0004", [cache_size(LedgerCache)]),
                 load_snapshot(LedgerSnapshot, LedgerCache),
                 AddFun = case ReturnTerms of
                                 true ->
@@ -754,7 +752,6 @@ hashtree_query(State, Tag, JournalCheck) ->
         {LedgerSnapshot, LedgerCache},
         JournalSnapshot} = snapshot_store(State, SnapType, no_lookup),
     Folder = fun() ->
-                leveled_log:log("B0004", [cache_size(LedgerCache)]),
                 load_snapshot(LedgerSnapshot, LedgerCache),
                 StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
                 EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
@@ -804,7 +801,6 @@ foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun) ->
                                     {FoldObjectsFun, []}
                             end,
     Folder = fun() ->
-                leveled_log:log("B0004", [cache_size(LedgerCache)]),
                 load_snapshot(LedgerSnapshot, LedgerCache),
                 AccFun = accumulate_objects(FoldFun, JournalSnapshot, Tag),
                 Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
@@ -824,7 +820,6 @@ bucketkey_query(State, Tag, Bucket, {FoldKeysFun, InitAcc}) ->
         {LedgerSnapshot, LedgerCache},
         _JournalSnapshot} = snapshot_store(State, ledger, no_lookup),
     Folder = fun() ->
-                leveled_log:log("B0004", [cache_size(LedgerCache)]),
                 load_snapshot(LedgerSnapshot, LedgerCache),
                 SK = leveled_codec:to_ledgerkey(Bucket, null, Tag),
                 EK = leveled_codec:to_ledgerkey(Bucket, null, Tag),
