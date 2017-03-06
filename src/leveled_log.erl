@@ -26,6 +26,8 @@
 
     {"G0001",
         {info, "Generic log point"}},
+    {"G0002",
+        {info, "Generic log point with term ~w"}},
     {"D0001",
         {debug, "Generic debug log"}},
     
@@ -133,6 +135,8 @@
         {info, "Garbage collection on manifest removes key for filename ~s"}},
     {"P0037",
         {info, "Merging of penciller L0 tree to size ~w complete"}},
+    {"P0038",
+        {info, "Bad record when closing manifest ~w"}},
         
     {"PC001",
         {info, "Penciller's clerk ~w started with owner ~w"}},
@@ -351,7 +355,10 @@ log_timer(LogReference, Subs, StartTime) ->
     end.
 
 log_randomtimer(LogReference, Subs, StartTime, RandomProb) ->
-    case random:uniform() < RandomProb of
+    {R, _S} = random:uniform_s({erlang:phash2(self()),
+                                element(2, StartTime),
+                                element(3, StartTime)}),
+    case R < RandomProb of
         true ->
             log_timer(LogReference, Subs, StartTime);
         false ->
