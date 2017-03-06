@@ -54,6 +54,8 @@
                         {root_path :: string(),
                         max_inmemory_tablesize :: integer(),
                         start_snapshot = false :: boolean(),
+                        snapshot_query,
+                        bookies_mem :: tuple(),
                         source_penciller :: pid(),
                         levelzero_cointoss = false :: boolean()}).
 

@@ -184,9 +184,8 @@
         pcl_confirmdelete/3,
         pcl_close/1,
         pcl_doom/1,
-        pcl_registersnapshot/2,
         pcl_releasesnapshot/2,
-        pcl_loadsnapshot/2,
+        pcl_registersnapshot/4,
         pcl_getstartupsequencenumber/1]).
 
 -export([
@@ -303,14 +302,13 @@ pcl_confirmdelete(Pid, FileName, FilePid) ->
 pcl_getstartupsequencenumber(Pid) ->
     gen_server:call(Pid, get_startup_sqn, infinity).
 
-pcl_registersnapshot(Pid, Snapshot) ->
-    gen_server:call(Pid, {register_snapshot, Snapshot}, infinity).
+pcl_registersnapshot(Pid, Snapshot, Query, BookiesMem) ->
+    gen_server:call(Pid,
+                    {register_snapshot, Snapshot, Query, BookiesMem},
+                    infinity).
 
 pcl_releasesnapshot(Pid, Snapshot) ->
     gen_server:cast(Pid, {release_snapshot, Snapshot}).
-
-pcl_loadsnapshot(Pid, Increment) ->
-    gen_server:call(Pid, {load_snapshot, Increment}, infinity).
 
 pcl_close(Pid) ->
     gen_server:call(Pid, close, 60000).
@@ -324,17 +322,16 @@ pcl_doom(Pid) ->
 
 init([PCLopts]) ->
     case {PCLopts#penciller_options.root_path,
-            PCLopts#penciller_options.start_snapshot} of
-        {undefined, true} ->
+            PCLopts#penciller_options.start_snapshot,
+            PCLopts#penciller_options.snapshot_query,
+            PCLopts#penciller_options.bookies_mem} of
+        {undefined, true, Query, BookiesMem} ->
             SrcPenciller = PCLopts#penciller_options.source_penciller,
-            {ok, State} = pcl_registersnapshot(SrcPenciller, self()),
-            ManifestClone = leveled_pmanifest:copy_manifest(State#state.manifest),
+            {ok, State} = pcl_registersnapshot(SrcPenciller, self(), Query, BookiesMem),
             leveled_log:log("P0001", [self()]),
             {ok, State#state{is_snapshot=true,
-                                source_penciller=SrcPenciller,
-                                manifest=ManifestClone}};
-            %% Need to do something about timeout
-        {_RootPath, false} ->
+                                source_penciller=SrcPenciller}};
+        {_RootPath, false, _Q, _BM} ->
             start_from_file(PCLopts)
     end.    
     
@@ -430,39 +427,79 @@ handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
     {reply, Acc, State#state{levelzero_astree = L0AsList}};
 handle_call(get_startup_sqn, _From, State) ->
     {reply, State#state.persisted_sqn, State};
-handle_call({register_snapshot, Snapshot}, _From, State) ->
+handle_call({register_snapshot, Snapshot, Query, BookiesMem}, _From, State) ->
+    % Register and load a snapshot
+    %
+    % For setup of the snapshot to be efficient should pass a query
+    % of (StartKey, EndKey) - this will avoid a fully copy of the penciller's
+    % memory being required to be trasnferred to the clone.  However, this
+    % will not be a valid clone for fetch
     Manifest0 = leveled_pmanifest:add_snapshot(State#state.manifest,
                                                 Snapshot,
                                                 ?SNAPSHOT_TIMEOUT),
-    {reply, {ok, State}, State#state{manifest = Manifest0}};
-handle_call({load_snapshot, {BookieIncrTree, BookieIdx, MinSQN, MaxSQN}},
-                                                                _From, State) ->
-    {LedgerSQN, L0Size, L0Cache} =
+    
+    {BookieIncrTree, BookieIdx, MinSQN, MaxSQN} = BookiesMem,
+    LM1Cache =
         case BookieIncrTree of
             empty_cache ->
-                {State#state.ledger_sqn,
-                    State#state.levelzero_size,
-                    State#state.levelzero_cache};
+                leveled_tree:empty(?CACHE_TYPE);
             _ ->
-                leveled_pmem:add_to_cache(State#state.levelzero_size,
-                                            {BookieIncrTree, MinSQN, MaxSQN},
-                                            State#state.ledger_sqn,
-                                            State#state.levelzero_cache)
+                BookieIncrTree
         end,
-    L0Index =
-        case BookieIdx of
-            empty_index ->
-                State#state.levelzero_index;
-            _ ->
-                leveled_pmem:add_to_index(BookieIdx,
-                                            State#state.levelzero_index,
-                                            length(L0Cache))
+
+    CloneState = 
+        case Query of
+            no_lookup ->
+                {UpdMaxSQN, UpdSize, L0Cache} =
+                    leveled_pmem:add_to_cache(State#state.levelzero_size,
+                                                {LM1Cache, MinSQN, MaxSQN},
+                                                State#state.ledger_sqn,
+                                                State#state.levelzero_cache),
+                #state{levelzero_cache = L0Cache,
+                        ledger_sqn = UpdMaxSQN,
+                        levelzero_size = UpdSize,
+                        persisted_sqn = State#state.persisted_sqn};
+            {StartKey, EndKey} ->
+                SW = os:timestamp(),
+                L0AsTree =
+                    leveled_pmem:merge_trees(StartKey,
+                                                EndKey,
+                                                State#state.levelzero_cache,
+                                                LM1Cache),
+                leveled_log:log_randomtimer("P0037",
+                                            [State#state.levelzero_size],
+                                            SW,
+                                            0.1),
+                #state{levelzero_astree = L0AsTree,
+                        ledger_sqn = MaxSQN,
+                        persisted_sqn = State#state.persisted_sqn};
+            undefined ->
+                {UpdMaxSQN, UpdSize, L0Cache} =
+                    leveled_pmem:add_to_cache(State#state.levelzero_size,
+                                                {LM1Cache, MinSQN, MaxSQN},
+                                                State#state.ledger_sqn,
+                                                State#state.levelzero_cache),
+                L0Index =
+                    case BookieIdx of
+                        empty_index ->
+                            State#state.levelzero_index;
+                        _ ->
+                            leveled_pmem:add_to_index(BookieIdx,
+                                                        State#state.levelzero_index,
+                                                        length(L0Cache))
+                    end,
+                #state{levelzero_cache = L0Cache,
+                        levelzero_index = L0Index,
+                        levelzero_size = UpdSize,
+                        ledger_sqn = UpdMaxSQN,
+                        persisted_sqn = State#state.persisted_sqn}
         end,
-    {reply, ok, State#state{levelzero_cache=L0Cache,
-                                levelzero_size=L0Size,
-                                levelzero_index=L0Index,
-                                ledger_sqn=LedgerSQN,
-                                snapshot_fully_loaded=true}};
+    ManifestClone = leveled_pmanifest:copy_manifest(State#state.manifest),
+    {reply,
+        {ok,
+            CloneState#state{snapshot_fully_loaded=true,
+                                manifest=ManifestClone}},
+        State#state{manifest = Manifest0}};
 handle_call({fetch_levelzero, Slot}, _From, State) ->
     {reply, lists:nth(Slot, State#state.levelzero_cache), State};
 handle_call(close, _From, State) ->
@@ -1190,11 +1227,12 @@ simple_server_test() ->
     ?assertMatch(Key3, pcl_fetch(PCLr, {o,"Bucket0003", "Key0003", null})),
     ?assertMatch(Key4, pcl_fetch(PCLr, {o,"Bucket0004", "Key0004", null})),
     
-    SnapOpts = #penciller_options{start_snapshot = true,
-                                    source_penciller = PCLr},
-    {ok, PclSnap} = pcl_start(SnapOpts),
-    leveled_bookie:load_snapshot(PclSnap,
-                                    leveled_bookie:empty_ledgercache()),
+    {ok, PclSnap, null} = 
+        leveled_bookie:snapshot_store(leveled_bookie:empty_ledgercache(),
+                                        PCLr,
+                                        null,
+                                        ledger,
+                                        undefined),           
     
     ?assertMatch(Key1, pcl_fetch(PclSnap, {o,"Bucket0001", "Key0001", null})),
     ?assertMatch(Key2, pcl_fetch(PclSnap, {o,"Bucket0002", "Key0002", null})),
@@ -1242,8 +1280,13 @@ simple_server_test() ->
                                                 1)),
     ok = pcl_close(PclSnap),
      
-    {ok, PclSnap2} = pcl_start(SnapOpts),
-    leveled_bookie:load_snapshot(PclSnap2, leveled_bookie:empty_ledgercache()),
+    {ok, PclSnap2, null} = 
+        leveled_bookie:snapshot_store(leveled_bookie:empty_ledgercache(),
+                                        PCLr,
+                                        null,
+                                        ledger,
+                                        undefined),
+    
     ?assertMatch(false, pcl_checksequencenumber(PclSnap2,
                                                 {o,
                                                     "Bucket0001",

@@ -66,10 +66,10 @@
 
 -export([get_opt/2,
             get_opt/3,
-            load_snapshot/2,
             empty_ledgercache/0,
             loadqueue_ledgercache/1,
-            push_ledgercache/2]).  
+            push_ledgercache/2,
+            snapshot_store/5]).  
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -374,10 +374,9 @@ init([Opts]) ->
                         ledger_cache=#ledger_cache{mem = NewETS},
                         is_snapshot=false}};
         Bookie ->
-            {ok,
-                {Penciller, LedgerCache},
-                Inker} = book_snapshotstore(Bookie, self(), ?SNAPSHOT_TIMEOUT),
-            ok = load_snapshot(Penciller, LedgerCache),
+            {ok, Penciller, Inker} = book_snapshotstore(Bookie,
+                                                        self(),
+                                                        ?SNAPSHOT_TIMEOUT),
             leveled_log:log("B0002", [Inker, Penciller]),
             {ok, #state{penciller=Penciller,
                         inker=Inker,
@@ -588,17 +587,6 @@ code_change(_OldVsn, State, _Extra) ->
 %%% External functions
 %%%============================================================================
 
-%% @doc Load a snapshot of the penciller with the contents of the ledger cache
-%% If the snapshot is to be loaded for a query then #ledger_cache.index may
-%% be empty_index (As no need to update lookups), also #ledger_cache.loader
-%% may also be empty_cache if there are no relevant results in the LedgerCache
-load_snapshot(LedgerSnapshot, LedgerCache) ->
-    CacheToLoad = {LedgerCache#ledger_cache.loader,
-                    LedgerCache#ledger_cache.index,
-                    LedgerCache#ledger_cache.min_sqn,
-                    LedgerCache#ledger_cache.max_sqn},
-    ok = leveled_penciller:pcl_loadsnapshot(LedgerSnapshot, CacheToLoad).
-
 %% @doc Empty the ledger cache table following a push
 empty_ledgercache() ->
     #ledger_cache{mem = ets:new(empty, [ordered_set])}.
@@ -624,6 +612,51 @@ loadqueue_ledgercache(Cache) ->
     T = leveled_tree:from_orderedlist(SL, ?CACHE_TYPE),
     Cache#ledger_cache{load_queue = [], loader = T}.
 
+%% @doc Allow all a snapshot to be created from part of the store, preferably
+%% passing in a query filter so that all of the LoopState does not need to
+%% be copied from the real actor to the clone
+%%
+%% SnapType can be store (requires journal and ledger) or ledger (requires
+%% ledger only)
+%%
+%% Query can be no_lookup, indicating the snapshot will be used for non-specific
+%% range queries and not direct fetch requests.  {StartKey, EndKey} if the the
+%% snapshot is to be used for one specific query only (this is much quicker to
+%% setup, assuming the range is a small subset of the overall key space).
+snapshot_store(LedgerCache0, Penciller, Inker, SnapType, Query) ->
+    SW = os:timestamp(),
+    LedgerCache = readycache_forsnapshot(LedgerCache0, Query),
+    BookiesMem = {LedgerCache#ledger_cache.loader,
+                    LedgerCache#ledger_cache.index,
+                    LedgerCache#ledger_cache.min_sqn,
+                    LedgerCache#ledger_cache.max_sqn},
+    PCLopts = #penciller_options{start_snapshot = true,
+                                    source_penciller = Penciller,
+                                    snapshot_query = Query,
+                                    bookies_mem = BookiesMem},
+    {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
+    leveled_log:log_randomtimer("B0004", [cache_size(LedgerCache)], SW, 0.1),
+    case SnapType of
+        store ->
+            InkerOpts = #inker_options{start_snapshot=true,
+                                        source_inker=Inker},
+            {ok, JournalSnapshot} = leveled_inker:ink_start(InkerOpts),
+            {ok, LedgerSnapshot, JournalSnapshot};
+        ledger ->
+            {ok, LedgerSnapshot, null}
+    end.    
+
+snapshot_store(State, SnapType) ->
+    snapshot_store(State, SnapType, undefined).
+
+snapshot_store(State, SnapType, Query) ->
+    snapshot_store(State#state.ledger_cache,
+                    State#state.penciller,
+                    State#state.inker,
+                    SnapType,
+                    Query).
+
+
 %%%============================================================================
 %%% Internal functions
 %%%============================================================================
@@ -640,11 +673,10 @@ cache_size(LedgerCache) ->
     ets:info(LedgerCache#ledger_cache.mem, size).
 
 bucket_stats(State, Bucket, Tag) ->
-    {ok,
-        {LedgerSnapshot, LedgerCache},
-        _JournalSnapshot} = snapshot_store(State, ledger, no_lookup),
+    {ok, LedgerSnapshot, _JournalSnapshot} = snapshot_store(State,
+                                                            ledger,
+                                                            no_lookup),
     Folder = fun() ->
-                load_snapshot(LedgerSnapshot, LedgerCache),
                 StartKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
                 EndKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
                 AccFun = accumulate_size(),
@@ -661,11 +693,10 @@ bucket_stats(State, Bucket, Tag) ->
 
 binary_bucketlist(State, Tag, {FoldBucketsFun, InitAcc}) ->
     % List buckets for tag, assuming bucket names are all binary type
-    {ok,
-        {LedgerSnapshot, LedgerCache},
-        _JournalSnapshot} = snapshot_store(State, ledger, no_lookup),
+    {ok, LedgerSnapshot, _JournalSnapshot} = snapshot_store(State,
+                                                            ledger,
+                                                            no_lookup),
     Folder = fun() ->
-                load_snapshot(LedgerSnapshot, LedgerCache),
                 BucketAcc = get_nextbucket(null,
                                             Tag,
                                             LedgerSnapshot,
@@ -718,11 +749,11 @@ index_query(State,
                                             ?IDX_TAG,
                                             IdxField,
                                             EndValue),
-    {ok,
-        {LedgerSnapshot, LedgerCache},
-        _JournalSnapshot} = snapshot_store(State, ledger, {StartKey, EndKey}),
+    {ok, LedgerSnapshot, _JournalSnapshot} = snapshot_store(State,
+                                                            ledger,
+                                                            {StartKey,
+                                                                EndKey}),
     Folder = fun() ->
-                load_snapshot(LedgerSnapshot, LedgerCache),
                 AddFun = case ReturnTerms of
                                 true ->
                                     fun add_terms/2;
@@ -748,11 +779,10 @@ hashtree_query(State, Tag, JournalCheck) ->
                             check_presence ->
                                 store
                         end,
-    {ok,
-        {LedgerSnapshot, LedgerCache},
-        JournalSnapshot} = snapshot_store(State, SnapType, no_lookup),
+    {ok, LedgerSnapshot, JournalSnapshot} = snapshot_store(State,
+                                                            SnapType,
+                                                            no_lookup),
     Folder = fun() ->
-                load_snapshot(LedgerSnapshot, LedgerCache),
                 StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
                 EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
                 AccFun = accumulate_hashes(JournalCheck, JournalSnapshot),
@@ -791,9 +821,7 @@ foldobjects_byindex(State, Tag, Bucket, Field, FromTerm, ToTerm, FoldObjectsFun)
     foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun).
 
 foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun) ->
-    {ok,
-        {LedgerSnapshot, LedgerCache},
-        JournalSnapshot} = snapshot_store(State, store),
+    {ok, LedgerSnapshot, JournalSnapshot} = snapshot_store(State, store),
     {FoldFun, InitAcc} = case is_tuple(FoldObjectsFun) of
                                 true ->
                                     FoldObjectsFun;
@@ -801,7 +829,6 @@ foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun) ->
                                     {FoldObjectsFun, []}
                             end,
     Folder = fun() ->
-                load_snapshot(LedgerSnapshot, LedgerCache),
                 AccFun = accumulate_objects(FoldFun, JournalSnapshot, Tag),
                 Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
                                                         StartKey,
@@ -816,11 +843,10 @@ foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun) ->
 
 
 bucketkey_query(State, Tag, Bucket, {FoldKeysFun, InitAcc}) ->
-    {ok,
-        {LedgerSnapshot, LedgerCache},
-        _JournalSnapshot} = snapshot_store(State, ledger, no_lookup),
+    {ok, LedgerSnapshot, _JournalSnapshot} = snapshot_store(State,
+                                                            ledger,
+                                                            no_lookup),
     Folder = fun() ->
-                load_snapshot(LedgerSnapshot, LedgerCache),
                 SK = leveled_codec:to_ledgerkey(Bucket, null, Tag),
                 EK = leveled_codec:to_ledgerkey(Bucket, null, Tag),
                 AccFun = accumulate_keys(FoldKeysFun),
@@ -837,26 +863,6 @@ bucketkey_query(State, Tag, Bucket, {FoldKeysFun, InitAcc}) ->
 allkey_query(State, Tag, {FoldKeysFun, InitAcc}) ->
     bucketkey_query(State, Tag, null, {FoldKeysFun, InitAcc}).
 
-
-snapshot_store(State, SnapType) ->
-    snapshot_store(State, SnapType, undefined).
-
-snapshot_store(State, SnapType, Query) ->
-    SW = os:timestamp(),
-    PCLopts = #penciller_options{start_snapshot=true,
-                                    source_penciller=State#state.penciller},
-    {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
-    LedgerCache = readycache_forsnapshot(State#state.ledger_cache, Query),
-    leveled_log:log_randomtimer("B0004", [cache_size(LedgerCache)], SW, 0.1),
-    case SnapType of
-        store ->
-            InkerOpts = #inker_options{start_snapshot=true,
-                                        source_inker=State#state.inker},
-            {ok, JournalSnapshot} = leveled_inker:ink_start(InkerOpts),
-            {ok, {LedgerSnapshot, LedgerCache}, JournalSnapshot};
-        ledger ->
-            {ok, {LedgerSnapshot, LedgerCache}, null}
-    end.    
 
 readycache_forsnapshot(LedgerCache, {StartKey, EndKey}) ->
     {KL, MinSQN, MaxSQN} = scan_table(LedgerCache#ledger_cache.mem,
