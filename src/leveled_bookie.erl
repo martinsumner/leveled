@@ -644,7 +644,6 @@ bucket_stats(State, Bucket, Tag) ->
         {LedgerSnapshot, LedgerCache},
         _JournalSnapshot} = snapshot_store(State, ledger, no_lookup),
     Folder = fun() ->
-                leveled_log:log("B0004", [cache_size(LedgerCache)]),
                 load_snapshot(LedgerSnapshot, LedgerCache),
                 StartKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
                 EndKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
@@ -848,10 +847,12 @@ snapshot_store(State, SnapType) ->
     snapshot_store(State, SnapType, undefined).
 
 snapshot_store(State, SnapType, Query) ->
+    SW = os:timestamp(),
     PCLopts = #penciller_options{start_snapshot=true,
                                     source_penciller=State#state.penciller},
     {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
     LedgerCache = readycache_forsnapshot(State#state.ledger_cache, Query),
+    leveled_log:log_timer("B0004", [cache_size(LedgerCache)], SW),
     case SnapType of
         store ->
             InkerOpts = #inker_options{start_snapshot=true,

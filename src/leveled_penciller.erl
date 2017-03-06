@@ -397,6 +397,7 @@ handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
                 _From,
                 State=#state{snapshot_fully_loaded=Ready})
                                                         when Ready == true ->
+    SW = os:timestamp(),
     L0AsList =
         case State#state.levelzero_astree of
             undefined ->
@@ -407,7 +408,9 @@ handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
             List ->
                 List
         end,
-    
+    leveled_log:log_timer("P0037",
+                            [length(L0AsList)],
+                            SW),
     SetupFoldFun =
         fun(Level, Acc) ->
             Pointers = leveled_pmanifest:range_lookup(State#state.manifest,

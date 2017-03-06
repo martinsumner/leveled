@@ -289,12 +289,12 @@ release_snapshot(Manifest, Pid) ->
     {SnapList0, MinSnapSQN} = lists:foldl(FilterFun,
                                             {[], infinity},
                                             Manifest#manifest.snapshots),
-    leveled_log:log("P0004", [SnapList0]),
     case SnapList0 of
         [] ->
             Manifest#manifest{snapshots = SnapList0,
                                 min_snapshot_sqn = 0};
         _ ->
+            leveled_log:log("P0004", [SnapList0]),
             Manifest#manifest{snapshots = SnapList0,
                                 min_snapshot_sqn = MinSnapSQN}
     end.
