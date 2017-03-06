@@ -847,7 +847,7 @@ snapshot_store(State, SnapType, Query) ->
                                     source_penciller=State#state.penciller},
     {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
     LedgerCache = readycache_forsnapshot(State#state.ledger_cache, Query),
-    leveled_log:log_timer("B0004", [cache_size(LedgerCache)], SW),
+    leveled_log:log_randomtimer("B0004", [cache_size(LedgerCache)], SW, 0.1),
     case SnapType of
         store ->
             InkerOpts = #inker_options{start_snapshot=true,

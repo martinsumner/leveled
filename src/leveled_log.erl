@@ -9,6 +9,7 @@
 
 -export([log/2,
             log_timer/3,
+            log_randomtimer/4,
             put_timing/4,
             head_timing/4,
             get_timing/3,
@@ -345,6 +346,14 @@ log_timer(LogReference, Subs, StartTime) ->
                             ++ LogText
                             ++ " with time taken ~w " ++ Unit ++ "~n",
                         [self()|Subs] ++ [Time]);
+        false ->
+            ok
+    end.
+
+log_randomtimer(LogReference, Subs, StartTime, RandomProb) ->
+    case random:uniform() < RandomProb of
+        true ->
+            log_timer(LogReference, Subs, StartTime);
         false ->
             ok
     end.

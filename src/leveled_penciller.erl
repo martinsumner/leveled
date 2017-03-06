@@ -408,9 +408,7 @@ handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
             List ->
                 List
         end,
-    leveled_log:log_timer("P0037",
-                            [length(L0AsList)],
-                            SW),
+    leveled_log:log_randomtimer("P0037", [length(L0AsList)], SW, 0.1),
     SetupFoldFun =
         fun(Level, Acc) ->
             Pointers = leveled_pmanifest:range_lookup(State#state.manifest,
