@@ -632,7 +632,13 @@ terminate(Reason, State) ->
     % Tidy shutdown of individual files
     EntryCloseFun =
         fun(ME) ->
-            ok = leveled_sst:sst_close(ME#manifest_entry.owner)
+            case is_record(ME, manifest_entry) of
+                true ->
+                    ok = leveled_sst:sst_close(ME#manifest_entry.owner);
+                false ->
+                    {_SK, ME0} = ME,
+                    ok = leveled_sst:sst_close(ME0#manifest_entry.owner)
+            end
         end,
     leveled_pmanifest:close_manifest(State#state.manifest, EntryCloseFun),
     leveled_log:log("P0011", []),

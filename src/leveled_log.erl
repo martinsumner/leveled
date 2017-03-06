@@ -26,6 +26,8 @@
 
     {"G0001",
         {info, "Generic log point"}},
+    {"G0002",
+        {info, "Generic log point with term ~w"}},
     {"D0001",
         {debug, "Generic debug log"}},
     
@@ -351,7 +353,10 @@ log_timer(LogReference, Subs, StartTime) ->
     end.
 
 log_randomtimer(LogReference, Subs, StartTime, RandomProb) ->
-    case random:uniform() < RandomProb of
+    {R, _S} = random:uniform_s({erlang:phash2(self()),
+                                element(2, StartTime),
+                                element(3, StartTime)}),
+    case R < RandomProb of
         true ->
             log_timer(LogReference, Subs, StartTime);
         false ->
