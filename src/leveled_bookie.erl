@@ -358,6 +358,8 @@ book_destroy(Pid) ->
 %%%============================================================================
 
 init([Opts]) ->
+    SW = os:timestamp(),
+    random:seed(erlang:phash2(self()), element(2, SW), element(3, SW)),
     case get_opt(snapshot_bookie, Opts) of
         undefined ->
             % Start from file not snapshot
@@ -635,7 +637,7 @@ snapshot_store(LedgerCache0, Penciller, Inker, SnapType, Query) ->
                                     snapshot_query = Query,
                                     bookies_mem = BookiesMem},
     {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
-    leveled_log:log_randomtimer("B0004", [cache_size(LedgerCache)], SW, 0.1),
+    leveled_log:log_randomtimer("B0004", [cache_size(LedgerCache)], SW, 0.02),
     case SnapType of
         store ->
             InkerOpts = #inker_options{start_snapshot=true,

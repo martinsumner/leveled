@@ -222,6 +222,8 @@ ink_print_manifest(Pid) ->
 %%%============================================================================
 
 init([InkerOpts]) ->
+    SW = os:timestamp(),
+    random:seed(erlang:phash2(self()), element(2, SW), element(3, SW)),
     case {InkerOpts#inker_options.root_path,
             InkerOpts#inker_options.start_snapshot} of
         {undefined, true} ->

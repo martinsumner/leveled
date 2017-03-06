@@ -353,9 +353,7 @@ log_timer(LogReference, Subs, StartTime) ->
     end.
 
 log_randomtimer(LogReference, Subs, StartTime, RandomProb) ->
-    {R, _S} = random:uniform_s({erlang:phash2(self()),
-                                element(2, StartTime),
-                                element(3, StartTime)}),
+    R = random:uniform(),
     case R < RandomProb of
         true ->
             log_timer(LogReference, Subs, StartTime);

@@ -321,6 +321,8 @@ pcl_doom(Pid) ->
 %%%============================================================================
 
 init([PCLopts]) ->
+    SW = os:timestamp(),
+    random:seed(erlang:phash2(self()), element(2, SW), element(3, SW)),
     case {PCLopts#penciller_options.root_path,
             PCLopts#penciller_options.start_snapshot,
             PCLopts#penciller_options.snapshot_query,
@@ -405,7 +407,7 @@ handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
             List ->
                 List
         end,
-    leveled_log:log_randomtimer("P0037", [length(L0AsList)], SW, 0.1),
+    leveled_log:log_randomtimer("P0037", [length(L0AsList)], SW, 0.01),
     SetupFoldFun =
         fun(Level, Acc) ->
             Pointers = leveled_pmanifest:range_lookup(State#state.manifest,
