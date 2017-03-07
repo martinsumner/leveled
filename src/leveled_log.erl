@@ -9,6 +9,7 @@
 
 -export([log/2,
             log_timer/3,
+            log_randomtimer/4,
             put_timing/4,
             head_timing/4,
             get_timing/3,
@@ -25,6 +26,8 @@
 
     {"G0001",
         {info, "Generic log point"}},
+    {"G0002",
+        {info, "Generic log point with term ~w"}},
     {"D0001",
         {debug, "Generic debug log"}},
     
@@ -35,7 +38,7 @@
     {"B0003",
         {info, "Bookie closing for reason ~w"}},
     {"B0004",
-        {info, "Length of increment in snapshot is ~w"}},
+        {info, "Initialised PCL clone and length of increment in snapshot is ~w"}},
     {"B0005",
         {info, "LedgerSQN=~w at startup"}},
     {"B0006",
@@ -59,9 +62,9 @@
         {info, "Get timing for result ~w is sample ~w total ~w and max ~w"}},
     
     {"P0001",
-        {info, "Ledger snapshot ~w registered"}},
+        {debug, "Ledger snapshot ~w registered"}},
     {"P0003",
-        {info, "Ledger snapshot ~w released"}},
+        {debug, "Ledger snapshot ~w released"}},
     {"P0004",
         {info, "Remaining ledger snapshots are ~w"}},
     {"P0005",
@@ -129,7 +132,9 @@
     {"P0035",
         {info, "Startup with Manifest SQN of ~w"}},
     {"P0036",
-        {info, "Garbage collection on mnaifest removes key for filename ~s"}},
+        {info, "Garbage collection on manifest removes key for filename ~s"}},
+    {"P0037",
+        {info, "Merging of penciller L0 tree from size ~w complete"}},
         
     {"PC001",
         {info, "Penciller's clerk ~w started with owner ~w"}},
@@ -343,6 +348,15 @@ log_timer(LogReference, Subs, StartTime) ->
                             ++ LogText
                             ++ " with time taken ~w " ++ Unit ++ "~n",
                         [self()|Subs] ++ [Time]);
+        false ->
+            ok
+    end.
+
+log_randomtimer(LogReference, Subs, StartTime, RandomProb) ->
+    R = random:uniform(),
+    case R < RandomProb of
+        true ->
+            log_timer(LogReference, Subs, StartTime);
         false ->
             ok
     end.

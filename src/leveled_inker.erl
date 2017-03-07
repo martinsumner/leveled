@@ -222,6 +222,8 @@ ink_print_manifest(Pid) ->
 %%%============================================================================
 
 init([InkerOpts]) ->
+    SW = os:timestamp(),
+    random:seed(erlang:phash2(self()), element(2, SW), element(3, SW)),
     case {InkerOpts#inker_options.root_path,
             InkerOpts#inker_options.start_snapshot} of
         {undefined, true} ->
@@ -711,10 +713,7 @@ filepath(CompactFilePath, NewSQN, compact_journal) ->
 
 
 initiate_penciller_snapshot(Bookie) ->
-    {ok,
-        {LedgerSnap, LedgerCache},
-        _} = leveled_bookie:book_snapshotledger(Bookie, self(), undefined),
-    leveled_bookie:load_snapshot(LedgerSnap, LedgerCache),
+    {ok, LedgerSnap, _} = leveled_bookie:book_snapshotledger(Bookie, self(), undefined),
     MaxSQN = leveled_penciller:pcl_getstartupsequencenumber(LedgerSnap),
     {LedgerSnap, MaxSQN}.
 

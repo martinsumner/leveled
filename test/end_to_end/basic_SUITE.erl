@@ -155,7 +155,7 @@ journal_compaction(_Config) ->
     testutil:wait_for_compaction(Bookie1),
     % Start snapshot - should not stop deletions
     {ok,
-        {PclClone, _LdgCache},
+        PclClone, 
             InkClone} = leveled_bookie:book_snapshotstore(Bookie1,
                                                             self(),
                                                             300000),
