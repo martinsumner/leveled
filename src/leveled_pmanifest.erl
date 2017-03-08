@@ -262,7 +262,8 @@ mergefile_selector(Manifest, LevelIdx) when LevelIdx =< 1 ->
 mergefile_selector(Manifest, LevelIdx) ->
     Level = leveled_tree:to_list(array:get(LevelIdx,
                                             Manifest#manifest.levels)),
-    lists:nth(random:uniform(length(Level)), Level).
+    {_SK, ME} = lists:nth(random:uniform(length(Level)), Level),
+    ME.
 
 add_snapshot(Manifest, Pid, Timeout) ->
     {MegaNow, SecNow, _} = os:timestamp(),
@@ -721,9 +722,9 @@ random_select_test() ->
     % https://github.com/martinsumner/leveled/issues/43
     L2File = mergefile_selector(LastManifest, 2),
     Level1 = array:get(1, LastManifest#manifest.levels),
-    Level2 = leveled_tree:to_list(array:get(2, LastManifest#manifest.levels)),
     ?assertMatch(true, lists:member(L1File, Level1)),
-    ?assertMatch(true, lists:member(L2File, Level2)).
+    ?assertMatch(true, is_record(L1File, manifest_entry)),
+    ?assertMatch(true, is_record(L2File, manifest_entry)).
 
 keylookup_manifest_test() ->
     {Man0, Man1, Man2, Man3, _Man4, _Man5, Man6} = initial_setup(),
