@@ -189,7 +189,10 @@
         pcl_getstartupsequencenumber/1]).
 
 -export([
-        filepath/3,
+        sst_rootpath/1,
+        sst_filename/3]).
+
+-export([
         clean_testdir/1]).
 
 -include_lib("eunit/include/eunit.hrl").
@@ -655,6 +658,19 @@ code_change(_OldVsn, State, _Extra) ->
 
 
 %%%============================================================================
+%%% Path functions
+%%%============================================================================
+
+sst_rootpath(RootPath) ->
+    FP = RootPath ++ "/" ++ ?FILES_FP,
+    filelib:ensure_dir(FP ++ "/"),
+    FP.
+
+sst_filename(ManSQN, Level, Count) ->
+    lists:flatten(io_lib:format("~w_~w_~w.sst", [ManSQN, Level, Count])).
+    
+
+%%%============================================================================
 %%% Internal functions
 %%%============================================================================
 
@@ -685,7 +701,9 @@ start_from_file(PCLopts) ->
     Manifest0 = leveled_pmanifest:open_manifest(RootPath),
     OpenFun =
         fun(FN) ->
-            {ok, Pid, {_FK, _LK}} = leveled_sst:sst_open(FN),
+            {ok,
+                Pid,
+                {_FK, _LK}} = leveled_sst:sst_open(sst_rootpath(RootPath), FN),
             Pid
         end,
     SQNFun = fun leveled_sst:sst_getmaxsequencenumber/1,
@@ -696,13 +714,12 @@ start_from_file(PCLopts) ->
     ManSQN = leveled_pmanifest:get_manifest_sqn(Manifest1),
     leveled_log:log("P0035", [ManSQN]),
     %% Find any L0 files
-    L0FN = filepath(RootPath, ManSQN + 1, new_merge_files) ++ "_0_0.sst",
-    case filelib:is_file(L0FN) of
+    L0FN = sst_filename(ManSQN + 1, 0, 0),
+    case filelib:is_file(filename:join(sst_rootpath(RootPath), L0FN)) of
         true ->
             leveled_log:log("P0015", [L0FN]),
-            {ok,
-                L0Pid,
-                {L0StartKey, L0EndKey}} = leveled_sst:sst_open(L0FN),
+            L0Open = leveled_sst:sst_open(sst_rootpath(RootPath), L0FN),
+            {ok, L0Pid, {L0StartKey, L0EndKey}} = L0Open,
             L0SQN = leveled_sst:sst_getmaxsequencenumber(L0Pid),
             L0Entry = #manifest_entry{start_key = L0StartKey,
                                         end_key = L0EndKey,
@@ -786,11 +803,14 @@ update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
 %% where as the Wait of true is used at shutdown
 
 roll_memory(State, false) ->
-    FileName = levelzero_filename(State),
+    ManSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest) + 1,
+    RootPath = sst_rootpath(State#state.root_path),
+    FileName = sst_filename(ManSQN, 0, 0),
     leveled_log:log("P0019", [FileName, State#state.ledger_sqn]),
     PCL = self(),
     FetchFun = fun(Slot) -> pcl_fetchlevelzero(PCL, Slot) end,
-    R = leveled_sst:sst_newlevelzero(FileName,
+    R = leveled_sst:sst_newlevelzero(RootPath,
+                                        FileName,
                                         length(State#state.levelzero_cache),
                                         FetchFun,
                                         PCL,
@@ -798,20 +818,19 @@ roll_memory(State, false) ->
     {ok, Constructor, _} = R,
     Constructor;
 roll_memory(State, true) ->
-    FileName = levelzero_filename(State),
+    ManSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest) + 1,
+    RootPath = sst_rootpath(State#state.root_path),
+    FileName = sst_filename(ManSQN, 0, 0),
     FetchFun = fun(Slot) -> lists:nth(Slot, State#state.levelzero_cache) end,
     KVList = leveled_pmem:to_list(length(State#state.levelzero_cache),
                                     FetchFun),
-    R = leveled_sst:sst_new(FileName, 0, KVList, State#state.ledger_sqn),
+    R = leveled_sst:sst_new(RootPath,
+                            FileName,
+                            0,
+                            KVList,
+                            State#state.ledger_sqn),
     {ok, Constructor, _} = R,
     Constructor.
-
-levelzero_filename(State) ->
-    ManSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest) + 1,
-    FileName = State#state.root_path
-                ++ "/" ++ ?FILES_FP ++ "/"
-                ++ integer_to_list(ManSQN) ++ "_0_0",
-    FileName.
 
 timed_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, HeadTimer) ->
     SW = os:timestamp(),
@@ -1089,16 +1108,6 @@ keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SSTiterator}, KeyRange,
     end.    
 
 
-filepath(RootPath, files) ->
-    FP = RootPath ++ "/" ++ ?FILES_FP,
-    filelib:ensure_dir(FP ++ "/"),
-    FP.
-
-filepath(RootPath, NewMSN, new_merge_files) ->
-    filepath(RootPath, files) ++ "/" ++ integer_to_list(NewMSN).
- 
-
-
 %%%============================================================================
 %%% Test
 %%%============================================================================
@@ -1127,8 +1136,8 @@ generate_randomkeys(Count, SQN, Acc) ->
     
 
 clean_testdir(RootPath) ->
-    clean_subdir(leveled_pmanifest:filepath(RootPath, manifest)),
-    clean_subdir(filepath(RootPath, files)).
+    clean_subdir(sst_rootpath(RootPath)),
+    clean_subdir(filename:join(RootPath, ?MANIFEST_FP)).
 
 clean_subdir(DirPath) ->
     case filelib:is_dir(DirPath) of
@@ -1458,18 +1467,19 @@ foldwithimm_simple_test() ->
                     {{o, "Bucket1", "Key6", null}, 7}], AccB).
 
 create_file_test() ->
-    Filename = "../test/new_file.sst",
-    ok = file:write_file(Filename, term_to_binary("hello")),
+    {RP, Filename} = {"../test/", "new_file.sst"},
+    ok = file:write_file(filename:join(RP, Filename), term_to_binary("hello")),
     KVL = lists:usort(generate_randomkeys(10000)),
     Tree = leveled_tree:from_orderedlist(KVL, ?CACHE_TYPE),
     FetchFun = fun(Slot) -> lists:nth(Slot, [Tree]) end,
     {ok,
         SP,
-        noreply} = leveled_sst:sst_newlevelzero(Filename,
-                                                    1,
-                                                    FetchFun,
-                                                    undefined,
-                                                    10000),
+        noreply} = leveled_sst:sst_newlevelzero(RP,
+                                                Filename,
+                                                1,
+                                                FetchFun,
+                                                undefined,
+                                                10000),
     lists:foreach(fun(X) ->
                         case checkready(SP) of
                             timeout ->
@@ -1482,7 +1492,7 @@ create_file_test() ->
     io:format("StartKey ~w EndKey ~w~n", [StartKey, EndKey]),
     ?assertMatch({o, _, _, _}, StartKey),
     ?assertMatch({o, _, _, _}, EndKey),
-    ?assertMatch("../test/new_file.sst", SrcFN),
+    ?assertMatch("./new_file.sst", SrcFN),
     ok = leveled_sst:sst_clear(SP),
     {ok, Bin} = file:read_file("../test/new_file.sst.discarded"),
     ?assertMatch("hello", binary_to_term(Bin)).

@@ -151,10 +151,8 @@ merge(SrcLevel, Manifest, RootPath) ->
                                                             Src),
             {Man0, []};
         _ ->
-            FilePath = leveled_penciller:filepath(RootPath,
-                                                    NewSQN,
-                                                    new_merge_files),
-            perform_merge(Manifest, Src, SinkList, SrcLevel, FilePath, NewSQN)
+            RootPath = leveled_penciller:sst_rootpath(RootPath),
+            perform_merge(Manifest, Src, SinkList, SrcLevel, RootPath, NewSQN)
     end.
 
 notify_deletions([], _Penciller) ->
@@ -199,11 +197,13 @@ do_merge([], [], SinkLevel, _SinkB, _RP, NewSQN, _MaxSQN, Additions) ->
     leveled_log:log("PC011", [NewSQN, SinkLevel, length(Additions)]),
     Additions;
 do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, Additions) ->
-    FileName = lists:flatten(io_lib:format(RP ++ "_~w_~w.sst",
-                                            [SinkLevel, length(Additions)])),
+    FileName = leveled_penciller:sst_filename(NewSQN,
+                                                SinkLevel,
+                                                length(Additions)),
     leveled_log:log("PC012", [NewSQN, FileName, SinkB]),
     TS1 = os:timestamp(),
-    case leveled_sst:sst_new(FileName, KL1, KL2, SinkB, SinkLevel, MaxSQN) of
+    case leveled_sst:sst_new(RP, FileName,
+                                KL1, KL2, SinkB, SinkLevel, MaxSQN) of
         empty ->
             leveled_log:log("PC013", [FileName]),
             do_merge([], [],
@@ -261,49 +261,54 @@ generate_randomkeys(Count, Acc, BucketLow, BRange) ->
 
 merge_file_test() ->
     KL1_L1 = lists:sort(generate_randomkeys(8000, 0, 1000)),
-    {ok, PidL1_1, _} = leveled_sst:sst_new("../test/KL1_L1.sst",
+    {ok, PidL1_1, _} = leveled_sst:sst_new("../test/",
+                                            "KL1_L1.sst",
                                             1,
                                             KL1_L1,
                                             undefined),
     KL1_L2 = lists:sort(generate_randomkeys(8000, 0, 250)),
-    {ok, PidL2_1, _} = leveled_sst:sst_new("../test/KL1_L2.sst",
+    {ok, PidL2_1, _} = leveled_sst:sst_new("../test/",
+                                            "KL1_L2.sst",
                                             2,
                                             KL1_L2,
                                             undefined),
     KL2_L2 = lists:sort(generate_randomkeys(8000, 250, 250)),
-    {ok, PidL2_2, _} = leveled_sst:sst_new("../test/KL2_L2.sst",
+    {ok, PidL2_2, _} = leveled_sst:sst_new("../test/",
+                                            "KL2_L2.sst",
                                             2,
                                             KL2_L2,
                                             undefined),
     KL3_L2 = lists:sort(generate_randomkeys(8000, 500, 250)),
-    {ok, PidL2_3, _} = leveled_sst:sst_new("../test/KL3_L2.sst",
+    {ok, PidL2_3, _} = leveled_sst:sst_new("../test/",
+                                            "KL3_L2.sst",
                                             2,
                                             KL3_L2,
                                             undefined),
     KL4_L2 = lists:sort(generate_randomkeys(8000, 750, 250)),
-    {ok, PidL2_4, _} = leveled_sst:sst_new("../test/KL4_L2.sst",
+    {ok, PidL2_4, _} = leveled_sst:sst_new("../test/",
+                                            "KL4_L2.sst",
                                             2,
                                             KL4_L2,
                                             undefined),
     
     E1 = #manifest_entry{owner = PidL1_1,
-                            filename = "../test/KL1_L1.sst",
+                            filename = "./KL1_L1.sst",
                             end_key = lists:last(KL1_L1),
                             start_key = lists:nth(1, KL1_L1)},
     E2 = #manifest_entry{owner = PidL2_1,
-                            filename = "../test/KL1_L2.sst",
+                            filename = "./KL1_L2.sst",
                             end_key = lists:last(KL1_L2),
                             start_key = lists:nth(1, KL1_L2)},
     E3 = #manifest_entry{owner = PidL2_2,
-                            filename = "../test/KL2_L2.sst",
+                            filename = "./KL2_L2.sst",
                             end_key = lists:last(KL2_L2),
                             start_key = lists:nth(1, KL2_L2)},
     E4 = #manifest_entry{owner = PidL2_3,
-                            filename = "../test/KL3_L2.sst",
+                            filename = "./KL3_L2.sst",
                             end_key = lists:last(KL3_L2),
                             start_key = lists:nth(1, KL3_L2)},
     E5 = #manifest_entry{owner = PidL2_4,
-                            filename = "../test/KL4_L2.sst",
+                            filename = "./KL4_L2.sst",
                             end_key = lists:last(KL4_L2),
                             start_key = lists:nth(1, KL4_L2)},
     
