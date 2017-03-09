@@ -256,9 +256,14 @@ merge_lookup(Manifest, LevelIdx, StartKey, EndKey) ->
 %% genuinely better - eventually every file has to be compacted.
 %%
 %% Hence, the initial implementation is to select files to merge at random
-mergefile_selector(Manifest, LevelIdx) ->
+mergefile_selector(Manifest, LevelIdx) when LevelIdx =< 1 ->
     Level = array:get(LevelIdx, Manifest#manifest.levels),
-    lists:nth(random:uniform(length(Level)), Level).
+    lists:nth(random:uniform(length(Level)), Level);
+mergefile_selector(Manifest, LevelIdx) ->
+    Level = leveled_tree:to_list(array:get(LevelIdx,
+                                            Manifest#manifest.levels)),
+    {_SK, ME} = lists:nth(random:uniform(length(Level)), Level),
+    ME.
 
 add_snapshot(Manifest, Pid, Timeout) ->
     {MegaNow, SecNow, _} = os:timestamp(),
@@ -708,6 +713,18 @@ changeup_setup(Man6) ->
     % remove_manifest_entry(Manifest, ManSQN, Level, Entry)
     
     {Man7, Man8, Man9, Man10, Man11, Man12, Man13}.
+
+random_select_test() ->
+    ManTuple = initial_setup(),
+    LastManifest = element(7, ManTuple),
+    L1File = mergefile_selector(LastManifest, 1),
+    % This blows up if the function is not prepared for the different format
+    % https://github.com/martinsumner/leveled/issues/43
+    L2File = mergefile_selector(LastManifest, 2),
+    Level1 = array:get(1, LastManifest#manifest.levels),
+    ?assertMatch(true, lists:member(L1File, Level1)),
+    ?assertMatch(true, is_record(L1File, manifest_entry)),
+    ?assertMatch(true, is_record(L2File, manifest_entry)).
 
 keylookup_manifest_test() ->
     {Man0, Man1, Man2, Man3, _Man4, _Man5, Man6} = initial_setup(),
