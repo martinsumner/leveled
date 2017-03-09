@@ -548,7 +548,6 @@ read_file(Filename, State) ->
                     filename = Filename}.
 
 open_reader(Filename) ->
-    io:format("Reading filename ~s~n", [Filename]),
     {ok, Handle} = file:open(Filename, [binary, raw, read]),
     {ok, Lengths} = file:pread(Handle, 0, 8),
     <<SlotsLength:32/integer, SummaryLength:32/integer>> = Lengths,
