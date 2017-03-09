@@ -667,7 +667,7 @@ sst_rootpath(RootPath) ->
     FP.
 
 sst_filename(ManSQN, Level, Count) ->
-    lists:flatten(io_lib:format("~w_~w_~w.sst", [ManSQN, Level, Count])).
+    lists:flatten(io_lib:format("./~w_~w_~w.sst", [ManSQN, Level, Count])).
     
 
 %%%============================================================================
