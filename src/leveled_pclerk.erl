@@ -151,8 +151,8 @@ merge(SrcLevel, Manifest, RootPath) ->
                                                             Src),
             {Man0, []};
         _ ->
-            RootPath = leveled_penciller:sst_rootpath(RootPath),
-            perform_merge(Manifest, Src, SinkList, SrcLevel, RootPath, NewSQN)
+            SST_RP = leveled_penciller:sst_rootpath(RootPath),
+            perform_merge(Manifest, Src, SinkList, SrcLevel, SST_RP, NewSQN)
     end.
 
 notify_deletions([], _Penciller) ->
