@@ -90,10 +90,10 @@
         delete_pending/2,
         delete_pending/3]).
 
--export([sst_new/4,
-            sst_new/6,
-            sst_newlevelzero/5,
-            sst_open/1,
+-export([sst_new/5,
+            sst_new/7,
+            sst_newlevelzero/6,
+            sst_open/2,
             sst_get/2,
             sst_get/3,
             sst_getkvrange/4,
@@ -123,6 +123,7 @@
                         handle :: file:fd(),
                         sst_timings :: tuple(),
                         penciller :: pid(),
+                        root_path,
                         filename,
                         blockindex_cache}).
 
@@ -131,17 +132,20 @@
 %%% API
 %%%============================================================================
 
-sst_open(Filename) ->
+sst_open(RootPath, Filename) ->
     {ok, Pid} = gen_fsm:start(?MODULE, [], []),
-    case gen_fsm:sync_send_event(Pid, {sst_open, Filename}, infinity) of
+    case gen_fsm:sync_send_event(Pid,
+                                    {sst_open, RootPath, Filename},
+                                    infinity) of
         {ok, {SK, EK}} ->
             {ok, Pid, {SK, EK}}
     end.
 
-sst_new(Filename, Level, KVList, MaxSQN) ->
+sst_new(RootPath, Filename, Level, KVList, MaxSQN) ->
     {ok, Pid} = gen_fsm:start(?MODULE, [], []),
     case gen_fsm:sync_send_event(Pid,
                                     {sst_new,
+                                        RootPath,
                                         Filename,
                                         Level,
                                         KVList,
@@ -151,7 +155,7 @@ sst_new(Filename, Level, KVList, MaxSQN) ->
             {ok, Pid, {SK, EK}}
     end.
 
-sst_new(Filename, KL1, KL2, IsBasement, Level, MaxSQN) ->
+sst_new(RootPath, Filename, KL1, KL2, IsBasement, Level, MaxSQN) ->
     {{Rem1, Rem2}, MergedList} = merge_lists(KL1, KL2, {IsBasement, Level}),
     case MergedList of
         [] ->
@@ -160,6 +164,7 @@ sst_new(Filename, KL1, KL2, IsBasement, Level, MaxSQN) ->
             {ok, Pid} = gen_fsm:start(?MODULE, [], []),
             case gen_fsm:sync_send_event(Pid,
                                             {sst_new,
+                                                RootPath,
                                                 Filename,
                                                 Level,
                                                 MergedList,
@@ -170,10 +175,11 @@ sst_new(Filename, KL1, KL2, IsBasement, Level, MaxSQN) ->
             end
     end.
 
-sst_newlevelzero(Filename, Slots, FetchFun, Penciller, MaxSQN) ->
+sst_newlevelzero(RootPath, Filename, Slots, FetchFun, Penciller, MaxSQN) ->
     {ok, Pid} = gen_fsm:start(?MODULE, [], []),
     gen_fsm:send_event(Pid,
                         {sst_newlevelzero,
+                            RootPath,
                             Filename,
                             Slots,
                             FetchFun,
@@ -228,14 +234,14 @@ sst_printtimings(Pid) ->
 init([]) ->
     {ok, starting, #state{}}.
 
-starting({sst_open, Filename}, _From, State) ->
-    UpdState = read_file(Filename, State),
+starting({sst_open, RootPath, Filename}, _From, State) ->
+    UpdState = read_file(Filename, State#state{root_path=RootPath}),
     Summary = UpdState#state.summary,
     {reply,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}},
         reader,
         UpdState};
-starting({sst_new, Filename, Level, KVList, MaxSQN}, _From, State) ->
+starting({sst_new, RootPath, Filename, Level, KVList, MaxSQN}, _From, State) ->
     SW = os:timestamp(),
     {FirstKey, 
         Length, 
@@ -247,8 +253,8 @@ starting({sst_new, Filename, Level, KVList, MaxSQN}, _From, State) ->
                                         FirstKey,
                                         Length,
                                         MaxSQN),
-    ActualFilename = write_file(Filename, SummaryBin, SlotsBin),
-    UpdState = read_file(ActualFilename, State),
+    ActualFilename = write_file(RootPath, Filename, SummaryBin, SlotsBin),
+    UpdState = read_file(ActualFilename, State#state{root_path=RootPath}),
     Summary = UpdState#state.summary,
     leveled_log:log_timer("SST08",
                             [ActualFilename, Level, Summary#summary.max_sqn],
@@ -258,8 +264,8 @@ starting({sst_new, Filename, Level, KVList, MaxSQN}, _From, State) ->
         reader,
         UpdState#state{blockindex_cache = BlockIndex}}.
 
-starting({sst_newlevelzero, Filename, Slots, FetchFun, Penciller, MaxSQN},
-                                                                    State) ->
+starting({sst_newlevelzero, RootPath, Filename,
+                    Slots, FetchFun, Penciller, MaxSQN}, State) ->
     SW = os:timestamp(),
     KVList = leveled_pmem:to_list(Slots, FetchFun),
     {FirstKey, 
@@ -272,8 +278,8 @@ starting({sst_newlevelzero, Filename, Slots, FetchFun, Penciller, MaxSQN},
                                         FirstKey,
                                         Length,
                                         MaxSQN),
-    ActualFilename = write_file(Filename, SummaryBin, SlotsBin),
-    UpdState = read_file(ActualFilename, State),
+    ActualFilename = write_file(RootPath, Filename, SummaryBin, SlotsBin),
+    UpdState = read_file(ActualFilename, State#state{root_path=RootPath}),
     Summary = UpdState#state.summary,
     leveled_log:log_timer("SST08",
                             [ActualFilename, 0, Summary#summary.max_sqn],
@@ -357,7 +363,8 @@ delete_pending({get_slots, SlotList}, _From, State) ->
 delete_pending(close, _From, State) ->
     leveled_log:log("SST07", [State#state.filename]),
     ok = file:close(State#state.handle),
-    ok = file:delete(State#state.filename),
+    ok = file:delete(filename:join(State#state.root_path,
+                                    State#state.filename)),
     {stop, normal, ok, State}.
 
 delete_pending(timeout, State) ->
@@ -368,7 +375,8 @@ delete_pending(timeout, State) ->
 delete_pending(close, State) ->
     leveled_log:log("SST07", [State#state.filename]),
     ok = file:close(State#state.handle),
-    ok = file:delete(State#state.filename),
+    ok = file:delete(filename:join(State#state.root_path,
+                                    State#state.filename)),
     {stop, normal, State}.
 
 handle_sync_event(_Msg, _From, StateName, State) ->
@@ -380,6 +388,8 @@ handle_event(_Msg, StateName, State) ->
 handle_info(_Msg, StateName, State) ->
     {next_state, StateName, State}.
 
+terminate(normal, delete_pending, _State) ->
+    ok;
 terminate(Reason, _StateName, State) ->
     leveled_log:log("SST04", [Reason, State#state.filename]).
 
@@ -497,31 +507,32 @@ fetch_range(StartKey, EndKey, ScanWidth, State) ->
     lists:foldl(FetchFun, [], SlotsToFetchBinList) ++ SlotsToPoint.
 
 
-write_file(Filename, SummaryBin, SlotsBin) ->
+write_file(RootPath, Filename, SummaryBin, SlotsBin) ->
     SummaryLength = byte_size(SummaryBin),
     SlotsLength = byte_size(SlotsBin),
     {PendingName, FinalName} = generate_filenames(Filename),
-    ok = file:write_file(PendingName,
+    ok = file:write_file(filename:join(RootPath, PendingName),
                             <<SlotsLength:32/integer,
                                 SummaryLength:32/integer,    
                                 SlotsBin/binary,
                                 SummaryBin/binary>>,
                             [raw]),
-    case filelib:is_file(FinalName) of
+    case filelib:is_file(filename:join(RootPath, FinalName)) of
         true ->
-            AltName = filename:join(filename:dirname(FinalName),
-                                    filename:basename(FinalName))
+            AltName = filename:join(RootPath, filename:basename(FinalName))
                         ++ ?DISCARD_EXT,
             leveled_log:log("SST05", [FinalName, AltName]),
-            ok = file:rename(FinalName, AltName);
+            ok = file:rename(filename:join(RootPath, FinalName), AltName);
         false ->
             ok
     end,
-    file:rename(PendingName, FinalName),
+    file:rename(filename:join(RootPath, PendingName),
+                filename:join(RootPath, FinalName)),
     FinalName.
 
 read_file(Filename, State) ->
-    {Handle, SummaryBin} = open_reader(Filename),
+    {Handle, SummaryBin} = open_reader(filename:join(State#state.root_path,
+                                                        Filename)),
     {Summary, SlotList} = read_table_summary(SummaryBin),
     SlotCount = length(SlotList),
     BlockIndexCache = array:new([{size, SlotCount}, {default, none}]),
@@ -1364,8 +1375,8 @@ merge_test() ->
     KVL2 = lists:ukeysort(1, generate_randomkeys(1, N, 1, 20)),
     KVL3 = lists:ukeymerge(1, KVL1, KVL2),
     SW0 = os:timestamp(),
-    {ok, P1, {FK1, LK1}} = sst_new("../test/level1_src", 1, KVL1, 6000),
-    {ok, P2, {FK2, LK2}} = sst_new("../test/level2_src", 2, KVL2, 3000),
+    {ok, P1, {FK1, LK1}} = sst_new("../test/", "level1_src", 1, KVL1, 6000),
+    {ok, P2, {FK2, LK2}} = sst_new("../test/", "level2_src", 2, KVL2, 3000),
     ExpFK1 = element(1, lists:nth(1, KVL1)),
     ExpLK1 = element(1, lists:last(KVL1)),
     ExpFK2 = element(1, lists:nth(1, KVL2)),
@@ -1376,7 +1387,8 @@ merge_test() ->
     ?assertMatch(ExpLK2, LK2),
     ML1 = [{next, #manifest_entry{owner = P1}, FK1}],
     ML2 = [{next, #manifest_entry{owner = P2}, FK2}],
-    {ok, P3, {{Rem1, Rem2}, FK3, LK3}} = sst_new("../test/level2_merge",
+    {ok, P3, {{Rem1, Rem2}, FK3, LK3}} = sst_new("../test/",
+                                                    "level2_merge",
                                                     ML1,
                                                     ML2,
                                                     false,
@@ -1408,12 +1420,13 @@ merge_test() ->
     
 
 simple_persisted_range_test() ->
-    Filename = "../test/simple_test",
+    {RP, Filename} = {"../test/", "simple_test"},
     KVList0 = generate_randomkeys(1, ?SLOT_SIZE * 16, 1, 20),
     KVList1 = lists:ukeysort(1, KVList0),
     [{FirstKey, _FV}|_Rest] = KVList1,
     {LastKey, _LV} = lists:last(KVList1),
-    {ok, Pid, {FirstKey, LastKey}} = sst_new(Filename,
+    {ok, Pid, {FirstKey, LastKey}} = sst_new(RP,
+                                                Filename,
                                                 1,
                                                 KVList1,
                                                 length(KVList1)),
@@ -1450,12 +1463,13 @@ simple_persisted_range_test() ->
     
 
 simple_persisted_test() ->
-    Filename = "../test/simple_test",
+    {RP, Filename} = {"../test/", "simple_test"},
     KVList0 = generate_randomkeys(1, ?SLOT_SIZE * 32, 1, 20),
     KVList1 = lists:ukeysort(1, KVList0),
     [{FirstKey, _FV}|_Rest] = KVList1,
     {LastKey, _LV} = lists:last(KVList1),
-    {ok, Pid, {FirstKey, LastKey}} = sst_new(Filename,
+    {ok, Pid, {FirstKey, LastKey}} = sst_new(RP,
+                                                Filename,
                                                 1,
                                                 KVList1,
                                                 length(KVList1)),
@@ -1558,7 +1572,7 @@ simple_persisted_test() ->
     ?assertMatch([{Eight000Key, _v800}], FetchedListB4),
     
     ok = sst_close(Pid),
-    ok = file:delete(Filename ++ ".sst").
+    ok = file:delete(filename:join(RP, Filename ++ ".sst")).
 
 key_dominates_test() ->
     KV1 = {{o, "Bucket", "Key1", null}, {5, {active, infinity}, 0, []}},
