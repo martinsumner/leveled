@@ -161,7 +161,7 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN) ->
 sst_new(RootPath, Filename, KVL1, KVL2, IsBasement, Level, MaxSQN) ->
     {Rem1, Rem2, SlotList} = merge_lists(KVL1, KVL2, {IsBasement, Level}),
     case SlotList of
-        {_, []} ->
+        [{_, []}] ->
             empty;
         _ ->
             {ok, Pid} = gen_fsm:start(?MODULE, [], []),
