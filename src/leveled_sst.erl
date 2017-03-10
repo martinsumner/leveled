@@ -414,7 +414,6 @@ fetch(LedgerKey, Hash, State) ->
                                         State#state.blockindex_cache),
             case CachedBlockIdx of 
                 none ->
-                    io:format("Looking for key without cache~n"),
                     SlotBin = read_slot(State#state.handle, Slot),
                     {Result,
                         BlockLengths,
@@ -428,7 +427,6 @@ fetch(LedgerKey, Hash, State) ->
                         Slot#slot_index_value.slot_id,
                         State#state{blockindex_cache = BlockIndexCache}};
                 <<BlockLengths:20/binary, BlockIdx/binary>> ->
-                    io:format("Looking for key with cache~n"),
                     PosList = find_pos(BlockIdx, 
                                         double_hash(Hash, LedgerKey), 
                                         [], 
@@ -800,14 +798,11 @@ check_blocks([], _Handle, _Slot, _BlockLengths, _LedgerKey) ->
     not_present;
 check_blocks([Pos|Rest], Handle, Slot, BlockLengths, LedgerKey) ->
     {BlockNumber, BlockPos} = revert_position(Pos),
-    io:format("Checking BlockNumber ~w in BlockPos ~w~n",
-                [BlockNumber, BlockPos]),
     BlockBin = read_block(Handle, Slot, BlockLengths, BlockNumber),
     BlockL = binary_to_term(BlockBin),
     {K, V} = lists:nth(BlockPos, BlockL),
     case K of 
         LedgerKey ->
-            io:format("Key mismatch in check_blocks~n"),
             {K, V};
         _ ->
             check_blocks(Rest, Handle, Slot, BlockLengths, LedgerKey)
@@ -816,7 +811,6 @@ check_blocks([Pos|Rest], Handle, Slot, BlockLengths, LedgerKey) ->
 
 read_block(Handle, Slot, BlockLengths, BlockID) ->
     {BlockPos, Offset, Length} = block_offsetandlength(BlockLengths, BlockID),
-    io:format("Reading offset ~w Length ~w~n", [Offset, Length]),
     {ok, BlockBin} = file:pread(Handle,
                                 Slot#slot_index_value.start_position
                                     + BlockPos
@@ -1058,7 +1052,6 @@ fetch_value([Pos|Rest], BlockLengths, Blocks, Key) ->
     {K, V} = lists:nth(BlockPos, BlockL),
     case K of 
         Key ->
-            io:format("Key mismatch in fetch_value~n"),
             {K, V};
         _ ->
             fetch_value(Rest, BlockLengths, Blocks, Key)
