@@ -259,7 +259,7 @@
         {error, "False result returned from SST with filename ~s as "
                     ++ "slot ~w has failed crc check"}},
     {"SST03",
-        {info, "Opening SST file with filename ~s keys ~w slots ~w and"
+        {info, "Opening SST file with filename ~s slots ~w and"
                 ++ " max sqn ~w"}},
     {"SST04",
         {info, "Exit called for reason ~w on filename ~s"}},

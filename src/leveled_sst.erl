@@ -66,6 +66,8 @@
 
 -define(MAX_SLOTS, 256).
 -define(SLOT_SIZE, 128). % This is not configurable
+-define(NOLOOK_MULT, 2). % How much bigger is a slot/block with no lookups 
+-define(NOLOOK_SLOTSIZE, ?SLOT_SIZE * ?NOLOOK_MULT).
 -define(COMPRESSION_LEVEL, 1).
 -define(BINARY_SETTINGS, [{compressed, ?COMPRESSION_LEVEL}]).
 % -define(LEVEL_BLOOM_BITS, [{0, 8}, {1, 10}, {2, 8}, {default, 6}]).
@@ -143,22 +145,23 @@ sst_open(RootPath, Filename) ->
 
 sst_new(RootPath, Filename, Level, KVList, MaxSQN) ->
     {ok, Pid} = gen_fsm:start(?MODULE, [], []),
+    SlotList = merge_lists(KVList),
     case gen_fsm:sync_send_event(Pid,
                                     {sst_new,
                                         RootPath,
                                         Filename,
                                         Level,
-                                        KVList,
+                                        SlotList,
                                         MaxSQN},
                                     infinity) of
         {ok, {SK, EK}} ->
             {ok, Pid, {SK, EK}}
     end.
 
-sst_new(RootPath, Filename, KL1, KL2, IsBasement, Level, MaxSQN) ->
-    {{Rem1, Rem2}, MergedList} = merge_lists(KL1, KL2, {IsBasement, Level}),
-    case MergedList of
-        [] ->
+sst_new(RootPath, Filename, KVL1, KVL2, IsBasement, Level, MaxSQN) ->
+    {Rem1, Rem2, SlotList} = merge_lists(KVL1, KVL2, {IsBasement, Level}),
+    case SlotList of
+        {_, []} ->
             empty;
         _ ->
             {ok, Pid} = gen_fsm:start(?MODULE, [], []),
@@ -167,7 +170,7 @@ sst_new(RootPath, Filename, KL1, KL2, IsBasement, Level, MaxSQN) ->
                                                 RootPath,
                                                 Filename,
                                                 Level,
-                                                MergedList,
+                                                SlotList,
                                                 MaxSQN},
                                             infinity) of
                 {ok, {SK, EK}} ->
@@ -241,13 +244,14 @@ starting({sst_open, RootPath, Filename}, _From, State) ->
         {ok, {Summary#summary.first_key, Summary#summary.last_key}},
         reader,
         UpdState};
-starting({sst_new, RootPath, Filename, Level, KVList, MaxSQN}, _From, State) ->
+starting({sst_new, RootPath, Filename, Level, SlotList, MaxSQN},
+                                                        _From, State) ->
     SW = os:timestamp(),
     {FirstKey, 
         Length, 
         SlotIndex, 
         BlockIndex, 
-        SlotsBin} = build_all_slots(KVList),
+        SlotsBin} = build_all_slots(SlotList),
     SummaryBin = build_table_summary(SlotIndex,
                                         Level,
                                         FirstKey,
@@ -268,15 +272,16 @@ starting({sst_newlevelzero, RootPath, Filename,
                     Slots, FetchFun, Penciller, MaxSQN}, State) ->
     SW = os:timestamp(),
     KVList = leveled_pmem:to_list(Slots, FetchFun),
+    SlotList = merge_lists(KVList),
     {FirstKey, 
-        Length, 
+        SlotCount, 
         SlotIndex, 
         BlockIndex, 
-        SlotsBin} = build_all_slots(KVList),
+        SlotsBin} = build_all_slots(SlotList),
     SummaryBin = build_table_summary(SlotIndex,
                                         0,
                                         FirstKey,
-                                        Length,
+                                        SlotCount,
                                         MaxSQN),
     ActualFilename = write_file(RootPath, Filename, SummaryBin, SlotsBin),
     UpdState = read_file(ActualFilename, State#state{root_path=RootPath}),
@@ -534,14 +539,13 @@ read_file(Filename, State) ->
     {Handle, SummaryBin} = open_reader(filename:join(State#state.root_path,
                                                         Filename)),
     {Summary, SlotList} = read_table_summary(SummaryBin),
-    SlotCount = length(SlotList),
-    BlockIndexCache = array:new([{size, SlotCount}, {default, none}]),
+    BlockIndexCache = array:new([{size, Summary#summary.size},
+                                    {default, none}]),
     UpdState = State#state{blockindex_cache = BlockIndexCache},
     SlotIndex = from_list(SlotList),
     UpdSummary = Summary#summary{index = SlotIndex},
     leveled_log:log("SST03", [Filename,
                                 Summary#summary.size,
-                                SlotCount,
                                 Summary#summary.max_sqn]),
     UpdState#state{summary = UpdSummary,
                     handle = Handle,
@@ -554,13 +558,13 @@ open_reader(Filename) ->
     {ok, SummaryBin} = file:pread(Handle, SlotsLength + 8, SummaryLength),
     {Handle, SummaryBin}.
 
-build_table_summary(SlotList, _Level, FirstKey, L, MaxSQN) ->
-    [{LastKey, _LastV}|_Rest] = SlotList,
+build_table_summary(SlotIndex, _Level, FirstKey, SlotCount, MaxSQN) ->
+    [{LastKey, _LastV}|_Rest] = SlotIndex,
     Summary = #summary{first_key = FirstKey,
                         last_key = LastKey,
-                        size = L,
+                        size = SlotCount,
                         max_sqn = MaxSQN},
-    SummBin = term_to_binary({Summary, lists:reverse(SlotList)},
+    SummBin = term_to_binary({Summary, lists:reverse(SlotIndex)},
                                 ?BINARY_SETTINGS),
     SummCRC = erlang:crc32(SummBin),
     <<SummCRC:32/integer, SummBin/binary>>.
@@ -574,15 +578,12 @@ read_table_summary(BinWithCheck) ->
             binary_to_term(SummBin)
     end.
 
-build_all_slots(KVList) ->
-    L = length(KVList),
-    % The length is not a constant time command and the list may be large,
-    % but otherwise length must be called each iteration to avoid exception
-    % on split or sublist
+
+build_all_slots(SlotList) ->
+    [{_Lookup, KVList}|_R] = SlotList,
     [{FirstKey, _FirstV}|_Rest] = KVList,
-    SlotCount = L div ?SLOT_SIZE + 1,
-    BuildResponse = build_all_slots(KVList,
-                                    SlotCount,
+    SlotCount = length(SlotList),
+    BuildResponse = build_all_slots(SlotList,
                                     8,
                                     1,
                                     [],
@@ -590,33 +591,26 @@ build_all_slots(KVList) ->
                                                 {default, none}]),
                                     <<>>),
     {SlotIndex, BlockIndex, SlotsBin} = BuildResponse,
-    {FirstKey, L, SlotIndex, BlockIndex, SlotsBin}.
+    {FirstKey, SlotCount, SlotIndex, BlockIndex, SlotsBin}.
 
-build_all_slots([], _SC, _Pos, _SlotID, SlotIdx, BlockIdxA, SlotsBin) ->
-    {SlotIdx, BlockIdxA, SlotsBin};
-build_all_slots(KVL, SC, Pos, SlotID, SlotIdx, BlockIdxA, SlotsBin) ->
-    {SlotList, KVRem} =
-        case SC of
-            1 ->
-                {lists:sublist(KVL, ?SLOT_SIZE), []};
-            _N ->
-                lists:split(?SLOT_SIZE, KVL)
-        end,
-    {LastKey, _V} = lists:last(SlotList),
-    {BlockIndex, SlotBin, HashList} = generate_binary_slot(SlotList),
+build_all_slots([], _Pos, _SlotID, SlotIdxAcc, BlockIdxAcc, SlotBinAcc) ->
+    {SlotIdxAcc, BlockIdxAcc, SlotBinAcc};
+build_all_slots(SlotList, Pos, SlotID, SlotIdxAcc, BlockIdxAcc, SlotBinAcc) ->
+    [{Lookup, KVList}|Rest] = SlotList,
+    {LastKey, _LastV} = lists:last(KVList),
+    {BlockIdx, SlotBin, HashList} = generate_binary_slot(Lookup, KVList),
     Length = byte_size(SlotBin),
     Bloom = leveled_tinybloom:create_bloom(HashList),
     SlotIndexV = #slot_index_value{slot_id = SlotID,
                                     start_position = Pos,
                                     length = Length,
                                     bloom = Bloom},
-    build_all_slots(KVRem,
-                    SC - 1,
+    build_all_slots(Rest,
                     Pos + Length,
                     SlotID + 1,
-                    [{LastKey, SlotIndexV}|SlotIdx],
-                    array:set(SlotID - 1, BlockIndex, BlockIdxA),
-                    <<SlotsBin/binary, SlotBin/binary>>).
+                    [{LastKey, SlotIndexV}|SlotIdxAcc],
+                    array:set(SlotID - 1, BlockIdx, BlockIdxAcc),
+                    <<SlotBinAcc/binary, SlotBin/binary>>).
 
 
 generate_filenames(RootFilename) ->
@@ -700,7 +694,7 @@ lookup_slots(StartKey, EndKey, Tree) ->
 %% based on a 17-bit hash (so 0.0039 fpr).
 
 
-generate_binary_slot(KVL) ->
+generate_binary_slot(Lookup, KVL) ->
     
     HashFoldFun =
         fun({K, V}, {PosBinAcc, NoHashCount, HashAcc}) ->
@@ -733,49 +727,66 @@ generate_binary_slot(KVL) ->
             end
          
          end,
-
-    {PosBinIndex0, NHC, HashL} = lists:foldr(HashFoldFun, {<<>>, 0, []}, KVL),
-    PosBinIndex1 = 
-        case NHC of
-            0 ->
-                PosBinIndex0;
-            _ ->
-                N = NHC - 1,
-                <<0:1/integer, N:7/integer, PosBinIndex0/binary>>
+    
+    {HashL, PosBinIndex} = 
+        case Lookup of
+            lookup ->
+                {PosBinIndex0,
+                    NHC,
+                    HashL0} = lists:foldr(HashFoldFun, {<<>>, 0, []}, KVL),
+                PosBinIndex1 = 
+                    case NHC of
+                        0 ->
+                            PosBinIndex0;
+                        _ ->
+                            N = NHC - 1,
+                            <<0:1/integer, N:7/integer, PosBinIndex0/binary>>
+                    end,
+                {HashL0, PosBinIndex1};
+            no_lookup ->
+                {[], <<0:1/integer, 127:7/integer>>}
         end,
 
+    BlockSize =
+        case Lookup of
+            lookup ->
+                ?SLOT_SIZE div 4;
+            no_lookup ->
+                ?NOLOOK_SLOTSIZE div 4
+        end,
+            
 
     {B1, B2, B3, B4} = 
         case length(KVL) of 
-            L when L =< 32 ->
+            L when L =< BlockSize ->
                 {term_to_binary(KVL, ?BINARY_SETTINGS),
                     <<0:0>>, 
                     <<0:0>>, 
                     <<0:0>>};
-            L when L =< 64 ->
-                {KVLA_32, KVLB_32} = lists:split(32, KVL),
-                {term_to_binary(KVLA_32, ?BINARY_SETTINGS),
-                    term_to_binary(KVLB_32, ?BINARY_SETTINGS),
+            L when L =< 2 * BlockSize ->
+                {KVLA, KVLB} = lists:split(BlockSize, KVL),
+                {term_to_binary(KVLA, ?BINARY_SETTINGS),
+                    term_to_binary(KVLB, ?BINARY_SETTINGS),
                     <<0:0>>, 
                     <<0:0>>};
-            L when L =< 96 ->
-                {KVLA_32, KVLB_64} = lists:split(32, KVL),
-                {KVLB_32, KVLC_32} = lists:split(32, KVLB_64),
-                {term_to_binary(KVLA_32, ?BINARY_SETTINGS),
-                    term_to_binary(KVLB_32, ?BINARY_SETTINGS),
-                    term_to_binary(KVLC_32, ?BINARY_SETTINGS),
+            L when L =< 3 * BlockSize ->
+                {KVLA, KVLB_Rest} = lists:split(BlockSize, KVL),
+                {KVLB, KVLC} = lists:split(BlockSize, KVLB_Rest),
+                {term_to_binary(KVLA, ?BINARY_SETTINGS),
+                    term_to_binary(KVLB, ?BINARY_SETTINGS),
+                    term_to_binary(KVLC, ?BINARY_SETTINGS),
                     <<0:0>>};
-            L when L =< 128 ->
-                {KVLA_32, KVLB_96} = lists:split(32, KVL),
-                {KVLB_32, KVLC_64} = lists:split(32, KVLB_96),
-                {KVLC_32, KVLD_32} = lists:split(32, KVLC_64),
-                {term_to_binary(KVLA_32, ?BINARY_SETTINGS),
-                    term_to_binary(KVLB_32, ?BINARY_SETTINGS),
-                    term_to_binary(KVLC_32, ?BINARY_SETTINGS),
-                    term_to_binary(KVLD_32, ?BINARY_SETTINGS)}
+            L when L =< 4 * BlockSize ->
+                {KVLA, KVLB_Rest} = lists:split(BlockSize, KVL),
+                {KVLB, KVLC_Rest} = lists:split(BlockSize, KVLB_Rest),
+                {KVLC, KVLD} = lists:split(BlockSize, KVLC_Rest),
+                {term_to_binary(KVLA, ?BINARY_SETTINGS),
+                    term_to_binary(KVLB, ?BINARY_SETTINGS),
+                    term_to_binary(KVLC, ?BINARY_SETTINGS),
+                    term_to_binary(KVLD, ?BINARY_SETTINGS)}
         end,
 
-    B1P = byte_size(PosBinIndex1),
+    B1P = byte_size(PosBinIndex),
     B1L = byte_size(B1),
     B2L = byte_size(B2),
     B3L = byte_size(B3),
@@ -786,12 +797,12 @@ generate_binary_slot(KVL) ->
                 B3L:32/integer, 
                 B4L:32/integer>>,
     SlotBin = <<Lengths/binary, 
-                PosBinIndex1/binary, 
+                PosBinIndex/binary, 
                 B1/binary, B2/binary, B3/binary, B4/binary>>,
     CRC32 = erlang:crc32(SlotBin),
     FullBin = <<CRC32:32/integer, SlotBin/binary>>,
 
-    {<<Lengths/binary, PosBinIndex1/binary>>, FullBin, HashL}.
+    {<<Lengths/binary, PosBinIndex/binary>>, FullBin, HashL}.
 
 
 check_blocks([], _Handle, _Slot, _BlockLengths, _LedgerKey) ->
@@ -1078,8 +1089,25 @@ find_pos(<<0:1/integer, NHC:7/integer, T/binary>>, Hash, PosList, Count) ->
 %%% Merge Functions
 %%%============================================================================
 
-%% functions for merging two KV lists with pointers
-
+%% The source lists are merged into lists of slots before the file is created
+%% At Level zero, there will be a single source list - and this will always be
+%% split into standard size slots
+%%
+%% At lower levels there will be two source lists and they will need to be
+%% merged to ensure that the best conflicting answer survives and compactable
+%% KV pairs are discarded.
+%%
+%% At lower levels slots can be larger if there are no lookup keys present in
+%% the slot.  This is to slow the growth of the manifest/number-of-files when
+%% large numbers of index keys are present - as well as improving compression
+%% ratios in the Ledger.
+%%
+%% The outcome of merge_lists/1 and merge_lists/3 should be an list of slots.
+%% Each slot should be ordered by Key and be of the form {Flag, KVList}, where
+%% Flag can either be lookup or no-lookup.  The list of slots should also be
+%% ordered by Key (i.e. the first key in the slot)
+%%
+%% For merging  ...
 %% Compare the keys at the head of the list, and either skip that "best" key or
 %% identify as the next key.
 %%
@@ -1090,23 +1118,82 @@ find_pos(<<0:1/integer, NHC:7/integer, T/binary>>, Hash, PosList, Count) ->
 %% there are matching keys then the highest sequence number must be chosen and
 %% any lower sequence numbers should be compacted out of existence
 
-merge_lists(KeyList1, KeyList2, LevelInfo) ->
-    merge_lists(KeyList1, KeyList2, LevelInfo, [], ?MAX_SLOTS * ?SLOT_SIZE).
+merge_lists(KVList1) ->
+    SlotCount = length(KVList1) div ?SLOT_SIZE, 
+    split_lists(KVList1, [], SlotCount).
 
-merge_lists([], [], _LevelR, MergedList, _MaxSize) ->
-    {{[], []}, lists:reverse(MergedList)};
-merge_lists(Rem1, Rem2, _LevelR, MergedList, 0) ->
-    {{Rem1, Rem2}, lists:reverse(MergedList)};
-merge_lists(KeyList1, KeyList2, {IsBasement, TS}, MergedList, MaxSize) ->
-    case key_dominates(KeyList1, KeyList2, {IsBasement, TS}) of
-        {{next_key, TopKey}, Rem1, Rem2} ->
-            merge_lists(Rem1,
+split_lists([], SlotLists, 0) ->
+    lists:reverse(SlotLists);
+split_lists(LastPuff, SlotLists, 0) ->
+    lists:reverse([{lookup, LastPuff}|SlotLists]);
+split_lists(KVList1, SlotLists, N) ->
+    {Slot, KVListRem} = lists:split(?SLOT_SIZE, KVList1),
+    split_lists(KVListRem, [{lookup, Slot}|SlotLists], N - 1).
+
+merge_lists(KVList1, KVList2, LevelInfo) ->
+    merge_lists(KVList1, KVList2, LevelInfo, [], 0).
+
+merge_lists(KVList1, KVList2, _LI, SlotList, ?MAX_SLOTS) ->
+    {KVList1, KVList2, lists:reverse(SlotList)};
+merge_lists([], [], _LI, SlotList, _SlotCount) ->
+    {[], [], lists:reverse(SlotList)};
+merge_lists(KVList1, KVList2, LI, SlotList, SlotCount) ->
+    {KVRem1,
+        KVRem2,
+        Slot} = form_slot(KVList1, KVList2, LI, no_lookup, 0, []),
+    case Slot of
+        [] ->
+            merge_lists(KVRem1, KVRem2, LI, SlotList, SlotCount);
+        _ ->
+            merge_lists(KVRem1, KVRem2, LI, [Slot|SlotList], SlotCount + 1)
+    end.
+
+form_slot([], [], _LI, Type, _Size, Slot) ->
+    {[], [], {Type, lists:reverse(Slot)}};
+form_slot(KVList1, KVList2, _LI, lookup, ?SLOT_SIZE, Slot) ->
+    {KVList1, KVList2, {lookup, lists:reverse(Slot)}};
+form_slot(KVList1, KVList2, _LI, no_lookup, ?NOLOOK_SLOTSIZE, Slot) ->
+    {KVList1, KVList2, {no_lookup, lists:reverse(Slot)}};
+form_slot(KVList1, KVList2, {IsBasement, TS}, lookup, Size, Slot) ->
+    case key_dominates(KVList1, KVList2, {IsBasement, TS}) of
+        {{next_key, TopKV}, Rem1, Rem2} ->
+            form_slot(Rem1,
                         Rem2,
                         {IsBasement, TS},
-                        [TopKey|MergedList],
-                        MaxSize - 1);
+                        lookup,
+                        Size + 1,
+                        [TopKV|Slot]);
         {skipped_key, Rem1, Rem2} ->
-            merge_lists(Rem1, Rem2, {IsBasement, TS}, MergedList, MaxSize)
+            form_slot(Rem1, Rem2, {IsBasement, TS}, lookup, Size, Slot)
+    end;
+form_slot(KVList1, KVList2, {IsBasement, TS}, no_lookup, Size, Slot) ->
+    case key_dominates(KVList1, KVList2, {IsBasement, TS}) of
+        {{next_key, {TopK, TopV}}, Rem1, Rem2} ->
+            case leveled_codec:to_lookup(TopK) of
+                no_lookup ->
+                    form_slot(Rem1,
+                                Rem2,
+                                {IsBasement, TS},
+                                no_lookup,
+                                Size + 1,
+                                [{TopK, TopV}|Slot]);
+                lookup ->
+                    case Size >= ?SLOT_SIZE of
+                        true ->
+                            {KVList1,
+                                KVList2,
+                                {no_lookup, lists:reverse(Slot)}};
+                        false ->
+                            form_slot(Rem1,
+                                        Rem2,
+                                        {IsBasement, TS},
+                                        lookup,
+                                        Size + 1,
+                                        [{TopK, TopV}|Slot])
+                    end
+            end;        
+        {skipped_key, Rem1, Rem2} ->
+            form_slot(Rem1, Rem2, {IsBasement, TS}, lookup, Size, Slot)
     end.
 
 key_dominates(KL1, KL2, Level) ->
@@ -1255,7 +1342,7 @@ indexed_list_test() ->
 
     SW0 = os:timestamp(),
 
-    {_PosBinIndex1, FullBin, _HL} = generate_binary_slot(KVL1),
+    {_PosBinIndex1, FullBin, _HL} = generate_binary_slot(lookup, KVL1),
     io:format(user,
                 "Indexed list created slot in ~w microseconds of size ~w~n",
                 [timer:now_diff(os:timestamp(), SW0), byte_size(FullBin)]),
@@ -1283,7 +1370,7 @@ indexed_list_mixedkeys_test() ->
     KVL1 = lists:sublist(KVL0, 33),
     Keys = lists:ukeysort(1, generate_indexkeys(60) ++ KVL1),
 
-    {_PosBinIndex1, FullBin, _HL} = generate_binary_slot(Keys),
+    {_PosBinIndex1, FullBin, _HL} = generate_binary_slot(lookup, Keys),
 
     {TestK1, TestV1} = lists:nth(4, KVL1),
     MH1 = leveled_codec:magic_hash(TestK1),
@@ -1309,7 +1396,7 @@ indexed_list_mixedkeys2_test() ->
     IdxKeys2 = lists:ukeysort(1, generate_indexkeys(30)),
     % this isn't actually ordered correctly
     Keys = IdxKeys1 ++ KVL1 ++ IdxKeys2,
-    {_PosBinIndex1, FullBin, _HL} = generate_binary_slot(Keys),
+    {_PosBinIndex1, FullBin, _HL} = generate_binary_slot(lookup, Keys),
     lists:foreach(fun({K, V}) ->
                         MH = leveled_codec:magic_hash(K),
                         test_binary_slot(FullBin, K, MH, {K, V})
@@ -1318,7 +1405,7 @@ indexed_list_mixedkeys2_test() ->
 
 indexed_list_allindexkeys_test() ->
     Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(150)), 128),
-    {PosBinIndex1, FullBin, _HL} = generate_binary_slot(Keys),
+    {PosBinIndex1, FullBin, _HL} = generate_binary_slot(lookup, Keys),
     ?assertMatch(<<_BL:20/binary, 127:8/integer>>, PosBinIndex1),
     % SW = os:timestamp(),
     BinToList = binaryslot_tolist(FullBin),
@@ -1328,10 +1415,22 @@ indexed_list_allindexkeys_test() ->
     ?assertMatch(Keys, BinToList),
     ?assertMatch(Keys, binaryslot_trimmedlist(FullBin, all, all)).
 
+indexed_list_allindexkeys_nolookup_test() ->
+    Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(1000)),
+                            128 * ?NOLOOK_MULT),
+    {PosBinIndex1, FullBin, _HL} = generate_binary_slot(no_lookup, Keys),
+    ?assertMatch(<<_BL:20/binary, 127:8/integer>>, PosBinIndex1),
+    % SW = os:timestamp(),
+    BinToList = binaryslot_tolist(FullBin),
+    % io:format(user,
+    %             "Indexed list flattened in ~w microseconds ~n",
+    %             [timer:now_diff(os:timestamp(), SW)]),
+    ?assertMatch(Keys, BinToList),
+    ?assertMatch(Keys, binaryslot_trimmedlist(FullBin, all, all)).
 
 indexed_list_allindexkeys_trimmed_test() ->
     Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(150)), 128),
-    {PosBinIndex1, FullBin, _HL} = generate_binary_slot(Keys),
+    {PosBinIndex1, FullBin, _HL} = generate_binary_slot(lookup, Keys),
     ?assertMatch(<<_BL:20/binary, 127:8/integer>>, PosBinIndex1),
     ?assertMatch(Keys, binaryslot_trimmedlist(FullBin, 
                                                 {i, 
@@ -1369,7 +1468,7 @@ indexed_list_mixedkeys_bitflip_test() ->
     KVL0 = lists:ukeysort(1, generate_randomkeys(1, 50, 1, 4)),
     KVL1 = lists:sublist(KVL0, 33),
     Keys = lists:ukeysort(1, generate_indexkeys(60) ++ KVL1),
-    {_PosBinIndex1, FullBin, _HL} = generate_binary_slot(Keys),
+    {_PosBinIndex1, FullBin, _HL} = generate_binary_slot(lookup, Keys),
     L = byte_size(FullBin),
     Byte1 = random:uniform(L),
     <<PreB1:Byte1/binary, A:8/integer, PostByte1/binary>> = FullBin,
@@ -1423,16 +1522,12 @@ merge_test() ->
     ?assertMatch(ExpLK2, LK2),
     ML1 = [{next, #manifest_entry{owner = P1}, FK1}],
     ML2 = [{next, #manifest_entry{owner = P2}, FK2}],
-    {ok, P3, {{Rem1, Rem2}, FK3, LK3}} = sst_new("../test/",
-                                                    "level2_merge",
-                                                    ML1,
-                                                    ML2,
-                                                    false,
-                                                    2,
-                                                    N * 2),
+    NewR = sst_new("../test/", "level2_merge", ML1, ML2, false, 2, N * 2),
+    {ok, P3, {{Rem1, Rem2}, FK3, LK3}} = NewR,
     ?assertMatch([], Rem1),
     ?assertMatch([], Rem2),
     ?assertMatch(true, FK3 == min(FK1, FK2)),
+    io:format("LK1 ~w LK2 ~w LK3 ~w~n", [LK1, LK2, LK3]),
     ?assertMatch(true, LK3 == max(LK1, LK2)),
     io:format(user,
                 "Created and merged two files of size ~w in ~w microseconds~n",

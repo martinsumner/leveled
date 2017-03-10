@@ -61,7 +61,8 @@
         generate_uuid/0,
         integer_now/0,
         riak_extract_metadata/2,
-        magic_hash/1]).         
+        magic_hash/1,
+        to_lookup/1]).         
 
 -define(V1_VERS, 1).
 -define(MAGIC, 53). % riak_kv -> riak_object
@@ -72,6 +73,14 @@
 %% Hash function contains mysterious constants, some explanation here as to
 %% what they are -
 %% http://stackoverflow.com/questions/10696223/reason-for-5381-number-in-djb-hash-function
+
+to_lookup(Key) ->
+    case element(1, Key) of
+        ?IDX_TAG ->
+            no_lookup;
+        _ ->
+            lookup
+    end.
 
 magic_hash({?RIAK_TAG, Bucket, Key, _SubKey}) ->
     magic_hash({Bucket, Key});
