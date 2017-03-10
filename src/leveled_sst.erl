@@ -1193,7 +1193,7 @@ form_slot(KVList1, KVList2, {IsBasement, TS}, no_lookup, Size, Slot) ->
                     end
             end;        
         {skipped_key, Rem1, Rem2} ->
-            form_slot(Rem1, Rem2, {IsBasement, TS}, lookup, Size, Slot)
+            form_slot(Rem1, Rem2, {IsBasement, TS}, no_lookup, Size, Slot)
     end.
 
 key_dominates(KL1, KL2, Level) ->
