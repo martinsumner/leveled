@@ -1334,6 +1334,18 @@ generate_indexkeys(Count, IndexList) ->
     generate_indexkeys(Count - 1, IndexList ++ Changes).
 
 
+form_slot_test() ->
+    % If a skip key happens, mustn't switch to loookup by accident as could be
+    % over the expected size
+    SkippingKV = {{o, "B1", "K9999", null}, {9999, tomb, 1234567, {}}},
+    Slot = [{{o, "B1", "K5", null}, {5, active, 99234567, {}}}],
+    R1 = form_slot([SkippingKV], [],
+                    {true, 99999999},
+                    no_lookup,
+                    ?SLOT_SIZE + 1,
+                    Slot),
+    ?assertMatch({[], [], {no_lookup, Slot}}, R1).
+
 indexed_list_test() ->
     io:format(user, "~nIndexed list timing test:~n", []),
     N = 150,
