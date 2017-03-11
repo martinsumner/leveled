@@ -1142,7 +1142,7 @@ merge_lists(KVList1, KVList2, LI, SlotList, SlotCount) ->
         KVRem2,
         Slot} = form_slot(KVList1, KVList2, LI, no_lookup, 0, []),
     case Slot of
-        [] ->
+        {_, []} ->
             merge_lists(KVRem1, KVRem2, LI, SlotList, SlotCount);
         _ ->
             merge_lists(KVRem1, KVRem2, LI, [Slot|SlotList], SlotCount + 1)
@@ -1345,6 +1345,18 @@ form_slot_test() ->
                     ?SLOT_SIZE + 1,
                     Slot),
     ?assertMatch({[], [], {no_lookup, Slot}}, R1).
+
+merge_tombstonelist_test() ->
+    % Merge lists wiht nothing but tombstones
+    SkippingKV1 = {{o, "B1", "K9995", null}, {9995, tomb, 1234567, {}}},
+    SkippingKV2 = {{o, "B1", "K9996", null}, {9996, tomb, 1234567, {}}},
+    SkippingKV3 = {{o, "B1", "K9997", null}, {9997, tomb, 1234567, {}}},
+    SkippingKV4 = {{o, "B1", "K9998", null}, {9998, tomb, 1234567, {}}},
+    SkippingKV5 = {{o, "B1", "K9999", null}, {9999, tomb, 1234567, {}}},
+    R = merge_lists([SkippingKV1, SkippingKV3, SkippingKV5],
+                        [SkippingKV2, SkippingKV4],
+                        {true, 9999999}),
+    ?assertMatch({[], [], []}, R).
 
 indexed_list_test() ->
     io:format(user, "~nIndexed list timing test:~n", []),
