@@ -369,7 +369,6 @@ handle_call({push_mem, {PushedTree, PushedIdx, MinSQN, MaxSQN}},
                                         State#state.work_backlog]),
             {reply, returned, State};
         false ->
-            leveled_log:log("P0018", [ok, false, false]),
             gen_server:reply(From, ok),
             {noreply,
                 update_levelzero(State#state.levelzero_size,
