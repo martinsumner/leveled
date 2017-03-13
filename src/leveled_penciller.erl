@@ -341,7 +341,7 @@ init([PCLopts]) ->
     end.    
     
 
-handle_call({push_mem, {PushedTree, PushedIdx, MinSQN, MaxSQN}},
+handle_call({push_mem, {LedgerTable, PushedIdx, MinSQN, MaxSQN}},
                 From,
                 State=#state{is_snapshot=Snap}) when Snap == false ->
     % The push_mem process is as follows:
@@ -370,7 +370,16 @@ handle_call({push_mem, {PushedTree, PushedIdx, MinSQN, MaxSQN}},
             {reply, returned, State};
         false ->
             leveled_log:log("P0018", [ok, false, false]),
-            gen_server:reply(From, ok),
+            PushedTree =
+                case is_tuple(LedgerTable) of
+                    true ->
+                        LedgerTable;
+                    false ->
+                        leveled_tree:from_orderedset(LedgerTable,
+                                                        ?CACHE_TYPE)
+                end,
+            % Reply ust happen after the table has been converted
+            gen_server:reply(From, ok), 
             {noreply,
                 update_levelzero(State#state.levelzero_size,
                                     {PushedTree, PushedIdx, MinSQN, MaxSQN},
