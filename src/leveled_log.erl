@@ -166,7 +166,8 @@
     {"PC015",
         {info, "File created"}},
     {"PC016",
-        {info, "Slow fetch from SFT ~w of ~w microseconds with result ~w"}},
+        {info, "Slow fetch from SFT ~w of ~w microseconds at level ~w "
+                    ++ "with result ~w"}},
     {"PC017",
         {info, "Notified clerk of manifest change"}},
     {"PC018",
