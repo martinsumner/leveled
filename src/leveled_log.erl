@@ -267,7 +267,7 @@
     {"SST05",
         {warn, "Rename rogue filename ~s to ~s"}},
     {"SST06",
-        {info, "File ~s has been set for delete"}},
+        {debug, "File ~s has been set for delete"}},
     {"SST07",
         {info, "Exit called and now clearing ~s"}},
     {"SST08",
