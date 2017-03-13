@@ -198,31 +198,40 @@ compact_inkerkvc({_InkerKey, crc_wonky, false}, _Strategy) ->
 compact_inkerkvc({{_SQN, ?INKT_TOMB, _LK}, _V, _CrcCheck}, _Strategy) ->
     skip;
 compact_inkerkvc({{SQN, ?INKT_KEYD, LK}, V, CrcCheck}, Strategy) ->
-    {Tag, _, _, _} = LK,
-    {Tag, TagStrat} = lists:keyfind(Tag, 1, Strategy),
-    case TagStrat of
+    case get_tagstrategy(LK, Strategy) of
+        skip ->
+            skip;
         retain ->
             {retain, {{SQN, ?INKT_KEYD, LK}, V, CrcCheck}};
         TagStrat ->
             {TagStrat, null}
     end;
 compact_inkerkvc({{SQN, ?INKT_STND, LK}, V, CrcCheck}, Strategy) ->
-    {Tag, _, _, _} = LK,
-    case lists:keyfind(Tag, 1, Strategy) of
-        {Tag, TagStrat} ->
-            case TagStrat of
-                retain ->
-                    {_V, KeyDeltas} = split_inkvalue(V),    
-                    {TagStrat, {{SQN, ?INKT_KEYD, LK}, {null, KeyDeltas}, CrcCheck}}; 
-                TagStrat ->
-                    {TagStrat, null}
-            end;
-        false ->
-            leveled_log:log("IC012", [Tag, Strategy]),
-            skip
+    case get_tagstrategy(LK, Strategy) of
+        skip ->
+            skip;
+        retain ->
+            {_V, KeyDeltas} = split_inkvalue(V),    
+            {retain, {{SQN, ?INKT_KEYD, LK}, {null, KeyDeltas}, CrcCheck}};
+        TagStrat ->
+            {TagStrat, null}
     end;
 compact_inkerkvc(_KVC, _Strategy) ->
     skip.
+
+get_tagstrategy(LK, Strategy) ->
+    case LK of
+        {Tag, _, _, _} ->
+            case lists:keyfind(Tag, 1, Strategy) of
+                {Tag, TagStrat} ->
+                    TagStrat;
+                false ->
+                    leveled_log:log("IC012", [Tag, Strategy]),
+                    skip
+            end;
+        _ ->
+            skip
+    end.
 
 split_inkvalue(VBin) ->
     case is_binary(VBin) of
@@ -428,6 +437,26 @@ endkey_passed_test() ->
     ?assertMatch(false, endkey_passed(TestKey, K1)),
     ?assertMatch(true, endkey_passed(TestKey, K2)).
 
+
+corrupted_ledgerkey_test() ->
+    % When testing for compacted journal which has been corrupted, there may
+    % be a corruptes ledger key.  Always skip these keys
+    % Key has become a 3-tuple not a 4-tuple
+    TagStrat1 = compact_inkerkvc({{1,
+                                        ?INKT_STND,
+                                        {?STD_TAG, "B1", "K1andSK"}},
+                                    {},
+                                    true},
+                                    [{?STD_TAG, retain}]),
+    ?assertMatch(skip, TagStrat1),
+    TagStrat2 = compact_inkerkvc({{1,
+                                        ?INKT_KEYD,
+                                        {?STD_TAG, "B1", "K1andSK"}},
+                                    {},
+                                    true},
+                                    [{?STD_TAG, retain}]),
+    ?assertMatch(skip, TagStrat2).
+    
 
 %% Test below proved that the overhead of performing hashes was trivial
 %% Maybe 5 microseconds per hash
