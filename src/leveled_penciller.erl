@@ -378,7 +378,7 @@ handle_call({push_mem, {LedgerTable, PushedIdx, MinSQN, MaxSQN}},
                         leveled_tree:from_orderedset(LedgerTable,
                                                         ?CACHE_TYPE)
                 end,
-            % Reply ust happen after the table has been converted
+            % Reply must happen after the table has been converted
             gen_server:reply(From, ok), 
             {noreply,
                 update_levelzero(State#state.levelzero_size,
@@ -862,7 +862,7 @@ fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
     L0Check = leveled_pmem:check_levelzero(Key, Hash, PosList, L0Cache),
     case L0Check of
         {false, not_found} ->
-            fetch(Key, Hash, Manifest, 0, fun timed_sst_get/3);
+            fetch(Key, Hash, Manifest, 0, fun timed_sst_get/4);
         {true, KV} ->
             {KV, 0}
     end.
@@ -874,7 +874,7 @@ fetch(Key, Hash, Manifest, Level, FetchFun) ->
         false ->
             fetch(Key, Hash, Manifest, Level + 1, FetchFun);
         FP ->
-            case FetchFun(FP, Key, Hash) of
+            case FetchFun(FP, Key, Hash, Level) of
                 not_present ->
                     fetch(Key, Hash, Manifest, Level + 1, FetchFun);
                 ObjectFound ->
@@ -882,21 +882,21 @@ fetch(Key, Hash, Manifest, Level, FetchFun) ->
             end
     end.
     
-timed_sst_get(PID, Key, Hash) ->
+timed_sst_get(PID, Key, Hash, Level) ->
     SW = os:timestamp(),
     R = leveled_sst:sst_get(PID, Key, Hash),
     T0 = timer:now_diff(os:timestamp(), SW),
-    log_slowfetch(T0, R, PID, ?SLOW_FETCH).
+    log_slowfetch(T0, R, PID, Level, ?SLOW_FETCH).
 
-log_slowfetch(T0, R, PID, FetchTolerance) ->
+log_slowfetch(T0, R, PID, Level, FetchTolerance) ->
     case {T0, R} of
         {T, R} when T < FetchTolerance ->
             R;
         {T, not_present} ->
-            leveled_log:log("PC016", [PID, T, not_present]),
+            leveled_log:log("PC016", [PID, T, Level, not_present]),
             not_present;
         {T, R} ->
-            leveled_log:log("PC016", [PID, T, found]),
+            leveled_log:log("PC016", [PID, T, Level, found]),
             R
     end.
 
@@ -1507,7 +1507,7 @@ create_file_test() ->
     ?assertMatch("hello", binary_to_term(Bin)).
 
 slow_fetch_test() ->
-    ?assertMatch(not_present, log_slowfetch(2, not_present, "fake", 1)).
+    ?assertMatch(not_present, log_slowfetch(2, not_present, "fake", 0, 1)).
 
 checkready(Pid) ->
     try

@@ -166,7 +166,8 @@
     {"PC015",
         {info, "File created"}},
     {"PC016",
-        {info, "Slow fetch from SFT ~w of ~w microseconds with result ~w"}},
+        {info, "Slow fetch from SFT ~w of ~w microseconds at level ~w "
+                    ++ "with result ~w"}},
     {"PC017",
         {info, "Notified clerk of manifest change"}},
     {"PC018",
@@ -259,14 +260,14 @@
         {error, "False result returned from SST with filename ~s as "
                     ++ "slot ~w has failed crc check"}},
     {"SST03",
-        {info, "Opening SST file with filename ~s keys ~w slots ~w and"
+        {info, "Opening SST file with filename ~s slots ~w and"
                 ++ " max sqn ~w"}},
     {"SST04",
         {info, "Exit called for reason ~w on filename ~s"}},
     {"SST05",
         {warn, "Rename rogue filename ~s to ~s"}},
     {"SST06",
-        {info, "File ~s has been set for delete"}},
+        {debug, "File ~s has been set for delete"}},
     {"SST07",
         {info, "Exit called and now clearing ~s"}},
     {"SST08",
