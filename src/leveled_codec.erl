@@ -481,7 +481,28 @@ general_skip_strategy_test() ->
                                     {},
                                     true},
                                     [{?STD_TAG, skip}]),
-    ?assertMatch(skip, TagStrat2).
+    ?assertMatch(skip, TagStrat2),
+    TagStrat3 = compact_inkerkvc({{1,
+                                        ?INKT_KEYD,
+                                        {?IDX_TAG, "B1", "K1", "SK"}},
+                                    {},
+                                    true},
+                                    [{?STD_TAG, skip}]),
+    ?assertMatch(skip, TagStrat3),
+    TagStrat4 = compact_inkerkvc({{1,
+                                        ?INKT_KEYD,
+                                        {?IDX_TAG, "B1", "K1", "SK"}},
+                                    {},
+                                    true},
+                                    [{?STD_TAG, skip}, {?IDX_TAG, recalc}]),
+    ?assertMatch({recalc, null}, TagStrat4),
+    TagStrat5 = compact_inkerkvc({{1,
+                                        ?INKT_TOMB,
+                                        {?IDX_TAG, "B1", "K1", "SK"}},
+                                    {},
+                                    true},
+                                    [{?STD_TAG, skip}, {?IDX_TAG, recalc}]),
+    ?assertMatch(skip, TagStrat5).
     
 corrupted_inker_tag_test() ->
     % Confirm that we will skip on unknown inker tag
