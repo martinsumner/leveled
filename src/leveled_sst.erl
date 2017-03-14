@@ -68,7 +68,6 @@
 -define(SLOT_SIZE, 128). % This is not configurable
 -define(NOLOOK_MULT, 2). % How much bigger is a slot/block with no lookups 
 -define(NOLOOK_SLOTSIZE, ?SLOT_SIZE * ?NOLOOK_MULT).
--define(EMPTY_SLOTLIST, [{no_lookup, []}]).
 -define(COMPRESSION_LEVEL, 1).
 -define(BINARY_SETTINGS, [{compressed, ?COMPRESSION_LEVEL}]).
 % -define(LEVEL_BLOOM_BITS, [{0, 8}, {1, 10}, {2, 8}, {default, 6}]).
@@ -161,7 +160,7 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN) ->
 sst_new(RootPath, Filename, KVL1, KVL2, IsBasement, Level, MaxSQN) ->
     {Rem1, Rem2, SlotList, FK} = merge_lists(KVL1, KVL2, {IsBasement, Level}),
     case SlotList of
-        ?EMPTY_SLOTLIST ->
+        [] ->
             empty;
         _ ->
             {ok, Pid} = gen_fsm:start(?MODULE, [], []),
@@ -1138,8 +1137,6 @@ merge_lists(KVList1, KVList2, LevelInfo) ->
 
 merge_lists(KVList1, KVList2, _LI, SlotList, FirstKey, ?MAX_SLOTS) ->
     {KVList1, KVList2, lists:reverse(SlotList), FirstKey};
-merge_lists([], [], _LI, [], null, _SlotCount) ->
-    {[], [], ?EMPTY_SLOTLIST, null};
 merge_lists([], [], _LI, SlotList, FirstKey, _SlotCount) ->
     {[], [], lists:reverse(SlotList), FirstKey};
 merge_lists(KVList1, KVList2, LI, SlotList, FirstKey, SlotCount) ->
@@ -1391,7 +1388,7 @@ merge_tombstonelist_test() ->
     R = merge_lists([SkippingKV1, SkippingKV3, SkippingKV5],
                         [SkippingKV2, SkippingKV4],
                         {true, 9999999}),
-    ?assertMatch({[], [], ?EMPTY_SLOTLIST, null}, R).
+    ?assertMatch({[], [], [], null}, R).
 
 indexed_list_test() ->
     io:format(user, "~nIndexed list timing test:~n", []),
