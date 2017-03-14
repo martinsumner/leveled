@@ -465,7 +465,33 @@ corrupted_ledgerkey_test() ->
                                     true},
                                     [{?STD_TAG, retain}]),
     ?assertMatch(skip, TagStrat2).
+
+general_skip_strategy_test() ->
+    % Confirm that we will skip if the strategy says so
+    TagStrat1 = compact_inkerkvc({{1,
+                                        ?INKT_STND,
+                                        {?STD_TAG, "B1", "K1andSK"}},
+                                    {},
+                                    true},
+                                    [{?STD_TAG, skip}]),
+    ?assertMatch(skip, TagStrat1),
+    TagStrat2 = compact_inkerkvc({{1,
+                                        ?INKT_KEYD,
+                                        {?STD_TAG, "B1", "K1andSK"}},
+                                    {},
+                                    true},
+                                    [{?STD_TAG, skip}]),
+    ?assertMatch(skip, TagStrat2).
     
+corrupted_inker_tag_test() ->
+    % Confirm that we will skip on unknown inker tag
+    TagStrat1 = compact_inkerkvc({{1,
+                                        foo,
+                                        {?STD_TAG, "B1", "K1andSK"}},
+                                    {},
+                                    true},
+                                    [{?STD_TAG, retain}]),
+    ?assertMatch(skip, TagStrat1).
 
 %% Test below proved that the overhead of performing hashes was trivial
 %% Maybe 5 microseconds per hash
