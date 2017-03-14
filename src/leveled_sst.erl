@@ -1212,7 +1212,8 @@ form_slot(KVList1, KVList2, {IsBasement, TS}, no_lookup, Size, Slot, FK) ->
                         true ->
                             {KVList1,
                                 KVList2,
-                                {no_lookup, lists:reverse(Slot)}};
+                                {no_lookup, lists:reverse(Slot)},
+                                FK};
                         false ->
                             form_slot(Rem1,
                                         Rem2,
