@@ -71,7 +71,7 @@
 -define(COMPRESSION_LEVEL, 1).
 -define(BINARY_SETTINGS, [{compressed, ?COMPRESSION_LEVEL}]).
 % -define(LEVEL_BLOOM_BITS, [{0, 8}, {1, 10}, {2, 8}, {default, 6}]).
--define(MERGE_SCANWIDTH, 4).
+-define(MERGE_SCANWIDTH, 8).
 -define(DISCARD_EXT, ".discarded").
 -define(DELETE_TIMEOUT, 10000).
 -define(TREE_TYPE, idxt).
