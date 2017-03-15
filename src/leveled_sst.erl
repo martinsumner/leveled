@@ -1703,11 +1703,14 @@ additional_range_test() ->
                                     2 * ?NOLOOK_SLOTSIZE + Gap + 1),
     R4 = sst_getkvrange(P1, element(1, GapSKV), element(1, PastEKV), 2),
     ?assertMatch(IK2, R4),
+    R5 = sst_getkvrange(P1, SK, element(1, PastEKV), 2),
+    IKAll = IK1 ++ IK2,
+    ?assertMatch(IKAll, R5),
     
     % Testing at a slot end
     Slot1EK = element(1, lists:last(IK1)),
-    R5 = sst_getkvrange(P1, SK, Slot1EK, 2),
-    ?assertMatch(IK1, R5).
+    R6 = sst_getkvrange(P1, SK, Slot1EK, 2),
+    ?assertMatch(IK1, R6).
     
     
 
