@@ -454,6 +454,7 @@ fetch_range(StartKey, EndKey, ScanWidth, State) ->
     {Slots, RTrim} = lookup_slots(StartKey, EndKey, Summary#summary.index),
     Self = self(),
     SL = length(Slots),
+    
     ExpandedSlots = 
         case SL of
             0 ->
@@ -1357,14 +1358,16 @@ generate_indexkeys(Count) ->
 generate_indexkeys(0, IndexList) ->
     IndexList;
 generate_indexkeys(Count, IndexList) ->
-    IndexSpecs = [{add, "t1_int", random:uniform(80000)}],
-    Changes = leveled_codec:convert_indexspecs(IndexSpecs, 
-                                                "Bucket", 
-                                                "Key" ++ integer_to_list(Count), 
-                                                Count, 
-                                                infinity),
+    Changes = generate_indexkey(random:uniform(8000), Count),
     generate_indexkeys(Count - 1, IndexList ++ Changes).
 
+generate_indexkey(Term, Count) ->
+    IndexSpecs = [{add, "t1_int", Term}],
+    leveled_codec:convert_indexspecs(IndexSpecs, 
+                                        "Bucket", 
+                                        "Key" ++ integer_to_list(Count), 
+                                        Count, 
+                                        infinity).
 
 form_slot_test() ->
     % If a skip key happens, mustn't switch to loookup by accident as could be
@@ -1648,6 +1651,63 @@ simple_persisted_range_test() ->
     TL4 = lists:map(fun(EK) -> {SK4, EK} end, [EK2, EK3, EK4, EK5]),
     TL5 = lists:map(fun(EK) -> {SK5, EK} end, [EK2, EK3, EK4, EK5]),
     lists:foreach(TestFun, TL2 ++ TL3 ++ TL4 ++ TL5).                
+
+additional_range_test() ->
+    % Test fetching ranges that fall into odd situations with regards to the
+    % summayr index
+    % - ranges which fall between entries in summary
+    % - ranges which go beyond the end of the range of the sst
+    % - ranges which match to an end key in the summary index
+    IK1 = lists:foldl(fun(X, Acc) ->
+                            Acc ++ generate_indexkey(X, X)
+                        end,
+                        [],
+                        lists:seq(1, ?NOLOOK_SLOTSIZE)),
+    Gap = 2,
+    IK2 = lists:foldl(fun(X, Acc) ->
+                            Acc ++ generate_indexkey(X, X)
+                        end,
+                        [],
+                        lists:seq(?NOLOOK_SLOTSIZE + Gap + 1,
+                                    2 * ?NOLOOK_SLOTSIZE + Gap)),
+    {ok,
+        P1,
+        {{Rem1, Rem2},
+        SK,
+        EK}} = sst_new("../test/", "range1_src", IK1, IK2, false, 1, 9999),
+    ?assertMatch([], Rem1),
+    ?assertMatch([], Rem2),
+    ?assertMatch(SK, element(1, lists:nth(1, IK1))),
+    ?assertMatch(EK, element(1, lists:last(IK2))),
+    
+    % Basic test - checking scanwidth
+    R1 = sst_getkvrange(P1, SK, EK, 1),
+    ?assertMatch(?NOLOOK_SLOTSIZE + 1, length(R1)),
+    QR1 = lists:sublist(R1, ?NOLOOK_SLOTSIZE), 
+    ?assertMatch(IK1, QR1),
+    R2 = sst_getkvrange(P1, SK, EK, 2),
+    ?assertMatch(?NOLOOK_SLOTSIZE * 2, length(R2)),
+    QR2 = lists:sublist(R2, ?NOLOOK_SLOTSIZE),
+    QR3 = lists:sublist(R2, ?NOLOOK_SLOTSIZE + 1, 2 * ?NOLOOK_SLOTSIZE),
+    ?assertMatch(IK1, QR2),
+    ?assertMatch(IK2, QR3),
+    
+    % Testing the gap
+    [GapSKV] = generate_indexkey(?NOLOOK_SLOTSIZE + 1, ?NOLOOK_SLOTSIZE + 1),
+    [GapEKV] = generate_indexkey(?NOLOOK_SLOTSIZE + 2, ?NOLOOK_SLOTSIZE + 2),
+    R3 = sst_getkvrange(P1, element(1, GapSKV), element(1, GapEKV), 1),
+    ?assertMatch([], R3),
+    
+    % Testing beyond the range
+    [PastEKV] = generate_indexkey(2 * ?NOLOOK_SLOTSIZE + Gap + 1,
+                                    2 * ?NOLOOK_SLOTSIZE + Gap + 1),
+    R4 = sst_getkvrange(P1, element(1, GapSKV), element(1, PastEKV), 2),
+    ?assertMatch(IK2, R4),
+    
+    % Testing at a slot end
+    Slot1EK = element(1, lists:last(IK1)),
+    R5 = sst_getkvrange(P1, SK, Slot1EK, 2),
+    ?assertMatch(IK1, R5).
     
     
 
