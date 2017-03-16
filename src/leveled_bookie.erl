@@ -1181,7 +1181,7 @@ maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
     TimeToPush = maybe_withjitter(CacheSize, MaxCacheSize),
     if
         TimeToPush ->
-            CacheToLoad = {leveled_tree:from_orderedset(Tab, ?CACHE_TYPE),
+            CacheToLoad = {Tab,
                             Cache#ledger_cache.index,
                             Cache#ledger_cache.min_sqn,
                             Cache#ledger_cache.max_sqn},
