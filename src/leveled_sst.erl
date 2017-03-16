@@ -319,7 +319,7 @@ reader(get_maxsequencenumber, _From, State) ->
     Summary = State#state.summary,
     {reply, Summary#summary.max_sqn, reader, State};
 reader(print_timings, _From, State) ->
-    io:format(user, "Timings of ~w~n", [State#state.sst_timings]),
+    io:format(user, "~nTimings of ~w~n", [State#state.sst_timings]),
     {reply, ok, reader, State#state{sst_timings = undefined}};
 reader({set_for_delete, Penciller}, _From, State) ->
     leveled_log:log("SST06", [State#state.filename]),
@@ -1710,6 +1710,11 @@ additional_range_test() ->
     Slot1EK = element(1, lists:last(IK1)),
     R7 = sst_getkvrange(P1, SK, Slot1EK, 2),
     ?assertMatch(IK1, R7).
+    
+    % Testing beyond end (should never happen if manifest behaves)
+    % Test blows up anyway
+    % R8 = sst_getkvrange(P1, element(1, PastEKV), element(1, PastEKV), 2),
+    % ?assertMatch([], R8).
     
     
 
