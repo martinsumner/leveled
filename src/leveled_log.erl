@@ -134,7 +134,7 @@
     {"P0036",
         {info, "Garbage collection on manifest removes key for filename ~s"}},
     {"P0037",
-        {info, "Merging of penciller L0 tree from size ~w complete"}},
+        {debug, "Merging of penciller L0 tree from size ~w complete"}},
         
     {"PC001",
         {info, "Penciller's clerk ~w started with owner ~w"}},
