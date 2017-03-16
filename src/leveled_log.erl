@@ -66,7 +66,7 @@
     {"P0003",
         {debug, "Ledger snapshot ~w released"}},
     {"P0004",
-        {info, "Remaining ledger snapshots are ~w"}},
+        {debug, "Remaining ledger snapshots are ~w"}},
     {"P0005",
         {info, "Delete confirmed as file ~s is removed from Manifest"}},
     {"P0006",
