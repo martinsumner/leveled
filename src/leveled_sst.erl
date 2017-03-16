@@ -457,8 +457,6 @@ fetch_range(StartKey, EndKey, ScanWidth, State) ->
     
     ExpandedSlots = 
         case SL of
-            0 ->
-                [];
             1 ->
                 [Slot] = Slots,
                 case RTrim of
@@ -657,12 +655,7 @@ lookup_slots(StartKey, EndKey, Tree) ->
         end,
     SlotList = leveled_tree:search_range(StartKey, EndKey, Tree, StartKeyFun),
     {EK, _EndSlot} = lists:last(SlotList),
-    case EK of
-        EndKey ->
-            {lists:map(MapFun, SlotList), false};
-        _ ->
-            {lists:map(MapFun, SlotList), true}
-    end.
+    {lists:map(MapFun, SlotList), not leveled_codec:endkey_passed(EK, EndKey)}.
 
 
 %%%============================================================================
@@ -1706,11 +1699,17 @@ additional_range_test() ->
     R5 = sst_getkvrange(P1, SK, element(1, PastEKV), 2),
     IKAll = IK1 ++ IK2,
     ?assertMatch(IKAll, R5),
+    [MidREKV] = generate_indexkey(?NOLOOK_SLOTSIZE + Gap + 2,
+                                    ?NOLOOK_SLOTSIZE + Gap + 2),
+    io:format(user, "Mid second range to past range test~n", []),
+    R6 = sst_getkvrange(P1, element(1, MidREKV), element(1, PastEKV), 2),
+    Exp6 = lists:sublist(IK2, 2, length(IK2)),
+    ?assertMatch(Exp6, R6),
     
     % Testing at a slot end
     Slot1EK = element(1, lists:last(IK1)),
-    R6 = sst_getkvrange(P1, SK, Slot1EK, 2),
-    ?assertMatch(IK1, R6).
+    R7 = sst_getkvrange(P1, SK, Slot1EK, 2),
+    ?assertMatch(IK1, R7).
     
     
 
