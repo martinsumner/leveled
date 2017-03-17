@@ -201,7 +201,12 @@ sst_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
                             infinity).
 
 sst_getslots(Pid, SlotList) ->
-    gen_fsm:sync_send_event(Pid, {get_slots, SlotList}, infinity).
+    SlotBins = gen_fsm:sync_send_event(Pid, {get_slots, SlotList}, infinity),
+    FetchFun =
+        fun({SlotBin, SK, EK}, Acc) ->
+            Acc ++ binaryslot_trimmedlist(SlotBin, SK, EK)
+        end,
+    lists:foldl(FetchFun, [], SlotBins).
 
 sst_getmaxsequencenumber(Pid) ->
     gen_fsm:sync_send_event(Pid, get_maxsequencenumber, infinity).
@@ -310,11 +315,7 @@ reader({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
         State};
 reader({get_slots, SlotList}, _From, State) ->
     SlotBins = read_slots(State#state.handle, SlotList),
-    FetchFun =
-        fun({SlotBin, SK, EK}, Acc) ->
-            Acc ++ binaryslot_trimmedlist(SlotBin, SK, EK)
-        end,
-    {reply, lists:foldl(FetchFun, [], SlotBins), reader, State};
+    {reply, SlotBins, reader, State};
 reader(get_maxsequencenumber, _From, State) ->
     Summary = State#state.summary,
     {reply, Summary#summary.max_sqn, reader, State};
@@ -353,15 +354,7 @@ delete_pending({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
         ?DELETE_TIMEOUT};
 delete_pending({get_slots, SlotList}, _From, State) ->
     SlotBins = read_slots(State#state.handle, SlotList),
-    FetchFun =
-        fun({SlotBin, SK, EK}, Acc) ->
-            Acc ++ binaryslot_trimmedlist(SlotBin, SK, EK)
-        end,
-    {reply, 
-        lists:foldl(FetchFun, [], SlotBins),
-        delete_pending,
-        State,
-        ?DELETE_TIMEOUT};
+    {reply, SlotBins, delete_pending, State, ?DELETE_TIMEOUT};
 delete_pending(close, _From, State) ->
     leveled_log:log("SST07", [State#state.filename]),
     ok = file:close(State#state.handle),
