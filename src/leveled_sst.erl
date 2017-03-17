@@ -196,9 +196,15 @@ sst_get(Pid, LedgerKey, Hash) ->
     gen_fsm:sync_send_event(Pid, {get_kv, LedgerKey, Hash}, infinity).
 
 sst_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
-    gen_fsm:sync_send_event(Pid,
-                            {get_kvrange, StartKey, EndKey, ScanWidth},
-                            infinity).
+    Reply = gen_fsm:sync_send_event(Pid,
+                                    {get_kvrange, StartKey, EndKey, ScanWidth},
+                                    infinity),
+    FetchFun =
+        fun({SlotBin, SK, EK}, Acc) ->
+            Acc ++ binaryslot_trimmedlist(SlotBin, SK, EK)
+        end,
+    {SlotsToFetchBinList, SlotsToPoint} = Reply,
+    lists:foldl(FetchFun, [], SlotsToFetchBinList) ++ SlotsToPoint.
 
 sst_getslots(Pid, SlotList) ->
     SlotBins = gen_fsm:sync_send_event(Pid, {get_slots, SlotList}, infinity),
@@ -493,12 +499,7 @@ fetch_range(StartKey, EndKey, ScanWidth, State) ->
         end,
 
     SlotsToFetchBinList = read_slots(Handle, SlotsToFetch),
-
-    FetchFun =
-        fun({SlotBin, SK, EK}, Acc) ->
-            Acc ++ binaryslot_trimmedlist(SlotBin, SK, EK)
-        end,
-    lists:foldl(FetchFun, [], SlotsToFetchBinList) ++ SlotsToPoint.
+    {SlotsToFetchBinList, SlotsToPoint}.
 
 
 write_file(RootPath, Filename, SummaryBin, SlotsBin) ->
