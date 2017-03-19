@@ -1656,7 +1656,24 @@ additional_range_test() ->
     % R8 = sst_getkvrange(P1, element(1, PastEKV), element(1, PastEKV), 2),
     % ?assertMatch([], R8).
     
-    
+
+simple_persisted_slotsize_test() ->
+    {RP, Filename} = {"../test/", "simple_slotsize_test"},
+    KVList0 = generate_randomkeys(1, ?SLOT_SIZE * 2, 1, 20),
+    KVList1 = lists:sublist(lists:ukeysort(1, KVList0), ?SLOT_SIZE),
+    [{FirstKey, _FV}|_Rest] = KVList1,
+    {LastKey, _LV} = lists:last(KVList1),
+    {ok, Pid, {FirstKey, LastKey}} = sst_new(RP,
+                                                Filename,
+                                                1,
+                                                KVList1,
+                                                length(KVList1)),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sst_get(Pid, K))
+                        end,
+                    KVList1),
+    ok = sst_close(Pid),
+    ok = file:delete(filename:join(RP, Filename ++ ".sst")).
 
 simple_persisted_test() ->
     {RP, Filename} = {"../test/", "simple_test"},
