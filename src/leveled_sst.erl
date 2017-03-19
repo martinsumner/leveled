@@ -1111,15 +1111,6 @@ form_slot(KVList1, KVList2, _LI, no_lookup, ?NOLOOK_SLOTSIZE, Slot, FK) ->
     {KVList1, KVList2, {no_lookup, lists:reverse(Slot)}, FK};
 form_slot(KVList1, KVList2, {IsBasement, TS}, lookup, Size, Slot, FK) ->
     case {key_dominates(KVList1, KVList2, {IsBasement, TS}), FK} of
-        {{{next_key, TopKV}, Rem1, Rem2}, null} ->
-            {TopK, _TopV} = TopKV,
-            form_slot(Rem1,
-                        Rem2,
-                        {IsBasement, TS},
-                        lookup,
-                        Size + 1,
-                        [TopKV|Slot],
-                        TopK);
         {{{next_key, TopKV}, Rem1, Rem2}, _} ->
             form_slot(Rem1,
                         Rem2,
