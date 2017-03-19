@@ -909,41 +909,34 @@ binaryslot_trimmedlist(FullBin, StartKey, EndKey) ->
     LTrimFun = fun({K, _V}) -> K < StartKey end,
     RTrimFun = fun({K, _V}) -> not leveled_codec:endkey_passed(EndKey, K) end,
     BlockFetchFun = 
-        fun(Length, {Acc, Bin}) ->
-            case Length of 
-                0 ->
-                    {Acc, Bin};
-                _ ->
+        fun(Length, {Acc, Bin, Continue}) ->
+            case {Length, Continue} of 
+                {0, _} ->
+                    {Acc, Bin, false};
+                {_, true} ->
                     <<Block:Length/binary, Rest/binary>> = Bin,
                     BlockList = binary_to_term(Block),
-                    {FirstKey, _FV} = lists:nth(1, BlockList),
                     {LastKey, _LV} = lists:last(BlockList),
-                    TrimBools = trim_booleans(FirstKey, LastKey, 
-                                                StartKey, EndKey),
-                    case TrimBools of 
-                        {true, _, _, _} ->
-                            {Acc, Rest};
-                        {false, true, _, _} ->
-                            {Acc ++ BlockList, Rest};
-                        {false, false, true, false} ->
+                    case StartKey > LastKey of
+                        true ->
+                            {Acc, Rest, true};
+                        false ->
                             {_LDrop, RKeep} = lists:splitwith(LTrimFun, 
                                                                 BlockList),
-                            {Acc ++ RKeep, Rest};
-                        {false, false, false, true} ->
-                            {LKeep, _RDrop} = lists:splitwith(RTrimFun, 
-                                                                BlockList),
-                            {Acc ++ LKeep, Rest};
-                        {false, false, true, true} ->
-                            {_LDrop, RKeep} = lists:splitwith(LTrimFun, 
-                                                                BlockList),
-                            {LKeep, _RDrop} = lists:splitwith(RTrimFun, RKeep),
-                            {Acc ++ LKeep, Rest}
-                    end
-
+                            case leveled_codec:endkey_passed(EndKey, LastKey) of
+                                true ->
+                                    {LKeep, _RDrop} = lists:splitwith(RTrimFun, RKeep),
+                                    {Acc ++ LKeep, Rest, false};
+                                false ->
+                                    {Acc ++ RKeep, Rest, true}
+                            end
+                    end;
+                {_ , false} ->
+                    {Acc, Bin, false}
             end
         end,
 
-    {Out, _Rem} = 
+    {Out, _Rem, _Continue} = 
         case crc_check_slot(FullBin) of 
             {BlockLengths, RestBin} ->
                 <<B1P:32/integer,
@@ -952,50 +945,12 @@ binaryslot_trimmedlist(FullBin, StartKey, EndKey) ->
                     B3L:32/integer,
                     B4L:32/integer>> = BlockLengths,
                 <<_PosBinIndex:B1P/binary, Blocks/binary>> = RestBin,
-                lists:foldl(BlockFetchFun, {[], Blocks}, [B1L, B2L, B3L, B4L]);
+                lists:foldl(BlockFetchFun, {[], Blocks, true}, [B1L, B2L, B3L, B4L]);
             crc_wonky ->
-                {[], <<>>}
+                {[], <<>>, true}
         end,
     Out.
 
-
-trim_booleans(FirstKey, _LastKey, StartKey, all) ->
-    FirstKeyPassedStart = FirstKey > StartKey,
-    case FirstKeyPassedStart of 
-        true ->
-            {false, true, false, false};
-        false ->
-            {false, false, true, false}
-    end;
-trim_booleans(_FirstKey, LastKey, all, EndKey) ->
-    LastKeyPassedEnd = leveled_codec:endkey_passed(EndKey, LastKey),
-    case LastKeyPassedEnd of 
-        true ->
-            {false, false, false, true};
-        false ->
-            {false, true, false, false}
-        end;
-trim_booleans(FirstKey, LastKey, StartKey, EndKey) ->
-    FirstKeyPassedStart = FirstKey > StartKey,
-    PreRange = LastKey < StartKey,
-    PostRange = leveled_codec:endkey_passed(EndKey, FirstKey),
-    OutOfRange = PreRange or PostRange,
-    LastKeyPassedEnd = leveled_codec:endkey_passed(EndKey, LastKey),
-    case OutOfRange of 
-        true ->
-            {true, false, false, false};
-        false ->
-            case {FirstKeyPassedStart, LastKeyPassedEnd} of 
-                {true, false} ->
-                    {false, true, false, false};
-                {false, false} ->
-                    {false, false, true, false};
-                {true, true} ->
-                    {false, false, false, true};
-                {false, true} ->
-                    {false, false, true, true}
-            end 
-    end.
 
 
 crc_check_slot(FullBin) ->
