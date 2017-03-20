@@ -1188,8 +1188,9 @@ maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
             case leveled_penciller:pcl_pushmem(Penciller, CacheToLoad) of
                 ok ->
                     Cache0 = #ledger_cache{},
-                    true = ets:delete_all_objects(Tab),
-                    {ok, Cache0#ledger_cache{mem=Tab}};
+                    true = ets:delete(Tab),
+                    NewTab = ets:new(mem, [ordered_set]),
+                    {ok, Cache0#ledger_cache{mem=NewTab}};
                 returned ->
                     {returned, Cache}
             end;
