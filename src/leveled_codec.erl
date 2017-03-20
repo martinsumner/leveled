@@ -52,7 +52,8 @@
         compact_inkerkvc/2,
         split_inkvalue/1,
         check_forinkertype/2,
-        create_value_for_journal/1,
+        maybe_compress/1,
+        create_value_for_journal/2,
         build_metadata_object/2,
         generate_ledgerkv/5,
         get_size/2,
@@ -185,19 +186,91 @@ to_inkerkv(LedgerKey, SQN, to_fetch, null) ->
     {{SQN, ?INKT_STND, LedgerKey}, null, true};
 to_inkerkv(LedgerKey, SQN, Object, KeyChanges) ->
     InkerType = check_forinkertype(LedgerKey, Object),
-    Value = create_value_for_journal({Object, KeyChanges}),
+    Value = create_value_for_journal({Object, KeyChanges}, false),
     {{SQN, InkerType, LedgerKey}, Value}.
 
 %% Used when fetching objects, so only handles standard, hashable entries
 from_inkerkv(Object) ->
     case Object of
         {{SQN, ?INKT_STND, PK}, Bin} when is_binary(Bin) ->
-            {{SQN, PK}, binary_to_term(Bin)};
+            {{SQN, PK}, revert_value_from_journal(Bin)};
         {{SQN, ?INKT_STND, PK}, Term} ->
             {{SQN, PK}, Term};
         _ ->
             Object
     end.
+
+create_value_for_journal({Object, KeyChanges}, Compress) ->
+    KeyChangeBin = term_to_binary(KeyChanges, [compressed]),
+    KeyChangeBinLen = byte_size(KeyChangeBin),
+    ObjectBin = serialise_object(Object, Compress),
+    TypeCode = encode_valuetype(is_binary(Object), Compress),
+    <<ObjectBin/binary,
+        KeyChangeBin/binary,
+        KeyChangeBinLen:32/integer,
+        TypeCode:8/integer>>.
+
+maybe_compress({null, KeyChanges}) ->
+    create_value_for_journal({null, KeyChanges}, false);
+maybe_compress(JournalBin) ->
+    Length0 = byte_size(JournalBin) - 1,
+    <<JBin0:Length0/binary, Type:8/integer>> = JournalBin,
+    {IsBinary, IsCompressed} = decode_valuetype(Type),
+    case IsCompressed of
+        true ->
+            JournalBin;
+        false ->
+            V0 = revert_value_from_journal(JBin0, Length0, IsBinary, false),
+            create_value_for_journal(V0, true)
+    end.
+
+serialise_object(Object, false) when is_binary(Object) ->
+    Object;
+serialise_object(Object, true) when is_binary(Object) ->
+    zlib:compress(Object);
+serialise_object(Object, false) ->
+    term_to_binary(Object);
+serialise_object(Object, true) ->
+    term_to_binary(Object, [compressed]).
+
+revert_value_from_journal(JournalBin) ->
+    Length0 = byte_size(JournalBin) - 1,
+    <<JBin0:Length0/binary, Type:8/integer>> = JournalBin,
+    {IsBinary, IsCompressed} = decode_valuetype(Type),
+    revert_value_from_journal(JBin0, Length0, IsBinary, IsCompressed).
+    
+revert_value_from_journal(ValueBin, ValueLen, IsBinary, IsCompressed) ->
+    Length1 = ValueLen - 4,
+    <<JBin1:Length1/binary, KeyChangeLength:32/integer>> = ValueBin,
+    Length2 = Length1 - KeyChangeLength,
+    <<OBin2:Length2/binary, KCBin2:KeyChangeLength/binary>> = JBin1,
+    {deserialise_object(OBin2, IsBinary, IsCompressed),
+        binary_to_term(KCBin2)}.
+
+deserialise_object(Binary, true, true) ->
+    zlib:uncompress(Binary);
+deserialise_object(Binary, true, false) ->
+    Binary;
+deserialise_object(Binary, false, _) ->
+    binary_to_term(Binary).
+
+encode_valuetype(IsBinary, IsCompressed) ->
+    Bit2 =
+        case IsBinary of            
+            true -> 2;
+            false -> 0
+        end,
+    Bit1 =
+        case IsCompressed of
+            true -> 1;
+            false -> 0
+        end,
+    Bit1 + Bit2.
+
+decode_valuetype(TypeInt) ->
+    IsCompressed = TypeInt band 1 == 1,
+    IsBinary = TypeInt band 2 == 2,
+    {IsBinary, IsCompressed}.
 
 from_journalkey({SQN, _Type, LedgerKey}) ->
     {SQN, LedgerKey}.
@@ -220,7 +293,7 @@ compact_inkerkvc({{SQN, ?INKT_STND, LK}, V, CrcCheck}, Strategy) ->
         skip ->
             skip;
         retain ->
-            {_V, KeyDeltas} = split_inkvalue(V),    
+            {_V, KeyDeltas} = revert_value_from_journal(V),    
             {retain, {{SQN, ?INKT_KEYD, LK}, {null, KeyDeltas}, CrcCheck}};
         TagStrat ->
             {TagStrat, null}
@@ -245,7 +318,7 @@ get_tagstrategy(LK, Strategy) ->
 split_inkvalue(VBin) ->
     case is_binary(VBin) of
             true ->
-                binary_to_term(VBin);
+                revert_value_from_journal(VBin);
             false ->
                 VBin
         end.
@@ -254,14 +327,6 @@ check_forinkertype(_LedgerKey, delete) ->
     ?INKT_TOMB;
 check_forinkertype(_LedgerKey, _Object) ->
     ?INKT_STND.
-
-create_value_for_journal(Value) ->
-    case Value of
-        {Object, KeyChanges} ->
-            term_to_binary({Object, KeyChanges}, [compressed]);
-        Value when is_binary(Value) ->
-            Value
-    end.
 
 hash(Obj) ->
     erlang:phash2(term_to_binary(Obj)).
