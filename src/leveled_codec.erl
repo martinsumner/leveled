@@ -52,7 +52,8 @@
         compact_inkerkvc/2,
         split_inkvalue/1,
         check_forinkertype/2,
-        create_value_for_journal/1,
+        maybe_compress/1,
+        create_value_for_journal/2,
         build_metadata_object/2,
         generate_ledgerkv/5,
         get_size/2,
@@ -185,19 +186,91 @@ to_inkerkv(LedgerKey, SQN, to_fetch, null) ->
     {{SQN, ?INKT_STND, LedgerKey}, null, true};
 to_inkerkv(LedgerKey, SQN, Object, KeyChanges) ->
     InkerType = check_forinkertype(LedgerKey, Object),
-    Value = create_value_for_journal({Object, KeyChanges}),
+    Value = create_value_for_journal({Object, KeyChanges}, false),
     {{SQN, InkerType, LedgerKey}, Value}.
 
 %% Used when fetching objects, so only handles standard, hashable entries
 from_inkerkv(Object) ->
     case Object of
         {{SQN, ?INKT_STND, PK}, Bin} when is_binary(Bin) ->
-            {{SQN, PK}, binary_to_term(Bin)};
+            {{SQN, PK}, revert_value_from_journal(Bin)};
         {{SQN, ?INKT_STND, PK}, Term} ->
             {{SQN, PK}, Term};
         _ ->
             Object
     end.
+
+create_value_for_journal({Object, KeyChanges}, Compress) ->
+    KeyChangeBin = term_to_binary(KeyChanges, [compressed]),
+    KeyChangeBinLen = byte_size(KeyChangeBin),
+    ObjectBin = serialise_object(Object, Compress),
+    TypeCode = encode_valuetype(is_binary(Object), Compress),
+    <<ObjectBin/binary,
+        KeyChangeBin/binary,
+        KeyChangeBinLen:32/integer,
+        TypeCode:8/integer>>.
+
+maybe_compress({null, KeyChanges}) ->
+    create_value_for_journal({null, KeyChanges}, false);
+maybe_compress(JournalBin) ->
+    Length0 = byte_size(JournalBin) - 1,
+    <<JBin0:Length0/binary, Type:8/integer>> = JournalBin,
+    {IsBinary, IsCompressed} = decode_valuetype(Type),
+    case IsCompressed of
+        true ->
+            JournalBin;
+        false ->
+            V0 = revert_value_from_journal(JBin0, Length0, IsBinary, false),
+            create_value_for_journal(V0, true)
+    end.
+
+serialise_object(Object, false) when is_binary(Object) ->
+    Object;
+serialise_object(Object, true) when is_binary(Object) ->
+    zlib:compress(Object);
+serialise_object(Object, false) ->
+    term_to_binary(Object);
+serialise_object(Object, true) ->
+    term_to_binary(Object, [compressed]).
+
+revert_value_from_journal(JournalBin) ->
+    Length0 = byte_size(JournalBin) - 1,
+    <<JBin0:Length0/binary, Type:8/integer>> = JournalBin,
+    {IsBinary, IsCompressed} = decode_valuetype(Type),
+    revert_value_from_journal(JBin0, Length0, IsBinary, IsCompressed).
+    
+revert_value_from_journal(ValueBin, ValueLen, IsBinary, IsCompressed) ->
+    Length1 = ValueLen - 4,
+    <<JBin1:Length1/binary, KeyChangeLength:32/integer>> = ValueBin,
+    Length2 = Length1 - KeyChangeLength,
+    <<OBin2:Length2/binary, KCBin2:KeyChangeLength/binary>> = JBin1,
+    {deserialise_object(OBin2, IsBinary, IsCompressed),
+        binary_to_term(KCBin2)}.
+
+deserialise_object(Binary, true, true) ->
+    zlib:uncompress(Binary);
+deserialise_object(Binary, true, false) ->
+    Binary;
+deserialise_object(Binary, false, _) ->
+    binary_to_term(Binary).
+
+encode_valuetype(IsBinary, IsCompressed) ->
+    Bit2 =
+        case IsBinary of            
+            true -> 2;
+            false -> 0
+        end,
+    Bit1 =
+        case IsCompressed of
+            true -> 1;
+            false -> 0
+        end,
+    Bit1 + Bit2.
+
+decode_valuetype(TypeInt) ->
+    IsCompressed = TypeInt band 1 == 1,
+    IsBinary = TypeInt band 2 == 2,
+    {IsBinary, IsCompressed}.
 
 from_journalkey({SQN, _Type, LedgerKey}) ->
     {SQN, LedgerKey}.
@@ -220,7 +293,7 @@ compact_inkerkvc({{SQN, ?INKT_STND, LK}, V, CrcCheck}, Strategy) ->
         skip ->
             skip;
         retain ->
-            {_V, KeyDeltas} = split_inkvalue(V),    
+            {_V, KeyDeltas} = revert_value_from_journal(V),    
             {retain, {{SQN, ?INKT_KEYD, LK}, {null, KeyDeltas}, CrcCheck}};
         TagStrat ->
             {TagStrat, null}
@@ -245,7 +318,7 @@ get_tagstrategy(LK, Strategy) ->
 split_inkvalue(VBin) ->
     case is_binary(VBin) of
             true ->
-                binary_to_term(VBin);
+                revert_value_from_journal(VBin);
             false ->
                 VBin
         end.
@@ -254,14 +327,6 @@ check_forinkertype(_LedgerKey, delete) ->
     ?INKT_TOMB;
 check_forinkertype(_LedgerKey, _Object) ->
     ?INKT_STND.
-
-create_value_for_journal(Value) ->
-    case Value of
-        {Object, KeyChanges} ->
-            term_to_binary({Object, KeyChanges}, [compressed]);
-        Value when is_binary(Value) ->
-            Value
-    end.
 
 hash(Obj) ->
     erlang:phash2(term_to_binary(Obj)).
@@ -368,8 +433,7 @@ riak_extract_metadata(ObjBin, Size) ->
 %% <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
 %%%     VclockBin/binary, SibCount:32/integer, SibsBin/binary>>.
 
-riak_metadata_to_binary(Vclock, SibData) ->
-    VclockBin = term_to_binary(Vclock),
+riak_metadata_to_binary(VclockBin, SibData) ->
     VclockLen = byte_size(VclockBin),
     % <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
     %         VclockBin:VclockLen/binary, SibData:32/integer>>.
@@ -390,7 +454,7 @@ riak_metadata_from_binary(V1Binary) ->
             SC when is_integer(SC) ->
                 get_metadata_from_siblings(SibsBin, SibCount, [])
         end,
-    {binary_to_term(VclockBin), SibMetaBinList}.
+    {VclockBin, SibMetaBinList}.
 
 % Fixes the value length for each sibling to be zero, and so includes no value
 slimbin_content(MetaBin) ->
@@ -517,11 +581,26 @@ corrupted_inker_tag_test() ->
 %% Test below proved that the overhead of performing hashes was trivial
 %% Maybe 5 microseconds per hash
 
-%hashperf_test() ->
-%    OL = lists:map(fun(_X) -> crypto:rand_bytes(8192) end, lists:seq(1, 10000)),
-%    SW = os:timestamp(),
-%    _HL = lists:map(fun(Obj) -> erlang:phash2(Obj) end, OL),
-%    io:format(user, "10000 object hashes in ~w microseconds~n",
-%                [timer:now_diff(os:timestamp(), SW)]).
+hashperf_test() ->
+    OL = lists:map(fun(_X) -> crypto:rand_bytes(8192) end, lists:seq(1, 1000)),
+    SW = os:timestamp(),
+    _HL = lists:map(fun(Obj) -> erlang:phash2(Obj) end, OL),
+    io:format(user, "1000 object hashes in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SW)]).
+
+magichashperf_test() ->
+    KeyFun =
+        fun(X) ->
+            K = {o, "Bucket", "Key" ++ integer_to_list(X), null},
+            {K, X}
+        end,
+    KL = lists:map(KeyFun, lists:seq(1, 1000)),
+    {TimeMH, _HL1} = timer:tc(lists, map, [fun(K) -> magic_hash(K) end, KL]),
+    io:format(user, "1000 keys magic hashed in ~w microseconds~n", [TimeMH]),
+    {TimePH, _Hl2} = timer:tc(lists, map, [fun(K) -> erlang:phash2(K) end, KL]),
+    io:format(user, "1000 keys phash2 hashed in ~w microseconds~n", [TimePH]),
+    {TimeMH2, _HL1} = timer:tc(lists, map, [fun(K) -> magic_hash(K) end, KL]),
+    io:format(user, "1000 keys magic hashed in ~w microseconds~n", [TimeMH2]).
+
 
 -endif.

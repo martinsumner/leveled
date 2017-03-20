@@ -490,7 +490,8 @@ write_values([], _CDBopts, Journal0, ManSlice0) ->
     {Journal0, ManSlice0};
 write_values(KVCList, CDBopts, Journal0, ManSlice0) ->
     KVList = lists:map(fun({K, V, _C}) ->
-                            {K, leveled_codec:create_value_for_journal(V)}
+                            % Compress the value as part of compaction
+                            {K, leveled_codec:maybe_compress(V)}
                             end,
                         KVCList),
     {ok, Journal1} = case Journal0 of
@@ -639,11 +640,13 @@ test_ledgerkey(Key) ->
     {o, "Bucket", Key, null}.
 
 test_inkerkv(SQN, Key, V, IdxSpecs) ->
-    {{SQN, ?INKT_STND, test_ledgerkey(Key)}, term_to_binary({V, IdxSpecs})}.
+    leveled_codec:to_inkerkv(test_ledgerkey(Key), SQN, V, IdxSpecs).
 
 fetch_testcdb(RP) ->
     FN1 = leveled_inker:filepath(RP, 1, new_journal),
-    {ok, CDB1} = leveled_cdb:cdb_open_writer(FN1, #cdb_options{}),
+    {ok,
+        CDB1} = leveled_cdb:cdb_open_writer(FN1,
+                                            #cdb_options{binary_mode=true}),
     {K1, V1} = test_inkerkv(1, "Key1", "Value1", []),
     {K2, V2} = test_inkerkv(2, "Key2", "Value2", []),
     {K3, V3} = test_inkerkv(3, "Key3", "Value3", []),
@@ -661,7 +664,7 @@ fetch_testcdb(RP) ->
     ok = leveled_cdb:cdb_put(CDB1, K7, V7),
     ok = leveled_cdb:cdb_put(CDB1, K8, V8),
     {ok, FN2} = leveled_cdb:cdb_complete(CDB1),
-    leveled_cdb:cdb_open_reader(FN2).
+    leveled_cdb:cdb_open_reader(FN2, #cdb_options{binary_mode=true}).
 
 check_single_file_test() ->
     RP = "../test/journal",
@@ -718,7 +721,7 @@ compact_single_file_recovr_test() ->
         CDB} = compact_single_file_setup(),
     [{LowSQN, FN, PidR, _LastKey}] =
         compact_files([Candidate],
-                        #cdb_options{file_path=CompactFP},
+                        #cdb_options{file_path=CompactFP, binary_mode=true},
                         LedgerFun1,
                         LedgerSrv1,
                         9,
@@ -738,11 +741,11 @@ compact_single_file_recovr_test() ->
                                                 {1,
                                                     stnd,
                                                     test_ledgerkey("Key1")})),
-    {_RK1, RV1} = leveled_cdb:cdb_get(PidR,
-                                        {2,
-                                            stnd,
-                                            test_ledgerkey("Key2")}),
-    ?assertMatch({"Value2", []}, binary_to_term(RV1)),
+    RKV1 = leveled_cdb:cdb_get(PidR,
+                                {2,
+                                    stnd,
+                                    test_ledgerkey("Key2")}),
+    ?assertMatch({{_, _}, {"Value2", []}}, leveled_codec:from_inkerkv(RKV1)),
     ok = leveled_cdb:cdb_deletepending(CDB),
     ok = leveled_cdb:cdb_destroy(CDB).
 
@@ -755,7 +758,7 @@ compact_single_file_retain_test() ->
         CDB} = compact_single_file_setup(),
     [{LowSQN, FN, PidR, _LK}] =
         compact_files([Candidate],
-                        #cdb_options{file_path=CompactFP},
+                        #cdb_options{file_path=CompactFP, binary_mode=true},
                         LedgerFun1,
                         LedgerSrv1,
                         9,
@@ -775,11 +778,11 @@ compact_single_file_retain_test() ->
                                                 {1,
                                                     stnd,
                                                     test_ledgerkey("Key1")})),
-    {_RK1, RV1} = leveled_cdb:cdb_get(PidR,
+    RKV1 = leveled_cdb:cdb_get(PidR,
                                         {2,
                                             stnd,
                                             test_ledgerkey("Key2")}),
-    ?assertMatch({"Value2", []}, binary_to_term(RV1)),
+    ?assertMatch({{_, _}, {"Value2", []}}, leveled_codec:from_inkerkv(RKV1)),
     ok = leveled_cdb:cdb_deletepending(CDB),
     ok = leveled_cdb:cdb_destroy(CDB).
 
@@ -815,10 +818,9 @@ compact_singlefile_totwosmallfiles_test() ->
     {ok, CDB1} = leveled_cdb:cdb_open_writer(FN1, CDBoptsLarge),
     lists:foreach(fun(X) ->
                         LK = test_ledgerkey("Key" ++ integer_to_list(X)),
-                        Value = term_to_binary({crypto:rand_bytes(1024), []}),
-                        ok = leveled_cdb:cdb_put(CDB1,
-                                                    {X, ?INKT_STND, LK},
-                                                    Value)
+                        Value = crypto:rand_bytes(1024),
+                        {IK, IV} = leveled_codec:to_inkerkv(LK, X, Value, []),
+                        ok = leveled_cdb:cdb_put(CDB1, IK, IV)
                         end,
                     lists:seq(1, 1000)),
     {ok, NewName} = leveled_cdb:cdb_complete(CDB1),

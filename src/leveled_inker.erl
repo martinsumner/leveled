@@ -724,6 +724,9 @@ initiate_penciller_snapshot(Bookie) ->
 
 -ifdef(TEST).
 
+create_value_for_journal(Obj, Comp) ->
+    leveled_codec:create_value_for_journal(Obj, Comp).
+
 build_dummy_journal() ->
     F = fun(X) -> X end,
     build_dummy_journal(F).
@@ -740,8 +743,12 @@ build_dummy_journal(KeyConvertF) ->
     {ok, J1} = leveled_cdb:cdb_open_writer(F1),
     {K1, V1} = {KeyConvertF("Key1"), "TestValue1"},
     {K2, V2} = {KeyConvertF("Key2"), "TestValue2"},
-    ok = leveled_cdb:cdb_put(J1, {1, stnd, K1}, term_to_binary({V1, []})),
-    ok = leveled_cdb:cdb_put(J1, {2, stnd, K2}, term_to_binary({V2, []})),
+    ok = leveled_cdb:cdb_put(J1,
+                                {1, stnd, K1},
+                                create_value_for_journal({V1, []}, false)),
+    ok = leveled_cdb:cdb_put(J1,
+                                {2, stnd, K2},
+                                create_value_for_journal({V2, []}, false)),
     ok = leveled_cdb:cdb_roll(J1),
     LK1 = leveled_cdb:cdb_lastkey(J1),
     lists:foldl(fun(X, Closed) ->
@@ -760,8 +767,12 @@ build_dummy_journal(KeyConvertF) ->
     {ok, J2} = leveled_cdb:cdb_open_writer(F2),
     {K1, V3} = {KeyConvertF("Key1"), "TestValue3"},
     {K4, V4} = {KeyConvertF("Key4"), "TestValue4"},
-    ok = leveled_cdb:cdb_put(J2, {3, stnd, K1}, term_to_binary({V3, []})),
-    ok = leveled_cdb:cdb_put(J2, {4, stnd, K4}, term_to_binary({V4, []})),
+    ok = leveled_cdb:cdb_put(J2,
+                                {3, stnd, K1},
+                                create_value_for_journal({V3, []}, false)),
+    ok = leveled_cdb:cdb_put(J2,
+                                {4, stnd, K4},
+                                create_value_for_journal({V4, []}, false)),
     LK2 = leveled_cdb:cdb_lastkey(J2),
     ok = leveled_cdb:cdb_close(J2),
     Manifest = [{1, "../test/journal/journal_files/nursery_1", "pid1", LK1},
@@ -794,20 +805,22 @@ clean_subdir(DirPath) ->
 simple_inker_test() ->
     RootPath = "../test/journal",
     build_dummy_journal(),
-    CDBopts = #cdb_options{max_size=300000},
+    CDBopts = #cdb_options{max_size=300000, binary_mode=true},
     {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,
                                             cdb_options=CDBopts}),
     Obj1 = ink_get(Ink1, "Key1", 1),
     ?assertMatch({{1, "Key1"}, {"TestValue1", []}}, Obj1),
-    Obj2 = ink_get(Ink1, "Key4", 4),
-    ?assertMatch({{4, "Key4"}, {"TestValue4", []}}, Obj2),
+    Obj3 = ink_get(Ink1, "Key1", 3),
+    ?assertMatch({{3, "Key1"}, {"TestValue3", []}}, Obj3),
+    Obj4 = ink_get(Ink1, "Key4", 4),
+    ?assertMatch({{4, "Key4"}, {"TestValue4", []}}, Obj4),
     ink_close(Ink1),
     clean_testdir(RootPath).
 
 simple_inker_completeactivejournal_test() ->
     RootPath = "../test/journal",
     build_dummy_journal(),
-    CDBopts = #cdb_options{max_size=300000},
+    CDBopts = #cdb_options{max_size=300000, binary_mode=true},
     JournalFP = filepath(RootPath, journal_dir),
     F2 = filename:join(JournalFP, "nursery_3.pnd"),
     {ok, PidW} = leveled_cdb:cdb_open_writer(F2),
