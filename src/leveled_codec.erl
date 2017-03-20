@@ -581,11 +581,26 @@ corrupted_inker_tag_test() ->
 %% Test below proved that the overhead of performing hashes was trivial
 %% Maybe 5 microseconds per hash
 
-%hashperf_test() ->
-%    OL = lists:map(fun(_X) -> crypto:rand_bytes(8192) end, lists:seq(1, 10000)),
-%    SW = os:timestamp(),
-%    _HL = lists:map(fun(Obj) -> erlang:phash2(Obj) end, OL),
-%    io:format(user, "10000 object hashes in ~w microseconds~n",
-%                [timer:now_diff(os:timestamp(), SW)]).
+hashperf_test() ->
+    OL = lists:map(fun(_X) -> crypto:rand_bytes(8192) end, lists:seq(1, 1000)),
+    SW = os:timestamp(),
+    _HL = lists:map(fun(Obj) -> erlang:phash2(Obj) end, OL),
+    io:format(user, "1000 object hashes in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SW)]).
+
+magichashperf_test() ->
+    KeyFun =
+        fun(X) ->
+            K = {o, "Bucket", "Key" ++ integer_to_list(X), null},
+            {K, X}
+        end,
+    KL = lists:map(KeyFun, lists:seq(1, 1000)),
+    {TimeMH, _HL1} = timer:tc(lists, map, [fun(K) -> magic_hash(K) end, KL]),
+    io:format(user, "1000 keys magic hashed in ~w microseconds~n", [TimeMH]),
+    {TimePH, _Hl2} = timer:tc(lists, map, [fun(K) -> erlang:phash2(K) end, KL]),
+    io:format(user, "1000 keys phash2 hashed in ~w microseconds~n", [TimePH]),
+    {TimeMH2, _HL1} = timer:tc(lists, map, [fun(K) -> magic_hash(K) end, KL]),
+    io:format(user, "1000 keys magic hashed in ~w microseconds~n", [TimeMH2]).
+
 
 -endif.
