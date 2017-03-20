@@ -433,8 +433,7 @@ riak_extract_metadata(ObjBin, Size) ->
 %% <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
 %%%     VclockBin/binary, SibCount:32/integer, SibsBin/binary>>.
 
-riak_metadata_to_binary(Vclock, SibData) ->
-    VclockBin = term_to_binary(Vclock),
+riak_metadata_to_binary(VclockBin, SibData) ->
     VclockLen = byte_size(VclockBin),
     % <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
     %         VclockBin:VclockLen/binary, SibData:32/integer>>.
@@ -455,7 +454,7 @@ riak_metadata_from_binary(V1Binary) ->
             SC when is_integer(SC) ->
                 get_metadata_from_siblings(SibsBin, SibCount, [])
         end,
-    {binary_to_term(VclockBin), SibMetaBinList}.
+    {VclockBin, SibMetaBinList}.
 
 % Fixes the value length for each sibling to be zero, and so includes no value
 slimbin_content(MetaBin) ->
