@@ -355,8 +355,16 @@ delete_pending({get_kv, LedgerKey, Hash}, _From, State) ->
     {Result, _Stage, _SlotID, UpdState} = fetch(LedgerKey, Hash, State),
     {reply, Result, delete_pending, UpdState, ?DELETE_TIMEOUT};
 delete_pending({get_kvrange, StartKey, EndKey, ScanWidth}, _From, State) ->
+    FetchFun =
+        fun({SlotBin, SK, EK}, Acc) ->
+            Acc ++ binaryslot_trimmedlist(SlotBin, SK, EK)
+        end,
+    {SlotsToFetchBinList, SlotsToPoint} = fetch_range(StartKey,
+                                                        EndKey,
+                                                        ScanWidth,
+                                                        State),
     {reply,
-        fetch_range(StartKey, EndKey, ScanWidth, State),
+        lists:foldl(FetchFun, [], SlotsToFetchBinList) ++ SlotsToPoint,
         delete_pending,
         State,
         ?DELETE_TIMEOUT};
