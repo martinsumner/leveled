@@ -364,6 +364,7 @@ rolling({return_hashtable, IndexList, HashTreeBin}, _From, State) ->
     file:close(Handle),
     ok = rename_for_read(State#state.filename, NewName),
     leveled_log:log("CDB03", [NewName]),
+    ets:delete(State#state.hashtree),
     {NewHandle, Index, LastKey} = open_for_readonly(NewName,
                                                     State#state.last_key),
     case State#state.deferred_delete of
