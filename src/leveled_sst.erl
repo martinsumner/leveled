@@ -65,9 +65,10 @@
 -include("include/leveled.hrl").
 
 -define(MAX_SLOTS, 256).
--define(SLOT_SIZE, 128). % This is not configurable
--define(NOLOOK_MULT, 2). % How much bigger is a slot/block with no lookups 
--define(NOLOOK_SLOTSIZE, ?SLOT_SIZE * ?NOLOOK_MULT).
+-define(LOOK_SLOTSIZE, 128).
+-define(LOOK_BLOCKSIZE, {28, 16}). % This is not configurable
+-define(NOLOOK_SLOTSIZE, 256).
+-define(NOLOOK_BLOCKSIZE, {56, 32}). % This is not configurable
 -define(COMPRESSION_LEVEL, 1).
 -define(BINARY_SETTINGS, [{compressed, ?COMPRESSION_LEVEL}]).
 % -define(LEVEL_BLOOM_BITS, [{0, 8}, {1, 10}, {2, 8}, {default, 6}]).
@@ -427,7 +428,7 @@ fetch(LedgerKey, Hash, State) ->
                         slot_fetch, 
                         Slot#slot_index_value.slot_id,
                         State#state{blockindex_cache = BlockIndexCache}};
-                <<BlockLengths:20/binary, BlockIdx/binary>> ->
+                <<BlockLengths:24/binary, BlockIdx/binary>> ->
                     PosList = find_pos(BlockIdx, 
                                         double_hash(Hash, LedgerKey), 
                                         [], 
@@ -730,43 +731,56 @@ generate_binary_slot(Lookup, KVL) ->
                 {[], <<0:1/integer, 127:7/integer>>}
         end,
 
-    BlockSize =
+    {SideBlockSize, MidBlockSize} =
         case Lookup of
             lookup ->
-                ?SLOT_SIZE div 4;
+                ?LOOK_BLOCKSIZE;
             no_lookup ->
-                ?NOLOOK_SLOTSIZE div 4
+                ?NOLOOK_BLOCKSIZE
         end,
-            
 
-    {B1, B2, B3, B4} = 
+    {B1, B2, B3, B4, B5} = 
         case length(KVL) of 
-            L when L =< BlockSize ->
+            L when L =< SideBlockSize ->
                 {term_to_binary(KVL, ?BINARY_SETTINGS),
                     <<0:0>>, 
                     <<0:0>>, 
+                    <<0:0>>,
                     <<0:0>>};
-            L when L =< 2 * BlockSize ->
-                {KVLA, KVLB} = lists:split(BlockSize, KVL),
+            L when L =< 2 * SideBlockSize ->
+                {KVLA, KVLB} = lists:split(SideBlockSize, KVL),
                 {term_to_binary(KVLA, ?BINARY_SETTINGS),
                     term_to_binary(KVLB, ?BINARY_SETTINGS),
                     <<0:0>>, 
+                    <<0:0>>,
                     <<0:0>>};
-            L when L =< 3 * BlockSize ->
-                {KVLA, KVLB_Rest} = lists:split(BlockSize, KVL),
-                {KVLB, KVLC} = lists:split(BlockSize, KVLB_Rest),
+            L when L =< (2 * SideBlockSize + MidBlockSize) ->
+                {KVLA, KVLB_Rest} = lists:split(SideBlockSize, KVL),
+                {KVLB, KVLC} = lists:split(SideBlockSize, KVLB_Rest),
                 {term_to_binary(KVLA, ?BINARY_SETTINGS),
                     term_to_binary(KVLB, ?BINARY_SETTINGS),
                     term_to_binary(KVLC, ?BINARY_SETTINGS),
+                    <<0:0>>,
                     <<0:0>>};
-            L when L =< 4 * BlockSize ->
-                {KVLA, KVLB_Rest} = lists:split(BlockSize, KVL),
-                {KVLB, KVLC_Rest} = lists:split(BlockSize, KVLB_Rest),
-                {KVLC, KVLD} = lists:split(BlockSize, KVLC_Rest),
+            L when L =< (3 * SideBlockSize + MidBlockSize) ->
+                {KVLA, KVLB_Rest} = lists:split(SideBlockSize, KVL),
+                {KVLB, KVLC_Rest} = lists:split(SideBlockSize, KVLB_Rest),
+                {KVLC, KVLD} = lists:split(MidBlockSize, KVLC_Rest),
                 {term_to_binary(KVLA, ?BINARY_SETTINGS),
                     term_to_binary(KVLB, ?BINARY_SETTINGS),
                     term_to_binary(KVLC, ?BINARY_SETTINGS),
-                    term_to_binary(KVLD, ?BINARY_SETTINGS)}
+                    term_to_binary(KVLD, ?BINARY_SETTINGS),
+                    <<0:0>>};
+            L when L =< (4 * SideBlockSize + MidBlockSize) ->
+                {KVLA, KVLB_Rest} = lists:split(SideBlockSize, KVL),
+                {KVLB, KVLC_Rest} = lists:split(SideBlockSize, KVLB_Rest),
+                {KVLC, KVLD_Rest} = lists:split(MidBlockSize, KVLC_Rest),
+                {KVLD, KVLE} = lists:split(SideBlockSize, KVLD_Rest),
+                {term_to_binary(KVLA, ?BINARY_SETTINGS),
+                    term_to_binary(KVLB, ?BINARY_SETTINGS),
+                    term_to_binary(KVLC, ?BINARY_SETTINGS),
+                    term_to_binary(KVLD, ?BINARY_SETTINGS),
+                    term_to_binary(KVLE, ?BINARY_SETTINGS)}
         end,
 
     B1P = byte_size(PosBinIndex),
@@ -774,14 +788,16 @@ generate_binary_slot(Lookup, KVL) ->
     B2L = byte_size(B2),
     B3L = byte_size(B3),
     B4L = byte_size(B4),
+    B5L = byte_size(B5),
     Lengths = <<B1P:32/integer,
                 B1L:32/integer, 
                 B2L:32/integer, 
                 B3L:32/integer, 
-                B4L:32/integer>>,
+                B4L:32/integer,
+                B5L:32/integer>>,
     SlotBin = <<Lengths/binary, 
                 PosBinIndex/binary, 
-                B1/binary, B2/binary, B3/binary, B4/binary>>,
+                B1/binary, B2/binary, B3/binary, B4/binary, B5/binary>>,
     CRC32 = erlang:crc32(SlotBin),
     FullBin = <<CRC32:32/integer, SlotBin/binary>>,
     
@@ -811,8 +827,8 @@ read_block(Handle, Slot, BlockLengths, BlockID) ->
                                 Slot#slot_index_value.start_position
                                     + BlockPos
                                     + Offset
-                                    + 24,
-                                    % 4-byte CRC, 4 byte pos, 4x4 byte lengths
+                                    + 28,
+                                    % 4-byte CRC, 4 byte pos, 5x4 byte lengths
                                 Length),
     BlockBin.
 
@@ -894,9 +910,12 @@ binaryslot_tolist(FullBin) ->
                     B1L:32/integer,
                     B2L:32/integer,
                     B3L:32/integer,
-                    B4L:32/integer>> = BlockLengths,
+                    B4L:32/integer,
+                    B5L:32/integer>> = BlockLengths,
                 <<_PosBinIndex:B1P/binary, Blocks/binary>> = RestBin,
-                lists:foldl(BlockFetchFun, {[], Blocks}, [B1L, B2L, B3L, B4L]);
+                lists:foldl(BlockFetchFun,
+                                {[], Blocks},
+                                [B1L, B2L, B3L, B4L, B5L]);
             crc_wonky ->
                 {[], <<>>}
         end,
@@ -908,56 +927,103 @@ binaryslot_trimmedlist(FullBin, all, all) ->
 binaryslot_trimmedlist(FullBin, StartKey, EndKey) ->
     LTrimFun = fun({K, _V}) -> K < StartKey end,
     RTrimFun = fun({K, _V}) -> not leveled_codec:endkey_passed(EndKey, K) end,
-    BlockFetchFun = 
-        fun(Length, {Acc, Bin, Continue}) ->
-            case {Length, Continue} of 
-                {0, _} ->
-                    {Acc, Bin, false};
-                {_, true} ->
-                    <<Block:Length/binary, Rest/binary>> = Bin,
-                    BlockList = binary_to_term(Block),
-                    {LastKey, _LV} = lists:last(BlockList),
-                    case StartKey > LastKey of
-                        true ->
-                            {Acc, Rest, true};
-                        false ->
-                            {_LDrop, RKeep} = lists:splitwith(LTrimFun, 
-                                                                BlockList),
-                            case leveled_codec:endkey_passed(EndKey, LastKey) of
-                                true ->
-                                    {LKeep, _RDrop} = lists:splitwith(RTrimFun, RKeep),
-                                    {Acc ++ LKeep, Rest, false};
-                                false ->
-                                    {Acc ++ RKeep, Rest, true}
-                            end
-                    end;
-                {_ , false} ->
-                    {Acc, Bin, false}
-            end
-        end,
-
-    {Out, _Rem, _Continue} = 
+    
+    % It will be more effecient to check a subset of blocks.  To work out
+    % the best subset we always look in the middle block of 5, and based on
+    % the first and last keys of that middle block when compared to the Start
+    % and EndKey of the query determines a subset of blocks
+    %
+    % This isn't perfectly efficient, esepcially if the query overlaps Block2
+    % and Block3 (as Block 1 will also be checked), but finessing this last
+    % scenario is hard to do in concise code
+    BlocksToCheck = 
         case crc_check_slot(FullBin) of 
             {BlockLengths, RestBin} ->
                 <<B1P:32/integer,
                     B1L:32/integer,
                     B2L:32/integer,
                     B3L:32/integer,
-                    B4L:32/integer>> = BlockLengths,
-                <<_PosBinIndex:B1P/binary, Blocks/binary>> = RestBin,
-                lists:foldl(BlockFetchFun, {[], Blocks, true}, [B1L, B2L, B3L, B4L]);
+                    B4L:32/integer,
+                    B5L:32/integer>> = BlockLengths,
+                <<_PosBinIndex:B1P/binary,
+                    Block1:B1L/binary, Block2:B2L/binary,
+                    MidBlock:B3L/binary,
+                    Block4:B4L/binary, Block5:B5L/binary>> = RestBin,
+                case B3L of
+                    0 ->
+                        [Block1, Block2];
+                    _ ->    
+                        MidBlockList = binary_to_term(MidBlock),
+                        {MidFirst, _} = lists:nth(1, MidBlockList),
+                        {MidLast, _} = lists:last(MidBlockList),
+                        Split = {StartKey > MidLast,
+                                    StartKey >= MidFirst,
+                                    leveled_codec:endkey_passed(EndKey,
+                                                                    MidFirst),
+                                    leveled_codec:endkey_passed(EndKey,
+                                                                    MidLast)},
+                        case Split of
+                            {true, _, _, _} ->
+                                [Block4, Block5];
+                            {false, true, false, true} ->
+                                [MidBlockList];
+                            {false, true, false, false} ->
+                                [MidBlockList, Block4, Block5];
+                            {false, false, true, true} ->
+                                [Block1, Block2];
+                            {false, false, false, true} ->
+                                [Block1, Block2, MidBlockList];
+                            _ ->
+                                [Block1, Block2, MidBlockList, Block4, Block5]
+                        end
+                end;                 
             crc_wonky ->
-                {[], <<>>, true}
+                []
         end,
-    Out.
 
+    
+    BlockCheckFun = 
+        fun(Block, {Acc, Continue}) ->
+            case {Block, Continue} of 
+                {<<>>, _} ->
+                    {Acc, false};
+                {_, true} ->
+                    BlockList =
+                        case is_binary(Block) of
+                            true ->
+                                binary_to_term(Block);
+                            false ->
+                                Block
+                        end,
+                    {LastKey, _LV} = lists:last(BlockList),
+                    case StartKey > LastKey of
+                        true ->
+                            {Acc, true};
+                        false ->
+                            {_LDrop, RKeep} = lists:splitwith(LTrimFun, 
+                                                                BlockList),
+                            case leveled_codec:endkey_passed(EndKey, LastKey) of
+                                true ->
+                                    {LKeep, _RDrop} = lists:splitwith(RTrimFun, RKeep),
+                                    {Acc ++ LKeep, false};
+                                false ->
+                                    {Acc ++ RKeep, true}
+                            end
+                    end;
+                {_ , false} ->
+                    {Acc, false}
+            end
+        end,
+
+    {Acc, _Continue} = lists:foldl(BlockCheckFun, {[], true}, BlocksToCheck),
+    Acc.
 
 
 crc_check_slot(FullBin) ->
     <<CRC32:32/integer, SlotBin/binary>> = FullBin,
     case erlang:crc32(SlotBin) of 
         CRC32 ->
-            <<BlockLengths:20/binary, Rest/binary>> = SlotBin,
+            <<BlockLengths:24/binary, Rest/binary>> = SlotBin,
             {BlockLengths, Rest};
         _ ->
             leveled_log:log("SST09", []),
@@ -965,7 +1031,7 @@ crc_check_slot(FullBin) ->
     end.
 
 block_offsetandlength(BlockLengths, BlockID) ->
-    <<BlocksPos:32/integer, BlockLengths0:16/binary>> = BlockLengths,
+    <<BlocksPos:32/integer, BlockLengths0:20/binary>> = BlockLengths,
     case BlockID of
         1 ->
             <<B1L:32/integer, _BR/binary>> = BlockLengths0,
@@ -983,8 +1049,17 @@ block_offsetandlength(BlockLengths, BlockID) ->
             <<B1L:32/integer,
                 B2L:32/integer,
                 B3L:32/integer,
-                B4L:32/integer>> = BlockLengths0,
-            {BlocksPos, B1L + B2L + B3L, B4L}
+                B4L:32/integer,
+                _BR/binary>> = BlockLengths0,
+            {BlocksPos, B1L + B2L + B3L, B4L};
+        5 ->
+            <<B1L:32/integer,
+                B2L:32/integer,
+                B3L:32/integer,
+                B4L:32/integer,
+                B5L:32/integer,
+                _BR/binary>> = BlockLengths0,
+            {BlocksPos, B1L + B2L + B3L + B4L, B5L}
     end.
 
 double_hash(Hash, Key) ->
@@ -1004,15 +1079,26 @@ fetch_value([Pos|Rest], BlockLengths, Blocks, Key) ->
     case K of 
         Key ->
             {K, V};
-        _ ->
+        _ -> 
             fetch_value(Rest, BlockLengths, Blocks, Key)
     end.
 
 
 revert_position(Pos) ->
-    BlockNumber = (Pos div 32) + 1,
-    BlockPos = (Pos rem 32) + 1,
-    {BlockNumber, BlockPos}.
+    {SideBlockSize, MidBlockSize} = ?LOOK_BLOCKSIZE,
+    case Pos < 2 * SideBlockSize of
+        true ->
+            {(Pos div SideBlockSize) + 1, (Pos rem SideBlockSize) + 1};
+        false ->
+            case Pos < (2 * SideBlockSize + MidBlockSize) of
+                true ->
+                    {3, ((Pos - 2 * SideBlockSize) rem MidBlockSize) + 1};
+                false ->
+                    TailPos = Pos - 2 * SideBlockSize - MidBlockSize,
+                    {(TailPos div SideBlockSize) + 4,
+                        (TailPos rem SideBlockSize) + 1}
+            end
+    end.
 
 find_pos(<<>>, _Hash, PosList, _Count) ->
     PosList;
@@ -1059,7 +1145,7 @@ find_pos(<<0:1/integer, NHC:7/integer, T/binary>>, Hash, PosList, Count) ->
 %% any lower sequence numbers should be compacted out of existence
 
 merge_lists(KVList1) ->
-    SlotCount = length(KVList1) div ?SLOT_SIZE, 
+    SlotCount = length(KVList1) div ?LOOK_SLOTSIZE, 
     {[],
         [],
         split_lists(KVList1, [], SlotCount),
@@ -1071,7 +1157,7 @@ split_lists(LastPuff, SlotLists, 0) ->
     SlotD = generate_binary_slot(lookup, LastPuff),
     lists:reverse([SlotD|SlotLists]);
 split_lists(KVList1, SlotLists, N) ->
-    {Slot, KVListRem} = lists:split(?SLOT_SIZE, KVList1),
+    {Slot, KVListRem} = lists:split(?LOOK_SLOTSIZE, KVList1),
     SlotD = generate_binary_slot(lookup, Slot),
     split_lists(KVListRem, [SlotD|SlotLists], N - 1).
 
@@ -1105,7 +1191,8 @@ merge_lists(KVList1, KVList2, LI, SlotList, FirstKey, SlotCount) ->
 
 form_slot([], [], _LI, Type, _Size, Slot, FK) ->
     {[], [], {Type, lists:reverse(Slot)}, FK};
-form_slot(KVList1, KVList2, _LI, lookup, ?SLOT_SIZE, Slot, FK) ->
+
+form_slot(KVList1, KVList2, _LI, lookup, ?LOOK_SLOTSIZE, Slot, FK) ->
     {KVList1, KVList2, {lookup, lists:reverse(Slot)}, FK};
 form_slot(KVList1, KVList2, _LI, no_lookup, ?NOLOOK_SLOTSIZE, Slot, FK) ->
     {KVList1, KVList2, {no_lookup, lists:reverse(Slot)}, FK};
@@ -1142,7 +1229,7 @@ form_slot(KVList1, KVList2, {IsBasement, TS}, no_lookup, Size, Slot, FK) ->
                                 [{TopK, TopV}|Slot],
                                 FK0);
                 lookup ->
-                    case Size >= ?SLOT_SIZE of
+                    case Size >= ?LOOK_SLOTSIZE of
                         true ->
                             {KVList1,
                                 KVList2,
@@ -1310,7 +1397,7 @@ form_slot_test() ->
     R1 = form_slot([SkippingKV], [],
                     {true, 99999999},
                     no_lookup,
-                    ?SLOT_SIZE + 1,
+                    ?LOOK_SLOTSIZE + 1,
                     Slot,
                     {o, "B1", "K5", null}),
     ?assertMatch({[], [], {no_lookup, Slot}, {o, "B1", "K5", null}}, R1).
@@ -1399,7 +1486,7 @@ indexed_list_mixedkeys2_test() ->
 indexed_list_allindexkeys_test() ->
     Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(150)), 128),
     {PosBinIndex1, FullBin, _HL, _LK} = generate_binary_slot(lookup, Keys),
-    ?assertMatch(<<_BL:20/binary, 127:8/integer>>, PosBinIndex1),
+    ?assertMatch(<<_BL:24/binary, 127:8/integer>>, PosBinIndex1),
     % SW = os:timestamp(),
     BinToList = binaryslot_tolist(FullBin),
     % io:format(user,
@@ -1410,9 +1497,9 @@ indexed_list_allindexkeys_test() ->
 
 indexed_list_allindexkeys_nolookup_test() ->
     Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(1000)),
-                            128 * ?NOLOOK_MULT),
+                            ?NOLOOK_SLOTSIZE),
     {PosBinIndex1, FullBin, _HL, _LK} = generate_binary_slot(no_lookup, Keys),
-    ?assertMatch(<<_BL:20/binary, 127:8/integer>>, PosBinIndex1),
+    ?assertMatch(<<_BL:24/binary, 127:8/integer>>, PosBinIndex1),
     % SW = os:timestamp(),
     BinToList = binaryslot_tolist(FullBin),
     % io:format(user,
@@ -1424,7 +1511,7 @@ indexed_list_allindexkeys_nolookup_test() ->
 indexed_list_allindexkeys_trimmed_test() ->
     Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(150)), 128),
     {PosBinIndex1, FullBin, _HL, _LK} = generate_binary_slot(lookup, Keys),
-    ?assertMatch(<<_BL:20/binary, 127:8/integer>>, PosBinIndex1),
+    ?assertMatch(<<_BL:24/binary, 127:8/integer>>, PosBinIndex1),
     ?assertMatch(Keys, binaryslot_trimmedlist(FullBin, 
                                                 {i, 
                                                     "Bucket", 
@@ -1546,7 +1633,7 @@ merge_test() ->
 
 simple_persisted_range_test() ->
     {RP, Filename} = {"../test/", "simple_test"},
-    KVList0 = generate_randomkeys(1, ?SLOT_SIZE * 16, 1, 20),
+    KVList0 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 16, 1, 20),
     KVList1 = lists:ukeysort(1, KVList0),
     [{FirstKey, _FV}|_Rest] = KVList1,
     {LastKey, _LV} = lists:last(KVList1),
@@ -1659,8 +1746,9 @@ additional_range_test() ->
 
 simple_persisted_slotsize_test() ->
     {RP, Filename} = {"../test/", "simple_slotsize_test"},
-    KVList0 = generate_randomkeys(1, ?SLOT_SIZE * 2, 1, 20),
-    KVList1 = lists:sublist(lists:ukeysort(1, KVList0), ?SLOT_SIZE),
+    KVList0 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 2, 1, 20),
+    KVList1 = lists:sublist(lists:ukeysort(1, KVList0),
+                            ?LOOK_SLOTSIZE),
     [{FirstKey, _FV}|_Rest] = KVList1,
     {LastKey, _LV} = lists:last(KVList1),
     {ok, Pid, {FirstKey, LastKey}} = sst_new(RP,
@@ -1677,7 +1765,7 @@ simple_persisted_slotsize_test() ->
 
 simple_persisted_test() ->
     {RP, Filename} = {"../test/", "simple_test"},
-    KVList0 = generate_randomkeys(1, ?SLOT_SIZE * 32, 1, 20),
+    KVList0 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 32, 1, 20),
     KVList1 = lists:ukeysort(1, KVList0),
     [{FirstKey, _FV}|_Rest] = KVList1,
     {LastKey, _LV} = lists:last(KVList1),
@@ -1706,7 +1794,7 @@ simple_persisted_test() ->
                     ++ "microseconds~n",
                 [length(KVList1), timer:now_diff(os:timestamp(), SW1)]),
     ok = sst_printtimings(Pid),
-    KVList2 = generate_randomkeys(1, ?SLOT_SIZE * 32, 1, 20),
+    KVList2 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 32, 1, 20),
     MapFun =
         fun({K, V}, Acc) ->
             In = lists:keymember(K, 1, KVList1),
@@ -1731,8 +1819,6 @@ simple_persisted_test() ->
     FoldFun = fun(X, Acc) ->
                     case X of
                         {pointer, P, S, SK, EK} ->
-                            io:format("Get slot ~w with Acc at ~w~n", 
-                                        [S, length(Acc)]),
                             Acc ++ sst_getslots(P, [{pointer, P, S, SK, EK}]);
                         _ ->
                             Acc ++ [X]
