@@ -65,10 +65,10 @@
 -include("include/leveled.hrl").
 
 -define(MAX_SLOTS, 256).
--define(LOOK_SLOTSIZE, 128).
--define(LOOK_BLOCKSIZE, {28, 16}). % This is not configurable
+-define(LOOK_SLOTSIZE, 128). % This is not configurable
+-define(LOOK_BLOCKSIZE, {24, 32}). 
 -define(NOLOOK_SLOTSIZE, 256).
--define(NOLOOK_BLOCKSIZE, {56, 32}). % This is not configurable
+-define(NOLOOK_BLOCKSIZE, {56, 32}). 
 -define(COMPRESSION_LEVEL, 1).
 -define(BINARY_SETTINGS, [{compressed, ?COMPRESSION_LEVEL}]).
 % -define(LEVEL_BLOOM_BITS, [{0, 8}, {1, 10}, {2, 8}, {default, 6}]).
