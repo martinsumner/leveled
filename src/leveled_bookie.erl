@@ -626,7 +626,6 @@ loadqueue_ledgercache(Cache) ->
 %% snapshot is to be used for one specific query only (this is much quicker to
 %% setup, assuming the range is a small subset of the overall key space).
 snapshot_store(LedgerCache0, Penciller, Inker, SnapType, Query) ->
-    SW = os:timestamp(),
     LedgerCache = readycache_forsnapshot(LedgerCache0, Query),
     BookiesMem = {LedgerCache#ledger_cache.loader,
                     LedgerCache#ledger_cache.index,
@@ -669,9 +668,6 @@ maybe_longrunning(SW, Aspect) ->
         _ ->
             ok
     end.
-
-cache_size(LedgerCache) ->
-    ets:info(LedgerCache#ledger_cache.mem, size).
 
 bucket_stats(State, Bucket, Tag) ->
     {ok, LedgerSnapshot, _JournalSnapshot} = snapshot_store(State,
