@@ -120,13 +120,14 @@ Both leveled and leveldb are optimised for finding non-presence through the use 
 So it is better to focus on the results at the tail of the tests, as at the tail the results are a more genuine reflection of behaviour against the advertised test parameters.
 
 
-Test Description                  | Hardware     | Duration |Avg TPS    | Delta (Overall)  | Delta (Last Hour)
+Test Description                  | Hardware     | Duration |Avg TPS    | TPS Delta (Overall)  | TPS Delta (Last Hour)
 :---------------------------------|:-------------|:--------:|----------:|-----------------:|-------------------:
 8KB value, 60 workers, sync       | 5 x i2.2x    | 4 hr     | 12,679.91 | <b>+ 70.81%</b>  | <b>+ 63.99%</b>
 8KB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,100.19 | <b>+ 16.15%</b>  | <b>+ 35.92%</b>
 8KB value, 50 workers, no_sync    | 5 x d2.2x    | 4 hr     | 10,400.29 | <b>+  8.37%</b>  | <b>+ 23.51%</b>
 4KB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,993.95 | - 10.44%  | - 4.48%
 16KB value, 60 workers, no_sync   | 5 x i2.2x    | 6 hr     | 11,167.44 | <b>+ 80.48%</b>  | <b>+ 113.55%</b>
+8KB value, 80workers, no_sync, 2i queries | 5 x i2.2x | 6 hr | 9,855.96 | <b>+ 4.48%</b> | <b>+ 22.36%</b>
 
 Leveled, like bitcask, will defer compaction work until a designated compaction window, and these tests were run outside of that compaction window.  So although the throughput of leveldb is lower, it has no deferred work at the end of the test.  Future testing work is scheduled to examine leveled throughput during a compaction window.  
 
@@ -157,7 +158,7 @@ Testing during a journal compaction window
 
 Testing with secondary indexes provides some new challenges:
 
-- Including index entries on updates accelerates the rate of compaction of the merge tree, as each update into the merge tree is now multiple changes;
+- Including index entries on updates will accelerate the flow of merges in the merge tree, as each update into the merge tree is now multiple changes;
 - The 2i query needs an efficient snapshot to be taken of the store, and multiple such snapshots to exist in parallel;
 - The coverage nature of the query means that the query operation is now as slow as the slowest of the vnodes (out of 22 nodes with a ring size of 64), rather than being as slow as the second slowest of three vnodes.  Coverage queries are reactive to local resource pressure, whereas standard GET flows can work around such pressure.
 
@@ -171,6 +172,8 @@ The secondary index test was built on a test which sent
 
 The query load is relatively light compared to GET/PUT load in-line with Basho recommendations (decline from 350 queries per second to 120 queries per second through the test).  The queries
 return o(1000) results maximum towards the tail of the test and o(1) results at the start of the test.
+
+Further details on the implementation of the secondary indexes for volume tests can be found in the [driver file](https://github.com/martinsumner/basho_bench/blob/mas-nhsload/src/basho_bench_driver_riakc_pb.erl) for the test.
 
 Riak + leveled           |  Riak + leveldb
 :-------------------------:|:-------------------------:
