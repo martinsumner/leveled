@@ -6,8 +6,8 @@ Leveled is a <b>work-in-progress</b> prototype of a simple Key-Value store based
 
 - Optimised for workloads with <b>larger values</b> (e.g. > 4KB).
 
-- Explicitly supports <b>HEAD requests</b> in addition to GET requests. 
-  - Splits the storage of value between keys/metadata and body, 
+- Explicitly supports <b>HEAD requests</b> in addition to GET requests.
+  - Splits the storage of value between keys/metadata and body,
   - Stores keys/metadata in a merge tree and the full object in a journal of [CDB files](https://en.wikipedia.org/wiki/Cdb_(software))
   - allowing for HEAD requests which have lower overheads than GET requests, and
   - queries which traverse keys/metadatas to be supported with fewer side effects on the page cache.
@@ -20,7 +20,7 @@ Leveled is a <b>work-in-progress</b> prototype of a simple Key-Value store based
 
 - Written in <b>Erlang</b> as a message passing system between Actors.
 
-The store has been developed with a <b>focus on being a potential backend to a Riak KV</b> database, rather than as a generic store.  It is intended to be a fully-featured backend - including support for secondary indexes, multiple fold types and auto-expiry of objects. 
+The store has been developed with a <b>focus on being a potential backend to a Riak KV</b> database, rather than as a generic store.  It is intended to be a fully-featured backend - including support for secondary indexes, multiple fold types and auto-expiry of objects.
 
 An optimised version of Riak KV has been produced in parallel which will exploit the availability of HEAD requests (to access object metadata including version vectors), where a full GET is not required.  This, along with reduced write amplification when compared to leveldb, is expected to offer significant improvement in the volume and predictability of throughput for workloads with larger (> 4KB) object sizes, as well as reduced tail latency.
 
@@ -50,16 +50,17 @@ Test Description                  | Hardware     | Duration |Avg TPS    | TPS De
 :---------------------------------|:-------------|:--------:|----------:|-----------------:|-------------------:
 8KB value, 60 workers, sync       | 5 x i2.2x    | 4 hr     | 12,679.91 | <b>+ 70.81%</b>  | <b>+ 63.99%</b>
 8KB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,100.19 | <b>+ 16.15%</b>  | <b>+ 35.92%</b>
-8KB value, 50 workers, no_sync    | 5 x d2.2x    | 4 hr     | 10,400.29 | <b>+  8.37%</b>  | <b>+ 23.51%</b> 
+8KB value, 50 workers, no_sync    | 5 x d2.2x    | 4 hr     | 10,400.29 | <b>+  8.37%</b>  | <b>+ 23.51%</b>
 4KB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,993.95 | - 10.44%  | - 4.48%
 16KB value, 60 workers, no_sync   | 5 x i2.2x    | 6 hr     | 11,167.44 | <b>+ 80.48%</b>  | <b>+ 113.55%</b>
+8KB value, 80, workers, no_sync, 1% 2i | 5 x i2.2x | 6 hr | 9,855.96 | <b>+ 4.48%</b> | <b>+ 22.36%</b>
 
 Tests generally show a 5:1 improvement in tail latency for leveled.
 
 All tests have in common:
 
 - Target Key volume - 200M with pareto distribution of load
-- 5 GETs per 1 update 
+- 5 GETs per 1 update
 - RAID 10 (software) drives
 - allow_mult=false, lww=false
 - modified riak optimised for leveled used in leveled tests
@@ -117,7 +118,7 @@ Running in Riak requires one of the branches of riak_kv referenced [here](docs/F
 Building this from source as part of Riak will require a bit of fiddling around.
 
 - clone and build [riak](https://github.com/martinsumner/riak/tree/mas-leveleddb)
-- cd deps 
+- cd deps
 - rm -rf riak_kv
 - git clone -b mas-leveled-putfsm --single-branch https://github.com/martinsumner/riak_kv.git
 - cd ..
