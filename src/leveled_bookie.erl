@@ -626,7 +626,6 @@ loadqueue_ledgercache(Cache) ->
 %% snapshot is to be used for one specific query only (this is much quicker to
 %% setup, assuming the range is a small subset of the overall key space).
 snapshot_store(LedgerCache0, Penciller, Inker, SnapType, Query) ->
-    SW = os:timestamp(),
     LedgerCache = readycache_forsnapshot(LedgerCache0, Query),
     BookiesMem = {LedgerCache#ledger_cache.loader,
                     LedgerCache#ledger_cache.index,
@@ -637,7 +636,6 @@ snapshot_store(LedgerCache0, Penciller, Inker, SnapType, Query) ->
                                     snapshot_query = Query,
                                     bookies_mem = BookiesMem},
     {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
-    leveled_log:log_randomtimer("B0004", [cache_size(LedgerCache)], SW, 0.02),
     case SnapType of
         store ->
             InkerOpts = #inker_options{start_snapshot=true,
@@ -670,9 +668,6 @@ maybe_longrunning(SW, Aspect) ->
         _ ->
             ok
     end.
-
-cache_size(LedgerCache) ->
-    ets:info(LedgerCache#ledger_cache.mem, size).
 
 bucket_stats(State, Bucket, Tag) ->
     {ok, LedgerSnapshot, _JournalSnapshot} = snapshot_store(State,
@@ -1188,8 +1183,9 @@ maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
             case leveled_penciller:pcl_pushmem(Penciller, CacheToLoad) of
                 ok ->
                     Cache0 = #ledger_cache{},
-                    true = ets:delete_all_objects(Tab),
-                    {ok, Cache0#ledger_cache{mem=Tab}};
+                    true = ets:delete(Tab),
+                    NewTab = ets:new(mem, [ordered_set]),
+                    {ok, Cache0#ledger_cache{mem=NewTab}};
                 returned ->
                     {returned, Cache}
             end;
