@@ -246,7 +246,7 @@ handle_call({put, Key, Object, KeyChanges}, _From, State) ->
             {reply, {ok, UpdState#state.journal_sqn, ObjSize}, UpdState}
     end;
 handle_call({fetch, Key, SQN}, _From, State) ->
-    case get_object(Key, SQN, State#state.manifest) of
+    case get_object(Key, SQN, State#state.manifest, true) of
         {{SQN, Key}, {Value, _IndexSpecs}} ->
             {reply, {ok, Value}, State};
         Other ->
@@ -452,13 +452,16 @@ put_object(LedgerKey, Object, KeyChanges, State) ->
 
 
 get_object(LedgerKey, SQN, Manifest) ->
+    get_object(LedgerKey, SQN, Manifest, false).
+
+get_object(LedgerKey, SQN, Manifest, ToIgnoreKeyChanges) ->
     JournalP = leveled_imanifest:find_entry(SQN, Manifest),
     {InkerKey, _V, true} = leveled_codec:to_inkerkv(LedgerKey,
                                                     SQN,
                                                     to_fetch,
                                                     null),
     Obj = leveled_cdb:cdb_get(JournalP, InkerKey),
-    leveled_codec:from_inkerkv(Obj).
+    leveled_codec:from_inkerkv(Obj, ToIgnoreKeyChanges).
 
 key_check(LedgerKey, SQN, Manifest) ->
     JournalP = leveled_imanifest:find_entry(SQN, Manifest),
