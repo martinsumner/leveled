@@ -48,6 +48,7 @@
         from_ledgerkey/1,
         to_inkerkv/4,
         from_inkerkv/1,
+        from_inkerkv/2,
         from_journalkey/1,
         compact_inkerkvc/2,
         split_inkvalue/1,
@@ -191,17 +192,23 @@ to_inkerkv(LedgerKey, SQN, Object, KeyChanges) ->
 
 %% Used when fetching objects, so only handles standard, hashable entries
 from_inkerkv(Object) ->
+    from_inkerkv(Object, false).
+
+from_inkerkv(Object, ToIgnoreKeyChanges) ->
     case Object of
         {{SQN, ?INKT_STND, PK}, Bin} when is_binary(Bin) ->
-            {{SQN, PK}, revert_value_from_journal(Bin)};
+            {{SQN, PK}, revert_value_from_journal(Bin, ToIgnoreKeyChanges)};
         {{SQN, ?INKT_STND, PK}, Term} ->
             {{SQN, PK}, Term};
         _ ->
             Object
     end.
 
-create_value_for_journal({Object, KeyChanges}, Compress) ->
+create_value_for_journal({Object, KeyChanges}, Compress)
+                                            when not is_binary(KeyChanges) ->
     KeyChangeBin = term_to_binary(KeyChanges, [compressed]),
+    create_value_for_journal({Object, KeyChangeBin}, Compress);
+create_value_for_journal({Object, KeyChangeBin}, Compress) ->
     KeyChangeBinLen = byte_size(KeyChangeBin),
     ObjectBin = serialise_object(Object, Compress),
     TypeCode = encode_valuetype(is_binary(Object), Compress),
@@ -213,14 +220,19 @@ create_value_for_journal({Object, KeyChanges}, Compress) ->
 maybe_compress({null, KeyChanges}) ->
     create_value_for_journal({null, KeyChanges}, false);
 maybe_compress(JournalBin) ->
-    Length0 = byte_size(JournalBin) - 1,
-    <<JBin0:Length0/binary, Type:8/integer>> = JournalBin,
+    Length0 = byte_size(JournalBin) - 5,
+    <<JBin0:Length0/binary,
+        KeyChangeLength:32/integer,
+        Type:8/integer>> = JournalBin,
     {IsBinary, IsCompressed} = decode_valuetype(Type),
     case IsCompressed of
         true ->
             JournalBin;
         false ->
-            V0 = revert_value_from_journal(JBin0, Length0, IsBinary, false),
+            Length1 = Length0 - KeyChangeLength,
+            <<OBin2:Length1/binary, KCBin2:KeyChangeLength/binary>> = JBin0,
+            V0 = {deserialise_object(OBin2, IsBinary, IsCompressed),
+                    binary_to_term(KCBin2)},
             create_value_for_journal(V0, true)
     end.
 
@@ -234,18 +246,24 @@ serialise_object(Object, true) ->
     term_to_binary(Object, [compressed]).
 
 revert_value_from_journal(JournalBin) ->
-    Length0 = byte_size(JournalBin) - 1,
-    <<JBin0:Length0/binary, Type:8/integer>> = JournalBin,
+    revert_value_from_journal(JournalBin, false).
+
+revert_value_from_journal(JournalBin, ToIgnoreKeyChanges) ->
+    Length0 = byte_size(JournalBin) - 5,
+    <<JBin0:Length0/binary,
+        KeyChangeLength:32/integer,
+        Type:8/integer>> = JournalBin,
     {IsBinary, IsCompressed} = decode_valuetype(Type),
-    revert_value_from_journal(JBin0, Length0, IsBinary, IsCompressed).
-    
-revert_value_from_journal(ValueBin, ValueLen, IsBinary, IsCompressed) ->
-    Length1 = ValueLen - 4,
-    <<JBin1:Length1/binary, KeyChangeLength:32/integer>> = ValueBin,
-    Length2 = Length1 - KeyChangeLength,
-    <<OBin2:Length2/binary, KCBin2:KeyChangeLength/binary>> = JBin1,
-    {deserialise_object(OBin2, IsBinary, IsCompressed),
-        binary_to_term(KCBin2)}.
+    Length1 = Length0 - KeyChangeLength,
+    case ToIgnoreKeyChanges of
+        true ->
+            <<OBin2:Length1/binary, _KCBin2:KeyChangeLength/binary>> = JBin0,
+            {deserialise_object(OBin2, IsBinary, IsCompressed), []};
+        false ->
+            <<OBin2:Length1/binary, KCBin2:KeyChangeLength/binary>> = JBin0,
+            {deserialise_object(OBin2, IsBinary, IsCompressed),
+                binary_to_term(KCBin2)}
+    end.
 
 deserialise_object(Binary, true, true) ->
     zlib:uncompress(Binary);
