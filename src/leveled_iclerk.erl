@@ -95,8 +95,8 @@
 %% How many consecutive files to compact in one run
 -define(MAX_COMPACTION_RUN, 4).
 %% Sliding scale to allow preference of longer runs up to maximum
--define(SINGLEFILE_COMPACTION_TARGET, 60.0).
--define(MAXRUN_COMPACTION_TARGET, 80.0).
+-define(SINGLEFILE_COMPACTION_TARGET, 40.0).
+-define(MAXRUN_COMPACTION_TARGET, 60.0).
 -define(CRC_SIZE, 4).
 -define(DEFAULT_RELOAD_STRATEGY, leveled_codec:inker_reload_strategy([])).
 -define(DEFAULT_WASTE_RETENTION_PERIOD, 86400).
@@ -550,20 +550,20 @@ simple_score_test() ->
             #candidate{compaction_perc = 75.0},
             #candidate{compaction_perc = 76.0},
             #candidate{compaction_perc = 70.0}],
-    ?assertMatch(6.0, score_run(Run1, 4)),
+    ?assertMatch(-14.0, score_run(Run1, 4)),
     Run2 = [#candidate{compaction_perc = 75.0}],
-    ?assertMatch(-15.0, score_run(Run2, 4)),
+    ?assertMatch(-35.0, score_run(Run2, 4)),
     ?assertMatch(0.0, score_run([], 4)),
     Run3 = [#candidate{compaction_perc = 100.0}],
-    ?assertMatch(-40.0, score_run(Run3, 4)).
+    ?assertMatch(-60.0, score_run(Run3, 4)).
 
 score_compare_test() ->
-    Run1 = [#candidate{compaction_perc = 75.0},
-            #candidate{compaction_perc = 75.0},
-            #candidate{compaction_perc = 76.0},
-            #candidate{compaction_perc = 70.0}],
+    Run1 = [#candidate{compaction_perc = 55.0},
+            #candidate{compaction_perc = 55.0},
+            #candidate{compaction_perc = 56.0},
+            #candidate{compaction_perc = 50.0}],
     ?assertMatch(6.0, score_run(Run1, 4)),
-    Run2 = [#candidate{compaction_perc = 75.0}],
+    Run2 = [#candidate{compaction_perc = 55.0}],
     ?assertMatch(Run1, choose_best_assessment(Run1, Run2, 4)),
     ?assertMatch(Run2, choose_best_assessment(Run1 ++ Run2, Run2, 4)).
 
@@ -585,27 +585,27 @@ file_gc_test() ->
 find_bestrun_test() ->
 %% Tests dependent on these defaults
 %% -define(MAX_COMPACTION_RUN, 4).
-%% -define(SINGLEFILE_COMPACTION_TARGET, 60.0).
-%% -define(MAXRUN_COMPACTION_TARGET, 80.0).
+%% -define(SINGLEFILE_COMPACTION_TARGET, 40.0).
+%% -define(MAXRUN_COMPACTION_TARGET, 60.0).
 %% Tested first with blocks significant as no back-tracking
-    Block1 = [#candidate{compaction_perc = 75.0},
-                #candidate{compaction_perc = 85.0},
-                #candidate{compaction_perc = 62.0},
-                #candidate{compaction_perc = 70.0}],
-    Block2 = [#candidate{compaction_perc = 58.0},
-                #candidate{compaction_perc = 95.0},
-                #candidate{compaction_perc = 95.0},
-                #candidate{compaction_perc = 65.0}],
-    Block3 = [#candidate{compaction_perc = 90.0},
+    Block1 = [#candidate{compaction_perc = 55.0},
+                #candidate{compaction_perc = 65.0},
+                #candidate{compaction_perc = 42.0},
+                #candidate{compaction_perc = 50.0}],
+    Block2 = [#candidate{compaction_perc = 38.0},
+                #candidate{compaction_perc = 75.0},
+                #candidate{compaction_perc = 75.0},
+                #candidate{compaction_perc = 45.0}],
+    Block3 = [#candidate{compaction_perc = 70.0},
                 #candidate{compaction_perc = 100.0},
                 #candidate{compaction_perc = 100.0},
                 #candidate{compaction_perc = 100.0}],
-    Block4 = [#candidate{compaction_perc = 75.0},
-                #candidate{compaction_perc = 76.0},
-                #candidate{compaction_perc = 76.0},
+    Block4 = [#candidate{compaction_perc = 55.0},
+                #candidate{compaction_perc = 56.0},
+                #candidate{compaction_perc = 56.0},
+                #candidate{compaction_perc = 40.0}],
+    Block5 = [#candidate{compaction_perc = 60.0},
                 #candidate{compaction_perc = 60.0}],
-    Block5 = [#candidate{compaction_perc = 80.0},
-                #candidate{compaction_perc = 80.0}],
     CList0 = Block1 ++ Block2 ++ Block3 ++ Block4 ++ Block5,
     ?assertMatch(Block4, assess_candidates(CList0, 4, [], [])),
     CList1 = CList0 ++ [#candidate{compaction_perc = 20.0}],
@@ -614,26 +614,26 @@ find_bestrun_test() ->
     CList2 = Block4 ++ Block3 ++ Block2 ++ Block1 ++ Block5,
     ?assertMatch(Block4, assess_candidates(CList2, 4, [], [])),
     CList3 = Block5 ++ Block1 ++ Block2 ++ Block3 ++ Block4,
-    ?assertMatch([#candidate{compaction_perc = 62.0},
-                        #candidate{compaction_perc = 70.0},
-                        #candidate{compaction_perc = 58.0}],
+    ?assertMatch([#candidate{compaction_perc = 42.0},
+                        #candidate{compaction_perc = 50.0},
+                        #candidate{compaction_perc = 38.0}],
                     assess_candidates(CList3, 4, [], [])),
     %% Now do some back-tracking to get a genuinely optimal solution without
     %% needing to re-order
-    ?assertMatch([#candidate{compaction_perc = 62.0},
-                        #candidate{compaction_perc = 70.0},
-                        #candidate{compaction_perc = 58.0}],
+    ?assertMatch([#candidate{compaction_perc = 42.0},
+                        #candidate{compaction_perc = 50.0},
+                        #candidate{compaction_perc = 38.0}],
                     assess_candidates(CList0, 4)),
-    ?assertMatch([#candidate{compaction_perc = 62.0},
-                        #candidate{compaction_perc = 70.0},
-                        #candidate{compaction_perc = 58.0}],
+    ?assertMatch([#candidate{compaction_perc = 42.0},
+                        #candidate{compaction_perc = 50.0},
+                        #candidate{compaction_perc = 38.0}],
                     assess_candidates(CList0, 5)),
-    ?assertMatch([#candidate{compaction_perc = 62.0},
-                        #candidate{compaction_perc = 70.0},
-                        #candidate{compaction_perc = 58.0},
-                        #candidate{compaction_perc = 95.0},
-                        #candidate{compaction_perc = 95.0},
-                        #candidate{compaction_perc = 65.0}], 
+    ?assertMatch([#candidate{compaction_perc = 42.0},
+                        #candidate{compaction_perc = 50.0},
+                        #candidate{compaction_perc = 38.0},
+                        #candidate{compaction_perc = 75.0},
+                        #candidate{compaction_perc = 75.0},
+                        #candidate{compaction_perc = 45.0}], 
                     assess_candidates(CList0, 6)).
 
 test_ledgerkey(Key) ->

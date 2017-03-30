@@ -897,7 +897,7 @@ compact_journal_test() ->
                                 end end,
                             false,
                             CompactedManifest2),
-    ?assertMatch(true, R),
+    ?assertMatch(false, R),
     ?assertMatch(2, length(CompactedManifest2)),
     ink_close(Ink1),
     clean_testdir(RootPath).
