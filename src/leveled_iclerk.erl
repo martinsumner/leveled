@@ -85,6 +85,8 @@
         clerk_stop/1,
         code_change/3]).      
 
+-export([schedule_compaction/3]).
+
 -include_lib("eunit/include/eunit.hrl").
 
 -define(JOURNAL_FILEX, "cdb").
@@ -100,6 +102,7 @@
 -define(CRC_SIZE, 4).
 -define(DEFAULT_RELOAD_STRATEGY, leveled_codec:inker_reload_strategy([])).
 -define(DEFAULT_WASTE_RETENTION_PERIOD, 86400).
+-define(INTERVALS_PER_HOUR, 4).
 
 -record(state, {inker :: pid(),
                     max_run_length :: integer(),
@@ -229,6 +232,68 @@ terminate(Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
+
+%%%============================================================================
+%%% External functions
+%%%============================================================================
+
+%% Schedule the next compaction event for this store.  Chooses a random
+%% interval, and then a random start time within the first third
+%% of the interval.
+%%
+%% The number of Compaction runs per day can be set.  This doesn't guaranteee
+%% those runs, but uses the assumption there will be n runs when scheduling
+%% the next one
+%%
+%% Compaction Hours should be the list of hours during the day (based on local
+%% time when compcation can be scheduled to run)
+%% e.g. [0, 1, 2, 3, 4, 21, 22, 23]
+%% Runs per day is the number of compcation runs per day that should be
+%% scheduled - expected to be a small integer, probably 1
+%%
+%% Current TS should be the outcome of os:timestamp()
+%%
+
+schedule_compaction(CompactionHours, RunsPerDay, CurrentTS) ->
+    IntervalLength = 60 div ?INTERVALS_PER_HOUR,
+    TotalHours = length(CompactionHours),
+    
+    LocalTime = calendar:now_to_local_time(CurrentTS),
+    {{NowY, NowMon, NowD},
+        {NowH, NowMin, _NowS}} = LocalTime,
+    CurrentInterval = {NowH, NowMin div IntervalLength + 1},
+    
+    RandSelect =
+        fun(_X) ->
+            {lists:nth(random:uniform(TotalHours), CompactionHours),
+                random:uniform(?INTERVALS_PER_HOUR)}
+        end,
+    RandIntervals = lists:sort(lists:map(RandSelect,
+                                            lists:seq(1, RunsPerDay))),
+    
+    CheckNotBefore = fun(A) -> A =< CurrentInterval end,
+    {TooEarly, MaybeOK} = lists:splitwith(CheckNotBefore, RandIntervals),
+    
+    {NextDate, {NextH, NextI}} = 
+        case MaybeOK of
+            [] ->
+                % Use first Too Early tomorrow if none of selected run times
+                % are today
+                Tmrw = calendar:date_to_gregorian_days(NowY, NowMon, NowD) + 1,
+                {calendar:gregorian_days_to_date(Tmrw),
+                    lists:nth(1, TooEarly)};
+            _ ->
+                {{NowY, NowMon, NowD}, lists:nth(1, MaybeOK)}
+        end,
+    NextS0 = NextI * (IntervalLength * 60)
+                - random:uniform(IntervalLength * 60),
+    NextM = NextS0 div 60,
+    NextS = NextS0 rem 60,
+    TimeDiff = calendar:time_difference(LocalTime,
+                                        {NextDate, {NextH, NextM, NextS}}),
+    {Days, {Hours, Mins, Secs}} = TimeDiff,
+    Days * 86400 + Hours * 3600 + Mins * 60 + Secs.
+    
 
 %%%============================================================================
 %%% Internal functions
@@ -536,7 +601,6 @@ clear_waste(State) ->
                         end,
                     ClearedJournals).
 
-    
 
 %%%============================================================================
 %%% Test
@@ -544,6 +608,23 @@ clear_waste(State) ->
 
 
 -ifdef(TEST).
+
+schedule_test() ->
+    schedule_test_bycount(1),
+    schedule_test_bycount(2),
+    schedule_test_bycount(4).
+
+schedule_test_bycount(N) ->
+    CurrentTS = {1490,883918,94000}, % Actually 30th March 2017 15:27
+    SecondsToCompaction0 = schedule_compaction([16], N, CurrentTS),
+    io:format("Seconds to compaction ~w~n", [SecondsToCompaction0]),
+    ?assertMatch(true, SecondsToCompaction0 > 1800),
+    ?assertMatch(true, SecondsToCompaction0 < 5700),
+    SecondsToCompaction1 = schedule_compaction([14], N, CurrentTS),
+    io:format("Seconds to compaction ~w~n", [SecondsToCompaction1]),
+    ?assertMatch(true, SecondsToCompaction1 > 81000),
+    ?assertMatch(true, SecondsToCompaction1 < 84300).
+
 
 simple_score_test() ->
     Run1 = [#candidate{compaction_perc = 75.0},
