@@ -258,11 +258,11 @@ check_forobject(Bookie, TestObject) ->
     {ok, HeadBinary} = book_riakhead(Bookie,
                                         TestObject#r_object.bucket,
                                         TestObject#r_object.key),
-    {_SibMetaBinList,
+    {_SibMetaBin,
         Vclock,
         _Hash,
         size} = leveled_codec:riak_extract_metadata(HeadBinary, size),
-    true = Vclock == TestObject#r_object.vclock.
+    true = binary_to_term(Vclock) == TestObject#r_object.vclock.
 
 check_formissingobject(Bookie, Bucket, Key) ->
     not_found = book_riakget(Bookie, Bucket, Key),
