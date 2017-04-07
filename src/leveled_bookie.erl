@@ -1500,15 +1500,48 @@ foldobjects_vs_hashtree_test() ->
     io:format("First item ~w~n", [lists:nth(1, KeyHashList1)]),
     FoldObjectsFun = fun(B, K, V, Acc) ->
                             [{B, K, erlang:phash2(term_to_binary(V))}|Acc] end,
-    {async, HTFolder2} = book_returnfolder(Bookie1,
-                                            {foldobjects_allkeys,
-                                                ?STD_TAG,
-                                                FoldObjectsFun}),
+    {async, HTFolder2} =
+        book_returnfolder(Bookie1,
+                            {foldobjects_allkeys, ?STD_TAG, FoldObjectsFun}),
     KeyHashList2 = HTFolder2(),
     ?assertMatch(KeyHashList1, lists:usort(KeyHashList2)),
     
+    FoldHeadsFun =
+        fun(B, K, ProxyV, Acc) ->
+            {proxy_object,
+                        _MDBin,
+                        _Size,
+                        {FetchFun, Clone, JK}} = ProxyV,
+            V = FetchFun(Clone, JK),
+            [{B, K, erlang:phash2(term_to_binary(V))}|Acc]
+        end,
+    
+    {async, HTFolder3} =
+        book_returnfolder(Bookie1,
+                            {foldheads_allkeys, ?STD_TAG, FoldHeadsFun}),
+    KeyHashList3 = HTFolder3(),
+    ?assertMatch(KeyHashList1, lists:usort(KeyHashList3)),
+    
+    FoldHeadsFun2 = 
+        fun(B, K, ProxyV, Acc) ->
+            {proxy_object,
+                        MD,
+                        _Size,
+                        _Fetcher} = ProxyV,
+            {Hash, _Size} = MD,
+            [{B, K, Hash}|Acc]
+        end,
+    
+    {async, HTFolder4} =
+        book_returnfolder(Bookie1,
+                            {foldheads_allkeys, ?STD_TAG, FoldHeadsFun2}),
+    KeyHashList4 = HTFolder4(),
+    ?assertMatch(KeyHashList1, lists:usort(KeyHashList4)),
+    
     ok = book_close(Bookie1),
     reset_filestructure().
+
+
 
 scan_table_test() ->
     K1 = leveled_codec:to_ledgerkey(<<"B1">>,
