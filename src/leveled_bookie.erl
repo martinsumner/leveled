@@ -1091,7 +1091,7 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
                                         MDBin,
                                         Size,
                                         {fun fetch_value/2, InkerClone, JK}},
-                            FoldObjectsFun(B, K, Value, Acc);
+                            FoldObjectsFun(B, K, term_to_binary(Value), Acc);
                         false ->
                             R = fetch_value(InkerClone, JK),
                             case R of
@@ -1520,7 +1520,7 @@ foldobjects_vs_hashtree_test() ->
             {proxy_object,
                         _MDBin,
                         _Size,
-                        {FetchFun, Clone, JK}} = ProxyV,
+                        {FetchFun, Clone, JK}} = binary_to_term(ProxyV),
             V = FetchFun(Clone, JK),
             [{B, K, erlang:phash2(term_to_binary(V))}|Acc]
         end,
@@ -1536,7 +1536,7 @@ foldobjects_vs_hashtree_test() ->
             {proxy_object,
                         MD,
                         _Size,
-                        _Fetcher} = ProxyV,
+                        _Fetcher} = binary_to_term(ProxyV),
             {Hash, _Size} = MD,
             [{B, K, Hash}|Acc]
         end,
@@ -1595,7 +1595,7 @@ foldobjects_vs_foldheads_bybucket_test() ->
             {proxy_object,
                         _MDBin,
                         _Size,
-                        {FetchFun, Clone, JK}} = ProxyV,
+                        {FetchFun, Clone, JK}} = binary_to_term(ProxyV),
             V = FetchFun(Clone, JK),
             [{B, K, erlang:phash2(term_to_binary(V))}|Acc]
         end,
