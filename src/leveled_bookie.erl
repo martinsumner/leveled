@@ -536,6 +536,10 @@ handle_call({return_folder, FolderType}, _From, State) ->
             {reply,
                 foldheads_allkeys(State, Tag, FoldHeadsFun),
                 State};
+        {foldheads_bybucket, Tag, Bucket, FoldHeadsFun} ->
+            {reply,
+                foldheads_bybucket(State, Tag, Bucket, FoldHeadsFun),
+                State};
         {foldobjects_allkeys, Tag, FoldObjectsFun} ->
             {reply,
                 foldobjects_allkeys(State, Tag, FoldObjectsFun),
@@ -829,6 +833,11 @@ foldobjects_bybucket(State, Tag, Bucket, FoldObjectsFun) ->
     StartKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
     EndKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
     foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun, false).
+
+foldheads_bybucket(State, Tag, Bucket, FoldHeadsFun) ->
+    StartKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
+    EndKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
+    foldobjects(State, Tag, StartKey, EndKey, FoldHeadsFun, true).
 
 foldobjects_byindex(State, Tag, Bucket,
                         Field, FromTerm, ToTerm, FoldObjectsFun) ->
@@ -1497,7 +1506,7 @@ foldobjects_vs_hashtree_test() ->
                                                     ?STD_TAG,
                                                     false}),
     KeyHashList1 = lists:usort(HTFolder1()),
-    io:format("First item ~w~n", [lists:nth(1, KeyHashList1)]),
+    
     FoldObjectsFun = fun(B, K, V, Acc) ->
                             [{B, K, erlang:phash2(term_to_binary(V))}|Acc] end,
     {async, HTFolder2} =
@@ -1541,6 +1550,77 @@ foldobjects_vs_hashtree_test() ->
     ok = book_close(Bookie1),
     reset_filestructure().
 
+
+foldobjects_vs_foldheads_bybucket_test() ->
+    RootPath = reset_filestructure(),
+    {ok, Bookie1} = book_start([{root_path, RootPath},
+                                    {max_journalsize, 1000000},
+                                    {cache_size, 500}]),
+    ObjL1 = generate_multiple_objects(400, 1),
+    ObjL2 = generate_multiple_objects(400, 1),
+    % Put in all the objects with a TTL in the future
+    Future = leveled_codec:integer_now() + 300,
+    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
+                                                        "BucketA", K, V, S,
+                                                        ?STD_TAG,
+                                                        Future) end,
+                    ObjL1),
+    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
+                                                        "BucketB", K, V, S,
+                                                        ?STD_TAG,
+                                                        Future) end,
+                    ObjL2),
+    
+    FoldObjectsFun = fun(B, K, V, Acc) ->
+                            [{B, K, erlang:phash2(term_to_binary(V))}|Acc] end,
+    {async, HTFolder1A} =
+        book_returnfolder(Bookie1,
+                            {foldobjects_bybucket,
+                                ?STD_TAG,
+                                "BucketA",
+                                FoldObjectsFun}),
+    KeyHashList1A = HTFolder1A(),
+    {async, HTFolder1B} =
+        book_returnfolder(Bookie1,
+                            {foldobjects_bybucket,
+                                ?STD_TAG,
+                                "BucketB",
+                                FoldObjectsFun}),
+    KeyHashList1B = HTFolder1B(),
+    ?assertMatch(false,
+                    lists:usort(KeyHashList1A) == lists:usort(KeyHashList1B)),
+    
+    FoldHeadsFun =
+        fun(B, K, ProxyV, Acc) ->
+            {proxy_object,
+                        _MDBin,
+                        _Size,
+                        {FetchFun, Clone, JK}} = ProxyV,
+            V = FetchFun(Clone, JK),
+            [{B, K, erlang:phash2(term_to_binary(V))}|Acc]
+        end,
+    
+    {async, HTFolder2A} =
+        book_returnfolder(Bookie1,
+                            {foldheads_bybucket,
+                                ?STD_TAG,
+                                "BucketA",
+                                FoldHeadsFun}),
+    KeyHashList2A = HTFolder2A(),
+    {async, HTFolder2B} =
+        book_returnfolder(Bookie1,
+                            {foldheads_bybucket,
+                                ?STD_TAG,
+                                "BucketB",
+                                FoldHeadsFun}),
+    KeyHashList2B = HTFolder2B(),
+    ?assertMatch(true,
+                    lists:usort(KeyHashList1A) == lists:usort(KeyHashList2A)),
+    ?assertMatch(true,
+                    lists:usort(KeyHashList1B) == lists:usort(KeyHashList2B)),
+    
+    ok = book_close(Bookie1),
+    reset_filestructure().
 
 
 scan_table_test() ->
