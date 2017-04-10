@@ -185,7 +185,7 @@
         pcl_close/1,
         pcl_doom/1,
         pcl_releasesnapshot/2,
-        pcl_registersnapshot/4,
+        pcl_registersnapshot/5,
         pcl_getstartupsequencenumber/1]).
 
 -export([
@@ -214,7 +214,8 @@
 -define(COIN_SIDECOUNT, 5).
 -define(SLOW_FETCH, 20000).
 -define(ITERATOR_SCANWIDTH, 4).
--define(SNAPSHOT_TIMEOUT, 3600).
+-define(SNAPSHOT_TIMEOUT_LONG, 3600).
+-define(SNAPSHOT_TIMEOUT_SHORT, 600).
 
 -record(state, {manifest, % a manifest record from the leveled_manifest module
                 persisted_sqn = 0 :: integer(), % The highest SQN persisted
@@ -305,9 +306,9 @@ pcl_confirmdelete(Pid, FileName, FilePid) ->
 pcl_getstartupsequencenumber(Pid) ->
     gen_server:call(Pid, get_startup_sqn, infinity).
 
-pcl_registersnapshot(Pid, Snapshot, Query, BookiesMem) ->
+pcl_registersnapshot(Pid, Snapshot, Query, BookiesMem, LR) ->
     gen_server:call(Pid,
-                    {register_snapshot, Snapshot, Query, BookiesMem},
+                    {register_snapshot, Snapshot, Query, BookiesMem, LR},
                     infinity).
 
 pcl_releasesnapshot(Pid, Snapshot) ->
@@ -332,7 +333,12 @@ init([PCLopts]) ->
             PCLopts#penciller_options.bookies_mem} of
         {undefined, true, Query, BookiesMem} ->
             SrcPenciller = PCLopts#penciller_options.source_penciller,
-            {ok, State} = pcl_registersnapshot(SrcPenciller, self(), Query, BookiesMem),
+            LongRunning = PCLopts#penciller_options.snapshot_longrunning,
+            {ok, State} = pcl_registersnapshot(SrcPenciller, 
+                                                self(), 
+                                                Query, 
+                                                BookiesMem, 
+                                                LongRunning),
             leveled_log:log("P0001", [self()]),
             {ok, State#state{is_snapshot=true,
                                 source_penciller=SrcPenciller}};
@@ -444,16 +450,24 @@ handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
     {reply, Acc, State#state{levelzero_astree = L0AsList}};
 handle_call(get_startup_sqn, _From, State) ->
     {reply, State#state.persisted_sqn, State};
-handle_call({register_snapshot, Snapshot, Query, BookiesMem}, _From, State) ->
+handle_call({register_snapshot, Snapshot, Query, BookiesMem, LR}, _From, State) ->
     % Register and load a snapshot
     %
     % For setup of the snapshot to be efficient should pass a query
     % of (StartKey, EndKey) - this will avoid a fully copy of the penciller's
     % memory being required to be trasnferred to the clone.  However, this
     % will not be a valid clone for fetch
+    Timeout = 
+        case LR of
+            true ->
+                ?SNAPSHOT_TIMEOUT_LONG;
+            false ->
+                ?SNAPSHOT_TIMEOUT_SHORT
+        end,
+
     Manifest0 = leveled_pmanifest:add_snapshot(State#state.manifest,
                                                 Snapshot,
-                                                ?SNAPSHOT_TIMEOUT),
+                                                Timeout),
     
     {BookieIncrTree, BookieIdx, MinSQN, MaxSQN} = BookiesMem,
     LM1Cache =
