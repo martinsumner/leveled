@@ -54,6 +54,7 @@
 -define(MAX_LEVELS, 8).
 -define(TREE_TYPE, idxt).
 -define(TREE_WIDTH, 8).
+-define(PHANTOM_PID, r2d_fail).
 
 -record(manifest, {levels,
                         % an array of lists or trees representing the manifest
@@ -266,9 +267,7 @@ mergefile_selector(Manifest, LevelIdx) ->
     ME.
 
 add_snapshot(Manifest, Pid, Timeout) ->
-    {MegaNow, SecNow, _} = os:timestamp(),
-    TimeToTimeout = MegaNow * 1000000 + SecNow + Timeout,
-    SnapEntry = {Pid, Manifest#manifest.manifest_sqn, TimeToTimeout},
+    SnapEntry = {Pid, Manifest#manifest.manifest_sqn, seconds_now(), Timeout},
     SnapList0 = [SnapEntry|Manifest#manifest.snapshots],
     ManSQN = Manifest#manifest.manifest_sqn,
     case Manifest#manifest.min_snapshot_sqn of
@@ -283,22 +282,34 @@ add_snapshot(Manifest, Pid, Timeout) ->
 
 release_snapshot(Manifest, Pid) ->
     FilterFun =
-        fun({P, SQN, TS}, {Acc, MinSQN}) ->
+        fun({P, SQN, ST, TO}, {Acc, MinSQN, Found}) ->
             case P of
                 Pid ->
-                    {Acc, MinSQN};
+                    {Acc, MinSQN, true};
                 _ ->
-                    {[{P, SQN, TS}|Acc], min(SQN, MinSQN)}
+                    case seconds_now() > (ST + TO) of 
+                        true ->
+                            leveled_log:log("P0038", [P, SQN,  ST, TO]),
+                            {Acc, MinSQN, Found};
+                        false ->
+                            {[{P, SQN, ST, TO}|Acc], min(SQN, MinSQN), Found}
+                    end
             end
         end,
-    {SnapList0, MinSnapSQN} = lists:foldl(FilterFun,
-                                            {[], infinity},
-                                            Manifest#manifest.snapshots),
+    {SnapList0, MinSnapSQN, Hit} = lists:foldl(FilterFun,
+                                                {[], infinity, false},
+                                                Manifest#manifest.snapshots),
+    case Hit of 
+        false ->
+            leveled_log:log("P0039", [Pid, length(SnapList0), MinSnapSQN]);
+        true ->
+            ok 
+    end,
     case SnapList0 of
         [] ->
             Manifest#manifest{snapshots = SnapList0,
                                 min_snapshot_sqn = 0};
-        _ ->
+        _  ->
             leveled_log:log("P0004", [SnapList0]),
             Manifest#manifest{snapshots = SnapList0,
                                 min_snapshot_sqn = MinSnapSQN}
@@ -317,7 +328,10 @@ ready_to_delete(Manifest, Filename) ->
             PDs = dict:erase(Filename, Manifest#manifest.pending_deletes),
             {true, Manifest#manifest{pending_deletes = PDs}};
         _N ->
-            {false, Manifest}
+            % If failed to delete then we should release a phantom pid
+            % in case this is necessary to timeout any snapshots
+            % This wll also trigger a log  
+            {false, release_snapshot(Manifest, ?PHANTOM_PID)}
     end.
 
 check_for_work(Manifest, Thresholds) ->
@@ -626,6 +640,10 @@ open_manifestfile(RootPath, [TopManSQN|Rest]) ->
             leveled_log:log("P0033", [CurrManFile, "crc wonky"]),
             open_manifestfile(RootPath, Rest)
     end.
+
+seconds_now() ->
+    {MegaNow, SecNow, _} = os:timestamp(),
+    MegaNow * 1000000 + SecNow.
 
 
 %%%============================================================================
@@ -973,6 +991,19 @@ snapshot_release_test() ->
     {Bool19, _Man20} = ready_to_delete(Man19, "Z3"),
     ?assertMatch(true, Bool19).
     
-    
+
+snapshot_timeout_test() ->
+    Man6 = element(7, initial_setup()),
+    Man7 = add_snapshot(Man6, "pid_a1", 3600),
+    ?assertMatch(1, length(Man7#manifest.snapshots)),
+    Man8 = release_snapshot(Man7, "pid_a1"),
+    ?assertMatch(0, length(Man8#manifest.snapshots)),
+    Man9 = add_snapshot(Man8, "pid_a1", 0),
+    timer:sleep(2001),
+    ?assertMatch(1, length(Man9#manifest.snapshots)),
+    Man10 = release_snapshot(Man9, ?PHANTOM_PID),
+    ?assertMatch(0, length(Man10#manifest.snapshots)).
+
+
     
 -endif.
