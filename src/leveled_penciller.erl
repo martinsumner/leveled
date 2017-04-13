@@ -214,7 +214,7 @@
 -define(COIN_SIDECOUNT, 5).
 -define(SLOW_FETCH, 20000).
 -define(ITERATOR_SCANWIDTH, 4).
--define(SNAPSHOT_TIMEOUT_LONG, 3600).
+-define(SNAPSHOT_TIMEOUT_LONG, 5400).
 -define(SNAPSHOT_TIMEOUT_SHORT, 600).
 
 -record(state, {manifest, % a manifest record from the leveled_manifest module
