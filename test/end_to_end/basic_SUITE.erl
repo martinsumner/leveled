@@ -489,7 +489,7 @@ space_clear_ondelete(_Config) ->
     timer:sleep(10000), % Allow for any L0 file to be rolled
     {ok, FNsA_L} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
     {ok, FNsA_J} = file:list_dir(RootPath ++ "/journal/journal_files"),
-    io:format("Bookie created ~w journal files and ~w ledger files~n",
+    io:format("FNsA - Bookie created ~w journal files and ~w ledger files~n",
                     [length(FNsA_J), length(FNsA_L)]),
     
     % Get an iterator to lock the inker during compaction
@@ -499,6 +499,8 @@ space_clear_ondelete(_Config) ->
                                                         {foldobjects_allkeys,
                                                             ?RIAK_TAG,
                                                             FoldObjectsFun}),
+    {async, KF1} = leveled_bookie:book_returnfolder(Book1, AllKeyQuery),
+
     % Delete the keys
     SW2 = os:timestamp(),
     lists:foreach(fun({Bucket, Key}) ->
@@ -529,9 +531,12 @@ space_clear_ondelete(_Config) ->
                     lists:seq(1, 15)),
     io:format("Waiting for journal deletes - blocked~n"),
     timer:sleep(20000),
-    KeyHashList1 = HTreeF1(),
-    io:format("Key Hash List returned of length ~w~n", [length(KeyHashList1)]),
-    true = length(KeyHashList1) == 80000,
+    
+    % for this query snapshot is made at fold time
+    true = length(HTreeF1()) == 0,
+    % This query uses a genuine async fold on a snasphot made at request time
+    true = length(KF1()) == 80000, 
+    
     io:format("Waiting for journal deletes - unblocked~n"),
     timer:sleep(20000),
     {ok, FNsB_L} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
@@ -539,7 +544,7 @@ space_clear_ondelete(_Config) ->
     {ok, FNsB_PC} = file:list_dir(RootPath
                                     ++ "/journal/journal_files/post_compact"),
     PointB_Journals = length(FNsB_J) + length(FNsB_PC),
-    io:format("Bookie has ~w journal files and ~w ledger files " ++
+    io:format("FNsB - Bookie has ~w journal files and ~w ledger files " ++
                     "after deletes~n",
                 [PointB_Journals, length(FNsB_L)]),
     
@@ -566,7 +571,7 @@ space_clear_ondelete(_Config) ->
             end,
     ok = leveled_bookie:book_close(Book2),
     {ok, FNsC_L} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
-    io:format("Bookie has ~w ledger files " ++
+    io:format("FNsC - Bookie has ~w ledger files " ++
                     "after close~n", [length(FNsC_L)]),
     
     {ok, Book3} = leveled_bookie:book_start(StartOpts1),
@@ -576,8 +581,12 @@ space_clear_ondelete(_Config) ->
     timer:sleep(12000),
     ok = leveled_bookie:book_close(Book3),
     {ok, FNsD_L} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
-    io:format("Bookie has ~w ledger files " ++
+    io:format("FNsD - Bookie has ~w ledger files " ++
                     "after second close~n", [length(FNsD_L)]),
+    lists:foreach(fun(FN) -> 
+                        io:format("FNsD - Ledger file if ~s~n", [FN]) 
+                    end, 
+                    FNsD_L),
     true = PointB_Journals < length(FNsA_J),
     true = length(FNsD_L) < length(FNsA_L),
     true = length(FNsD_L) < length(FNsB_L),

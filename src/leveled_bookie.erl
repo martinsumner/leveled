@@ -484,6 +484,9 @@ handle_call({head, Bucket, Key, Tag}, _From, State) ->
             end
     end;
 handle_call({snapshot, _Requestor, SnapType, _Timeout}, _From, State) ->
+    % TODO: clean-up passing of Requestor (which was previously just used in 
+    % logs) and so can now be ignored, and timeout which is ignored - but 
+    % probably shouldn't be.
     Reply = snapshot_store(State, SnapType),
     {reply, Reply, State};
 handle_call({return_folder, FolderType}, _From, State) ->
@@ -860,7 +863,7 @@ foldobjects_byindex(State, Tag, Bucket,
     foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun, false).
 
 
-foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun, DeferredFetch) ->
+foldobjects(_State, Tag, StartKey, EndKey, FoldObjectsFun, DeferredFetch) ->
     {FoldFun, InitAcc} = case is_tuple(FoldObjectsFun) of
                                 true ->
                                     FoldObjectsFun;
@@ -874,11 +877,17 @@ foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun, DeferredFetch) ->
     % and the sweeper prompts the fold before checking to see if the fold is
     % ready to be run.  This may lead to the fold being called on an old
     % snapshot.
+    Self = self(),
     Folder =
         fun() ->
             {ok,
                 LedgerSnapshot,
-                JournalSnapshot} = snapshot_store(State, store),
+                JournalSnapshot} = book_snapshotstore(Self, Self, 5400),
+                % Timeout will be ignored, as will Requestor
+                %
+                % This uses the external snapshot - as the snpshot will need 
+                % to have consistent state between Bookie and Penciller when
+                % it is made.
             AccFun = accumulate_objects(FoldFun,
                                         JournalSnapshot,
                                         Tag,
