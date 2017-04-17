@@ -57,6 +57,7 @@
                         snapshot_query,
                         bookies_mem :: tuple(),
                         source_penciller :: pid(),
+                        snapshot_longrunning = true :: boolean(),
                         levelzero_cointoss = false :: boolean()}).
 
 -record(iclerk_options,

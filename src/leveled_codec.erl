@@ -445,57 +445,44 @@ build_metadata_object(PrimaryKey, MD) ->
 riak_extract_metadata(delete, Size) ->
     {delete, null, null, Size};
 riak_extract_metadata(ObjBin, Size) ->
-    {Vclock, SibData} = riak_metadata_from_binary(ObjBin),
-    {SibData, Vclock, erlang:phash2(ObjBin), Size}.
+    {Vclock, SibBin} = riak_metadata_from_binary(ObjBin),
+    {SibBin, Vclock, erlang:phash2(ObjBin), Size}.
 
 %% <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
 %%%     VclockBin/binary, SibCount:32/integer, SibsBin/binary>>.
 
-riak_metadata_to_binary(Vclock, SibData) ->
-    VclockBin = term_to_binary(Vclock),
+riak_metadata_to_binary(VclockBin, SibMetaBin) ->
     VclockLen = byte_size(VclockBin),
-    % <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
-    %         VclockBin:VclockLen/binary, SibData:32/integer>>.
-    SibCount = length(SibData),
-    SibsBin = slimbin_contents(SibData),
-    <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
-            VclockBin:VclockLen/binary, SibCount:32/integer, SibsBin/binary>>.
+    <<?MAGIC:8/integer, ?V1_VERS:8/integer,
+        VclockLen:32/integer, VclockBin/binary,
+        SibMetaBin/binary>>.
     
 riak_metadata_from_binary(V1Binary) ->
     <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
             Rest/binary>> = V1Binary,
-    % Just grab the Sibling count and not the full metadata
-    % <<VclockBin:VclockLen/binary, SibCount:32/integer, _Rest/binary>> = Rest,
-    % {binary_to_term(VclockBin), SibCount}.
     <<VclockBin:VclockLen/binary, SibCount:32/integer, SibsBin/binary>> = Rest,
-    SibMetaBinList =
+    SibMetaBin =
         case SibCount of
             SC when is_integer(SC) ->
-                get_metadata_from_siblings(SibsBin, SibCount, [])
+                get_metadata_from_siblings(SibsBin,
+                                            SibCount,
+                                            <<SibCount:32/integer>>)
         end,
-    {binary_to_term(VclockBin), SibMetaBinList}.
+    {VclockBin, SibMetaBin}.
 
-% Fixes the value length for each sibling to be zero, and so includes no value
-slimbin_content(MetaBin) ->
-    MetaLen = byte_size(MetaBin),
-    <<0:32/integer,  MetaLen:32/integer, MetaBin:MetaLen/binary>>.
-
-slimbin_contents(SibMetaBinList) ->
-    F = fun(MetaBin, Acc) ->
-                <<Acc/binary, (slimbin_content(MetaBin))/binary>>
-        end,
-    lists:foldl(F, <<>>, SibMetaBinList).
-    
-get_metadata_from_siblings(<<>>, 0, SibMetaBinList) ->
-    SibMetaBinList;
+get_metadata_from_siblings(<<>>, 0, SibMetaBin) ->
+    SibMetaBin;
 get_metadata_from_siblings(<<ValLen:32/integer, Rest0/binary>>,
                             SibCount,
-                            SibMetaBinList) ->
+                            SibMetaBin) ->
     <<_ValBin:ValLen/binary, MetaLen:32/integer, Rest1/binary>> = Rest0,
     <<MetaBin:MetaLen/binary, Rest2/binary>> = Rest1,
     get_metadata_from_siblings(Rest2,
                                 SibCount - 1,
-                                [MetaBin|SibMetaBinList]).
+                                <<SibMetaBin/binary,
+                                    0:32/integer,
+                                    MetaLen:32/integer,
+                                    MetaBin:MetaLen/binary>>).
 
 
 

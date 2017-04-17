@@ -640,9 +640,21 @@ snapshot_store(LedgerCache0, Penciller, Inker, SnapType, Query) ->
                     LedgerCache#ledger_cache.index,
                     LedgerCache#ledger_cache.min_sqn,
                     LedgerCache#ledger_cache.max_sqn},
+    LongRunning = 
+        case Query of 
+            undefined -> 
+                true;
+            no_lookup ->
+                true;
+            _ ->
+                % If a specific query has been defined, then not expected
+                % to be long running
+                false
+        end,
     PCLopts = #penciller_options{start_snapshot = true,
                                     source_penciller = Penciller,
                                     snapshot_query = Query,
+                                    snapshot_longrunning = LongRunning,
                                     bookies_mem = BookiesMem},
     {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
     case SnapType of
@@ -1528,9 +1540,9 @@ foldobjects_vs_hashtree_test() ->
     FoldHeadsFun =
         fun(B, K, ProxyV, Acc) ->
             {proxy_object,
-                        _MDBin,
-                        _Size,
-                        {FetchFun, Clone, JK}} = binary_to_term(ProxyV),
+                _MDBin,
+                _Size,
+                {FetchFun, Clone, JK}} = binary_to_term(ProxyV),
             V = FetchFun(Clone, JK),
             [{B, K, erlang:phash2(term_to_binary(V))}|Acc]
         end,
@@ -1544,9 +1556,9 @@ foldobjects_vs_hashtree_test() ->
     FoldHeadsFun2 = 
         fun(B, K, ProxyV, Acc) ->
             {proxy_object,
-                        MD,
-                        _Size,
-                        _Fetcher} = binary_to_term(ProxyV),
+                MD,
+                _Size,
+                _Fetcher} = binary_to_term(ProxyV),
             {Hash, _Size} = MD,
             [{B, K, Hash}|Acc]
         end,
