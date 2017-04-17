@@ -849,27 +849,37 @@ foldobjects_byindex(State, Tag, Bucket,
 
 
 foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun, DeferredFetch) ->
-    {ok, LedgerSnapshot, JournalSnapshot} = snapshot_store(State, store),
     {FoldFun, InitAcc} = case is_tuple(FoldObjectsFun) of
                                 true ->
                                     FoldObjectsFun;
                                 false ->
                                     {FoldObjectsFun, []}
                             end,
-    Folder = fun() ->
-                AccFun = accumulate_objects(FoldFun,
-                                            JournalSnapshot,
-                                            Tag,
-                                            DeferredFetch),
-                Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
-                                                        StartKey,
-                                                        EndKey,
-                                                        AccFun,
-                                                        InitAcc),
-                ok = leveled_penciller:pcl_close(LedgerSnapshot),
-                ok = leveled_inker:ink_close(JournalSnapshot),
-                Acc
-                end,
+    % For fold_objects the snapshot has been moved inside of the Folder
+    % function.
+    %
+    % fold_objects and fold_heads are called by the riak_kv_sweeper in Riak,
+    % and the sweeper prompts the fold before checking to see if the fold is
+    % ready to be run.  This may lead to the fold being called on an old
+    % snapshot.
+    Folder =
+        fun() ->
+            {ok,
+                LedgerSnapshot,
+                JournalSnapshot} = snapshot_store(State, store),
+            AccFun = accumulate_objects(FoldFun,
+                                        JournalSnapshot,
+                                        Tag,
+                                        DeferredFetch),
+            Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
+                                                    StartKey,
+                                                    EndKey,
+                                                    AccFun,
+                                                    InitAcc),
+            ok = leveled_penciller:pcl_close(LedgerSnapshot),
+            ok = leveled_inker:ink_close(JournalSnapshot),
+            Acc
+        end,
     {async, Folder}.
 
 
