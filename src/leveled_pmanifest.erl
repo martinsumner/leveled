@@ -37,6 +37,7 @@
         mergefile_selector/2,
         add_snapshot/3,
         release_snapshot/2,
+        merge_snapshot/2,
         ready_to_delete/2,
         check_for_work/2,
         is_basement/2,
@@ -266,18 +267,26 @@ mergefile_selector(Manifest, LevelIdx) ->
     {_SK, ME} = lists:nth(random:uniform(length(Level)), Level),
     ME.
 
+%% When the cllerk returns an update manifest to the penciller, the penciller
+%% should restore its view of the snapshots to that manifest
+merge_snapshot(PencillerManifest, ClerkManifest) ->
+    ClerkManifest#manifest{snapshots =
+                                PencillerManifest#manifest.snapshots,
+                            min_snapshot_sqn =
+                                PencillerManifest#manifest.min_snapshot_sqn}.
+
 add_snapshot(Manifest, Pid, Timeout) ->
     SnapEntry = {Pid, Manifest#manifest.manifest_sqn, seconds_now(), Timeout},
     SnapList0 = [SnapEntry|Manifest#manifest.snapshots],
     ManSQN = Manifest#manifest.manifest_sqn,
     case Manifest#manifest.min_snapshot_sqn of
         0 ->
-            
             Manifest#manifest{snapshots = SnapList0,
                                 min_snapshot_sqn = ManSQN};
         N ->
             N0 = min(N, ManSQN),
-            Manifest#manifest{snapshots = SnapList0, min_snapshot_sqn = N0}
+            Manifest#manifest{snapshots = SnapList0,
+                                min_snapshot_sqn = N0}
     end.
 
 release_snapshot(Manifest, Pid) ->
