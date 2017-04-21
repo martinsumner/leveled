@@ -1099,8 +1099,17 @@ accumulate_hashes(JournalCheck, InkerClone) ->
 
 accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
     Now = leveled_codec:integer_now(),
-    AccFun  =
+    AccFun =
         fun(LK, V, Acc) ->
+            % The function takes the Ledger Key and the value from the
+            % ledger (with the value being the object metadata)
+            %
+            % Need to check if this is an active object (so TTL has not
+            % expired).
+            % If this is a deferred_fetch (i.e. the fold is a fold_heads not
+            % a fold_objects), then a metadata object needs to be built to be
+            % returned - but a quick check that Key is present in the Journal
+            % is made first
             case leveled_codec:is_active(LK, V, Now) of
                 true ->
                     {SQN, _St, _MH, MD} =
@@ -1115,14 +1124,29 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
                     JK = {leveled_codec:to_ledgerkey(B, K, Tag), SQN},
                     case DeferredFetch of
                         true ->
-                            Size = leveled_codec:get_size(LK, V),
-                            MDBin =
-                                leveled_codec:build_metadata_object(LK, MD),
-                            Value = {proxy_object,
-                                        MDBin,
-                                        Size,
-                                        {fun fetch_value/2, InkerClone, JK}},
-                            FoldObjectsFun(B, K, term_to_binary(Value), Acc);
+                            InJournal =
+                                leveled_inker:ink_keycheck(InkerClone,
+                                                            LK,
+                                                            SQN),
+                            case InJournal of
+                                probably ->
+                                    Size = leveled_codec:get_size(LK, V),
+                                    MDBin =
+                                        leveled_codec:build_metadata_object(LK,
+                                                                            MD),
+                                    Value = {proxy_object,
+                                                MDBin,
+                                                Size,
+                                                {fun fetch_value/2,
+                                                    InkerClone,
+                                                    JK}},
+                                    FoldObjectsFun(B,
+                                                    K,
+                                                    term_to_binary(Value),
+                                                    Acc);
+                                missing ->
+                                    Acc
+                            end;
                         false ->
                             R = fetch_value(InkerClone, JK),
                             case R of
