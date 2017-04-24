@@ -142,19 +142,81 @@ As a general rule, looking at the resource utilisation during the tests, the fol
 - leveldb throughput would be increased by having improved disk i/o.
 
 
-## Riak Cluster Test - Phase 2
+## Riak Cluster Test - Phase 2 - AAE Rebuild
 
-to be completed ..
+These tests have been completed using the following static characteristics which are designed to be a balanced comparison between leveled and leveldb:
 
-Testing with changed hashtree logic in Riak so key/clock scan is effective
+- 8KB value,
+- 100 workers,
+- no sync on write,
+- 5 x i2.2x nodes,
+- 6 hour duration.
 
-## Riak Cluster Test - Phase 3
+This is the test used in Phase 1.  Note that since Phase 1 was completed a number of performance improvements have been made in leveled, so that the starting gap between Riak/leveled and Riak/leveldb has widened.
+
+The tests have been run using the new riak_kv_sweeper facility within develop.  This feature is an alternative approach to controlling and scheduling rebuilds, allowing for other work to be scheduled into the same fold.  As the test is focused on hashtree rebuilds, the test was run with:
+
+- active anti-entropy enabled,
+- a 3 hour rebuild timer.
+
+The 3-hour rebuild timer is not a recommended configuration, it is an artificial scenario to support testing in a short time window.
+
+In the current Riak develop branch all sweeps use the Mod:fold_objects/4 function in the backend behaviour.  In the testing of Riak/leveled this was changed to allow use of the new Mod:fold_heads/4 function available in the leveled backend (which can be used if the backend supports the fold_heads capability).
+
+In clusters which have fully migrated to Riak 2.2, the hashtrees are built from a hash of the vector clock, not the object - handling the issue of consistent hashing without canonicalisation of riak objects.  This means that hashtrees can be rebuilt without knowledge of the object itself.  However, the purpose of rebuilding the hashtree is to ensure that the hashtree represents the data that is still present in the store, as opposed to the assumed state of the store based on the history of changes.  Rebuilding hashtrees is part of the defence against accidental deletion (e.g. through user error), and data corruption within the store where no read-repair is other wise triggered.  So although leveled can make hashtree rebuilds faster by only folding over the heads, this only answers part of the problem.  A rebuild based on heads only proves deletion/corruption has not occurred in the Ledger, but doesn't rule out the possibility that deletion/corruption has occurred in the Journal.
+
+The fold_heads/4 implementation in leveled partially answers the challenge of Journal deletion or corruption by checking for presence in the Journal as part of the fold.  Presence checking means that the object sequence number is in the Journal manifest, and the hash of the Key & sequence number is the lookup tree for that Journal.  It is expected that corruption of blocks within journal files will be handled as part of the compaction work to be tested in Phase 3.
+
+### Leveled AAE rebuild with journal check
+
+The comparison between leveled and leveldb shows a marked difference in throughput volatility and tail latency (especially with updates).
+
+Riak + leveled           |  Riak + leveldb
+:-------------------------:|:-------------------------:
+![](../test/volume/cluster_aae/output/summary_leveled_5n_100t_i2_nosync_inkcheckaae.png "LevelEd")  |  ![](../test/volume/cluster_aae/output/summary_leveldb_5n_100t_i2_nosync_sweeperaae.png "LevelDB")
+
+The differences between the two tests are:
+
+- <strong>47.7%</strong> more requests handled with leveled across the whole test window
+- <strong>54.5%</strong> more requests handled with leveled in the last hour of the test
+- <b>7</b> more hashtree rebuilds completed in the leveled test
+
+As with other tests the leveled test had a <strong>slower mean GET time</strong> (<b>6.0ms</b> compared to <b>3.7ms</b>) reflecting the extra cycle caused by deferring the GET request until quorum has been reached through HEAD requests.  The leveled test by contrast though had a substantially <strong>more predictable and lower mean UPDATE time</strong> (<b>14.7ms</b> compared to <b>52.4ms</b>).
+
+Throughput in the leveldb test is reduced from a comparative test without active anti-entropy by a significant amount (more than <b>11%</b>), whereas the throughput reduction from enabling/disabling anti-entropy is marginal in leveled comparisons.
+
+### Comparison without journal check
+
+ One surprising result from the AAE comparison is that although the leveled test shows less variation in throughput because of the rebuilds, the actual rebuilds take a roughly equivalent time in both the leveled and leveldb tests:
+
+ Hour          |  Riak + leveled rebuild times |  Riak + leveldb rebuild times
+ :-----------:|:-------------------------:|:-------------------------:
+ 1 | 519.51 | 518.30
+ 2 | 793.24 | 719.97
+ 3 | 1,130.36 | 1,111.25
+ 4 | 1,428.16 | 1,459.03
+ 5 | 1,677.24 | 1,668.50
+ 6 | 1,818.63 | 1,859.14
+
+Note that throughput was 50% higher in the Riak + leveled test, so although the times are comparable the database sizes are larger in this test.
+
+To explore this further, the same test was also run but with the leveled backend only folding heads across the Ledger (and not doing any check for presence in the Journal).  In the ledger-only checking version 110 rebuilds were completed in the test as opposed to 80 rebuilds completed without the Journal check.  The time for the checks are halved if the Journal check is removed.
+
+Although the rebuild times are reduced by removing the Journal check, the throughput change for database consumers is negligible (and well within the margin of error between test runs).  So removing the Journal check makes rebuilds faster, but doesn't improve overall database performance for users.
+
+### Comparison with "legacy" rebuild mechanism in leveldb
+
+The sweeper mechanism is a new facility in the riak_kv develop branch, and has a different system of throttles to the direct fold mechanism previously used.  Without sweeper enabled, by default only one concurrent rebuild is allowed per cluster, whereas sweeper restricts to one concurrent rebuild per node.  Sweeper has an additional throttle based on the volume of data passed to control the pace of each sweep.
+
+If the same test is run with a leveldb backend but with the pre-sweeper fold mechanism, then total throughput across the is improved by <b>8.9%</b>.  However, this throughput reduction comes at the cost of a <b>90%</b> reduction in the number of rebuilds completed within the test.
+
+## Riak Cluster Test - Phase 3 - Compaction
 
 to be completed ..
 
 Testing during a journal compaction window
 
-## Riak Cluster Test - Phase 4
+## Riak Cluster Test - Phase 4 - 2i
 
 Testing with secondary indexes provides some new challenges:
 
@@ -199,7 +261,7 @@ As before, increasing the available CPU will increase the potential throughput o
 In the 2i query test there is the same significant reduction in tail latency when comparing leveled with leveldb.  For the 2i queries there is also a significant reduction in mean latency - a <b> 57.96%</b> reduction over the course of the test.  However this reduction is not a sign that leveled can resolve 2i queries faster than leveldb - it is related to the problem of tail latency.  The minimum response time for a 2i query in leveldb drifts from 4ms to 14ms as the test progresses - whereas the minimum response time for Riak and leveled fluctuates from 5ms through to 20ms at the end of the test.  Outside of resource pressure leveldb will give a faster response - but resource pressure is much more likely with leveldb.
 
 
-## Riak Cluster Test - Phase 5
+## Riak Cluster Test - Phase 5 - Bitcask compare
 
 For larger objects, it is interesting to compare performance with between Bitcask and leveled.  At the start of a pure push test it is not possible for leveled to operate at the same rate as bitcask - as bitcask is finding/updating pointer s through a NIF'd memory operation in C (whereas leveled needs to has two levels of indirect pointers which are being lazily persisted to disk).
 
