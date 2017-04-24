@@ -69,7 +69,8 @@
             empty_ledgercache/0,
             loadqueue_ledgercache/1,
             push_ledgercache/2,
-            snapshot_store/5]).  
+            snapshot_store/5,
+            fetch_value/2]).  
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -447,7 +448,7 @@ handle_call({get, Bucket, Key, Tag}, _From, State) ->
                     {reply, not_found, State};
                 {active, TS} ->
                     Active = TS >= leveled_codec:integer_now(),
-                    Object = fetch_value(LedgerKey, Seqn, State#state.inker),
+                    Object = fetch_value(State#state.inker, {LedgerKey, Seqn}),
                     GT1 = leveled_log:get_timing(GT0, SWg, fetch),
                     case {Active, Object} of
                         {_, not_present} ->
@@ -483,6 +484,9 @@ handle_call({head, Bucket, Key, Tag}, _From, State) ->
             end
     end;
 handle_call({snapshot, _Requestor, SnapType, _Timeout}, _From, State) ->
+    % TODO: clean-up passing of Requestor (which was previously just used in 
+    % logs) and so can now be ignored, and timeout which is ignored - but 
+    % probably shouldn't be.
     Reply = snapshot_store(State, SnapType),
     {reply, Reply, State};
 handle_call({return_folder, FolderType}, _From, State) ->
@@ -530,6 +534,14 @@ handle_call({return_folder, FolderType}, _From, State) ->
         {hashtree_query, Tag, JournalCheck} ->
             {reply,
                 hashtree_query(State, Tag, JournalCheck),
+                State};
+        {foldheads_allkeys, Tag, FoldHeadsFun} ->
+            {reply,
+                foldheads_allkeys(State, Tag, FoldHeadsFun),
+                State};
+        {foldheads_bybucket, Tag, Bucket, FoldHeadsFun} ->
+            {reply,
+                foldheads_bybucket(State, Tag, Bucket, FoldHeadsFun),
                 State};
         {foldobjects_allkeys, Tag, FoldObjectsFun} ->
             {reply,
@@ -667,6 +679,16 @@ snapshot_store(State, SnapType, Query) ->
                     State#state.inker,
                     SnapType,
                     Query).
+
+fetch_value(Inker, {Key, SQN}) ->
+    SW = os:timestamp(),
+    case leveled_inker:ink_fetch(Inker, Key, SQN) of
+        {ok, Value} ->
+            maybe_longrunning(SW, inker_fetch),
+            Value;
+        not_present ->
+            not_present
+    end.
 
 
 %%%============================================================================
@@ -815,39 +837,70 @@ hashtree_query(State, Tag, JournalCheck) ->
 foldobjects_allkeys(State, Tag, FoldObjectsFun) ->
     StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
     EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
-    foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun).
+    foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun, false).
+
+foldheads_allkeys(State, Tag, FoldHeadsFun) ->
+    StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
+    EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
+    foldobjects(State, Tag, StartKey, EndKey, FoldHeadsFun, true).
 
 foldobjects_bybucket(State, Tag, Bucket, FoldObjectsFun) ->
     StartKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
     EndKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
-    foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun).
+    foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun, false).
 
-foldobjects_byindex(State, Tag, Bucket, Field, FromTerm, ToTerm, FoldObjectsFun) ->
-    StartKey = leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG, Field,
-                                            FromTerm),
-    EndKey =  leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG, Field,
-                                            ToTerm),
-    foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun).
+foldheads_bybucket(State, Tag, Bucket, FoldHeadsFun) ->
+    StartKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
+    EndKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
+    foldobjects(State, Tag, StartKey, EndKey, FoldHeadsFun, true).
 
-foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun) ->
-    {ok, LedgerSnapshot, JournalSnapshot} = snapshot_store(State, store),
+foldobjects_byindex(State, Tag, Bucket,
+                        Field, FromTerm, ToTerm, FoldObjectsFun) ->
+    StartKey =
+        leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG, Field, FromTerm),
+    EndKey =
+        leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG, Field, ToTerm),
+    foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun, false).
+
+
+foldobjects(_State, Tag, StartKey, EndKey, FoldObjectsFun, DeferredFetch) ->
     {FoldFun, InitAcc} = case is_tuple(FoldObjectsFun) of
                                 true ->
                                     FoldObjectsFun;
                                 false ->
                                     {FoldObjectsFun, []}
                             end,
-    Folder = fun() ->
-                AccFun = accumulate_objects(FoldFun, JournalSnapshot, Tag),
-                Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
-                                                        StartKey,
-                                                        EndKey,
-                                                        AccFun,
-                                                        InitAcc),
-                ok = leveled_penciller:pcl_close(LedgerSnapshot),
-                ok = leveled_inker:ink_close(JournalSnapshot),
-                Acc
-                end,
+    % For fold_objects the snapshot has been moved inside of the Folder
+    % function.
+    %
+    % fold_objects and fold_heads are called by the riak_kv_sweeper in Riak,
+    % and the sweeper prompts the fold before checking to see if the fold is
+    % ready to be run.  This may lead to the fold being called on an old
+    % snapshot.
+    Self = self(),
+    Folder =
+        fun() ->
+            {ok,
+                LedgerSnapshot,
+                JournalSnapshot} = book_snapshotstore(Self, Self, 5400),
+                % Timeout will be ignored, as will Requestor
+                %
+                % This uses the external snapshot - as the snpshot will need 
+                % to have consistent state between Bookie and Penciller when
+                % it is made.
+            AccFun = accumulate_objects(FoldFun,
+                                        JournalSnapshot,
+                                        Tag,
+                                        DeferredFetch),
+            Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
+                                                    StartKey,
+                                                    EndKey,
+                                                    AccFun,
+                                                    InitAcc),
+            ok = leveled_penciller:pcl_close(LedgerSnapshot),
+            ok = leveled_inker:ink_close(JournalSnapshot),
+            Acc
+        end,
     {async, Folder}.
 
 
@@ -955,8 +1008,8 @@ set_options(Opts) ->
     
     JournalFP = RootPath ++ "/" ++ ?JOURNAL_FP,
     LedgerFP = RootPath ++ "/" ++ ?LEDGER_FP,
-    ok =filelib:ensure_dir(JournalFP),
-    ok =filelib:ensure_dir(LedgerFP),
+    ok = filelib:ensure_dir(JournalFP),
+    ok = filelib:ensure_dir(LedgerFP),
     
     {#inker_options{root_path = JournalFP,
                         reload_strategy = ReloadStrategy,
@@ -1005,16 +1058,6 @@ fetch_head(Key, Penciller, LedgerCache) ->
             end
     end.
 
-fetch_value(Key, SQN, Inker) ->
-    SW = os:timestamp(),
-    case leveled_inker:ink_fetch(Inker, Key, SQN) of
-        {ok, Value} ->
-            maybe_longrunning(SW, inker_fetch),
-            Value;
-        not_present ->
-            not_present
-    end.
-
 
 accumulate_size() ->
     Now = leveled_codec:integer_now(),
@@ -1053,28 +1096,71 @@ accumulate_hashes(JournalCheck, InkerClone) ->
                 end,
     AccFun.
 
-accumulate_objects(FoldObjectsFun, InkerClone, Tag) ->
+
+accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
     Now = leveled_codec:integer_now(),
-    AccFun  = fun(LK, V, Acc) ->
-                    case leveled_codec:is_active(LK, V, Now) of
+    AccFun =
+        fun(LK, V, Acc) ->
+            % The function takes the Ledger Key and the value from the
+            % ledger (with the value being the object metadata)
+            %
+            % Need to check if this is an active object (so TTL has not
+            % expired).
+            % If this is a deferred_fetch (i.e. the fold is a fold_heads not
+            % a fold_objects), then a metadata object needs to be built to be
+            % returned - but a quick check that Key is present in the Journal
+            % is made first
+            case leveled_codec:is_active(LK, V, Now) of
+                true ->
+                    {SQN, _St, _MH, MD} =
+                        leveled_codec:striphead_to_details(V),
+                    {B, K} =
+                        case leveled_codec:from_ledgerkey(LK) of
+                            {B0, K0} ->
+                                {B0, K0};
+                            {B0, K0, _T0} ->
+                                {B0, K0}
+                        end,
+                    JK = {leveled_codec:to_ledgerkey(B, K, Tag), SQN},
+                    case DeferredFetch of
                         true ->
-                            SQN = leveled_codec:strip_to_seqonly({LK, V}),
-                            {B, K} = case leveled_codec:from_ledgerkey(LK) of
-                                            {B0, K0} -> {B0, K0};
-                                            {B0, K0, _T0} -> {B0, K0}
-                                        end,
-                            QK = leveled_codec:to_ledgerkey(B, K, Tag),
-                            R = leveled_inker:ink_fetch(InkerClone, QK, SQN),
-                            case R of
-                                {ok, Value} ->
-                                    FoldObjectsFun(B, K, Value, Acc);
-                                not_present ->
+                            InJournal =
+                                leveled_inker:ink_keycheck(InkerClone,
+                                                            LK,
+                                                            SQN),
+                            case InJournal of
+                                probably ->
+                                    Size = leveled_codec:get_size(LK, V),
+                                    MDBin =
+                                        leveled_codec:build_metadata_object(LK,
+                                                                            MD),
+                                    Value = {proxy_object,
+                                                MDBin,
+                                                Size,
+                                                {fun fetch_value/2,
+                                                    InkerClone,
+                                                    JK}},
+                                    FoldObjectsFun(B,
+                                                    K,
+                                                    term_to_binary(Value),
+                                                    Acc);
+                                missing ->
                                     Acc
                             end;
                         false ->
-                            Acc
-                    end
-                end,
+                            R = fetch_value(InkerClone, JK),
+                            case R of
+                                not_present ->
+                                    Acc;
+                                Value ->
+                                    FoldObjectsFun(B, K, Value, Acc)
+                                
+                            end
+                    end;
+                false ->
+                    Acc
+            end
+        end,
     AccFun.
 
 
@@ -1475,18 +1561,122 @@ foldobjects_vs_hashtree_test() ->
                                                     ?STD_TAG,
                                                     false}),
     KeyHashList1 = lists:usort(HTFolder1()),
-    io:format("First item ~w~n", [lists:nth(1, KeyHashList1)]),
+    
     FoldObjectsFun = fun(B, K, V, Acc) ->
                             [{B, K, erlang:phash2(term_to_binary(V))}|Acc] end,
-    {async, HTFolder2} = book_returnfolder(Bookie1,
-                                            {foldobjects_allkeys,
-                                                ?STD_TAG,
-                                                FoldObjectsFun}),
+    {async, HTFolder2} =
+        book_returnfolder(Bookie1,
+                            {foldobjects_allkeys, ?STD_TAG, FoldObjectsFun}),
     KeyHashList2 = HTFolder2(),
     ?assertMatch(KeyHashList1, lists:usort(KeyHashList2)),
     
+    FoldHeadsFun =
+        fun(B, K, ProxyV, Acc) ->
+            {proxy_object,
+                _MDBin,
+                _Size,
+                {FetchFun, Clone, JK}} = binary_to_term(ProxyV),
+            V = FetchFun(Clone, JK),
+            [{B, K, erlang:phash2(term_to_binary(V))}|Acc]
+        end,
+    
+    {async, HTFolder3} =
+        book_returnfolder(Bookie1,
+                            {foldheads_allkeys, ?STD_TAG, FoldHeadsFun}),
+    KeyHashList3 = HTFolder3(),
+    ?assertMatch(KeyHashList1, lists:usort(KeyHashList3)),
+    
+    FoldHeadsFun2 = 
+        fun(B, K, ProxyV, Acc) ->
+            {proxy_object,
+                MD,
+                _Size,
+                _Fetcher} = binary_to_term(ProxyV),
+            {Hash, _Size} = MD,
+            [{B, K, Hash}|Acc]
+        end,
+    
+    {async, HTFolder4} =
+        book_returnfolder(Bookie1,
+                            {foldheads_allkeys, ?STD_TAG, FoldHeadsFun2}),
+    KeyHashList4 = HTFolder4(),
+    ?assertMatch(KeyHashList1, lists:usort(KeyHashList4)),
+    
     ok = book_close(Bookie1),
     reset_filestructure().
+
+
+foldobjects_vs_foldheads_bybucket_test() ->
+    RootPath = reset_filestructure(),
+    {ok, Bookie1} = book_start([{root_path, RootPath},
+                                    {max_journalsize, 1000000},
+                                    {cache_size, 500}]),
+    ObjL1 = generate_multiple_objects(400, 1),
+    ObjL2 = generate_multiple_objects(400, 1),
+    % Put in all the objects with a TTL in the future
+    Future = leveled_codec:integer_now() + 300,
+    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
+                                                        "BucketA", K, V, S,
+                                                        ?STD_TAG,
+                                                        Future) end,
+                    ObjL1),
+    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
+                                                        "BucketB", K, V, S,
+                                                        ?STD_TAG,
+                                                        Future) end,
+                    ObjL2),
+    
+    FoldObjectsFun = fun(B, K, V, Acc) ->
+                            [{B, K, erlang:phash2(term_to_binary(V))}|Acc] end,
+    {async, HTFolder1A} =
+        book_returnfolder(Bookie1,
+                            {foldobjects_bybucket,
+                                ?STD_TAG,
+                                "BucketA",
+                                FoldObjectsFun}),
+    KeyHashList1A = HTFolder1A(),
+    {async, HTFolder1B} =
+        book_returnfolder(Bookie1,
+                            {foldobjects_bybucket,
+                                ?STD_TAG,
+                                "BucketB",
+                                FoldObjectsFun}),
+    KeyHashList1B = HTFolder1B(),
+    ?assertMatch(false,
+                    lists:usort(KeyHashList1A) == lists:usort(KeyHashList1B)),
+    
+    FoldHeadsFun =
+        fun(B, K, ProxyV, Acc) ->
+            {proxy_object,
+                        _MDBin,
+                        _Size,
+                        {FetchFun, Clone, JK}} = binary_to_term(ProxyV),
+            V = FetchFun(Clone, JK),
+            [{B, K, erlang:phash2(term_to_binary(V))}|Acc]
+        end,
+    
+    {async, HTFolder2A} =
+        book_returnfolder(Bookie1,
+                            {foldheads_bybucket,
+                                ?STD_TAG,
+                                "BucketA",
+                                FoldHeadsFun}),
+    KeyHashList2A = HTFolder2A(),
+    {async, HTFolder2B} =
+        book_returnfolder(Bookie1,
+                            {foldheads_bybucket,
+                                ?STD_TAG,
+                                "BucketB",
+                                FoldHeadsFun}),
+    KeyHashList2B = HTFolder2B(),
+    ?assertMatch(true,
+                    lists:usort(KeyHashList1A) == lists:usort(KeyHashList2A)),
+    ?assertMatch(true,
+                    lists:usort(KeyHashList1B) == lists:usort(KeyHashList2B)),
+    
+    ok = book_close(Bookie1),
+    reset_filestructure().
+
 
 scan_table_test() ->
     K1 = leveled_codec:to_ledgerkey(<<"B1">>,

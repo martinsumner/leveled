@@ -4,6 +4,7 @@
 -export([all/0]).
 -export([retain_strategy/1,
             recovr_strategy/1,
+            aae_missingjournal/1,
             aae_bustedjournal/1,
             journal_compaction_bustedjournal/1
             ]).
@@ -11,6 +12,7 @@
 all() -> [
             retain_strategy,
             recovr_strategy,
+            aae_missingjournal,
             aae_bustedjournal,
             journal_compaction_bustedjournal
             ].
@@ -93,6 +95,51 @@ recovr_strategy(_Config) ->
     ok = leveled_bookie:book_close(Book1),
     testutil:reset_filestructure().
 
+
+aae_missingjournal(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    StartOpts = [{root_path, RootPath},
+                    {max_journalsize, 20000000},
+                    {sync_strategy, testutil:sync_strategy()}],
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts),
+    {TestObject, TestSpec} = testutil:generate_testobject(),
+    ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
+    testutil:check_forobject(Bookie1, TestObject),
+    GenList = [2],
+    _CLs = testutil:load_objects(20000, GenList, Bookie1, TestObject,
+                                fun testutil:generate_objects/2),
+    
+    FoldHeadsFun =
+        fun(B, K, _V, Acc) -> [{B, K}|Acc] end,
+    
+    {async, AllHeadF1} =
+        leveled_bookie:book_returnfolder(Bookie1,
+                                            {foldheads_allkeys,
+                                                ?RIAK_TAG,
+                                                FoldHeadsFun}),
+    HeadL1 = length(AllHeadF1()),
+    io:format("Fold head returned ~w objects~n", [HeadL1]),
+    
+    ok = leveled_bookie:book_close(Bookie1),
+    CDBFiles = testutil:find_journals(RootPath),
+    [HeadF|_Rest] = CDBFiles,
+    io:format("Selected Journal for removal of ~s~n", [HeadF]),
+    ok = file:delete(RootPath ++ "/journal/journal_files/" ++ HeadF),
+    
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts),
+    % Check that fold heads picks up on the missing file
+    {async, AllHeadF2} =
+        leveled_bookie:book_returnfolder(Bookie2,
+                                            {foldheads_allkeys,
+                                                ?RIAK_TAG,
+                                                FoldHeadsFun}),
+    HeadL2 = length(AllHeadF2()),
+    io:format("Fold head returned ~w objects~n", [HeadL2]),
+    true = HeadL2 < HeadL1,
+    true = HeadL2 > 0,
+    
+    ok = leveled_bookie:book_close(Bookie2),
+    testutil:reset_filestructure().
 
 aae_bustedjournal(_Config) ->
     RootPath = testutil:reset_filestructure(),
@@ -223,7 +270,7 @@ aae_bustedjournal(_Config) ->
     KeyHashList6 = HashTreeF6(),
     true = length(KeyHashList6) > 19000,
     true = length(KeyHashList6) < HeadCount,
-    
+     
     ok = leveled_bookie:book_close(Bookie4),
     
     testutil:restore_topending(RootPath, HeadF),

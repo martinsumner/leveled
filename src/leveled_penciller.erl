@@ -331,7 +331,7 @@ init([PCLopts]) ->
             PCLopts#penciller_options.start_snapshot,
             PCLopts#penciller_options.snapshot_query,
             PCLopts#penciller_options.bookies_mem} of
-        {undefined, true, Query, BookiesMem} ->
+        {undefined, _Snapshot=true, Query, BookiesMem} ->
             SrcPenciller = PCLopts#penciller_options.source_penciller,
             LongRunning = PCLopts#penciller_options.snapshot_longrunning,
             {ok, State} = pcl_registersnapshot(SrcPenciller, 
@@ -342,7 +342,7 @@ init([PCLopts]) ->
             leveled_log:log("P0001", [self()]),
             {ok, State#state{is_snapshot=true,
                                 source_penciller=SrcPenciller}};
-        {_RootPath, false, _Q, _BM} ->
+        {_RootPath, _Snapshot=false, _Q, _BM} ->
             start_from_file(PCLopts)
     end.    
     
@@ -544,7 +544,9 @@ handle_call(doom, _From, State) ->
 handle_cast({manifest_change, NewManifest}, State) ->
     NewManSQN = leveled_pmanifest:get_manifest_sqn(NewManifest),
     ok = leveled_pclerk:clerk_promptdeletions(State#state.clerk, NewManSQN),
-    {noreply, State#state{manifest = NewManifest, work_ongoing=false}};
+    UpdManifest = leveled_pmanifest:merge_snapshot(State#state.manifest,
+                                                    NewManifest),
+    {noreply, State#state{manifest = UpdManifest, work_ongoing=false}};
 handle_cast({release_snapshot, Snapshot}, State) ->
     Manifest0 = leveled_pmanifest:release_snapshot(State#state.manifest,
                                                    Snapshot),

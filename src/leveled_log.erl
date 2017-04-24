@@ -139,7 +139,7 @@
         {info, "Timeout of snapshot with pid=~w at SQN=~w at TS ~w "
                     ++ "set to timeout=~w"}},
     {"P0039",
-        {info, "Failed to relase pid=~w "
+        {info, "Failed to release pid=~w "
                     ++ "leaving SnapshotCount=~w and MinSQN=~w"}},
         
     {"PC001",
