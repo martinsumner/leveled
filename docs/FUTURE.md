@@ -12,7 +12,7 @@ The store supports all the required Riak backend capabilities.  A number of furt
 
 - A bucket size query, which requires traversal only of the Ledger and counts the keys and sums the total on-disk size of the objects within the bucket.
 
-- A new SW count to operate in parallel to DW, where SW is the number of nodes required to have flushed to disk (not just written to buffer); with SW being configurable to 0 (no vnodes will need to sync this write), 1 (the PUT coordinator will sync, but no other vnodes) or all (all vnodes will be required to sync this write before providing a DW ack).  This will allow the expensive disk sync operation to be constrained to the writes for which it is most needed. 
+- A new SW count to operate in parallel to DW, where SW is the number of nodes required to have flushed to disk (not just written to buffer); with SW being configurable to 0 (no vnodes will need to sync this write), 1 (the PUT coordinator will sync, but no other vnodes) or all (all vnodes will be required to sync this write before providing a DW ack).  This will allow the expensive disk sync operation to be constrained to the writes for which it is most needed.
 
 - Support for a specific Riak tombstone tag where reaping of tombstones can be deferred (by many days) i.e. so that a 'sort-of-keep' deletion strategy can be followed that will eventually garbage collect without the need to hold pending full deletion state in memory.
 
@@ -28,8 +28,6 @@ There is some work required before LevelEd could be considered production ready:
 - Further functional testing within the context of Riak.
 
 - Introduction of property-based testing.
-
-- Riak modifications to support the optimised Key/Clock scanning for hashtree rebuilds.
 
 - Amend compaction scheduling to ensure that all vnodes do not try to concurrently compact during a single window.
 
@@ -48,13 +46,13 @@ Branch: [mas-leveleddb](https://github.com/martinsumner/riak_kv/tree/mas-leveled
 
 Branched-From: [Basho/develop](https://github.com/basho/riak_kv)
 
-Description: 
+Description:
 
 The leveled backend has been implemented with some basic manual functional tests.  The backend has the following capabilities:
 
 - async_fold - can return a Folder() function in response to 2i queries;
 - indexes - support for secondary indexes (currently being returned in the wrong order);
-- head - supports a HEAD as well as a GET request; 
+- head - supports a HEAD as well as a GET request;
 - hash_query - can return keys/hashes when rebuilding hashtrees, so implementation of hashtree can call this rather than folding objects and hashing the objects returning from the fold.
 
 All standard features should (in theory) be supportable (e.g. TTL, M/R, term_regex etc) but aren't subject to end-to_end testing at present.
@@ -117,3 +115,15 @@ This branch changes the behaviour slightly at the non-coordinating vnodes.  Thes
 This should save two object fetches (where n=3) in most circumstances.
 
 Note, although the branch name refers to the put fsm - the actual fsm is unchanged by this, all of the changes are within vnode_put
+
+### AAE Rebuild Acceleration
+
+Branch: [mas-leveled-scanner-i649](https://github.com/martinsumner/riak_kv/tree/mas-leveled-scanner-i649)
+
+Branched-From: [mas-leveled-putfsm](https://github.com/martinsumner/riak_kv/tree/mas-leveled-putfsm)
+
+Description:
+
+The riak_kv_sweeper which is part of the post-2.2 develop branch controls folds over objects so that multiple functions can be applied to a single fold.  The only aspect of the Riak system that uses this feature at present is AAE hashtree rebuilds.
+
+This branch modifies the kv_sweeper so that if the capability exists, and unless a sweeper has explicitly stated a requirement not to allow this feature, the sweeper can defer the fetching of the objects.  This means that the sweeper will fold over the "heads" of the objects returning a specially crafter Riak Object which contains a reference to the body rather than the actual body - so that the object body can be fetched if and only if access to the object contents is requested via the riak_object module.
