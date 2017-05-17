@@ -112,20 +112,41 @@
                 waste_path :: string(),
                 sync_strategy = none}).
 
+-type cdb_options() :: #cdb_options{}.
+
+
 
 %%%============================================================================
 %%% API
 %%%============================================================================
 
+-spec cdb_open_writer(string()) -> {ok, pid()}.
+%% @doc
+%% Open a file for writing using default options
 cdb_open_writer(Filename) ->
     %% No options passed
     cdb_open_writer(Filename, #cdb_options{binary_mode=true}).
 
+-spec cdb_open_writer(string(), cdb_options()) -> {ok, pid()}.
+%% @doc
+%% The filename should be a full file system reference to an existing CDB
+%% file, and it will be opened and a FSM started to manage the file - with the
+%% hashtree cached in memory (the file will need to be scanned to build the
+%% hashtree)
 cdb_open_writer(Filename, Opts) ->
     {ok, Pid} = gen_fsm:start(?MODULE, [Opts], []),
     ok = gen_fsm:sync_send_event(Pid, {open_writer, Filename}, infinity),
     {ok, Pid}.
 
+-spec cdb_reopen_reader(string(), binary()) -> {ok, pid()}.
+%% @doc
+%% Open an existing file that has already been moved into read-only mode. The
+%% LastKey should be known, as it has been stored in the manifest.  Knowing the
+%% LastKey stops the file from needing to be scanned on start-up to discover
+%% the LastKey.
+%%
+%% The LastKey is the Key of the last object added to the file - and is used to
+%% determine when scans over a file have completed.
 cdb_reopen_reader(Filename, LastKey) ->
     {ok, Pid} = gen_fsm:start(?MODULE, [#cdb_options{binary_mode=true}], []),
     ok = gen_fsm:sync_send_event(Pid,
@@ -133,48 +154,112 @@ cdb_reopen_reader(Filename, LastKey) ->
                                     infinity),
     {ok, Pid}.
 
+-spec cdb_open_reader(string()) -> {ok, pid()}.
+%% @doc
+%% Open an existing file that has already been moved into read-only mode.
+%% Don't use this if the LastKey is known, as this requires an expensive scan
+%% to discover the LastKey. 
 cdb_open_reader(Filename) ->
     cdb_open_reader(Filename, #cdb_options{binary_mode=true}).
 
+-spec cdb_open_reader(string(), #cdb_options{}) -> {ok, pid()}.
+%% @doc
+%% Open an existing file that has already been moved into read-only mode.
+%% Don't use this if the LastKey is known, as this requires an expensive scan
+%% to discover the LastKey.
+%% Allows non-default cdb_options to be passed
 cdb_open_reader(Filename, Opts) ->
     {ok, Pid} = gen_fsm:start(?MODULE, [Opts], []),
     ok = gen_fsm:sync_send_event(Pid, {open_reader, Filename}, infinity),
     {ok, Pid}.
 
+-spec cdb_get(pid(), any()) -> {any(), any()}|missing.
+%% @doc
+%% Extract a Key and Value from a CDB file by passing in a Key.  
 cdb_get(Pid, Key) ->
     gen_fsm:sync_send_event(Pid, {get_kv, Key}, infinity).
 
+-spec cdb_put(pid(), any(), any()) -> ok|roll.
+%% @doc
+%% Put a key and value into a cdb file that is open as a writer, will fail
+%% if the FSM is in any other state.
+%%
+%% Response can be roll - if there is no space to put this value in the file.
+%% It is assumed that the response to a "roll" will be to roll the file, which
+%% will close this file for writing after persisting the hashtree.  
 cdb_put(Pid, Key, Value) ->
     gen_fsm:sync_send_event(Pid, {put_kv, Key, Value}, infinity).
 
+-spec cdb_mput(pid(), list()) -> ok|roll.
+%% @doc
+%% Add multiple keys and values in one call.  The file will request a roll if
+%% all of the keys and values cnanot be written (and in this case none of them
+%% will).  Mput is an all_or_nothing operation.
+%%
+%% It may be preferable to respond to roll by trying individual PUTs until
+%% roll is returned again
 cdb_mput(Pid, KVList) ->
     gen_fsm:sync_send_event(Pid, {mput_kv, KVList}, infinity).
 
-%% SampleSize can be an integer or the atom all
+-spec cdb_getpositions(pid(), integer()|all) -> list().
+%% @doc
+%% Get the positions in the file of a random sample of Keys.  cdb_directfetch
+%% can then be used to fetch those keys.  SampleSize can be an integer or the
+%% atom all.  To be used for sampling queries, for example to assess the
+%% potential for compaction.
 cdb_getpositions(Pid, SampleSize) ->
     gen_fsm:sync_send_event(Pid, {get_positions, SampleSize}, infinity).
 
+-spec cdb_directfetch(pid(), list(), key_only|key_size|key_value_check) ->
+                                                                        list().
+%% @doc
 %% Info can be key_only, key_size (size being the size of the value) or
 %% key_value_check (with the check part indicating if the CRC is correct for
 %% the value)
 cdb_directfetch(Pid, PositionList, Info) ->
     gen_fsm:sync_send_event(Pid, {direct_fetch, PositionList, Info}, infinity).
 
+-spec cdb_close(pid()) -> ok.
+%% @doc
+%% RONSEAL
 cdb_close(Pid) ->
     gen_fsm:sync_send_all_state_event(Pid, cdb_close, infinity).
 
+-spec cdb_complete(pid()) -> {ok, string()}.
+%% @doc
+%% Persists the hashtable to the end of the file, to close it for further
+%% writing then exit.  Returns the filename that was saved.
 cdb_complete(Pid) ->
     gen_fsm:sync_send_event(Pid, cdb_complete, infinity).
 
+-spec cdb_roll(pid()) -> ok.
+%% @doc
+%% Persists the hashtable to the end of the file, to close it for further
+%% writing but do not exit, this will continue to service requests in the
+%% rolling state whilst the hashtable is being written, and will become a
+%% reader (read-only) CDB file process on completion
 cdb_roll(Pid) ->
     gen_fsm:send_event(Pid, cdb_roll).
 
+-spec cdb_returnhashtable(pid(), list(), binary()) -> ok.
+%% @doc
+%% Used for handling the return of a calulcated hashtable from a spawnded
+%% process - the building of the hashtable should not block the servicing of
+%% requests.  Returned is the binary for writing and the IndexList
+%% [{Index, CurrPos, IndexLength}] which can be used to locate the slices of
+%% the hashtree within that binary
 cdb_returnhashtable(Pid, IndexList, HashTreeBin) ->
     gen_fsm:sync_send_event(Pid, {return_hashtable, IndexList, HashTreeBin}, infinity).
 
+-spec cdb_checkhashtable(pid()) -> boolean().
+%% @doc
+%% Hash the hashtable been written for this file?
 cdb_checkhashtable(Pid) ->
     gen_fsm:sync_send_event(Pid, check_hashtable).
 
+-spec cdb_destroy(pid()) -> ok.
+%% @doc
+%% If the file is in a delete_pending state close (and will destroy)
 cdb_destroy(Pid) ->
     gen_fsm:send_event(Pid, destroy).
 
@@ -182,16 +267,26 @@ cdb_deletepending(Pid) ->
     % Only used in unit tests
     cdb_deletepending(Pid, 0, no_poll).
 
+-spec cdb_deletepending(pid(), integer(), pid()|no_poll) -> ok.
+%% @doc
+%% Puts the file in a delete_pending state.  From that state the Inker will be
+%% polled to discover if the Manifest SQN at which the file is deleted now
+%% means that the file can safely be destroyed (as there are no snapshots with
+%% any outstanding dependencies).
+%% Passing no_poll means there's no inker to poll, and the process will close
+%% on timeout rather than poll.
 cdb_deletepending(Pid, ManSQN, Inker) ->
     gen_fsm:send_event(Pid, {delete_pending, ManSQN, Inker}).
 
+-spec cdb_scan(pid(), fun(), any(), integer()|undefined) ->
+                                                    {integer()|eof, any()}.
+%% @doc
 %% cdb_scan returns {LastPosition, Acc}.  Use LastPosition as StartPosiiton to
 %% continue from that point (calling function has to protect against) double
 %% counting.
 %%
 %% LastPosition could be the atom complete when the last key processed was at
 %% the end of the file.  last_key must be defined in LoopState.
-
 cdb_scan(Pid, FilterFun, InitAcc, StartPosition) ->
     gen_fsm:sync_send_all_state_event(Pid,
                                         {cdb_scan,
@@ -200,18 +295,25 @@ cdb_scan(Pid, FilterFun, InitAcc, StartPosition) ->
                                             StartPosition},
                                         infinity).
 
+-spec cdb_lastkey(pid()) -> any().
+%% @doc
 %% Get the last key to be added to the file (which will have the highest
 %% sequence number)
 cdb_lastkey(Pid) ->
     gen_fsm:sync_send_all_state_event(Pid, cdb_lastkey, infinity).
 
+-spec cdb_firstkey(pid()) -> any().
 cdb_firstkey(Pid) ->
     gen_fsm:sync_send_all_state_event(Pid, cdb_firstkey, infinity).
 
+-spec cdb_filename(pid()) -> string().
+%% @doc
 %% Get the filename of the database
 cdb_filename(Pid) ->
     gen_fsm:sync_send_all_state_event(Pid, cdb_filename, infinity).
 
+-spec cdb_keycheck(pid(), any()) -> probably|missing.
+%% @doc
 %% Check to see if the key is probably present, will return either
 %% probably or missing.  Does not do a definitive check
 cdb_keycheck(Pid, Key) ->
