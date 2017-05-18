@@ -248,13 +248,18 @@ code_change(_OldVsn, State, _Extra) ->
 %% Compaction Hours should be the list of hours during the day (based on local
 %% time when compcation can be scheduled to run)
 %% e.g. [0, 1, 2, 3, 4, 21, 22, 23]
-%% Runs per day is the number of compcation runs per day that should be
+%% Runs per day is the number of compaction runs per day that should be
 %% scheduled - expected to be a small integer, probably 1
 %%
 %% Current TS should be the outcome of os:timestamp()
 %%
 
 schedule_compaction(CompactionHours, RunsPerDay, CurrentTS) ->
+    % We chedule the next interval by acting as if we were scheduing all
+    % n intervals at random, but then only chose the next one.  After each
+    % event is occurred the random process is repeated to determine the next
+    % event to schedule i.e. the unused schedule is discarded.
+    
     IntervalLength = 60 div ?INTERVALS_PER_HOUR,
     TotalHours = length(CompactionHours),
     
@@ -263,6 +268,8 @@ schedule_compaction(CompactionHours, RunsPerDay, CurrentTS) ->
         {NowH, NowMin, _NowS}} = LocalTime,
     CurrentInterval = {NowH, NowMin div IntervalLength + 1},
     
+    % Randomly select an hour and an interval for each of the runs expected
+    % today.
     RandSelect =
         fun(_X) ->
             {lists:nth(random:uniform(TotalHours), CompactionHours),
@@ -271,13 +278,15 @@ schedule_compaction(CompactionHours, RunsPerDay, CurrentTS) ->
     RandIntervals = lists:sort(lists:map(RandSelect,
                                             lists:seq(1, RunsPerDay))),
     
+    % Pick the next interval from the list.  The intervals before current time
+    % are considered as intervals tomorrow, so will only be next if there are
+    % no other today
     CheckNotBefore = fun(A) -> A =< CurrentInterval end,
     {TooEarly, MaybeOK} = lists:splitwith(CheckNotBefore, RandIntervals),
-    
     {NextDate, {NextH, NextI}} = 
         case MaybeOK of
             [] ->
-                % Use first Too Early tomorrow if none of selected run times
+                % Use first interval picked tomorrow if none of selected run times
                 % are today
                 Tmrw = calendar:date_to_gregorian_days(NowY, NowMon, NowD) + 1,
                 {calendar:gregorian_days_to_date(Tmrw),
@@ -285,6 +294,8 @@ schedule_compaction(CompactionHours, RunsPerDay, CurrentTS) ->
             _ ->
                 {{NowY, NowMon, NowD}, lists:nth(1, MaybeOK)}
         end,
+    
+    % Calculate the offset in seconds to this next interval
     NextS0 = NextI * (IntervalLength * 60)
                 - random:uniform(IntervalLength * 60),
     NextM = NextS0 div 60,
@@ -620,7 +631,7 @@ schedule_test_bycount(N) ->
     io:format("Seconds to compaction ~w~n", [SecondsToCompaction0]),
     ?assertMatch(true, SecondsToCompaction0 > 1800),
     ?assertMatch(true, SecondsToCompaction0 < 5700),
-    SecondsToCompaction1 = schedule_compaction([14], N, CurrentTS),
+    SecondsToCompaction1 = schedule_compaction([14], N, CurrentTS), % tomorrow!
     io:format("Seconds to compaction ~w~n", [SecondsToCompaction1]),
     ?assertMatch(true, SecondsToCompaction1 > 81000),
     ?assertMatch(true, SecondsToCompaction1 < 84300).
