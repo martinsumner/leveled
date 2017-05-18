@@ -142,6 +142,15 @@
 %%% API
 %%%============================================================================
 
+-spec sst_open(string(), string()) -> {ok, pid(), {tuple(), tuple()}}.
+%% @doc
+%% Open an SST file at a given path and filename.  The first and last keys
+%% are returned in response to the request - so that those keys can be used
+%% in manifests to understand what range of keys are covered by the SST file.
+%% All keys in the file should be between the first and last key in erlang
+%% term order.
+%%
+%% The filename should include the file extension.
 sst_open(RootPath, Filename) ->
     {ok, Pid} = gen_fsm:start(?MODULE, [], []),
     case gen_fsm:sync_send_event(Pid,
@@ -151,6 +160,12 @@ sst_open(RootPath, Filename) ->
             {ok, Pid, {SK, EK}}
     end.
 
+-spec sst_new(string(), string(), integer(), list(), integer()) ->
+                                            {ok, pid(), {tuple(), tuple()}}.
+%% @doc
+%% Start a new SST file at the assigned level passing in a list of Key, Value
+%% pairs.  This should not be used for basement levels or unexpanded Key/Value
+%% lists as merge_lists will not be called.
 sst_new(RootPath, Filename, Level, KVList, MaxSQN) ->
     {ok, Pid} = gen_fsm:start(?MODULE, [], []),
     {[], [], SlotList, FK}  = merge_lists(KVList),
@@ -166,6 +181,20 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN) ->
             {ok, Pid, {SK, EK}}
     end.
 
+-spec sst_new(string(), string(), list(), list(),
+                boolean(), integer(), integer()) ->
+                    empty|{ok, pid(), {{list(), list()}, tuple(), tuple()}}.
+%% @doc
+%% Start a new SST file at the assigned level passing in a two lists of
+%% {Key, Value} pairs to be merged.  The merge_lists function will use the
+%% IsBasement boolean to determine if expired keys or tombstones can be
+%% deleted.
+%%
+%% The remainder of the lists is returned along with the StartKey and EndKey
+%% so that the remainder cna be  used in the next file in the merge.  It might
+%% be that the merge_lists returns nothin (for example when a basement file is
+%% all tombstones) - and the atome empty is returned in this case so that the
+%% file is not added to the manifest.
 sst_new(RootPath, Filename, KVL1, KVL2, IsBasement, Level, MaxSQN) ->
     {Rem1, Rem2, SlotList, FK} = merge_lists(KVL1, KVL2, {IsBasement, Level}),
     case SlotList of
@@ -186,6 +215,13 @@ sst_new(RootPath, Filename, KVL1, KVL2, IsBasement, Level, MaxSQN) ->
             end
     end.
 
+-spec sst_newlevelzero(string(), string(),
+                            integer(), fun(), pid()|undefined, integer()) ->
+                                                        {ok, pid(), noreply}.
+%% @doc
+%% Start a new file at level zero.  At this level the file size is not fixed -
+%% it will be as big as the input.  Also the KVList is not passed in, it is 
+%% fetched slot by slot using the FetchFun
 sst_newlevelzero(RootPath, Filename, Slots, FetchFun, Penciller, MaxSQN) ->
     {ok, Pid} = gen_fsm:start(?MODULE, [], []),
     gen_fsm:send_event(Pid,
@@ -198,12 +234,30 @@ sst_newlevelzero(RootPath, Filename, Slots, FetchFun, Penciller, MaxSQN) ->
                             MaxSQN}),
     {ok, Pid, noreply}.
 
+-spec sst_get(pid(), tuple()) -> tuple()|not_present.
+%% @doc
+%% Return a Key, Value pair matching a Key or not_present if the Key is not in
+%% the store.  The magic_hash function is used to accelerate the seeking of
+%% keys, sst_get/3 should be used directly if this has already been calculated
 sst_get(Pid, LedgerKey) ->
     sst_get(Pid, LedgerKey, leveled_codec:magic_hash(LedgerKey)).
 
+-spec sst_get(pid(), tuple(), integer()) -> tuple()|not_present.
+%% @doc
+%% Return a Key, Value pair matching a Key or not_present if the Key is not in
+%% the store (with the magic hash precalculated).
 sst_get(Pid, LedgerKey, Hash) ->
     gen_fsm:sync_send_event(Pid, {get_kv, LedgerKey, Hash}, infinity).
 
+-spec sst_getkvrange(pid(), tuple()|all, tuple()|all, integer()) -> list().
+%% @doc
+%% Get a range of {Key, Value} pairs as a list between StartKey and EndKey
+%% (inclusive).  The ScanWidth is the maximum size of the range, a pointer
+%% will be placed on the tail of the resulting list if results expand beyond
+%% the Scan Width
+%%
+%% To make the range open-ended (either ta start, end or both) the all atom
+%% can be use din place of the Key tuple.
 sst_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
     case gen_fsm:sync_send_event(Pid,
                                     {get_kvrange, StartKey, EndKey, ScanWidth},
@@ -218,6 +272,10 @@ sst_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
             Reply
     end.
 
+-spec sst_getslots(pid(), list()) -> list().
+%% @doc
+%% Get a list of slots by their ID. The slot will be converted from the binary
+%% to term form outside of the FSM loop
 sst_getslots(Pid, SlotList) ->
     SlotBins = gen_fsm:sync_send_event(Pid, {get_slots, SlotList}, infinity),
     FetchFun =
@@ -226,27 +284,54 @@ sst_getslots(Pid, SlotList) ->
         end,
     lists:foldl(FetchFun, [], SlotBins).
 
+-spec sst_getmaxsequencenumber(pid()) -> integer().
+%% @doc
+%% Get the maximume sequence number for this SST file
 sst_getmaxsequencenumber(Pid) ->
     gen_fsm:sync_send_event(Pid, get_maxsequencenumber, infinity).
 
+-spec sst_setfordelete(pid(), pid()|false) -> ok.
+%% @doc
+%% If the SST is no longer in use in the active ledger it can be set for
+%% delete.  Once set for delete it will poll the Penciller pid to see if
+%% it is yet safe to be deleted (i.e. because all snapshots which depend
+%% on it have finished).  No polling will be done if the Penciller pid
+%% is 'false'
 sst_setfordelete(Pid, Penciller) ->
     gen_fsm:sync_send_event(Pid, {set_for_delete, Penciller}, infinity).
 
+-spec sst_clear(pid()) -> ok.
+%% @doc
+%% For this file to be closed and deleted
 sst_clear(Pid) ->
     gen_fsm:sync_send_event(Pid, {set_for_delete, false}, infinity),
     gen_fsm:sync_send_event(Pid, close, 1000).
 
+-spec sst_deleteconfirmed(pid()) -> ok.
+%% @doc
+%% Allows a penciller to confirm to a SST file that it can be cleared, as it
+%% is no longer in use
 sst_deleteconfirmed(Pid) ->
     gen_fsm:send_event(Pid, close).
 
+-spec sst_checkready(pid()) -> {ok, string(), tuple(), tuple()}.
+%% @doc
+%% If a file has been set to be built, check that it has been built.  Returns
+%% the filename and the {startKey, EndKey} for the manifest.
 sst_checkready(Pid) ->
     %% Only used in test
     gen_fsm:sync_send_event(Pid, background_complete, 100).
 
-
+-spec sst_close(pid()) -> ok.
+%% @doc
+%% Close the file
 sst_close(Pid) ->
     gen_fsm:sync_send_event(Pid, close, 2000).
 
+-spec sst_printtimings(pid()) -> ok.
+%% @doc
+%% The state of the FSM keeps track of timings of operations, and this can
+%% forced to be printed.
 %% Used in unit tests to force the printing of timings
 sst_printtimings(Pid) ->
     gen_fsm:sync_send_event(Pid, print_timings, 1000).
