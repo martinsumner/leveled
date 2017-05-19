@@ -152,7 +152,10 @@ cdb_mput(Pid, KVList) ->
 
 %% SampleSize can be an integer or the atom all
 cdb_getpositions(Pid, SampleSize) ->
-    gen_fsm:sync_send_event(Pid, {get_positions, SampleSize}, infinity).
+    SW = os:timestamp(),
+    R = gen_fsm:sync_send_event(Pid, {get_positions, SampleSize}, infinity),
+    leveled_log:log_timer("CDB19", [SampleSize], SW),
+    R.
 
 %% Info can be key_only, key_size (size being the size of the value) or
 %% key_value_check (with the check part indicating if the CRC is correct for
@@ -886,20 +889,27 @@ scan_index_forsample(Handle, [CacheEntry|Tail], ScanFun, Acc, SampleSize) ->
 
 scan_index_findlast(Handle, Position, Count, {LastPosition, TotalKeys}) ->
     {ok, _} = file:position(Handle, Position),
-    MaxPos = lists:foldl(fun({_Hash, HPos}, MaxPos) -> max(HPos, MaxPos) end,
+    MaxPosFun = fun({_Hash, HPos}, MaxPos) -> max(HPos, MaxPos) end,
+    MaxPos = lists:foldl(MaxPosFun,
                             LastPosition,
                             read_next_n_integerpairs(Handle, Count)),
     {MaxPos, TotalKeys + Count}.
 
 scan_index_returnpositions(Handle, Position, Count, PosList0) ->
     {ok, _} = file:position(Handle, Position),
-    lists:foldl(fun({Hash, HPosition}, PosList) ->
-                                case Hash of
-                                    0 -> PosList;
-                                    _ -> PosList ++ [HPosition]
-                                end end,
+    AddPosFun =
+        fun({Hash, HPosition}, PosList) ->
+            case Hash of
+                0 ->
+                    PosList;
+                _ ->
+                    [HPosition|PosList]
+            end
+        end,
+    PosList = lists:foldl(AddPosFun,
                             PosList0,
-                            read_next_n_integerpairs(Handle, Count)).
+                            read_next_n_integerpairs(Handle, Count)),
+    lists:reverse(PosList).
 
 
 %% Take an active file and write the hash details necessary to close that
@@ -1879,6 +1889,7 @@ get_keys_byposition_manykeys_test() ->
     {ok, P2} = cdb_open_reader(F2, #cdb_options{binary_mode=false}),
     PositionList = cdb_getpositions(P2, all),
     L1 = length(PositionList),
+    io:format("Length of all positions ~w~n", [L1]),
     ?assertMatch(KeyCount, L1),
     
     SampleList1 = cdb_getpositions(P2, 10),
