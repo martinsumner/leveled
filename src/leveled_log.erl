@@ -316,7 +316,9 @@
         {info, "After ~w PUTs total write time is ~w total sync time is ~w "
                 ++ "and max write time is ~w and max sync time is ~w"}},
     {"CDB18",
-        {info, "Handled return and write of hashtable"}}
+        {info, "Handled return and write of hashtable"}},
+    {"CDB19",
+        {info, "Scan of positions for SampleSize=~w"}}
         ])).
 
 
