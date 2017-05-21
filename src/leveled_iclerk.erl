@@ -95,7 +95,7 @@
 -define(BATCH_SIZE, 32).
 -define(BATCHES_TO_CHECK, 8).
 %% How many consecutive files to compact in one run
--define(MAX_COMPACTION_RUN, 4).
+-define(MAX_COMPACTION_RUN, 6).
 %% Sliding scale to allow preference of longer runs up to maximum
 -define(SINGLEFILE_COMPACTION_TARGET, 40.0).
 -define(MAXRUN_COMPACTION_TARGET, 60.0).
