@@ -179,7 +179,7 @@ book_start(Opts) ->
 %% @doc Put an object with an expiry time
 %%
 %% Put an item in the store but with a Time To Live - the time when the object
-%% should expire, in gregorian_sconds (add the required number of seconds to
+%% should expire, in gregorian_seconds (add the required number of seconds to
 %% leveled_codec:integer_time/1).
 %%
 %% There exists the possibility of per object expiry times, not just whole
@@ -1308,11 +1308,11 @@ maybe_withjitter(CacheSize, MaxCacheSize) ->
 
 
 
-load_fun(KeyInLedger, ValueInLedger, _Position, Acc0, ExtractFun) ->
+load_fun(KeyInJournal, ValueInJournal, _Position, Acc0, ExtractFun) ->
     {MinSQN, MaxSQN, OutputTree} = Acc0,
-    {SQN, Type, PK} = KeyInLedger,
+    {SQN, Type, PK} = KeyInJournal,
     % VBin may already be a term
-    {VBin, VSize} = ExtractFun(ValueInLedger), 
+    {VBin, VSize} = ExtractFun(ValueInJournal), 
     {Obj, IndexSpecs} = leveled_codec:split_inkvalue(VBin),
     case SQN of
         SQN when SQN < MinSQN ->
