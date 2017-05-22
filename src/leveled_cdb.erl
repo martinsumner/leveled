@@ -101,7 +101,7 @@
 -record(state, {hashtree,
                 last_position :: integer(),
                 last_key = empty,
-                hash_index = [] :: list(),
+                hash_index = {} :: tuple(),
                 filename :: string(),
                 handle :: file:fd(),
                 max_size :: integer(),
@@ -538,7 +538,7 @@ reader({key_check, Key}, _From, State) ->
         reader,
         State};
 reader({get_positions, SampleSize, Index, Acc}, _From, State) ->
-    {Index, {Pos, Count}} = lists:keyfind(Index, 1, State#state.hash_index),
+    {Pos, Count} = element(Index + 1, State#state.hash_index),
     UpdAcc = scan_index_returnpositions(State#state.handle, Pos, Count, Acc),
     case SampleSize of
         all ->
@@ -875,8 +875,7 @@ get_index(Handle, Index, no_cache) ->
     % Get location of hashtable and number of entries in the hash
     read_next_2_integers(Handle);
 get_index(_Handle, Index, Cache) ->
-    {Index, {Pointer, Count}} = lists:keyfind(Index, 1, Cache),
-    {Pointer, Count}.
+    element(Index +  1, Cache).
 
 %% Get a Key/Value pair from an active CDB file (with no hash table written)
 %% This requires a key dictionary to be passed in (mapping keys to positions)
@@ -961,17 +960,20 @@ load_index(Handle) ->
         fun(X) ->
             file:position(Handle, {bof, ?DWORD_SIZE * X}),
             {HashTablePos, Count} = read_next_2_integers(Handle),
-            {X, {HashTablePos, Count}}
+            {HashTablePos, Count}
         end,
-    lists:map(LoadIndexFun, Index).
+    list_to_tuple(lists:map(LoadIndexFun, Index)).
 
 %% Function to find the LastKey in the file
 find_lastkey(Handle, IndexCache) ->
     ScanIndexFun =
-        fun({_X, {Pos, Count}}, {LastPos, KeyCount}) ->
+        fun(Index, {LastPos, KeyCount}) ->
+            {Pos, Count} = element(Index + 1, IndexCache),
             scan_index_findlast(Handle, Pos, Count, {LastPos, KeyCount})
         end,
-    {LastPosition, TotalKeys} = lists:foldl(ScanIndexFun, {0, 0}, IndexCache),
+    {LastPosition, TotalKeys} = lists:foldl(ScanIndexFun,
+                                            {0, 0},
+                                            lists:seq(0, 255)),
     case TotalKeys of
         0 ->
             empty;
