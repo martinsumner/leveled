@@ -152,7 +152,37 @@ cdb_mput(Pid, KVList) ->
 
 %% SampleSize can be an integer or the atom all
 cdb_getpositions(Pid, SampleSize) ->
-    gen_fsm:sync_send_event(Pid, {get_positions, SampleSize}, infinity).
+    % Getting many positions from the index, especially getting all positions
+    % can take time (about 1s for all positions).  Rather than queue all
+    % requests waiting for this to complete, loop over each of the 256 indexes
+    % outside of the FSM processing loop - to allow for other messages to be
+    % interleaved
+    case SampleSize of
+        all ->
+            FoldFun = 
+                fun(Index, Acc) ->
+                    cdb_getpositions_fromidx(Pid, all, Index, Acc)
+                end,
+            IdxList = lists:seq(0, 255),
+            lists:foldl(FoldFun, [], IdxList);
+        S0 ->
+            FoldFun = 
+                fun({_R, Index}, Acc) ->
+                    case length(Acc) of
+                        S0 ->
+                            Acc;
+                        L when L < S0 ->
+                            cdb_getpositions_fromidx(Pid, S0, Index, Acc)
+                    end
+                end,
+            RandFun = fun(X) -> {random:uniform(), X} end,
+            SeededL = lists:map(RandFun, lists:seq(0, 255)),
+            SortedL = lists:keysort(1, SeededL),
+            lists:foldl(FoldFun, [], SortedL)
+    end.
+
+cdb_getpositions_fromidx(Pid, SampleSize, Index, Acc) ->
+    gen_fsm:sync_send_event(Pid, {get_positions, SampleSize, Index, Acc}).
 
 %% Info can be key_only, key_size (size being the size of the value) or
 %% key_value_check (with the check part indicating if the CRC is correct for
@@ -352,8 +382,8 @@ rolling({key_check, Key}, _From, State) ->
                     loose_presence),
         rolling,
         State};
-rolling({get_positions, _SampleSize}, _From, State) ->
-    {reply, [], rolling, State};
+rolling({get_positions, _SampleSize, _Index, SampleAcc}, _From, State) ->
+    {reply, SampleAcc, rolling, State};
 rolling({return_hashtable, IndexList, HashTreeBin}, _From, State) ->
     SW = os:timestamp(),
     Handle = State#state.handle,
@@ -405,28 +435,14 @@ reader({key_check, Key}, _From, State) ->
                         State#state.binary_mode),
         reader,
         State};
-reader({get_positions, SampleSize}, _From, State) ->
+reader({get_positions, SampleSize, Index, Acc}, _From, State) ->
+    {Index, {Pos, Count}} = lists:keyfind(Index, 1, State#state.hash_index),
+    UpdAcc = scan_index_returnpositions(State#state.handle, Pos, Count, Acc),
     case SampleSize of
         all ->
-            {reply,
-                scan_index(State#state.handle,
-                            State#state.hash_index,
-                            {fun scan_index_returnpositions/4, []}),
-                reader,
-                State};
+            {reply, UpdAcc, reader, State};
         _ ->
-            SeededL = lists:map(fun(X) -> {random:uniform(), X} end,
-                                State#state.hash_index),
-            SortedL = lists:keysort(1, SeededL),
-            RandomisedHashIndex = lists:map(fun({_R, X}) -> X end, SortedL),
-            {reply,
-                scan_index_forsample(State#state.handle,
-                                        RandomisedHashIndex,
-                                        fun scan_index_returnpositions/4,
-                                        [],
-                                        SampleSize),
-                reader,
-                State}
+            {reply, lists:sublist(UpdAcc, SampleSize), reader, State}
     end;
 reader({direct_fetch, PositionList, Info}, _From, State) ->
     H = State#state.handle,
@@ -839,18 +855,21 @@ open_for_readonly(Filename, LastKeyKnown) ->
 
 load_index(Handle) ->
     Index = lists:seq(0, 255),
-    lists:map(fun(X) ->
-                    file:position(Handle, {bof, ?DWORD_SIZE * X}),
-                    {HashTablePos, Count} = read_next_2_integers(Handle),
-                    {X, {HashTablePos, Count}} end,
-                Index).
+    LoadIndexFun =
+        fun(X) ->
+            file:position(Handle, {bof, ?DWORD_SIZE * X}),
+            {HashTablePos, Count} = read_next_2_integers(Handle),
+            {X, {HashTablePos, Count}}
+        end,
+    lists:map(LoadIndexFun, Index).
 
 %% Function to find the LastKey in the file
 find_lastkey(Handle, IndexCache) ->
-    {LastPosition, TotalKeys} = scan_index(Handle,
-                                            IndexCache,
-                                            {fun scan_index_findlast/4,
-                                                {0, 0}}),
+    ScanIndexFun =
+        fun({_X, {Pos, Count}}, {LastPos, KeyCount}) ->
+            scan_index_findlast(Handle, Pos, Count, {LastPos, KeyCount})
+        end,
+    {LastPosition, TotalKeys} = lists:foldl(ScanIndexFun, {0, 0}, IndexCache),
     case TotalKeys of
         0 ->
             empty;
@@ -861,45 +880,29 @@ find_lastkey(Handle, IndexCache) ->
     end.
 
 
-scan_index(Handle, IndexCache, {ScanFun, InitAcc}) ->
-    lists:foldl(fun({_X, {Pos, Count}}, Acc) ->
-                            ScanFun(Handle, Pos, Count, Acc)
-                            end,
-                        InitAcc,
-                        IndexCache).
-
-scan_index_forsample(_Handle, [], _ScanFun, Acc, SampleSize) ->
-    lists:sublist(Acc, SampleSize);
-scan_index_forsample(Handle, [CacheEntry|Tail], ScanFun, Acc, SampleSize) ->
-    case length(Acc) of
-        L when L >= SampleSize ->
-            lists:sublist(Acc, SampleSize);
-        _ ->
-            {_X, {Pos, Count}} = CacheEntry,
-            scan_index_forsample(Handle,
-                                    Tail,
-                                    ScanFun,
-                                    ScanFun(Handle, Pos, Count, Acc),
-                                    SampleSize)
-    end.
-
-
 scan_index_findlast(Handle, Position, Count, {LastPosition, TotalKeys}) ->
     {ok, _} = file:position(Handle, Position),
-    MaxPos = lists:foldl(fun({_Hash, HPos}, MaxPos) -> max(HPos, MaxPos) end,
+    MaxPosFun = fun({_Hash, HPos}, MaxPos) -> max(HPos, MaxPos) end,
+    MaxPos = lists:foldl(MaxPosFun,
                             LastPosition,
                             read_next_n_integerpairs(Handle, Count)),
     {MaxPos, TotalKeys + Count}.
 
 scan_index_returnpositions(Handle, Position, Count, PosList0) ->
     {ok, _} = file:position(Handle, Position),
-    lists:foldl(fun({Hash, HPosition}, PosList) ->
-                                case Hash of
-                                    0 -> PosList;
-                                    _ -> PosList ++ [HPosition]
-                                end end,
+    AddPosFun =
+        fun({Hash, HPosition}, PosList) ->
+            case Hash of
+                0 ->
+                    PosList;
+                _ ->
+                    [HPosition|PosList]
+            end
+        end,
+    PosList = lists:foldl(AddPosFun,
                             PosList0,
-                            read_next_n_integerpairs(Handle, Count)).
+                            read_next_n_integerpairs(Handle, Count)),
+    lists:reverse(PosList).
 
 
 %% Take an active file and write the hash details necessary to close that
@@ -1879,6 +1882,7 @@ get_keys_byposition_manykeys_test() ->
     {ok, P2} = cdb_open_reader(F2, #cdb_options{binary_mode=false}),
     PositionList = cdb_getpositions(P2, all),
     L1 = length(PositionList),
+    io:format("Length of all positions ~w~n", [L1]),
     ?assertMatch(KeyCount, L1),
     
     SampleList1 = cdb_getpositions(P2, 10),
