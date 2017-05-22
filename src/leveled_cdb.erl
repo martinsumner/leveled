@@ -13,7 +13,7 @@
 %% - Support for incrementally writing a CDB file while keeping the hash table 
 %% in memory
 %% - The ability to scan a database in blocks of sequence numbers
-%% - The applictaion of a CRC chekc by default to all values
+%% - The applictaion of a CRC check by default to all values
 %%
 %% This module provides functions to create and query a CDB (constant database).
 %% A CDB implements a two-level hashtable which provides fast {key,value} 
