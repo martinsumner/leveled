@@ -8,7 +8,8 @@
             fetchput_snapshot/1,
             load_and_count/1,
             load_and_count_withdelete/1,
-            space_clear_ondelete/1
+            space_clear_ondelete/1,
+            is_empty_test/1
             ]).
 
 all() -> [
@@ -18,7 +19,8 @@ all() -> [
             fetchput_snapshot,
             load_and_count,
             load_and_count_withdelete,
-            space_clear_ondelete
+            space_clear_ondelete,
+            is_empty_test
             ].
 
 
@@ -592,3 +594,57 @@ space_clear_ondelete(_Config) ->
     true = length(FNsD_L) < length(FNsB_L),
     true = length(FNsD_L) < length(FNsC_L),
     true = length(FNsD_L) == 0.
+
+
+
+is_empty_test(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    StartOpts1 = [{root_path, RootPath},
+                    {sync_strategy, testutil:sync_strategy()}],
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+    
+    {B1, K1, V1, Spec, MD} = {term_to_binary("Bucket1"),
+                                term_to_binary("Key1"),
+                                "Value1",
+                                [],
+                                [{"MDK1", "MDV1"}]},
+    {TestObject1, TestSpec1} =
+        testutil:generate_testobject(B1, K1, V1, Spec, MD),
+    {B1, K2, V2, Spec, MD} = {term_to_binary("Bucket1"),
+                                term_to_binary("Key2"),
+                                "Value2",
+                                [],
+                                [{"MDK1", "MDV1"}]},
+    {TestObject2, TestSpec2} =
+        testutil:generate_testobject(B1, K2, V2, Spec, MD),
+    {B2, K3, V3, Spec, MD} = {term_to_binary("Bucket2"),
+                                term_to_binary("Key3"),
+                                "Value3",
+                                [],
+                                [{"MDK1", "MDV1"}]},
+    {TestObject3, TestSpec3} =
+        testutil:generate_testobject(B2, K3, V3, Spec, MD),
+    ok = testutil:book_riakput(Bookie1, TestObject1, TestSpec1),
+    ok = testutil:book_riakput(Bookie1, TestObject2, TestSpec2),
+    ok = testutil:book_riakput(Bookie1, TestObject3, TestSpec3),
+    
+    FoldBucketsFun = fun(B, Acc) -> sets:add_element(B, Acc) end,
+    BucketListQuery = {binary_bucketlist,
+                        ?RIAK_TAG,
+                        {FoldBucketsFun, sets:new()}},
+    {async, BL} = leveled_bookie:book_returnfolder(Bookie1, BucketListQuery),
+    true = sets:size(BL()) == 2,
+    
+    ok = leveled_bookie:book_put(Bookie1, B2, K3, delete, [], ?RIAK_TAG),
+    {async, BLpd1} = leveled_bookie:book_returnfolder(Bookie1, BucketListQuery),
+    true = sets:size(BLpd1()) == 1,
+    
+    ok = leveled_bookie:book_put(Bookie1, B1, K2, delete, [], ?RIAK_TAG),
+    {async, BLpd2} = leveled_bookie:book_returnfolder(Bookie1, BucketListQuery),
+    true = sets:size(BLpd2()) == 1,
+    
+    ok = leveled_bookie:book_put(Bookie1, B1, K1, delete, [], ?RIAK_TAG),
+    {async, BLpd3} = leveled_bookie:book_returnfolder(Bookie1, BucketListQuery),
+    true = sets:size(BLpd3()) == 0,
+    
+    ok = leveled_bookie:book_close(Bookie1).
