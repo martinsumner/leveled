@@ -179,7 +179,7 @@ book_start(Opts) ->
 %% @doc Put an object with an expiry time
 %%
 %% Put an item in the store but with a Time To Live - the time when the object
-%% should expire, in gregorian_sconds (add the required number of seconds to
+%% should expire, in gregorian_seconds (add the required number of seconds to
 %% leveled_codec:integer_time/1).
 %%
 %% There exists the possibility of per object expiry times, not just whole
@@ -729,6 +729,7 @@ binary_bucketlist(State, Tag, {FoldBucketsFun, InitAcc}) ->
                                                             no_lookup),
     Folder = fun() ->
                 BucketAcc = get_nextbucket(null,
+                                            null,
                                             Tag,
                                             LedgerSnapshot,
                                             []),
@@ -739,26 +740,40 @@ binary_bucketlist(State, Tag, {FoldBucketsFun, InitAcc}) ->
                 end,
     {async, Folder}.
 
-get_nextbucket(NextBucket, Tag, LedgerSnapshot, BKList) ->
-    StartKey = leveled_codec:to_ledgerkey(NextBucket, null, Tag),
+get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList) ->
+    Now = leveled_codec:integer_now(),
+    StartKey = leveled_codec:to_ledgerkey(NextBucket, NextKey, Tag),
     EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
-    ExtractFun = fun(LK, _V, _Acc) -> leveled_codec:from_ledgerkey(LK) end,
-    BK = leveled_penciller:pcl_fetchnextkey(LedgerSnapshot,
-                                                StartKey,
-                                                EndKey,
-                                                ExtractFun,
-                                                null),
-    case BK of
+    ExtractFun =
+        fun(LK, V, _Acc) ->
+            {leveled_codec:from_ledgerkey(LK), V}
+        end,
+    R = leveled_penciller:pcl_fetchnextkey(LedgerSnapshot,
+                                                    StartKey,
+                                                    EndKey,
+                                                    ExtractFun,
+                                                    null),
+    case R of
         null ->
             leveled_log:log("B0008",[]),
             BKList;
-        {B, K} when is_binary(B) ->
-            leveled_log:log("B0009",[B]),
-            get_nextbucket(<<B/binary, 0>>,
-                            Tag,
-                            LedgerSnapshot,
-                            [{B, K}|BKList]);
-        NB ->
+        {{B, K}, V} when is_binary(B), is_binary(K) ->
+            case leveled_codec:is_active({B, K}, V, Now) of
+                true ->
+                    leveled_log:log("B0009",[B]),
+                    get_nextbucket(<<B/binary, 0>>,
+                                    null,
+                                    Tag,
+                                    LedgerSnapshot,
+                                    [{B, K}|BKList]);
+                false ->
+                    get_nextbucket(B,
+                                    <<K/binary, 0>>,
+                                    Tag,
+                                    LedgerSnapshot,
+                                    BKList)
+            end;
+        {NB, _V} ->
             leveled_log:log("B0010",[NB]),
             []
     end.
@@ -1308,11 +1323,11 @@ maybe_withjitter(CacheSize, MaxCacheSize) ->
 
 
 
-load_fun(KeyInLedger, ValueInLedger, _Position, Acc0, ExtractFun) ->
+load_fun(KeyInJournal, ValueInJournal, _Position, Acc0, ExtractFun) ->
     {MinSQN, MaxSQN, OutputTree} = Acc0,
-    {SQN, Type, PK} = KeyInLedger,
+    {SQN, Type, PK} = KeyInJournal,
     % VBin may already be a term
-    {VBin, VSize} = ExtractFun(ValueInLedger), 
+    {VBin, VSize} = ExtractFun(ValueInJournal), 
     {Obj, IndexSpecs} = leveled_codec:split_inkvalue(VBin),
     case SQN of
         SQN when SQN < MinSQN ->
