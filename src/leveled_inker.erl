@@ -275,22 +275,25 @@ ink_loadpcl(Pid, MinSQN, FilterFun, Penciller) ->
 %% required to reload the Ledger on startup).
 ink_compactjournal(Pid, Bookie, Timeout) ->
     CheckerInitiateFun = fun initiate_penciller_snapshot/1,
+    CheckerCloseFun = fun leveled_penciller:pcl_close/1,
     CheckerFilterFun = fun leveled_penciller:pcl_checksequencenumber/3,
     gen_server:call(Pid,
                         {compact,
                             Bookie,
                             CheckerInitiateFun,
+                            CheckerCloseFun,
                             CheckerFilterFun,
                             Timeout},
                         infinity).
 
 %% Allows the Checker to be overriden in test, use something other than a
 %% penciller
-ink_compactjournal(Pid, Checker, InitiateFun, FilterFun, Timeout) ->
+ink_compactjournal(Pid, Checker, InitiateFun, CloseFun, FilterFun, Timeout) ->
     gen_server:call(Pid,
                         {compact,
                             Checker,
                             InitiateFun,
+                            CloseFun,
                             FilterFun,
                             Timeout},
                         infinity).
@@ -427,12 +430,14 @@ handle_call(print_manifest, _From, State) ->
 handle_call({compact,
                 Checker,
                 InitiateFun,
+                CloseFun,
                 FilterFun,
                 Timeout},
                     _From, State) ->
     leveled_iclerk:clerk_compact(State#state.clerk,
                                     Checker,
                                     InitiateFun,
+                                    CloseFun,
                                     FilterFun,
                                     self(),
                                     Timeout),
@@ -839,7 +844,6 @@ initiate_penciller_snapshot(Bookie) ->
     MaxSQN = leveled_penciller:pcl_getstartupsequencenumber(LedgerSnap),
     {LedgerSnap, MaxSQN}.
 
-
 %%%============================================================================
 %%% Test
 %%%============================================================================
@@ -1001,6 +1005,7 @@ compact_journal_test() ->
     ok = ink_compactjournal(Ink1,
                             Checker,
                             fun(X) -> {X, 55} end,
+                            fun(_F) -> ok end,
                             fun(L, K, SQN) -> lists:member({SQN, K}, L) end,
                             5000),
     timer:sleep(1000),
@@ -1010,6 +1015,7 @@ compact_journal_test() ->
     ok = ink_compactjournal(Ink1,
                             Checker2,
                             fun(X) -> {X, 55} end,
+                            fun(_F) -> ok end,
                             fun(L, K, SQN) -> lists:member({SQN, K}, L) end,
                             5000),
     timer:sleep(1000),
@@ -1041,6 +1047,7 @@ empty_manifest_test() ->
     ok = ink_compactjournal(Ink1,
                             [],
                             fun(X) -> {X, 55} end,
+                            fun(_F) -> ok end,
                             CheckFun,
                             5000),
     timer:sleep(1000),

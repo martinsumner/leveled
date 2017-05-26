@@ -80,7 +80,7 @@
         handle_info/2,
         terminate/2,
         clerk_new/1,
-        clerk_compact/6,
+        clerk_compact/7,
         clerk_hashtablecalc/3,
         clerk_stop/1,
         code_change/3]).      
@@ -124,14 +124,15 @@
 clerk_new(InkerClerkOpts) ->
     gen_server:start(?MODULE, [InkerClerkOpts], []).
     
-clerk_compact(Pid, Checker, InitiateFun, FilterFun, Inker, Timeout) ->
+clerk_compact(Pid, Checker, InitiateFun, CloseFun, FilterFun, Inker, TimeO) ->
     gen_server:cast(Pid,
                     {compact,
                     Checker,
                     InitiateFun,
+                    CloseFun,
                     FilterFun,
                     Inker,
-                    Timeout}).
+                    TimeO}).
 
 clerk_hashtablecalc(HashTree, StartPos, CDBpid) ->
     {ok, Clerk} = gen_server:start(?MODULE, [#iclerk_options{}], []),
@@ -171,7 +172,7 @@ init([IClerkOpts]) ->
 handle_call(_Msg, _From, State) ->
     {reply, not_supported, State}.
 
-handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
+handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Inker, _TO},
                 State) ->
     % Empty the waste folder
     clear_waste(State),
@@ -207,11 +208,13 @@ handle_cast({compact, Checker, InitiateFun, FilterFun, Inker, _Timeout},
                     update_inker(Inker,
                                     ManifestSlice,
                                     FilesToDelete),
+                    ok = CloseFun(FilterServer),
                     {noreply, State}
             end;
         Score ->
             leveled_log:log("IC003", [Score]),
             ok = leveled_inker:ink_compactioncomplete(Inker),
+            ok = CloseFun(FilterServer),
             {noreply, State}
     end;
 handle_cast({hashtable_calc, HashTree, StartPos, CDBpid}, State) ->
