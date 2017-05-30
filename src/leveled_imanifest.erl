@@ -28,11 +28,22 @@
 -define(PENDING_FILEX, "pnd").
 -define(SKIP_WIDTH, 16).
 
+-type manifest() :: list({integer(), list()}).
+%% The manifest is divided into blocks by sequence number, with each block
+%% being a list of manifest entries for that SQN range.
+-type manifest_entry() :: {integer(), string(), pid()|string(), any()}.
+%% The Entry should have a pid() as the third element, but a string() may be
+%% used in unit tests
+
 
 %%%============================================================================
 %%% API
 %%%============================================================================
 
+-spec generate_entry(pid()) -> list().
+%% @doc
+%% Generate a list with a single iManifest entry for a journal file.  Used
+%% only by the clerk when creating new entries for compacted files.
 generate_entry(Journal) ->
     {ok, NewFN} = leveled_cdb:cdb_complete(Journal),
     {ok, PidR} = leveled_cdb:cdb_open_reader(NewFN),
@@ -44,7 +55,12 @@ generate_entry(Journal) ->
             leveled_log:log("IC013", [NewFN]),
             []
     end.
-                        
+
+-spec add_entry(manifest(), manifest_entry(), boolean()) -> manifest().
+%% @doc
+%% Add a new entry to the manifest, if this is the rolling of a new active
+%% journal the boolean ToEnd can be used to indicate it should be simply
+%% appended to the end of the manifest.
 add_entry(Manifest, Entry, ToEnd) ->
     {SQN, FN, PidR, LastKey} = Entry,
     StrippedName = filename:rootname(FN),
@@ -57,6 +73,10 @@ add_entry(Manifest, Entry, ToEnd) ->
             from_list(Man1)
     end.
 
+-spec append_lastkey(manifest(), pid(), any()) -> manifest().
+%% @doc
+%% On discovery of the last key in the last journal entry, the manifest can
+%% be updated through this function to have the last key
 append_lastkey(Manifest, Pid, LastKey) ->
     [{SQNMarker, SQNL}|ManifestTail] = Manifest,
     [{E_SQN, E_FN, E_P, E_LK}|SQNL_Tail] = SQNL,
@@ -68,22 +88,35 @@ append_lastkey(Manifest, Pid, LastKey) ->
             Manifest
     end.
 
+-spec remove_entry(manifest(), manifest_entry()) -> manifest().
+%% @doc
+%% Remove an entry from a manifest (after compaction)
 remove_entry(Manifest, Entry) ->
     {SQN, FN, _PidR, _LastKey} = Entry,
     leveled_log:log("I0013", [FN]),
     Man0 = lists:keydelete(SQN, 1, to_list(Manifest)),
     from_list(Man0).
 
+-spec find_entry(integer(), manifest()) -> pid()|string().
+%% @doc
+%% Given a SQN find the relevant manifest_entry, returning just the pid() of
+%% the journal file (which may be a string() in unit tests)
 find_entry(SQN, [{SQNMarker, SubL}|_Tail]) when SQN >= SQNMarker ->
     find_subentry(SQN, SubL);
 find_entry(SQN, [_TopEntry|Tail]) ->
     find_entry(SQN, Tail).
 
+-spec head_entry(manifest()) -> manifest_entry().
+%% @doc
+%% Return the head manifets entry (the most recent journal)
 head_entry(Manifest) ->
     [{_SQNMarker, SQNL}|_Tail] = Manifest,
     [HeadEntry|_SQNL_Tail] = SQNL,
     HeadEntry.
-
+    
+-spec to_list(manifest()) -> list().
+%% @doc
+%% Convert the manifest to a flat list
 to_list(Manifest) ->
     FoldFun =
         fun({_SQNMarker, SubL}, Acc) ->
@@ -91,6 +124,9 @@ to_list(Manifest) ->
         end,
     lists:foldl(FoldFun, [], Manifest).
 
+-spec reader(integer(), string()) -> manifest().
+%% @doc
+%% Given a file path and a manifest SQN return the inker manifest
 reader(SQN, RootPath) ->
     ManifestPath = leveled_inker:filepath(RootPath, manifest_dir),
     leveled_log:log("I0015", [ManifestPath, SQN]),
@@ -99,7 +135,10 @@ reader(SQN, RootPath) ->
                                                 ++ ".man")),
     from_list(lists:reverse(lists:sort(binary_to_term(MBin)))).
     
-
+-spec writer(manifest(), integer(), string()) -> ok.
+%% @doc
+%% Given a manifest and a manifest SQN and a file path, save the manifest to
+%% disk
 writer(Manifest, ManSQN, RootPath) ->
     ManPath = leveled_inker:filepath(RootPath, manifest_dir),
     NewFN = filename:join(ManPath,
@@ -114,12 +153,18 @@ writer(Manifest, ManSQN, RootPath) ->
             ok = file:rename(TmpFN, NewFN),
             ok
     end.
-    
+
+-spec printer(manifest()) -> ok.
+%% @doc
+%% Print the manifest to the log
 printer(Manifest) ->
     lists:foreach(fun({SQN, FN, _PID, _LK}) ->
                          leveled_log:log("I0017", [SQN, FN]) end,
                     to_list(Manifest)).
 
+-spec complete_filex() -> string().
+%% @doc
+%% Return the file extension to be used for a completed manifest file
 complete_filex() ->
     ?MANIFEST_FILEX.
 
