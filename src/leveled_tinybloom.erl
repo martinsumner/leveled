@@ -25,7 +25,9 @@
 %%% API
 %%%============================================================================
 
-
+-spec create_bloom(list(integer())) -> binary().
+%% @doc
+%% Create a binary bloom filter from alist of hashes
 create_bloom(HashList) ->
     case length(HashList) of
         0 ->
@@ -41,6 +43,9 @@ create_bloom(HashList) ->
             add_hashlist(HashList, 1, 0, 0)
     end.
 
+-spec check_hash(integer(), binary()) -> boolean().
+%% @doc
+%% Check for the presence of a given hash within a bloom
 check_hash(_Hash, <<>>) ->
     false;
 check_hash(Hash, BloomBin) ->

@@ -30,21 +30,48 @@
 
 -define(SKIP_WIDTH, 16).
 
+-type tree_type() :: tree|idxt|skpl. 
+-type leveled_tree() :: {tree_type(),
+                            integer(), % length
+                            any()}.
 
 %%%============================================================================
 %%% API
 %%%============================================================================
 
+-spec from_orderedset(ets:tab(), tree_type()) -> leveled_tree().
+%% @doc
+%% Convert an ETS table of Keys and Values (of table type ordered_set) into a
+%% leveled_tree of the given type.
 from_orderedset(Table, Type) ->
     from_orderedlist(ets:tab2list(Table), Type, ?SKIP_WIDTH).
 
+-spec from_orderedset(ets:tab(), tree_type(), integer()|auto)
+                                                            -> leveled_tree().
+%% @doc
+%% Convert an ETS table of Keys and Values (of table type ordered_set) into a
+%% leveled_tree of the given type.  The SkipWidth is an integer representing
+%% the underlying list size joined in the tree (the trees are all trees of
+%% lists of this size).  For the skpl type the width can be auto-sized based
+%% on the length
 from_orderedset(Table, Type, SkipWidth) ->
     from_orderedlist(ets:tab2list(Table), Type, SkipWidth).
 
-
+-spec from_orderedlist(list(tuple()), tree_type()) -> leveled_tree().
+%% @doc
+%% Convert a list of Keys and Values (of table type ordered_set) into a
+%% leveled_tree of the given type.
 from_orderedlist(OrderedList, Type) ->
     from_orderedlist(OrderedList, Type, ?SKIP_WIDTH).
 
+-spec from_orderedlist(list(tuple()), tree_type(), integer()|auto)
+                                                            -> leveled_tree().
+%% @doc
+%% Convert a list of Keys and Values (of table type ordered_set) into a
+%% leveled_tree of the given type.  The SkipWidth is an integer representing
+%% the underlying list size joined in the tree (the trees are all trees of
+%% lists of this size).  For the skpl type the width can be auto-sized based
+%% on the length
 from_orderedlist(OrderedList, tree, SkipWidth) ->
     L = length(OrderedList),
     {tree, L, tree_fromorderedlist(OrderedList, [], L, SkipWidth)};
@@ -63,7 +90,11 @@ from_orderedlist(OrderedList, skpl, _SkipWidth) ->
         end,
     {skpl, L, skpl_fromorderedlist(OrderedList, L, SkipWidth, 2)}.
     
-
+-spec match(tuple()|integer(), leveled_tree()) -> none|{value, any()}.
+%% @doc
+%% Return the value from a tree associated with an exact match for the given
+%% key.  This assumes the tree contains the actual keys and values to be
+%% macthed against, not a manifest representing ranges of keys and values.
 match(Key, {tree, _L, Tree}) ->
     Iter = tree_iterator_from(Key, Tree),
     case tree_next(Iter) of
@@ -84,6 +115,12 @@ match(Key, {skpl, _L, SkipList}) ->
     SL0 = skpl_getsublist(Key, SkipList),
     lookup_match(Key, SL0).
 
+-spec search(tuple()|integer(), leveled_tree(), fun()) -> none|tuple().
+%% @doc
+%% Search is used when the tree is a manifest of key ranges and it is necessary
+%% to find a rnage which may contain the key.  The StartKeyFun is used if the
+%% values contain extra information that can be used to determine if the key is
+%% or is not present.
 search(Key, {tree, _L, Tree}, StartKeyFun) ->
     Iter = tree_iterator_from(Key, Tree),
     case tree_next(Iter) of
@@ -126,6 +163,18 @@ search(Key, {skpl, _L, SkipList}, StartKeyFun) ->
             none
     end.
 
+-spec match_range(tuple()|integer()|all,
+                    tuple()|integer()|all,
+                    leveled_tree())
+                                 -> list().
+%% @doc
+%% Return a range of value between trees from a tree associated with an
+%% exact match for the given key.  This assumes the tree contains the actual
+%% keys and values to be macthed against, not a manifest representing ranges
+%% of keys and values.
+%%
+%% The keyword all can be used as a substitute for the StartKey to remove a
+%% constraint from the range.
 match_range(StartRange, EndRange, Tree) ->
     EndRangeFun =
         fun(ER, FirstRHSKey, _FirstRHSValue) ->
@@ -133,6 +182,15 @@ match_range(StartRange, EndRange, Tree) ->
         end,
     match_range(StartRange, EndRange, Tree, EndRangeFun).
 
+-spec match_range(tuple()|integer()|all,
+                    tuple()|integer()|all,
+                    leveled_tree(),
+                    fun())
+                                 -> list().
+%% @doc
+%% As match_range/3 but a function can be passed to be used when comparing the
+%5 EndKey with a key in the tree (such as leveled_codec:endkey_passed), where
+%% Erlang term comparison will not give the desired result.
 match_range(StartRange, EndRange, {tree, _L, Tree}, EndRangeFun) ->
     treelookup_range_start(StartRange, EndRange, Tree, EndRangeFun);
 match_range(StartRange, EndRange, {idxt, _L, Tree}, EndRangeFun) ->
@@ -140,7 +198,18 @@ match_range(StartRange, EndRange, {idxt, _L, Tree}, EndRangeFun) ->
 match_range(StartRange, EndRange, {skpl, _L, SkipList}, EndRangeFun) ->
     skpllookup_to_range(StartRange, EndRange, SkipList, EndRangeFun).
 
-
+-spec search_range(tuple()|integer()|all,
+                    tuple()|integer()|all,
+                    leveled_tree(),
+                    fun())
+                                -> list().
+%% @doc
+%% Extract a range from a tree, with search used when the tree is a manifest
+%% of key ranges and it is necessary to find a rnage which may encapsulate the
+%% key range.
+%%
+%% The StartKeyFun is used if the values contain extra information that can be
+%% used to determine if the key is or is not present.
 search_range(StartRange, EndRange, Tree, StartKeyFun) ->
     EndRangeFun =
         fun(ER, _FirstRHSKey, FirstRHSValue) ->
@@ -156,7 +225,9 @@ search_range(StartRange, EndRange, Tree, StartKeyFun) ->
             skpllookup_to_range(StartRange, EndRange, SL, EndRangeFun)
     end.
 
-
+-spec to_list(leveled_tree()) -> list().
+%% @doc
+%% Collapse the tree back to a list
 to_list({tree, _L, Tree}) ->
     FoldFun =
         fun({_MK, SL}, Acc) ->
@@ -176,10 +247,15 @@ to_list({skpl, _L, SkipList}) ->
     lists:append(Lv0List).
 
 
-
+-spec tsize(leveled_tree()) -> integer().
+%% @doc
+%% Return the count of items in a tree
 tsize({_Type, L, _Tree}) ->
     L.
 
+-spec empty(tree_type()) -> leveled_tree().
+%% @doc
+%% Return an empty tree of the given type
 empty(tree) ->
     {tree, 0, empty_tree()};
 empty(idxt) ->

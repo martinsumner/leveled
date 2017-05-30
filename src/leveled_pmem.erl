@@ -43,11 +43,20 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+-type index_array() :: array:array().
 
 %%%============================================================================
 %%% API
 %%%============================================================================
 
+-spec prepare_for_index(index_array(), integer()|no_lookup) -> index_array().
+%% @doc
+%% Add the hash of a key to the index.  This is 'prepared' in the sense that
+%% this index is not use until it is loaded into the main index.
+%%
+%% prepare_for_index is called from the Bookie when been added to the ledger
+%% cache, but the index is not used until that ledger cache is in the
+%% penciller L0 memory
 prepare_for_index(IndexArray, no_lookup) ->
     IndexArray;
 prepare_for_index(IndexArray, Hash) ->
@@ -55,7 +64,55 @@ prepare_for_index(IndexArray, Hash) ->
     Bin = array:get(Slot, IndexArray),
     array:set(Slot, <<Bin/binary, 1:1/integer, H0:23/integer>>, IndexArray).
 
+-spec add_to_index(index_array(), index_array(), integer()) -> index_array().
+%% @doc
+%% Expand the penciller's current index array with the details from a new
+%% ledger cache tree sent from the Bookie.  The tree will have a cache slot
+%% which is the index of this ledger_cache in the list of the ledger_caches
+add_to_index(LM1Array, L0Index, CacheSlot) when CacheSlot < 128 ->
+    IndexAddFun =
+        fun(Slot, Acc) ->
+            Bin0 = array:get(Slot, Acc),
+            BinLM1 = array:get(Slot, LM1Array),
+            array:set(Slot,
+                        <<Bin0/binary,
+                            0:1/integer, CacheSlot:7/integer,
+                            BinLM1/binary>>,
+                        Acc)
+        end,
+    lists:foldl(IndexAddFun, L0Index, lists:seq(0, 255)).
 
+-spec new_index() -> index_array().
+%% @doc
+%% Create a new index array
+new_index() ->
+    array:new([{size, 256}, {default, <<>>}]).
+
+-spec clear_index(index_array()) -> index_array().
+%% @doc
+%% Create a new index array
+clear_index(_L0Index) ->
+    new_index().
+
+-spec check_index(integer(), index_array()) -> list(integer()).
+%% @doc
+%% return a list of positions in the list of cache arrays that may contain the
+%% key associated with the hash being checked
+check_index(Hash, L0Index) ->
+    {Slot, H0} = split_hash(Hash),
+    Bin = array:get(Slot, L0Index),
+    find_pos(Bin, H0, [], 0).    
+
+
+-spec add_to_cache(integer(),
+                    {tuple(), integer(), integer()},
+                    integer(),
+                    list()) ->
+                        {integer(), integer(), list()}.
+%% @doc
+%% The penciller's cache is a list of leveled_trees, this adds a new tree to
+%% that cache, providing an update to the approximate size of the cache and
+%% the Ledger's SQN.
 add_to_cache(L0Size, {LevelMinus1, MinSQN, MaxSQN}, LedgerSQN, TreeList) ->
     LM1Size = leveled_tree:tsize(LevelMinus1),
     case LM1Size of
@@ -70,30 +127,14 @@ add_to_cache(L0Size, {LevelMinus1, MinSQN, MaxSQN}, LedgerSQN, TreeList) ->
             end
     end.
 
-add_to_index(LM1Array, L0Index, CacheSlot) when CacheSlot < 128 ->
-    IndexAddFun =
-        fun(Slot, Acc) ->
-            Bin0 = array:get(Slot, Acc),
-            BinLM1 = array:get(Slot, LM1Array),
-            array:set(Slot,
-                        <<Bin0/binary,
-                            0:1/integer, CacheSlot:7/integer,
-                            BinLM1/binary>>,
-                        Acc)
-        end,
-    lists:foldl(IndexAddFun, L0Index, lists:seq(0, 255)).
-
-new_index() ->
-    array:new([{size, 256}, {default, <<>>}]).
-
-clear_index(_L0Index) ->
-    new_index().
-
-check_index(Hash, L0Index) ->
-    {Slot, H0} = split_hash(Hash),
-    Bin = array:get(Slot, L0Index),
-    find_pos(Bin, H0, [], 0).    
-
+-spec to_list(integer(), fun()) -> list().
+%% @doc
+%% The cache is a list of leveled_trees of length Slots.  This will fetch
+%% each tree in turn by slot ID and then produce a merged/sorted output of
+%% Keys and Values (to load into a SST file).
+%%
+%% Each slot is requested in turn to avoid halting the penciller whilst it
+%% does a large object copy of the whole cache.
 to_list(Slots, FetchFun) ->
     SW = os:timestamp(),
     SlotList = lists:reverse(lists:seq(1, Slots)),
@@ -107,10 +148,25 @@ to_list(Slots, FetchFun) ->
     leveled_log:log_timer("PM002", [length(FullList)], SW),
     FullList.
 
-
+-spec check_levelzero(tuple(), list(integer()), list())
+                                            -> {boolean(), tuple|not_found}.
+%% @doc
+%% Check for the presence of a given Key in the Level Zero cache, with the
+%% index array having been checked first for a list of potential positions
+%% in the list of ledger caches - and then each potential ledger_cache being
+%% checked (with the most recently received cache being checked first) until a
+%% match is found.
 check_levelzero(Key, PosList, TreeList) ->
     check_levelzero(Key, leveled_codec:magic_hash(Key), PosList, TreeList).
 
+-spec check_levelzero(tuple(), integer(), list(integer()), list())
+                                            -> {boolean(), tuple|not_found}.
+%% @doc
+%% Check for the presence of a given Key in the Level Zero cache, with the
+%% index array having been checked first for a list of potential positions
+%% in the list of ledger caches - and then each potential ledger_cache being
+%% checked (with the most recently received cache being checked first) until a
+%% match is found.
 check_levelzero(_Key, _Hash, _PosList, []) ->
     {false, not_found};
 check_levelzero(_Key, _Hash, [], _TreeList) ->
@@ -118,7 +174,11 @@ check_levelzero(_Key, _Hash, [], _TreeList) ->
 check_levelzero(Key, Hash, PosList, TreeList) ->
     check_slotlist(Key, Hash, PosList, TreeList).
 
-
+-spec merge_trees(tuple(), tuple(), list(tuple()), tuple()) -> list().
+%% @doc
+%% Return a list of keys and values across the level zero cache (and the
+%% currently unmerged bookie's ledger cache) that are between StartKey
+%% and EndKey (inclusive).
 merge_trees(StartKey, EndKey, TreeList, LevelMinus1) ->
     lists:foldl(fun(Tree, Acc) ->
                         R = leveled_tree:match_range(StartKey,

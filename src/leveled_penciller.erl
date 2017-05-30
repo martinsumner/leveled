@@ -243,19 +243,59 @@
                 
                 head_timing :: tuple()}).
 
+-type penciller_options() :: #penciller_options{}.
+-type bookies_memory() :: {tuple()|empty_cache,
+                            array:array()|empty_array,
+                            integer()|infinity,
+                            integer()}.
+-type pcl_state() :: #state{}.
 
 %%%============================================================================
 %%% API
 %%%============================================================================
 
- 
+-spec pcl_start(penciller_options()) -> {ok, pid()}.
+%% @doc
+%% Start a penciller using a penciller options record.  The start_snapshot
+%% option should be used if this is to be a clone of an existing penciller,
+%% otherwise the penciller will look in root path for a manifest and
+%% associated sst files to start-up from a previous persisted state.
+%%
+%% When starting a clone a query can also be passed.  This prevents the whole
+%% Level Zero memory space from being copied to the snapshot, instead the
+%% query is run against the level zero space and just the query results are
+%5 copied into the clone.  
 pcl_start(PCLopts) ->
     gen_server:start(?MODULE, [PCLopts], []).
 
+-spec pcl_pushmem(pid(), bookies_memory()) -> ok|returned.
+%% @doc
+%% Load the contents of the Bookie's memory of recent additions to the Ledger
+%% to the Ledger proper.
+%%
+%% The load is made up of a cache in the form of a leveled_skiplist tuple (or
+%% the atom empty_cache if no cache is present), an index of entries in the
+%% skiplist in the form of leveled_pmem index (or empty_index), the minimum
+%% sequence number in the cache and the maximum sequence number.
+%%
+%% If the penciller does not have capacity for the pushed cache it will
+%% respond with the atom 'returned'.  This is a signal to hold the memory
+%% at the Bookie, and try again soon.  This normally only occurs when there
+%% is a backlog of merges - so the bookie should backoff for longer each time.
 pcl_pushmem(Pid, LedgerCache) ->
     %% Bookie to dump memory onto penciller
     gen_server:call(Pid, {push_mem, LedgerCache}, infinity).
 
+-spec pcl_fetchlevelzero(pid(), integer()) -> tuple().
+%% @doc
+%% Allows a single slot of the penciller's levelzero cache to be fetched.  The
+%% levelzero cache can be up to 40K keys - sending this to the process that is
+%% persisting this in a SST file in a single cast will lock the process for
+%% 30-40ms.  This allows that process to fetch this slot by slot, so that
+%% this is split into a series of smaller events.
+%%
+%% The return value will be a leveled_skiplist that forms that part of the
+%% cache
 pcl_fetchlevelzero(Pid, Slot) ->
     %% Timeout to cause crash of L0 file when it can't get the close signal
     %% as it is deadlocked making this call.
@@ -263,7 +303,17 @@ pcl_fetchlevelzero(Pid, Slot) ->
     %% If the timeout gets hit outside of close scenario the Penciller will
     %% be stuck in L0 pending
     gen_server:call(Pid, {fetch_levelzero, Slot}, 60000).
-    
+
+-spec pcl_fetch(pid(), tuple()) -> {tuple(), tuple()}|not_present.
+%% @doc
+%% Fetch a key, return the first (highest SQN) occurrence of that Key along
+%% with  the value.
+%%
+%% The Key needs to be hashable (i.e. have a tag which indicates that the key
+%% can be looked up) - index entries are not hashable for example.
+%%
+%% If the hash is already knonw, call pcl_fetch/3 as magic_hash is a
+%% relatively expensive hash function
 pcl_fetch(Pid, Key) ->
     Hash = leveled_codec:magic_hash(Key),
     if
@@ -271,19 +321,48 @@ pcl_fetch(Pid, Key) ->
             gen_server:call(Pid, {fetch, Key, Hash}, infinity)
     end.
 
+-spec pcl_fetch(pid(), tuple(), integer()) -> {tuple(), tuple()}|not_present.
+%% @doc
+%% Fetch a key, return the first (highest SQN) occurrence of that Key along
+%% with  the value.
+%%
+%% Hash should be result of leveled_codec:magic_hash(Key)
 pcl_fetch(Pid, Key, Hash) ->
     gen_server:call(Pid, {fetch, Key, Hash}, infinity).
 
+-spec pcl_fetchkeys(pid(), tuple(), tuple(), fun(), any()) -> any().
+%% @doc
+%% Run a range query between StartKey and EndKey (inclusive).  This will cover
+%% all keys in the range - so must only be run against snapshots of the
+%% penciller to avoid blocking behaviour.
+%%
+%% Comparison with the upper-end of the range (EndKey) is done using
+%% leveled_codec:endkey_passed/2 - so use nulls within the tuple to manage
+%% the top of the range.  Comparison with the start of the range is based on
+%% Erlang term order.
 pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc) ->
     gen_server:call(Pid,
                     {fetch_keys, StartKey, EndKey, AccFun, InitAcc, -1},
                     infinity).
 
+-spec pcl_fetchnextkey(pid(), tuple(), tuple(), fun(), any()) -> any().
+%% @doc
+%% Run a range query between StartKey and EndKey (inclusive).  This has the
+%% same constraints as pcl_fetchkeys/5, but will only return the first key
+%% found in erlang term order.
 pcl_fetchnextkey(Pid, StartKey, EndKey, AccFun, InitAcc) ->
     gen_server:call(Pid,
                     {fetch_keys, StartKey, EndKey, AccFun, InitAcc, 1},
                     infinity).
 
+-spec pcl_checksequencenumber(pid(), tuple(), integer()) -> boolean().
+%% @doc
+%% Check if the sequence number of the passed key is not replaced by a change
+%% after the passed sequence number.  Will return true if the Key is present
+%% and either is equal to, or prior to the passed SQN.
+%%
+%% If the key is not present, it will be assumed that a higher sequence number
+%% tombstone once existed, and false will be returned.
 pcl_checksequencenumber(Pid, Key, SQN) ->
     Hash = leveled_codec:magic_hash(Key),
     if
@@ -291,32 +370,80 @@ pcl_checksequencenumber(Pid, Key, SQN) ->
             gen_server:call(Pid, {check_sqn, Key, Hash, SQN}, infinity)
     end.
 
+-spec pcl_workforclerk(pid()) -> ok.
+%% @doc
+%% A request from the clerk to check for work.  If work is present the
+%% Penciller will cast back to the clerk, no response is sent to this
+%% request.
 pcl_workforclerk(Pid) ->
     gen_server:cast(Pid, work_for_clerk).
 
+-spec pcl_manifestchange(pid(), tuple()) -> ok.
+%% @doc
+%% Provide a manifest record (i.e. the output of the leveled_pmanifest module)
+%% that is required to beocme the new manifest.
 pcl_manifestchange(Pid, Manifest) ->
     gen_server:cast(Pid, {manifest_change, Manifest}).
 
+-spec pcl_confirml0complete(pid(), string(), tuple(), tuple()) -> ok.
+%% @doc
+%% Allows a SST writer that has written a L0 file to confirm that the file 
+%% is now complete, so the filename and key ranges can be added to the 
+%% manifest and the file can be used in place of the in-memory levelzero
+%% cache.
 pcl_confirml0complete(Pid, FN, StartKey, EndKey) ->
     gen_server:cast(Pid, {levelzero_complete, FN, StartKey, EndKey}).
 
+-spec pcl_confirmdelete(pid(), string(), pid()) -> ok.
+%% @doc
+%% Poll from a delete_pending file requesting a message if the file is now
+%% ready for deletion (i.e. all snapshots which depend on the file have
+%% finished)
 pcl_confirmdelete(Pid, FileName, FilePid) ->
     gen_server:cast(Pid, {confirm_delete, FileName, FilePid}).
 
+-spec pcl_getstartupsequencenumber(pid()) -> integer().
+%% @doc
+%% At startup the penciller will get the largest sequence number that is 
+%% within the persisted files.  This function allows for this sequence number
+%% to be fetched - so that it can be used to determine parts of the Ledger
+%% which  may have been lost in the last shutdown (so that the ledger can
+%% be reloaded from that point in the Journal)
 pcl_getstartupsequencenumber(Pid) ->
     gen_server:call(Pid, get_startup_sqn, infinity).
 
+-spec pcl_registersnapshot(pid(),
+                            pid(),
+                            no_lookup|{tuple(), tuple()}|undefined,
+                            bookies_memory(),
+                            boolean())
+                                -> {ok, pcl_state()}.
+%% @doc
+%% Register a snapshot of the penciller, returning a state record from the
+%% penciller for the snapshot to use as its LoopData
 pcl_registersnapshot(Pid, Snapshot, Query, BookiesMem, LR) ->
     gen_server:call(Pid,
                     {register_snapshot, Snapshot, Query, BookiesMem, LR},
                     infinity).
 
+-spec pcl_releasesnapshot(pid(), pid()) -> ok.
+%% @doc
+%% Inform the primary penciller that a snapshot is finished, so that the 
+%% penciller can allow deletes to proceed if appropriate.
 pcl_releasesnapshot(Pid, Snapshot) ->
     gen_server:cast(Pid, {release_snapshot, Snapshot}).
 
+-spec pcl_close(pid()) -> ok.
+%% @doc
+%% Close the penciller neatly, trying to persist to disk anything in the memory
 pcl_close(Pid) ->
     gen_server:call(Pid, close, 60000).
 
+-spec pcl_doom(pid()) -> {ok, list()}.
+%% @doc
+%% Close the penciller neatly, trying to persist to disk anything in the memory
+%% Return a list of filepaths from where files exist for this penciller (should
+%% the calling process which to erase the store).
 pcl_doom(Pid) ->
     gen_server:call(Pid, doom, 60000).
 
