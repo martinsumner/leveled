@@ -22,7 +22,7 @@
 -define(LOG_LEVEL, [info, warn, error, critical]).
 -define(SAMPLE_RATE, 16).
 
--define(LOGBASE, dict:from_list([
+-define(LOGBASE, [
 
     {"G0001",
         {info, "Generic log point"}},
@@ -323,11 +323,11 @@
                 ++ "and max write time is ~w and max sync time is ~w"}},
     {"CDB18",
         {info, "Handled return and write of hashtable"}}
-        ])).
+        ]).
 
 
 log(LogReference, Subs) ->
-    {LogLevel, LogText} = dict:fetch(LogReference, ?LOGBASE),
+    {LogLevel, LogText} = lists:keyfind(LogReference, 1, ?LOGBASE),
     case lists:member(LogLevel, ?LOG_LEVEL) of
         true ->
             io:format(format_time()
@@ -340,7 +340,7 @@ log(LogReference, Subs) ->
 
 
 log_timer(LogReference, Subs, StartTime) ->
-    {LogLevel, LogText} = dict:fetch(LogReference, ?LOGBASE),
+    {LogLevel, LogText} = lists:keyfind(LogReference, 1, ?LOGBASE),
     case lists:member(LogLevel, ?LOG_LEVEL) of
         true ->
             MicroS = timer:now_diff(os:timestamp(), StartTime),
