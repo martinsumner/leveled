@@ -327,34 +327,48 @@
 
 
 log(LogReference, Subs) ->
-    {LogLevel, LogText} = lists:keyfind(LogReference, 1, ?LOGBASE),
-    case lists:member(LogLevel, ?LOG_LEVEL) of
-        true ->
-            io:format(format_time()
-                        ++ " " ++ LogReference ++ " ~w "
-                        ++ LogText ++ "~n",
-                        [self()|Subs]);
+    log(LogReference, Subs, ?LOG_LEVEL).
+
+log(LogRef, Subs, SupportedLogLevels) ->
+    case lists:keyfind(LogRef, 1, ?LOGBASE) of
+        {LogRef, {LogLevel, LogText}} ->
+            case lists:member(LogLevel, SupportedLogLevels) of
+                true ->
+                    io:format(format_time()
+                                ++ " " ++ LogRef ++ " ~w "
+                                ++ LogText ++ "~n",
+                                [self()|Subs]);
+                false ->
+                    ok
+            end;
         false ->
             ok
     end.
 
 
 log_timer(LogReference, Subs, StartTime) ->
-    {LogLevel, LogText} = lists:keyfind(LogReference, 1, ?LOGBASE),
-    case lists:member(LogLevel, ?LOG_LEVEL) of
-        true ->
-            MicroS = timer:now_diff(os:timestamp(), StartTime),
-            {Unit, Time} = case MicroS of
-                                MicroS when MicroS < 1000 ->
-                                    {"microsec", MicroS};
-                                MicroS ->
-                                    {"ms", MicroS div 1000}
-                            end,
-            io:format(format_time()
-                            ++ " " ++ LogReference ++ " ~w "
-                            ++ LogText
-                            ++ " with time taken ~w " ++ Unit ++ "~n",
-                        [self()|Subs] ++ [Time]);
+    log_timer(LogReference, Subs, StartTime, ?LOG_LEVEL).
+
+log_timer(LogRef, Subs, StartTime, SupportedLogLevels) ->
+    case lists:keyfind(LogRef, 1, ?LOGBASE) of
+        {LogRef, {LogLevel, LogText}} ->
+            case lists:member(LogLevel, SupportedLogLevels) of
+                true ->
+                    MicroS = timer:now_diff(os:timestamp(), StartTime),
+                    {Unit, Time} = case MicroS of
+                                        MicroS when MicroS < 1000 ->
+                                            {"microsec", MicroS};
+                                        MicroS ->
+                                            {"ms", MicroS div 1000}
+                                    end,
+                    io:format(format_time()
+                                    ++ " " ++ LogRef ++ " ~w "
+                                    ++ LogText
+                                    ++ " with time taken ~w " ++ Unit ++ "~n",
+                                [self()|Subs] ++ [Time]);
+                false ->
+                    ok
+            end;
         false ->
             ok
     end.
@@ -576,5 +590,11 @@ head_timing_test() ->
     ?assertMatch(49, N),
     ?assertMatch(3, lists:nth(1, dict:fetch(found_2, D))),
     ?assertMatch(1, lists:nth(1, dict:fetch(found_lower, D))).
+
+log_warn_test() ->
+    ok = log("G0001", [], [warn, error]),
+    ok = log("G8888", [], [info, warn, error]),
+    ok = log_timer("G0001", [], os:timestamp(), [warn, error]),
+    ok = log_timer("G8888", [], os:timestamp(), [info, warn, error]).
 
 -endif.

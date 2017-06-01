@@ -43,7 +43,8 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--type index_array() :: array:array().
+% -type index_array() :: array:array().
+-type index_array() :: any(). % To live with OTP16
 
 %%%============================================================================
 %%% API

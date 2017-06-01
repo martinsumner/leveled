@@ -245,7 +245,8 @@
 
 -type penciller_options() :: #penciller_options{}.
 -type bookies_memory() :: {tuple()|empty_cache,
-                            array:array()|empty_array,
+                            % array:array()|empty_array,
+                            any()|empty_array, % Issue of type compatability with OTP16
                             integer()|infinity,
                             integer()}.
 -type pcl_state() :: #state{}.
