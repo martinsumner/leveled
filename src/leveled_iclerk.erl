@@ -95,10 +95,10 @@
 -define(BATCH_SIZE, 32).
 -define(BATCHES_TO_CHECK, 8).
 %% How many consecutive files to compact in one run
--define(MAX_COMPACTION_RUN, 6).
+-define(MAX_COMPACTION_RUN, 8).
 %% Sliding scale to allow preference of longer runs up to maximum
 -define(SINGLEFILE_COMPACTION_TARGET, 40.0).
--define(MAXRUN_COMPACTION_TARGET, 60.0).
+-define(MAXRUN_COMPACTION_TARGET, 70.0).
 -define(CRC_SIZE, 4).
 -define(DEFAULT_RELOAD_STRATEGY, leveled_codec:inker_reload_strategy([])).
 -define(DEFAULT_WASTE_RETENTION_PERIOD, 86400).
@@ -383,47 +383,55 @@ fetch_inbatches(PositionList, BatchSize, CDB, CheckedList) ->
     KL_List = leveled_cdb:cdb_directfetch(CDB, Batch, key_size),
     fetch_inbatches(Tail, BatchSize, CDB, CheckedList ++ KL_List).
 
-assess_candidates(AllCandidates, MaxRunLength) ->
-    NaiveBestRun = assess_candidates(AllCandidates, MaxRunLength, [], []),
+
+assess_candidates(AllCandidates, MaxRunLength) when is_integer(MaxRunLength) ->
+    % This will take the defaults for other params.
+    % Unit tests should pass tuple as params including tested defaults
+    assess_candidates(AllCandidates, 
+                        {MaxRunLength,
+                            ?MAXRUN_COMPACTION_TARGET,
+                            ?SINGLEFILE_COMPACTION_TARGET});
+assess_candidates(AllCandidates, Params) ->
+    NaiveBestRun = assess_candidates(AllCandidates, Params, [], []),
+    MaxRunLength = element(1, Params),
     case length(AllCandidates) of
         L when L > MaxRunLength, MaxRunLength > 1 ->
             %% Assess with different offsets from the start
-            SqL = lists:seq(1, MaxRunLength - 1),
-            lists:foldl(fun(Counter, BestRun) ->
-                                SubList = lists:nthtail(Counter,
-                                                            AllCandidates),
-                                assess_candidates(SubList,
-                                                    MaxRunLength,
-                                                    [],
-                                                    BestRun)
-                                end,
-                            NaiveBestRun,
-                            SqL);
+            AssessFold = 
+                fun(Counter, BestRun) ->
+                    SubList = lists:nthtail(Counter, AllCandidates),
+                    assess_candidates(SubList, Params, [], BestRun)
+                end,
+
+            lists:foldl(AssessFold, 
+                            NaiveBestRun, 
+                            lists:seq(1, MaxRunLength - 1));
         _ ->
             NaiveBestRun
     end.
 
-assess_candidates([], _MaxRunLength, _CurrentRun0, BestAssessment) ->
+assess_candidates([], _Params, _CurrentRun0, BestAssessment) ->
     BestAssessment;
-assess_candidates([HeadC|Tail], MaxRunLength, CurrentRun0, BestAssessment) ->
+assess_candidates([HeadC|Tail], Params, CurrentRun0, BestAssessment) ->
     CurrentRun1 = choose_best_assessment(CurrentRun0 ++ [HeadC],
                                             [HeadC],
-                                            MaxRunLength),
+                                            Params),
     assess_candidates(Tail,
-                        MaxRunLength,
+                        Params,
                         CurrentRun1,
                         choose_best_assessment(CurrentRun1,
                                                 BestAssessment,
-                                                MaxRunLength)).
+                                                Params)).
 
 
-choose_best_assessment(RunToAssess, BestRun, MaxRunLength) ->
+choose_best_assessment(RunToAssess, BestRun, Params) ->
+    {MaxRunLength, _MR_CT, _SF_CT} = Params,
     case length(RunToAssess) of
         LR1 when LR1 > MaxRunLength ->
             BestRun;
         _ ->
-            AssessScore = score_run(RunToAssess, MaxRunLength),
-            BestScore = score_run(BestRun, MaxRunLength),
+            AssessScore = score_run(RunToAssess, Params),
+            BestScore = score_run(BestRun, Params),
             if
                 AssessScore > BestScore ->
                     RunToAssess;
@@ -431,19 +439,23 @@ choose_best_assessment(RunToAssess, BestRun, MaxRunLength) ->
                     BestRun
             end
     end.    
-        
-score_run([], _MaxRunLength) ->
+
+score_run(Run, MaxRunLength) when is_integer(MaxRunLength) ->
+    Params = {MaxRunLength, 
+                    ?MAXRUN_COMPACTION_TARGET,
+                    ?SINGLEFILE_COMPACTION_TARGET},
+    score_run(Run, Params);
+score_run([], _Params) ->
     0.0;
-score_run(Run, MaxRunLength) ->
-    TargetIncr = case MaxRunLength of
-                        1 ->
-                            0.0;
-                        MaxRunSize ->
-                            (?MAXRUN_COMPACTION_TARGET
-                                - ?SINGLEFILE_COMPACTION_TARGET)
-                                    / (MaxRunSize - 1)
-                    end,
-    Target = ?SINGLEFILE_COMPACTION_TARGET +  TargetIncr * (length(Run) - 1),
+score_run(Run, {MaxRunLength, MR_CT, SF_CT}) ->
+    TargetIncr = 
+        case MaxRunLength of
+            1 ->
+                0.0;
+            MaxRunSize ->
+                (MR_CT - SF_CT) / (MaxRunSize - 1)
+        end,
+    Target = SF_CT +  TargetIncr * (length(Run) - 1),
     RunTotal = lists:foldl(fun(Cand, Acc) ->
                                 Acc + Cand#candidate.compaction_perc end,
                             0.0,
@@ -645,7 +657,7 @@ simple_score_test() ->
             #candidate{compaction_perc = 75.0},
             #candidate{compaction_perc = 76.0},
             #candidate{compaction_perc = 70.0}],
-    ?assertMatch(-14.0, score_run(Run1, 4)),
+    ?assertMatch(-4.0, score_run(Run1, 4)),
     Run2 = [#candidate{compaction_perc = 75.0}],
     ?assertMatch(-35.0, score_run(Run2, 4)),
     ?assertMatch(0.0, score_run([], 4)),
@@ -657,10 +669,16 @@ score_compare_test() ->
             #candidate{compaction_perc = 55.0},
             #candidate{compaction_perc = 56.0},
             #candidate{compaction_perc = 50.0}],
-    ?assertMatch(6.0, score_run(Run1, 4)),
+    ?assertMatch(16.0, score_run(Run1, 4)),
     Run2 = [#candidate{compaction_perc = 55.0}],
-    ?assertMatch(Run1, choose_best_assessment(Run1, Run2, 4)),
-    ?assertMatch(Run2, choose_best_assessment(Run1 ++ Run2, Run2, 4)).
+    ?assertMatch(Run1, 
+                    choose_best_assessment(Run1, 
+                                            Run2, 
+                                            {4, 60.0, 40.0})),
+    ?assertMatch(Run2, 
+                    choose_best_assessment(Run1 ++ Run2, 
+                                            Run2, 
+                                            {4, 60.0, 40.0})).
 
 file_gc_test() ->
     State = #state{waste_path="test/waste/",
@@ -683,6 +701,7 @@ find_bestrun_test() ->
 %% -define(SINGLEFILE_COMPACTION_TARGET, 40.0).
 %% -define(MAXRUN_COMPACTION_TARGET, 60.0).
 %% Tested first with blocks significant as no back-tracking
+    Params = {4, 60.0, 40.0},
     Block1 = [#candidate{compaction_perc = 55.0},
                 #candidate{compaction_perc = 65.0},
                 #candidate{compaction_perc = 42.0},
@@ -697,39 +716,39 @@ find_bestrun_test() ->
                 #candidate{compaction_perc = 100.0}],
     Block4 = [#candidate{compaction_perc = 55.0},
                 #candidate{compaction_perc = 56.0},
-                #candidate{compaction_perc = 56.0},
+                #candidate{compaction_perc = 57.0},
                 #candidate{compaction_perc = 40.0}],
     Block5 = [#candidate{compaction_perc = 60.0},
                 #candidate{compaction_perc = 60.0}],
     CList0 = Block1 ++ Block2 ++ Block3 ++ Block4 ++ Block5,
-    ?assertMatch(Block4, assess_candidates(CList0, 4, [], [])),
+    ?assertMatch(Block4, assess_candidates(CList0, Params, [], [])),
     CList1 = CList0 ++ [#candidate{compaction_perc = 20.0}],
     ?assertMatch([#candidate{compaction_perc = 20.0}],
-                    assess_candidates(CList1, 4, [], [])),
+                    assess_candidates(CList1, Params, [], [])),
     CList2 = Block4 ++ Block3 ++ Block2 ++ Block1 ++ Block5,
-    ?assertMatch(Block4, assess_candidates(CList2, 4, [], [])),
+    ?assertMatch(Block4, assess_candidates(CList2, Params, [], [])),
     CList3 = Block5 ++ Block1 ++ Block2 ++ Block3 ++ Block4,
     ?assertMatch([#candidate{compaction_perc = 42.0},
                         #candidate{compaction_perc = 50.0},
                         #candidate{compaction_perc = 38.0}],
-                    assess_candidates(CList3, 4, [], [])),
+                    assess_candidates(CList3, Params)),
     %% Now do some back-tracking to get a genuinely optimal solution without
     %% needing to re-order
     ?assertMatch([#candidate{compaction_perc = 42.0},
                         #candidate{compaction_perc = 50.0},
                         #candidate{compaction_perc = 38.0}],
-                    assess_candidates(CList0, 4)),
+                    assess_candidates(CList0, Params)),
     ?assertMatch([#candidate{compaction_perc = 42.0},
                         #candidate{compaction_perc = 50.0},
                         #candidate{compaction_perc = 38.0}],
-                    assess_candidates(CList0, 5)),
+                    assess_candidates(CList0, setelement(1, Params, 5))),
     ?assertMatch([#candidate{compaction_perc = 42.0},
                         #candidate{compaction_perc = 50.0},
                         #candidate{compaction_perc = 38.0},
                         #candidate{compaction_perc = 75.0},
                         #candidate{compaction_perc = 75.0},
                         #candidate{compaction_perc = 45.0}], 
-                    assess_candidates(CList0, 6)).
+                    assess_candidates(CList0, setelement(1, Params, 6))).
 
 test_ledgerkey(Key) ->
     {o, "Bucket", Key, null}.
