@@ -467,7 +467,7 @@ load_and_count_withdelete(_Config) ->
 space_clear_ondelete(_Config) ->
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = [{root_path, RootPath},
-                    {max_journalsize, 20000000},
+                    {max_journalsize, 10000000},
                     {sync_strategy, testutil:sync_strategy()}],
     {ok, Book1} = leveled_bookie:book_start(StartOpts1),
     G2 = fun testutil:generate_compressibleobjects/2,
@@ -586,7 +586,7 @@ space_clear_ondelete(_Config) ->
     io:format("FNsD - Bookie has ~w ledger files " ++
                     "after second close~n", [length(FNsD_L)]),
     lists:foreach(fun(FN) -> 
-                        io:format("FNsD - Ledger file if ~s~n", [FN]) 
+                        io:format("FNsD - Ledger file is ~s~n", [FN]) 
                     end, 
                     FNsD_L),
     true = PointB_Journals < length(FNsA_J),
