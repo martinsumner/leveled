@@ -210,7 +210,7 @@ The sweeper mechanism is a new facility in the riak_kv develop branch, and has a
 
 If the same test is run with a leveldb backend but with the pre-sweeper fold mechanism, then total throughput across the is improved by <b>8.9%</b>.  However, this throughput reduction comes at the cost of a <b>90%</b> reduction in the number of rebuilds completed within the test.
 
-## Riak Cluster Test - Phase 3 - Compaction
+## Riak Cluster Test - Phase 3 - Journal Compaction
 
 When first developing the issue of compacting the value store was left to one side from a performance perspective, under the assumption that compaction would occur in some out-of-hours window.  Bitcask is configurable in this way, but also manages to do continuous compaction without major performance issues.
 
@@ -223,7 +223,7 @@ This was tested with:
 - no sync on write,
 - 5 x i2.2x nodes,
 - 12 hour duration,
-- 200M keys with a pareto distribution (and hence significant value rotation in the 20%).
+- 200M keys with a pareto distribution (and hence significant value rotation in the most commonly accessed keys).
 
 With 10 compaction events per day, after the 12 hour test 155GB per node had been compacted out of the value store during the test.  In the 12 hours following the test, a similar amount was compacted - to the point there was rough equivalence in node volumes between the closing state of the leveled test and the closing state of the leveldb test.
 
