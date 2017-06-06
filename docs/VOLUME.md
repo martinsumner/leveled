@@ -235,8 +235,8 @@ Riak + leveled           |  Riak + leveldb
 
 The throughput difference by hour of the test was:
 
-| Throughput | leveldb comparison
-:-------------------------|------------:|------------:|
+Test Hour| Throughput | leveldb Comparison
+:-------------------------|------------:|------------:
 Hour 1 | 20,692.02 | 112.73%
 Hour 2 | 16,147.89 | 106.37%
 Hour 3 | 14,190.78 | 115.78%
