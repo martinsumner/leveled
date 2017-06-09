@@ -210,11 +210,47 @@ The sweeper mechanism is a new facility in the riak_kv develop branch, and has a
 
 If the same test is run with a leveldb backend but with the pre-sweeper fold mechanism, then total throughput across the is improved by <b>8.9%</b>.  However, this throughput reduction comes at the cost of a <b>90%</b> reduction in the number of rebuilds completed within the test.
 
-## Riak Cluster Test - Phase 3 - Compaction
+## Riak Cluster Test - Phase 3 - Journal Compaction
 
-to be completed ..
+When first developing leveled, the issue of compacting the value store was left to one side from a performance perspective, under the assumption that compaction would occur in some out-of-hours window.  Bitcask is configurable in this way, but also manages to do continuous compaction without major performance issues.
 
-Testing during a journal compaction window
+For this phase, a new compaction feature was added to allow for "continuous" compaction of the value store (Journal).  This means that each vnode will schedule approximately N compaction attempts through the day, rather than wait for a compaction window to occur.
+
+This was tested with:
+
+- 8KB value,
+- 80 workers,
+- no sync on write,
+- 5 x i2.2x nodes,
+- 12 hour duration,
+- 200M keys with a pareto distribution (and hence significant value rotation in the most commonly accessed keys).
+
+With 10 compaction events per day, after the 12 hour test 155GB per node had been compacted out of the value store during the test.  In the 12 hours following the test, a further 125GB was compacted - to the point there was rough equivalence in node volumes between the closing state of the leveled test and the closing state of the leveldb test.
+
+As before, the Riak + leveled test had substantially lower tail latency, and achieved higher (and more consistent) throughput.  There was an increased volatility in throughput when compared to non-compacting tests, but the volatility is still negligible when compared with leveldb tests.
+
+Riak + leveled           |  Riak + leveldb
+:-------------------------:|:-------------------------:
+![](../test/volume/cluster_journalcompact/output/summary_leveled_5n_80t_i2_nosync_jc.png "LevelEd")  |  ![](../test/volume/cluster_journalcompact/output/summary_leveldb_5n_80t_i2_nosync.png "LevelDB")
+
+The throughput difference by hour of the test was:
+
+Test Hour| Throughput | leveldb Comparison
+:-------------------------|------------:|------------:
+Hour 1 | 20,692.02 | 112.73%
+Hour 2 | 16,147.89 | 106.37%
+Hour 3 | 14,190.78 | 115.78%
+Hour 4 | 12,740.58 | 123.36%
+Hour 5 | 11,939.17 | 137.70%
+Hour 6 | 11,549.50 | 144.42%
+Hour 7 | 10,948.01 | 142.05%
+Hour 8 | 10,625.46 | 138.90%
+Hour 9 | 10,119.73 | 137.53%
+Hour 10 | 9,965.14 | 143.52%
+Hour 11 | 10,112.84 | 149.13%
+Hour 12 | 10,266.02 | 144.63%
+
+This is the first time a test of this duration has been run, and there does appear to be a trend of Riak/leveled throughput tending towards a stable volume, rather than an ongoing decline in throughput as the test progresses.
 
 ## Riak Cluster Test - Phase 4 - 2i
 

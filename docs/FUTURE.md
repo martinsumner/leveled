@@ -29,8 +29,6 @@ There is some work required before LevelEd could be considered production ready:
 
 - Introduction of property-based testing.
 
-- Amend compaction scheduling to ensure that all vnodes do not try to concurrently compact during a single window.
-
 - Improved handling of corrupted files.
 
 - A way of identifying the partition in each log to ease the difficulty of tracing activity when multiple stores are run in parallel.
@@ -127,3 +125,17 @@ Description:
 The riak_kv_sweeper which is part of the post-2.2 develop branch controls folds over objects so that multiple functions can be applied to a single fold.  The only aspect of the Riak system that uses this feature at present is AAE hashtree rebuilds.
 
 This branch modifies the kv_sweeper so that if the capability exists, and unless a sweeper has explicitly stated a requirement not to allow this feature, the sweeper can defer the fetching of the objects.  This means that the sweeper will fold over the "heads" of the objects returning a specially crafter Riak Object which contains a reference to the body rather than the actual body - so that the object body can be fetched if and only if access to the object contents is requested via the riak_object module.
+
+### Journal compaction
+
+Branch: [mas-leveled-autocompact](https://github.com/martinsumner/riak_kv/tree/mas-leveled-autocompact)
+
+Branched-From: [mas-leveled-scanner-i649](https://github.com/martinsumner/riak_kv/tree/mas-leveled-scanner-i649)
+
+Description:
+
+Allows for the hours of day in which compaction of the Journal compaction will be run to be configurable.  Also configurable, is the number of times (approximately) each vnode should run journal compaction each day.
+
+The number of times this will need to be run will depend on the distribution of updates - most specifically what proportion of PUTs are changes as opposed to new data.
+
+Cuttlefish config is still broken, so changes to config should be made through the riak_kv_leveled.hrl include file.
