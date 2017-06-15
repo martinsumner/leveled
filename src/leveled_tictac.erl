@@ -68,7 +68,7 @@
 -define(SEGMENT_COUNT, ?LEVEL1_WIDTH * ?LEVEL2_WIDTH).
 -define(HASH_SIZE, 4).
 
--record(tictactree, {treeID ::integer(),
+-record(tictactree, {treeID :: any(),
                         level1 :: binary(),
                         level2 :: array:array()}).
 
@@ -143,6 +143,25 @@ find_dirtyleaves(SrcTree, SinkTree) ->
     
     lists:sort(lists:foldl(FoldFun, [], IdxList)).
 
+merge_trees(TreeA, TreeB) ->
+    MergedTree = new_tree(merge),
+    
+    L1A = TreeA#tictactree.level1,
+    L1B = TreeB#tictactree.level1,
+    NewLevel1 = merge_binaries(L1A, L1B),
+    
+    MergeFun =
+        fun(SQN, MergeL2) ->
+            L2A = array:get(SQN, TreeA#tictactree.level2),
+            L2B = array:get(SQN, TreeA#tictactree.level2),
+            NewLevel2 = merge_binaries(L2A, L2B),
+            array:set(SQN, NewLevel2, MergeL2)
+        end,
+    NewLevel2 = lists:foldl(MergeFun,
+                                MergedTree#tictactree.level2,
+                                lists:seq(0, ?LEVEL1_WIDTH - 1)),
+                                
+    MergedTree#tictactree{level1 = NewLevel1, level2 = NewLevel2}.
 
 %%%============================================================================
 %%% Internal functions
@@ -166,6 +185,13 @@ segmentcompare(SrcBin, SnkBin, Acc, Counter) ->
 get_segment(Key) ->
     erlang:phash2(Key) band (?SEGMENT_COUNT - 1).
 
+merge_binaries(BinA, BinB) ->
+    BitSize = bit_size(BinA),
+    BitSize = bit_size(BinB),
+    <<AInt:BitSize/integer>> = BinA,
+    <<BInt:BitSize/integer>> = BinB,
+    MergedInt = AInt bxor BInt,
+    <<MergedInt:BitSize/integer>>.
 
 %%%============================================================================
 %%% Test
@@ -205,6 +231,31 @@ simple_test() ->
     ?assertMatch(true, lists:member(get_segment("K3"), DL1)),
     ?assertMatch(false, lists:member(get_segment("K1"), DL1)).
 
+merge_test() ->
+    HashFun = fun(_K, V) -> erlang:phash2(V) end,
+    
+    TreeX0 = new_tree(0),
+    TreeX1 = add_kv(TreeX0, "X1", 1, HashFun),
+    TreeX2 = add_kv(TreeX1, "X2", 2, HashFun),
+    TreeX3 = add_kv(TreeX2, "X3", 3, HashFun),
+    TreeX4 = add_kv(TreeX3, "X3", 4, HashFun),
+    
+    TreeY0 = new_tree(0),
+    TreeY1 = add_kv(TreeY0, "Y1", 101, HashFun),
+    TreeY2 = add_kv(TreeY1, "Y2", 102, HashFun),
+    TreeY3 = add_kv(TreeY2, "Y3", 103, HashFun),
+    TreeY4 = add_kv(TreeY3, "Y3", 104, HashFun),
+    
+    TreeZ1 = add_kv(TreeX4, "Y1", 101, HashFun),
+    TreeZ2 = add_kv(TreeZ1, "Y2", 102, HashFun),
+    TreeZ3 = add_kv(TreeZ2, "Y3", 103, HashFun),
+    TreeZ4 = add_kv(TreeZ3, "Y3", 104, HashFun),
+    
+    TreeM0 = merge_trees(TreeX4, TreeY4),
+    ?assertMatch(true, TreeM0#tictactree.level1 == TreeZ4#tictactree.level1),
+    
+    TreeM1 = merge_trees(TreeX3, TreeY4),
+    ?assertMatch(false, TreeM1#tictactree.level1 == TreeZ4#tictactree.level1).
 
 -endif.
 
