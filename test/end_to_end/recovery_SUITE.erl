@@ -80,7 +80,7 @@ recovr_strategy(_Config) ->
     Q = fun(RT) -> {index_query,
                         "Bucket6",
                         {fun testutil:foldkeysfun/3, []},
-                        {"idx1_bin", "#", "~"},
+                        {"idx1_bin", "#", "|"},
                         {RT, undefined}}
                     end,
     {async, TFolder} = leveled_bookie:book_returnfolder(Book1, Q(true)),
@@ -205,8 +205,12 @@ aae_bustedjournal(_Config) ->
     % Will need to remove the file or corrupt the hashtree to get presence to
     % fail
     
-    FoldObjectsFun = fun(B, K, V, Acc) -> [{B, K, erlang:phash2(V)}|Acc]
-                                            end,
+    FoldObjectsFun = 
+        fun(B, K, V, Acc) -> 
+            VC = testutil:get_vclock(V),
+            H = erlang:phash2(lists:sort(VC)),
+            [{B, K, H}|Acc]
+        end,
     SW = os:timestamp(),
     {async, HashTreeF3} = leveled_bookie:book_returnfolder(Bookie2,
                                                             {foldobjects_allkeys,

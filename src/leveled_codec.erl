@@ -445,8 +445,11 @@ build_metadata_object(PrimaryKey, MD) ->
 riak_extract_metadata(delete, Size) ->
     {delete, null, null, Size};
 riak_extract_metadata(ObjBin, Size) ->
-    {Vclock, SibBin} = riak_metadata_from_binary(ObjBin),
-    {SibBin, Vclock, erlang:phash2(ObjBin), Size}.
+    {VclockBin, SibBin} = riak_metadata_from_binary(ObjBin),
+    {SibBin, 
+        VclockBin, 
+        erlang:phash2(lists:sort(binary_to_term(VclockBin))), 
+        Size}.
 
 %% <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
 %%%     VclockBin/binary, SibCount:32/integer, SibsBin/binary>>.

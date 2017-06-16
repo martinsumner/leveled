@@ -1511,11 +1511,11 @@ hashtree_query_test() ->
                                                     ?STD_TAG,
                                                     false}),
     KeyHashList = HTFolder(),
-        lists:foreach(fun({B, _K, H}) ->
-                            ?assertMatch("Bucket", B),
-                            ?assertMatch(true, is_integer(H))
-                            end,
-                        KeyHashList),
+    lists:foreach(fun({B, _K, H}) ->
+                        ?assertMatch("Bucket", B),
+                        ?assertMatch(true, is_integer(H))
+                        end,
+                    KeyHashList),
     ?assertMatch(1200, length(KeyHashList)),
     ok = book_close(Bookie1),
     {ok, Bookie2} = book_start([{root_path, RootPath},
