@@ -56,7 +56,15 @@
 
 -include("include/leveled.hrl").
 
--export([]).
+-export([
+            new_tree/1,
+            add_kv/4,
+            find_dirtyleaves/2,
+            find_dirtysegments/2,
+            fetch_root/1,
+            fetch_leaves/2,
+            merge_trees/2
+        ]).
 
 
 
@@ -72,6 +80,9 @@
                         level1 :: binary(),
                         level2 :: array:array()}).
 
+
+-type tictactree() :: #tictactree{}.
+
 %%%============================================================================
 %%% API
 %%%============================================================================
@@ -82,7 +93,9 @@
 %%% External functions
 %%%============================================================================
 
-
+-spec new_tree(any()) -> tictactree().
+%% @doc
+%% Create a new tree, zeroed out.
 new_tree(TreeID) ->
     Lv1Width = ?LEVEL1_WIDTH * ?HASH_SIZE * 8,
     Lv1Init = <<0:Lv1Width/integer>>,
@@ -91,8 +104,10 @@ new_tree(TreeID) ->
     Lv2Init = array:new([{size, ?LEVEL1_WIDTH}, {default, Lv2SegBinInit}]),
     #tictactree{treeID = TreeID, level1 = Lv1Init, level2 = Lv2Init}.
 
-
-
+-spec add_kv(tictactree(), tuple(), tuple(), fun()) -> tictactree().
+%% @doc
+%% Add a Key and value to a tictactree using the HashFun to calculate the Hash
+%% based on that key and value
 add_kv(TicTacTree, Key, Value, HashFun) ->
     HashV = HashFun(Key, Value),
     SegChangeHash = erlang:phash2(Key, HashV),
@@ -126,23 +141,54 @@ add_kv(TicTacTree, Key, Value, HashFun) ->
                             level2 = array:set(Level1Pos,
                                                 Level2Upd,
                                                 TicTacTree#tictactree.level2)}.
-    
 
-find_dirtyleaves(SrcTree, SinkTree) ->
-    IdxList = segmentcompare(SrcTree#tictactree.level1,
-                                SinkTree#tictactree.level1),
+-spec find_dirtyleaves(tictactree(), tictactree()) -> list(integer()).
+%% @doc
+%% Returns a list of segment IDs that which hold differences between the state
+%% represented by the two trees.
+find_dirtyleaves(SrcTree, SnkTree) ->
+    IdxList = find_dirtysegments(fetch_root(SrcTree), fetch_root(SnkTree)),
+    SrcLeaves = fetch_leaves(SrcTree, IdxList),
+    SnkLeaves = fetch_leaves(SnkTree, IdxList),
     
     FoldFun =
         fun(Idx, Acc) ->
-            L2IdxList =
-                segmentcompare(array:get(Idx, SrcTree#tictactree.level2),
-                                array:get(Idx, SinkTree#tictactree.level2)),
-            
+            {Idx, SrcLeaf} = lists:keyfind(Idx, 1, SrcLeaves),
+            {Idx, SnkLeaf} = lists:keyfind(Idx, 1, SnkLeaves),
+            L2IdxList = segmentcompare(SrcLeaf, SnkLeaf),
             Acc ++ lists:map(fun(X) -> X + Idx * ?LEVEL2_WIDTH end, L2IdxList)
         end,
-    
     lists:sort(lists:foldl(FoldFun, [], IdxList)).
 
+-spec find_dirtysegments(binary(), binary()) -> list(integer()).
+%% @doc
+%% Returns a list of branch IDs that contain differences between the tress.
+%% Pass in level 1 binaries to make the comparison.
+find_dirtysegments(SrcBin, SinkBin) ->
+    segmentcompare(SrcBin, SinkBin).
+
+-spec fetch_root(tictactree()) -> binary().
+%% @doc
+%% Return the level1 binary for a tree.
+fetch_root(TicTacTree) ->
+    TicTacTree#tictactree.level1.
+
+-spec fetch_leaves(tictactree(), list(integer())) -> list().
+%% @doc
+%% Return a keylist for the segment hashes for the leaves of the tree based on
+%% the list of branch IDs provided
+fetch_leaves(TicTacTree, BranchList) ->
+    MapFun =
+        fun(Idx) ->
+            {Idx, array:get(Idx, TicTacTree#tictactree.level2)}
+        end,
+    lists:map(MapFun, BranchList).
+
+-spec merge_trees(tictactree(), tictactree()) -> tictactree().
+%% Merge two trees providing a result that represents the combined state,
+%% assuming that the two trees were correctly partitioned pre-merge.  If a key
+%% and value has been added to both trees, then the merge will not give the 
+%% expected outcome.
 merge_trees(TreeA, TreeB) ->
     MergedTree = new_tree(merge),
     
@@ -204,10 +250,10 @@ simple_test() ->
     HashFun = fun(_K, V) -> erlang:phash2(V) end,
     
     Tree0 = new_tree(0),
-    Tree1 = add_kv(Tree0, "K1", 1, HashFun),
-    Tree2 = add_kv(Tree1, "K2", 2, HashFun),
-    Tree3 = add_kv(Tree2, "K3", 3, HashFun),
-    Tree3A = add_kv(Tree3, "K3", 4, HashFun),
+    Tree1 = add_kv(Tree0, {o, "B1", "K1", null}, {caine, 1}, HashFun),
+    Tree2 = add_kv(Tree1, {o, "B1", "K2", null}, {caine, 2}, HashFun),
+    Tree3 = add_kv(Tree2, {o, "B1", "K3", null}, {caine, 3}, HashFun),
+    Tree3A = add_kv(Tree3, {o, "B1", "K3", null}, {caine, 4}, HashFun),
     ?assertMatch(true, Tree0#tictactree.level1 == Tree0#tictactree.level1),
     ?assertMatch(false, Tree0#tictactree.level1 == Tree1#tictactree.level1),
     ?assertMatch(false, Tree1#tictactree.level1 == Tree2#tictactree.level1),
@@ -215,41 +261,41 @@ simple_test() ->
     ?assertMatch(false, Tree3#tictactree.level1 == Tree3A#tictactree.level1),
     
     Tree0X = new_tree(0),
-    Tree1X = add_kv(Tree0X, "K3", 3, HashFun),
-    Tree2X = add_kv(Tree1X, "K1", 1, HashFun),
-    Tree3X = add_kv(Tree2X, "K2", 2, HashFun),
-    Tree3XA = add_kv(Tree3X, "K3", 4, HashFun),
+    Tree1X = add_kv(Tree0X, {o, "B1", "K3", null}, {caine, 3}, HashFun),
+    Tree2X = add_kv(Tree1X, {o, "B1", "K1", null}, {caine, 1}, HashFun),
+    Tree3X = add_kv(Tree2X, {o, "B1", "K2", null}, {caine, 2}, HashFun),
+    Tree3XA = add_kv(Tree3X, {o, "B1", "K3", null}, {caine, 4}, HashFun),
     ?assertMatch(false, Tree1#tictactree.level1 == Tree1X#tictactree.level1),
     ?assertMatch(false, Tree2#tictactree.level1 == Tree2X#tictactree.level1),
     ?assertMatch(true, Tree3#tictactree.level1 == Tree3X#tictactree.level1),
     ?assertMatch(true, Tree3XA#tictactree.level1 == Tree3XA#tictactree.level1),
     
     DL0 = find_dirtyleaves(Tree1, Tree0),
-    ?assertMatch(true, lists:member(get_segment("K1"), DL0)),
+    ?assertMatch(true, lists:member(get_segment({o, "B1", "K1", null}), DL0)),
     DL1 = find_dirtyleaves(Tree3, Tree1),
-    ?assertMatch(true, lists:member(get_segment("K2"), DL1)),
-    ?assertMatch(true, lists:member(get_segment("K3"), DL1)),
-    ?assertMatch(false, lists:member(get_segment("K1"), DL1)).
+    ?assertMatch(true, lists:member(get_segment({o, "B1", "K2", null}), DL1)),
+    ?assertMatch(true, lists:member(get_segment({o, "B1", "K3", null}), DL1)),
+    ?assertMatch(false, lists:member(get_segment({o, "B1", "K1", null}), DL1)).
 
 merge_test() ->
     HashFun = fun(_K, V) -> erlang:phash2(V) end,
     
     TreeX0 = new_tree(0),
-    TreeX1 = add_kv(TreeX0, "X1", 1, HashFun),
-    TreeX2 = add_kv(TreeX1, "X2", 2, HashFun),
-    TreeX3 = add_kv(TreeX2, "X3", 3, HashFun),
-    TreeX4 = add_kv(TreeX3, "X3", 4, HashFun),
+    TreeX1 = add_kv(TreeX0, {o, "B1", "X1", null}, {caine, 1}, HashFun),
+    TreeX2 = add_kv(TreeX1, {o, "B1", "X2", null}, {caine, 2}, HashFun),
+    TreeX3 = add_kv(TreeX2, {o, "B1", "X3", null}, {caine, 3}, HashFun),
+    TreeX4 = add_kv(TreeX3, {o, "B1", "X3", null}, {caine, 4}, HashFun),
     
     TreeY0 = new_tree(0),
-    TreeY1 = add_kv(TreeY0, "Y1", 101, HashFun),
-    TreeY2 = add_kv(TreeY1, "Y2", 102, HashFun),
-    TreeY3 = add_kv(TreeY2, "Y3", 103, HashFun),
-    TreeY4 = add_kv(TreeY3, "Y3", 104, HashFun),
+    TreeY1 = add_kv(TreeY0, {o, "B1", "Y1", null}, {caine, 101}, HashFun),
+    TreeY2 = add_kv(TreeY1, {o, "B1", "Y2", null}, {caine, 102}, HashFun),
+    TreeY3 = add_kv(TreeY2, {o, "B1", "Y3", null}, {caine, 103}, HashFun),
+    TreeY4 = add_kv(TreeY3, {o, "B1", "Y3", null}, {caine, 104}, HashFun),
     
-    TreeZ1 = add_kv(TreeX4, "Y1", 101, HashFun),
-    TreeZ2 = add_kv(TreeZ1, "Y2", 102, HashFun),
-    TreeZ3 = add_kv(TreeZ2, "Y3", 103, HashFun),
-    TreeZ4 = add_kv(TreeZ3, "Y3", 104, HashFun),
+    TreeZ1 = add_kv(TreeX4, {o, "B1", "Y1", null}, {caine, 101}, HashFun),
+    TreeZ2 = add_kv(TreeZ1, {o, "B1", "Y2", null}, {caine, 102}, HashFun),
+    TreeZ3 = add_kv(TreeZ2, {o, "B1", "Y3", null}, {caine, 103}, HashFun),
+    TreeZ4 = add_kv(TreeZ3, {o, "B1", "Y3", null}, {caine, 104}, HashFun),
     
     TreeM0 = merge_trees(TreeX4, TreeY4),
     ?assertMatch(true, TreeM0#tictactree.level1 == TreeZ4#tictactree.level1),
