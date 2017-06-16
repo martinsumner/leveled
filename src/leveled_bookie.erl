@@ -308,7 +308,7 @@ book_head(Pid, Bucket, Key, Tag) ->
 %% {keylist, Tag, {FoldKeysFun, Acc}} -> list all keys with tag
 %% {keylist, Tag, Bucket, {FoldKeysFun, Acc}} -> list all keys within given
 %% bucket
-%% {hashtree_query, Tag, JournalCheck} -> return keys and hashes for all
+%% {hashlist_query, Tag, JournalCheck} -> return keys and hashes for all
 %% objects with a given tag
 %% {foldobjects_bybucket, Tag, Bucket, FoldObjectsFun} -> fold over all objects
 %% in a given bucket
@@ -531,9 +531,9 @@ handle_call({return_folder, FolderType}, _From, State) ->
             {reply,
                 bucketkey_query(State, Tag, Bucket, {FoldKeysFun, Acc}),
                 State};
-        {hashtree_query, Tag, JournalCheck} ->
+        {hashlist_query, Tag, JournalCheck} ->
             {reply,
-                hashtree_query(State, Tag, JournalCheck),
+                hashlist_query(State, Tag, JournalCheck),
                 State};
         {foldheads_allkeys, Tag, FoldHeadsFun} ->
             {reply,
@@ -818,7 +818,7 @@ index_query(State,
     {async, Folder}.
 
 
-hashtree_query(State, Tag, JournalCheck) ->
+hashlist_query(State, Tag, JournalCheck) ->
     SnapType = case JournalCheck of
                             false ->
                                 ledger;
@@ -1484,7 +1484,7 @@ ttl_test() ->
     ok = book_close(Bookie2),
     reset_filestructure().
 
-hashtree_query_test() ->
+hashlist_query_test() ->
     RootPath = reset_filestructure(),
     {ok, Bookie1} = book_start([{root_path, RootPath},
                                 {max_journalsize, 1000000},
@@ -1507,7 +1507,7 @@ hashtree_query_test() ->
                     ObjL2),
     % Scan the store for the Bucket, Keys and Hashes
     {async, HTFolder} = book_returnfolder(Bookie1,
-                                                {hashtree_query,
+                                                {hashlist_query,
                                                     ?STD_TAG,
                                                     false}),
     KeyHashList = HTFolder(),
@@ -1522,7 +1522,7 @@ hashtree_query_test() ->
                                     {max_journalsize, 200000},
                                     {cache_size, 500}]),
     {async, HTFolder2} = book_returnfolder(Bookie2,
-                                                {hashtree_query,
+                                                {hashlist_query,
                                                     ?STD_TAG,
                                                     false}),
     L0 = length(KeyHashList),
@@ -1532,7 +1532,7 @@ hashtree_query_test() ->
     ok = book_close(Bookie2),
     reset_filestructure().
 
-hashtree_query_withjournalcheck_test() ->
+hashlist_query_withjournalcheck_test() ->
     RootPath = reset_filestructure(),
     {ok, Bookie1} = book_start([{root_path, RootPath},
                                     {max_journalsize, 1000000},
@@ -1546,12 +1546,12 @@ hashtree_query_withjournalcheck_test() ->
                                                         Future) end,
                     ObjL1),
     {async, HTFolder1} = book_returnfolder(Bookie1,
-                                                {hashtree_query,
+                                                {hashlist_query,
                                                     ?STD_TAG,
                                                     false}),
     KeyHashList = HTFolder1(),
     {async, HTFolder2} = book_returnfolder(Bookie1,
-                                                {hashtree_query,
+                                                {hashlist_query,
                                                     ?STD_TAG,
                                                     check_presence}),
     ?assertMatch(KeyHashList, HTFolder2()),
@@ -1572,7 +1572,7 @@ foldobjects_vs_hashtree_test() ->
                                                         Future) end,
                     ObjL1),
     {async, HTFolder1} = book_returnfolder(Bookie1,
-                                                {hashtree_query,
+                                                {hashlist_query,
                                                     ?STD_TAG,
                                                     false}),
     KeyHashList1 = lists:usort(HTFolder1()),
