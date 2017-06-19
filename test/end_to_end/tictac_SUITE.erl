@@ -92,7 +92,33 @@ many_put_compare(_Config) ->
     true = length(SegList0) == 1, 
     % only the test object should be different
     true = length(AltList) > 100000, 
-    % check there are a significant number fo differences from empty
+    % check there are a significant number of differences from empty
+    
+    FoldKeysFun =
+        fun(SegListToFind) ->
+            fun(_B, K, Acc) ->
+                Seg = leveled_tictac:get_segment(K),
+                case lists:member(Seg, SegListToFind) of
+                    true ->
+                        [K|Acc];
+                    false ->
+                        Acc
+                end
+            end
+        end,
+    SegQuery = {keylist, o_rkv, "Bucket", {FoldKeysFun(SegList0), []}},
+    {async, SegKeyFinder} =
+        leveled_bookie:book_returnfolder(Bookie2, SegQuery),
+    SWSKL0 = os:timestamp(),
+    SegKeyList = SegKeyFinder(),
+    io:format("Finding ~w keys in ~w dirty segments in ~w~n",
+                [length(SegKeyList),
+                    length(SegList0),
+                    timer:now_diff(os:timestamp(), SWSKL0)]),
+    
+    true = length(SegKeyList) >= 1,
+    true = length(SegKeyList) < 10,
+    true = lists:member("Key1.1.4567.4321", SegKeyList),
     
     % Now remove the object which represents the difference between these
     % stores and confirm that the tictac trees will now match

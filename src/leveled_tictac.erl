@@ -61,7 +61,8 @@
             find_dirtysegments/2,
             fetch_root/1,
             fetch_leaves/2,
-            merge_trees/2
+            merge_trees/2,
+            get_segment/1
         ]).
 
 
@@ -200,6 +201,10 @@ merge_trees(TreeA, TreeB) ->
                                 
     MergedTree#tictactree{level1 = NewLevel1, level2 = NewLevel2}.
 
+get_segment(Key) ->
+    erlang:phash2(Key) band (?SEGMENT_COUNT - 1).
+
+
 %%%============================================================================
 %%% Internal functions
 %%%============================================================================
@@ -218,9 +223,6 @@ segmentcompare(SrcBin, SnkBin, Acc, Counter) ->
         _ ->
             segmentcompare(SrcTail, SnkTail, [Counter|Acc], Counter + 1)
     end.
-
-get_segment(Key) ->
-    erlang:phash2(Key) band (?SEGMENT_COUNT - 1).
 
 merge_binaries(BinA, BinB) ->
     BitSize = bit_size(BinA),
