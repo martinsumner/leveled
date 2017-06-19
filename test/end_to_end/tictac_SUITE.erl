@@ -17,7 +17,12 @@ many_put_compare(_Config) ->
                     {max_pencillercachesize, 16000},
                     {sync_strategy, riak_sync}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
-    {TestObject, TestSpec} = testutil:generate_testobject(),
+    {B1, K1, V1, S1, MD} = {"Bucket",
+                                "Key1.1.4567.4321",
+                                "Value1",
+                                [],
+                                [{"MDK1", "MDV1"}]},
+    {TestObject, TestSpec} = testutil:generate_testobject(B1, K1, V1, S1, MD),
     ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
     testutil:check_forobject(Bookie1, TestObject),
     ok = leveled_bookie:book_close(Bookie1),
@@ -63,7 +68,25 @@ many_put_compare(_Config) ->
                 [timer:now_diff(os:timestamp(), SWC0)]),
     io:format("Tree comparison shows ~w different leaves~n",
                 [length(SegList)]),
-    true = length(SegList) == 1,
+    AltList = leveled_tictac:find_dirtyleaves(TreeA, 
+                                                leveled_tictac:new_tree(0)),
+    io:format("Tree comparison shows ~w altered leaves~n",
+                [length(AltList)]),
+    true = length(SegList) == 1, 
+    % only the test object should be different
+    true = length(AltList) > 100000, 
+    % check there are a significant number fo differences from empty
     
-    ok = leveled_bookie:book_destroy(Bookie2),
-    ok = leveled_bookie:book_destroy(Bookie3).
+    testutil:book_riakdelete(Bookie2, B1, K1, []),
+    {async, TreeAFolder0} = leveled_bookie:book_returnfolder(Bookie2, TicTacQ),
+    SWA1 = os:timestamp(),
+    TreeA0 = TreeAFolder0(),
+    io:format("Build tictac tree with 200K objects in ~w~n",
+                [timer:now_diff(os:timestamp(), SWA1)]),
+
+    SegList0 = leveled_tictac:find_dirtyleaves(TreeA0, TreeB),
+    true = length(SegList0) == 0,
+    % Removed test object so tictac trees should match
+
+    ok = leveled_bookie:book_close(Bookie2),
+    ok = leveled_bookie:book_close(Bookie3).
