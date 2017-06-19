@@ -427,7 +427,9 @@ get_keyandhash(LK, Value) ->
             {Bucket, Key, Hash};
         ?STD_TAG ->
             {Hash, _Size} = MD,
-            {Bucket, Key, Hash}
+            {Bucket, Key, Hash};
+        ?IDX_TAG ->
+            from_ledgerkey(LK) % returns {Bucket, Key, IdxValue} 
     end.
 
 

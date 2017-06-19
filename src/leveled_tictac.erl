@@ -52,8 +52,6 @@
 
 -module(leveled_tictac).
 
-% -behaviour(gen_server).
-
 -include("include/leveled.hrl").
 
 -export([
@@ -67,7 +65,6 @@
         ]).
 
 
-
 -include_lib("eunit/include/eunit.hrl").
 
 -define(LEVEL1_WIDTH, 256).
@@ -78,16 +75,10 @@
 
 -record(tictactree, {treeID :: any(),
                         level1 :: binary(),
-                        level2 :: array:array()}).
-
+                        level2 :: any() % an array - but OTP compatibility
+                        }).
 
 -type tictactree() :: #tictactree{}.
-
-%%%============================================================================
-%%% API
-%%%============================================================================
-
-
 
 %%%============================================================================
 %%% External functions
@@ -192,8 +183,8 @@ fetch_leaves(TicTacTree, BranchList) ->
 merge_trees(TreeA, TreeB) ->
     MergedTree = new_tree(merge),
     
-    L1A = TreeA#tictactree.level1,
-    L1B = TreeB#tictactree.level1,
+    L1A = fetch_root(TreeA),
+    L1B = fetch_root(TreeB),
     NewLevel1 = merge_binaries(L1A, L1B),
     
     MergeFun =

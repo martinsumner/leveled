@@ -310,6 +310,18 @@ book_head(Pid, Bucket, Key, Tag) ->
 %% bucket
 %% {hashlist_query, Tag, JournalCheck} -> return keys and hashes for all
 %% objects with a given tag
+%% {tictactree_idx, {Bucket, IdxField, StartValue, EndValue}, PartitionFilter}
+%% -> compile a hashtree for the items on the index.  A partition filter is 
+%% required to avoid adding an index entry in this vnode as a fallback.
+%% There is no de-duplicate of results, duplicate reuslts corrupt the tree.
+%% {tictactree_obj, {Bucket, StartKey, EndKey, CheckPresence}, PartitionFilter}
+%% -> compile a hashtree for all the objects in the range.  A partition filter
+%% may be passed to restrict the query to a given partition on this vnode.  The
+%% filter should bea function that takes (Bucket, Key) as inputs and outputs
+%% one of the atoms accumulate or pass.  There is no de-duplicate of results,
+%% duplicate reuslts corrupt the tree.
+%% CheckPresence can be used if there is a need to do a deeper check to ensure
+%% that the object is in the Journal (or at least indexed within the Journal).
 %% {foldobjects_bybucket, Tag, Bucket, FoldObjectsFun} -> fold over all objects
 %% in a given bucket
 %% {foldobjects_byindex,
@@ -534,6 +546,28 @@ handle_call({return_folder, FolderType}, _From, State) ->
         {hashlist_query, Tag, JournalCheck} ->
             {reply,
                 hashlist_query(State, Tag, JournalCheck),
+                State};
+        {tictactree_obj,
+            {Tag, Bucket, StartKey, EndKey, CheckPresence},
+            PartitionFilter} ->
+            {reply,
+                tictactree(State,
+                            Tag,
+                            Bucket,
+                            {StartKey, EndKey},
+                            CheckPresence,
+                            PartitionFilter),
+                State};
+        {tictactree_idx,
+            {Bucket, IdxField, StartValue, EndValue},
+            PartitionFilter} ->
+            {reply,
+                tictactree(State,
+                            ?IDX_TAG,
+                            Bucket,
+                            {IdxField, StartValue, EndValue},
+                            false,
+                            PartitionFilter),
                 State};
         {foldheads_allkeys, Tag, FoldHeadsFun} ->
             {reply,
@@ -848,6 +882,76 @@ hashlist_query(State, Tag, JournalCheck) ->
                 end,
     {async, Folder}.
 
+tictactree(State, Tag, Bucket, Query, JournalCheck, Filter) ->
+    % Journal check can be used for object key folds to confirm that the
+    % object is still indexed within the journal
+    SnapType = case JournalCheck of
+                            false ->
+                                ledger;
+                            check_presence ->
+                                store
+                        end,
+    {ok, LedgerSnapshot, JournalSnapshot} = snapshot_store(State,
+                                                            SnapType,
+                                                            no_lookup),
+    Tree = leveled_tictac:new_tree(temp),
+    Folder =
+        fun() ->
+            % The start key and end key will vary depending on whether the
+            % fold is to fold over an index or a key range
+            {StartKey, EndKey, HashFun} =
+                case Tag of
+                    ?IDX_TAG ->
+                        {IdxField, StartIdx, EndIdx} = Query,
+                        HashIdxValFun =
+                            fun(_Key, IdxValue) ->
+                                erlang:phash2(IdxValue)
+                            end,
+                        {leveled_codec:to_ledgerkey(Bucket,
+                                                    null,
+                                                    ?IDX_TAG,
+                                                    IdxField,
+                                                    StartIdx),
+                            leveled_codec:to_ledgerkey(Bucket,
+                                                        null,
+                                                        ?IDX_TAG,
+                                                        IdxField,
+                                                        EndIdx),
+                            HashIdxValFun};
+                    _ ->
+                        {StartObjKey, EndObjKey} = Query,
+                        PassHashFun = fun(_Key, Hash) -> Hash end,
+                        {leveled_codec:to_ledgerkey(Bucket,
+                                                    StartObjKey,
+                                                    Tag),
+                            leveled_codec:to_ledgerkey(Bucket,
+                                                        EndObjKey,
+                                                        Tag),
+                            PassHashFun}
+                end,
+            
+            AccFun = accumulate_tree(Filter,
+                                        JournalCheck,
+                                        JournalSnapshot,
+                                        HashFun),
+            Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
+                                                    StartKey,
+                                                    EndKey,
+                                                    AccFun,
+                                                    Tree),
+            
+            % Close down snapshot when complete so as not to hold removed
+            % files open
+            ok = leveled_penciller:pcl_close(LedgerSnapshot),
+            case JournalCheck of
+                false ->
+                    ok;
+                check_presence ->
+                    leveled_inker:ink_close(JournalSnapshot)
+            end,
+            Acc
+        end,
+    {async, Folder}.
 
 foldobjects_allkeys(State, Tag, FoldObjectsFun) ->
     StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
@@ -1088,27 +1192,51 @@ accumulate_size() ->
     AccFun.
 
 accumulate_hashes(JournalCheck, InkerClone) ->
+    AddKeyFun =
+        fun(B, K, H, Acc) ->
+            [{B, K, H}|Acc]
+        end,
+    get_hashaccumulator(JournalCheck,
+                            InkerClone,
+                            AddKeyFun).
+
+accumulate_tree(FilterFun, JournalCheck, InkerClone, HashFun) ->
+    AddKeyFun =
+        fun(B, K, H, Tree) ->
+            case FilterFun(B, K) of
+                accumulate ->
+                    leveled_tictac:add_kv(Tree, K, H, HashFun);
+                pass ->
+                    Tree
+            end
+        end,
+    get_hashaccumulator(JournalCheck,
+                        InkerClone,
+                        AddKeyFun).
+    
+get_hashaccumulator(JournalCheck, InkerClone, AddKeyFun) ->
     Now = leveled_codec:integer_now(),
-    AccFun = fun(LK, V, KHList) ->
-                    case leveled_codec:is_active(LK, V, Now) of
-                        true ->
-                            {B, K, H} = leveled_codec:get_keyandhash(LK, V),
-                            Check = random:uniform() < ?CHECKJOURNAL_PROB,
-                            case {JournalCheck, Check} of
-                                {check_presence, true} ->
-                                    case check_presence(LK, V, InkerClone) of
-                                        true ->
-                                            [{B, K, H}|KHList];
-                                        false ->
-                                            KHList
-                                    end;
-                                _ ->    
-                                    [{B, K, H}|KHList]
+    AccFun =
+        fun(LK, V, Acc) ->
+            case leveled_codec:is_active(LK, V, Now) of
+                true ->
+                    {B, K, H} = leveled_codec:get_keyandhash(LK, V),
+                    Check = random:uniform() < ?CHECKJOURNAL_PROB,
+                    case {JournalCheck, Check} of
+                        {check_presence, true} ->
+                            case check_presence(LK, V, InkerClone) of
+                                true ->
+                                    AddKeyFun(B, K, H, Acc);
+                                false ->
+                                    Acc
                             end;
-                        false ->
-                            KHList
-                    end
-                end,
+                        _ ->    
+                            AddKeyFun(B, K, H, Acc)
+                    end;
+                false ->
+                    Acc
+            end
+        end,
     AccFun.
 
 

@@ -31,6 +31,7 @@
             get_randomindexes_generator/1,
             name_list/0,
             load_objects/5,
+            load_objects/6,
             put_indexed_objects/3,
             put_altered_indexed_objects/3,
             put_altered_indexed_objects/4,
@@ -52,6 +53,7 @@
 -define(MD_LASTMOD,  <<"X-Riak-Last-Modified">>).
 -define(MD_DELETED,  <<"X-Riak-Deleted">>).
 -define(EMPTY_VTAG_BIN, <<"e">>).
+-define(ROOT_PATH, "test").
 
 %% =================================================
 %% From riak_object
@@ -169,13 +171,17 @@ riakload(Bookie, ObjectList) ->
 
 
 reset_filestructure() ->
-    reset_filestructure(0).
+    reset_filestructure(0, ?ROOT_PATH).
     
-reset_filestructure(Wait) ->
-     io:format("Waiting ~w ms to give a chance for all file closes " ++
+reset_filestructure(Wait) when is_integer(Wait) ->
+    reset_filestructure(Wait, ?ROOT_PATH);
+reset_filestructure(RootPath) when is_list(RootPath) ->
+    reset_filestructure(0, RootPath).
+
+reset_filestructure(Wait, RootPath) ->
+    io:format("Waiting ~w ms to give a chance for all file closes " ++
                  "to complete~n", [Wait]),
-     timer:sleep(Wait),
-    RootPath  = "test",
+    timer:sleep(Wait),
     filelib:ensure_dir(RootPath ++ "/journal/"),
     filelib:ensure_dir(RootPath ++ "/ledger/"),
     leveled_inker:clean_testdir(RootPath ++ "/journal"),
@@ -420,6 +426,9 @@ get_vclock(ObjectBin) ->
     binary_to_term(VclockBin).    
 
 load_objects(ChunkSize, GenList, Bookie, TestObject, Generator) ->
+    load_objects(ChunkSize, GenList, Bookie, TestObject, Generator, 1000).
+
+load_objects(ChunkSize, GenList, Bookie, TestObject, Generator, SubListL) ->
     lists:map(fun(KN) ->
                     ObjListA = Generator(ChunkSize, KN),
                     StartWatchA = os:timestamp(),
@@ -433,7 +442,7 @@ load_objects(ChunkSize, GenList, Bookie, TestObject, Generator) ->
                         true ->
                             check_forobject(Bookie, TestObject)
                     end,
-                    lists:sublist(ObjListA, 1000) end,
+                    lists:sublist(ObjListA, SubListL) end,
                 GenList).
 
 
