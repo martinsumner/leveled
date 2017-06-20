@@ -310,11 +310,17 @@ book_head(Pid, Bucket, Key, Tag) ->
 %% bucket
 %% {hashlist_query, Tag, JournalCheck} -> return keys and hashes for all
 %% objects with a given tag
-%% {tictactree_idx, {Bucket, IdxField, StartValue, EndValue}, PartitionFilter}
+%% {tictactree_idx,
+%%      {Bucket, IdxField, StartValue, EndValue},
+%%      TreeSize, 
+%%      PartitionFilter}
 %% -> compile a hashtree for the items on the index.  A partition filter is 
 %% required to avoid adding an index entry in this vnode as a fallback.
 %% There is no de-duplicate of results, duplicate reuslts corrupt the tree.
-%% {tictactree_obj, {Bucket, StartKey, EndKey, CheckPresence}, PartitionFilter}
+%% {tictactree_obj,
+%%      {Bucket, StartKey, EndKey, CheckPresence},
+%%      TreeSize,
+%%      PartitionFilter}
 %% -> compile a hashtree for all the objects in the range.  A partition filter
 %% may be passed to restrict the query to a given partition on this vnode.  The
 %% filter should bea function that takes (Bucket, Key) as inputs and outputs
@@ -549,6 +555,7 @@ handle_call({return_folder, FolderType}, _From, State) ->
                 State};
         {tictactree_obj,
             {Tag, Bucket, StartKey, EndKey, CheckPresence},
+            TreeSize,
             PartitionFilter} ->
             {reply,
                 tictactree(State,
@@ -556,10 +563,12 @@ handle_call({return_folder, FolderType}, _From, State) ->
                             Bucket,
                             {StartKey, EndKey},
                             CheckPresence,
+                            TreeSize,
                             PartitionFilter),
                 State};
         {tictactree_idx,
             {Bucket, IdxField, StartValue, EndValue},
+            TreeSize,
             PartitionFilter} ->
             {reply,
                 tictactree(State,
@@ -567,6 +576,7 @@ handle_call({return_folder, FolderType}, _From, State) ->
                             Bucket,
                             {IdxField, StartValue, EndValue},
                             false,
+                            TreeSize,
                             PartitionFilter),
                 State};
         {foldheads_allkeys, Tag, FoldHeadsFun} ->
@@ -882,7 +892,7 @@ hashlist_query(State, Tag, JournalCheck) ->
                 end,
     {async, Folder}.
 
-tictactree(State, Tag, Bucket, Query, JournalCheck, Filter) ->
+tictactree(State, Tag, Bucket, Query, JournalCheck, TreeSize, Filter) ->
     % Journal check can be used for object key folds to confirm that the
     % object is still indexed within the journal
     SnapType = case JournalCheck of
@@ -894,7 +904,7 @@ tictactree(State, Tag, Bucket, Query, JournalCheck, Filter) ->
     {ok, LedgerSnapshot, JournalSnapshot} = snapshot_store(State,
                                                             SnapType,
                                                             no_lookup),
-    Tree = leveled_tictac:new_tree(temp),
+    Tree = leveled_tictac:new_tree(temp, TreeSize),
     Folder =
         fun() ->
             % The start key and end key will vary depending on whether the

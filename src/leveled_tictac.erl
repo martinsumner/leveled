@@ -56,25 +56,30 @@
 
 -export([
             new_tree/1,
+            new_tree/2,
             add_kv/4,
             find_dirtyleaves/2,
             find_dirtysegments/2,
             fetch_root/1,
             fetch_leaves/2,
             merge_trees/2,
-            get_segment/1
+            get_segment/2
         ]).
 
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(LEVEL1_WIDTH, 256).
--define(LEVEL2_WIDTH, 4096).
--define(LEVEL2_BITWIDTH, 12).
--define(SEGMENT_COUNT, ?LEVEL1_WIDTH * ?LEVEL2_WIDTH).
 -define(HASH_SIZE, 4).
+-define(SMALL, {8, 256, 256 * 256}).
+-define(MEDIUM, {9, 512, 512 * 512}).
+-define(LARGE, {10, 1024, 1024 * 1024}).
+-define(XLARGE, {11, 2048, 2048 * 2048}).
 
 -record(tictactree, {treeID :: any(),
+                        size  :: small|medium|large|xlarge,
+                        width :: integer(),
+                        bitwidth :: integer(),
+                        segment_count :: integer(),
                         level1 :: binary(),
                         level2 :: any() % an array - but OTP compatibility
                         }).
@@ -89,12 +94,32 @@
 %% @doc
 %% Create a new tree, zeroed out.
 new_tree(TreeID) ->
-    Lv1Width = ?LEVEL1_WIDTH * ?HASH_SIZE * 8,
+    new_tree(TreeID, small).
+    
+new_tree(TreeID, Size) ->
+    {BitWidth, Width, SegmentCount} =
+        case Size of
+            small ->
+                ?SMALL;
+            medium ->
+                ?MEDIUM;
+            large ->
+                ?LARGE;
+            xlarge ->
+                ?XLARGE
+        end,
+    Lv1Width = Width * ?HASH_SIZE * 8,
     Lv1Init = <<0:Lv1Width/integer>>,
-    Lv2SegBinSize = ?LEVEL2_WIDTH * ?HASH_SIZE * 8,
+    Lv2SegBinSize = Width * ?HASH_SIZE * 8,
     Lv2SegBinInit = <<0:Lv2SegBinSize/integer>>,
-    Lv2Init = array:new([{size, ?LEVEL1_WIDTH}, {default, Lv2SegBinInit}]),
-    #tictactree{treeID = TreeID, level1 = Lv1Init, level2 = Lv2Init}.
+    Lv2Init = array:new([{size, Width}, {default, Lv2SegBinInit}]),
+    #tictactree{treeID = TreeID,
+                    size = Size,
+                    width = Width,
+                    bitwidth = BitWidth,
+                    segment_count = SegmentCount,
+                    level1 = Lv1Init,
+                    level2 = Lv2Init}.
 
 -spec add_kv(tictactree(), tuple(), tuple(), fun()) -> tictactree().
 %% @doc
@@ -103,10 +128,13 @@ new_tree(TreeID) ->
 add_kv(TicTacTree, Key, Value, HashFun) ->
     HashV = HashFun(Key, Value),
     SegChangeHash = erlang:phash2(Key, HashV),
-    Segment = get_segment(Key),
+    Segment = get_segment(Key, TicTacTree#tictactree.segment_count),
     
-    Level2Pos = Segment band (?LEVEL2_WIDTH - 1),
-    Level1Pos = (Segment bsr ?LEVEL2_BITWIDTH) band (?LEVEL1_WIDTH - 1),
+    Level2Pos =
+        Segment band (TicTacTree#tictactree.width - 1),
+    Level1Pos =
+        (Segment bsr TicTacTree#tictactree.bitwidth)
+            band (TicTacTree#tictactree.width - 1),
     Level2BytePos = ?HASH_SIZE * Level2Pos,
     Level1BytePos = ?HASH_SIZE * Level1Pos,
     
@@ -139,6 +167,10 @@ add_kv(TicTacTree, Key, Value, HashFun) ->
 %% Returns a list of segment IDs that which hold differences between the state
 %% represented by the two trees.
 find_dirtyleaves(SrcTree, SnkTree) ->
+    _Size = SrcTree#tictactree.size,
+    _Size = SnkTree#tictactree.size,
+    Width = SrcTree#tictactree.width,
+    
     IdxList = find_dirtysegments(fetch_root(SrcTree), fetch_root(SnkTree)),
     SrcLeaves = fetch_leaves(SrcTree, IdxList),
     SnkLeaves = fetch_leaves(SnkTree, IdxList),
@@ -148,7 +180,7 @@ find_dirtyleaves(SrcTree, SnkTree) ->
             {Idx, SrcLeaf} = lists:keyfind(Idx, 1, SrcLeaves),
             {Idx, SnkLeaf} = lists:keyfind(Idx, 1, SnkLeaves),
             L2IdxList = segmentcompare(SrcLeaf, SnkLeaf),
-            Acc ++ lists:map(fun(X) -> X + Idx * ?LEVEL2_WIDTH end, L2IdxList)
+            Acc ++ lists:map(fun(X) -> X + Idx * Width end, L2IdxList)
         end,
     lists:sort(lists:foldl(FoldFun, [], IdxList)).
 
@@ -182,7 +214,10 @@ fetch_leaves(TicTacTree, BranchList) ->
 %% and value has been added to both trees, then the merge will not give the 
 %% expected outcome.
 merge_trees(TreeA, TreeB) ->
-    MergedTree = new_tree(merge),
+    Size = TreeA#tictactree.size,
+    Size = TreeB#tictactree.size,
+    
+    MergedTree = new_tree(merge, Size),
     
     L1A = fetch_root(TreeA),
     L1B = fetch_root(TreeB),
@@ -197,12 +232,12 @@ merge_trees(TreeA, TreeB) ->
         end,
     NewLevel2 = lists:foldl(MergeFun,
                                 MergedTree#tictactree.level2,
-                                lists:seq(0, ?LEVEL1_WIDTH - 1)),
+                                lists:seq(0, MergedTree#tictactree.width - 1)),
                                 
     MergedTree#tictactree{level1 = NewLevel1, level2 = NewLevel2}.
 
-get_segment(Key) ->
-    erlang:phash2(Key) band (?SEGMENT_COUNT - 1).
+get_segment(Key, SegmentCount) ->
+    erlang:phash2(Key) band (SegmentCount - 1).
 
 
 %%%============================================================================
@@ -239,10 +274,16 @@ merge_binaries(BinA, BinB) ->
 -ifdef(TEST).
 
 
-simple_test() ->
+simple_bysize_test() ->
+    simple_test_withsize(small),
+    simple_test_withsize(medium),
+    simple_test_withsize(large),
+    simple_test_withsize(xlarge).
+
+simple_test_withsize(Size) ->
     HashFun = fun(_K, V) -> erlang:phash2(V) end,
     
-    Tree0 = new_tree(0),
+    Tree0 = new_tree(0, Size),
     Tree1 = add_kv(Tree0, {o, "B1", "K1", null}, {caine, 1}, HashFun),
     Tree2 = add_kv(Tree1, {o, "B1", "K2", null}, {caine, 2}, HashFun),
     Tree3 = add_kv(Tree2, {o, "B1", "K3", null}, {caine, 3}, HashFun),
@@ -253,7 +294,7 @@ simple_test() ->
     ?assertMatch(false, Tree2#tictactree.level1 == Tree3#tictactree.level1),
     ?assertMatch(false, Tree3#tictactree.level1 == Tree3A#tictactree.level1),
     
-    Tree0X = new_tree(0),
+    Tree0X = new_tree(0, Size),
     Tree1X = add_kv(Tree0X, {o, "B1", "K3", null}, {caine, 3}, HashFun),
     Tree2X = add_kv(Tree1X, {o, "B1", "K1", null}, {caine, 1}, HashFun),
     Tree3X = add_kv(Tree2X, {o, "B1", "K2", null}, {caine, 2}, HashFun),
@@ -263,23 +304,31 @@ simple_test() ->
     ?assertMatch(true, Tree3#tictactree.level1 == Tree3X#tictactree.level1),
     ?assertMatch(true, Tree3XA#tictactree.level1 == Tree3XA#tictactree.level1),
     
+    SC = Tree0#tictactree.segment_count,
+    
     DL0 = find_dirtyleaves(Tree1, Tree0),
-    ?assertMatch(true, lists:member(get_segment({o, "B1", "K1", null}), DL0)),
+    ?assertMatch(true, lists:member(get_segment({o, "B1", "K1", null}, SC), DL0)),
     DL1 = find_dirtyleaves(Tree3, Tree1),
-    ?assertMatch(true, lists:member(get_segment({o, "B1", "K2", null}), DL1)),
-    ?assertMatch(true, lists:member(get_segment({o, "B1", "K3", null}), DL1)),
-    ?assertMatch(false, lists:member(get_segment({o, "B1", "K1", null}), DL1)).
+    ?assertMatch(true, lists:member(get_segment({o, "B1", "K2", null}, SC), DL1)),
+    ?assertMatch(true, lists:member(get_segment({o, "B1", "K3", null}, SC), DL1)),
+    ?assertMatch(false, lists:member(get_segment({o, "B1", "K1", null}, SC), DL1)).
 
-merge_test() ->
+merge_bysize_test() ->
+    merge_test_withsize(small),
+    merge_test_withsize(medium),
+    merge_test_withsize(large),
+    merge_test_withsize(xlarge).
+
+merge_test_withsize(Size) ->
     HashFun = fun(_K, V) -> erlang:phash2(V) end,
     
-    TreeX0 = new_tree(0),
+    TreeX0 = new_tree(0, Size),
     TreeX1 = add_kv(TreeX0, {o, "B1", "X1", null}, {caine, 1}, HashFun),
     TreeX2 = add_kv(TreeX1, {o, "B1", "X2", null}, {caine, 2}, HashFun),
     TreeX3 = add_kv(TreeX2, {o, "B1", "X3", null}, {caine, 3}, HashFun),
     TreeX4 = add_kv(TreeX3, {o, "B1", "X3", null}, {caine, 4}, HashFun),
     
-    TreeY0 = new_tree(0),
+    TreeY0 = new_tree(0, Size),
     TreeY1 = add_kv(TreeY0, {o, "B1", "Y1", null}, {caine, 101}, HashFun),
     TreeY2 = add_kv(TreeY1, {o, "B1", "Y2", null}, {caine, 102}, HashFun),
     TreeY3 = add_kv(TreeY2, {o, "B1", "Y3", null}, {caine, 103}, HashFun),

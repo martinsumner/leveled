@@ -12,6 +12,8 @@ all() -> [
 
 
 many_put_compare(_Config) ->
+    TreeSize = small,
+    SegmentCount = 256 * 256,
     % Test requires multiple different databases, so want to mount them all
     % on individual file paths
     RootPathA = testutil:reset_filestructure("testA"),
@@ -68,6 +70,7 @@ many_put_compare(_Config) ->
     
     TicTacQ = {tictactree_obj,
                 {o_rkv, "Bucket", null, null, false},
+                TreeSize,
                 fun(_B, _K) -> accumulate end},
     {async, TreeAFolder} = leveled_bookie:book_returnfolder(Bookie2, TicTacQ),
     {async, TreeBFolder} = leveled_bookie:book_returnfolder(Bookie3, TicTacQ),
@@ -91,13 +94,13 @@ many_put_compare(_Config) ->
                 [length(AltList)]),
     true = length(SegList0) == 1, 
     % only the test object should be different
-    true = length(AltList) > 100000, 
+    true = length(AltList) > 10000, 
     % check there are a significant number of differences from empty
     
     FoldKeysFun =
         fun(SegListToFind) ->
             fun(_B, K, Acc) ->
-                Seg = leveled_tictac:get_segment(K),
+                Seg = leveled_tictac:get_segment(K, SegmentCount),
                 case lists:member(Seg, SegListToFind) of
                     true ->
                         [K|Acc];
