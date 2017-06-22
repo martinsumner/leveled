@@ -8,7 +8,7 @@
             ]).
 
 all() -> [
-            % many_put_compare,
+            many_put_compare,
             index_compare
             ].
 
