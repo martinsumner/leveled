@@ -3,11 +3,13 @@
 -include("include/leveled.hrl").
 -export([all/0]).
 -export([
-            many_put_compare/1
+            many_put_compare/1,
+            index_compare/1
             ]).
 
 all() -> [
-            many_put_compare
+            % many_put_compare,
+            index_compare
             ].
 
 
@@ -208,3 +210,113 @@ many_put_compare(_Config) ->
     ok = leveled_bookie:book_close(Bookie4),
     ok = leveled_bookie:book_close(Bookie5).
     
+
+index_compare(_Config) ->
+    TreeSize = small,
+    LS = 2000,
+    JS = 50000000,
+    SS = testutil:sync_strategy(),
+    % SegmentCount = 256 * 256,
+    
+    % Test requires multiple different databases, so want to mount them all
+    % on individual file paths
+    RootPathA = testutil:reset_filestructure("testA"),
+    RootPathB = testutil:reset_filestructure("testB"),
+    RootPathC = testutil:reset_filestructure("testC"),
+    RootPathD = testutil:reset_filestructure("testD"),
+    % Book1A to get all objects
+    {ok, Book1A} = leveled_bookie:book_start(RootPathA, LS, JS, SS),
+    % Book1B/C/D will have objects partitioned across it
+    {ok, Book1B} = leveled_bookie:book_start(RootPathB, LS, JS, SS),
+    {ok, Book1C} = leveled_bookie:book_start(RootPathC, LS, JS, SS),
+    {ok, Book1D} = leveled_bookie:book_start(RootPathD, LS, JS, SS),
+    
+    % Generate nine lists of objects
+    BucketBin = list_to_binary("Bucket"),
+    GenMapFun =
+        fun(_X) ->
+            V = testutil:get_compressiblevalue(),
+            Indexes = testutil:get_randomindexes_generator(8),
+            testutil:generate_objects(10000, binary_uuid, [], V, Indexes)
+        end,
+    
+    ObjLists = lists:map(GenMapFun, lists:seq(1, 9)),
+    
+    % Load all nine lists into Book1A
+    lists:foreach(fun(ObjL) -> testutil:riakload(Book1A, ObjL) end,
+                    ObjLists), 
+    
+    % Split nine lists across Book1B to Book1D, three object lists in each
+    lists:foreach(fun(ObjL) -> testutil:riakload(Book1B, ObjL) end,
+                    lists:sublist(ObjLists, 1, 3)),
+    lists:foreach(fun(ObjL) -> testutil:riakload(Book1C, ObjL) end,
+                    lists:sublist(ObjLists, 4, 3)),
+    lists:foreach(fun(ObjL) -> testutil:riakload(Book1D, ObjL) end,
+                    lists:sublist(ObjLists, 7, 3)),
+    
+    GetTicTacTreeFun =
+        fun(X, Bookie) ->
+            SW = os:timestamp(),
+            ST = "!",
+            ET = "|",
+            Q = {tictactree_idx,
+                    {BucketBin, "idx" ++ integer_to_list(X) ++ "_bin", ST, ET},
+                    TreeSize,
+                    fun(_B, _K) -> accumulate end},
+            {async, Folder} = leveled_bookie:book_returnfolder(Bookie, Q),
+            R = Folder(),
+            io:format("TicTac Tree for index ~w took " ++
+                            "~w microseconds~n",
+                        [X, timer:now_diff(os:timestamp(), SW)]),
+            R
+        end,
+    
+    % Get a TicTac tree representing one of the indexes in Bucket A
+    TicTacTree1_Full = GetTicTacTreeFun(1, Book1A),
+    TicTacTree1_P1 = GetTicTacTreeFun(1, Book1B),
+    TicTacTree1_P2 = GetTicTacTreeFun(1, Book1C),
+    TicTacTree1_P3 = GetTicTacTreeFun(1, Book1D),
+    
+    % Merge the tree across the partitions
+    TicTacTree1_Joined = lists:foldl(fun leveled_tictac:merge_trees/2,
+                                        TicTacTree1_P1,
+                                        [TicTacTree1_P2, TicTacTree1_P3]),
+    
+    % Go compare! Also heck we're not comparing empty trees
+    DL1_0 = leveled_tictac:find_dirtyleaves(TicTacTree1_Full,
+                                            TicTacTree1_Joined),
+    EmptyTree = leveled_tictac:new_tree(empty, TreeSize),
+    DL1_1 = leveled_tictac:find_dirtyleaves(TicTacTree1_Full, EmptyTree),
+    true = DL1_0 == [],
+    true = length(DL1_1) > 100,
+
+    ok = leveled_bookie:book_close(Book1A),
+    ok = leveled_bookie:book_close(Book1B),
+    ok = leveled_bookie:book_close(Book1C),
+    ok = leveled_bookie:book_close(Book1D),
+    
+    % Double chekc all is well still after a restart
+    % Book1A to get all objects
+    {ok, Book2A} = leveled_bookie:book_start(RootPathA, LS, JS, SS),
+    % Book1B/C/D will have objects partitioned across it
+    {ok, Book2B} = leveled_bookie:book_start(RootPathB, LS, JS, SS),
+    {ok, Book2C} = leveled_bookie:book_start(RootPathC, LS, JS, SS),
+    {ok, Book2D} = leveled_bookie:book_start(RootPathD, LS, JS, SS),
+    % Get a TicTac tree representing one of the indexes in Bucket A
+    TicTacTree2_Full = GetTicTacTreeFun(2, Book2A),
+    TicTacTree2_P1 = GetTicTacTreeFun(2, Book2B),
+    TicTacTree2_P2 = GetTicTacTreeFun(2, Book2C),
+    TicTacTree2_P3 = GetTicTacTreeFun(2, Book2D),
+    
+    % Merge the tree across the partitions
+    TicTacTree2_Joined = lists:foldl(fun leveled_tictac:merge_trees/2,
+                                        TicTacTree2_P1,
+                                        [TicTacTree2_P2, TicTacTree2_P3]),
+    
+    % Go compare! Also heck we're not comparing empty trees
+    DL2_0 = leveled_tictac:find_dirtyleaves(TicTacTree2_Full,
+                                            TicTacTree2_Joined),
+    EmptyTree = leveled_tictac:new_tree(empty, TreeSize),
+    DL2_1 = leveled_tictac:find_dirtyleaves(TicTacTree2_Full, EmptyTree),
+    true = DL2_0 == [],
+    true = length(DL2_1) > 100.
