@@ -398,7 +398,7 @@ index_compare(_Config) ->
     SWSS = os:timestamp(),
     SL_Joined = MMFldr_2B() ++ MMFldr_2C() ++ MMFldr_2D(),
     SL_Full = MMFldr_2A(),
-    io:format("Segment search across both clusters took ~w~n")
+    io:format("Segment search across both clusters took ~w~n",
                 [timer:now_diff(os:timestamp(), SWSS)]),
     
     io:format("Joined SegList ~w~n", [SL_Joined]),
