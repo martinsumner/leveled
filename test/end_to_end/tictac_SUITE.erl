@@ -412,4 +412,10 @@ index_compare(_Config) ->
     % The actual difference is discovered
     true = lists:member({"zz999", term_to_binary("K9.Z")}, Diffs),
     % Without discovering too many others
-    true = length(Diffs) < 20.
+    true = length(Diffs) < 20,
+
+
+    ok = leveled_bookie:book_close(Book2A),
+    ok = leveled_bookie:book_close(Book2B),
+    ok = leveled_bookie:book_close(Book2C),
+    ok = leveled_bookie:book_close(Book2D).
