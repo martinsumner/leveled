@@ -8,7 +8,7 @@
             ]).
 
 all() -> [
-            many_put_compare,
+            % many_put_compare,
             index_compare
             ].
 
@@ -216,7 +216,7 @@ index_compare(_Config) ->
     LS = 2000,
     JS = 50000000,
     SS = testutil:sync_strategy(),
-    % SegmentCount = 256 * 256,
+    SegmentCount = 256 * 256,
     
     % Test requires multiple different databases, so want to mount them all
     % on individual file paths
@@ -366,4 +366,50 @@ index_compare(_Config) ->
     DL3_0 = leveled_tictac:find_dirtyleaves(TicTacTree3_Full,
                                             TicTacTree3_Joined),
     io:format("Different leaves count ~w~n", [length(DL3_0)]),
-    true = length(DL3_0) == 1.
+    true = length(DL3_0) == 1,
+    
+    % Now we want to find for the {Term, Key} pairs that make up the segment
+    % diferrence (there should only be one)
+    %
+    % We want the database to filter on segment - so this doesn't have the
+    % overheads of key listing
+    
+    FoldKeysIndexQFun =
+        fun(_Bucket, {Term, Key}, Acc) ->
+            Seg = leveled_tictac:get_segment(Key, SegmentCount),
+            case lists:member(Seg, DL3_0) of
+                true ->
+                    [{Term, Key}|Acc];
+                false ->
+                    Acc
+            end
+        end,
+    
+    MismatchQ = {index_query,
+                    BucketBin,
+                    {FoldKeysIndexQFun, []},
+                    {"idx2_bin", "!", "|"},
+                    {true, undefined}},
+    {async, MMFldr_2A} = leveled_bookie:book_returnfolder(Book2A, MismatchQ),
+    {async, MMFldr_2B} = leveled_bookie:book_returnfolder(Book2B, MismatchQ),
+    {async, MMFldr_2C} = leveled_bookie:book_returnfolder(Book2C, MismatchQ),
+    {async, MMFldr_2D} = leveled_bookie:book_returnfolder(Book2D, MismatchQ),
+    
+    SWSS = os:timestamp(),
+    SL_Joined = MMFldr_2B() ++ MMFldr_2C() ++ MMFldr_2D(),
+    SL_Full = MMFldr_2A(),
+    io:format("Segment search across both clusters took ~w~n")
+                [timer:now_diff(os:timestamp(), SWSS)]),
+    
+    io:format("Joined SegList ~w~n", [SL_Joined]),
+    io:format("Full SegList ~w~n", [SL_Full]),
+    
+    Diffs = lists:subtract(SL_Full, SL_Joined)
+                ++ lists:subtract(SL_Joined, SL_Full),
+    
+    io:format("Differences between lists ~w~n", [Diffs]),
+    
+    % The actual difference is discovered
+    true = lists:member({"zz999", term_to_binary("K9.Z")}, Diffs),
+    % Without discovering too many others
+    true = length(Diffs) < 20.
