@@ -8,7 +8,7 @@
             ]).
 
 all() -> [
-            many_put_compare,
+            % many_put_compare,
             index_compare
             ].
 
@@ -282,7 +282,7 @@ index_compare(_Config) ->
                                         TicTacTree1_P1,
                                         [TicTacTree1_P2, TicTacTree1_P3]),
     
-    % Go compare! Also heck we're not comparing empty trees
+    % Go compare! Also check we're not comparing empty trees
     DL1_0 = leveled_tictac:find_dirtyleaves(TicTacTree1_Full,
                                             TicTacTree1_Joined),
     EmptyTree = leveled_tictac:new_tree(empty, TreeSize),
@@ -313,10 +313,57 @@ index_compare(_Config) ->
                                         TicTacTree2_P1,
                                         [TicTacTree2_P2, TicTacTree2_P3]),
     
-    % Go compare! Also heck we're not comparing empty trees
+    % Go compare! Also check we're not comparing empty trees
     DL2_0 = leveled_tictac:find_dirtyleaves(TicTacTree2_Full,
                                             TicTacTree2_Joined),
     EmptyTree = leveled_tictac:new_tree(empty, TreeSize),
     DL2_1 = leveled_tictac:find_dirtyleaves(TicTacTree2_Full, EmptyTree),
     true = DL2_0 == [],
-    true = length(DL2_1) > 100.
+    true = length(DL2_1) > 100,
+    
+    IdxSpc = {add, "idx2_bin", "zz999"},
+    {TestObj, TestSpc} = testutil:generate_testobject(BucketBin,
+                                                        term_to_binary("K9.Z"),
+                                                        "Value1",
+                                                        [IdxSpc],
+                                                        [{"MDK1", "MDV1"}]),
+    ok = testutil:book_riakput(Book2C, TestObj, TestSpc),
+    testutil:check_forobject(Book2C, TestObj),
+    
+    TicTacTree3_Full = GetTicTacTreeFun(2, Book2A),
+    TicTacTree3_P1 = GetTicTacTreeFun(2, Book2B),
+    TicTacTree3_P2 = GetTicTacTreeFun(2, Book2C),
+    TicTacTree3_P3 = GetTicTacTreeFun(2, Book2D),
+    
+    % Merge the tree across the partitions
+    TicTacTree3_Joined = lists:foldl(fun leveled_tictac:merge_trees/2,
+                                        TicTacTree3_P1,
+                                        [TicTacTree3_P2, TicTacTree3_P3]),
+                                        
+    % Find all keys index, and then just the last key
+    IdxQ1 = {index_query,
+                BucketBin,
+                {fun testutil:foldkeysfun/3, []},
+                {"idx2_bin", "zz", "zz|"},
+                {true, undefined}},
+    {async, IdxFolder1} = leveled_bookie:book_returnfolder(Book2C, IdxQ1),
+    true = IdxFolder1() >= 1,
+    
+    DL_3to2B = leveled_tictac:find_dirtyleaves(TicTacTree2_P1,
+                                                TicTacTree3_P1),
+    DL_3to2C = leveled_tictac:find_dirtyleaves(TicTacTree2_P2,
+                                                TicTacTree3_P2),
+    DL_3to2D = leveled_tictac:find_dirtyleaves(TicTacTree2_P3,
+                                                TicTacTree3_P3),
+    io:format("Individual tree comparison found dirty leaves of ~w ~w ~w~n",
+                [DL_3to2B, DL_3to2C, DL_3to2D]),
+    
+    true = length(DL_3to2B) == 0,
+    true = length(DL_3to2C) == 1,
+    true = length(DL_3to2D) == 0,
+    
+    % Go compare! Should find a difference in one leaf
+    DL3_0 = leveled_tictac:find_dirtyleaves(TicTacTree3_Full,
+                                            TicTacTree3_Joined),
+    io:format("Different leaves count ~w~n", [length(DL3_0)]),
+    true = length(DL3_0) == 1.

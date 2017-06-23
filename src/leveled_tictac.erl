@@ -164,7 +164,7 @@ add_kv(TicTacTree, Key, Value, HashFun) ->
 
 -spec find_dirtyleaves(tictactree(), tictactree()) -> list(integer()).
 %% @doc
-%% Returns a list of segment IDs that which hold differences between the state
+%% Returns a list of segment IDs which hold differences between the state
 %% represented by the two trees.
 find_dirtyleaves(SrcTree, SnkTree) ->
     _Size = SrcTree#tictactree.size,
@@ -226,14 +226,14 @@ merge_trees(TreeA, TreeB) ->
     MergeFun =
         fun(SQN, MergeL2) ->
             L2A = array:get(SQN, TreeA#tictactree.level2),
-            L2B = array:get(SQN, TreeA#tictactree.level2),
+            L2B = array:get(SQN, TreeB#tictactree.level2),
             NewLevel2 = merge_binaries(L2A, L2B),
             array:set(SQN, NewLevel2, MergeL2)
         end,
     NewLevel2 = lists:foldl(MergeFun,
                                 MergedTree#tictactree.level2,
                                 lists:seq(0, MergedTree#tictactree.width - 1)),
-                                
+    
     MergedTree#tictactree{level1 = NewLevel1, level2 = NewLevel2}.
 
 get_segment(Key, SegmentCount) ->
@@ -258,6 +258,25 @@ segmentcompare(SrcBin, SnkBin, Acc, Counter) ->
         _ ->
             segmentcompare(SrcTail, SnkTail, [Counter|Acc], Counter + 1)
     end.
+
+checktree(TicTacTree) ->
+    checktree(TicTacTree#tictactree.level1, TicTacTree, 0).
+
+checktree(<<>>, TicTacTree, Counter) ->
+    true = TicTacTree#tictactree.width == Counter;
+checktree(Level1Bin, TicTacTree, Counter) ->
+    BitSize = ?HASH_SIZE * 8,
+    <<TopHash:BitSize/integer, Tail/binary>> = Level1Bin,
+    L2Bin = array:get(Counter, TicTacTree#tictactree.level2),
+    true = TopHash == segmentsummarise(L2Bin, 0),
+    checktree(Tail, TicTacTree, Counter + 1).            
+
+segmentsummarise(<<>>, L1Acc) ->
+    L1Acc;
+segmentsummarise(L2Bin, L1Acc) ->
+    BitSize = ?HASH_SIZE * 8,
+    <<TopHash:BitSize/integer, Tail/binary>> = L2Bin,
+    segmentsummarise(Tail, L1Acc bxor TopHash).
 
 merge_binaries(BinA, BinB) ->
     BitSize = bit_size(BinA),
@@ -340,9 +359,11 @@ merge_test_withsize(Size) ->
     TreeZ4 = add_kv(TreeZ3, {o, "B1", "Y3", null}, {caine, 104}, HashFun),
     
     TreeM0 = merge_trees(TreeX4, TreeY4),
+    checktree(TreeM0),
     ?assertMatch(true, TreeM0#tictactree.level1 == TreeZ4#tictactree.level1),
     
     TreeM1 = merge_trees(TreeX3, TreeY4),
+    checktree(TreeM1),
     ?assertMatch(false, TreeM1#tictactree.level1 == TreeZ4#tictactree.level1).
 
 -endif.
