@@ -67,7 +67,7 @@ many_put_compare(_Config) ->
     {ok, Bookie3} = leveled_bookie:book_start(StartOpts3),
     lists:foreach(fun(ObjL) -> testutil:riakload(Bookie3, ObjL) end, CLs),
     
-    % Now run a tictac query against both stores to see th extent to which
+    % Now run a tictac query against both stores to see the extent to which
     % state between stores is consistent
     
     TicTacQ = {tictactree_obj,

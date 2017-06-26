@@ -84,7 +84,12 @@
                         level2 :: any() % an array - but OTP compatibility
                         }).
 
+-record(recenttrees, {trees :: list(),
+                        size:: small|medium|large|xlarge
+                        }).
+
 -type tictactree() :: #tictactree{}.
+-type recenttrees() :: #recenttrees{}.
 
 %%%============================================================================
 %%% External functions
@@ -95,7 +100,10 @@
 %% Create a new tree, zeroed out.
 new_tree(TreeID) ->
     new_tree(TreeID, small).
-    
+
+-spec new_tree(any(), small|medium|large|xlarge) -> tictactree().
+%% @doc
+%% Create a new tree, zeroed out.  Specify the t-shirt siz eof the tree    
 new_tree(TreeID, Size) ->
     {BitWidth, Width, SegmentCount} =
         case Size of
@@ -121,10 +129,12 @@ new_tree(TreeID, Size) ->
                     level1 = Lv1Init,
                     level2 = Lv2Init}.
 
--spec add_kv(tictactree(), tuple(), tuple(), fun()) -> tictactree().
+-spec add_kv(tictactree(), tuple(), tuple(), fun((_,_) -> integer())) ->
+                                                                tictactree().
 %% @doc
 %% Add a Key and value to a tictactree using the HashFun to calculate the Hash
-%% based on that key and value
+%% based on that key and value (or extract the Hash if it is present within
+%% the value).  
 add_kv(TicTacTree, Key, Value, HashFun) ->
     HashV = HashFun(Key, Value),
     SegChangeHash = erlang:phash2(Key, HashV),
@@ -236,9 +246,72 @@ merge_trees(TreeA, TreeB) ->
     
     MergedTree#tictactree{level1 = NewLevel1, level2 = NewLevel2}.
 
+-spec get_segment(tuple(), integer()) -> integer().
+%% @doc
+%% Map the key to a segmen.
 get_segment(Key, SegmentCount) ->
     erlang:phash2(Key) band (SegmentCount - 1).
 
+
+-spec match_hour(tuple(), tuple(), fun((_,_) -> tuple()), tuple(), integer())
+                                            -> {integer(), integer()}|no_match.
+%% @doc
+%% Match the modified date of the object to an hour of day, where the hour of
+%% the day is within a threshold.  Used for identifying recently added keys and
+%% mapping those keys to the right tictac tree of recent additions
+%%
+%% The ModDateFun must return a datetime tuple e.g. {{Y, M, D}, {H, M, S}}
+match_hour(Key, Value, ModDateFun, Now, HoursToKeep) ->
+    {ModDate, {ModHr, _ModMin, _ModSec}} = ModDateFun(Key, Value),
+    {NowDate, {NowHr, _NowMin, _NowSec}} = calendar:now_to_datetime(Now),
+    {DayDiff, {HourDiff, _MinDiff, _SecDiff}}
+        = calendar:time_difference({ModDate, {ModHr, 0, 0}},
+                                    {NowDate, {NowHr, 0, 0}}),
+    case HoursToKeep >= DayDiff * 24 + HourDiff of
+        true ->
+            {ModDate, ModHr};
+        false ->
+            no_match
+    end.
+    
+-spec add_recent_kv(tuple(), tuple(),
+                        fun((_,_) -> integer()),
+                        integer(), recenttrees()) -> recenttrees().
+%% @doc
+%% Add a recently modified key and value to the appropriate tree of recent
+%% keys and values.
+add_recent_kv({ModDate, ModHour}, {Key, Value},
+                                        HashFun, HoursToKeep, RecentTrees) ->
+    case lists:keyfind({ModDate, ModHour}, 1, RecentTrees#recenttrees.trees) of
+        {{ModDate, ModHour}, Tree0} ->
+            Tree1 = add_kv(Tree0, Key, Value, HashFun),
+            RT1 = lists:keyreplace({ModDate, ModHour},
+                                    1,
+                                    RecentTrees#recenttrees.trees, 
+                                    {{ModDate, ModHour}, Tree1}),
+            RecentTrees#recenttrees{trees = RT1};
+        not_found ->
+            NT0 = new_tree(recent, RecentTrees#recenttrees.size),
+            NT1 = add_kv(NT0, Key, Value, HashFun),
+            RT0 = [{{ModDate, ModHour}, NT1}|RecentTrees#recenttrees.trees],
+            case length(RT0) > HoursToKeep of
+                true ->
+                    FoldFun =
+                        fun({K, _V} , Acc) ->
+                            case K < Acc of
+                                true ->
+                                    K;
+                                false ->
+                                    Acc
+                            end
+                        end,
+                    OldestK = lists:foldl(FoldFun, NT1, {ModDate, ModHour}),
+                    RT1 = lists:keydelete(OldestK, 1, RT0),
+                    RecentTrees#recenttrees{trees = RT1};
+                false ->
+                    RecentTrees#recenttrees{trees = RT0}
+            end
+    end.
 
 %%%============================================================================
 %%% Internal functions
