@@ -378,6 +378,20 @@ convert_indexspecs(IndexSpecs, Bucket, Key, SQN, TTL) ->
                     end,
                 IndexSpecs).
 
+-spec generate_ledgerkv(tuple(), integer(), any(),
+                                integer(), tuple()|infinity) ->
+                        {any(), any(), any(), integer()|no_lookup, list()}.
+%% @doc
+%% Function to extract from an object the information necessary to populate
+%% the Penciller's ledger.
+%% Outputs -
+%% Bucket - original Bucket extracted from the PrimaryKey 
+%% Key - original Key extracted from the PrimaryKey
+%% Value - the value to be used in the Ledger (essentially the extracted
+%% metadata)
+%% Hash - A magic hash of the key to be used in lookups and filters
+%% LastMods - the last modified dates for the object (may be multiple due to
+%% siblings)
 generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS) ->
     {Tag, Bucket, Key, _} = PrimaryKey,
     Status = case Obj of
@@ -387,11 +401,12 @@ generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS) ->
                         {active, TS}
                 end,
     Hash = magic_hash(PrimaryKey),
+    {MD, LastMods} = extract_metadata(Obj, Size, Tag),
     Value = {SQN,
                 Status,
                 Hash,
-                extract_metadata(Obj, Size, Tag)},
-    {Bucket, Key, {PrimaryKey, Value}, Hash}.
+                MD},
+    {Bucket, Key, Value, Hash, LastMods}.
 
 
 integer_now() ->
@@ -404,7 +419,7 @@ integer_time(TS) ->
 extract_metadata(Obj, Size, ?RIAK_TAG) ->
     riak_extract_metadata(Obj, Size);
 extract_metadata(Obj, Size, ?STD_TAG) ->
-    {hash(Obj), Size}.
+    {{hash(Obj), Size}, []}.
 
 get_size(PK, Value) ->
     {Tag, _Bucket, _Key, _} = PK,
@@ -445,13 +460,14 @@ build_metadata_object(PrimaryKey, MD) ->
 
 
 riak_extract_metadata(delete, Size) ->
-    {delete, null, null, Size};
+    {{delete, null, null, Size}, []};
 riak_extract_metadata(ObjBin, Size) ->
-    {VclockBin, SibBin} = riak_metadata_from_binary(ObjBin),
-    {SibBin, 
-        VclockBin, 
-        erlang:phash2(lists:sort(binary_to_term(VclockBin))), 
-        Size}.
+    {VclockBin, SibBin, LastMods} = riak_metadata_from_binary(ObjBin),
+    {{SibBin, 
+            VclockBin, 
+            erlang:phash2(lists:sort(binary_to_term(VclockBin))), 
+            Size},
+        LastMods}.
 
 %% <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
 %%%     VclockBin/binary, SibCount:32/integer, SibsBin/binary>>.
@@ -466,28 +482,41 @@ riak_metadata_from_binary(V1Binary) ->
     <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
             Rest/binary>> = V1Binary,
     <<VclockBin:VclockLen/binary, SibCount:32/integer, SibsBin/binary>> = Rest,
-    SibMetaBin =
+    {SibMetaBin, LastMods} =
         case SibCount of
             SC when is_integer(SC) ->
                 get_metadata_from_siblings(SibsBin,
                                             SibCount,
-                                            <<SibCount:32/integer>>)
+                                            <<SibCount:32/integer>>,
+                                            [])
         end,
-    {VclockBin, SibMetaBin}.
+    {VclockBin, SibMetaBin, LastMods}.
 
-get_metadata_from_siblings(<<>>, 0, SibMetaBin) ->
-    SibMetaBin;
+get_metadata_from_siblings(<<>>, 0, SibMetaBin, LastMods) ->
+    {SibMetaBin, LastMods};
 get_metadata_from_siblings(<<ValLen:32/integer, Rest0/binary>>,
                             SibCount,
-                            SibMetaBin) ->
+                            SibMetaBin,
+                            LastMods) ->
     <<_ValBin:ValLen/binary, MetaLen:32/integer, Rest1/binary>> = Rest0,
     <<MetaBin:MetaLen/binary, Rest2/binary>> = Rest1,
+    LastMod =
+        case MetaBin of 
+            <<MegaSec:32/integer,
+                Sec:32/integer,
+                MicroSec:32/integer,
+                _Rest/binary>> ->
+                    {MegaSec, Sec, MicroSec};
+            _ ->
+                {0, 0, 0}
+        end,
     get_metadata_from_siblings(Rest2,
                                 SibCount - 1,
                                 <<SibMetaBin/binary,
                                     0:32/integer,
                                     MetaLen:32/integer,
-                                    MetaBin:MetaLen/binary>>).
+                                    MetaBin:MetaLen/binary>>,
+                                    [LastMod|LastMods]).
 
 
 

@@ -1383,25 +1383,17 @@ accumulate_index(TermRe, AddFun, FoldKeysFun) ->
 
 
 preparefor_ledgercache(?INKT_KEYD,
-                        LedgerKey, SQN, _Obj, _Size, {IndexSpecs, TTL}) ->
+                        LedgerKey, SQN, _Obj, _Size, {IdxSpecs, TTL}) ->
     {Bucket, Key} = leveled_codec:from_ledgerkey(LedgerKey),
-    KeyChanges = leveled_codec:convert_indexspecs(IndexSpecs,
-                                                    Bucket,
-                                                    Key,
-                                                    SQN,
-                                                    TTL),
+    KeyChanges =
+        leveled_codec:convert_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL),
     {no_lookup, SQN, KeyChanges};
-preparefor_ledgercache(_Type, LedgerKey, SQN, Obj, Size, {IndexSpecs, TTL}) ->
-    {Bucket, Key, ObjKeyChange, H} = leveled_codec:generate_ledgerkv(LedgerKey,
-                                                                        SQN,
-                                                                        Obj,
-                                                                        Size,
-                                                                        TTL),
-    KeyChanges = [ObjKeyChange] ++ leveled_codec:convert_indexspecs(IndexSpecs,
-                                                                        Bucket,
-                                                                        Key,
-                                                                        SQN,
-                                                                        TTL),
+preparefor_ledgercache(_Type, LedgerKey, SQN, Obj, Size, {IdxSpecs, TTL}) ->
+    {Bucket, Key, MetaValue, H, _LastMods} =
+        leveled_codec:generate_ledgerkv(LedgerKey, SQN, Obj, Size, TTL),
+    KeyChanges =
+        [{LedgerKey, MetaValue}] ++
+            leveled_codec:convert_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL),
     {H, SQN, KeyChanges}.
 
 
