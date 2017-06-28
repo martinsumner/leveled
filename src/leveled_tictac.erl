@@ -149,7 +149,7 @@ add_kv(TicTacTree, Key, Value, HashFun) ->
         PostL1/binary>> = TicTacTree#tictactree.level1,
     
     SegLeaf2Upd = SegLeaf2 bxor SegChangeHash,
-    SegLeaf1Upd = SegLeaf1 bxor SegLeaf2 bxor SegLeaf2Upd,
+    SegLeaf1Upd = SegLeaf1 bxor SegChangeHash,
     
     Level1Upd = <<PreL1:Level1BytePos/binary,
                     SegLeaf1Upd:HashIntLength/integer,
