@@ -5,8 +5,6 @@
 -define(STD_TAG, o).
 %% Tag used for secondary index keys
 -define(IDX_TAG, i).
-%% Tag used for near real-time anti-entropy index keys
--define(AAE_TAG, i_aae).
 
 %% Inker key type used for 'normal' objects
 -define(INKT_STND, stnd). 

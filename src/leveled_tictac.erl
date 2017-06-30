@@ -63,7 +63,8 @@
             fetch_root/1,
             fetch_leaves/2,
             merge_trees/2,
-            get_segment/2
+            get_segment/2,
+            tictac_hash/2
         ]).
 
 
@@ -117,7 +118,7 @@ new_tree(TreeID, Size) ->
 %% based on that key and value
 add_kv(TicTacTree, Key, Value, HashFun) ->
     HashV = HashFun(Key, Value),
-    SegChangeHash = erlang:phash2(Key, HashV),
+    SegChangeHash = tictac_hash(Key, HashV),
     Segment = get_segment(Key, TicTacTree#tictactree.segment_count),
     
     Level2Pos =
@@ -234,6 +235,13 @@ get_segment(Key, SegmentCount) when is_integer(SegmentCount) ->
     erlang:phash2(Key) band (SegmentCount - 1);
 get_segment(Key, TreeSize) ->
     get_segment(Key, element(3, get_size(TreeSize))).
+
+
+-spec tictac_hash(tuple(), any()) -> integer().
+%% @doc
+%% Hash the key and term
+tictac_hash(Key, Term) ->
+    erlang:phash2({Key, Term}).
 
 %%%============================================================================
 %%% Internal functions

@@ -4,14 +4,19 @@
 -export([all/0]).
 -export([
             many_put_compare/1,
-            index_compare/1
+            index_compare/1,
+            recent_aae_noaae/1,
+            recent_aae_allaae/1
             ]).
 
 all() -> [
-            many_put_compare,
-            index_compare
+            % many_put_compare,
+            % index_compare,
+            % recent_aae_noaae,
+            recent_aae_allaae
             ].
 
+-define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
 
 many_put_compare(_Config) ->
     TreeSize = small,
@@ -419,3 +424,243 @@ index_compare(_Config) ->
     ok = leveled_bookie:book_close(Book2B),
     ok = leveled_bookie:book_close(Book2C),
     ok = leveled_bookie:book_close(Book2D).
+
+
+recent_aae_noaae(_Config) ->
+    TreeSize = small,
+    % SegmentCount = 256 * 256,
+    UnitMins = 2,
+    
+    % Test requires multiple different databases, so want to mount them all
+    % on individual file paths
+    RootPathA = testutil:reset_filestructure("testA"),
+    RootPathB = testutil:reset_filestructure("testB"),
+    RootPathC = testutil:reset_filestructure("testC"),
+    RootPathD = testutil:reset_filestructure("testD"),
+    StartOptsA = aae_startopts(RootPathA, false),
+    StartOptsB = aae_startopts(RootPathB, false),
+    StartOptsC = aae_startopts(RootPathC, false),
+    StartOptsD = aae_startopts(RootPathD, false),
+    
+    % Book1A to get all objects
+    {ok, Book1A} = leveled_bookie:book_start(StartOptsA),
+    % Book1B/C/D will have objects partitioned across it
+    {ok, Book1B} = leveled_bookie:book_start(StartOptsB),
+    {ok, Book1C} = leveled_bookie:book_start(StartOptsC),
+    {ok, Book1D} = leveled_bookie:book_start(StartOptsD),
+    
+    {B1, K1, V1, S1, MD} = {"Bucket",
+                                "Key1.1.4567.4321",
+                                "Value1",
+                                [],
+                                [{"MDK1", "MDV1"}]},
+    {TestObject, TestSpec} = testutil:generate_testobject(B1, K1, V1, S1, MD),
+    
+    SW_StartLoad = os:timestamp(),
+    
+    ok = testutil:book_riakput(Book1A, TestObject, TestSpec),
+    ok = testutil:book_riakput(Book1B, TestObject, TestSpec),
+    testutil:check_forobject(Book1A, TestObject),
+    testutil:check_forobject(Book1B, TestObject),
+    
+    {TicTacTreeJoined, TicTacTreeFull, EmptyTree, _LMDIndexes} =
+        load_and_check_recentaae(Book1A, Book1B, Book1C, Book1D,
+                                    SW_StartLoad, TreeSize, UnitMins,
+                                    false),
+    % Go compare! Also confirm we're not comparing empty trees
+    DL1_0 = leveled_tictac:find_dirtyleaves(TicTacTreeFull,
+                                            TicTacTreeJoined),
+    
+    DL1_1 = leveled_tictac:find_dirtyleaves(TicTacTreeFull, EmptyTree),
+    true = DL1_0 == [],
+    true = length(DL1_1) == 0,
+
+    ok = leveled_bookie:book_close(Book1A),
+    ok = leveled_bookie:book_close(Book1B),
+    ok = leveled_bookie:book_close(Book1C),
+    ok = leveled_bookie:book_close(Book1D).
+
+
+recent_aae_allaae(_Config) ->
+    TreeSize = small,
+    % SegmentCount = 256 * 256,
+    UnitMins = 2,
+    AAE = {all, 60, UnitMins},
+    
+    % Test requires multiple different databases, so want to mount them all
+    % on individual file paths
+    RootPathA = testutil:reset_filestructure("testA"),
+    RootPathB = testutil:reset_filestructure("testB"),
+    RootPathC = testutil:reset_filestructure("testC"),
+    RootPathD = testutil:reset_filestructure("testD"),
+    StartOptsA = aae_startopts(RootPathA, AAE),
+    StartOptsB = aae_startopts(RootPathB, AAE),
+    StartOptsC = aae_startopts(RootPathC, AAE),
+    StartOptsD = aae_startopts(RootPathD, AAE),
+    
+    % Book1A to get all objects
+    {ok, Book1A} = leveled_bookie:book_start(StartOptsA),
+    % Book1B/C/D will have objects partitioned across it
+    {ok, Book1B} = leveled_bookie:book_start(StartOptsB),
+    {ok, Book1C} = leveled_bookie:book_start(StartOptsC),
+    {ok, Book1D} = leveled_bookie:book_start(StartOptsD),
+    
+    {B1, K1, V1, S1, MD} = {"Bucket",
+                                "Key1.1.4567.4321",
+                                "Value1",
+                                [],
+                                [{"MDK1", "MDV1"}]},
+    {TestObject, TestSpec} = testutil:generate_testobject(B1, K1, V1, S1, MD),
+    
+    SW_StartLoad = os:timestamp(),
+    
+    ok = testutil:book_riakput(Book1A, TestObject, TestSpec),
+    ok = testutil:book_riakput(Book1B, TestObject, TestSpec),
+    testutil:check_forobject(Book1A, TestObject),
+    testutil:check_forobject(Book1B, TestObject),
+    
+    {TicTacTreeJoined, TicTacTreeFull, EmptyTree, _LMDIndexes} =
+        load_and_check_recentaae(Book1A, Book1B, Book1C, Book1D,
+                                    SW_StartLoad, TreeSize, UnitMins,
+                                    false),
+    % Go compare! Also confirm we're not comparing empty trees
+    DL1_0 = leveled_tictac:find_dirtyleaves(TicTacTreeFull,
+                                            TicTacTreeJoined),
+    
+    DL1_1 = leveled_tictac:find_dirtyleaves(TicTacTreeFull, EmptyTree),
+    true = DL1_0 == [],
+    true = length(DL1_1) > 100,
+
+    ok = leveled_bookie:book_close(Book1A),
+    ok = leveled_bookie:book_close(Book1B),
+    ok = leveled_bookie:book_close(Book1C),
+    ok = leveled_bookie:book_close(Book1D).
+
+
+load_and_check_recentaae(Book1A, Book1B, Book1C, Book1D,
+                            SW_StartLoad, TreeSize, UnitMins,
+                            LMDIndexes_Loaded) ->
+    
+    LMDIndexes = 
+        case LMDIndexes_Loaded of
+            false ->
+                % Generate nine lists of objects
+                % BucketBin = list_to_binary("Bucket"),
+                GenMapFun =
+                    fun(_X) ->
+                        V = testutil:get_compressiblevalue(),
+                        Indexes = testutil:get_randomindexes_generator(8),
+                        testutil:generate_objects(5000,
+                                                    binary_uuid,
+                                                    [],
+                                                    V,
+                                                    Indexes)
+                    end,
+                
+                ObjLists = lists:map(GenMapFun, lists:seq(1, 9)),
+                
+                % Load all nine lists into Book1A
+                lists:foreach(fun(ObjL) -> testutil:riakload(Book1A, ObjL) end,
+                                ObjLists), 
+                
+                % Split nine lists across Book1B to Book1D, three object lists
+                % in each
+                lists:foreach(fun(ObjL) -> testutil:riakload(Book1B, ObjL) end,
+                                lists:sublist(ObjLists, 1, 3)),
+                lists:foreach(fun(ObjL) -> testutil:riakload(Book1C, ObjL) end,
+                                lists:sublist(ObjLists, 4, 3)),
+                lists:foreach(fun(ObjL) -> testutil:riakload(Book1D, ObjL) end,
+                                lists:sublist(ObjLists, 7, 3)),
+                
+                SW_EndLoad = os:timestamp(),
+                determine_lmd_indexes(SW_StartLoad, SW_EndLoad, UnitMins);
+            _ ->
+                LMDIndexes_Loaded
+        end,
+    
+    EmptyTree = leveled_tictac:new_tree(empty, TreeSize),
+    
+    GetTicTacTreeFun =
+        fun(Bookie) ->
+            fun(LMD, Acc) ->
+                SW = os:timestamp(),
+                ST = <<"0">>,
+                ET = <<"A">>,
+                Q = {tictactree_idx,
+                        {<<"$all">>,
+                            list_to_binary("$aae." ++ LMD ++ "_bin"),
+                            ST,
+                            ET},
+                        TreeSize,
+                        fun(_B, _K) -> accumulate end},
+                {async, Folder} = leveled_bookie:book_returnfolder(Bookie, Q),
+                R = Folder(),
+                io:format("TicTac Tree for index ~w took " ++
+                                "~w microseconds~n",
+                            [LMD, timer:now_diff(os:timestamp(), SW)]),
+                leveled_tictac:merge_trees(R, Acc)
+            end
+        end,
+    
+    % Get a TicTac tree representing one of the indexes in Bucket A
+    TicTacTree1_Full =
+        lists:foldl(GetTicTacTreeFun(Book1A), EmptyTree, LMDIndexes),
+    
+    TicTacTree1_P1 =
+        lists:foldl(GetTicTacTreeFun(Book1B), EmptyTree, LMDIndexes),
+    TicTacTree1_P2 =
+        lists:foldl(GetTicTacTreeFun(Book1C), EmptyTree, LMDIndexes),
+    TicTacTree1_P3 =
+        lists:foldl(GetTicTacTreeFun(Book1D), EmptyTree, LMDIndexes),
+    
+    % Merge the tree across the partitions
+    TicTacTree1_Joined = lists:foldl(fun leveled_tictac:merge_trees/2,
+                                        TicTacTree1_P1,
+                                        [TicTacTree1_P2, TicTacTree1_P3]),
+    
+    {TicTacTree1_Full, TicTacTree1_Joined, EmptyTree, LMDIndexes}.
+    
+
+aae_startopts(RootPath, AAE) ->
+    LS = 2000,
+    JS = 50000000,
+    SS = testutil:sync_strategy(),
+    [{root_path, RootPath},
+        {sync_strategy, SS},
+        {cache_size, LS},
+        {max_journalsize, JS},
+        {recent_aae, AAE}].
+
+
+determine_lmd_indexes(StartTS, EndTS, UnitMins) ->
+    StartDT = calendar:now_to_datetime(StartTS),
+    EndDT = calendar:now_to_datetime(EndTS),
+    StartTimeStr = get_strtime(StartDT, UnitMins),
+    EndTimeStr = get_strtime(EndDT, UnitMins),
+    
+    AddTimeFun =
+        fun(X, Acc) ->
+            case lists:member(EndTimeStr, Acc) of
+                true ->
+                    Acc;
+                false ->
+                    NextTime =
+                        300 * X +
+                            calendar:datetime_to_gregorian_seconds(StartDT),
+                    NextDT =
+                        calendar:gregorian_seconds_to_datetime(NextTime),
+                    Acc ++ [get_strtime(NextDT, UnitMins)]
+            end
+        end,
+    
+    lists:foldl(AddTimeFun, [StartTimeStr], lists:seq(1, 5)).        
+    
+    
+get_strtime(DateTime, UnitMins) ->
+    {{Y, M, D}, {Hour, Minute, _Second}} = DateTime,
+    RoundMins =
+        UnitMins * (Minute div UnitMins),
+    StrTime =
+        lists:flatten(io_lib:format(?LMD_FORMAT,
+                                        [Y, M, D, Hour, RoundMins])),
+    StrTime.

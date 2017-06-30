@@ -1246,7 +1246,7 @@ get_hashaccumulator(JournalCheck, InkerClone, AddKeyFun) ->
         fun(LK, V, Acc) ->
             case leveled_codec:is_active(LK, V, Now) of
                 true ->
-                    {B, K, H} = leveled_codec:get_keyandhash(LK, V),
+                    {B, K, H} = leveled_codec:get_keyandobjhash(LK, V),
                     Check = random:uniform() < ?CHECKJOURNAL_PROB,
                     case {JournalCheck, Check} of
                         {check_presence, true} ->
@@ -1408,13 +1408,13 @@ preparefor_ledgercache(?INKT_KEYD,
 preparefor_ledgercache(_InkTag,
                         LedgerKey, SQN, Obj, Size, {IdxSpecs, TTL},
                         AAE) ->
-    {Bucket, Key, MetaValue, H, LastMods} =
+    {Bucket, Key, MetaValue, {KeyH, ObjH}, LastMods} =
         leveled_codec:generate_ledgerkv(LedgerKey, SQN, Obj, Size, TTL),
     KeyChanges =
         [{LedgerKey, MetaValue}] ++
             leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL) ++
-            leveled_codec:aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods),
-    {H, SQN, KeyChanges}.
+            leveled_codec:aae_indexspecs(AAE, Bucket, Key, SQN, ObjH, LastMods),
+    {KeyH, SQN, KeyChanges}.
 
 
 addto_ledgercache({H, SQN, KeyChanges}, Cache) ->
