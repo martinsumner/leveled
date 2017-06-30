@@ -82,6 +82,7 @@
 -define(CACHE_SIZE_JITTER, 25).
 -define(JOURNAL_SIZE_JITTER, 20).
 -define(LONG_RUNNING, 80000).
+-define(RECENT_AAE, false).
 
 -record(ledger_cache, {mem :: ets:tab(),
                         loader = leveled_tree:empty(?CACHE_TYPE)
@@ -94,6 +95,7 @@
 -record(state, {inker :: pid(),
                 penciller :: pid(),
                 cache_size :: integer(),
+                recent_aae :: false|#recent_aae{},
                 ledger_cache = #ledger_cache{},
                 is_snapshot :: boolean(),
                 slow_offer = false :: boolean(),
@@ -157,7 +159,7 @@ book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy) ->
 %%
 %% TODO:
 %% The reload_strategy is exposed as currently no firm decision has been made 
-%% about how recovery should work.  For instance if we were to trust evrything
+%% about how recovery should work.  For instance if we were to trust everything
 %% as permanent in the Ledger once it is persisted, then there would be no
 %% need to retain a skinny history of key changes in the Journal after
 %% compaction.  If, as an alternative we assume the Ledger is never permanent,
@@ -383,15 +385,28 @@ init([Opts]) ->
         undefined ->
             % Start from file not snapshot
             {InkerOpts, PencillerOpts} = set_options(Opts),
-            {Inker, Penciller} = startup(InkerOpts, PencillerOpts),
+            
             CacheJitter = ?CACHE_SIZE div (100 div ?CACHE_SIZE_JITTER),
             CacheSize = get_opt(cache_size, Opts, ?CACHE_SIZE)
                         + erlang:phash2(self()) rem CacheJitter,
+            RecentAAE =
+                case get_opt(recent_aae, Opts, ?RECENT_AAE) of
+                    false ->
+                        false;
+                    {BucketList, LimitMinutes, UnitMinutes} ->
+                        #recent_aae{buckets = BucketList,
+                                    limit_minutes = LimitMinutes,
+                                    unit_minutes = UnitMinutes}
+                end,
+                
+            {Inker, Penciller} = startup(InkerOpts, PencillerOpts, RecentAAE),
+            
             NewETS = ets:new(mem, [ordered_set]),
             leveled_log:log("B0001", [Inker, Penciller]),
             {ok, #state{inker=Inker,
                         penciller=Penciller,
                         cache_size=CacheSize,
+                        recent_aae=RecentAAE,
                         ledger_cache=#ledger_cache{mem = NewETS},
                         is_snapshot=false}};
         Bookie ->
@@ -418,7 +433,8 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State) ->
                                         SQN,
                                         Object,
                                         ObjSize,
-                                        {IndexSpecs, TTL}),
+                                        {IndexSpecs, TTL},
+                                        State#state.recent_aae),
     Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
     T1 = timer:now_diff(os:timestamp(), SW) - T0,
     PutTimes = leveled_log:put_timing(bookie, State#state.put_timing, T0, T1),
@@ -1151,14 +1167,14 @@ set_options(Opts) ->
                             max_inmemory_tablesize = PCLL0CacheSize,
                             levelzero_cointoss = true}}.
 
-startup(InkerOpts, PencillerOpts) ->
+startup(InkerOpts, PencillerOpts, RecentAAE) ->
     {ok, Inker} = leveled_inker:ink_start(InkerOpts),
     {ok, Penciller} = leveled_penciller:pcl_start(PencillerOpts),
     LedgerSQN = leveled_penciller:pcl_getstartupsequencenumber(Penciller),
     leveled_log:log("B0005", [LedgerSQN]),
     ok = leveled_inker:ink_loadpcl(Inker,
                                     LedgerSQN + 1,
-                                    fun load_fun/5,
+                                    get_loadfun(RecentAAE),
                                     Penciller),
     {Inker, Penciller}.
 
@@ -1383,17 +1399,21 @@ accumulate_index(TermRe, AddFun, FoldKeysFun) ->
 
 
 preparefor_ledgercache(?INKT_KEYD,
-                        LedgerKey, SQN, _Obj, _Size, {IdxSpecs, TTL}) ->
+                        LedgerKey, SQN, _Obj, _Size, {IdxSpecs, TTL},
+                        _AAE) ->
     {Bucket, Key} = leveled_codec:from_ledgerkey(LedgerKey),
     KeyChanges =
-        leveled_codec:convert_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL),
+        leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL),
     {no_lookup, SQN, KeyChanges};
-preparefor_ledgercache(_Type, LedgerKey, SQN, Obj, Size, {IdxSpecs, TTL}) ->
-    {Bucket, Key, MetaValue, H, _LastMods} =
+preparefor_ledgercache(_InkTag,
+                        LedgerKey, SQN, Obj, Size, {IdxSpecs, TTL},
+                        AAE) ->
+    {Bucket, Key, MetaValue, H, LastMods} =
         leveled_codec:generate_ledgerkv(LedgerKey, SQN, Obj, Size, TTL),
     KeyChanges =
         [{LedgerKey, MetaValue}] ++
-            leveled_codec:convert_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL),
+            leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL) ++
+            leveled_codec:aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods),
     {H, SQN, KeyChanges}.
 
 
@@ -1452,35 +1472,40 @@ maybe_withjitter(CacheSize, MaxCacheSize) ->
     end.
 
 
-
-load_fun(KeyInJournal, ValueInJournal, _Position, Acc0, ExtractFun) ->
-    {MinSQN, MaxSQN, OutputTree} = Acc0,
-    {SQN, Type, PK} = KeyInJournal,
-    % VBin may already be a term
-    {VBin, VSize} = ExtractFun(ValueInJournal), 
-    {Obj, IndexSpecs} = leveled_codec:split_inkvalue(VBin),
-    case SQN of
-        SQN when SQN < MinSQN ->
-            {loop, Acc0};    
-        SQN when SQN < MaxSQN ->
-            Changes = preparefor_ledgercache(Type, PK, SQN,
-                                                Obj, VSize, IndexSpecs),
-            {loop,
-                {MinSQN,
-                    MaxSQN,
-                    addto_ledgercache(Changes, OutputTree, loader)}};
-        MaxSQN ->
-            leveled_log:log("B0006", [SQN]),
-            Changes = preparefor_ledgercache(Type, PK, SQN,
-                                                Obj, VSize, IndexSpecs),
-            {stop,
-                {MinSQN,
-                    MaxSQN,
-                    addto_ledgercache(Changes, OutputTree, loader)}};
-        SQN when SQN > MaxSQN ->
-            leveled_log:log("B0007", [MaxSQN, SQN]),
-            {stop, Acc0}
-    end.
+get_loadfun(RecentAAE) ->
+    PrepareFun = 
+        fun(Tag, PK, SQN, Obj, VS, IdxSpecs) ->
+            preparefor_ledgercache(Tag, PK, SQN, Obj, VS, IdxSpecs, RecentAAE)
+        end,
+    LoadFun =
+        fun(KeyInJournal, ValueInJournal, _Pos, Acc0, ExtractFun) ->
+            {MinSQN, MaxSQN, OutputTree} = Acc0,
+            {SQN, InkTag, PK} = KeyInJournal,
+            % VBin may already be a term
+            {VBin, VSize} = ExtractFun(ValueInJournal), 
+            {Obj, IdxSpecs} = leveled_codec:split_inkvalue(VBin),
+            case SQN of
+                SQN when SQN < MinSQN ->
+                    {loop, Acc0};    
+                SQN when SQN < MaxSQN ->
+                    Chngs = PrepareFun(InkTag, PK, SQN, Obj, VSize, IdxSpecs),
+                    {loop,
+                        {MinSQN,
+                            MaxSQN,
+                            addto_ledgercache(Chngs, OutputTree, loader)}};
+                MaxSQN ->
+                    leveled_log:log("B0006", [SQN]),
+                    Chngs = PrepareFun(InkTag, PK, SQN, Obj, VSize, IdxSpecs),
+                    {stop,
+                        {MinSQN,
+                            MaxSQN,
+                            addto_ledgercache(Chngs, OutputTree, loader)}};
+                SQN when SQN > MaxSQN ->
+                    leveled_log:log("B0007", [MaxSQN, SQN]),
+                    {stop, Acc0}
+            end
+        end,
+    LoadFun.
 
 
 get_opt(Key, Opts) ->

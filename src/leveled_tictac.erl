@@ -97,17 +97,7 @@ new_tree(TreeID) ->
     new_tree(TreeID, small).
     
 new_tree(TreeID, Size) ->
-    {BitWidth, Width, SegmentCount} =
-        case Size of
-            small ->
-                ?SMALL;
-            medium ->
-                ?MEDIUM;
-            large ->
-                ?LARGE;
-            xlarge ->
-                ?XLARGE
-        end,
+    {BitWidth, Width, SegmentCount} = get_size(Size),
     Lv1Width = Width * ?HASH_SIZE * 8,
     Lv1Init = <<0:Lv1Width/integer>>,
     Lv2SegBinSize = Width * ?HASH_SIZE * 8,
@@ -236,13 +226,30 @@ merge_trees(TreeA, TreeB) ->
     
     MergedTree#tictactree{level1 = NewLevel1, level2 = NewLevel2}.
 
-get_segment(Key, SegmentCount) ->
-    erlang:phash2(Key) band (SegmentCount - 1).
-
+-spec get_segment(any(), integer()|small|medium|large|xlarge) -> integer().
+%% @doc
+%% Return the segment ID for a Key.  Can pass the tree size or the actual
+%% segment count derived from the size
+get_segment(Key, SegmentCount) when is_integer(SegmentCount) ->
+    erlang:phash2(Key) band (SegmentCount - 1);
+get_segment(Key, TreeSize) ->
+    get_segment(Key, element(3, get_size(TreeSize))).
 
 %%%============================================================================
 %%% Internal functions
 %%%============================================================================
+
+get_size(Size) ->
+    case Size of
+        small ->
+            ?SMALL;
+        medium ->
+            ?MEDIUM;
+        large ->
+            ?LARGE;
+        xlarge ->
+            ?XLARGE
+    end.
 
 segmentcompare(SrcBin, SinkBin) when byte_size(SrcBin)==byte_size(SinkBin) ->
     segmentcompare(SrcBin, SinkBin, [], 0).

@@ -5,6 +5,8 @@
 -define(STD_TAG, o).
 %% Tag used for secondary index keys
 -define(IDX_TAG, i).
+%% Tag used for near real-time anti-entropy index keys
+-define(AAE_TAG, i_aae).
 
 %% Inker key type used for 'normal' objects
 -define(INKT_STND, stnd). 
@@ -66,6 +68,25 @@
                         cdb_options = #cdb_options{} :: #cdb_options{},
                         waste_retention_period :: integer(),
                         reload_strategy = [] :: list()}).
+
+-record(recent_aae, {buckets :: list()|all,
+                        % whitelist of buckets to support recent recent AAE
+                        % or all to support all buckets
+                        
+                        limit_minutes :: integer(),
+                        % how long to retain entries the temporary index for
+                        % It will actually be retained for limit + unit minutes
+                        % 60 minutes seems sensible
+                        
+                        unit_minutes :: integer(),
+                        % What the minimum unit size will be for a query
+                        % e.g. the minimum time duration to be used in range
+                        % queries of the aae index
+                        % 5 minutes seems sensible
+                        
+                        tree_size = small :: atom()
+                        % Just defaulted to small for now
+                        }).
 
 -record(r_content, {
           metadata,

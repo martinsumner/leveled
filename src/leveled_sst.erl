@@ -1503,11 +1503,11 @@ generate_indexkeys(Count, IndexList) ->
 
 generate_indexkey(Term, Count) ->
     IndexSpecs = [{add, "t1_int", Term}],
-    leveled_codec:convert_indexspecs(IndexSpecs, 
-                                        "Bucket", 
-                                        "Key" ++ integer_to_list(Count), 
-                                        Count, 
-                                        infinity).
+    leveled_codec:idx_indexspecs(IndexSpecs, 
+                                    "Bucket", 
+                                    "Key" ++ integer_to_list(Count), 
+                                    Count, 
+                                    infinity).
 
 form_slot_test() ->
     % If a skip key happens, mustn't switch to loookup by accident as could be
