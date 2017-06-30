@@ -10,9 +10,9 @@
             ]).
 
 all() -> [
-            % many_put_compare,
-            % index_compare,
-            % recent_aae_noaae,
+            many_put_compare,
+            index_compare,
+            recent_aae_noaae,
             recent_aae_allaae
             ].
 
