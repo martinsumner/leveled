@@ -519,7 +519,7 @@ recent_aae_allaae(_Config) ->
     testutil:check_forobject(Book1A, TestObject),
     testutil:check_forobject(Book1B, TestObject),
     
-    {TicTacTreeJoined, TicTacTreeFull, EmptyTree, _LMDIndexes} =
+    {TicTacTreeJoined, TicTacTreeFull, EmptyTree, LMDIndexes} =
         load_and_check_recentaae(Book1A, Book1B, Book1C, Book1D,
                                     SW_StartLoad, TreeSize, UnitMins,
                                     false),
@@ -534,7 +534,31 @@ recent_aae_allaae(_Config) ->
     ok = leveled_bookie:book_close(Book1A),
     ok = leveled_bookie:book_close(Book1B),
     ok = leveled_bookie:book_close(Book1C),
-    ok = leveled_bookie:book_close(Book1D).
+    ok = leveled_bookie:book_close(Book1D),
+    
+    % Book2A to get all objects
+    {ok, Book2A} = leveled_bookie:book_start(StartOptsA),
+    % Book2B/C/D will have objects partitioned across it
+    {ok, Book2B} = leveled_bookie:book_start(StartOptsB),
+    {ok, Book2C} = leveled_bookie:book_start(StartOptsC),
+    {ok, Book2D} = leveled_bookie:book_start(StartOptsD),
+    
+    {TicTacTreeJoined, TicTacTreeFull, EmptyTree, _LMDIndexes} =
+        load_and_check_recentaae(Book2A, Book2B, Book2C, Book2D,
+                                    SW_StartLoad, TreeSize, UnitMins,
+                                    LMDIndexes),
+    % Go compare! Also confirm we're not comparing empty trees
+    DL1_0 = leveled_tictac:find_dirtyleaves(TicTacTreeFull,
+                                            TicTacTreeJoined),
+    
+    DL1_1 = leveled_tictac:find_dirtyleaves(TicTacTreeFull, EmptyTree),
+    true = DL1_0 == [],
+    true = length(DL1_1) > 100,
+    
+    ok = leveled_bookie:book_close(Book2A),
+    ok = leveled_bookie:book_close(Book2B),
+    ok = leveled_bookie:book_close(Book2C),
+    ok = leveled_bookie:book_close(Book2D).
 
 
 load_and_check_recentaae(Book1A, Book1B, Book1C, Book1D,
