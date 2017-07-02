@@ -282,8 +282,12 @@ generate_testobject() ->
     generate_testobject(B1, K1, V1, Spec1, MD).
 
 generate_testobject(B, K, V, Spec, MD) ->
-    Content = #r_content{metadata=dict:from_list(MD), value=V},
-    {#r_object{bucket=B, key=K, contents=[Content], vclock=[{'a',1}]},
+    MD0 = [{?MD_LASTMOD, os:timestamp()}|MD],
+    Content = #r_content{metadata=dict:from_list(MD0), value=V},
+    {#r_object{bucket=B,
+                key=K,
+                contents=[Content],
+                vclock=generate_vclock()},
         Spec}.
 
 

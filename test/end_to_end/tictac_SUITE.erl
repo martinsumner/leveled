@@ -543,7 +543,7 @@ recent_aae_allaae(_Config) ->
     {ok, Book2C} = leveled_bookie:book_start(StartOptsC),
     {ok, Book2D} = leveled_bookie:book_start(StartOptsD),
     
-    {TicTacTreeJoined, TicTacTreeFull, EmptyTree, _LMDIndexes} =
+    {TicTacTreeJoined, TicTacTreeFull, EmptyTree, LMDIndexes} =
         load_and_check_recentaae(Book2A, Book2B, Book2C, Book2D,
                                     SW_StartLoad, TreeSize, UnitMins,
                                     LMDIndexes),
@@ -554,6 +554,28 @@ recent_aae_allaae(_Config) ->
     DL1_1 = leveled_tictac:find_dirtyleaves(TicTacTreeFull, EmptyTree),
     true = DL1_0 == [],
     true = length(DL1_1) > 100,
+    
+    V2 = "Value2",
+    {TestObject2, TestSpec2} =
+        testutil:generate_testobject(B1, K1, V2, S1, MD),
+    
+    New_startTS = os:timestamp(),
+    
+    ok = testutil:book_riakput(Book2B, TestObject2, TestSpec2),
+    testutil:check_forobject(Book2B, TestObject2),
+    testutil:check_forobject(Book2A, TestObject),
+    
+    New_endTS = os:timestamp(),
+    NewLMDIndexes = determine_lmd_indexes(New_startTS, New_endTS, UnitMins),
+    {TicTacTreeJoined2, TicTacTreeFull2, _EmptyTree, NewLMDIndexes} =
+        load_and_check_recentaae(Book2A, Book2B, Book2C, Book2D,
+                                    New_startTS, TreeSize, UnitMins,
+                                    NewLMDIndexes),
+    DL2_0 = leveled_tictac:find_dirtyleaves(TicTacTreeFull2,
+                                            TicTacTreeJoined2),
+    
+    % DL2_1 = leveled_tictac:find_dirtyleaves(TicTacTreeFull, EmptyTree),
+    true = length(DL2_0) == 1,
     
     ok = leveled_bookie:book_close(Book2A),
     ok = leveled_bookie:book_close(Book2B),
@@ -619,7 +641,7 @@ load_and_check_recentaae(Book1A, Book1B, Book1C, Book1D,
                         fun(_B, _K) -> accumulate end},
                 {async, Folder} = leveled_bookie:book_returnfolder(Bookie, Q),
                 R = Folder(),
-                io:format("TicTac Tree for index ~w took " ++
+                io:format("TicTac Tree for index ~s took " ++
                                 "~w microseconds~n",
                             [LMD, timer:now_diff(os:timestamp(), SW)]),
                 leveled_tictac:merge_trees(R, Acc)

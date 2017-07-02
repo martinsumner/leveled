@@ -446,9 +446,9 @@ aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods) ->
                                 leveled_tictac:get_segment(Key, TreeSize),
                             IdxFldStr = ?NRT_IDX ++ LMD1 ++ "_bin",
                             IdxTrmStr =
-                                string:right(integer_to_list(SegID), 24, $0) ++
+                                string:right(integer_to_list(SegID), 8, $0) ++
                                 "." ++
-                                string:right(integer_to_list(H), 24, $0),
+                                string:right(integer_to_list(H), 8, $0),
                             {IdxK, IdxV} =
                                 gen_indexspec(Bucket0, Key,
                                                 add,
@@ -826,7 +826,7 @@ genaaeidx_test() ->
     [{{?IDX_TAG, <<"Bucket0">>, {Fld, Term}, <<"Key1">>},
         {SQN, {active, TS}, no_lookup, null}}] = AAESpecsB1,
     ?assertMatch(true, is_integer(TS)),
-    ?assertMatch(49, length(binary_to_list(Term))),
+    ?assertMatch(17, length(binary_to_list(Term))),
     ?assertMatch("$aae.", lists:sublist(binary_to_list(Fld), 5)).
 
 -endif.
