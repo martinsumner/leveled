@@ -502,7 +502,7 @@ check_indexed_objects(Book, B, KSpecL, V) ->
                                                 {fun foldkeysfun/3, []},
                                                 {"idx1_bin",
                                                     "0",
-                                                    "~"},
+                                                    "|"},
                                                 ?RETURN_TERMS}),
     SW = os:timestamp(),
     {async, Fldr} = R,

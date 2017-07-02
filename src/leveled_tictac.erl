@@ -356,9 +356,11 @@ merge_bysize_medium_test() ->
 merge_bysize_large_test() ->
     merge_test_withsize(large).
 
-% merge_bysize_xlarge_test() ->
-%    merge_test_withsize(xlarge).
-% timmeout on cover test - so commented
+merge_bysize_xlarge_test_() ->
+    {timeout, 60, fun merge_bysize_xlarge_test2/0}.
+
+merge_bysize_xlarge_test2() ->
+    merge_test_withsize(xlarge).
 
 merge_test_withsize(Size) ->
     HashFun = fun(_K, V) -> erlang:phash2(V) end,
