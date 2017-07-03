@@ -577,6 +577,50 @@ recent_aae_allaae(_Config) ->
     % DL2_1 = leveled_tictac:find_dirtyleaves(TicTacTreeFull, EmptyTree),
     true = length(DL2_0) == 1,
     
+    [DirtySeg] = DL2_0,
+    TermPrefix = string:right(integer_to_list(DirtySeg), 8, $0),
+
+    LMDSegFolder =
+        fun(LMD, {Acc, Bookie}) ->
+            IdxLMD = list_to_binary("$aae." ++ LMD ++ "_bin"),
+            IdxQ1 =
+                {index_query,
+                    <<"$all">>,
+                    {fun testutil:foldkeysfun/3, []},
+                    {IdxLMD,
+                        list_to_binary(TermPrefix ++ "."),
+                        list_to_binary(TermPrefix ++ "|")},
+                    {true, undefined}},
+            {async, IdxFolder} =
+                leveled_bookie:book_returnfolder(Bookie, IdxQ1),
+            {Acc ++ IdxFolder(), Bookie}
+        end,
+    {KeysTerms2A, _} = lists:foldl(LMDSegFolder,
+                                    {[], Book2A},
+                                    lists:usort(LMDIndexes ++ NewLMDIndexes)),
+    true = length(KeysTerms2A) >= 1,
+
+    {KeysTerms2B, _} = lists:foldl(LMDSegFolder,
+                                    {[], Book2B},
+                                    lists:usort(LMDIndexes ++ NewLMDIndexes)),
+    {KeysTerms2C, _} = lists:foldl(LMDSegFolder,
+                                    {[], Book2C},
+                                    lists:usort(LMDIndexes ++ NewLMDIndexes)),
+    {KeysTerms2D, _} = lists:foldl(LMDSegFolder,
+                                    {[], Book2D},
+                                    lists:usort(LMDIndexes ++ NewLMDIndexes)),
+    
+    KeysTerms2Joined = KeysTerms2B ++ KeysTerms2C ++ KeysTerms2D,
+    DeltaX = lists:subtract(KeysTerms2A, KeysTerms2Joined),
+    DeltaY = lists:subtract(KeysTerms2Joined, KeysTerms2A),
+    
+    io:format("DeltaX ~w~n", [DeltaX]),
+    io:format("DeltaY ~w~n", [DeltaY]),
+    
+    true = length(DeltaX) == 0, % This hasn't seen any extra changes
+    true = length(DeltaY) == 1, % This has seen an extra change
+    [{_, K1}] = DeltaY,
+    
     ok = leveled_bookie:book_close(Book2A),
     ok = leveled_bookie:book_close(Book2B),
     ok = leveled_bookie:book_close(Book2C),
