@@ -43,6 +43,7 @@
             find_journals/1,
             wait_for_compaction/1,
             foldkeysfun/3,
+            foldkeysfun_returnbucket/3,
             sync_strategy/0]).
 
 -define(RETURN_TERMS, {true, undefined}).
@@ -483,6 +484,11 @@ get_randomdate() ->
 
 
 foldkeysfun(_Bucket, Item, Acc) -> Acc ++ [Item].
+
+foldkeysfun_returnbucket(Bucket, {Term, Key}, Acc) ->
+    Acc ++ [{Term, {Bucket, Key}}];
+foldkeysfun_returnbucket(Bucket, Key, Acc) ->
+    Acc ++ [{Bucket, Key}].
 
 check_indexed_objects(Book, B, KSpecL, V) ->
     % Check all objects match, return what should be the results of an all

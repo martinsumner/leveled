@@ -71,7 +71,7 @@
 -define(MAGIC, 53). % riak_kv -> riak_object
 -define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
 -define(NRT_IDX, "$aae.").
--define(ALL_BUCKETS, list_to_binary("$all")).
+-define(ALL_BUCKETS, <<"$all">>).
 
 -type recent_aae() :: #recent_aae{}.
 
@@ -181,9 +181,10 @@ is_active(Key, Value, Now) ->
             false
     end.
 
-from_ledgerkey({Tag, Bucket, {_IdxField, IdxValue}, Key})
-                                                when Tag == ?IDX_TAG ->
-    {Bucket, Key, IdxValue};
+from_ledgerkey({?IDX_TAG, ?ALL_BUCKETS, {_IdxFld, IdxVal}, {Bucket, Key}}) ->
+    {Bucket, Key, IdxVal};
+from_ledgerkey({?IDX_TAG, Bucket, {_IdxFld, IdxVal}, Key}) ->
+    {Bucket, Key, IdxVal};
 from_ledgerkey({_Tag, Bucket, Key, null}) ->
     {Bucket, Key}.
 
@@ -393,8 +394,22 @@ gen_indexspec(Bucket, Key, IdxOp, IdxField, IdxTerm, SQN, TTL) ->
                 %% TODO: timestamps for delayed reaping 
                 tomb
         end,
-    {to_ledgerkey(Bucket, Key, ?IDX_TAG, IdxField, IdxTerm),
-            {SQN, Status, no_lookup, null}}.
+    case Bucket of
+        {all, RealBucket} ->    
+            {to_ledgerkey(?ALL_BUCKETS,
+                            {RealBucket, Key},
+                            ?IDX_TAG,
+                            IdxField,
+                            IdxTerm),
+                {SQN, Status, no_lookup, null}};
+        _ ->
+            {to_ledgerkey(Bucket,
+                            Key,
+                            ?IDX_TAG,
+                            IdxField,
+                            IdxTerm),
+                {SQN, Status, no_lookup, null}}
+    end.
 
 -spec aae_indexspecs(false|recent_aae(),
                                 any(), any(),
@@ -418,7 +433,7 @@ aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods) ->
     Bucket0 =
         case AAE#recent_aae.buckets of
             all ->
-                ?ALL_BUCKETS;
+                {all, Bucket};
             ListB ->
                 case lists:member(Bucket, ListB) of
                     true ->
@@ -545,7 +560,7 @@ get_size(PK, Value) ->
 
 -spec get_keyandobjhash(tuple(), tuple()) -> tuple().
 %% @doc
-%% Return a tucple of {Bucket, Key, Hash} where hash is a has of the object
+%% Return a tucple of {Bucket, Key, Hash} where hash is a hash of the object
 %% not the key (for example with Riak tagged objects this will be a hash of
 %% the sorted vclock)
 get_keyandobjhash(LK, Value) ->

@@ -106,11 +106,11 @@ many_put_compare(_Config) ->
     
     FoldKeysFun =
         fun(SegListToFind) ->
-            fun(_B, K, Acc) ->
+            fun(B, K, Acc) ->
                 Seg = leveled_tictac:get_segment(K, SegmentCount),
                 case lists:member(Seg, SegListToFind) of
                     true ->
-                        [K|Acc];
+                        [{B, K}|Acc];
                     false ->
                         Acc
                 end
@@ -586,7 +586,7 @@ recent_aae_allaae(_Config) ->
             IdxQ1 =
                 {index_query,
                     <<"$all">>,
-                    {fun testutil:foldkeysfun/3, []},
+                    {fun testutil:foldkeysfun_returnbucket/3, []},
                     {IdxLMD,
                         list_to_binary(TermPrefix ++ "."),
                         list_to_binary(TermPrefix ++ "|")},
@@ -619,7 +619,7 @@ recent_aae_allaae(_Config) ->
     
     true = length(DeltaX) == 0, % This hasn't seen any extra changes
     true = length(DeltaY) == 1, % This has seen an extra change
-    [{_, K1}] = DeltaY,
+    [{_, {B1, K1}}] = DeltaY,
     
     ok = leveled_bookie:book_close(Book2A),
     ok = leveled_bookie:book_close(Book2B),

@@ -1333,8 +1333,6 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
     AccFun.
 
 
-
-
 check_presence(Key, Value, InkerClone) ->
     {LedgerKey, SQN} = leveled_codec:strip_to_keyseqonly({Key, Value}),
     case leveled_inker:ink_keycheck(InkerClone, LedgerKey, SQN) of
