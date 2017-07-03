@@ -106,11 +106,11 @@ many_put_compare(_Config) ->
     
     FoldKeysFun =
         fun(SegListToFind) ->
-            fun(B, K, Acc) ->
+            fun(_B, K, Acc) ->
                 Seg = leveled_tictac:get_segment(K, SegmentCount),
                 case lists:member(Seg, SegListToFind) of
                     true ->
-                        [{B, K}|Acc];
+                        [K|Acc];
                     false ->
                         Acc
                 end
