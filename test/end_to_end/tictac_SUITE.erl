@@ -6,14 +6,16 @@
             many_put_compare/1,
             index_compare/1,
             recent_aae_noaae/1,
-            recent_aae_allaae/1
+            recent_aae_allaae/1,
+            recent_aae_bucketaae/1
             ]).
 
 all() -> [
             many_put_compare,
             index_compare,
             recent_aae_noaae,
-            recent_aae_allaae
+            recent_aae_allaae,
+            recent_aae_bucketaae
             ].
 
 -define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
@@ -627,10 +629,185 @@ recent_aae_allaae(_Config) ->
     ok = leveled_bookie:book_close(Book2D).
 
 
+
+recent_aae_bucketaae(_Config) ->
+    % Configure AAE to work only on a single whitelisted bucket
+    % Confirm that we can spot a delta in this bucket, but not
+    % in another bucket
+    
+    TreeSize = small,
+    % SegmentCount = 256 * 256,
+    UnitMins = 2,
+    AAE = {[<<"Bucket">>], 60, UnitMins},
+    
+    % Test requires multiple different databases, so want to mount them all
+    % on individual file paths
+    RootPathA = testutil:reset_filestructure("testA"),
+    RootPathB = testutil:reset_filestructure("testB"),
+    RootPathC = testutil:reset_filestructure("testC"),
+    RootPathD = testutil:reset_filestructure("testD"),
+    StartOptsA = aae_startopts(RootPathA, AAE),
+    StartOptsB = aae_startopts(RootPathB, AAE),
+    StartOptsC = aae_startopts(RootPathC, AAE),
+    StartOptsD = aae_startopts(RootPathD, AAE),
+    
+    % Book1A to get all objects
+    {ok, Book1A} = leveled_bookie:book_start(StartOptsA),
+    % Book1B/C/D will have objects partitioned across it
+    {ok, Book1B} = leveled_bookie:book_start(StartOptsB),
+    {ok, Book1C} = leveled_bookie:book_start(StartOptsC),
+    {ok, Book1D} = leveled_bookie:book_start(StartOptsD),
+    
+    {B1, K1, V1, S1, MD} = {<<"Bucket">>,
+                                "Key1.1.4567.4321",
+                                "Value1",
+                                [],
+                                [{"MDK1", "MDV1"}]},
+    {TestObject, TestSpec} = testutil:generate_testobject(B1, K1, V1, S1, MD),
+    
+    SW_StartLoad = os:timestamp(),
+    
+    ok = testutil:book_riakput(Book1A, TestObject, TestSpec),
+    ok = testutil:book_riakput(Book1B, TestObject, TestSpec),
+    testutil:check_forobject(Book1A, TestObject),
+    testutil:check_forobject(Book1B, TestObject),
+    
+    {TicTacTreeJoined, TicTacTreeFull, EmptyTree, LMDIndexes} =
+        load_and_check_recentaae(Book1A, Book1B, Book1C, Book1D,
+                                    SW_StartLoad, TreeSize, UnitMins,
+                                    false, <<"Bucket">>),
+    % Go compare! Also confirm we're not comparing empty trees
+    DL1_0 = leveled_tictac:find_dirtyleaves(TicTacTreeFull,
+                                            TicTacTreeJoined),
+    
+    DL1_1 = leveled_tictac:find_dirtyleaves(TicTacTreeFull, EmptyTree),
+    true = DL1_0 == [],
+    true = length(DL1_1) > 100,
+
+    ok = leveled_bookie:book_close(Book1A),
+    ok = leveled_bookie:book_close(Book1B),
+    ok = leveled_bookie:book_close(Book1C),
+    ok = leveled_bookie:book_close(Book1D),
+    
+    % Book2A to get all objects
+    {ok, Book2A} = leveled_bookie:book_start(StartOptsA),
+    % Book2B/C/D will have objects partitioned across it
+    {ok, Book2B} = leveled_bookie:book_start(StartOptsB),
+    {ok, Book2C} = leveled_bookie:book_start(StartOptsC),
+    {ok, Book2D} = leveled_bookie:book_start(StartOptsD),
+    
+    % Change the value for a key in another bucket
+    % If we get trees for this period, no difference should be found
+    
+    V2 = "Value2",
+    {TestObject2, TestSpec2} =
+        testutil:generate_testobject(<<"NotBucket">>, K1, V2, S1, MD),
+    
+    New_startTS2 = os:timestamp(),
+    
+    ok = testutil:book_riakput(Book2B, TestObject2, TestSpec2),
+    testutil:check_forobject(Book2B, TestObject2),
+    testutil:check_forobject(Book2A, TestObject),
+    
+    New_endTS2 = os:timestamp(),
+    NewLMDIndexes2 = determine_lmd_indexes(New_startTS2, New_endTS2, UnitMins),
+    {TicTacTreeJoined2, TicTacTreeFull2, _EmptyTree, NewLMDIndexes2} =
+        load_and_check_recentaae(Book2A, Book2B, Book2C, Book2D,
+                                    New_startTS2, TreeSize, UnitMins,
+                                    NewLMDIndexes2, <<"Bucket">>),
+    DL2_0 = leveled_tictac:find_dirtyleaves(TicTacTreeFull2,
+                                            TicTacTreeJoined2),
+    true = length(DL2_0) == 0,
+    
+    % Now create an object that is a change to an existing key in the
+    % monitored bucket.  A differrence should be found
+    
+    {TestObject3, TestSpec3} =
+        testutil:generate_testobject(B1, K1, V2, S1, MD),
+    
+    New_startTS3 = os:timestamp(),
+    
+    ok = testutil:book_riakput(Book2B, TestObject3, TestSpec3),
+    testutil:check_forobject(Book2B, TestObject3),
+    testutil:check_forobject(Book2A, TestObject),
+    
+    New_endTS3 = os:timestamp(),
+    NewLMDIndexes3 = determine_lmd_indexes(New_startTS3, New_endTS3, UnitMins),
+    {TicTacTreeJoined3, TicTacTreeFull3, _EmptyTree, NewLMDIndexes3} =
+        load_and_check_recentaae(Book2A, Book2B, Book2C, Book2D,
+                                    New_startTS3, TreeSize, UnitMins,
+                                    NewLMDIndexes3, <<"Bucket">>),
+    DL3_0 = leveled_tictac:find_dirtyleaves(TicTacTreeFull3,
+                                            TicTacTreeJoined3),
+    
+    % DL2_1 = leveled_tictac:find_dirtyleaves(TicTacTreeFull, EmptyTree),
+    true = length(DL3_0) == 1,
+    
+    % Find the dirty segment, and use that to find the dirty key
+    %
+    % Note that unlike when monitoring $all, fold_keys can be used as there
+    % is no need to return the Bucket (as hte bucket is known)
+    
+    [DirtySeg] = DL3_0,
+    TermPrefix = string:right(integer_to_list(DirtySeg), 8, $0),
+
+    LMDSegFolder =
+        fun(LMD, {Acc, Bookie}) ->
+            IdxLMD = list_to_binary("$aae." ++ LMD ++ "_bin"),
+            IdxQ1 =
+                {index_query,
+                    <<"Bucket">>,
+                    {fun testutil:foldkeysfun/3, []},
+                    {IdxLMD,
+                        list_to_binary(TermPrefix ++ "."),
+                        list_to_binary(TermPrefix ++ "|")},
+                    {true, undefined}},
+            {async, IdxFolder} =
+                leveled_bookie:book_returnfolder(Bookie, IdxQ1),
+            {Acc ++ IdxFolder(), Bookie}
+        end,
+    {KeysTerms2A, _} = lists:foldl(LMDSegFolder,
+                                    {[], Book2A},
+                                    lists:usort(LMDIndexes ++ NewLMDIndexes3)),
+    true = length(KeysTerms2A) >= 1,
+
+    {KeysTerms2B, _} = lists:foldl(LMDSegFolder,
+                                    {[], Book2B},
+                                    lists:usort(LMDIndexes ++ NewLMDIndexes3)),
+    {KeysTerms2C, _} = lists:foldl(LMDSegFolder,
+                                    {[], Book2C},
+                                    lists:usort(LMDIndexes ++ NewLMDIndexes3)),
+    {KeysTerms2D, _} = lists:foldl(LMDSegFolder,
+                                    {[], Book2D},
+                                    lists:usort(LMDIndexes ++ NewLMDIndexes3)),
+    
+    KeysTerms2Joined = KeysTerms2B ++ KeysTerms2C ++ KeysTerms2D,
+    DeltaX = lists:subtract(KeysTerms2A, KeysTerms2Joined),
+    DeltaY = lists:subtract(KeysTerms2Joined, KeysTerms2A),
+    
+    io:format("DeltaX ~w~n", [DeltaX]),
+    io:format("DeltaY ~w~n", [DeltaY]),
+    
+    true = length(DeltaX) == 0, % This hasn't seen any extra changes
+    true = length(DeltaY) == 1, % This has seen an extra change
+    [{_, K1}] = DeltaY,
+    
+    ok = leveled_bookie:book_close(Book2A),
+    ok = leveled_bookie:book_close(Book2B),
+    ok = leveled_bookie:book_close(Book2C),
+    ok = leveled_bookie:book_close(Book2D).
+
+
 load_and_check_recentaae(Book1A, Book1B, Book1C, Book1D,
                             SW_StartLoad, TreeSize, UnitMins,
                             LMDIndexes_Loaded) ->
-    
+    load_and_check_recentaae(Book1A, Book1B, Book1C, Book1D,
+                                SW_StartLoad, TreeSize, UnitMins,
+                                LMDIndexes_Loaded, <<"$all">>).
+
+load_and_check_recentaae(Book1A, Book1B, Book1C, Book1D,
+                            SW_StartLoad, TreeSize, UnitMins,
+                            LMDIndexes_Loaded, Bucket) ->
     LMDIndexes = 
         case LMDIndexes_Loaded of
             false ->
@@ -677,7 +854,7 @@ load_and_check_recentaae(Book1A, Book1B, Book1C, Book1D,
                 ST = <<"0">>,
                 ET = <<"A">>,
                 Q = {tictactree_idx,
-                        {<<"$all">>,
+                        {Bucket,
                             list_to_binary("$aae." ++ LMD ++ "_bin"),
                             ST,
                             ET},
