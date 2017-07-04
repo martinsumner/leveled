@@ -7,7 +7,8 @@
             index_compare/1,
             recent_aae_noaae/1,
             recent_aae_allaae/1,
-            recent_aae_bucketaae/1
+            recent_aae_bucketaae/1,
+            recent_aae_expiry/1
             ]).
 
 all() -> [
@@ -15,7 +16,8 @@ all() -> [
             index_compare,
             recent_aae_noaae,
             recent_aae_allaae,
-            recent_aae_bucketaae
+            recent_aae_bucketaae,
+            recent_aae_expiry
             ].
 
 -define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
@@ -798,6 +800,74 @@ recent_aae_bucketaae(_Config) ->
     ok = leveled_bookie:book_close(Book2D).
 
 
+recent_aae_expiry(_Config) ->
+    % Proof that the index entries are indeed expired
+    
+    TreeSize = small,
+    % SegmentCount = 256 * 256,
+    UnitMins = 1,
+    TotalMins = 2,
+    AAE = {all, TotalMins, UnitMins},
+    
+    % Test requires multiple different databases, so want to mount them all
+    % on individual file paths
+    RootPathA = testutil:reset_filestructure("testA"),
+    StartOptsA = aae_startopts(RootPathA, AAE),
+    
+    % Book1A to get all objects
+    {ok, Book1A} = leveled_bookie:book_start(StartOptsA),
+    
+    GenMapFun =
+        fun(_X) ->
+            V = testutil:get_compressiblevalue(),
+            Indexes = testutil:get_randomindexes_generator(8),
+            testutil:generate_objects(5000,
+                                        binary_uuid,
+                                        [],
+                                        V,
+                                        Indexes)
+        end,
+                
+    ObjLists = lists:map(GenMapFun, lists:seq(1, 3)),
+    
+    SW0 = os:timestamp(),
+    % Load all nine lists into Book1A
+    lists:foreach(fun(ObjL) -> testutil:riakload(Book1A, ObjL) end,
+                    ObjLists), 
+    SW1 = os:timestamp(),
+    % sleep for two minutes, so all index entries will have expired
+    GetTicTacTreeFun =
+        fun(Bookie) ->
+            get_tictactree_fun(Bookie, <<"$all">>, TreeSize)
+        end,
+    EmptyTree = leveled_tictac:new_tree(empty, TreeSize),
+    LMDIndexes = determine_lmd_indexes(SW0, SW1, UnitMins),
+    
+    % Should get a non-empty answer to the query
+    TicTacTree1_Full =
+        lists:foldl(GetTicTacTreeFun(Book1A), EmptyTree, LMDIndexes),    
+    DL3_0 = leveled_tictac:find_dirtyleaves(TicTacTree1_Full, EmptyTree),
+    true = length(DL3_0) > 0,
+    
+    SecondsSinceLMD = timer:now_diff(os:timestamp(), SW0) div 1000000,
+    SecondsToExpiry = (TotalMins + UnitMins) * 60,
+    
+    case SecondsToExpiry > SecondsSinceLMD of
+        true ->
+            timer:sleep((SecondsToExpiry - SecondsSinceLMD) * 1000);
+        false ->
+            tier:sleep(0)
+    end,
+    
+    % Should now get an empty answer - all entries have expired
+    TicTacTree2_Full =
+        lists:foldl(GetTicTacTreeFun(Book1A), EmptyTree, LMDIndexes),    
+    
+    DL4_0 = leveled_tictac:find_dirtyleaves(TicTacTree2_Full, EmptyTree),
+    true = length(DL4_0) == 0.
+
+
+
 load_and_check_recentaae(Book1A, Book1B, Book1C, Book1D,
                             SW_StartLoad, TreeSize, UnitMins,
                             LMDIndexes_Loaded) ->
@@ -849,24 +919,7 @@ load_and_check_recentaae(Book1A, Book1B, Book1C, Book1D,
     
     GetTicTacTreeFun =
         fun(Bookie) ->
-            fun(LMD, Acc) ->
-                SW = os:timestamp(),
-                ST = <<"0">>,
-                ET = <<"A">>,
-                Q = {tictactree_idx,
-                        {Bucket,
-                            list_to_binary("$aae." ++ LMD ++ "_bin"),
-                            ST,
-                            ET},
-                        TreeSize,
-                        fun(_B, _K) -> accumulate end},
-                {async, Folder} = leveled_bookie:book_returnfolder(Bookie, Q),
-                R = Folder(),
-                io:format("TicTac Tree for index ~s took " ++
-                                "~w microseconds~n",
-                            [LMD, timer:now_diff(os:timestamp(), SW)]),
-                leveled_tictac:merge_trees(R, Acc)
-            end
+            get_tictactree_fun(Bookie, Bucket, TreeSize)
         end,
     
     % Get a TicTac tree representing one of the indexes in Bucket A
@@ -912,7 +965,7 @@ determine_lmd_indexes(StartTS, EndTS, UnitMins) ->
                     Acc;
                 false ->
                     NextTime =
-                        300 * X +
+                        UnitMins * 60 * X +
                             calendar:datetime_to_gregorian_seconds(StartDT),
                     NextDT =
                         calendar:gregorian_seconds_to_datetime(NextTime),
@@ -920,7 +973,7 @@ determine_lmd_indexes(StartTS, EndTS, UnitMins) ->
             end
         end,
     
-    lists:foldl(AddTimeFun, [StartTimeStr], lists:seq(1, 5)).        
+    lists:foldl(AddTimeFun, [StartTimeStr], lists:seq(1, 10)).        
     
     
 get_strtime(DateTime, UnitMins) ->
@@ -931,3 +984,24 @@ get_strtime(DateTime, UnitMins) ->
         lists:flatten(io_lib:format(?LMD_FORMAT,
                                         [Y, M, D, Hour, RoundMins])),
     StrTime.
+
+
+get_tictactree_fun(Bookie, Bucket, TreeSize) ->
+    fun(LMD, Acc) ->
+        SW = os:timestamp(),
+        ST = <<"0">>,
+        ET = <<"A">>,
+        Q = {tictactree_idx,
+                {Bucket,
+                    list_to_binary("$aae." ++ LMD ++ "_bin"),
+                    ST,
+                    ET},
+                TreeSize,
+                fun(_B, _K) -> accumulate end},
+        {async, Folder} = leveled_bookie:book_returnfolder(Bookie, Q),
+        R = Folder(),
+        io:format("TicTac Tree for index ~s took " ++
+                        "~w microseconds~n",
+                    [LMD, timer:now_diff(os:timestamp(), SW)]),
+        leveled_tictac:merge_trees(R, Acc)
+    end.
