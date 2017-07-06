@@ -1,8 +1,8 @@
 # Anti-Entropy
 
-Leveled is primarily designed to be a backend for Riak, and Riak has a number of anti-entropy mechanisms for comparing database state within and across clusters.  As part of the ongoing community work to build improvements into a new pure open-source release of Riak, some features have been added directly to Leveled to directly test some potential enhancements to anti-entropy.  These features are concerned with:
+Leveled is primarily designed to be a backend for Riak, and Riak has a number of anti-entropy mechanisms for comparing database state within and across clusters.  As part of the ongoing community work to build improvements into a new pure open-source release of Riak, some features have been added directly to Leveled to explore some potential enhancements to anti-entropy.  These features are concerned with:
 
-- Allowing for the database state within in a Leveled store or stores to be compared with an other store or stores which should have the same data;
+- Allowing for the database state within in a Leveled store or stores to be compared with an other store or stores which should share a portion of that state;
 
 - Allowing for quicker checking that recent changes to one store or stores have also been received by another store or stores that should be receiving the same changes.
 
@@ -12,7 +12,7 @@ The aim is to use these as new backend capabilities, combined with new coverage 
 
 - Comparison can use a consistent approach to compare state within and between clusters.
 
-- Comparison does not rely on duplication of database state to a separate store, with further anti-entropy required to manage state variance between the actual stores and anti-entropy stores.
+- Comparison does not rely on duplication of database state to a separate anti-entropy database, with further anti-entropy required to manage state variance between the actual stores and anti-entropy stores.
 
 - Comparison of state can be abstracted from Riak specific implementation so that mechanisms to compare between Riak clusters can be re-used to compare between a Riak cluster and another database store.  Coordination with another data store (e.g. Solr) can be controlled by the Riak user not just the Riak developer.
 
@@ -36,15 +36,15 @@ This requires all of the keys and hashes need to be pulled into memory to build 
 
 Anti-entropy in leveled is supported using the leveled_tictac module.  This module uses a less secure form of merkle trees that don't prevent information from leaking out, or make the tree tamper-proof, but allow for the trees to be built incrementally, and trees built incrementally to be merged.  These Merkle trees we're calling Tic-Tac Trees after the [Tic-Tac language](https://en.wikipedia.org/wiki/Tic-tac) to fit in with Bookmaker-based naming conventions of leveled.  The Tic-Tac language has been historically used on racecourses to communicate the state of the market between participants; although the more widespread use of mobile communications means that the use of Tic-Tac is petering out, and rather like Basho employees, there are now only three Tic-Tac practitioners left.
 
-The change from Merkle trees to Tic-Tac trees is simply to no longer use a cryptographically strong hashing algorithm, and now combine hashes through XORing rather than concatenation.  So a segment leaf is calculated from:
+The change from secure Merkle trees is simply to XOR and not hashing/concatenation for combining hashes, combined with using trees of fixed sizes, so that tree merging can also be managed through XOR operations.  So a segment leaf is calculated from:
 
 ``hash(K1, H1) XOR hash(K2, H2) XOR ... hash(Kn, Hn)``
 
-The Keys and hashes can now be combined in any order with any grouping.  The use of XOR instead of concatentation is [discouraged in secure Merkle Trees](https://security.stackexchange.com/questions/89847/can-xor-be-used-in-a-merkle-tree-instead-of-concatenation) but is not novel in its use within [trees focused on anti-entropy](http://distributeddatastore.blogspot.co.uk/2013/07/cassandra-using-merkle-trees-to-detect.html).
+The Keys and hashes can now be combined in any order with any grouping.  The use of XOR instead of concatenation is [discouraged in secure Merkle Trees](https://security.stackexchange.com/questions/89847/can-xor-be-used-in-a-merkle-tree-instead-of-concatenation) but is not novel in its use within [trees focused on anti-entropy](http://distributeddatastore.blogspot.co.uk/2013/07/cassandra-using-merkle-trees-to-detect.html).
 
 This enables two things:
 
-- The tree can be built incrementally when scanning across a store not in segment order (i.e. scanning across a store in key order) without needing to hold an state in memory beyond the size of the tree.
+- The tree can be built incrementally when scanning across a store not in segment order (i.e. scanning across a store in key order) without needing to hold an state in memory beyond the fixed size of the tree.
 
 - Two trees from stores with non-overlapping key ranges can be merged to reflect the combined state of that store i.e. the trees for each store can be built independently and in parallel and the subsequently merged without needing to build an interim view of the combined state.
 
