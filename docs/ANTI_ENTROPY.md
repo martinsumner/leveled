@@ -1,12 +1,12 @@
 # Anti-Entropy
 
-Leveled is primarily designed to be a backend for Riak, and Riak has a number of anti-entropy mechanisms for comparing database state within and across clusters.  As part of the ongoing community work to build improvements into Riak going forward, some features have been added directly to Leveled to directly test some potential enhancements to anti-entropy.  These features are concerned with:
+Leveled is primarily designed to be a backend for Riak, and Riak has a number of anti-entropy mechanisms for comparing database state within and across clusters.  As part of the ongoing community work to build improvements into a new pure open-source release of Riak, some features have been added directly to Leveled to directly test some potential enhancements to anti-entropy.  These features are concerned with:
 
 - Allowing for the database state within in a Leveled store or stores to be compared with an other store or stores which should have the same data;
 
 - Allowing for quicker checking that recent changes to one store or stores have also been received by another store or stores that should be receiving the same changes.
 
-The aim is to use these backend capabilities to allow for a Riak anti-entropy mechanism with the following features:
+The aim is to use these as new backend capabilities, combined with new coverage FSM query behaviour, to allow for new Riak anti-entropy mechanisms with the following features:
 
 - Comparison can be made between clusters with different ring-sizes - comparison is not coupled to partitioning.
 
@@ -15,6 +15,10 @@ The aim is to use these backend capabilities to allow for a Riak anti-entropy me
 - Comparison does not rely on duplication of database state to a separate store, with further anti-entropy required to manage state variance between the actual stores and anti-entropy stores.
 
 - Comparison of state can be abstracted from Riak specific implementation so that mechanisms to compare between Riak clusters can be re-used to compare between a Riak cluster and another database store.  Coordination with another data store (e.g. Solr) can be controlled by the Riak user not just the Riak developer.
+
+- Comparison can be controlled at a bucket level, so that buckets can be configured to be either specifically whitelisted into the anti-entropy scope, or blacklisted from it - with the option to support different schedules for anti-entropy operations for different buckets when whitelisting is used.
+
+- Through the use of key types allow for flexibility to calculate anti-entropy mechanisms in a way specific to the type of object being stored (e.g. support alternative mechanisms for some CRDT types).
 
 ## Merkle Trees
 
