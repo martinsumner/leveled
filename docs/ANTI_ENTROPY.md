@@ -1,10 +1,10 @@
 # Anti-Entropy
 
-Leveled is primarily designed to be a backend for Riak.  Riak has a number of anti-entropy mechanisms for comparing database state within and across clusters, as part of exploring the potential for improvements in these anti-entropy mechanisms - some features have been added directly to Leveled.  The purpose of these features is to:
+Leveled is primarily designed to be a backend for Riak, and Riak has a number of anti-entropy mechanisms for comparing database state within and across clusters.  As part of the ongoing community work to build improvements into Riak going forward, some features have been added directly to Leveled to directly test some potential enhancements to anti-entropy.  These features are concerned with:
 
-- Allow for the database state within in a Leveled store or stores to be compared with an other store or stores which should have the same data;
+- Allowing for the database state within in a Leveled store or stores to be compared with an other store or stores which should have the same data;
 
-- Allow for quicker checking that recent changes to one store or stores have also been received by another store or stores that should be receiving the same changes.
+- Allowing for quicker checking that recent changes to one store or stores have also been received by another store or stores that should be receiving the same changes.
 
 The aim is to use these backend capabilities to allow for a Riak anti-entropy mechanism with the following features:
 
@@ -12,9 +12,9 @@ The aim is to use these backend capabilities to allow for a Riak anti-entropy me
 
 - Comparison can use a consistent approach to compare state within and between clusters.
 
-- Comparison does not rely on duplication of database state to a separate store, with further anti-entropy required to manage state variance between the actual and anti-entropy stores.
+- Comparison does not rely on duplication of database state to a separate store, with further anti-entropy required to manage state variance between the actual stores and anti-entropy stores.
 
-- Comparison of state can be abstracted from Riak specific implementation so that mechanisms to compare between Riak clusters can be re-used to compare between a Riak cluster and another database store.  Coordination with another data store (e.g. Solr) can be controlled by the Riak user not the Riak developer.
+- Comparison of state can be abstracted from Riak specific implementation so that mechanisms to compare between Riak clusters can be re-used to compare between a Riak cluster and another database store.  Coordination with another data store (e.g. Solr) can be controlled by the Riak user not just the Riak developer.
 
 ## Merkle Trees
 
@@ -30,13 +30,13 @@ This requires all of the keys and hashes need to be pulled into memory to build 
 
 ## Tic-Tac Trees
 
-Anti-entropy in leveled is supported using the leveled_tictac module.  This module uses a less secure form of merkle trees that don't prevent information from leaking out, or make the tree tamper-proof, but allow for the trees to be built incrementally, and trees built incrementally to be merged.  These trees we're calling Tic-Tac Trees after the [Tic-Tac language](https://en.wikipedia.org/wiki/Tic-tac) which has been historically used on racecourses to communicate the state of the market between participants; although the more widespread use of mobile communications means that the use of Tic-Tac is petering out, and rather like Basho employees, there are now only three Tic-Tac practitioners left.
+Anti-entropy in leveled is supported using the leveled_tictac module.  This module uses a less secure form of merkle trees that don't prevent information from leaking out, or make the tree tamper-proof, but allow for the trees to be built incrementally, and trees built incrementally to be merged.  These Merkle trees we're calling Tic-Tac Trees after the [Tic-Tac language](https://en.wikipedia.org/wiki/Tic-tac) to fit in with Bookmaker-based naming conventions of leveled.  The Tic-Tac language has been historically used on racecourses to communicate the state of the market between participants; although the more widespread use of mobile communications means that the use of Tic-Tac is petering out, and rather like Basho employees, there are now only three Tic-Tac practitioners left.
 
 The change from Merkle trees to Tic-Tac trees is simply to no longer use a cryptographically strong hashing algorithm, and now combine hashes through XORing rather than concatenation.  So a segment leaf is calculated from:
 
 ``hash(K1, H1) XOR hash(K2, H2) XOR ... hash(Kn, Hn)``
 
-The Keys and hashes can now be combined in any order with any grouping.
+The Keys and hashes can now be combined in any order with any grouping.  The use of XOR instead of concatentation is [discouraged in secure Merkle Trees](https://security.stackexchange.com/questions/89847/can-xor-be-used-in-a-merkle-tree-instead-of-concatenation) but is not novel in its use within [trees focused on anti-entropy](http://distributeddatastore.blogspot.co.uk/2013/07/cassandra-using-merkle-trees-to-detect.html).
 
 This enables two things:
 
