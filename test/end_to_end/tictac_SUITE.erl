@@ -431,6 +431,9 @@ index_compare(_Config) ->
 
 
 recent_aae_noaae(_Config) ->
+    % Starts databases with recent_aae tables, and attempt to query to fetch
+    % recent aae trees returns empty trees as no index entries are found.
+    
     TreeSize = small,
     % SegmentCount = 256 * 256,
     UnitMins = 2,
@@ -486,6 +489,21 @@ recent_aae_noaae(_Config) ->
 
 
 recent_aae_allaae(_Config) ->
+    % Leveled is started in blacklisted mode with no buckets blacklisted. 
+    %
+    % A number of changes are then loaded into a store, and also partitioned
+    % across a separate set of three stores.  A merge tree is returned from
+    % both the single store and the partitioned store, and proven to compare
+    % the same.
+    %
+    % A single change is then made, but into one half of the system only.  The
+    % aae index is then re-queried and it is verified that a signle segment
+    % difference is found.
+    %
+    % The segment Id found is then used in a query to find the Keys that make
+    % up that segment, and the delta discovered should be just that one key
+    % which was known to have been changed
+    
     TreeSize = small,
     % SegmentCount = 256 * 256,
     UnitMins = 2,
