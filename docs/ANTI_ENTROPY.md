@@ -56,15 +56,15 @@ It is assumed that the trees will only be transferred securely between trusted a
 
 Anti-entropy in Riak is a dual-track process:
 
-- there is a need to efficiently and rapidly provide an update on store state that represents recent additions;
+- there is a need to efficiently and rapidly provide an update on vnode-state that represents recent additions;
 
-- there is a need to ensure that the anti-entropy view of state represents the state of the whole database.
+- there is a need to ensure that the anti-entropy view of state represents the state of the whole database, as actually exists on disk.
 
-Within the current Riak AAE implementation, recent changes are supported by having a separate anti-entropy store organised by segments so that the Merkle tree can be updated incrementally to reflect recent changes.  The Merkle tree produced following these changes should then represent the whole state of the database.  
+Within the current Riak AAE implementation, tracking recent changes is supported by having a dedicated anti-entropy store organised by segments so that the Merkle tree can be updated incrementally to reflect recent changes.  The Merkle tree produced following these changes should then represent the whole state of the database.  
 
-However as the view of the whole state is maintained in a different store to that holding the actual data: there is an entropy problem between the actual store and the AAE store e.g. data could be lost from the real store, and go undetected as it is not lost from the AAE store.  So periodically the AAE store is rebuilt by scanning the whole of the real store.  This rebuild can be an expensive process, and the cost is commonly controlled through performing this task infrequently.  Prior to the end of Basho there were changes pending in develop to better throttle and schedule these updates - through the riak_kv_sweeper.
+However as the view of the whole state is maintained in a different store to that holding the actual data: there is an entropy problem between the actual store and the AAE store e.g. data could be lost from the real store, and go undetected as it is not lost from the AAE store.  So periodically the AAE store is rebuilt by scanning the whole of the real store.  This rebuild can be an expensive process, and the cost is commonly controlled through performing this task infrequently.  Prior to the end of Basho there were changes pending in develop to better throttle and schedule these updates - through the riak_kv_sweeper, so that the store could be built more frequently with safety (and so that the scans necessary to build the store could be multi-purpose).
 
-The AAE store also needs to be partially scanned on a regular basis to update the current view of the Merkle tree.  If a vnode has 100M keys, and there has been 1000 updates since the last merkle tree was updated - then there will need to be o(1000) seeks across subsets of the store returning o(100K) keys in total.  As the store grows, the AAE store can grow to a non-trivial size, and have an impact on the page-cache and disk busyness.
+The AAE store also needs to be partially scanned on a regular basis to update the current view of the Merkle tree.  If a vnode has 100M keys, and there has been 1000 updates since the last merkle tree was updated - then there will need to be o(1000) seeks across subsets of the store returning o(100K) keys in total.  As the store grows, the AAE store can grow to a non-trivial size, and have an impact on the page-cache and disk busyness within the node.
 
 The AAE store is re-usable for checking consistency between databases, but with the following limitations:
 
@@ -74,7 +74,7 @@ The AAE store is re-usable for checking consistency between databases, but with 
 
 ### Proposed Leveled AAE
 
-There are three primary costs with scanning over the whole database:
+The first stage in considering an alternative approach to anti-entropy, was to question the necessity of having a dedicated AAE database that needs to reflect all key changes in the actual vnode store.  A separate store can have features such as being sorted by segment ID that make that store easier to scan for rebuilds of the tree.  By contrast, there are three primary costs with scanning over the primary database:
 
 - the impact on the page cache as all keys and values have to be read from disk, including not-recently used values;
 
@@ -82,15 +82,17 @@ There are three primary costs with scanning over the whole database:
 
 - the overall I/O load (primarily network-related) of streaming results from the fold.
 
-The third cost can be addressed by the fold output being an incrementally updatable tree of a fixed size; i.e. if the fold builds a Tic-Tac tree and doesn't stream results (like list keys), and guarantees a fixed size output both from a single partition and following merging across multiple partitions.  Within Leveled the first two costs are reduced by design due to the separation of Keys and Metadata from the object value, reducing significantly the workload associated with such a scan - especially where values are large.
+The third cost can be addressed by the fold output being an incrementally updatable tree of a fixed size; i.e. if the fold builds a Tic-Tac tree and doesn't stream results (like list keys), and guarantees a fixed size output both from a single partition and following merging across multiple partitions.  Within Leveled the first two costs are reduced by design due to the separation of Keys and Metadata from the object value, reducing significantly the workload associated with such a scan; especially where values are large.
 
 The [testing of traditional Riak AAE](https://github.com/martinsumner/leveled/blob/master/docs/VOLUME.md#leveled-aae-rebuild-with-journal-check) already undertaken has shown that scanning the database is not necessarily such a big issue in Leveled.  So it does seem potentially feasible to scan the store on a regular basis.  The testing of Leveldb with the riak_kv_sweeper feature shows that with the improved throttling more regular scanning is also possible here: testing with riak_kv_sweeper managed to achieve 10 x the number of sweeps, with only a 9% drop in throughput.
 
-A hypothesis is proposed that regular scanning of the full store to produce a Tic-Tac tree is certainly feasible in Leveled, but also potentially tolerable in other back-ends.  However, <b>frequent</b> scanning may still be impractical.  It is therefore suggested that there should be an alternative form of anti-entropy that can be run in addition to scanning, that is lower cost and can be run be frequently in support of scanning to produce Tic-Tac trees.  This supporting anti-entropy should focus on the job of verifying that <b>recent</b> changes have been received.  So there would be two anti-entropy mechanisms, one which can be run frequently (minutes) to check for the receipt of recent changes, and one that can be run regularly but infrequently (hours/days) to check that full database state is consistent.
+A hypothesis is proposed that regular scanning of the full store to produce a Tic-Tac tree is certainly feasible in Leveled, but also potentially tolerable in other back-ends.  However, <b>frequent</b> scanning is likely to still be impractical.  It is therefore suggested that there should be an alternative form of anti-entropy that can be run in addition to scanning, that is lower cost and can be run be frequently in support of whole database scanning.  This additional anti-entropy mechanism would focus on the job of verifying that <b>recent</b> changes have been received.  So there would be two anti-entropy mechanisms, one which can be run frequently (minutes) to check for the receipt of recent changes, and one that can be run regularly but infrequently (hours/days) to check that full database state is consistent.
+
+It is proposed to compare full database state by scanning the actual store, but producing a Tic-Tac tree as the outcome, one that can be merged across partitions through a coverage query to provide an overall view of the database state.  This view could be compared with different coverage query offsets within the same cluster, and with different replicated clusters.
 
 To provide a check on recent changes it is proposed to add a temporary index within the store, with an entry for each change that is built from a rounded last modified date and the hash of the value, so that the index can be scanned to form a Tic-Tac tree of recent changes.  This assumes that each object has a Last Modified Date that is consistent (for that version) across all points where that particular version is stored, to use as the field name for the index.  The term of the index is based on the segment ID (for the tree) and the hash of the value. This allows for a scan to build a tree of changes for a given range of modified dates, as well as a scan for keys and hashes to be returned for a given segment ID and date range.
 
-Within the Leveled the index can be made temporary by giving the entry a time-to-live, independent of any object time to live.  So once the change is beyond the timescale in which the operator wishes to check for recent changes, it will naturally be removed from the database (through deletion on the next compaction event that hits the entry in the Ledger).
+Within the Leveled the index can be made temporary by giving the entry a time-to-live, independent of any object time to live.  So once the change is beyond the timescale in which the operator wishes to check for recent changes, it will naturally be removed from the database (through deletion on the next compaction event that hits the entry in the Ledger).  Therefore in the long-term, there is no need to maintain additional state outside of the primary database stores, in order to manage anti-entropy.
 
 Hence overall this should give:
 
