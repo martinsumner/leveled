@@ -129,7 +129,7 @@ There are two parts to the full database anti-entropy mechanism:  the Tic-Tac tr
             PartitionFilter}
 ```
 
-The tictactree_obj folder produces a Tic-Tac tree form a fold across the objects (or more precisely the heads of the objects in the Ledger)m using the constraints Tag, Bucket, StartKey and EndKey.  CheckPresence can be used to require the folder to confirm if the value is present in the Journal before including it in the tree - this will slow down the fold significantly, but protect from corruption in the Journal not represented in the Ledger.  The partition filter cna be used where the store holds data from multiple partitions, and only data form a subset of partitions should be included, with the partition filter being a function on the Bucket and Key to make that decision.
+The tictactree_obj folder produces a Tic-Tac tree from a fold across the objects (or more precisely the heads of the objects in the Ledger) using the constraints Tag, Bucket, StartKey and EndKey.  CheckPresence can be used to require the folder to confirm if the value is present in the Journal before including it in the tree - this will slow down the fold significantly, but protect from corruption in the Journal not represented in the Ledger.  The partition filter can be used where the store holds data from multiple partitions, and only data form a subset of partitions should be included, with the partition filter being a function on the Bucket and Key to make that decision.
 
 The tictactree_idx folder produces a tic-Tac tree from a range of an index, and so can be used as with tictactree_obj but for checking that an index is consistent between coverage offsets or between databases.
 
@@ -179,7 +179,6 @@ Even with this mitigation, the volume of false positives and negatives needs to 
 
 The approach considered for Leveled has been to modify the Merkle trees used to ease their implementation, as well as specifically separating out anti-entropy for recent changes as a different problem to long-term anti-entropy of global state.
 
-There is [emergent research ongoing](http://haslab.uminho.pt/tome/files/global_logical_clocks.pdf) to try and leverage the use of dotted version vectors at a node level to improve the efficiency of managing key-level consistency, reduce the risks associated with deletes (without permanent tombstones), but also provide an inherently integrated approach to active anti-entropy.
 
 The Global Logical Clock approach does assume that durability is not mutable:
 
