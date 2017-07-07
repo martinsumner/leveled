@@ -32,7 +32,7 @@ A side effect of the concatenation decision is that trees cannot be calculated i
 
 This requires all of the keys and hashes need to be pulled into memory to build the hashtree - unless the tree is being built segment by segment.  The Riak hashtree data store is therefore ordered by segment so that it can be incrementally built.  The segments which have had key changes are tracked, and at exchange time all "dirty segments" are re-scanned in the store segment by segment, so that the hashtree can be rebuilt.
 
-## Tic-Tac Trees
+## Tic-Tac Merkle Trees
 
 Anti-entropy in leveled is supported using the leveled_tictac module.  This module uses a less secure form of merkle trees that don't prevent information from leaking out, or make the tree tamper-proof, but allow for the trees to be built incrementally, and trees built incrementally to be merged.  These Merkle trees we're calling Tic-Tac Trees after the [Tic-Tac language](https://en.wikipedia.org/wiki/Tic-tac) to fit in with Bookmaker-based naming conventions of leveled.  The Tic-Tac language has been historically used on racecourses to communicate the state of the market between participants; although the more widespread use of mobile communications means that the use of Tic-Tac is petering out, and rather like Basho employees, there are now only three Tic-Tac practitioners left.
 
@@ -56,21 +56,23 @@ It is assumed that the trees will only be transferred securely between trusted a
 
 Anti-entropy in Riak is a dual-track process:
 
-- there is a need to efficiently and rapidly provide an update on vnode-state that represents recent additions;
+- there is a capacity to efficiently and rapidly provide an update on overall vnode state that reflects recent additions, by maintaining a separate anti-entropy store in parallel to each primary store;
 
-- there is a need to ensure that the anti-entropy view of state represents the state of the whole database, as actually exists on disk.
+- there is a capacity to ensure that the anti-entropy view of state represents the state of the whole database, as actually exists on disk, by periodically rebuilding that view from the primary store.
 
-Within the current Riak AAE implementation, tracking recent changes is supported by having a dedicated anti-entropy store organised by segments so that the Merkle tree can be updated incrementally to reflect recent changes.  The Merkle tree produced following these changes should then represent the whole state of the database.  
+Within the current Riak AAE implementation, tracking recent changes is supported by having a dedicated anti-entropy store organised by segments (an identifier of a leaf of the Merkle tree) so that the Merkle tree can be updated incrementally to reflect recent changes.  When a new update is received an AAE tree update is made following the vnode update, and the segment is marked as requiring an update before completing the next Merkle tree exchange.  
 
 However as the view of the whole state is maintained in a different store to that holding the actual data: there is an entropy problem between the actual store and the AAE store e.g. data could be lost from the real store, and go undetected as it is not lost from the AAE store.  So periodically the AAE store is rebuilt by scanning the whole of the real store.  This rebuild can be an expensive process, and the cost is commonly controlled through performing this task infrequently.  Prior to the end of Basho there were changes pending in develop to better throttle and schedule these updates - through the riak_kv_sweeper, so that the store could be built more frequently with safety (and so that the scans necessary to build the store could be multi-purpose).
 
-The AAE store also needs to be partially scanned on a regular basis to update the current view of the Merkle tree.  If a vnode has 100M keys, and there has been 1000 updates since the last merkle tree was updated - then there will need to be o(1000) seeks across subsets of the store returning o(100K) keys in total.  As the store grows, the AAE store can grow to a non-trivial size, and have an impact on the page-cache and disk busyness within the node.
+The AAE store also needs to be partially scanned on a regular basis to update the current view of the Merkle tree, to reflect the segments which have been altered by recent changes.  If a vnode has 100M keys, and there has been 1000 updates since the last merkle tree was updated - then there will need to be o(1000) seeks across subsets of the store returning o(100K) keys in total.  As the store grows, the AAE store can grow to a non-trivial size, and these operations may have an impact on the page-cache and disk busyness within the node.
 
 The AAE store is re-usable for checking consistency between databases, but with the following limitations:
 
 - the two stores need to be partitioned equally, constraining replication to other database technologies, and preventing replication from being used as an approach to re-partitioning (ring re-sizing).
 
 - the aae store is not split by bucket, and so supporting replication configured per bucket is challenging.  
+
+The AAE process in production system commonly raises false positives (prompts repairs that are unnecessary), sometimes for [known reasons](https://github.com/basho/riak_kv/issues/1189), sometimes for unknown reasons, especially following rebuilds which follow ring changes.  The repair process has [a throttle](http://docs.basho.com/riak/kv/2.2.3/using/cluster-operations/active-anti-entropy/#throttling) to prevent this from impacting a production system, but this commonly needs to be re-tuned based on experience.
 
 ### Proposed Leveled AAE
 
