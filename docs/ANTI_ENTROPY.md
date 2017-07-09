@@ -30,13 +30,13 @@ A side effect of the concatenation decision is that trees cannot be calculated i
 
 ``hash([{K1, H1}, {K2, H2} .. {Kn, Hn}])``
 
-This requires all of the keys and hashes need to be pulled into memory to build the hashtree - unless the tree is being built segment by segment.  The Riak hashtree data store is therefore ordered by segment so that it can be incrementally built.  The segments which have had key changes are tracked, and at exchange time all "dirty segments" are re-scanned in the store segment by segment, so that the hashtree can be rebuilt.
+This requires all of the keys and hashes to be pulled into memory to build the hashtree - unless the tree is being built segment by segment.  The Riak hashtree data store is therefore ordered by segment so that it can be incrementally built.  The segments which have had key changes are tracked, and at exchange time all "dirty segments" are re-scanned in the store segment by segment, so that the hashtree can be rebuilt.
 
 ## Tic-Tac Merkle Trees
 
-Anti-entropy in leveled is supported using the leveled_tictac module.  This module uses a less secure form of merkle trees that don't prevent information from leaking out, or make the tree tamper-proof, but allow for the trees to be built incrementally, and trees built incrementally to be merged.  These Merkle trees we're calling Tic-Tac Trees after the [Tic-Tac language](https://en.wikipedia.org/wiki/Tic-tac) to fit in with Bookmaker-based naming conventions of leveled.  The Tic-Tac language has been historically used on racecourses to communicate the state of the market between participants; although the more widespread use of mobile communications means that the use of Tic-Tac is petering out, and rather like Basho employees, there are now only three Tic-Tac practitioners left.
+Anti-entropy in leveled is supported using the [leveled_tictac](https://github.com/martinsumner/leveled/blob/mas-tictac/src/leveled_tictac.erl) module.  This module uses a less secure form of merkle trees that don't prevent information from leaking out, or make the tree tamper-proof, but allow for the trees to be built incrementally, and trees built incrementally to be merged.  These Merkle trees we're calling Tic-Tac Trees after the [Tic-Tac language](https://en.wikipedia.org/wiki/Tic-tac) to fit in with Bookmaker-based naming conventions of leveled.  The Tic-Tac language has been historically used on racecourses to communicate the state of the market between participants; although the more widespread use of mobile communications means that the use of Tic-Tac is petering out, and rather like Basho employees, there are now only three Tic-Tac practitioners left.
 
-The change from secure Merkle trees is simply to XOR and not hashing/concatenation for combining hashes, combined with using trees of fixed sizes, so that tree merging can also be managed through XOR operations.  So a segment leaf is calculated from:
+The change from secure Merkle trees is simply to (use XOR? or XOR hashes), and not hashing/concatenation, for combining hashes, combined with using trees of fixed sizes, so that tree merging can also be managed through XOR operations.  So a segment leaf is calculated from:
 
 ``hash(K1, H1) XOR hash(K2, H2) XOR ... hash(Kn, Hn)``
 
@@ -62,7 +62,7 @@ Anti-entropy in Riak is a dual-track process:
 
 Within the current Riak AAE implementation, tracking recent changes is supported by having a dedicated anti-entropy store organised by segments (an identifier of a leaf of the Merkle tree) so that the Merkle tree can be updated incrementally to reflect recent changes.  When a new update is received an AAE tree update is made following the vnode update, and the segment is marked as requiring an update before completing the next Merkle tree exchange.  
 
-However as the view of the whole state is maintained in a different store to that holding the actual data: there is an entropy problem between the actual store and the AAE store e.g. data could be lost from the real store, and go undetected as it is not lost from the AAE store.  So periodically the AAE store is rebuilt by scanning the whole of the real store.  This rebuild can be an expensive process, and the cost is commonly controlled through performing this task infrequently.  Prior to the end of Basho there were changes pending in develop to better throttle and schedule these updates - through the riak_kv_sweeper, so that the store could be built more frequently with safety (and so that the scans necessary to build the store could be multi-purpose).
+However as the view of the whole state is maintained in a different store to that holding the actual data: there is an entropy problem between the actual store and the AAE store e.g. data could be lost from the real store, and go undetected as it is not lost from the AAE store.  So periodically the AAE store is rebuilt by scanning the whole of the real store.  This rebuild can be an expensive process, and the cost is commonly controlled through performing this task infrequently.  Prior to the end of Basho there were changes pending in riak\_kv's develop branch to better throttle and schedule these updates - through the `riak_kv_sweeper`, so that the store could be built more frequently with safety (and so that the scans necessary to build the store could be multi-purpose).
 
 The AAE store also needs to be partially scanned on a regular basis to update the current view of the Merkle tree, to reflect the segments which have been altered by recent changes.  If a vnode has 100M keys, and there has been 1000 updates since the last merkle tree was updated - then there will need to be o(1000) seeks across subsets of the store returning o(100K) keys in total.  As the store grows, the AAE store can grow to a non-trivial size, and these operations may have an impact on the page-cache and disk busyness within the node.
 
@@ -70,7 +70,7 @@ The AAE store is re-usable for checking consistency between databases, but with 
 
 - the two stores need to be partitioned equally, constraining replication to other database technologies, and preventing replication from being used as an approach to re-partitioning (ring re-sizing).
 
-- the aae store is not split by bucket, and so supporting replication configured per bucket is challenging.  
+- the AAE store is not split by bucket, and so supporting replication configured per bucket is challenging.  
 
 The AAE process in production system commonly raises false positives (prompts repairs that are unnecessary), sometimes for [known reasons](https://github.com/basho/riak_kv/issues/1189), sometimes for unknown reasons, especially following rebuilds which follow ring changes.  The repair process has [a throttle](http://docs.basho.com/riak/kv/2.2.3/using/cluster-operations/active-anti-entropy/#throttling) to prevent this from impacting a production system, but this commonly needs to be re-tuned based on experience.
 
@@ -86,7 +86,7 @@ The first stage in considering an alternative approach to anti-entropy, was to q
 
 The third cost can be addressed by the fold output being an incrementally updatable tree of a fixed size; i.e. if the fold builds a Tic-Tac tree and doesn't stream results (like list keys), and guarantees a fixed size output both from a single partition and following merging across multiple partitions.  Within Leveled the first two costs are reduced by design due to the separation of Keys and Metadata from the object value, reducing significantly the workload associated with such a scan; especially where values are large.
 
-The [testing of traditional Riak AAE](https://github.com/martinsumner/leveled/blob/master/docs/VOLUME.md#leveled-aae-rebuild-with-journal-check) already undertaken has shown that scanning the database is not necessarily such a big issue in Leveled.  So it does seem potentially feasible to scan the store on a regular basis.  The testing of Leveldb with the riak_kv_sweeper feature shows that with the improved throttling more regular scanning is also possible here: testing with riak_kv_sweeper managed to achieve 10 x the number of sweeps, with only a 9% drop in throughput.
+The [testing of traditional Riak AAE](https://github.com/martinsumner/leveled/blob/master/docs/VOLUME.md#leveled-aae-rebuild-with-journal-check) already undertaken has shown that scanning the database is not necessarily such a big issue in Leveled.  So it does seem potentially feasible to scan the store on a regular basis.  The testing of Leveldb with the `riak_kv_sweeper` feature shows that with the improved throttling more regular scanning is also possible here: testing with `riak_kv_sweeper` managed to achieve 10 x the number of sweeps, with only a 9% drop in throughput.
 
 A hypothesis is proposed that regular scanning of the full store to produce a Tic-Tac tree is certainly feasible in Leveled, but also potentially tolerable in other back-ends.  However, <b>frequent</b> scanning is likely to still be impractical.  If it is not possible to scan the database frequently, if a recent failure event has led to a discrepancy between stores, this will not be detected in a timely manner.  It is therefore suggested that there should be an alternative form of anti-entropy that can be run in addition to scanning, that is lower cost and can be run frequently in support of whole database scanning.  This additional anti-entropy mechanism would focus on the job of verifying that <b>recent</b> changes have been received.  
 
@@ -131,7 +131,7 @@ There are two parts to the full database anti-entropy mechanism:  the Tic-Tac tr
 
 The tictactree_obj folder produces a Tic-Tac tree from a fold across the objects (or more precisely the heads of the objects in the Ledger) using the constraints Tag, Bucket, StartKey and EndKey.  CheckPresence can be used to require the folder to confirm if the value is present in the Journal before including it in the tree - this will slow down the fold significantly, but protect from corruption in the Journal not represented in the Ledger.  The partition filter can be used where the store holds data from multiple partitions, and only data form a subset of partitions should be included, with the partition filter being a function on the Bucket and Key to make that decision.
 
-The tictactree_idx folder produces a tic-Tac tree from a range of an index, and so can be used as with tictactree_obj but for checking that an index is consistent between coverage offsets or between databases.
+The tictactree_idx folder produces a Tic-Tac tree from a range of an index, and so can be used like tictactree_obj but for checking that an index is consistent between coverage offsets or between databases.
 
 These two folds are tested in the tictac_SUITE test suite in the ``many_put_compare`` and ``index_compare`` tests.
 
@@ -153,25 +153,25 @@ The index entry is then of the form:
 
 In blacklist mode the Bucket will be $all, and the Key will actually be a {Bucket, Key} pair.
 
-The index entry is given a TTL of a configurable amount (e.g. 1 hour) - and no index entry may be added if the change is already considered to be too far in the past.  The index entry is added to the Ledger in the same transaction as the other changes, and will be re-calculated and re-added out of the Journal under restart conditions where the change has not reached a persisted state in the Ledger prior to the close.
+The index entry is given a TTL of a configurable amount (e.g. 1 hour) - and no index entry may be added if the change is already considered to be too far in the past.  The index entry is added to the Ledger in the same transaction as an object value update, and will be re-calculated and re-added out of the Journal under restart conditions where the change has not reached a persisted state in the Ledger prior to the close, for example after a crash.
 
 The near real-time entropy index currently has four ct tests:
 
-- recent_aae_noaae (confirming loading a store with real-time aae disabled has no impact);
+- `recent_aae_noaae` (confirming loading a store with real-time aae disabled has no impact);
 
-- recent_aae_allaae (confirming that a single store loaded with data can be compared with the a store where the same data is spread across three leveled instances - with all buckets covered by anti-entropy);
+- `recent_aae_allaae` (confirming that a single store loaded with data can be compared with the a store where the same data is spread across three leveled instances - with all buckets covered by anti-entropy);
 
-- recent_aae_bucketaae (confirming that a single store loaded with data can be compared with the a store where the same data is spread across three leveled instances - with a single buckets covered by anti-entropy);
+- `recent_aae_bucketaae` (confirming that a single store loaded with data can be compared with the a store where the same data is spread across three leveled instances - with a single buckets covered by anti-entropy);
 
-- recent_aae_expiry (confirming that aae index will expire).
+- `recent_aae_expiry` (confirming that aae index will expire).
 
 ### Clock Drift
 
-The proposed near-real-time anti-entropy mechanism depends on a timestamp, so ultimately some false positives and false negatives are unavoidable - especially if clock drift is large.  The assumption is though:
+The proposed near-real-time anti-entropy mechanism depends on a timestamp, so ultimately some false positives and false negatives are unavoidable - especially if clock drift is large.  The assumption is:
 
 - that this method is never a single dependency for ensuring consistency, it is supported by other mechanisms to further validate, that would detect false negatives.
 
-- that recovery from false positives will be safely implemented, so that a falsely identified discrepancy is validated before a change is made (e.g. repair through read-repair).
+- that recovery from false positives will be safely implemented, so that a falsely identified discrepancy is validated before a change is made (e.g. read-repair).
 
 Even with this mitigation, the volume of false positives and negatives needs to be controlled, in particular where clock drift is small (i.e. measured in seconds), and hence likely.  If the object has a last modified date set in one place, as with Riak, there is no issue with different actors seeing a different last modified date for the same change.  However, as the index object should expire the risk exists that the store will set an inappropriate expiry time, or even not index the object as it considers the object to be a modification too far in the past.  The Near Real-Time AAE process has the concept of unit minutes, which represents the level of granularity all times will be rounded to.  All expiry times are set with a tolerance equal to the unit minutes, to avoid false positives or negatives when clock drift is small.
 
@@ -180,7 +180,7 @@ Even with this mitigation, the volume of false positives and negatives needs to 
 The approach considered for Leveled has been to modify the Merkle trees used to ease their implementation, as well as specifically separating out anti-entropy for recent changes as a different problem to long-term anti-entropy of global state.
 
 
-The Global Logical Clock approach does assume that durability is not mutable:
+The [Global Logical Clock](https://github.com/ricardobcl/DottedDB) approach does assume that durability is not mutable:
 
 > Nodes have access to durable storage; nodes can crash but
 eventually will recover with the content of the durable storage as at the time of
