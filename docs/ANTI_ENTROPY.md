@@ -4,7 +4,7 @@
 
 In the initial releases of Riak, there were three levels of protection against loss of data, where loss is caused by either a backend store not receiving data (because it was unavailable), or losing writes (due to a crash, or corruption of previously written data):
 
-- [Read repair](http://docs.basho.com/riak/kv/2.2.3/learn/concepts/replication/#read-repair), whenever an object was read, if as part of that read it was discovered that a primary node that should have the an update but instead has an older version of an object; then post the completion of the read the finite-state-machine managing the get would update the out-of-date vnode with the latest version.
+- [Read repair](http://docs.basho.com/riak/kv/2.2.3/learn/concepts/replication/#read-repair), whenever an object was read, if as part of that read it was discovered that a vnode that should have the an update but instead has an older version of an object; then post the completion of the read the finite-state-machine managing the get would update the out-of-date vnode with the latest version.
 
 - [Hinted handoff](http://docs.basho.com/riak/kv/2.2.3/using/reference/handoff/#types-of-handoff), if a fallback node has taken responsibility for writes to a given vnode due to a temporary ring change in the cluster (e.g. due to a node failure), then when the expected primary returns to service the fallback node should be triggered to handoff any data it has (from this or any previous fallback period) to the expected primary vnode.  Once handoff was complete the vnode would then self-destruct and remove any durable state.  Fallback nodes start vnodes for the same ring partition as the primary vnode.  A fallback node is selected because it owns the next vnode in the ring, but it starts a new vnode to replace the primary vnode, it doesn't store data in the vnode backend which caused it to be considered a fallback (fallback is to a node not to a vnode) - so handoff is not required to be selective about the data that is handed off.
 
@@ -24,7 +24,7 @@ From this persisted store a Merkle tree is maintained for each Partition.  These
 
 The process of maintaining the hashtree is partially deferred to the point of the exchange, but is relatively low cost, and so these exchanges can occur frequently without creating significant background load.  Infrequently, but regularly, the hashtree store would be cleared and rebuilt from an object fold to ensure that it reflected the actual persisted state in the store.
 
-The impact on the tree primary issues of anti-entropy of this mechanism was:
+The impact on the three primary issues of anti-entropy of this mechanism was:
 
 - Repair was de-coupled from reads, and so unread objects would not have a vastly reduced risk of disappearing following node failure and disk corruption events.
 
@@ -44,11 +44,13 @@ Although this represented an improvement in terms of entropy management, there w
 
 - The hashtrees are not externally exposed, and so cannot be used for externally managed replication (e.g. to another database).
 
-- The rebuilds of the hshtree still require the relatively expensive fold_objects operation, and so parallelisation of rebuilds may need to be controlled to prevent an impact on cluster performance.  Measuring the impact is difficult in pre-production load tests due to the scheduled and infrequent nature of AAE rebuilds.
+- The rebuilds of the hashtree still require the relatively expensive fold_objects operation, and so parallelisation of rebuilds may need to be controlled to prevent an impact on cluster performance.  Measuring the impact is difficult in pre-production load tests due to the scheduled and infrequent nature of AAE rebuilds.
+
+- Improvements to hashtrees require significant devleopment and test for transition, due to the potential for hashtree changes to break many things (e.g. Solr integration, MDC), and also the difficulty in coordinating changes between different dependent systems that independently build state over long periods of time.
 
 ## Leveled and AAE
 
-Leveled is primarily designed to be a backend for Riak, and Riak has a number of anti-entropy mechanisms for comparing database state within and across clusters.  As part of the ongoing community work to build improvements into a new pure open-source release of Riak, some features have been added directly to Leveled to explore some potential enhancements to anti-entropy.  These features are concerned with:
+Leveled is primarily designed to be a backend for Riak.  As part of the ongoing community work to build improvements into a new pure open-source release of Riak, some features have been added directly to Leveled to explore some potential enhancements to anti-entropy.  These features are concerned with:
 
 - Allowing for the database state within in a Leveled store or stores to be compared with an other store or stores which should share a portion of that state;
 
@@ -78,7 +80,7 @@ A side effect of the concatenation decision is that trees cannot be calculated i
 
 ``hash([{K1, H1}, {K2, H2} .. {Kn, Hn}])``
 
-This requires all of the keys and hashes to be pulled into memory to build the hashtree - unless the tree is being built segment by segment.  The Riak hashtree data store is therefore ordered by segment so that it can be incrementally built.  The segments which have had key changes are tracked, and at exchange time all "dirty segments" are re-scanned in the store segment by segment, so that the hashtree can be rebuilt.
+This requires all of the keys and hashes to be pulled into memory to build the hashtree - unless the tree is being built segment by segment.  The Riak hashtree data store is therefore ordered by segment so that it can be incrementally built.  The segments which have had key changes are tracked, and at exchange time all "dirty segments" are re-scanned in the store segment by segment, so that the hashtree can be rebuilt.  Note though, that this is necessary in the current hashtree implementation even if there was an incrementally buildable Merkle Tree, as there is no read before write into the hashtree to inform the process of what update (if any) to reverse out of the Tree as well as which update to add in.
 
 ## Tic-Tac Merkle Trees
 
@@ -124,7 +126,7 @@ The AAE process in production system commonly raises false positives (prompts re
 
 ### Proposed Leveled AAE
 
-The first stage in considering an alternative approach to anti-entropy, was to question the necessity of having a dedicated AAE database that needs to reflect all key changes in the actual vnode store.  A separate store can have features such as being sorted by segment ID that make that store easier to scan for rebuilds of the tree: hence avoiding the three main costs with scanning over the primary database:
+The first stage in considering an alternative approach to anti-entropy, was to question the necessity of having a dedicated AAE database that needs to reflect all key changes in the actual vnode store.  This separate store is currently necessary as the hashtree needs a store sorted by segment ID that make that store easier to scan for rebuilds of the tree, hence avoiding the three main costs with scanning over the primary database:
 
 - the impact on the page cache as all keys and values have to be read from disk, including not-recently used values;
 
@@ -132,7 +134,9 @@ The first stage in considering an alternative approach to anti-entropy, was to q
 
 - the overall I/O load (primarily network-related) of streaming results from the fold.
 
-The third cost can be addressed by the fold output being an incrementally updatable tree of a fixed size; i.e. if the fold builds a Tic-Tac tree and doesn't stream results (like list keys), and guarantees a fixed size output both from a single partition and following merging across multiple partitions.  Within Leveled the first two costs are reduced by design due to the separation of Keys and Metadata from the object value, reducing significantly the workload associated with such a scan; especially where values are large.
+The third cost can be addressed by the fold output being an incrementally updatable tree of a fixed size; i.e. if the fold builds a Tic-Tac tree and doesn't stream results (like list keys), and guarantees a fixed size output both from a single partition and following merging across multiple partitions.  
+
+Within Leveled the first two costs are reduced by design due to the separation of Keys and Metadata from the object value, reducing significantly the workload associated with such a scan; especially where values are large.
 
 The [testing of traditional Riak AAE](https://github.com/martinsumner/leveled/blob/master/docs/VOLUME.md#leveled-aae-rebuild-with-journal-check) already undertaken has shown that scanning the database is not necessarily such a big issue in Leveled.  So it does seem potentially feasible to scan the store on a regular basis.  The testing of Leveldb with the `riak_kv_sweeper` feature shows that with the improved throttling more regular scanning is also possible here: testing with `riak_kv_sweeper` managed to achieve 10 x the number of sweeps, with only a 9% drop in throughput.
 
@@ -248,3 +252,13 @@ Some further consideration has been given to using a version of this Global Logi
 - How to discover key IDs from missing dots where the controlling node for the update has recently failed.
 
 This likely represent gaps in current understanding, rather than flaws in the approach.  The evolution of this research will be tracked with interest.
+
+## Some Notes on Riak implementation
+
+Some notes on re-using this alternative anti-entropy mechanism within Riak:
+
+- There is divergence between Leveled and LevelDB with regards to how async folds are implemented.  Within LevelDB requesting an async fold returns a folder function that will take a snapshot when it is called.  Within Leveled the option exists to take the snapshot before returning the folder function, so that calling the folder function will work on a snapshot of the store taken when the folder was requested.  This difference caused issues with testing with riak_kv_sweeeper, as the scheduling in sweeper meant that folds would be requested, and left on a queue for a long enough to be timed out by the time it was called.  The quick fix for riak_kv_sweeper testing was to make the folder snapshot behaviour in Leveled consistent with LevelDB.  However, the original behaviour opens up some interesting possibilities for AAE implementation in that a coverage set of vnodes could be snapshotted at a point in time, but not all folds need to be run concurrently to make the result consistent to the point in time - so folds could be directly throttled by the coverage process so that only one fold was being run on each node at once.  
+
+- In Leveled a special fold currently supports the Tic-Tac tree generation for indexes, and one for objects.  It may be better to support this through a offering a more open capability to pass different fold functions and accumulators into index folds.  This could be re-used for "reporting indexes", where we want to count terms of different types rather than return all those terms via an accumulating list e.g. an index may have a bitmap style part, and the function will apply a wildcard mask to the bitmap and count the number of hits against each possible output.  
+
+- The initial intention is to implement the hashtree query functions based around the coverage_fsm behaviour, but with the option to stipulate externally the offset.  So to test for differences between clusters, the user could concurrently query the two clusters for the same offset (or a random offset), whereas to find entropy within a cluster two concurrently run queries could be compared for different offsets.
