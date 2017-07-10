@@ -1,5 +1,53 @@
 # Anti-Entropy
 
+## Background
+
+In the initial releases of Riak, there were three levels of protection against loss of data, where loss is caused by either a backend store not receiving data (because it was unavailable), or losing writes (due to a crash, or corruption of previously written data):
+
+- [Read repair](http://docs.basho.com/riak/kv/2.2.3/learn/concepts/replication/#read-repair), whenever an object was read, if as part of that read it was discovered that a primary node that should have the an update but instead has an older version of an object; then post the completion of the read the finite-state-machine managing the get would update the out-of-date vnode with the latest version.
+
+- [Hinted handoff](http://docs.basho.com/riak/kv/2.2.3/using/reference/handoff/#types-of-handoff), if a fallback node has taken responsibility for writes to a given vnode due to a temporary ring change in the cluster (e.g. due to a node failure), then when the expected primary returns to service the fallback node should be triggered to handoff any data it has (from this or any previous fallback period) to the expected primary vnode.  Once handoff was complete the vnode would then self-destruct and remove any durable state.  Fallback nodes start vnodes for the same ring partition as the primary vnode.  A fallback node is selected because it owns the next vnode in the ring, but it starts a new vnode to replace the primary vnode, it doesn't store data in the vnode backend which caused it to be considered a fallback (fallback is to a node not to a vnode) - so handoff is not required to be selective about the data that is handed off.
+
+- [Key-listing for multi-data-centre replication](http://docs.basho.com/riak/kv/2.2.3/using/reference/v2-multi-datacenter/architecture/#fullsync-replication), for customers with the proprietary Riak Enterprise software there was a mechanism whereby vnode by vnode there would be a fold over all the objects in the vnode, for a replicated bucket, calculating a hash for the object and sending the keys and hashes to a replicated cluster for comparison with the result of its equivalent object fold.  Any variances would then be repaired by streaming those missing updates between the clusters to be re-added across all required vnodes.
+
+There were three primary issues with these mechanisms:
+
+- Some objects may be read very infrequently, and such objects may be lost due to a series of failure or disk-corruption events that occurred between reads.
+
+- For large stores per-vnode object folding required for MDC was an expensive operation, and when run in parallel with standard database load could lead to unpredictability in response times.
+
+- Some read events do not validate across multiple vnodes, primarily secondary index queries, so an inconsistent index due to a failed write would never be detected by the database.  Secondary index queries were not necessarily eventually consistent, but were potentially never consistent.
+
+To address these weaknesses Active Anti-Entropy (AAE) was introduced to Riak, as a configurable option.  Configuring Active Anti-Entropy would start a new AAE hashtree store for every primary vnode in the ring.  The vnode process would following a successful put [update this hashtree store process](https://github.com/basho/riak_kv/blob/2.1.7/src/riak_kv_vnode.erl#L2139-L2169) by sending it the updated object after converting it from its binary format.  This would generally happen in an async way, but periodically the change would block the vnode to confirm that the AAE process was keeping up.  The hashtree store process would hash the riak object to create a hash for the update, and hash the Key to map it to one of 1024 * 1024 segments - and then in batches update the store with a key of {$t, Partition, Segment, Key}, and a value of the object hash.
+
+From this persisted store a Merkle tree is maintained for each Partition.  These Merkle trees can then then be exchanged with another vnode's AAE hashtree store if that vnode is also a primary vnode for that same partition.  Exchanging the Merkle tree would highlight any segments which had a variance - and then it would be possible to iterate over the store segment by segment to discover which keys actually differed.  Those keys could then be re-read, so that read repair would correct any entropy that actually existed.  
+
+The process of maintaining the hashtree is partially deferred to the point of the exchange, but is relatively low cost, and so these exchanges can occur frequently without creating significant background load.  Infrequently, but regularly, the hashtree store would be cleared and rebuilt from an object fold to ensure that it reflected the actual persisted state in the store.
+
+The impact on the tree primary issues of anti-entropy of this mechanism was:
+
+- Repair was de-coupled from reads, and so unread objects would not have a vastly reduced risk of disappearing following node failure and disk corruption events.
+
+- Exchanges have a predictable and limited impact on cluster load, relative to object folds, if the variance highlighted by the exchange is small.
+
+- Secondary index queries would be made consistent following PUT failure after the next AAE exchange, and those exchanges are regular.  Consistency is maintained by comparison of the actual object, not the index entries within the backed, and so loss of index data due to backend corruption would still not be detected by AAE.
+
+Although this represented an improvement in terms of entropy management, there were still some imperfections with the mechanism:
+
+- The hash of the object was *not* based on a canonicalised version of the object, so could be inconsistent between trees (https://github.com/basho/riak_kv/issues/1189).
+
+- Converting the object from_binary and sending it to another process has a potentially non-trivial cost for larger objects with significant amounts of metadata (e.g. 2i terms).
+
+- Hashtrees may become mysteriously inconsistent following rebuilds, if the rebuild followed a cluster change operation (e.g. adding/removing a node) - and there would be storms of read actions prompted that would not lead to repairs.
+
+- The anti-entropy mechanism is tightly coupled with the partitioning of the cluster, and so cannot be used between clusters of different ring-sizes so that replication cannot support safe ring-size changes (i.e. we cannot change ring size by starting another cluster with a different size and replicating to that cluster).
+
+- The hashtrees are not externally exposed, and so cannot be used for externally managed replication (e.g. to another database).
+
+- The rebuilds of the hshtree still require the relatively expensive fold_objects operation, and so parallelisation of rebuilds may need to be controlled to prevent an impact on cluster performance.  Measuring the impact is difficult in pre-production load tests due to the scheduled and infrequent nature of AAE rebuilds.
+
+## Leveled and AAE
+
 Leveled is primarily designed to be a backend for Riak, and Riak has a number of anti-entropy mechanisms for comparing database state within and across clusters.  As part of the ongoing community work to build improvements into a new pure open-source release of Riak, some features have been added directly to Leveled to explore some potential enhancements to anti-entropy.  These features are concerned with:
 
 - Allowing for the database state within in a Leveled store or stores to be compared with an other store or stores which should share a portion of that state;
@@ -36,7 +84,7 @@ This requires all of the keys and hashes to be pulled into memory to build the h
 
 Anti-entropy in leveled is supported using the [leveled_tictac](https://github.com/martinsumner/leveled/blob/mas-tictac/src/leveled_tictac.erl) module.  This module uses a less secure form of merkle trees that don't prevent information from leaking out, or make the tree tamper-proof, but allow for the trees to be built incrementally, and trees built incrementally to be merged.  These Merkle trees we're calling Tic-Tac Trees after the [Tic-Tac language](https://en.wikipedia.org/wiki/Tic-tac) to fit in with Bookmaker-based naming conventions of leveled.  The Tic-Tac language has been historically used on racecourses to communicate the state of the market between participants; although the more widespread use of mobile communications means that the use of Tic-Tac is petering out, and rather like Basho employees, there are now only three Tic-Tac practitioners left.
 
-The change from secure Merkle trees is simply to (use XOR? or XOR hashes), and not hashing/concatenation, for combining hashes, combined with using trees of fixed sizes, so that tree merging can also be managed through XOR operations.  So a segment leaf is calculated from:
+The first change from secure Merkle trees is simply to XOR together hashes to combine them, rather than re-hash a concatenation of keys and hashes.  Combined with the use of trees of fixed sizes, this allows for tree merging to be managed through XOR operations.  So a segment leaf is calculated from:
 
 ``hash(K1, H1) XOR hash(K2, H2) XOR ... hash(Kn, Hn)``
 
