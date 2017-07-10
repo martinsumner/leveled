@@ -179,6 +179,7 @@ Even with this mitigation, the volume of false positives and negatives needs to 
 
 The approach considered for Leveled has been to modify the Merkle trees used to ease their implementation, as well as specifically separating out anti-entropy for recent changes as a different problem to long-term anti-entropy of global state.
 
+[Recent research](http://haslab.uminho.pt/tome/files/global_logical_clocks.pdf) has been released which examines using dotted version vectors at a node level to improve the efficiency of managing key-level consistency, reducing the risks associated with deletes (without permanent tombstones), but also provide an inherently integrated approach to active anti-entropy.
 
 The Global Logical Clock approach does assume that durability is not mutable:
 
