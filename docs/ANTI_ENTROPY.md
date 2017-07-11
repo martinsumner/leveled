@@ -207,6 +207,8 @@ In blacklist mode the Bucket will be $all, and the Key will actually be a {Bucke
 
 The index entry is given a TTL of a configurable amount (e.g. 1 hour) - and no index entry may be added if the change is already considered to be too far in the past.  The index entry is added to the Ledger in the same transaction as an object value update, and will be re-calculated and re-added out of the Journal under restart conditions where the change has not reached a persisted state in the Ledger prior to the close, for example after a crash.
 
+Querying this anti-entropy index can re-use the ``tictactree_idx`` query feature used for Full Database Anti-Entropy.  
+
 The near real-time entropy index currently has four ct tests:
 
 - `recent_aae_noaae` (confirming loading a store with real-time aae disabled has no impact);
