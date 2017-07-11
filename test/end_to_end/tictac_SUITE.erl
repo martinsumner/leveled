@@ -507,7 +507,7 @@ recent_aae_allaae(_Config) ->
     TreeSize = small,
     % SegmentCount = 256 * 256,
     UnitMins = 2,
-    AAE = {all, 60, UnitMins},
+    AAE = {blacklist, [], 60, UnitMins},
     
     % Test requires multiple different databases, so want to mount them all
     % on individual file paths
@@ -658,7 +658,7 @@ recent_aae_bucketaae(_Config) ->
     TreeSize = small,
     % SegmentCount = 256 * 256,
     UnitMins = 2,
-    AAE = {[<<"Bucket">>], 60, UnitMins},
+    AAE = {whitelist, [<<"Bucket">>], 60, UnitMins},
     
     % Test requires multiple different databases, so want to mount them all
     % on individual file paths
@@ -825,7 +825,7 @@ recent_aae_expiry(_Config) ->
     % SegmentCount = 256 * 256,
     UnitMins = 1,
     TotalMins = 2,
-    AAE = {all, TotalMins, UnitMins},
+    AAE = {backlist, [], TotalMins, UnitMins},
     
     % Test requires multiple different databases, so want to mount them all
     % on individual file paths

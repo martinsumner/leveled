@@ -2,7 +2,7 @@
 
 ## Background
 
-In the initial releases of Riak, there were three levels of protection against loss of data, where loss is caused by either a backend store not receiving data (because it was unavailable), or losing writes (due to a crash, or corruption of previously written data):
+In the early history of Riak, there were three levels of protection against loss of data, where loss is caused by either a backend store not receiving data (because it was unavailable), or losing writes (due to a crash, or corruption of previously written data):
 
 - [Read repair](http://docs.basho.com/riak/kv/2.2.3/learn/concepts/replication/#read-repair), whenever an object was read, if as part of that read it was discovered that a vnode that should have the an update but instead has an older version of an object; then post the completion of the read the finite-state-machine managing the get would update the out-of-date vnode with the latest version.
 
@@ -36,7 +36,7 @@ Although this represented an improvement in terms of entropy management, there w
 
 - The hash of the object was *not* based on a canonicalised version of the object, so could be inconsistent between trees (https://github.com/basho/riak_kv/issues/1189).
 
-- Converting the object from_binary and sending it to another process has a potentially non-trivial cost for larger objects with significant amounts of metadata (e.g. 2i terms).
+- Converting the object from_binary and sending it to another process (to pass from the `riak_kv_vnode` to the `riak_kv_index_hashtree` has a potentially non-trivial cost for larger objects with significant amounts of metadata (e.g. 2i terms).
 
 - Hashtrees may become mysteriously inconsistent following rebuilds, if the rebuild followed a cluster change operation (e.g. adding/removing a node) - and there would be storms of read actions prompted that would not lead to repairs.
 

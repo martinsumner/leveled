@@ -67,9 +67,17 @@
                         waste_retention_period :: integer(),
                         reload_strategy = [] :: list()}).
 
--record(recent_aae, {buckets :: list()|all,
-                        % whitelist of buckets to support recent recent AAE
-                        % or all to support all buckets
+-record(recent_aae, {filter :: whitelist|blacklist,
+                        % the buckets list should either be a
+                        % - whitelist - specific buckets are included, and
+                        % entries are indexed by bucket name
+                        % - blacklist - specific buckets are excluded, and
+                        % all other entries are indexes using the special
+                        % $all bucket
+                        
+                        buckets :: list(),
+                        % whitelist or blacklist of buckets to support recent
+                        % AAE
                         
                         limit_minutes :: integer(),
                         % how long to retain entries the temporary index for

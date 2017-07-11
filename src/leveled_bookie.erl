@@ -393,8 +393,9 @@ init([Opts]) ->
                 case get_opt(recent_aae, Opts, ?RECENT_AAE) of
                     false ->
                         false;
-                    {BucketList, LimitMinutes, UnitMinutes} ->
-                        #recent_aae{buckets = BucketList,
+                    {FilterType, BucketList, LimitMinutes, UnitMinutes} ->
+                        #recent_aae{filter = FilterType,
+                                    buckets = BucketList,
                                     limit_minutes = LimitMinutes,
                                     unit_minutes = UnitMinutes}
                 end,

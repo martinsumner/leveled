@@ -430,12 +430,18 @@ aae_indexspecs(false, _Bucket, _Key, _SQN, _H, _LastMods) ->
 aae_indexspecs(_AAE, _Bucket, _Key, _SQN, _H, []) ->
     [];
 aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods) ->
+    InList = lists:member(Bucket, AAE#recent_aae.buckets),
     Bucket0 =
-        case AAE#recent_aae.buckets of
-            all ->
-                {all, Bucket};
-            ListB ->
-                case lists:member(Bucket, ListB) of
+        case AAE#recent_aae.filter of
+            blacklist ->
+                case InList of
+                    true ->
+                        false;
+                    false ->
+                        {all, Bucket}
+                end;
+            whitelist ->
+                case InList of
                     true ->
                         Bucket;
                     false ->
@@ -811,7 +817,10 @@ parseolddate_test() ->
     ?assertMatch(no_index, PD).
 
 genaaeidx_test() ->
-    AAE = #recent_aae{buckets=all, limit_minutes=60, unit_minutes=5},
+    AAE = #recent_aae{filter=blacklist,
+                        buckets=[],
+                        limit_minutes=60,
+                        unit_minutes=5},
     Bucket = <<"Bucket1">>,
     Key = <<"Key1">>,
     SQN = 1,
@@ -832,16 +841,22 @@ genaaeidx_test() ->
     AAESpecs0 = aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods0),
     ?assertMatch(0, length(AAESpecs0)),
     
-    AAE0 = AAE#recent_aae{buckets=[<<"Bucket0">>]},
+    AAE0 = AAE#recent_aae{filter=whitelist,
+                            buckets=[<<"Bucket0">>]},
     AAESpecsB0 = aae_indexspecs(AAE0, Bucket, Key, SQN, H, LastMods1),
     ?assertMatch(0, length(AAESpecsB0)),
-    AAESpecsB1 = aae_indexspecs(AAE0, <<"Bucket0">>, Key, SQN, H, LastMods1),
     
+    AAESpecsB1 = aae_indexspecs(AAE0, <<"Bucket0">>, Key, SQN, H, LastMods1),
     ?assertMatch(1, length(AAESpecsB1)),
     [{{?IDX_TAG, <<"Bucket0">>, {Fld, Term}, <<"Key1">>},
         {SQN, {active, TS}, no_lookup, null}}] = AAESpecsB1,
     ?assertMatch(true, is_integer(TS)),
     ?assertMatch(17, length(binary_to_list(Term))),
-    ?assertMatch("$aae.", lists:sublist(binary_to_list(Fld), 5)).
+    ?assertMatch("$aae.", lists:sublist(binary_to_list(Fld), 5)),
+    
+    AAE1 = AAE#recent_aae{filter=blacklist,
+                            buckets=[<<"Bucket0">>]},
+    AAESpecsB2 = aae_indexspecs(AAE1, <<"Bucket0">>, Key, SQN, H, LastMods1),
+    ?assertMatch(0, length(AAESpecsB2)).
 
 -endif.
