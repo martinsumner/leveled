@@ -825,7 +825,7 @@ recent_aae_expiry(_Config) ->
     % SegmentCount = 256 * 256,
     UnitMins = 1,
     TotalMins = 2,
-    AAE = {backlist, [], TotalMins, UnitMins},
+    AAE = {blacklist, [], TotalMins, UnitMins},
     
     % Test requires multiple different databases, so want to mount them all
     % on individual file paths
