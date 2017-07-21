@@ -1481,17 +1481,13 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
     BRand = random:uniform(BRange),
     BNumber = string:right(integer_to_list(BucketLow + BRand), 4, $0),
     KNumber = string:right(integer_to_list(random:uniform(1000)), 6, $0),
-    LedgerKey = leveled_codec:to_ledgerkey("Bucket" ++ BNumber,
-                                            "Key" ++ KNumber,
-                                            o),
-    {_B, _K, KV, _H} = leveled_codec:generate_ledgerkv(LedgerKey,
-                                                        Seqn,
-                                                        crypto:rand_bytes(64),
-                                                        64,
-                                                        infinity),
+    LK = leveled_codec:to_ledgerkey("Bucket" ++ BNumber, "Key" ++ KNumber, o),
+    Chunk = crypto:rand_bytes(64),
+    {_B, _K, MV, _H, _LMs} =
+        leveled_codec:generate_ledgerkv(LK, Seqn, Chunk, 64, infinity),
     generate_randomkeys(Seqn + 1,
                         Count - 1,
-                        [KV|Acc],
+                        [{LK, MV}|Acc],
                         BucketLow,
                         BRange).
 
@@ -1507,11 +1503,11 @@ generate_indexkeys(Count, IndexList) ->
 
 generate_indexkey(Term, Count) ->
     IndexSpecs = [{add, "t1_int", Term}],
-    leveled_codec:convert_indexspecs(IndexSpecs, 
-                                        "Bucket", 
-                                        "Key" ++ integer_to_list(Count), 
-                                        Count, 
-                                        infinity).
+    leveled_codec:idx_indexspecs(IndexSpecs, 
+                                    "Bucket", 
+                                    "Key" ++ integer_to_list(Count), 
+                                    Count, 
+                                    infinity).
 
 form_slot_test() ->
     % If a skip key happens, mustn't switch to loookup by accident as could be

@@ -351,7 +351,11 @@ compare_method_test() ->
                 [timer:now_diff(os:timestamp(), SWb), Sz1]),
     ?assertMatch(Sz0, Sz1).
 
-with_index_test() ->
+with_index_test_() ->
+    % Otherwise this test may timeout when run with coverage enabled
+    {timeout, 60, fun with_index_test2/0}.
+
+with_index_test2() ->
     IndexPrepareFun =
         fun({K, _V}, Acc) ->
             H = leveled_codec:magic_hash(K),

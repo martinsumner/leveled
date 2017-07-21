@@ -58,8 +58,9 @@
         build_metadata_object/2,
         generate_ledgerkv/5,
         get_size/2,
-        get_keyandhash/2,
-        convert_indexspecs/5,
+        get_keyandobjhash/2,
+        idx_indexspecs/5,
+        aae_indexspecs/6,
         generate_uuid/0,
         integer_now/0,
         riak_extract_metadata/2,
@@ -68,22 +69,20 @@
 
 -define(V1_VERS, 1).
 -define(MAGIC, 53). % riak_kv -> riak_object
+-define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
+-define(NRT_IDX, "$aae.").
+-define(ALL_BUCKETS, <<"$all">>).
 
+-type recent_aae() :: #recent_aae{}.
+
+-spec magic_hash(any()) -> integer().
+%% @doc 
 %% Use DJ Bernstein magic hash function. Note, this is more expensive than
 %% phash2 but provides a much more balanced result.
 %%
 %% Hash function contains mysterious constants, some explanation here as to
 %% what they are -
 %% http://stackoverflow.com/questions/10696223/reason-for-5381-number-in-djb-hash-function
-
-to_lookup(Key) ->
-    case element(1, Key) of
-        ?IDX_TAG ->
-            no_lookup;
-        _ ->
-            lookup
-    end.
-
 magic_hash({?RIAK_TAG, Bucket, Key, _SubKey}) ->
     magic_hash({Bucket, Key});
 magic_hash({?STD_TAG, Bucket, Key, _SubKey}) ->
@@ -100,7 +99,21 @@ hash1(H, <<B:8/integer, Rest/bytes>>) ->
     H2 = H1 bxor B,
     hash1(H2, Rest).
 
+%% @doc
+%% Should it be possible to lookup a key in the merge tree.  This is not true
+%% For keys that should only be read through range queries.  Direct lookup
+%% keys will have presence in bloom filters and other lookup accelerators. 
+to_lookup(Key) ->
+    case element(1, Key) of
+        ?IDX_TAG ->
+            no_lookup;
+        _ ->
+            lookup
+    end.
 
+-spec generate_uuid() -> list().
+%% @doc
+%% Generate a new globally unique ID as a string.
 %% Credit to
 %% https://github.com/afiskon/erlang-uuid-v4/blob/master/src/uuid.erl
 generate_uuid() ->
@@ -168,9 +181,10 @@ is_active(Key, Value, Now) ->
             false
     end.
 
-from_ledgerkey({Tag, Bucket, {_IdxField, IdxValue}, Key})
-                                                when Tag == ?IDX_TAG ->
-    {Bucket, Key, IdxValue};
+from_ledgerkey({?IDX_TAG, ?ALL_BUCKETS, {_IdxFld, IdxVal}, {Bucket, Key}}) ->
+    {Bucket, Key, IdxVal};
+from_ledgerkey({?IDX_TAG, Bucket, {_IdxFld, IdxVal}, Key}) ->
+    {Bucket, Key, IdxVal};
 from_ledgerkey({_Tag, Bucket, Key, null}) ->
     {Bucket, Key}.
 
@@ -363,21 +377,151 @@ endkey_passed({EK1, EK2, EK3, null}, {CK1, CK2, CK3, _}) ->
 endkey_passed(EndKey, CheckingKey) ->
     EndKey < CheckingKey.
 
-convert_indexspecs(IndexSpecs, Bucket, Key, SQN, TTL) ->
-    lists:map(fun({IndexOp, IdxField, IdxValue}) ->
-                        Status = case IndexOp of
-                                    add ->
-                                        {active, TTL};
-                                    remove ->
-                                        %% TODO: timestamps for delayed reaping 
-                                        tomb
-                                end,
-                        {to_ledgerkey(Bucket, Key, ?IDX_TAG,
-                                IdxField, IdxValue),
-                            {SQN, Status, no_lookup, null}}
-                    end,
-                IndexSpecs).
+idx_indexspecs(IndexSpecs, Bucket, Key, SQN, TTL) ->
+    lists:map(
+            fun({IdxOp, IdxFld, IdxTrm}) ->
+                gen_indexspec(Bucket, Key, IdxOp, IdxFld, IdxTrm, SQN, TTL)
+            end,
+            IndexSpecs
+                ).
 
+gen_indexspec(Bucket, Key, IdxOp, IdxField, IdxTerm, SQN, TTL) ->
+    Status =
+        case IdxOp of
+            add ->
+                {active, TTL};
+            remove ->
+                %% TODO: timestamps for delayed reaping 
+                tomb
+        end,
+    case Bucket of
+        {all, RealBucket} ->    
+            {to_ledgerkey(?ALL_BUCKETS,
+                            {RealBucket, Key},
+                            ?IDX_TAG,
+                            IdxField,
+                            IdxTerm),
+                {SQN, Status, no_lookup, null}};
+        _ ->
+            {to_ledgerkey(Bucket,
+                            Key,
+                            ?IDX_TAG,
+                            IdxField,
+                            IdxTerm),
+                {SQN, Status, no_lookup, null}}
+    end.
+
+-spec aae_indexspecs(false|recent_aae(),
+                                any(), any(),
+                                integer(), integer(),
+                                list())
+                                    -> list().
+%% @doc
+%% Generate an additional index term representing the change, if the last
+%% modified date for the change is within the definition of recency.
+%%
+%% The objetc may have multiple last modified dates (siblings), and in this
+%% case index entries for all dates within the range are added.
+%%
+%% The index should entry auto-expire in the future (when it is no longer
+%% relevant to assessing recent changes)
+aae_indexspecs(false, _Bucket, _Key, _SQN, _H, _LastMods) ->
+    [];
+aae_indexspecs(_AAE, _Bucket, _Key, _SQN, _H, []) ->
+    [];
+aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods) ->
+    InList = lists:member(Bucket, AAE#recent_aae.buckets),
+    Bucket0 =
+        case AAE#recent_aae.filter of
+            blacklist ->
+                case InList of
+                    true ->
+                        false;
+                    false ->
+                        {all, Bucket}
+                end;
+            whitelist ->
+                case InList of
+                    true ->
+                        Bucket;
+                    false ->
+                        false
+                end
+        end,
+    case Bucket0 of
+        false ->
+            [];
+        Bucket0 ->
+            GenIdxFun =
+                fun(LMD0, Acc) ->
+                    Dates = parse_date(LMD0,
+                                        AAE#recent_aae.unit_minutes,
+                                        AAE#recent_aae.limit_minutes,
+                                        integer_now()),
+                    case Dates of
+                        no_index ->
+                            Acc;
+                        {LMD1, TTL} ->
+                            TreeSize = AAE#recent_aae.tree_size,
+                            SegID =
+                                leveled_tictac:get_segment(Key, TreeSize),
+                            IdxFldStr = ?NRT_IDX ++ LMD1 ++ "_bin",
+                            IdxTrmStr =
+                                string:right(integer_to_list(SegID), 8, $0) ++
+                                "." ++
+                                string:right(integer_to_list(H), 8, $0),
+                            {IdxK, IdxV} =
+                                gen_indexspec(Bucket0, Key,
+                                                add,
+                                                list_to_binary(IdxFldStr),
+                                                list_to_binary(IdxTrmStr),
+                                                SQN, TTL),
+                            [{IdxK, IdxV}|Acc]
+                    end
+                end,
+            lists:foldl(GenIdxFun, [], LastMods)
+    end.
+
+-spec parse_date(tuple(), integer(), integer(), integer()) ->
+                    no_index|{binary(), integer()}.
+%% @doc
+%% Parse the lat modified date and the AAE date configuration to return a
+%% binary to be used as the last modified date part of the index, and an
+%% integer to be used as the TTL of the index entry.
+%% Return no_index if the change is not recent.
+parse_date(LMD, UnitMins, LimitMins, Now) ->
+    LMDsecs = integer_time(LMD),
+    Recent = (LMDsecs + LimitMins * 60) > Now,
+    case Recent of
+        false ->
+            no_index;
+        true ->
+            {{Y, M, D}, {Hour, Minute, _Second}} =
+                calendar:now_to_datetime(LMD),
+            RoundMins =
+                UnitMins * (Minute div UnitMins),
+            StrTime =
+                lists:flatten(io_lib:format(?LMD_FORMAT,
+                                                [Y, M, D, Hour, RoundMins])),
+            TTL = min(Now, LMDsecs) + (LimitMins + UnitMins) * 60,
+            {StrTime, TTL}
+    end.
+
+-spec generate_ledgerkv(
+            tuple(), integer(), any(), integer(), tuple()|infinity) ->
+            {any(), any(), any(), {integer()|no_lookup, integer()}, list()}.
+%% @doc
+%% Function to extract from an object the information necessary to populate
+%% the Penciller's ledger.
+%% Outputs -
+%% Bucket - original Bucket extracted from the PrimaryKey 
+%% Key - original Key extracted from the PrimaryKey
+%% Value - the value to be used in the Ledger (essentially the extracted
+%% metadata)
+%% {Hash, ObjHash} - A magic hash of the key to accelerate lookups, and a hash
+%% of the value to be used for equality checking between objects
+%% LastMods - the last modified dates for the object (may be multiple due to
+%% siblings)
 generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS) ->
     {Tag, Bucket, Key, _} = PrimaryKey,
     Status = case Obj of
@@ -387,11 +531,13 @@ generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS) ->
                         {active, TS}
                 end,
     Hash = magic_hash(PrimaryKey),
+    {MD, LastMods} = extract_metadata(Obj, Size, Tag),
+    ObjHash = get_objhash(Tag, MD),
     Value = {SQN,
                 Status,
                 Hash,
-                extract_metadata(Obj, Size, Tag)},
-    {Bucket, Key, {PrimaryKey, Value}, Hash}.
+                MD},
+    {Bucket, Key, Value, {Hash, ObjHash}, LastMods}.
 
 
 integer_now() ->
@@ -404,7 +550,7 @@ integer_time(TS) ->
 extract_metadata(Obj, Size, ?RIAK_TAG) ->
     riak_extract_metadata(Obj, Size);
 extract_metadata(Obj, Size, ?STD_TAG) ->
-    {hash(Obj), Size}.
+    {{hash(Obj), Size}, []}.
 
 get_size(PK, Value) ->
     {Tag, _Bucket, _Key, _} = PK,
@@ -417,20 +563,33 @@ get_size(PK, Value) ->
             {_Hash, Size} = MD,
             Size
     end.
-    
-get_keyandhash(LK, Value) ->
+
+-spec get_keyandobjhash(tuple(), tuple()) -> tuple().
+%% @doc
+%% Return a tucple of {Bucket, Key, Hash} where hash is a hash of the object
+%% not the key (for example with Riak tagged objects this will be a hash of
+%% the sorted vclock)
+get_keyandobjhash(LK, Value) ->
     {Tag, Bucket, Key, _} = LK,
     {_, _, _, MD} = Value,
     case Tag of
-        ?RIAK_TAG ->
-            {_RMD, _VC, Hash, _Size} = MD,
-            {Bucket, Key, Hash};
-        ?STD_TAG ->
-            {Hash, _Size} = MD,
-            {Bucket, Key, Hash}
+        ?IDX_TAG ->
+            from_ledgerkey(LK); % returns {Bucket, Key, IdxValue}
+        _ ->
+            {Bucket, Key, get_objhash(Tag, MD)}
     end.
 
-
+get_objhash(Tag, ObjMetaData) ->
+    case Tag of
+        ?RIAK_TAG ->
+            {_RMD, _VC, Hash, _Size} = ObjMetaData,
+            Hash;
+        ?STD_TAG ->
+            {Hash, _Size} = ObjMetaData,
+            Hash
+    end.
+        
+        
 build_metadata_object(PrimaryKey, MD) ->
     {Tag, _Bucket, _Key, null} = PrimaryKey,
     case Tag of
@@ -443,10 +602,14 @@ build_metadata_object(PrimaryKey, MD) ->
 
 
 riak_extract_metadata(delete, Size) ->
-    {delete, null, null, Size};
+    {{delete, null, null, Size}, []};
 riak_extract_metadata(ObjBin, Size) ->
-    {Vclock, SibBin} = riak_metadata_from_binary(ObjBin),
-    {SibBin, Vclock, erlang:phash2(ObjBin), Size}.
+    {VclockBin, SibBin, LastMods} = riak_metadata_from_binary(ObjBin),
+    {{SibBin, 
+            VclockBin, 
+            erlang:phash2(lists:sort(binary_to_term(VclockBin))), 
+            Size},
+        LastMods}.
 
 %% <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
 %%%     VclockBin/binary, SibCount:32/integer, SibsBin/binary>>.
@@ -461,28 +624,41 @@ riak_metadata_from_binary(V1Binary) ->
     <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
             Rest/binary>> = V1Binary,
     <<VclockBin:VclockLen/binary, SibCount:32/integer, SibsBin/binary>> = Rest,
-    SibMetaBin =
+    {SibMetaBin, LastMods} =
         case SibCount of
             SC when is_integer(SC) ->
                 get_metadata_from_siblings(SibsBin,
                                             SibCount,
-                                            <<SibCount:32/integer>>)
+                                            <<SibCount:32/integer>>,
+                                            [])
         end,
-    {VclockBin, SibMetaBin}.
+    {VclockBin, SibMetaBin, LastMods}.
 
-get_metadata_from_siblings(<<>>, 0, SibMetaBin) ->
-    SibMetaBin;
+get_metadata_from_siblings(<<>>, 0, SibMetaBin, LastMods) ->
+    {SibMetaBin, LastMods};
 get_metadata_from_siblings(<<ValLen:32/integer, Rest0/binary>>,
                             SibCount,
-                            SibMetaBin) ->
+                            SibMetaBin,
+                            LastMods) ->
     <<_ValBin:ValLen/binary, MetaLen:32/integer, Rest1/binary>> = Rest0,
     <<MetaBin:MetaLen/binary, Rest2/binary>> = Rest1,
+    LastMod =
+        case MetaBin of 
+            <<MegaSec:32/integer,
+                Sec:32/integer,
+                MicroSec:32/integer,
+                _Rest/binary>> ->
+                    {MegaSec, Sec, MicroSec};
+            _ ->
+                {0, 0, 0}
+        end,
     get_metadata_from_siblings(Rest2,
                                 SibCount - 1,
                                 <<SibMetaBin/binary,
                                     0:32/integer,
                                     MetaLen:32/integer,
-                                    MetaBin:MetaLen/binary>>).
+                                    MetaBin:MetaLen/binary>>,
+                                    [LastMod|LastMods]).
 
 
 
@@ -498,7 +674,7 @@ indexspecs_test() ->
     IndexSpecs = [{add, "t1_int", 456},
                     {add, "t1_bin", "adbc123"},
                     {remove, "t1_bin", "abdc456"}],
-    Changes = convert_indexspecs(IndexSpecs, "Bucket", "Key2", 1, infinity),
+    Changes = idx_indexspecs(IndexSpecs, "Bucket", "Key2", 1, infinity),
     ?assertMatch({{i, "Bucket", {"t1_int", 456}, "Key2"},
                         {1, {active, infinity}, no_lookup, null}},
                     lists:nth(1, Changes)),
@@ -608,5 +784,79 @@ magichashperf_test() ->
     {TimeMH2, _HL1} = timer:tc(lists, map, [fun(K) -> magic_hash(K) end, KL]),
     io:format(user, "1000 keys magic hashed in ~w microseconds~n", [TimeMH2]).
 
+parsedate_test() ->
+    {MeS, S, MiS} = os:timestamp(),
+    timer:sleep(100),
+    Now = integer_now(),
+    UnitMins = 5,
+    LimitMins = 60,
+    PD = parse_date({MeS, S, MiS}, UnitMins, LimitMins, Now),
+    io:format("Parsed Date ~w~n", [PD]),
+    ?assertMatch(true, is_tuple(PD)),
+    check_pd(PD, UnitMins),
+    CheckFun =
+        fun(Offset) ->
+            ModDate = {MeS, S + Offset * 60, MiS},
+            check_pd(parse_date(ModDate, UnitMins, LimitMins, Now), UnitMins)
+        end,  
+    lists:foreach(CheckFun, lists:seq(1, 60)).
+    
+check_pd(PD, UnitMins) ->
+    {LMDstr, _TTL} = PD,
+    Minutes = list_to_integer(lists:nthtail(10, LMDstr)),
+    ?assertMatch(0, Minutes rem UnitMins).
+
+parseolddate_test() ->
+    LMD = os:timestamp(),
+    timer:sleep(100),
+    Now = integer_now() + 60 * 60,
+    UnitMins = 5,
+    LimitMins = 60,
+    PD = parse_date(LMD, UnitMins, LimitMins, Now),
+    io:format("Parsed Date ~w~n", [PD]),
+    ?assertMatch(no_index, PD).
+
+genaaeidx_test() ->
+    AAE = #recent_aae{filter=blacklist,
+                        buckets=[],
+                        limit_minutes=60,
+                        unit_minutes=5},
+    Bucket = <<"Bucket1">>,
+    Key = <<"Key1">>,
+    SQN = 1,
+    H = erlang:phash2(null),
+    LastMods = [os:timestamp(), os:timestamp()],
+
+    AAESpecs = aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods),
+    ?assertMatch(2, length(AAESpecs)),
+    
+    LastMods1 = [os:timestamp()],
+    AAESpecs1 = aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods1),
+    ?assertMatch(1, length(AAESpecs1)),
+    IdxB = element(2, element(1, lists:nth(1, AAESpecs1))),
+    io:format(user, "AAE IDXSpecs1 ~w~n", [AAESpecs1]),
+    ?assertMatch(<<"$all">>, IdxB),
+    
+    LastMods0 = [],
+    AAESpecs0 = aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods0),
+    ?assertMatch(0, length(AAESpecs0)),
+    
+    AAE0 = AAE#recent_aae{filter=whitelist,
+                            buckets=[<<"Bucket0">>]},
+    AAESpecsB0 = aae_indexspecs(AAE0, Bucket, Key, SQN, H, LastMods1),
+    ?assertMatch(0, length(AAESpecsB0)),
+    
+    AAESpecsB1 = aae_indexspecs(AAE0, <<"Bucket0">>, Key, SQN, H, LastMods1),
+    ?assertMatch(1, length(AAESpecsB1)),
+    [{{?IDX_TAG, <<"Bucket0">>, {Fld, Term}, <<"Key1">>},
+        {SQN, {active, TS}, no_lookup, null}}] = AAESpecsB1,
+    ?assertMatch(true, is_integer(TS)),
+    ?assertMatch(17, length(binary_to_list(Term))),
+    ?assertMatch("$aae.", lists:sublist(binary_to_list(Fld), 5)),
+    
+    AAE1 = AAE#recent_aae{filter=blacklist,
+                            buckets=[<<"Bucket0">>]},
+    AAESpecsB2 = aae_indexspecs(AAE1, <<"Bucket0">>, Key, SQN, H, LastMods1),
+    ?assertMatch(0, length(AAESpecsB2)).
 
 -endif.

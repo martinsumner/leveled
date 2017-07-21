@@ -31,6 +31,7 @@
             get_randomindexes_generator/1,
             name_list/0,
             load_objects/5,
+            load_objects/6,
             put_indexed_objects/3,
             put_altered_indexed_objects/3,
             put_altered_indexed_objects/4,
@@ -42,6 +43,7 @@
             find_journals/1,
             wait_for_compaction/1,
             foldkeysfun/3,
+            foldkeysfun_returnbucket/3,
             sync_strategy/0]).
 
 -define(RETURN_TERMS, {true, undefined}).
@@ -52,6 +54,7 @@
 -define(MD_LASTMOD,  <<"X-Riak-Last-Modified">>).
 -define(MD_DELETED,  <<"X-Riak-Deleted">>).
 -define(EMPTY_VTAG_BIN, <<"e">>).
+-define(ROOT_PATH, "test").
 
 %% =================================================
 %% From riak_object
@@ -169,13 +172,17 @@ riakload(Bookie, ObjectList) ->
 
 
 reset_filestructure() ->
-    reset_filestructure(0).
+    reset_filestructure(0, ?ROOT_PATH).
     
-reset_filestructure(Wait) ->
-     io:format("Waiting ~w ms to give a chance for all file closes " ++
+reset_filestructure(Wait) when is_integer(Wait) ->
+    reset_filestructure(Wait, ?ROOT_PATH);
+reset_filestructure(RootPath) when is_list(RootPath) ->
+    reset_filestructure(0, RootPath).
+
+reset_filestructure(Wait, RootPath) ->
+    io:format("Waiting ~w ms to give a chance for all file closes " ++
                  "to complete~n", [Wait]),
-     timer:sleep(Wait),
-    RootPath  = "test",
+    timer:sleep(Wait),
     filelib:ensure_dir(RootPath ++ "/journal/"),
     filelib:ensure_dir(RootPath ++ "/ledger/"),
     leveled_inker:clean_testdir(RootPath ++ "/journal"),
@@ -258,10 +265,8 @@ check_forobject(Bookie, TestObject) ->
     {ok, HeadBinary} = book_riakhead(Bookie,
                                         TestObject#r_object.bucket,
                                         TestObject#r_object.key),
-    {_SibMetaBin,
-        Vclock,
-        _Hash,
-        size} = leveled_codec:riak_extract_metadata(HeadBinary, size),
+    {{_SibMetaBin, Vclock, _Hash, size}, _LMS}
+        = leveled_codec:riak_extract_metadata(HeadBinary, size),
     true = binary_to_term(Vclock) == TestObject#r_object.vclock.
 
 check_formissingobject(Bookie, Bucket, Key) ->
@@ -278,8 +283,12 @@ generate_testobject() ->
     generate_testobject(B1, K1, V1, Spec1, MD).
 
 generate_testobject(B, K, V, Spec, MD) ->
-    Content = #r_content{metadata=dict:from_list(MD), value=V},
-    {#r_object{bucket=B, key=K, contents=[Content], vclock=[{'a',1}]},
+    MD0 = [{?MD_LASTMOD, os:timestamp()}|MD],
+    Content = #r_content{metadata=dict:from_list(MD0), value=V},
+    {#r_object{bucket=B,
+                key=K,
+                contents=[Content],
+                vclock=generate_vclock()},
         Spec}.
 
 
@@ -370,7 +379,8 @@ set_object(Bucket, Key, Value, IndexGen, Indexes2Remove) ->
                                             {remove, IdxF, IdxV} end,
                                         Indexes2Remove),
             [{"MDK", "MDV" ++ Key},
-                {"MDK2", "MDV" ++ Key}]},
+                {"MDK2", "MDV" ++ Key},
+                {?MD_LASTMOD, os:timestamp()}]},
     {B1, K1, V1, Spec1, MD} = Obj,
     Content = #r_content{metadata=dict:from_list(MD), value=V1},
     {#r_object{bucket=B1,
@@ -420,6 +430,9 @@ get_vclock(ObjectBin) ->
     binary_to_term(VclockBin).    
 
 load_objects(ChunkSize, GenList, Bookie, TestObject, Generator) ->
+    load_objects(ChunkSize, GenList, Bookie, TestObject, Generator, 1000).
+
+load_objects(ChunkSize, GenList, Bookie, TestObject, Generator, SubListL) ->
     lists:map(fun(KN) ->
                     ObjListA = Generator(ChunkSize, KN),
                     StartWatchA = os:timestamp(),
@@ -433,7 +446,7 @@ load_objects(ChunkSize, GenList, Bookie, TestObject, Generator) ->
                         true ->
                             check_forobject(Bookie, TestObject)
                     end,
-                    lists:sublist(ObjListA, 1000) end,
+                    lists:sublist(ObjListA, SubListL) end,
                 GenList).
 
 
@@ -472,6 +485,11 @@ get_randomdate() ->
 
 foldkeysfun(_Bucket, Item, Acc) -> Acc ++ [Item].
 
+foldkeysfun_returnbucket(Bucket, {Term, Key}, Acc) ->
+    Acc ++ [{Term, {Bucket, Key}}];
+foldkeysfun_returnbucket(Bucket, Key, Acc) ->
+    Acc ++ [{Bucket, Key}].
+
 check_indexed_objects(Book, B, KSpecL, V) ->
     % Check all objects match, return what should be the results of an all
     % index query
@@ -490,7 +508,7 @@ check_indexed_objects(Book, B, KSpecL, V) ->
                                                 {fun foldkeysfun/3, []},
                                                 {"idx1_bin",
                                                     "0",
-                                                    "~"},
+                                                    "|"},
                                                 ?RETURN_TERMS}),
     SW = os:timestamp(),
     {async, Fldr} = R,

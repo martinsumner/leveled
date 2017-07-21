@@ -1002,7 +1002,7 @@ plain_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
     element(1, R).
 
 fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
-    PosList =  leveled_pmem:check_index(Hash, L0Index),
+    PosList = leveled_pmem:check_index(Hash, L0Index),
     L0Check = leveled_pmem:check_levelzero(Key, Hash, PosList, L0Cache),
     case L0Check of
         {false, not_found} ->

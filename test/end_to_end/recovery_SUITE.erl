@@ -80,7 +80,7 @@ recovr_strategy(_Config) ->
     Q = fun(RT) -> {index_query,
                         "Bucket6",
                         {fun testutil:foldkeysfun/3, []},
-                        {"idx1_bin", "#", "~"},
+                        {"idx1_bin", "#", "|"},
                         {RT, undefined}}
                     end,
     {async, TFolder} = leveled_bookie:book_returnfolder(Book1, Q(true)),
@@ -190,13 +190,13 @@ aae_bustedjournal(_Config) ->
     true = GetCount < HeadCount,
     
     {async, HashTreeF1} = leveled_bookie:book_returnfolder(Bookie2,
-                                                            {hashtree_query,
+                                                            {hashlist_query,
                                                                 ?RIAK_TAG,
                                                                 false}),
     KeyHashList1 = HashTreeF1(),
     20001 = length(KeyHashList1),
     {async, HashTreeF2} = leveled_bookie:book_returnfolder(Bookie2,
-                                                            {hashtree_query,
+                                                            {hashlist_query,
                                                                 ?RIAK_TAG,
                                                                 check_presence}),
     KeyHashList2 = HashTreeF2(),
@@ -205,8 +205,12 @@ aae_bustedjournal(_Config) ->
     % Will need to remove the file or corrupt the hashtree to get presence to
     % fail
     
-    FoldObjectsFun = fun(B, K, V, Acc) -> [{B, K, erlang:phash2(V)}|Acc]
-                                            end,
+    FoldObjectsFun = 
+        fun(B, K, V, Acc) -> 
+            VC = testutil:get_vclock(V),
+            H = erlang:phash2(lists:sort(VC)),
+            [{B, K, H}|Acc]
+        end,
     SW = os:timestamp(),
     {async, HashTreeF3} = leveled_bookie:book_returnfolder(Bookie2,
                                                             {foldobjects_allkeys,
@@ -264,7 +268,7 @@ aae_bustedjournal(_Config) ->
                     length(KeyHashList5)]),
     
     {async, HashTreeF6} = leveled_bookie:book_returnfolder(Bookie4,
-                                                            {hashtree_query,
+                                                            {hashlist_query,
                                                                 ?RIAK_TAG,
                                                                 check_presence}),
     KeyHashList6 = HashTreeF6(),

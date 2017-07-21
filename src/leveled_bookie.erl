@@ -82,6 +82,7 @@
 -define(CACHE_SIZE_JITTER, 25).
 -define(JOURNAL_SIZE_JITTER, 20).
 -define(LONG_RUNNING, 80000).
+-define(RECENT_AAE, false).
 
 -record(ledger_cache, {mem :: ets:tab(),
                         loader = leveled_tree:empty(?CACHE_TYPE)
@@ -94,6 +95,7 @@
 -record(state, {inker :: pid(),
                 penciller :: pid(),
                 cache_size :: integer(),
+                recent_aae :: false|#recent_aae{},
                 ledger_cache = #ledger_cache{},
                 is_snapshot :: boolean(),
                 slow_offer = false :: boolean(),
@@ -157,7 +159,7 @@ book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy) ->
 %%
 %% TODO:
 %% The reload_strategy is exposed as currently no firm decision has been made 
-%% about how recovery should work.  For instance if we were to trust evrything
+%% about how recovery should work.  For instance if we were to trust everything
 %% as permanent in the Ledger once it is persisted, then there would be no
 %% need to retain a skinny history of key changes in the Journal after
 %% compaction.  If, as an alternative we assume the Ledger is never permanent,
@@ -308,8 +310,26 @@ book_head(Pid, Bucket, Key, Tag) ->
 %% {keylist, Tag, {FoldKeysFun, Acc}} -> list all keys with tag
 %% {keylist, Tag, Bucket, {FoldKeysFun, Acc}} -> list all keys within given
 %% bucket
-%% {hashtree_query, Tag, JournalCheck} -> return keys and hashes for all
+%% {hashlist_query, Tag, JournalCheck} -> return keys and hashes for all
 %% objects with a given tag
+%% {tictactree_idx,
+%%      {Bucket, IdxField, StartValue, EndValue},
+%%      TreeSize, 
+%%      PartitionFilter}
+%% -> compile a hashtree for the items on the index.  A partition filter is 
+%% required to avoid adding an index entry in this vnode as a fallback.
+%% There is no de-duplicate of results, duplicate reuslts corrupt the tree.
+%% {tictactree_obj,
+%%      {Bucket, StartKey, EndKey, CheckPresence},
+%%      TreeSize,
+%%      PartitionFilter}
+%% -> compile a hashtree for all the objects in the range.  A partition filter
+%% may be passed to restrict the query to a given partition on this vnode.  The
+%% filter should bea function that takes (Bucket, Key) as inputs and outputs
+%% one of the atoms accumulate or pass.  There is no de-duplicate of results,
+%% duplicate reuslts corrupt the tree.
+%% CheckPresence can be used if there is a need to do a deeper check to ensure
+%% that the object is in the Journal (or at least indexed within the Journal).
 %% {foldobjects_bybucket, Tag, Bucket, FoldObjectsFun} -> fold over all objects
 %% in a given bucket
 %% {foldobjects_byindex,
@@ -365,15 +385,29 @@ init([Opts]) ->
         undefined ->
             % Start from file not snapshot
             {InkerOpts, PencillerOpts} = set_options(Opts),
-            {Inker, Penciller} = startup(InkerOpts, PencillerOpts),
+            
             CacheJitter = ?CACHE_SIZE div (100 div ?CACHE_SIZE_JITTER),
             CacheSize = get_opt(cache_size, Opts, ?CACHE_SIZE)
                         + erlang:phash2(self()) rem CacheJitter,
+            RecentAAE =
+                case get_opt(recent_aae, Opts, ?RECENT_AAE) of
+                    false ->
+                        false;
+                    {FilterType, BucketList, LimitMinutes, UnitMinutes} ->
+                        #recent_aae{filter = FilterType,
+                                    buckets = BucketList,
+                                    limit_minutes = LimitMinutes,
+                                    unit_minutes = UnitMinutes}
+                end,
+                
+            {Inker, Penciller} = startup(InkerOpts, PencillerOpts, RecentAAE),
+            
             NewETS = ets:new(mem, [ordered_set]),
             leveled_log:log("B0001", [Inker, Penciller]),
             {ok, #state{inker=Inker,
                         penciller=Penciller,
                         cache_size=CacheSize,
+                        recent_aae=RecentAAE,
                         ledger_cache=#ledger_cache{mem = NewETS},
                         is_snapshot=false}};
         Bookie ->
@@ -400,7 +434,8 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State) ->
                                         SQN,
                                         Object,
                                         ObjSize,
-                                        {IndexSpecs, TTL}),
+                                        {IndexSpecs, TTL},
+                                        State#state.recent_aae),
     Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
     T1 = timer:now_diff(os:timestamp(), SW) - T0,
     PutTimes = leveled_log:put_timing(bookie, State#state.put_timing, T0, T1),
@@ -531,9 +566,35 @@ handle_call({return_folder, FolderType}, _From, State) ->
             {reply,
                 bucketkey_query(State, Tag, Bucket, {FoldKeysFun, Acc}),
                 State};
-        {hashtree_query, Tag, JournalCheck} ->
+        {hashlist_query, Tag, JournalCheck} ->
             {reply,
-                hashtree_query(State, Tag, JournalCheck),
+                hashlist_query(State, Tag, JournalCheck),
+                State};
+        {tictactree_obj,
+            {Tag, Bucket, StartKey, EndKey, CheckPresence},
+            TreeSize,
+            PartitionFilter} ->
+            {reply,
+                tictactree(State,
+                            Tag,
+                            Bucket,
+                            {StartKey, EndKey},
+                            CheckPresence,
+                            TreeSize,
+                            PartitionFilter),
+                State};
+        {tictactree_idx,
+            {Bucket, IdxField, StartValue, EndValue},
+            TreeSize,
+            PartitionFilter} ->
+            {reply,
+                tictactree(State,
+                            ?IDX_TAG,
+                            Bucket,
+                            {IdxField, StartValue, EndValue},
+                            false,
+                            TreeSize,
+                            PartitionFilter),
                 State};
         {foldheads_allkeys, Tag, FoldHeadsFun} ->
             {reply,
@@ -818,7 +879,7 @@ index_query(State,
     {async, Folder}.
 
 
-hashtree_query(State, Tag, JournalCheck) ->
+hashlist_query(State, Tag, JournalCheck) ->
     SnapType = case JournalCheck of
                             false ->
                                 ledger;
@@ -848,6 +909,76 @@ hashtree_query(State, Tag, JournalCheck) ->
                 end,
     {async, Folder}.
 
+tictactree(State, Tag, Bucket, Query, JournalCheck, TreeSize, Filter) ->
+    % Journal check can be used for object key folds to confirm that the
+    % object is still indexed within the journal
+    SnapType = case JournalCheck of
+                            false ->
+                                ledger;
+                            check_presence ->
+                                store
+                        end,
+    {ok, LedgerSnapshot, JournalSnapshot} = snapshot_store(State,
+                                                            SnapType,
+                                                            no_lookup),
+    Tree = leveled_tictac:new_tree(temp, TreeSize),
+    Folder =
+        fun() ->
+            % The start key and end key will vary depending on whether the
+            % fold is to fold over an index or a key range
+            {StartKey, EndKey, HashFun} =
+                case Tag of
+                    ?IDX_TAG ->
+                        {IdxField, StartIdx, EndIdx} = Query,
+                        HashIdxValFun =
+                            fun(_Key, IdxValue) ->
+                                erlang:phash2(IdxValue)
+                            end,
+                        {leveled_codec:to_ledgerkey(Bucket,
+                                                    null,
+                                                    ?IDX_TAG,
+                                                    IdxField,
+                                                    StartIdx),
+                            leveled_codec:to_ledgerkey(Bucket,
+                                                        null,
+                                                        ?IDX_TAG,
+                                                        IdxField,
+                                                        EndIdx),
+                            HashIdxValFun};
+                    _ ->
+                        {StartObjKey, EndObjKey} = Query,
+                        PassHashFun = fun(_Key, Hash) -> Hash end,
+                        {leveled_codec:to_ledgerkey(Bucket,
+                                                    StartObjKey,
+                                                    Tag),
+                            leveled_codec:to_ledgerkey(Bucket,
+                                                        EndObjKey,
+                                                        Tag),
+                            PassHashFun}
+                end,
+            
+            AccFun = accumulate_tree(Filter,
+                                        JournalCheck,
+                                        JournalSnapshot,
+                                        HashFun),
+            Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
+                                                    StartKey,
+                                                    EndKey,
+                                                    AccFun,
+                                                    Tree),
+            
+            % Close down snapshot when complete so as not to hold removed
+            % files open
+            ok = leveled_penciller:pcl_close(LedgerSnapshot),
+            case JournalCheck of
+                false ->
+                    ok;
+                check_presence ->
+                    leveled_inker:ink_close(JournalSnapshot)
+            end,
+            Acc
+        end,
+    {async, Folder}.
 
 foldobjects_allkeys(State, Tag, FoldObjectsFun) ->
     StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
@@ -1037,14 +1168,14 @@ set_options(Opts) ->
                             max_inmemory_tablesize = PCLL0CacheSize,
                             levelzero_cointoss = true}}.
 
-startup(InkerOpts, PencillerOpts) ->
+startup(InkerOpts, PencillerOpts, RecentAAE) ->
     {ok, Inker} = leveled_inker:ink_start(InkerOpts),
     {ok, Penciller} = leveled_penciller:pcl_start(PencillerOpts),
     LedgerSQN = leveled_penciller:pcl_getstartupsequencenumber(Penciller),
     leveled_log:log("B0005", [LedgerSQN]),
     ok = leveled_inker:ink_loadpcl(Inker,
                                     LedgerSQN + 1,
-                                    fun load_fun/5,
+                                    get_loadfun(RecentAAE),
                                     Penciller),
     {Inker, Penciller}.
 
@@ -1088,27 +1219,51 @@ accumulate_size() ->
     AccFun.
 
 accumulate_hashes(JournalCheck, InkerClone) ->
+    AddKeyFun =
+        fun(B, K, H, Acc) ->
+            [{B, K, H}|Acc]
+        end,
+    get_hashaccumulator(JournalCheck,
+                            InkerClone,
+                            AddKeyFun).
+
+accumulate_tree(FilterFun, JournalCheck, InkerClone, HashFun) ->
+    AddKeyFun =
+        fun(B, K, H, Tree) ->
+            case FilterFun(B, K) of
+                accumulate ->
+                    leveled_tictac:add_kv(Tree, K, H, HashFun);
+                pass ->
+                    Tree
+            end
+        end,
+    get_hashaccumulator(JournalCheck,
+                        InkerClone,
+                        AddKeyFun).
+    
+get_hashaccumulator(JournalCheck, InkerClone, AddKeyFun) ->
     Now = leveled_codec:integer_now(),
-    AccFun = fun(LK, V, KHList) ->
-                    case leveled_codec:is_active(LK, V, Now) of
-                        true ->
-                            {B, K, H} = leveled_codec:get_keyandhash(LK, V),
-                            Check = random:uniform() < ?CHECKJOURNAL_PROB,
-                            case {JournalCheck, Check} of
-                                {check_presence, true} ->
-                                    case check_presence(LK, V, InkerClone) of
-                                        true ->
-                                            [{B, K, H}|KHList];
-                                        false ->
-                                            KHList
-                                    end;
-                                _ ->    
-                                    [{B, K, H}|KHList]
+    AccFun =
+        fun(LK, V, Acc) ->
+            case leveled_codec:is_active(LK, V, Now) of
+                true ->
+                    {B, K, H} = leveled_codec:get_keyandobjhash(LK, V),
+                    Check = random:uniform() < ?CHECKJOURNAL_PROB,
+                    case {JournalCheck, Check} of
+                        {check_presence, true} ->
+                            case check_presence(LK, V, InkerClone) of
+                                true ->
+                                    AddKeyFun(B, K, H, Acc);
+                                false ->
+                                    Acc
                             end;
-                        false ->
-                            KHList
-                    end
-                end,
+                        _ ->    
+                            AddKeyFun(B, K, H, Acc)
+                    end;
+                false ->
+                    Acc
+            end
+        end,
     AccFun.
 
 
@@ -1179,8 +1334,6 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
     AccFun.
 
 
-
-
 check_presence(Key, Value, InkerClone) ->
     {LedgerKey, SQN} = leveled_codec:strip_to_keyseqonly({Key, Value}),
     case leveled_inker:ink_keycheck(InkerClone, LedgerKey, SQN) of
@@ -1245,26 +1398,22 @@ accumulate_index(TermRe, AddFun, FoldKeysFun) ->
 
 
 preparefor_ledgercache(?INKT_KEYD,
-                        LedgerKey, SQN, _Obj, _Size, {IndexSpecs, TTL}) ->
+                        LedgerKey, SQN, _Obj, _Size, {IdxSpecs, TTL},
+                        _AAE) ->
     {Bucket, Key} = leveled_codec:from_ledgerkey(LedgerKey),
-    KeyChanges = leveled_codec:convert_indexspecs(IndexSpecs,
-                                                    Bucket,
-                                                    Key,
-                                                    SQN,
-                                                    TTL),
+    KeyChanges =
+        leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL),
     {no_lookup, SQN, KeyChanges};
-preparefor_ledgercache(_Type, LedgerKey, SQN, Obj, Size, {IndexSpecs, TTL}) ->
-    {Bucket, Key, ObjKeyChange, H} = leveled_codec:generate_ledgerkv(LedgerKey,
-                                                                        SQN,
-                                                                        Obj,
-                                                                        Size,
-                                                                        TTL),
-    KeyChanges = [ObjKeyChange] ++ leveled_codec:convert_indexspecs(IndexSpecs,
-                                                                        Bucket,
-                                                                        Key,
-                                                                        SQN,
-                                                                        TTL),
-    {H, SQN, KeyChanges}.
+preparefor_ledgercache(_InkTag,
+                        LedgerKey, SQN, Obj, Size, {IdxSpecs, TTL},
+                        AAE) ->
+    {Bucket, Key, MetaValue, {KeyH, ObjH}, LastMods} =
+        leveled_codec:generate_ledgerkv(LedgerKey, SQN, Obj, Size, TTL),
+    KeyChanges =
+        [{LedgerKey, MetaValue}] ++
+            leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL) ++
+            leveled_codec:aae_indexspecs(AAE, Bucket, Key, SQN, ObjH, LastMods),
+    {KeyH, SQN, KeyChanges}.
 
 
 addto_ledgercache({H, SQN, KeyChanges}, Cache) ->
@@ -1322,35 +1471,40 @@ maybe_withjitter(CacheSize, MaxCacheSize) ->
     end.
 
 
-
-load_fun(KeyInJournal, ValueInJournal, _Position, Acc0, ExtractFun) ->
-    {MinSQN, MaxSQN, OutputTree} = Acc0,
-    {SQN, Type, PK} = KeyInJournal,
-    % VBin may already be a term
-    {VBin, VSize} = ExtractFun(ValueInJournal), 
-    {Obj, IndexSpecs} = leveled_codec:split_inkvalue(VBin),
-    case SQN of
-        SQN when SQN < MinSQN ->
-            {loop, Acc0};    
-        SQN when SQN < MaxSQN ->
-            Changes = preparefor_ledgercache(Type, PK, SQN,
-                                                Obj, VSize, IndexSpecs),
-            {loop,
-                {MinSQN,
-                    MaxSQN,
-                    addto_ledgercache(Changes, OutputTree, loader)}};
-        MaxSQN ->
-            leveled_log:log("B0006", [SQN]),
-            Changes = preparefor_ledgercache(Type, PK, SQN,
-                                                Obj, VSize, IndexSpecs),
-            {stop,
-                {MinSQN,
-                    MaxSQN,
-                    addto_ledgercache(Changes, OutputTree, loader)}};
-        SQN when SQN > MaxSQN ->
-            leveled_log:log("B0007", [MaxSQN, SQN]),
-            {stop, Acc0}
-    end.
+get_loadfun(RecentAAE) ->
+    PrepareFun = 
+        fun(Tag, PK, SQN, Obj, VS, IdxSpecs) ->
+            preparefor_ledgercache(Tag, PK, SQN, Obj, VS, IdxSpecs, RecentAAE)
+        end,
+    LoadFun =
+        fun(KeyInJournal, ValueInJournal, _Pos, Acc0, ExtractFun) ->
+            {MinSQN, MaxSQN, OutputTree} = Acc0,
+            {SQN, InkTag, PK} = KeyInJournal,
+            % VBin may already be a term
+            {VBin, VSize} = ExtractFun(ValueInJournal), 
+            {Obj, IdxSpecs} = leveled_codec:split_inkvalue(VBin),
+            case SQN of
+                SQN when SQN < MinSQN ->
+                    {loop, Acc0};    
+                SQN when SQN < MaxSQN ->
+                    Chngs = PrepareFun(InkTag, PK, SQN, Obj, VSize, IdxSpecs),
+                    {loop,
+                        {MinSQN,
+                            MaxSQN,
+                            addto_ledgercache(Chngs, OutputTree, loader)}};
+                MaxSQN ->
+                    leveled_log:log("B0006", [SQN]),
+                    Chngs = PrepareFun(InkTag, PK, SQN, Obj, VSize, IdxSpecs),
+                    {stop,
+                        {MinSQN,
+                            MaxSQN,
+                            addto_ledgercache(Chngs, OutputTree, loader)}};
+                SQN when SQN > MaxSQN ->
+                    leveled_log:log("B0007", [MaxSQN, SQN]),
+                    {stop, Acc0}
+            end
+        end,
+    LoadFun.
 
 
 get_opt(Key, Opts) ->
@@ -1484,7 +1638,7 @@ ttl_test() ->
     ok = book_close(Bookie2),
     reset_filestructure().
 
-hashtree_query_test() ->
+hashlist_query_test() ->
     RootPath = reset_filestructure(),
     {ok, Bookie1} = book_start([{root_path, RootPath},
                                 {max_journalsize, 1000000},
@@ -1507,22 +1661,22 @@ hashtree_query_test() ->
                     ObjL2),
     % Scan the store for the Bucket, Keys and Hashes
     {async, HTFolder} = book_returnfolder(Bookie1,
-                                                {hashtree_query,
+                                                {hashlist_query,
                                                     ?STD_TAG,
                                                     false}),
     KeyHashList = HTFolder(),
-        lists:foreach(fun({B, _K, H}) ->
-                            ?assertMatch("Bucket", B),
-                            ?assertMatch(true, is_integer(H))
-                            end,
-                        KeyHashList),
+    lists:foreach(fun({B, _K, H}) ->
+                        ?assertMatch("Bucket", B),
+                        ?assertMatch(true, is_integer(H))
+                        end,
+                    KeyHashList),
     ?assertMatch(1200, length(KeyHashList)),
     ok = book_close(Bookie1),
     {ok, Bookie2} = book_start([{root_path, RootPath},
                                     {max_journalsize, 200000},
                                     {cache_size, 500}]),
     {async, HTFolder2} = book_returnfolder(Bookie2,
-                                                {hashtree_query,
+                                                {hashlist_query,
                                                     ?STD_TAG,
                                                     false}),
     L0 = length(KeyHashList),
@@ -1532,7 +1686,7 @@ hashtree_query_test() ->
     ok = book_close(Bookie2),
     reset_filestructure().
 
-hashtree_query_withjournalcheck_test() ->
+hashlist_query_withjournalcheck_test() ->
     RootPath = reset_filestructure(),
     {ok, Bookie1} = book_start([{root_path, RootPath},
                                     {max_journalsize, 1000000},
@@ -1546,12 +1700,12 @@ hashtree_query_withjournalcheck_test() ->
                                                         Future) end,
                     ObjL1),
     {async, HTFolder1} = book_returnfolder(Bookie1,
-                                                {hashtree_query,
+                                                {hashlist_query,
                                                     ?STD_TAG,
                                                     false}),
     KeyHashList = HTFolder1(),
     {async, HTFolder2} = book_returnfolder(Bookie1,
-                                                {hashtree_query,
+                                                {hashlist_query,
                                                     ?STD_TAG,
                                                     check_presence}),
     ?assertMatch(KeyHashList, HTFolder2()),
@@ -1572,7 +1726,7 @@ foldobjects_vs_hashtree_test() ->
                                                         Future) end,
                     ObjL1),
     {async, HTFolder1} = book_returnfolder(Bookie1,
-                                                {hashtree_query,
+                                                {hashlist_query,
                                                     ?STD_TAG,
                                                     false}),
     KeyHashList1 = lists:usort(HTFolder1()),
