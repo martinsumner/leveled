@@ -453,8 +453,7 @@ pcl_doom(Pid) ->
 %%%============================================================================
 
 init([PCLopts]) ->
-    SW = os:timestamp(),
-    random:seed(erlang:phash2(self()), element(2, SW), element(3, SW)),
+    leveled_rand:seed(),
     case {PCLopts#penciller_options.root_path,
             PCLopts#penciller_options.start_snapshot,
             PCLopts#penciller_options.snapshot_query,
@@ -921,7 +920,7 @@ update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
             RandomFactor =
                 case State#state.levelzero_cointoss of
                     true ->
-                        case random:uniform(?COIN_SIDECOUNT) of
+                        case leveled_rand:uniform(?COIN_SIDECOUNT) of
                             1 ->
                                 true;
                             _ ->
@@ -1275,8 +1274,8 @@ generate_randomkeys(0, _SQN, Acc) ->
     lists:reverse(Acc);
 generate_randomkeys(Count, SQN, Acc) ->
     K = {o,
-            lists:concat(["Bucket", random:uniform(1024)]),
-            lists:concat(["Key", random:uniform(1024)]),
+            lists:concat(["Bucket", leveled_rand:uniform(1024)]),
+            lists:concat(["Key", leveled_rand:uniform(1024)]),
             null},
     RandKey = {K,
                 {SQN,

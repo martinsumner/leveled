@@ -374,7 +374,7 @@ log_timer(LogRef, Subs, StartTime, SupportedLogLevels) ->
     end.
 
 log_randomtimer(LogReference, Subs, StartTime, RandomProb) ->
-    R = random:uniform(),
+    R = leveled_rand:uniform(),
     case R < RandomProb of
         true ->
             log_timer(LogReference, Subs, StartTime);
@@ -388,7 +388,7 @@ log_randomtimer(LogReference, Subs, StartTime, RandomProb) ->
 put_timing(_Actor, undefined, T0, T1) ->
     {1, {T0, T1}, {T0, T1}};
 put_timing(Actor, {?PUT_LOGPOINT, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
-    RN = random:uniform(?PUT_LOGPOINT),
+    RN = leveled_rand:uniform(?PUT_LOGPOINT),
     case RN > ?PUT_LOGPOINT div 2 of
         true ->
             % log at the timing point less than half the time
@@ -434,7 +434,7 @@ head_timing_int(undefined, T0, Level, R) ->
                 end end,
     {1, lists:foldl(NewDFun, dict:new(), head_keylist())};
 head_timing_int({?HEAD_LOGPOINT, HeadTimingD}, T0, Level, R) ->
-    RN = random:uniform(?HEAD_LOGPOINT),
+    RN = leveled_rand:uniform(?HEAD_LOGPOINT),
     case RN > ?HEAD_LOGPOINT div 2 of
         true ->
             % log at the timing point less than half the time
@@ -533,7 +533,7 @@ gen_timing_int(undefined, T0, TimerType, KeyListFun, _LogPoint, _LogRef) ->
     {1, lists:foldl(NewDFun, dict:new(), KeyListFun())};
 gen_timing_int({LogPoint, TimerD}, T0, TimerType, KeyListFun, LogPoint,
                                                                     LogRef) ->
-    RN = random:uniform(LogPoint),
+    RN = leveled_rand:uniform(LogPoint),
     case RN > LogPoint div 2 of
         true ->
             % log at the timing point less than half the time

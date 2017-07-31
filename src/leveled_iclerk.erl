@@ -275,8 +275,8 @@ schedule_compaction(CompactionHours, RunsPerDay, CurrentTS) ->
     % today.
     RandSelect =
         fun(_X) ->
-            {lists:nth(random:uniform(TotalHours), CompactionHours),
-                random:uniform(?INTERVALS_PER_HOUR)}
+            {lists:nth(leveled_rand:uniform(TotalHours), CompactionHours),
+                leveled_rand:uniform(?INTERVALS_PER_HOUR)}
         end,
     RandIntervals = lists:sort(lists:map(RandSelect,
                                             lists:seq(1, RunsPerDay))),
@@ -300,7 +300,7 @@ schedule_compaction(CompactionHours, RunsPerDay, CurrentTS) ->
     
     % Calculate the offset in seconds to this next interval
     NextS0 = NextI * (IntervalLength * 60)
-                - random:uniform(IntervalLength * 60),
+                - leveled_rand:uniform(IntervalLength * 60),
     NextM = NextS0 div 60,
     NextS = NextS0 rem 60,
     TimeDiff = calendar:time_difference(LocalTime,
@@ -932,7 +932,7 @@ compact_singlefile_totwosmallfiles_test() ->
     {ok, CDB1} = leveled_cdb:cdb_open_writer(FN1, CDBoptsLarge),
     lists:foreach(fun(X) ->
                         LK = test_ledgerkey("Key" ++ integer_to_list(X)),
-                        Value = crypto:rand_bytes(1024),
+                        Value = leveled_rand:rand_bytes(1024),
                         {IK, IV} = leveled_codec:to_inkerkv(LK, X, Value, []),
                         ok = leveled_cdb:cdb_put(CDB1, IK, IV)
                         end,

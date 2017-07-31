@@ -243,7 +243,7 @@ buildrandomfashion_test() ->
     ManL0 = build_testmanifest_aslist(),
     RandMapFun =
         fun(X) ->
-            {random:uniform(), X}
+            {leveled_rand:uniform(), X}
         end,    
     ManL1 = lists:map(RandMapFun, ManL0),
     ManL2 = lists:sort(ManL1),
@@ -257,7 +257,7 @@ buildrandomfashion_test() ->
     test_testmanifest(Man0),
     ?assertMatch(ManL0, to_list(Man0)),
     
-    RandomEntry = lists:nth(random:uniform(50), ManL0),
+    RandomEntry = lists:nth(leveled_rand:uniform(50), ManL0),
     Man1 = remove_entry(Man0, RandomEntry),
     Man2 = add_entry(Man1, RandomEntry, false),
     

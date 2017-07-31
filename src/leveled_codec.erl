@@ -117,7 +117,7 @@ to_lookup(Key) ->
 %% Credit to
 %% https://github.com/afiskon/erlang-uuid-v4/blob/master/src/uuid.erl
 generate_uuid() ->
-    <<A:32, B:16, C:16, D:16, E:48>> = crypto:rand_bytes(16),
+    <<A:32, B:16, C:16, D:16, E:48>> = leveled_rand:rand_bytes(16),
     L = io_lib:format("~8.16.0b-~4.16.0b-4~3.16.0b-~4.16.0b-~12.16.0b", 
                         [A, B, C band 16#0fff, D band 16#3fff bor 16#8000, E]),
     binary_to_list(list_to_binary(L)).
@@ -764,7 +764,7 @@ corrupted_inker_tag_test() ->
 %% Maybe 5 microseconds per hash
 
 hashperf_test() ->
-    OL = lists:map(fun(_X) -> crypto:rand_bytes(8192) end, lists:seq(1, 1000)),
+    OL = lists:map(fun(_X) -> leveled_rand:rand_bytes(8192) end, lists:seq(1, 1000)),
     SW = os:timestamp(),
     _HL = lists:map(fun(Obj) -> erlang:phash2(Obj) end, OL),
     io:format(user, "1000 object hashes in ~w microseconds~n",
