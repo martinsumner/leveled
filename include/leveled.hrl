@@ -28,44 +28,44 @@
                         timestamp :: integer()}).                      
 
 -record(manifest_entry,
-                        {start_key :: tuple(),
-                        end_key :: tuple(),
-                        owner :: pid()|list(),
-                        filename :: string()}).
+                        {start_key :: tuple() | undefined,
+                         end_key :: tuple() | undefined,
+                         owner :: pid()|list(),
+                         filename :: string() | undefined}).
 
 -record(cdb_options,
-                        {max_size :: integer(),
-                        file_path :: string(),
-                        waste_path :: string(),
-                        binary_mode = false :: boolean(),
-                        sync_strategy = sync}).
+                        {max_size :: integer() | undefined,
+                         file_path :: string() | undefined,
+                         waste_path :: string() | undefined,
+                         binary_mode = false :: boolean(),
+                         sync_strategy = sync}).
 
 -record(inker_options,
-                        {cdb_max_size :: integer(),
-                        root_path :: string(),
-                        cdb_options :: #cdb_options{},
+                        {cdb_max_size :: integer() | undefined,
+                        root_path :: string() | undefined,
+                        cdb_options :: #cdb_options{} | undefined,
                         start_snapshot = false :: boolean(),
-                        source_inker :: pid(),
+                        source_inker :: pid() | undefined,
                         reload_strategy = [] :: list(),
-                        waste_retention_period :: integer(),
+                        waste_retention_period :: integer() | undefined,
                         max_run_length}).
 
 -record(penciller_options,
-                        {root_path :: string(),
-                        max_inmemory_tablesize :: integer(),
+                        {root_path :: string() | undefined,
+                        max_inmemory_tablesize :: integer() | undefined,
                         start_snapshot = false :: boolean(),
                         snapshot_query,
-                        bookies_mem :: tuple(),
-                        source_penciller :: pid(),
+                        bookies_mem :: tuple() | undefined,
+                        source_penciller :: pid() | undefined,
                         snapshot_longrunning = true :: boolean(),
                         levelzero_cointoss = false :: boolean()}).
 
 -record(iclerk_options,
-                        {inker :: pid(),
-                        max_run_length :: integer(),
-                        cdb_options = #cdb_options{} :: #cdb_options{},
-                        waste_retention_period :: integer(),
-                        reload_strategy = [] :: list()}).
+                        {inker :: pid() | undefined,
+                         max_run_length :: integer() | undefined,
+                         cdb_options = #cdb_options{} :: #cdb_options{},
+                         waste_retention_period :: integer() | undefined,
+                         reload_strategy = [] :: list()}).
 
 -record(recent_aae, {filter :: whitelist|blacklist,
                         % the buckets list should either be a
@@ -106,4 +106,3 @@
           vclock,
           updatemetadata=dict:store(clean, true, dict:new()),
           updatevalue :: term()}).
- 

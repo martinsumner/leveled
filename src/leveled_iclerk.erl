@@ -104,17 +104,17 @@
 -define(DEFAULT_WASTE_RETENTION_PERIOD, 86400).
 -define(INTERVALS_PER_HOUR, 4).
 
--record(state, {inker :: pid(),
-                    max_run_length :: integer(),
-                    cdb_options,
-                    waste_retention_period :: integer(),
-                    waste_path :: string(),
-                    reload_strategy = ?DEFAULT_RELOAD_STRATEGY :: list()}).
+-record(state, {inker :: pid() | undefined,
+                max_run_length :: integer() | undefined,
+                cdb_options,
+                waste_retention_period :: integer() | undefined,
+                waste_path :: string() | undefined,
+                reload_strategy = ?DEFAULT_RELOAD_STRATEGY :: list()}).
 
--record(candidate, {low_sqn :: integer(),
-                    filename :: string(),
-                    journal :: pid(),
-                    compaction_perc :: float()}).
+-record(candidate, {low_sqn :: integer() | undefined,
+                    filename :: string() | undefined,
+                    journal :: pid() | undefined,
+                    compaction_perc :: float() | undefined}).
 
 
 %%%============================================================================

@@ -47,8 +47,8 @@
 -define(MAX_TIMEOUT, 2000).
 -define(MIN_TIMEOUT, 200).
 
--record(state, {owner :: pid(),
-                root_path :: string(),
+-record(state, {owner :: pid() | undefined,
+                root_path :: string() | undefined,
                 pending_deletions = dict:new() % OTP 16 does not like type
                 }).
 
