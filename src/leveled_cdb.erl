@@ -99,17 +99,17 @@
 -define(DELETE_TIMEOUT, 10000).
 
 -record(state, {hashtree,
-                last_position :: integer(),
+                last_position :: integer() | undefined,
                 last_key = empty,
                 hash_index = {} :: tuple(),
-                filename :: string(),
-                handle :: file:fd(),
-                max_size :: integer(),
+                filename :: string() | undefined,
+                handle :: file:fd() | undefined,
+                max_size :: integer() | undefined,
                 binary_mode = false :: boolean(),
                 delete_point = 0 :: integer(),
-                inker :: pid(),
+                inker :: pid() | undefined,
                 deferred_delete = false :: boolean(),
-                waste_path :: string(),
+                waste_path :: string() | undefined,
                 sync_strategy = none}).
 
 -type cdb_options() :: #cdb_options{}.
