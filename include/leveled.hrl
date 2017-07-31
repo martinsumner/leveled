@@ -51,12 +51,12 @@
                         max_run_length}).
 
 -record(penciller_options,
-                        {root_path :: string(),
-                        max_inmemory_tablesize :: integer(),
+                        {root_path :: string() | undefined,
+                        max_inmemory_tablesize :: integer() | undefined,
                         start_snapshot = false :: boolean(),
                         snapshot_query,
-                        bookies_mem :: tuple(),
-                        source_penciller :: pid(),
+                        bookies_mem :: tuple() | undefined,
+                        source_penciller :: pid() | undefined,
                         snapshot_longrunning = true :: boolean(),
                         levelzero_cointoss = false :: boolean()}).
 

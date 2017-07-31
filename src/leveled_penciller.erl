@@ -223,25 +223,25 @@
                 ledger_sqn = 0 :: integer(), % The highest SQN added to L0
                 root_path = "../test" :: string(),
                 
-                clerk :: pid(),
+                clerk :: pid() | undefined,
                 
                 levelzero_pending = false :: boolean(),
-                levelzero_constructor :: pid(),
+                levelzero_constructor :: pid() | undefined,
                 levelzero_cache = [] :: list(), % a list of trees
                 levelzero_size = 0 :: integer(),
-                levelzero_maxcachesize :: integer(),
+                levelzero_maxcachesize :: integer() | undefined,
                 levelzero_cointoss = false :: boolean(),
                 levelzero_index, % An array
                 
                 is_snapshot = false :: boolean(),
                 snapshot_fully_loaded = false :: boolean(),
-                source_penciller :: pid(),
-                levelzero_astree :: list(),
+                source_penciller :: pid() | undefined,
+                levelzero_astree :: list() | undefined,
                 
                 work_ongoing = false :: boolean(), % i.e. compaction work
                 work_backlog = false :: boolean(), % i.e. compaction work
                 
-                head_timing :: tuple()}).
+                head_timing :: tuple() | undefined}).
 
 -type penciller_options() :: #penciller_options{}.
 -type bookies_memory() :: {tuple()|empty_cache,
@@ -1269,9 +1269,7 @@ keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SSTiterator}, KeyRange,
 
 
 generate_randomkeys({Count, StartSQN}) ->
-    generate_randomkeys(Count, StartSQN, []);
-generate_randomkeys(Count) ->
-    generate_randomkeys(Count, 0, []).
+    generate_randomkeys(Count, StartSQN, []).
 
 generate_randomkeys(0, _SQN, Acc) ->
     lists:reverse(Acc);
@@ -1622,7 +1620,7 @@ foldwithimm_simple_test() ->
 create_file_test() ->
     {RP, Filename} = {"../test/", "new_file.sst"},
     ok = file:write_file(filename:join(RP, Filename), term_to_binary("hello")),
-    KVL = lists:usort(generate_randomkeys(10000)),
+    KVL = lists:usort(generate_randomkeys({10000, 0})),
     Tree = leveled_tree:from_orderedlist(KVL, ?CACHE_TYPE),
     FetchFun = fun(Slot) -> lists:nth(Slot, [Tree]) end,
     {ok,
