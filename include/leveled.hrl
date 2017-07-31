@@ -34,11 +34,11 @@
                          filename :: string() | undefined}).
 
 -record(cdb_options,
-                        {max_size :: integer(),
-                        file_path :: string() | undefined,
-                        waste_path :: string() | undefined,
-                        binary_mode = false :: boolean(),
-                        sync_strategy = sync}).
+                        {max_size :: integer() | undefined,
+                         file_path :: string() | undefined,
+                         waste_path :: string() | undefined,
+                         binary_mode = false :: boolean(),
+                         sync_strategy = sync}).
 
 -record(inker_options,
                         {cdb_max_size :: integer() | undefined,
@@ -61,11 +61,11 @@
                         levelzero_cointoss = false :: boolean()}).
 
 -record(iclerk_options,
-                        {inker :: pid(),
-                        max_run_length :: integer(),
-                        cdb_options = #cdb_options{} :: #cdb_options{},
-                        waste_retention_period :: integer(),
-                        reload_strategy = [] :: list()}).
+                        {inker :: pid() | undefined,
+                         max_run_length :: integer() | undefined,
+                         cdb_options = #cdb_options{} :: #cdb_options{},
+                         waste_retention_period :: integer() | undefined,
+                         reload_strategy = [] :: list()}).
 
 -record(recent_aae, {filter :: whitelist|blacklist,
                         % the buckets list should either be a
