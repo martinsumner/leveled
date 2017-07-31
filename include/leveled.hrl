@@ -43,7 +43,7 @@
 -record(inker_options,
                         {cdb_max_size :: integer() | undefined,
                         root_path :: string() | undefined,
-                        cdb_options :: #cdb_options{},
+                        cdb_options :: #cdb_options{} | undefined,
                         start_snapshot = false :: boolean(),
                         source_inker :: pid() | undefined,
                         reload_strategy = [] :: list(),
@@ -106,4 +106,3 @@
           vclock,
           updatemetadata=dict:store(clean, true, dict:new()),
           updatevalue :: term()}).
- 

@@ -92,15 +92,15 @@
                         min_sqn = infinity :: integer()|infinity,
                         max_sqn = 0 :: integer()}).
 
--record(state, {inker :: pid(),
-                penciller :: pid(),
-                cache_size :: integer(),
-                recent_aae :: false|#recent_aae{},
+-record(state, {inker :: pid() | undefined,
+                penciller :: pid() | undefined,
+                cache_size :: integer() | undefined,
+                recent_aae :: false | #recent_aae{} | undefined,
                 ledger_cache = #ledger_cache{},
-                is_snapshot :: boolean(),
+                is_snapshot :: boolean() | undefined,
                 slow_offer = false :: boolean(),
-                put_timing :: tuple(),
-                get_timing :: tuple()}).
+                put_timing :: tuple() | undefined,
+                get_timing :: tuple() | undefined}).
 
 
 %%%============================================================================
