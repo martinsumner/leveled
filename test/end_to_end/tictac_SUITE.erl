@@ -865,23 +865,40 @@ recent_aae_expiry(_Config) ->
     TicTacTree1_Full =
         lists:foldl(GetTicTacTreeFun(Book1A), EmptyTree, LMDIndexes),    
     DL3_0 = leveled_tictac:find_dirtyleaves(TicTacTree1_Full, EmptyTree),
+    io:format("Dirty leaves found before expiry ~w~n", [length(DL3_0)]),
+
     true = length(DL3_0) > 0,
     
     SecondsSinceLMD = timer:now_diff(os:timestamp(), SW0) div 1000000,
     SecondsToExpiry = (TotalMins + UnitMins) * 60,
     
+    io:format("SecondsToExpiry ~w SecondsSinceLMD ~w~n", 
+                [SecondsToExpiry, SecondsSinceLMD]),
+    io:format("LMDIndexes ~w~n", [LMDIndexes]),
+
     case SecondsToExpiry > SecondsSinceLMD of
         true ->
-            timer:sleep((SecondsToExpiry - SecondsSinceLMD) * 1000);
+            timer:sleep((1 + SecondsToExpiry - SecondsSinceLMD) * 1000);
         false ->
-            tier:sleep(0)
+            timer:sleep(1000)
     end,
     
     % Should now get an empty answer - all entries have expired
     TicTacTree2_Full =
         lists:foldl(GetTicTacTreeFun(Book1A), EmptyTree, LMDIndexes),    
-    
     DL4_0 = leveled_tictac:find_dirtyleaves(TicTacTree2_Full, EmptyTree),
+    io:format("Dirty leaves found after expiry ~w~n", [length(DL4_0)]),
+
+    timer:sleep(10000),
+
+    TicTacTree3_Full =
+        lists:foldl(GetTicTacTreeFun(Book1A), EmptyTree, LMDIndexes),    
+    DL5_0 = leveled_tictac:find_dirtyleaves(TicTacTree3_Full, EmptyTree),
+    io:format("Dirty leaves found after expiry plus 10s ~w~n", [length(DL5_0)]),
+
+
+    ok = leveled_bookie:book_close(Book1A),
+
     true = length(DL4_0) == 0.
 
 
