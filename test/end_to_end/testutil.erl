@@ -319,10 +319,10 @@ get_compressiblevalue() ->
                 L).
 
 generate_smallobjects(Count, KeyNumber) ->
-    generate_objects(Count, KeyNumber, [], crypto:rand_bytes(512)).
+    generate_objects(Count, KeyNumber, [], leveled_rand:rand_bytes(512)).
 
 generate_objects(Count, KeyNumber) ->
-    generate_objects(Count, KeyNumber, [], crypto:rand_bytes(4096)).
+    generate_objects(Count, KeyNumber, [], leveled_rand:rand_bytes(4096)).
 
 
 generate_objects(Count, KeyNumber, ObjL, Value) ->

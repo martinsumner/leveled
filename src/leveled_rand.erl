@@ -5,6 +5,7 @@
 
 %% API
 -export([
+         uniform/0,
          uniform/1,
          seed/0,
          rand_bytes/1
@@ -14,6 +15,9 @@
 %%% New (r19+) rand style functions
 %%%===================================================================
 -ifndef(old_rand).
+uniform() ->
+    rand:uniform().
+
 uniform(N) ->
     rand:uniform(N).
 
@@ -27,6 +31,9 @@ rand_bytes(Size) ->
 %%%===================================================================
 %%% Old (r18) random style functions
 %%%===================================================================
+uniform() ->
+    random:uniform().
+
 uniform(N) ->
     random:uniform(N).
 
