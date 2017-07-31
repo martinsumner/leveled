@@ -28,10 +28,10 @@
                         timestamp :: integer()}).                      
 
 -record(manifest_entry,
-                        {start_key :: tuple(),
-                        end_key :: tuple(),
-                        owner :: pid()|list(),
-                        filename :: string()}).
+                        {start_key :: tuple() | undefined,
+                         end_key :: tuple() | undefined,
+                         owner :: pid()|list(),
+                         filename :: string() | undefined}).
 
 -record(cdb_options,
                         {max_size :: integer(),

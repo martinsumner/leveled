@@ -117,7 +117,7 @@
 
 -record(summary,    {first_key :: tuple(),
                         last_key :: tuple(),
-                        index :: tuple(), 
+                     index :: tuple() | undefined,
                         size :: integer(),
                         max_sqn :: integer()}).
 
@@ -129,9 +129,9 @@
 %% extra copying.  Files at the top of the tree yield, those lower down don't.
 
 -record(state,      {summary,
-                        handle :: file:fd(),
-                        sst_timings :: tuple(),
-                        penciller :: pid(),
+                     handle :: file:fd() | undefined,
+                     sst_timings :: tuple() | undefined,
+                     penciller :: pid() | undefined,
                         root_path,
                         filename,
                         yield_blockquery = false :: boolean(),
