@@ -35,19 +35,19 @@
 
 -record(cdb_options,
                         {max_size :: integer(),
-                        file_path :: string(),
-                        waste_path :: string(),
+                        file_path :: string() | undefined,
+                        waste_path :: string() | undefined,
                         binary_mode = false :: boolean(),
                         sync_strategy = sync}).
 
 -record(inker_options,
-                        {cdb_max_size :: integer(),
-                        root_path :: string(),
+                        {cdb_max_size :: integer() | undefined,
+                        root_path :: string() | undefined,
                         cdb_options :: #cdb_options{},
                         start_snapshot = false :: boolean(),
-                        source_inker :: pid(),
+                        source_inker :: pid() | undefined,
                         reload_strategy = [] :: list(),
-                        waste_retention_period :: integer(),
+                        waste_retention_period :: integer() | undefined,
                         max_run_length}).
 
 -record(penciller_options,

@@ -128,15 +128,15 @@
 -record(state, {manifest = [] :: list(),
 				manifest_sqn = 0 :: integer(),
                 journal_sqn = 0 :: integer(),
-                active_journaldb :: pid(),
+                active_journaldb :: pid() | undefined,
                 pending_removals = [] :: list(),
                 registered_snapshots = [] :: list(),
-                root_path :: string(),
-                cdb_options :: #cdb_options{},
-                clerk :: pid(),
+                root_path :: string() | undefined,
+                cdb_options :: #cdb_options{} | undefined,
+                clerk :: pid() | undefined,
                 compaction_pending = false :: boolean(),
                 is_snapshot = false :: boolean(),
-                source_inker :: pid()}).
+                source_inker :: pid() | undefined}).
 
 
 -type inker_options() :: #inker_options{}.
