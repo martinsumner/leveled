@@ -61,7 +61,7 @@
                         % an array of lists or trees representing the manifest
                     manifest_sqn = 0 :: integer(),
                         % The current manifest SQN
-                    snapshots :: list(),
+                    snapshots :: list() | undefined,
                         % A list of snaphots (i.e. clones)
                     min_snapshot_sqn = 0 :: integer(),
                         % The smallest snapshot manifest SQN in the snapshot
