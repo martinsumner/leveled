@@ -317,3 +317,9 @@ For the 6-hour test the total throughput achieved was:
 - leveldb with listkeys vnode_pool - 270.1M (- 0.85%)
 - leveldb with listkeys node_pool - 278.0M (+ 2.04%)
 - leveled with listkeys node_pool - 333.0M (+ 22.23%)
+
+Of note is the escalating response times of the fold as the size of the database increased.  The nature of the cluster would mean that with unconstrained hardware resource the node_worker_pool should take 5 x longer than the vnode_worker_pool - but within the test it was generally less than 3 times longer.  However, this was 3 times longer than a large time which increased with database size in a non-linear fashion.
+
+With leveled there was a strongly favourable comparison, with both improved response times, and less dramatic rises in those times as the database grew.
+
+![](pics/listkeys_jobtime_compare.png)
