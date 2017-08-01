@@ -304,7 +304,7 @@ This was tested with the following configuration:
 - 5-node cluster, i2.2xlarge
 - 64-partition ring-size
 - 100K GETs : 20K UPDATEs : 1 LIST_KEYS operations ratios
-- 6KB fixed object size (smaller object size chosen when compared to previous tests to try and relative importance of write amplification in leveldb)
+- 6KB fixed object size (smaller object size chosen when compared to previous tests to try and reduce the relative importance of write amplification in leveldb, and see the listkeys impact more clearly)
 - 400M key-space (pareto distribution)
 
 This initial test showed that there was a minimal impact on throughput with running these listkeys operations leveldb when having ``snap_prefold`` either disabled or enabled.  All three leveldb tests (without listkeys, with listkeys and snap_prefold, with listkeys and without snap_prefold) achieved an overall throughput within the margin of error of cloud testing.
