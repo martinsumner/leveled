@@ -231,7 +231,7 @@ cdb_getpositions(Pid, SampleSize) ->
                             cdb_getpositions_fromidx(Pid, S0, Index, Acc)
                     end
                 end,
-            RandFun = fun(X) -> {random:uniform(), X} end,
+            RandFun = fun(X) -> {leveled_rand:uniform(), X} end,
             SeededL = lists:map(RandFun, lists:seq(0, 255)),
             SortedL = lists:keysort(1, SeededL),
             lists:foldl(FoldFun, [], SortedL)

@@ -330,11 +330,11 @@ merge_lookup(Manifest, LevelIdx, StartKey, EndKey) ->
 %% Hence, the initial implementation is to select files to merge at random
 mergefile_selector(Manifest, LevelIdx) when LevelIdx =< 1 ->
     Level = array:get(LevelIdx, Manifest#manifest.levels),
-    lists:nth(random:uniform(length(Level)), Level);
+    lists:nth(leveled_rand:uniform(length(Level)), Level);
 mergefile_selector(Manifest, LevelIdx) ->
     Level = leveled_tree:to_list(array:get(LevelIdx,
                                             Manifest#manifest.levels)),
-    {_SK, ME} = lists:nth(random:uniform(length(Level)), Level),
+    {_SK, ME} = lists:nth(leveled_rand:uniform(length(Level)), Level),
     ME.
 
 -spec merge_snapshot(manifest(), manifest()) -> manifest().
@@ -924,7 +924,7 @@ ext_keylookup_manifest_test() ->
     {ok, BytesCopied} = file:copy(Man7FN, Man7FNAlt),
     {ok, Bin} = file:read_file(Man7FN),
     ?assertMatch(BytesCopied, byte_size(Bin)),
-    RandPos = random:uniform(bit_size(Bin) - 1),
+    RandPos = leveled_rand:uniform(bit_size(Bin) - 1),
     <<Pre:RandPos/bitstring, BitToFlip:1/integer, Rest/bitstring>> = Bin,
     Flipped = BitToFlip bxor 1,
     ok  = file:write_file(Man7FN,

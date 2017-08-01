@@ -497,7 +497,7 @@ delete_pending(timeout, State) ->
                                                self()),
     % If the next thing is another timeout - may be long-running snapshot, so
     % back-off
-    {next_state, delete_pending, State, random:uniform(10) * ?DELETE_TIMEOUT};
+    {next_state, delete_pending, State, leveled_rand:uniform(10) * ?DELETE_TIMEOUT};
 delete_pending(close, State) ->
     leveled_log:log("SST07", [State#state.filename]),
     ok = file:close(State#state.handle),
@@ -1478,11 +1478,11 @@ generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
 generate_randomkeys(_Seqn, 0, Acc, _BucketLow, _BucketHigh) ->
     Acc;
 generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
-    BRand = random:uniform(BRange),
+    BRand = leveled_rand:uniform(BRange),
     BNumber = string:right(integer_to_list(BucketLow + BRand), 4, $0),
-    KNumber = string:right(integer_to_list(random:uniform(1000)), 6, $0),
+    KNumber = string:right(integer_to_list(leveled_rand:uniform(1000)), 6, $0),
     LK = leveled_codec:to_ledgerkey("Bucket" ++ BNumber, "Key" ++ KNumber, o),
-    Chunk = crypto:rand_bytes(64),
+    Chunk = leveled_rand:rand_bytes(64),
     {_B, _K, MV, _H, _LMs} =
         leveled_codec:generate_ledgerkv(LK, Seqn, Chunk, 64, infinity),
     generate_randomkeys(Seqn + 1,
@@ -1498,7 +1498,7 @@ generate_indexkeys(Count) ->
 generate_indexkeys(0, IndexList) ->
     IndexList;
 generate_indexkeys(Count, IndexList) ->
-    Changes = generate_indexkey(random:uniform(8000), Count),
+    Changes = generate_indexkey(leveled_rand:uniform(8000), Count),
     generate_indexkeys(Count - 1, IndexList ++ Changes).
 
 generate_indexkey(Term, Count) ->
@@ -1671,7 +1671,7 @@ indexed_list_mixedkeys_bitflip_test() ->
     {_PosBinIndex1, FullBin, _HL, LK} = generate_binary_slot(lookup, Keys),
     ?assertMatch(LK, element(1, lists:last(Keys))),
     L = byte_size(FullBin),
-    Byte1 = random:uniform(L),
+    Byte1 = leveled_rand:uniform(L),
     <<PreB1:Byte1/binary, A:8/integer, PostByte1/binary>> = FullBin,
     FullBin0 = 
         case A of 

@@ -28,7 +28,7 @@ check_positive(KeyList, Bloom, LoopCount) ->
 
 
 produce_keylist(KeyCount) ->
-	KeyPrefix = lists:concat(["PositiveKey-", random:uniform(KeyCount)]),
+	KeyPrefix = lists:concat(["PositiveKey-", leveled_rand:uniform(KeyCount)]),
 	produce_keylist(KeyCount, [], KeyPrefix).
 
 produce_keylist(0, KeyList, _) ->
@@ -46,7 +46,7 @@ check_negative(KeyCount, CheckCount) ->
 check_negative(Bloom, 0, FalsePos) ->
 	{byte_size(Bloom), FalsePos};
 check_negative(Bloom, CheckCount, FalsePos) ->
-	Key = lists:concat(["NegativeKey-", CheckCount, random:uniform(CheckCount)]),
+	Key = lists:concat(["NegativeKey-", CheckCount, leveled_rand:uniform(CheckCount)]),
 	case leveled_rice:check_key(Key, Bloom) of 
 		true -> check_negative(Bloom, CheckCount - 1, FalsePos + 1);
 		false -> check_negative(Bloom, CheckCount - 1, FalsePos)
