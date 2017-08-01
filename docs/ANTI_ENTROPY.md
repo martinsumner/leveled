@@ -309,7 +309,7 @@ This was tested with the following configuration:
 
 This initial test showed that there was a minimal impact on throughput with running these listkeys operations leveldb when having ``snap_prefold`` either disabled or enabled.  All three leveldb tests (without listkeys, with listkeys and snap_prefold, with listkeys and without snap_prefold) achieved an overall throughput within the margin of error of cloud testing.
 
-<img src="pics/volume_listkeys_compare_6KB.png" width="1200" height="400" />
+<img src="pics/volume_listkeys_compare_6KB.png" width="1200" height="600" />
 
 For the 6-hour test the total throughput achieved was:
 
