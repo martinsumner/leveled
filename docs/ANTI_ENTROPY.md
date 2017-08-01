@@ -326,7 +326,7 @@ With leveled there was a strongly favourable comparison, with both improved resp
 
 Even when using the (constrained) node_worker_pool the leveled implementation runs list_keys jobs at a rate of 155K keys per second.  By contrast leveldb runs at 45K keys per second with the vnode_worker_pool and just 16K keys per second when throttled by using the node_worker_pool.
 
-These rates change with object size with leveldb, but not with leveled.  so when testing with object sizes of 10KB, rates drop to 27K keys per second for the same test with leveldb using the vnode_worker_pool.  However, rates are unchanged for leveled, as the operation is now independent of object size (as object values do not need to be scanned).
+These rates change with object size with leveldb, but not with leveled.  so when testing with object sizes of 10KB, rates drop to 27K keys per second for the same test with leveldb using the vnode_worker_pool.  However, rates are unchanged for leveled, as the operation in leveled is independent of object size (as object values do not need to be scanned).
 
 The intention is though, not to use list_keys operations in AAE - but instead to dynamically produce TicTac Trees either by folding objects (or heads with leveled) or folding over specialist indexes.  More relevant tests will follow in the next phase.
 
