@@ -37,9 +37,6 @@ uniform() ->
 uniform(N) ->
     random:uniform(N).
 
-uniform_s(N, State) ->
-    random:uniform_s(N, State).
-
 seed() ->
     SW = os:timestamp(),
     random:seed(erlang:phash2(self()), element(2, SW), element(3, SW)).
