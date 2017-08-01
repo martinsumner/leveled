@@ -307,4 +307,13 @@ This was tested with the following configuration:
 - 6KB fixed object size (smaller object size chosen when compared to previous tests to try and relative importance of write amplification in leveldb)
 - 400M key-space (pareto distribution)
 
-Interesting this showed that there was a minimal impact on throughput with running these listkeys operations leveldb when having ``snap_prefold`` either disabled or enabled.  All three leveldb tests (without listkeys, with listkeys and snap_prefold, with listkeys and without snap_prefold) achieved an overall throughput within the margin of error of cloud testing.
+This initial test showed that there was a minimal impact on throughput with running these listkeys operations leveldb when having ``snap_prefold`` either disabled or enabled.  All three leveldb tests (without listkeys, with listkeys and snap_prefold, with listkeys and without snap_prefold) achieved an overall throughput within the margin of error of cloud testing.
+
+![](pics/volume_listkeys_compare_6KB.png)
+
+For the 6-hour test the total throughput achieved was:
+
+leveldb with no listkeys - 272.4M
+leveldb with listkeys vnode_pool - 270.1M (- 0.85%)
+leveldb with listkeys node_pool - 278.0M (+ 2.04%)
+leveled with listkeys node_pool - 333.0M (+ 22.23%) 
