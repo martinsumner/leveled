@@ -42,6 +42,6 @@ seed() ->
     random:seed(erlang:phash2(self()), element(2, SW), element(3, SW)).
 
 rand_bytes(Size) ->
-    crypto:strong_rand(Size).
+    crypto:rand_bytes(Size).
 
 -endif.
