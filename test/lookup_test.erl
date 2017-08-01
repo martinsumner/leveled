@@ -41,7 +41,7 @@ go_dict(_, 0, _) ->
     {erlang:memory(), statistics(garbage_collection)};
 go_dict(D, N, M) ->
     % Lookup a random key - which may not be present
-    LookupKey = lists:concat(["key-", random:uniform(M)]),
+    LookupKey = lists:concat(["key-", leveled_rand:uniform(M)]),
     LookupHash = hash(LookupKey),
     dict:find(LookupHash, D),
 
@@ -71,7 +71,7 @@ go_ets(_, 0, _) ->
     {erlang:memory(), statistics(garbage_collection)};
 go_ets(Ets, N, M) ->
     % Lookup a random key - which may not be present
-    LookupKey = lists:concat(["key-", random:uniform(M)]),
+    LookupKey = lists:concat(["key-", leveled_rand:uniform(M)]),
     LookupHash = hash(LookupKey),
     ets:lookup(Ets, LookupHash),
 
@@ -95,7 +95,7 @@ go_gbtree(_, 0, _) ->
     {erlang:memory(), statistics(garbage_collection)};
 go_gbtree(Tree, N, M) ->
     % Lookup a random key - which may not be present
-    LookupKey = lists:concat(["key-", random:uniform(M)]),
+    LookupKey = lists:concat(["key-", leveled_rand:uniform(M)]),
     LookupHash = hash(LookupKey),
     gb_trees:lookup(LookupHash, Tree),
 
@@ -134,7 +134,7 @@ go_arrayofdict(_, 0, _) ->
     {erlang:memory(), statistics(garbage_collection)};
 go_arrayofdict(Array, N, M) ->
     % Lookup a random key - which may not be present
-    LookupKey = lists:concat(["key-", random:uniform(M)]),
+    LookupKey = lists:concat(["key-", leveled_rand:uniform(M)]),
     LookupHash = hash(LookupKey),
     LookupIndex = hash_to_index(LookupHash),
     dict:find(LookupHash, array:get(LookupIndex, Array)),
@@ -177,7 +177,7 @@ go_arrayofgbtree(_, 0, _) ->
     {erlang:memory(), statistics(garbage_collection)};
 go_arrayofgbtree(Array, N, M) ->
     % Lookup a random key - which may not be present
-    LookupKey = lists:concat(["key-", random:uniform(M)]),
+    LookupKey = lists:concat(["key-", leveled_rand:uniform(M)]),
     LookupHash = hash(LookupKey),
     LookupIndex = hash_to_index(LookupHash),
     gb_trees:lookup(LookupHash, array:get(LookupIndex, Array)),
@@ -212,7 +212,7 @@ go_arrayofdict_withcache(_, 0, _) ->
     {erlang:memory(), statistics(garbage_collection)};
 go_arrayofdict_withcache({MArray, CArray}, N, M) ->
     % Lookup a random key - which may not be present
-    LookupKey = lists:concat(["key-", random:uniform(M)]),
+    LookupKey = lists:concat(["key-", leveled_rand:uniform(M)]),
     LookupHash = hash(LookupKey),
     LookupIndex = hash_to_index(LookupHash),
     dict:find(LookupHash, array:get(LookupIndex, CArray)),
@@ -263,10 +263,10 @@ create_block(N, BlockType, KeyStruct) ->
         20 ->
             Key = lists:concat(["key-20-special"]);
         _ ->
-            Key = lists:concat(["key-", N, "-", random:uniform(1000)])
+            Key = lists:concat(["key-", N, "-", leveled_rand:uniform(1000)])
     end,
-    SequenceNumber = random:uniform(1000000000),
-    Indexes = [{<<"DateOfBirth_int">>, random:uniform(10000)}, {<<"index1_bin">>, lists:concat([random:uniform(1000), "SomeCommonText"])}, {<<"index2_bin">>, <<"RepetitionRepetitionRepetition">>}],
+    SequenceNumber = leveled_rand:uniform(1000000000),
+    Indexes = [{<<"DateOfBirth_int">>, leveled_rand:uniform(10000)}, {<<"index1_bin">>, lists:concat([leveled_rand:uniform(1000), "SomeCommonText"])}, {<<"index2_bin">>, <<"RepetitionRepetitionRepetition">>}],
     case BlockType of
         keylist ->
             Term = {o, Bucket, Key, {Indexes, SequenceNumber}},

@@ -379,8 +379,7 @@ book_destroy(Pid) ->
 %%%============================================================================
 
 init([Opts]) ->
-    SW = os:timestamp(),
-    random:seed(erlang:phash2(self()), element(2, SW), element(3, SW)),
+    leveled_rand:seed(),
     case get_opt(snapshot_bookie, Opts) of
         undefined ->
             % Start from file not snapshot
@@ -1248,7 +1247,7 @@ get_hashaccumulator(JournalCheck, InkerClone, AddKeyFun) ->
             case leveled_codec:is_active(LK, V, Now) of
                 true ->
                     {B, K, H} = leveled_codec:get_keyandobjhash(LK, V),
-                    Check = random:uniform() < ?CHECKJOURNAL_PROB,
+                    Check = leveled_rand:uniform() < ?CHECKJOURNAL_PROB,
                     case {JournalCheck, Check} of
                         {check_presence, true} ->
                             case check_presence(LK, V, InkerClone) of
@@ -1459,7 +1458,7 @@ maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
 maybe_withjitter(CacheSize, MaxCacheSize) ->    
     if
         CacheSize > MaxCacheSize ->
-            R = random:uniform(7 * MaxCacheSize),
+            R = leveled_rand:uniform(7 * MaxCacheSize),
             if
                 (CacheSize - MaxCacheSize) > R ->
                     true;
@@ -1544,7 +1543,7 @@ generate_multiple_objects(0, _KeyNumber, ObjL) ->
     ObjL;
 generate_multiple_objects(Count, KeyNumber, ObjL) ->
     Key = "Key" ++ integer_to_list(KeyNumber),
-    Value = crypto:rand_bytes(256),
+    Value = leveled_rand:rand_bytes(256),
     IndexSpec = [{add, "idx1_bin", "f" ++ integer_to_list(KeyNumber rem 10)}],
     generate_multiple_objects(Count - 1,
                                 KeyNumber + 1,

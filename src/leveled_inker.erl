@@ -344,8 +344,7 @@ ink_printmanifest(Pid) ->
 %%%============================================================================
 
 init([InkerOpts]) ->
-    SW = os:timestamp(),
-    random:seed(erlang:phash2(self()), element(2, SW), element(3, SW)),
+    leveled_rand:seed(),
     case {InkerOpts#inker_options.root_path,
             InkerOpts#inker_options.start_snapshot} of
         {undefined, true} ->
@@ -989,7 +988,7 @@ compact_journal_test() ->
                             PK = "KeyZ" ++ integer_to_list(X),
                             {ok, SQN, _} = ink_put(Ink1,
                                                     test_ledgerkey(PK),
-                                                    crypto:rand_bytes(10000),
+                                                    leveled_rand:rand_bytes(10000),
                                                     {[], infinity}),
                             {SQN, test_ledgerkey(PK)}
                             end,

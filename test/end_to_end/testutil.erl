@@ -298,7 +298,7 @@ generate_compressibleobjects(Count, KeyNumber) ->
 
 
 get_compressiblevalue_andinteger() ->
-    {random:uniform(1000), get_compressiblevalue()}.
+    {leveled_rand:uniform(1000), get_compressiblevalue()}.
 
 get_compressiblevalue() ->
     S1 = "111111111111111",
@@ -313,16 +313,16 @@ get_compressiblevalue() ->
                 {5, S5}, {6, S6}, {7, S7}, {8, S8}],
     L = lists:seq(1, 1024),
     lists:foldl(fun(_X, Acc) ->
-                    {_, Str} = lists:keyfind(random:uniform(8), 1, Selector),
+                    {_, Str} = lists:keyfind(leveled_rand:uniform(8), 1, Selector),
                     Acc ++ Str end,
                 "",
                 L).
 
 generate_smallobjects(Count, KeyNumber) ->
-    generate_objects(Count, KeyNumber, [], crypto:rand_bytes(512)).
+    generate_objects(Count, KeyNumber, [], leveled_rand:rand_bytes(512)).
 
 generate_objects(Count, KeyNumber) ->
-    generate_objects(Count, KeyNumber, [], crypto:rand_bytes(4096)).
+    generate_objects(Count, KeyNumber, [], leveled_rand:rand_bytes(4096)).
 
 
 generate_objects(Count, KeyNumber, ObjL, Value) ->
@@ -340,7 +340,7 @@ generate_objects(Count, binary_uuid, ObjL, Value, IndexGen, Bucket) ->
                                 IndexGen),
     generate_objects(Count - 1,
                         binary_uuid,
-                        ObjL ++ [{random:uniform(), Obj1, Spec1}],
+                        ObjL ++ [{leveled_rand:uniform(), Obj1, Spec1}],
                         Value,
                         IndexGen,
                         Bucket);
@@ -351,7 +351,7 @@ generate_objects(Count, uuid, ObjL, Value, IndexGen, Bucket) ->
                                 IndexGen),
     generate_objects(Count - 1,
                         uuid,
-                        ObjL ++ [{random:uniform(), Obj1, Spec1}],
+                        ObjL ++ [{leveled_rand:uniform(), Obj1, Spec1}],
                         Value,
                         IndexGen,
                         Bucket);
@@ -362,7 +362,7 @@ generate_objects(Count, KeyNumber, ObjL, Value, IndexGen, Bucket) ->
                                 IndexGen),
     generate_objects(Count - 1,
                         KeyNumber + 1,
-                        ObjL ++ [{random:uniform(), Obj1, Spec1}],
+                        ObjL ++ [{leveled_rand:uniform(), Obj1, Spec1}],
                         Value,
                         IndexGen,
                         Bucket).
@@ -392,11 +392,11 @@ set_object(Bucket, Key, Value, IndexGen, Indexes2Remove) ->
 
 generate_vclock() ->
     lists:map(fun(X) ->
-                    {_, Actor} = lists:keyfind(random:uniform(10),
+                    {_, Actor} = lists:keyfind(leveled_rand:uniform(10),
                                                 1,
                                                 actor_list()),
                     {Actor, X} end,
-                    lists:seq(1, random:uniform(8))).
+                    lists:seq(1, leveled_rand:uniform(8))).
 
 
 actor_list() ->
@@ -469,14 +469,14 @@ name_list() ->
 
 get_randomname() ->
     NameList = name_list(),
-    N = random:uniform(16),
+    N = leveled_rand:uniform(16),
     {N, Name} = lists:keyfind(N, 1, NameList),
     Name.
 
 get_randomdate() ->
     LowTime = 60000000000,
     HighTime = 70000000000,
-    RandPoint = LowTime + random:uniform(HighTime - LowTime),
+    RandPoint = LowTime + leveled_rand:uniform(HighTime - LowTime),
     Date = calendar:gregorian_seconds_to_datetime(RandPoint),
     {{Year, Month, Day}, {Hour, Minute, Second}} = Date,
     lists:flatten(io_lib:format("~4..0w~2..0w~2..0w~2..0w~2..0w~2..0w",
