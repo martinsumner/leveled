@@ -279,3 +279,32 @@ Some notes on re-using this alternative anti-entropy mechanism within Riak:
 * The initial intention is to implement the hashtree query functions based around the coverage_fsm behaviour, but with the option to stipulate externally the offset.  So to test for differences between clusters, the user could concurrently query the two clusters for the same offset (or a random offset), whereas to find entropy within a cluster two concurrently run queries could be compared for different offsets.  
 
 * A surprising feature of read repair is that it will read repair to fallback nodes, not just primary nodes.  This means that in read-intensive workloads, write activity may dramatically increase during node failure (as a large proportion of reads will become write events) - increasing the chance of servers falling domino style.  However, in some circumstances the extra duplication can also [increase the chance of data loss](https://github.com/russelldb/russelldb.github.io/blob/master/3.2.kv679-solution.md)!  This also increases greatly the volume of unnecessary data to be handed-off when the primary returns.  Without active anti-entropy, and in the absence of other safety checks like `notfound_ok` being set to false, or `pr` being set to at least 1 - there will be scenarios where this feature may be helpful.  As part of improving active anti-entropy, it may be wise to re-visit the tuning of anti-entropy features that existed prior to AAE, in particular should it be possible to configure read-repair to act on primary nodes only.
+
+## Some notes on the experience of Riak implementation
+
+### Phase 1 - Initial Test of Folds with Core node_worker_pool
+
+As an initial proving stage of implementation, the riak_core_node_worker_pool has been implemented in riak_kv and riak_core, and then the listkeys function has been change so that it can be switched between using the node_worker_pool (new behaviour) and running in parallel using the vnode_worker_pool (old behaviour).
+
+This also required a change to the backends for leveldb and leveled (there was not a quick way of making this change in bitcask), such that they could be changed to use a new ``snap_prefold`` capability.  With snap_prefold configured (and requested by the kv_vnode), the backend will return a folder over a database snapshot which has already been taken.  So rather than returning ``{async, Folder}`` whereby calling ``Folder()`` would make the snapshot then run the fold, this can now return ``{queue, Folder}`` where the snapshot has already been taken so if the calling of ``Folder()`` is deferred due to queueing it will still be approximately consistent to the time the request was initiated.
+
+The following branches are required to provide this feature:
+
+```
+git clone -b master https://github.com/martinsumner/leveled.git
+git clone -b mas-nodeworkerpool https://github.com/martinsumner/riak_core.git  
+git clone -b mas-leveled-corenodeworker https://github.com/martinsumner/riak_kv.git  
+git clone -b mas-leveled-2.0.34 https://github.com/martinsumner/eleveldb.git  
+```
+
+The purpose of these branches was to do an initial test of how bad the problem of running listkeys is, how does running listkeys compare between leveldb and leveled, and how does the impact change if the node_worker_pool rather than the vnode_worker_pool is used (i.e. with and without the ``snap_prefold`` capability enabled).
+
+This was tested with the following configuration:
+
+- 5-node cluster, i2.2xlarge
+- 64-partition ring-size
+- 100K GETs : 20K UPDATEs : 1 LIST_KEYS operations ratios
+- 6KB fixed object size (smaller object size chosen when compared to previous tests to try and relative importance of write amplification in leveldb)
+- 400M key-space (pareto distribution)
+
+Interesting this showed that there was a minimal impact on throughput with running these listkeys operations leveldb when having ``snap_prefold`` either disabled or enabled.  All three leveldb tests (without listkeys, with listkeys and snap_prefold, with listkeys and without snap_prefold) achieved an overall throughput within the margin of error of cloud testing.
