@@ -323,3 +323,11 @@ Of note is the escalating response times of the fold as the size of the database
 With leveled there was a strongly favourable comparison, with both improved response times, and less dramatic rises in those times as the database grew.
 
 ![](pics/listkeys_jobtime_compare.png)
+
+Even when using the (constrained) node_worker_pool the leveled implementation runs list_keys jobs at a rate of 155K keys per second.  By contrast leveldb runs at 45K keys per second with the vnode_worker_pool and just 16K keys per second when throttled by using the node_worker_pool.
+
+The intention is though, not to use list_keys operations in AAE - but instead to dynamically produce TicTac Trees either by folding objects (or heads with leveled) or folding over specialist indexes.
+
+### Phase 2
+
+tbc
