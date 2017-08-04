@@ -358,6 +358,20 @@ So moving forward to phase 2, consideration is being given to having a ``native_
 
 The primary issue that such an implementation would need to resolve is how to handle the situation when the AAE tree is in the locked state.  Would it be possible to wait for the lock to be released?  Should replication comparisons be suspended whilst locks are being held?  Could the process of locking still support the potential for snapshotting/folding in parallel the lock being held for normal access.
 
+#### AAE Hashtree locks
+
+The AAE hashtree lock situation is complex, but can be summarised as:
+
+- there are three types of relevant locks: a lock on the hashtree itself (acquired via riak_kv_index_hashtree:get_lock), a concurrency lock managed by the riak_kv_entropy_manager, another concurrency lock managed by riak_core_bg_manager.
+
+- the hashtree lock when acquired is released only by the death of the acquiring process (so this lock should only be acquired by temporary processes such as a riak_kv_exchange_fsm).
+
+- to acquire the hashtree lock, it needs to not be acquired, but also the ``built`` state of the hashtree store must be true.  
+
+- when rebuilding a hashtree (for example after expiry), the ``built`` state is changed from true, so that whilst the hashtree is being built a lock cannot be acquired for na exchange.
+
+- it seems likely that a fold over the hashtree should be safe even when lock has been acquired for an exchange (as long as there is no overlap of flushing the in-memory queue), but not when the state of the hashtree is not built.
+
 ### Phase 2
 
 tbc
