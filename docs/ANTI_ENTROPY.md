@@ -334,7 +334,7 @@ The intention is though, not to use list_keys operations in AAE - but instead to
 
 One thing that deserves debate with regards to multi-data-centre replication, is should the existing AAE process just be abandoned.  There have been three considerations that have driven this implementation towards considering abandonment:  
 
-- The bad history of unexplained problems.  Issues with AAE commonly been associated with [hashing of unsorted objects](https://github.com/basho/riak_kv/issues/1189), but issues continue to be seen, especially after node joins and leaves even when running versions that have this resolved.  It is feared that the knowledge of the existence of this issue has led to other AAE issues not being investigated, as it was more efficient to simply assume it was issue 1189.
+- The bad history of unexplained problems.  Issues with AAE commonly been associated with [hashing of unsorted objects](https://github.com/basho/riak_kv/issues/1189), but issues continue to be seen even when running versions that have this resolved.  It is feared that the knowledge of the existence of this issue has led to other AAE issues not being investigated, as it was more efficient to simply assume all AAE issues were ultimately caused by Issue 1189.
 
 - The problems of upgrading the hashtree.  A software change which alters the form of the existing hashtree is not going to be easy to implement, and includes a non-functional risk associated with handling two hashtrees in parallel for a transition period.
 
@@ -344,17 +344,19 @@ With a leveled backend, and the efficient support for dynamically building a Tic
 
 - the slow fold times highlighted in [phase 1 testing](ANTI_ENTROPY.md#phase-1---initial-test-of-folds-with-core-node_worker_pool) when using leveldb backends.
 
-- the difficulty of managing bitcask snapshots, as they appear to require the database to be re-opened by another process - and so may require all keys to be held in memory twice during the life of the snapshot).  Presumably bitcask folds will also be similarly slow.
+- the difficulty of managing bitcask snapshots, as they appear to require the database to be re-opened by another process - and so may require all keys to be held in memory twice during the life of the snapshot.  Presumably bitcask folds will also be similarly slow (although they were not tested in Phase 1).
 
 It should also be noted that:
 
 - there is no advantage of removing eleveldb as a dependency, if it is still in use as a backend.
 
-- there may be a history of false accusations of AAE problems, as the AAE throttle is applied in Riak even when AAE is not disabled - so the correlation of AAE throttling announcements in logs and short-term Riak performance issues may have created a false impression of this stability being AAE related.  the riak_kv_entropy_manager applies the throttle whenever there are node connectivity issues, regardless of AAE activity.
+- there may be a history of false accusations of AAE problems, as the AAE throttle is applied in Riak even when AAE is not disabled - so the correlation of AAE throttling announcements in logs and short-term Riak performance issues may have created a false impression of this stability being AAE related.  The riak_kv_entropy_manager applies the throttle whenever there are node connectivity issues, regardless of AAE activity.
 
 - if a consistent hashing algorithm is forced (between AAE merkle trees and TicTac trees), it should be possible to scan a legacy AAE store and produce a mergeable TicTac tree.  There may be a simple transition from Merkle trees as-is to TicTac trees to-be, which will allow for mixed ring-size multi-data-centre comparison (i.e. by running a coverage fold over the AAE trees).
 
-So moving forward to phase 2, consideration is being given to having a ``native_aaetree`` capability, that would be supported by the Leveled backend.  If this capability exists, then when handling a coverage fold for an AAE report, the riak_kv_vnode would request a ``{queue, Folder}`` directly from the backend to be sent to the core_node_worker_pool.  If such a capability doesn't exist, the ``{queue, Folder}`` would instead be requested from the hashtree PID for that vnode, not the actual backend.
+So moving forward to phase 2, consideration is being given to having a ``native_aaetree`` capability, that would be supported by the Leveled backend.  If this capability exists, then when handling a coverage fold for an AAE report, the riak_kv_vnode would request a ``{queue, Folder}`` directly from the backend to be sent to the core_node_worker_pool.  If such a capability doesn't exist, the ``{queue, Folder}`` would instead be requested from the hashtree PID for that vnode, not the actual backend.  This would mean any existing leveldb or bitcask users could continue to use AAE as-is, whilst still gaining the support for open-source MDC comparison independent of ring-sizes.
+
+The primary issue that such an implementation would need to resolve is how to handle the situation when the AAE tree is in the locked state.  Would it be possible to wait for the lock to be released?  Should replication comparisons be suspended whilst locks are being held?  Could the process of locking still support the potential for snapshotting/folding in parallel the lock being held for normal access.
 
 ### Phase 2
 
