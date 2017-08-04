@@ -372,6 +372,8 @@ The AAE hashtree lock situation is complex, but can be summarised as:
 
 - it seems likely that a fold over the hashtree should be safe even when lock has been acquired for an exchange (as long as there is no overlap of flushing the in-memory queue), but not when the state of the hashtree is not built.
 
+- however during a coverage fold for MDC AAE, a build may crash the fold so there may be a need to check for running folds before prompting a rebuild.
+
 ### Phase 2
 
 tbc
