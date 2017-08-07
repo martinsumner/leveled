@@ -113,31 +113,83 @@ many_put_compare(_Config) ->
 
     % Now run the same query by putting the tree-building responsibility onto
     % the fold_objects_fun
-    HashFun =
-      fun(_Key, Value) ->
-          {proxy_object, HeadBin, _Size, _FetchFun} = binary_to_term(Value),
-          <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
-                Rest/binary>> = HeadBin,
-          <<VclockBin:VclockLen/binary, _NotNeeded/binary>> = Rest,
-          erlang:phash2(lists:sort(binary_to_term(VclockBin)))
+
+    ApplyHash =
+      fun(HashFun) ->
+          fun(_Key, Value) ->
+              {proxy_object, HeadBin, _Size, _FetchFun} = binary_to_term(Value),
+              <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
+                    Rest/binary>> = HeadBin,
+              <<VclockBin:VclockLen/binary, _NotNeeded/binary>> = Rest,
+              HashFun(lists:sort(binary_to_term(VclockBin)))
+          end
       end,
     FoldObjectsFun =
       fun(_Bucket, Key, Value, Acc) ->
-          leveled_tictac:add_kv(Acc, Key, Value, HashFun)
+          leveled_tictac:add_kv(Acc, Key, Value, ApplyHash(fun erlang:phash2/1))
       end,
-    FoldQ = {foldheads_bybucket,
+
+    FoldQ0 = {foldheads_bybucket,
               o_rkv,
               "Bucket",
-              {FoldObjectsFun, leveled_tictac:new_tree(0, TreeSize)}},
-    {async, TreeAObjFolder} = leveled_bookie:book_returnfolder(Bookie2, FoldQ),
+              {FoldObjectsFun, leveled_tictac:new_tree(0, TreeSize)},
+              false, true},
+    {async, TreeAObjFolder0} =
+        leveled_bookie:book_returnfolder(Bookie2, FoldQ0),
     SWB0Obj = os:timestamp(),
-    TreeAObj = TreeAObjFolder(),
-    io:format("Build tictac tree via object foldwith 200K objects in ~w~n",
+    TreeAObj0 = TreeAObjFolder0(),
+    io:format("Build tictac tree via object fold with no "++
+                    "presence check and 200K objects in ~w~n",
                 [timer:now_diff(os:timestamp(), SWB0Obj)]),
-    SegList0Obj = leveled_tictac:find_dirtyleaves(TreeA, TreeAObj),
-    io:format("Fold object compared with tictac fold has ~w diffs~n",
-                [length(SegList0Obj)]),
-    true = length(SegList0Obj) == 0,
+    true = length(leveled_tictac:find_dirtyleaves(TreeA, TreeAObj0)) == 0,
+
+    FoldQ1 = {foldheads_bybucket,
+              o_rkv,
+              "Bucket",
+              {FoldObjectsFun, leveled_tictac:new_tree(0, TreeSize)},
+              true, true},
+    {async, TreeAObjFolder1} =
+        leveled_bookie:book_returnfolder(Bookie2, FoldQ1),
+    SWB1Obj = os:timestamp(),
+    TreeAObj1 = TreeAObjFolder1(),
+    io:format("Build tictac tree via object fold with "++
+                    "presence check and 200K objects in ~w~n",
+                [timer:now_diff(os:timestamp(), SWB1Obj)]),
+    true = length(leveled_tictac:find_dirtyleaves(TreeA, TreeAObj1)) == 0,
+
+    % AAE trees within riak are based on a sha of the vector clock.  So to
+    % compare with an AAE tree we need to compare outputs when we're hashing
+    % a hash
+    AltHashFun =
+        fun(Term) ->
+            erlang:phash2(crypto:hash(sha, term_to_binary(Term)))
+        end,
+    AltFoldObjectsFun =
+        fun(_Bucket, Key, Value, Acc) ->
+            leveled_tictac:add_kv(Acc, Key, Value, ApplyHash(AltHashFun))
+        end,
+    AltFoldQ0 = {foldheads_bybucket,
+              o_rkv,
+              "Bucket",
+              {AltFoldObjectsFun, leveled_tictac:new_tree(0, TreeSize)},
+              false, true},
+    {async, TreeAAltObjFolder0} =
+        leveled_bookie:book_returnfolder(Bookie2, AltFoldQ0),
+    SWB2Obj = os:timestamp(),
+    TreeAAltObj = TreeAAltObjFolder0(),
+    io:format("Build tictac tree via object fold with no "++
+                    "presence check and 200K objects  and alt hash in ~w~n",
+                [timer:now_diff(os:timestamp(), SWB2Obj)]),
+    {async, TreeBAltObjFolder0} =
+        leveled_bookie:book_returnfolder(Bookie3, AltFoldQ0),
+    SWB3Obj = os:timestamp(),
+    TreeBAltObj = TreeBAltObjFolder0(),
+    io:format("Build tictac tree via object fold with no "++
+                    "presence check and 200K objects  and alt hash in ~w~n",
+                [timer:now_diff(os:timestamp(), SWB3Obj)]),
+    true =
+        length(leveled_tictac:find_dirtyleaves(TreeBAltObj, TreeAAltObj)) == 1,
+
 
     %% Finding differing keys
     FoldKeysFun =
