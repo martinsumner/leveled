@@ -126,6 +126,14 @@ The AAE store is re-usable for checking consistency between databases, but with 
 
 The AAE process in production system commonly raises false positives (prompts repairs that are unnecessary), sometimes for [known reasons](https://github.com/basho/riak_kv/issues/1189), sometimes for unknown reasons, especially following rebuilds which follow ring changes.  The repair process has [a throttle](http://docs.basho.com/riak/kv/2.2.3/using/cluster-operations/active-anti-entropy/#throttling) to prevent this from impacting a production system, but this commonly needs to be re-tuned based on experience.
 
+There is also a significant cost with AAE.  The following chart compares performance with a mixed load test including 2% 2i queries, majority GETs (80% approx), minority PUTs (20% approx) with a large potential key space.  The load test was run on a 5-node i2.xlarge cluster, comparing Riak performance with either a leveldb or leveled backend with and without anti-entropy enabled.
+
+![](pics/BaselineCompare_with2i_AAE.png)
+
+The purple and blue lines sho Riak+leveled throughput with/without AAE enabled, the reg and orange lines show the same for Riak+leveldb.
+
+The AAE configuration used in this test was aggressive in terms of AAE tree rebuild (every four hours), but the significant gap in throughput seen with and without AAE persists even during spells in the test when there is no rebuild activity taking place (e.g. 13,000 to 15,000 elapsed seconds).  Maintaining an additional key-store strictly for entropy management places a non-trivial cost on throughput of a heavily loaded cluster.
+
 ### Proposed Leveled AAE
 
 The first stage in considering an alternative approach to anti-entropy, was to question the necessity of having a dedicated AAE database that needs to reflect all key changes in the actual vnode store.  This separate store is currently necessary as the hashtree needs a store sorted by segment ID that make that store easier to scan for rebuilds of the tree, hence avoiding the three main costs with scanning over the primary database:
