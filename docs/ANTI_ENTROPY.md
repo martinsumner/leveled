@@ -348,6 +348,8 @@ One thing that deserves debate with regards to multi-data-centre replication, is
 
 - A general sense of complexity with regards to existing AAE, especially around locking and rebuilding.  Also a general fear of the complexity and long-term supportability of eleveldb: although the historical stability of the project indicates it wis well written, and each branch is documented to a high standard, it requires a significant context shift for those used to working with Erlang.
 
+- The performance overheads of AAE stores (see testing results above).  These will vary between setups, and depend heavily on the size of the key-space and the write-throughput - but managing another key store for the purpose of anti-entropy is non-trivial.
+
 With a leveled backend, and the efficient support for dynamically building a TicTac tree without a separate AAE database - the AAE database appears now redundant and its disadvantages means an legacy-AAE-free approach seems optimal.  However, there are problems with trying the same new approach with eleveldb and bitcask backends:
 
 - the slow fold times highlighted in [phase 1 testing](ANTI_ENTROPY.md#phase-1---initial-test-of-folds-with-core-node_worker_pool) when using leveldb backends.
@@ -364,7 +366,7 @@ It should also be noted that:
 
 So moving forward to phase 2, consideration is being given to having a ``native_aaetree`` capability, that would be supported by the Leveled backend.  If this capability exists, then when handling a coverage fold for an AAE report, the riak_kv_vnode would request a ``{queue, Folder}`` directly from the backend to be sent to the core_node_worker_pool.  If such a capability doesn't exist, the ``{queue, Folder}`` would instead be requested from the hashtree PID for that vnode, not the actual backend.  This would mean any existing leveldb or bitcask users could continue to use AAE as-is, whilst still gaining the support for open-source MDC comparison independent of ring-sizes.
 
-The primary issue that such an implementation would need to resolve is how to handle the situation when the AAE tree is in the locked state.  Would it be possible to wait for the lock to be released?  Should replication comparisons be suspended whilst locks are being held?  Could the process of locking still support the potential for snapshotting/folding in parallel the lock being held for normal access.
+The primary issue that such an implementation would need to resolve is how to handle the situation when the AAE tree is not in a usable state (for example whilst awaiting completion of a build or a rebuild).  Would it be possible to wait for the hashtree to be available?  Could replication comparisons be suspended whilst hashtrees are not ready?  Could coverage plans be re-computed to account for the fact that no lock can be obtained on the clocked hahstree?
 
 #### AAE Hashtree locks
 
