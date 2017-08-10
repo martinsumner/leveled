@@ -126,6 +126,14 @@ The AAE store is re-usable for checking consistency between databases, but with 
 
 The AAE process in production system commonly raises false positives (prompts repairs that are unnecessary), sometimes for [known reasons](https://github.com/basho/riak_kv/issues/1189), sometimes for unknown reasons, especially following rebuilds which follow ring changes.  The repair process has [a throttle](http://docs.basho.com/riak/kv/2.2.3/using/cluster-operations/active-anti-entropy/#throttling) to prevent this from impacting a production system, but this commonly needs to be re-tuned based on experience.
 
+There is also a significant cost with AAE.  The following chart compares performance with a mixed load test including 2% 2i queries, majority GETs (80% approx), minority PUTs (20% approx) with a large potential key space.  The load test was run on a 5-node i2.xlarge cluster, comparing Riak performance with either a leveldb or leveled backend with and without anti-entropy enabled.
+
+![](pics/BaselineCompare_with2i_AAE.png)
+
+The purple and blue lines sho Riak+leveled throughput with/without AAE enabled, the reg and orange lines show the same for Riak+leveldb.
+
+The AAE configuration used in this test was aggressive in terms of AAE tree rebuild (every four hours), but the significant gap in throughput seen with and without AAE persists even during spells in the test when there is no rebuild activity taking place (e.g. 13,000 to 15,000 elapsed seconds).  Maintaining an additional key-store strictly for entropy management places a non-trivial cost on throughput of a heavily loaded cluster.
+
 ### Proposed Leveled AAE
 
 The first stage in considering an alternative approach to anti-entropy, was to question the necessity of having a dedicated AAE database that needs to reflect all key changes in the actual vnode store.  This separate store is currently necessary as the hashtree needs a store sorted by segment ID that make that store easier to scan for rebuilds of the tree, hence avoiding the three main costs with scanning over the primary database:
@@ -279,3 +287,103 @@ Some notes on re-using this alternative anti-entropy mechanism within Riak:
 * The initial intention is to implement the hashtree query functions based around the coverage_fsm behaviour, but with the option to stipulate externally the offset.  So to test for differences between clusters, the user could concurrently query the two clusters for the same offset (or a random offset), whereas to find entropy within a cluster two concurrently run queries could be compared for different offsets.  
 
 * A surprising feature of read repair is that it will read repair to fallback nodes, not just primary nodes.  This means that in read-intensive workloads, write activity may dramatically increase during node failure (as a large proportion of reads will become write events) - increasing the chance of servers falling domino style.  However, in some circumstances the extra duplication can also [increase the chance of data loss](https://github.com/russelldb/russelldb.github.io/blob/master/3.2.kv679-solution.md)!  This also increases greatly the volume of unnecessary data to be handed-off when the primary returns.  Without active anti-entropy, and in the absence of other safety checks like `notfound_ok` being set to false, or `pr` being set to at least 1 - there will be scenarios where this feature may be helpful.  As part of improving active anti-entropy, it may be wise to re-visit the tuning of anti-entropy features that existed prior to AAE, in particular should it be possible to configure read-repair to act on primary nodes only.
+
+## Some notes on the experience of Riak implementation
+
+### Phase 1 - Initial Test of Folds with Core node_worker_pool
+
+As an initial proving stage of implementation, the riak_core_node_worker_pool has been implemented in riak_kv and riak_core, and then the listkeys function has been change so that it can be switched between using the node_worker_pool (new behaviour) and running in parallel using the vnode_worker_pool (old behaviour).
+
+This also required a change to the backends for leveldb and leveled (there was not a quick way of making this change in bitcask), such that they could be changed to use a new ``snap_prefold`` capability.  With snap_prefold configured (and requested by the kv_vnode), the backend will return a folder over a database snapshot which has already been taken.  So rather than returning ``{async, Folder}`` whereby calling ``Folder()`` would make the snapshot then run the fold, this can now return ``{queue, Folder}`` where the snapshot has already been taken so if the calling of ``Folder()`` is deferred due to queueing it will still be approximately consistent to the time the request was initiated.
+
+The following branches are required to provide this feature:
+
+```
+git clone -b master https://github.com/martinsumner/leveled.git
+git clone -b mas-nodeworkerpool https://github.com/martinsumner/riak_core.git  
+git clone -b mas-leveled-corenodeworker https://github.com/martinsumner/riak_kv.git  
+git clone -b mas-leveled-2.0.34 https://github.com/martinsumner/eleveldb.git  
+```
+
+The purpose of these branches was to do an initial test of how bad the problem of running listkeys is, how does running listkeys compare between leveldb and leveled, and how does the impact change if the node_worker_pool rather than the vnode_worker_pool is used (i.e. with and without the ``snap_prefold`` capability enabled).
+
+This was tested with the following configuration:
+
+- 5-node cluster, i2.2xlarge
+- 64-partition ring-size
+- 100K GETs : 20K UPDATEs : 1 LIST_KEYS operations ratios
+- 6KB fixed object size (smaller object size chosen when compared to previous tests to try and reduce the relative importance of write amplification in leveldb, and see the listkeys impact more clearly)
+- 400M key-space (pareto distribution)
+
+This initial test showed that there was a minimal impact on throughput with running these listkeys operations leveldb when having ``snap_prefold`` either disabled or enabled.  All three leveldb tests (without listkeys, with listkeys and snap_prefold, with listkeys and without snap_prefold) achieved an overall throughput within the margin of error of cloud testing.
+
+![](pics/volume_listkeys_compare_6KB.png)
+
+For the 6-hour test the total throughput achieved was:
+
+- leveldb with no listkeys - 272.4M
+- leveldb with listkeys vnode_pool - 270.1M (- 0.85%)
+- leveldb with listkeys node_pool - 278.0M (+ 2.04%)
+- leveled with listkeys node_pool - 333.0M (+ 22.23%)
+
+Of note is the escalating response times of the fold as the size of the database increased.  The nature of the cluster would mean that with unconstrained hardware resource the node_worker_pool should take 5 x longer than the vnode_worker_pool - but within the test it was generally less than 3 times longer.  However, this was 3 times longer than a large time which increased with database size in a non-linear fashion.
+
+With leveled there was a strongly favourable comparison, with both improved response times, and less dramatic rises in those times as the database grew.
+
+![](pics/listkeys_jobtime_compare.png)
+
+Even when using the (constrained) node_worker_pool the leveled implementation runs list_keys jobs at a rate of 155K keys per second.  By contrast leveldb runs at 45K keys per second with the vnode_worker_pool and just 16K keys per second when throttled by using the node_worker_pool.
+
+These rates change with object size with leveldb, but not with leveled.  so when testing with object sizes of 10KB, rates drop to 27K keys per second for the same test with leveldb using the vnode_worker_pool.  However, rates are unchanged for leveled, as the operation in leveled is independent of object size (as object values do not need to be scanned).
+
+The intention is though, not to use list_keys operations in AAE - but instead to dynamically produce TicTac Trees either by folding objects (or heads with leveled) or folding over specialist indexes.  More relevant tests will follow in the next phase.
+
+### Some Implementation Considerations
+
+One thing that deserves debate with regards to multi-data-centre replication, is should the existing AAE process just be abandoned.  There have been three considerations that have driven this implementation towards considering abandonment:  
+
+- The bad history of unexplained problems.  Issues with AAE commonly been associated with [hashing of unsorted objects](https://github.com/basho/riak_kv/issues/1189), but issues continue to be seen even when running versions that have this resolved.  It is feared that the knowledge of the existence of this issue has led to other AAE issues not being investigated, as it was more efficient to simply assume all AAE issues were ultimately caused by Issue 1189.
+
+- The problems of upgrading the hashtree.  A software change which alters the form of the existing hashtree is not going to be easy to implement, and includes a non-functional risk associated with handling two hashtrees in parallel for a transition period.
+
+- A general sense of complexity with regards to existing AAE, especially around locking and rebuilding.  Also a general fear of the complexity and long-term supportability of eleveldb: although the historical stability of the project indicates it wis well written, and each branch is documented to a high standard, it requires a significant context shift for those used to working with Erlang.
+
+- The performance overheads of AAE stores (see testing results above).  These will vary between setups, and depend heavily on the size of the key-space and the write-throughput - but managing another key store for the purpose of anti-entropy is non-trivial.
+
+With a leveled backend, and the efficient support for dynamically building a TicTac tree without a separate AAE database - the AAE database appears now redundant and its disadvantages means an legacy-AAE-free approach seems optimal.  However, there are problems with trying the same new approach with eleveldb and bitcask backends:
+
+- the slow fold times highlighted in [phase 1 testing](ANTI_ENTROPY.md#phase-1---initial-test-of-folds-with-core-node_worker_pool) when using leveldb backends.
+
+- the difficulty of managing bitcask snapshots, as they appear to require the database to be re-opened by another process - and so may require all keys to be held in memory twice during the life of the snapshot.  Presumably bitcask folds will also be similarly slow (although they were not tested in Phase 1).
+
+It should also be noted that:
+
+- there is no advantage of removing eleveldb as a dependency, if it is still in use as a backend.
+
+- there may be a history of false accusations of AAE problems, as the AAE throttle is applied in Riak even when AAE is not disabled - so the correlation of AAE throttling announcements in logs and short-term Riak performance issues may have created a false impression of this stability being AAE related.  The riak_kv_entropy_manager applies the throttle whenever there are node connectivity issues, regardless of AAE activity.
+
+- if a consistent hashing algorithm is forced (between AAE merkle trees and TicTac trees), it should be possible to scan a legacy AAE store and produce a mergeable TicTac tree.  There may be a simple transition from Merkle trees as-is to TicTac trees to-be, which will allow for mixed ring-size multi-data-centre comparison (i.e. by running a coverage fold over the AAE trees).
+
+So moving forward to phase 2, consideration is being given to having a ``native_aaetree`` capability, that would be supported by the Leveled backend.  If this capability exists, then when handling a coverage fold for an AAE report, the riak_kv_vnode would request a ``{queue, Folder}`` directly from the backend to be sent to the core_node_worker_pool.  If such a capability doesn't exist, the ``{queue, Folder}`` would instead be requested from the hashtree PID for that vnode, not the actual backend.  This would mean any existing leveldb or bitcask users could continue to use AAE as-is, whilst still gaining the support for open-source MDC comparison independent of ring-sizes.
+
+The primary issue that such an implementation would need to resolve is how to handle the situation when the AAE tree is not in a usable state (for example whilst awaiting completion of a build or a rebuild).  Would it be possible to wait for the hashtree to be available?  Could replication comparisons be suspended whilst hashtrees are not ready?  Could coverage plans be re-computed to account for the fact that no lock can be obtained on the clocked hahstree?
+
+#### AAE Hashtree locks
+
+The AAE hashtree lock situation is complex, but can be summarised as:
+
+- there are three types of relevant locks: a lock on the hashtree itself (acquired via riak_kv_index_hashtree:get_lock), a concurrency lock managed by the riak_kv_entropy_manager, another concurrency lock managed by riak_core_bg_manager.
+
+- the hashtree lock when acquired is released only by the death of the acquiring process (so this lock should only be acquired by temporary processes such as a riak_kv_exchange_fsm).
+
+- to acquire the hashtree lock, it needs to not be acquired, but also the ``built`` state of the hashtree store must be true.  
+
+- when rebuilding a hashtree (for example after expiry), the ``built`` state is changed from true, so that whilst the hashtree is being built a lock cannot be acquired for na exchange.
+
+- it seems likely that a fold over the hashtree should be safe even when lock has been acquired for an exchange (as long as there is no overlap of flushing the in-memory queue), but not when the state of the hashtree is not built.
+
+- however during a coverage fold for MDC AAE, a build may crash the fold so there may be a need to check for running folds before prompting a rebuild.
+
+### Phase 2
+
+tbc
