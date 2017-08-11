@@ -130,7 +130,7 @@ There is also a significant cost with AAE.  The following chart compares perform
 
 ![](pics/BaselineCompare_with2i_AAE.png)
 
-The purple and blue lines sho Riak+leveled throughput with/without AAE enabled, the reg and orange lines show the same for Riak+leveldb.
+The purple and blue lines show Riak+leveldb throughput with/without AAE enabled, the reg and orange lines show the same for Riak+leveled.
 
 The AAE configuration used in this test was aggressive in terms of AAE tree rebuild (every four hours), but the significant gap in throughput seen with and without AAE persists even during spells in the test when there is no rebuild activity taking place (e.g. 13,000 to 15,000 elapsed seconds).  Maintaining an additional key-store strictly for entropy management places a non-trivial cost on throughput of a heavily loaded cluster.
 
