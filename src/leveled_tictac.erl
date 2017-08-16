@@ -64,7 +64,8 @@
             fetch_leaves/2,
             merge_trees/2,
             get_segment/2,
-            tictac_hash/2
+            tictac_hash/2,
+            export_tree/1
         ]).
 
 
@@ -111,6 +112,45 @@ new_tree(TreeID, Size) ->
                     segment_count = SegmentCount,
                     level1 = Lv1Init,
                     level2 = Lv2Init}.
+
+-spec export_tree(tictactree()) -> list().
+%% @doc
+%% Export the tree into a tuple list, with the level1 binary, and then for 
+%% level2 {branchID, binary()}
+export_tree(Tree) ->
+    L2 = 
+        lists:foldl(fun(X, L2Acc) ->
+                            [{X, array:get(X, Tree#tictactree.level2)}|L2Acc]
+                        end,
+                    [],
+                    lists:seq(0, Tree#tictactree.width - 1)),
+    [{level1, Tree#tictactree.level1}, {level2, lists:reverse(L2)}].
+
+-spec import_tree(list()) -> tictactree().
+%% @doc
+%% Reverse the export process
+import_tree(ExportedTree) ->
+    [{level1, L1Bin}, {level2, L2List}] = ExportedTree,
+    Sizes = [{small, element(2, ?SMALL)}, 
+                {medium, element(2, ?MEDIUM)}, 
+                {large, element(2, ?LARGE)}, 
+                {xlarge, element(2, ?XLARGE)}],
+    Width = byte_size(L1Bin) div ?HASH_SIZE,
+    {Size, Width} = lists:keyfind(Width, 2, Sizes),
+    {BitWidth, Width, SegmentCount} = get_size(Size),
+    Lv2Init = array:new([{size, Width}]),
+    Lv2 = lists:foldl(fun({X, L2SegBin}, L2Array) ->
+                                array:set(X, L2SegBin, L2Array)
+                            end,
+                        Lv2Init,
+                        L2List),
+    #tictactree{treeID = import,
+                    size = Size,
+                    width = Width,
+                    bitwidth = BitWidth,
+                    segment_count = SegmentCount,
+                    level1 = L1Bin,
+                    level2 = Lv2}.
 
 -spec add_kv(tictactree(), tuple(), tuple(), fun()) -> tictactree().
 %% @doc
@@ -345,7 +385,12 @@ simple_test_withsize(Size) ->
     DL1 = find_dirtyleaves(Tree3, Tree1),
     ?assertMatch(true, lists:member(get_segment({o, "B1", "K2", null}, SC), DL1)),
     ?assertMatch(true, lists:member(get_segment({o, "B1", "K3", null}, SC), DL1)),
-    ?assertMatch(false, lists:member(get_segment({o, "B1", "K1", null}, SC), DL1)).
+    ?assertMatch(false, lists:member(get_segment({o, "B1", "K1", null}, SC), DL1)),
+    
+    % Export and import tree to confirm no difference
+    ExpTree3 = export_tree(Tree3),
+    ImpTree3 = import_tree(ExpTree3),
+    ?assertMatch(DL1, find_dirtyleaves(ImpTree3, Tree1)).
 
 merge_bysize_small_test() ->
     merge_test_withsize(small).

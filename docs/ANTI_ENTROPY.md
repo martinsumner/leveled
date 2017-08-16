@@ -386,4 +386,4 @@ The AAE hashtree lock situation is complex, but can be summarised as:
 
 ### Phase 2
 
-tbc
+For phase 2 the issues of how to efficiently manage AAE queries in leveldb and bitcask will be put to one side, and the focus will be on getting an effective solution up and running with leveled.
