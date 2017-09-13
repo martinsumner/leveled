@@ -121,7 +121,8 @@ new_tree(TreeID, Size) ->
 export_tree(Tree) ->
     L2 = 
         lists:foldl(fun(X, L2Acc) ->
-                            [{X, array:get(X, Tree#tictactree.level2)}|L2Acc]
+                            [{integer_to_binary(X), 
+                                array:get(X, Tree#tictactree.level2)}|L2Acc]
                         end,
                     [],
                     lists:seq(0, Tree#tictactree.width - 1)),
@@ -146,11 +147,11 @@ import_tree(ExportedTree) ->
     {Size, Width} = lists:keyfind(Width, 2, Sizes),
     {BitWidth, Width, SegmentCount} = get_size(Size),
     Lv2Init = array:new([{size, Width}]),
-    Lv2 = lists:foldl(fun({X, L2SegBin}, L2Array) ->
-                                array:set(X, L2SegBin, L2Array)
-                            end,
-                        Lv2Init,
-                        L2List),
+    FoldFun = 
+        fun({X, L2SegBin}, L2Array) ->
+            array:set(binary_to_integer(X), L2SegBin, L2Array)
+        end,
+    Lv2 = lists:foldl(FoldFun, Lv2Init, L2List),
     #tictactree{treeID = import,
                     size = Size,
                     width = Width,
