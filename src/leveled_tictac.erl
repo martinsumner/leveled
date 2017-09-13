@@ -124,13 +124,19 @@ export_tree(Tree) ->
                         end,
                     [],
                     lists:seq(0, Tree#tictactree.width - 1)),
-    [{level1, Tree#tictactree.level1}, {level2, lists:reverse(L2)}].
+    {struct, 
+        [{<<"level1">>, base64:encode_to_string(Tree#tictactree.level1)}, 
+            {<<"level2">>, {struct, lists:reverse(L2)}}
+            ]}.
 
 -spec import_tree(list()) -> tictactree().
 %% @doc
 %% Reverse the export process
 import_tree(ExportedTree) ->
-    [{level1, L1Bin}, {level2, L2List}] = ExportedTree,
+    {struct, 
+        [{<<"level1">>, L1Base64}, 
+        {<<"level2">>, {struct, L2List}}]} = ExportedTree,
+    L1Bin = base64:decode(L1Base64),
     Sizes = [{small, element(2, ?SMALL)}, 
                 {medium, element(2, ?MEDIUM)}, 
                 {large, element(2, ?LARGE)}, 
