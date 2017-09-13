@@ -65,7 +65,8 @@
             merge_trees/2,
             get_segment/2,
             tictac_hash/2,
-            export_tree/1
+            export_tree/1,
+            import_tree/1
         ]).
 
 
