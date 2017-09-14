@@ -1784,7 +1784,11 @@ foldobjects_vs_hashtree_test() ->
 
     {async, HTFolder3} =
         book_returnfolder(Bookie1,
-                            {foldheads_allkeys, ?STD_TAG, FoldHeadsFun}),
+                            {foldheads_allkeys, 
+                                ?STD_TAG, 
+                                FoldHeadsFun,
+                                true,
+                                true}),
     KeyHashList3 = HTFolder3(),
     ?assertMatch(KeyHashList1, lists:usort(KeyHashList3)),
 
@@ -1800,7 +1804,11 @@ foldobjects_vs_hashtree_test() ->
 
     {async, HTFolder4} =
         book_returnfolder(Bookie1,
-                            {foldheads_allkeys, ?STD_TAG, FoldHeadsFun2}),
+                            {foldheads_allkeys, 
+                                ?STD_TAG, 
+                                FoldHeadsFun2,
+                                false,
+                                false}),
     KeyHashList4 = HTFolder4(),
     ?assertMatch(KeyHashList1, lists:usort(KeyHashList4)),
 
@@ -1862,14 +1870,18 @@ foldobjects_vs_foldheads_bybucket_test() ->
                             {foldheads_bybucket,
                                 ?STD_TAG,
                                 "BucketA",
-                                FoldHeadsFun}),
+                                FoldHeadsFun,
+                                true,
+                                true}),
     KeyHashList2A = HTFolder2A(),
     {async, HTFolder2B} =
         book_returnfolder(Bookie1,
                             {foldheads_bybucket,
                                 ?STD_TAG,
                                 "BucketB",
-                                FoldHeadsFun}),
+                                FoldHeadsFun,
+                                false,
+                                false}),
     KeyHashList2B = HTFolder2B(),
     ?assertMatch(true,
                     lists:usort(KeyHashList1A) == lists:usort(KeyHashList2A)),
