@@ -534,8 +534,8 @@ space_clear_ondelete(_Config) ->
     io:format("Waiting for journal deletes - blocked~n"),
     timer:sleep(20000),
     
-    % for this query snapshot is made at fold time
-    true = length(HTreeF1()) == 0,
+    % for this query snapshot is made at fold time - EDIT now uses a snapshot!
+    true = length(HTreeF1()) == 80000,
     % This query uses a genuine async fold on a snasphot made at request time
     true = length(KF1()) == 80000, 
     
