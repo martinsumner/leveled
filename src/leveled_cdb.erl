@@ -370,10 +370,11 @@ init([Opts]) ->
 starting({open_writer, Filename}, _From, State) ->
     leveled_log:log("CDB01", [Filename]),
     {LastPosition, HashTree, LastKey} = open_active_file(Filename),
-    WriteOps = set_writeops(State#state.sync_strategy),
+    {WriteOps, UpdStrategy} = set_writeops(State#state.sync_strategy),
     leveled_log:log("CDB13", [WriteOps]),
     {ok, Handle} = file:open(Filename, WriteOps),
     {reply, ok, writer, State#state{handle=Handle,
+                                        sync_strategy = UpdStrategy,
                                         last_position=LastPosition,
                                         last_key=LastKey,
                                         filename=Filename,
@@ -714,6 +715,8 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %%% Internal functions
 %%%============================================================================
 
+
+-spec set_writeops(sync|riak_sync|none) -> {list(), sync|riak_sync|none}.
 %% Assumption is that sync should be used - it is a transaction log.
 %%
 %% However this flag is not supported in OTP 16.  Bitcask appears to pass an
@@ -721,16 +724,31 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %% bitcask nif fileops).
 %%
 %% To get round this will try and datasync on each PUT with riak_sync
+-ifdef(no_sync).
+
 set_writeops(SyncStrategy) ->
     case SyncStrategy of
         sync ->
-            [sync | ?WRITE_OPS];
+            {?WRITE_OPS, riak_sync};
         riak_sync ->
-            ?WRITE_OPS;
+            {?WRITE_OPS, riak_sync};
         none ->
-            ?WRITE_OPS
+            {?WRITE_OPS, none}
     end.
 
+-else.
+
+set_writeops(SyncStrategy) ->
+    case SyncStrategy of
+        sync ->
+            {[sync | ?WRITE_OPS], sync};
+        riak_sync ->
+            {?WRITE_OPS, riak_sync};
+        none ->
+            {?WRITE_OPS, none}
+    end.
+
+-endif.
 
 %% from_dict(FileName,ListOfKeyValueTuples)
 %% Given a filename and a dictionary, create a cdb
@@ -1956,7 +1974,10 @@ generate_sequentialkeys(Count, KVList) ->
     KV = {"Key" ++ integer_to_list(Count), "Value" ++ integer_to_list(Count)},
     generate_sequentialkeys(Count - 1, KVList ++ [KV]).
 
-get_keys_byposition_manykeys_test() ->
+get_keys_byposition_manykeys_test_() ->
+    {timeout, 60, fun get_keys_byposition_manykeys_test_to/0}.
+
+get_keys_byposition_manykeys_test_to() ->
     KeyCount = 1024,
     {ok, P1} = cdb_open_writer("../test/poskeymany.pnd",
                                 #cdb_options{binary_mode=false}),

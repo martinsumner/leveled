@@ -137,10 +137,11 @@ sync_strategy() ->
             sync;
         "19" ->
             sync;
-        "16" ->
+        _ ->
+            % running the sync strategy with OTP16 on macbook is 
+            % super slow.  So revert to no sync
             none
     end.
-
 
 book_riakput(Pid, RiakObject, IndexSpecs) ->
     leveled_bookie:book_put(Pid,
