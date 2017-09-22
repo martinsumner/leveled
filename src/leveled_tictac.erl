@@ -114,7 +114,7 @@ new_tree(TreeID, Size) ->
                     level1 = Lv1Init,
                     level2 = Lv2Init}.
 
--spec export_tree(tictactree()) -> list().
+-spec export_tree(tictactree()) -> {struct, list()}.
 %% @doc
 %% Export the tree into a tuple list, with the level1 binary, and then for 
 %% level2 {branchID, binary()}
@@ -131,7 +131,7 @@ export_tree(Tree) ->
             {<<"level2">>, {struct, lists:reverse(L2)}}
             ]}.
 
--spec import_tree(list()) -> tictactree().
+-spec import_tree({struct, list()}) -> tictactree().
 %% @doc
 %% Reverse the export process
 import_tree(ExportedTree) ->

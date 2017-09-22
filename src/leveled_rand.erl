@@ -11,6 +11,9 @@
          rand_bytes/1
         ]).
 
+
+-include_lib("eunit/include/eunit.hrl").
+
 %%%===================================================================
 %%% New (r19+) rand style functions
 %%%===================================================================
@@ -43,5 +46,13 @@ seed() ->
 
 rand_bytes(Size) ->
     crypto:rand_bytes(Size).
+
+-endif.
+
+
+-ifdef(TEST).
+
+rand_test() ->
+    ?assertMatch(true, uniform() < 1).
 
 -endif.

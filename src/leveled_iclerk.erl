@@ -923,7 +923,10 @@ compare_candidate_test() ->
     ?assertMatch([Candidate1, Candidate2, Candidate3, Candidate4],
                 sort_run([Candidate3, Candidate2, Candidate4, Candidate1])).       
 
-compact_singlefile_totwosmallfiles_test() ->
+compact_singlefile_totwosmallfiles_test_() ->
+    {timeout, 60, fun compact_singlefile_totwosmallfiles_testto/0}.
+
+compact_singlefile_totwosmallfiles_testto() ->
     RP = "../test/journal",
     CP = "../test/journal/journal_file/post_compact/",
     ok = filelib:ensure_dir(CP),

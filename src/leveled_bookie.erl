@@ -1671,7 +1671,10 @@ ttl_test() ->
     ok = book_close(Bookie2),
     reset_filestructure().
 
-hashlist_query_test() ->
+hashlist_query_test_() ->
+    {timeout, 60, fun hashlist_query_testto/0}.
+
+hashlist_query_testto() ->
     RootPath = reset_filestructure(),
     {ok, Bookie1} = book_start([{root_path, RootPath},
                                 {max_journalsize, 1000000},
@@ -1719,7 +1722,11 @@ hashlist_query_test() ->
     ok = book_close(Bookie2),
     reset_filestructure().
 
-hashlist_query_withjournalcheck_test() ->
+
+hashlist_query_withjournalcheck_test_() ->
+    {timeout, 60, fun hashlist_query_withjournalcheck_testto/0}.
+
+hashlist_query_withjournalcheck_testto() ->
     RootPath = reset_filestructure(),
     {ok, Bookie1} = book_start([{root_path, RootPath},
                                     {max_journalsize, 1000000},
@@ -1745,7 +1752,10 @@ hashlist_query_withjournalcheck_test() ->
     ok = book_close(Bookie1),
     reset_filestructure().
 
-foldobjects_vs_hashtree_test() ->
+foldobjects_vs_hashtree_test_() ->
+    {timeout, 60, fun foldobjects_vs_hashtree_testto/0}.
+
+foldobjects_vs_hashtree_testto() ->
     RootPath = reset_filestructure(),
     {ok, Bookie1} = book_start([{root_path, RootPath},
                                     {max_journalsize, 1000000},
@@ -1787,7 +1797,7 @@ foldobjects_vs_hashtree_test() ->
                             {foldheads_allkeys, 
                                 ?STD_TAG, 
                                 FoldHeadsFun, 
-                                true, 
+                                true,
                                 true}),
     KeyHashList3 = HTFolder3(),
     ?assertMatch(KeyHashList1, lists:usort(KeyHashList3)),
@@ -1807,7 +1817,7 @@ foldobjects_vs_hashtree_test() ->
                             {foldheads_allkeys, 
                                 ?STD_TAG, 
                                 FoldHeadsFun2,
-                                false, 
+                                false,
                                 false}),
     KeyHashList4 = HTFolder4(),
     ?assertMatch(KeyHashList1, lists:usort(KeyHashList4)),
@@ -1815,8 +1825,10 @@ foldobjects_vs_hashtree_test() ->
     ok = book_close(Bookie1),
     reset_filestructure().
 
+foldobjects_vs_foldheads_bybucket_test_() ->
+    {timeout, 60, fun foldobjects_vs_foldheads_bybucket_testto/0}.
 
-foldobjects_vs_foldheads_bybucket_test() ->
+foldobjects_vs_foldheads_bybucket_testto() ->
     RootPath = reset_filestructure(),
     {ok, Bookie1} = book_start([{root_path, RootPath},
                                     {max_journalsize, 1000000},
@@ -1871,7 +1883,7 @@ foldobjects_vs_foldheads_bybucket_test() ->
                                 ?STD_TAG,
                                 "BucketA",
                                 FoldHeadsFun,
-                                true, 
+                                true,
                                 true}),
     KeyHashList2A = HTFolder2A(),
     {async, HTFolder2B} =
@@ -1880,7 +1892,7 @@ foldobjects_vs_foldheads_bybucket_test() ->
                                 ?STD_TAG,
                                 "BucketB",
                                 FoldHeadsFun,
-                                false, 
+                                false,
                                 false}),
     KeyHashList2B = HTFolder2B(),
     ?assertMatch(true,
