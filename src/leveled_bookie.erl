@@ -1334,7 +1334,7 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
                                     ProxyObj = make_proxy_object(LK, JK,
                                                                   MD, V,
                                                                   InkerClone),
-                                    FoldObjectsFun(B, K,ProxyObj, Acc);
+                                    FoldObjectsFun(B, K, ProxyObj, Acc);
                                 missing ->
                                     Acc
                             end;
@@ -1796,7 +1796,7 @@ foldobjects_vs_hashtree_testto() ->
         book_returnfolder(Bookie1,
                             {foldheads_allkeys, 
                                 ?STD_TAG, 
-                                FoldHeadsFun,
+                                FoldHeadsFun, 
                                 true,
                                 true}),
     KeyHashList3 = HTFolder3(),
