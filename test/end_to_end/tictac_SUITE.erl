@@ -305,11 +305,11 @@ many_put_compare(_Config) ->
 
 
 index_compare(_Config) ->
-    TreeSize = small,
+    TreeSize = xxsmall,
     LS = 2000,
     JS = 50000000,
     SS = testutil:sync_strategy(),
-    SegmentCount = 256 * 256,
+    SegmentCount = 64 * 64,
 
     % Test requires multiple different databases, so want to mount them all
     % on individual file paths

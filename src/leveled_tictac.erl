@@ -73,13 +73,15 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(HASH_SIZE, 4).
+-define(XXSMALL, {6, 64, 64 * 64}).
+-define(XSMALL, {7, 128, 128 * 128}).
 -define(SMALL, {8, 256, 256 * 256}).
 -define(MEDIUM, {9, 512, 512 * 512}).
 -define(LARGE, {10, 1024, 1024 * 1024}).
 -define(XLARGE, {11, 2048, 2048 * 2048}).
 
 -record(tictactree, {treeID :: any(),
-                        size  :: small|medium|large|xlarge,
+                        size  :: xxsmall|xsmall|small|medium|large|xlarge,
                         width :: integer(),
                         bitwidth :: integer(),
                         segment_count :: integer(),
@@ -139,10 +141,9 @@ import_tree(ExportedTree) ->
         [{<<"level1">>, L1Base64}, 
         {<<"level2">>, {struct, L2List}}]} = ExportedTree,
     L1Bin = base64:decode(L1Base64),
-    Sizes = [{small, element(2, ?SMALL)}, 
-                {medium, element(2, ?MEDIUM)}, 
-                {large, element(2, ?LARGE)}, 
-                {xlarge, element(2, ?XLARGE)}],
+    Sizes = 
+        lists:map(fun(SizeTag) -> {SizeTag, element(2, get_size(SizeTag))} end,
+                    [xxsmall, xsmall, small, medium, large, xlarge]),
     Width = byte_size(L1Bin) div ?HASH_SIZE,
     {Size, Width} = lists:keyfind(Width, 2, Sizes),
     {BitWidth, Width, SegmentCount} = get_size(Size),
@@ -275,7 +276,9 @@ merge_trees(TreeA, TreeB) ->
     
     MergedTree#tictactree{level1 = NewLevel1, level2 = NewLevel2}.
 
--spec get_segment(any(), integer()|small|medium|large|xlarge) -> integer().
+-spec get_segment(any(), 
+                    integer()|xsmall|xxsmall|small|medium|large|xlarge) -> 
+                        integer().
 %% @doc
 %% Return the segment ID for a Key.  Can pass the tree size or the actual
 %% segment count derived from the size
@@ -297,6 +300,10 @@ tictac_hash(Key, Term) ->
 
 get_size(Size) ->
     case Size of
+        xxsmall -> 
+            ?XXSMALL;
+        xsmall ->
+            ?XSMALL;
         small ->
             ?SMALL;
         medium ->
@@ -357,6 +364,8 @@ merge_binaries(BinA, BinB) ->
 
 
 simple_bysize_test() ->
+    simple_test_withsize(xxsmall),
+    simple_test_withsize(xsmall),
     simple_test_withsize(small),
     simple_test_withsize(medium),
     simple_test_withsize(large),
