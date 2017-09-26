@@ -57,14 +57,14 @@
 -export([
             new_tree/1,
             new_tree/2,
-            add_kv/4,
+            add_kv/5,
             find_dirtyleaves/2,
             find_dirtysegments/2,
             fetch_root/1,
             fetch_leaves/2,
             merge_trees/2,
             get_segment/2,
-            tictac_hash/2,
+            tictac_hash/3,
             export_tree/1,
             import_tree/1
         ]).
@@ -161,13 +161,24 @@ import_tree(ExportedTree) ->
                     level2 = Lv2}.
 
 -spec add_kv(tictactree(), tuple(), tuple(), fun()) -> tictactree().
+add_kv(TicTacTree, Key, Value, BinExtractFun) ->
+    add_kv(TicTacTree, Key, Value, BinExtractFun, false).
+
+-spec add_kv(tictactree(), tuple(), tuple(), fun(), boolean()) -> tictactree().
 %% @doc
-%% Add a Key and value to a tictactree using the HashFun to calculate the Hash
-%% based on that key and value
-add_kv(TicTacTree, Key, Value, HashFun) ->
-    HashV = HashFun(Key, Value),
-    SegChangeHash = tictac_hash(Key, HashV),
-    Segment = get_segment(Key, TicTacTree#tictactree.segment_count),
+%% Add a Key and value to a tictactree using the BinExtractFun to extract a 
+%% binary from the Key and value from which to generate the hash.  The 
+%% BinExtractFun will also need to do any canonicalisation necessary to make
+%% the hash consistent (such as whitespace removal, or sorting)
+%%
+%% For exportable trees the hash function will be based on the CJ Bernstein
+%% magic hash.  For non-exportable trees erlang:phash2 will be used, and so 
+%% non-binary Keys and Values can be returned from the BinExtractFun in this
+%% case.
+add_kv(TicTacTree, Key, Value, BinExtractFun, Exportable) ->
+    {BinK, BinV} = BinExtractFun(Key, Value),
+    {SegHash, SegChangeHash} = tictac_hash(BinK, BinV, Exportable),
+    Segment = get_segment(SegHash, TicTacTree#tictactree.segment_count),
     
     Level2Pos =
         Segment band (TicTacTree#tictactree.width - 1),
@@ -275,21 +286,33 @@ merge_trees(TreeA, TreeB) ->
     
     MergedTree#tictactree{level1 = NewLevel1, level2 = NewLevel2}.
 
--spec get_segment(any(), integer()|small|medium|large|xlarge) -> integer().
+-spec get_segment(integer(), integer()|small|medium|large|xlarge) -> integer().
 %% @doc
 %% Return the segment ID for a Key.  Can pass the tree size or the actual
 %% segment count derived from the size
-get_segment(Key, SegmentCount) when is_integer(SegmentCount) ->
-    erlang:phash2(Key) band (SegmentCount - 1);
-get_segment(Key, TreeSize) ->
-    get_segment(Key, element(3, get_size(TreeSize))).
+get_segment(Hash, SegmentCount) when is_integer(SegmentCount) ->
+    Hash band (SegmentCount - 1);
+get_segment(Hash, TreeSize) ->
+    get_segment(Hash, element(3, get_size(TreeSize))).
 
 
--spec tictac_hash(tuple(), any()) -> integer().
+-spec tictac_hash(any(), any(), boolean()) -> integer().
 %% @doc
-%% Hash the key and term
-tictac_hash(Key, Term) ->
-    erlang:phash2({Key, Term}).
+%% Hash the key and term, to either something repetable in Erlang, or using 
+%% the DJ Bernstein hash if it is the tree needs to be compared with one 
+%% calculated with a non-Erlang store
+%%
+%% Boolean is Exportable.  does the hash need to be repetable by a non-Erlang
+%% machine  
+tictac_hash(BinKey, BinVal, true) 
+                            when is_binary(BinKey) and is_binary(BinVal) ->
+    HashKey = leveled_codec:magic_hash({binary, BinKey}),
+    HashVal = leveled_codec:magic_hash({binary, BinVal}),
+    {HashKey, HashKey bxor HashVal};
+tictac_hash(BinKey, {is_hash, HashedVal}, false) ->
+    {erlang:phash2(BinKey), erlang:phash2(BinKey) bxor HashedVal};
+tictac_hash(BinKey, BinVal, false) ->
+    {erlang:phash2(BinKey), erlang:phash2(BinKey) bxor erlang:phash2(BinVal)}.
 
 %%%============================================================================
 %%% Internal functions
@@ -363,13 +386,17 @@ simple_bysize_test() ->
     simple_test_withsize(xlarge).
 
 simple_test_withsize(Size) ->
-    HashFun = fun(_K, V) -> erlang:phash2(V) end,
+    BinFun = fun(K, V) -> {term_to_binary(K), term_to_binary(V)} end,
     
+    K1 = {o, "B1", "K1", null},
+    K2 = {o, "B1", "K2", null},
+    K3 = {o, "B1", "K3", null},
+
     Tree0 = new_tree(0, Size),
-    Tree1 = add_kv(Tree0, {o, "B1", "K1", null}, {caine, 1}, HashFun),
-    Tree2 = add_kv(Tree1, {o, "B1", "K2", null}, {caine, 2}, HashFun),
-    Tree3 = add_kv(Tree2, {o, "B1", "K3", null}, {caine, 3}, HashFun),
-    Tree3A = add_kv(Tree3, {o, "B1", "K3", null}, {caine, 4}, HashFun),
+    Tree1 = add_kv(Tree0, K1, {caine, 1}, BinFun),
+    Tree2 = add_kv(Tree1, K2, {caine, 2}, BinFun),
+    Tree3 = add_kv(Tree2, K3, {caine, 3}, BinFun),
+    Tree3A = add_kv(Tree3, K3, {caine, 4}, BinFun),
     ?assertMatch(true, Tree0#tictactree.level1 == Tree0#tictactree.level1),
     ?assertMatch(false, Tree0#tictactree.level1 == Tree1#tictactree.level1),
     ?assertMatch(false, Tree1#tictactree.level1 == Tree2#tictactree.level1),
@@ -377,23 +404,28 @@ simple_test_withsize(Size) ->
     ?assertMatch(false, Tree3#tictactree.level1 == Tree3A#tictactree.level1),
     
     Tree0X = new_tree(0, Size),
-    Tree1X = add_kv(Tree0X, {o, "B1", "K3", null}, {caine, 3}, HashFun),
-    Tree2X = add_kv(Tree1X, {o, "B1", "K1", null}, {caine, 1}, HashFun),
-    Tree3X = add_kv(Tree2X, {o, "B1", "K2", null}, {caine, 2}, HashFun),
-    Tree3XA = add_kv(Tree3X, {o, "B1", "K3", null}, {caine, 4}, HashFun),
+    Tree1X = add_kv(Tree0X, K3, {caine, 3}, BinFun),
+    Tree2X = add_kv(Tree1X, K1, {caine, 1}, BinFun),
+    Tree3X = add_kv(Tree2X, K2, {caine, 2}, BinFun),
+    Tree3XA = add_kv(Tree3X, K3, {caine, 4}, BinFun),
     ?assertMatch(false, Tree1#tictactree.level1 == Tree1X#tictactree.level1),
     ?assertMatch(false, Tree2#tictactree.level1 == Tree2X#tictactree.level1),
     ?assertMatch(true, Tree3#tictactree.level1 == Tree3X#tictactree.level1),
     ?assertMatch(true, Tree3XA#tictactree.level1 == Tree3XA#tictactree.level1),
     
     SC = Tree0#tictactree.segment_count,
+
+    GetSegFun = 
+        fun(TK) ->
+            get_segment(erlang:phash2(term_to_binary(TK)), SC)
+        end,
     
     DL0 = find_dirtyleaves(Tree1, Tree0),
-    ?assertMatch(true, lists:member(get_segment({o, "B1", "K1", null}, SC), DL0)),
+    ?assertMatch(true, lists:member(GetSegFun(K1), DL0)),
     DL1 = find_dirtyleaves(Tree3, Tree1),
-    ?assertMatch(true, lists:member(get_segment({o, "B1", "K2", null}, SC), DL1)),
-    ?assertMatch(true, lists:member(get_segment({o, "B1", "K3", null}, SC), DL1)),
-    ?assertMatch(false, lists:member(get_segment({o, "B1", "K1", null}, SC), DL1)),
+    ?assertMatch(true, lists:member(GetSegFun(K2), DL1)),
+    ?assertMatch(true, lists:member(GetSegFun(K3), DL1)),
+    ?assertMatch(false, lists:member(GetSegFun(K1), DL1)),
     
     % Export and import tree to confirm no difference
     ExpTree3 = export_tree(Tree3),
@@ -416,24 +448,24 @@ merge_bysize_xlarge_test2() ->
     merge_test_withsize(xlarge).
 
 merge_test_withsize(Size) ->
-    HashFun = fun(_K, V) -> erlang:phash2(V) end,
+    BinFun = fun(K, V) -> {term_to_binary(K), term_to_binary(V)} end,
     
     TreeX0 = new_tree(0, Size),
-    TreeX1 = add_kv(TreeX0, {o, "B1", "X1", null}, {caine, 1}, HashFun),
-    TreeX2 = add_kv(TreeX1, {o, "B1", "X2", null}, {caine, 2}, HashFun),
-    TreeX3 = add_kv(TreeX2, {o, "B1", "X3", null}, {caine, 3}, HashFun),
-    TreeX4 = add_kv(TreeX3, {o, "B1", "X3", null}, {caine, 4}, HashFun),
+    TreeX1 = add_kv(TreeX0, {o, "B1", "X1", null}, {caine, 1}, BinFun),
+    TreeX2 = add_kv(TreeX1, {o, "B1", "X2", null}, {caine, 2}, BinFun),
+    TreeX3 = add_kv(TreeX2, {o, "B1", "X3", null}, {caine, 3}, BinFun),
+    TreeX4 = add_kv(TreeX3, {o, "B1", "X3", null}, {caine, 4}, BinFun),
     
     TreeY0 = new_tree(0, Size),
-    TreeY1 = add_kv(TreeY0, {o, "B1", "Y1", null}, {caine, 101}, HashFun),
-    TreeY2 = add_kv(TreeY1, {o, "B1", "Y2", null}, {caine, 102}, HashFun),
-    TreeY3 = add_kv(TreeY2, {o, "B1", "Y3", null}, {caine, 103}, HashFun),
-    TreeY4 = add_kv(TreeY3, {o, "B1", "Y3", null}, {caine, 104}, HashFun),
+    TreeY1 = add_kv(TreeY0, {o, "B1", "Y1", null}, {caine, 101}, BinFun),
+    TreeY2 = add_kv(TreeY1, {o, "B1", "Y2", null}, {caine, 102}, BinFun),
+    TreeY3 = add_kv(TreeY2, {o, "B1", "Y3", null}, {caine, 103}, BinFun),
+    TreeY4 = add_kv(TreeY3, {o, "B1", "Y3", null}, {caine, 104}, BinFun),
     
-    TreeZ1 = add_kv(TreeX4, {o, "B1", "Y1", null}, {caine, 101}, HashFun),
-    TreeZ2 = add_kv(TreeZ1, {o, "B1", "Y2", null}, {caine, 102}, HashFun),
-    TreeZ3 = add_kv(TreeZ2, {o, "B1", "Y3", null}, {caine, 103}, HashFun),
-    TreeZ4 = add_kv(TreeZ3, {o, "B1", "Y3", null}, {caine, 104}, HashFun),
+    TreeZ1 = add_kv(TreeX4, {o, "B1", "Y1", null}, {caine, 101}, BinFun),
+    TreeZ2 = add_kv(TreeZ1, {o, "B1", "Y2", null}, {caine, 102}, BinFun),
+    TreeZ3 = add_kv(TreeZ2, {o, "B1", "Y3", null}, {caine, 103}, BinFun),
+    TreeZ4 = add_kv(TreeZ3, {o, "B1", "Y3", null}, {caine, 104}, BinFun),
     
     TreeM0 = merge_trees(TreeX4, TreeY4),
     checktree(TreeM0),
@@ -442,6 +474,10 @@ merge_test_withsize(Size) ->
     TreeM1 = merge_trees(TreeX3, TreeY4),
     checktree(TreeM1),
     ?assertMatch(false, TreeM1#tictactree.level1 == TreeZ4#tictactree.level1).
+
+exportable_test() ->
+    {Int1, Int2} = tictac_hash(<<"key">>, <<"value">>, true),
+    ?assertMatch({true, true}, {is_integer(Int1), is_integer(Int2)}).
 
 -endif.
 
