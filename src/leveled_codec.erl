@@ -87,10 +87,12 @@ magic_hash({?RIAK_TAG, Bucket, Key, _SubKey}) ->
     magic_hash({Bucket, Key});
 magic_hash({?STD_TAG, Bucket, Key, _SubKey}) ->
     magic_hash({Bucket, Key});
+magic_hash({binary, BinaryKey}) ->
+    H = 5381,
+    hash1(H, BinaryKey) band 16#FFFFFFFF;
 magic_hash(AnyKey) ->
     BK = term_to_binary(AnyKey),
-    H = 5381,
-    hash1(H, BK) band 16#FFFFFFFF.
+    magic_hash({binary, BK}).
 
 hash1(H, <<>>) -> 
     H;
