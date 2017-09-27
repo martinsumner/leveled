@@ -296,7 +296,7 @@ get_segment(Hash, TreeSize) ->
     get_segment(Hash, element(3, get_size(TreeSize))).
 
 
--spec tictac_hash(any(), any(), boolean()) -> integer().
+-spec tictac_hash(any(), any(), boolean()) -> {integer(), integer()}.
 %% @doc
 %% Hash the key and term, to either something repetable in Erlang, or using 
 %% the DJ Bernstein hash if it is the tree needs to be compared with one 
@@ -477,7 +477,7 @@ merge_test_withsize(Size) ->
 
 exportable_test() ->
     {Int1, Int2} = tictac_hash(<<"key">>, <<"value">>, true),
-    ?assertMatch({true, true}, {is_integer(Int1), is_integer(Int2)}).
+    ?assertMatch({true, true}, {Int1 >= 0, Int2 >=0}).
 
 -endif.
 

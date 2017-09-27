@@ -74,6 +74,11 @@
 -define(ALL_BUCKETS, <<"$all">>).
 
 -type recent_aae() :: #recent_aae{}.
+-type riak_metadata() :: {binary()|delete, % Sibling Metadata
+                            binary()|null, % Vclock Metadata
+                            integer()|null, % Hash of vclock
+                            {integer(), integer(), integer()}|null, % LMOD TS 
+                            integer()}. % Size in bytes of real object
 
 -spec magic_hash(any()) -> integer().
 %% @doc 
@@ -583,7 +588,7 @@ get_keyandobjhash(LK, Value) ->
 get_objhash(Tag, ObjMetaData) ->
     case Tag of
         ?RIAK_TAG ->
-            {_RMD, _VC, Hash, _Size} = ObjMetaData,
+            {_RMD, _VC, Hash, _LMD, _Size} = ObjMetaData,
             Hash;
         ?STD_TAG ->
             {Hash, _Size} = ObjMetaData,
@@ -595,20 +600,34 @@ build_metadata_object(PrimaryKey, MD) ->
     {Tag, _Bucket, _Key, null} = PrimaryKey,
     case Tag of
         ?RIAK_TAG ->
-            {SibData, Vclock, _Hash, _Size} = MD,
+            {SibData, Vclock, _Hash, _LMD, _Size} = MD,
             riak_metadata_to_binary(Vclock, SibData);
         ?STD_TAG ->
             MD
     end.
 
 
+-spec riak_extract_metadata(binary()|delete, non_neg_integer()) -> 
+                            {riak_metadata(), list()}.
+%% @doc
+%% Riak extract metadata should extract a metadata object which is a 
+%% five-tuple of:
+%% - Binary of sibling Metadata
+%% - Binary of vector clock metadata
+%% - Non-exportable hash of the vector clock metadata
+%% - The largest last modified date of the object
+%% - Size of the object
+%%
+%% The metadata object should be returned with the full list of last 
+%% modified dates (which will be used for recent anti-entropy index creation)
 riak_extract_metadata(delete, Size) ->
-    {{delete, null, null, Size}, []};
+    {{delete, null, null, null, Size}, []};
 riak_extract_metadata(ObjBin, Size) ->
     {VclockBin, SibBin, LastMods} = riak_metadata_from_binary(ObjBin),
     {{SibBin, 
             VclockBin, 
             erlang:phash2(lists:sort(binary_to_term(VclockBin))), 
+            lists:max(LastMods),
             Size},
         LastMods}.
 
