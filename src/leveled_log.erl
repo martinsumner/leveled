@@ -120,7 +120,8 @@
     {"P0030",
         {warn, "We're doomed - intention recorded to destroy all files"}},
     {"P0031",
-        {info, "Completion of update to levelzero"}},
+        {info, "Completion of update to levelzero"
+                    ++ " with cache size status ~w ~w"}},
     {"P0032",
         {info, "Head timing for result ~w is sample ~w total ~w and max ~w"}},
     {"P0033",
@@ -141,6 +142,8 @@
     {"P0039",
         {info, "Failed to release pid=~w "
                     ++ "leaving SnapshotCount=~w and MinSQN=~w"}},
+    {"P0040",
+        {info, "Archiving filename ~s as unused at startup"}},
         
     {"PC001",
         {info, "Penciller's clerk ~w started with owner ~w"}},

@@ -620,7 +620,7 @@ build_metadata_object(PrimaryKey, MD) ->
 %% The metadata object should be returned with the full list of last 
 %% modified dates (which will be used for recent anti-entropy index creation)
 riak_extract_metadata(delete, Size) ->
-    {{delete, null, null, null, Size}, []};
+    {{delete, null, null, Size}, []};
 riak_extract_metadata(ObjBin, Size) ->
     {VclockBin, SibBin, LastMods} = riak_metadata_from_binary(ObjBin),
     {{SibBin, 
