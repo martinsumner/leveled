@@ -76,8 +76,7 @@
 -type recent_aae() :: #recent_aae{}.
 -type riak_metadata() :: {binary()|delete, % Sibling Metadata
                             binary()|null, % Vclock Metadata
-                            integer()|null, % Hash of vclock
-                            {integer(), integer(), integer()}|null, % LMOD TS 
+                            integer()|null, % Hash of vclock - non-exportable 
                             integer()}. % Size in bytes of real object
 
 -spec magic_hash(any()) -> integer().
@@ -588,19 +587,19 @@ get_keyandobjhash(LK, Value) ->
 get_objhash(Tag, ObjMetaData) ->
     case Tag of
         ?RIAK_TAG ->
-            {_RMD, _VC, Hash, _LMD, _Size} = ObjMetaData,
+            {_RMD, _VC, Hash, _Size} = ObjMetaData,
             Hash;
         ?STD_TAG ->
             {Hash, _Size} = ObjMetaData,
             Hash
     end.
         
-        
+
 build_metadata_object(PrimaryKey, MD) ->
     {Tag, _Bucket, _Key, null} = PrimaryKey,
     case Tag of
         ?RIAK_TAG ->
-            {SibData, Vclock, _Hash, _LMD, _Size} = MD,
+            {SibData, Vclock, _Hash, _Size} = MD,
             riak_metadata_to_binary(Vclock, SibData);
         ?STD_TAG ->
             MD
@@ -627,7 +626,6 @@ riak_extract_metadata(ObjBin, Size) ->
     {{SibBin, 
             VclockBin, 
             erlang:phash2(lists:sort(binary_to_term(VclockBin))), 
-            lists:max(LastMods),
             Size},
         LastMods}.
 
