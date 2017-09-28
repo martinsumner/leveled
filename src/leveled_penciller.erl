@@ -900,14 +900,14 @@ start_from_file(PCLopts) ->
     ok = archive_files(RootPath, FileList0),
     {ok, State0}.
 
-archive_files(RootPath, FileList) ->
+archive_files(RootPath, UsedFileList) ->
     {ok, AllFiles} = file:list_dir(sst_rootpath(RootPath)),
     FileCheckFun =
         fun(FN, UnusedFiles) ->
             FN0 = "./" ++ FN,
             case filename:extension(FN0) of 
                 ?SST_FILEX ->
-                    case lists:member(FN0, FileList) of 
+                    case lists:member(FN0, UsedFileList) of 
                         true ->
                             UnusedFiles;
                         false ->
@@ -1376,6 +1376,23 @@ clean_dir_test() ->
     ?assertMatch(ok, file:write_file(RootPath ++ "/test.bob", "hello")),
     ok = clean_subdir(RootPath ++ "/test.bob"),
     ok = file:delete(RootPath ++ "/test.bob").
+
+
+archive_files_test() ->
+    RootPath = "../test/ledger",
+    SSTPath = sst_rootpath(RootPath),
+    ok = filelib:ensure_dir(SSTPath),
+    ok = file:write_file(SSTPath ++ "/test1.sst", "hello_world"),
+    ok = file:write_file(SSTPath ++ "/test2.sst", "hello_world"),
+    ok = file:write_file(SSTPath ++ "/test3.bob", "hello_world"),
+    UsedFiles = ["./test1.sst"],
+    ok = archive_files(RootPath, UsedFiles),
+    {ok, AllFiles} = file:list_dir(SSTPath),
+    ?assertMatch(true, lists:member("test1.sst", AllFiles)),
+    ?assertMatch(false, lists:member("test2.sst", AllFiles)),
+    ?assertMatch(true, lists:member("test3.bob", AllFiles)),
+    ?assertMatch(true, lists:member("test2.bak", AllFiles)),
+    ok = clean_subdir(SSTPath).
 
 simple_server_test() ->
     RootPath = "../test/ledger",
