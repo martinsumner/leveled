@@ -206,6 +206,8 @@
 -define(FILES_FP, "ledger_files").
 -define(CURRENT_FILEX, "crr").
 -define(PENDING_FILEX, "pnd").
+-define(SST_FILEX, ".sst").
+-define(ARCHIVE_FILEX, ".bak").
 -define(MEMTABLE, mem).
 -define(MAX_TABLESIZE, 28000). % This is less than max - but COIN_SIDECOUNT
 -define(SUPER_MAX_TABLE_SIZE, 40000).
@@ -819,7 +821,8 @@ sst_rootpath(RootPath) ->
     FP.
 
 sst_filename(ManSQN, Level, Count) ->
-    lists:flatten(io_lib:format("./~w_~w_~w.sst", [ManSQN, Level, Count])).
+    lists:flatten(io_lib:format("./~w_~w_~w" ++ ?SST_FILEX, 
+                                    [ManSQN, Level, Count])).
     
 
 %%%============================================================================
@@ -859,41 +862,73 @@ start_from_file(PCLopts) ->
             Pid
         end,
     SQNFun = fun leveled_sst:sst_getmaxsequencenumber/1,
-    {MaxSQN, Manifest1} = leveled_pmanifest:load_manifest(Manifest0,
-                                                            OpenFun,
-                                                            SQNFun),
+    {MaxSQN, Manifest1, FileList} = 
+        leveled_pmanifest:load_manifest(Manifest0, OpenFun, SQNFun),
     leveled_log:log("P0014", [MaxSQN]),
     ManSQN = leveled_pmanifest:get_manifest_sqn(Manifest1),
     leveled_log:log("P0035", [ManSQN]),
     %% Find any L0 files
     L0FN = sst_filename(ManSQN + 1, 0, 0),
-    case filelib:is_file(filename:join(sst_rootpath(RootPath), L0FN)) of
-        true ->
-            leveled_log:log("P0015", [L0FN]),
-            L0Open = leveled_sst:sst_open(sst_rootpath(RootPath), L0FN),
-            {ok, L0Pid, {L0StartKey, L0EndKey}} = L0Open,
-            L0SQN = leveled_sst:sst_getmaxsequencenumber(L0Pid),
-            L0Entry = #manifest_entry{start_key = L0StartKey,
-                                        end_key = L0EndKey,
-                                        filename = L0FN,
-                                        owner = L0Pid},
-            Manifest2 = leveled_pmanifest:insert_manifest_entry(Manifest1,
-                                                                ManSQN + 1,
-                                                                0,
-                                                                L0Entry),
-            leveled_log:log("P0016", [L0SQN]),
-            LedgerSQN = max(MaxSQN, L0SQN),
-            {ok,
-                InitState#state{manifest = Manifest2,
+    {State0, FileList0} = 
+        case filelib:is_file(filename:join(sst_rootpath(RootPath), L0FN)) of
+            true ->
+                leveled_log:log("P0015", [L0FN]),
+                L0Open = leveled_sst:sst_open(sst_rootpath(RootPath), L0FN),
+                {ok, L0Pid, {L0StartKey, L0EndKey}} = L0Open,
+                L0SQN = leveled_sst:sst_getmaxsequencenumber(L0Pid),
+                L0Entry = #manifest_entry{start_key = L0StartKey,
+                                            end_key = L0EndKey,
+                                            filename = L0FN,
+                                            owner = L0Pid},
+                Manifest2 = leveled_pmanifest:insert_manifest_entry(Manifest1,
+                                                                    ManSQN + 1,
+                                                                    0,
+                                                                    L0Entry),
+                leveled_log:log("P0016", [L0SQN]),
+                LedgerSQN = max(MaxSQN, L0SQN),
+                {InitState#state{manifest = Manifest2,
                                     ledger_sqn = LedgerSQN,
-                                    persisted_sqn = LedgerSQN}};
-        false ->
-            leveled_log:log("P0017", []),
-            {ok,
-                InitState#state{manifest = Manifest1,
+                                    persisted_sqn = LedgerSQN},
+                    [L0FN|FileList]};
+            false ->
+                leveled_log:log("P0017", []),
+                {InitState#state{manifest = Manifest1,
                                     ledger_sqn = MaxSQN,
-                                    persisted_sqn = MaxSQN}}
-    end.
+                                    persisted_sqn = MaxSQN},
+                    FileList}
+        end,
+    ok = archive_files(RootPath, FileList0),
+    {ok, State0}.
+
+archive_files(RootPath, UsedFileList) ->
+    {ok, AllFiles} = file:list_dir(sst_rootpath(RootPath)),
+    FileCheckFun =
+        fun(FN, UnusedFiles) ->
+            FN0 = "./" ++ FN,
+            case filename:extension(FN0) of 
+                ?SST_FILEX ->
+                    case lists:member(FN0, UsedFileList) of 
+                        true ->
+                            UnusedFiles;
+                        false ->
+                            leveled_log:log("P0040", [FN0]),
+                            [FN0|UnusedFiles]
+                    end;
+                _ ->
+                    UnusedFiles
+            end
+        end,
+    RenameFun =
+        fun(FN) ->
+            AltName = filename:join(sst_rootpath(RootPath), 
+                                        filename:basename(FN, ?SST_FILEX))
+                        ++ ?ARCHIVE_FILEX,
+            file:rename(filename:join(sst_rootpath(RootPath), FN), 
+                            AltName)
+        end,
+    FilesToArchive = lists:foldl(FileCheckFun, [], AllFiles),
+    lists:foreach(RenameFun, FilesToArchive),
+    ok.
 
 
 update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
@@ -934,11 +969,13 @@ update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
             case {CacheTooBig, L0Free, JitterCheck, NoPendingManifestChange} of
                 {true, true, true, true}  ->
                     L0Constructor = roll_memory(UpdState, false),
-                    leveled_log:log_timer("P0031", [], SW),
+                    leveled_log:log_timer("P0031", [true, true], SW),
                     UpdState#state{levelzero_pending=true,
                                     levelzero_constructor=L0Constructor};
                 _ ->
-                    leveled_log:log_timer("P0031", [], SW),
+                    leveled_log:log_timer("P0031", 
+                                            [CacheTooBig, JitterCheck], 
+                                            SW),
                     UpdState
             end
     end.
@@ -1339,6 +1376,23 @@ clean_dir_test() ->
     ?assertMatch(ok, file:write_file(RootPath ++ "/test.bob", "hello")),
     ok = clean_subdir(RootPath ++ "/test.bob"),
     ok = file:delete(RootPath ++ "/test.bob").
+
+
+archive_files_test() ->
+    RootPath = "../test/ledger",
+    SSTPath = sst_rootpath(RootPath),
+    ok = filelib:ensure_dir(SSTPath),
+    ok = file:write_file(SSTPath ++ "/test1.sst", "hello_world"),
+    ok = file:write_file(SSTPath ++ "/test2.sst", "hello_world"),
+    ok = file:write_file(SSTPath ++ "/test3.bob", "hello_world"),
+    UsedFiles = ["./test1.sst"],
+    ok = archive_files(RootPath, UsedFiles),
+    {ok, AllFiles} = file:list_dir(SSTPath),
+    ?assertMatch(true, lists:member("test1.sst", AllFiles)),
+    ?assertMatch(false, lists:member("test2.sst", AllFiles)),
+    ?assertMatch(true, lists:member("test3.bob", AllFiles)),
+    ?assertMatch(true, lists:member("test2.bak", AllFiles)),
+    ok = clean_subdir(SSTPath).
 
 simple_server_test() ->
     RootPath = "../test/ledger",

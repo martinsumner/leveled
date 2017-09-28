@@ -74,6 +74,10 @@
 -define(ALL_BUCKETS, <<"$all">>).
 
 -type recent_aae() :: #recent_aae{}.
+-type riak_metadata() :: {binary()|delete, % Sibling Metadata
+                            binary()|null, % Vclock Metadata
+                            integer()|null, % Hash of vclock - non-exportable 
+                            integer()}. % Size in bytes of real object
 
 -spec magic_hash(any()) -> integer().
 %% @doc 
@@ -464,7 +468,8 @@ aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods) ->
                         {LMD1, TTL} ->
                             TreeSize = AAE#recent_aae.tree_size,
                             SegID =
-                                leveled_tictac:get_segment(Key, TreeSize),
+                                leveled_tictac:get_segment(erlang:phash2(Key), 
+                                                            TreeSize),
                             IdxFldStr = ?NRT_IDX ++ LMD1 ++ "_bin",
                             IdxTrmStr =
                                 string:right(integer_to_list(SegID), 8, $0) ++
@@ -589,7 +594,7 @@ get_objhash(Tag, ObjMetaData) ->
             Hash
     end.
         
-        
+
 build_metadata_object(PrimaryKey, MD) ->
     {Tag, _Bucket, _Key, null} = PrimaryKey,
     case Tag of
@@ -601,6 +606,19 @@ build_metadata_object(PrimaryKey, MD) ->
     end.
 
 
+-spec riak_extract_metadata(binary()|delete, non_neg_integer()) -> 
+                            {riak_metadata(), list()}.
+%% @doc
+%% Riak extract metadata should extract a metadata object which is a 
+%% five-tuple of:
+%% - Binary of sibling Metadata
+%% - Binary of vector clock metadata
+%% - Non-exportable hash of the vector clock metadata
+%% - The largest last modified date of the object
+%% - Size of the object
+%%
+%% The metadata object should be returned with the full list of last 
+%% modified dates (which will be used for recent anti-entropy index creation)
 riak_extract_metadata(delete, Size) ->
     {{delete, null, null, Size}, []};
 riak_extract_metadata(ObjBin, Size) ->
