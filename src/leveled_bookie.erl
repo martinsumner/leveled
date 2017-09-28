@@ -934,14 +934,10 @@ tictactree(State, Tag, Bucket, Query, JournalCheck, TreeSize, Filter) ->
         fun() ->
             % The start key and end key will vary depending on whether the
             % fold is to fold over an index or a key range
-            {StartKey, EndKey, HashFun} =
+            {StartKey, EndKey, ExtractFun} =
                 case Tag of
                     ?IDX_TAG ->
                         {IdxField, StartIdx, EndIdx} = Query,
-                        HashIdxValFun =
-                            fun(_Key, IdxValue) ->
-                                erlang:phash2(IdxValue)
-                            end,
                         {leveled_codec:to_ledgerkey(Bucket,
                                                     null,
                                                     ?IDX_TAG,
@@ -952,23 +948,21 @@ tictactree(State, Tag, Bucket, Query, JournalCheck, TreeSize, Filter) ->
                                                         ?IDX_TAG,
                                                         IdxField,
                                                         EndIdx),
-                            HashIdxValFun};
+                            fun(K, T) -> {K, T} end};
                     _ ->
                         {StartObjKey, EndObjKey} = Query,
-                        PassHashFun = fun(_Key, Hash) -> Hash end,
                         {leveled_codec:to_ledgerkey(Bucket,
                                                     StartObjKey,
                                                     Tag),
                             leveled_codec:to_ledgerkey(Bucket,
                                                         EndObjKey,
                                                         Tag),
-                            PassHashFun}
+                            fun(K, H) -> {K, {is_hash, H}} end}
                 end,
-
             AccFun = accumulate_tree(Filter,
                                         JournalCheck,
                                         JournalSnapshot,
-                                        HashFun),
+                                        ExtractFun),
             Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
                                                     StartKey,
                                                     EndKey,
@@ -1263,7 +1257,7 @@ accumulate_tree(FilterFun, JournalCheck, InkerClone, HashFun) ->
         fun(B, K, H, Tree) ->
             case FilterFun(B, K) of
                 accumulate ->
-                    leveled_tictac:add_kv(Tree, K, H, HashFun);
+                    leveled_tictac:add_kv(Tree, K, H, HashFun, false);
                 pass ->
                     Tree
             end

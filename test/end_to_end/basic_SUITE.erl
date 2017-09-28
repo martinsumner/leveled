@@ -580,21 +580,58 @@ space_clear_ondelete(_Config) ->
     io:format("This should cause a final ledger merge event~n"),
     io:format("Will require the penciller to resolve the issue of creating" ++
                 " an empty file as all keys compact on merge~n"),
-    timer:sleep(12000),
+    
+    CheckFun = 
+        fun(X, FileCount) ->
+            case FileCount of
+                0 ->
+                    0;
+                _ ->
+                    timer:sleep(X),
+                    {ok, NewFC} = 
+                        file:list_dir(RootPath ++ "/ledger/ledger_files"),
+                    io:format("Looping with ledger file count ~w~n", 
+                                [length(NewFC)]),
+                    length(strip_nonsst(NewFC))
+            end
+        end,
+    
+    FC = lists:foldl(CheckFun, infinity, [2000, 3000, 5000, 8000]),
     ok = leveled_bookie:book_close(Book3),
+    case FC of 
+        0 ->
+            ok;
+        _ ->
+            {ok, Book4} = leveled_bookie:book_start(StartOpts1),
+            lists:foldl(CheckFun, infinity, [2000, 3000, 5000, 8000]),
+            leveled_bookie:book_close(Book4)
+    end,
+
     {ok, FNsD_L} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
     io:format("FNsD - Bookie has ~w ledger files " ++
-                    "after second close~n", [length(FNsD_L)]),
+                    "after second close~n", [length(strip_nonsst(FNsD_L))]),
     lists:foreach(fun(FN) -> 
                         io:format("FNsD - Ledger file is ~s~n", [FN]) 
                     end, 
                     FNsD_L),
     true = PointB_Journals < length(FNsA_J),
-    true = length(FNsD_L) < length(FNsA_L),
-    true = length(FNsD_L) < length(FNsB_L),
-    true = length(FNsD_L) < length(FNsC_L),
-    true = length(FNsD_L) == 0.
+    true = length(strip_nonsst(FNsD_L)) < length(strip_nonsst(FNsA_L)),
+    true = length(strip_nonsst(FNsD_L)) < length(strip_nonsst(FNsB_L)),
+    true = length(strip_nonsst(FNsD_L)) < length(strip_nonsst(FNsC_L)),
+    true = length(strip_nonsst(FNsD_L)) == 0.
 
+
+strip_nonsst(FileList) ->
+    SSTOnlyFun = 
+        fun(FN, Acc) ->
+            case filename:extension(FN) of 
+                ".sst" -> 
+                    [FN|Acc];
+                _ ->
+                    Acc 
+            end
+        end,
+    lists:foldl(SSTOnlyFun, [], FileList).
 
 
 is_empty_test(_Config) ->

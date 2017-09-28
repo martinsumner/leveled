@@ -136,7 +136,8 @@ copy_manifest(Manifest) ->
     % about is switched to undefined
     Manifest#manifest{snapshots = undefined, pending_deletes = undefined}.
 
--spec load_manifest(manifest(), fun(), fun()) -> {integer(), manifest()}.
+-spec load_manifest(manifest(), fun(), fun()) -> 
+                                        {integer(), manifest(), list()}.
 %% @doc
 %% Roll over the manifest starting a process to manage each file in the
 %% manifest.  The PidFun should be able to return the Pid of a file process
@@ -144,13 +145,15 @@ copy_manifest(Manifest) ->
 %% of that file, if passed the Pid that owns it.
 load_manifest(Manifest, PidFun, SQNFun) ->
     UpdateLevelFun =
-        fun(LevelIdx, {AccMaxSQN, AccMan}) ->
+        fun(LevelIdx, {AccMaxSQN, AccMan, AccFL}) ->
             L0 = array:get(LevelIdx, AccMan#manifest.levels),
-            {L1, SQN1} = load_level(LevelIdx, L0, PidFun, SQNFun),
+            {L1, SQN1, FileList} = load_level(LevelIdx, L0, PidFun, SQNFun),
             UpdLevels = array:set(LevelIdx, L1, AccMan#manifest.levels),
-            {max(AccMaxSQN, SQN1), AccMan#manifest{levels = UpdLevels}}
+            {max(AccMaxSQN, SQN1), 
+                AccMan#manifest{levels = UpdLevels},
+                AccFL ++ FileList}
         end,
-    lists:foldl(UpdateLevelFun, {0, Manifest},
+    lists:foldl(UpdateLevelFun, {0, Manifest, []},
                     lists:seq(0, Manifest#manifest.basement)).
 
 -spec close_manifest(manifest(), fun()) -> ok.
@@ -488,27 +491,33 @@ levelzero_present(Manifest) ->
 
 load_level(LevelIdx, Level, PidFun, SQNFun) ->
     HigherLevelLoadFun =
-        fun(ME, {L_Out, L_MaxSQN}) ->
+        fun(ME, {L_Out, L_MaxSQN, FileList}) ->
             FN = ME#manifest_entry.filename,
             P = PidFun(FN),
             SQN = SQNFun(P),
-            {[ME#manifest_entry{owner=P}|L_Out], max(SQN, L_MaxSQN)}
+            {[ME#manifest_entry{owner=P}|L_Out], 
+                max(SQN, L_MaxSQN),
+                [FN|FileList]}
         end,
     LowerLevelLoadFun =
-        fun({EK, ME}, {L_Out, L_MaxSQN}) ->
+        fun({EK, ME}, {L_Out, L_MaxSQN, FileList}) ->
             FN = ME#manifest_entry.filename,
             P = PidFun(FN),
             SQN = SQNFun(P),
-            {[{EK, ME#manifest_entry{owner=P}}|L_Out], max(SQN, L_MaxSQN)}
+            {[{EK, ME#manifest_entry{owner=P}}|L_Out], 
+                max(SQN, L_MaxSQN),
+                [FN|FileList]}
         end,
     case LevelIdx =< 1 of
         true ->
-            lists:foldr(HigherLevelLoadFun, {[], 0}, Level);
+            lists:foldr(HigherLevelLoadFun, {[], 0, []}, Level);
         false ->
-            {L0, MaxSQN} = lists:foldr(LowerLevelLoadFun,
-                                        {[], 0},
+            {L0, MaxSQN, Flist} = lists:foldr(LowerLevelLoadFun,
+                                        {[], 0, []},
                                         leveled_tree:to_list(Level)),
-            {leveled_tree:from_orderedlist(L0, ?TREE_TYPE, ?TREE_WIDTH), MaxSQN}
+            {leveled_tree:from_orderedlist(L0, ?TREE_TYPE, ?TREE_WIDTH), 
+                MaxSQN, 
+                Flist}
     end.
 
 close_level(LevelIdx, Level, CloseEntryFun) when LevelIdx =< 1 ->

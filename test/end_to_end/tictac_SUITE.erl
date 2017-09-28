@@ -114,19 +114,16 @@ many_put_compare(_Config) ->
     % Now run the same query by putting the tree-building responsibility onto
     % the fold_objects_fun
 
-    ApplyHash =
-      fun(HashFun) ->
-          fun(_Key, Value) ->
-              {proxy_object, HeadBin, _Size, _FetchFun} = binary_to_term(Value),
-              <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
-                    Rest/binary>> = HeadBin,
-              <<VclockBin:VclockLen/binary, _NotNeeded/binary>> = Rest,
-              HashFun(lists:sort(binary_to_term(VclockBin)))
-          end
-      end,
+    ExtractClockFun =
+        fun(Key, Value) ->
+            {proxy_object, HeadBin, _Size, _FetchFun} = binary_to_term(Value),
+            <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
+                VclockBin:VclockLen/binary, _Rest/binary>> = HeadBin,
+            {Key, lists:sort(binary_to_term(VclockBin))}
+        end,
     FoldObjectsFun =
       fun(_Bucket, Key, Value, Acc) ->
-          leveled_tictac:add_kv(Acc, Key, Value, ApplyHash(fun erlang:phash2/1))
+          leveled_tictac:add_kv(Acc, Key, Value, ExtractClockFun, false)
       end,
 
     FoldQ0 = {foldheads_bybucket,
@@ -157,22 +154,25 @@ many_put_compare(_Config) ->
                 [timer:now_diff(os:timestamp(), SWB1Obj)]),
     true = length(leveled_tictac:find_dirtyleaves(TreeA, TreeAObj1)) == 0,
 
-    % AAE trees within riak are based on a sha of the vector clock.  So to
-    % compare with an AAE tree we need to compare outputs when we're hashing
-    % a hash
-    AltHashFun =
-        fun(Term) ->
-            erlang:phash2(crypto:hash(sha, term_to_binary(Term)))
+    % For an exportable comparison, want hash to be based on something not 
+    % coupled to erlang language - so use exportable query
+    AltExtractFun =
+        fun(K, V) ->
+            {proxy_object, HeadBin, _Size, _FetchFun} = binary_to_term(V),
+            <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
+                VclockBin:VclockLen/binary, _Rest/binary>> = HeadBin,
+            {term_to_binary(K), VclockBin}
         end,
     AltFoldObjectsFun =
         fun(_Bucket, Key, Value, Acc) ->
-            leveled_tictac:add_kv(Acc, Key, Value, ApplyHash(AltHashFun))
+            leveled_tictac:add_kv(Acc, Key, Value, AltExtractFun, true)
         end,
     AltFoldQ0 = {foldheads_bybucket,
-              o_rkv,
-              "Bucket",
-              {AltFoldObjectsFun, leveled_tictac:new_tree(0, TreeSize)},
-              false, true},
+                    o_rkv,
+                    "Bucket",
+                    {AltFoldObjectsFun, leveled_tictac:new_tree(0, TreeSize)},
+                    false, 
+                    true},
     {async, TreeAAltObjFolder0} =
         leveled_bookie:book_returnfolder(Bookie2, AltFoldQ0),
     SWB2Obj = os:timestamp(),
@@ -187,15 +187,19 @@ many_put_compare(_Config) ->
     io:format("Build tictac tree via object fold with no "++
                     "presence check and 200K objects  and alt hash in ~w~n",
                 [timer:now_diff(os:timestamp(), SWB3Obj)]),
-    true =
-        length(leveled_tictac:find_dirtyleaves(TreeBAltObj, TreeAAltObj)) == 1,
+    DL_ExportFold = 
+        length(leveled_tictac:find_dirtyleaves(TreeBAltObj, TreeAAltObj)),
+    io:format("Found dirty leaves with exportable comparison of ~w~n",
+                [DL_ExportFold]),
+    true = DL_ExportFold == 1,
 
 
     %% Finding differing keys
     FoldKeysFun =
         fun(SegListToFind) ->
             fun(_B, K, Acc) ->
-                Seg = leveled_tictac:get_segment(K, SegmentCount),
+                Seg = 
+                    leveled_tictac:get_segment(erlang:phash2(K), SegmentCount),
                 case lists:member(Seg, SegListToFind) of
                     true ->
                         [K|Acc];
@@ -469,7 +473,8 @@ index_compare(_Config) ->
 
     FoldKeysIndexQFun =
         fun(_Bucket, {Term, Key}, Acc) ->
-            Seg = leveled_tictac:get_segment(Key, SegmentCount),
+            Seg = 
+                leveled_tictac:get_segment(erlang:phash2(Key), SegmentCount),
             case lists:member(Seg, DL3_0) of
                 true ->
                     [{Term, Key}|Acc];
