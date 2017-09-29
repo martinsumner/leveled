@@ -79,6 +79,7 @@
 -define(MEDIUM, {9, 512, 512 * 512}).
 -define(LARGE, {10, 1024, 1024 * 1024}).
 -define(XLARGE, {11, 2048, 2048 * 2048}).
+-define(EMPTY, <<0:8/integer>>).
 
 -record(tictactree, {treeID :: any(),
                         size  :: xxsmall|xsmall|small|medium|large|xlarge,
@@ -105,9 +106,7 @@ new_tree(TreeID, Size) ->
     {BitWidth, Width, SegmentCount} = get_size(Size),
     Lv1Width = Width * ?HASH_SIZE * 8,
     Lv1Init = <<0:Lv1Width/integer>>,
-    Lv2SegBinSize = Width * ?HASH_SIZE * 8,
-    Lv2SegBinInit = <<0:Lv2SegBinSize/integer>>,
-    Lv2Init = array:new([{size, Width}, {default, Lv2SegBinInit}]),
+    Lv2Init = array:new([{size, Width}, {default, ?EMPTY}]),
     #tictactree{treeID = TreeID,
                     size = Size,
                     width = Width,
@@ -190,7 +189,7 @@ add_kv(TicTacTree, Key, Value, BinExtractFun, Exportable) ->
     Level2BytePos = ?HASH_SIZE * Level2Pos,
     Level1BytePos = ?HASH_SIZE * Level1Pos,
     
-    Level2 = array:get(Level1Pos, TicTacTree#tictactree.level2),
+    Level2 = get_level2(TicTacTree, Level1Pos),
     
     HashIntLength = ?HASH_SIZE * 8,
     <<PreL2:Level2BytePos/binary,
@@ -256,7 +255,7 @@ fetch_root(TicTacTree) ->
 fetch_leaves(TicTacTree, BranchList) ->
     MapFun =
         fun(Idx) ->
-            {Idx, array:get(Idx, TicTacTree#tictactree.level2)}
+            {Idx, get_level2(TicTacTree, Idx)}
         end,
     lists:map(MapFun, BranchList).
 
@@ -277,8 +276,8 @@ merge_trees(TreeA, TreeB) ->
     
     MergeFun =
         fun(SQN, MergeL2) ->
-            L2A = array:get(SQN, TreeA#tictactree.level2),
-            L2B = array:get(SQN, TreeB#tictactree.level2),
+            L2A = get_level2(TreeA, SQN),
+            L2B = get_level2(TreeB, SQN),
             NewLevel2 = merge_binaries(L2A, L2B),
             array:set(SQN, NewLevel2, MergeL2)
         end,
@@ -322,6 +321,15 @@ tictac_hash(BinKey, BinVal, false) ->
 %%% Internal functions
 %%%============================================================================
 
+get_level2(TicTacTree, L1Pos) ->
+    case array:get(L1Pos, TicTacTree#tictactree.level2) of 
+        ?EMPTY ->
+            Lv2SegBinSize = TicTacTree#tictactree.width * ?HASH_SIZE * 8,
+            <<0:Lv2SegBinSize/integer>>;
+        SrcL2 ->
+            SrcL2 
+    end.
+
 get_size(Size) ->
     case Size of
         xxsmall -> 
@@ -361,7 +369,7 @@ checktree(<<>>, TicTacTree, Counter) ->
 checktree(Level1Bin, TicTacTree, Counter) ->
     BitSize = ?HASH_SIZE * 8,
     <<TopHash:BitSize/integer, Tail/binary>> = Level1Bin,
-    L2Bin = array:get(Counter, TicTacTree#tictactree.level2),
+    L2Bin = get_level2(TicTacTree, Counter),
     true = TopHash == segmentsummarise(L2Bin, 0),
     checktree(Tail, TicTacTree, Counter + 1).            
 
