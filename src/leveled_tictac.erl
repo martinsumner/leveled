@@ -121,13 +121,13 @@ new_tree(TreeID, Size) ->
 %% Export the tree into a tuple list, with the level1 binary, and then for 
 %% level2 {branchID, binary()}
 export_tree(Tree) ->
+    EncodeL2Fun = 
+        fun(X, L2Acc) ->
+            L2Element = zlib:compress(array:get(X, Tree#tictactree.level2)),
+            [{integer_to_list(X), base64:encode_to_string(L2Element)}|L2Acc]
+        end,
     L2 = 
-        lists:foldl(fun(X, L2Acc) ->
-                            [{integer_to_binary(X), 
-                                array:get(X, Tree#tictactree.level2)}|L2Acc]
-                        end,
-                    [],
-                    lists:seq(0, Tree#tictactree.width - 1)),
+        lists:foldl(EncodeL2Fun, [], lists:seq(0, Tree#tictactree.width - 1)),
     {struct, 
         [{<<"level1">>, base64:encode_to_string(Tree#tictactree.level1)}, 
             {<<"level2">>, {struct, lists:reverse(L2)}}
@@ -149,8 +149,9 @@ import_tree(ExportedTree) ->
     {BitWidth, Width, SegmentCount} = get_size(Size),
     Lv2Init = array:new([{size, Width}]),
     FoldFun = 
-        fun({X, L2SegBin}, L2Array) ->
-            array:set(binary_to_integer(X), L2SegBin, L2Array)
+        fun({X, EncodedL2SegBin}, L2Array) ->
+            L2SegBin = zlib:uncompress(base64:decode(EncodedL2SegBin)),
+            array:set(list_to_integer(X), L2SegBin, L2Array)
         end,
     Lv2 = lists:foldl(FoldFun, Lv2Init, L2List),
     #tictactree{treeID = import,
@@ -386,7 +387,10 @@ merge_binaries(BinA, BinB) ->
 -ifdef(TEST).
 
 
-simple_bysize_test() ->
+simple_bysize_test_() ->
+    {timeout, 60, fun simple_bysize_test_allsizes/0}.
+
+simple_bysize_test_allsizes() ->
     simple_test_withsize(xxsmall),
     simple_test_withsize(xsmall),
     simple_test_withsize(small),
