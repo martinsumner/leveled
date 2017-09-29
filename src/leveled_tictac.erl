@@ -124,7 +124,7 @@ export_tree(Tree) ->
     EncodeL2Fun = 
         fun(X, L2Acc) ->
             L2Element = zlib:compress(array:get(X, Tree#tictactree.level2)),
-            [{integer_to_list(X), base64:encode_to_string(L2Element)}|L2Acc]
+            [{integer_to_binary(X), base64:encode_to_string(L2Element)}|L2Acc]
         end,
     L2 = 
         lists:foldl(EncodeL2Fun, [], lists:seq(0, Tree#tictactree.width - 1)),
@@ -151,7 +151,7 @@ import_tree(ExportedTree) ->
     FoldFun = 
         fun({X, EncodedL2SegBin}, L2Array) ->
             L2SegBin = zlib:uncompress(base64:decode(EncodedL2SegBin)),
-            array:set(list_to_integer(X), L2SegBin, L2Array)
+            array:set(binary_to_integer(X), L2SegBin, L2Array)
         end,
     Lv2 = lists:foldl(FoldFun, Lv2Init, L2List),
     #tictactree{treeID = import,
