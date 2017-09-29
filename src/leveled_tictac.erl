@@ -66,7 +66,8 @@
             get_segment/2,
             tictac_hash/3,
             export_tree/1,
-            import_tree/1
+            import_tree/1,
+            valid_size/1
         ]).
 
 
@@ -80,6 +81,7 @@
 -define(LARGE, {10, 1024, 1024 * 1024}).
 -define(XLARGE, {11, 2048, 2048 * 2048}).
 -define(EMPTY, <<0:8/integer>>).
+-define(VALID_SIZES, [xxsmall, xsmall, small, medium, large, xlarge]).
 
 -record(tictactree, {treeID :: any(),
                         size  :: xxsmall|xsmall|small|medium|large|xlarge,
@@ -95,6 +97,12 @@
 %%%============================================================================
 %%% External functions
 %%%============================================================================
+
+-spec valid_size(any()) -> boolean().
+%% @doc
+%% For validation of input
+valid_size(Size) ->
+    lists:member(Size, ?VALID_SIZES).
 
 -spec new_tree(any()) -> tictactree().
 %% @doc
@@ -142,7 +150,7 @@ import_tree(ExportedTree) ->
     L1Bin = base64:decode(L1Base64),
     Sizes = 
         lists:map(fun(SizeTag) -> {SizeTag, element(2, get_size(SizeTag))} end,
-                    [xxsmall, xsmall, small, medium, large, xlarge]),
+                    ?VALID_SIZES),
     Width = byte_size(L1Bin) div ?HASH_SIZE,
     {Size, Width} = lists:keyfind(Width, 2, Sizes),
     {BitWidth, Width, SegmentCount} = get_size(Size),
@@ -414,6 +422,7 @@ simple_bysize_test_allsizes() ->
     simple_test_withsize(xlarge).
 
 simple_test_withsize(Size) ->
+    ?assertMatch(true, valid_size(Size)),
     BinFun = fun(K, V) -> {term_to_binary(K), term_to_binary(V)} end,
     
     K1 = {o, "B1", "K1", null},
