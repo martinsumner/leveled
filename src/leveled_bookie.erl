@@ -1933,6 +1933,33 @@ foldobjects_vs_foldheads_bybucket_testto() ->
                     lists:usort(KeyHashList2B) == lists:usort(KeyHashList2C)),
     ?assertMatch(true,
                     lists:usort(KeyHashList2B) == lists:usort(KeyHashList2D)),
+    
+    {async, HTFolder2E} =
+        book_returnfolder(Bookie1,
+                            {foldheads_bybucket,
+                                ?STD_TAG,
+                                "BucketB",
+                                {"Key", "Key4zzzz"},
+                                FoldHeadsFun,
+                                false,
+                                false}),
+    KeyHashList2E = HTFolder2E(),
+    {async, HTFolder2F} =
+        book_returnfolder(Bookie1,
+                            {foldheads_bybucket,
+                                ?STD_TAG,
+                                "BucketB",
+                                {"Key5", <<"all">>},
+                                FoldHeadsFun,
+                                false,
+                                false}),
+    KeyHashList2F = HTFolder2F(),
+
+    ?assertMatch(true, length(KeyHashList2E) > 0),
+    ?assertMatch(true, length(KeyHashList2F) > 0),
+    ?assertMatch(true,
+                    lists:usort(KeyHashList2B) == 
+                        lists:usort(KeyHashList2E ++ KeyHashList2F)),
 
     ok = book_close(Bookie1),
     reset_filestructure().
