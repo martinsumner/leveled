@@ -129,6 +129,7 @@ many_put_compare(_Config) ->
     FoldQ0 = {foldheads_bybucket,
               o_rkv,
               "Bucket",
+              all,
               {FoldObjectsFun, leveled_tictac:new_tree(0, TreeSize)},
               false, true},
     {async, TreeAObjFolder0} =
@@ -143,6 +144,7 @@ many_put_compare(_Config) ->
     FoldQ1 = {foldheads_bybucket,
               o_rkv,
               "Bucket",
+              all,
               {FoldObjectsFun, leveled_tictac:new_tree(0, TreeSize)},
               true, true},
     {async, TreeAObjFolder1} =
@@ -170,6 +172,7 @@ many_put_compare(_Config) ->
     AltFoldQ0 = {foldheads_bybucket,
                     o_rkv,
                     "Bucket",
+                    all,
                     {AltFoldObjectsFun, leveled_tictac:new_tree(0, TreeSize)},
                     false, 
                     true},
