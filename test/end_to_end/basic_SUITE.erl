@@ -156,11 +156,8 @@ journal_compaction(_Config) ->
     
     testutil:wait_for_compaction(Bookie1),
     % Start snapshot - should not stop deletions
-    {ok,
-        PclClone, 
-            InkClone} = leveled_bookie:book_snapshotstore(Bookie1,
-                                                            self(),
-                                                            300000),
+    {ok, PclClone, InkClone} = 
+        leveled_bookie:book_snapshot(Bookie1, store, undefined, false),
     % Wait 2 seconds for files to be deleted
     WasteFP = RootPath ++ "/journal/journal_files/waste",
     lists:foldl(fun(X, Found) ->
@@ -500,7 +497,8 @@ space_clear_ondelete(_Config) ->
     {async, HTreeF1} = leveled_bookie:book_returnfolder(Book1,
                                                         {foldobjects_allkeys,
                                                             ?RIAK_TAG,
-                                                            FoldObjectsFun}),
+                                                            FoldObjectsFun,
+                                                            false}),
     {async, KF1} = leveled_bookie:book_returnfolder(Book1, AllKeyQuery),
 
     % Delete the keys
@@ -534,8 +532,8 @@ space_clear_ondelete(_Config) ->
     io:format("Waiting for journal deletes - blocked~n"),
     timer:sleep(20000),
     
-    % for this query snapshot is made at fold time - EDIT now uses a snapshot!
-    true = length(HTreeF1()) == 80000,
+    % for this query snapshot is made at fold time
+    true = length(HTreeF1()) == 0,
     % This query uses a genuine async fold on a snasphot made at request time
     true = length(KF1()) == 80000, 
     
