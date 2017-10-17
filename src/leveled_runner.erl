@@ -6,12 +6,13 @@
 %% the book for querying the backend.  
 %%
 %% Runners implement the {async, Folder} within Riak backends - returning an 
-%% {async, Runner}, where the Runner() can be called as a function.  The
+%% {async, Runner}.  Runner is just a function that provides access to a 
+%% snapshot of the database to allow for a particular query.  The
 %% Runner may make the snapshot at the point it is called, or the snapshot can
 %% be generated and encapsulated within the function (known as snap_prefold).   
 %%
 %% Runners which view only the Ledger (the Penciller view of the state) may 
-%% have a CheckPresence option - which causes the function to perform a basic 
+%% have a CheckPresence boolean - which causes the function to perform a basic 
 %% check that the item is available in the Journal via the Inker as part of 
 %% the fold.  This may be useful for anti-entropy folds 
 
