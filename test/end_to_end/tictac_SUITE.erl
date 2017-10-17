@@ -129,6 +129,7 @@ many_put_compare(_Config) ->
     FoldQ0 = {foldheads_bybucket,
               o_rkv,
               "Bucket",
+              all,
               {FoldObjectsFun, leveled_tictac:new_tree(0, TreeSize)},
               false, true},
     {async, TreeAObjFolder0} =
@@ -143,6 +144,7 @@ many_put_compare(_Config) ->
     FoldQ1 = {foldheads_bybucket,
               o_rkv,
               "Bucket",
+              all,
               {FoldObjectsFun, leveled_tictac:new_tree(0, TreeSize)},
               true, true},
     {async, TreeAObjFolder1} =
@@ -170,6 +172,7 @@ many_put_compare(_Config) ->
     AltFoldQ0 = {foldheads_bybucket,
                     o_rkv,
                     "Bucket",
+                    all,
                     {AltFoldObjectsFun, leveled_tictac:new_tree(0, TreeSize)},
                     false, 
                     true},
@@ -309,11 +312,11 @@ many_put_compare(_Config) ->
 
 
 index_compare(_Config) ->
-    TreeSize = small,
+    TreeSize = xxsmall,
     LS = 2000,
     JS = 50000000,
     SS = testutil:sync_strategy(),
-    SegmentCount = 256 * 256,
+    SegmentCount = 64 * 64,
 
     % Test requires multiple different databases, so want to mount them all
     % on individual file paths

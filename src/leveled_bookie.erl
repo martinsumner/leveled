@@ -604,10 +604,11 @@ handle_call({return_folder, FolderType}, _From, State) ->
                                   CheckPresence,
                                   SnapPreFold),
                 State};
-        {foldheads_bybucket, Tag, Bucket, FoldHeadsFun,
+        {foldheads_bybucket, Tag, Bucket, KeyRange, FoldHeadsFun,
                                 CheckPresence, SnapPreFold} ->
             {reply,
                 foldheads_bybucket(State, Tag, Bucket,
+                                    KeyRange,
                                     FoldHeadsFun,
                                     CheckPresence,
                                     SnapPreFold),
@@ -1000,9 +1001,20 @@ foldobjects_bybucket(State, Tag, Bucket, FoldObjectsFun) ->
     foldobjects(State, Tag, StartKey, EndKey, FoldObjectsFun,
                 false, true).
 
-foldheads_bybucket(State, Tag, Bucket, FoldHeadsFun, CheckPresence, SnapPreFold) ->
-    StartKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
-    EndKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
+foldheads_bybucket(State, Tag, Bucket, KeyRange, FoldHeadsFun, 
+                                                CheckPresence, SnapPreFold) ->
+    {StartKey, EndKey} = 
+        case KeyRange of 
+            all -> 
+                {leveled_codec:to_ledgerkey(Bucket, null, Tag),
+                    leveled_codec:to_ledgerkey(Bucket, null, Tag)};
+            {StartTerm, <<"$all">>} ->
+                {leveled_codec:to_ledgerkey(Bucket, StartTerm, Tag),
+                    leveled_codec:to_ledgerkey(Bucket, null, Tag)};
+            {StartTerm, EndTerm} ->
+                {leveled_codec:to_ledgerkey(Bucket, StartTerm, Tag),
+                    leveled_codec:to_ledgerkey(Bucket, EndTerm, Tag)}
+        end,
     foldobjects(State, Tag, StartKey, EndKey, FoldHeadsFun,
                 {true, CheckPresence}, SnapPreFold).
 
@@ -1876,6 +1888,7 @@ foldobjects_vs_foldheads_bybucket_testto() ->
                             {foldheads_bybucket,
                                 ?STD_TAG,
                                 "BucketA",
+                                all,
                                 FoldHeadsFun,
                                 true,
                                 true}),
@@ -1885,14 +1898,68 @@ foldobjects_vs_foldheads_bybucket_testto() ->
                             {foldheads_bybucket,
                                 ?STD_TAG,
                                 "BucketB",
+                                all,
                                 FoldHeadsFun,
                                 false,
                                 false}),
     KeyHashList2B = HTFolder2B(),
+    
     ?assertMatch(true,
                     lists:usort(KeyHashList1A) == lists:usort(KeyHashList2A)),
     ?assertMatch(true,
                     lists:usort(KeyHashList1B) == lists:usort(KeyHashList2B)),
+
+    {async, HTFolder2C} =
+        book_returnfolder(Bookie1,
+                            {foldheads_bybucket,
+                                ?STD_TAG,
+                                "BucketB",
+                                {"Key", <<"$all">>},
+                                FoldHeadsFun,
+                                false,
+                                false}),
+    KeyHashList2C = HTFolder2C(),
+    {async, HTFolder2D} =
+        book_returnfolder(Bookie1,
+                            {foldheads_bybucket,
+                                ?STD_TAG,
+                                "BucketB",
+                                {"Key", "Keyzzzzz"},
+                                FoldHeadsFun,
+                                false,
+                                false}),
+    KeyHashList2D = HTFolder2D(),
+    ?assertMatch(true,
+                    lists:usort(KeyHashList2B) == lists:usort(KeyHashList2C)),
+    ?assertMatch(true,
+                    lists:usort(KeyHashList2B) == lists:usort(KeyHashList2D)),
+    
+    {async, HTFolder2E} =
+        book_returnfolder(Bookie1,
+                            {foldheads_bybucket,
+                                ?STD_TAG,
+                                "BucketB",
+                                {"Key", "Key4zzzz"},
+                                FoldHeadsFun,
+                                false,
+                                false}),
+    KeyHashList2E = HTFolder2E(),
+    {async, HTFolder2F} =
+        book_returnfolder(Bookie1,
+                            {foldheads_bybucket,
+                                ?STD_TAG,
+                                "BucketB",
+                                {"Key5", <<"all">>},
+                                FoldHeadsFun,
+                                false,
+                                false}),
+    KeyHashList2F = HTFolder2F(),
+
+    ?assertMatch(true, length(KeyHashList2E) > 0),
+    ?assertMatch(true, length(KeyHashList2F) > 0),
+    ?assertMatch(true,
+                    lists:usort(KeyHashList2B) == 
+                        lists:usort(KeyHashList2E ++ KeyHashList2F)),
 
     ok = book_close(Bookie1),
     reset_filestructure().
