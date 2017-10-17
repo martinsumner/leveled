@@ -202,7 +202,7 @@ aae_bustedjournal(_Config) ->
     {async, HashTreeF2} = leveled_bookie:book_returnfolder(Bookie2,
                                                             {hashlist_query,
                                                                 ?RIAK_TAG,
-                                                                check_presence}),
+                                                                true}),
     KeyHashList2 = HashTreeF2(),
     % The file is still there, and the hashtree is not corrupted
     KeyHashList2 = KeyHashList1,
@@ -219,7 +219,8 @@ aae_bustedjournal(_Config) ->
     {async, HashTreeF3} = leveled_bookie:book_returnfolder(Bookie2,
                                                             {foldobjects_allkeys,
                                                                 ?RIAK_TAG,
-                                                                FoldObjectsFun}),
+                                                                FoldObjectsFun,
+                                                                false}),
     KeyHashList3 = HashTreeF3(),
     
     true = length(KeyHashList3) > 19000,
@@ -241,7 +242,8 @@ aae_bustedjournal(_Config) ->
     {async, HashTreeF4} = leveled_bookie:book_returnfolder(Bookie3,
                                                             {foldobjects_allkeys,
                                                                 ?RIAK_TAG,
-                                                                FoldObjectsFun}),
+                                                                FoldObjectsFun,
+                                                                false}),
     KeyHashList4 = HashTreeF4(),
     
     true = length(KeyHashList4) == 20001,
@@ -258,7 +260,8 @@ aae_bustedjournal(_Config) ->
     {async, HashTreeF5} = leveled_bookie:book_returnfolder(Bookie4,
                                                             {foldobjects_allkeys,
                                                                 ?RIAK_TAG,
-                                                                FoldObjectsFun}),
+                                                                FoldObjectsFun,
+                                                                false}),
     KeyHashList5 = HashTreeF5(),
     
     true = length(KeyHashList5) > 19000,
@@ -274,7 +277,7 @@ aae_bustedjournal(_Config) ->
     {async, HashTreeF6} = leveled_bookie:book_returnfolder(Bookie4,
                                                             {hashlist_query,
                                                                 ?RIAK_TAG,
-                                                                check_presence}),
+                                                                true}),
     KeyHashList6 = HashTreeF6(),
     true = length(KeyHashList6) > 19000,
     true = length(KeyHashList6) < HeadCount,
@@ -289,7 +292,8 @@ aae_bustedjournal(_Config) ->
     {async, HashTreeF7} = leveled_bookie:book_returnfolder(Bookie5,
                                                             {foldobjects_allkeys,
                                                                 ?RIAK_TAG,
-                                                                FoldObjectsFun}),
+                                                                FoldObjectsFun,
+                                                                false}),
     KeyHashList7 = HashTreeF7(),
     
     true = length(KeyHashList7) == 20001,

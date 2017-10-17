@@ -82,7 +82,7 @@ many_put_compare(_Config) ->
     % state between stores is consistent
 
     TicTacQ = {tictactree_obj,
-                {o_rkv, "Bucket", null, null, false},
+                {o_rkv, "Bucket", null, null, true},
                 TreeSize,
                 fun(_B, _K) -> accumulate end},
     {async, TreeAFolder} = leveled_bookie:book_returnfolder(Bookie2, TicTacQ),
@@ -110,6 +110,18 @@ many_put_compare(_Config) ->
     % only the test object should be different
     true = length(AltList) > 10000,
     % check there are a significant number of differences from empty
+
+    WrongPartitionTicTacQ = {tictactree_obj,
+                            {o_rkv, "Bucket", null, null, false},
+                            TreeSize,
+                            fun(_B, _K) -> pass end},
+    {async, TreeAFolder_WP} = 
+        leveled_bookie:book_returnfolder(Bookie2, WrongPartitionTicTacQ),
+    TreeAWP = TreeAFolder_WP(),
+    DoubleEmpty =
+        leveled_tictac:find_dirtyleaves(TreeAWP,
+                                        leveled_tictac:new_tree(0, TreeSize)),
+    true = length(DoubleEmpty) == 0,
 
     % Now run the same query by putting the tree-building responsibility onto
     % the fold_objects_fun

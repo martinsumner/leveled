@@ -1457,7 +1457,8 @@ simple_server_test() ->
                                         PCLr,
                                         null,
                                         ledger,
-                                        undefined),           
+                                        undefined,
+                                        false),           
     
     ?assertMatch(Key1, pcl_fetch(PclSnap, {o,"Bucket0001", "Key0001", null})),
     ?assertMatch(Key2, pcl_fetch(PclSnap, {o,"Bucket0002", "Key0002", null})),
@@ -1510,7 +1511,8 @@ simple_server_test() ->
                                         PCLr,
                                         null,
                                         ledger,
-                                        undefined),
+                                        undefined,
+                                        false),
     
     ?assertMatch(false, pcl_checksequencenumber(PclSnap2,
                                                 {o,

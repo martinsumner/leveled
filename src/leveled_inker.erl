@@ -839,7 +839,8 @@ filepath(CompactFilePath, NewSQN, compact_journal) ->
 
 
 initiate_penciller_snapshot(Bookie) ->
-    {ok, LedgerSnap, _} = leveled_bookie:book_snapshotledger(Bookie, self(), undefined),
+    {ok, LedgerSnap, _} = 
+        leveled_bookie:book_snapshot(Bookie, ledger, undefined, true),
     MaxSQN = leveled_penciller:pcl_getstartupsequencenumber(LedgerSnap),
     {LedgerSnap, MaxSQN}.
 
