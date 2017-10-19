@@ -283,12 +283,15 @@ empty_bloom_test() ->
     ?assertMatch({0, 4},
                     check_neg_hashes(BloomBin0, [0, 10, 100, 100000], {0, 0})).
 
-bloom_test() ->
+bloom_test_() ->
+    {timeout, 20, fun bloom_test_ranges/0}.
+
+bloom_test_ranges() ->
     test_bloom(128, 2000),
-    test_bloom(64, 10),
-    test_bloom(32, 10),
-    test_bloom(16, 10),
-    test_bloom(8, 10).
+    test_bloom(64, 100),
+    test_bloom(32, 100),
+    test_bloom(16, 100),
+    test_bloom(8, 100).
 
 test_bloom(N, Runs) ->
     ListOfHashLists = 
