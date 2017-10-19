@@ -239,7 +239,7 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
     BNumber = string:right(integer_to_list(BucketLow + BRand), 4, $0),
     KNumber = string:right(integer_to_list(leveled_rand:uniform(10000)), 6, $0),
     LK = leveled_codec:to_ledgerkey("Bucket" ++ BNumber, "Key" ++ KNumber, o),
-    Chunk = leveled_rand:rand_bytes(64),
+    Chunk = leveled_rand:rand_bytes(16),
     {_B, _K, MV, _H, _LMs} =
         leveled_codec:generate_ledgerkv(LK, Seqn, Chunk, 64, infinity),
     generate_randomkeys(Seqn + 1,
@@ -284,11 +284,11 @@ empty_bloom_test() ->
                     check_neg_hashes(BloomBin0, [0, 10, 100, 100000], {0, 0})).
 
 bloom_test() ->
-    test_bloom(128, 400),
-    test_bloom(64, 400),
-    test_bloom(32, 400),
-    test_bloom(16, 400),
-    test_bloom(8, 400).
+    test_bloom(128, 2000),
+    test_bloom(64, 10),
+    test_bloom(32, 10),
+    test_bloom(16, 10),
+    test_bloom(8, 10).
 
 test_bloom(N, Runs) ->
     ListOfHashLists = 
