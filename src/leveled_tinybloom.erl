@@ -239,7 +239,7 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
     BNumber = string:right(integer_to_list(BucketLow + BRand), 4, $0),
     KNumber = string:right(integer_to_list(leveled_rand:uniform(10000)), 6, $0),
     LK = leveled_codec:to_ledgerkey("Bucket" ++ BNumber, "Key" ++ KNumber, o),
-    Chunk = leveled_rand:rand_bytes(64),
+    Chunk = leveled_rand:rand_bytes(16),
     {_B, _K, MV, _H, _LMs} =
         leveled_codec:generate_ledgerkv(LK, Seqn, Chunk, 64, infinity),
     generate_randomkeys(Seqn + 1,
@@ -283,46 +283,50 @@ empty_bloom_test() ->
     ?assertMatch({0, 4},
                     check_neg_hashes(BloomBin0, [0, 10, 100, 100000], {0, 0})).
 
-bloom_test() ->
-    test_bloom(128),
-    test_bloom(64),
-    test_bloom(32),
-    test_bloom(16),
-    test_bloom(8).
+bloom_test_() ->
+    {timeout, 20, fun bloom_test_ranges/0}.
 
-test_bloom(N) ->
-    HashList1 = get_hashlist(N),
-    HashList2 = get_hashlist(N),
-    HashList3 = get_hashlist(N),
-    HashList4 = get_hashlist(N),
+bloom_test_ranges() ->
+    test_bloom(128, 2000),
+    test_bloom(64, 100),
+    test_bloom(32, 100),
+    test_bloom(16, 100),
+    test_bloom(8, 100).
+
+test_bloom(N, Runs) ->
+    ListOfHashLists = 
+        lists:map(fun(_X) -> get_hashlist(N) end, lists:seq(1, Runs)),
     
     SWa = os:timestamp(),
-    BloomBin1 = create_bloom(HashList1),
-    BloomBin2 = create_bloom(HashList2),
-    BloomBin3 = create_bloom(HashList3),
-    BloomBin4 = create_bloom(HashList4),
+    ListOfBlooms =
+        lists:map(fun(HL) -> create_bloom(HL) end, ListOfHashLists),
     TSa = timer:now_diff(os:timestamp(), SWa),
     
     SWb = os:timestamp(),
-    check_all_hashes(BloomBin1, HashList1),
-    check_all_hashes(BloomBin2, HashList2),
-    check_all_hashes(BloomBin3, HashList3),
-    check_all_hashes(BloomBin4, HashList4),
+    lists:foreach(fun(Nth) ->
+                        HL = lists:nth(Nth, ListOfHashLists),
+                        BB = lists:nth(Nth, ListOfBlooms),
+                        check_all_hashes(BB, HL)
+                     end,
+                     lists:seq(1, Runs)),
     TSb = timer:now_diff(os:timestamp(), SWb),
      
     HashPool = get_hashlist(N * 2),
-    HashListOut1 = lists:sublist(lists:subtract(HashPool, HashList1), N),
-    HashListOut2 = lists:sublist(lists:subtract(HashPool, HashList2), N),
-    HashListOut3 = lists:sublist(lists:subtract(HashPool, HashList3), N),
-    HashListOut4 = lists:sublist(lists:subtract(HashPool, HashList4), N),
-    
+    ListOfMisses = 
+        lists:map(fun(HL) ->
+                        lists:sublist(lists:subtract(HashPool, HL), N)
+                    end,
+                    ListOfHashLists),
+
     SWc = os:timestamp(),
-    C0 = {0, 0},
-    C1 = check_neg_hashes(BloomBin1, HashListOut1, C0),
-    C2 = check_neg_hashes(BloomBin2, HashListOut2, C1),
-    C3 = check_neg_hashes(BloomBin3, HashListOut3, C2),
-    C4 = check_neg_hashes(BloomBin4, HashListOut4, C3),
-    {Pos, Neg} = C4,
+    {Pos, Neg} = 
+        lists:foldl(fun(Nth, Acc) ->
+                            HL = lists:nth(Nth, ListOfMisses),
+                            BB = lists:nth(Nth, ListOfBlooms),
+                            check_neg_hashes(BB, HL, Acc)
+                        end,
+                        {0, 0},
+                        lists:seq(1, Runs)),
     FPR = Pos / (Pos + Neg),
     TSc = timer:now_diff(os:timestamp(), SWc),
     
@@ -330,7 +334,6 @@ test_bloom(N) ->
                 "Test with size ~w has microsecond timings: -"
                     ++ " build ~w check ~w neg_check ~w and fpr ~w~n",
                 [N, TSa, TSb, TSc, FPR]).
-
 
 
 -endif.
