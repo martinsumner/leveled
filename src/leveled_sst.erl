@@ -237,12 +237,12 @@ sst_newlevelzero(RootPath, Filename, Slots, FetchFun, Penciller, MaxSQN) ->
 -spec sst_get(pid(), tuple()) -> tuple()|not_present.
 %% @doc
 %% Return a Key, Value pair matching a Key or not_present if the Key is not in
-%% the store.  The magic_hash function is used to accelerate the seeking of
+%% the store.  The segment_hash function is used to accelerate the seeking of
 %% keys, sst_get/3 should be used directly if this has already been calculated
 sst_get(Pid, LedgerKey) ->
-    sst_get(Pid, LedgerKey, leveled_codec:magic_hash(LedgerKey)).
+    sst_get(Pid, LedgerKey, leveled_codec:segment_hash(LedgerKey)).
 
--spec sst_get(pid(), tuple(), integer()) -> tuple()|not_present.
+-spec sst_get(pid(), tuple(), {integer(), integer()}) -> tuple()|not_present.
 %% @doc
 %% Return a Key, Value pair matching a Key or not_present if the Key is not in
 %% the store (with the magic hash precalculated).
@@ -554,7 +554,7 @@ fetch(LedgerKey, Hash, State) ->
                         State#state{blockindex_cache = BlockIndexCache}};
                 <<BlockLengths:24/binary, BlockIdx/binary>> ->
                     PosList = find_pos(BlockIdx, 
-                                        double_hash(Hash, LedgerKey), 
+                                        extra_hash(Hash), 
                                         [], 
                                         0),
                     case PosList of 
@@ -808,9 +808,9 @@ generate_binary_slot(Lookup, KVL) ->
         fun({K, V}, {PosBinAcc, NoHashCount, HashAcc}) ->
             
             {_SQN, H1} = leveled_codec:strip_to_seqnhashonly({K, V}),
-            case is_integer(H1) of 
+            PosH1 = extra_hash(H1),
+            case is_integer(PosH1) of 
                 true ->
-                    PosH1 = double_hash(H1, K),
                     case NoHashCount of 
                         0 ->
                             {<<1:1/integer, 
@@ -1003,7 +1003,7 @@ binaryslot_get(FullBin, Key, Hash) ->
             <<B1P:32/integer, _R/binary>> = BlockLengths, 
             <<PosBinIndex:B1P/binary, Blocks/binary>> = Rest,
             PosList = find_pos(PosBinIndex,
-                                double_hash(Hash, Key), 
+                                extra_hash(Hash), 
                                 [], 
                                 0),
             {fetch_value(PosList, BlockLengths, Blocks, Key),
@@ -1186,9 +1186,10 @@ block_offsetandlength(BlockLengths, BlockID) ->
             {BlocksPos, B1L + B2L + B3L + B4L, B5L}
     end.
 
-double_hash(Hash, Key) ->
-    H2 = erlang:phash2(Key),
-    (Hash bxor H2) band 32767.
+extra_hash({_SegHash, ExtraHash}) when is_integer(ExtraHash) ->
+    ExtraHash band 32767;
+extra_hash(NotHash) ->
+    NotHash.
 
 fetch_value([], _BlockLengths, _Blocks, _Key) ->
     not_present;
@@ -1548,15 +1549,15 @@ indexed_list_test() ->
                 [timer:now_diff(os:timestamp(), SW0), byte_size(FullBin)]),
 
     {TestK1, TestV1} = lists:nth(20, KVL1),
-    MH1 = leveled_codec:magic_hash(TestK1),
+    MH1 = leveled_codec:segment_hash(TestK1),
     {TestK2, TestV2} = lists:nth(40, KVL1),
-    MH2 = leveled_codec:magic_hash(TestK2),
+    MH2 = leveled_codec:segment_hash(TestK2),
     {TestK3, TestV3} = lists:nth(60, KVL1),
-    MH3 = leveled_codec:magic_hash(TestK3),
+    MH3 = leveled_codec:segment_hash(TestK3),
     {TestK4, TestV4} = lists:nth(80, KVL1),
-    MH4 = leveled_codec:magic_hash(TestK4),
+    MH4 = leveled_codec:segment_hash(TestK4),
     {TestK5, TestV5} = lists:nth(100, KVL1),
-    MH5 = leveled_codec:magic_hash(TestK5),
+    MH5 = leveled_codec:segment_hash(TestK5),
 
     test_binary_slot(FullBin, TestK1, MH1, {TestK1, TestV1}),
     test_binary_slot(FullBin, TestK2, MH2, {TestK2, TestV2}),
@@ -1573,15 +1574,15 @@ indexed_list_mixedkeys_test() ->
     {_PosBinIndex1, FullBin, _HL, _LK} = generate_binary_slot(lookup, Keys),
 
     {TestK1, TestV1} = lists:nth(4, KVL1),
-    MH1 = leveled_codec:magic_hash(TestK1),
+    MH1 = leveled_codec:segment_hash(TestK1),
     {TestK2, TestV2} = lists:nth(8, KVL1),
-    MH2 = leveled_codec:magic_hash(TestK2),
+    MH2 = leveled_codec:segment_hash(TestK2),
     {TestK3, TestV3} = lists:nth(12, KVL1),
-    MH3 = leveled_codec:magic_hash(TestK3),
+    MH3 = leveled_codec:segment_hash(TestK3),
     {TestK4, TestV4} = lists:nth(16, KVL1),
-    MH4 = leveled_codec:magic_hash(TestK4),
+    MH4 = leveled_codec:segment_hash(TestK4),
     {TestK5, TestV5} = lists:nth(20, KVL1),
-    MH5 = leveled_codec:magic_hash(TestK5),
+    MH5 = leveled_codec:segment_hash(TestK5),
 
     test_binary_slot(FullBin, TestK1, MH1, {TestK1, TestV1}),
     test_binary_slot(FullBin, TestK2, MH2, {TestK2, TestV2}),
@@ -1598,7 +1599,7 @@ indexed_list_mixedkeys2_test() ->
     Keys = IdxKeys1 ++ KVL1 ++ IdxKeys2,
     {_PosBinIndex1, FullBin, _HL, _LK} = generate_binary_slot(lookup, Keys),
     lists:foreach(fun({K, V}) ->
-                        MH = leveled_codec:magic_hash(K),
+                        MH = leveled_codec:segment_hash(K),
                         test_binary_slot(FullBin, K, MH, {K, V})
                         end,
                     KVL1).
@@ -1682,7 +1683,7 @@ indexed_list_mixedkeys_bitflip_test() ->
         end,
     
     {TestK1, _TestV1} = lists:nth(20, KVL1),
-    MH1 = leveled_codec:magic_hash(TestK1),
+    MH1 = leveled_codec:segment_hash(TestK1),
 
     test_binary_slot(FullBin0, TestK1, MH1, not_present),
     ToList = binaryslot_tolist(FullBin0),
@@ -1920,7 +1921,7 @@ simple_persisted_test() ->
             In = lists:keymember(K, 1, KVList1),
             case {K > FirstKey, LastKey > K, In} of
                 {true, true, false} ->
-                    [{K, leveled_codec:magic_hash(K), V}|Acc];
+                    [{K, leveled_codec:segment_hash(K), V}|Acc];
                 _ ->
                     Acc
             end
