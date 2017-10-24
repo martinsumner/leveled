@@ -48,7 +48,7 @@ create_bloom(HashList) ->
 %% Check for the presence of a given hash within a bloom
 check_hash(_Hash, <<>>) ->
     false;
-check_hash({Hash, _ExtraHash}, BloomBin) ->
+check_hash({_SegHash, Hash}, BloomBin) ->
     SlotSplit = (byte_size(BloomBin) div ?BITS_PER_KEY) - 1,
     {Slot, H0, H1} = split_hash(Hash, SlotSplit),
     Mask = get_mask(H0, H1),
@@ -66,10 +66,10 @@ check_hash({Hash, _ExtraHash}, BloomBin) ->
 %%% Internal Functions
 %%%============================================================================
 
-split_hash(SegHash, SlotSplit) ->
-    Slot = SegHash band SlotSplit,
-    H0 = (SegHash bsr 4) band (?BAND_MASK),
-    H1 = (SegHash bsr 10) band (?BAND_MASK),
+split_hash(Hash, SlotSplit) ->
+    Slot = Hash band SlotSplit,
+    H0 = (Hash bsr 4) band (?BAND_MASK),
+    H1 = (Hash bsr 10) band (?BAND_MASK),
     {Slot, H0, H1}.
 
 get_mask(H0, H1) ->
@@ -87,7 +87,7 @@ get_mask(H0, H1) ->
 add_hashlist([], _S, S0, S1) ->
     IntSize = ?INTEGER_SIZE,
     <<S0:IntSize/integer, S1:IntSize/integer>>;
-add_hashlist([{TopHash, _ExtraHash}|T], SlotSplit, S0, S1) ->
+add_hashlist([{_SegHash, TopHash}|T], SlotSplit, S0, S1) ->
     {Slot, H0, H1} = split_hash(TopHash, SlotSplit),
     Mask = get_mask(H0, H1),
     case Slot of
@@ -101,7 +101,7 @@ add_hashlist([], _S, S0, S1, S2, S3) ->
      IntSize = ?INTEGER_SIZE,
      <<S0:IntSize/integer, S1:IntSize/integer,
         S2:IntSize/integer, S3:IntSize/integer>>;
-add_hashlist([{TopHash, _ExtraHash}|T], SlotSplit, S0, S1, S2, S3) ->
+add_hashlist([{_SegHash, TopHash}|T], SlotSplit, S0, S1, S2, S3) ->
     {Slot, H0, H1} = split_hash(TopHash, SlotSplit),
     Mask = get_mask(H0, H1),
     case Slot of
@@ -126,7 +126,7 @@ add_hashlist([], _S, S0, S1, S2, S3, S4, S5, S6, S7, S8, S9,
         SA:IntSize/integer, SB:IntSize/integer,
         SC:IntSize/integer, SD:IntSize/integer,
         SE:IntSize/integer, SF:IntSize/integer>>;
-add_hashlist([{TopHash, _ExtraHash}|T],
+add_hashlist([{_SegHash, TopHash}|T],
                 SlotSplit,
                 S0, S1, S2, S3, S4, S5, S6, S7, S8, S9,
                 SA, SB, SC, SD, SE, SF) ->

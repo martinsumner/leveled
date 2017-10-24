@@ -648,8 +648,8 @@ schedule_test_bycount(N) ->
     ?assertMatch(true, SecondsToCompaction0 < 5700),
     SecondsToCompaction1 = schedule_compaction([14], N, CurrentTS), % tomorrow!
     io:format("Seconds to compaction ~w~n", [SecondsToCompaction1]),
-    ?assertMatch(true, SecondsToCompaction1 > 81000),
-    ?assertMatch(true, SecondsToCompaction1 < 84300).
+    ?assertMatch(true, SecondsToCompaction1 >= 81180),
+    ?assertMatch(true, SecondsToCompaction1 =< 84780).
 
 
 simple_score_test() ->

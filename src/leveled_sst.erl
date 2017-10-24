@@ -1186,8 +1186,8 @@ block_offsetandlength(BlockLengths, BlockID) ->
             {BlocksPos, B1L + B2L + B3L + B4L, B5L}
     end.
 
-extra_hash({_SegHash, ExtraHash}) when is_integer(ExtraHash) ->
-    ExtraHash band 32767;
+extra_hash({SegHash, _ExtraHash}) when is_integer(SegHash) ->
+    SegHash band 32767;
 extra_hash(NotHash) ->
     NotHash.
 
