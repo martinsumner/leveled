@@ -50,8 +50,8 @@ check_hash(_Hash, <<>>) ->
     false;
 check_hash({_SegHash, Hash}, BloomBin) ->
     SlotSplit = (byte_size(BloomBin) div ?BITS_PER_KEY) - 1,
-    {Slot, H0, H1, H2, H3} = split_hash(Hash, SlotSplit),
-    Mask = get_mask(H0, H1, H2, H3),
+    {Slot, H0, H1} = split_hash(Hash, SlotSplit),
+    Mask = get_mask(H0, H1),
     Pos = Slot * ?BITS_PER_KEY,
     IntSize = ?INTEGER_SIZE,
     <<_H:Pos/binary, CheckInt:IntSize/integer, _T/binary>> = BloomBin,
@@ -70,12 +70,15 @@ split_hash(Hash, SlotSplit) ->
     Slot = Hash band SlotSplit,
     H0 = (Hash bsr 4) band (?BAND_MASK),
     H1 = (Hash bsr 10) band (?BAND_MASK),
-    H2 = (Hash bsr 16) band (?BAND_MASK),
-    H3 = (Hash bsr 24) band (?BAND_MASK),
-    {Slot, H0, H1, H2, H3}.
+    {Slot, H0, H1}.
 
-get_mask(H0, H1, H2, H3) ->
-    (1 bsl H0) bor (1 bsl H1) bor (1 bsl H2) bor (1 bsl H3).
+get_mask(H0, H1) ->
+    case H0 == H1 of
+        true ->
+            1 bsl H0;
+        false ->
+            (1 bsl H0) + (1 bsl H1)
+    end.
 
 
 %% This looks ugly and clunky, but in tests it was quicker than modifying an
@@ -85,8 +88,8 @@ add_hashlist([], _S, S0, S1) ->
     IntSize = ?INTEGER_SIZE,
     <<S0:IntSize/integer, S1:IntSize/integer>>;
 add_hashlist([{_SegHash, TopHash}|T], SlotSplit, S0, S1) ->
-    {Slot, H0, H1, H2, H3} = split_hash(TopHash, SlotSplit),
-    Mask = get_mask(H0, H1, H2, H3),
+    {Slot, H0, H1} = split_hash(TopHash, SlotSplit),
+    Mask = get_mask(H0, H1),
     case Slot of
         0 ->
             add_hashlist(T, SlotSplit, S0 bor Mask, S1);
@@ -99,8 +102,8 @@ add_hashlist([], _S, S0, S1, S2, S3) ->
      <<S0:IntSize/integer, S1:IntSize/integer,
         S2:IntSize/integer, S3:IntSize/integer>>;
 add_hashlist([{_SegHash, TopHash}|T], SlotSplit, S0, S1, S2, S3) ->
-    {Slot, H0, H1, H2, H3} = split_hash(TopHash, SlotSplit),
-    Mask = get_mask(H0, H1, H2, H3),
+    {Slot, H0, H1} = split_hash(TopHash, SlotSplit),
+    Mask = get_mask(H0, H1),
     case Slot of
         0 ->
             add_hashlist(T, SlotSplit, S0 bor Mask, S1, S2, S3);
@@ -127,8 +130,8 @@ add_hashlist([{_SegHash, TopHash}|T],
                 SlotSplit,
                 S0, S1, S2, S3, S4, S5, S6, S7, S8, S9,
                 SA, SB, SC, SD, SE, SF) ->
-    {Slot, H0, H1, H2, H3} = split_hash(TopHash, SlotSplit),
-    Mask = get_mask(H0, H1, H2, H3),
+    {Slot, H0, H1} = split_hash(TopHash, SlotSplit),
+    Mask = get_mask(H0, H1),
     case Slot of
         0 ->
             add_hashlist(T,
