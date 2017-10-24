@@ -333,8 +333,8 @@ load_and_count(_Config) ->
                                                 Bookie1,
                                                 TestObject,
                                                 G1),
-                        {_S, Count} = testutil:check_bucket_stats(Bookie1,
-                                                                    "Bucket"),
+                        {_S, Count} = 
+                            testutil:check_bucket_stats(Bookie1, "Bucket"),
                         if
                             Acc + 5000 == Count ->
                                 ok
@@ -351,8 +351,8 @@ load_and_count(_Config) ->
                                                 Bookie1,
                                                 TestObject,
                                                 G2),
-                        {_S, Count} = testutil:check_bucket_stats(Bookie1,
-                                                                    "Bucket"),
+                        {_S, Count} = 
+                            testutil:check_bucket_stats(Bookie1, "Bucket"),
                         if
                             Acc + 5000 == Count ->
                                 ok
@@ -368,8 +368,8 @@ load_and_count(_Config) ->
                                                 Bookie1,
                                                 TestObject,
                                                 G1),
-                        {_S, Count} = testutil:check_bucket_stats(Bookie1,
-                                                                    "Bucket"),
+                        {_S, Count} = 
+                            testutil:check_bucket_stats(Bookie1, "Bucket"),
                         if
                             Count == 200000 ->
                                 ok
@@ -385,8 +385,8 @@ load_and_count(_Config) ->
                                                 Bookie1,
                                                 TestObject,
                                                 G2),
-                        {_S, Count} = testutil:check_bucket_stats(Bookie1,
-                                                                    "Bucket"),
+                        {_S, Count} = 
+                            testutil:check_bucket_stats(Bookie1, "Bucket"),
                         if
                             Acc + 5000 == Count ->
                                 ok

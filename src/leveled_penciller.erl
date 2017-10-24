@@ -673,6 +673,8 @@ handle_call(doom, _From, State) ->
 
 handle_cast({manifest_change, NewManifest}, State) ->
     NewManSQN = leveled_pmanifest:get_manifest_sqn(NewManifest),
+    OldManSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest),
+    leveled_log:log("P0041", [OldManSQN, NewManSQN]),
     ok = leveled_pclerk:clerk_promptdeletions(State#state.clerk, NewManSQN),
     UpdManifest = leveled_pmanifest:merge_snapshot(State#state.manifest,
                                                     NewManifest),
