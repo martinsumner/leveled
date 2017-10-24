@@ -64,14 +64,13 @@
 
 -include("include/leveled.hrl").
 
--define(MAX_SLOTS, 256).
--define(LOOK_SLOTSIZE, 128). % This is not configurable
--define(LOOK_BLOCKSIZE, {24, 32}). 
+-define(MAX_SLOTS, 300).
+-define(LOOK_SLOTSIZE, 104). % This is not configurable
+-define(LOOK_BLOCKSIZE, {20, 24}). 
 -define(NOLOOK_SLOTSIZE, 256).
 -define(NOLOOK_BLOCKSIZE, {56, 32}). 
 -define(COMPRESSION_LEVEL, 1).
 -define(BINARY_SETTINGS, [{compressed, ?COMPRESSION_LEVEL}]).
-% -define(LEVEL_BLOOM_BITS, [{0, 8}, {1, 10}, {2, 8}, {default, 6}]).
 -define(MERGE_SCANWIDTH, 16).
 -define(DISCARD_EXT, ".discarded").
 -define(DELETE_TIMEOUT, 10000).
@@ -1539,7 +1538,7 @@ indexed_list_test() ->
     io:format(user, "~nIndexed list timing test:~n", []),
     N = 150,
     KVL0 = lists:ukeysort(1, generate_randomkeys(1, N, 1, 4)),
-    KVL1 = lists:sublist(KVL0, 128),
+    KVL1 = lists:sublist(KVL0, ?LOOK_SLOTSIZE),
 
     SW0 = os:timestamp(),
 
@@ -1605,9 +1604,11 @@ indexed_list_mixedkeys2_test() ->
                     KVL1).
 
 indexed_list_allindexkeys_test() ->
-    Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(150)), 128),
+    Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(150)), 
+                            ?LOOK_SLOTSIZE),
     {PosBinIndex1, FullBin, _HL, _LK} = generate_binary_slot(lookup, Keys),
-    ?assertMatch(<<_BL:24/binary, 127:8/integer>>, PosBinIndex1),
+    EmptySlotSize = ?LOOK_SLOTSIZE - 1,
+    ?assertMatch(<<_BL:24/binary, EmptySlotSize:8/integer>>, PosBinIndex1),
     % SW = os:timestamp(),
     BinToList = binaryslot_tolist(FullBin),
     % io:format(user,
@@ -1630,9 +1631,11 @@ indexed_list_allindexkeys_nolookup_test() ->
     ?assertMatch(Keys, binaryslot_trimmedlist(FullBin, all, all)).
 
 indexed_list_allindexkeys_trimmed_test() ->
-    Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(150)), 128),
+    Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(150)), 
+                            ?LOOK_SLOTSIZE),
     {PosBinIndex1, FullBin, _HL, _LK} = generate_binary_slot(lookup, Keys),
-    ?assertMatch(<<_BL:24/binary, 127:8/integer>>, PosBinIndex1),
+    EmptySlotSize = ?LOOK_SLOTSIZE - 1,
+    ?assertMatch(<<_BL:24/binary, EmptySlotSize:8/integer>>, PosBinIndex1),
     ?assertMatch(Keys, binaryslot_trimmedlist(FullBin, 
                                                 {i, 
                                                     "Bucket", 
@@ -1657,9 +1660,9 @@ indexed_list_allindexkeys_trimmed_test() ->
     ?assertMatch(11, length(O2)),
     ?assertMatch(R2, O2),
 
-    {SK3, _} = lists:nth(127, Keys),
-    {EK3, _} = lists:nth(128, Keys),
-    R3 = lists:sublist(Keys, 127, 2),
+    {SK3, _} = lists:nth(?LOOK_SLOTSIZE - 1, Keys),
+    {EK3, _} = lists:nth(?LOOK_SLOTSIZE, Keys),
+    R3 = lists:sublist(Keys, ?LOOK_SLOTSIZE - 1, 2),
     O3 = binaryslot_trimmedlist(FullBin, SK3, EK3),
     ?assertMatch(2, length(O3)),
     ?assertMatch(R3, O3).
