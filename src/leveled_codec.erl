@@ -88,7 +88,7 @@
 %% speed can be gained if just the segment ID is known - but more can be 
 %% gained should the extended hash (with the second element) is known
 segment_hash(Key) when is_binary(Key) ->
-    <<SegmentID:16/integer, ExtraHash:16/integer, _Rest/binary>> = 
+    <<SegmentID:16/integer, ExtraHash:32/integer, _Rest/binary>> = 
         crypto:hash(md5, Key),
     {SegmentID, ExtraHash};
 segment_hash(Key) ->
