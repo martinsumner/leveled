@@ -214,7 +214,7 @@ search_range(StartRange, EndRange, Tree, StartKeyFun) ->
     EndRangeFun =
         fun(ER, _FirstRHSKey, FirstRHSValue) ->
             StartRHSKey = StartKeyFun(FirstRHSValue),
-            ER >= StartRHSKey 
+            not leveled_codec:endkey_passed(ER, StartRHSKey) 
         end,
     case Tree of
         {tree, _L, T} ->
@@ -405,8 +405,12 @@ idxtlookup_range_end(EndRange, {TLI, NK0, SL0}, Iter0, Output, EndRangeFun) ->
                 [{FirstRHSKey, FirstRHSValue}|_Rest] ->
                     case EndRangeFun(EndRange, FirstRHSKey, FirstRHSValue) of
                         true ->
+                            % The start key is not after the end of the range
+                            % and so this should be included in the range
                             Output ++ LHS ++ [{FirstRHSKey, FirstRHSValue}];
                         false ->
+                            % the start key of the next key is after the end
+                            % of the range and so should not be included
                             Output ++ LHS
                     end
             end;
@@ -803,5 +807,23 @@ empty_test() ->
     ?assertMatch(0, tsize(T1)),
     T2 = empty(idxt),
     ?assertMatch(0, tsize(T2)).
+
+search_range_idx_test() ->
+    Tree = 
+        {idxt,1,
+            {{[{{o_rkv,"Bucket1","Key1",null},
+                {manifest_entry,{o_rkv,"Bucket","Key9083",null},
+                                {o_rkv,"Bucket1","Key1",null},
+                                "<0.320.0>","./16_1_6.sst"}}]},
+                {1,{{o_rkv,"Bucket1","Key1",null},1,nil,nil}}}},
+    StartKeyFun =
+        fun(ME) ->
+            ME#manifest_entry.start_key
+        end,
+    R = search_range({o_rkv, "Bucket", null, null}, 
+                        {o_rkv, "Bucket", null, null}, 
+                        Tree, 
+                        StartKeyFun),
+    ?assertMatch(1, length(R)).
 
 -endif.

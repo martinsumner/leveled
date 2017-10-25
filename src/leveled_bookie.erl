@@ -947,7 +947,7 @@ fetch_head(Key, Penciller, LedgerCache) ->
         [{Key, Head}] ->
             Head;
         [] ->
-            Hash = leveled_codec:magic_hash(Key),
+            Hash = leveled_codec:segment_hash(Key),
             case leveled_penciller:pcl_fetch(Penciller, Key, Hash) of
                 {Key, Head} ->
                     maybe_longrunning(SW, pcl_head),

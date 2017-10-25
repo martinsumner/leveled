@@ -315,21 +315,22 @@ pcl_fetchlevelzero(Pid, Slot) ->
 %% The Key needs to be hashable (i.e. have a tag which indicates that the key
 %% can be looked up) - index entries are not hashable for example.
 %%
-%% If the hash is already knonw, call pcl_fetch/3 as magic_hash is a
+%% If the hash is already knonw, call pcl_fetch/3 as segment_hash is a
 %% relatively expensive hash function
 pcl_fetch(Pid, Key) ->
-    Hash = leveled_codec:magic_hash(Key),
+    Hash = leveled_codec:segment_hash(Key),
     if
         Hash /= no_lookup ->
             gen_server:call(Pid, {fetch, Key, Hash}, infinity)
     end.
 
--spec pcl_fetch(pid(), tuple(), integer()) -> {tuple(), tuple()}|not_present.
+-spec pcl_fetch(pid(), tuple(), {integer(), integer()}) -> 
+                                            {tuple(), tuple()}|not_present.
 %% @doc
 %% Fetch a key, return the first (highest SQN) occurrence of that Key along
 %% with  the value.
 %%
-%% Hash should be result of leveled_codec:magic_hash(Key)
+%% Hash should be result of leveled_codec:segment_hash(Key)
 pcl_fetch(Pid, Key, Hash) ->
     gen_server:call(Pid, {fetch, Key, Hash}, infinity).
 
@@ -367,7 +368,7 @@ pcl_fetchnextkey(Pid, StartKey, EndKey, AccFun, InitAcc) ->
 %% If the key is not present, it will be assumed that a higher sequence number
 %% tombstone once existed, and false will be returned.
 pcl_checksequencenumber(Pid, Key, SQN) ->
-    Hash = leveled_codec:magic_hash(Key),
+    Hash = leveled_codec:segment_hash(Key),
     if
         Hash /= no_lookup ->
             gen_server:call(Pid, {check_sqn, Key, Hash, SQN}, infinity)
@@ -672,6 +673,8 @@ handle_call(doom, _From, State) ->
 
 handle_cast({manifest_change, NewManifest}, State) ->
     NewManSQN = leveled_pmanifest:get_manifest_sqn(NewManifest),
+    OldManSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest),
+    leveled_log:log("P0041", [OldManSQN, NewManSQN]),
     ok = leveled_pclerk:clerk_promptdeletions(State#state.clerk, NewManSQN),
     UpdManifest = leveled_pmanifest:merge_snapshot(State#state.manifest,
                                                     NewManifest),
@@ -1317,7 +1320,7 @@ generate_randomkeys(Count, SQN, Acc) ->
     RandKey = {K,
                 {SQN,
                 {active, infinity},
-                leveled_codec:magic_hash(K),
+                leveled_codec:segment_hash(K),
                 null}},
     generate_randomkeys(Count - 1, SQN + 1, [RandKey|Acc]).
     
@@ -1347,7 +1350,7 @@ maybe_pause_push(PCL, KL) ->
     T1 = lists:foldl(fun({K, V}, {AccSL, AccIdx, MinSQN, MaxSQN}) ->
                             UpdSL = [{K, V}|AccSL],
                             SQN = leveled_codec:strip_to_seqonly({K, V}),
-                            H = leveled_codec:magic_hash(K),
+                            H = leveled_codec:segment_hash(K),
                             UpdIdx = leveled_pmem:prepare_for_index(AccIdx, H),
                             {UpdSL, UpdIdx, min(SQN, MinSQN), max(SQN, MaxSQN)}
                             end,
@@ -1366,7 +1369,7 @@ maybe_pause_push(PCL, KL) ->
 
 %% old test data doesn't have the magic hash
 add_missing_hash({K, {SQN, ST, MD}}) ->
-    {K, {SQN, ST, leveled_codec:magic_hash(K), MD}}.
+    {K, {SQN, ST, leveled_codec:segment_hash(K), MD}}.
 
 
 clean_dir_test() ->

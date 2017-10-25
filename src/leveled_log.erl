@@ -144,6 +144,8 @@
                     ++ "leaving SnapshotCount=~w and MinSQN=~w"}},
     {"P0040",
         {info, "Archiving filename ~s as unused at startup"}},
+    {"P0041",
+        {info, "Penciller manifest switched from SQN ~w to ~w"}},
         
     {"PC001",
         {info, "Penciller's clerk ~w started with owner ~w"}},

@@ -254,7 +254,7 @@ generate_randomkeys(Count, Acc, BucketLow, BRange) ->
     K = {o, "Bucket" ++ BNumber, "Key" ++ KNumber},
     RandKey = {K, {Count + 1,
                     {active, infinity},
-                    leveled_codec:magic_hash(K),
+                    leveled_codec:segment_hash(K),
                     null}},
     generate_randomkeys(Count - 1, [RandKey|Acc], BucketLow, BRange).
 

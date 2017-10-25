@@ -50,7 +50,8 @@
 %%% API
 %%%============================================================================
 
--spec prepare_for_index(index_array(), integer()|no_lookup) -> index_array().
+-spec prepare_for_index(index_array(), {integer(), integer()}|no_lookup) 
+                                                            -> index_array().
 %% @doc
 %% Add the hash of a key to the index.  This is 'prepared' in the sense that
 %% this index is not use until it is loaded into the main index.
@@ -95,7 +96,7 @@ new_index() ->
 clear_index(_L0Index) ->
     new_index().
 
--spec check_index(integer(), index_array()) -> list(integer()).
+-spec check_index({integer(), integer()}, index_array()) -> list(integer()).
 %% @doc
 %% return a list of positions in the list of cache arrays that may contain the
 %% key associated with the hash being checked
@@ -158,9 +159,9 @@ to_list(Slots, FetchFun) ->
 %% checked (with the most recently received cache being checked first) until a
 %% match is found.
 check_levelzero(Key, PosList, TreeList) ->
-    check_levelzero(Key, leveled_codec:magic_hash(Key), PosList, TreeList).
+    check_levelzero(Key, leveled_codec:segment_hash(Key), PosList, TreeList).
 
--spec check_levelzero(tuple(), integer(), list(integer()), list())
+-spec check_levelzero(tuple(), {integer(), integer()}, list(integer()), list())
                                             -> {boolean(), tuple|not_found}.
 %% @doc
 %% Check for the presence of a given Key in the Level Zero cache, with the
@@ -204,10 +205,10 @@ find_pos(<<0:1/integer, NxtSlot:7/integer, T/binary>>, Hash, PosList, _SlotID) -
     find_pos(T, Hash, PosList, NxtSlot).
 
 
-split_hash(Hash) ->
-    Slot = Hash band 255,
-    H0 = (Hash bsr 8) band 8388607,
-    {Slot, H0}.
+split_hash({SegmentID, ExtraHash}) ->
+    Slot = SegmentID band 255,
+    H0 = (SegmentID bsr 8) bor (ExtraHash bsl 8),
+    {Slot, H0 band 8388607}.
 
 check_slotlist(Key, _Hash, CheckList, TreeList) ->
     SlotCheckFun =
@@ -358,7 +359,7 @@ with_index_test_() ->
 with_index_test2() ->
     IndexPrepareFun =
         fun({K, _V}, Acc) ->
-            H = leveled_codec:magic_hash(K),
+            H = leveled_codec:segment_hash(K),
             prepare_for_index(Acc, H)
         end,
     LoadFun =
@@ -382,7 +383,7 @@ with_index_test2() ->
 
     CheckFun =
         fun({K, V}, {L0Idx, L0Cache}) ->
-            H = leveled_codec:magic_hash(K),
+            H = leveled_codec:segment_hash(K),
             PosList = check_index(H, L0Idx),
             ?assertMatch({true, {K, V}},
                             check_slotlist(K, H, PosList, L0Cache)),

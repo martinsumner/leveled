@@ -65,6 +65,7 @@
         integer_now/0,
         riak_extract_metadata/2,
         magic_hash/1,
+        segment_hash/1,
         to_lookup/1]).         
 
 -define(V1_VERS, 1).
@@ -79,6 +80,20 @@
                             integer()|null, % Hash of vclock - non-exportable 
                             integer()}. % Size in bytes of real object
 
+
+-spec segment_hash(any()) -> {integer(), integer()}.
+%% @doc
+%% Return two 16 bit integers - the segment ID and a second integer for spare
+%% entropy.  The hashed should be used in blooms or indexes such that some 
+%% speed can be gained if just the segment ID is known - but more can be 
+%% gained should the extended hash (with the second element) is known
+segment_hash(Key) when is_binary(Key) ->
+    <<SegmentID:16/integer, ExtraHash:32/integer, _Rest/binary>> = 
+        crypto:hash(md5, Key),
+    {SegmentID, ExtraHash};
+segment_hash(Key) ->
+    segment_hash(term_to_binary(Key)).
+
 -spec magic_hash(any()) -> integer().
 %% @doc 
 %% Use DJ Bernstein magic hash function. Note, this is more expensive than
@@ -87,10 +102,6 @@
 %% Hash function contains mysterious constants, some explanation here as to
 %% what they are -
 %% http://stackoverflow.com/questions/10696223/reason-for-5381-number-in-djb-hash-function
-magic_hash({?RIAK_TAG, Bucket, Key, _SubKey}) ->
-    magic_hash({Bucket, Key});
-magic_hash({?STD_TAG, Bucket, Key, _SubKey}) ->
-    magic_hash({Bucket, Key});
 magic_hash({binary, BinaryKey}) ->
     H = 5381,
     hash1(H, BinaryKey) band 16#FFFFFFFF;
@@ -516,7 +527,9 @@ parse_date(LMD, UnitMins, LimitMins, Now) ->
 
 -spec generate_ledgerkv(
             tuple(), integer(), any(), integer(), tuple()|infinity) ->
-            {any(), any(), any(), {integer()|no_lookup, integer()}, list()}.
+            {any(), any(), any(), 
+                {{integer(), integer()}|no_lookup, integer()}, 
+                list()}.
 %% @doc
 %% Function to extract from an object the information necessary to populate
 %% the Penciller's ledger.
@@ -537,7 +550,7 @@ generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS) ->
                     _ ->
                         {active, TS}
                 end,
-    Hash = magic_hash(PrimaryKey),
+    Hash = segment_hash(PrimaryKey),
     {MD, LastMods} = extract_metadata(Obj, Size, Tag),
     ObjHash = get_objhash(Tag, MD),
     Value = {SQN,
