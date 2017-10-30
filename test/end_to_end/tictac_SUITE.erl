@@ -131,11 +131,18 @@ many_put_compare(_Config) ->
             {proxy_object, HeadBin, _Size, _FetchFun} = binary_to_term(Value),
             <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
                 VclockBin:VclockLen/binary, _Rest/binary>> = HeadBin,
-            {Key, lists:sort(binary_to_term(VclockBin))}
+            case is_binary(Key) of 
+                true -> 
+                    {Key, 
+                        lists:sort(binary_to_term(VclockBin))};
+                false ->
+                    {term_to_binary(Key), 
+                        lists:sort(binary_to_term(VclockBin))}
+            end
         end,
     FoldObjectsFun =
       fun(_Bucket, Key, Value, Acc) ->
-          leveled_tictac:add_kv(Acc, Key, Value, ExtractClockFun, false)
+          leveled_tictac:add_kv(Acc, Key, Value, ExtractClockFun)
       end,
 
     FoldQ0 = {foldheads_bybucket,
@@ -179,7 +186,7 @@ many_put_compare(_Config) ->
         end,
     AltFoldObjectsFun =
         fun(_Bucket, Key, Value, Acc) ->
-            leveled_tictac:add_kv(Acc, Key, Value, AltExtractFun, true)
+            leveled_tictac:add_kv(Acc, Key, Value, AltExtractFun)
         end,
     AltFoldQ0 = {foldheads_bybucket,
                     o_rkv,
@@ -213,8 +220,7 @@ many_put_compare(_Config) ->
     FoldKeysFun =
         fun(SegListToFind) ->
             fun(_B, K, Acc) ->
-                Seg = 
-                    leveled_tictac:get_segment(erlang:phash2(K), SegmentCount),
+                Seg = get_segment(K, SegmentCount),
                 case lists:member(Seg, SegListToFind) of
                     true ->
                         [K|Acc];
@@ -488,8 +494,7 @@ index_compare(_Config) ->
 
     FoldKeysIndexQFun =
         fun(_Bucket, {Term, Key}, Acc) ->
-            Seg = 
-                leveled_tictac:get_segment(erlang:phash2(Key), SegmentCount),
+            Seg = get_segment(Key, SegmentCount),
             case lists:member(Seg, DL3_0) of
                 true ->
                     [{Term, Key}|Acc];
@@ -1144,3 +1149,15 @@ get_tictactree_fun(Bookie, Bucket, TreeSize) ->
                     [LMD, timer:now_diff(os:timestamp(), SW)]),
         leveled_tictac:merge_trees(R, Acc)
     end.
+
+get_segment(K, SegmentCount) ->
+    BinKey = 
+        case is_binary(K) of
+            true ->
+                K;
+            false ->
+                term_to_binary(K)
+        end,
+    {SegmentID, ExtraHash} = leveled_codec:segment_hash(BinKey),
+    SegHash = (ExtraHash band 65535) bsl 16 + SegmentID,
+    leveled_tictac:get_segment(SegHash, SegmentCount).

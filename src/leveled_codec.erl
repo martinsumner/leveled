@@ -480,9 +480,9 @@ aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods) ->
                             Acc;
                         {LMD1, TTL} ->
                             TreeSize = AAE#recent_aae.tree_size,
+                            SegID32 = leveled_tictac:keyto_segment32(Key),
                             SegID =
-                                leveled_tictac:get_segment(erlang:phash2(Key), 
-                                                            TreeSize),
+                                leveled_tictac:get_segment(SegID32, TreeSize),
                             IdxFldStr = ?NRT_IDX ++ LMD1 ++ "_bin",
                             IdxTrmStr =
                                 string:right(integer_to_list(SegID), 8, $0) ++

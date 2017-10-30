@@ -167,6 +167,15 @@ tictactree(SnapFun, {Tag, Bucket, Query}, JournalCheck, TreeSize, Filter) ->
             {ok, LedgerSnap, JournalSnap} = SnapFun(),
             % The start key and end key will vary depending on whether the
             % fold is to fold over an index or a key range
+            EnsureKeyBinaryFun = 
+                fun(K, T) -> 
+                    case is_binary(K) of 
+                        true ->
+                            {K, T};
+                        false ->
+                            {term_to_binary(K), T}
+                    end 
+                end,
             {StartKey, EndKey, ExtractFun} =
                 case Tag of
                     ?IDX_TAG ->
@@ -174,12 +183,15 @@ tictactree(SnapFun, {Tag, Bucket, Query}, JournalCheck, TreeSize, Filter) ->
                         KeyDefFun = fun leveled_codec:to_ledgerkey/5,
                         {KeyDefFun(Bucket, null, ?IDX_TAG, IdxFld, StartIdx),
                             KeyDefFun(Bucket, null, ?IDX_TAG, IdxFld, EndIdx),
-                            fun(K, T) -> {K, T} end};
+                            EnsureKeyBinaryFun};
                     _ ->
                         {StartOKey, EndOKey} = Query,
                         {leveled_codec:to_ledgerkey(Bucket, StartOKey, Tag),
                             leveled_codec:to_ledgerkey(Bucket, EndOKey, Tag),
-                            fun(K, H) -> {K, {is_hash, H}} end}
+                            fun(K, H) -> 
+                                V = {is_hash, H},
+                                EnsureKeyBinaryFun(K, V)
+                            end}
                 end,
             AccFun = 
                 accumulate_tree(Filter, JournalCheck, JournalSnap, ExtractFun),
@@ -363,7 +375,7 @@ accumulate_tree(FilterFun, JournalCheck, InkerClone, HashFun) ->
         fun(B, K, H, Tree) ->
             case FilterFun(B, K) of
                 accumulate ->
-                    leveled_tictac:add_kv(Tree, K, H, HashFun, false);
+                    leveled_tictac:add_kv(Tree, K, H, HashFun);
                 pass ->
                     Tree
             end
