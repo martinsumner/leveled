@@ -91,6 +91,9 @@ segment_hash(Key) when is_binary(Key) ->
     <<SegmentID:16/integer, ExtraHash:32/integer, _Rest/binary>> = 
         crypto:hash(md5, Key),
     {SegmentID, ExtraHash};
+segment_hash({?RIAK_TAG, Bucket, Key, null}) 
+                                    when is_binary(Bucket), is_binary(Key) ->
+    segment_hash(<<Bucket/binary, Key/binary>>);
 segment_hash(Key) ->
     segment_hash(term_to_binary(Key)).
 

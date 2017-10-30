@@ -356,6 +356,18 @@ generate_objects(Count, uuid, ObjL, Value, IndexGen, Bucket) ->
                         Value,
                         IndexGen,
                         Bucket);
+generate_objects(Count, {binary, KeyNumber}, ObjL, Value, IndexGen, Bucket) ->
+    {Obj1, Spec1} = 
+        set_object(list_to_binary(Bucket),
+                    list_to_binary("Key" ++ integer_to_list(KeyNumber)),
+                    Value,
+                    IndexGen),
+    generate_objects(Count - 1,
+                        {binary, KeyNumber + 1},
+                        ObjL ++ [{leveled_rand:uniform(), Obj1, Spec1}],
+                        Value,
+                        IndexGen,
+                        Bucket);
 generate_objects(Count, KeyNumber, ObjL, Value, IndexGen, Bucket) ->
     {Obj1, Spec1} = set_object(Bucket,
                                 "Key" ++ integer_to_list(KeyNumber),
