@@ -1061,7 +1061,7 @@ binarysplit_mapfun(MultiSlotBin, StartPos) ->
     end.
 
 
--spec read_slots(file:io_device(), list(), {false:list(), any()}) -> list().
+-spec read_slots(file:io_device(), list(), {false|list(), any()}) -> list().
 %% @doc
 %% The reading of sots will return a list of either 2-tuples containing 
 %% {K, V} pairs - or 3-tuples containing {Binary, SK, EK}.  The 3 tuples 
