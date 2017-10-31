@@ -100,8 +100,7 @@ perbucket_aae(_Config) ->
         {foldheads_allkeys,
             ?RIAK_TAG,
             {get_segment_folder(DLs, TreeSize),  []},
-            false,
-            true},
+            false, true},
     
     SW_SL0 = os:timestamp(),
     {async, Book2SegFolder} =
@@ -115,7 +114,27 @@ perbucket_aae(_Config) ->
     io:format("Segment lists found ~w ~w~n", [Book2SegList, Book3SegList]),
 
     Delta = lists:subtract(Book2SegList, Book3SegList),
-    true = length(Delta) == 1.
+    true = length(Delta) == 1,
+    
+    SuperHeadSegmentFolder = 
+        {foldheads_allkeys,
+            ?RIAK_TAG,
+            {get_segment_folder(DLs, TreeSize),  []},
+            false, true, DLs},
+    
+    SW_SL1 = os:timestamp(),
+    {async, Book2SegFolder1} =
+        leveled_bookie:book_returnfolder(Bookie2, SuperHeadSegmentFolder),
+    {async, Book3SegFolder1} =
+        leveled_bookie:book_returnfolder(Bookie3, SuperHeadSegmentFolder),
+    Book2SegList1 = Book2SegFolder1(),
+    Book3SegList1 = Book3SegFolder1(),
+    Time_SL1 = timer:now_diff(os:timestamp(), SW_SL1)/1000,
+    io:format("Two segment list folds took ~w milliseconds ~n", [Time_SL1]),
+    io:format("Segment lists found ~w ~w~n", [Book2SegList1, Book3SegList1]),
+
+    Delta1 = lists:subtract(Book2SegList1, Book3SegList1),
+    true = length(Delta1) == 1.
 
 
 get_segment_folder(SegmentList, TreeSize) ->

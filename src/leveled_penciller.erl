@@ -176,6 +176,7 @@
         pcl_fetch/2,
         pcl_fetch/3,
         pcl_fetchkeys/5,
+        pcl_fetchkeysbysegment/6,
         pcl_fetchnextkey/5,
         pcl_checksequencenumber/3,
         pcl_workforclerk/1,
@@ -346,7 +347,32 @@ pcl_fetch(Pid, Key, Hash) ->
 %% Erlang term order.
 pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc) ->
     gen_server:call(Pid,
-                    {fetch_keys, StartKey, EndKey, AccFun, InitAcc, -1},
+                    {fetch_keys, 
+                        StartKey, EndKey, 
+                        AccFun, InitAcc, 
+                        false, -1},
+                    infinity).
+
+-spec pcl_fetchkeysbysegment(pid(), tuple(), tuple(), fun(), any(), 
+                                            false|list(integer())) -> any().
+%% @doc
+%% Run a range query between StartKey and EndKey (inclusive).  This will cover
+%% all keys in the range - so must only be run against snapshots of the
+%% penciller to avoid blocking behaviour.  
+%%
+%% This version allows an additional input of a SegmentList.  This is a list 
+%% of 16-bit integers representing the segment IDs  band ((2 ^ 16) -1) that
+%% are interesting to the fetch
+%%
+%% Note that segment must be false unless the object Tag supports additional
+%% indexing by segment.  This cannot be used on ?IDX_TAG and other tags that
+%% use the no_lookup hash
+pcl_fetchkeysbysegment(Pid, StartKey, EndKey, AccFun, InitAcc, SegmentList) ->
+    gen_server:call(Pid,
+                    {fetch_keys, 
+                        StartKey, EndKey, 
+                        AccFun, InitAcc, 
+                        SegmentList, -1},
                     infinity).
 
 -spec pcl_fetchnextkey(pid(), tuple(), tuple(), fun(), any()) -> any().
@@ -356,7 +382,10 @@ pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc) ->
 %% found in erlang term order.
 pcl_fetchnextkey(Pid, StartKey, EndKey, AccFun, InitAcc) ->
     gen_server:call(Pid,
-                    {fetch_keys, StartKey, EndKey, AccFun, InitAcc, 1},
+                    {fetch_keys, 
+                        StartKey, EndKey, 
+                        AccFun, InitAcc, 
+                        false, 1},
                     infinity).
 
 -spec pcl_checksequencenumber(pid(), tuple(), integer()) -> boolean().
@@ -540,7 +569,10 @@ handle_call({check_sqn, Key, Hash, SQN}, _From, State) ->
                                         State#state.levelzero_index),
                         SQN),
         State};
-handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
+handle_call({fetch_keys, 
+                    StartKey, EndKey, 
+                    AccFun, InitAcc, 
+                    SegmentList, MaxKeys},
                 _From,
                 State=#state{snapshot_fully_loaded=Ready})
                                                         when Ready == true ->
@@ -575,7 +607,7 @@ handle_call({fetch_keys, StartKey, EndKey, AccFun, InitAcc, MaxKeys},
     Acc = keyfolder({L0AsList, SSTiter},
                         {StartKey, EndKey},
                         {AccFun, InitAcc},
-                        MaxKeys),
+                        {SegmentList, MaxKeys}),
     
     {reply, Acc, State#state{levelzero_astree = L0AsList}};
 handle_call(get_startup_sqn, _From, State) ->
@@ -1098,43 +1130,175 @@ compare_to_sqn(Obj, SQN) ->
     end.
 
 
+%%%============================================================================
+%%% Iterator functions 
+%%% 
+%%% TODO - move to dedicated module with extended unit testing
+%%%============================================================================
+
+
+-spec keyfolder(list(), list(), tuple(), tuple(), {fun(), any()}) -> any().
+%% @doc
+%% The keyfolder will compare an iterator across the immutable in-memory cache
+%% of the Penciller (the IMMiter), with an iterator across the persisted part 
+%% (the SSTiter).
+%%
+%% A Segment List and a MaxKeys may be passed.  Every time something is added 
+%% to the accumulator MaxKeys is reduced - so set MaxKeys to -1 if it is 
+%% intended to be infinite.
+%%
+%% The basic principle is to take the next key in the IMMiter and compare it
+%% to the next key in the SSTiter, and decide which one should be added to the
+%% accumulator.  The iterators are advanced if they either win (i.e. are the 
+%% next key), or are dominated. This goes on until the iterators are empty.
+%%
+%% To advance the SSTiter the find_nextkey/4 function is used, as the SSTiter
+%% is an iterator across multiple levels - and so needs to do its own 
+%% comparisons to pop the next result.
+keyfolder(IMMiter, SSTiter, StartKey, EndKey, {AccFun, Acc}) ->
+    keyfolder({IMMiter, SSTiter}, 
+                {StartKey, EndKey},
+                {AccFun, Acc}, 
+                {false, -1}).
+
+keyfolder(_Iterators, _KeyRange, {_AccFun, Acc}, {_SegmentList, MaxKeys}) 
+                                                        when MaxKeys == 0 ->
+    Acc;
+keyfolder({[], SSTiter}, KeyRange, {AccFun, Acc}, {SegmentList, MaxKeys}) ->
+    {StartKey, EndKey} = KeyRange,
+    case find_nextkey(SSTiter, StartKey, EndKey, SegmentList) of
+        no_more_keys ->
+            Acc;
+        {NxSSTiter, {SSTKey, SSTVal}} ->
+            Acc1 = AccFun(SSTKey, SSTVal, Acc),
+            keyfolder({[], NxSSTiter}, 
+                        KeyRange, 
+                        {AccFun, Acc1}, 
+                        {SegmentList, MaxKeys - 1})
+    end;
+keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SSTiterator}, 
+            KeyRange, 
+            {AccFun, Acc}, 
+            {SegmentList, MaxKeys}) ->
+    {StartKey, EndKey} = KeyRange,
+    case {IMMKey < StartKey, leveled_codec:endkey_passed(EndKey, IMMKey)} of
+        {true, _} ->
+    
+            % Normally everything is pre-filterd, but the IMM iterator can
+            % be re-used and so may be behind the StartKey if the StartKey has
+            % advanced from the previous use
+            keyfolder({NxIMMiterator, SSTiterator},
+                        KeyRange,
+                        {AccFun, Acc},
+                        {SegmentList, MaxKeys});
+        {false, true} ->
+            % There are no more keys in-range in the in-memory
+            % iterator, so take action as if this iterator is empty
+            % (see above)
+            keyfolder({[], SSTiterator},
+                        KeyRange,
+                        {AccFun, Acc},
+                        {SegmentList, MaxKeys});
+        {false, false} ->
+            case find_nextkey(SSTiterator, StartKey, EndKey, SegmentList) of
+                no_more_keys ->
+                    % No more keys in range in the persisted store, so use the
+                    % in-memory KV as the next
+                    Acc1 = AccFun(IMMKey, IMMVal, Acc),
+                    keyfolder({NxIMMiterator, 
+                                    []},
+                                KeyRange,
+                                {AccFun, Acc1},
+                                {SegmentList, MaxKeys - 1});
+                {NxSSTiterator, {SSTKey, SSTVal}} ->
+                    % There is a next key, so need to know which is the
+                    % next key between the two (and handle two keys
+                    % with different sequence numbers).  
+                    case leveled_codec:key_dominates({IMMKey,
+                                                            IMMVal},
+                                                        {SSTKey,
+                                                            SSTVal}) of
+                        left_hand_first ->
+                            Acc1 = AccFun(IMMKey, IMMVal, Acc),
+                            % Stow the previous best result away at Level -1 
+                            % so that there is no need to iterate to it again
+                            NewEntry = {-1, [{SSTKey, SSTVal}]},
+                            keyfolder({NxIMMiterator, 
+                                            lists:keystore(-1, 
+                                                            1, 
+                                                            NxSSTiterator, 
+                                                            NewEntry)},
+                                        KeyRange,
+                                        {AccFun, Acc1},
+                                        {SegmentList, MaxKeys - 1});
+                        right_hand_first ->
+                            Acc1 = AccFun(SSTKey, SSTVal, Acc),
+                            keyfolder({[{IMMKey, IMMVal}|NxIMMiterator],
+                                            NxSSTiterator},
+                                        KeyRange,
+                                        {AccFun, Acc1},
+                                        {SegmentList, MaxKeys - 1});
+                        left_hand_dominant ->
+                            Acc1 = AccFun(IMMKey, IMMVal, Acc),
+                            % We can add to the accumulator here.  As the SST
+                            % key was the most dominant across all SST levels,
+                            % so there is no need to hold off until the IMMKey
+                            % is left hand first.
+                            keyfolder({NxIMMiterator, 
+                                            NxSSTiterator},
+                                        KeyRange,
+                                        {AccFun, Acc1},
+                                        {SegmentList, MaxKeys - 1})
+                    end
+            end
+    end.    
+
 %% Looks to find the best choice for the next key across the levels (other
 %% than in-memory table)
 %% In finding the best choice, the next key in a given level may be a next
 %% block or next file pointer which will need to be expanded
 
 find_nextkey(QueryArray, StartKey, EndKey) ->
-    find_nextkey(QueryArray,
-                    0,
-                    {null, null},
-                    StartKey,
-                    EndKey,
-                    ?ITERATOR_SCANWIDTH).
+    find_nextkey(QueryArray, StartKey, EndKey, false).
 
-find_nextkey(_QueryArray, LCnt, {null, null}, _StartKey, _EndKey, _Width)
-                                            when LCnt > ?MAX_LEVELS ->
+find_nextkey(QueryArray, StartKey, EndKey, SegmentList) ->
+    find_nextkey(QueryArray,
+                    -1,
+                    {null, null},
+                    StartKey, EndKey,
+                    SegmentList, ?ITERATOR_SCANWIDTH).
+
+find_nextkey(_QueryArray, LCnt, 
+                {null, null}, 
+                _StartKey, _EndKey, 
+                _SegList, _Width) when LCnt > ?MAX_LEVELS ->
     % The array has been scanned wihtout finding a best key - must be
     % exhausted - respond to indicate no more keys to be found by the
     % iterator
     no_more_keys;
-find_nextkey(QueryArray, LCnt, {BKL, BestKV}, _StartKey, _EndKey, _Width)
-                                            when LCnt > ?MAX_LEVELS ->
+find_nextkey(QueryArray, LCnt, 
+                {BKL, BestKV}, 
+                _StartKey, _EndKey, 
+                _SegList, _Width) when LCnt > ?MAX_LEVELS ->
     % All levels have been scanned, so need to remove the best result from
     % the array, and return that array along with the best key/sqn/status
     % combination
     {BKL, [BestKV|Tail]} = lists:keyfind(BKL, 1, QueryArray),
     {lists:keyreplace(BKL, 1, QueryArray, {BKL, Tail}), BestKV};
-find_nextkey(QueryArray, LCnt, {BestKeyLevel, BestKV},
-                                                StartKey, EndKey, Width) ->
+find_nextkey(QueryArray, LCnt, 
+                {BestKeyLevel, BestKV}, 
+                StartKey, EndKey, 
+                SegList, Width) ->
     % Get the next key at this level
-    {NextKey, RestOfKeys} = case lists:keyfind(LCnt, 1, QueryArray) of
-                                    false ->
-                                        {null, null};
-                                    {LCnt, []} ->
-                                        {null, null};
-                                    {LCnt, [NK|ROfKs]} ->
-                                        {NK, ROfKs}
-                                end,
+    {NextKey, RestOfKeys} = 
+        case lists:keyfind(LCnt, 1, QueryArray) of
+            false ->
+                {null, null};
+            {LCnt, []} ->
+                {null, null};
+            {LCnt, [NK|ROfKs]} ->
+                {NK, ROfKs}
+        end,
     % Compare the next key at this level with the best key
     case {NextKey, BestKeyLevel, BestKV} of
         {null, BKL, BKV} ->
@@ -1142,42 +1306,48 @@ find_nextkey(QueryArray, LCnt, {BestKeyLevel, BestKV},
             find_nextkey(QueryArray,
                             LCnt + 1,
                             {BKL, BKV},
-                            StartKey, EndKey, Width);
+                            StartKey, EndKey, 
+                            SegList, Width);
         {{next, Owner, _SK}, BKL, BKV} ->
             % The first key at this level is pointer to a file - need to query
             % the file to expand this level out before proceeding
             Pointer = {next, Owner, StartKey, EndKey},
             UpdList = leveled_sst:expand_list_by_pointer(Pointer,
                                                             RestOfKeys,
-                                                            Width),
+                                                            Width,
+                                                            SegList),
             NewEntry = {LCnt, UpdList},
             % Need to loop around at this level (LCnt) as we have not yet
             % examined a real key at this level
             find_nextkey(lists:keyreplace(LCnt, 1, QueryArray, NewEntry),
                             LCnt,
                             {BKL, BKV},
-                            StartKey, EndKey, Width);
+                            StartKey, EndKey, 
+                            SegList, Width);
         {{pointer, SSTPid, Slot, PSK, PEK}, BKL, BKV} ->
             % The first key at this level is pointer within a file  - need to
             % query the file to expand this level out before proceeding
             Pointer = {pointer, SSTPid, Slot, PSK, PEK},
             UpdList = leveled_sst:expand_list_by_pointer(Pointer,
                                                             RestOfKeys,
-                                                            Width),
+                                                            Width,
+                                                            SegList),
             NewEntry = {LCnt, UpdList},
             % Need to loop around at this level (LCnt) as we have not yet
             % examined a real key at this level
             find_nextkey(lists:keyreplace(LCnt, 1, QueryArray, NewEntry),
                             LCnt,
                             {BKL, BKV},
-                            StartKey, EndKey, Width);
+                            StartKey, EndKey, 
+                            SegList, Width);
         {{Key, Val}, null, null} ->
             % No best key set - so can assume that this key is the best key,
             % and check the lower levels
             find_nextkey(QueryArray,
                             LCnt + 1,
                             {LCnt, {Key, Val}},
-                            StartKey, EndKey, Width);
+                            StartKey, EndKey, 
+                            SegList, Width);
         {{Key, Val}, _BKL, {BestKey, _BestVal}} when Key < BestKey ->
             % There is a real key and a best key to compare, and the real key
             % at this level is before the best key, and so is now the new best
@@ -1186,7 +1356,8 @@ find_nextkey(QueryArray, LCnt, {BestKeyLevel, BestKV},
             find_nextkey(QueryArray,
                             LCnt + 1,
                             {LCnt, {Key, Val}},
-                            StartKey, EndKey, Width);
+                            StartKey, EndKey, 
+                            SegList, Width);
         {{Key, Val}, BKL, {BestKey, BestVal}} when Key == BestKey ->
             SQN = leveled_codec:strip_to_seqonly({Key, Val}),
             BestSQN = leveled_codec:strip_to_seqonly({BestKey, BestVal}),
@@ -1197,7 +1368,8 @@ find_nextkey(QueryArray, LCnt, {BestKeyLevel, BestKV},
                     find_nextkey(lists:keyreplace(LCnt, 1, QueryArray, NewEntry),
                                     LCnt + 1,
                                     {BKL, {BestKey, BestVal}},
-                                    StartKey, EndKey, Width);
+                                    StartKey, EndKey, 
+                                    SegList, Width);
                 SQN > BestSQN ->
                     % There is a real key at the front of this level and it has
                     % a higher SQN than the best key, so we should use this as
@@ -1212,92 +1384,19 @@ find_nextkey(QueryArray, LCnt, {BestKeyLevel, BestKV},
                                                     {BKL, BestTail}),
                                     LCnt + 1,
                                     {LCnt, {Key, Val}},
-                                    StartKey, EndKey, Width)
+                                    StartKey, EndKey, 
+                                    SegList, Width)
             end;
         {_, BKL, BKV} ->
             % This is not the best key
             find_nextkey(QueryArray,
                             LCnt + 1,
                             {BKL, BKV},
-                            StartKey, EndKey, Width)
+                            StartKey, EndKey, 
+                            SegList, Width)
     end.
 
 
-keyfolder(IMMiter, SSTiter, StartKey, EndKey, {AccFun, Acc}) ->
-    keyfolder({IMMiter, SSTiter}, {StartKey, EndKey}, {AccFun, Acc}, -1).
-
-keyfolder(_Iterators, _KeyRange, {_AccFun, Acc}, MaxKeys) when MaxKeys == 0 ->
-    Acc;
-keyfolder({[], SSTiter}, KeyRange, {AccFun, Acc}, MaxKeys) ->
-    {StartKey, EndKey} = KeyRange,
-    case find_nextkey(SSTiter, StartKey, EndKey) of
-        no_more_keys ->
-            Acc;
-        {NxSSTiter, {SSTKey, SSTVal}} ->
-            Acc1 = AccFun(SSTKey, SSTVal, Acc),
-            keyfolder({[], NxSSTiter}, KeyRange, {AccFun, Acc1}, MaxKeys - 1)
-    end;
-keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SSTiterator}, KeyRange,
-                                                    {AccFun, Acc}, MaxKeys) ->
-    {StartKey, EndKey} = KeyRange,
-    case {IMMKey < StartKey, leveled_codec:endkey_passed(EndKey, IMMKey)} of
-        {true, _} ->
-    
-            % Normally everything is pre-filterd, but the IMM iterator can
-            % be re-used and so may be behind the StartKey if the StartKey has
-            % advanced from the previous use
-            keyfolder({NxIMMiterator, SSTiterator},
-                        KeyRange,
-                        {AccFun, Acc},
-                        MaxKeys);
-        {false, true} ->
-            % There are no more keys in-range in the in-memory
-            % iterator, so take action as if this iterator is empty
-            % (see above)
-            keyfolder({[], SSTiterator},
-                        KeyRange,
-                        {AccFun, Acc},
-                        MaxKeys);
-        {false, false} ->
-            case find_nextkey(SSTiterator, StartKey, EndKey) of
-                no_more_keys ->
-                    % No more keys in range in the persisted store, so use the
-                    % in-memory KV as the next
-                    Acc1 = AccFun(IMMKey, IMMVal, Acc),
-                    keyfolder({NxIMMiterator, SSTiterator},
-                                KeyRange,
-                                {AccFun, Acc1},
-                                MaxKeys - 1);
-                {NxSSTiterator, {SSTKey, SSTVal}} ->
-                    % There is a next key, so need to know which is the
-                    % next key between the two (and handle two keys
-                    % with different sequence numbers).  
-                    case leveled_codec:key_dominates({IMMKey,
-                                                            IMMVal},
-                                                        {SSTKey,
-                                                            SSTVal}) of
-                        left_hand_first ->
-                            Acc1 = AccFun(IMMKey, IMMVal, Acc),
-                            keyfolder({NxIMMiterator, SSTiterator},
-                                        KeyRange,
-                                        {AccFun, Acc1},
-                                        MaxKeys - 1);
-                        right_hand_first ->
-                            Acc1 = AccFun(SSTKey, SSTVal, Acc),
-                            keyfolder({[{IMMKey, IMMVal}|NxIMMiterator],
-                                            NxSSTiterator},
-                                        KeyRange,
-                                        {AccFun, Acc1},
-                                        MaxKeys - 1);
-                        left_hand_dominant ->
-                            Acc1 = AccFun(IMMKey, IMMVal, Acc),
-                            keyfolder({NxIMMiterator, NxSSTiterator},
-                                        KeyRange,
-                                        {AccFun, Acc1},
-                                        MaxKeys - 1)
-                    end
-            end
-    end.    
 
 
 %%%============================================================================
@@ -1666,6 +1765,7 @@ foldwithimm_simple_test() ->
     IMMiterB = leveled_tree:match_range({o, "Bucket1", "Key1", null},
                                         {o, null, null, null},
                                         IMM3),
+    io:format("Compare IMM3 with QueryArrary~n"),
     AccB = keyfolder(IMMiterB,
                     QueryArray,
                     {o, "Bucket1", "Key1", null}, {o, "Bucket1", "Key6", null},

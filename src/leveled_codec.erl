@@ -97,6 +97,7 @@ segment_hash({?RIAK_TAG, Bucket, Key, null})
 segment_hash(Key) ->
     segment_hash(term_to_binary(Key)).
 
+
 -spec magic_hash(any()) -> integer().
 %% @doc 
 %% Use DJ Bernstein magic hash function. Note, this is more expensive than

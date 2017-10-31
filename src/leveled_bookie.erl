@@ -699,7 +699,17 @@ get_runner(State,
             {foldheads_allkeys, Tag, FoldFun, JournalCheck, SnapPreFold}) ->
     SnapType = snaptype_by_presence(JournalCheck),
     SnapFun = return_snapfun(State, SnapType, no_lookup, true, SnapPreFold),
-    leveled_runner:foldheads_allkeys(SnapFun, Tag, FoldFun, JournalCheck);
+    leveled_runner:foldheads_allkeys(SnapFun, Tag, FoldFun, 
+                                        JournalCheck, false);
+get_runner(State, 
+            {foldheads_allkeys, 
+                Tag, FoldFun, 
+                JournalCheck, SnapPreFold, SegmentList}) ->
+    SnapType = snaptype_by_presence(JournalCheck),
+    SnapFun = return_snapfun(State, SnapType, no_lookup, true, SnapPreFold),
+    leveled_runner:foldheads_allkeys(SnapFun, 
+                                        Tag, FoldFun, 
+                                        JournalCheck, SegmentList);
 get_runner(State, 
             {foldobjects_allkeys, Tag, FoldFun, SnapPreFold}) ->
     SnapFun = return_snapfun(State, store, no_lookup, true, SnapPreFold),
