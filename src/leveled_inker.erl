@@ -1020,16 +1020,10 @@ compact_journal_test() ->
                             5000),
     timer:sleep(1000),
     CompactedManifest2 = ink_getmanifest(Ink1),
-    R = lists:foldl(fun({_SQN, FN, _P, _LK}, Acc) ->
-                                case string:str(FN, "post_compact") of
-                                    N when N > 0 ->
-                                        true;
-                                    0 ->
-                                        Acc
-                                end end,
-                            false,
-                            CompactedManifest2),
-    ?assertMatch(false, R),
+    lists:foreach(fun({_SQN, FN, _P, _LK}) ->
+                            ?assertMatch(0, string:str(FN, "post_compact"))
+                        end,
+                    CompactedManifest2),
     ?assertMatch(2, length(CompactedManifest2)),
     ink_close(Ink1),
     clean_testdir(RootPath).
