@@ -13,7 +13,6 @@ all() -> [
 -define(MAGIC, 53). % riak_kv -> riak_object
 
 perbucket_aae(_Config) ->
-    TreeSize = small,
     % Test requires multiple different databases, so want to mount them all
     % on individual file paths
     RootPathA = testutil:reset_filestructure("testA"),
@@ -62,7 +61,16 @@ perbucket_aae(_Config) ->
                     {sync_strategy, testutil:sync_strategy()}],
     {ok, Bookie3} = leveled_bookie:book_start(StartOpts3),
     lists:foreach(fun(ObjL) -> testutil:riakload(Bookie3, ObjL) end, CLs),
+    test_singledelta_stores(Bookie2, Bookie3, small, {B1, K1}),
+    test_singledelta_stores(Bookie2, Bookie3, medium, {B1, K1}),
+    ok = leveled_bookie:book_close(Bookie2),
+    ok = leveled_bookie:book_close(Bookie3).
 
+
+
+test_singledelta_stores(BookA, BookB, TreeSize, DeltaKey) ->
+    io:format("Test for single delta with tree size ~w~n", [TreeSize]),
+    {B1, K1} = DeltaKey,
     % Now run a tictac query against both stores to see the extent to which
     % state between stores is consistent
     HeadTicTacFolder = 
@@ -74,27 +82,29 @@ perbucket_aae(_Config) ->
             true},
 
     SW_TT0 = os:timestamp(),
-    {async, Book2TreeFolder} =
-        leveled_bookie:book_returnfolder(Bookie2, HeadTicTacFolder),
-    {async, Book3TreeFolder} =
-        leveled_bookie:book_returnfolder(Bookie3, HeadTicTacFolder),
-    {Count2, Book2Tree} = Book2TreeFolder(),
-    {Count3, Book3Tree} = Book3TreeFolder(),
+    {async, BookATreeFolder} =
+        leveled_bookie:book_returnfolder(BookA, HeadTicTacFolder),
+    {async, BookBTreeFolder} =
+        leveled_bookie:book_returnfolder(BookB, HeadTicTacFolder),
+    {CountA, BookATree} = BookATreeFolder(),
+    {CountB, BookBTree} = BookBTreeFolder(),
     Time_TT0 = timer:now_diff(os:timestamp(), SW_TT0)/1000,
     io:format("Two tree folds took ~w milliseconds ~n", [Time_TT0]),
 
     io:format("Fold over keys revealed counts of ~w and ~w~n", 
-                [Count2, Count3]),
+                [CountA, CountB]),
 
-    1 = Count2 - Count3,
+    % There should be a single delta between the stores
+    1 = CountA - CountB,
 
-    DLs = leveled_tictac:find_dirtyleaves(Book2Tree, Book3Tree),
+    DLs = leveled_tictac:find_dirtyleaves(BookATree, BookBTree),
     io:format("Found dirty leaves with Riak fold_heads of ~w~n",
                 [length(DLs)]),
     true = length(DLs) == 1,
-    {ExpSeg, _ExpExtra} = leveled_codec:segment_hash(<<B1/binary, K1/binary>>),
+    ExpSeg = leveled_tictac:keyto_segment32(<<B1/binary, K1/binary>>),
+    TreeSeg = leveled_tictac:get_segment(ExpSeg, TreeSize),
     [ActualSeg] = DLs,
-    true = ExpSeg == ActualSeg band 65535,
+    true = TreeSeg == ActualSeg,
     
     HeadSegmentFolder = 
         {foldheads_allkeys,
@@ -103,17 +113,18 @@ perbucket_aae(_Config) ->
             false, true},
     
     SW_SL0 = os:timestamp(),
-    {async, Book2SegFolder} =
-        leveled_bookie:book_returnfolder(Bookie2, HeadSegmentFolder),
-    {async, Book3SegFolder} =
-        leveled_bookie:book_returnfolder(Bookie3, HeadSegmentFolder),
-    Book2SegList = Book2SegFolder(),
-    Book3SegList = Book3SegFolder(),
+    {async, BookASegFolder} =
+        leveled_bookie:book_returnfolder(BookA, HeadSegmentFolder),
+    {async, BookBSegFolder} =
+        leveled_bookie:book_returnfolder(BookB, HeadSegmentFolder),
+    BookASegList = BookASegFolder(),
+    BookBSegList = BookBSegFolder(),
     Time_SL0 = timer:now_diff(os:timestamp(), SW_SL0)/1000,
     io:format("Two segment list folds took ~w milliseconds ~n", [Time_SL0]),
-    io:format("Segment lists found ~w ~w~n", [Book2SegList, Book3SegList]),
+    io:format("Segment lists found of lengths ~w ~w~n", 
+                [length(BookASegList), length(BookBSegList)]),
 
-    Delta = lists:subtract(Book2SegList, Book3SegList),
+    Delta = lists:subtract(BookASegList, BookBSegList),
     true = length(Delta) == 1,
     
     SuperHeadSegmentFolder = 
@@ -123,17 +134,19 @@ perbucket_aae(_Config) ->
             false, true, DLs},
     
     SW_SL1 = os:timestamp(),
-    {async, Book2SegFolder1} =
-        leveled_bookie:book_returnfolder(Bookie2, SuperHeadSegmentFolder),
-    {async, Book3SegFolder1} =
-        leveled_bookie:book_returnfolder(Bookie3, SuperHeadSegmentFolder),
-    Book2SegList1 = Book2SegFolder1(),
-    Book3SegList1 = Book3SegFolder1(),
+    {async, BookASegFolder1} =
+        leveled_bookie:book_returnfolder(BookA, SuperHeadSegmentFolder),
+    {async, BookBSegFolder1} =
+        leveled_bookie:book_returnfolder(BookB, SuperHeadSegmentFolder),
+    BookASegList1 = BookASegFolder1(),
+    BookBSegList1 = BookBSegFolder1(),
     Time_SL1 = timer:now_diff(os:timestamp(), SW_SL1)/1000,
     io:format("Two segment list folds took ~w milliseconds ~n", [Time_SL1]),
-    io:format("Segment lists found ~w ~w~n", [Book2SegList1, Book3SegList1]),
+    io:format("Segment lists found of lengths ~w ~w~n", 
+                [length(BookASegList1), length(BookBSegList1)]),
 
-    Delta1 = lists:subtract(Book2SegList1, Book3SegList1),
+    Delta1 = lists:subtract(BookASegList1, BookBSegList1),
+    io:format("Delta found of ~w~n", [Delta1]),
     true = length(Delta1) == 1.
 
 

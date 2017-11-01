@@ -66,7 +66,8 @@
         riak_extract_metadata/2,
         magic_hash/1,
         segment_hash/1,
-        to_lookup/1]).         
+        to_lookup/1,
+        riak_metadata_to_binary/2]).         
 
 -define(V1_VERS, 1).
 -define(MAGIC, 53). % riak_kv -> riak_object

@@ -274,13 +274,7 @@ sst_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
 %% To make the range open-ended (either ta start, end or both) the all atom
 %% can be use din place of the Key tuple.
 sst_getfilteredrange(Pid, StartKey, EndKey, ScanWidth, SegList) ->
-    SegList0 = 
-        case is_list(SegList) of 
-            true ->
-                lists:map(fun tune_hash/1, SegList);
-            false ->
-                SegList
-        end,
+    SegList0 = tune_seglist(SegList),
     case gen_fsm:sync_send_event(Pid,
                                     {get_kvrange, 
                                         StartKey, EndKey, 
@@ -309,13 +303,7 @@ sst_getslots(Pid, SlotList) ->
 %% returned (not precisely - with false results returned in addition).  Use 
 %% false as a SegList to not filter
 sst_getfilteredslots(Pid, SlotList, SegList) ->
-    SegList0 = 
-        case is_list(SegList) of 
-            true ->
-                lists:map(fun tune_hash/1, SegList);
-            false ->
-                SegList
-        end,
+    SegList0 = tune_seglist(SegList),
     SlotBins = gen_fsm:sync_send_event(Pid, 
                                         {get_slots, SlotList, SegList0}, 
                                         infinity),
@@ -1339,6 +1327,14 @@ extra_hash(NotHash) ->
 tune_hash(SegHash) ->
     SegHash band 32767.
 
+tune_seglist(SegList) ->
+    case is_list(SegList) of 
+        true ->
+            lists:map(fun tune_hash/1, SegList);
+        false ->
+            SegList
+    end.
+
 fetch_value([], _BlockLengths, _Blocks, _Key) ->
     not_present;
 fetch_value([Pos|Rest], BlockLengths, Blocks, Key) ->
@@ -2227,5 +2223,49 @@ nonsense_coverage_test() ->
                                                         nonsense)),
     ?assertMatch({reply, undefined, reader, #state{}},
                     handle_sync_event("hello", self(), reader, #state{})).
+
+hashmatching_bytreesize_test() ->
+    B = <<"Bucket">>,
+    V = leveled_codec:riak_metadata_to_binary(term_to_binary([{"actor1", 1}]), 
+                                                <<1:32/integer, 
+                                                    0:32/integer,
+                                                    0:32/integer>>),
+    GenKeyFun =
+        fun(X) ->
+            LK = 
+                {?RIAK_TAG, 
+                    B, 
+                    list_to_binary("Key" ++ integer_to_list(X)), 
+                    null},
+            LKV = leveled_codec:generate_ledgerkv(LK, 
+                                                    X, 
+                                                    V, 
+                                                    byte_size(V), 
+                                                    {active, infinity}),
+            {_Bucket, _Key, MetaValue, _Hashes, _LastMods} = LKV,
+            {LK, MetaValue}
+        end,
+    KVL = lists:map(GenKeyFun, lists:seq(1, 128)),
+    {PosBinIndex1, _FullBin, _HL, _LK} = 
+        generate_binary_slot(lookup, KVL),
+    check_segment_match(PosBinIndex1, KVL, small),
+    check_segment_match(PosBinIndex1, KVL, medium).
+
+
+check_segment_match(PosBinIndex1, KVL, TreeSize) ->
+    CheckFun =
+        fun({{_T, B, K, null}, _V}) ->
+            Seg = 
+                leveled_tictac:get_segment(
+                        leveled_tictac:keyto_segment32(<<B/binary, K/binary>>),
+                        TreeSize),
+            SegList0 = tune_seglist([Seg]),
+            PosList = find_pos(PosBinIndex1, SegList0, [], 0),
+            ?assertMatch(true, length(PosList) >= 1)
+        end,
+    lists:foreach(CheckFun, KVL).
+
+
+
 
 -endif.
