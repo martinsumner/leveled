@@ -553,6 +553,12 @@ exportable_test() ->
     {Int1, Int2} = tictac_hash(<<"key">>, <<"value">>),
     ?assertMatch({true, true}, {Int1 >= 0, Int2 >=0}).
 
+merge_emptytree_test() ->
+    TreeA = new_tree("A"),
+    TreeB = new_tree("B"),
+    TreeC = merge_trees(TreeA, TreeB),
+    ?assertMatch([], find_dirtyleaves(TreeA, TreeC)).
+
 -endif.
 
     
