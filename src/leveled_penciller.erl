@@ -776,20 +776,14 @@ handle_cast(work_for_clerk, State) ->
             case WC of
                 0 ->
                     {noreply, State#state{work_backlog=false}};
-                N when N > ?WORKQUEUE_BACKLOG_TOLERANCE ->
-                    leveled_log:log("P0024", [N, true]),
-                    [TL|_Tail] = WL,
-                    ok = leveled_pclerk:clerk_push(State#state.clerk, 
-                                                    {TL, State#state.manifest}),
-                    {noreply,
-                        State#state{work_backlog=true, work_ongoing=true}};
                 N ->
-                    leveled_log:log("P0024", [N, false]),
+                    Backlog = N > ?WORKQUEUE_BACKLOG_TOLERANCE,
+                    leveled_log:log("P0024", [N, Backlog]),
                     [TL|_Tail] = WL,
                     ok = leveled_pclerk:clerk_push(State#state.clerk, 
                                                     {TL, State#state.manifest}),
                     {noreply,
-                        State#state{work_backlog=false, work_ongoing=true}}
+                        State#state{work_backlog=Backlog, work_ongoing=true}}
             end;
         _ ->
             {noreply, State}
@@ -986,7 +980,8 @@ update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
                                     ledger_sqn=UpdMaxSQN},
             CacheTooBig = NewL0Size > State#state.levelzero_maxcachesize,
             CacheMuchTooBig = NewL0Size > ?SUPER_MAX_TABLE_SIZE,
-            L0Free = not leveled_pmanifest:levelzero_present(State#state.manifest),
+            L0Free = 
+                not leveled_pmanifest:levelzero_present(State#state.manifest),
             RandomFactor =
                 case State#state.levelzero_cointoss of
                     true ->
@@ -1364,8 +1359,11 @@ find_nextkey(QueryArray, LCnt,
             if
                 SQN =< BestSQN ->
                     % This is a dominated key, so we need to skip over it
-                    NewEntry = {LCnt, RestOfKeys},
-                    find_nextkey(lists:keyreplace(LCnt, 1, QueryArray, NewEntry),
+                    NewQArray = lists:keyreplace(LCnt, 
+                                                    1, 
+                                                    QueryArray, 
+                                                    {LCnt, RestOfKeys}),
+                    find_nextkey(NewQArray,
                                     LCnt + 1,
                                     {BKL, {BestKey, BestVal}},
                                     StartKey, EndKey, 
@@ -1535,7 +1533,8 @@ simple_server_test() ->
     ?assertMatch(Key3, pcl_fetch(PCL, {o,"Bucket0003", "Key0003", null})),
     timer:sleep(200),
     % This sleep should make sure that the merge to L1 has occurred
-    % This will free up the L0 slot for the remainder to be written in shutdown
+    % This will free up the L0 slot for the remainder to be written in 
+    % shutdown
     ok = pcl_close(PCL),
     
     {ok, PCLr} = pcl_start(#penciller_options{root_path=RootPath,
@@ -1591,8 +1590,8 @@ simple_server_test() ->
                                                     null},
                                                 3004)),
     % Add some more keys and confirm that check sequence number still
-    % sees the old version in the previous snapshot, but will see the new version
-    % in a new snapshot
+    % sees the old version in the previous snapshot, but will see the new 
+    % version in a new snapshot
     
     Key1A_Pre = {{o,"Bucket0001", "Key0001", null},
                     {4005, {active, infinity}, null}},
@@ -1754,13 +1753,15 @@ foldwithimm_simple_test() ->
                     {8, {active, infinity}, 0, null}}],
     AccA = keyfolder(IMMiterA,
                         QueryArray,
-                        {o, "Bucket1", "Key1", null}, {o, "Bucket1", "Key6", null},
+                        {o, "Bucket1", "Key1", null}, 
+                        {o, "Bucket1", "Key6", null},
                         {AccFun, []}),
     ?assertMatch([{{o, "Bucket1", "Key1", null}, 8},
                     {{o, "Bucket1", "Key3", null}, 3},
                     {{o, "Bucket1", "Key5", null}, 2}], AccA),
     
-    KL1B = [{{o, "Bucket1", "Key4", null}, {10, {active, infinity}, 0, null}}|KL1A],
+    AddKV = {{o, "Bucket1", "Key4", null}, {10, {active, infinity}, 0, null}},
+    KL1B = [AddKV|KL1A],
     IMM3 = leveled_tree:from_orderedlist(lists:ukeysort(1, KL1B), ?CACHE_TYPE),
     IMMiterB = leveled_tree:match_range({o, "Bucket1", "Key1", null},
                                         {o, null, null, null},

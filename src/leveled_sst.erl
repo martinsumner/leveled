@@ -1837,16 +1837,8 @@ indexed_list_mixedkeys_bitflip_test() ->
     Keys = lists:ukeysort(1, generate_indexkeys(60) ++ KVL1),
     {_PosBinIndex1, FullBin, _HL, LK} = generate_binary_slot(lookup, Keys),
     ?assertMatch(LK, element(1, lists:last(Keys))),
-    L = byte_size(FullBin),
-    Byte1 = leveled_rand:uniform(L),
-    <<PreB1:Byte1/binary, A:8/integer, PostByte1/binary>> = FullBin,
-    FullBin0 = 
-        case A of 
-            0 ->
-                <<PreB1:Byte1/binary, 255:8/integer, PostByte1/binary>>;
-            _ ->
-                <<PreB1:Byte1/binary, 0:8/integer, PostByte1/binary>>
-        end,
+    
+    FullBin0 = flip_byte(FullBin),
     
     {TestK1, _TestV1} = lists:nth(20, KVL1),
     MH1 = leveled_codec:segment_hash(TestK1),
@@ -1861,6 +1853,17 @@ indexed_list_mixedkeys_bitflip_test() ->
     ?assertMatch(0, length(O1)),
     ?assertMatch([], O1).
 
+
+flip_byte(Binary) ->
+    L = byte_size(Binary),
+    Byte1 = leveled_rand:uniform(L),
+    <<PreB1:Byte1/binary, A:8/integer, PostByte1/binary>> = Binary,
+    case A of 
+        0 ->
+            <<PreB1:Byte1/binary, 255:8/integer, PostByte1/binary>>;
+        _ ->
+            <<PreB1:Byte1/binary, 0:8/integer, PostByte1/binary>>
+    end.
 
 
 test_binary_slot(FullBin, Key, Hash, ExpectedValue) ->
@@ -2222,7 +2225,11 @@ nonsense_coverage_test() ->
                                                         #state{},
                                                         nonsense)),
     ?assertMatch({reply, undefined, reader, #state{}},
-                    handle_sync_event("hello", self(), reader, #state{})).
+                    handle_sync_event("hello", self(), reader, #state{})),
+                    
+    SampleBin = <<0:128/integer>>,
+    FlippedBin = flip_byte(SampleBin),
+    ?assertMatch(false, FlippedBin == SampleBin).
 
 hashmatching_bytreesize_test() ->
     B = <<"Bucket">>,
