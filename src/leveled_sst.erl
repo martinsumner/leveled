@@ -108,8 +108,7 @@
             sst_deleteconfirmed/1,
             sst_close/1]).
 
--export([expand_list_by_pointer/4,
-            get_slotid/1]).
+-export([expand_list_by_pointer/4]).
 
 
 -record(slot_index_value, {slot_id :: integer(),
@@ -1621,9 +1620,6 @@ expand_list_by_pointer({next, ManEntry, StartKey, EndKey},
                                             StartKey, EndKey, 
                                             Width, SegList),
     ExpPointer ++ Tail.
-
-get_slotid(Slot) ->
-    Slot#slot_index_value.slot_id.
 
 %%%============================================================================
 %%% Test
