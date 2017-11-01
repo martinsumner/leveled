@@ -286,14 +286,7 @@ merge_trees(TreeA, TreeB) ->
         fun(SQN, MergeL2) ->
             L2A = get_level2(TreeA, SQN),
             L2B = get_level2(TreeB, SQN),
-            BothEmpty = (L2A == ?EMPTY) and (L2B == ?EMPTY),
-            NewLevel2 = 
-                case BothEmpty of
-                    true ->
-                        ?EMPTY;
-                    false ->
-                        merge_binaries(L2A, L2B)
-                end,
+            NewLevel2 = merge_binaries(L2A, L2B),
             array:set(SQN, NewLevel2, MergeL2)
         end,
     NewLevel2 = lists:foldl(MergeFun,
