@@ -75,12 +75,20 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(HASH_SIZE, 4).
--define(XXSMALL, {6, 64, 64 * 64}).
--define(XSMALL, {7, 128, 128 * 128}).
+
+-define(XXSMALL, {6, 64, 64 * 64}). % DO NOT USE
+-define(XSMALL, {7, 128, 128 * 128}). % DO NOT USE
+%% DO NOT USE warnings with smaller key sizes are there as accelerated queries
+%% for finding segment lists will not work where the tree size is smaller than 
+%% 2 ^ 15
+
+%% SUPPORTED tree sizes
 -define(SMALL, {8, 256, 256 * 256}).
 -define(MEDIUM, {9, 512, 512 * 512}).
 -define(LARGE, {10, 1024, 1024 * 1024}).
 -define(XLARGE, {11, 2048, 2048 * 2048}).
+
+
 -define(EMPTY, <<0:8/integer>>).
 -define(VALID_SIZES, [xxsmall, xsmall, small, medium, large, xlarge]).
 
