@@ -63,7 +63,15 @@ perbucket_aae(_Config) ->
     lists:foreach(fun(ObjL) -> testutil:riakload(Bookie3, ObjL) end, CLs),
     test_singledelta_stores(Bookie2, Bookie3, small, {B1, K1}),
     test_singledelta_stores(Bookie2, Bookie3, medium, {B1, K1}),
+    test_singledelta_stores(Bookie2, Bookie3, xsmall, {B1, K1}),
+    test_singledelta_stores(Bookie2, Bookie3, xxsmall, {B1, K1}),
+    
+    % Test with a newly opend book (i.e with no blovk indexes cached)
     ok = leveled_bookie:book_close(Bookie2),
+    {ok, Bookie2A} = leveled_bookie:book_start(StartOpts2),
+    test_singledelta_stores(Bookie2A, Bookie3, small, {B1, K1}),
+    
+    ok = leveled_bookie:book_close(Bookie2A),
     ok = leveled_bookie:book_close(Bookie3).
 
 
@@ -120,18 +128,21 @@ test_singledelta_stores(BookA, BookB, TreeSize, DeltaKey) ->
     BookASegList = BookASegFolder(),
     BookBSegList = BookBSegFolder(),
     Time_SL0 = timer:now_diff(os:timestamp(), SW_SL0)/1000,
-    io:format("Two segment list folds took ~w milliseconds ~n", [Time_SL0]),
+    io:format("Two unfiltered segment list folds took ~w milliseconds ~n", 
+                [Time_SL0]),
     io:format("Segment lists found of lengths ~w ~w~n", 
                 [length(BookASegList), length(BookBSegList)]),
 
     Delta = lists:subtract(BookASegList, BookBSegList),
     true = length(Delta) == 1,
+
+    SegFilterList = leveled_tictac:generate_segmentfilter_list(DLs, TreeSize),
     
     SuperHeadSegmentFolder = 
         {foldheads_allkeys,
             ?RIAK_TAG,
             {get_segment_folder(DLs, TreeSize),  []},
-            false, true, DLs},
+            false, true, SegFilterList},
     
     SW_SL1 = os:timestamp(),
     {async, BookASegFolder1} =
@@ -141,13 +152,38 @@ test_singledelta_stores(BookA, BookB, TreeSize, DeltaKey) ->
     BookASegList1 = BookASegFolder1(),
     BookBSegList1 = BookBSegFolder1(),
     Time_SL1 = timer:now_diff(os:timestamp(), SW_SL1)/1000,
-    io:format("Two segment list folds took ~w milliseconds ~n", [Time_SL1]),
+    io:format("Two filtered segment list folds took ~w milliseconds ~n", 
+                [Time_SL1]),
     io:format("Segment lists found of lengths ~w ~w~n", 
                 [length(BookASegList1), length(BookBSegList1)]),
+    
 
-    Delta1 = lists:subtract(BookASegList1, BookBSegList1),
-    io:format("Delta found of ~w~n", [Delta1]),
-    true = length(Delta1) == 1.
+    FalseMatchFilter = DLs ++ [1, 100, 101, 1000, 1001],
+    SegFilterListF = 
+        leveled_tictac:generate_segmentfilter_list(FalseMatchFilter, TreeSize),
+    SuperHeadSegmentFolderF = 
+        {foldheads_allkeys,
+            ?RIAK_TAG,
+            {get_segment_folder(DLs, TreeSize),  []},
+            false, true, SegFilterListF},
+    
+    SW_SL1F = os:timestamp(),
+    {async, BookASegFolder1F} =
+        leveled_bookie:book_returnfolder(BookA, SuperHeadSegmentFolderF),
+    {async, BookBSegFolder1F} =
+        leveled_bookie:book_returnfolder(BookB, SuperHeadSegmentFolderF),
+    BookASegList1F = BookASegFolder1F(),
+    BookBSegList1F = BookBSegFolder1F(),
+    Time_SL1F = timer:now_diff(os:timestamp(), SW_SL1F)/1000,
+    io:format("Two filtered segment list folds " ++ 
+                " with false positives took ~w milliseconds ~n", 
+                [Time_SL1F]),
+    io:format("Segment lists found of lengths ~w ~w~n", 
+                [length(BookASegList1F), length(BookBSegList1F)]),
+
+    Delta1F = lists:subtract(BookASegList1F, BookBSegList1F),
+    io:format("Delta found of ~w~n", [Delta1F]),
+    true = length(Delta1F) == 1.
 
 
 get_segment_folder(SegmentList, TreeSize) ->

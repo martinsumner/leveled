@@ -68,7 +68,8 @@
             export_tree/1,
             import_tree/1,
             valid_size/1,
-            keyto_segment32/1
+            keyto_segment32/1,
+            generate_segmentfilter_list/2
         ]).
 
 
@@ -76,13 +77,11 @@
 
 -define(HASH_SIZE, 4).
 
--define(XXSMALL, {6, 64, 64 * 64}). % DO NOT USE
--define(XSMALL, {7, 128, 128 * 128}). % DO NOT USE
-%% DO NOT USE warnings with smaller key sizes are there as accelerated queries
-%% for finding segment lists will not work where the tree size is smaller than 
-%% 2 ^ 15
+%% UNSUUPPORTED tree sizes for accelerated segment filtering
+-define(XXSMALL, {6, 64, 64 * 64}). 
+-define(XSMALL, {7, 128, 128 * 128}). 
 
-%% SUPPORTED tree sizes
+%% SUPPORTED tree sizes for accelerated segment filtering
 -define(SMALL, {8, 256, 256 * 256}).
 -define(MEDIUM, {9, 512, 512 * 512}).
 -define(LARGE, {10, 1024, 1024 * 1024}).
@@ -342,6 +341,32 @@ keyto_segment32(BinKey) when is_binary(BinKey) ->
     (ExtraHash band 65535) bsl 16 + SegmentID;
 keyto_segment32(Key) ->
     keyto_segment32(term_to_binary(Key)).
+
+-spec generate_segmentfilter_list(list(integer()), atom())  
+                                                    -> false|list(integer()). 
+%% @doc
+%% Cannot accelerate segment listing for trees below certain sizes, so check
+%% the creation of segment filter lists with this function
+generate_segmentfilter_list(_SegmentList, xxsmall) -> 
+    false;
+generate_segmentfilter_list(SegmentList, xsmall) -> 
+    case length(SegmentList) =< 4 of
+        true ->
+            A0 = 1 bsl 15,
+            A1 = 1 bsl 14,
+            ExpandSegFun = 
+                fun(X, Acc) -> 
+                    Acc ++ [X, X + A0, X + A1, X + A0 + A1]
+                end,
+            lists:foldl(ExpandSegFun, [], SegmentList);
+        false ->
+            false
+    end;
+generate_segmentfilter_list(SegmentList, Size) ->
+    case lists:member(Size, ?VALID_SIZES) of 
+        true ->
+            SegmentList
+    end.
 
 %%%============================================================================
 %%% Internal functions
