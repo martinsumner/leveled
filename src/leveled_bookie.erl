@@ -680,12 +680,6 @@ get_runner(State, {keylist, Tag, Bucket, FoldAccT}) ->
 
 %% Set of runners for object or metadata folds
 get_runner(State, 
-            {foldheads_allkeys, Tag, FoldFun, JournalCheck, SnapPreFold}) ->
-    SnapType = snaptype_by_presence(JournalCheck),
-    SnapFun = return_snapfun(State, SnapType, no_lookup, true, SnapPreFold),
-    leveled_runner:foldheads_allkeys(SnapFun, Tag, FoldFun, 
-                                        JournalCheck, false);
-get_runner(State, 
             {foldheads_allkeys, 
                 Tag, FoldFun, 
                 JournalCheck, SnapPreFold, SegmentList}) ->
@@ -702,14 +696,14 @@ get_runner(State,
             {foldheads_bybucket, 
                 Tag, Bucket, KeyRange, 
                 FoldFun, 
-                JournalCheck, SnapPreFold}) ->
+                JournalCheck, SnapPreFold, SegmentList}) ->
     {StartKey, EndKey, SnapQ} = return_ledger_keyrange(Tag, Bucket, KeyRange),
     SnapType = snaptype_by_presence(JournalCheck),
     SnapFun = return_snapfun(State, SnapType, SnapQ, true, SnapPreFold),
     leveled_runner:foldheads_bybucket(SnapFun, 
                                         {Tag, StartKey, EndKey}, 
                                         FoldFun, 
-                                        JournalCheck);
+                                        JournalCheck, SegmentList);
 get_runner(State,
             {foldobjects_bybucket, 
                 Tag, Bucket, KeyRange, 
@@ -1322,8 +1316,7 @@ foldobjects_vs_hashtree_testto() ->
                             {foldheads_allkeys, 
                                 ?STD_TAG, 
                                 FoldHeadsFun, 
-                                true,
-                                true}),
+                                true, true, false}),
     KeyHashList3 = HTFolder3(),
     ?assertMatch(KeyHashList1, lists:usort(KeyHashList3)),
 
@@ -1342,8 +1335,7 @@ foldobjects_vs_hashtree_testto() ->
                             {foldheads_allkeys, 
                                 ?STD_TAG, 
                                 FoldHeadsFun2,
-                                false,
-                                false}),
+                                false, false, false}),
     KeyHashList4 = HTFolder4(),
     ?assertMatch(KeyHashList1, lists:usort(KeyHashList4)),
 
@@ -1413,8 +1405,7 @@ foldobjects_vs_foldheads_bybucket_testto() ->
                                 "BucketA",
                                 all,
                                 FoldHeadsFun,
-                                true,
-                                true}),
+                                true, true, false}),
     KeyHashList2A = HTFolder2A(),
     {async, HTFolder2B} =
         book_returnfolder(Bookie1,
@@ -1423,8 +1414,7 @@ foldobjects_vs_foldheads_bybucket_testto() ->
                                 "BucketB",
                                 all,
                                 FoldHeadsFun,
-                                true,
-                                false}),
+                                true, false, false}),
     KeyHashList2B = HTFolder2B(),
     
     ?assertMatch(true,
@@ -1439,8 +1429,7 @@ foldobjects_vs_foldheads_bybucket_testto() ->
                                 "BucketB",
                                 {"Key", <<"$all">>},
                                 FoldHeadsFun,
-                                true,
-                                false}),
+                                true, false, false}),
     KeyHashList2C = HTFolder2C(),
     {async, HTFolder2D} =
         book_returnfolder(Bookie1,
@@ -1449,8 +1438,7 @@ foldobjects_vs_foldheads_bybucket_testto() ->
                                 "BucketB",
                                 {"Key", "Keyzzzzz"},
                                 FoldHeadsFun,
-                                true,
-                                true}),
+                                true, true, false}),
     KeyHashList2D = HTFolder2D(),
     ?assertMatch(true,
                     lists:usort(KeyHashList2B) == lists:usort(KeyHashList2C)),
@@ -1464,8 +1452,7 @@ foldobjects_vs_foldheads_bybucket_testto() ->
                                 "BucketB",
                                 {"Key", "Key4zzzz"},
                                 FoldHeadsFun,
-                                true,
-                                false}),
+                                true, false, false}),
     KeyHashList2E = HTFolder2E(),
     {async, HTFolder2F} =
         book_returnfolder(Bookie1,
@@ -1474,8 +1461,7 @@ foldobjects_vs_foldheads_bybucket_testto() ->
                                 "BucketB",
                                 {"Key5", <<"all">>},
                                 FoldHeadsFun,
-                                true,
-                                false}),
+                                true, false, false}),
     KeyHashList2F = HTFolder2F(),
 
     ?assertMatch(true, length(KeyHashList2E) > 0),

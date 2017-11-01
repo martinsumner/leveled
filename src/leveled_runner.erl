@@ -30,7 +30,7 @@
             tictactree/5,
             foldheads_allkeys/5,
             foldobjects_allkeys/3,
-            foldheads_bybucket/4,
+            foldheads_bybucket/5,
             foldobjects_bybucket/3,
             foldobjects_byindex/3
         ]).
@@ -247,15 +247,21 @@ foldobjects_bybucket(SnapFun, {Tag, StartKey, EndKey}, FoldFun) ->
                 FoldFun, 
                 false, false).
 
--spec foldheads_bybucket(fun(), {atom(), any(), any()}, fun(), boolean()) -> 
-                                                                {async, fun()}.
+-spec foldheads_bybucket(fun(), 
+                            {atom(), any(), any()}, 
+                            fun(), 
+                            boolean(), false|list(integer())) 
+                                                        -> {async, fun()}.
 %% @doc
 %% Fold over all object metadata within a given key range in a bucket
-foldheads_bybucket(SnapFun, {Tag, StartKey, EndKey}, FoldFun, JournalCheck) ->
+foldheads_bybucket(SnapFun, 
+                    {Tag, StartKey, EndKey}, 
+                    FoldFun, 
+                    JournalCheck, SegmentList) ->
     foldobjects(SnapFun, 
                 Tag, StartKey, EndKey, 
                 FoldFun, 
-                {true, JournalCheck}, false).
+                {true, JournalCheck}, SegmentList).
 
 -spec foldobjects_byindex(fun(), tuple(), fun()) -> {async, fun()}.
 %% @doc

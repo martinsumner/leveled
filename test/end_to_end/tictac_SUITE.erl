@@ -150,7 +150,7 @@ many_put_compare(_Config) ->
               "Bucket",
               all,
               {FoldObjectsFun, leveled_tictac:new_tree(0, TreeSize)},
-              false, true},
+              false, true, false},
     {async, TreeAObjFolder0} =
         leveled_bookie:book_returnfolder(Bookie2, FoldQ0),
     SWB0Obj = os:timestamp(),
@@ -165,7 +165,7 @@ many_put_compare(_Config) ->
               "Bucket",
               all,
               {FoldObjectsFun, leveled_tictac:new_tree(0, TreeSize)},
-              true, true},
+              true, true, false},
     {async, TreeAObjFolder1} =
         leveled_bookie:book_returnfolder(Bookie2, FoldQ1),
     SWB1Obj = os:timestamp(),
@@ -193,8 +193,7 @@ many_put_compare(_Config) ->
                     "Bucket",
                     all,
                     {AltFoldObjectsFun, leveled_tictac:new_tree(0, TreeSize)},
-                    false, 
-                    true},
+                    false, true, false},
     {async, TreeAAltObjFolder0} =
         leveled_bookie:book_returnfolder(Bookie2, AltFoldQ0),
     SWB2Obj = os:timestamp(),

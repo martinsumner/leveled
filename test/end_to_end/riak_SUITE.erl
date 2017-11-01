@@ -78,47 +78,37 @@ crossbucket_aae(_Config) ->
 
 test_singledelta_stores(BookA, BookB, TreeSize, DeltaKey) ->
     io:format("Test for single delta with tree size ~w~n", [TreeSize]),
-    {B1, K1} = DeltaKey,
     % Now run a tictac query against both stores to see the extent to which
     % state between stores is consistent
-    HeadTicTacFolder = 
+    TicTacFolder = 
         {foldheads_allkeys,
             ?RIAK_TAG,
             {fun head_tictac_foldfun/4, 
                 {0, leveled_tictac:new_tree(test, TreeSize)}},
-            false,
-            true},
+            false, true, false},
+    % tictac query by bucket (should be same result as all stores)
+    TicTacByBucketFolder = 
+        {foldheads_bybucket, 
+                ?RIAK_TAG, <<"Bucket">>, 
+                all, 
+                {fun head_tictac_foldfun/4, 
+                    {0, leveled_tictac:new_tree(test, TreeSize)}},
+                false, false, false},
 
-    SW_TT0 = os:timestamp(),
-    {async, BookATreeFolder} =
-        leveled_bookie:book_returnfolder(BookA, HeadTicTacFolder),
-    {async, BookBTreeFolder} =
-        leveled_bookie:book_returnfolder(BookB, HeadTicTacFolder),
-    {CountA, BookATree} = BookATreeFolder(),
-    {CountB, BookBTree} = BookBTreeFolder(),
-    Time_TT0 = timer:now_diff(os:timestamp(), SW_TT0)/1000,
-    io:format("Two tree folds took ~w milliseconds ~n", [Time_TT0]),
-
-    io:format("Fold over keys revealed counts of ~w and ~w~n", 
-                [CountA, CountB]),
-
-    % There should be a single delta between the stores
-    1 = CountA - CountB,
-
-    DLs = leveled_tictac:find_dirtyleaves(BookATree, BookBTree),
-    io:format("Found dirty leaves with Riak fold_heads of ~w~n",
-                [length(DLs)]),
-    true = length(DLs) == 1,
-    ExpSeg = leveled_tictac:keyto_segment32(<<B1/binary, K1/binary>>),
-    TreeSeg = leveled_tictac:get_segment(ExpSeg, TreeSize),
-    [ActualSeg] = DLs,
-    true = TreeSeg == ActualSeg,
+    DLs = check_tictacfold(BookA, BookB, 
+                            TicTacFolder, 
+                            DeltaKey, 
+                            TreeSize),
+    DLs = check_tictacfold(BookA, BookB, 
+                            TicTacByBucketFolder, 
+                            DeltaKey, 
+                            TreeSize),
     
     HeadSegmentFolder = 
         {foldheads_allkeys,
             ?RIAK_TAG,
             {get_segment_folder(DLs, TreeSize),  []},
-            false, true},
+            false, true, false},
     
     SW_SL0 = os:timestamp(),
     {async, BookASegFolder} =
@@ -227,6 +217,34 @@ head_tictac_foldfun(B, K, PO, {Count, TreeAcc}) ->
         end,
     {Count + 1, 
         leveled_tictac:add_kv(TreeAcc, {B, K}, PO, ExtractFun)}.
+
+
+check_tictacfold(BookA, BookB, HeadTicTacFolder, {B1, K1}, TreeSize) ->
+    SW_TT0 = os:timestamp(),
+    {async, BookATreeFolder} =
+        leveled_bookie:book_returnfolder(BookA, HeadTicTacFolder),
+    {async, BookBTreeFolder} =
+        leveled_bookie:book_returnfolder(BookB, HeadTicTacFolder),
+    {CountA, BookATree} = BookATreeFolder(),
+    {CountB, BookBTree} = BookBTreeFolder(),
+    Time_TT0 = timer:now_diff(os:timestamp(), SW_TT0)/1000,
+    io:format("Two tree folds took ~w milliseconds ~n", [Time_TT0]),
+
+    io:format("Fold over keys revealed counts of ~w and ~w~n", 
+                [CountA, CountB]),
+
+    % There should be a single delta between the stores
+    1 = CountA - CountB,
+
+    DLs = leveled_tictac:find_dirtyleaves(BookATree, BookBTree),
+    io:format("Found dirty leaves with Riak fold_heads of ~w~n",
+                [length(DLs)]),
+    true = length(DLs) == 1,
+    ExpSeg = leveled_tictac:keyto_segment32(<<B1/binary, K1/binary>>),
+    TreeSeg = leveled_tictac:get_segment(ExpSeg, TreeSize),
+    [ActualSeg] = DLs,
+    true = TreeSeg == ActualSeg,
+    DLs.
 
 
 summary_from_binary(<<131, _Rest/binary>>=ObjBin) ->
