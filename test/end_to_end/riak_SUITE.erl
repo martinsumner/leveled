@@ -3,16 +3,16 @@
 -include("include/leveled.hrl").
 -export([all/0]).
 -export([
-            perbucket_aae/1
+            crossbucket_aae/1
             ]).
 
 all() -> [
-            perbucket_aae
+            crossbucket_aae
             ].
 
 -define(MAGIC, 53). % riak_kv -> riak_object
 
-perbucket_aae(_Config) ->
+crossbucket_aae(_Config) ->
     % Test requires multiple different databases, so want to mount them all
     % on individual file paths
     RootPathA = testutil:reset_filestructure("testA"),
@@ -156,6 +156,26 @@ test_singledelta_stores(BookA, BookB, TreeSize, DeltaKey) ->
                 [Time_SL1]),
     io:format("Segment lists found of lengths ~w ~w~n", 
                 [length(BookASegList1), length(BookBSegList1)]),
+    
+    SuperHeadSegmentFolderCP = 
+        {foldheads_allkeys,
+            ?RIAK_TAG,
+            {get_segment_folder(DLs, TreeSize),  []},
+            true, true, SegFilterList},
+    
+    SW_SL1CP = os:timestamp(),
+    {async, BookASegFolder1CP} =
+        leveled_bookie:book_returnfolder(BookA, SuperHeadSegmentFolderCP),
+    {async, BookBSegFolder1CP} =
+        leveled_bookie:book_returnfolder(BookB, SuperHeadSegmentFolderCP),
+    BookASegList1CP = BookASegFolder1CP(),
+    BookBSegList1CP = BookBSegFolder1CP(),
+    Time_SL1CP = timer:now_diff(os:timestamp(), SW_SL1CP)/1000,
+    io:format("Two filtered segment list folds " ++ 
+                "with presence check took ~w milliseconds ~n", 
+                [Time_SL1CP]),
+    io:format("Segment lists found of lengths ~w ~w~n", 
+                [length(BookASegList1CP), length(BookBSegList1CP)]),
     
 
     FalseMatchFilter = DLs ++ [1, 100, 101, 1000, 1001],
