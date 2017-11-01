@@ -390,16 +390,13 @@ handle_call({register_snapshot, Requestor}, _From , State) ->
                 State#state.active_journaldb},
                 State#state{registered_snapshots=Rs}};
 handle_call({confirm_delete, ManSQN}, _From, State) ->
-    Reply = lists:foldl(fun({_R, SnapSQN}, Bool) ->
-                                case SnapSQN >= ManSQN of
-                                    true ->
-                                        Bool;
-                                    false ->
-                                        false
-                                end end,
-                            true,
-                            State#state.registered_snapshots),
-    {reply, Reply, State};
+    CheckSQNFun = 
+        fun({_R, SnapSQN}, Bool) ->
+            (SnapSQN >= ManSQN) and Bool
+        end,
+    {reply, 
+        lists:foldl(CheckSQNFun, true, State#state.registered_snapshots), 
+        State};
 handle_call(get_manifest, _From, State) ->
     {reply, leveled_imanifest:to_list(State#state.manifest), State};
 handle_call({update_manifest,
