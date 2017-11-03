@@ -1385,13 +1385,14 @@ perform_write_hash_tables(Handle, HashTreeBin, StartPos) ->
 %% The List passed in should be made up of {Index, Position, Count} tuples
 write_top_index_table(Handle, BasePos, IndexList) ->
     FnWriteIndex = fun({_Index, Pos, Count}, {AccBin, CurrPos}) ->
-        {PosLE, NextPos} = 
-            case Count == 0 of
-                true ->
-                    {endian_flip(CurrPos), CurrPos};
-                false ->
-                    {endian_flip(Pos), Pos + (Count * ?DWORD_SIZE)}
-            end, 
+        case Count == 0 of
+            true ->
+                PosLE = endian_flip(CurrPos),
+                NextPos = CurrPos;
+            false ->
+                PosLE = endian_flip(Pos),
+                NextPos = Pos + (Count * ?DWORD_SIZE)
+        end, 
         CountLE = endian_flip(Count),
         {<<AccBin/binary, PosLE:32, CountLE:32>>, NextPos}
     end,
