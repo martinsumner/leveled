@@ -740,6 +740,26 @@ generate_filenames(RootFilename) ->
     end.    
 
 
+-spec serialise_block(any()) -> binary().
+%% @doc
+%% Convert term to binary
+%% Function split out to make it easier to experiment with different 
+%% compression methods.  Also, perhaps standardise applictaion of CRC
+%% checks
+serialise_block(Term) ->
+    term_to_binary(Term, ?BINARY_SETTINGS).
+
+
+-spec deserialise_block(binary()) -> any().
+%% @doc
+%% Convert binary to term
+%% Function split out to make it easier to experiment with different 
+%% compression methods.  Also, perhaps standardise applictaion of CRC
+%% checks
+deserialise_block(Bin) ->
+    binary_to_term(Bin).
+
+
 %%%============================================================================
 %%% SlotIndex Implementation
 %%%============================================================================
@@ -865,45 +885,45 @@ generate_binary_slot(Lookup, KVL) ->
     {B1, B2, B3, B4, B5} = 
         case length(KVL) of 
             L when L =< SideBlockSize ->
-                {term_to_binary(KVL, ?BINARY_SETTINGS),
+                {serialise_block(KVL),
                     <<0:0>>, 
                     <<0:0>>, 
                     <<0:0>>,
                     <<0:0>>};
             L when L =< 2 * SideBlockSize ->
                 {KVLA, KVLB} = lists:split(SideBlockSize, KVL),
-                {term_to_binary(KVLA, ?BINARY_SETTINGS),
-                    term_to_binary(KVLB, ?BINARY_SETTINGS),
+                {serialise_block(KVLA),
+                    serialise_block(KVLB),
                     <<0:0>>, 
                     <<0:0>>,
                     <<0:0>>};
             L when L =< (2 * SideBlockSize + MidBlockSize) ->
                 {KVLA, KVLB_Rest} = lists:split(SideBlockSize, KVL),
                 {KVLB, KVLC} = lists:split(SideBlockSize, KVLB_Rest),
-                {term_to_binary(KVLA, ?BINARY_SETTINGS),
-                    term_to_binary(KVLB, ?BINARY_SETTINGS),
-                    term_to_binary(KVLC, ?BINARY_SETTINGS),
+                {serialise_block(KVLA),
+                    serialise_block(KVLB),
+                    serialise_block(KVLC),
                     <<0:0>>,
                     <<0:0>>};
             L when L =< (3 * SideBlockSize + MidBlockSize) ->
                 {KVLA, KVLB_Rest} = lists:split(SideBlockSize, KVL),
                 {KVLB, KVLC_Rest} = lists:split(SideBlockSize, KVLB_Rest),
                 {KVLC, KVLD} = lists:split(MidBlockSize, KVLC_Rest),
-                {term_to_binary(KVLA, ?BINARY_SETTINGS),
-                    term_to_binary(KVLB, ?BINARY_SETTINGS),
-                    term_to_binary(KVLC, ?BINARY_SETTINGS),
-                    term_to_binary(KVLD, ?BINARY_SETTINGS),
+                {serialise_block(KVLA),
+                    serialise_block(KVLB),
+                    serialise_block(KVLC),
+                    serialise_block(KVLD),
                     <<0:0>>};
             L when L =< (4 * SideBlockSize + MidBlockSize) ->
                 {KVLA, KVLB_Rest} = lists:split(SideBlockSize, KVL),
                 {KVLB, KVLC_Rest} = lists:split(SideBlockSize, KVLB_Rest),
                 {KVLC, KVLD_Rest} = lists:split(MidBlockSize, KVLC_Rest),
                 {KVLD, KVLE} = lists:split(SideBlockSize, KVLD_Rest),
-                {term_to_binary(KVLA, ?BINARY_SETTINGS),
-                    term_to_binary(KVLB, ?BINARY_SETTINGS),
-                    term_to_binary(KVLC, ?BINARY_SETTINGS),
-                    term_to_binary(KVLD, ?BINARY_SETTINGS),
-                    term_to_binary(KVLE, ?BINARY_SETTINGS)}
+                {serialise_block(KVLA),
+                    serialise_block(KVLB),
+                    serialise_block(KVLC),
+                    serialise_block(KVLD),
+                    serialise_block(KVLE)}
         end,
 
     B1P = byte_size(PosBinIndex),
@@ -934,7 +954,7 @@ check_blocks([], _Handle, _Slot, _BlockLengths, _LedgerKey) ->
 check_blocks([Pos|Rest], Handle, Slot, BlockLengths, LedgerKey) ->
     {BlockNumber, BlockPos} = revert_position(Pos),
     BlockBin = read_block(Handle, Slot, BlockLengths, BlockNumber),
-    BlockL = binary_to_term(BlockBin),
+    BlockL = deserialise_block(BlockBin),
     {K, V} = lists:nth(BlockPos, BlockL),
     case K of 
         LedgerKey ->
@@ -1022,7 +1042,7 @@ binaryslot_tolist(FullBin) ->
                     {Acc, Bin};
                 _ ->
                     <<Block:Length/binary, Rest/binary>> = Bin,
-                    {Acc ++ binary_to_term(Block), Rest}
+                    {Acc ++ deserialise_block(Block), Rest}
             end
         end,
 
@@ -1076,7 +1096,7 @@ binaryslot_trimmedlist(FullBin, StartKey, EndKey) ->
                     0 ->
                         [Block1, Block2];
                     _ ->    
-                        MidBlockList = binary_to_term(MidBlock),
+                        MidBlockList = deserialise_block(MidBlock),
                         {MidFirst, _} = lists:nth(1, MidBlockList),
                         {MidLast, _} = lists:last(MidBlockList),
                         Split = {StartKey > MidLast,
@@ -1114,7 +1134,7 @@ binaryslot_trimmedlist(FullBin, StartKey, EndKey) ->
                     BlockList =
                         case is_binary(Block) of
                             true ->
-                                binary_to_term(Block);
+                                deserialise_block(Block);
                             false ->
                                 Block
                         end,
@@ -1198,7 +1218,7 @@ fetch_value([Pos|Rest], BlockLengths, Blocks, Key) ->
         Offset,
         Length} = block_offsetandlength(BlockLengths, BlockNumber),
     <<_Pre:Offset/binary, Block:Length/binary, _Rest/binary>> = Blocks,
-    BlockL = binary_to_term(Block),
+    BlockL = deserialise_block(Block),
     {K, V} = lists:nth(BlockPos, BlockL),
     case K of 
         Key ->
