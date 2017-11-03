@@ -747,7 +747,8 @@ generate_filenames(RootFilename) ->
 %% compression methods.  Also, perhaps standardise applictaion of CRC
 %% checks
 serialise_block(Term) ->
-    term_to_binary(Term, ?BINARY_SETTINGS).
+    {ok, Bin} = lz4:pack(term_to_binary(Term)),
+    Bin.
 
 
 -spec deserialise_block(binary()) -> any().
@@ -757,7 +758,8 @@ serialise_block(Term) ->
 %% compression methods.  Also, perhaps standardise applictaion of CRC
 %% checks
 deserialise_block(Bin) ->
-    binary_to_term(Bin).
+    {ok, Bin0} = lz4:unpack(Bin),
+    binary_to_term(Bin0).
 
 
 %%%============================================================================
