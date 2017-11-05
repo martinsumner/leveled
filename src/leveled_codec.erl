@@ -218,7 +218,7 @@ to_inkerkv(LedgerKey, SQN, to_fetch, null) ->
     {{SQN, ?INKT_STND, LedgerKey}, null, true};
 to_inkerkv(LedgerKey, SQN, Object, KeyChanges) ->
     InkerType = check_forinkertype(LedgerKey, Object),
-    Value = create_value_for_journal({Object, KeyChanges}, false),
+    Value = create_value_for_journal({Object, KeyChanges}, true),
     {{SQN, InkerType, LedgerKey}, Value}.
 
 %% Used when fetching objects, so only handles standard, hashable entries
