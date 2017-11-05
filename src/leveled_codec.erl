@@ -270,7 +270,8 @@ maybe_compress(JournalBin) ->
 serialise_object(Object, false) when is_binary(Object) ->
     Object;
 serialise_object(Object, true) when is_binary(Object) ->
-    zlib:compress(Object);
+    {ok, Bin} = lz4:pack(Object),
+    Bin;
 serialise_object(Object, false) ->
     term_to_binary(Object);
 serialise_object(Object, true) ->
@@ -297,7 +298,8 @@ revert_value_from_journal(JournalBin, ToIgnoreKeyChanges) ->
     end.
 
 deserialise_object(Binary, true, true) ->
-    zlib:uncompress(Binary);
+    {ok, Deflated} = lz4:unpack(Binary),
+    Deflated;
 deserialise_object(Binary, true, false) ->
     Binary;
 deserialise_object(Binary, false, _) ->
