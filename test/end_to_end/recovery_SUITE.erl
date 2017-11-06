@@ -308,7 +308,7 @@ aae_bustedjournal(_Config) ->
 journal_compaction_bustedjournal(_Config) ->
     % Different circumstances will be created in different runs
     busted_journal_test(10000000, native, on_receipt),
-    busted_journal_test(7777777, native, on_compact),
+    busted_journal_test(7777777, lz4, on_compact),
     busted_journal_test(8888888, lz4, on_receipt).
     
 
