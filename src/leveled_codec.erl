@@ -54,7 +54,7 @@
         compact_inkerkvc/2,
         split_inkvalue/1,
         check_forinkertype/2,
-        maybe_compress/1,
+        maybe_compress/2,
         create_value_for_journal/3,
         build_metadata_object/2,
         generate_ledgerkv/5,
@@ -251,9 +251,9 @@ create_value_for_journal({Object, KeyChangeBin}, Compress, Method) ->
         KeyChangeBinLen:32/integer,
         TypeCode:8/integer>>.
 
-maybe_compress({null, KeyChanges}) ->
+maybe_compress({null, KeyChanges}, _PressMethod) ->
     create_value_for_journal({null, KeyChanges}, false, native);
-maybe_compress(JournalBin) ->
+maybe_compress(JournalBin, PressMethod) ->
     Length0 = byte_size(JournalBin) - 5,
     <<JBin0:Length0/binary,
         KeyChangeLength:32/integer,
@@ -267,10 +267,6 @@ maybe_compress(JournalBin) ->
             <<OBin2:Length1/binary, KCBin2:KeyChangeLength/binary>> = JBin0,
             V0 = {deserialise_object(OBin2, IsBinary, IsCompressed, IsLz4),
                     binary_to_term(KCBin2)},
-            PressMethod = case IsLz4 of 
-                                true -> lz4; 
-                                false -> native 
-                            end,
             create_value_for_journal(V0, true, PressMethod)
     end.
 
@@ -340,7 +336,7 @@ encode_valuetype(IsBinary, IsCompressed, Method) ->
 decode_valuetype(TypeInt) ->
     IsCompressed = TypeInt band 1 == 1,
     IsBinary = TypeInt band 2 == 2,
-    IsLz4 = TypeInt band 4 ==4,
+    IsLz4 = TypeInt band 4 == 4,
     {IsBinary, IsCompressed, IsLz4}.
 
 from_journalkey({SQN, _Type, LedgerKey}) ->

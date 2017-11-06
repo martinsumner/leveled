@@ -307,12 +307,13 @@ aae_bustedjournal(_Config) ->
 
 journal_compaction_bustedjournal(_Config) ->
     % Different circumstances will be created in different runs
-    busted_journal_test(10000000, native, on_receipt),
-    busted_journal_test(7777777, lz4, on_compact),
-    busted_journal_test(8888888, lz4, on_receipt).
+    busted_journal_test(10000000, native, on_receipt, true),
+    busted_journal_test(7777777, lz4, on_compact, true),
+    busted_journal_test(8888888, lz4, on_receipt, true),
+    busted_journal_test(7777777, lz4, on_compact, false).
     
 
-busted_journal_test(MaxJournalSize, PressMethod, PressPoint) ->
+busted_journal_test(MaxJournalSize, PressMethod, PressPoint, Bust) ->
     % Simply confirms that none of this causes a crash
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = [{root_path, RootPath},
@@ -336,11 +337,18 @@ busted_journal_test(MaxJournalSize, PressMethod, PressPoint) ->
                     ObjList2),
     ok = leveled_bookie:book_close(Bookie1),
     
-    CDBFiles = testutil:find_journals(RootPath),
-    lists:foreach(fun(FN) ->
-                        testutil:corrupt_journal(RootPath, FN, 100, 2048, 1000)
-                        end,
-                    CDBFiles),
+    case Bust of
+        true ->
+            CDBFiles = testutil:find_journals(RootPath),
+            lists:foreach(fun(FN) ->
+                                testutil:corrupt_journal(RootPath, 
+                                                            FN, 
+                                                            100, 2048, 1000)
+                            end,
+                            CDBFiles);
+        false ->
+            ok 
+    end,
     
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
     
