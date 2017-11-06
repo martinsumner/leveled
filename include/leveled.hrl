@@ -49,6 +49,7 @@
                         reload_strategy = [] :: list(),
                         waste_retention_period :: integer() | undefined,
                         compression_method :: lz4|native,
+                        compress_on_receipt :: boolean(),
                         max_run_length}).
 
 -record(penciller_options,

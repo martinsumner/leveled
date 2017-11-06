@@ -82,6 +82,7 @@
 -define(LONG_RUNNING, 80000).
 -define(RECENT_AAE, false).
 -define(COMPRESSION_METHOD, lz4).
+-define(COMPRESSION_POINT, on_receipt).
 
 -record(ledger_cache, {mem :: ets:tab(),
                         loader = leveled_tree:empty(?CACHE_TYPE)
@@ -923,12 +924,23 @@ set_options(Opts) ->
                 % Must include lz4 library in rebar.config
                 lz4 
         end,
+    CompressOnReceipt = 
+        case get_opt(compression_point, Opts, ?COMPRESSION_POINT) of 
+            on_receipt ->
+                % Note this will add measurable delay to PUT time
+                % https://github.com/martinsumner/leveled/issues/95
+                true;
+            on_compact ->
+                % If using lz4 this is not recommended
+                false 
+        end,
 
     {#inker_options{root_path = JournalFP,
                         reload_strategy = ReloadStrategy,
                         max_run_length = get_opt(max_run_length, Opts),
                         waste_retention_period = WRP,
                         compression_method = CompressionMethod,
+                        compress_on_receipt = CompressOnReceipt,
                         cdb_options = 
                             #cdb_options{max_size=MaxJournalSize,
                                             binary_mode=true,

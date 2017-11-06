@@ -307,17 +307,20 @@ aae_bustedjournal(_Config) ->
 
 journal_compaction_bustedjournal(_Config) ->
     % Different circumstances will be created in different runs
-    busted_journal_test(10000000),
-    busted_journal_test(7777777).
+    busted_journal_test(10000000, native, on_receipt),
+    busted_journal_test(7777777, native, on_compact),
+    busted_journal_test(8888888, lz4, on_receipt).
     
 
-busted_journal_test(MaxJournalSize) ->
+busted_journal_test(MaxJournalSize, PressMethod, PressPoint) ->
     % Simply confirms that none of this causes a crash
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = [{root_path, RootPath},
                     {max_journalsize, MaxJournalSize},
                     {max_run_length, 10},
-                    {sync_strategy, testutil:sync_strategy()}],
+                    {sync_strategy, testutil:sync_strategy()},
+                    {compression_method, PressMethod},
+                    {compression_point, PressPoint}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
@@ -358,6 +361,7 @@ busted_journal_test(MaxJournalSize) ->
     
     ok = leveled_bookie:book_close(Bookie2),
     testutil:reset_filestructure(10000).
+
 
 
 rotating_object_check(BookOpts, B, NumberOfObjects) ->

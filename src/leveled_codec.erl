@@ -46,7 +46,8 @@
         to_ledgerkey/3,
         to_ledgerkey/5,
         from_ledgerkey/1,
-        to_inkerkv/5,
+        to_inkerkv/3,
+        to_inkerkv/6,
         from_inkerkv/1,
         from_inkerkv/2,
         from_journalkey/1,
@@ -73,7 +74,6 @@
 -define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
 -define(NRT_IDX, "$aae.").
 -define(ALL_BUCKETS, <<"$all">>).
--define(COMPRESS_ON_RECEIPT, true).
 
 -type recent_aae() :: #recent_aae{}.
 -type riak_metadata() :: {binary()|delete, % Sibling Metadata
@@ -215,14 +215,13 @@ to_ledgerkey(Bucket, Key, Tag) ->
 %% Return the Key, Value and Hash Option for this object.  The hash option
 %% indicates whether the key would ever be looked up directly, and so if it
 %% requires an entry in the hash table
-to_inkerkv(LedgerKey, SQN, to_fetch, null, _CompressionMethod) ->
-    {{SQN, ?INKT_STND, LedgerKey}, null, true};
-to_inkerkv(LedgerKey, SQN, Object, KeyChanges, CompressionMethod) ->
+to_inkerkv(LedgerKey, SQN, to_fetch) ->
+    {{SQN, ?INKT_STND, LedgerKey}, null, true}.
+
+to_inkerkv(LedgerKey, SQN, Object, KeyChanges, PressMethod, Compress) ->
     InkerType = check_forinkertype(LedgerKey, Object),
     Value = 
-        create_value_for_journal({Object, KeyChanges}, 
-                                    ?COMPRESS_ON_RECEIPT,
-                                    CompressionMethod),
+        create_value_for_journal({Object, KeyChanges}, Compress, PressMethod),
     {{SQN, InkerType, LedgerKey}, Value}.
 
 %% Used when fetching objects, so only handles standard, hashable entries

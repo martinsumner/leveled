@@ -757,7 +757,8 @@ test_ledgerkey(Key) ->
     {o, "Bucket", Key, null}.
 
 test_inkerkv(SQN, Key, V, IdxSpecs) ->
-    leveled_codec:to_inkerkv(test_ledgerkey(Key), SQN, V, IdxSpecs, native).
+    leveled_codec:to_inkerkv(test_ledgerkey(Key), SQN, V, IdxSpecs, 
+                                native, false).
 
 fetch_testcdb(RP) ->
     FN1 = leveled_inker:filepath(RP, 1, new_journal),
@@ -940,7 +941,8 @@ compact_singlefile_totwosmallfiles_testto() ->
                         LK = test_ledgerkey("Key" ++ integer_to_list(X)),
                         Value = leveled_rand:rand_bytes(1024),
                         {IK, IV} = 
-                            leveled_codec:to_inkerkv(LK, X, Value, [], native),
+                            leveled_codec:to_inkerkv(LK, X, Value, [], 
+                                                        native, true),
                         ok = leveled_cdb:cdb_put(CDB1, IK, IV)
                         end,
                     lists:seq(1, 1000)),
