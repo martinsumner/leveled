@@ -9,7 +9,8 @@
             load_and_count/1,
             load_and_count_withdelete/1,
             space_clear_ondelete/1,
-            is_empty_test/1
+            is_empty_test/1,
+            many_put_fetch_switchcompression/1
             ]).
 
 all() -> [
@@ -20,7 +21,8 @@ all() -> [
             load_and_count,
             load_and_count_withdelete,
             space_clear_ondelete,
-            is_empty_test
+            is_empty_test,
+            many_put_fetch_switchcompression
             ].
 
 
@@ -683,3 +685,49 @@ is_empty_test(_Config) ->
     true = sets:size(BLpd3()) == 0,
     
     ok = leveled_bookie:book_close(Bookie1).
+
+
+many_put_fetch_switchcompression(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    StartOpts1 = [{root_path, RootPath},
+                    {max_pencillercachesize, 16000},
+                    {sync_strategy, riak_sync},
+                    {compression_method, native}],
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+    {TestObject, TestSpec} = testutil:generate_testobject(),
+    ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
+    testutil:check_forobject(Bookie1, TestObject),
+    ok = leveled_bookie:book_close(Bookie1),
+    StartOpts2 = [{root_path, RootPath},
+                    {max_journalsize, 500000000},
+                    {max_pencillercachesize, 32000},
+                    {sync_strategy, testutil:sync_strategy()},
+                    {compression_method, lz4}],
+    
+    %% Change compression method
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
+    testutil:check_forobject(Bookie2, TestObject),
+    GenList = [2, 40002, 80002, 120002],
+    CLs = testutil:load_objects(40000, GenList, Bookie2, TestObject,
+                                fun testutil:generate_smallobjects/2),
+    CL1A = lists:nth(1, CLs),
+    ChkListFixed = lists:nth(length(CLs), CLs),
+    testutil:check_forlist(Bookie2, CL1A),
+    ObjList2A = testutil:generate_objects(5000, 2),
+    testutil:riakload(Bookie2, ObjList2A),
+    ChkList2A = lists:sublist(lists:sort(ObjList2A), 1000),
+    testutil:check_forlist(Bookie2, ChkList2A),
+    testutil:check_forlist(Bookie2, ChkListFixed),
+    testutil:check_forobject(Bookie2, TestObject),
+    testutil:check_forlist(Bookie2, ChkList2A),
+    testutil:check_forlist(Bookie2, ChkListFixed),
+    testutil:check_forobject(Bookie2, TestObject),
+    ok = leveled_bookie:book_close(Bookie2),
+
+    %% Change method back again
+    {ok, Bookie3} = leveled_bookie:book_start(StartOpts1),
+    testutil:check_forlist(Bookie3, ChkList2A),
+    testutil:check_forlist(Bookie3, ChkListFixed),
+    testutil:check_forobject(Bookie3, TestObject),
+    testutil:check_formissingobject(Bookie3, "Bookie1", "MissingKey0123"),
+    ok = leveled_bookie:book_destroy(Bookie3).

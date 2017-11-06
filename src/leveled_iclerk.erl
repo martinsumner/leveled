@@ -109,7 +109,8 @@
                 cdb_options,
                 waste_retention_period :: integer() | undefined,
                 waste_path :: string() | undefined,
-                reload_strategy = ?DEFAULT_RELOAD_STRATEGY :: list()}).
+                reload_strategy = ?DEFAULT_RELOAD_STRATEGY :: list(),
+                compression_method :: lz4|native}).
 
 -record(candidate, {low_sqn :: integer() | undefined,
                     filename :: string() | undefined,
@@ -167,7 +168,9 @@ init([IClerkOpts]) ->
                         cdb_options = CDBopts,
                         reload_strategy = ReloadStrategy,
                         waste_path = WP,
-                        waste_retention_period = WRP}}.
+                        waste_retention_period = WRP,
+                        compression_method = 
+                            IClerkOpts#iclerk_options.compression_method}}.
 
 handle_call(_Msg, _From, State) ->
     {reply, not_supported, State}.
@@ -754,7 +757,7 @@ test_ledgerkey(Key) ->
     {o, "Bucket", Key, null}.
 
 test_inkerkv(SQN, Key, V, IdxSpecs) ->
-    leveled_codec:to_inkerkv(test_ledgerkey(Key), SQN, V, IdxSpecs).
+    leveled_codec:to_inkerkv(test_ledgerkey(Key), SQN, V, IdxSpecs, native).
 
 fetch_testcdb(RP) ->
     FN1 = leveled_inker:filepath(RP, 1, new_journal),
@@ -936,13 +939,15 @@ compact_singlefile_totwosmallfiles_testto() ->
     lists:foreach(fun(X) ->
                         LK = test_ledgerkey("Key" ++ integer_to_list(X)),
                         Value = leveled_rand:rand_bytes(1024),
-                        {IK, IV} = leveled_codec:to_inkerkv(LK, X, Value, []),
+                        {IK, IV} = 
+                            leveled_codec:to_inkerkv(LK, X, Value, [], native),
                         ok = leveled_cdb:cdb_put(CDB1, IK, IV)
                         end,
                     lists:seq(1, 1000)),
     {ok, NewName} = leveled_cdb:cdb_complete(CDB1),
     {ok, CDBr} = leveled_cdb:cdb_open_reader(NewName),
-    CDBoptsSmall = #cdb_options{binary_mode=true, max_size=400000, file_path=CP},
+    CDBoptsSmall = 
+        #cdb_options{binary_mode=true, max_size=400000, file_path=CP},
     BestRun1 = [#candidate{low_sqn=1,
                             filename=leveled_cdb:cdb_filename(CDBr),
                             journal=CDBr,

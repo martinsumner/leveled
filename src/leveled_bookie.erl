@@ -81,6 +81,7 @@
 -define(JOURNAL_SIZE_JITTER, 20).
 -define(LONG_RUNNING, 80000).
 -define(RECENT_AAE, false).
+-define(COMPRESSION_METHOD, lz4).
 
 -record(ledger_cache, {mem :: ets:tab(),
                         loader = leveled_tree:empty(?CACHE_TYPE)
@@ -387,7 +388,8 @@ init([Opts]) ->
                                     unit_minutes = UnitMinutes}
                 end,
 
-            {Inker, Penciller} = startup(InkerOpts, PencillerOpts, RecentAAE),
+            {Inker, Penciller} = 
+                startup(InkerOpts, PencillerOpts, RecentAAE),
 
             NewETS = ets:new(mem, [ordered_set]),
             leveled_log:log("B0001", [Inker, Penciller]),
@@ -911,16 +913,30 @@ set_options(Opts) ->
     ok = filelib:ensure_dir(JournalFP),
     ok = filelib:ensure_dir(LedgerFP),
 
+    CompressionMethod = 
+        case get_opt(compression_method, Opts, ?COMPRESSION_METHOD) of 
+            native ->
+                % Note native compression will have reduced performance
+                % https://github.com/martinsumner/leveled/issues/95
+                native;
+            lz4 ->
+                % Must include lz4 library in rebar.config
+                lz4 
+        end,
+
     {#inker_options{root_path = JournalFP,
                         reload_strategy = ReloadStrategy,
                         max_run_length = get_opt(max_run_length, Opts),
                         waste_retention_period = WRP,
-                        cdb_options = #cdb_options{max_size=MaxJournalSize,
-                                                    binary_mode=true,
-                                                    sync_strategy=SyncStrat}},
+                        compression_method = CompressionMethod,
+                        cdb_options = 
+                            #cdb_options{max_size=MaxJournalSize,
+                                            binary_mode=true,
+                                            sync_strategy=SyncStrat}},
         #penciller_options{root_path = LedgerFP,
                             max_inmemory_tablesize = PCLL0CacheSize,
-                            levelzero_cointoss = true}}.
+                            levelzero_cointoss = true,
+                            compression_method = CompressionMethod}}.
 
 startup(InkerOpts, PencillerOpts, RecentAAE) ->
     {ok, Inker} = leveled_inker:ink_start(InkerOpts),

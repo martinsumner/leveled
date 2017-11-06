@@ -136,6 +136,7 @@
                 clerk :: pid() | undefined,
                 compaction_pending = false :: boolean(),
                 is_snapshot = false :: boolean(),
+                compression_method :: lz4|native,
                 source_inker :: pid() | undefined}).
 
 
@@ -509,10 +510,12 @@ start_from_file(InkOpts) ->
     ReloadStrategy = InkOpts#inker_options.reload_strategy,
     MRL = InkOpts#inker_options.max_run_length,
     WRP = InkOpts#inker_options.waste_retention_period,
+    Compression = InkOpts#inker_options.compression_method,
     IClerkOpts = #iclerk_options{inker = self(),
                                     cdb_options=IClerkCDBOpts,
                                     waste_retention_period = WRP,
                                     reload_strategy = ReloadStrategy,
+                                    compression_method = Compression,
                                     max_run_length = MRL},
     {ok, Clerk} = leveled_iclerk:clerk_new(IClerkOpts),
     
@@ -528,16 +531,19 @@ start_from_file(InkOpts) ->
                     active_journaldb = ActiveJournal,
                     root_path = RootPath,
                     cdb_options = CDBopts#cdb_options{waste_path=WasteFP},
+                    compression_method = Compression,
                     clerk = Clerk}}.
 
 
 put_object(LedgerKey, Object, KeyChanges, State) ->
     NewSQN = State#state.journal_sqn + 1,
     ActiveJournal = State#state.active_journaldb,
-    {JournalKey, JournalBin} = leveled_codec:to_inkerkv(LedgerKey,
-                                                            NewSQN,
-                                                            Object,
-                                                            KeyChanges),
+    {JournalKey, JournalBin} = 
+        leveled_codec:to_inkerkv(LedgerKey,
+                                    NewSQN,
+                                    Object,
+                                    KeyChanges,
+                                    State#state.compression_method),
     case leveled_cdb:cdb_put(ActiveJournal,
                                 JournalKey,
                                 JournalBin) of
@@ -579,19 +585,23 @@ get_object(LedgerKey, SQN, Manifest) ->
 
 get_object(LedgerKey, SQN, Manifest, ToIgnoreKeyChanges) ->
     JournalP = leveled_imanifest:find_entry(SQN, Manifest),
-    {InkerKey, _V, true} = leveled_codec:to_inkerkv(LedgerKey,
-                                                    SQN,
-                                                    to_fetch,
-                                                    null),
+    {InkerKey, _V, true} = 
+        leveled_codec:to_inkerkv(LedgerKey,
+                                    SQN,
+                                    to_fetch,
+                                    null,
+                                    not_applicable),
     Obj = leveled_cdb:cdb_get(JournalP, InkerKey),
     leveled_codec:from_inkerkv(Obj, ToIgnoreKeyChanges).
 
 key_check(LedgerKey, SQN, Manifest) ->
     JournalP = leveled_imanifest:find_entry(SQN, Manifest),
-    {InkerKey, _V, true} = leveled_codec:to_inkerkv(LedgerKey,
-                                                    SQN,
-                                                    to_fetch,
-                                                    null),
+    {InkerKey, _V, true} = 
+        leveled_codec:to_inkerkv(LedgerKey,
+                                    SQN,
+                                    to_fetch,
+                                    null,
+                                    not_applicable),
     leveled_cdb:cdb_keycheck(JournalP, InkerKey).
 
 build_manifest(ManifestFilenames,
@@ -851,7 +861,7 @@ initiate_penciller_snapshot(Bookie) ->
 -ifdef(TEST).
 
 create_value_for_journal(Obj, Comp) ->
-    leveled_codec:create_value_for_journal(Obj, Comp).
+    leveled_codec:create_value_for_journal(Obj, Comp, native).
 
 build_dummy_journal() ->
     F = fun(X) -> X end,
@@ -933,7 +943,8 @@ simple_inker_test() ->
     build_dummy_journal(),
     CDBopts = #cdb_options{max_size=300000, binary_mode=true},
     {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,
-                                            cdb_options=CDBopts}),
+                                            cdb_options=CDBopts,
+                                            compression_method=native}),
     Obj1 = ink_get(Ink1, "Key1", 1),
     ?assertMatch({{1, "Key1"}, {"TestValue1", []}}, Obj1),
     Obj3 = ink_get(Ink1, "Key1", 3),
@@ -955,7 +966,8 @@ simple_inker_completeactivejournal_test() ->
     F1r = filename:join(JournalFP, "nursery_1.pnd"),
     ok = file:rename(F1, F1r),
     {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,
-                                            cdb_options=CDBopts}),
+                                            cdb_options=CDBopts,
+                                            compression_method=native}),
     Obj1 = ink_get(Ink1, "Key1", 1),
     ?assertMatch({{1, "Key1"}, {"TestValue1", []}}, Obj1),
     Obj2 = ink_get(Ink1, "Key4", 4),
@@ -973,7 +985,8 @@ compact_journal_test() ->
     RStrategy = [{?STD_TAG, recovr}],
     {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,
                                             cdb_options=CDBopts,
-                                            reload_strategy=RStrategy}),
+                                            reload_strategy=RStrategy,
+                                            compression_method=native}),
     {ok, NewSQN1, _ObjSize} = ink_put(Ink1,
                                         test_ledgerkey("KeyAA"),
                                         "TestValueAA",
@@ -1039,7 +1052,8 @@ empty_manifest_test() ->
     clean_testdir(RootPath),
     CDBopts = #cdb_options{max_size=300000},
     {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,
-                                            cdb_options=CDBopts}),
+                                            cdb_options=CDBopts,
+                                            compression_method=native}),
     ?assertMatch(not_present, ink_fetch(Ink1, "Key1", 1)),
     
     CheckFun = fun(L, K, SQN) -> lists:member({SQN, K}, L) end,
@@ -1059,7 +1073,8 @@ empty_manifest_test() ->
     ok = file:write_file(FN, term_to_binary("Hello")),
     
     {ok, Ink2} = ink_start(#inker_options{root_path=RootPath,
-                                            cdb_options=CDBopts}),
+                                            cdb_options=CDBopts,
+                                            compression_method=native}),
     ?assertMatch(not_present, ink_fetch(Ink2, "Key1", 1)),
     {ok, SQN, Size} = ink_put(Ink2, "Key1", "Value1", {[], infinity}),
     ?assertMatch(2, SQN),

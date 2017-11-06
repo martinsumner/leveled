@@ -46,7 +46,7 @@
         to_ledgerkey/3,
         to_ledgerkey/5,
         from_ledgerkey/1,
-        to_inkerkv/4,
+        to_inkerkv/5,
         from_inkerkv/1,
         from_inkerkv/2,
         from_journalkey/1,
@@ -54,7 +54,7 @@
         split_inkvalue/1,
         check_forinkertype/2,
         maybe_compress/1,
-        create_value_for_journal/2,
+        create_value_for_journal/3,
         build_metadata_object/2,
         generate_ledgerkv/5,
         get_size/2,
@@ -73,6 +73,7 @@
 -define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
 -define(NRT_IDX, "$aae.").
 -define(ALL_BUCKETS, <<"$all">>).
+-define(COMPRESS_ON_RECEIPT, true).
 
 -type recent_aae() :: #recent_aae{}.
 -type riak_metadata() :: {binary()|delete, % Sibling Metadata
@@ -214,11 +215,14 @@ to_ledgerkey(Bucket, Key, Tag) ->
 %% Return the Key, Value and Hash Option for this object.  The hash option
 %% indicates whether the key would ever be looked up directly, and so if it
 %% requires an entry in the hash table
-to_inkerkv(LedgerKey, SQN, to_fetch, null) ->
+to_inkerkv(LedgerKey, SQN, to_fetch, null, _CompressionMethod) ->
     {{SQN, ?INKT_STND, LedgerKey}, null, true};
-to_inkerkv(LedgerKey, SQN, Object, KeyChanges) ->
+to_inkerkv(LedgerKey, SQN, Object, KeyChanges, CompressionMethod) ->
     InkerType = check_forinkertype(LedgerKey, Object),
-    Value = create_value_for_journal({Object, KeyChanges}, true),
+    Value = 
+        create_value_for_journal({Object, KeyChanges}, 
+                                    ?COMPRESS_ON_RECEIPT,
+                                    CompressionMethod),
     {{SQN, InkerType, LedgerKey}, Value}.
 
 %% Used when fetching objects, so only handles standard, hashable entries
@@ -235,46 +239,55 @@ from_inkerkv(Object, ToIgnoreKeyChanges) ->
             Object
     end.
 
-create_value_for_journal({Object, KeyChanges}, Compress)
+create_value_for_journal({Object, KeyChanges}, Compress, Method)
                                             when not is_binary(KeyChanges) ->
     KeyChangeBin = term_to_binary(KeyChanges, [compressed]),
-    create_value_for_journal({Object, KeyChangeBin}, Compress);
-create_value_for_journal({Object, KeyChangeBin}, Compress) ->
+    create_value_for_journal({Object, KeyChangeBin}, Compress, Method);
+create_value_for_journal({Object, KeyChangeBin}, Compress, Method) ->
     KeyChangeBinLen = byte_size(KeyChangeBin),
-    ObjectBin = serialise_object(Object, Compress),
-    TypeCode = encode_valuetype(is_binary(Object), Compress),
+    ObjectBin = serialise_object(Object, Compress, Method),
+    TypeCode = encode_valuetype(is_binary(Object), Compress, Method),
     <<ObjectBin/binary,
         KeyChangeBin/binary,
         KeyChangeBinLen:32/integer,
         TypeCode:8/integer>>.
 
 maybe_compress({null, KeyChanges}) ->
-    create_value_for_journal({null, KeyChanges}, false);
+    create_value_for_journal({null, KeyChanges}, false, native);
 maybe_compress(JournalBin) ->
     Length0 = byte_size(JournalBin) - 5,
     <<JBin0:Length0/binary,
         KeyChangeLength:32/integer,
         Type:8/integer>> = JournalBin,
-    {IsBinary, IsCompressed} = decode_valuetype(Type),
+    {IsBinary, IsCompressed, IsLz4} = decode_valuetype(Type),
     case IsCompressed of
         true ->
             JournalBin;
         false ->
             Length1 = Length0 - KeyChangeLength,
             <<OBin2:Length1/binary, KCBin2:KeyChangeLength/binary>> = JBin0,
-            V0 = {deserialise_object(OBin2, IsBinary, IsCompressed),
+            V0 = {deserialise_object(OBin2, IsBinary, IsCompressed, IsLz4),
                     binary_to_term(KCBin2)},
-            create_value_for_journal(V0, true)
+            PressMethod = case IsLz4 of 
+                                true -> lz4; 
+                                false -> native 
+                            end,
+            create_value_for_journal(V0, true, PressMethod)
     end.
 
-serialise_object(Object, false) when is_binary(Object) ->
+serialise_object(Object, false, _Method) when is_binary(Object) ->
     Object;
-serialise_object(Object, true) when is_binary(Object) ->
-    {ok, Bin} = lz4:pack(Object),
-    Bin;
-serialise_object(Object, false) ->
+serialise_object(Object, true, Method) when is_binary(Object) ->
+    case Method of 
+        lz4 ->
+            {ok, Bin} = lz4:pack(Object),
+            Bin;
+        native ->
+            zlib:compress(Object)
+    end;
+serialise_object(Object, false, _Method) ->
     term_to_binary(Object);
-serialise_object(Object, true) ->
+serialise_object(Object, true, _Method) ->
     term_to_binary(Object, [compressed]).
 
 revert_value_from_journal(JournalBin) ->
@@ -285,27 +298,34 @@ revert_value_from_journal(JournalBin, ToIgnoreKeyChanges) ->
     <<JBin0:Length0/binary,
         KeyChangeLength:32/integer,
         Type:8/integer>> = JournalBin,
-    {IsBinary, IsCompressed} = decode_valuetype(Type),
+    {IsBinary, IsCompressed, IsLz4} = decode_valuetype(Type),
     Length1 = Length0 - KeyChangeLength,
     case ToIgnoreKeyChanges of
         true ->
             <<OBin2:Length1/binary, _KCBin2:KeyChangeLength/binary>> = JBin0,
-            {deserialise_object(OBin2, IsBinary, IsCompressed), []};
+            {deserialise_object(OBin2, IsBinary, IsCompressed, IsLz4), []};
         false ->
             <<OBin2:Length1/binary, KCBin2:KeyChangeLength/binary>> = JBin0,
-            {deserialise_object(OBin2, IsBinary, IsCompressed),
+            {deserialise_object(OBin2, IsBinary, IsCompressed, IsLz4),
                 binary_to_term(KCBin2)}
     end.
 
-deserialise_object(Binary, true, true) ->
+deserialise_object(Binary, true, true, true) ->
     {ok, Deflated} = lz4:unpack(Binary),
     Deflated;
-deserialise_object(Binary, true, false) ->
+deserialise_object(Binary, true, true, false) ->
+    zlib:uncompress(Binary);
+deserialise_object(Binary, true, false, _IsLz4) ->
     Binary;
-deserialise_object(Binary, false, _) ->
+deserialise_object(Binary, false, _, _IsLz4) ->
     binary_to_term(Binary).
 
-encode_valuetype(IsBinary, IsCompressed) ->
+encode_valuetype(IsBinary, IsCompressed, Method) ->
+    Bit3 = 
+        case Method of 
+            lz4 -> 4;
+            native -> 0
+        end,
     Bit2 =
         case IsBinary of            
             true -> 2;
@@ -316,12 +336,13 @@ encode_valuetype(IsBinary, IsCompressed) ->
             true -> 1;
             false -> 0
         end,
-    Bit1 + Bit2.
+    Bit1 + Bit2 + Bit3.
 
 decode_valuetype(TypeInt) ->
     IsCompressed = TypeInt band 1 == 1,
     IsBinary = TypeInt band 2 == 2,
-    {IsBinary, IsCompressed}.
+    IsLz4 = TypeInt band 4 ==4,
+    {IsBinary, IsCompressed, IsLz4}.
 
 from_journalkey({SQN, _Type, LedgerKey}) ->
     {SQN, LedgerKey}.
