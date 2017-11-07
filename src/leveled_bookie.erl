@@ -104,10 +104,13 @@
 
 
 -type book_state() :: #state{}.
+-type sync_mode() :: sync|none|riak_sync.
 
 %%%============================================================================
 %%% API
 %%%============================================================================
+
+-spec book_start(string(), integer(), integer(), sync_mode()) -> {ok, pid()}.
 
 %% @doc Start a Leveled Key/Value store - limited options support.
 %%
@@ -141,6 +144,8 @@ book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy) ->
                     {cache_size, LedgerCacheSize},
                     {max_journalsize, JournalSize},
                     {sync_strategy, SyncStrategy}]).
+
+-spec book_start(list(tuple())) -> {ok, pid()}.
 
 %% @doc Start a Leveled Key/Value store - full options support.
 %%
@@ -194,6 +199,10 @@ book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy) ->
 
 book_start(Opts) ->
     gen_server:start(?MODULE, [Opts], []).
+
+
+-spec book_tempput(pid(), any(), any(), any(), list(), atom(), integer()) ->
+                                                                    ok|pause.
 
 %% @doc Put an object with an expiry time
 %%
@@ -258,12 +267,18 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs) ->
 book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag) ->
     book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, infinity).
 
+-spec book_put(pid(), any(), any(), any(), list(), atom(), infinity|integer()) 
+                                                                -> ok|pause.
+
 book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) ->
     gen_server:call(Pid,
                     {put, Bucket, Key, Object, IndexSpecs, Tag, TTL},
                     infinity).
 
-%% @doc - Standard PUT
+
+-spec book_delete(pid(), any(), any(), list()) -> ok|pause.
+
+%% @doc 
 %%
 %% A thin wrap around the put of a special tombstone object.  There is no
 %% immediate reclaim of space, simply the addition of a more recent tombstone.
@@ -271,7 +286,11 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) ->
 book_delete(Pid, Bucket, Key, IndexSpecs) ->
     book_put(Pid, Bucket, Key, delete, IndexSpecs, ?STD_TAG).
 
-%% @doc - GET and HAD requests
+
+-spec book_get(pid(), any(), any(), atom()) -> {ok, any()}|not_found.
+-spec book_head(pid(), any(), any(), atom()) -> {ok, any()}|not_found.
+
+%% @doc - GET and HEAD requests
 %%
 %% The Bookie supports both GET and HEAD requests, with the HEAD request
 %% returning only the metadata and not the actual object value.  The HEAD
@@ -280,17 +299,21 @@ book_delete(Pid, Bucket, Key, IndexSpecs) ->
 %% GET requests first follow the path of a HEAD request, and if an object is
 %% found, then fetch the value from the Journal via the Inker.
 
-book_get(Pid, Bucket, Key) ->
-    book_get(Pid, Bucket, Key, ?STD_TAG).
-
-book_head(Pid, Bucket, Key) ->
-    book_head(Pid, Bucket, Key, ?STD_TAG).
 
 book_get(Pid, Bucket, Key, Tag) ->
     gen_server:call(Pid, {get, Bucket, Key, Tag}, infinity).
 
 book_head(Pid, Bucket, Key, Tag) ->
     gen_server:call(Pid, {head, Bucket, Key, Tag}, infinity).
+
+book_get(Pid, Bucket, Key) ->
+    book_get(Pid, Bucket, Key, ?STD_TAG).
+
+book_head(Pid, Bucket, Key) ->
+    book_head(Pid, Bucket, Key, ?STD_TAG).
+
+
+-spec book_returnfolder(pid(), tuple()) -> {async, fun()}.
 
 %% @doc Snapshots/Clones
 %%
@@ -343,6 +366,12 @@ book_head(Pid, Bucket, Key, Tag) ->
 book_returnfolder(Pid, RunnerType) ->
     gen_server:call(Pid, {return_runner, RunnerType}, infinity).
 
+
+-spec book_snapshot(pid(), 
+                    store|ledger, 
+                    tuple()|undefined, 
+                    boolean()|undefined) -> {ok, pid(), pid()|null}.
+
 %% @doc create a snapshot of the store
 %%
 %% Snapshot can be based on a pre-defined query (which will be used to filter 
@@ -352,6 +381,10 @@ book_returnfolder(Pid, RunnerType) ->
 
 book_snapshot(Pid, SnapType, Query, LongRunning) ->
     gen_server:call(Pid, {snapshot, SnapType, Query, LongRunning}, infinity).
+
+
+-spec book_compactjournal(pid(), integer()) -> ok.
+-spec book_islastcompactionpending(pid()) -> boolean().
 
 %% @doc Call for compaction of the Journal
 %%
@@ -365,6 +398,10 @@ book_compactjournal(Pid, Timeout) ->
 
 book_islastcompactionpending(Pid) ->
     gen_server:call(Pid, confirm_compact, infinity).
+
+
+-spec book_close(pid()) -> ok.
+-spec book_destroy(pid()) -> ok.
 
 %% @doc Clean shutdown
 %%
