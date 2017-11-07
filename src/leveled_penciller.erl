@@ -243,7 +243,9 @@
                 work_ongoing = false :: boolean(), % i.e. compaction work
                 work_backlog = false :: boolean(), % i.e. compaction work
                 
-                head_timing :: tuple() | undefined}).
+                head_timing :: tuple() | undefined,
+                
+                compression_method :: lz4|native}).
 
 -type penciller_options() :: #penciller_options{}.
 -type bookies_memory() :: {tuple()|empty_cache,
@@ -835,25 +837,28 @@ sst_filename(ManSQN, Level, Count) ->
 
 start_from_file(PCLopts) ->
     RootPath = PCLopts#penciller_options.root_path,
-    MaxTableSize = case PCLopts#penciller_options.max_inmemory_tablesize of
-                        undefined ->
-                            ?MAX_TABLESIZE;
-                        M ->
-                            M
-                    end,
+    MaxTableSize = 
+        case PCLopts#penciller_options.max_inmemory_tablesize of
+            undefined ->
+                ?MAX_TABLESIZE;
+            M ->
+                M
+        end,
+    PressMethod = PCLopts#penciller_options.compression_method,
     
-    {ok, MergeClerk} = leveled_pclerk:clerk_new(self(), RootPath),
+    {ok, MergeClerk} = leveled_pclerk:clerk_new(self(), RootPath, PressMethod),
     
     CoinToss = PCLopts#penciller_options.levelzero_cointoss,
     % Used to randomly defer the writing of L0 file.  Intended to help with
     % vnode syncronisation issues (e.g. stop them all by default merging to
     % level zero concurrently)
     
-    InitState = #state{clerk=MergeClerk,
-                        root_path=RootPath,
-                        levelzero_maxcachesize=MaxTableSize,
-                        levelzero_cointoss=CoinToss,
-                        levelzero_index=leveled_pmem:new_index()},
+    InitState = #state{clerk = MergeClerk,
+                        root_path = RootPath,
+                        levelzero_maxcachesize = MaxTableSize,
+                        levelzero_cointoss = CoinToss,
+                        levelzero_index = leveled_pmem:new_index(),
+                        compression_method = PressMethod},
     
     %% Open manifest
     Manifest0 = leveled_pmanifest:open_manifest(RootPath),
@@ -861,7 +866,8 @@ start_from_file(PCLopts) ->
         fun(FN) ->
             {ok,
                 Pid,
-                {_FK, _LK}} = leveled_sst:sst_open(sst_rootpath(RootPath), FN),
+                {_FK, _LK}} = 
+                    leveled_sst:sst_open(sst_rootpath(RootPath), FN),
             Pid
         end,
     SQNFun = fun leveled_sst:sst_getmaxsequencenumber/1,
@@ -1006,7 +1012,8 @@ roll_memory(State, false) ->
                                         length(State#state.levelzero_cache),
                                         FetchFun,
                                         PCL,
-                                        State#state.ledger_sqn),
+                                        State#state.ledger_sqn,
+                                        State#state.compression_method),
     {ok, Constructor, _} = R,
     Constructor;
 roll_memory(State, true) ->
@@ -1020,7 +1027,8 @@ roll_memory(State, true) ->
                             FileName,
                             0,
                             KVList,
-                            State#state.ledger_sqn),
+                            State#state.ledger_sqn,
+                            State#state.compression_method),
     {ok, Constructor, _} = R,
     Constructor.
 
@@ -1401,7 +1409,8 @@ simple_server_test() ->
     RootPath = "../test/ledger",
     clean_testdir(RootPath),
     {ok, PCL} = pcl_start(#penciller_options{root_path=RootPath,
-                                                max_inmemory_tablesize=1000}),
+                                                max_inmemory_tablesize=1000,
+                                                compression_method=native}),
     Key1_Pre = {{o,"Bucket0001", "Key0001", null},
                     {1, {active, infinity}, null}},
     Key1 = add_missing_hash(Key1_Pre),
@@ -1440,7 +1449,8 @@ simple_server_test() ->
     ok = pcl_close(PCL),
     
     {ok, PCLr} = pcl_start(#penciller_options{root_path=RootPath,
-                                                max_inmemory_tablesize=1000}),
+                                                max_inmemory_tablesize=1000,
+                                                compression_method=native}),
     ?assertMatch(2003, pcl_getstartupsequencenumber(PCLr)),
     % ok = maybe_pause_push(PCLr, [Key2] ++ KL2 ++ [Key3]),
     
@@ -1689,7 +1699,8 @@ create_file_test() ->
                                                 1,
                                                 FetchFun,
                                                 undefined,
-                                                10000),
+                                                10000,
+                                                native),
     lists:foreach(fun(X) ->
                         case checkready(SP) of
                             timeout ->
