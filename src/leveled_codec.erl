@@ -385,13 +385,8 @@ get_tagstrategy(LK, Strategy) ->
             skip
     end.
 
-split_inkvalue(VBin) ->
-    case is_binary(VBin) of
-            true ->
-                revert_value_from_journal(VBin);
-            false ->
-                VBin
-        end.
+split_inkvalue(VBin) when is_binary(VBin) ->
+    revert_value_from_journal(VBin).
 
 check_forinkertype(_LedgerKey, delete) ->
     ?INKT_TOMB;
