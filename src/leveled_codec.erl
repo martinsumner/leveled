@@ -237,8 +237,6 @@ from_inkerkv(Object, ToIgnoreKeyChanges) ->
     case Object of
         {{SQN, ?INKT_STND, PK}, Bin} when is_binary(Bin) ->
             {{SQN, PK}, revert_value_from_journal(Bin, ToIgnoreKeyChanges)};
-        {{SQN, ?INKT_STND, PK}, Term} ->
-            {{SQN, PK}, Term};
         _ ->
             Object
     end.
