@@ -145,19 +145,34 @@ book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy) ->
 %% @doc Start a Leveled Key/Value store - full options support.
 %%
 %% Allows an options proplists to be passed for setting options.  There are
-%% two primary additional options this allows over book_start/4:
+%% four primary additional options this allows over book_start/4:
 %% - retain_strategy
 %% - waste_retention_period
+%% - compression_method
+%% - compression_point
 %%
-%% Both of these relate to compaction in the Journal.  The retain_strategy
-%% determines if a skinny record of the object should be retained following
-%% compaction, and how thta should be used when recovering lost state in the
-%% Ledger.
+%% Both of the first two options relate to compaction in the Journal.  The 
+%% retain_strategydetermines if a skinny record of the object should be 
+%% retained following compaction, and how that should be used when recovering 
+%% lost state in the Ledger.
+%%
+%% This is relevant to when Riak uses Leveled in that KeyChanges are presented
+%% by the vnode to the backend as deltas.  This means that if those key 
+%% changes do not remain recorded in the journal once the value has been 
+%% compacted - rebuilding the ledger from the Journal would lead to incorrect
+%% index entries being present.
 %%
 %% Currently compacted records no longer in use are not removed but moved to
 %% a journal_waste folder, and the waste_retention_period determines how long
 %% this history should be kept for (for example to allow for it to be backed
-%% up before deletion)
+%% up before deletion).
+%%
+%% Compression method and point allow Leveled to be switched from using bif
+%% based compression (zlib) to suing nif based compression (lz4).  The 
+%% compression point can be changed between on_receipt (all values are 
+%% compressed as they are received), to on_compact where values are originally 
+%% stored uncompressed (speeding PUT times), and are only compressed when 
+%% they are first subject to compaction
 %%
 %% TODO:
 %% The reload_strategy is exposed as currently no firm decision has been made
