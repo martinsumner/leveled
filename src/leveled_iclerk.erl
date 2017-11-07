@@ -109,7 +109,8 @@
                 cdb_options,
                 waste_retention_period :: integer() | undefined,
                 waste_path :: string() | undefined,
-                reload_strategy = ?DEFAULT_RELOAD_STRATEGY :: list()}).
+                reload_strategy = ?DEFAULT_RELOAD_STRATEGY :: list(),
+                compression_method :: lz4|native}).
 
 -record(candidate, {low_sqn :: integer() | undefined,
                     filename :: string() | undefined,
@@ -167,7 +168,9 @@ init([IClerkOpts]) ->
                         cdb_options = CDBopts,
                         reload_strategy = ReloadStrategy,
                         waste_path = WP,
-                        waste_retention_period = WRP}}.
+                        waste_retention_period = WRP,
+                        compression_method = 
+                            IClerkOpts#iclerk_options.compression_method}}.
 
 handle_call(_Msg, _From, State) ->
     {reply, not_supported, State}.
@@ -194,7 +197,8 @@ handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Inker, _TO},
                                             FilterFun,
                                             FilterServer,
                                             MaxSQN,
-                                            State#state.reload_strategy),
+                                            State#state.reload_strategy,
+                                            State#state.compression_method),
             FilesToDelete = lists:map(fun(C) ->
                                             {C#candidate.low_sqn,
                                                 C#candidate.filename,
@@ -490,7 +494,8 @@ update_inker(Inker, ManifestSlice, FilesToDelete) ->
                     FilesToDelete),
                     ok.
 
-compact_files(BestRun, CDBopts, FilterFun, FilterServer, MaxSQN, RStrategy) ->
+compact_files(BestRun, CDBopts, FilterFun, FilterServer, 
+                                            MaxSQN, RStrategy, PressMethod) ->
     BatchesOfPositions = get_all_positions(BestRun, []),
     compact_files(BatchesOfPositions,
                                 CDBopts,
@@ -499,19 +504,20 @@ compact_files(BestRun, CDBopts, FilterFun, FilterServer, MaxSQN, RStrategy) ->
                                 FilterServer,
                                 MaxSQN,
                                 RStrategy,
+                                PressMethod,
                                 []).
 
 
 compact_files([], _CDBopts, null, _FilterFun, _FilterServer, _MaxSQN,
-                            _RStrategy, ManSlice0) ->
+                            _RStrategy, _PressMethod, ManSlice0) ->
     ManSlice0;
 compact_files([], _CDBopts, ActiveJournal0, _FilterFun, _FilterServer, _MaxSQN,
-                            _RStrategy, ManSlice0) ->
+                            _RStrategy, _PressMethod, ManSlice0) ->
     ManSlice1 = ManSlice0 ++ leveled_imanifest:generate_entry(ActiveJournal0),
     ManSlice1;
 compact_files([Batch|T], CDBopts, ActiveJournal0,
                             FilterFun, FilterServer, MaxSQN, 
-                            RStrategy, ManSlice0) ->
+                            RStrategy, PressMethod, ManSlice0) ->
     {SrcJournal, PositionList} = Batch,
     KVCs0 = leveled_cdb:cdb_directfetch(SrcJournal,
                                         PositionList,
@@ -524,9 +530,10 @@ compact_files([Batch|T], CDBopts, ActiveJournal0,
     {ActiveJournal1, ManSlice1} = write_values(KVCs1,
                                                 CDBopts, 
                                                 ActiveJournal0,
-                                                ManSlice0),
+                                                ManSlice0,
+                                                PressMethod),
     compact_files(T, CDBopts, ActiveJournal1, FilterFun, FilterServer, MaxSQN,
-                                RStrategy, ManSlice1).
+                                RStrategy, PressMethod, ManSlice1).
 
 get_all_positions([], PositionBatches) ->
     PositionBatches;
@@ -577,12 +584,12 @@ filter_output(KVCs, FilterFun, FilterServer, MaxSQN, ReloadStrategy) ->
                 KVCs).
     
 
-write_values([], _CDBopts, Journal0, ManSlice0) ->
+write_values([], _CDBopts, Journal0, ManSlice0, _PressMethod) ->
     {Journal0, ManSlice0};
-write_values(KVCList, CDBopts, Journal0, ManSlice0) ->
+write_values(KVCList, CDBopts, Journal0, ManSlice0, PressMethod) ->
     KVList = lists:map(fun({K, V, _C}) ->
                             % Compress the value as part of compaction
-                            {K, leveled_codec:maybe_compress(V)}
+                            {K, leveled_codec:maybe_compress(V, PressMethod)}
                             end,
                         KVCList),
     {ok, Journal1} = case Journal0 of
@@ -605,7 +612,7 @@ write_values(KVCList, CDBopts, Journal0, ManSlice0) ->
             {Journal1, ManSlice0};
         roll ->
             ManSlice1 = ManSlice0 ++ leveled_imanifest:generate_entry(Journal1),
-            write_values(KVCList, CDBopts, null, ManSlice1)
+            write_values(KVCList, CDBopts, null, ManSlice1, PressMethod)
     end.
                         
 clear_waste(State) ->
@@ -754,7 +761,8 @@ test_ledgerkey(Key) ->
     {o, "Bucket", Key, null}.
 
 test_inkerkv(SQN, Key, V, IdxSpecs) ->
-    leveled_codec:to_inkerkv(test_ledgerkey(Key), SQN, V, IdxSpecs).
+    leveled_codec:to_inkerkv(test_ledgerkey(Key), SQN, V, IdxSpecs, 
+                                native, false).
 
 fetch_testcdb(RP) ->
     FN1 = leveled_inker:filepath(RP, 1, new_journal),
@@ -839,7 +847,8 @@ compact_single_file_recovr_test() ->
                         LedgerFun1,
                         LedgerSrv1,
                         9,
-                        [{?STD_TAG, recovr}]),
+                        [{?STD_TAG, recovr}],
+                        native),
     io:format("FN of ~s~n", [FN]),
     ?assertMatch(2, LowSQN),
     ?assertMatch(probably,
@@ -876,7 +885,8 @@ compact_single_file_retain_test() ->
                         LedgerFun1,
                         LedgerSrv1,
                         9,
-                        [{?STD_TAG, retain}]),
+                        [{?STD_TAG, retain}],
+                        native),
     io:format("FN of ~s~n", [FN]),
     ?assertMatch(1, LowSQN),
     ?assertMatch(probably,
@@ -936,13 +946,16 @@ compact_singlefile_totwosmallfiles_testto() ->
     lists:foreach(fun(X) ->
                         LK = test_ledgerkey("Key" ++ integer_to_list(X)),
                         Value = leveled_rand:rand_bytes(1024),
-                        {IK, IV} = leveled_codec:to_inkerkv(LK, X, Value, []),
+                        {IK, IV} = 
+                            leveled_codec:to_inkerkv(LK, X, Value, [], 
+                                                        native, true),
                         ok = leveled_cdb:cdb_put(CDB1, IK, IV)
                         end,
                     lists:seq(1, 1000)),
     {ok, NewName} = leveled_cdb:cdb_complete(CDB1),
     {ok, CDBr} = leveled_cdb:cdb_open_reader(NewName),
-    CDBoptsSmall = #cdb_options{binary_mode=true, max_size=400000, file_path=CP},
+    CDBoptsSmall = 
+        #cdb_options{binary_mode=true, max_size=400000, file_path=CP},
     BestRun1 = [#candidate{low_sqn=1,
                             filename=leveled_cdb:cdb_filename(CDBr),
                             journal=CDBr,
@@ -954,7 +967,8 @@ compact_singlefile_totwosmallfiles_testto() ->
                                     FakeFilterFun,
                                     null,
                                     900,
-                                    [{?STD_TAG, recovr}]),
+                                    [{?STD_TAG, recovr}],
+                                    native),
     ?assertMatch(2, length(ManifestSlice)),
     lists:foreach(fun({_SQN, _FN, CDB, _LK}) ->
                         ok = leveled_cdb:cdb_deletepending(CDB),

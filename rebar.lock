@@ -1,1 +1,4 @@
-[].
+[{<<"lz4">>,
+  {git,"https://github.com/martinsumner/erlang-lz4",
+       {ref,"09d539685e616b614e851926384439384601ee5a"}},
+  0}].

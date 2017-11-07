@@ -81,6 +81,8 @@
 -define(JOURNAL_SIZE_JITTER, 20).
 -define(LONG_RUNNING, 80000).
 -define(RECENT_AAE, false).
+-define(COMPRESSION_METHOD, lz4).
+-define(COMPRESSION_POINT, on_receipt).
 
 -record(ledger_cache, {mem :: ets:tab(),
                         loader = leveled_tree:empty(?CACHE_TYPE)
@@ -143,19 +145,34 @@ book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy) ->
 %% @doc Start a Leveled Key/Value store - full options support.
 %%
 %% Allows an options proplists to be passed for setting options.  There are
-%% two primary additional options this allows over book_start/4:
+%% four primary additional options this allows over book_start/4:
 %% - retain_strategy
 %% - waste_retention_period
+%% - compression_method
+%% - compression_point
 %%
-%% Both of these relate to compaction in the Journal.  The retain_strategy
-%% determines if a skinny record of the object should be retained following
-%% compaction, and how thta should be used when recovering lost state in the
-%% Ledger.
+%% Both of the first two options relate to compaction in the Journal.  The 
+%% retain_strategydetermines if a skinny record of the object should be 
+%% retained following compaction, and how that should be used when recovering 
+%% lost state in the Ledger.
+%%
+%% This is relevant to when Riak uses Leveled in that KeyChanges are presented
+%% by the vnode to the backend as deltas.  This means that if those key 
+%% changes do not remain recorded in the journal once the value has been 
+%% compacted - rebuilding the ledger from the Journal would lead to incorrect
+%% index entries being present.
 %%
 %% Currently compacted records no longer in use are not removed but moved to
 %% a journal_waste folder, and the waste_retention_period determines how long
 %% this history should be kept for (for example to allow for it to be backed
-%% up before deletion)
+%% up before deletion).
+%%
+%% Compression method and point allow Leveled to be switched from using bif
+%% based compression (zlib) to suing nif based compression (lz4).  The 
+%% compression point can be changed between on_receipt (all values are 
+%% compressed as they are received), to on_compact where values are originally 
+%% stored uncompressed (speeding PUT times), and are only compressed when 
+%% they are first subject to compaction
 %%
 %% TODO:
 %% The reload_strategy is exposed as currently no firm decision has been made
@@ -387,7 +404,8 @@ init([Opts]) ->
                                     unit_minutes = UnitMinutes}
                 end,
 
-            {Inker, Penciller} = startup(InkerOpts, PencillerOpts, RecentAAE),
+            {Inker, Penciller} = 
+                startup(InkerOpts, PencillerOpts, RecentAAE),
 
             NewETS = ets:new(mem, [ordered_set]),
             leveled_log:log("B0001", [Inker, Penciller]),
@@ -899,16 +917,41 @@ set_options(Opts) ->
     ok = filelib:ensure_dir(JournalFP),
     ok = filelib:ensure_dir(LedgerFP),
 
+    CompressionMethod = 
+        case get_opt(compression_method, Opts, ?COMPRESSION_METHOD) of 
+            native ->
+                % Note native compression will have reduced performance
+                % https://github.com/martinsumner/leveled/issues/95
+                native;
+            lz4 ->
+                % Must include lz4 library in rebar.config
+                lz4 
+        end,
+    CompressOnReceipt = 
+        case get_opt(compression_point, Opts, ?COMPRESSION_POINT) of 
+            on_receipt ->
+                % Note this will add measurable delay to PUT time
+                % https://github.com/martinsumner/leveled/issues/95
+                true;
+            on_compact ->
+                % If using lz4 this is not recommended
+                false 
+        end,
+
     {#inker_options{root_path = JournalFP,
                         reload_strategy = ReloadStrategy,
                         max_run_length = get_opt(max_run_length, Opts),
                         waste_retention_period = WRP,
-                        cdb_options = #cdb_options{max_size=MaxJournalSize,
-                                                    binary_mode=true,
-                                                    sync_strategy=SyncStrat}},
+                        compression_method = CompressionMethod,
+                        compress_on_receipt = CompressOnReceipt,
+                        cdb_options = 
+                            #cdb_options{max_size=MaxJournalSize,
+                                            binary_mode=true,
+                                            sync_strategy=SyncStrat}},
         #penciller_options{root_path = LedgerFP,
                             max_inmemory_tablesize = PCLL0CacheSize,
-                            levelzero_cointoss = true}}.
+                            levelzero_cointoss = true,
+                            compression_method = CompressionMethod}}.
 
 startup(InkerOpts, PencillerOpts, RecentAAE) ->
     {ok, Inker} = leveled_inker:ink_start(InkerOpts),
