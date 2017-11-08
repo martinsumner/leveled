@@ -297,7 +297,7 @@
     {"CDB04",
         {info, "Deletion confirmed for file ~s at ManifestSQN ~w"}},
     {"CDB05",
-        {info, "Closing of filename ~s for reason ~w"}},
+        {info, "Closing of filename ~s from state ~w for reason ~w"}},
     {"CDB06",
         {info, "File to be truncated at last position of ~w with end of "
                 ++ "file at ~w"}},
@@ -327,7 +327,11 @@
         {info, "After ~w PUTs total write time is ~w total sync time is ~w "
                 ++ "and max write time is ~w and max sync time is ~w"}},
     {"CDB18",
-        {info, "Handled return and write of hashtable"}}
+        {info, "Handled return and write of hashtable"}},
+    {"CDB19",
+        {info, "Transferring filename ~s to waste ~s"}},
+    {"CDB20",
+        {info, "Deleting filename ~s as no waste retention period defined"}}
         ]).
 
 

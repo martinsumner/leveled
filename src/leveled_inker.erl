@@ -493,25 +493,21 @@ code_change(_OldVsn, State, _Extra) ->
 %%%============================================================================
 
 start_from_file(InkOpts) ->
-    RootPath = InkOpts#inker_options.root_path,
-    CDBopts = InkOpts#inker_options.cdb_options,
     
+    CDBopts = get_cdbopts(InkOpts),
+    
+    RootPath = InkOpts#inker_options.root_path,
     JournalFP = filepath(RootPath, journal_dir),
     filelib:ensure_dir(JournalFP),
     CompactFP = filepath(RootPath, journal_compact_dir),
     filelib:ensure_dir(CompactFP),
-    WasteFP = filepath(RootPath, journal_waste_dir),
-    filelib:ensure_dir(WasteFP),
     ManifestFP = filepath(RootPath, manifest_dir),
     ok = filelib:ensure_dir(ManifestFP),
+    IClerkCDBOpts = CDBopts#cdb_options{file_path = CompactFP},
     
-    {ok, ManifestFilenames} = file:list_dir(ManifestFP),
-    
-    IClerkCDBOpts = CDBopts#cdb_options{file_path = CompactFP,
-                                        waste_path = WasteFP},
+    WRP = InkOpts#inker_options.waste_retention_period,
     ReloadStrategy = InkOpts#inker_options.reload_strategy,
     MRL = InkOpts#inker_options.max_run_length,
-    WRP = InkOpts#inker_options.waste_retention_period,
     PressMethod = InkOpts#inker_options.compression_method,
     PressOnReceipt = InkOpts#inker_options.compress_on_receipt,
     IClerkOpts = #iclerk_options{inker = self(),
@@ -520,8 +516,10 @@ start_from_file(InkOpts) ->
                                     reload_strategy = ReloadStrategy,
                                     compression_method = PressMethod,
                                     max_run_length = MRL},
+    
     {ok, Clerk} = leveled_iclerk:clerk_new(IClerkOpts),
     
+    {ok, ManifestFilenames} = file:list_dir(ManifestFP),
     {Manifest,
         ManifestSQN,
         JournalSQN,
@@ -533,10 +531,27 @@ start_from_file(InkOpts) ->
                     journal_sqn = JournalSQN,
                     active_journaldb = ActiveJournal,
                     root_path = RootPath,
-                    cdb_options = CDBopts#cdb_options{waste_path=WasteFP},
+                    cdb_options = CDBopts,
                     compression_method = PressMethod,
                     compress_on_receipt = PressOnReceipt,
                     clerk = Clerk}}.
+
+get_cdbopts(InkOpts)->
+    CDBopts = InkOpts#inker_options.cdb_options,
+    WasteFP = 
+        case InkOpts#inker_options.waste_retention_period of 
+            undefined ->
+                % If the waste retention period is undefined, there will
+                % be no retention of waste.  This is triggered by making
+                % the waste path undefined
+                undefined;
+            _WRP ->
+                WFP = filepath(InkOpts#inker_options.root_path, 
+                                journal_waste_dir),
+                filelib:ensure_dir(WFP),
+                WFP
+        end,
+    CDBopts#cdb_options{waste_path = WasteFP}.
 
 
 put_object(LedgerKey, Object, KeyChanges, State) ->
@@ -677,8 +692,8 @@ open_all_manifest(Man0, RootPath, CDBOpts) ->
             PFN = FN ++ "." ++ ?PENDING_FILEX,
             case filelib:is_file(CFN) of
                 true ->
-                    {ok, Pid} = leveled_cdb:cdb_reopen_reader(CFN,
-                                                                LK_RO),
+                    {ok, Pid} = 
+                        leveled_cdb:cdb_reopen_reader(CFN, LK_RO, CDBOpts),
                     {LowSQN, FN, Pid, LK_RO};
                 false ->
                     W = leveled_cdb:cdb_open_writer(PFN, CDBOpts),
@@ -920,6 +935,7 @@ build_dummy_journal(KeyConvertF) ->
 clean_testdir(RootPath) ->
     clean_subdir(filepath(RootPath, journal_dir)),
     clean_subdir(filepath(RootPath, journal_compact_dir)),
+    clean_subdir(filepath(RootPath, journal_waste_dir)),
     clean_subdir(filepath(RootPath, manifest_dir)).
 
 clean_subdir(DirPath) ->
@@ -976,19 +992,26 @@ simple_inker_completeactivejournal_test() ->
 test_ledgerkey(Key) ->
     {o, "Bucket", Key, null}.
 
-compact_journal_test() ->
-    {timeout, 60, fun compact_journal_testto/0}.
+compact_journal_wasteretained_test_() ->
+    {timeout, 60, fun() -> compact_journal_testto(300, true) end}.
 
-compact_journal_testto() ->
+compact_journal_wastediscarded_test_() ->
+    {timeout, 60, fun() -> compact_journal_testto(undefined, false) end}.
+
+compact_journal_testto(WRP, ExpectedFiles) ->
     RootPath = "../test/journal",
-    build_dummy_journal(fun test_ledgerkey/1),
     CDBopts = #cdb_options{max_size=300000},
     RStrategy = [{?STD_TAG, recovr}],
-    {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,
-                                            cdb_options=CDBopts,
-                                            reload_strategy=RStrategy,
-                                            compression_method=native,
-                                            compress_on_receipt=false}),
+    InkOpts = #inker_options{root_path=RootPath,
+                                cdb_options=CDBopts,
+                                reload_strategy=RStrategy,
+                                waste_retention_period=WRP,
+                                compression_method=native,
+                                compress_on_receipt=false},
+    
+    build_dummy_journal(fun test_ledgerkey/1),
+    {ok, Ink1} = ink_start(InkOpts),
+    
     {ok, NewSQN1, _ObjSize} = ink_put(Ink1,
                                         test_ledgerkey("KeyAA"),
                                         "TestValueAA",
@@ -1036,7 +1059,7 @@ compact_journal_testto() ->
     timer:sleep(1000),
     CompactedManifest2 = ink_getmanifest(Ink1),
     R = lists:foldl(fun({_SQN, FN, _P, _LK}, Acc) ->
-                                case string:str(FN, "post_compact") of
+                                case string:str(FN, ?COMPACT_FP) of
                                     N when N > 0 ->
                                         true;
                                     0 ->
@@ -1049,6 +1072,9 @@ compact_journal_testto() ->
     ink_close(Ink1),
     % Need to wait for delete_pending files to timeout
     timer:sleep(10000),
+    % Are there filese in the waste folder after compaction
+    {ok, WasteFNs} = file:list_dir(filepath(RootPath, journal_waste_dir)),
+    ?assertMatch(ExpectedFiles, length(WasteFNs) > 0),
     clean_testdir(RootPath).
 
 empty_manifest_test() ->

@@ -66,7 +66,7 @@
             cdb_open_writer/2,
             cdb_open_reader/1,
             cdb_open_reader/2,
-            cdb_reopen_reader/2,
+            cdb_reopen_reader/3,
             cdb_get/2,
             cdb_put/3,
             cdb_mput/2,
@@ -138,7 +138,7 @@ cdb_open_writer(Filename, Opts) ->
     ok = gen_fsm:sync_send_event(Pid, {open_writer, Filename}, infinity),
     {ok, Pid}.
 
--spec cdb_reopen_reader(string(), binary()) -> {ok, pid()}.
+-spec cdb_reopen_reader(string(), binary(), cdb_options()) -> {ok, pid()}.
 %% @doc
 %% Open an existing file that has already been moved into read-only mode. The
 %% LastKey should be known, as it has been stored in the manifest.  Knowing the
@@ -147,8 +147,9 @@ cdb_open_writer(Filename, Opts) ->
 %%
 %% The LastKey is the Key of the last object added to the file - and is used to
 %% determine when scans over a file have completed.
-cdb_reopen_reader(Filename, LastKey) ->
-    {ok, Pid} = gen_fsm:start(?MODULE, [#cdb_options{binary_mode=true}], []),
+cdb_reopen_reader(Filename, LastKey, CDBopts) ->
+    {ok, Pid} = 
+        gen_fsm:start(?MODULE, [CDBopts#cdb_options{binary_mode=true}], []),
     ok = gen_fsm:sync_send_event(Pid,
                                     {open_reader, Filename, LastKey},
                                     infinity),
@@ -692,17 +693,19 @@ handle_info(_Msg, StateName, State) ->
     {next_state, StateName, State}.
 
 terminate(Reason, StateName, State) ->
-    leveled_log:log("CDB05", [State#state.filename, Reason]),
+    leveled_log:log("CDB05", [State#state.filename, StateName, Reason]),
     case {State#state.handle, StateName, State#state.waste_path} of
         {undefined, _, _} ->
             ok;
         {Handle, delete_pending, undefined} ->
             ok = file:close(Handle),
-            ok = file:delete(State#state.filename);
+            ok = file:delete(State#state.filename),
+            leveled_log:log("CDB20", [State#state.filename]);
         {Handle, delete_pending, WasteFP} ->
             file:close(Handle),
             Components = filename:split(State#state.filename),
             NewName = WasteFP ++ lists:last(Components),
+            leveled_log:log("CDB19", [State#state.filename, NewName]),
             file:rename(State#state.filename, NewName);
         {Handle, _, _} ->
             file:close(Handle)

@@ -157,7 +157,7 @@ book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy) ->
 %% - compression_point
 %%
 %% Both of the first two options relate to compaction in the Journal.  The 
-%% retain_strategydetermines if a skinny record of the object should be 
+%% retain_strategy determines if a skinny record of the object should be 
 %% retained following compaction, and how that should be used when recovering 
 %% lost state in the Ledger.
 %%
@@ -170,7 +170,9 @@ book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy) ->
 %% Currently compacted records no longer in use are not removed but moved to
 %% a journal_waste folder, and the waste_retention_period determines how long
 %% this history should be kept for (for example to allow for it to be backed
-%% up before deletion).
+%% up before deletion).  If the waste_retention_period (in seconds) is 
+%% undefined, then there will be no holding of this waste - unused files will
+%% be immediately deleted.
 %%
 %% Compression method and point allow Leveled to be switched from using bif
 %% based compression (zlib) to suing nif based compression (lz4).  The 
