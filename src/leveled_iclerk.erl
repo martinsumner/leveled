@@ -923,7 +923,9 @@ compact_empty_file_test() ->
                     {3, {o, "Bucket", "Key3", null}}],
     LedgerFun1 = fun(_Srv, _Key, _ObjSQN) -> false end,
     Score1 = check_single_file(CDB2, LedgerFun1, LedgerSrv1, 9, 8, 4),
-    ?assertMatch(100.0, Score1).
+    ?assertMatch(100.0, Score1),
+    ok = leveled_cdb:cdb_deletepending(CDB2),
+    ok = leveled_cdb:cdb_destroy(CDB2).
 
 compare_candidate_test() ->
     Candidate1 = #candidate{low_sqn=1},

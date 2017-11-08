@@ -299,6 +299,7 @@ ink_compactjournal(Pid, Checker, InitiateFun, CloseFun, FilterFun, Timeout) ->
                             FilterFun,
                             Timeout},
                         infinity).
+
 -spec ink_compactioncomplete(pid()) -> ok.
 %% @doc
 %% Used by a clerk to state that a compaction process is over, only change
@@ -933,7 +934,6 @@ clean_subdir(DirPath) ->
                         end,
                     Files).
 
-
 simple_inker_test() ->
     RootPath = "../test/journal",
     build_dummy_journal(),
@@ -977,6 +977,9 @@ test_ledgerkey(Key) ->
     {o, "Bucket", Key, null}.
 
 compact_journal_test() ->
+    {timeout, 60, fun compact_journal_testto/0}.
+
+compact_journal_testto() ->
     RootPath = "../test/journal",
     build_dummy_journal(fun test_ledgerkey/1),
     CDBopts = #cdb_options{max_size=300000},
@@ -1044,6 +1047,8 @@ compact_journal_test() ->
     ?assertMatch(false, R),
     ?assertMatch(2, length(CompactedManifest2)),
     ink_close(Ink1),
+    % Need to wait for delete_pending files to timeout
+    timer:sleep(10000),
     clean_testdir(RootPath).
 
 empty_manifest_test() ->

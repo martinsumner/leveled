@@ -297,7 +297,7 @@
     {"CDB04",
         {info, "Deletion confirmed for file ~s at ManifestSQN ~w"}},
     {"CDB05",
-        {info, "Closing of filename ~s for Reason ~w"}},
+        {info, "Closing of filename ~s for reason ~w"}},
     {"CDB06",
         {info, "File to be truncated at last position of ~w with end of "
                 ++ "file at ~w"}},
