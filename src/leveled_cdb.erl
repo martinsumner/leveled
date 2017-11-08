@@ -66,7 +66,7 @@
             cdb_open_writer/2,
             cdb_open_reader/1,
             cdb_open_reader/2,
-            cdb_reopen_reader/2,
+            cdb_reopen_reader/3,
             cdb_get/2,
             cdb_put/3,
             cdb_mput/2,
@@ -138,7 +138,7 @@ cdb_open_writer(Filename, Opts) ->
     ok = gen_fsm:sync_send_event(Pid, {open_writer, Filename}, infinity),
     {ok, Pid}.
 
--spec cdb_reopen_reader(string(), binary()) -> {ok, pid()}.
+-spec cdb_reopen_reader(string(), binary(), cdb_options()) -> {ok, pid()}.
 %% @doc
 %% Open an existing file that has already been moved into read-only mode. The
 %% LastKey should be known, as it has been stored in the manifest.  Knowing the
@@ -147,8 +147,9 @@ cdb_open_writer(Filename, Opts) ->
 %%
 %% The LastKey is the Key of the last object added to the file - and is used to
 %% determine when scans over a file have completed.
-cdb_reopen_reader(Filename, LastKey) ->
-    {ok, Pid} = gen_fsm:start(?MODULE, [#cdb_options{binary_mode=true}], []),
+cdb_reopen_reader(Filename, LastKey, CDBopts) ->
+    {ok, Pid} = 
+        gen_fsm:start(?MODULE, [CDBopts#cdb_options{binary_mode=true}], []),
     ok = gen_fsm:sync_send_event(Pid,
                                     {open_reader, Filename, LastKey},
                                     infinity),
@@ -692,17 +693,19 @@ handle_info(_Msg, StateName, State) ->
     {next_state, StateName, State}.
 
 terminate(Reason, StateName, State) ->
-    leveled_log:log("CDB05", [State#state.filename, Reason]),
+    leveled_log:log("CDB05", [State#state.filename, StateName, Reason]),
     case {State#state.handle, StateName, State#state.waste_path} of
         {undefined, _, _} ->
             ok;
         {Handle, delete_pending, undefined} ->
             ok = file:close(Handle),
-            ok = file:delete(State#state.filename);
+            ok = file:delete(State#state.filename),
+            leveled_log:log("CDB20", [State#state.filename]);
         {Handle, delete_pending, WasteFP} ->
             file:close(Handle),
             Components = filename:split(State#state.filename),
             NewName = WasteFP ++ lists:last(Components),
+            leveled_log:log("CDB19", [State#state.filename, NewName]),
             file:rename(State#state.filename, NewName);
         {Handle, _, _} ->
             file:close(Handle)
@@ -750,25 +753,8 @@ set_writeops(SyncStrategy) ->
 
 -endif.
 
-%% from_dict(FileName,ListOfKeyValueTuples)
-%% Given a filename and a dictionary, create a cdb
-%% using the key value pairs from the dict.
-from_dict(FileName,Dict) ->
-    KeyValueList = dict:to_list(Dict),
-    create(FileName, KeyValueList).
-
-%%
-%% create(FileName,ListOfKeyValueTuples) -> ok
-%% Given a filename and a list of {key,value} tuples,
-%% this function creates a CDB
-%%
-create(FileName,KeyValueList) ->
-    {ok, Handle} = file:open(FileName, ?WRITE_OPS),
-    {ok, _} = file:position(Handle, {bof, ?BASE_POSITION}),
-    {BasePos, HashTree} = write_key_value_pairs(Handle, KeyValueList),
-    close_file(Handle, HashTree, BasePos).
-
-
+-spec open_active_file(list()) -> {integer(), ets:tid(), any()}.
+%% @doc
 %% Open an active file - one for which it is assumed the hash tables have not 
 %% yet been written
 %%
@@ -794,6 +780,11 @@ open_active_file(FileName) when is_list(FileName) ->
     end,
     {LastPosition, HashTree, LastKey}.
 
+-spec put(list()|file:io_device(), 
+            any(), any(), 
+            {integer(), ets:tid()}, boolean(), integer())
+                            -> roll|{file:io_device(), integer(), ets:tid()}.
+%% @doc
 %% put(Handle, Key, Value, {LastPosition, HashDict}) -> {NewPosition, KeyDict}
 %% Append to an active file a new key/value pair returning an updated 
 %% dictionary of Keys and positions.  Returns an updated Position
@@ -819,6 +810,14 @@ put(Handle, Key, Value, {LastPosition, HashTree}, BinaryMode, MaxSize) ->
                 put_hashtree(Key, LastPosition, HashTree)}
     end.
 
+
+-spec mput(file:io_device(), 
+            list(tuple()), 
+            {integer(), ets:tid()}, boolean(), integer())
+                    -> roll|{file:io_device(), integer(), ets:tid(), any()}.
+%% @doc
+%% Multiple puts - either all will succeed or it will return roll with non
+%% succeeding.  
 mput(Handle, KVList, {LastPosition, HashTree0}, BinaryMode, MaxSize) ->
     {KPList, Bin, LastKey} = multi_key_value_to_record(KVList,
                                                         BinaryMode,
@@ -837,18 +836,11 @@ mput(Handle, KVList, {LastPosition, HashTree0}, BinaryMode, MaxSize) ->
             {Handle, PotentialNewSize, HashTree1, LastKey}
     end.
 
-%% Should not be used for non-test PUTs by the inker - as the Max File Size
-%% should be taken from the startup options not the default
-put(FileName, Key, Value, {LastPosition, HashTree}) ->
-    put(FileName, Key, Value, {LastPosition, HashTree},
-            ?BINARY_MODE, ?MAX_FILE_SIZE).
 
-%%
-%% get(FileName,Key) -> {key,value}
-%% Given a filename and a key, returns a key and value tuple.
-%%
-
-
+-spec get_withcache(file:io_device(), any(), tuple(), boolean()) -> tuple().
+%% @doc
+%% Using a cache of the Index array - get a K/V pair from the file using the 
+%% Key
 get_withcache(Handle, Key, Cache, BinaryMode) ->
     get(Handle, Key, Cache, true, BinaryMode).
 
@@ -858,6 +850,16 @@ get_withcache(Handle, Key, Cache, QuickCheck, BinaryMode) ->
 get(FileNameOrHandle, Key, BinaryMode) ->
     get(FileNameOrHandle, Key, no_cache, true, BinaryMode).
 
+
+-spec get(list()|file:io_device(), 
+            any(), no_cache|tuple(), 
+            loose_presence|any(), boolean()) 
+                             -> tuple()|probably|missing.
+%% @doc
+%% Get a K/V pair from the file using the Key.  QuickCheck can be set to 
+%% loose_presence if all is required is a loose check of presence (that the 
+%% Key is probably present as there is a hash in the hash table which matches 
+%% that Key)
 get(FileName, Key, Cache, QuickCheck, BinaryMode) when is_list(FileName) ->
     {ok, Handle} = file:open(FileName,[binary, raw, read]),
     get(Handle, Key, Cache, QuickCheck, BinaryMode);
@@ -893,11 +895,12 @@ get_index(Handle, Index, no_cache) ->
     % Get location of hashtable and number of entries in the hash
     read_next_2_integers(Handle);
 get_index(_Handle, Index, Cache) ->
-    element(Index +  1, Cache).
+    element(Index + 1, Cache).
 
+-spec get_mem(any(), list()|file:io_device(), ets:tid(), boolean()) -> 
+                                                    tuple()|probably|missing.
+%% @doc
 %% Get a Key/Value pair from an active CDB file (with no hash table written)
-%% This requires a key dictionary to be passed in (mapping keys to positions)
-%% Will return {Key, Value} or missing
 get_mem(Key, FNOrHandle, HashTree, BinaryMode) ->
     get_mem(Key, FNOrHandle, HashTree, BinaryMode, true).
 
@@ -912,11 +915,18 @@ get_mem(Key, Handle, HashTree, BinaryMode, QuickCheck) ->
         {loose_presence, _L} ->
             probably;
         _ ->
-        extract_kvpair(Handle, ListToCheck, Key, BinaryMode)
+            extract_kvpair(Handle, ListToCheck, Key, BinaryMode)
     end.
 
+-spec get_nextkey(list()|file:io_device()) -> 
+        nomorekeys|
+            {any(), nomorekeys}|
+                {any(), file:io_device(), {integer(), integer()}}.
+%% @doc
 %% Get the next key at a position in the file (or the first key if no position 
-%% is passed).  Will return both a key and the next position
+%% is passed).  Will return both a key and the next position, or nomorekeys if
+%% the end has been reached (either in place of the result if there are no 
+%% more keys, or in place of the position if the returned key is the last key)
 get_nextkey(Filename) when is_list(Filename) ->
     {ok, Handle} = file:open(Filename, [binary, raw, read]),
     get_nextkey(Handle);
@@ -941,6 +951,10 @@ get_nextkey(Handle, {Position, FirstHashPosition}) ->
             nomorekeys
 end.
 
+-spec hashtable_calc(ets:tid(), integer()) -> {list(), binary()}.
+%% @doc
+%% Create a binary representation of the hash table to be written to the end
+%% of the file
 hashtable_calc(HashTree, StartPos) ->
     Seq = lists:seq(0, 255),
     SWC = os:timestamp(),
@@ -1595,6 +1609,34 @@ write_hash_tables([Index|Rest], HashTree, CurrPos, BasePos,
 %% Given a file name, this function returns a list
 %% of {key,value} tuples from the CDB.
 %%
+
+
+%% from_dict(FileName,ListOfKeyValueTuples)
+%% Given a filename and a dictionary, create a cdb
+%% using the key value pairs from the dict.
+from_dict(FileName,Dict) ->
+    KeyValueList = dict:to_list(Dict),
+    create(FileName, KeyValueList).
+
+
+%%
+%% create(FileName,ListOfKeyValueTuples) -> ok
+%% Given a filename and a list of {key,value} tuples,
+%% this function creates a CDB
+%%
+create(FileName,KeyValueList) ->
+    {ok, Handle} = file:open(FileName, ?WRITE_OPS),
+    {ok, _} = file:position(Handle, {bof, ?BASE_POSITION}),
+    {BasePos, HashTree} = write_key_value_pairs(Handle, KeyValueList),
+    close_file(Handle, HashTree, BasePos).
+
+
+%% Should not be used for non-test PUTs by the inker - as the Max File Size
+%% should be taken from the startup options not the default
+put(FileName, Key, Value, {LastPosition, HashTree}) ->
+    put(FileName, Key, Value, {LastPosition, HashTree},
+            ?BINARY_MODE, ?MAX_FILE_SIZE).
+
 
 dump(FileName) ->
     {ok, Handle} = file:open(FileName, [binary, raw, read]),
