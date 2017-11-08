@@ -104,10 +104,14 @@
 
 
 -type book_state() :: #state{}.
+-type sync_mode() :: sync|none|riak_sync.
+-type ledger_cache() :: #ledger_cache{}.
 
 %%%============================================================================
 %%% API
 %%%============================================================================
+
+-spec book_start(string(), integer(), integer(), sync_mode()) -> {ok, pid()}.
 
 %% @doc Start a Leveled Key/Value store - limited options support.
 %%
@@ -142,6 +146,8 @@ book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy) ->
                     {max_journalsize, JournalSize},
                     {sync_strategy, SyncStrategy}]).
 
+-spec book_start(list(tuple())) -> {ok, pid()}.
+
 %% @doc Start a Leveled Key/Value store - full options support.
 %%
 %% Allows an options proplists to be passed for setting options.  There are
@@ -152,7 +158,7 @@ book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy) ->
 %% - compression_point
 %%
 %% Both of the first two options relate to compaction in the Journal.  The 
-%% retain_strategydetermines if a skinny record of the object should be 
+%% retain_strategy determines if a skinny record of the object should be 
 %% retained following compaction, and how that should be used when recovering 
 %% lost state in the Ledger.
 %%
@@ -165,7 +171,9 @@ book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy) ->
 %% Currently compacted records no longer in use are not removed but moved to
 %% a journal_waste folder, and the waste_retention_period determines how long
 %% this history should be kept for (for example to allow for it to be backed
-%% up before deletion).
+%% up before deletion).  If the waste_retention_period (in seconds) is 
+%% undefined, then there will be no holding of this waste - unused files will
+%% be immediately deleted.
 %%
 %% Compression method and point allow Leveled to be switched from using bif
 %% based compression (zlib) to suing nif based compression (lz4).  The 
@@ -194,6 +202,10 @@ book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy) ->
 
 book_start(Opts) ->
     gen_server:start(?MODULE, [Opts], []).
+
+
+-spec book_tempput(pid(), any(), any(), any(), list(), atom(), integer()) ->
+                                                                    ok|pause.
 
 %% @doc Put an object with an expiry time
 %%
@@ -258,12 +270,18 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs) ->
 book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag) ->
     book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, infinity).
 
+-spec book_put(pid(), any(), any(), any(), list(), atom(), infinity|integer()) 
+                                                                -> ok|pause.
+
 book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) ->
     gen_server:call(Pid,
                     {put, Bucket, Key, Object, IndexSpecs, Tag, TTL},
                     infinity).
 
-%% @doc - Standard PUT
+
+-spec book_delete(pid(), any(), any(), list()) -> ok|pause.
+
+%% @doc 
 %%
 %% A thin wrap around the put of a special tombstone object.  There is no
 %% immediate reclaim of space, simply the addition of a more recent tombstone.
@@ -271,7 +289,11 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) ->
 book_delete(Pid, Bucket, Key, IndexSpecs) ->
     book_put(Pid, Bucket, Key, delete, IndexSpecs, ?STD_TAG).
 
-%% @doc - GET and HAD requests
+
+-spec book_get(pid(), any(), any(), atom()) -> {ok, any()}|not_found.
+-spec book_head(pid(), any(), any(), atom()) -> {ok, any()}|not_found.
+
+%% @doc - GET and HEAD requests
 %%
 %% The Bookie supports both GET and HEAD requests, with the HEAD request
 %% returning only the metadata and not the actual object value.  The HEAD
@@ -280,17 +302,21 @@ book_delete(Pid, Bucket, Key, IndexSpecs) ->
 %% GET requests first follow the path of a HEAD request, and if an object is
 %% found, then fetch the value from the Journal via the Inker.
 
-book_get(Pid, Bucket, Key) ->
-    book_get(Pid, Bucket, Key, ?STD_TAG).
-
-book_head(Pid, Bucket, Key) ->
-    book_head(Pid, Bucket, Key, ?STD_TAG).
 
 book_get(Pid, Bucket, Key, Tag) ->
     gen_server:call(Pid, {get, Bucket, Key, Tag}, infinity).
 
 book_head(Pid, Bucket, Key, Tag) ->
     gen_server:call(Pid, {head, Bucket, Key, Tag}, infinity).
+
+book_get(Pid, Bucket, Key) ->
+    book_get(Pid, Bucket, Key, ?STD_TAG).
+
+book_head(Pid, Bucket, Key) ->
+    book_head(Pid, Bucket, Key, ?STD_TAG).
+
+
+-spec book_returnfolder(pid(), tuple()) -> {async, fun()}.
 
 %% @doc Snapshots/Clones
 %%
@@ -343,6 +369,12 @@ book_head(Pid, Bucket, Key, Tag) ->
 book_returnfolder(Pid, RunnerType) ->
     gen_server:call(Pid, {return_runner, RunnerType}, infinity).
 
+
+-spec book_snapshot(pid(), 
+                    store|ledger, 
+                    tuple()|undefined, 
+                    boolean()|undefined) -> {ok, pid(), pid()|null}.
+
 %% @doc create a snapshot of the store
 %%
 %% Snapshot can be based on a pre-defined query (which will be used to filter 
@@ -352,6 +384,10 @@ book_returnfolder(Pid, RunnerType) ->
 
 book_snapshot(Pid, SnapType, Query, LongRunning) ->
     gen_server:call(Pid, {snapshot, SnapType, Query, LongRunning}, infinity).
+
+
+-spec book_compactjournal(pid(), integer()) -> ok.
+-spec book_islastcompactionpending(pid()) -> boolean().
 
 %% @doc Call for compaction of the Journal
 %%
@@ -365,6 +401,10 @@ book_compactjournal(Pid, Timeout) ->
 
 book_islastcompactionpending(Pid) ->
     gen_server:call(Pid, confirm_compact, infinity).
+
+
+-spec book_close(pid()) -> ok.
+-spec book_destroy(pid()) -> ok.
 
 %% @doc Clean shutdown
 %%
@@ -567,11 +607,15 @@ code_change(_OldVsn, State, _Extra) ->
 %%% External functions
 %%%============================================================================
 
-%% @doc Empty the ledger cache table following a push
+-spec empty_ledgercache() -> ledger_cache().
+%% @doc 
+%% Empty the ledger cache table following a push
 empty_ledgercache() ->
     #ledger_cache{mem = ets:new(empty, [ordered_set])}.
 
-%% @doc push the ledgercache to the Penciller - which should respond ok or
+-spec push_ledgercache(pid(), ledger_cache()) -> ok|returned.
+%% @doc 
+%% Push the ledgercache to the Penciller - which should respond ok or
 %% returned.  If the response is ok the cache can be flushed, but if the
 %% response is returned the cache should continue to build and it should try
 %% to flush at a later date
@@ -582,8 +626,10 @@ push_ledgercache(Penciller, Cache) ->
                     Cache#ledger_cache.max_sqn},
     leveled_penciller:pcl_pushmem(Penciller, CacheToLoad).
 
-%% @doc the ledger cache can be built from a queue, for example when
-%% loading the ledger from the head of the journal on startup
+-spec loadqueue_ledgercache(ledger_cache()) -> ledger_cache().
+%% @doc 
+%% The ledger cache can be built from a queue, for example when loading the 
+%% ledger from the head of the journal on startup
 %%
 %% The queue should be build using [NewKey|Acc] so that the most recent
 %% key is kept in the sort
@@ -592,7 +638,12 @@ loadqueue_ledgercache(Cache) ->
     T = leveled_tree:from_orderedlist(SL, ?CACHE_TYPE),
     Cache#ledger_cache{load_queue = [], loader = T}.
 
-%% @doc Allow all a snapshot to be created from part of the store, preferably
+-spec snapshot_store(ledger_cache(), 
+                        pid(), null|pid(), store|ledger, 
+                        undefined|tuple(), undefined|boolean()) ->
+                                                {ok, pid(), pid()|null}.
+%% @doc 
+%% Allow all a snapshot to be created from part of the store, preferably
 %% passing in a query filter so that all of the LoopState does not need to
 %% be copied from the real actor to the clone
 %%
@@ -633,6 +684,9 @@ snapshot_store(State, SnapType, Query, LongRunning) ->
                     Query,
                     LongRunning).
 
+-spec fetch_value(pid(), {any(), integer()}) -> not_present|any().
+%% @doc
+%% Fetch a value from the Journal
 fetch_value(Inker, {Key, SQN}) ->
     SW = os:timestamp(),
     case leveled_inker:ink_fetch(Inker, Key, SQN) of

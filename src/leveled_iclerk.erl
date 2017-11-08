@@ -101,7 +101,6 @@
 -define(MAXRUN_COMPACTION_TARGET, 70.0).
 -define(CRC_SIZE, 4).
 -define(DEFAULT_RELOAD_STRATEGY, leveled_codec:inker_reload_strategy([])).
--define(DEFAULT_WASTE_RETENTION_PERIOD, 86400).
 -define(INTERVALS_PER_HOUR, 4).
 
 -record(state, {inker :: pid() | undefined,
@@ -150,18 +149,15 @@ init([IClerkOpts]) ->
     ReloadStrategy = IClerkOpts#iclerk_options.reload_strategy,
     CDBopts = IClerkOpts#iclerk_options.cdb_options,
     WP = CDBopts#cdb_options.waste_path,
-    WRP = case IClerkOpts#iclerk_options.waste_retention_period of
-                undefined ->
-                    ?DEFAULT_WASTE_RETENTION_PERIOD;
-                WRP0 ->
-                    WRP0
-            end,
-    MRL = case IClerkOpts#iclerk_options.max_run_length of
-                undefined ->
-                    ?MAX_COMPACTION_RUN;
-                MRL0 ->
-                    MRL0
-            end,
+    WRP = IClerkOpts#iclerk_options.waste_retention_period,
+    
+    MRL = 
+        case IClerkOpts#iclerk_options.max_run_length of
+            undefined ->
+                ?MAX_COMPACTION_RUN;
+            MRL0 ->
+                MRL0
+        end,
             
     {ok, #state{max_run_length = MRL,
                         inker = IClerkOpts#iclerk_options.inker,
@@ -616,23 +612,27 @@ write_values(KVCList, CDBopts, Journal0, ManSlice0, PressMethod) ->
     end.
                         
 clear_waste(State) ->
-    WP = State#state.waste_path,
-    WRP = State#state.waste_retention_period,
-    {ok, ClearedJournals} = file:list_dir(WP),
-    N = calendar:datetime_to_gregorian_seconds(calendar:local_time()),
-    lists:foreach(fun(DelJ) ->
-                        LMD = filelib:last_modified(WP ++ DelJ),
-                        case N - calendar:datetime_to_gregorian_seconds(LMD) of
-                            LMD_Delta when LMD_Delta >= WRP ->
-                                ok = file:delete(WP ++ DelJ),
-                                leveled_log:log("IC010", [WP ++ DelJ]);
-                            LMD_Delta ->
-                                leveled_log:log("IC011", [WP ++ DelJ,
-                                                            LMD_Delta]),
-                                ok
-                        end
-                        end,
-                    ClearedJournals).
+    case State#state.waste_path of
+        undefined ->
+            ok;
+        WP ->
+            WRP = State#state.waste_retention_period,
+            {ok, ClearedJournals} = file:list_dir(WP),
+            N = calendar:datetime_to_gregorian_seconds(calendar:local_time()),
+            DeleteJournalFun =
+                fun(DelJ) ->
+                    LMD = filelib:last_modified(WP ++ DelJ),
+                    case N - calendar:datetime_to_gregorian_seconds(LMD) of
+                        LMD_Delta when LMD_Delta >= WRP ->
+                            ok = file:delete(WP ++ DelJ),
+                            leveled_log:log("IC010", [WP ++ DelJ]);
+                        LMD_Delta ->
+                            leveled_log:log("IC011", [WP ++ DelJ, LMD_Delta]),
+                            ok
+                    end
+                end,
+            lists:foreach(DeleteJournalFun, ClearedJournals)
+    end.
 
 
 %%%============================================================================
@@ -923,7 +923,9 @@ compact_empty_file_test() ->
                     {3, {o, "Bucket", "Key3", null}}],
     LedgerFun1 = fun(_Srv, _Key, _ObjSQN) -> false end,
     Score1 = check_single_file(CDB2, LedgerFun1, LedgerSrv1, 9, 8, 4),
-    ?assertMatch(100.0, Score1).
+    ?assertMatch(100.0, Score1),
+    ok = leveled_cdb:cdb_deletepending(CDB2),
+    ok = leveled_cdb:cdb_destroy(CDB2).
 
 compare_candidate_test() ->
     Candidate1 = #candidate{low_sqn=1},
