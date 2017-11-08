@@ -493,9 +493,12 @@ code_change(_OldVsn, State, _Extra) ->
 %%%============================================================================
 
 start_from_file(InkOpts) ->
-    
+    % Setting the correct CDB options is important when starting the inker, in
+    % particular for waste retention which is determined by the CDB options 
+    % with which the file was last opened
     CDBopts = get_cdbopts(InkOpts),
     
+    % Determine filepaths
     RootPath = InkOpts#inker_options.root_path,
     JournalFP = filepath(RootPath, journal_dir),
     filelib:ensure_dir(JournalFP),
@@ -503,6 +506,8 @@ start_from_file(InkOpts) ->
     filelib:ensure_dir(CompactFP),
     ManifestFP = filepath(RootPath, manifest_dir),
     ok = filelib:ensure_dir(ManifestFP),
+    % The IClerk must start files with the compaction file path so that they
+    % will be stored correctly in this folder
     IClerkCDBOpts = CDBopts#cdb_options{file_path = CompactFP},
     
     WRP = InkOpts#inker_options.waste_retention_period,
@@ -519,6 +524,8 @@ start_from_file(InkOpts) ->
     
     {ok, Clerk} = leveled_iclerk:clerk_new(IClerkOpts),
     
+    % The building of the manifest will load all the CDB files, starting a 
+    % new leveled_cdb process for each file
     {ok, ManifestFilenames} = file:list_dir(ManifestFP),
     {Manifest,
         ManifestSQN,
@@ -1071,8 +1078,8 @@ compact_journal_testto(WRP, ExpectedFiles) ->
     ?assertMatch(2, length(CompactedManifest2)),
     ink_close(Ink1),
     % Need to wait for delete_pending files to timeout
-    timer:sleep(10000),
-    % Are there filese in the waste folder after compaction
+    timer:sleep(12000),
+    % Are there files in the waste folder after compaction
     {ok, WasteFNs} = file:list_dir(filepath(RootPath, journal_waste_dir)),
     ?assertMatch(ExpectedFiles, length(WasteFNs) > 0),
     clean_testdir(RootPath).
