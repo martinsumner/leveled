@@ -67,7 +67,8 @@
         riak_extract_metadata/2,
         magic_hash/1,
         segment_hash/1,
-        to_lookup/1]).         
+        to_lookup/1,
+        riak_metadata_to_binary/2]).         
 
 -define(V1_VERS, 1).
 -define(MAGIC, 53). % riak_kv -> riak_object
@@ -92,8 +93,12 @@ segment_hash(Key) when is_binary(Key) ->
     <<SegmentID:16/integer, ExtraHash:32/integer, _Rest/binary>> = 
         crypto:hash(md5, Key),
     {SegmentID, ExtraHash};
+segment_hash({?RIAK_TAG, Bucket, Key, null}) 
+                                    when is_binary(Bucket), is_binary(Key) ->
+    segment_hash(<<Bucket/binary, Key/binary>>);
 segment_hash(Key) ->
     segment_hash(term_to_binary(Key)).
+
 
 -spec magic_hash(any()) -> integer().
 %% @doc 
@@ -232,8 +237,6 @@ from_inkerkv(Object, ToIgnoreKeyChanges) ->
     case Object of
         {{SQN, ?INKT_STND, PK}, Bin} when is_binary(Bin) ->
             {{SQN, PK}, revert_value_from_journal(Bin, ToIgnoreKeyChanges)};
-        {{SQN, ?INKT_STND, PK}, Term} ->
-            {{SQN, PK}, Term};
         _ ->
             Object
     end.
@@ -382,13 +385,8 @@ get_tagstrategy(LK, Strategy) ->
             skip
     end.
 
-split_inkvalue(VBin) ->
-    case is_binary(VBin) of
-            true ->
-                revert_value_from_journal(VBin);
-            false ->
-                VBin
-        end.
+split_inkvalue(VBin) when is_binary(VBin) ->
+    revert_value_from_journal(VBin).
 
 check_forinkertype(_LedgerKey, delete) ->
     ?INKT_TOMB;
@@ -498,9 +496,9 @@ aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods) ->
                             Acc;
                         {LMD1, TTL} ->
                             TreeSize = AAE#recent_aae.tree_size,
+                            SegID32 = leveled_tictac:keyto_segment32(Key),
                             SegID =
-                                leveled_tictac:get_segment(erlang:phash2(Key), 
-                                                            TreeSize),
+                                leveled_tictac:get_segment(SegID32, TreeSize),
                             IdxFldStr = ?NRT_IDX ++ LMD1 ++ "_bin",
                             IdxTrmStr =
                                 string:right(integer_to_list(SegID), 8, $0) ++

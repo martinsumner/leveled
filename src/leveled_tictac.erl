@@ -57,29 +57,37 @@
 -export([
             new_tree/1,
             new_tree/2,
-            add_kv/5,
+            add_kv/4,
             find_dirtyleaves/2,
             find_dirtysegments/2,
             fetch_root/1,
             fetch_leaves/2,
             merge_trees/2,
             get_segment/2,
-            tictac_hash/3,
+            tictac_hash/2,
             export_tree/1,
             import_tree/1,
-            valid_size/1
+            valid_size/1,
+            keyto_segment32/1,
+            generate_segmentfilter_list/2
         ]).
 
 
 -include_lib("eunit/include/eunit.hrl").
 
 -define(HASH_SIZE, 4).
--define(XXSMALL, {6, 64, 64 * 64}).
--define(XSMALL, {7, 128, 128 * 128}).
+
+%% UNSUUPPORTED tree sizes for accelerated segment filtering
+-define(XXSMALL, {6, 64, 64 * 64}). 
+-define(XSMALL, {7, 128, 128 * 128}). 
+
+%% SUPPORTED tree sizes for accelerated segment filtering
 -define(SMALL, {8, 256, 256 * 256}).
 -define(MEDIUM, {9, 512, 512 * 512}).
 -define(LARGE, {10, 1024, 1024 * 1024}).
 -define(XLARGE, {11, 2048, 2048 * 2048}).
+
+
 -define(EMPTY, <<0:8/integer>>).
 -define(VALID_SIZES, [xxsmall, xsmall, small, medium, large, xlarge]).
 
@@ -169,24 +177,16 @@ import_tree(ExportedTree) ->
                     level1 = L1Bin,
                     level2 = Lv2}.
 
--spec add_kv(tictactree(), tuple(), tuple(), fun()) -> tictactree().
-add_kv(TicTacTree, Key, Value, BinExtractFun) ->
-    add_kv(TicTacTree, Key, Value, BinExtractFun, false).
 
--spec add_kv(tictactree(), tuple(), tuple(), fun(), boolean()) -> tictactree().
+-spec add_kv(tictactree(), tuple(), tuple(), fun()) -> tictactree().
 %% @doc
 %% Add a Key and value to a tictactree using the BinExtractFun to extract a 
 %% binary from the Key and value from which to generate the hash.  The 
 %% BinExtractFun will also need to do any canonicalisation necessary to make
 %% the hash consistent (such as whitespace removal, or sorting)
-%%
-%% For exportable trees the hash function will be based on the CJ Bernstein
-%% magic hash.  For non-exportable trees erlang:phash2 will be used, and so 
-%% non-binary Keys and Values can be returned from the BinExtractFun in this
-%% case.
-add_kv(TicTacTree, Key, Value, BinExtractFun, Exportable) ->
+add_kv(TicTacTree, Key, Value, BinExtractFun) ->
     {BinK, BinV} = BinExtractFun(Key, Value),
-    {SegHash, SegChangeHash} = tictac_hash(BinK, BinV, Exportable),
+    {SegHash, SegChangeHash} = tictac_hash(BinK, BinV),
     Segment = get_segment(SegHash, TicTacTree#tictactree.segment_count),
     
     Level2Pos =
@@ -286,14 +286,7 @@ merge_trees(TreeA, TreeB) ->
         fun(SQN, MergeL2) ->
             L2A = get_level2(TreeA, SQN),
             L2B = get_level2(TreeB, SQN),
-            BothEmpty = (L2A == ?EMPTY) and (L2B == ?EMPTY),
-            NewLevel2 = 
-                case BothEmpty of
-                    true ->
-                        ?EMPTY;
-                    false ->
-                        merge_binaries(L2A, L2B)
-                end,
+            NewLevel2 = merge_binaries(L2A, L2B),
             array:set(SQN, NewLevel2, MergeL2)
         end,
     NewLevel2 = lists:foldl(MergeFun,
@@ -314,27 +307,64 @@ get_segment(Hash, TreeSize) ->
     get_segment(Hash, element(3, get_size(TreeSize))).
 
 
--spec tictac_hash(any(), any(), boolean()) -> {integer(), integer()}.
+-spec tictac_hash(binary(), any()) -> {integer(), integer()}.
 %% @doc
-%% Hash the key and term, to either something repetable in Erlang, or using 
-%% the DJ Bernstein hash if it is the tree needs to be compared with one 
-%% calculated with a non-Erlang store
-%%
-%% Boolean is Exportable.  does the hash need to be repetable by a non-Erlang
-%% machine  
-tictac_hash(BinKey, BinVal, true) 
-                            when is_binary(BinKey) and is_binary(BinVal) ->
-    HashKey = leveled_codec:magic_hash({binary, BinKey}),
-    HashVal = leveled_codec:magic_hash({binary, BinVal}),
-    {HashKey, HashKey bxor HashVal};
-tictac_hash(BinKey, {is_hash, HashedVal}, false) ->
-    {erlang:phash2(BinKey), erlang:phash2(BinKey) bxor HashedVal};
-tictac_hash(BinKey, BinVal, false) ->
-    {erlang:phash2(BinKey), erlang:phash2(BinKey) bxor erlang:phash2(BinVal)}.
+%% Hash the key and term.
+%% The term can be of the form {is_hash, 32-bit integer)} to indicate the hash 
+%% has already been taken. If the value is not a pre-extracted hash just use 
+%% erlang:phash2.  If an exportable hash of the value is required this should
+%% be managed through the add_kv ExtractFun providing a pre-prepared Hash.
+tictac_hash(BinKey, Val) when is_binary(BinKey) ->
+    HashKey = keyto_segment32(BinKey),
+    HashVal = 
+        case Val of 
+            {is_hash, HashedVal} ->
+                HashedVal;
+            _ ->
+                erlang:phash2(Val)
+        end,
+    {HashKey, HashKey bxor HashVal}.
+
+-spec keyto_segment32(any()) -> integer().
+%% @doc
+%% The first 16 bits of the segment hash used in the tictac tree should be 
+%% made up of the segment ID part (which is used to accelerate queries)
+keyto_segment32(BinKey) when is_binary(BinKey) ->
+    {SegmentID, ExtraHash} = leveled_codec:segment_hash(BinKey),
+    (ExtraHash band 65535) bsl 16 + SegmentID;
+keyto_segment32(Key) ->
+    keyto_segment32(term_to_binary(Key)).
+
+-spec generate_segmentfilter_list(list(integer()), atom())  
+                                                    -> false|list(integer()). 
+%% @doc
+%% Cannot accelerate segment listing for trees below certain sizes, so check
+%% the creation of segment filter lists with this function
+generate_segmentfilter_list(_SegmentList, xxsmall) -> 
+    false;
+generate_segmentfilter_list(SegmentList, xsmall) -> 
+    case length(SegmentList) =< 4 of
+        true ->
+            A0 = 1 bsl 15,
+            A1 = 1 bsl 14,
+            ExpandSegFun = 
+                fun(X, Acc) -> 
+                    Acc ++ [X, X + A0, X + A1, X + A0 + A1]
+                end,
+            lists:foldl(ExpandSegFun, [], SegmentList);
+        false ->
+            false
+    end;
+generate_segmentfilter_list(SegmentList, Size) ->
+    case lists:member(Size, ?VALID_SIZES) of 
+        true ->
+            SegmentList
+    end.
 
 %%%============================================================================
 %%% Internal functions
 %%%============================================================================
+
 
 get_level2(TicTacTree, L1Pos) ->
     case array:get(L1Pos, TicTacTree#tictactree.level2) of 
@@ -454,7 +484,7 @@ simple_test_withsize(Size) ->
 
     GetSegFun = 
         fun(TK) ->
-            get_segment(erlang:phash2(term_to_binary(TK)), SC)
+            get_segment(keyto_segment32(term_to_binary(TK)), SC)
         end,
     
     DL0 = find_dirtyleaves(Tree1, Tree0),
@@ -513,8 +543,14 @@ merge_test_withsize(Size) ->
     ?assertMatch(false, TreeM1#tictactree.level1 == TreeZ4#tictactree.level1).
 
 exportable_test() ->
-    {Int1, Int2} = tictac_hash(<<"key">>, <<"value">>, true),
+    {Int1, Int2} = tictac_hash(<<"key">>, <<"value">>),
     ?assertMatch({true, true}, {Int1 >= 0, Int2 >=0}).
+
+merge_emptytree_test() ->
+    TreeA = new_tree("A"),
+    TreeB = new_tree("B"),
+    TreeC = merge_trees(TreeA, TreeB),
+    ?assertMatch([], find_dirtyleaves(TreeA, TreeC)).
 
 -endif.
 

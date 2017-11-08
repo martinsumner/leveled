@@ -28,9 +28,9 @@
             bucketkey_query/4,
             hashlist_query/3,
             tictactree/5,
-            foldheads_allkeys/4,
+            foldheads_allkeys/5,
             foldobjects_allkeys/3,
-            foldheads_bybucket/4,
+            foldheads_bybucket/5,
             foldobjects_bybucket/3,
             foldobjects_byindex/3
         ]).
@@ -167,6 +167,15 @@ tictactree(SnapFun, {Tag, Bucket, Query}, JournalCheck, TreeSize, Filter) ->
             {ok, LedgerSnap, JournalSnap} = SnapFun(),
             % The start key and end key will vary depending on whether the
             % fold is to fold over an index or a key range
+            EnsureKeyBinaryFun = 
+                fun(K, T) -> 
+                    case is_binary(K) of 
+                        true ->
+                            {K, T};
+                        false ->
+                            {term_to_binary(K), T}
+                    end 
+                end,
             {StartKey, EndKey, ExtractFun} =
                 case Tag of
                     ?IDX_TAG ->
@@ -174,12 +183,15 @@ tictactree(SnapFun, {Tag, Bucket, Query}, JournalCheck, TreeSize, Filter) ->
                         KeyDefFun = fun leveled_codec:to_ledgerkey/5,
                         {KeyDefFun(Bucket, null, ?IDX_TAG, IdxFld, StartIdx),
                             KeyDefFun(Bucket, null, ?IDX_TAG, IdxFld, EndIdx),
-                            fun(K, T) -> {K, T} end};
+                            EnsureKeyBinaryFun};
                     _ ->
                         {StartOKey, EndOKey} = Query,
                         {leveled_codec:to_ledgerkey(Bucket, StartOKey, Tag),
                             leveled_codec:to_ledgerkey(Bucket, EndOKey, Tag),
-                            fun(K, H) -> {K, {is_hash, H}} end}
+                            fun(K, H) -> 
+                                V = {is_hash, H},
+                                EnsureKeyBinaryFun(K, V)
+                            end}
                 end,
             AccFun = 
                 accumulate_tree(Filter, JournalCheck, JournalSnap, ExtractFun),
@@ -201,14 +213,18 @@ tictactree(SnapFun, {Tag, Bucket, Query}, JournalCheck, TreeSize, Filter) ->
         end,
     {async, Runner}.
 
--spec foldheads_allkeys(fun(), atom(), fun(), boolean()) -> {async, fun()}.
+-spec foldheads_allkeys(fun(), atom(), fun(), boolean(), false|list(integer())) 
+                                                            -> {async, fun()}.
 %% @doc
 %% Fold over all heads in the store for a given tag - applying the passed 
 %% function to each proxy object
-foldheads_allkeys(SnapFun, Tag, FoldFun, JournalCheck) ->
+foldheads_allkeys(SnapFun, Tag, FoldFun, JournalCheck, SegmentList) ->
     StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
     EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
-    foldobjects(SnapFun, Tag, StartKey, EndKey, FoldFun, {true, JournalCheck}).
+    foldobjects(SnapFun, 
+                Tag, StartKey, EndKey, 
+                FoldFun, 
+                {true, JournalCheck}, SegmentList).
 
 -spec foldobjects_allkeys(fun(), atom(), fun()) -> {async, fun()}.
 %% @doc
@@ -216,21 +232,36 @@ foldheads_allkeys(SnapFun, Tag, FoldFun, JournalCheck) ->
 foldobjects_allkeys(SnapFun, Tag, FoldFun) ->
     StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
     EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
-    foldobjects(SnapFun, Tag, StartKey, EndKey, FoldFun, false).
+    foldobjects(SnapFun, 
+                Tag, StartKey, EndKey, 
+                FoldFun, 
+                false, false).
 
 -spec foldobjects_bybucket(fun(), {atom(), any(), any()}, fun()) -> 
                                                                 {async, fun()}.
 %% @doc
 %% Fold over all objects within a given key range in a bucket
 foldobjects_bybucket(SnapFun, {Tag, StartKey, EndKey}, FoldFun) ->
-    foldobjects(SnapFun, Tag, StartKey, EndKey, FoldFun, false).
+    foldobjects(SnapFun, 
+                Tag, StartKey, EndKey, 
+                FoldFun, 
+                false, false).
 
--spec foldheads_bybucket(fun(), {atom(), any(), any()}, fun(), boolean()) -> 
-                                                                {async, fun()}.
+-spec foldheads_bybucket(fun(), 
+                            {atom(), any(), any()}, 
+                            fun(), 
+                            boolean(), false|list(integer())) 
+                                                        -> {async, fun()}.
 %% @doc
 %% Fold over all object metadata within a given key range in a bucket
-foldheads_bybucket(SnapFun, {Tag, StartKey, EndKey}, FoldFun, JournalCheck) ->
-    foldobjects(SnapFun, Tag, StartKey, EndKey, FoldFun, {true, JournalCheck}).
+foldheads_bybucket(SnapFun, 
+                    {Tag, StartKey, EndKey}, 
+                    FoldFun, 
+                    JournalCheck, SegmentList) ->
+    foldobjects(SnapFun, 
+                Tag, StartKey, EndKey, 
+                FoldFun, 
+                {true, JournalCheck}, SegmentList).
 
 -spec foldobjects_byindex(fun(), tuple(), fun()) -> {async, fun()}.
 %% @doc
@@ -241,7 +272,10 @@ foldobjects_byindex(SnapFun, {Tag, Bucket, Field, FromTerm, ToTerm}, FoldFun) ->
         leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG, Field, FromTerm),
     EndKey =
         leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG, Field, ToTerm),
-    foldobjects(SnapFun, Tag, StartKey, EndKey, FoldFun, false).
+    foldobjects(SnapFun, 
+                Tag, StartKey, EndKey, 
+                FoldFun, 
+                false, false).
 
 
 
@@ -290,8 +324,8 @@ get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList) ->
 
 
 -spec foldobjects(fun(), atom(), tuple(), tuple(), fun(), 
-                                                false|{true, boolean()}) ->
-                    {async, fun()}.
+                    false|{true, boolean()}, false|list(integer())) ->
+                                                            {async, fun()}.
 %% @doc
 %% The object folder should be passed DeferredFetch.
 %% DeferredFetch can either be false (which will return to the fold function
@@ -299,7 +333,10 @@ get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList) ->
 %% will be created that if understood by the fold function will allow the fold
 %% function to work on the head of the object, and defer fetching the body in
 %% case such a fetch is unecessary.
-foldobjects(SnapFun, Tag, StartKey, EndKey, FoldObjectsFun, DeferredFetch) ->
+foldobjects(SnapFun, 
+            Tag, StartKey, EndKey, 
+            FoldObjectsFun, 
+            DeferredFetch, SegmentList) ->
     {FoldFun, InitAcc} =
         case is_tuple(FoldObjectsFun) of
             true ->
@@ -319,11 +356,12 @@ foldobjects(SnapFun, Tag, StartKey, EndKey, FoldObjectsFun, DeferredFetch) ->
                                         JournalSnapshot,
                                         Tag,
                                         DeferredFetch),
-            Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
-                                                    StartKey,
-                                                    EndKey,
-                                                    AccFun,
-                                                    InitAcc),
+            Acc = leveled_penciller:pcl_fetchkeysbysegment(LedgerSnapshot,
+                                                            StartKey,
+                                                            EndKey,
+                                                            AccFun,
+                                                            InitAcc, 
+                                                            SegmentList),
             ok = leveled_penciller:pcl_close(LedgerSnapshot),
             case DeferredFetch of 
                 {true, false} ->
@@ -363,7 +401,7 @@ accumulate_tree(FilterFun, JournalCheck, InkerClone, HashFun) ->
         fun(B, K, H, Tree) ->
             case FilterFun(B, K) of
                 accumulate ->
-                    leveled_tictac:add_kv(Tree, K, H, HashFun, false);
+                    leveled_tictac:add_kv(Tree, K, H, HashFun);
                 pass ->
                     Tree
             end

@@ -699,13 +699,11 @@ terminate(Reason, StateName, State) ->
             ok;
         {Handle, delete_pending, undefined} ->
             ok = file:close(Handle),
-            ok = file:delete(State#state.filename),
-            leveled_log:log("CDB20", [State#state.filename]);
+            ok = file:delete(State#state.filename);
         {Handle, delete_pending, WasteFP} ->
             file:close(Handle),
             Components = filename:split(State#state.filename),
             NewName = WasteFP ++ lists:last(Components),
-            leveled_log:log("CDB19", [State#state.filename, NewName]),
             file:rename(State#state.filename, NewName);
         {Handle, _, _} ->
             file:close(Handle)
