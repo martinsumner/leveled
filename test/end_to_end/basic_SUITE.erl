@@ -112,21 +112,27 @@ many_put_fetch_head(_Config) ->
     ok = leveled_bookie:book_destroy(Bookie3).
 
 journal_compaction(_Config) ->
+    journal_compaction_tester(false, 3600),
+    journal_compaction_tester(false, undefined),
+    journal_compaction_tester(true, 3600).
+
+journal_compaction_tester(Restart, WRP) ->
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = [{root_path, RootPath},
                     {max_journalsize, 10000000},
                     {max_run_length, 1},
-                    {sync_strategy, testutil:sync_strategy()}],
-    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
-    ok = leveled_bookie:book_compactjournal(Bookie1, 30000),
+                    {sync_strategy, testutil:sync_strategy()},
+                    {waste_retention_period, WRP}],
+    {ok, Bookie0} = leveled_bookie:book_start(StartOpts1),
+    ok = leveled_bookie:book_compactjournal(Bookie0, 30000),
     {TestObject, TestSpec} = testutil:generate_testobject(),
-    ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
-    testutil:check_forobject(Bookie1, TestObject),
+    ok = testutil:book_riakput(Bookie0, TestObject, TestSpec),
+    testutil:check_forobject(Bookie0, TestObject),
     ObjList1 = testutil:generate_objects(20000, 2),
-    testutil:riakload(Bookie1, ObjList1),
+    testutil:riakload(Bookie0, ObjList1),
     ChkList1 = lists:sublist(lists:sort(ObjList1), 10000),
-    testutil:check_forlist(Bookie1, ChkList1),
-    testutil:check_forobject(Bookie1, TestObject),
+    testutil:check_forlist(Bookie0, ChkList1),
+    testutil:check_forobject(Bookie0, TestObject),
     {B2, K2, V2, Spec2, MD} = {"Bucket2",
                                 "Key2",
                                 "Value2",
@@ -134,18 +140,18 @@ journal_compaction(_Config) ->
                                 [{"MDK2", "MDV2"}]},
     {TestObject2, TestSpec2} = testutil:generate_testobject(B2, K2,
                                                             V2, Spec2, MD),
-    ok = testutil:book_riakput(Bookie1, TestObject2, TestSpec2),
-    ok = leveled_bookie:book_compactjournal(Bookie1, 30000),
-    testutil:check_forlist(Bookie1, ChkList1),
-    testutil:check_forobject(Bookie1, TestObject),
-    testutil:check_forobject(Bookie1, TestObject2),
-    testutil:check_forlist(Bookie1, ChkList1),
-    testutil:check_forobject(Bookie1, TestObject),
-    testutil:check_forobject(Bookie1, TestObject2),
+    ok = testutil:book_riakput(Bookie0, TestObject2, TestSpec2),
+    ok = leveled_bookie:book_compactjournal(Bookie0, 30000),
+    testutil:check_forlist(Bookie0, ChkList1),
+    testutil:check_forobject(Bookie0, TestObject),
+    testutil:check_forobject(Bookie0, TestObject2),
+    testutil:check_forlist(Bookie0, ChkList1),
+    testutil:check_forobject(Bookie0, TestObject),
+    testutil:check_forobject(Bookie0, TestObject2),
     %% Delete some of the objects
     ObjListD = testutil:generate_objects(10000, 2),
     lists:foreach(fun({_R, O, _S}) ->
-                        testutil:book_riakdelete(Bookie1,
+                        testutil:book_riakdelete(Bookie0,
                                                     O#r_object.bucket,
                                                     O#r_object.key,
                                                     [])
@@ -154,7 +160,17 @@ journal_compaction(_Config) ->
     
     %% Now replace all the other objects
     ObjList2 = testutil:generate_objects(40000, 10002),
-    testutil:riakload(Bookie1, ObjList2),
+    testutil:riakload(Bookie0, ObjList2),
+
+    Bookie1 =
+        case Restart of 
+            true ->
+                ok = leveled_bookie:book_close(Bookie0),
+                {ok, RestartedB} = leveled_bookie:book_start(StartOpts1),
+                RestartedB;
+            false ->
+                Bookie0 
+        end,
     
     ok = leveled_bookie:book_compactjournal(Bookie1, 30000),
     
@@ -184,7 +200,12 @@ journal_compaction(_Config) ->
                     [2000,2000,2000,2000,2000,2000]),
     {ok, ClearedJournals} = file:list_dir(WasteFP),
     io:format("~w ClearedJournals found~n", [length(ClearedJournals)]),
-    true = length(ClearedJournals) > 0,
+    case is_integer(WRP) of 
+        true ->
+            true = length(ClearedJournals) > 0;
+        false ->
+            true = length(ClearedJournals) == 0
+    end,
     
     ChkList3 = lists:sublist(lists:sort(ObjList2), 500),
     testutil:check_forlist(Bookie1, ChkList3),
@@ -212,7 +233,12 @@ journal_compaction(_Config) ->
     
     {ok, ClearedJournalsPC} = file:list_dir(WasteFP),
     io:format("~w ClearedJournals found~n", [length(ClearedJournalsPC)]),
-    true = length(ClearedJournalsPC) == 0,
+    case is_integer(WRP) of 
+        true ->
+            true = length(ClearedJournals) > 0;
+        false ->
+            true = length(ClearedJournals) == 0
+    end,
     
     testutil:reset_filestructure(10000).
 

@@ -105,6 +105,7 @@
 
 -type book_state() :: #state{}.
 -type sync_mode() :: sync|none|riak_sync.
+-type ledger_cache() :: #ledger_cache{}.
 
 %%%============================================================================
 %%% API
@@ -606,11 +607,15 @@ code_change(_OldVsn, State, _Extra) ->
 %%% External functions
 %%%============================================================================
 
-%% @doc Empty the ledger cache table following a push
+-spec empty_ledgercache() -> ledger_cache().
+%% @doc 
+%% Empty the ledger cache table following a push
 empty_ledgercache() ->
     #ledger_cache{mem = ets:new(empty, [ordered_set])}.
 
-%% @doc push the ledgercache to the Penciller - which should respond ok or
+-spec push_ledgercache(pid(), ledger_cache()) -> ok|returned.
+%% @doc 
+%% Push the ledgercache to the Penciller - which should respond ok or
 %% returned.  If the response is ok the cache can be flushed, but if the
 %% response is returned the cache should continue to build and it should try
 %% to flush at a later date
@@ -621,8 +626,10 @@ push_ledgercache(Penciller, Cache) ->
                     Cache#ledger_cache.max_sqn},
     leveled_penciller:pcl_pushmem(Penciller, CacheToLoad).
 
-%% @doc the ledger cache can be built from a queue, for example when
-%% loading the ledger from the head of the journal on startup
+-spec loadqueue_ledgercache(ledger_cache()) -> ledger_cache().
+%% @doc 
+%% The ledger cache can be built from a queue, for example when loading the 
+%% ledger from the head of the journal on startup
 %%
 %% The queue should be build using [NewKey|Acc] so that the most recent
 %% key is kept in the sort
@@ -631,7 +638,12 @@ loadqueue_ledgercache(Cache) ->
     T = leveled_tree:from_orderedlist(SL, ?CACHE_TYPE),
     Cache#ledger_cache{load_queue = [], loader = T}.
 
-%% @doc Allow all a snapshot to be created from part of the store, preferably
+-spec snapshot_store(ledger_cache(), 
+                        pid(), null|pid(), store|ledger, 
+                        undefined|tuple(), undefined|boolean()) ->
+                                                {ok, pid(), pid()|null}.
+%% @doc 
+%% Allow all a snapshot to be created from part of the store, preferably
 %% passing in a query filter so that all of the LoopState does not need to
 %% be copied from the real actor to the clone
 %%
@@ -688,6 +700,9 @@ snapshot_store(State, SnapType, Query, LongRunning) ->
                     Query,
                     LongRunning).
 
+-spec fetch_value(pid(), {any(), integer()}) -> not_present|any().
+%% @doc
+%% Fetch a value from the Journal
 fetch_value(Inker, {Key, SQN}) ->
     SW = os:timestamp(),
     case leveled_inker:ink_fetch(Inker, Key, SQN) of
