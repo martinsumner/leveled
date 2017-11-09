@@ -1193,23 +1193,15 @@ saferead_keyvalue(Handle) ->
             false;
         {KeyL, ValueL} ->
             case safe_read_next_key(Handle, KeyL) of 
-                {error, _} ->
-                    false;
-                eof ->
-                    false;
                 false ->
                     false;
                 Key ->
-                    case file:read(Handle, ValueL) of 
-                        eof ->
-                            false;
-                        {ok, Value} ->
-                            case crccheck_value(Value) of
-                                true ->
-                                    {Key, Value, KeyL, ValueL};
-                                false ->
-                                    false
-                            end
+                    {ok, Value} = file:read(Handle, ValueL),
+                    case crccheck_value(Value) of
+                        true ->
+                            {Key, Value, KeyL, ValueL};
+                        false ->
+                            false
                     end 
             end
     end.
@@ -2015,10 +2007,10 @@ generate_sequentialkeys(Count, KVList) ->
     generate_sequentialkeys(Count - 1, KVList ++ [KV]).
 
 get_keys_byposition_manykeys_test_() ->
-    {timeout, 60, fun get_keys_byposition_manykeys_test_to/0}.
+    {timeout, 120, fun get_keys_byposition_manykeys_test_to/0}.
 
 get_keys_byposition_manykeys_test_to() ->
-    KeyCount = 1024,
+    KeyCount = 2048,
     {ok, P1} = cdb_open_writer("../test/poskeymany.pnd",
                                 #cdb_options{binary_mode=false}),
     KVList = generate_sequentialkeys(KeyCount, []),
@@ -2209,6 +2201,47 @@ crc_corrupt_writer_test() ->
     ok = cdb_put(P2, "Key100", "Value100"),
     ?assertMatch({"Key100", "Value100"}, cdb_get(P2, "Key100")),
     ok = cdb_close(P2).
+
+safe_read_test() ->
+    Key = <<"Key">>,
+    Value = <<"Value">>,
+    CRC = calc_crc(Value),
+    ValToWrite = <<Value/binary, CRC:32/integer>>,
+    KeyL = byte_size(Key),
+    ValueL= byte_size(ValToWrite),
+    
+    TestFN = "../test/saferead.pnd",
+    BinToWrite = 
+        <<KeyL:32/integer, ValueL:32/integer, Key/binary, ValToWrite/binary>>,
+    
+    TestCorruptedWriteFun = 
+        fun(BitNumber, ok) ->
+            <<PreBin:BitNumber/bitstring, 
+                Bit:1/integer, 
+                PostBin/bitstring>> = BinToWrite, 
+            BadBit = Bit bxor 1,
+            AltBin = <<PreBin:BitNumber/bitstring, 
+                        BadBit:1/integer, 
+                        PostBin/bitstring>>,
+            file:delete(TestFN),
+            {ok, Handle} = file:open(TestFN, ?WRITE_OPS),
+            ok = file:pwrite(Handle, 0, AltBin),
+            {ok, _} = file:position(Handle, bof),
+            case saferead_keyvalue(Handle) of 
+                false ->
+                    ok;
+                {Key, Value, KeyL, ValueL} ->
+                    ok 
+            end
+        end,
+
+    Check = lists:foldl(TestCorruptedWriteFun, 
+                        ok, 
+                        lists:seq(1, -1 + 8 * (KeyL + ValueL + 8))),
+
+    ?assertMatch(ok, Check),
+    file:delete(TestFN).
+    
 
 nonsense_coverage_test() ->
     {ok, Pid} = gen_fsm:start(?MODULE, [#cdb_options{}], []),

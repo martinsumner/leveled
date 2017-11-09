@@ -338,7 +338,7 @@ schedule_compaction(CompactionHours, RunsPerDay, CurrentTS) ->
 %% @doc
 %% Get a score for a single CDB file in the journal.  This will pull out a bunch 
 %% of keys and sizes at random in an efficient way (by scanning the hashtable
-%% then just picking the key and siz einformation of disk).
+%% then just picking the key and size information of disk).
 %% 
 %% The score should represent a percentage which is the size of the file by 
 %% comparison to the original file if compaction was to be run.  So if a file 
