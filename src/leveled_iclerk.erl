@@ -335,6 +335,17 @@ schedule_compaction(CompactionHours, RunsPerDay, CurrentTS) ->
 %%%============================================================================
 
 
+%% @doc
+%% Get a score for a single CDB file in the journal.  This will pull out a bunch 
+%% of keys and sizes at random in an efficient way (by scanning the hashtable
+%% then just picking the key and siz einformation of disk).
+%% 
+%% The score should represent a percentage which is the size of the file by 
+%% comparison to the original file if compaction was to be run.  So if a file 
+%% can be reduced in size by 30% the score will be 70%.
+%% 
+%% The score is based on a random sample - so will not be consistent between 
+%% calls.
 check_single_file(CDB, FilterFun, FilterServer, MaxSQN, SampleSize, BatchSize) ->
     FN = leveled_cdb:cdb_filename(CDB),
     PositionList = leveled_cdb:cdb_getpositions(CDB, SampleSize),
