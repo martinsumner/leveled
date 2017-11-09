@@ -1163,19 +1163,25 @@ saferead_keyvalue(Handle) ->
                 false ->
                     false;
                 Key ->
-                    {ok, Value} = file:read(Handle, ValueL),
-                    case crccheck_value(Value) of
-                        true ->
-                            {Key, Value, KeyL, ValueL};
-                        false ->
-                            false
-                    end 
+                    case file:read(Handle, ValueL) of 
+                        {ok, Value} -> 
+                            case crccheck_value(Value) of
+                                true ->
+                                    {Key, Value, KeyL, ValueL};
+                                false ->
+                                    false
+                            end;
+                        eof ->
+                            false 
+                    end
             end
     end.
 
 
 safe_read_next_key(Handle, Length) ->
     try read_next_key(Handle, Length) of
+        eof ->
+            false;
         Term ->
             Term
     catch
@@ -1208,8 +1214,12 @@ calc_crc(Value) ->
     end.
 
 read_next_key(Handle, Length) ->
-    {ok, Bin} = file:read(Handle, Length),
-    binary_to_term(Bin).
+    case file:read(Handle, Length) of
+        {ok, Bin} -> 
+            binary_to_term(Bin);
+        eof ->
+            eof
+    end.
 
 
 %% Read next string where the string has a CRC prepended - stripping the crc 
@@ -2143,16 +2153,23 @@ crc_corrupt_writer_test() ->
     ok = cdb_close(P2).
 
 safe_read_test() ->
-    Key = <<"Key">>,
+    % should return the right thing or false, or the wrong thing if and 
+    % only if we understand why
+    Key = term_to_binary(<<"Key">>),
     Value = <<"Value">>,
     CRC = calc_crc(Value),
-    ValToWrite = <<Value/binary, CRC:32/integer>>,
+    ValToWrite = <<CRC:32/integer, Value/binary>>,
     KeyL = byte_size(Key),
+    FlippedKeyL = endian_flip(KeyL),
     ValueL= byte_size(ValToWrite),
+    FlippedValL = endian_flip(ValueL),
     
     TestFN = "../test/saferead.pnd",
     BinToWrite = 
-        <<KeyL:32/integer, ValueL:32/integer, Key/binary, ValToWrite/binary>>,
+        <<FlippedKeyL:32/integer, 
+            FlippedValL:32/integer, 
+            Key/binary, 
+            ValToWrite/binary>>,
     
     TestCorruptedWriteFun = 
         fun(BitNumber) ->
@@ -2167,11 +2184,61 @@ safe_read_test() ->
             {ok, Handle} = file:open(TestFN, ?WRITE_OPS),
             ok = file:pwrite(Handle, 0, AltBin),
             {ok, _} = file:position(Handle, bof),
-            ?assertMatch(false, saferead_keyvalue(Handle))
+            case saferead_keyvalue(Handle) of 
+                false ->
+                    % Result OK to be false - should get that on error
+                    ok;
+                {<<"Key">>, ValToWrite, KeyL, BadValueL} ->
+                    % Sometimes corruption may yield a correct answer
+                    % for example if Value Length is too big
+                    %
+                    % This cna only happen with a corrupted value length at
+                    % the end of the file - which is just a peculiarity of 
+                    % the test
+                    ?assertMatch(true, BadValueL > ValueL);
+                {_BadKey, ValToWrite, KeyL, ValueL} ->
+                    % Key is not CRC checked - so may be bit flipped to
+                    % something which is still passes through binary_to_term
+                    % Assumption is that the application should always 
+                    % ultimately know the key - and so will be able to check
+                    % against the Key it is trying for.
+                    ok
+            end,
+            ok = file:close(Handle)
         end,
 
     lists:foreach(TestCorruptedWriteFun, 
                     lists:seq(1, -1 + 8 * (KeyL + ValueL + 8))),
+    
+    {ok, HandleK} = file:open(TestFN, ?WRITE_OPS),
+    ok = file:pwrite(HandleK, 0, BinToWrite),
+    {ok, _} = file:position(HandleK, 8 + KeyL + ValueL),
+    ?assertMatch(false, safe_read_next_key(HandleK, KeyL)),
+    ok = file:close(HandleK),
+
+    WrongKeyL = endian_flip(KeyL + ValueL),
+    {ok, HandleV0} = file:open(TestFN, ?WRITE_OPS),
+    ok = file:pwrite(HandleV0, 0, BinToWrite),
+    ok = file:pwrite(HandleV0, 0, <<WrongKeyL:32/integer>>),
+    {ok, _} = file:position(HandleV0, bof),
+    ?assertMatch(false, saferead_keyvalue(HandleV0)),
+    ok = file:close(HandleV0),
+
+    WrongValL = 0,
+    {ok, HandleV1} = file:open(TestFN, ?WRITE_OPS),
+    ok = file:pwrite(HandleV1, 0, BinToWrite),
+    ok = file:pwrite(HandleV1, 4, <<WrongValL:32/integer>>),
+    {ok, _} = file:position(HandleV1, bof),
+    ?assertMatch(false, saferead_keyvalue(HandleV1)),
+    ok = file:close(HandleV1),
+
+    io:format("Happy check ~n"),
+    {ok, HandleHappy} = file:open(TestFN, ?WRITE_OPS),
+    ok = file:pwrite(HandleHappy, 0, BinToWrite),
+    {ok, _} = file:position(HandleHappy, bof),
+    ?assertMatch({<<"Key">>, ValToWrite, KeyL, ValueL}, 
+                    saferead_keyvalue(HandleHappy)),
+    
     file:delete(TestFN).
     
 
