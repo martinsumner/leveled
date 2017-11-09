@@ -172,32 +172,53 @@ journal_compaction_tester(Restart, WRP) ->
                 Bookie0 
         end,
     
-    ok = leveled_bookie:book_compactjournal(Bookie1, 30000),
     
-    testutil:wait_for_compaction(Bookie1),
-    % Start snapshot - should not stop deletions
+    WasteFP = RootPath ++ "/journal/journal_files/waste",
+    % Start snapshot - should stop deletions
     {ok, PclClone, InkClone} = 
         leveled_bookie:book_snapshot(Bookie1, store, undefined, false),
+    ok = leveled_bookie:book_compactjournal(Bookie1, 30000),
+    testutil:wait_for_compaction(Bookie1),
+    % Wait to cause delete_pending to be blocked by snapshot
+    % timeout on switch to delete_pending is 10s
+    timer:sleep(10100),
+    case WRP of 
+        undefined -> 
+            ok;
+        _ ->
+            % Check nothing got deleted
+            {ok, CJs} = file:list_dir(WasteFP),
+            true = length(CJs) == 0
+    end,
+    ok = leveled_penciller:pcl_close(PclClone),
+    ok = leveled_inker:ink_close(InkClone),
+    % Snapshot released so deletes shoudl occur at next timeout
+    case WRP of 
+        undefined ->
+            timer:sleep(10100); % wait for delete_pending timeout
     % Wait 2 seconds for files to be deleted
-    WasteFP = RootPath ++ "/journal/journal_files/waste",
-    lists:foldl(fun(X, Found) ->
-                        case Found of
-                            true ->
-                                Found;
-                            false ->
-                                {ok, Files} = file:list_dir(WasteFP),
-                                if
-                                    length(Files) > 0 ->
-                                        io:format("Deleted files found~n"),
-                                        true;
-                                    length(Files) == 0 ->
-                                        timer:sleep(X),
-                                        false
-                                end
-                        end
-                        end,
-                    false,
-                    [2000,2000,2000,2000,2000,2000]),
+        _ ->
+            FindDeletedFilesFun =
+                fun(X, Found) ->
+                    case Found of
+                        true ->
+                            Found;
+                        false ->
+                            {ok, Files} = file:list_dir(WasteFP),
+                            if
+                                length(Files) > 0 ->
+                                    io:format("Deleted files found~n"),
+                                    true;
+                                length(Files) == 0 ->
+                                    timer:sleep(X),
+                                    false
+                            end
+                    end
+                end,
+            lists:foldl(FindDeletedFilesFun,
+                            false,
+                            [2000,2000,2000,2000,2000,2000])
+    end,
     {ok, ClearedJournals} = file:list_dir(WasteFP),
     io:format("~w ClearedJournals found~n", [length(ClearedJournals)]),
     case is_integer(WRP) of 
@@ -210,10 +231,8 @@ journal_compaction_tester(Restart, WRP) ->
     ChkList3 = lists:sublist(lists:sort(ObjList2), 500),
     testutil:check_forlist(Bookie1, ChkList3),
     
-    ok = leveled_penciller:pcl_close(PclClone),
-    ok = leveled_inker:ink_close(InkClone),
-    
     ok = leveled_bookie:book_close(Bookie1),
+    
     % Restart
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
     testutil:check_forobject(Bookie2, TestObject),
