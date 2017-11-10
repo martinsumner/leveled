@@ -91,7 +91,7 @@
 
 -define(JOURNAL_FILEX, "cdb").
 -define(PENDING_FILEX, "pnd").
--define(SAMPLE_SIZE, 200).
+-define(SAMPLE_SIZE, 100).
 -define(BATCH_SIZE, 32).
 -define(BATCHES_TO_CHECK, 8).
 %% How many consecutive files to compact in one run
