@@ -109,7 +109,7 @@
                 waste_retention_period :: integer() | undefined,
                 waste_path :: string() | undefined,
                 reload_strategy = ?DEFAULT_RELOAD_STRATEGY :: list(),
-                compression_method :: lz4|native}).
+                compression_method = native :: lz4|native}).
 
 -record(candidate, {low_sqn :: integer() | undefined,
                     filename :: string() | undefined,

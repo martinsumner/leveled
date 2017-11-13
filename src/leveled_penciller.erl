@@ -246,7 +246,7 @@
                 
                 head_timing :: tuple() | undefined,
                 
-                compression_method :: lz4|native}).
+                compression_method = native :: lz4|native}).
 
 -type penciller_options() :: #penciller_options{}.
 -type bookies_memory() :: {tuple()|empty_cache,

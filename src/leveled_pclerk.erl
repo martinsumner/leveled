@@ -50,7 +50,7 @@
 -record(state, {owner :: pid() | undefined,
                 root_path :: string() | undefined,
                 pending_deletions = dict:new(), % OTP 16 does not like type
-                compression_method :: lz4|native
+                compression_method = native :: lz4|native
                 }).
 
 %%%============================================================================

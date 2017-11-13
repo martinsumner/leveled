@@ -140,7 +140,7 @@
                     filename,
                     yield_blockquery = false :: boolean(),
                     blockindex_cache,
-                    compression_method :: press_methods()}).
+                    compression_method = native :: press_methods()}).
 
 -type sst_state() :: #state{}.
 
