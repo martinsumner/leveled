@@ -136,8 +136,8 @@
                 clerk :: pid() | undefined,
                 compaction_pending = false :: boolean(),
                 is_snapshot = false :: boolean(),
-                compression_method :: lz4|native,
-                compress_on_receipt :: boolean(),
+                compression_method = native :: lz4|native,
+                compress_on_receipt = false :: boolean(),
                 source_inker :: pid() | undefined}).
 
 

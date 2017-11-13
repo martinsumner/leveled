@@ -48,8 +48,8 @@
                         source_inker :: pid() | undefined,
                         reload_strategy = [] :: list(),
                         waste_retention_period :: integer() | undefined,
-                        compression_method :: lz4|native,
-                        compress_on_receipt :: boolean(),
+                        compression_method = native :: lz4|native,
+                        compress_on_receipt = false :: boolean(),
                         max_run_length}).
 
 -record(penciller_options,
@@ -60,7 +60,7 @@
                         bookies_mem :: tuple() | undefined,
                         source_penciller :: pid() | undefined,
                         snapshot_longrunning = true :: boolean(),
-                        compression_method :: lz4|native,
+                        compression_method = native :: lz4|native,
                         levelzero_cointoss = false :: boolean()}).
 
 -record(iclerk_options,
@@ -68,7 +68,7 @@
                          max_run_length :: integer() | undefined,
                          cdb_options = #cdb_options{} :: #cdb_options{},
                          waste_retention_period :: integer() | undefined,
-                         compression_method :: lz4|native,
+                         compression_method = native :: lz4|native,
                          reload_strategy = [] :: list()}).
 
 -record(recent_aae, {filter :: whitelist|blacklist,
