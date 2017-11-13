@@ -453,7 +453,7 @@ gen_indexspec(Bucket, Key, IdxOp, IdxField, IdxTerm, SQN, TTL) ->
 %% Generate an additional index term representing the change, if the last
 %% modified date for the change is within the definition of recency.
 %%
-%% The objetc may have multiple last modified dates (siblings), and in this
+%% The object may have multiple last modified dates (siblings), and in this
 %% case index entries for all dates within the range are added.
 %%
 %% The index should entry auto-expire in the future (when it is no longer
@@ -907,5 +907,20 @@ genaaeidx_test() ->
                             buckets=[<<"Bucket0">>]},
     AAESpecsB2 = aae_indexspecs(AAE1, <<"Bucket0">>, Key, SQN, H, LastMods1),
     ?assertMatch(0, length(AAESpecsB2)).
+
+delayedupdate_aaeidx_test() ->
+    AAE = #recent_aae{filter=blacklist,
+                        buckets=[],
+                        limit_minutes=60,
+                        unit_minutes=5},
+    Bucket = <<"Bucket1">>,
+    Key = <<"Key1">>,
+    SQN = 1,
+    H = erlang:phash2(null),
+    {Mega, Sec, MSec} = os:timestamp(),
+    LastMods = [{Mega -1, Sec, MSec}],
+    AAESpecs = aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods),
+    ?assertMatch(0, length(AAESpecs)).
+
 
 -endif.

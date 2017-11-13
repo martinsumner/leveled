@@ -91,7 +91,7 @@
 
 -define(JOURNAL_FILEX, "cdb").
 -define(PENDING_FILEX, "pnd").
--define(SAMPLE_SIZE, 200).
+-define(SAMPLE_SIZE, 100).
 -define(BATCH_SIZE, 32).
 -define(BATCHES_TO_CHECK, 8).
 %% How many consecutive files to compact in one run
@@ -116,14 +116,24 @@
                     journal :: pid() | undefined,
                     compaction_perc :: float() | undefined}).
 
+-type iclerk_options() :: #iclerk_options{}.
 
 %%%============================================================================
 %%% API
 %%%============================================================================
 
+-spec clerk_new(iclerk_options()) -> {ok, pid()}.
+%% @doc
+%% Generate a new clerk
 clerk_new(InkerClerkOpts) ->
     gen_server:start(?MODULE, [InkerClerkOpts], []).
-    
+
+-spec clerk_compact(pid(), pid(), 
+                    fun(), fun(), fun(),  
+                    pid(), integer()) -> ok.
+%% @doc
+%% Trigger a compaction for this clerk if the threshold of data recovery has 
+%% been met
 clerk_compact(Pid, Checker, InitiateFun, CloseFun, FilterFun, Inker, TimeO) ->
     gen_server:cast(Pid,
                     {compact,
@@ -134,10 +144,18 @@ clerk_compact(Pid, Checker, InitiateFun, CloseFun, FilterFun, Inker, TimeO) ->
                     Inker,
                     TimeO}).
 
+-spec clerk_hashtablecalc(ets:tid(), integer(), pid()) -> ok.
+%% @doc
+%% Spawn a dedicated clerk for the process of calculating the binary view
+%% of the hastable in the CDB file - so that the file is not blocked during
+%% this calculation
 clerk_hashtablecalc(HashTree, StartPos, CDBpid) ->
     {ok, Clerk} = gen_server:start(?MODULE, [#iclerk_options{}], []),
     gen_server:cast(Clerk, {hashtable_calc, HashTree, StartPos, CDBpid}).
 
+-spec clerk_stop(pid()) -> ok.
+%% @doc
+%% Stop the clerk
 clerk_stop(Pid) ->
     gen_server:cast(Pid, stop).
 
@@ -240,6 +258,10 @@ code_change(_OldVsn, State, _Extra) ->
 %%% External functions
 %%%============================================================================
 
+-spec schedule_compaction(list(integer()), 
+                            integer(), 
+                            {integer(), integer(), integer()}) -> integer().
+%% @doc
 %% Schedule the next compaction event for this store.  Chooses a random
 %% interval, and then a random start time within the first third
 %% of the interval.
@@ -256,7 +278,6 @@ code_change(_OldVsn, State, _Extra) ->
 %%
 %% Current TS should be the outcome of os:timestamp()
 %%
-
 schedule_compaction(CompactionHours, RunsPerDay, CurrentTS) ->
     % We chedule the next interval by acting as if we were scheduing all
     % n intervals at random, but then only chose the next one.  After each
@@ -314,11 +335,27 @@ schedule_compaction(CompactionHours, RunsPerDay, CurrentTS) ->
 %%%============================================================================
 
 
+%% @doc
+%% Get a score for a single CDB file in the journal.  This will pull out a bunch 
+%% of keys and sizes at random in an efficient way (by scanning the hashtable
+%% then just picking the key and size information of disk).
+%% 
+%% The score should represent a percentage which is the size of the file by 
+%% comparison to the original file if compaction was to be run.  So if a file 
+%% can be reduced in size by 30% the score will be 70%.
+%% 
+%% The score is based on a random sample - so will not be consistent between 
+%% calls.
 check_single_file(CDB, FilterFun, FilterServer, MaxSQN, SampleSize, BatchSize) ->
     FN = leveled_cdb:cdb_filename(CDB),
     PositionList = leveled_cdb:cdb_getpositions(CDB, SampleSize),
     KeySizeList = fetch_inbatches(PositionList, BatchSize, CDB, []),
-    
+    Score = 
+        size_comparison_score(KeySizeList, FilterFun, FilterServer, MaxSQN),
+    leveled_log:log("IC004", [FN, Score]),
+    Score.
+
+size_comparison_score(KeySizeList, FilterFun, FilterServer, MaxSQN) ->
     FoldFunForSizeCompare =
         fun(KS, {ActSize, RplSize}) ->
             case KS of
@@ -333,20 +370,22 @@ check_single_file(CDB, FilterFun, FilterServer, MaxSQN, SampleSize, BatchSize) -
                             {ActSize, RplSize + Size - ?CRC_SIZE}
                     end;
                 _ ->
+                    % There is a key which is not in expected format
+                    % Not that the key-size list has been filtered for
+                    % errors by leveled_cdb - but this doesn't know the 
+                    % expected format of the key
                     {ActSize, RplSize}
             end
             end,
             
     R0 = lists:foldl(FoldFunForSizeCompare, {0, 0}, KeySizeList),
     {ActiveSize, ReplacedSize} = R0,
-    Score = case ActiveSize + ReplacedSize of
-                0 ->
-                    100.0;
-                _ ->
-                    100 * ActiveSize / (ActiveSize + ReplacedSize)
-            end,
-    leveled_log:log("IC004", [FN, Score]),
-    Score.
+    case ActiveSize + ReplacedSize of
+        0 ->
+            100.0;
+        _ ->
+            100 * ActiveSize / (ActiveSize + ReplacedSize)
+    end.
 
 scan_all_files(Manifest, FilterFun, FilterServer, MaxSQN) ->
     scan_all_files(Manifest, FilterFun, FilterServer, MaxSQN, []).
@@ -979,6 +1018,22 @@ compact_singlefile_totwosmallfiles_testto() ->
                     ManifestSlice),
     ok = leveled_cdb:cdb_deletepending(CDBr),
     ok = leveled_cdb:cdb_destroy(CDBr).
+
+size_score_test() ->
+    KeySizeList = 
+        [{{1, "INK", "Key1"}, 104},
+            {{2, "INK", "Key2"}, 124},
+            {{3, "INK", "Key3"}, 144},
+            {{4, "INK", "Key4"}, 154},
+            {{5, "INK", "Key5", "Subk1"}, 164},
+            {{6, "INK", "Key6"}, 174},
+            {{7, "INK", "Key7"}, 184}],
+    MaxSQN = 6,
+    CurrentList = ["Key1", "Key4", "Key5", "Key6"],
+    FilterFun = fun(L, K, _SQN) -> lists:member(K, L) end,
+    Score = size_comparison_score(KeySizeList, FilterFun, CurrentList, MaxSQN),
+    ?assertMatch(true, Score > 69.0),
+    ?assertMatch(true, Score < 70.0).
 
 coverage_cheat_test() ->
     {noreply, _State0} = handle_info(timeout, #state{}),

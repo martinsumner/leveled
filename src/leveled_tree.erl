@@ -352,16 +352,12 @@ treelookup_range_end(EndRange, {NK0, SL0}, Iter0, Output, EndRangeFun) ->
     case leveled_codec:endkey_passed(EndRange, NK0) of
         true ->
             {LHS, RHS} = lists:splitwith(PredFun, SL0),
-            case RHS of
-                [] ->
-                    Output ++ LHS;
-                [{FirstRHSKey, FirstRHSValue}|_Rest] ->
-                    case EndRangeFun(EndRange, FirstRHSKey, FirstRHSValue) of
-                        true ->
-                            Output ++ LHS ++ [{FirstRHSKey, FirstRHSValue}];
-                        false ->
-                            Output ++ LHS
-                    end
+            [{FirstRHSKey, FirstRHSValue}|_Rest] = RHS,
+            case EndRangeFun(EndRange, FirstRHSKey, FirstRHSValue) of
+                true ->
+                    Output ++ LHS ++ [{FirstRHSKey, FirstRHSValue}];
+                false ->
+                    Output ++ LHS
             end;
         false ->
             UpdOutput = Output ++ SL0,
@@ -378,6 +374,8 @@ treelookup_range_end(EndRange, {NK0, SL0}, Iter0, Output, EndRangeFun) ->
     end.
 
 idxtlookup_range_start(StartRange, EndRange, {TLI, IDX}, EndRangeFun) ->
+    % TLI tuple of lists, IDS is a gb_tree of End Keys mapping to tuple 
+    % indexes
     Iter0 = tree_iterator_from(StartRange, IDX),
     case tree_next(Iter0) of
         none ->
@@ -388,6 +386,8 @@ idxtlookup_range_start(StartRange, EndRange, {TLI, IDX}, EndRangeFun) ->
                     K < StartRange
                 end,
             {_LHS, RHS} = lists:splitwith(PredFun, element(ListID, TLI)),
+            % The RHS is the list of {EK, SK} elements where the EK >=  the 
+            % StartRange, otherwise the LHS falls before the range
             idxtlookup_range_end(EndRange, {TLI, NK, RHS}, Iter1, [], EndRangeFun)
     end.
 
@@ -395,24 +395,27 @@ idxtlookup_range_end(EndRange, {TLI, NK0, SL0}, Iter0, Output, EndRangeFun) ->
     PredFun =
         fun({K, _V}) ->
             not leveled_codec:endkey_passed(EndRange, K)
+            % true if EndRange is after K
         end,
     case leveled_codec:endkey_passed(EndRange, NK0) of
         true ->
+            % The end key of this list is after the end of the range, so no
+            % longer interested in any of the rest of the tree - just this 
+            % sublist
             {LHS, RHS} = lists:splitwith(PredFun, SL0),
-            case RHS of
-                [] ->
-                    Output ++ LHS;
-                [{FirstRHSKey, FirstRHSValue}|_Rest] ->
-                    case EndRangeFun(EndRange, FirstRHSKey, FirstRHSValue) of
-                        true ->
-                            % The start key is not after the end of the range
-                            % and so this should be included in the range
-                            Output ++ LHS ++ [{FirstRHSKey, FirstRHSValue}];
-                        false ->
-                            % the start key of the next key is after the end
-                            % of the range and so should not be included
-                            Output ++ LHS
-                    end
+            % Split the {EK, SK} pairs based on the EndRange.  Note that the 
+            % last key is passed the end range - so the RHS cannot be empty, it
+            % must at least include the last key (as NK0 is at the end of SL0).
+            [{FirstRHSKey, FirstRHSValue}|_Rest] = RHS,
+            case EndRangeFun(EndRange, FirstRHSKey, FirstRHSValue) of
+                true ->
+                    % The start key is not after the end of the range
+                    % and so this should be included in the range
+                    Output ++ LHS ++ [{FirstRHSKey, FirstRHSValue}];
+                false ->
+                    % the start key of the next key is after the end
+                    % of the range and so should not be included
+                    Output ++ LHS
             end;
         false ->
             UpdOutput = Output ++ SL0,
@@ -587,13 +590,16 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
 
 
 tree_search_test() ->
-    search_test_by_type(tree).
+    search_test_by_type(tree),
+    extra_searchrange_test_by_type(tree).
 
 idxt_search_test() ->
-    search_test_by_type(idxt).
+    search_test_by_type(idxt),
+    extra_searchrange_test_by_type(idxt).
 
 skpl_search_test() ->
-    search_test_by_type(skpl).
+    search_test_by_type(skpl),
+    extra_searchrange_test_by_type(skpl).
 
 search_test_by_type(Type) ->
     MapFun =
@@ -745,13 +751,16 @@ tree_test_by_(Width, Type, N) ->
 
 
 tree_matchrange_test() ->
-    matchrange_test_by_type(tree).
+    matchrange_test_by_type(tree),
+    extra_matchrange_test_by_type(tree).
 
 idxt_matchrange_test() ->
-    matchrange_test_by_type(idxt).
+    matchrange_test_by_type(idxt),
+    extra_matchrange_test_by_type(idxt).
 
 skpl_matchrange_test() ->
-    matchrange_test_by_type(skpl).
+    matchrange_test_by_type(skpl),
+    extra_matchrange_test_by_type(skpl).
 
 
 matchrange_test_by_type(Type) ->
@@ -782,6 +791,62 @@ matchrange_test_by_type(Type) ->
     ?assertMatch(2, LengthR(PenultimateKey, FinalKey, Tree0)),
     ?assertMatch(KL_Length, LengthR(AfterFirstKey, PenultimateKey, Tree0) + 2),
     ?assertMatch(1, LengthR(AfterPenultimateKey, FinalKey, Tree0)).
+
+extra_matchrange_test_by_type(Type) ->
+    N = 4000,
+    KL = lists:ukeysort(1, generate_randomkeys(1, N, 1, N div 5)),
+    Tree0 = from_orderedlist(KL, Type),
+
+    SubL = lists:sublist(KL, 2000, 3100),
+    RangeLists = 
+        lists:map(fun(P) -> lists:sublist(SubL, P, P + 50) end, 
+                    lists:seq(1, 50)),
+    TestRangeLFun = 
+        fun(RangeL) ->
+            SKeyV = lists:nth(1, RangeL),
+            EKeyV = lists:nth(50, RangeL),
+            {{o, SB, SK, null}, _SV} = SKeyV,
+            {{o, EB, EK, null}, _EV} = EKeyV,
+            SRangeK = {o, SB, SK ++ "0", null},
+            ERangeK = {o, EB, EK ++ "0", null},
+            ?assertMatch(49, length(match_range(SRangeK, ERangeK, Tree0)))
+        end,
+    lists:foreach(TestRangeLFun, RangeLists).
+
+extra_searchrange_test_by_type(Type) ->
+    N = 4000,
+    KL = lists:ukeysort(1, generate_randomkeys(1, N, 1, N div 5)),
+    SearchKL = convertkeylist(KL, []),
+    % Each {K, V} in the convert list is now an {EK, SK} or a range
+    Tree0 = from_orderedlist(SearchKL, Type),
+
+    SubL = lists:sublist(KL, 2000, 3100),
+    
+    SKFun = fun(V) -> V end,
+    
+    TestRangeLFun = 
+        fun(P) ->
+            RangeL = lists:sublist(SubL, P, P + 50),
+            % If P is odd, the range keys will be between a start key and an 
+            % end key.  
+            % If P is even, the range keys will be between an end key and a 
+            % start key
+            SKeyV = lists:nth(1, RangeL),
+            EKeyV = lists:nth(50, RangeL),
+            {{o, SB, SK, null}, _SV} = SKeyV,
+            {{o, EB, EK, null}, _EV} = EKeyV,
+            FRangeK = {o, SB, SK ++ "0", null},
+            BRangeK = {o, EB, EK ++ "0", null},
+            ?assertMatch(25, length(search_range(FRangeK, BRangeK, Tree0, SKFun)))
+        end,
+    lists:foreach(TestRangeLFun, lists:seq(1, 50)).
+
+convertkeylist(KeyList, Acc) when length(KeyList) < 2 ->
+    lists:reverse(Acc);
+convertkeylist(KeyList, Acc) -> 
+    [{SK, _SV}|OddTail] = KeyList,
+    [{EK, _EV}|EvenTail] = OddTail,
+    convertkeylist(EvenTail, [{EK, SK}|Acc]).
 
 match_fun(Tree) ->
     fun({K, V}) ->

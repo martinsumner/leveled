@@ -916,39 +916,6 @@ get_mem(Key, Handle, HashTree, BinaryMode, QuickCheck) ->
             extract_kvpair(Handle, ListToCheck, Key, BinaryMode)
     end.
 
--spec get_nextkey(list()|file:io_device()) -> 
-        nomorekeys|
-            {any(), nomorekeys}|
-                {any(), file:io_device(), {integer(), integer()}}.
-%% @doc
-%% Get the next key at a position in the file (or the first key if no position 
-%% is passed).  Will return both a key and the next position, or nomorekeys if
-%% the end has been reached (either in place of the result if there are no 
-%% more keys, or in place of the position if the returned key is the last key)
-get_nextkey(Filename) when is_list(Filename) ->
-    {ok, Handle} = file:open(Filename, [binary, raw, read]),
-    get_nextkey(Handle);
-get_nextkey(Handle) ->
-    {ok, _} = file:position(Handle, bof),
-    {FirstHashPosition, _} = read_next_2_integers(Handle),
-    get_nextkey(Handle, {256 * ?DWORD_SIZE, FirstHashPosition}).
-
-get_nextkey(Handle, {Position, FirstHashPosition}) ->
-    {ok, Position} = file:position(Handle, Position),
-    case read_next_2_integers(Handle) of 
-        {KeyLength, ValueLength} ->
-            NextKey = read_next_key(Handle, KeyLength),
-            NextPosition = Position + KeyLength + ValueLength + ?DWORD_SIZE,
-            case NextPosition of 
-                FirstHashPosition ->
-                    {NextKey, nomorekeys};
-                _ ->
-                    {NextKey, Handle, {NextPosition, FirstHashPosition}}
-            end;
-        eof ->
-            nomorekeys
-end.
-
 -spec hashtable_calc(ets:tid(), integer()) -> {list(), binary()}.
 %% @doc
 %% Create a binary representation of the hash table to be written to the end
@@ -1010,7 +977,7 @@ find_lastkey(Handle, IndexCache) ->
         _ ->
             {ok, _} = file:position(Handle, LastPosition),
             {KeyLength, _ValueLength} = read_next_2_integers(Handle),
-            read_next_key(Handle, KeyLength)
+            safe_read_next_key(Handle, KeyLength)
     end.
 
 
@@ -1193,30 +1160,28 @@ saferead_keyvalue(Handle) ->
             false;
         {KeyL, ValueL} ->
             case safe_read_next_key(Handle, KeyL) of 
-                {error, _} ->
-                    false;
-                eof ->
-                    false;
                 false ->
                     false;
                 Key ->
                     case file:read(Handle, ValueL) of 
-                        eof ->
-                            false;
-                        {ok, Value} ->
+                        {ok, Value} -> 
                             case crccheck_value(Value) of
                                 true ->
                                     {Key, Value, KeyL, ValueL};
                                 false ->
                                     false
-                            end
-                    end 
+                            end;
+                        eof ->
+                            false 
+                    end
             end
     end.
 
 
 safe_read_next_key(Handle, Length) ->
     try read_next_key(Handle, Length) of
+        eof ->
+            false;
         Term ->
             Term
     catch
@@ -1250,10 +1215,10 @@ calc_crc(Value) ->
 
 read_next_key(Handle, Length) ->
     case file:read(Handle, Length) of
-        {ok, Bin} ->
+        {ok, Bin} -> 
             binary_to_term(Bin);
-        ReadError ->
-            ReadError
+        eof ->
+            eof
     end.
 
 
@@ -1907,32 +1872,9 @@ search_hash_table_findinslot_test() ->
     ?assertMatch(missing, get("../test/hashtable1_test.cdb", Key1, false)),
     ok = file:delete("../test/hashtable1_test.cdb").
 
-getnextkey_inclemptyvalue_test() ->
-    L = [{"K9", "V9"}, {"K2", "V2"}, {"K3", ""}, 
-      {"K4", "V4"}, {"K5", "V5"}, {"K6", "V6"}, {"K7", "V7"}, 
-      {"K8", "V8"}, {"K1", "V1"}],
-    ok = create("../test/hashtable2_test.cdb", L),
-    {FirstKey, Handle, P1} = get_nextkey("../test/hashtable2_test.cdb"),
-    io:format("Next position details of ~w~n", [P1]),
-    ?assertMatch("K9", FirstKey),
-    {SecondKey, Handle, P2} = get_nextkey(Handle, P1),
-    ?assertMatch("K2", SecondKey),
-    {ThirdKeyNoValue, Handle, P3} = get_nextkey(Handle, P2),
-    ?assertMatch("K3", ThirdKeyNoValue),
-    {_, Handle, P4} = get_nextkey(Handle, P3),
-    {_, Handle, P5} = get_nextkey(Handle, P4),
-    {_, Handle, P6} = get_nextkey(Handle, P5),
-    {_, Handle, P7} = get_nextkey(Handle, P6),
-    {_, Handle, P8} = get_nextkey(Handle, P7),
-    {LastKey, nomorekeys} = get_nextkey(Handle, P8),
-    ?assertMatch("K1", LastKey),
-    ok = file:delete("../test/hashtable2_test.cdb").
-
 newactivefile_test() ->
     {LastPosition, _, _} = open_active_file("../test/activefile_test.cdb"),
     ?assertMatch(256 * ?DWORD_SIZE, LastPosition),
-    Response = get_nextkey("../test/activefile_test.cdb"),
-    ?assertMatch(nomorekeys, Response),
     ok = file:delete("../test/activefile_test.cdb").
 
 emptyvalue_fromdict_test() ->
@@ -2015,10 +1957,10 @@ generate_sequentialkeys(Count, KVList) ->
     generate_sequentialkeys(Count - 1, KVList ++ [KV]).
 
 get_keys_byposition_manykeys_test_() ->
-    {timeout, 60, fun get_keys_byposition_manykeys_test_to/0}.
+    {timeout, 120, fun get_keys_byposition_manykeys_test_to/0}.
 
 get_keys_byposition_manykeys_test_to() ->
-    KeyCount = 1024,
+    KeyCount = 2048,
     {ok, P1} = cdb_open_writer("../test/poskeymany.pnd",
                                 #cdb_options{binary_mode=false}),
     KVList = generate_sequentialkeys(KeyCount, []),
@@ -2209,6 +2151,96 @@ crc_corrupt_writer_test() ->
     ok = cdb_put(P2, "Key100", "Value100"),
     ?assertMatch({"Key100", "Value100"}, cdb_get(P2, "Key100")),
     ok = cdb_close(P2).
+
+safe_read_test() ->
+    % should return the right thing or false, or the wrong thing if and 
+    % only if we understand why
+    Key = term_to_binary(<<"Key">>),
+    Value = <<"Value">>,
+    CRC = calc_crc(Value),
+    ValToWrite = <<CRC:32/integer, Value/binary>>,
+    KeyL = byte_size(Key),
+    FlippedKeyL = endian_flip(KeyL),
+    ValueL= byte_size(ValToWrite),
+    FlippedValL = endian_flip(ValueL),
+    
+    TestFN = "../test/saferead.pnd",
+    BinToWrite = 
+        <<FlippedKeyL:32/integer, 
+            FlippedValL:32/integer, 
+            Key/binary, 
+            ValToWrite/binary>>,
+    
+    TestCorruptedWriteFun = 
+        fun(BitNumber) ->
+            <<PreBin:BitNumber/bitstring, 
+                Bit:1/integer, 
+                PostBin/bitstring>> = BinToWrite, 
+            BadBit = Bit bxor 1,
+            AltBin = <<PreBin:BitNumber/bitstring, 
+                        BadBit:1/integer, 
+                        PostBin/bitstring>>,
+            file:delete(TestFN),
+            {ok, Handle} = file:open(TestFN, ?WRITE_OPS),
+            ok = file:pwrite(Handle, 0, AltBin),
+            {ok, _} = file:position(Handle, bof),
+            case saferead_keyvalue(Handle) of 
+                false ->
+                    % Result OK to be false - should get that on error
+                    ok;
+                {<<"Key">>, ValToWrite, KeyL, BadValueL} ->
+                    % Sometimes corruption may yield a correct answer
+                    % for example if Value Length is too big
+                    %
+                    % This cna only happen with a corrupted value length at
+                    % the end of the file - which is just a peculiarity of 
+                    % the test
+                    ?assertMatch(true, BadValueL > ValueL);
+                {_BadKey, ValToWrite, KeyL, ValueL} ->
+                    % Key is not CRC checked - so may be bit flipped to
+                    % something which is still passes through binary_to_term
+                    % Assumption is that the application should always 
+                    % ultimately know the key - and so will be able to check
+                    % against the Key it is trying for.
+                    ok
+            end,
+            ok = file:close(Handle)
+        end,
+
+    lists:foreach(TestCorruptedWriteFun, 
+                    lists:seq(1, -1 + 8 * (KeyL + ValueL + 8))),
+    
+    {ok, HandleK} = file:open(TestFN, ?WRITE_OPS),
+    ok = file:pwrite(HandleK, 0, BinToWrite),
+    {ok, _} = file:position(HandleK, 8 + KeyL + ValueL),
+    ?assertMatch(false, safe_read_next_key(HandleK, KeyL)),
+    ok = file:close(HandleK),
+
+    WrongKeyL = endian_flip(KeyL + ValueL),
+    {ok, HandleV0} = file:open(TestFN, ?WRITE_OPS),
+    ok = file:pwrite(HandleV0, 0, BinToWrite),
+    ok = file:pwrite(HandleV0, 0, <<WrongKeyL:32/integer>>),
+    {ok, _} = file:position(HandleV0, bof),
+    ?assertMatch(false, saferead_keyvalue(HandleV0)),
+    ok = file:close(HandleV0),
+
+    WrongValL = 0,
+    {ok, HandleV1} = file:open(TestFN, ?WRITE_OPS),
+    ok = file:pwrite(HandleV1, 0, BinToWrite),
+    ok = file:pwrite(HandleV1, 4, <<WrongValL:32/integer>>),
+    {ok, _} = file:position(HandleV1, bof),
+    ?assertMatch(false, saferead_keyvalue(HandleV1)),
+    ok = file:close(HandleV1),
+
+    io:format("Happy check ~n"),
+    {ok, HandleHappy} = file:open(TestFN, ?WRITE_OPS),
+    ok = file:pwrite(HandleHappy, 0, BinToWrite),
+    {ok, _} = file:position(HandleHappy, bof),
+    ?assertMatch({<<"Key">>, ValToWrite, KeyL, ValueL}, 
+                    saferead_keyvalue(HandleHappy)),
+    
+    file:delete(TestFN).
+    
 
 nonsense_coverage_test() ->
     {ok, Pid} = gen_fsm:start(?MODULE, [#cdb_options{}], []),
