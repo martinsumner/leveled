@@ -29,7 +29,7 @@
             hashlist_query/3,
             tictactree/5,
             foldheads_allkeys/5,
-            foldobjects_allkeys/3,
+            foldobjects_allkeys/4,
             foldheads_bybucket/5,
             foldobjects_bybucket/3,
             foldobjects_byindex/3
@@ -226,10 +226,11 @@ foldheads_allkeys(SnapFun, Tag, FoldFun, JournalCheck, SegmentList) ->
                 FoldFun, 
                 {true, JournalCheck}, SegmentList).
 
--spec foldobjects_allkeys(fun(), atom(), fun()) -> {async, fun()}.
+-spec foldobjects_allkeys(fun(), atom(), fun(), key_order|sqn_order) 
+                                                            -> {async, fun()}.
 %% @doc
 %% Fold over all objects for a given tag
-foldobjects_allkeys(SnapFun, Tag, FoldFun) ->
+foldobjects_allkeys(SnapFun, Tag, FoldFun, _Order) ->
     StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
     EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
     foldobjects(SnapFun, 

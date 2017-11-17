@@ -253,7 +253,7 @@ ink_close(Pid) ->
 ink_doom(Pid) ->
     gen_server:call(Pid, doom, 60000).
 
--spec ink_fold(pid(), integer(), {fun(), fun(), fun()}, pid()) -> ok.
+-spec ink_fold(pid(), integer(), {fun(), fun(), fun()}, any()) -> ok.
 %% @doc
 %% Fold over the journal from a starting sequence number (MinSQN), passing 
 %% in three functions and a snapshot of the penciller.  The Fold functions
@@ -270,7 +270,7 @@ ink_doom(Pid) ->
 %% KeyInJournal 
 %% ValueInJournal
 %% Position - the actual position within the CDB file of the object
-%% Acc - the accumulator
+%% Acc - the bathc accumulator
 %% ExtractFun - a single arity function which can be applied to ValueInJournal
 %% to extract the actual object, and the size of the object,
 %%
@@ -279,13 +279,13 @@ ink_doom(Pid) ->
 %% {stop, {MinSQN, MaxSQN, UpdAcc}}
 %% The FilterFun is required to call stop when MaxSQN is reached
 %%
-%% The InitAccFun should return an initial accumulator for each subfold.
+%% The InitAccFun should return an initial batch accumulator for each subfold.
 %%
-%% The FoldFun is a 2 arity function that should take as inputs:
-%% The Recipient
-%% The Accumulator built over the sub-fold
-ink_fold(Pid, MinSQN, FoldFuns, Recipient) ->
-    gen_server:call(Pid, {fold, MinSQN, FoldFuns, Recipient}, infinity).
+%% The BatchFun is a two arity function that should take as inputs:
+%% An overall accumulator
+%% The batch accumulator built over the sub-fold
+ink_fold(Pid, MinSQN, FoldFuns, Acc) ->
+    gen_server:call(Pid, {fold, MinSQN, FoldFuns, Acc}, infinity).
 
 -spec ink_loadpcl(pid(), integer(), fun(), pid()) -> ok.
 %%
@@ -297,13 +297,17 @@ ink_fold(Pid, MinSQN, FoldFuns, Recipient) ->
 %% The load fun should be a five arity function like:
 %% load_fun(KeyInJournal, ValueInJournal, _Position, Acc0, ExtractFun)
 ink_loadpcl(Pid, MinSQN, FilterFun, Penciller) ->
+    BatchFun = 
+        fun(BatchAcc, _Acc) ->
+            push_to_penciller(Penciller, BatchAcc)
+        end,
     gen_server:call(Pid, 
                     {fold, 
                         MinSQN, 
                         {FilterFun, 
                             fun leveled_bookie:empty_ledgercache/0, 
-                            fun push_to_penciller/2}, 
-                        Penciller}, 
+                            BatchFun}, 
+                        ok}, 
                     infinity).
 
 -spec ink_compactjournal(pid(), pid(), integer()) -> ok.
@@ -426,12 +430,12 @@ handle_call({key_check, Key, SQN}, _From, State) ->
 handle_call({fold, 
                 StartSQN, 
                 {FilterFun, InitAccFun, FoldFun}, 
-                Recipient}, _From, State) ->
+                Acc}, _From, State) ->
     Manifest = lists:reverse(leveled_imanifest:to_list(State#state.manifest)),
     Reply = 
         fold_from_sequence(StartSQN, 
                             {FilterFun, InitAccFun, FoldFun}, 
-                            Recipient, 
+                            Acc, 
                             Manifest),
     {reply, Reply, State};
 handle_call({register_snapshot, Requestor}, _From , State) ->
@@ -793,75 +797,81 @@ start_new_activejournal(SQN, RootPath, CDBOpts) ->
     {SQN, Filename, PidW, empty}.
 
 
-%% Scan between sequence numbers applying FilterFun to each entry where
-%% FilterFun{K, V, Acc} -> Penciller Key List
-%% Load the output for the CDB file into the Penciller.
 
-fold_from_sequence(_MinSQN, _FoldFuns, _Rec, []) ->
-    ok;
-fold_from_sequence(MinSQN, FoldFuns, Rec, [{LowSQN, FN, Pid, _LK}|Rest])
+-spec fold_from_sequence(integer(), {fun(), fun(), fun()}, any(), list()) 
+                                                                    -> any().
+%% @doc
+%%
+%% Scan from the starting sequence number to the end of the Journal.  Apply
+%% the FilterFun as it scans over the CDB file to build up a Batch of relevant
+%% objects - and then apply the FoldFun to the batch once the batch is 
+%% complete
+%%
+%% Inputs - MinSQN, FoldFuns, OverallAccumulator, Inker's Manifest
+%%
+%% The fold loops over all the CDB files in the Manifest.  Each file is looped
+%% over in batches using foldfile_between_sequence/7.  The batch is a range of
+%% sequence numbers (so the batch size may be << ?LOADING_BATCH) in compacted 
+%% files
+fold_from_sequence(_MinSQN, _FoldFuns, Acc, []) ->
+    Acc;
+fold_from_sequence(MinSQN, FoldFuns, Acc, [{LowSQN, FN, Pid, _LK}|Rest])
                                                     when LowSQN >= MinSQN ->    
-    fold_between_sequence(MinSQN,
-                            MinSQN + ?LOADING_BATCH,
-                            FoldFuns,
-                            Rec,
-                            Pid,
-                            undefined,
-                            FN,
-                            Rest);
-fold_from_sequence(MinSQN, FoldFuns, Rec, [{_LowSQN, FN, Pid, _LK}|Rest]) ->
-    case Rest of
-        [] ->
-            fold_between_sequence(MinSQN,
-                                    MinSQN + ?LOADING_BATCH,
-                                    FoldFuns,
-                                    Rec,
-                                    Pid,
-                                    undefined,
-                                    FN,
-                                    Rest);
-        [{NextSQN, _NxtFN, _NxtPid, _NxtLK}|_Rest] when NextSQN > MinSQN ->
-            fold_between_sequence(MinSQN,
-                                    MinSQN + ?LOADING_BATCH,
-                                    FoldFuns,
-                                    Rec,
-                                    Pid,
-                                    undefined,
-                                    FN,
-                                    Rest);
-        _ ->
-            fold_from_sequence(MinSQN, FoldFuns, Rec, Rest)
-    end.
+    Acc0 = foldfile_between_sequence(MinSQN,
+                                        MinSQN + ?LOADING_BATCH,
+                                        FoldFuns,
+                                        Acc,
+                                        Pid,
+                                        undefined,
+                                        FN),
+    fold_from_sequence(MinSQN, FoldFuns, Acc0, Rest);
+fold_from_sequence(MinSQN, FoldFuns, Acc, [{_LowSQN, FN, Pid, _LK}|Rest]) ->
+    % If this file has a LowSQN less than the minimum, we can skip it if the 
+    % next file also has a LowSQN below the minimum
+    Acc0 = 
+        case Rest of
+            [] ->
+                foldfile_between_sequence(MinSQN,
+                                            MinSQN + ?LOADING_BATCH,
+                                            FoldFuns,
+                                            Acc,
+                                            Pid,
+                                            undefined,
+                                            FN);
+            [{NextSQN, _NxtFN, _NxtPid, _NxtLK}|_Rest] when NextSQN > MinSQN ->
+                foldfile_between_sequence(MinSQN,
+                                            MinSQN + ?LOADING_BATCH,
+                                            FoldFuns,
+                                            Acc,
+                                            Pid,
+                                            undefined,
+                                            FN);
+            _ ->
+                Acc    
+        end,
+    fold_from_sequence(MinSQN, FoldFuns, Acc0, Rest).
 
-
-
-fold_between_sequence(MinSQN, MaxSQN, FoldFuns, 
-                        Recipient, CDBpid, StartPos, FN, Rest) ->
+foldfile_between_sequence(MinSQN, MaxSQN, FoldFuns, 
+                                                Acc, CDBpid, StartPos, FN) ->
     leveled_log:log("I0014", [FN, MinSQN]),
     {FilterFun, InitAccFun, FoldFun} = FoldFuns,
-    InitAcc = {MinSQN, MaxSQN, InitAccFun()},
-    Res = case leveled_cdb:cdb_scan(CDBpid, FilterFun, InitAcc, StartPos) of
-                {eof, {AccMinSQN, _AccMaxSQN, AccLC}} ->
-                    ok = FoldFun(Recipient, AccLC),
-                    {ok, AccMinSQN};
-                {LastPosition, {_AccMinSQN, _AccMaxSQN, AccLC}} ->
-                    ok = FoldFun(Recipient, AccLC),
-                    NextSQN = MaxSQN + 1,
-                    fold_between_sequence(NextSQN,
-                                            NextSQN + ?LOADING_BATCH,
-                                            FoldFuns,
-                                            Recipient,
-                                            CDBpid,
-                                            LastPosition,
-                                            FN,
-                                            Rest)
-            end,
-    case Res of
-        {ok, LMSQN} ->
-            fold_from_sequence(LMSQN, FoldFuns, Recipient, Rest);
-        ok ->
-            ok
+    InitBatchAcc = {MinSQN, MaxSQN, InitAccFun()},
+    
+    case leveled_cdb:cdb_scan(CDBpid, FilterFun, InitBatchAcc, StartPos) of
+        {eof, {_AccMinSQN, _AccMaxSQN, BatchAcc}} ->
+            FoldFun(BatchAcc, Acc);
+        {LastPosition, {_AccMinSQN, _AccMaxSQN, BatchAcc}} ->
+            UpdAcc = FoldFun(BatchAcc, Acc),
+            NextSQN = MaxSQN + 1,
+            foldfile_between_sequence(NextSQN,
+                                        NextSQN + ?LOADING_BATCH,
+                                        FoldFuns,
+                                        UpdAcc,
+                                        CDBpid,
+                                        LastPosition,
+                                        FN)
     end.
+
 
 push_to_penciller(Penciller, LedgerCache) ->
     % The push to penciller must start as a tree to correctly de-duplicate

@@ -653,7 +653,9 @@ loadqueue_ledgercache(Cache) ->
 %% Query can be no_lookup, indicating the snapshot will be used for non-specific
 %% range queries and not direct fetch requests.  {StartKey, EndKey} if the the
 %% snapshot is to be used for one specific query only (this is much quicker to
-%% setup, assuming the range is a small subset of the overall key space).
+%% setup, assuming the range is a small subset of the overall key space).  If 
+%% lookup is required but the range isn't defined then 'undefined' should be 
+%% passed as the query
 snapshot_store(LedgerCache, Penciller, Inker, SnapType, Query, LongRunning) ->
     LedgerCacheReady = readycache_forsnapshot(LedgerCache, Query),
     BookiesMem = {LedgerCacheReady#ledger_cache.loader,
@@ -760,10 +762,18 @@ get_runner(State,
     leveled_runner:foldheads_allkeys(SnapFun, 
                                         Tag, FoldFun, 
                                         JournalCheck, SegmentList);
-get_runner(State, 
+get_runner(State,
             {foldobjects_allkeys, Tag, FoldFun, SnapPreFold}) ->
+    get_runner(State, 
+                {foldobjects_allkeys, Tag, FoldFun, SnapPreFold, key_order});
+get_runner(State, 
+            {foldobjects_allkeys, Tag, FoldFun, SnapPreFold, key_order}) ->
     SnapFun = return_snapfun(State, store, no_lookup, true, SnapPreFold),
-    leveled_runner:foldobjects_allkeys(SnapFun, Tag, FoldFun);
+    leveled_runner:foldobjects_allkeys(SnapFun, Tag, FoldFun, key_order);
+get_runner(State,
+            {foldobjects_allkeys, Tag, FoldFun, SnapPreFold, sqn_order}) ->
+    SnapFun = return_snapfun(State, store, undefined, true, SnapPreFold),
+    leveled_runner:foldobjects_allkeys(SnapFun, Tag, FoldFun, sqn_order);
 get_runner(State,
             {foldheads_bybucket, 
                 Tag, Bucket, KeyRange, 
