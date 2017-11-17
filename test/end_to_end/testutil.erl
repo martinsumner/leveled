@@ -32,6 +32,8 @@
             name_list/0,
             load_objects/5,
             load_objects/6,
+            update_some_objects/3,
+            delete_some_objects/3,
             put_indexed_objects/3,
             put_altered_indexed_objects/3,
             put_altered_indexed_objects/4,
@@ -402,6 +404,37 @@ set_object(Bucket, Key, Value, IndexGen, Indexes2Remove) ->
                 vclock=generate_vclock()},
         Spec1}.
 
+update_some_objects(Bookie, ObjList, SampleSize) ->
+    StartWatchA = os:timestamp(),
+    ToUpdateList = lists:sublist(lists:sort(ObjList), SampleSize),
+    UpdateFun =
+        fun({R, Obj, Spec}) ->
+            VC = Obj#r_object.vclock,
+            VC0 = update_vclock(VC),
+            [C] = Obj#r_object.contents,
+            C0 = C#r_content{value = leveled_rand:rand_bytes(512)},
+            UpdObj = Obj#r_object{vclock = VC0, contents = [C0]},
+            {R, UpdObj, Spec}
+        end,
+    UpdatedObjList = lists:map(UpdateFun, ToUpdateList),
+    riakload(Bookie, UpdatedObjList),
+    Time = timer:now_diff(os:timestamp(), StartWatchA),
+    io:format("~w objects updates in ~w seconds~n",
+                                [SampleSize, Time/1000000]).
+
+delete_some_objects(Bookie, ObjList, SampleSize) ->
+    StartWatchA = os:timestamp(),
+    ToDeleteList = lists:sublist(lists:sort(ObjList), SampleSize),
+    DeleteFun =
+        fun({_R, Obj, Spec}) ->
+            B = Obj#r_object.bucket,
+            K = Obj#r_object.key,
+            book_riakdelete(Bookie, B, K, Spec)
+        end,
+    lists:foreach(DeleteFun, ToDeleteList),
+    Time = timer:now_diff(os:timestamp(), StartWatchA),
+    io:format("~w objects deleted in ~w seconds~n",
+                                [SampleSize, Time/1000000]).
 
 generate_vclock() ->
     lists:map(fun(X) ->
@@ -411,6 +444,9 @@ generate_vclock() ->
                     {Actor, X} end,
                     lists:seq(1, leveled_rand:uniform(8))).
 
+update_vclock(VC) ->
+    [{Actor, X}|Rest] = VC,
+    [{Actor, X + 1}|Rest].
 
 actor_list() ->
     [{1, albert}, {2, bertie}, {3, clara}, {4, dave}, {5, elton},

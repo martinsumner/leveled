@@ -230,13 +230,96 @@ foldheads_allkeys(SnapFun, Tag, FoldFun, JournalCheck, SegmentList) ->
                                                             -> {async, fun()}.
 %% @doc
 %% Fold over all objects for a given tag
-foldobjects_allkeys(SnapFun, Tag, FoldFun, _Order) ->
+foldobjects_allkeys(SnapFun, Tag, FoldFun, key_order) ->
     StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
     EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
     foldobjects(SnapFun, 
                 Tag, StartKey, EndKey, 
                 FoldFun, 
-                false, false).
+                false, false);
+foldobjects_allkeys(SnapFun, Tag, FoldObjectsFun, sqn_order) ->
+    % Fold over the journal in order of receipt
+    {FoldFun, InitAcc} =
+        case is_tuple(FoldObjectsFun) of
+            true ->
+                % FoldObjectsFun is already a tuple with a Fold function and an
+                % initial accumulator
+                FoldObjectsFun;
+            false ->
+                % no initial accumulatr passed, and so should be just a list
+                {FoldObjectsFun, []}
+        end,
+    
+    FilterFun =
+        fun(JKey, JVal, _Pos, Acc, ExtractFun) ->
+            
+            {SQN, InkTag, LedgerKey} = JKey,
+            case {InkTag, leveled_codec:from_ledgerkey(Tag, LedgerKey)} of 
+                {?INKT_STND, {B, K}} ->
+                    % Ignore tombstones and non-matching Tags and Key changes 
+                    % objects.  
+                    {MinSQN, MaxSQN, BatchAcc} = Acc,
+                    case SQN of
+                        SQN when SQN < MinSQN ->
+                            {loop, Acc};
+                        SQN when SQN > MaxSQN ->
+                            {stop, Acc};
+                        _ ->
+                            {VBin, _VSize} = ExtractFun(JVal),
+                            {Obj, _IdxSpecs} = leveled_codec:split_inkvalue(VBin),
+                            ToLoop = 
+                                case SQN  of 
+                                    MaxSQN -> stop;
+                                    _ -> loop
+                                end,
+                            {ToLoop, 
+                                {MinSQN, MaxSQN, [{B, K, SQN, Obj}|BatchAcc]}}
+                    end;
+                _ ->
+                    {loop, Acc}
+            end 
+        end,
+
+    InitAccFun = fun(_FN, _SQN) -> [] end,
+
+    Folder =
+        fun() ->
+
+            {ok, LedgerSnapshot, JournalSnapshot} = SnapFun(),
+            IsValidFun = 
+                fun(Bucket, Key, SQN) ->
+                    LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
+                    leveled_penciller:pcl_checksequencenumber(LedgerSnapshot, 
+                                                                LedgerKey, 
+                                                                SQN)
+                end,
+
+            BatchFoldFun = 
+                fun(BatchAcc, ObjAcc) ->
+                    ObjFun = 
+                        fun({B, K, SQN, Obj}, Acc) -> 
+                            case IsValidFun(B, K, SQN) of
+                                true ->
+                                    FoldFun(B, K, Obj, Acc);
+                                false ->
+                                    Acc
+                            end 
+                        end,
+                    leveled_log:log("R0001", [length(BatchAcc)]),
+                    lists:foldr(ObjFun, ObjAcc, BatchAcc)
+                end,
+            
+            Acc = 
+                leveled_inker:ink_fold(JournalSnapshot, 
+                                        0,
+                                        {FilterFun, InitAccFun, BatchFoldFun},
+                                        InitAcc),
+            ok = leveled_penciller:pcl_close(LedgerSnapshot),
+            ok = leveled_inker:ink_close(JournalSnapshot),
+            Acc 
+        end,
+    {async, Folder}.
+            
 
 -spec foldobjects_bybucket(fun(), {atom(), any(), any()}, fun()) -> 
                                                                 {async, fun()}.
@@ -481,7 +564,7 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
                             ProxyObj = make_proxy_object(LK, JK,
                                                           MD, V,
                                                           InkerClone),
-                            FoldObjectsFun(B, K,ProxyObj, Acc);
+                            FoldObjectsFun(B, K, ProxyObj, Acc);
                         false ->
                             R = leveled_bookie:fetch_value(InkerClone, JK),
                             case R of

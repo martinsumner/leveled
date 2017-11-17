@@ -280,6 +280,8 @@ ink_doom(Pid) ->
 %% The FilterFun is required to call stop when MaxSQN is reached
 %%
 %% The InitAccFun should return an initial batch accumulator for each subfold.
+%% It is a 2-arity function that takes a filename and a MinSQN as an input 
+%% potentially to be use din logging 
 %%
 %% The BatchFun is a two arity function that should take as inputs:
 %% An overall accumulator
@@ -301,12 +303,15 @@ ink_loadpcl(Pid, MinSQN, FilterFun, Penciller) ->
         fun(BatchAcc, _Acc) ->
             push_to_penciller(Penciller, BatchAcc)
         end,
+    InitAccFun =
+        fun(FN, CurrentMinSQN) ->
+            leveled_log:log("I0014", [FN, CurrentMinSQN]),
+            leveled_bookie:empty_ledgercache()
+        end,
     gen_server:call(Pid, 
                     {fold, 
                         MinSQN, 
-                        {FilterFun, 
-                            fun leveled_bookie:empty_ledgercache/0, 
-                            BatchFun}, 
+                        {FilterFun, InitAccFun, BatchFun}, 
                         ok}, 
                     infinity).
 
@@ -853,9 +858,8 @@ fold_from_sequence(MinSQN, FoldFuns, Acc, [{_LowSQN, FN, Pid, _LK}|Rest]) ->
 
 foldfile_between_sequence(MinSQN, MaxSQN, FoldFuns, 
                                                 Acc, CDBpid, StartPos, FN) ->
-    leveled_log:log("I0014", [FN, MinSQN]),
     {FilterFun, InitAccFun, FoldFun} = FoldFuns,
-    InitBatchAcc = {MinSQN, MaxSQN, InitAccFun()},
+    InitBatchAcc = {MinSQN, MaxSQN, InitAccFun(FN, MinSQN)},
     
     case leveled_cdb:cdb_scan(CDBpid, FilterFun, InitBatchAcc, StartPos) of
         {eof, {_AccMinSQN, _AccMaxSQN, BatchAcc}} ->
