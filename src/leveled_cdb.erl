@@ -1421,7 +1421,7 @@ update_statetimings(no_timing, 0) ->
 update_statetimings(Timings, 0) ->
     case Timings#cdb_timings.sample_count of 
         SC when SC >= ?TIMING_SAMPLESIZE ->
-            leveled_log:log("CDBnn", [Timings#cdb_timings.sample_count, 
+            leveled_log:log("CDB19", [Timings#cdb_timings.sample_count, 
                                         Timings#cdb_timings.sample_cyclecount,
                                         Timings#cdb_timings.sample_fetchtime,
                                         Timings#cdb_timings.sample_indextime]),
