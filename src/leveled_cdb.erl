@@ -120,7 +120,7 @@
                         sample_cyclecount = 0 :: integer(),
                         sample_indextime = 0 :: integer(),
                         sample_fetchtime = 0 :: integer(),
-                        fetchloop_starttime :: erlang:timestamp()}).
+                        fetchloop_starttime :: undefined|erlang:timestamp()}).
 
 -type cdb_options() :: #cdb_options{}.
 -type cdb_timings() :: no_timing|#cdb_timings{}.
@@ -2084,7 +2084,7 @@ get_keys_byposition_manykeys_test_to() ->
     KVList = generate_sequentialkeys(KeyCount, []),
     lists:foreach(fun({K, V}) -> cdb_put(P1, K, V) end, KVList),
     ok = cdb_roll(P1),
-    % Should not return posiitons when rolling
+    % Should not return positions when rolling
     ?assertMatch([], cdb_getpositions(P1, 10)), 
     lists:foldl(fun(X, Complete) ->
                         case Complete of
