@@ -7,6 +7,7 @@
             book_riakget/3,
             book_riakhead/3,
             riakload/2,
+            stdload/2,
             reset_filestructure/0,
             reset_filestructure/1,
             check_bucket_stats/2,
@@ -172,6 +173,22 @@ riakload(Bookie, ObjectList) ->
                             end
                             end,
                     ObjectList).
+
+stdload(Bookie, Count) -> 
+    stdload(Bookie, Count, []).
+
+stdload(_Bookie, 0, Acc) ->
+    Acc;
+stdload(Bookie, Count, Acc) ->
+    B = "Bucket",
+    K = leveled_codec:generate_uuid(),
+    V = get_compressiblevalue(),
+    R = leveled_bookie:book_put(Bookie, B, K, V, [], ?STD_TAG),
+    case R of
+        ok -> ok;
+        pause -> timer:sleep(?SLOWOFFER_DELAY)
+    end,
+    stdload(Bookie, Count - 1, [{B, K, erlang:phash2(V)}|Acc]).
 
 
 reset_filestructure() ->

@@ -284,6 +284,8 @@ handoff(_Config) ->
                     {sync_strategy, riak_sync}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
 
+    % Add some noe Riak objects in - which should be ignored in folds.
+    Hashes = testutil:stdload(Bookie1, 1000),
     % Generate 200K objects to be used within the test, and load them into
     % the first store (outputting the generated objects as a list of lists)
     % to be used elsewhere
@@ -321,6 +323,11 @@ handoff(_Config) ->
                     {max_pencillercachesize, 30000},
                     {sync_strategy, none}],
     {ok, Bookie4} = leveled_bookie:book_start(StartOpts4),
+
+    FoldStObjectsFun = 
+        fun(B, K, V, Acc) ->
+            [{B, K, erlang:phash2(V)}|Acc]
+        end,
 
     FoldObjectsFun = 
         fun(Book) ->
@@ -383,6 +390,26 @@ handoff(_Config) ->
     check_tictacfold(Bookie1, Bookie2, TicTacFolder, none, TreeSize),
     check_tictacfold(Bookie2, Bookie3, TicTacFolder, none, TreeSize),
     check_tictacfold(Bookie3, Bookie4, TicTacFolder, none, TreeSize),
+
+    StdFolder = 
+        {foldobjects_allkeys,
+            ?STD_TAG,
+            FoldStObjectsFun,
+            true, 
+            sqn_order},
+    
+    {async, StdFold1} = leveled_bookie:book_returnfolder(Bookie1, StdFolder),
+    {async, StdFold2} = leveled_bookie:book_returnfolder(Bookie2, StdFolder),
+    {async, StdFold3} = leveled_bookie:book_returnfolder(Bookie3, StdFolder),
+    {async, StdFold4} = leveled_bookie:book_returnfolder(Bookie4, StdFolder),
+    StdFoldOut1 = lists:sort(StdFold1()),
+    StdFoldOut2 = lists:sort(StdFold2()),
+    StdFoldOut3 = lists:sort(StdFold3()),
+    StdFoldOut4 = lists:sort(StdFold4()),
+    true = StdFoldOut1 == lists:sort(Hashes),
+    true = StdFoldOut2 == [],
+    true = StdFoldOut3 == [],
+    true = StdFoldOut4 == [],
 
     % Shutdown
     ok = leveled_bookie:book_close(Bookie1),
