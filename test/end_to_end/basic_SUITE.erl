@@ -82,7 +82,7 @@ many_put_fetch_head(_Config) ->
     testutil:check_forobject(Bookie1, TestObject),
     ok = leveled_bookie:book_close(Bookie1),
     StartOpts2 = [{root_path, RootPath},
-                    {max_journalsize, 500000000},
+                    {max_journalsize, 50000000},
                     {max_pencillercachesize, 32000},
                     {sync_strategy, testutil:sync_strategy()},
                     {compression_point, on_receipt}],

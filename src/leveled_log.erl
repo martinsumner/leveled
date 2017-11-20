@@ -329,9 +329,9 @@
     {"CDB18",
         {info, "Handled return and write of hashtable"}},
     {"CDB19",
-        {info, "Sample timings in microseconds for sample_count=~w" 
-                    ++ "totals of cycle_count=~w "
-                    ++ "fetch_time=~w index_time=~w "}}
+        {info, "Sample timings in microseconds for sample_count=~w " 
+                    ++ "with totals of cycle_count=~w "
+                    ++ "fetch_time=~w index_time=~w"}}
         ]).
 
 
