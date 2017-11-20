@@ -46,6 +46,7 @@
         to_ledgerkey/3,
         to_ledgerkey/5,
         from_ledgerkey/1,
+        from_ledgerkey/2,
         to_inkerkv/3,
         to_inkerkv/6,
         from_inkerkv/1,
@@ -204,6 +205,19 @@ is_active(Key, Value, Now) ->
             false
     end.
 
+-spec from_ledgerkey(atom(), tuple()) -> false|tuple().
+%% @doc
+%% Return the "significant information" from the Ledger Key (normally the 
+%% {Bucket, Key} pair) if and only if the ExpectedTag matched the tag - 
+%% otherwise return false
+from_ledgerkey(ExpectedTag, {ExpectedTag, Bucket, Key, SubKey}) ->
+    from_ledgerkey({ExpectedTag, Bucket, Key, SubKey});
+from_ledgerkey(_ExpectedTag, _OtherKey) ->
+    false.
+
+-spec from_ledgerkey(tuple()) -> tuple().
+%% @doc
+%% Return identifying information from the LedgerKey
 from_ledgerkey({?IDX_TAG, ?ALL_BUCKETS, {_IdxFld, IdxVal}, {Bucket, Key}}) ->
     {Bucket, Key, IdxVal};
 from_ledgerkey({?IDX_TAG, Bucket, {_IdxFld, IdxVal}, Key}) ->

@@ -7,6 +7,7 @@
             book_riakget/3,
             book_riakhead/3,
             riakload/2,
+            stdload/2,
             reset_filestructure/0,
             reset_filestructure/1,
             check_bucket_stats/2,
@@ -32,6 +33,8 @@
             name_list/0,
             load_objects/5,
             load_objects/6,
+            update_some_objects/3,
+            delete_some_objects/3,
             put_indexed_objects/3,
             put_altered_indexed_objects/3,
             put_altered_indexed_objects/4,
@@ -170,6 +173,22 @@ riakload(Bookie, ObjectList) ->
                             end
                             end,
                     ObjectList).
+
+stdload(Bookie, Count) -> 
+    stdload(Bookie, Count, []).
+
+stdload(_Bookie, 0, Acc) ->
+    Acc;
+stdload(Bookie, Count, Acc) ->
+    B = "Bucket",
+    K = leveled_codec:generate_uuid(),
+    V = get_compressiblevalue(),
+    R = leveled_bookie:book_put(Bookie, B, K, V, [], ?STD_TAG),
+    case R of
+        ok -> ok;
+        pause -> timer:sleep(?SLOWOFFER_DELAY)
+    end,
+    stdload(Bookie, Count - 1, [{B, K, erlang:phash2(V)}|Acc]).
 
 
 reset_filestructure() ->
@@ -402,6 +421,37 @@ set_object(Bucket, Key, Value, IndexGen, Indexes2Remove) ->
                 vclock=generate_vclock()},
         Spec1}.
 
+update_some_objects(Bookie, ObjList, SampleSize) ->
+    StartWatchA = os:timestamp(),
+    ToUpdateList = lists:sublist(lists:sort(ObjList), SampleSize),
+    UpdateFun =
+        fun({R, Obj, Spec}) ->
+            VC = Obj#r_object.vclock,
+            VC0 = update_vclock(VC),
+            [C] = Obj#r_object.contents,
+            C0 = C#r_content{value = leveled_rand:rand_bytes(512)},
+            UpdObj = Obj#r_object{vclock = VC0, contents = [C0]},
+            {R, UpdObj, Spec}
+        end,
+    UpdatedObjList = lists:map(UpdateFun, ToUpdateList),
+    riakload(Bookie, UpdatedObjList),
+    Time = timer:now_diff(os:timestamp(), StartWatchA),
+    io:format("~w objects updates in ~w seconds~n",
+                                [SampleSize, Time/1000000]).
+
+delete_some_objects(Bookie, ObjList, SampleSize) ->
+    StartWatchA = os:timestamp(),
+    ToDeleteList = lists:sublist(lists:sort(ObjList), SampleSize),
+    DeleteFun =
+        fun({_R, Obj, Spec}) ->
+            B = Obj#r_object.bucket,
+            K = Obj#r_object.key,
+            book_riakdelete(Bookie, B, K, Spec)
+        end,
+    lists:foreach(DeleteFun, ToDeleteList),
+    Time = timer:now_diff(os:timestamp(), StartWatchA),
+    io:format("~w objects deleted in ~w seconds~n",
+                                [SampleSize, Time/1000000]).
 
 generate_vclock() ->
     lists:map(fun(X) ->
@@ -411,6 +461,9 @@ generate_vclock() ->
                     {Actor, X} end,
                     lists:seq(1, leveled_rand:uniform(8))).
 
+update_vclock(VC) ->
+    [{Actor, X}|Rest] = VC,
+    [{Actor, X + 1}|Rest].
 
 actor_list() ->
     [{1, albert}, {2, bertie}, {3, clara}, {4, dave}, {5, elton},

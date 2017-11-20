@@ -8,10 +8,12 @@
 
 %% Inker key type used for 'normal' objects
 -define(INKT_STND, stnd). 
+
 %% Inker key type used for objects which contain no value, only key changes
 %% This is used currently for objects formed under a 'retain' strategy on Inker
-%% compaction, but could be used for special set-type objects
+%% compaction
 -define(INKT_KEYD, keyd). 
+
 %% Inker key type used for tombstones
 -define(INKT_TOMB, tomb).
 

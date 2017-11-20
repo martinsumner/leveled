@@ -3,11 +3,13 @@
 -include("include/leveled.hrl").
 -export([all/0]).
 -export([
-            crossbucket_aae/1
+            crossbucket_aae/1,
+            handoff/1
             ]).
 
 all() -> [
-            crossbucket_aae
+            crossbucket_aae,
+            handoff
             ].
 
 -define(MAGIC, 53). % riak_kv -> riak_object
@@ -39,7 +41,7 @@ crossbucket_aae(_Config) ->
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
     testutil:check_forobject(Bookie2, TestObject),
 
-    % Generate 200K objects to be sued within the test, and load them into
+    % Generate 200K objects to be used within the test, and load them into
     % the first store (outputting the generated objects as a list of lists)
     % to be used elsewhere
 
@@ -219,7 +221,7 @@ head_tictac_foldfun(B, K, PO, {Count, TreeAcc}) ->
         leveled_tictac:add_kv(TreeAcc, {B, K}, PO, ExtractFun)}.
 
 
-check_tictacfold(BookA, BookB, HeadTicTacFolder, {B1, K1}, TreeSize) ->
+check_tictacfold(BookA, BookB, HeadTicTacFolder, DeltaKey, TreeSize) ->
     SW_TT0 = os:timestamp(),
     {async, BookATreeFolder} =
         leveled_bookie:book_returnfolder(BookA, HeadTicTacFolder),
@@ -233,17 +235,22 @@ check_tictacfold(BookA, BookB, HeadTicTacFolder, {B1, K1}, TreeSize) ->
     io:format("Fold over keys revealed counts of ~w and ~w~n", 
                 [CountA, CountB]),
 
-    % There should be a single delta between the stores
-    1 = CountA - CountB,
-
     DLs = leveled_tictac:find_dirtyleaves(BookATree, BookBTree),
     io:format("Found dirty leaves with Riak fold_heads of ~w~n",
                 [length(DLs)]),
-    true = length(DLs) == 1,
-    ExpSeg = leveled_tictac:keyto_segment32(<<B1/binary, K1/binary>>),
-    TreeSeg = leveled_tictac:get_segment(ExpSeg, TreeSize),
-    [ActualSeg] = DLs,
-    true = TreeSeg == ActualSeg,
+    case DeltaKey of
+        {B1, K1} ->
+            % There should be a single delta between the stores
+            1 = CountA - CountB,
+            true = length(DLs) == 1,
+            ExpSeg = leveled_tictac:keyto_segment32(<<B1/binary, K1/binary>>),
+            TreeSeg = leveled_tictac:get_segment(ExpSeg, TreeSize),
+            [ActualSeg] = DLs,
+            true = TreeSeg == ActualSeg;
+        none ->
+            0 = CountA - CountB,
+            true = length(DLs) == 0
+    end,
     DLs.
 
 
@@ -261,3 +268,151 @@ summary_from_binary(ObjBin, ObjSize) ->
         _Rest/binary>> = ObjBin,
     {lists:usort(binary_to_term(VclockBin)), ObjSize, SibCount}.
 
+
+
+handoff(_Config) ->
+    % Test requires multiple different databases, so want to mount them all
+    % on individual file paths
+    RootPathA = testutil:reset_filestructure("testA"),
+    RootPathB = testutil:reset_filestructure("testB"),
+    RootPathC = testutil:reset_filestructure("testC"),
+    RootPathD = testutil:reset_filestructure("testD"),
+
+    % Start the first database, load a test object, close it, start it again
+    StartOpts1 = [{root_path, RootPathA},
+                    {max_pencillercachesize, 16000},
+                    {sync_strategy, riak_sync}],
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+
+    % Add some noe Riak objects in - which should be ignored in folds.
+    Hashes = testutil:stdload(Bookie1, 1000),
+    % Generate 200K objects to be used within the test, and load them into
+    % the first store (outputting the generated objects as a list of lists)
+    % to be used elsewhere
+
+    GenList = 
+        [binary_uuid, binary_uuid, binary_uuid, binary_uuid],
+    [CL0, CL1, CL2, CL3] = 
+        testutil:load_objects(40000,
+                                GenList,
+                                Bookie1,
+                                no_check,
+                                fun testutil:generate_smallobjects/2,
+                                40000),
+    
+    % Update an delete some objects
+    testutil:update_some_objects(Bookie1, CL0, 1000),
+    testutil:update_some_objects(Bookie1, CL1, 20000),
+    testutil:delete_some_objects(Bookie1, CL2, 10000),
+    testutil:delete_some_objects(Bookie1, CL3, 4000),
+
+    % Compact the journal
+    ok = leveled_bookie:book_compactjournal(Bookie1, 30000),
+    testutil:wait_for_compaction(Bookie1),
+
+    % Start two new empty stores
+    StartOpts2 = [{root_path, RootPathB},
+                    {max_pencillercachesize, 24000},
+                    {sync_strategy, none}],
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
+    StartOpts3 = [{root_path, RootPathC},
+                    {max_pencillercachesize, 30000},
+                    {sync_strategy, none}],
+    {ok, Bookie3} = leveled_bookie:book_start(StartOpts3),
+    StartOpts4 = [{root_path, RootPathD},
+                    {max_pencillercachesize, 30000},
+                    {sync_strategy, none}],
+    {ok, Bookie4} = leveled_bookie:book_start(StartOpts4),
+
+    FoldStObjectsFun = 
+        fun(B, K, V, Acc) ->
+            [{B, K, erlang:phash2(V)}|Acc]
+        end,
+
+    FoldObjectsFun = 
+        fun(Book) ->
+            fun(B, K, Obj, ok) ->
+                leveled_bookie:book_put(Book, B, K, Obj, [], ?RIAK_TAG),
+                ok
+            end
+        end,
+    
+    % Handoff the data from the first store to the other three stores
+    HandoffFolder2 = 
+        {foldobjects_allkeys,
+            ?RIAK_TAG,
+            {FoldObjectsFun(Bookie2), ok},
+            false,
+            key_order},
+    HandoffFolder3 = 
+        {foldobjects_allkeys,
+            ?RIAK_TAG,
+            {FoldObjectsFun(Bookie3), ok},
+            true,
+            sqn_order},
+    HandoffFolder4 = 
+        {foldobjects_allkeys,
+            ?RIAK_TAG,
+            {FoldObjectsFun(Bookie4), ok},
+            true,
+            sqn_order},
+    {async, Handoff2} =
+        leveled_bookie:book_returnfolder(Bookie1, HandoffFolder2),
+    SW2 = os:timestamp(),
+    ok = Handoff2(),
+    Time_HO2 = timer:now_diff(os:timestamp(), SW2)/1000,
+    io:format("Handoff to Book2 in key_order took ~w milliseconds ~n", 
+                [Time_HO2]),
+    SW3 = os:timestamp(),
+    {async, Handoff3} =
+        leveled_bookie:book_returnfolder(Bookie1, HandoffFolder3),
+    ok = Handoff3(),
+    Time_HO3 = timer:now_diff(os:timestamp(), SW3)/1000,
+    io:format("Handoff to Book3 in sqn_order took ~w milliseconds ~n", 
+                [Time_HO3]),
+    SW4 = os:timestamp(),
+    {async, Handoff4} =
+        leveled_bookie:book_returnfolder(Bookie1, HandoffFolder4),
+    ok = Handoff4(),
+    Time_HO4 = timer:now_diff(os:timestamp(), SW4)/1000,
+    io:format("Handoff to Book4 in sqn_order took ~w milliseconds ~n", 
+                [Time_HO4]),
+
+    % Run tictac folds to confirm all stores consistent after handoff
+    TreeSize = xxsmall,
+
+    TicTacFolder = 
+        {foldheads_allkeys,
+            ?RIAK_TAG,
+            {fun head_tictac_foldfun/4, 
+                {0, leveled_tictac:new_tree(test, TreeSize)}},
+            false, true, false},
+    check_tictacfold(Bookie1, Bookie2, TicTacFolder, none, TreeSize),
+    check_tictacfold(Bookie2, Bookie3, TicTacFolder, none, TreeSize),
+    check_tictacfold(Bookie3, Bookie4, TicTacFolder, none, TreeSize),
+
+    StdFolder = 
+        {foldobjects_allkeys,
+            ?STD_TAG,
+            FoldStObjectsFun,
+            true, 
+            sqn_order},
+    
+    {async, StdFold1} = leveled_bookie:book_returnfolder(Bookie1, StdFolder),
+    {async, StdFold2} = leveled_bookie:book_returnfolder(Bookie2, StdFolder),
+    {async, StdFold3} = leveled_bookie:book_returnfolder(Bookie3, StdFolder),
+    {async, StdFold4} = leveled_bookie:book_returnfolder(Bookie4, StdFolder),
+    StdFoldOut1 = lists:sort(StdFold1()),
+    StdFoldOut2 = lists:sort(StdFold2()),
+    StdFoldOut3 = lists:sort(StdFold3()),
+    StdFoldOut4 = lists:sort(StdFold4()),
+    true = StdFoldOut1 == lists:sort(Hashes),
+    true = StdFoldOut2 == [],
+    true = StdFoldOut3 == [],
+    true = StdFoldOut4 == [],
+
+    % Shutdown
+    ok = leveled_bookie:book_close(Bookie1),
+    ok = leveled_bookie:book_close(Bookie2),
+    ok = leveled_bookie:book_close(Bookie3),
+    ok = leveled_bookie:book_close(Bookie4).
