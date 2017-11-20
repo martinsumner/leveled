@@ -921,18 +921,15 @@ get(Handle, Key, Cache, QuickCheck, BinaryMode, Timings)
             {Timings, missing};
         _ ->
             % Get starting slot in hashtable
-            {ok, FirstHashPosition} = file:position(Handle, {bof, HashTable}),
+            {ok, FirstHashPosition} = 
+                file:position(Handle, {bof, HashTable}),
             Slot = hash_to_slot(Hash, Count),
-            {ok, _} = file:position(Handle, {cur, Slot * ?DWORD_SIZE}),
-            LastHashPosition = HashTable + ((Count-1) * ?DWORD_SIZE),
-            LocList = lists:seq(FirstHashPosition,
-                                    LastHashPosition,
-                                    ?DWORD_SIZE), 
-            % Split list around starting slot.
-            {L1, L2} = lists:split(Slot, LocList),
             UpdTimings = update_indextimings(Timings, SW),
             search_hash_table(Handle,
-                                lists:append(L2, L1),
+                                {FirstHashPosition,
+                                    Slot,
+                                    1,
+                                    Count},
                                 Hash,
                                 Key,
                                 QuickCheck,
@@ -1314,14 +1311,10 @@ read_integerpairs(<<Int1:32, Int2:32, Rest/binary>>, Pairs) ->
                                     endian_flip(Int2)}]).
 
 
-search_hash_table(Handle, Entries, Hash, Key, 
-                    QuickCheck, BinaryMode, Timings) ->
-    search_hash_table(Handle, Entries, Hash, Key, 
-                    QuickCheck, BinaryMode, Timings, 0).
 
--spec search_hash_table(file:io_device(), list(), integer(), any(), 
+-spec search_hash_table(file:io_device(), tuple(), integer(), any(), 
                             loose_presence|boolean(), boolean(),  
-                            cdb_timings(), integer()) -> 
+                            cdb_timings()) -> 
                                 {cdb_timings(), missing|probably|tuple()}.
 %% @doc
 %%
@@ -1332,13 +1325,23 @@ search_hash_table(Handle, Entries, Hash, Key,
 %% true - check the CRC before returning key & value
 %% false - don't check the CRC before returning key & value
 %% loose_presence - confirm that the hash of the key is present
-search_hash_table(_Handle, [], Hash, _Key,
-                        _QuickCheck, _BinaryMode, _Timings, CycleCount) -> 
-    log_cyclecount(CycleCount, Hash, missing),
-    {no_timing, missing};
-search_hash_table(Handle, [Entry|RestOfEntries], Hash, Key,
-                        QuickCheck, BinaryMode, Timings, CycleCount) ->
-    {ok, _} = file:position(Handle, Entry),
+search_hash_table(_Handle, 
+                    {_, _, _TotalSlots, _TotalSlots}, 
+                    _Hash, _Key,
+                    _QuickCheck, _BinaryMode, Timings) -> 
+    % We have done the full loop - value must not be present
+    {Timings, missing};
+search_hash_table(Handle, 
+                    {FirstHashPosition, Slot, CycleCount, TotalSlots}, 
+                    Hash, Key,
+                    QuickCheck, BinaryMode, Timings) ->
+    
+    % Read the next 2 integers at current position, see if it matches the hash 
+    % we're after
+    Offset = 
+        ((Slot + CycleCount - 1) rem TotalSlots) * ?DWORD_SIZE 
+        + FirstHashPosition,
+    {ok, _} = file:position(Handle, Offset),
     {StoredHash, DataLoc} = read_next_2_integers(Handle),
     
     case StoredHash of
@@ -1352,33 +1355,30 @@ search_hash_table(Handle, [Entry|RestOfEntries], Hash, Key,
                 end,
             case KV of
                 missing ->
+                    leveled_log:log("CDB15", [Hash]),
                     search_hash_table(Handle,
-                                        RestOfEntries,
-                                        Hash,
-                                        Key,
-                                        QuickCheck,
-                                        BinaryMode,
-                                        Timings,
-                                        CycleCount + 1);
+                                        {FirstHashPosition,
+                                            Slot,
+                                            CycleCount + 1,
+                                            TotalSlots},
+                                        Hash, Key,
+                                        QuickCheck, BinaryMode,
+                                        Timings);
                 _ ->
                     UpdTimings = update_fetchtimings(Timings, CycleCount),
-                    log_cyclecount(CycleCount, Hash, found),
                     {UpdTimings, KV} 
             end;
         _ ->
-            search_hash_table(Handle, RestOfEntries, Hash, Key,
-                                        QuickCheck, BinaryMode,
-                                        Timings, 
-                                        CycleCount + 1)
+            search_hash_table(Handle, 
+                                {FirstHashPosition,
+                                    Slot,
+                                    CycleCount + 1,
+                                    TotalSlots}, 
+                                Hash, Key,
+                                QuickCheck, BinaryMode,
+                                Timings)
     end.
 
-log_cyclecount(CycleCount, Hash, Result) ->
-    if
-        CycleCount > 8 ->
-            leveled_log:log("CDB15", [CycleCount, Hash, Result]);
-        true ->
-            ok
-    end.
 
 -spec update_fetchtimings(no_timing|cdb_timings(), integer()) ->
                                                 no_timing|cdb_timings().
