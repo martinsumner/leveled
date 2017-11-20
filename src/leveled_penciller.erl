@@ -1820,7 +1820,8 @@ create_file_test() ->
     ?assertMatch("hello", binary_to_term(Bin)).
 
 slow_fetch_test() ->
-    ?assertMatch(not_present, log_slowfetch(2, not_present, "fake", 0, 1)).
+    ?assertMatch(not_present, log_slowfetch(2, not_present, "fake", 0, 1)),
+    ?assertMatch("value", log_slowfetch(2, "value", "fake", 0, 1)).
 
 checkready(Pid) ->
     try

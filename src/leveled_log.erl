@@ -331,7 +331,10 @@
     {"CDB19",
         {info, "Sample timings in microseconds for sample_count=~w " 
                     ++ "with totals of cycle_count=~w "
-                    ++ "fetch_time=~w index_time=~w"}}
+                    ++ "fetch_time=~w index_time=~w"}},
+
+    {"R0001",
+        {debug, "Object fold to process batch of ~w objects"}}
         ]).
 
 

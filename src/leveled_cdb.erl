@@ -669,19 +669,29 @@ handle_sync_event({cdb_scan, FilterFun, Acc, StartPos},
                                 {ok, StartPos}
                         end,
     file:position(State#state.handle, StartPos0),
+    file:advise(State#state.handle, 
+                    StartPos0, 
+                    EndPos0 - StartPos0, 
+                    sequential),
     MaybeEnd = (check_last_key(State#state.last_key) == empty) or
                     (StartPos0 >= (EndPos0 - ?DWORD_SIZE)),
-    case MaybeEnd of
-        true ->
-            {reply, {eof, Acc}, StateName, State};
-        false ->
-            {LastPosition, Acc2} = scan_over_file(State#state.handle,
-                                                    StartPos0,
-                                                    FilterFun,
-                                                    Acc,
-                                                    State#state.last_key),
-            {reply, {LastPosition, Acc2}, StateName, State}
-    end;
+    {LastPosition, Acc2} = 
+        case MaybeEnd of
+            true ->
+                {eof, Acc};
+            false ->
+                scan_over_file(State#state.handle,
+                                StartPos0,
+                                FilterFun,
+                                Acc,
+                                State#state.last_key)
+        end,
+    {ok, LastReadPos} = file:position(State#state.handle, cur),
+    file:advise(State#state.handle, 
+                    StartPos0, 
+                    LastReadPos - StartPos0, 
+                    dont_need),
+    {reply, {LastPosition, Acc2}, StateName, State};
 handle_sync_event(cdb_lastkey, _From, StateName, State) ->
     {reply, State#state.last_key, StateName, State};
 handle_sync_event(cdb_firstkey, _From, StateName, State) ->
