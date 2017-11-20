@@ -553,7 +553,7 @@ reader({key_check, Key}, _From, State) ->
                         State#state.hash_index,
                         loose_presence,
                         State#state.binary_mode,
-                        State#state.timings),
+                        no_timing),
     {reply, Result, reader, State};
 reader({get_positions, SampleSize, Index, Acc}, _From, State) ->
     {Pos, Count} = element(Index + 1, State#state.hash_index),
