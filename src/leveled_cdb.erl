@@ -918,7 +918,7 @@ get(Handle, Key, Cache, QuickCheck, BinaryMode, Timings)
     % If the count is 0 for that index - key must be missing
     case Count of
         0 ->
-            {no_timing, missing};
+            {Timings, missing};
         _ ->
             % Get starting slot in hashtable
             {ok, FirstHashPosition} = file:position(Handle, {bof, HashTable}),
