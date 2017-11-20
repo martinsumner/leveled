@@ -1368,6 +1368,8 @@ search_hash_table(Handle,
                     UpdTimings = update_fetchtimings(Timings, CycleCount),
                     {UpdTimings, KV} 
             end;
+        0 ->
+            {Timings, missing};
         _ ->
             search_hash_table(Handle, 
                                 {FirstHashPosition,
@@ -1850,6 +1852,13 @@ cyclecount_test() ->
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({K, V}, cdb_get(P2, K)) end,
                     KVL2),
+    % Test many missing keys
+    lists:foreach(fun(X) ->
+                        K = "NotKey" ++ integer_to_list(X),
+                        ?assertMatch(missing, cdb_get(P2, K))
+                    end,
+                    lists:seq(1, 5000)),
+
     ok = cdb_close(P2),
     ok = file:delete("../test/cycle_count.cdb").
     
