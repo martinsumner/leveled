@@ -281,7 +281,7 @@ handoff(_Config) ->
     % Start the first database, load a test object, close it, start it again
     StartOpts1 = [{root_path, RootPathA},
                     {max_pencillercachesize, 16000},
-                    {sync_strategy, riak_sync}],
+                    {sync_strategy, sync}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
 
     % Add some noe Riak objects in - which should be ignored in folds.

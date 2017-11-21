@@ -12,13 +12,11 @@
             log_randomtimer/4,
             put_timing/4,
             head_timing/4,
-            get_timing/3,
-            sst_timing/3]).         
+            get_timing/3]).         
 
 -define(PUT_LOGPOINT, 10000).
 -define(HEAD_LOGPOINT, 20000).
 -define(GET_LOGPOINT, 20000).
--define(SST_LOGPOINT, 20000).
 -define(LOG_LEVEL, [info, warn, error, critical]).
 -define(SAMPLE_RATE, 16).
 
@@ -60,6 +58,9 @@
         {warn, "Long running task took ~w microseconds with task of type ~w"}},
     {"B0014",
         {info, "Get timing for result ~w is sample ~w total ~w and max ~w"}},
+    
+    {"R0001",
+        {debug, "Object fold to process batch of ~w objects"}},
     
     {"P0001",
         {debug, "Ledger snapshot ~w registered"}},
@@ -191,7 +192,44 @@
         {info, "Prompting deletions at ManifestSQN=~w"}},
     {"PC022",
         {info, "Storing reference to deletions at ManifestSQN=~w"}},
-        
+    {"PM002",
+        {info, "Completed dump of L0 cache to list of size ~w"}},
+    
+    {"SST01",
+        {info, "SST timing for result ~w is sample ~w total ~w and max ~w"}},
+    {"SST02",
+        {error, "False result returned from SST with filename ~s as "
+                    ++ "slot ~w has failed crc check"}},
+    {"SST03",
+        {info, "Opening SST file with filename ~s slots ~w and"
+                ++ " max sqn ~w"}},
+    {"SST04",
+        {info, "Exit called for reason ~w on filename ~s"}},
+    {"SST05",
+        {warn, "Rename rogue filename ~s to ~s"}},
+    {"SST06",
+        {debug, "File ~s has been set for delete"}},
+    {"SST07",
+        {info, "Exit called and now clearing ~s"}},
+    {"SST08",
+        {info, "Completed creation of ~s at level ~w with max sqn ~w"}},
+    {"SST09",
+        {warn, "Read request exposes slot with bad CRC"}},
+    {"SST10",
+        {debug, "Expansion sought to support pointer to pid ~w status ~w"}},
+    {"SST11",
+        {info, "Level zero creation timings in microseconds "
+                ++ "pmem_fetch=~w merge_lists=~w build_slots=~w " 
+                ++ "build_summary=~w read_switch=~w"}},
+    {"SST12",
+        {info, "SST Timings for sample_count=~w"
+                ++ " at timing points index_query_time=~w"
+                ++ " tiny_bloom_time=~w slot_index_time=~w slot_fetch_time=~w"
+                ++ " noncached_block_fetch_time=~w"
+                ++ " exiting at points tiny_bloom=~w slot_index=~w"
+                ++ " slot_fetch=~w noncached_block_fetch=~w"}},
+    
+    
     {"I0001",
         {info, "Unexpected failure to fetch value for Key=~w SQN=~w "
                 ++ "with reason ~w"}},
@@ -261,33 +299,7 @@
     {"IC013",
         {warn, "File with name ~s to be ignored in manifest as scanning for "
                 ++ "first key returned empty - maybe corrupted"}},
-    
-    {"PM002",
-        {info, "Completed dump of L0 cache to list of size ~w"}},
-    
-    {"SST01",
-        {info, "SST timing for result ~w is sample ~w total ~w and max ~w"}},
-    {"SST02",
-        {error, "False result returned from SST with filename ~s as "
-                    ++ "slot ~w has failed crc check"}},
-    {"SST03",
-        {info, "Opening SST file with filename ~s slots ~w and"
-                ++ " max sqn ~w"}},
-    {"SST04",
-        {info, "Exit called for reason ~w on filename ~s"}},
-    {"SST05",
-        {warn, "Rename rogue filename ~s to ~s"}},
-    {"SST06",
-        {debug, "File ~s has been set for delete"}},
-    {"SST07",
-        {info, "Exit called and now clearing ~s"}},
-    {"SST08",
-        {info, "Completed creation of ~s at level ~w with max sqn ~w"}},
-    {"SST09",
-        {warn, "Read request exposes slot with bad CRC"}},
-    {"SST10",
-        {debug, "Expansion sought to support pointer to pid ~w status ~w"}},
-    
+
     {"CDB01",
         {info, "Opening file for writing with filename ~s"}},
     {"CDB02",
@@ -330,10 +342,7 @@
     {"CDB19",
         {info, "Sample timings in microseconds for sample_count=~w " 
                     ++ "with totals of cycle_count=~w "
-                    ++ "fetch_time=~w index_time=~w"}},
-
-    {"R0001",
-        {debug, "Object fold to process batch of ~w objects"}}
+                    ++ "fetch_time=~w index_time=~w"}}
         ]).
 
 
@@ -477,34 +486,6 @@ head_key(found, Level) when Level > 2 ->
 
 head_keylist() ->
     [not_present, found_lower, found_0, found_1, found_2].
-
-
-sst_timing(undefined, SW, TimerType) ->
-    T0 = timer:now_diff(os:timestamp(), SW),
-    gen_timing_int(undefined,
-                    T0,
-                    TimerType,
-                    fun sst_keylist/0,
-                    ?SST_LOGPOINT,
-                    "SST01");
-sst_timing({N, SSTTimerD}, SW, TimerType) ->
-    case N band (?SAMPLE_RATE - 1) of
-        0 ->
-            T0 = timer:now_diff(os:timestamp(), SW),
-            gen_timing_int({N, SSTTimerD},
-                            T0,
-                            TimerType,
-                            fun sst_keylist/0,
-                            ?SST_LOGPOINT,
-                            "SST01");
-        _ ->
-            % Not to be sampled this time
-            {N + 1, SSTTimerD}
-    end.
-
-sst_keylist() ->
-    [tiny_bloom, slot_bloom, slot_fetch].
-
 
 get_timing(undefined, SW, TimerType) ->
     T0 = timer:now_diff(os:timestamp(), SW),
