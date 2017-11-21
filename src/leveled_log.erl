@@ -319,8 +319,7 @@
         {info, "Microsecond timings for hashtree build of "
                 ++ "to_list ~w sort ~w build ~w"}},
     {"CDB15",
-        {info, "Cycle count of ~w in hashtable search higher than expected"
-                ++ " in search for hash ~w with result ~w"}},
+        {info, "Collision in search for hash ~w"}},
     {"CDB16",
         {info, "CDB scan from start ~w in file with end ~w and last_key ~w"}},
     {"CDB17",
@@ -328,6 +327,10 @@
                 ++ "and max write time is ~w and max sync time is ~w"}},
     {"CDB18",
         {info, "Handled return and write of hashtable"}},
+    {"CDB19",
+        {info, "Sample timings in microseconds for sample_count=~w " 
+                    ++ "with totals of cycle_count=~w "
+                    ++ "fetch_time=~w index_time=~w"}},
 
     {"R0001",
         {debug, "Object fold to process batch of ~w objects"}}
