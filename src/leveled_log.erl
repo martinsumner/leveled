@@ -9,15 +9,9 @@
 
 -export([log/2,
             log_timer/3,
-            log_randomtimer/4,
-            put_timing/4,
-            get_timing/3]).         
+            log_randomtimer/4]).         
 
--define(PUT_LOGPOINT, 10000).
--define(HEAD_LOGPOINT, 20000).
--define(GET_LOGPOINT, 20000).
 -define(LOG_LEVEL, [info, warn, error, critical]).
--define(SAMPLE_RATE, 16).
 
 -define(LOGBASE, [
 
@@ -50,14 +44,18 @@
         {info, "Bucket list finds non-binary Bucket ~w"}},
     {"B0011",
         {warn, "Call to destroy the store and so all files to be removed"}},
-    {"B0012",
-        {info, "After ~w PUTs total inker time is ~w total ledger time is ~w "
-                ++ "and max inker time is ~w and max ledger time is ~w"}},
     {"B0013",
         {warn, "Long running task took ~w microseconds with task of type ~w"}},
-    {"B0014",
-        {info, "Get timing for result ~w is sample ~w total ~w and max ~w"}},
-    
+    {"B0015",
+        {info, "Put timing with sample_count=~w and mem_time=~w ink_time=~w"
+                ++ " with total_object_size=~w"}},
+    {"B0016",
+        {info, "Get timing with sample_count=~w and head_time=~w body_time=~w"
+                ++ " with fetch_count=~w"}},
+    {"B0017",
+        {info, "Fold timing with sample_count=~w and setup_time=~w"}},
+
+
     {"R0001",
         {debug, "Object fold to process batch of ~w objects"}},
     
@@ -405,92 +403,6 @@ log_randomtimer(LogReference, Subs, StartTime, RandomProb) ->
         false ->
             ok
     end.
-
-%% Make a log of put timings split out by actor - one log for every
-%% PUT_LOGPOINT puts
-
-put_timing(_Actor, undefined, T0, T1) ->
-    {1, {T0, T1}, {T0, T1}};
-put_timing(Actor, {?PUT_LOGPOINT, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
-    RN = leveled_rand:uniform(?PUT_LOGPOINT),
-    case RN > ?PUT_LOGPOINT div 2 of
-        true ->
-            % log at the timing point less than half the time
-            LogRef =
-                case Actor of
-                    bookie -> "B0012" %;
-                    % inker -> "I0019";
-                    % journal -> "CDB17"
-                end,
-            log(LogRef, [?PUT_LOGPOINT, Total0, Total1, Max0, Max1]),
-            put_timing(Actor, undefined, T0, T1);
-        false ->
-            % Log some other random time
-            put_timing(Actor, {RN, {Total0, Total1}, {Max0, Max1}}, T0, T1)
-    end;
-put_timing(_Actor, {N, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
-    {N + 1, {Total0 + T0, Total1 + T1}, {max(Max0, T0), max(Max1, T1)}}.
-
-
-get_timing(undefined, SW, TimerType) ->
-    T0 = timer:now_diff(os:timestamp(), SW),
-    gen_timing_int(undefined,
-                    T0,
-                    TimerType,
-                    fun get_keylist/0,
-                    ?GET_LOGPOINT,
-                    "B0014");
-get_timing({N, GetTimerD}, SW, TimerType) ->
-    case N band (?SAMPLE_RATE - 1) of
-        0 ->
-            T0 = timer:now_diff(os:timestamp(), SW),
-            gen_timing_int({N, GetTimerD},
-                            T0,
-                            TimerType,
-                            fun get_keylist/0,
-                            ?GET_LOGPOINT,
-                            "B0014");
-        _ ->
-            % Not to be sampled this time
-            {N + 1, GetTimerD}
-    end.
-
-get_keylist() ->
-    [head_not_present, head_found, fetch].
-
-
-gen_timing_int(undefined, T0, TimerType, KeyListFun, _LogPoint, _LogRef) ->
-    NewDFun = fun(K, Acc) ->
-                case K of
-                    TimerType ->
-                        dict:store(K, [1, T0, T0], Acc);
-                    _ ->
-                        dict:store(K, [0, 0, 0], Acc)
-                end end,
-    {1, lists:foldl(NewDFun, dict:new(), KeyListFun())};
-gen_timing_int({LogPoint, TimerD}, T0, TimerType, KeyListFun, LogPoint,
-                                                                    LogRef) ->
-    RN = leveled_rand:uniform(LogPoint),
-    case RN > LogPoint div 2 of
-        true ->
-            % log at the timing point less than half the time
-            LogFun  = fun(K) -> log(LogRef, [K|dict:fetch(K, TimerD)]) end,
-            lists:foreach(LogFun, KeyListFun()),
-            gen_timing_int(undefined, T0, TimerType,
-                            KeyListFun, LogPoint, LogRef);
-        false ->
-            % Log some other time - reset to RN not 0 to stagger logs out over
-            % time between the vnodes
-            gen_timing_int({RN, TimerD}, T0, TimerType,
-                            KeyListFun, LogPoint, LogRef)
-    end;
-gen_timing_int({N, TimerD}, T0, TimerType, _KeyListFun, _LogPoint, _LogRef) ->
-    [Count0, Total0, Max0] = dict:fetch(TimerType, TimerD),
-    {N + 1, 
-        dict:store(TimerType, 
-                    [Count0 + 1, Total0 + T0, max(Max0, T0)], 
-                    TimerD)}.
-
 
 format_time() ->
     format_time(localtime_ms()).

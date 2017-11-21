@@ -2531,7 +2531,19 @@ check_segment_match(PosBinIndex1, KVL, TreeSize) ->
         end,
     lists:foreach(CheckFun, KVL).
 
-
+timings_test() ->
+    SW = os:timestamp(),
+    timer:sleep(1),
+    {no_timing, T0} = update_timings(SW, #sst_timings{}, tiny_bloom, false),
+    {no_timing, T1} = update_timings(SW, T0, slot_index, false),
+    {no_timing, T2} = update_timings(SW, T1, slot_fetch, false),
+    {no_timing, T3} = update_timings(SW, T2, noncached_block, false),
+    timer:sleep(1),
+    {_, T4} = update_timings(SW, T3, tiny_bloom, true),
+    ?assertMatch(4, T4#sst_timings.sample_count),
+    ?assertMatch(1, T4#sst_timings.tiny_bloom_count),
+    ?assertMatch(true, T4#sst_timings.tiny_bloom_time > 
+                            T3#sst_timings.tiny_bloom_time).
 
 
 -endif.

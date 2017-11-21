@@ -1929,6 +1929,19 @@ checkready(Pid) ->
             timeout
     end.
 
+timings_test() ->
+    SW = os:timestamp(),
+    timer:sleep(1),
+    T0 = update_timings(SW, #pcl_timings{}, {"K", "V"}, 2),
+    timer:sleep(1),
+    T1 = update_timings(SW, T0, {"K", "V"}, 3),
+    T2 = update_timings(SW, T1, {"K", "V"}, basement),
+    ?assertMatch(3, T2#pcl_timings.sample_count),
+    ?assertMatch(true, T2#pcl_timings.foundlower_time > T2#pcl_timings.found2_time),
+    ?assertMatch(1, T2#pcl_timings.found2_count),
+    ?assertMatch(2, T2#pcl_timings.foundlower_count).    
+
+
 coverage_cheat_test() ->
     {noreply, _State0} = handle_info(timeout, #state{}),
     {ok, _State1} = code_change(null, #state{}, null).
