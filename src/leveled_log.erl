@@ -11,7 +11,6 @@
             log_timer/3,
             log_randomtimer/4,
             put_timing/4,
-            head_timing/4,
             get_timing/3]).         
 
 -define(PUT_LOGPOINT, 10000).
@@ -124,7 +123,12 @@
         {info, "Completion of update to levelzero"
                     ++ " with cache size status ~w ~w"}},
     {"P0032",
-        {info, "Head timing for result ~w is sample ~w total ~w and max ~w"}},
+        {info, "Fetch head timing with sample_count=~w and level timings of"
+                    ++ " foundmem_time=~w found0_time=~w found1_time=~w" 
+                    ++ " found2_time=~w foundlower_time=~w missed_time=~w"
+                    ++ " with counts of"
+                    ++ " foundmem_count=~w found0_count=~w found1_count=~w" 
+                    ++ " found2_count=~w foundlower_count=~w missed_count=~w"}},
     {"P0033",
         {error, "Corrupted manifest file at path ~s to be ignored "
                     ++ "due to error ~w"}},
@@ -427,65 +431,6 @@ put_timing(Actor, {?PUT_LOGPOINT, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
 put_timing(_Actor, {N, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
     {N + 1, {Total0 + T0, Total1 + T1}, {max(Max0, T0), max(Max1, T1)}}.
 
-%% Make a log of penciller head timings split out by level and result - one
-%% log for every HEAD_LOGPOINT puts
-%% Returns a tuple of {Count, TimingDict} to be stored on the process state
-head_timing(undefined, SW, Level, R) ->
-    T0 = timer:now_diff(os:timestamp(), SW),
-    head_timing_int(undefined, T0, Level, R);
-head_timing({N, HeadTimingD}, SW, Level, R) ->
-    case N band (?SAMPLE_RATE - 1) of
-        0 ->
-            T0 = timer:now_diff(os:timestamp(), SW),
-            head_timing_int({N, HeadTimingD}, T0, Level, R);
-        _ ->
-            % Not to be sampled this time
-            {N + 1, HeadTimingD}
-    end.
-
-head_timing_int(undefined, T0, Level, R) -> 
-    Key = head_key(R, Level),
-    NewDFun = fun(K, Acc) ->
-                case K of
-                    Key ->
-                        dict:store(K, [1, T0, T0], Acc);
-                    _ ->
-                        dict:store(K, [0, 0, 0], Acc)
-                end end,
-    {1, lists:foldl(NewDFun, dict:new(), head_keylist())};
-head_timing_int({?HEAD_LOGPOINT, HeadTimingD}, T0, Level, R) ->
-    RN = leveled_rand:uniform(?HEAD_LOGPOINT),
-    case RN > ?HEAD_LOGPOINT div 2 of
-        true ->
-            % log at the timing point less than half the time
-            LogFun  = fun(K) -> log("P0032", [K|dict:fetch(K, HeadTimingD)]) end,
-            lists:foreach(LogFun, head_keylist()),
-            head_timing_int(undefined, T0, Level, R);
-        false ->
-            % Log some other time - reset to RN not 0 to stagger logs out over
-            % time between the vnodes
-            head_timing_int({RN, HeadTimingD}, T0, Level, R)
-    end;
-head_timing_int({N, HeadTimingD}, T0, Level, R) ->
-    Key = head_key(R, Level),
-    [Count0, Total0, Max0] = dict:fetch(Key, HeadTimingD),
-    {N + 1,
-        dict:store(Key, [Count0 + 1, Total0 + T0, max(Max0, T0)],
-        HeadTimingD)}.
-                                    
-head_key(not_present, _Level) ->
-    not_present;
-head_key(found, 0) ->
-    found_0;
-head_key(found, 1) ->
-    found_1;
-head_key(found, 2) ->
-    found_2;
-head_key(found, Level) when Level > 2 ->
-    found_lower.
-
-head_keylist() ->
-    [not_present, found_lower, found_0, found_1, found_2].
 
 get_timing(undefined, SW, TimerType) ->
     T0 = timer:now_diff(os:timestamp(), SW),
@@ -571,17 +516,6 @@ format_time({{Y, M, D}, {H, Mi, S, Ms}}) ->
 log_test() ->
     log("D0001", []),
     log_timer("D0001", [], os:timestamp()).
-
-head_timing_test() ->
-    SW = os:timestamp(),
-    HeadTimer0 = lists:foldl(fun(_X, Acc) -> head_timing(Acc, SW, 2, found) end,
-                                undefined,
-                                lists:seq(0, 47)),
-    HeadTimer1 = head_timing(HeadTimer0, SW, 3, found),
-    {N, D} = HeadTimer1,
-    ?assertMatch(49, N),
-    ?assertMatch(3, lists:nth(1, dict:fetch(found_2, D))),
-    ?assertMatch(1, lists:nth(1, dict:fetch(found_lower, D))).
 
 log_warn_test() ->
     ok = log("G0001", [], [warn, error]),
