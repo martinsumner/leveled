@@ -9,18 +9,9 @@
 
 -export([log/2,
             log_timer/3,
-            log_randomtimer/4,
-            put_timing/4,
-            head_timing/4,
-            get_timing/3,
-            sst_timing/3]).         
+            log_randomtimer/4]).         
 
--define(PUT_LOGPOINT, 10000).
--define(HEAD_LOGPOINT, 20000).
--define(GET_LOGPOINT, 20000).
--define(SST_LOGPOINT, 20000).
 -define(LOG_LEVEL, [info, warn, error, critical]).
--define(SAMPLE_RATE, 16).
 
 -define(LOGBASE, [
 
@@ -53,13 +44,20 @@
         {info, "Bucket list finds non-binary Bucket ~w"}},
     {"B0011",
         {warn, "Call to destroy the store and so all files to be removed"}},
-    {"B0012",
-        {info, "After ~w PUTs total inker time is ~w total ledger time is ~w "
-                ++ "and max inker time is ~w and max ledger time is ~w"}},
     {"B0013",
         {warn, "Long running task took ~w microseconds with task of type ~w"}},
-    {"B0014",
-        {info, "Get timing for result ~w is sample ~w total ~w and max ~w"}},
+    {"B0015",
+        {info, "Put timing with sample_count=~w and mem_time=~w ink_time=~w"
+                ++ " with total_object_size=~w"}},
+    {"B0016",
+        {info, "Get timing with sample_count=~w and head_time=~w body_time=~w"
+                ++ " with fetch_count=~w"}},
+    {"B0017",
+        {info, "Fold timing with sample_count=~w and setup_time=~w"}},
+
+
+    {"R0001",
+        {debug, "Object fold to process batch of ~w objects"}},
     
     {"P0001",
         {debug, "Ledger snapshot ~w registered"}},
@@ -123,7 +121,12 @@
         {info, "Completion of update to levelzero"
                     ++ " with cache size status ~w ~w"}},
     {"P0032",
-        {info, "Head timing for result ~w is sample ~w total ~w and max ~w"}},
+        {info, "Fetch head timing with sample_count=~w and level timings of"
+                    ++ " foundmem_time=~w found0_time=~w found1_time=~w" 
+                    ++ " found2_time=~w foundlower_time=~w missed_time=~w"
+                    ++ " with counts of"
+                    ++ " foundmem_count=~w found0_count=~w found1_count=~w" 
+                    ++ " found2_count=~w foundlower_count=~w missed_count=~w"}},
     {"P0033",
         {error, "Corrupted manifest file at path ~s to be ignored "
                     ++ "due to error ~w"}},
@@ -191,7 +194,44 @@
         {info, "Prompting deletions at ManifestSQN=~w"}},
     {"PC022",
         {info, "Storing reference to deletions at ManifestSQN=~w"}},
-        
+    {"PM002",
+        {info, "Completed dump of L0 cache to list of size ~w"}},
+    
+    {"SST01",
+        {info, "SST timing for result ~w is sample ~w total ~w and max ~w"}},
+    {"SST02",
+        {error, "False result returned from SST with filename ~s as "
+                    ++ "slot ~w has failed crc check"}},
+    {"SST03",
+        {info, "Opening SST file with filename ~s slots ~w and"
+                ++ " max sqn ~w"}},
+    {"SST04",
+        {info, "Exit called for reason ~w on filename ~s"}},
+    {"SST05",
+        {warn, "Rename rogue filename ~s to ~s"}},
+    {"SST06",
+        {debug, "File ~s has been set for delete"}},
+    {"SST07",
+        {info, "Exit called and now clearing ~s"}},
+    {"SST08",
+        {info, "Completed creation of ~s at level ~w with max sqn ~w"}},
+    {"SST09",
+        {warn, "Read request exposes slot with bad CRC"}},
+    {"SST10",
+        {debug, "Expansion sought to support pointer to pid ~w status ~w"}},
+    {"SST11",
+        {info, "Level zero creation timings in microseconds "
+                ++ "pmem_fetch=~w merge_lists=~w build_slots=~w " 
+                ++ "build_summary=~w read_switch=~w"}},
+    {"SST12",
+        {info, "SST Timings for sample_count=~w"
+                ++ " at timing points index_query_time=~w"
+                ++ " tiny_bloom_time=~w slot_index_time=~w slot_fetch_time=~w"
+                ++ " noncached_block_fetch_time=~w"
+                ++ " exiting at points tiny_bloom=~w slot_index=~w"
+                ++ " slot_fetch=~w noncached_block_fetch=~w"}},
+    
+    
     {"I0001",
         {info, "Unexpected failure to fetch value for Key=~w SQN=~w "
                 ++ "with reason ~w"}},
@@ -261,33 +301,7 @@
     {"IC013",
         {warn, "File with name ~s to be ignored in manifest as scanning for "
                 ++ "first key returned empty - maybe corrupted"}},
-    
-    {"PM002",
-        {info, "Completed dump of L0 cache to list of size ~w"}},
-    
-    {"SST01",
-        {info, "SST timing for result ~w is sample ~w total ~w and max ~w"}},
-    {"SST02",
-        {error, "False result returned from SST with filename ~s as "
-                    ++ "slot ~w has failed crc check"}},
-    {"SST03",
-        {info, "Opening SST file with filename ~s slots ~w and"
-                ++ " max sqn ~w"}},
-    {"SST04",
-        {info, "Exit called for reason ~w on filename ~s"}},
-    {"SST05",
-        {warn, "Rename rogue filename ~s to ~s"}},
-    {"SST06",
-        {debug, "File ~s has been set for delete"}},
-    {"SST07",
-        {info, "Exit called and now clearing ~s"}},
-    {"SST08",
-        {info, "Completed creation of ~s at level ~w with max sqn ~w"}},
-    {"SST09",
-        {warn, "Read request exposes slot with bad CRC"}},
-    {"SST10",
-        {debug, "Expansion sought to support pointer to pid ~w status ~w"}},
-    
+
     {"CDB01",
         {info, "Opening file for writing with filename ~s"}},
     {"CDB02",
@@ -330,10 +344,7 @@
     {"CDB19",
         {info, "Sample timings in microseconds for sample_count=~w " 
                     ++ "with totals of cycle_count=~w "
-                    ++ "fetch_time=~w index_time=~w"}},
-
-    {"R0001",
-        {debug, "Object fold to process batch of ~w objects"}}
+                    ++ "fetch_time=~w index_time=~w"}}
         ]).
 
 
@@ -393,179 +404,6 @@ log_randomtimer(LogReference, Subs, StartTime, RandomProb) ->
             ok
     end.
 
-%% Make a log of put timings split out by actor - one log for every
-%% PUT_LOGPOINT puts
-
-put_timing(_Actor, undefined, T0, T1) ->
-    {1, {T0, T1}, {T0, T1}};
-put_timing(Actor, {?PUT_LOGPOINT, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
-    RN = leveled_rand:uniform(?PUT_LOGPOINT),
-    case RN > ?PUT_LOGPOINT div 2 of
-        true ->
-            % log at the timing point less than half the time
-            LogRef =
-                case Actor of
-                    bookie -> "B0012" %;
-                    % inker -> "I0019";
-                    % journal -> "CDB17"
-                end,
-            log(LogRef, [?PUT_LOGPOINT, Total0, Total1, Max0, Max1]),
-            put_timing(Actor, undefined, T0, T1);
-        false ->
-            % Log some other random time
-            put_timing(Actor, {RN, {Total0, Total1}, {Max0, Max1}}, T0, T1)
-    end;
-put_timing(_Actor, {N, {Total0, Total1}, {Max0, Max1}}, T0, T1) ->
-    {N + 1, {Total0 + T0, Total1 + T1}, {max(Max0, T0), max(Max1, T1)}}.
-
-%% Make a log of penciller head timings split out by level and result - one
-%% log for every HEAD_LOGPOINT puts
-%% Returns a tuple of {Count, TimingDict} to be stored on the process state
-head_timing(undefined, SW, Level, R) ->
-    T0 = timer:now_diff(os:timestamp(), SW),
-    head_timing_int(undefined, T0, Level, R);
-head_timing({N, HeadTimingD}, SW, Level, R) ->
-    case N band (?SAMPLE_RATE - 1) of
-        0 ->
-            T0 = timer:now_diff(os:timestamp(), SW),
-            head_timing_int({N, HeadTimingD}, T0, Level, R);
-        _ ->
-            % Not to be sampled this time
-            {N + 1, HeadTimingD}
-    end.
-
-head_timing_int(undefined, T0, Level, R) -> 
-    Key = head_key(R, Level),
-    NewDFun = fun(K, Acc) ->
-                case K of
-                    Key ->
-                        dict:store(K, [1, T0, T0], Acc);
-                    _ ->
-                        dict:store(K, [0, 0, 0], Acc)
-                end end,
-    {1, lists:foldl(NewDFun, dict:new(), head_keylist())};
-head_timing_int({?HEAD_LOGPOINT, HeadTimingD}, T0, Level, R) ->
-    RN = leveled_rand:uniform(?HEAD_LOGPOINT),
-    case RN > ?HEAD_LOGPOINT div 2 of
-        true ->
-            % log at the timing point less than half the time
-            LogFun  = fun(K) -> log("P0032", [K|dict:fetch(K, HeadTimingD)]) end,
-            lists:foreach(LogFun, head_keylist()),
-            head_timing_int(undefined, T0, Level, R);
-        false ->
-            % Log some other time - reset to RN not 0 to stagger logs out over
-            % time between the vnodes
-            head_timing_int({RN, HeadTimingD}, T0, Level, R)
-    end;
-head_timing_int({N, HeadTimingD}, T0, Level, R) ->
-    Key = head_key(R, Level),
-    [Count0, Total0, Max0] = dict:fetch(Key, HeadTimingD),
-    {N + 1,
-        dict:store(Key, [Count0 + 1, Total0 + T0, max(Max0, T0)],
-        HeadTimingD)}.
-                                    
-head_key(not_present, _Level) ->
-    not_present;
-head_key(found, 0) ->
-    found_0;
-head_key(found, 1) ->
-    found_1;
-head_key(found, 2) ->
-    found_2;
-head_key(found, Level) when Level > 2 ->
-    found_lower.
-
-head_keylist() ->
-    [not_present, found_lower, found_0, found_1, found_2].
-
-
-sst_timing(undefined, SW, TimerType) ->
-    T0 = timer:now_diff(os:timestamp(), SW),
-    gen_timing_int(undefined,
-                    T0,
-                    TimerType,
-                    fun sst_keylist/0,
-                    ?SST_LOGPOINT,
-                    "SST01");
-sst_timing({N, SSTTimerD}, SW, TimerType) ->
-    case N band (?SAMPLE_RATE - 1) of
-        0 ->
-            T0 = timer:now_diff(os:timestamp(), SW),
-            gen_timing_int({N, SSTTimerD},
-                            T0,
-                            TimerType,
-                            fun sst_keylist/0,
-                            ?SST_LOGPOINT,
-                            "SST01");
-        _ ->
-            % Not to be sampled this time
-            {N + 1, SSTTimerD}
-    end.
-
-sst_keylist() ->
-    [tiny_bloom, slot_bloom, slot_fetch].
-
-
-get_timing(undefined, SW, TimerType) ->
-    T0 = timer:now_diff(os:timestamp(), SW),
-    gen_timing_int(undefined,
-                    T0,
-                    TimerType,
-                    fun get_keylist/0,
-                    ?GET_LOGPOINT,
-                    "B0014");
-get_timing({N, GetTimerD}, SW, TimerType) ->
-    case N band (?SAMPLE_RATE - 1) of
-        0 ->
-            T0 = timer:now_diff(os:timestamp(), SW),
-            gen_timing_int({N, GetTimerD},
-                            T0,
-                            TimerType,
-                            fun get_keylist/0,
-                            ?GET_LOGPOINT,
-                            "B0014");
-        _ ->
-            % Not to be sampled this time
-            {N + 1, GetTimerD}
-    end.
-
-get_keylist() ->
-    [head_not_present, head_found, fetch].
-
-
-gen_timing_int(undefined, T0, TimerType, KeyListFun, _LogPoint, _LogRef) ->
-    NewDFun = fun(K, Acc) ->
-                case K of
-                    TimerType ->
-                        dict:store(K, [1, T0, T0], Acc);
-                    _ ->
-                        dict:store(K, [0, 0, 0], Acc)
-                end end,
-    {1, lists:foldl(NewDFun, dict:new(), KeyListFun())};
-gen_timing_int({LogPoint, TimerD}, T0, TimerType, KeyListFun, LogPoint,
-                                                                    LogRef) ->
-    RN = leveled_rand:uniform(LogPoint),
-    case RN > LogPoint div 2 of
-        true ->
-            % log at the timing point less than half the time
-            LogFun  = fun(K) -> log(LogRef, [K|dict:fetch(K, TimerD)]) end,
-            lists:foreach(LogFun, KeyListFun()),
-            gen_timing_int(undefined, T0, TimerType,
-                            KeyListFun, LogPoint, LogRef);
-        false ->
-            % Log some other time - reset to RN not 0 to stagger logs out over
-            % time between the vnodes
-            gen_timing_int({RN, TimerD}, T0, TimerType,
-                            KeyListFun, LogPoint, LogRef)
-    end;
-gen_timing_int({N, TimerD}, T0, TimerType, _KeyListFun, _LogPoint, _LogRef) ->
-    [Count0, Total0, Max0] = dict:fetch(TimerType, TimerD),
-    {N + 1, 
-        dict:store(TimerType, 
-                    [Count0 + 1, Total0 + T0, max(Max0, T0)], 
-                    TimerD)}.
-
-
 format_time() ->
     format_time(localtime_ms()).
 
@@ -590,17 +428,6 @@ format_time({{Y, M, D}, {H, Mi, S, Ms}}) ->
 log_test() ->
     log("D0001", []),
     log_timer("D0001", [], os:timestamp()).
-
-head_timing_test() ->
-    SW = os:timestamp(),
-    HeadTimer0 = lists:foldl(fun(_X, Acc) -> head_timing(Acc, SW, 2, found) end,
-                                undefined,
-                                lists:seq(0, 47)),
-    HeadTimer1 = head_timing(HeadTimer0, SW, 3, found),
-    {N, D} = HeadTimer1,
-    ?assertMatch(49, N),
-    ?assertMatch(3, lists:nth(1, dict:fetch(found_2, D))),
-    ?assertMatch(1, lists:nth(1, dict:fetch(found_lower, D))).
 
 log_warn_test() ->
     ok = log("G0001", [], [warn, error]),

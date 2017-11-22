@@ -97,7 +97,7 @@
 -define(WRITE_OPS, [binary, raw, read, write]).
 -define(PENDING_ROLL_WAIT, 30).
 -define(DELETE_TIMEOUT, 10000).
--define(TIMING_SAMPLECOUNTDOWN, 2000).
+-define(TIMING_SAMPLECOUNTDOWN, 1000).
 -define(TIMING_SAMPLESIZE, 100).
 
 -record(state, {hashtree,
@@ -1437,7 +1437,7 @@ update_statetimings(Timings, 0) ->
                                         Timings#cdb_timings.sample_cyclecount,
                                         Timings#cdb_timings.sample_fetchtime,
                                         Timings#cdb_timings.sample_indextime]),
-            {no_timing, leveled_rand:uniform(?TIMING_SAMPLECOUNTDOWN)};
+            {no_timing, leveled_rand:uniform(2 * ?TIMING_SAMPLECOUNTDOWN)};
         _SC ->
             {Timings, 0}
     end;

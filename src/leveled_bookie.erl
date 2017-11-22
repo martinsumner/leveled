@@ -83,6 +83,8 @@
 -define(RECENT_AAE, false).
 -define(COMPRESSION_METHOD, lz4).
 -define(COMPRESSION_POINT, on_receipt).
+-define(TIMING_SAMPLESIZE, 100).
+-define(TIMING_SAMPLECOUNTDOWN, 10000).
 
 -record(ledger_cache, {mem :: ets:tab(),
                         loader = leveled_tree:empty(?CACHE_TYPE)
@@ -99,13 +101,34 @@
                 ledger_cache = #ledger_cache{},
                 is_snapshot :: boolean() | undefined,
                 slow_offer = false :: boolean(),
-                put_timing :: tuple() | undefined,
-                get_timing :: tuple() | undefined}).
+                puttiming_countdown = 0 :: integer(),
+                gettiming_countdown = 0 :: integer(),
+                foldtiming_countdown = 0 :: integer(),
+                get_timings = no_timing :: get_timings(),
+                put_timings = no_timing :: put_timings(),
+                fold_timings = no_timing :: fold_timings()}).
+
+
+-record(get_timings, {sample_count = 0 :: integer(),
+                        head_time = 0 :: integer(),
+                        body_time = 0 :: integer(),
+                        fetch_count = 0 :: integer()}).
+
+-record(put_timings, {sample_count = 0 :: integer(),
+                        mem_time = 0 :: integer(),
+                        ink_time = 0 :: integer(),
+                        total_size = 0 :: integer()}).
+
+-record(fold_timings, {sample_count = 0 :: integer(),
+                        setup_time = 0 :: integer()}).
 
 
 -type book_state() :: #state{}.
 -type sync_mode() :: sync|none|riak_sync.
 -type ledger_cache() :: #ledger_cache{}.
+-type get_timings() :: no_timing|#get_timings{}.
+-type put_timings() :: no_timing|#put_timings{}.
+-type fold_timings() :: no_timing|#fold_timings{}.
 
 %%%============================================================================
 %%% API
@@ -467,12 +490,13 @@ init([Opts]) ->
 
 handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State) ->
     LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
-    SW = os:timestamp(),
+    SW0 = os:timestamp(),
     {ok, SQN, ObjSize} = leveled_inker:ink_put(State#state.inker,
                                                 LedgerKey,
                                                 Object,
                                                 {IndexSpecs, TTL}),
-    T0 = timer:now_diff(os:timestamp(), SW),
+    {SW1, Timings1} = 
+        update_timings(SW0, {put, {inker, ObjSize}}, State#state.put_timings),
     Changes = preparefor_ledgercache(no_type_assigned,
                                         LedgerKey,
                                         SQN,
@@ -481,8 +505,10 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State) ->
                                         {IndexSpecs, TTL},
                                         State#state.recent_aae),
     Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
-    T1 = timer:now_diff(os:timestamp(), SW) - T0,
-    PutTimes = leveled_log:put_timing(bookie, State#state.put_timing, T0, T1),
+    {_SW2, Timings2} = update_timings(SW1, {put, mem}, Timings1),
+    
+    {Timings, CountDown} = 
+        update_statetimings(put, Timings2, State#state.puttiming_countdown),
     % If the previous push to memory was returned then punish this PUT with a
     % delay.  If the back-pressure in the Penciller continues, these delays
     % will beocme more frequent
@@ -492,53 +518,66 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State) ->
         false ->
             gen_server:reply(From, ok)
     end,
-    maybe_longrunning(SW, overall_put),
+    maybe_longrunning(SW0, overall_put),
     case maybepush_ledgercache(State#state.cache_size,
                                     Cache0,
                                     State#state.penciller) of
         {ok, NewCache} ->
-            {noreply, State#state{ledger_cache=NewCache,
-                                    put_timing=PutTimes,
-                                    slow_offer=false}};
+            {noreply, State#state{ledger_cache = NewCache,
+                                    put_timings = Timings,
+                                    puttiming_countdown = CountDown,
+                                    slow_offer = false}};
         {returned, NewCache} ->
-            {noreply, State#state{ledger_cache=NewCache,
-                                    put_timing=PutTimes,
-                                    slow_offer=true}}
+            {noreply, State#state{ledger_cache = NewCache,
+                                    put_timings = Timings,
+                                    puttiming_countdown = CountDown,
+                                    slow_offer = true}}
     end;
 handle_call({get, Bucket, Key, Tag}, _From, State) ->
     LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
     SWh = os:timestamp(),
-    case fetch_head(LedgerKey,
-                    State#state.penciller,
-                    State#state.ledger_cache) of
-        not_present ->
-            GT0 = leveled_log:get_timing(State#state.get_timing,
-                                            SWh,
-                                            head_not_present),
-            {reply, not_found, State#state{get_timing=GT0}};
-        Head ->
-            GT0 = leveled_log:get_timing(State#state.get_timing,
-                                            SWh,
-                                            head_found),
-            SWg = os:timestamp(),
-            {Seqn, Status, _MH, _MD} = leveled_codec:striphead_to_details(Head),
-            case Status of
-                tomb ->
-                    {reply, not_found, State};
-                {active, TS} ->
-                    Active = TS >= leveled_codec:integer_now(),
-                    Object = fetch_value(State#state.inker, {LedgerKey, Seqn}),
-                    GT1 = leveled_log:get_timing(GT0, SWg, fetch),
-                    case {Active, Object} of
-                        {_, not_present} ->
-                            {reply, not_found, State#state{get_timing=GT1}};
-                        {true, Object} ->
-                            {reply, {ok, Object}, State#state{get_timing=GT1}};
-                        _ ->
-                            {reply, not_found, State#state{get_timing=GT1}}
-                    end
-            end
-    end;
+    HeadResult = 
+        case fetch_head(LedgerKey,
+                        State#state.penciller,
+                        State#state.ledger_cache) of
+            not_present ->
+                not_found;
+            Head ->
+                {Seqn, Status, _MH, _MD} = 
+                    leveled_codec:striphead_to_details(Head),
+                case Status of
+                    tomb ->
+                        not_found;
+                    {active, TS} ->
+                        case TS >= leveled_codec:integer_now() of
+                            false ->
+                                not_found;
+                            true ->
+                                {LedgerKey, Seqn}
+                        end
+                end
+        end,
+    {SWb, Timings1} = 
+        update_timings(SWh, {get, head}, State#state.get_timings),
+    {Reply, Timings2} = 
+        case HeadResult of 
+            not_found -> 
+                {not_found, Timings1};
+            {LK, SQN} ->
+                Object = fetch_value(State#state.inker, {LK, SQN}),
+                {_SW, UpdTimingsB} =
+                    update_timings(SWb, {get, body}, Timings1),
+                case Object of 
+                    not_present ->
+                        {not_found, UpdTimingsB};
+                    _ ->
+                        {{ok, Object}, UpdTimingsB} 
+                end 
+        end,
+    {Timings, CountDown} = 
+        update_statetimings(get, Timings2, State#state.gettiming_countdown),
+    {reply, Reply, State#state{get_timings = Timings, 
+                                gettiming_countdown = CountDown}};
 handle_call({head, Bucket, Key, Tag}, _From, State) ->
     LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
     case fetch_head(LedgerKey,
@@ -569,7 +608,14 @@ handle_call({snapshot, SnapType, Query, LongRunning}, _From, State) ->
     Reply = snapshot_store(State, SnapType, Query, LongRunning),
     {reply, Reply, State};
 handle_call({return_runner, QueryType}, _From, State) ->
-    {reply, get_runner(State, QueryType), State};
+    SW = os:timestamp(),
+    Runner = get_runner(State, QueryType),
+    {_SW, Timings1} = 
+        update_timings(SW, {fold, setup}, State#state.fold_timings),
+    {Timings, CountDown} = 
+        update_statetimings(fold, Timings1, State#state.foldtiming_countdown),
+    {reply, Runner, State#state{fold_timings = Timings, 
+                                foldtiming_countdown = CountDown}};
 handle_call({compact_journal, Timeout}, _From, State) ->
     ok = leveled_inker:ink_compactjournal(State#state.inker,
                                             self(),
@@ -1180,6 +1226,109 @@ delete_path(DirPath) ->
     {ok, Files} = file:list_dir(DirPath),
     [file:delete(filename:join([DirPath, File])) || File <- Files],
     file:del_dir(DirPath).
+
+
+
+%%%============================================================================
+%%% Timing Functions
+%%%============================================================================
+
+-spec update_statetimings(put|get|fold, 
+                            put_timings()|get_timings()|fold_timings(), 
+                            integer()) 
+                    -> {put_timings()|get_timings()|fold_timings(), integer()}.
+%% @doc
+%%
+%% The timings state is either in countdown to the next set of samples of
+%% we are actively collecting a sample.  Active collection take place 
+%% when the countdown is 0.  Once the sample has reached the expected count
+%% then there is a log of that sample, and the countdown is restarted.
+%%
+%% Outside of sample windows the timings object should be set to the atom
+%% no_timing.  no_timing is a valid state for each timings type.
+update_statetimings(put, no_timing, 0) ->
+    {#put_timings{}, 0};
+update_statetimings(get, no_timing, 0) ->
+    {#get_timings{}, 0};
+update_statetimings(fold, no_timing, 0) ->
+    {#fold_timings{}, 0};
+update_statetimings(put, Timings, 0) ->
+    case Timings#put_timings.sample_count of 
+        SC when SC >= ?TIMING_SAMPLESIZE ->
+            log_timings(put, Timings),
+            {no_timing, leveled_rand:uniform(2 * ?TIMING_SAMPLECOUNTDOWN)};
+        _SC ->
+            {Timings, 0}
+    end;
+update_statetimings(get, Timings, 0) ->
+    case Timings#get_timings.sample_count of 
+        SC when SC >= ?TIMING_SAMPLESIZE ->
+            log_timings(get, Timings),
+            {no_timing, leveled_rand:uniform(2 * ?TIMING_SAMPLECOUNTDOWN)};
+        _SC ->
+            {Timings, 0}
+    end;
+update_statetimings(fold, Timings, 0) ->
+    case Timings#fold_timings.sample_count of 
+        SC when SC >= (?TIMING_SAMPLESIZE div 10) ->
+            log_timings(fold, Timings),
+            {no_timing, 
+                leveled_rand:uniform(2 * (?TIMING_SAMPLECOUNTDOWN div 10))};
+        _SC ->
+            {Timings, 0}
+    end;
+update_statetimings(_, no_timing, N) ->
+    {no_timing, N - 1}.
+
+log_timings(put, Timings) ->
+    leveled_log:log("B0015", [Timings#put_timings.sample_count, 
+                                Timings#put_timings.mem_time,
+                                Timings#put_timings.ink_time,
+                                Timings#put_timings.total_size]);
+log_timings(get, Timings) ->
+    leveled_log:log("B0016", [Timings#get_timings.sample_count, 
+                                Timings#get_timings.head_time,
+                                Timings#get_timings.body_time,
+                                Timings#get_timings.fetch_count]);
+log_timings(fold, Timings) ->    
+    leveled_log:log("B0017", [Timings#fold_timings.sample_count, 
+                                Timings#fold_timings.setup_time]).
+
+
+update_timings(_SW, _Stage, no_timing) ->
+    {no_timing, no_timing};
+update_timings(SW, {put, Stage}, Timings) ->
+    Timer = timer:now_diff(os:timestamp(), SW),
+    Timings0 = 
+        case Stage of 
+            {inker, ObjectSize} ->
+                INT = Timings#put_timings.ink_time + Timer,
+                TSZ = Timings#put_timings.total_size + ObjectSize,
+                Timings#put_timings{ink_time = INT, total_size = TSZ};
+            mem ->
+                PCT = Timings#put_timings.mem_time + Timer,
+                CNT = Timings#put_timings.sample_count + 1,
+                Timings#put_timings{mem_time = PCT, sample_count = CNT}
+        end,
+    {os:timestamp(), Timings0};
+update_timings(SW, {get, head}, Timings) ->
+    Timer = timer:now_diff(os:timestamp(), SW),
+    GHT = Timings#get_timings.head_time + Timer,
+    CNT = Timings#get_timings.sample_count + 1,
+    Timings0 = Timings#get_timings{head_time = GHT, sample_count = CNT},
+    {os:timestamp(), Timings0};
+update_timings(SW, {get, body}, Timings) ->
+    Timer = timer:now_diff(os:timestamp(), SW),
+    GBT = Timings#get_timings.body_time + Timer,
+    FCNT = Timings#get_timings.fetch_count + 1,
+    Timings0 = Timings#get_timings{body_time = GBT, fetch_count = FCNT},
+    {no_timing, Timings0};
+update_timings(SW, {fold, setup}, Timings) ->
+    Timer = timer:now_diff(os:timestamp(), SW),
+    FST = Timings#fold_timings.setup_time + Timer,
+    CNT = Timings#fold_timings.sample_count + 1,
+    Timings0 = Timings#fold_timings{setup_time = FST, sample_count = CNT},
+    {no_timing, Timings0}.
 
 %%%============================================================================
 %%% Test
