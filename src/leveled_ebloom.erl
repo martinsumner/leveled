@@ -1,11 +1,11 @@
 %% -------- TinyBloom ---------
 %%
-%% A fixed size bloom that supports 128 keys only, made to try and minimise
+%% A fixed size bloom that supports 32K keys only, made to try and minimise
 %% the cost of producing the bloom
 %%
 
 
--module(leveled_tinybloom).
+-module(leveled_ebloom).
 
 -include("include/leveled.hrl").
 
@@ -16,8 +16,8 @@
             check_hash/2
             ]).
 
--define(BLOOM_SIZE_BYTES, 16). 
--define(INTEGER_SIZE, 128). 
+-define(BLOOM_SIZE_BYTES, 2048). 
+-define(INTEGER_SIZE, 16384). 
 -define(BAND_MASK, ?INTEGER_SIZE - 1). 
 
 
@@ -32,15 +32,16 @@ create_bloom(HashList) ->
     case length(HashList) of
         0 ->
             <<>>;
-        L when L > 32 ->
+        L when L > 16384 ->
             add_hashlist(HashList,
                             7,
                             0, 0, 0, 0, 0, 0, 0, 0);
-        L when L > 16 ->
+        L when L > 8192 ->
             add_hashlist(HashList, 3, 0, 0, 0, 0);
         _ ->
             add_hashlist(HashList, 1, 0, 0)
     end.
+
 
 -spec check_hash(integer(), binary()) -> boolean().
 %% @doc
@@ -68,13 +69,19 @@ check_hash({_SegHash, Hash}, BloomBin) ->
 split_hash(Hash, SlotSplit) ->
     Slot = Hash band SlotSplit,
     H0 = (Hash bsr 4) band (?BAND_MASK),
-    H1 = (Hash bsr 11) band (?BAND_MASK),
-    H2 = (Hash bsr 18) band (?BAND_MASK),
-    H3 = (Hash bsr 25) band (?BAND_MASK),
-    {Slot, [H0, H1, H2, H3]}.
+    H1 = (Hash bsr 18) band (?BAND_MASK),
+    % H2 = (Hash bsr 34) band (?BAND_MASK),
+    % H3 = (Hash bsr 49) band (?BAND_MASK),
+    {Slot, [H0, H1 
+                %, H2, H3
+                ]}.
 
-get_mask([H0, H1, H2, H3]) ->
-    (1 bsl H0) bor (1 bsl H1) bor (1 bsl H2) bor (1 bsl H3).
+get_mask([H0, H1
+            %, H2, H3
+            ]) ->
+    (1 bsl H0) bor (1 bsl H1) 
+        % bor (1 bsl H2) bor (1 bsl H3)
+        .
 
 
 %% This looks ugly and clunky, but in tests it was quicker than modifying an
@@ -164,33 +171,34 @@ add_hashlist([{_SegHash, TopHash}|T],
 
 -ifdef(TEST).
 
-generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
-    generate_randomkeys(Seqn,
-                        Count,
-                        [],
-                        BucketRangeLow,
-                        BucketRangeHigh).
+generate_orderedkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
+    generate_orderedkeys(Seqn,
+                            Count,
+                            [],
+                            BucketRangeLow,
+                            BucketRangeHigh).
 
-generate_randomkeys(_Seqn, 0, Acc, _BucketLow, _BucketHigh) ->
+generate_orderedkeys(_Seqn, 0, Acc, _BucketLow, _BucketHigh) ->
     Acc;
-generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
-    BRand = leveled_rand:uniform(BRange),
-    BNumber = string:right(integer_to_list(BucketLow + BRand), 4, $0),
-    KNumber = string:right(integer_to_list(leveled_rand:uniform(10000)), 6, $0),
-    LK = leveled_codec:to_ledgerkey("Bucket" ++ BNumber, "Key" ++ KNumber, o),
+generate_orderedkeys(Seqn, Count, Acc, BucketLow, BucketHigh) ->
+    BNumber = Seqn div (BucketHigh - BucketLow),
+    BucketExt = string:right(integer_to_list(BucketLow + BNumber), 4, $0),
+    KNumber = Seqn * 100 + leveled_rand:uniform(100),
+    KeyExt = 
+        string:right(integer_to_list(KNumber), 8, $0),
+    LK = leveled_codec:to_ledgerkey("Bucket" ++ BucketExt, "Key" ++ KeyExt, o),
     Chunk = leveled_rand:rand_bytes(16),
     {_B, _K, MV, _H, _LMs} =
         leveled_codec:generate_ledgerkv(LK, Seqn, Chunk, 64, infinity),
-    generate_randomkeys(Seqn + 1,
+    generate_orderedkeys(Seqn + 1,
                         Count - 1,
                         [{LK, MV}|Acc],
                         BucketLow,
-                        BRange).
+                        BucketHigh).
 
 
 get_hashlist(N) ->
-    KVL0 = lists:ukeysort(1, generate_randomkeys(1, N * 2, 1, 20)),
-    KVL = lists:sublist(KVL0, N),
+    KVL = generate_orderedkeys(1, N, 1, 20),
     HashFun =
         fun({K, _V}) ->
             leveled_codec:segment_hash(K)
@@ -223,46 +231,54 @@ empty_bloom_test() ->
                     check_neg_hashes(BloomBin0, [0, 10, 100, 100000], {0, 0})).
 
 bloom_test_() ->
-    {timeout, 20, fun bloom_test_ranges/0}.
+    {timeout, 60, fun bloom_test_ranges/0}.
 
 bloom_test_ranges() ->
-    test_bloom(128, 256),
-    test_bloom(64, 100),
-    test_bloom(32, 100),
-    test_bloom(16, 100),
-    test_bloom(8, 100).
+    test_bloom(40000, 2),
+    test_bloom(?INTEGER_SIZE, 10),
+    test_bloom(20000, 2),
+    test_bloom(10000, 2),
+    test_bloom(5000, 2).
 
 test_bloom(N, Runs) ->
     ListOfHashLists = 
-        lists:map(fun(_X) -> get_hashlist(N) end, lists:seq(1, Runs)),
-    
+        lists:map(fun(_X) -> get_hashlist(N * 2) end, lists:seq(1, Runs)),
+    SpliListFun =
+        fun(HashList) -> 
+            HitOrMissFun = 
+                fun (Entry, {HitL, MissL}) ->
+                    case random:uniform() < 0.5 of
+                        true -> 
+                            {[Entry|HitL], MissL};
+                        false ->
+                            {HitL, [Entry|MissL]}
+                    end 
+                end,
+            lists:foldl(HitOrMissFun, {[], []}, HashList)
+        end,
+    SplitListOfHashLists = lists:map(SpliListFun, ListOfHashLists),
+
     SWa = os:timestamp(),
     ListOfBlooms =
-        lists:map(fun(HL) -> create_bloom(HL) end, ListOfHashLists),
+        lists:map(fun({HL, _ML}) -> create_bloom(HL) end, 
+                    SplitListOfHashLists),
     TSa = timer:now_diff(os:timestamp(), SWa),
     
     SWb = os:timestamp(),
     lists:foreach(fun(Nth) ->
-                        HL = lists:nth(Nth, ListOfHashLists),
+                        {HL, _ML} = lists:nth(Nth, SplitListOfHashLists),
                         BB = lists:nth(Nth, ListOfBlooms),
                         check_all_hashes(BB, HL)
                      end,
                      lists:seq(1, Runs)),
     TSb = timer:now_diff(os:timestamp(), SWb),
-     
-    HashPool = get_hashlist(N * 2),
-    ListOfMisses = 
-        lists:map(fun(HL) ->
-                        lists:sublist(lists:subtract(HashPool, HL), N)
-                    end,
-                    ListOfHashLists),
-
+    
     SWc = os:timestamp(),
     {Pos, Neg} = 
         lists:foldl(fun(Nth, Acc) ->
-                            HL = lists:nth(Nth, ListOfMisses),
+                            {_HL, ML} = lists:nth(Nth, SplitListOfHashLists),
                             BB = lists:nth(Nth, ListOfBlooms),
-                            check_neg_hashes(BB, HL, Acc)
+                            check_neg_hashes(BB, ML, Acc)
                         end,
                         {0, 0},
                         lists:seq(1, Runs)),
