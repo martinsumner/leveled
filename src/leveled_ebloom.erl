@@ -39,12 +39,12 @@ create_bloom(HashList) ->
                             0, 0, 0, 0, 0, 0, 0, 0,
                             0, 0, 0, 0, 0, 0, 0, 0,
                             0, 0, 0, 0, 0, 0, 0, 0);
-        L when L > 8192 ->
+        L when L > 4096 ->
             add_hashlist(HashList,
                             16,
                             0, 0, 0, 0, 0, 0, 0, 0,
                             0, 0, 0, 0, 0, 0, 0, 0);
-        L when L > 4084 ->
+        L when L > 2048 ->
             add_hashlist(HashList, 4, 0, 0, 0, 0);
         _ ->
             add_hashlist(HashList, 2, 0, 0)
@@ -550,7 +550,8 @@ bloom_test_ranges() ->
     test_bloom(128 * 256, 10),
     test_bloom(20000, 2),
     test_bloom(10000, 2),
-    test_bloom(5000, 2).
+    test_bloom(5000, 2),
+    test_bloom(2000, 2).
 
 test_bloom(N, Runs) ->
     ListOfHashLists = 
