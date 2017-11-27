@@ -235,7 +235,7 @@ bloom_test_() ->
 
 bloom_test_ranges() ->
     test_bloom(40000, 2),
-    test_bloom(?INTEGER_SIZE, 10),
+    test_bloom(128 * 256, 10),
     test_bloom(20000, 2),
     test_bloom(10000, 2),
     test_bloom(5000, 2).
@@ -262,7 +262,7 @@ test_bloom(N, Runs) ->
     ListOfBlooms =
         lists:map(fun({HL, _ML}) -> create_bloom(HL) end, 
                     SplitListOfHashLists),
-    TSa = timer:now_diff(os:timestamp(), SWa),
+    TSa = timer:now_diff(os:timestamp(), SWa)/Runs,
     
     SWb = os:timestamp(),
     lists:foreach(fun(Nth) ->
@@ -271,7 +271,7 @@ test_bloom(N, Runs) ->
                         check_all_hashes(BB, HL)
                      end,
                      lists:seq(1, Runs)),
-    TSb = timer:now_diff(os:timestamp(), SWb),
+    TSb = timer:now_diff(os:timestamp(), SWb)/Runs,
     
     SWc = os:timestamp(),
     {Pos, Neg} = 
@@ -283,7 +283,7 @@ test_bloom(N, Runs) ->
                         {0, 0},
                         lists:seq(1, Runs)),
     FPR = Pos / (Pos + Neg),
-    TSc = timer:now_diff(os:timestamp(), SWc),
+    TSc = timer:now_diff(os:timestamp(), SWc)/Runs,
     
     io:format(user,
                 "Test with size ~w has microsecond timings: -"
