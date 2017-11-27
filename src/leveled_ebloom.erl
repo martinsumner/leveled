@@ -16,8 +16,8 @@
             check_hash/2
             ]).
 
--define(BLOOM_SIZE_BYTES, 1024). 
--define(INTEGER_SIZE, 8192). 
+-define(BLOOM_SIZE_BYTES, 512). 
+-define(INTEGER_SIZE, 4096). 
 -define(BAND_MASK, ?INTEGER_SIZE - 1). 
 
 
@@ -32,15 +32,22 @@ create_bloom(HashList) ->
     case length(HashList) of
         0 ->
             <<>>;
+        L when L > 16384 ->
+            add_hashlist(HashList,
+                            32,
+                            0, 0, 0, 0, 0, 0, 0, 0,
+                            0, 0, 0, 0, 0, 0, 0, 0,
+                            0, 0, 0, 0, 0, 0, 0, 0,
+                            0, 0, 0, 0, 0, 0, 0, 0);
         L when L > 8192 ->
             add_hashlist(HashList,
-                            15,
+                            16,
                             0, 0, 0, 0, 0, 0, 0, 0,
                             0, 0, 0, 0, 0, 0, 0, 0);
         L when L > 4084 ->
-            add_hashlist(HashList, 3, 0, 0, 0, 0);
+            add_hashlist(HashList, 4, 0, 0, 0, 0);
         _ ->
-            add_hashlist(HashList, 1, 0, 0)
+            add_hashlist(HashList, 2, 0, 0)
     end.
 
 
@@ -50,7 +57,7 @@ create_bloom(HashList) ->
 check_hash(_Hash, <<>>) ->
     false;
 check_hash({_SegHash, Hash}, BloomBin) ->
-    SlotSplit = (byte_size(BloomBin) div ?BLOOM_SIZE_BYTES) - 1,
+    SlotSplit = byte_size(BloomBin) div ?BLOOM_SIZE_BYTES,
     {Slot, Hashes} = split_hash(Hash, SlotSplit),
     Mask = get_mask(Hashes),
     Pos = Slot * ?BLOOM_SIZE_BYTES,
@@ -68,9 +75,9 @@ check_hash({_SegHash, Hash}, BloomBin) ->
 %%%============================================================================
 
 split_hash(Hash, SlotSplit) ->
-    Slot = Hash band SlotSplit,
-    H0 = (Hash bsr 4) band (?BAND_MASK),
-    H1 = (Hash bsr 17) band (?BAND_MASK),
+    Slot = (Hash band 255) rem SlotSplit,
+    H0 = (Hash bsr 8) band (?BAND_MASK),
+    H1 = (Hash bsr 20) band (?BAND_MASK),
     {Slot, [H0, H1]}.
 
 get_mask([H0, H1]) ->
@@ -209,6 +216,264 @@ add_hashlist([{_SegHash, TopHash}|T],
                             SlotSplit,
                             S0, S1, S2, S3, S4, S5, S6, S7,
                             S8, S9, S10, S11, S12, S13, S14, S15 bor Mask)
+    end.
+
+
+add_hashlist([], _S, S0, S1, S2, S3, S4, S5, S6, S7,
+                S8, S9, S10, S11, S12, S13, S14, S15,
+                S16, S17, S18, S19, S20, S21, S22, S23,
+                S24, S25, S26, S27, S28, S29, S30, S31) ->
+    IntSize = ?INTEGER_SIZE,
+    <<S0:IntSize/integer, S1:IntSize/integer,
+        S2:IntSize/integer, S3:IntSize/integer,
+        S4:IntSize/integer, S5:IntSize/integer,
+        S6:IntSize/integer, S7:IntSize/integer,
+        S8:IntSize/integer, S9:IntSize/integer,
+        S10:IntSize/integer, S11:IntSize/integer,
+        S12:IntSize/integer, S13:IntSize/integer,
+        S14:IntSize/integer, S15:IntSize/integer,
+        S16:IntSize/integer, S17:IntSize/integer,
+        S18:IntSize/integer, S19:IntSize/integer,
+        S20:IntSize/integer, S21:IntSize/integer,
+        S22:IntSize/integer, S23:IntSize/integer,
+        S24:IntSize/integer, S25:IntSize/integer,
+        S26:IntSize/integer, S27:IntSize/integer,
+        S28:IntSize/integer, S29:IntSize/integer,
+        S30:IntSize/integer, S31:IntSize/integer>>;
+add_hashlist([{_SegHash, TopHash}|T],
+                SlotSplit,
+                S0, S1, S2, S3, S4, S5, S6, S7,
+                S8, S9, S10, S11, S12, S13, S14, S15,
+                S16, S17, S18, S19, S20, S21, S22, S23,
+                S24, S25, S26, S27, S28, S29, S30, S31) ->
+    {Slot, Hashes} = split_hash(TopHash, SlotSplit),
+    Mask = get_mask(Hashes),
+    case Slot of
+        0 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0 bor Mask, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        1 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1 bor Mask, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        2 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2 bor Mask, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        3 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3 bor Mask, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        4 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4 bor Mask, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        5 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5 bor Mask, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        6 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6 bor Mask, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        7 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7 bor Mask,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        8 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8 bor Mask, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        9 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9 bor Mask, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        10 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10 bor Mask, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        11 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11 bor Mask, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        12 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12 bor Mask, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        13 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13 bor Mask, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        14 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14 bor Mask, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        15 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15 bor Mask,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        16 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16 bor Mask, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        17 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17 bor Mask, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        18 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18 bor Mask, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        19 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19 bor Mask, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        20 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20 bor Mask, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        21 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21 bor Mask, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        22 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22 bor Mask, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        23 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23 bor Mask,
+                            S24, S25, S26, S27, S28, S29, S30, S31);
+        24 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24 bor Mask, S25, S26, S27, S28, S29, S30, S31);
+        25 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25 bor Mask, S26, S27, S28, S29, S30, S31);
+        26 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26 bor Mask, S27, S28, S29, S30, S31);
+        27 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27 bor Mask, S28, S29, S30, S31);
+        28 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28 bor Mask, S29, S30, S31);
+        29 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29 bor Mask, S30, S31);
+        30 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30 bor Mask, S31);
+        31 ->
+            add_hashlist(T,
+                            SlotSplit,
+                            S0, S1, S2, S3, S4, S5, S6, S7,
+                            S8, S9, S10, S11, S12, S13, S14, S15,
+                            S16, S17, S18, S19, S20, S21, S22, S23,
+                            S24, S25, S26, S27, S28, S29, S30, S31 bor Mask)
+        
     end.
 
 
