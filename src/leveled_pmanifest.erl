@@ -689,7 +689,7 @@ update_pendingdeletes(ManSQN, Removals, PendingDeletes) ->
 
 -spec update_blooms(list()|manifest_entry(), 
                     list()|manifest_entry(), 
-                    any() 
+                    any()) 
                                                 -> {any(), list()}.
 %% @doc
 %%
