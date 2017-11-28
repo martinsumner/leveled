@@ -226,10 +226,11 @@
     {"SST12",
         {info, "SST Timings for sample_count=~w"
                 ++ " at timing points index_query_time=~w"
-                ++ " lookup_cache_time=~w slot_index_time=~w slot_fetch_time=~w"
+                ++ " lookup_cache_time=~w slot_index_time=~w "
+                ++ " fetch_cache_time=~w slot_fetch_time=~w"
                 ++ " noncached_block_fetch_time=~w"
                 ++ " exiting at points slot_index=~w"
-                ++ " slot_fetch=~w noncached_block_fetch=~w"}},
+                ++ " fetch_cache=~w slot_fetch=~w noncached_block_fetch=~w"}},
     
     
     {"I0001",

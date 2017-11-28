@@ -78,6 +78,7 @@
 -define(TREE_SIZE, 4).
 -define(TIMING_SAMPLECOUNTDOWN, 10000).
 -define(TIMING_SAMPLESIZE, 100).
+-define(CACHE_SIZE, 32).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -142,17 +143,20 @@
                     blockindex_cache,
                     compression_method = native :: press_methods(),
                     timings = no_timing :: sst_timings(),
-                    timings_countdown = 0 :: integer()}).
+                    timings_countdown = 0 :: integer(),
+                    fetch_cache = array:new([{size, ?CACHE_SIZE}])}).
 
 -record(sst_timings, 
                 {sample_count = 0 :: integer(),
                     index_query_time = 0 :: integer(),
                     lookup_cache_time = 0 :: integer(),
                     slot_index_time = 0 :: integer(),
+                    fetch_cache_time = 0 :: integer(),
                     slot_fetch_time = 0 :: integer(),
                     noncached_block_time = 0 :: integer(),
                     lookup_cache_count = 0 :: integer(),
                     slot_index_count = 0 :: integer(),
+                    fetch_cache_count = 0 :: integer(),
                     slot_fetch_count = 0 :: integer(),
                     noncached_block_count = 0 :: integer()}).
 
@@ -672,18 +676,37 @@ fetch(LedgerKey, Hash, State, Timings0) ->
                 _ ->
                     {SW3, Timings3} =
                         update_timings(SW2, Timings2, slot_index, true),
-                    StartPos = Slot#slot_index_value.start_position,
-                    Result = 
-                        check_blocks(PosList,
-                                        State#state.handle,
-                                        StartPos,
-                                        BlockLengths,
-                                        LedgerKey, 
-                                        PressMethod,
-                                        not_present),
-                    {_SW4, Timings4} =
-                        update_timings(SW3, Timings3, slot_fetch, false),
-                    {Result, State, Timings4}
+                    FetchCache = State#state.fetch_cache,
+                    CacheHash = cache_hash(Hash),
+                    case array:get(CacheHash, FetchCache) of 
+                        {LedgerKey, V} ->
+                            {_SW4, Timings4} = 
+                                update_timings(SW3, 
+                                                Timings3, 
+                                                fetch_cache, 
+                                                false),
+                            {{LedgerKey, V}, State, Timings4};
+                        _ ->
+                            StartPos = Slot#slot_index_value.start_position,
+                            Result = 
+                                check_blocks(PosList,
+                                                State#state.handle,
+                                                StartPos,
+                                                BlockLengths,
+                                                LedgerKey, 
+                                                PressMethod,
+                                                not_present),
+                            FetchCache0 = 
+                                array:set(CacheHash, Result, FetchCache),
+                            {_SW4, Timings4} = 
+                                update_timings(SW3, 
+                                                Timings3, 
+                                                slot_fetch, 
+                                                false),
+                            {Result, 
+                                State#state{fetch_cache = FetchCache0}, 
+                                Timings4}
+                    end
             end 
     end.
 
@@ -1471,6 +1494,11 @@ extra_hash({SegHash, _ExtraHash}) when is_integer(SegHash) ->
 extra_hash(NotHash) ->
     NotHash.
 
+cache_hash({_SegHash, ExtraHash}) when is_integer(ExtraHash) ->
+    ExtraHash band (?CACHE_SIZE - 1);
+cache_hash(_NotHash) ->
+    0.
+
 tune_hash(SegHash) ->
     SegHash band 32767.
 
@@ -1810,9 +1838,11 @@ log_timings(Timings) ->
                                 Timings#sst_timings.index_query_time,
                                 Timings#sst_timings.lookup_cache_time,
                                 Timings#sst_timings.slot_index_time,
+                                Timings#sst_timings.fetch_cache_time,
                                 Timings#sst_timings.slot_fetch_time,
                                 Timings#sst_timings.noncached_block_time,
                                 Timings#sst_timings.slot_index_count,
+                                Timings#sst_timings.fetch_cache_count,
                                 Timings#sst_timings.slot_fetch_count,
                                 Timings#sst_timings.noncached_block_count]).
 
@@ -1832,6 +1862,9 @@ update_timings(SW, Timings, Stage, Continue) ->
             slot_index ->
                 SIT = Timings#sst_timings.slot_index_time,
                 Timings#sst_timings{slot_index_time = SIT + Timer};
+            fetch_cache ->
+                FCT = Timings#sst_timings.fetch_cache_time,
+                Timings#sst_timings{fetch_cache_time = FCT + Timer};
             slot_fetch ->
                 SFT = Timings#sst_timings.slot_fetch_time,
                 Timings#sst_timings{slot_fetch_time = SFT + Timer};
@@ -1848,6 +1881,9 @@ update_timings(SW, Timings, Stage, Continue) ->
                     slot_index ->
                         SIC = Timings#sst_timings.slot_index_count,
                         Timings0#sst_timings{slot_index_count = SIC + 1};
+                    fetch_cache ->
+                        FCC = Timings#sst_timings.fetch_cache_count,
+                        Timings0#sst_timings{fetch_cache_count = FCC + 1};
                     slot_fetch ->
                         SFC = Timings#sst_timings.slot_fetch_count,
                         Timings0#sst_timings{slot_fetch_count = SFC + 1};
