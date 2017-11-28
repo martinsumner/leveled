@@ -1495,9 +1495,7 @@ extra_hash(NotHash) ->
     NotHash.
 
 cache_hash({_SegHash, ExtraHash}) when is_integer(ExtraHash) ->
-    ExtraHash band (?CACHE_SIZE - 1);
-cache_hash(_NotHash) ->
-    0.
+    ExtraHash band (?CACHE_SIZE - 1).
 
 tune_hash(SegHash) ->
     SegHash band 32767.
