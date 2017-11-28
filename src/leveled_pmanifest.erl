@@ -72,7 +72,7 @@
                         % deletion was made, and the original Manifest Entry
                     basement :: integer(),
                         % Currently the lowest level (the largest number)
-                    blooms :: dict:dict()
+                    blooms :: any() % actually a dict but OTP 16 compatability
                         % A dictionary mapping PIDs to bloom filters
                     }).      
 
@@ -689,8 +689,8 @@ update_pendingdeletes(ManSQN, Removals, PendingDeletes) ->
 
 -spec update_blooms(list()|manifest_entry(), 
                     list()|manifest_entry(), 
-                    dict:dict()) 
-                                                -> {dict:dict(), list()}.
+                    any() 
+                                                -> {any(), list()}.
 %% @doc
 %%
 %% The manifest is a Pid-> Bloom mappping for every Pid, and this needs to 
