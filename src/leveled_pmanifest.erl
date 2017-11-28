@@ -154,10 +154,12 @@ load_manifest(Manifest, LoadFun, SQNFun) ->
             {L1, SQN1, FileList, LvlBloom} = 
                 load_level(LevelIdx, L0, LoadFun, SQNFun),
             UpdLevels = array:set(LevelIdx, L1, AccMan#manifest.levels),
+            FoldBloomFun = 
+                fun({P, B}, BAcc) -> 
+                    dict:store(P, B, BAcc) 
+                end,
             UpdBlooms = 
-                dict:merge(fun(_K, V, V) -> V end, 
-                                AccMan#manifest.blooms, 
-                                LvlBloom),
+                lists:foldl(FoldBloomFun, AccMan#manifest.blooms, LvlBloom),
             {max(AccMaxSQN, SQN1), 
                 AccMan#manifest{levels = UpdLevels, blooms = UpdBlooms},
                 AccFL ++ FileList}
@@ -503,9 +505,9 @@ levelzero_present(Manifest) ->
     not is_empty(0, array:get(0, Manifest#manifest.levels)).
 
 
--spec check_bloom(manifest(), string(), {integer(), integer()}) -> boolean().
+-spec check_bloom(manifest(), pid(), {integer(), integer()}) -> boolean().
 %% @doc
-%% Check to see if a hahs is present in a manifest entry by using the exported
+%% Check to see if a hash is present in a manifest entry by using the exported
 %% bloom filter
 check_bloom(Manifest, FP, Hash) ->
     case dict:find(FP, Manifest#manifest.blooms) of 
@@ -528,37 +530,37 @@ check_bloom(Manifest, FP, Hash) ->
 
 load_level(LevelIdx, Level, LoadFun, SQNFun) ->
     HigherLevelLoadFun =
-        fun(ME, {L_Out, L_MaxSQN, FileList, BloomD}) ->
+        fun(ME, {L_Out, L_MaxSQN, FileList, BloomL}) ->
             FN = ME#manifest_entry.filename,
             {P, Bloom} = LoadFun(FN),
             SQN = SQNFun(P),
             {[ME#manifest_entry{owner=P}|L_Out], 
                 max(SQN, L_MaxSQN),
                 [FN|FileList],
-                dict:store(FN, Bloom, BloomD)}
+                [{P, Bloom}|BloomL]}
         end,
     LowerLevelLoadFun =
-        fun({EK, ME}, {L_Out, L_MaxSQN, FileList, BloomD}) ->
+        fun({EK, ME}, {L_Out, L_MaxSQN, FileList, BloomL}) ->
             FN = ME#manifest_entry.filename,
             {P, Bloom} = LoadFun(FN),
             SQN = SQNFun(P),
             {[{EK, ME#manifest_entry{owner=P}}|L_Out], 
                 max(SQN, L_MaxSQN),
                 [FN|FileList],
-                dict:store(FN, Bloom, BloomD)}
+                [{P, Bloom}|BloomL]}
         end,
     case LevelIdx =< 1 of
         true ->
-            lists:foldr(HigherLevelLoadFun, {[], 0, [], dict:new()}, Level);
+            lists:foldr(HigherLevelLoadFun, {[], 0, [], []}, Level);
         false ->
-            {L0, MaxSQN, Flist, UpdBloomD} = 
-                lists:foldr(LowerLevelLoadFun,
-                            {[], 0, [], dict:new()},
+            {L0, MaxSQN, Flist, UpdBloomL} = 
+                lists:foldr(LowerLevelLoadFun, 
+                            {[], 0, [], []}, 
                             leveled_tree:to_list(Level)),
             {leveled_tree:from_orderedlist(L0, ?TREE_TYPE, ?TREE_WIDTH), 
                 MaxSQN, 
                 Flist,
-                UpdBloomD}
+                UpdBloomL}
     end.
 
 close_level(LevelIdx, Level, CloseEntryFun) when LevelIdx =< 1 ->
