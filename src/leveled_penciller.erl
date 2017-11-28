@@ -181,7 +181,7 @@
         pcl_checksequencenumber/3,
         pcl_workforclerk/1,
         pcl_manifestchange/2,
-        pcl_confirml0complete/4,
+        pcl_confirml0complete/5,
         pcl_confirmdelete/3,
         pcl_close/1,
         pcl_doom/1,
@@ -439,14 +439,14 @@ pcl_workforclerk(Pid) ->
 pcl_manifestchange(Pid, Manifest) ->
     gen_server:cast(Pid, {manifest_change, Manifest}).
 
--spec pcl_confirml0complete(pid(), string(), tuple(), tuple()) -> ok.
+-spec pcl_confirml0complete(pid(), string(), tuple(), tuple(), binary()) -> ok.
 %% @doc
 %% Allows a SST writer that has written a L0 file to confirm that the file 
 %% is now complete, so the filename and key ranges can be added to the 
 %% manifest and the file can be used in place of the in-memory levelzero
 %% cache.
-pcl_confirml0complete(Pid, FN, StartKey, EndKey) ->
-    gen_server:cast(Pid, {levelzero_complete, FN, StartKey, EndKey}).
+pcl_confirml0complete(Pid, FN, StartKey, EndKey, Bloom) ->
+    gen_server:cast(Pid, {levelzero_complete, FN, StartKey, EndKey, Bloom}).
 
 -spec pcl_confirmdelete(pid(), string(), pid()) -> ok.
 %% @doc
@@ -759,17 +759,18 @@ handle_cast({confirm_delete, Filename, FilePid}, State=#state{is_snapshot=Snap})
             % from the Clerk
             {noreply, State}
     end;
-handle_cast({levelzero_complete, FN, StartKey, EndKey}, State) ->
+handle_cast({levelzero_complete, FN, StartKey, EndKey, Bloom}, State) ->
     leveled_log:log("P0029", []),
     ManEntry = #manifest_entry{start_key=StartKey,
                                 end_key=EndKey,
                                 owner=State#state.levelzero_constructor,
-                                filename=FN},
+                                filename=FN,
+                                bloom=Bloom},
     ManifestSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest) + 1,
     UpdMan = leveled_pmanifest:insert_manifest_entry(State#state.manifest,
-                                                    ManifestSQN,
-                                                    0,
-                                                    ManEntry),
+                                                        ManifestSQN,
+                                                        0,
+                                                        ManEntry),
     % Prompt clerk to ask about work - do this for every L0 roll
     UpdIndex = leveled_pmem:clear_index(State#state.levelzero_index),
     ok = leveled_pclerk:clerk_prompt(State#state.clerk),
@@ -837,7 +838,7 @@ terminate(Reason, State) ->
     L0_Left = State#state.levelzero_size > 0,
     case {State#state.levelzero_pending, L0_Present, L0_Left} of
         {false, false, true} ->
-            L0Pid = roll_memory(State, true),
+            {L0Pid, _L0Bloom} = roll_memory(State, true),
             ok = leveled_sst:sst_close(L0Pid);
         StatusTuple ->
             leveled_log:log("P0010", [StatusTuple])
@@ -911,11 +912,9 @@ start_from_file(PCLopts) ->
     Manifest0 = leveled_pmanifest:open_manifest(RootPath),
     OpenFun =
         fun(FN) ->
-            {ok,
-                Pid,
-                {_FK, _LK}} = 
-                    leveled_sst:sst_open(sst_rootpath(RootPath), FN),
-            Pid
+            {ok, Pid, {_FK, _LK}, Bloom} = 
+                leveled_sst:sst_open(sst_rootpath(RootPath), FN),
+            {Pid, Bloom}
         end,
     SQNFun = fun leveled_sst:sst_getmaxsequencenumber/1,
     {MaxSQN, Manifest1, FileList} = 
@@ -930,12 +929,13 @@ start_from_file(PCLopts) ->
             true ->
                 leveled_log:log("P0015", [L0FN]),
                 L0Open = leveled_sst:sst_open(sst_rootpath(RootPath), L0FN),
-                {ok, L0Pid, {L0StartKey, L0EndKey}} = L0Open,
+                {ok, L0Pid, {L0StartKey, L0EndKey}, Bloom} = L0Open,
                 L0SQN = leveled_sst:sst_getmaxsequencenumber(L0Pid),
                 L0Entry = #manifest_entry{start_key = L0StartKey,
                                             end_key = L0EndKey,
                                             filename = L0FN,
-                                            owner = L0Pid},
+                                            owner = L0Pid,
+                                            bloom = Bloom},
                 Manifest2 = leveled_pmanifest:insert_manifest_entry(Manifest1,
                                                                     ManSQN + 1,
                                                                     0,
@@ -1025,7 +1025,7 @@ update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
             JitterCheck = RandomFactor or CacheMuchTooBig,
             case {CacheTooBig, L0Free, JitterCheck, NoPendingManifestChange} of
                 {true, true, true, true}  ->
-                    L0Constructor = roll_memory(UpdState, false),
+                    {L0Constructor, none} = roll_memory(UpdState, false),
                     leveled_log:log_timer("P0031", [true, true], SW),
                     UpdState#state{levelzero_pending=true,
                                     levelzero_constructor=L0Constructor};
@@ -1063,7 +1063,7 @@ roll_memory(State, false) ->
                                         State#state.ledger_sqn,
                                         State#state.compression_method),
     {ok, Constructor, _} = R,
-    Constructor;
+    {Constructor, none};
 roll_memory(State, true) ->
     ManSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest) + 1,
     RootPath = sst_rootpath(State#state.root_path),
@@ -1077,8 +1077,8 @@ roll_memory(State, true) ->
                             KVList,
                             State#state.ledger_sqn,
                             State#state.compression_method),
-    {ok, Constructor, _} = R,
-    Constructor.
+    {ok, Constructor, _, Bloom} = R,
+    {Constructor, Bloom}.
 
 timed_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, Timings) ->
     SW = os:timestamp(),
@@ -1107,11 +1107,16 @@ fetch(Key, Hash, Manifest, Level, FetchFun) ->
         false ->
             fetch(Key, Hash, Manifest, Level + 1, FetchFun);
         FP ->
-            case FetchFun(FP, Key, Hash, Level) of
-                not_present ->
-                    fetch(Key, Hash, Manifest, Level + 1, FetchFun);
-                ObjectFound ->
-                    {ObjectFound, Level}
+            case leveled_pmanifest:check_bloom(Manifest, FP, Hash) of 
+                true ->
+                    case FetchFun(FP, Key, Hash, Level) of
+                        not_present ->
+                            fetch(Key, Hash, Manifest, Level + 1, FetchFun);
+                        ObjectFound ->
+                            {ObjectFound, Level}
+                    end;
+                false ->
+                    fetch(Key, Hash, Manifest, Level + 1, FetchFun)
             end
     end.
     

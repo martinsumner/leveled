@@ -879,7 +879,7 @@ search_range_idx_test() ->
             {{[{{o_rkv,"Bucket1","Key1",null},
                 {manifest_entry,{o_rkv,"Bucket","Key9083",null},
                                 {o_rkv,"Bucket1","Key1",null},
-                                "<0.320.0>","./16_1_6.sst"}}]},
+                                "<0.320.0>","./16_1_6.sst", none}}]},
                 {1,{{o_rkv,"Bucket1","Key1",null},1,nil,nil}}}},
     StartKeyFun =
         fun(ME) ->

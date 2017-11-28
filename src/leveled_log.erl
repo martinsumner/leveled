@@ -226,9 +226,9 @@
     {"SST12",
         {info, "SST Timings for sample_count=~w"
                 ++ " at timing points index_query_time=~w"
-                ++ " tiny_bloom_time=~w slot_index_time=~w slot_fetch_time=~w"
+                ++ " lookup_cache_time=~w slot_index_time=~w slot_fetch_time=~w"
                 ++ " noncached_block_fetch_time=~w"
-                ++ " exiting at points tiny_bloom=~w slot_index=~w"
+                ++ " exiting at points slot_index=~w"
                 ++ " slot_fetch=~w noncached_block_fetch=~w"}},
     
     
