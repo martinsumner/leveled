@@ -34,17 +34,17 @@ The Put time measurement chart compares the time taken by the Inker to persist t
 
 The time for Head requests is broken down in two ways: the time based on the level of the merge tree from which it was fetched; the timings within the SST file processes themselves.
 
-![](pics/23Nov_HeadTimeChart.png)
+![](pics/23Nov_HeadTimeSplit.png)
 
 The timings for the merge tree are surprisingly high for missing entries (which largely should be covered by bloom filter checks), and there is a surprisingly high gap between the timings for different levels (again given the expected speed of the bloom checks).
 
 This has been improved, first by changing the bloom filter and passing the bloom so that it can be accessed directly without a message pass from the penciller:
 
-![](pics/28Nov_HeadTimeChart.png)
+![](pics/28Nov_HeadTimeSplit.png)
 
 A second improvement was to include a small (32) cache of recently fetched keys in each SST process to be checked before the expensive slot_fetch:
 
-![](pics/29Nov_HeadTimeChart.png)
+![](pics/29Nov_HeadTimeSplit.png)
 
 Within the SST file, the timings are broken down between index_query (the time taken to find the slot in the tree), tiny_bloom (the time taken to check against the bloom filter for that slot), slot_index (the time taken to look up the position in the slot - which may also double as a bloom filter to determine non_presence) and slot_fetch (the time taken to fetch the block from disk and perform binary_to_term and then walk to the position).
 
