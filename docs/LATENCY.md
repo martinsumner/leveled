@@ -38,6 +38,14 @@ The time for Head requests is broken down in two ways: the time based on the lev
 
 The timings for the merge tree are surprisingly high for missing entries (which largely should be covered by bloom filter checks), and there is a surprisingly high gap between the timings for different levels (again given the expected speed of the bloom checks).
 
+This has been improved, first by changing the bloom filter and passing the bloom so that it can be accessed directly without a message pass from the penciller:
+
+![](pics/28Nov_HeadTimeChart.png)
+
+A second improvement was to include a small (32) cache of recently fetched keys in each SST process to be checked before the expensive slot_fetch:
+
+![](pics/29Nov_HeadTimeChart.png)
+
 Within the SST file, the timings are broken down between index_query (the time taken to find the slot in the tree), tiny_bloom (the time taken to check against the bloom filter for that slot), slot_index (the time taken to look up the position in the slot - which may also double as a bloom filter to determine non_presence) and slot_fetch (the time taken to fetch the block from disk and perform binary_to_term and then walk to the position).
 
 ![](pics/23Nov_SSTFetchTimeSplit.png)
@@ -51,5 +59,7 @@ For this test we can also see from the metrics the proportion of Head requests w
 This can also be broken down for each individual SST file request (note that most SST file requests should not find a slot due to the multiple levels).
 
 ![](pics/23Nov_SSTFetchCountSplit.png)
+
+80% of file requests exit after the bloom check.  Very few false positives are discovered after the bloom check in the slot_index check, so 20% of fetch requests to files result in a slot_fetch.
 
 ## Merge Time
