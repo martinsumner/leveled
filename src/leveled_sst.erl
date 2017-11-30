@@ -311,8 +311,8 @@ sst_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
 %% will be placed on the tail of the resulting list if results expand beyond
 %% the Scan Width
 %%
-%% To make the range open-ended (either ta start, end or both) the all atom
-%% can be use din place of the Key tuple.
+%% To make the range open-ended (either to start, end or both) the all atom
+%% can be used in place of the Key tuple.
 sst_getfilteredrange(Pid, StartKey, EndKey, ScanWidth, SegList) ->
     SegList0 = tune_seglist(SegList),
     case gen_fsm:sync_send_event(Pid,
