@@ -231,7 +231,11 @@
                 ++ " noncached_block_fetch_time=~w"
                 ++ " exiting at points slot_index=~w"
                 ++ " fetch_cache=~w slot_fetch=~w noncached_block_fetch=~w"}},
-    
+    {"SST13",
+        {info, "SST merge list build timings of"
+                ++ " fold_toslot=~w slot_hashlist=~w"
+                ++ " slot_serialise=~w slot_finish=~w"
+                ++ " is_basement=~w level=~w"}},
     
     {"I0001",
         {info, "Unexpected failure to fetch value for Key=~w SQN=~w "
