@@ -50,7 +50,7 @@ A second improvement was to include a small (32) cache of recently fetched keys 
 
 It should be noted that the combined overall throughput improvement from these changes is somewhere between 2% and 5%.  So although the difference in the low-level measurements are significant (> 100 microseconds), and the volumes of HEAD requests is high (either 3 or 4 for each transaction) - the final difference is marginal.
 
-## Head Time - File Level
+## Head Time - File Level <a name="FileLevelHead"></a>
 
 Within the SST file, the timings are broken down between index_query (the time taken to find the slot in the tree), tiny_bloom (the time taken to check against the bloom filter for that slot), slot_index (the time taken to look up the position in the slot - which may also double as a bloom filter to determine non_presence) and slot_fetch (the time taken to fetch the block from disk and perform binary_to_term and then walk to the position).
 
@@ -85,3 +85,12 @@ Note that the fetch_pmem process only exists for Level Zero files.  Below Level 
 This indicates that 90% of the time is being spent running merge_lists, which is a CPU intensive process.  Also that CPU intensive process lasts on average for 2s per host every second.  
 
 This test was run on servers with 4 CPU cores (with 8 threads).  Depending on accounting for CPU time, the merge_lists process during merge appears to be consuming somewhere between 25% and 50% of CPU time in thee test.
+
+The merge_lists process includes the time to build the slots (the term_to_binary slots - compare and merge - binary_to_term process).
+
+Looking at the number of files per second (across the cluster)
+ being created at each level - the dominance of Level 1 files can be seen in this equation:
+
+ ![](pics/SSTFilesPerSecondByLevel.png)
+
+ But note the from the [previous section](#FileLevelHead) it can be seen that files found in Level 1 are very rare.  So it would appear that a change that trades off Level 1 value-found time in favour of faster Level 1 file create time would be a good trade off.
