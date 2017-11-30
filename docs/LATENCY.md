@@ -30,13 +30,15 @@ The Put time measurement chart compares the time taken by the Inker to persist t
 
 ![](pics/23Nov_PutTimeSplit.png)  
 
-## Head Time
+## Head Time - Penciller
 
 The time for Head requests is broken down in two ways: the time based on the level of the merge tree from which it was fetched; the timings within the SST file processes themselves.
 
 ![](pics/23Nov_HeadTimeSplit.png)
 
 The timings for the merge tree are surprisingly high for missing entries (which largely should be covered by bloom filter checks), and there is a surprisingly high gap between the timings for different levels (again given the expected speed of the bloom checks).
+
+### Improvements
 
 This has been improved, first by changing the bloom filter and passing the bloom so that it can be accessed directly without a message pass from the penciller:
 
@@ -45,6 +47,10 @@ This has been improved, first by changing the bloom filter and passing the bloom
 A second improvement was to include a small (32) cache of recently fetched keys in each SST process to be checked before the expensive slot_fetch:
 
 ![](pics/29Nov_HeadTimeSplit.png)
+
+It should be noted that the combined overall throughput improvement from these changes is somewhere between 2% and 5%.  So although the difference in the low-level measurements are significant (> 100 microseconds), and the volumes of HEAD requests is high (either 3 or 4 for each transaction) - the final difference is marginal.
+
+## Head Time - File Level
 
 Within the SST file, the timings are broken down between index_query (the time taken to find the slot in the tree), tiny_bloom (the time taken to check against the bloom filter for that slot), slot_index (the time taken to look up the position in the slot - which may also double as a bloom filter to determine non_presence) and slot_fetch (the time taken to fetch the block from disk and perform binary_to_term and then walk to the position).
 
@@ -63,3 +69,19 @@ This can also be broken down for each individual SST file request (note that mos
 80% of file requests exit after the bloom check.  Very few false positives are discovered after the bloom check in the slot_index check, so 20% of fetch requests to files result in a slot_fetch.
 
 ## Merge Time
+
+First metric of interest is the total time (per second) taken for files to be created during the merge process, as reported by the Penciller's Clerk:
+
+![](pics/PerHostTotalFileCreateTime.png)
+
+For Level Zero files there is a breakdown of where this time is spent:
+
+![](pics/Level0CreateTimeSplit.png)
+
+Note that the fetch_pmem process only exists for Level Zero files.  Below Level Zero the files have a more complicated merge_lists process, but not fetch from the penciller memory.  For other SST files, the breakdown between merge_lists and other activity in file creation is:
+
+![](pics/MergeTimeCompare.png)
+
+This indicates that 90% of the time is being spent running merge_lists, which is a CPU intensive process.  Also that CPU intensive process lasts on average for 2s per host every second.  
+
+This test was run on servers with 4 CPU cores (with 8 threads).  Depending on accounting for CPU time, the merge_lists process during merge appears to be consuming somewhere between 25% and 50% of CPU time in thee test.
