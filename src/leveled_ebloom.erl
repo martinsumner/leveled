@@ -560,7 +560,7 @@ test_bloom(N, Runs) ->
         fun(HashList) -> 
             HitOrMissFun = 
                 fun (Entry, {HitL, MissL}) ->
-                    case random:uniform() < 0.5 of
+                    case leveled_rand:uniform() < 0.5 of
                         true -> 
                             {[Entry|HitL], MissL};
                         false ->
