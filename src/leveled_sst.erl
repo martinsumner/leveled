@@ -2294,7 +2294,21 @@ indexed_list_mixedkeys_bitflip_test() ->
     {SK1, _} = lists:nth(10, Keys),
     {EK1, _} = lists:nth(20, Keys),
     O1 = binaryslot_trimmedlist(SlotBin3, SK1, EK1, native),
-    ?assertMatch([], O1).
+    ?assertMatch([], O1),
+    
+    SlotBin4 = flip_byte(SlotBin, 0, 20),
+    SlotBin5 = flip_byte(SlotBin, 20, byte_size(Header) - 20 - 12),
+
+    test_binary_slot(SlotBin4, TestKey1, MH1, not_present),
+    test_binary_slot(SlotBin5, TestKey1, MH1, not_present),
+    ToList4 = binaryslot_tolist(SlotBin4, native),
+    ToList5 = binaryslot_tolist(SlotBin5, native),
+    ?assertMatch([], ToList4),
+    ?assertMatch([], ToList5),
+    O4 = binaryslot_trimmedlist(SlotBin4, SK1, EK1, native),
+    O5 = binaryslot_trimmedlist(SlotBin4, SK1, EK1, native),
+    ?assertMatch([], O4),
+    ?assertMatch([], O5).
 
 
 flip_byte(Binary, Offset, Length) ->
