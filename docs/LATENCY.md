@@ -93,4 +93,18 @@ Looking at the number of files per second (across the cluster)
 
  ![](pics/SSTFilesPerSecondByLevel.png)
 
- But note the from the [previous section](#FileLevelHead) it can be seen that files found in Level 1 are very rare.  So it would appear that a change that trades off Level 1 value-found time in favour of faster Level 1 file create time would be a good trade off.
+ But note the from the [previous section](#FileLevelHead) it can be seen that values found in Level 1 are very rare.  So it would appear that a change that trades off Level 1 value-found time in favour of faster Level 1 file create time would be a good trade off.
+
+ The time spent, specifically in Level 1, on average during the merge_lists part of building the file is:
+
+- fold_toslot: 214.0ms (this is a combination of fetching the slots from the source files and joining, sorting those slots)
+
+- slot_hashlist: 10.9ms (extracting the hashes form the keys and building the slot index)
+
+- slot_serialise: 177.0ms (managing the term_to_binary and compression process for all the blocks)
+
+- slot_finish: 16.7ms (put it all together and take the checksum)
+
+A potential way forward is to remove the compression from Levels 0 and 1.  These levels will make a small fraction of the overall space in any reasonably sized store - so losing compression should not have a major impact on page_cache coverage.  This would reduce both the slot_serialise and fold_toslot delays during merge.  
+
+A downside of removing compression will be the time to complete the CRC check on fetching and serialising.  Initial unit tests indicated this more than doubled.  Trying non-native CRC checks (such as xxHash) didn't change this impact.  However, the side effect seems to have been mitigated by making the CRC check per block (and CRC checking the header separately).  
