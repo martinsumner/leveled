@@ -81,6 +81,7 @@
 -define(CACHE_SIZE, 32).
 -define(BLOCK_LENGTHS_LENGTH, 20).
 -define(FLIPPER32, 4294967295).
+-define(COMPRESS_AT_LEVEL, 2).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -126,7 +127,7 @@
                         size :: integer(),
                         max_sqn :: integer()}).
 
--type press_methods() :: lz4|native.
+-type press_methods() :: lz4|native|none.
 
 %% yield_blockquery is used to detemrine if the work necessary to process a
 %% range query beyond the fetching the slot should be managed from within
@@ -204,7 +205,8 @@ sst_open(RootPath, Filename) ->
 %% lists as merge_lists will not be called.
 sst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod) ->
     {ok, Pid} = gen_fsm:start(?MODULE, [], []),
-    {[], [], SlotList, FK}  = merge_lists(KVList, PressMethod),
+    PressMethod0 = compress_level(Level, PressMethod),
+    {[], [], SlotList, FK}  = merge_lists(KVList, PressMethod0),
     case gen_fsm:sync_send_event(Pid,
                                     {sst_new,
                                         RootPath,
@@ -212,7 +214,7 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod) ->
                                         Level,
                                         {SlotList, FK},
                                         MaxSQN,
-                                        PressMethod},
+                                        PressMethod0},
                                     infinity) of
         {ok, {SK, EK}, Bloom} ->
             {ok, Pid, {SK, EK}, Bloom}
@@ -235,8 +237,9 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod) ->
 sst_new(RootPath, Filename, 
         KVL1, KVL2, IsBasement, Level, 
         MaxSQN, PressMethod) ->
+    PressMethod0 = compress_level(Level, PressMethod),
     {Rem1, Rem2, SlotList, FK} = 
-        merge_lists(KVL1, KVL2, {IsBasement, Level}, PressMethod),
+        merge_lists(KVL1, KVL2, {IsBasement, Level}, PressMethod0),
     case SlotList of
         [] ->
             empty;
@@ -249,7 +252,7 @@ sst_new(RootPath, Filename,
                                                 Level,
                                                 {SlotList, FK},
                                                 MaxSQN,
-                                                PressMethod},
+                                                PressMethod0},
                                             infinity) of
                 {ok, {SK, EK}, Bloom} ->
                     {ok, Pid, {{Rem1, Rem2}, SK, EK}, Bloom}
@@ -267,6 +270,7 @@ sst_new(RootPath, Filename,
 sst_newlevelzero(RootPath, Filename, 
                     Slots, FetchFun, Penciller,
                     MaxSQN, PressMethod) ->
+    PressMethod0 = compress_level(0, PressMethod),
     {ok, Pid} = gen_fsm:start(?MODULE, [], []),
     gen_fsm:send_event(Pid,
                         {sst_newlevelzero,
@@ -276,7 +280,7 @@ sst_newlevelzero(RootPath, Filename,
                             FetchFun,
                             Penciller,
                             MaxSQN,
-                            PressMethod}),
+                            PressMethod0}),
     {ok, Pid, noreply}.
 
 -spec sst_get(pid(), tuple()) -> tuple()|not_present.
@@ -787,6 +791,13 @@ fetch_range(StartKey, EndKey, ScanWidth, SegList, State) ->
                     State#state.compression_method),
     {SlotsToFetchBinList, SlotsToPoint}.
 
+-spec compress_level(integer(), press_methods()) -> press_methods().
+%% @doc
+%% disable compression at higher levels for improved performance
+compress_level(Level, _PressMethod) when Level < ?COMPRESS_AT_LEVEL ->
+    none;
+compress_level(_Level, PressMethod) ->
+    PressMethod.
 
 write_file(RootPath, Filename, SummaryBin, SlotsBin, PressMethod) ->
     SummaryLength = byte_size(SummaryBin),
@@ -832,10 +843,14 @@ read_file(Filename, State) ->
         Bloom}.
 
 gen_fileversion(PressMethod) ->
+    % Native or none can be treated the same once written, as reader 
+    % does not need to know as compression info will be in header of the 
+    % block
     Bit1 = 
         case PressMethod of 
             lz4 -> 1;
-            native -> 0
+            native -> 0;
+            none -> 0
         end,
     Bit1.
 
@@ -945,6 +960,10 @@ serialise_block(Term, lz4) ->
 serialise_block(Term, native) ->
     Bin = term_to_binary(Term, ?BINARY_SETTINGS),
     CRC32 = hmac(Bin),
+    <<Bin/binary, CRC32:32/integer>>;
+serialise_block(Term, none) ->
+    Bin = term_to_binary(Term),
+    CRC32 = hmac(Bin),
     <<Bin/binary, CRC32:32/integer>>.
 
 
@@ -968,8 +987,10 @@ deserialise_block(Bin, PressMethod) ->
 deserialise_checkedblock(Bin, lz4) ->
     {ok, Bin0} = lz4:unpack(Bin),
     binary_to_term(Bin0);
-deserialise_checkedblock(Bin, native) ->
+deserialise_checkedblock(Bin, _Other) ->
+    % native or none can be treated the same
     binary_to_term(Bin).
+
 
 
 -spec hmac(binary()|integer()) -> integer().
