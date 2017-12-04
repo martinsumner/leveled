@@ -54,7 +54,9 @@
                 ++ " with fetch_count=~w"}},
     {"B0017",
         {info, "Fold timing with sample_count=~w and setup_time=~w"}},
-
+    {"B0018",
+        {info, "Positive HEAD responses timed with sample_count=~w and "
+                ++ " pcl_time=~w rsp_time=~w"}},
 
     {"R0001",
         {debug, "Object fold to process batch of ~w objects"}},

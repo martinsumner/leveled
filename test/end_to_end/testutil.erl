@@ -11,6 +11,7 @@
             reset_filestructure/0,
             reset_filestructure/1,
             check_bucket_stats/2,
+            checkhead_forlist/2,
             check_forlist/2,
             check_forlist/3,
             check_formissinglist/2,
@@ -264,6 +265,25 @@ check_forlist(Bookie, ChkList, Log) ->
                     end,
                 ChkList),
     io:format("Fetch check took ~w microseconds checking list of length ~w~n",
+                    [timer:now_diff(os:timestamp(), SW), length(ChkList)]).
+
+checkhead_forlist(Bookie, ChkList) ->
+    SW = os:timestamp(),
+    lists:foreach(fun({_RN, Obj, _Spc}) ->
+                    R = book_riakhead(Bookie,
+                                        Obj#r_object.bucket,
+                                        Obj#r_object.key),
+                    true = case R of
+                                {ok, _Head} ->
+                                    true;
+                                not_found ->
+                                    io:format("Object not found for key ~s~n",
+                                                [Obj#r_object.key]),
+                                    error
+                            end
+                    end,
+                ChkList),
+    io:format("Head check took ~w microseconds checking list of length ~w~n",
                     [timer:now_diff(os:timestamp(), SW), length(ChkList)]).
 
 check_formissinglist(Bookie, ChkList) ->
