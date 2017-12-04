@@ -108,3 +108,5 @@ Looking at the number of files per second (across the cluster)
 A potential way forward is to remove the compression from Levels 0 and 1.  These levels will make a small fraction of the overall space in any reasonably sized store - so losing compression should not have a major impact on page_cache coverage.  This would reduce both the slot_serialise and fold_toslot delays during merge.  
 
 A downside of removing compression will be the time to complete the CRC check on fetching and serialising.  Initial unit tests indicated this more than doubled.  Trying non-native CRC checks (such as xxHash) didn't change this impact.  However, the side effect seems to have been mitigated by making the CRC check per block (and CRC checking the header separately).  
+
+Testing the approach of not compressing L1 in a full-scale test was not successful though.  Although the slot_serialise time dropped significantly, overall performance was worse - almost certainly due to increased disk write activity.
