@@ -81,7 +81,7 @@
 -define(CACHE_SIZE, 32).
 -define(BLOCK_LENGTHS_LENGTH, 20).
 -define(FLIPPER32, 4294967295).
--define(COMPRESS_AT_LEVEL, 2).
+-define(COMPRESS_AT_LEVEL, 1).
 
 -include_lib("eunit/include/eunit.hrl").
 
