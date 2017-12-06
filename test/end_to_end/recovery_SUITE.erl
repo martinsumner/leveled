@@ -153,11 +153,24 @@ aae_bustedjournal(_Config) ->
     ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
     testutil:check_forobject(Bookie1, TestObject),
     GenList = [2],
-    _CLs = testutil:load_objects(20000, GenList, Bookie1, TestObject,
+    _CLs = testutil:load_objects(16000, GenList, Bookie1, TestObject,
                                 fun testutil:generate_objects/2),
     ok = leveled_bookie:book_close(Bookie1),
+
     CDBFiles = testutil:find_journals(RootPath),
     [HeadF|_Rest] = CDBFiles,
+    % Select the file to corrupt before completing the load - so as 
+    % not to corrupt the journal required on startup 
+    {ok, TempB} = leveled_bookie:book_start(StartOpts),
+    % Load the remaining objects which may be reloaded on startup due to 
+    % non-writing of L0
+    _CLsAdd = testutil:load_objects(4000, 
+                                        [16002], 
+                                        TempB, 
+                                        TestObject,
+                                        fun testutil:generate_objects/2),
+    ok = leveled_bookie:book_close(TempB),
+
     io:format("Selected Journal for corruption of ~s~n", [HeadF]),
     testutil:corrupt_journal(RootPath, HeadF, 1000, 2048, 1000),
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts),

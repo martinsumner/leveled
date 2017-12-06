@@ -54,7 +54,9 @@
                 ++ " with fetch_count=~w"}},
     {"B0017",
         {info, "Fold timing with sample_count=~w and setup_time=~w"}},
-
+    {"B0018",
+        {info, "Positive HEAD responses timed with sample_count=~w and "
+                ++ " pcl_time=~w rsp_time=~w"}},
 
     {"R0001",
         {debug, "Object fold to process batch of ~w objects"}},
@@ -226,11 +228,16 @@
     {"SST12",
         {info, "SST Timings for sample_count=~w"
                 ++ " at timing points index_query_time=~w"
-                ++ " tiny_bloom_time=~w slot_index_time=~w slot_fetch_time=~w"
+                ++ " lookup_cache_time=~w slot_index_time=~w "
+                ++ " fetch_cache_time=~w slot_fetch_time=~w"
                 ++ " noncached_block_fetch_time=~w"
-                ++ " exiting at points tiny_bloom=~w slot_index=~w"
-                ++ " slot_fetch=~w noncached_block_fetch=~w"}},
-    
+                ++ " exiting at points slot_index=~w"
+                ++ " fetch_cache=~w slot_fetch=~w noncached_block_fetch=~w"}},
+    {"SST13",
+        {info, "SST merge list build timings of"
+                ++ " fold_toslot=~w slot_hashlist=~w"
+                ++ " slot_serialise=~w slot_finish=~w"
+                ++ " is_basement=~w level=~w"}},
     
     {"I0001",
         {info, "Unexpected failure to fetch value for Key=~w SQN=~w "

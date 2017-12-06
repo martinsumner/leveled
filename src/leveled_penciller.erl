@@ -181,13 +181,15 @@
         pcl_checksequencenumber/3,
         pcl_workforclerk/1,
         pcl_manifestchange/2,
-        pcl_confirml0complete/4,
+        pcl_confirml0complete/5,
         pcl_confirmdelete/3,
         pcl_close/1,
         pcl_doom/1,
         pcl_releasesnapshot/2,
         pcl_registersnapshot/5,
-        pcl_getstartupsequencenumber/1]).
+        pcl_getstartupsequencenumber/1,
+        pcl_checkbloomtest/2,
+        pcl_checkforwork/1]).
 
 -export([
         sst_rootpath/1,
@@ -439,14 +441,14 @@ pcl_workforclerk(Pid) ->
 pcl_manifestchange(Pid, Manifest) ->
     gen_server:cast(Pid, {manifest_change, Manifest}).
 
--spec pcl_confirml0complete(pid(), string(), tuple(), tuple()) -> ok.
+-spec pcl_confirml0complete(pid(), string(), tuple(), tuple(), binary()) -> ok.
 %% @doc
 %% Allows a SST writer that has written a L0 file to confirm that the file 
 %% is now complete, so the filename and key ranges can be added to the 
 %% manifest and the file can be used in place of the in-memory levelzero
 %% cache.
-pcl_confirml0complete(Pid, FN, StartKey, EndKey) ->
-    gen_server:cast(Pid, {levelzero_complete, FN, StartKey, EndKey}).
+pcl_confirml0complete(Pid, FN, StartKey, EndKey, Bloom) ->
+    gen_server:cast(Pid, {levelzero_complete, FN, StartKey, EndKey, Bloom}).
 
 -spec pcl_confirmdelete(pid(), string(), pid()) -> ok.
 %% @doc
@@ -500,6 +502,25 @@ pcl_close(Pid) ->
 %% the calling process which to erase the store).
 pcl_doom(Pid) ->
     gen_server:call(Pid, doom, 60000).
+
+
+-spec pcl_checkbloomtest(pid(), tuple()) -> boolean().
+%% @doc
+%% Function specifically added to help testing.  In particular to make sure 
+%% that blooms are still available after pencllers have been re-loaded from
+%% disk.
+pcl_checkbloomtest(Pid, Key) ->
+    Hash = leveled_codec:segment_hash(Key),
+    if
+        Hash /= no_lookup ->
+            gen_server:call(Pid, {checkbloom_fortest, Key, Hash}, 2000)
+    end.
+
+-spec pcl_checkforwork(pid()) -> boolean().
+%% @doc
+%% Used in test only to confim compaction work complete before closing
+pcl_checkforwork(Pid) ->
+    gen_server:call(Pid, check_for_work, 2000).
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -724,7 +745,28 @@ handle_call(doom, _From, State) ->
     leveled_log:log("P0030", []),
     ManifestFP = State#state.root_path ++ "/" ++ ?MANIFEST_FP ++ "/",
     FilesFP = State#state.root_path ++ "/" ++ ?FILES_FP ++ "/",
-    {stop, normal, {ok, [ManifestFP, FilesFP]}, State}.
+    {stop, normal, {ok, [ManifestFP, FilesFP]}, State};
+handle_call({checkbloom_fortest, Key, Hash}, _From, State) ->
+    Manifest = State#state.manifest,
+    FoldFun = 
+        fun(Level, Acc) ->
+            case Acc of 
+                true ->
+                    true;
+                false ->
+                    case leveled_pmanifest:key_lookup(Manifest, Level, Key) of
+                        false ->
+                            false;
+                        FP ->
+                            leveled_pmanifest:check_bloom(Manifest, FP, Hash)
+                    end
+            end
+        end,
+    {reply, lists:foldl(FoldFun, false, lists:seq(0, ?MAX_LEVELS)), State};
+handle_call(check_for_work, _From, State) ->
+    {_WL, WC} = leveled_pmanifest:check_for_work(State#state.manifest,
+                                                    ?LEVEL_SCALEFACTOR),
+    {reply, WC > 0, State}.
 
 handle_cast({manifest_change, NewManifest}, State) ->
     NewManSQN = leveled_pmanifest:get_manifest_sqn(NewManifest),
@@ -759,17 +801,18 @@ handle_cast({confirm_delete, Filename, FilePid}, State=#state{is_snapshot=Snap})
             % from the Clerk
             {noreply, State}
     end;
-handle_cast({levelzero_complete, FN, StartKey, EndKey}, State) ->
+handle_cast({levelzero_complete, FN, StartKey, EndKey, Bloom}, State) ->
     leveled_log:log("P0029", []),
     ManEntry = #manifest_entry{start_key=StartKey,
                                 end_key=EndKey,
                                 owner=State#state.levelzero_constructor,
-                                filename=FN},
+                                filename=FN,
+                                bloom=Bloom},
     ManifestSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest) + 1,
     UpdMan = leveled_pmanifest:insert_manifest_entry(State#state.manifest,
-                                                    ManifestSQN,
-                                                    0,
-                                                    ManEntry),
+                                                        ManifestSQN,
+                                                        0,
+                                                        ManEntry),
     % Prompt clerk to ask about work - do this for every L0 roll
     UpdIndex = leveled_pmem:clear_index(State#state.levelzero_index),
     ok = leveled_pclerk:clerk_prompt(State#state.clerk),
@@ -837,7 +880,7 @@ terminate(Reason, State) ->
     L0_Left = State#state.levelzero_size > 0,
     case {State#state.levelzero_pending, L0_Present, L0_Left} of
         {false, false, true} ->
-            L0Pid = roll_memory(State, true),
+            {L0Pid, _L0Bloom} = roll_memory(State, true),
             ok = leveled_sst:sst_close(L0Pid);
         StatusTuple ->
             leveled_log:log("P0010", [StatusTuple])
@@ -911,11 +954,9 @@ start_from_file(PCLopts) ->
     Manifest0 = leveled_pmanifest:open_manifest(RootPath),
     OpenFun =
         fun(FN) ->
-            {ok,
-                Pid,
-                {_FK, _LK}} = 
-                    leveled_sst:sst_open(sst_rootpath(RootPath), FN),
-            Pid
+            {ok, Pid, {_FK, _LK}, Bloom} = 
+                leveled_sst:sst_open(sst_rootpath(RootPath), FN),
+            {Pid, Bloom}
         end,
     SQNFun = fun leveled_sst:sst_getmaxsequencenumber/1,
     {MaxSQN, Manifest1, FileList} = 
@@ -930,12 +971,13 @@ start_from_file(PCLopts) ->
             true ->
                 leveled_log:log("P0015", [L0FN]),
                 L0Open = leveled_sst:sst_open(sst_rootpath(RootPath), L0FN),
-                {ok, L0Pid, {L0StartKey, L0EndKey}} = L0Open,
+                {ok, L0Pid, {L0StartKey, L0EndKey}, Bloom} = L0Open,
                 L0SQN = leveled_sst:sst_getmaxsequencenumber(L0Pid),
                 L0Entry = #manifest_entry{start_key = L0StartKey,
                                             end_key = L0EndKey,
                                             filename = L0FN,
-                                            owner = L0Pid},
+                                            owner = L0Pid,
+                                            bloom = Bloom},
                 Manifest2 = leveled_pmanifest:insert_manifest_entry(Manifest1,
                                                                     ManSQN + 1,
                                                                     0,
@@ -1025,7 +1067,7 @@ update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
             JitterCheck = RandomFactor or CacheMuchTooBig,
             case {CacheTooBig, L0Free, JitterCheck, NoPendingManifestChange} of
                 {true, true, true, true}  ->
-                    L0Constructor = roll_memory(UpdState, false),
+                    {L0Constructor, none} = roll_memory(UpdState, false),
                     leveled_log:log_timer("P0031", [true, true], SW),
                     UpdState#state{levelzero_pending=true,
                                     levelzero_constructor=L0Constructor};
@@ -1063,7 +1105,7 @@ roll_memory(State, false) ->
                                         State#state.ledger_sqn,
                                         State#state.compression_method),
     {ok, Constructor, _} = R,
-    Constructor;
+    {Constructor, none};
 roll_memory(State, true) ->
     ManSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest) + 1,
     RootPath = sst_rootpath(State#state.root_path),
@@ -1077,8 +1119,8 @@ roll_memory(State, true) ->
                             KVList,
                             State#state.ledger_sqn,
                             State#state.compression_method),
-    {ok, Constructor, _} = R,
-    Constructor.
+    {ok, Constructor, _, Bloom} = R,
+    {Constructor, Bloom}.
 
 timed_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, Timings) ->
     SW = os:timestamp(),
@@ -1107,11 +1149,16 @@ fetch(Key, Hash, Manifest, Level, FetchFun) ->
         false ->
             fetch(Key, Hash, Manifest, Level + 1, FetchFun);
         FP ->
-            case FetchFun(FP, Key, Hash, Level) of
-                not_present ->
-                    fetch(Key, Hash, Manifest, Level + 1, FetchFun);
-                ObjectFound ->
-                    {ObjectFound, Level}
+            case leveled_pmanifest:check_bloom(Manifest, FP, Hash) of 
+                true ->
+                    case FetchFun(FP, Key, Hash, Level) of
+                        not_present ->
+                            fetch(Key, Hash, Manifest, Level + 1, FetchFun);
+                        ObjectFound ->
+                            {ObjectFound, Level}
+                    end;
+                false ->
+                    fetch(Key, Hash, Manifest, Level + 1, FetchFun)
             end
     end.
     
@@ -1600,6 +1647,21 @@ archive_files_test() ->
     ?assertMatch(true, lists:member("test2.bak", AllFiles)),
     ok = clean_subdir(SSTPath).
 
+shutdown_when_compact(Pid) ->
+    FoldFun = 
+        fun(_I, Ready) ->
+            case Ready of 
+                true -> 
+                    true;
+                false -> 
+                    timer:sleep(200),
+                    not pcl_checkforwork(Pid)
+            end
+        end,
+    true = lists:foldl(FoldFun, false, lists:seq(1, 100)),
+    io:format("No outstanding compaction work for ~w~n", [Pid]),
+    pcl_close(Pid).
+
 simple_server_test() ->
     RootPath = "../test/ledger",
     clean_testdir(RootPath),
@@ -1638,17 +1700,23 @@ simple_server_test() ->
     ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001", null})),
     ?assertMatch(Key2, pcl_fetch(PCL, {o,"Bucket0002", "Key0002", null})),
     ?assertMatch(Key3, pcl_fetch(PCL, {o,"Bucket0003", "Key0003", null})),
-    timer:sleep(200),
-    % This sleep should make sure that the merge to L1 has occurred
-    % This will free up the L0 slot for the remainder to be written in 
-    % shutdown
-    ok = pcl_close(PCL),
+    
+    true = pcl_checkbloomtest(PCL, {o,"Bucket0001", "Key0001", null}),
+    true = pcl_checkbloomtest(PCL, {o,"Bucket0002", "Key0002", null}),
+    true = pcl_checkbloomtest(PCL, {o,"Bucket0003", "Key0003", null}),
+    false = pcl_checkbloomtest(PCL, {o,"Bucket9999", "Key9999", null}),
+    
+    ok = shutdown_when_compact(PCL),
     
     {ok, PCLr} = pcl_start(#penciller_options{root_path=RootPath,
                                                 max_inmemory_tablesize=1000,
                                                 compression_method=native}),
     ?assertMatch(2003, pcl_getstartupsequencenumber(PCLr)),
     % ok = maybe_pause_push(PCLr, [Key2] ++ KL2 ++ [Key3]),
+    true = pcl_checkbloomtest(PCLr, {o,"Bucket0001", "Key0001", null}),
+    true = pcl_checkbloomtest(PCLr, {o,"Bucket0002", "Key0002", null}),
+    true = pcl_checkbloomtest(PCLr, {o,"Bucket0003", "Key0003", null}),
+    false = pcl_checkbloomtest(PCLr, {o,"Bucket9999", "Key9999", null}),
     
     ?assertMatch(Key1, pcl_fetch(PCLr, {o,"Bucket0001", "Key0001", null})),
     ?assertMatch(Key2, pcl_fetch(PCLr, {o,"Bucket0002", "Key0002", null})),

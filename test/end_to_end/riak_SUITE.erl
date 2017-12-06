@@ -54,6 +54,9 @@ crossbucket_aae(_Config) ->
                                 fun testutil:generate_smallobjects/2,
                                 40000),
 
+    %% Check all the objects are found - used to trigger HEAD performance log
+    ok = testutil:checkhead_forlist(Bookie2, lists:nth(1, CLs)),
+
     % Start a new store, and load the same objects (except fot the original
     % test object) into this store
 

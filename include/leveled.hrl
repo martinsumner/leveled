@@ -33,7 +33,8 @@
                         {start_key :: tuple() | undefined,
                          end_key :: tuple() | undefined,
                          owner :: pid()|list(),
-                         filename :: string() | undefined}).
+                         filename :: string() | undefined,
+                         bloom :: binary() | none | undefined}).
 
 -record(cdb_options,
                         {max_size :: integer() | undefined,
