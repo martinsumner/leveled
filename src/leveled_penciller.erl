@@ -200,9 +200,14 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(LEVEL_SCALEFACTOR, [{0, 0}, {1, 8}, {2, 64}, {3, 512},
-                            {4, 4096}, {5, 32768}, {6, 262144},
-                            {7, infinity}]).
+-define(LEVEL_SCALEFACTOR, 
+            [{0, 0}, {1, 4}, {2, 16}, {3, 64}, {4, 512}, 
+                {5, 4096}, {6, 32768}, {7, infinity}]).
+            % As an alternative to going up by a factor of 8 at each level, 
+            % increase by a factor of 4 at young levels - to make early  
+            % compaction jobs shorter.  A trillion keys is still supported
+            % before hitting the infinite level.  At > 10 trillion keys
+            % behaviour may become increasingly difficult to predict.
 -define(MAX_LEVELS, 8).
 -define(MAX_WORK_WAIT, 300).
 -define(MANIFEST_FP, "ledger_manifest").
