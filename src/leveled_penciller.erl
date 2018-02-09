@@ -264,12 +264,14 @@
                         found0_time = 0 :: integer(),
                         found1_time = 0 :: integer(),
                         found2_time = 0 :: integer(),
+                        found3_time = 0 :: integer(),
                         foundlower_time = 0 :: integer(),
                         missed_time = 0 :: integer(),
                         foundmem_count = 0 :: integer(),
                         found0_count = 0 :: integer(),
                         found1_count = 0 :: integer(),
                         found2_count = 0 :: integer(),
+                        found3_count = 0 :: integer(),
                         foundlower_count = 0 :: integer(),
                         missed_count = 0 :: integer()}).
 
@@ -1505,12 +1507,14 @@ log_timings(Timings) ->
                                 Timings#pcl_timings.found0_time,
                                 Timings#pcl_timings.found1_time,
                                 Timings#pcl_timings.found2_time,
+                                Timings#pcl_timings.found3_time,
                                 Timings#pcl_timings.foundlower_time,
                                 Timings#pcl_timings.missed_time,
                                 Timings#pcl_timings.foundmem_count,
                                 Timings#pcl_timings.found0_count,
                                 Timings#pcl_timings.found1_count,
                                 Timings#pcl_timings.found2_count,
+                                Timings#pcl_timings.found3_count,
                                 Timings#pcl_timings.foundlower_count,
                                 Timings#pcl_timings.missed_count]).
 
@@ -1548,6 +1552,10 @@ update_timings(SW, Timings, Result, Stage) ->
             L2T = Timings#pcl_timings.found2_time + Timer,
             L2C = Timings#pcl_timings.found2_count + 1,
             Timings0#pcl_timings{found2_time = L2T, found2_count = L2C};
+        {_, 3} ->
+            L3T = Timings#pcl_timings.found3_time + Timer,
+            L3C = Timings#pcl_timings.found3_count + 1,
+            Timings0#pcl_timings{found3_time = L3T, found3_count = L3C};
         _ ->
             LLT = Timings#pcl_timings.foundlower_time + Timer,
             LLC = Timings#pcl_timings.foundlower_count + 1,
@@ -2012,7 +2020,8 @@ timings_test() ->
     ?assertMatch(3, T2#pcl_timings.sample_count),
     ?assertMatch(true, T2#pcl_timings.foundlower_time > T2#pcl_timings.found2_time),
     ?assertMatch(1, T2#pcl_timings.found2_count),
-    ?assertMatch(2, T2#pcl_timings.foundlower_count).    
+    ?assertMatch(1, T2#pcl_timings.found3_count),
+    ?assertMatch(1, T2#pcl_timings.foundlower_count).    
 
 
 coverage_cheat_test() ->

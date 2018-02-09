@@ -125,10 +125,12 @@
     {"P0032",
         {info, "Fetch head timing with sample_count=~w and level timings of"
                     ++ " foundmem_time=~w found0_time=~w found1_time=~w" 
-                    ++ " found2_time=~w foundlower_time=~w missed_time=~w"
+                    ++ " found2_time=~w found3_time=~w foundlower_time=~w" 
+                    ++ " missed_time=~w"
                     ++ " with counts of"
                     ++ " foundmem_count=~w found0_count=~w found1_count=~w" 
-                    ++ " found2_count=~w foundlower_count=~w missed_count=~w"}},
+                    ++ " found2_count=~w found3_count=~w foundlower_count=~w"
+                    ++ " missed_count=~w"}},
     {"P0033",
         {error, "Corrupted manifest file at path ~s to be ignored "
                     ++ "due to error ~w"}},
