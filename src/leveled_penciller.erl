@@ -201,13 +201,21 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(LEVEL_SCALEFACTOR, 
-            [{0, 0}, {1, 4}, {2, 16}, {3, 64}, {4, 512}, 
-                {5, 4096}, {6, 32768}, {7, infinity}]).
+            [{0, 0}, 
+                {1, 4}, {2, 16}, {3, 64}, % Factor of 4
+                {4, 384}, {5, 2304}, % Factor of 6 
+                {6, 18432}, % Factor of 8 
+                {7, infinity}]).
             % As an alternative to going up by a factor of 8 at each level, 
             % increase by a factor of 4 at young levels - to make early  
-            % compaction jobs shorter.  A trillion keys is still supported
-            % before hitting the infinite level.  At > 10 trillion keys
-            % behaviour may become increasingly difficult to predict.
+            % compaction jobs shorter.
+            %  
+            % There are 32K keys per files => with 4096 files there are 100M
+            % keys supported,
+            
+            % 600M keys is supported before hitting the infinite level.  
+            % At o(10) trillion keys behaviour may become increasingly 
+            % difficult to predict.
 -define(MAX_LEVELS, 8).
 -define(MAX_WORK_WAIT, 300).
 -define(MANIFEST_FP, "ledger_manifest").
