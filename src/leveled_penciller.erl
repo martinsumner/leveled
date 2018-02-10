@@ -1969,7 +1969,7 @@ foldwithimm_simple_test() ->
 create_file_test() ->
     {RP, Filename} = {"../test/", "new_file.sst"},
     ok = file:write_file(filename:join(RP, Filename), term_to_binary("hello")),
-    KVL = lists:usort(generate_randomkeys({10000, 0})),
+    KVL = lists:usort(generate_randomkeys({50000, 0})),
     Tree = leveled_tree:from_orderedlist(KVL, ?CACHE_TYPE),
     FetchFun = fun(Slot) -> lists:nth(Slot, [Tree]) end,
     {ok,
@@ -1979,7 +1979,7 @@ create_file_test() ->
                                                 1,
                                                 FetchFun,
                                                 undefined,
-                                                10000,
+                                                50000,
                                                 native),
     lists:foreach(fun(X) ->
                         case checkready(SP) of
