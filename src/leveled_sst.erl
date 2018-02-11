@@ -1517,10 +1517,13 @@ binaryslot_trimmedlist(FullBin, StartKey, EndKey, PressMethod) ->
 crc_check_slot(FullBin) ->
     <<CRC32PBL:32/integer, 
         PosBL:32/integer, 
-        CRC32H:32/integer, 
-        Header:PosBL/binary, 
-        Blocks/binary>> = FullBin,
-    case {hmac(Header), hmac(PosBL)} of 
+        CRC32H:32/integer,
+        Rest/binary>> = FullBin,
+    PosBL0 = min(PosBL, byte_size(FullBin) - 3), 
+        % If the position has been bit-flipped to beyond the maximum paossible
+        % length, use the maximum possible length
+    <<Header:PosBL0/binary, Blocks/binary>> = Rest,
+    case {hmac(Header), hmac(PosBL0)} of 
         {CRC32H, CRC32PBL} ->
             {Header, Blocks};
         _ ->
