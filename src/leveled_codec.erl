@@ -62,6 +62,7 @@
         get_size/2,
         get_keyandobjhash/2,
         idx_indexspecs/5,
+        obj_objectspecs/3,
         aae_indexspecs/6,
         generate_uuid/0,
         integer_now/0,
@@ -222,7 +223,7 @@ from_ledgerkey({?IDX_TAG, ?ALL_BUCKETS, {_IdxFld, IdxVal}, {Bucket, Key}}) ->
     {Bucket, Key, IdxVal};
 from_ledgerkey({?IDX_TAG, Bucket, {_IdxFld, IdxVal}, Key}) ->
     {Bucket, Key, IdxVal};
-from_ledgerkey({_Tag, Bucket, Key, null}) ->
+from_ledgerkey({_Tag, Bucket, Key, _SubKey}) ->
     {Bucket, Key}.
 
 to_ledgerkey(Bucket, Key, Tag, Field, Value) when Tag == ?IDX_TAG ->
@@ -230,6 +231,9 @@ to_ledgerkey(Bucket, Key, Tag, Field, Value) when Tag == ?IDX_TAG ->
 
 to_ledgerkey(Bucket, Key, Tag) ->
     {Tag, Bucket, Key, null}.
+
+to_ledgerkey(Bucket, Key, Tag, SubKey) ->
+        {Tag, Bucket, Key, SubKey}.
 
 %% Return the Key, Value and Hash Option for this object.  The hash option
 %% indicates whether the key would ever be looked up directly, and so if it
@@ -404,6 +408,8 @@ split_inkvalue(VBin) when is_binary(VBin) ->
 
 check_forinkertype(_LedgerKey, delete) ->
     ?INKT_TOMB;
+check_forinkertype(_LedgerKey, head_only) ->
+    ?INKT_MPUT;
 check_forinkertype(_LedgerKey, _Object) ->
     ?INKT_STND.
 
@@ -423,6 +429,14 @@ endkey_passed({EK1, EK2, EK3, null}, {CK1, CK2, CK3, _}) ->
     {EK1, EK2, EK3} < {CK1, CK2, CK3};
 endkey_passed(EndKey, CheckingKey) ->
     EndKey < CheckingKey.
+
+
+obj_objectspecs(ObjectSpecs, SQN, TTL) ->
+    lists:map(fun({IdxOp, Bucket, Key, SubKey, Value}) ->
+                    gen_headspec(Bucket, Key, IdxOp, SubKey, Value, SQN, TTL)
+                end,
+                ObjectSpecs).
+
 
 idx_indexspecs(IndexSpecs, Bucket, Key, SQN, TTL) ->
     lists:map(
@@ -457,6 +471,19 @@ gen_indexspec(Bucket, Key, IdxOp, IdxField, IdxTerm, SQN, TTL) ->
                             IdxTerm),
                 {SQN, Status, no_lookup, null}}
     end.
+
+gen_headspec(Bucket, Key, IdxOp, SubKey, Value, SQN, TTL) ->
+    Status =
+        case IdxOp of
+            add ->
+                {active, TTL};
+            remove ->
+                %% TODO: timestamps for delayed reaping 
+                tomb
+        end,
+    {to_ledgerkey(Bucket, Key, ?HEAD_TAG, SubKey),
+        {SQN, Status, no_lookup, Value}}.
+
 
 -spec aae_indexspecs(false|recent_aae(),
                                 any(), any(),
@@ -611,7 +638,9 @@ get_size(PK, Value) ->
             Size;
         ?STD_TAG ->
             {_Hash, Size} = MD,
-            Size
+            Size;
+        ?HEAD_TAG ->
+            0
     end.
 
 -spec get_keyandobjhash(tuple(), tuple()) -> tuple().
@@ -641,12 +670,14 @@ get_objhash(Tag, ObjMetaData) ->
         
 
 build_metadata_object(PrimaryKey, MD) ->
-    {Tag, _Bucket, _Key, null} = PrimaryKey,
+    {Tag, _Bucket, _Key, _SubKey} = PrimaryKey,
     case Tag of
         ?RIAK_TAG ->
             {SibData, Vclock, _Hash, _Size} = MD,
             riak_metadata_to_binary(Vclock, SibData);
         ?STD_TAG ->
+            MD;
+        ?HEAD_TAG ->
             MD
     end.
 

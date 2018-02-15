@@ -51,6 +51,8 @@
         book_put/5,
         book_put/6,
         book_tempput/7,
+        book_mput/2,
+        book_mput/3,
         book_delete/4,
         book_get/3,
         book_get/4,
@@ -60,6 +62,7 @@
         book_snapshot/4,
         book_compactjournal/2,
         book_islastcompactionpending/1,
+        book_trimjournal/1,
         book_close/1,
         book_destroy/1]).
 
@@ -85,6 +88,7 @@
 -define(COMPRESSION_POINT, on_receipt).
 -define(TIMING_SAMPLESIZE, 100).
 -define(TIMING_SAMPLECOUNTDOWN, 10000).
+-define(DUMMY, dummy). % Dummy key used for mput operations
 
 -record(ledger_cache, {mem :: ets:tab(),
                         loader = leveled_tree:empty(?CACHE_TYPE)
@@ -101,6 +105,9 @@
                 ledger_cache = #ledger_cache{},
                 is_snapshot :: boolean() | undefined,
                 slow_offer = false :: boolean(),
+
+                head_only = false :: boolean(),
+
                 put_countdown = 0 :: integer(),
                 get_countdown = 0 :: integer(),
                 fold_countdown = 0 :: integer(),
@@ -310,6 +317,28 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) ->
                     infinity).
 
 
+-spec book_mput(pid(), list(tuple())) -> ok|pause.
+%% @doc
+%%
+%% When the store is being run in head_only mode, batches fo object specs may
+%% be inserted in to the store using book_mput/2.  ObjectSpecs should be 
+%% of the form {ObjectOp, Bucket, Key, SubKey, Value}.  The Value will be 
+%% stored within the HEAD of the object (in the Ledger), so the full object 
+%% is retrievable using a HEAD request.  The ObjectOp is either add or remove.
+book_mput(Pid, ObjectSpecs) ->
+    book_mput(Pid, ObjectSpecs, infinity).
+
+-spec book_mput(pid(), list(tuple()), infinity|integer()) -> ok|pause.
+%% @doc
+%%
+%% When the store is being run in head_only mode, batches fo object specs may
+%% be inserted in to the store using book_mput/2.  ObjectSpecs should be 
+%% of the form {action, {Bucket, Key, SubKey, Value}}.  The Value will be 
+%% stored within the HEAD of the object (in the Ledger), so the full object 
+%% is retrievable using a HEAD request.
+book_mput(Pid, ObjectSpecs, TTL) ->
+    gen_server:call(Pid, {mput, ObjectSpecs, TTL}, infinity).
+
 -spec book_delete(pid(), any(), any(), list()) -> ok|pause.
 
 %% @doc 
@@ -419,6 +448,7 @@ book_snapshot(Pid, SnapType, Query, LongRunning) ->
 
 -spec book_compactjournal(pid(), integer()) -> ok.
 -spec book_islastcompactionpending(pid()) -> boolean().
+-spec book_trimjournal(pid()) -> ok.
 
 %% @doc Call for compaction of the Journal
 %%
@@ -433,6 +463,13 @@ book_compactjournal(Pid, Timeout) ->
 book_islastcompactionpending(Pid) ->
     gen_server:call(Pid, confirm_compact, infinity).
 
+%% @doc Trim the journal when in head_only mode
+%%
+%% In head_only mode the journlacna be trimmed of entries which are before the 
+%% persisted SQN.  This is much quicker than compacting the journal
+
+book_trimjournal(Pid) ->
+    gen_server:call(Pid, trim, infinity).
 
 -spec book_close(pid()) -> ok.
 -spec book_destroy(pid()) -> ok.
@@ -474,6 +511,8 @@ init([Opts]) ->
                                     limit_minutes = LimitMinutes,
                                     unit_minutes = UnitMinutes}
                 end,
+            
+            HeadOnly = get_opt(head_only, Opts, false),
 
             {Inker, Penciller} = 
                 startup(InkerOpts, PencillerOpts, RecentAAE),
@@ -485,7 +524,8 @@ init([Opts]) ->
                         cache_size=CacheSize,
                         recent_aae=RecentAAE,
                         ledger_cache=#ledger_cache{mem = NewETS},
-                        is_snapshot=false}};
+                        is_snapshot=false,
+                        head_only=HeadOnly}};
         Bookie ->
             {ok, Penciller, Inker} = 
                 book_snapshot(Bookie, store, undefined, true),
@@ -496,7 +536,8 @@ init([Opts]) ->
     end.
 
 
-handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State) ->
+handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State)
+                                        when State#state.head_only == false ->
     LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
     SW0 = os:timestamp(),
     {ok, SQN, ObjSize} = leveled_inker:ink_put(State#state.inker,
@@ -541,7 +582,34 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State) ->
                                     put_countdown = CountDown,
                                     slow_offer = true}}
     end;
-handle_call({get, Bucket, Key, Tag}, _From, State) ->
+handle_call({mput, ObjectSpecs, TTL}, From, State) 
+                                        when State#state.head_only == true ->
+    {ok, SQN} = 
+        leveled_inker:ink_mput(State#state.inker, dummy, {ObjectSpecs, TTL}),
+    Changes = 
+        preparefor_ledgercache(?INKT_MPUT, ?DUMMY, 
+                                SQN, null, length(ObjectSpecs), 
+                                {ObjectSpecs, TTL}, 
+                                false),
+    Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
+    case State#state.slow_offer of
+        true ->
+            gen_server:reply(From, pause);
+        false ->
+            gen_server:reply(From, ok)
+    end,
+    case maybepush_ledgercache(State#state.cache_size,
+                                    Cache0,
+                                    State#state.penciller) of
+        {ok, NewCache} ->
+            {noreply, State#state{ledger_cache = NewCache,
+                                    slow_offer = false}};
+        {returned, NewCache} ->
+            {noreply, State#state{ledger_cache = NewCache,
+                                    slow_offer = true}}
+    end;
+handle_call({get, Bucket, Key, Tag}, _From, State) 
+                                        when State#state.head_only == false ->
     LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
     SWh = os:timestamp(),
     HeadResult = 
@@ -586,7 +654,11 @@ handle_call({get, Bucket, Key, Tag}, _From, State) ->
         update_statetimings(get, Timings2, State#state.get_countdown),
     {reply, Reply, State#state{get_timings = Timings, 
                                 get_countdown = CountDown}};
-handle_call({head, Bucket, Key, Tag}, _From, State) ->
+handle_call({head, Bucket, Key, Tag}, _From, State)
+                                        when State#state.head_only == false ->
+    % Head requests are not possible when the status is head_only, as head_only
+    % objects are only retrievable via folds not direct object access (there 
+    % is no hash generated for the objects to accelerate lookup)
     SWp = os:timestamp(),
     LK = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
     case fetch_head(LK, State#state.penciller, State#state.ledger_cache) of
@@ -634,17 +706,24 @@ handle_call({return_runner, QueryType}, _From, State) ->
         update_statetimings(fold, Timings1, State#state.fold_countdown),
     {reply, Runner, State#state{fold_timings = Timings, 
                                 fold_countdown = CountDown}};
-handle_call({compact_journal, Timeout}, _From, State) ->
+handle_call({compact_journal, Timeout}, _From, State)
+                                        when State#state.head_only == false ->
     ok = leveled_inker:ink_compactjournal(State#state.inker,
                                             self(),
                                             Timeout),
     {reply, ok, State};
-handle_call(confirm_compact, _From, State) ->
+handle_call(confirm_compact, _From, State)
+                                        when State#state.head_only == false ->
     {reply, leveled_inker:ink_compactionpending(State#state.inker), State};
+handle_call(trim, _From, State) when State#state.head_only == true ->
+    PSQN = leveled_penciller:pcl_persistedsqn(State#state.penciller),
+    {reply, leveled_inker:ink_trim(State#state.inker, PSQN), State};
 handle_call(close, _From, State) ->
     {stop, normal, ok, State};
 handle_call(destroy, _From, State=#state{is_snapshot=Snp}) when Snp == false ->
-    {stop, destroy, ok, State}.
+    {stop, destroy, ok, State};
+handle_call(Msg, _From, State) ->
+    {reply, {unsupported_message, element(1, Msg)}, State}.
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -1118,6 +1197,9 @@ fetch_head(Key, Penciller, LedgerCache) ->
     end.
 
 
+preparefor_ledgercache(?INKT_MPUT, ?DUMMY, SQN, _O, _S, {ObjSpecs, TTL}, _A) ->
+    ObjChanges = leveled_codec:obj_objectspecs(ObjSpecs, SQN, TTL),
+    {no_lookup, SQN, ObjChanges};
 preparefor_ledgercache(?INKT_KEYD,
                         LedgerKey, SQN, _Obj, _Size, {IdxSpecs, TTL},
                         _AAE) ->

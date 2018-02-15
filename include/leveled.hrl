@@ -5,9 +5,14 @@
 -define(STD_TAG, o).
 %% Tag used for secondary index keys
 -define(IDX_TAG, i).
+%% Tag used for head-only objects
+-define(HEAD_TAG, h).
 
 %% Inker key type used for 'normal' objects
 -define(INKT_STND, stnd). 
+
+%% Inker key type used for 'batch' objects
+-define(INKT_MPUT, mput).
 
 %% Inker key type used for objects which contain no value, only key changes
 %% This is used currently for objects formed under a 'retain' strategy on Inker

@@ -14,6 +14,7 @@
         append_lastkey/3,
         remove_entry/2,
         find_entry/2,
+        find_persistedentries/2,
         head_entry/1,
         to_list/1,
         from_list/1,
@@ -21,7 +22,6 @@
         writer/3,
         printer/1,
         complete_filex/0
-        
         ]).         
 
 -define(MANIFEST_FILEX, "man").
@@ -106,9 +106,26 @@ find_entry(SQN, [{SQNMarker, SubL}|_Tail]) when SQN >= SQNMarker ->
 find_entry(SQN, [_TopEntry|Tail]) ->
     find_entry(SQN, Tail).
 
+-spec find_persistedentries(integer(), manifest()) -> list(manifest_entry()).
+%% @doc
+%% Find the entries in the manifest where all items are < than the persisted
+%% SQN in the ledger
+find_persistedentries(SQN, Manifest) ->
+    DropFun = 
+        fun({ME_SQN, _FN, _ME_P, _LK}) ->
+            ME_SQN > SQN
+        end,
+    Entries = lists:dropwhile(DropFun, to_list(Manifest)),
+    case Entries of 
+        [_Head|Tail] ->
+            Tail;
+        [] ->
+            []
+    end.
+
 -spec head_entry(manifest()) -> manifest_entry().
 %% @doc
-%% Return the head manifets entry (the most recent journal)
+%% Return the head manifest entry (the most recent journal)
 head_entry(Manifest) ->
     [{_SQNMarker, SQNL}|_Tail] = Manifest,
     [HeadEntry|_SQNL_Tail] = SQNL,
@@ -238,6 +255,17 @@ buildfromend_test() ->
     Man0 = lists:foldr(FoldFun, [], ManL),
     test_testmanifest(Man0),
     ?assertMatch(ManL, to_list(Man0)).
+
+findpersisted_test() ->
+    Man = from_list(build_testmanifest_aslist()),
+    FilesToDelete1 = find_persistedentries(2001, Man),
+    ?assertMatch(2, length(FilesToDelete1)),
+    FilesToDelete2 = find_persistedentries(3000, Man),
+    ?assertMatch(3, length(FilesToDelete2)),
+    FilesToDelete3 = find_persistedentries(2999, Man),
+    ?assertMatch(2, length(FilesToDelete3)),
+    FilesToDelete4 = find_persistedentries(999, Man),
+    ?assertMatch([], FilesToDelete4).
 
 buildrandomfashion_test() ->
     ManL0 = build_testmanifest_aslist(),

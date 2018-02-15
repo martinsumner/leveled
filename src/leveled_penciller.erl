@@ -189,7 +189,8 @@
         pcl_registersnapshot/5,
         pcl_getstartupsequencenumber/1,
         pcl_checkbloomtest/2,
-        pcl_checkforwork/1]).
+        pcl_checkforwork/1,
+        pcl_persistedsqn/1]).
 
 -export([
         sst_rootpath/1,
@@ -504,6 +505,14 @@ pcl_registersnapshot(Pid, Snapshot, Query, BookiesMem, LR) ->
 pcl_releasesnapshot(Pid, Snapshot) ->
     gen_server:cast(Pid, {release_snapshot, Snapshot}).
 
+
+-spec pcl_persistedsqn(pid()) -> integer().
+%% @doc
+%% Return the persisted SQN, the highest SQN which has been persisted into the 
+%% Ledger
+pcl_persistedsqn(Pid) ->
+    gen_server:call(Pid, persisted_sqn, infinity).
+
 -spec pcl_close(pid()) -> ok.
 %% @doc
 %% Close the penciller neatly, trying to persist to disk anything in the memory
@@ -781,7 +790,9 @@ handle_call({checkbloom_fortest, Key, Hash}, _From, State) ->
 handle_call(check_for_work, _From, State) ->
     {_WL, WC} = leveled_pmanifest:check_for_work(State#state.manifest,
                                                     ?LEVEL_SCALEFACTOR),
-    {reply, WC > 0, State}.
+    {reply, WC > 0, State};
+handle_call(persisted_sqn, _From, State) ->
+    {reply, State#state.persisted_sqn, State}.
 
 handle_cast({manifest_change, NewManifest}, State) ->
     NewManSQN = leveled_pmanifest:get_manifest_sqn(NewManifest),

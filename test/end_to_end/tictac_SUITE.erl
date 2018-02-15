@@ -8,7 +8,8 @@
             recent_aae_noaae/1,
             recent_aae_allaae/1,
             recent_aae_bucketaae/1,
-            recent_aae_expiry/1
+            recent_aae_expiry/1,
+            basic_headonly/1
             ]).
 
 all() -> [
@@ -17,7 +18,8 @@ all() -> [
             recent_aae_noaae,
             recent_aae_allaae,
             recent_aae_bucketaae,
-            recent_aae_expiry
+            recent_aae_expiry,
+            basic_headonly
             ].
 
 -define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
@@ -1008,6 +1010,81 @@ recent_aae_expiry(_Config) ->
     ok = leveled_bookie:book_close(Book1A),
 
     true = length(DL4_0) == 0.
+
+
+basic_headonly(_Config) ->
+    % Load some AAE type objects into Leveled using the read_only mode.  This
+    % should allow for the items to be added in batches.  Confirm that the 
+    % journal is garbage collected as expected, and that it is possible to 
+    % perform a fold_heads style query 
+    ObjectCount = 100000,
+
+    RootPathHO = testutil:reset_filestructure("testHO"),
+    StartOpts1 = [{root_path, RootPathHO},
+                    {max_pencillercachesize, 16000},
+                    {sync_strategy, sync},
+                    {head_only, true}],
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+    {B1, K1, V1, S1, MD} = {"Bucket",
+                                "Key1.1.4567.4321",
+                                "Value1",
+                                [],
+                                [{"MDK1", "MDV1"}]},
+    {TestObject, TestSpec} = testutil:generate_testobject(B1, K1, V1, S1, MD),
+    {unsupported_message, put} = 
+        testutil:book_riakput(Bookie1, TestObject, TestSpec),
+    
+    ObjectSpecFun =
+        fun(Op) -> 
+            fun(N) ->
+                Bucket = <<"B", N:32/integer>>,
+                Key = <<"K", N:32/integer>>,
+                <<SegmentID:20/integer, _RestBS/bitstring>> = 
+                    crypto:hash(md5, term_to_binary({Bucket, Key})),
+                <<Hash:32/integer, _RestBN/bitstring>> =
+                    crypto:hash(md5, <<N:32/integer>>),
+                {Op, <<SegmentID:32/integer>>, Bucket, Key, Hash}
+            end 
+        end,
+    
+    ObjectSpecL = lists:map(ObjectSpecFun(add), lists:seq(1, ObjectCount)),
+    ok = load_objectspecs(ObjectSpecL, 32, Bookie1),
+
+    FoldFun = 
+        fun(_B, _K, V, {HashAcc, CountAcc}) ->
+            {HashAcc bxor V, CountAcc + 1}
+        end,
+    InitAcc = {0, 0},
+
+    RunnerDefinition = 
+        {foldheads_allkeys, h, {FoldFun, InitAcc}, false, false, false},
+    {async, Runner1} = 
+        leveled_bookie:book_returnfolder(Bookie1, RunnerDefinition),
+
+    SW1 = os:timestamp(),
+    {AccH1, AccC1} = Runner1(),
+    io:format("AccH and AccC of ~w ~w in ~w microseconds ~n", 
+                [AccH1, AccC1, timer:now_diff(os:timestamp(), SW1)]),
+
+    true = AccC1 == ObjectCount, 
+
+    ok = leveled_bookie:book_close(Bookie1).
+
+
+load_objectspecs([], _SliceSize, _Bookie) ->
+    ok;
+load_objectspecs(ObjectSpecL, SliceSize, Bookie) 
+                                    when length(ObjectSpecL) < SliceSize ->
+    load_objectspecs(ObjectSpecL, length(ObjectSpecL), Bookie);
+load_objectspecs(ObjectSpecL, SliceSize, Bookie) ->
+    {Head, Tail} = lists:split(SliceSize, ObjectSpecL),
+    case leveled_bookie:book_mput(Bookie, Head) of
+        ok ->
+            load_objectspecs(Tail, SliceSize, Bookie);
+        pause ->
+            timer:sleep(10),
+            load_objectspecs(Tail, SliceSize, Bookie)
+    end.
 
 
 

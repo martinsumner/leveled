@@ -82,6 +82,7 @@
         clerk_new/1,
         clerk_compact/7,
         clerk_hashtablecalc/3,
+        clerk_trim/3,
         clerk_stop/1,
         code_change/3]).      
 
@@ -143,6 +144,12 @@ clerk_compact(Pid, Checker, InitiateFun, CloseFun, FilterFun, Inker, TimeO) ->
                     FilterFun,
                     Inker,
                     TimeO}).
+
+-spec clerk_trim(pid(), pid(), integer()) -> ok.
+%% @doc
+%% Trim the Inker back to the persisted SQN
+clerk_trim(Pid, Inker, PersistedSQN) ->
+    gen_server:cast(Pid, {trim, Inker, PersistedSQN}).
 
 -spec clerk_hashtablecalc(ets:tid(), integer(), pid()) -> ok.
 %% @doc
@@ -235,6 +242,12 @@ handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Inker, _TO},
             ok = CloseFun(FilterServer),
             {noreply, State}
     end;
+handle_cast({trim, Inker, PersistedSQN}, State) ->
+    [_Active|Manifest] = leveled_inker:ink_getmanifest(Inker),
+    FilesToDelete = 
+        leveled_imanifest:find_persistedentries(PersistedSQN, Manifest),
+    ok = update_inker(Inker, [], FilesToDelete),
+    {noreply, State};
 handle_cast({hashtable_calc, HashTree, StartPos, CDBpid}, State) ->
     {IndexList, HashTreeBin} = leveled_cdb:hashtable_calc(HashTree, StartPos),
     ok = leveled_cdb:cdb_returnhashtable(CDBpid, IndexList, HashTreeBin),
@@ -527,7 +540,7 @@ update_inker(Inker, ManifestSlice, FilesToDelete) ->
                                                         Inker)
                         end,
                     FilesToDelete),
-                    ok.
+    ok.
 
 compact_files(BestRun, CDBopts, FilterFun, FilterServer, 
                                             MaxSQN, RStrategy, PressMethod) ->

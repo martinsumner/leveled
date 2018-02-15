@@ -553,17 +553,19 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
                                                             SQN),
                             case InJournal of
                                 probably ->
-                                    ProxyObj = make_proxy_object(LK, JK,
-                                                                  MD, V,
-                                                                  InkerClone),
+                                    ProxyObj = 
+                                        make_proxy_object(Tag, 
+                                                            LK, JK, MD, V,
+                                                            InkerClone),
                                     FoldObjectsFun(B, K, ProxyObj, Acc);
                                 missing ->
                                     Acc
                             end;
                         {true, false} ->
-                            ProxyObj = make_proxy_object(LK, JK,
-                                                          MD, V,
-                                                          InkerClone),
+                            ProxyObj = 
+                                make_proxy_object(Tag, 
+                                                    LK, JK, MD, V,
+                                                    InkerClone),
                             FoldObjectsFun(B, K, ProxyObj, Acc);
                         false ->
                             R = leveled_bookie:fetch_value(InkerClone, JK),
@@ -581,7 +583,10 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
         end,
     AccFun.
 
-make_proxy_object(LK, JK, MD, V, InkerClone) ->
+
+make_proxy_object(?HEAD_TAG, _LK, _JK, MD, _V, _InkerClone) ->
+    MD;
+make_proxy_object(_Tag, LK, JK, MD, V, InkerClone) ->
     Size = leveled_codec:get_size(LK, V),
     MDBin = leveled_codec:build_metadata_object(LK, MD),
     term_to_binary({proxy_object,
