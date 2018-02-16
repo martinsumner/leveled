@@ -654,11 +654,7 @@ handle_call({get, Bucket, Key, Tag}, _From, State)
         update_statetimings(get, Timings2, State#state.get_countdown),
     {reply, Reply, State#state{get_timings = Timings, 
                                 get_countdown = CountDown}};
-handle_call({head, Bucket, Key, Tag}, _From, State)
-                                        when State#state.head_only == false ->
-    % Head requests are not possible when the status is head_only, as head_only
-    % objects are only retrievable via folds not direct object access (there 
-    % is no hash generated for the objects to accelerate lookup)
+handle_call({head, Bucket, Key, Tag}, _From, State)  ->
     SWp = os:timestamp(),
     LK = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
     case fetch_head(LK, State#state.penciller, State#state.ledger_cache) of

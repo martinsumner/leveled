@@ -106,16 +106,16 @@ find_entry(SQN, [{SQNMarker, SubL}|_Tail]) when SQN >= SQNMarker ->
 find_entry(SQN, [_TopEntry|Tail]) ->
     find_entry(SQN, Tail).
 
--spec find_persistedentries(integer(), manifest()) -> list(manifest_entry()).
+-spec find_persistedentries(integer(), list()) -> list(manifest_entry()).
 %% @doc
 %% Find the entries in the manifest where all items are < than the persisted
 %% SQN in the ledger
-find_persistedentries(SQN, Manifest) ->
+find_persistedentries(SQN, ManifestAsList) ->
     DropFun = 
         fun({ME_SQN, _FN, _ME_P, _LK}) ->
             ME_SQN > SQN
         end,
-    Entries = lists:dropwhile(DropFun, to_list(Manifest)),
+    Entries = lists:dropwhile(DropFun, ManifestAsList),
     case Entries of 
         [_Head|Tail] ->
             Tail;
@@ -258,13 +258,13 @@ buildfromend_test() ->
 
 findpersisted_test() ->
     Man = from_list(build_testmanifest_aslist()),
-    FilesToDelete1 = find_persistedentries(2001, Man),
+    FilesToDelete1 = find_persistedentries(2001, to_list(Man)),
     ?assertMatch(2, length(FilesToDelete1)),
-    FilesToDelete2 = find_persistedentries(3000, Man),
+    FilesToDelete2 = find_persistedentries(3000, to_list(Man)),
     ?assertMatch(3, length(FilesToDelete2)),
-    FilesToDelete3 = find_persistedentries(2999, Man),
+    FilesToDelete3 = find_persistedentries(2999, to_list(Man)),
     ?assertMatch(2, length(FilesToDelete3)),
-    FilesToDelete4 = find_persistedentries(999, Man),
+    FilesToDelete4 = find_persistedentries(999, to_list(Man)),
     ?assertMatch([], FilesToDelete4).
 
 buildrandomfashion_test() ->

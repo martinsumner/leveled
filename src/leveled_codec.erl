@@ -98,6 +98,9 @@ segment_hash(Key) when is_binary(Key) ->
 segment_hash({?RIAK_TAG, Bucket, Key, null}) 
                                     when is_binary(Bucket), is_binary(Key) ->
     segment_hash(<<Bucket/binary, Key/binary>>);
+segment_hash({?HEAD_TAG, Bucket, Key, SubKey})
+                when is_binary(Bucket), is_binary(Key), is_binary(SubKey) ->
+    segment_hash(<<Bucket/binary, Key/binary, SubKey/binary>>);
 segment_hash(Key) ->
     segment_hash(term_to_binary(Key)).
 
@@ -229,11 +232,11 @@ from_ledgerkey({_Tag, Bucket, Key, _SubKey}) ->
 to_ledgerkey(Bucket, Key, Tag, Field, Value) when Tag == ?IDX_TAG ->
     {?IDX_TAG, Bucket, {Field, Value}, Key}.
 
+to_ledgerkey(Bucket, {Key, SubKey}, ?HEAD_TAG) ->
+    {?HEAD_TAG, Bucket, Key, SubKey};
 to_ledgerkey(Bucket, Key, Tag) ->
     {Tag, Bucket, Key, null}.
 
-to_ledgerkey(Bucket, Key, Tag, SubKey) ->
-        {Tag, Bucket, Key, SubKey}.
 
 %% Return the Key, Value and Hash Option for this object.  The hash option
 %% indicates whether the key would ever be looked up directly, and so if it
@@ -481,8 +484,8 @@ gen_headspec(Bucket, Key, IdxOp, SubKey, Value, SQN, TTL) ->
                 %% TODO: timestamps for delayed reaping 
                 tomb
         end,
-    {to_ledgerkey(Bucket, Key, ?HEAD_TAG, SubKey),
-        {SQN, Status, no_lookup, Value}}.
+    K = to_ledgerkey(Bucket, {Key, SubKey}, ?HEAD_TAG),
+    {K, {SQN, Status, segment_hash(K), Value}}.
 
 
 -spec aae_indexspecs(false|recent_aae(),

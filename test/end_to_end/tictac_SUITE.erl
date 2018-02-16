@@ -1017,13 +1017,14 @@ basic_headonly(_Config) ->
     % should allow for the items to be added in batches.  Confirm that the 
     % journal is garbage collected as expected, and that it is possible to 
     % perform a fold_heads style query 
-    ObjectCount = 100000,
+    ObjectCount = 200000,
 
     RootPathHO = testutil:reset_filestructure("testHO"),
     StartOpts1 = [{root_path, RootPathHO},
                     {max_pencillercachesize, 16000},
                     {sync_strategy, sync},
-                    {head_only, true}],
+                    {head_only, true},
+                    {max_journalsize, 500000}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {B1, K1, V1, S1, MD} = {"Bucket",
                                 "Key1.1.4567.4321",
@@ -1037,7 +1038,7 @@ basic_headonly(_Config) ->
     ObjectSpecFun =
         fun(Op) -> 
             fun(N) ->
-                Bucket = <<"B", N:32/integer>>,
+                Bucket = <<"B", N:8/integer>>,
                 Key = <<"K", N:32/integer>>,
                 <<SegmentID:20/integer, _RestBS/bitstring>> = 
                     crypto:hash(md5, term_to_binary({Bucket, Key})),
@@ -1048,7 +1049,11 @@ basic_headonly(_Config) ->
         end,
     
     ObjectSpecL = lists:map(ObjectSpecFun(add), lists:seq(1, ObjectCount)),
+
+    SW0 = os:timestamp(),
     ok = load_objectspecs(ObjectSpecL, 32, Bookie1),
+    io:format("Loaded an object count of ~w in ~w microseconds ~n", 
+                [ObjectCount, timer:now_diff(os:timestamp(), SW0)]),
 
     FoldFun = 
         fun(_B, _K, V, {HashAcc, CountAcc}) ->
@@ -1068,7 +1073,52 @@ basic_headonly(_Config) ->
 
     true = AccC1 == ObjectCount, 
 
-    ok = leveled_bookie:book_close(Bookie1).
+    JFP = RootPathHO ++ "/journal/journal_files",
+    {ok, FNs} = file:list_dir(JFP),
+    
+    ok = leveled_bookie:book_trimjournal(Bookie1),
+
+    WaitForTrimFun =
+        fun(N, _Acc) ->
+            {ok, PollFNs} = file:list_dir(JFP),
+            case length(PollFNs) < length(FNs) of 
+                true ->
+                    true;
+                false ->
+                    timer:sleep(N * 1000),
+                    false
+            end
+        end,
+    
+    true = lists:foldl(WaitForTrimFun, false, [1, 2, 3, 5, 8, 13]),
+    
+    {ok, FinalFNs} = file:list_dir(JFP),
+
+    % If we allow HEAD_TAG to be suubject to a lookup, then test this here
+    [{add, SegmentID0, Bucket0, Key0, Hash0}|_Rest] = ObjectSpecL,
+    {ok, Hash0} = 
+        leveled_bookie:book_head(Bookie1, SegmentID0, {Bucket0, Key0}, h),
+
+    ok = leveled_bookie:book_close(Bookie1),
+    {ok, FinalJournals} = file:list_dir(JFP),
+    io:format("Trim has reduced journal count from " ++ 
+                    "~w to ~w and ~w after restart~n", 
+                [length(FNs), length(FinalFNs), length(FinalJournals)]),
+
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
+
+    {async, Runner2} = 
+        leveled_bookie:book_returnfolder(Bookie2, RunnerDefinition),
+
+    {_AccH2, AccC2} = Runner2(),
+    true = AccC2 == ObjectCount,
+
+    {ok, Hash0} = 
+        leveled_bookie:book_head(Bookie2, SegmentID0, {Bucket0, Key0}, h),
+
+    ok = leveled_bookie:book_close(Bookie2).
+
+
 
 
 load_objectspecs([], _SliceSize, _Bookie) ->

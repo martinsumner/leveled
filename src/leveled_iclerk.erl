@@ -243,9 +243,9 @@ handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Inker, _TO},
             {noreply, State}
     end;
 handle_cast({trim, Inker, PersistedSQN}, State) ->
-    [_Active|Manifest] = leveled_inker:ink_getmanifest(Inker),
+    ManifestAsList = leveled_inker:ink_getmanifest(Inker),
     FilesToDelete = 
-        leveled_imanifest:find_persistedentries(PersistedSQN, Manifest),
+        leveled_imanifest:find_persistedentries(PersistedSQN, ManifestAsList),
     ok = update_inker(Inker, [], FilesToDelete),
     {noreply, State};
 handle_cast({hashtable_calc, HashTree, StartPos, CDBpid}, State) ->
