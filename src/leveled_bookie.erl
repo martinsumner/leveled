@@ -101,12 +101,13 @@
 -record(state, {inker :: pid() | undefined,
                 penciller :: pid() | undefined,
                 cache_size :: integer() | undefined,
-                recent_aae :: false | #recent_aae{} | undefined,
+                recent_aae :: recent_aae(),
                 ledger_cache = #ledger_cache{},
                 is_snapshot :: boolean() | undefined,
                 slow_offer = false :: boolean(),
 
                 head_only = false :: boolean(),
+                head_lookup = true :: boolean(),
 
                 put_countdown = 0 :: integer(),
                 get_countdown = 0 :: integer(),
@@ -144,6 +145,7 @@
 -type fold_timings() :: no_timing|#fold_timings{}.
 -type head_timings() :: no_timing|#head_timings{}.
 -type timing_types() :: head|get|put|fold.
+-type recent_aae() :: false|#recent_aae{}|undefined.
 
 %%%============================================================================
 %%% API
@@ -512,20 +514,30 @@ init([Opts]) ->
                                     unit_minutes = UnitMinutes}
                 end,
             
-            HeadOnly = get_opt(head_only, Opts, false),
+            {HeadOnly, HeadLookup} = 
+                case get_opt(head_only, Opts, false) of 
+                    false ->
+                        {false, true};
+                    with_lookup ->
+                        {true, true};
+                    no_lookup ->
+                        {true, false}
+                end,
+            
+            State0 = #state{cache_size=CacheSize,
+                                recent_aae=RecentAAE,
+                                is_snapshot=false,
+                                head_only=HeadOnly,
+                                head_lookup = HeadLookup},
 
             {Inker, Penciller} = 
-                startup(InkerOpts, PencillerOpts, RecentAAE),
+                startup(InkerOpts, PencillerOpts, State0),
 
             NewETS = ets:new(mem, [ordered_set]),
             leveled_log:log("B0001", [Inker, Penciller]),
-            {ok, #state{inker=Inker,
-                        penciller=Penciller,
-                        cache_size=CacheSize,
-                        recent_aae=RecentAAE,
-                        ledger_cache=#ledger_cache{mem = NewETS},
-                        is_snapshot=false,
-                        head_only=HeadOnly}};
+            {ok, State0#state{inker=Inker,
+                                penciller=Penciller,
+                                ledger_cache=#ledger_cache{mem = NewETS}}};
         Bookie ->
             {ok, Penciller, Inker} = 
                 book_snapshot(Bookie, store, undefined, true),
@@ -552,7 +564,7 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State)
                                         Object,
                                         ObjSize,
                                         {IndexSpecs, TTL},
-                                        State#state.recent_aae),
+                                        State),
     Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
     {_SW2, Timings2} = update_timings(SW1, {put, mem}, Timings1),
     
@@ -590,7 +602,7 @@ handle_call({mput, ObjectSpecs, TTL}, From, State)
         preparefor_ledgercache(?INKT_MPUT, ?DUMMY, 
                                 SQN, null, length(ObjectSpecs), 
                                 {ObjectSpecs, TTL}, 
-                                false),
+                                State),
     Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
     case State#state.slow_offer of
         true ->
@@ -654,7 +666,8 @@ handle_call({get, Bucket, Key, Tag}, _From, State)
         update_statetimings(get, Timings2, State#state.get_countdown),
     {reply, Reply, State#state{get_timings = Timings, 
                                 get_countdown = CountDown}};
-handle_call({head, Bucket, Key, Tag}, _From, State)  ->
+handle_call({head, Bucket, Key, Tag}, _From, State) 
+                                        when State#state.head_lookup == true ->
     SWp = os:timestamp(),
     LK = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
     case fetch_head(LK, State#state.penciller, State#state.ledger_cache) of
@@ -1156,14 +1169,14 @@ set_options(Opts) ->
                             levelzero_cointoss = true,
                             compression_method = CompressionMethod}}.
 
-startup(InkerOpts, PencillerOpts, RecentAAE) ->
+startup(InkerOpts, PencillerOpts, State) ->
     {ok, Inker} = leveled_inker:ink_start(InkerOpts),
     {ok, Penciller} = leveled_penciller:pcl_start(PencillerOpts),
     LedgerSQN = leveled_penciller:pcl_getstartupsequencenumber(Penciller),
     leveled_log:log("B0005", [LedgerSQN]),
     ok = leveled_inker:ink_loadpcl(Inker,
                                     LedgerSQN + 1,
-                                    get_loadfun(RecentAAE),
+                                    get_loadfun(State),
                                     Penciller),
     {Inker, Penciller}.
 
@@ -1193,25 +1206,34 @@ fetch_head(Key, Penciller, LedgerCache) ->
     end.
 
 
-preparefor_ledgercache(?INKT_MPUT, ?DUMMY, SQN, _O, _S, {ObjSpecs, TTL}, _A) ->
+-spec preparefor_ledgercache(atom(), any(), integer(), any(), 
+                                integer(), tuple(), book_state()) -> 
+                                    {integer()|no_lookup, integer(), list()}.
+%% @doc
+%% Prepare an object and its related key changes for addition to the Ledger 
+%% via the Ledger Cache.
+preparefor_ledgercache(?INKT_MPUT, 
+                        ?DUMMY, SQN, _O, _S, {ObjSpecs, TTL}, 
+                        _State) ->
     ObjChanges = leveled_codec:obj_objectspecs(ObjSpecs, SQN, TTL),
     {no_lookup, SQN, ObjChanges};
 preparefor_ledgercache(?INKT_KEYD,
                         LedgerKey, SQN, _Obj, _Size, {IdxSpecs, TTL},
-                        _AAE) ->
+                        _State) ->
     {Bucket, Key} = leveled_codec:from_ledgerkey(LedgerKey),
     KeyChanges =
         leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL),
     {no_lookup, SQN, KeyChanges};
 preparefor_ledgercache(_InkTag,
                         LedgerKey, SQN, Obj, Size, {IdxSpecs, TTL},
-                        AAE) ->
+                        State) ->
     {Bucket, Key, MetaValue, {KeyH, ObjH}, LastMods} =
         leveled_codec:generate_ledgerkv(LedgerKey, SQN, Obj, Size, TTL),
     KeyChanges =
         [{LedgerKey, MetaValue}] ++
             leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL) ++
-            leveled_codec:aae_indexspecs(AAE, Bucket, Key, SQN, ObjH, LastMods),
+            leveled_codec:aae_indexspecs(State#state.recent_aae, 
+                                            Bucket, Key, SQN, ObjH, LastMods),
     {KeyH, SQN, KeyChanges}.
 
 
@@ -1270,10 +1292,10 @@ maybe_withjitter(CacheSize, MaxCacheSize) ->
     end.
 
 
-get_loadfun(RecentAAE) ->
+get_loadfun(State) ->
     PrepareFun =
         fun(Tag, PK, SQN, Obj, VS, IdxSpecs) ->
-            preparefor_ledgercache(Tag, PK, SQN, Obj, VS, IdxSpecs, RecentAAE)
+            preparefor_ledgercache(Tag, PK, SQN, Obj, VS, IdxSpecs, State)
         end,
     LoadFun =
         fun(KeyInJournal, ValueInJournal, _Pos, Acc0, ExtractFun) ->
@@ -1832,7 +1854,7 @@ foldobjects_vs_foldheads_bybucket_testto() ->
                             {foldheads_bybucket,
                                 ?STD_TAG,
                                 "BucketB",
-                                {"Key", "Key4zzzz"},
+                                {"Key", "Key4|"},
                                 FoldHeadsFun,
                                 true, false, false}),
     KeyHashList2E = HTFolder2E(),
@@ -1841,13 +1863,17 @@ foldobjects_vs_foldheads_bybucket_testto() ->
                             {foldheads_bybucket,
                                 ?STD_TAG,
                                 "BucketB",
-                                {"Key5", <<"all">>},
+                                {"Key5", "Key|"},
                                 FoldHeadsFun,
                                 true, false, false}),
     KeyHashList2F = HTFolder2F(),
 
     ?assertMatch(true, length(KeyHashList2E) > 0),
     ?assertMatch(true, length(KeyHashList2F) > 0),
+    io:format("Length of 2B ~w 2E ~w 2F ~w~n", 
+                [length(KeyHashList2B), 
+                    length(KeyHashList2E), 
+                    length(KeyHashList2F)]),
     ?assertMatch(true,
                     lists:usort(KeyHashList2B) == 
                         lists:usort(KeyHashList2E ++ KeyHashList2F)),

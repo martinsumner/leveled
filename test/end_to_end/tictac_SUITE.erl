@@ -1013,17 +1013,21 @@ recent_aae_expiry(_Config) ->
 
 
 basic_headonly(_Config) ->
+    ObjectCount = 200000,
+    basic_headonly_test(ObjectCount, with_lookup),
+    basic_headonly_test(ObjectCount, no_lookup).
+
+
+basic_headonly_test(ObjectCount, HeadOnly) ->
     % Load some AAE type objects into Leveled using the read_only mode.  This
     % should allow for the items to be added in batches.  Confirm that the 
     % journal is garbage collected as expected, and that it is possible to 
     % perform a fold_heads style query 
-    ObjectCount = 200000,
-
     RootPathHO = testutil:reset_filestructure("testHO"),
     StartOpts1 = [{root_path, RootPathHO},
                     {max_pencillercachesize, 16000},
                     {sync_strategy, sync},
-                    {head_only, true},
+                    {head_only, HeadOnly},
                     {max_journalsize, 500000}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {B1, K1, V1, S1, MD} = {"Bucket",
@@ -1052,8 +1056,8 @@ basic_headonly(_Config) ->
 
     SW0 = os:timestamp(),
     ok = load_objectspecs(ObjectSpecL, 32, Bookie1),
-    io:format("Loaded an object count of ~w in ~w microseconds ~n", 
-                [ObjectCount, timer:now_diff(os:timestamp(), SW0)]),
+    io:format("Loaded an object count of ~w in ~w microseconds with ~w~n", 
+                [ObjectCount, timer:now_diff(os:timestamp(), SW0), HeadOnly]),
 
     FoldFun = 
         fun(_B, _K, V, {HashAcc, CountAcc}) ->
@@ -1068,7 +1072,7 @@ basic_headonly(_Config) ->
 
     SW1 = os:timestamp(),
     {AccH1, AccC1} = Runner1(),
-    io:format("AccH and AccC of ~w ~w in ~w microseconds ~n", 
+    io:format("AccH and AccC of ~w ~w in ~w microseconds~n", 
                 [AccH1, AccC1, timer:now_diff(os:timestamp(), SW1)]),
 
     true = AccC1 == ObjectCount, 
@@ -1094,10 +1098,24 @@ basic_headonly(_Config) ->
     
     {ok, FinalFNs} = file:list_dir(JFP),
 
-    % If we allow HEAD_TAG to be suubject to a lookup, then test this here
     [{add, SegmentID0, Bucket0, Key0, Hash0}|_Rest] = ObjectSpecL,
-    {ok, Hash0} = 
-        leveled_bookie:book_head(Bookie1, SegmentID0, {Bucket0, Key0}, h),
+    case HeadOnly of 
+        with_lookup ->
+            % If we allow HEAD_TAG to be suubject to a lookup, then test this 
+            % here
+            {ok, Hash0} = 
+                leveled_bookie:book_head(Bookie1, 
+                                            SegmentID0, 
+                                            {Bucket0, Key0}, 
+                                            h);
+        no_lookup ->
+            {unsupported_message, head} = 
+                leveled_bookie:book_head(Bookie1, 
+                                            SegmentID0, 
+                                            {Bucket0, Key0}, 
+                                            h)
+    end,
+
 
     ok = leveled_bookie:book_close(Bookie1),
     {ok, FinalJournals} = file:list_dir(JFP),
@@ -1113,8 +1131,22 @@ basic_headonly(_Config) ->
     {_AccH2, AccC2} = Runner2(),
     true = AccC2 == ObjectCount,
 
-    {ok, Hash0} = 
-        leveled_bookie:book_head(Bookie2, SegmentID0, {Bucket0, Key0}, h),
+    case HeadOnly of 
+        with_lookup ->
+            % If we allow HEAD_TAG to be suubject to a lookup, then test this 
+            % here
+            {ok, Hash0} = 
+                leveled_bookie:book_head(Bookie2, 
+                                            SegmentID0, 
+                                            {Bucket0, Key0}, 
+                                            h);
+        no_lookup ->
+            {unsupported_message, head} = 
+                leveled_bookie:book_head(Bookie2, 
+                                            SegmentID0, 
+                                            {Bucket0, Key0}, 
+                                            h)
+    end,
 
     ok = leveled_bookie:book_close(Bookie2).
 
