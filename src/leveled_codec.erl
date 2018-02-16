@@ -450,14 +450,7 @@ idx_indexspecs(IndexSpecs, Bucket, Key, SQN, TTL) ->
                 ).
 
 gen_indexspec(Bucket, Key, IdxOp, IdxField, IdxTerm, SQN, TTL) ->
-    Status =
-        case IdxOp of
-            add ->
-                {active, TTL};
-            remove ->
-                %% TODO: timestamps for delayed reaping 
-                tomb
-        end,
+    Status = set_status(IdxOp, TTL),
     case Bucket of
         {all, RealBucket} ->    
             {to_ledgerkey(?ALL_BUCKETS,
@@ -476,17 +469,16 @@ gen_indexspec(Bucket, Key, IdxOp, IdxField, IdxTerm, SQN, TTL) ->
     end.
 
 gen_headspec(Bucket, Key, IdxOp, SubKey, Value, SQN, TTL) ->
-    Status =
-        case IdxOp of
-            add ->
-                {active, TTL};
-            remove ->
-                %% TODO: timestamps for delayed reaping 
-                tomb
-        end,
+    Status = set_status(IdxOp, TTL),
     K = to_ledgerkey(Bucket, {Key, SubKey}, ?HEAD_TAG),
     {K, {SQN, Status, segment_hash(K), Value}}.
 
+
+set_status(add, TTL) ->
+    {active, TTL};
+set_status(remove, _TTL) ->
+    %% TODO: timestamps for delayed reaping 
+    tomb.
 
 -spec aae_indexspecs(false|recent_aae(),
                                 any(), any(),
