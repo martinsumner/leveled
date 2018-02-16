@@ -265,7 +265,9 @@ findpersisted_test() ->
     FilesToDelete3 = find_persistedentries(2999, to_list(Man)),
     ?assertMatch(2, length(FilesToDelete3)),
     FilesToDelete4 = find_persistedentries(999, to_list(Man)),
-    ?assertMatch([], FilesToDelete4).
+    ?assertMatch([], FilesToDelete4),
+    FilesToDelete5 = find_persistedentries(0, to_list(Man)),
+    ?assertMatch([], FilesToDelete5).
 
 buildrandomfashion_test() ->
     ManL0 = build_testmanifest_aslist(),

@@ -641,9 +641,7 @@ get_size(PK, Value) ->
             Size;
         ?STD_TAG ->
             {_Hash, Size} = MD,
-            Size;
-        ?HEAD_TAG ->
-            0
+            Size
     end.
 
 -spec get_keyandobjhash(tuple(), tuple()) -> tuple().

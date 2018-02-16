@@ -1014,11 +1014,12 @@ recent_aae_expiry(_Config) ->
 
 basic_headonly(_Config) ->
     ObjectCount = 200000,
-    basic_headonly_test(ObjectCount, with_lookup),
-    basic_headonly_test(ObjectCount, no_lookup).
+    RemoveCount = 100,
+    basic_headonly_test(ObjectCount, RemoveCount, with_lookup),
+    basic_headonly_test(ObjectCount, RemoveCount, no_lookup).
 
 
-basic_headonly_test(ObjectCount, HeadOnly) ->
+basic_headonly_test(ObjectCount, RemoveCount, HeadOnly) ->
     % Load some AAE type objects into Leveled using the read_only mode.  This
     % should allow for the items to be added in batches.  Confirm that the 
     % journal is garbage collected as expected, and that it is possible to 
@@ -1128,7 +1129,7 @@ basic_headonly_test(ObjectCount, HeadOnly) ->
     {async, Runner2} = 
         leveled_bookie:book_returnfolder(Bookie2, RunnerDefinition),
 
-    {_AccH2, AccC2} = Runner2(),
+    {AccH2, AccC2} = Runner2(),
     true = AccC2 == ObjectCount,
 
     case HeadOnly of 
@@ -1147,6 +1148,19 @@ basic_headonly_test(ObjectCount, HeadOnly) ->
                                             {Bucket0, Key0}, 
                                             h)
     end,
+
+    RemoveSpecL0 = lists:sublist(ObjectSpecL, RemoveCount),
+    RemoveSpecL1 = 
+        lists:map(fun(Spec) -> setelement(1, Spec, remove) end, RemoveSpecL0),
+    ok = load_objectspecs(RemoveSpecL1, 32, Bookie2),
+
+    {async, Runner3} = 
+        leveled_bookie:book_returnfolder(Bookie2, RunnerDefinition),
+
+    {AccH3, AccC3} = Runner3(),
+    true = AccC3 == (ObjectCount - RemoveCount),
+    false = AccH3 == AccH2,
+
 
     ok = leveled_bookie:book_close(Bookie2).
 

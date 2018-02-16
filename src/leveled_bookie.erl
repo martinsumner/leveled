@@ -966,7 +966,7 @@ get_runner(State, DeprecatedQuery) ->
 -spec get_deprecatedrunner(book_state(), tuple()) -> {async, fun()}.
 %% @doc
 %% Get an {async, Runner} for a given fold type.  Fold types have different 
-%% tuple inputs.  These folds are currentyl used in tests, but are deprecated.
+%% tuple inputs.  These folds are currently used in tests, but are deprecated.
 %% Most of these folds should be achievable through other available folds.
 get_deprecatedrunner(State, {bucket_stats, Bucket}) ->
     SnapFun = return_snapfun(State, ledger, no_lookup, true, true),
