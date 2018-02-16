@@ -48,7 +48,7 @@ Although this represented an improvement in terms of entropy management, there w
 
 - The rebuilds of the hashtree still require the relatively expensive fold_objects operation, and so parallelisation of rebuilds may need to be controlled to prevent an impact on cluster performance.  Measuring the impact is difficult in pre-production load tests due to the scheduled and infrequent nature of AAE rebuilds.
 
-- Improvements to hashtrees require significant devleopment and test for transition, due to the potential for hashtree changes to break many things (e.g. Solr integration, MDC), and also the difficulty in coordinating changes between different dependent systems that independently build state over long periods of time.
+- Improvements to hashtrees require significant development and test for transition, due to the potential for hashtree changes to break many things (e.g. Solr integration, MDC), and also the difficulty in coordinating changes between different dependent systems that independently build state over long periods of time.
 
 ## Leveled and AAE
 
