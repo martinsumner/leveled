@@ -105,7 +105,7 @@ When both replacing a store and replacing a tree, batches of updates need to be 
 
 ## Startup and Shutdown
 
-On shutdown any incomplete batches should be passed to the KeyStore and the KeyStore shutdown.  All functioning TreeCaches should be shutdown, and on shutdown should write a CRC-checked file containing the serialised tree.
+On shutdown any incomplete batches should be passed to the KeyStore and the KeyStore shutdown.  All functioning TreeCaches should be shutdown, and on shutdown should write a CRC-checked file containing the serialised tree.  At the point the shutdown is requested, the TreeCache may be at a more advanced state than the KeyStore, and if sync_on_write is not enabled in the vnode backend the KeyStore could be in advance of the backend.  To try and protect against situations on startup where the TreeCache reflects a more advanced state than the actual vnode - the TreeCache should not be persisted until the vnode backend and the AAE KeyStore have both successfully closed.
 
 On startup, if shutdown was completed normally, the TreeCaches should be restored from disk, as well as the KeyStore.  Any partially rebuilt KeyStore should be destroyed.
 
@@ -113,6 +113,16 @@ On recovering a TreeCache from disk, the TreeCache process should delete the Tre
 
 If the shutdown was unclean, and there is a KeyStore, but no persisted TreeCache, then before completing startup the AAEController should enforce a fold over the KeyStore to rebuild the TreeCaches.
 
-If the KeyStore has missing updates due to an abrupt shutdown, this will cause (potentially false) repairs of the keys, and the repair will also trigger a rehash.  the rehash should prompt a correction in the AAE KeyStore (through an `unidentified`) previous clock to bring the TreeCache and KeyStore back into line. 
+If the KeyStore has missing updates due to an abrupt shutdown, this will cause (potentially false) repairs of the keys, and the repair will also trigger a rehash.  the rehash should prompt a correction in the AAE KeyStore (through an `unidentified`) previous clock to bring the TreeCache and KeyStore back into line.
 
 ## Rebuilds and Rehashes
+
+If an AAE KeyStore is used in non-native mode, periodically the Keystore should be rebuilt, should there be entropy from disk in the actual KeyStore.  This is achieved using the `replacing-store` state in the AAEController.
+
+When replacing a store, the previous version of the store will be kept up to date and used throughout the rebuild process, in order to prevent the blocking of exchanges.  The only exception to this is when a rebuild has been prompted by a conflict of `is_emtpy` properties on startup - in which case the vnode startup process should be paused to allow for the rebuild to complete.
+
+To avoid the need to do reads before writes when updating the AAE KeyStore from the vnode backend fold (so as not to replace a new update with an older snapshot value from the backend) new updates must be parked in a DiskLog process whilst the fold completes.  Once the fold is complete, the rebuild of store can be finished by catching up on updates from the DiskLog.
+
+At this stage the old Keystore can be deleted, and the new KeyStore be used.  At this stage though, the TreeCache does not necessarily reflect the state of the new KeyStore - the `replacing-tree` state is used to resolve this.  When replacing the tree, new empty TreeCaches are started and maintained in parallel to the existing TreeCaches (which continue to be used in exchanges).  A fold of the KeyStore is now commenced, whilst new updates are cached in a DiskLog.  Once the fold is complete, the new updates are applied and the TreeCache can be migrated from the old cache to the new cache.
+
+  
