@@ -119,7 +119,7 @@ If the KeyStore has missing updates due to an abrupt shutdown, this will cause (
 
 If an AAE KeyStore is used in non-native mode, periodically the Keystore should be rebuilt, should there be entropy from disk in the actual KeyStore.  This is achieved using the `replacing-store` state in the AAEController.
 
-When replacing a store, the previous version of the store will be kept up to date and used throughout the rebuild process, in order to prevent the blocking of exchanges.  The only exception to this is when a rebuild has been prompted by a conflict of `is_emtpy` properties on startup - in which case the vnode startup process should be paused to allow for the rebuild to complete.
+When replacing a store, the previous version of the store will be kept up to date and used throughout the rebuild process, in order to prevent the blocking of exchanges.  The only exception to this is when a rebuild has been prompted by a conflict of `is_empty` properties on startup - in which case the vnode startup process should be paused to allow for the rebuild to complete.
 
 To avoid the need to do reads before writes when updating the AAE KeyStore from the vnode backend fold (so as not to replace a new update with an older snapshot value from the backend) new updates must be parked in a DiskLog process whilst the fold completes.  Once the fold is complete, the rebuild of store can be finished by catching up on updates from the DiskLog.
 
