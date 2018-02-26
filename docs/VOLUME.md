@@ -322,6 +322,7 @@ Phase 1 to 5 volume testing to this stage has been performed in a cloud environm
 - 96GB DRAM;
 - A RAID 10 array of 6 disks - all using traditional low-cost spinning disk hardware;
 - RAID managed by a RAID controller with a Flash-Backed Write Cache;
+- 8 nodes in the cluster;
 - Gigabit networking.
 
 The test is based on a special blended load developed to mimic the NHS use case., with the following characteristics:
