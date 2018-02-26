@@ -312,3 +312,70 @@ Riak + leveled           |  Riak + bitcask
 In the first hour of the test, bitcask throughput is <b>39.13%</b> greater than leveled.  Over the whole test, the bitcask-backed cluster achieves <b>16.48%</b> more throughput than leveled, but in the last hour this advantage is just <b>0.34%</b>.
 
 The results for bitcask look a bit weird and lumpy though, so perhaps there's something else going on here that's contributing to the gap closing.
+
+
+## Riak Cluster Test - Phase 6 - NHS Hardware compare
+
+Phase 1 to 5 volume testing to this stage has been performed in a cloud environment, the Phase 6 test though was run on physical servers loaned from the NHS environment.  These servers have the following characteristics:
+
+- 12 (fairly slow) CPU cores (24 CPU threads);
+- 96GB DRAM;
+- A RAID 10 array of 6 disks - all using traditional low-cost spinning disk hardware;
+- RAID managed by a RAID controller with a Flash-Backed Write Cache;
+- Gigabit networking.
+
+The test is based on a special blended load developed to mimic the NHS use case., with the following characteristics:
+
+- Most objects are large (10KB) but heavily used objects are potentially up to 5 times larger than this.  
+- Most objects are compressible, but a proportion of traffic is to write-once documents which cannot be compressed.
+- Each write must be flushed to disk (this is still performant because of the FBWC);
+- The majority of traffic is GETs;
+- There are also 2i queries which represent about 2-3% of overall volume, including some use of regular expression in 2i queries;
+- Most of the traffic (for non write-once objects) sits within a keyspace of about 100M, with a rough pareto distribution (80% of the load against 20% of the records).
+
+The test config can be found [here](https://github.com/martinsumner/basho_bench/blob/mas-nhsload/examples/riakc_nhs.config).
+
+The comparison here is between Riak 2.2.3 with leveldb backend, compared to Riak 2.2.3 with leveled backend and related enhancements (in particular using n HEADS and 1 GET for GET requests).  Active Anti-Entropy was enabled for both tests.
+
+In the straight time comparisons used in early phases, the picture doesn't reflect the issue of accumulation of load within the store.  The more data in the store, the harder all requests become to resolve - so rather than compare throughput over time, it is better to compare throughput with the aggregate level of operations so far.
+
+This chart provides the comparison from this test:
+
+![](pics/26Feb_TPut_12hr.png)
+
+The pattern is for the enhanced Riak with leveled to both consistently achieve higher average operations per second throughput, but for that throughput to be more consistent (i.e. more tightly clustered around the trendline).  At the backend of the test (when data volumes become more realistic), the difference in the trendlines is about 25%.
+
+Although the throughput achieved is better than with vanilla Riak/leveldb, the mean GET time is noticeably slower:
+
+![](pics/26Feb_MeanGET_12hr.png)
+
+It is assumed that the difference in MEAN GET time is directly related to:
+
+- The extra round trip from HEAD to GET request as a result of the changed GET FSM behaviour;
+- The additional overhead during the GET request of looking up the value in the Journal as well as the reference in the LSM tree.
+
+The Mean GET time may be nearly double, but the (slower) GET time is much more predictable as can be seen from the clustering around the trend line in the chart.  This is also show from the 99th percentile chart - where the 99th percentile GET time trendline is consistent between leveled and leveldb, but the variance in that time over time is not consistent:
+
+![](pics/26Feb_Perc99GET_12hr.png)
+
+It is assumed that the volatility difference is related to vnode queues, which can normally be worked around in GET requests using r=2/n=3, except when more than one vnode in the preflist has queues.  PUT requests are much more susceptible to vnode queues due to the random choosing of a coordinator, and the PUT being directly delayed by queues at that coordinator.
+
+Looking at the 99th percentile times for PUTs, Riak/leveled is an order of magnitude better than Riak/leveldb both in terms of trend and standard deviation from the trend.
+
+![](pics/26Feb_Perc99PUT_12hr.png)
+
+Likewise for 2i queries (which are particularly susceptible to vnode queues), there is now an order of magnitude improvement in the mean response time:
+
+![](pics/26Feb_Mean2i_12hr.png)
+
+The stability of response times is not as of result of a lack of resource pressure.  Once the volume of data on disk surpassed that which could be covered by page cache, the disk busyness rapidly increased to 100%:
+
+![](pics/26Feb_DiskUtil_Leveled_2.2.3.png)
+
+CPU utilisation was also generally high (and notably higher than in the Riak/leveldb test), running at between 50 and 60% throughout the test:
+
+![](pics/26Feb_CPU_Leveled_2.2.3.png)
+
+All this has implications for future backend choices, but also for the nature of the GET and PUT FSMs.  The most positive non-functional characteristic is the external response time stability in face of internal resource pressure.  What isn't clear is to the extent that this is delivered simply through a backend change, or by the change in the nature of the FSM which naturally diverts load away from vnodes with longer queues (e.g. delays) evening out the load in face of localised pressures.
+
+It will be interesting to see in the case of both leveldb and leveled backends the potential improvements which may arise from the use of [vnode_proxy soft overload checks and a switch to 1 GET, n-1 HEADS](https://github.com/basho/riak_kv/issues/1661).
