@@ -452,7 +452,6 @@ foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, SegmentList) ->
 
             ListFoldFun = 
                 fun({StartKey, EndKey}, FoldAcc) ->
-                    io:format("SK ~w EK ~w ~n", [StartKey, EndKey]),
                     leveled_penciller:pcl_fetchkeysbysegment(LedgerSnapshot,
                                                                 StartKey,
                                                                 EndKey,
