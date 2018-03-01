@@ -9,12 +9,14 @@
 -export([single_object_with2i/1,
             small_load_with2i/1,
             query_count/1,
+            multibucket_fold/1,
             rotating_objects/1]).
 
 all() -> [
             single_object_with2i,
             small_load_with2i,
             query_count,
+            multibucket_fold,
             rotating_objects
             ].
 
@@ -454,7 +456,7 @@ count_termsonindex(Bucket, IdxField, Book, QType) ->
     lists:foldl(fun(X, Acc) ->
                         SW = os:timestamp(),
                         ST = integer_to_list(X),
-                        ET = ST ++ "~",
+                        ET = ST ++ "|",
                         Q = {index_query,
                                 Bucket,
                                 {fun testutil:foldkeysfun/3, []},
@@ -472,6 +474,78 @@ count_termsonindex(Bucket, IdxField, Book, QType) ->
                         end,
                     0,
                     lists:seq(190, 221)).
+
+multibucket_fold(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    {ok, Bookie1} = leveled_bookie:book_start(RootPath,
+                                            2000,
+                                            50000000,
+                                            testutil:sync_strategy()),
+    ObjectGen = testutil:get_compressiblevalue_andinteger(),
+    IndexGen = fun() -> [] end,
+    ObjL1 = testutil:generate_objects(13000,
+                                        uuid,
+                                        [],
+                                        ObjectGen,
+                                        IndexGen,
+                                        <<"Bucket1">>),
+    testutil:riakload(Bookie1, ObjL1),
+    ObjL2 = testutil:generate_objects(17000,
+                                        uuid,
+                                        [],
+                                        ObjectGen,
+                                        IndexGen,
+                                        <<"Bucket2">>),
+    testutil:riakload(Bookie1, ObjL2),
+    ObjL3 = testutil:generate_objects(7000,
+                                        uuid,
+                                        [],
+                                        ObjectGen,
+                                        IndexGen,
+                                        <<"Bucket3">>),
+    testutil:riakload(Bookie1, ObjL3),
+    ObjL4 = testutil:generate_objects(23000,
+                                        uuid,
+                                        [],
+                                        ObjectGen,
+                                        IndexGen,
+                                        <<"Bucket4">>),
+    testutil:riakload(Bookie1, ObjL4),
+    Q1 = {foldheads_bybucketlist,
+                ?RIAK_TAG, 
+                [<<"Bucket1">>, <<"Bucket4">>],
+                fun(B, K, _PO, Acc) ->
+                    [{B, K}|Acc]
+                end,
+                false, 
+                true, 
+                false},
+    {async, R1} = leveled_bookie:book_returnfolder(Bookie1, Q1),
+    O1 = length(R1()),
+    io:format("Result R1 of length ~w~n", [O1]),
+    
+    Q2 = {foldheads_bybucketlist,
+                ?RIAK_TAG, 
+                [<<"Bucket2">>, <<"Bucket3">>],
+                {fun(_B, _K, _PO, Acc) ->
+                        Acc +1
+                    end,
+                    0},
+                false, 
+                true, 
+                false},
+    {async, R2} = leveled_bookie:book_returnfolder(Bookie1, Q2),
+    O2 = R2(),
+    io:format("Result R2 of ~w~n", [O2]),
+
+    true = 36000 == O1,
+    true = 24000 == O2,
+    
+    ok = leveled_bookie:book_close(Bookie1),
+    testutil:reset_filestructure().
+
+
+
 
 
 rotating_objects(_Config) ->

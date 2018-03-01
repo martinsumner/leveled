@@ -677,7 +677,7 @@ handle_call({fetch_keys,
                         {AccFun, InitAcc},
                         {SegmentList, MaxKeys}),
     
-    {reply, Acc, State#state{levelzero_astree = L0AsList}};
+    {reply, Acc, State};
 handle_call(get_startup_sqn, _From, State) ->
     {reply, State#state.persisted_sqn, State};
 handle_call({register_snapshot, Snapshot, Query, BookiesMem, LR}, _From, State) ->

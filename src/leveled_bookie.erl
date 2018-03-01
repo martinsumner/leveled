@@ -935,8 +935,27 @@ get_runner(State,
     SnapType = snaptype_by_presence(JournalCheck),
     SnapFun = return_snapfun(State, SnapType, SnapQ, true, SnapPreFold),
     leveled_runner:foldheads_bybucket(SnapFun, 
-                                        {Tag, StartKey, EndKey}, 
+                                        Tag, 
+                                        [{StartKey, EndKey}], 
                                         FoldFun, 
+                                        JournalCheck, SegmentList);
+get_runner(State,
+            {foldheads_bybucketlist,
+                Tag, 
+                BucketList,
+                FoldFun,
+                JournalCheck, SnapPreFold, SegmentList}) ->
+    KeyRangeFun = 
+        fun(Bucket) ->
+            {StartKey, EndKey, _} = return_ledger_keyrange(Tag, Bucket, all),
+            {StartKey, EndKey}
+        end,
+    SnapType = snaptype_by_presence(JournalCheck),
+    SnapFun = return_snapfun(State, SnapType, no_lookup, true, SnapPreFold),
+    leveled_runner:foldheads_bybucket(SnapFun,
+                                        Tag,
+                                        lists:map(KeyRangeFun, BucketList),
+                                        FoldFun,
                                         JournalCheck, SegmentList);
 get_runner(State,
             {foldobjects_bybucket, 
@@ -946,7 +965,8 @@ get_runner(State,
     {StartKey, EndKey, SnapQ} = return_ledger_keyrange(Tag, Bucket, KeyRange),
     SnapFun = return_snapfun(State, store, SnapQ, true, SnapPreFold),
     leveled_runner:foldobjects_bybucket(SnapFun, 
-                                        {Tag, StartKey, EndKey}, 
+                                        Tag, 
+                                        [{StartKey, EndKey}], 
                                         FoldFun);
 get_runner(State, 
             {foldobjects_byindex,
@@ -1007,7 +1027,7 @@ get_deprecatedrunner(State,
                                 PartitionFilter).
 
 
--spec return_ledger_keyrange(atom(), any(), tuple()) -> 
+-spec return_ledger_keyrange(atom(), any(), tuple()|all) -> 
                                         {tuple(), tuple(), tuple()|no_lookup}.
 %% @doc
 %% Convert a range of binary keys into a ledger key range, returning 
@@ -1038,7 +1058,6 @@ return_ledger_keyrange(Tag, Bucket, KeyRange) ->
         end,
     {StartKey, EndKey, SnapQuery}.
 
-        
 
 maybe_longrunning(SW, Aspect) ->
     case timer:now_diff(os:timestamp(), SW) of

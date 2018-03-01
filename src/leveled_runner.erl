@@ -30,8 +30,8 @@
             tictactree/5,
             foldheads_allkeys/5,
             foldobjects_allkeys/4,
-            foldheads_bybucket/5,
-            foldobjects_bybucket/3,
+            foldheads_bybucket/6,
+            foldobjects_bybucket/4,
             foldobjects_byindex/3
         ]).
 
@@ -222,9 +222,11 @@ foldheads_allkeys(SnapFun, Tag, FoldFun, JournalCheck, SegmentList) ->
     StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
     EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
     foldobjects(SnapFun, 
-                Tag, StartKey, EndKey, 
+                Tag, 
+                [{StartKey, EndKey}], 
                 FoldFun, 
-                {true, JournalCheck}, SegmentList).
+                {true, JournalCheck}, 
+                SegmentList).
 
 -spec foldobjects_allkeys(fun(), atom(), fun(), key_order|sqn_order) 
                                                             -> {async, fun()}.
@@ -234,9 +236,11 @@ foldobjects_allkeys(SnapFun, Tag, FoldFun, key_order) ->
     StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
     EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
     foldobjects(SnapFun, 
-                Tag, StartKey, EndKey, 
+                Tag, 
+                [{StartKey, EndKey}], 
                 FoldFun, 
-                false, false);
+                false, 
+                false);
 foldobjects_allkeys(SnapFun, Tag, FoldObjectsFun, sqn_order) ->
     % Fold over the journal in order of receipt
     {FoldFun, InitAcc} =
@@ -321,31 +325,37 @@ foldobjects_allkeys(SnapFun, Tag, FoldObjectsFun, sqn_order) ->
     {async, Folder}.
             
 
--spec foldobjects_bybucket(fun(), {atom(), any(), any()}, fun()) -> 
+-spec foldobjects_bybucket(fun(), atom(), list({any(), any()}), fun()) -> 
                                                                 {async, fun()}.
 %% @doc
 %% Fold over all objects within a given key range in a bucket
-foldobjects_bybucket(SnapFun, {Tag, StartKey, EndKey}, FoldFun) ->
+foldobjects_bybucket(SnapFun, Tag, KeyRanges, FoldFun) ->
     foldobjects(SnapFun, 
-                Tag, StartKey, EndKey, 
+                Tag, 
+                KeyRanges, 
                 FoldFun, 
-                false, false).
+                false, 
+                false).
 
 -spec foldheads_bybucket(fun(), 
-                            {atom(), any(), any()}, 
+                            atom(), 
+                            list({any(), any()}), 
                             fun(), 
                             boolean(), false|list(integer())) 
                                                         -> {async, fun()}.
 %% @doc
 %% Fold over all object metadata within a given key range in a bucket
 foldheads_bybucket(SnapFun, 
-                    {Tag, StartKey, EndKey}, 
+                    Tag, 
+                    KeyRanges, 
                     FoldFun, 
                     JournalCheck, SegmentList) ->
     foldobjects(SnapFun, 
-                Tag, StartKey, EndKey, 
+                Tag, 
+                KeyRanges, 
                 FoldFun, 
-                {true, JournalCheck}, SegmentList).
+                {true, JournalCheck}, 
+                SegmentList).
 
 -spec foldobjects_byindex(fun(), tuple(), fun()) -> {async, fun()}.
 %% @doc
@@ -357,9 +367,11 @@ foldobjects_byindex(SnapFun, {Tag, Bucket, Field, FromTerm, ToTerm}, FoldFun) ->
     EndKey =
         leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG, Field, ToTerm),
     foldobjects(SnapFun, 
-                Tag, StartKey, EndKey, 
+                Tag, 
+                [{StartKey, EndKey}], 
                 FoldFun, 
-                false, false).
+                false, 
+                false).
 
 
 
@@ -407,7 +419,7 @@ get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList) ->
     end.
 
 
--spec foldobjects(fun(), atom(), tuple(), tuple(), fun(), 
+-spec foldobjects(fun(), atom(), list(), fun(), 
                     false|{true, boolean()}, false|list(integer())) ->
                                                             {async, fun()}.
 %% @doc
@@ -417,19 +429,16 @@ get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList) ->
 %% will be created that if understood by the fold function will allow the fold
 %% function to work on the head of the object, and defer fetching the body in
 %% case such a fetch is unecessary.
-foldobjects(SnapFun, 
-            Tag, StartKey, EndKey, 
-            FoldObjectsFun, 
-            DeferredFetch, SegmentList) ->
+foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, SegmentList) ->
     {FoldFun, InitAcc} =
-        case is_tuple(FoldObjectsFun) of
+        case is_tuple(FoldObjFun) of
             true ->
                 % FoldObjectsFun is already a tuple with a Fold function and an
                 % initial accumulator
-                FoldObjectsFun;
+                FoldObjFun;
             false ->
                 % no initial accumulatr passed, and so should be just a list
-                {FoldObjectsFun, []}
+                {FoldObjFun, []}
         end,
     
     Folder =
@@ -440,12 +449,18 @@ foldobjects(SnapFun,
                                         JournalSnapshot,
                                         Tag,
                                         DeferredFetch),
-            Acc = leveled_penciller:pcl_fetchkeysbysegment(LedgerSnapshot,
-                                                            StartKey,
-                                                            EndKey,
-                                                            AccFun,
-                                                            InitAcc, 
-                                                            SegmentList),
+
+            ListFoldFun = 
+                fun({StartKey, EndKey}, FoldAcc) ->
+                    io:format("SK ~w EK ~w ~n", [StartKey, EndKey]),
+                    leveled_penciller:pcl_fetchkeysbysegment(LedgerSnapshot,
+                                                                StartKey,
+                                                                EndKey,
+                                                                AccFun,
+                                                                FoldAcc, 
+                                                                SegmentList)
+                end,
+            Acc = lists:foldl(ListFoldFun, InitAcc, KeyRanges),
             ok = leveled_penciller:pcl_close(LedgerSnapshot),
             case DeferredFetch of 
                 {true, false} ->
