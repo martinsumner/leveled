@@ -511,9 +511,9 @@ multibucket_fold(_Config) ->
                                         IndexGen,
                                         <<"Bucket4">>),
     testutil:riakload(Bookie1, ObjL4),
-    Q1 = {foldheads_bybucketlist,
+    Q1 = {foldheads_bybucket,
                 ?RIAK_TAG, 
-                [<<"Bucket1">>, <<"Bucket4">>],
+                [<<"Bucket1">>, <<"Bucket4">>], bucket_list,
                 fun(B, K, _PO, Acc) ->
                     [{B, K}|Acc]
                 end,
@@ -524,9 +524,9 @@ multibucket_fold(_Config) ->
     O1 = length(R1()),
     io:format("Result R1 of length ~w~n", [O1]),
     
-    Q2 = {foldheads_bybucketlist,
+    Q2 = {foldheads_bybucket,
                 ?RIAK_TAG, 
-                [<<"Bucket2">>, <<"Bucket3">>],
+                [<<"Bucket2">>, <<"Bucket3">>], bucket_list,
                 {fun(_B, _K, _PO, Acc) ->
                         Acc +1
                     end,
