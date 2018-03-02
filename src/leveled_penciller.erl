@@ -1273,15 +1273,6 @@ keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SSTiterator},
             {SegmentList, MaxKeys}) ->
     {StartKey, EndKey} = KeyRange,
     case {IMMKey < StartKey, leveled_codec:endkey_passed(EndKey, IMMKey)} of
-        {true, _} ->
-    
-            % Normally everything is pre-filterd, but the IMM iterator can
-            % be re-used and so may be behind the StartKey if the StartKey has
-            % advanced from the previous use
-            keyfolder({NxIMMiterator, SSTiterator},
-                        KeyRange,
-                        {AccFun, Acc},
-                        {SegmentList, MaxKeys});
         {false, true} ->
             % There are no more keys in-range in the in-memory
             % iterator, so take action as if this iterator is empty
