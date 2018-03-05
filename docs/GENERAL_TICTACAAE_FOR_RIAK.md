@@ -36,19 +36,15 @@ The high level changes proposed are:
 
 The primary actors
 
-- AAEController (1 per vnode) - gen_fsm
+- AAEController (1 per vnode) - gen_server
 
-- KeyStore (1 per Controller) - gen_server
+- KeyStore (1 per Controller) - gen_fsm
 
 - TreeCache (n per Controller) - gen_fsm
 
-- DiskLog (temporary - 1 per Controller) - gen_server
-
 ### AAEController
 
-The AAEController will have 3 states: `starting`, `replacing-store`, `replacing-tree` and `steady`.  In all states except `starting` an exchange will be possible.
-
-The AAEController can receive data updates from the vnode in four forms:
+The AAEController will manage all communication between the vnode and the other parts of the AAE system. The AAEController can receive data updates from the vnode in four forms:
 
 - {IndexN, Bucket, Key, CurrentClock, unidentified} for PUTs marshalled via the blind_put (for LWW buckets without 2i support in the backend e.g. LWW -> Bitcask), or when a rehash request has been made for a single object;
 
@@ -56,25 +52,38 @@ The AAEController can receive data updates from the vnode in four forms:
 
 - {IndexN, Bucket, Key, none, PreviousClock} for actual backend deletes (e.g. post tombstone).
 
-The AAE Controller will handle the casting or calling of these messages by casting a message to the appropriate TreeCache to prompt an update, and then adding the update to a queue to be batch written to the KeyStore.  There is an additional penalty for changes where the PreviousClock is unidentified in that they will require a range scan of the KeyStore to generate the TreeCache update message.
+The AAE Controller will handle these update messages by casting a message to the appropriate TreeCache to prompt an update, and then adding the update to a queue to be batch written to the KeyStore.  There is an additional penalty for changes where the PreviousClock is unidentified in that they will require a range query to fetch the previous result from the KeyStore.
 
 The AAE controller may also receive requests to retrieve the branch or leaf hashes for a given partition TreeCache, as well as trigger rebuilds or rehashes.
 
 ### KeyStore
 
-The KeyStore needs to support four operations:
+The KeyStore needs to support three operations:
 
 - A batch PUT of objects
 
-- An object fold bounded by a range
+- An object fold bounded by multiple ranges supporting different object folds and accumulators
 
 - An is_empty check
 
-- A GET of a single object
+this can be achieved by having a KeyStore run in `parallel` mode or `native` mode.  In `parallel` mode the KeyStore has its own dedicated backend store (which can be any supported Key/Value store).  In `native` mode, the vnode store must support the efficient object fold operations (in particular old by segmentID), and so a separate KeyStore is not required, and requests are diverted to the native vnode backend.  It is assumed that only the Leveled backend will support `native` mode.
 
-On startup the AAEController must be informed by the vnode the is_empty status of the actual vnode key store, and this should match the is_empty status of the AAE key store.  If there is a mismatch then the KeyStore must be rebuilt before the AAEController can exit the `starting` state.
+On startup the AAEController must be informed by the vnode the is_empty status of the actual vnode key store, and this should match the is_empty status of the AAE key store.  If there is a mismatch then the KeyStore must be rebuilt.
 
-As vnode changes are made, these changes should be reflected in batches in the KeyStore.  The Key for the entry in the KeyStore should be a tuple of `{IndexN, SegmentID, Bucket, Key}` where SegmentID is the hash of the Bucket and Key used to map the identifier to a location in the merkle tree.  The Value of the object should be a tuple of `{VectorClock, Hash}`.
+When a KeyStore is being rebuilt at startup, it is rebuilt from a fold of the actual vnode backend store - and new PUTs of objects (following the snapshot) will be queued to be played into the store after the fold has been completed.
+
+When a KeyStore is being rebuilt due to expiry of an existing store, the existing store is kept online until the rebuild is complete (and used for answering any fold requests).  Both stores are kept up to date with new changes (through queueing on the rebuilt store, and application on the expiring store).
+
+As vnode changes are made, these changes should be reflected in batches in the KeyStore.  The Bucket part of the Key used in the KeyStore will be `{IndexN, SegmentID}`, and Key part will be the actual `{Bucket, Key}` of the object.  The Value of the object should be a tuple of `{Version, VectorClock, Hash, ObjectSize, SiblingCount, Head}`:
+
+- Version represents the version of this object currently in use (to allow the value format to be changed in future releases);
+- VectorClock is the actual current VectorClock of the object;
+- Hash is the hash of the VectorClock;
+- ObjectSize is the byte size of the object which the Key and Clock represent;
+- SiblingCount is the number of siblings for that object within this vnode;
+- Head is the object header as a binary (a riak object binary with contents removed).
+
+by default Head will be the atom `disabled`.  Changing the mode of anti-entropy can enable the storage of the Head part - and this can then be used for 2i anti-entropy, of for metadata-based coverage folds.
 
 Activity in the KeyStore should be optimised for the vast majority of traffic being PUTs. Queries are only used for the KeyStore when:
 
@@ -83,8 +92,6 @@ Activity in the KeyStore should be optimised for the vast majority of traffic be
 - Folding over all objects to recalculate an AAE tree for each IndexN;
 
 - Fetching of a specific object by IndexN, SegmentID, Bucket and Key to recalculate a specific hash in the AAE tree when the update to the AAEController has a PreviousClock of `unidentified`.  
-
-When a KeyStore needs to be rebuilt, a new KeyStore is started, but the old KeyStore should continue to receive updates, and be used to fulfil requests for Keys and Clocks and to read `unidentified` Clocks.  Only once the new store is complete, should the old store be destroyed.
 
 A manifest file should be kept to indicate which is the current active store to be used on a restart.
 
@@ -96,12 +103,7 @@ There is a TreeCache process for each IndexN managed by the AAEController.  The 
 
 The TreeCache process should respond to each update by changing the tree to reflect that update.  
 
-The TreeCache can be in a `starting` state, for instance when a new cache is being built by the AAEController in the `replacing-tree` state.  In the starting state the TreeCache should not be forwarded requests for AAE tree information.
-
-
-### DiskLog
-
-When both replacing a store and replacing a tree, batches of updates need to be cached until the store or tree is ready to receive them.  For example, rebuilding the store will start a new KeyStore backend and take a snapshot of the real vnode backend to fold and populate the store.  However, the store being rebuilt cannot receive new updates during this rebuild process (without requiring all the updates from the fold to require a read before the PUT) - so the batches of new updates need to be cached in a log, to be applied only once the fold is complete.
+The TreeCache can be in a `loading` state, for instance when a new cache is being built by the AAEController, or when expiry has occurred. In this sate the TreeCache continues to update the existing tree, but also queues up received changes, whilst a new Tree is built from the KeyStore.  Once the TreeCache has been built the TreeCache should replace the old tree with the new tree and replay the queued updates.
 
 ## Startup and Shutdown
 
@@ -124,5 +126,3 @@ When replacing a store, the previous version of the store will be kept up to dat
 To avoid the need to do reads before writes when updating the AAE KeyStore from the vnode backend fold (so as not to replace a new update with an older snapshot value from the backend) new updates must be parked in a DiskLog process whilst the fold completes.  Once the fold is complete, the rebuild of store can be finished by catching up on updates from the DiskLog.
 
 At this stage the old Keystore can be deleted, and the new KeyStore be used.  At this stage though, the TreeCache does not necessarily reflect the state of the new KeyStore - the `replacing-tree` state is used to resolve this.  When replacing the tree, new empty TreeCaches are started and maintained in parallel to the existing TreeCaches (which continue to be used in exchanges).  A fold of the KeyStore is now commenced, whilst new updates are cached in a DiskLog.  Once the fold is complete, the new updates are applied and the TreeCache can be migrated from the old cache to the new cache.
-
-  
