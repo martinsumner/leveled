@@ -730,7 +730,12 @@ handle_call(trim, _From, State) when State#state.head_only == true ->
 handle_call(close, _From, State) ->
     {stop, normal, ok, State};
 handle_call(destroy, _From, State=#state{is_snapshot=Snp}) when Snp == false ->
-    {stop, destroy, ok, State};
+    leveled_log:log("B0011", []),
+    {ok, InkPathList} = leveled_inker:ink_doom(State#state.inker),
+    {ok, PCLPathList} = leveled_penciller:pcl_doom(State#state.penciller),
+    lists:foreach(fun(DirPath) -> delete_path(DirPath) end, InkPathList),
+    lists:foreach(fun(DirPath) -> delete_path(DirPath) end, PCLPathList),
+    {stop, normal, ok, State};
 handle_call(Msg, _From, State) ->
     {reply, {unsupported_message, element(1, Msg)}, State}.
 
@@ -740,13 +745,6 @@ handle_cast(_Msg, State) ->
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(destroy, State) ->
-    leveled_log:log("B0011", []),
-    {ok, InkPathList} = leveled_inker:ink_doom(State#state.inker),
-    {ok, PCLPathList} = leveled_penciller:pcl_doom(State#state.penciller),
-    lists:foreach(fun(DirPath) -> delete_path(DirPath) end, InkPathList),
-    lists:foreach(fun(DirPath) -> delete_path(DirPath) end, PCLPathList),
-    ok;
 terminate(Reason, State) ->
     leveled_log:log("B0003", [Reason]),
     ok = leveled_inker:ink_close(State#state.inker),
