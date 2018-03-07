@@ -747,8 +747,20 @@ handle_info(_Info, State) ->
 
 terminate(Reason, State) ->
     leveled_log:log("B0003", [Reason]),
-    ok = leveled_inker:ink_close(State#state.inker),
-    ok = leveled_penciller:pcl_close(State#state.penciller).
+    ok = 
+        case is_process_alive(State#state.inker) of 
+            true ->
+                leveled_inker:ink_close(State#state.inker);
+            false ->
+                ok 
+        end,
+    ok =
+        case is_process_alive(State#state.penciller) of 
+            true ->
+                leveled_penciller:pcl_close(State#state.penciller);
+            false ->
+                ok 
+        end.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
