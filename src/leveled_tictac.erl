@@ -76,16 +76,18 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(HASH_SIZE, 4).
+-define(L2_CHUNKSIZE, 256).
+-define(L2_BITSIZE, 8).
 
 %% UNSUUPPORTED tree sizes for accelerated segment filtering
--define(XXSMALL, {6, 64, 64 * 64}). 
--define(XSMALL, {7, 128, 128 * 128}). 
+-define(XXSMALL, 16). 
+-define(XSMALL, 64). 
 
 %% SUPPORTED tree sizes for accelerated segment filtering
--define(SMALL, {8, 256, 256 * 256}).
--define(MEDIUM, {9, 512, 512 * 512}).
--define(LARGE, {10, 1024, 1024 * 1024}).
--define(XLARGE, {11, 2048, 2048 * 2048}).
+-define(SMALL, 256).
+-define(MEDIUM, 1024).
+-define(LARGE, 4096).
+-define(XLARGE, 16384).
 
 
 -define(EMPTY, <<0:8/integer>>).
@@ -94,7 +96,6 @@
 -record(tictactree, {treeID :: any(),
                         size  :: xxsmall|xsmall|small|medium|large|xlarge,
                         width :: integer(),
-                        bitwidth :: integer(),
                         segment_count :: integer(),
                         level1 :: binary(),
                         level2 :: any() % an array - but OTP compatibility
@@ -119,15 +120,14 @@ new_tree(TreeID) ->
     new_tree(TreeID, small).
     
 new_tree(TreeID, Size) ->
-    {BitWidth, Width, SegmentCount} = get_size(Size),
+    Width = get_size(Size),
     Lv1Width = Width * ?HASH_SIZE * 8,
     Lv1Init = <<0:Lv1Width/integer>>,
     Lv2Init = array:new([{size, Width}, {default, ?EMPTY}]),
     #tictactree{treeID = TreeID,
                     size = Size,
                     width = Width,
-                    bitwidth = BitWidth,
-                    segment_count = SegmentCount,
+                    segment_count = Width * ?L2_CHUNKSIZE,
                     level1 = Lv1Init,
                     level2 = Lv2Init}.
 
@@ -156,12 +156,11 @@ import_tree(ExportedTree) ->
         [{<<"level1">>, L1Base64}, 
         {<<"level2">>, {struct, L2List}}]} = ExportedTree,
     L1Bin = base64:decode(L1Base64),
-    Sizes = 
-        lists:map(fun(SizeTag) -> {SizeTag, element(2, get_size(SizeTag))} end,
-                    ?VALID_SIZES),
+    Sizes = lists:map(fun(SizeTag) -> {SizeTag, get_size(SizeTag)} end, 
+                        ?VALID_SIZES),
     Width = byte_size(L1Bin) div ?HASH_SIZE,
     {Size, Width} = lists:keyfind(Width, 2, Sizes),
-    {BitWidth, Width, SegmentCount} = get_size(Size),
+    Width = get_size(Size),
     Lv2Init = array:new([{size, Width}]),
     FoldFun = 
         fun({X, EncodedL2SegBin}, L2Array) ->
@@ -172,8 +171,7 @@ import_tree(ExportedTree) ->
     #tictactree{treeID = import,
                     size = Size,
                     width = Width,
-                    bitwidth = BitWidth,
-                    segment_count = SegmentCount,
+                    segment_count = Width * ?L2_CHUNKSIZE,
                     level1 = L1Bin,
                     level2 = Lv2}.
 
@@ -190,10 +188,11 @@ add_kv(TicTacTree, Key, Value, BinExtractFun) ->
     Segment = get_segment(SegHash, TicTacTree#tictactree.segment_count),
     
     Level2Pos =
-        Segment band (TicTacTree#tictactree.width - 1),
+        Segment band (?L2_CHUNKSIZE - 1),
     Level1Pos =
-        (Segment bsr TicTacTree#tictactree.bitwidth)
+        (Segment bsr ?L2_BITSIZE)
             band (TicTacTree#tictactree.width - 1),
+    
     Level2BytePos = ?HASH_SIZE * Level2Pos,
     Level1BytePos = ?HASH_SIZE * Level1Pos,
     
@@ -228,7 +227,6 @@ add_kv(TicTacTree, Key, Value, BinExtractFun) ->
 find_dirtyleaves(SrcTree, SnkTree) ->
     _Size = SrcTree#tictactree.size,
     _Size = SnkTree#tictactree.size,
-    Width = SrcTree#tictactree.width,
     
     IdxList = find_dirtysegments(fetch_root(SrcTree), fetch_root(SnkTree)),
     SrcLeaves = fetch_leaves(SrcTree, IdxList),
@@ -239,7 +237,7 @@ find_dirtyleaves(SrcTree, SnkTree) ->
             {Idx, SrcLeaf} = lists:keyfind(Idx, 1, SrcLeaves),
             {Idx, SnkLeaf} = lists:keyfind(Idx, 1, SnkLeaves),
             L2IdxList = segmentcompare(SrcLeaf, SnkLeaf),
-            Acc ++ lists:map(fun(X) -> X + Idx * Width end, L2IdxList)
+            Acc ++ lists:map(fun(X) -> X + Idx * ?L2_CHUNKSIZE end, L2IdxList)
         end,
     lists:sort(lists:foldl(FoldFun, [], IdxList)).
 
@@ -304,7 +302,7 @@ merge_trees(TreeA, TreeB) ->
 get_segment(Hash, SegmentCount) when is_integer(SegmentCount) ->
     Hash band (SegmentCount - 1);
 get_segment(Hash, TreeSize) ->
-    get_segment(Hash, element(3, get_size(TreeSize))).
+    get_segment(Hash, ?L2_CHUNKSIZE * get_size(TreeSize)).
 
 
 -spec tictac_hash(binary(), any()) -> {integer(), integer()}.
@@ -369,7 +367,7 @@ generate_segmentfilter_list(SegmentList, Size) ->
 get_level2(TicTacTree, L1Pos) ->
     case array:get(L1Pos, TicTacTree#tictactree.level2) of 
         ?EMPTY ->
-            Lv2SegBinSize = TicTacTree#tictactree.width * ?HASH_SIZE * 8,
+            Lv2SegBinSize = ?L2_CHUNKSIZE * ?HASH_SIZE * 8,
             <<0:Lv2SegBinSize/integer>>;
         SrcL2 ->
             SrcL2 
