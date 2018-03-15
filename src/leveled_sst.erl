@@ -1519,7 +1519,7 @@ crc_check_slot(FullBin) ->
         PosBL:32/integer, 
         CRC32H:32/integer,
         Rest/binary>> = FullBin,
-    PosBL0 = min(PosBL, byte_size(FullBin) - 3), 
+    PosBL0 = min(PosBL, byte_size(FullBin) - 12), 
         % If the position has been bit-flipped to beyond the maximum paossible
         % length, use the maximum possible length
     <<Header:PosBL0/binary, Blocks/binary>> = Rest,
