@@ -27,6 +27,7 @@
             binary_bucketlist/5,
             index_query/3,
             bucketkey_query/4,
+            bucketkey_query/5,
             hashlist_query/3,
             tictactree/5,
             foldheads_allkeys/5,
@@ -40,6 +41,8 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(CHECKJOURNAL_PROB, 0.2).
+
+-type key_range() :: {StartKey:: any(), EndKey :: any()}.
 
 %%%============================================================================
 %%% External functions
@@ -118,25 +121,31 @@ index_query(SnapFun, {StartKey, EndKey, TermHandling}, FoldAccT) ->
         end,
     {async, Runner}.
 
--spec bucketkey_query(fun(), atom(), any(), tuple()) -> {async, fun()}.
+-spec bucketkey_query(fun(), atom(), any(), key_range(), tuple()) -> {async, fun()}.
 %% @doc
-%% Fold over all keys under tak (potentially restricted to a given bucket)
-bucketkey_query(SnapFun, Tag, Bucket, {FoldKeysFun, InitAcc}) ->
-    SK = leveled_codec:to_ledgerkey(Bucket, null, Tag),
-    EK = leveled_codec:to_ledgerkey(Bucket, null, Tag),
+%% Fold over all keys in `KeyRange' under tag (restricted to a given bucket)
+bucketkey_query(SnapFun, Tag, Bucket, {StartKey, EndKey}, {FoldKeysFun, InitAcc}) ->
+    SK = leveled_codec:to_ledgerkey(Bucket, StartKey, Tag),
+    EK = leveled_codec:to_ledgerkey(Bucket, EndKey, Tag),
     AccFun = accumulate_keys(FoldKeysFun),
-    Runner = 
+    Runner =
         fun() ->
-            {ok, LedgerSnapshot, _JournalSnapshot} = SnapFun(),
-            Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
-                                                        SK,
-                                                        EK,
-                                                        AccFun,
-                                                        InitAcc),
-            ok = leveled_penciller:pcl_close(LedgerSnapshot),
-            Acc
+                {ok, LedgerSnapshot, _JournalSnapshot} = SnapFun(),
+                Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
+                                                      SK,
+                                                      EK,
+                                                      AccFun,
+                                                      InitAcc),
+                ok = leveled_penciller:pcl_close(LedgerSnapshot),
+                Acc
         end,
     {async, Runner}.
+
+-spec bucketkey_query(fun(), atom(), any(), tuple()) -> {async, fun()}.
+%% @doc
+%% Fold over all keys under tag (potentially restricted to a given bucket)
+bucketkey_query(SnapFun, Tag, Bucket, FunAcc) ->
+    bucketkey_query(SnapFun, Tag, Bucket, {null, null}, FunAcc).
 
 -spec hashlist_query(fun(), atom(), boolean()) -> {async, fun()}.
 %% @doc
