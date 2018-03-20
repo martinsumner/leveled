@@ -327,6 +327,8 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) ->
 %% of the form {ObjectOp, Bucket, Key, SubKey, Value}.  The Value will be 
 %% stored within the HEAD of the object (in the Ledger), so the full object 
 %% is retrievable using a HEAD request.  The ObjectOp is either add or remove.
+%%
+%% The list should be de-duplicated before it is passed to the bookie.
 book_mput(Pid, ObjectSpecs) ->
     book_mput(Pid, ObjectSpecs, infinity).
 
@@ -335,9 +337,11 @@ book_mput(Pid, ObjectSpecs) ->
 %%
 %% When the store is being run in head_only mode, batches fo object specs may
 %% be inserted in to the store using book_mput/2.  ObjectSpecs should be 
-%% of the form {action, {Bucket, Key, SubKey, Value}}.  The Value will be 
+%% of the form {action, Bucket, Key, SubKey, Value}.  The Value will be 
 %% stored within the HEAD of the object (in the Ledger), so the full object 
 %% is retrievable using a HEAD request.
+%%
+%% The list should be de-duplicated before it is passed to the bookie.
 book_mput(Pid, ObjectSpecs, TTL) ->
     gen_server:call(Pid, {mput, ObjectSpecs, TTL}, infinity).
 
