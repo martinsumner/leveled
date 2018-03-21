@@ -64,7 +64,8 @@
         book_islastcompactionpending/1,
         book_trimjournal/1,
         book_close/1,
-        book_destroy/1]).
+        book_destroy/1,
+        book_isempty/2]).
 
 -export([get_opt/2,
             get_opt/3,
@@ -484,14 +485,23 @@ book_trimjournal(Pid) ->
 %%
 %% A clean shutdown will persist all the information in the Penciller memory
 %% before closing, so shutdown is not instantaneous.
-
 book_close(Pid) ->
     gen_server:call(Pid, close, infinity).
 
 %% @doc Close and clean-out files
-
 book_destroy(Pid) ->
     gen_server:call(Pid, destroy, infinity).
+
+
+-spec book_isempty(pid(), atom()) -> boolean().
+%% @doc 
+%% Confirm if the store is empty, or if it contains a Key and Value for a 
+%% given tag
+book_isempty(Pid, Tag) ->
+    FoldAccT = {fun(_B, _Acc) -> false end, true},
+    {async, Runner} = 
+        gen_server:call(Pid, {return_runner, {first_bucket, Tag, FoldAccT}}),
+    Runner().
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -992,7 +1002,14 @@ get_runner(State,
     leveled_runner:foldobjects_byindex(SnapFun, 
                                         {Tag, Bucket, Field, FromTerm, ToTerm},
                                         FoldObjectsFun);
-
+get_runner(State, {binary_bucketlist, Tag, FoldAccT}) ->
+    {FoldBucketsFun, Acc} = FoldAccT,
+    SnapFun = return_snapfun(State, ledger, no_lookup, false, false),
+    leveled_runner:binary_bucketlist(SnapFun, Tag, FoldBucketsFun, Acc);
+get_runner(State, {first_bucket, Tag, FoldAccT}) ->
+    {FoldBucketsFun, Acc} = FoldAccT,
+    SnapFun = return_snapfun(State, ledger, no_lookup, false, false),
+    leveled_runner:binary_bucketlist(SnapFun, Tag, FoldBucketsFun, Acc, 1);
 %% Set of specific runners, primarily used as exmaples for tests
 get_runner(State, DeprecatedQuery) ->
     get_deprecatedrunner(State, DeprecatedQuery).
@@ -1009,10 +1026,6 @@ get_deprecatedrunner(State, {bucket_stats, Bucket}) ->
 get_deprecatedrunner(State, {riakbucket_stats, Bucket}) ->
     SnapFun = return_snapfun(State, ledger, no_lookup, true, true),
     leveled_runner:bucket_sizestats(SnapFun, Bucket, ?RIAK_TAG);
-get_deprecatedrunner(State, {binary_bucketlist, Tag, FoldAccT}) ->
-    {FoldKeysFun, Acc} = FoldAccT,
-    SnapFun = return_snapfun(State, ledger, no_lookup, false, false),
-    leveled_runner:binary_bucketlist(SnapFun, Tag, FoldKeysFun, Acc);
 get_deprecatedrunner(State, {hashlist_query, Tag, JournalCheck}) ->
     SnapType = snaptype_by_presence(JournalCheck),
     SnapFun = return_snapfun(State, SnapType, no_lookup, true, true),    
@@ -1915,6 +1928,21 @@ foldobjects_vs_foldheads_bybucket_testto() ->
     ok = book_close(Bookie1),
     reset_filestructure().
 
+is_empty_test() ->
+    RootPath = reset_filestructure(),
+    {ok, Bookie1} = book_start([{root_path, RootPath},
+                                    {max_journalsize, 1000000},
+                                    {cache_size, 500}]),
+    % Put in an object with a TTL in the future
+    Future = leveled_codec:integer_now() + 300,
+    ?assertMatch(true, leveled_bookie:book_isempty(Bookie1, ?STD_TAG)),
+    ok = book_tempput(Bookie1, 
+                        <<"B">>, <<"K">>, {value, <<"V">>}, [], 
+                        ?STD_TAG, Future),
+    ?assertMatch(false, leveled_bookie:book_isempty(Bookie1, ?STD_TAG)),
+    ?assertMatch(true, leveled_bookie:book_isempty(Bookie1, ?RIAK_TAG)),
+
+    ok = leveled_bookie:book_close(Bookie1).
 
 scan_table_test() ->
     K1 = leveled_codec:to_ledgerkey(<<"B1">>,

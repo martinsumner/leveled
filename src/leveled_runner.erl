@@ -24,6 +24,7 @@
 -export([
             bucket_sizestats/3,
             binary_bucketlist/4,
+            binary_bucketlist/5,
             index_query/3,
             bucketkey_query/4,
             hashlist_query/3,
@@ -69,10 +70,20 @@ bucket_sizestats(SnapFun, Bucket, Tag) ->
 %% @doc
 %% List buckets for tag, assuming bucket names are all binary type
 binary_bucketlist(SnapFun, Tag, FoldBucketsFun, InitAcc) ->
+    binary_bucketlist(SnapFun, Tag, FoldBucketsFun, InitAcc, -1).
+
+-spec binary_bucketlist(fun(), atom(), fun(), any(), integer()) 
+                                                    -> {async, fun()}.
+%% @doc
+%% set Max Buckets to -1 to list all buckets, otherwise will only return
+%% MaxBuckets (use 1 to confirm that there exists any bucket for a given Tag)
+binary_bucketlist(SnapFun, Tag, FoldBucketsFun, InitAcc, MaxBuckets) ->
     Runner = 
         fun() ->
             {ok, LedgerSnapshot, _JournalSnapshot} = SnapFun(),
-            BucketAcc = get_nextbucket(null, null, Tag, LedgerSnapshot, []),
+            BucketAcc = 
+                get_nextbucket(null, null, 
+                                Tag, LedgerSnapshot, [], {0, MaxBuckets}),
             ok = leveled_penciller:pcl_close(LedgerSnapshot),
             lists:foldl(fun({B, _K}, Acc) -> FoldBucketsFun(B, Acc) end,
                             InitAcc,
@@ -380,7 +391,9 @@ foldobjects_byindex(SnapFun, {Tag, Bucket, Field, FromTerm, ToTerm}, FoldFun) ->
 %%% Internal functions
 %%%============================================================================
 
-get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList) ->
+get_nextbucket(_NextB, _NextK, _Tag, _LS, BKList, {Limit, Limit}) ->
+    BKList;
+get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList, {C, L}) ->
     Now = leveled_codec:integer_now(),
     StartKey = leveled_codec:to_ledgerkey(NextBucket, NextKey, Tag),
     EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
@@ -405,13 +418,15 @@ get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList) ->
                                     null,
                                     Tag,
                                     LedgerSnapshot,
-                                    [{B, K}|BKList]);
+                                    [{B, K}|BKList],
+                                    {C + 1, L});
                 false ->
                     get_nextbucket(B,
                                     <<K/binary, 0>>,
                                     Tag,
                                     LedgerSnapshot,
-                                    BKList)
+                                    BKList,
+                                    {C, L})
             end;
         {NB, _V} ->
             leveled_log:log("B0010",[NB]),
