@@ -97,12 +97,12 @@ segment_hash(Key) when is_binary(Key) ->
 segment_hash({?RIAK_TAG, Bucket, Key, null}) 
                                     when is_binary(Bucket), is_binary(Key) ->
     segment_hash(<<Bucket/binary, Key/binary>>);
-segment_hash({?HEAD_TAG, Bucket, Key, null})
-                                    when is_binary(Bucket), is_binary(Key) ->
-    segment_hash(<<Bucket/binary, Key/binary>>);
 segment_hash({?HEAD_TAG, Bucket, Key, SubK})
                     when is_binary(Bucket), is_binary(Key), is_binary(SubK) ->
     segment_hash(<<Bucket/binary, Key/binary, SubK/binary>>);
+segment_hash({?HEAD_TAG, Bucket, Key, _SubK})
+                                    when is_binary(Bucket), is_binary(Key) ->
+    segment_hash(<<Bucket/binary, Key/binary>>);
 segment_hash(Key) ->
     segment_hash(term_to_binary(Key)).
 
