@@ -98,9 +98,12 @@ segment_hash(Key) when is_binary(Key) ->
 segment_hash({?RIAK_TAG, Bucket, Key, null}) 
                                     when is_binary(Bucket), is_binary(Key) ->
     segment_hash(<<Bucket/binary, Key/binary>>);
-segment_hash({?HEAD_TAG, Bucket, Key, SubKey})
-                when is_binary(Bucket), is_binary(Key), is_binary(SubKey) ->
-    segment_hash(<<Bucket/binary, Key/binary, SubKey/binary>>);
+segment_hash({?HEAD_TAG, Bucket, Key, null})
+                                    when is_binary(Bucket), is_binary(Key) ->
+    segment_hash(<<Bucket/binary, Key/binary>>);
+segment_hash({?HEAD_TAG, Bucket, Key, SubK})
+                    when is_binary(Bucket), is_binary(Key), is_binary(SubK) ->
+    segment_hash(<<Bucket/binary, Key/binary, SubK/binary>>);
 segment_hash(Key) ->
     segment_hash(term_to_binary(Key)).
 
@@ -960,5 +963,13 @@ delayedupdate_aaeidx_test() ->
     AAESpecs = aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods),
     ?assertMatch(0, length(AAESpecs)).
 
+head_segment_compare_test() ->
+    % Reminder to align native and parallel(leveled_ko) key stores for 
+    % kv_index_tictactree
+    H1 = segment_hash({?HEAD_TAG, <<"B1">>, <<"K1">>, null}),
+    H2 = segment_hash({?RIAK_TAG, <<"B1">>, <<"K1">>, null}),
+    H3 = segment_hash({?HEAD_TAG, <<"B1">>, <<"K1">>, <<>>}),
+    ?assertMatch(H1, H2),
+    ?assertMatch(H1, H3).
 
 -endif.
