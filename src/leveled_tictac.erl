@@ -69,6 +69,7 @@
             import_tree/1,
             valid_size/1,
             keyto_segment32/1,
+            keyto_segment48/1,
             generate_segmentfilter_list/2
         ]).
 
@@ -327,11 +328,22 @@ tictac_hash(BinKey, Val) when is_binary(BinKey) ->
 %% @doc
 %% The first 16 bits of the segment hash used in the tictac tree should be 
 %% made up of the segment ID part (which is used to accelerate queries)
-keyto_segment32(BinKey) when is_binary(BinKey) ->
-    {SegmentID, ExtraHash} = leveled_codec:segment_hash(BinKey),
+keyto_segment32({segment_hash, SegmentID, ExtraHash}) 
+                        when is_integer(SegmentID), is_integer(ExtraHash) ->
     (ExtraHash band 65535) bsl 16 + SegmentID;
+keyto_segment32(BinKey) when is_binary(BinKey) ->
+    keyto_segment32(keyto_segment48(BinKey));
 keyto_segment32(Key) ->
     keyto_segment32(term_to_binary(Key)).
+
+-spec keyto_segment48(binary()) -> {segment_hash, integer(), integer()}.
+%% @doc
+%% Produce a segment with an Extra Hash part - for tictac use most of the 
+%% ExtraHash will be discarded
+keyto_segment48(BinKey) ->
+    <<SegmentID:16/integer, ExtraHash:32/integer, _Rest/binary>> = 
+        crypto:hash(md5, BinKey),
+    {segment_hash, SegmentID, ExtraHash}.
 
 -spec generate_segmentfilter_list(list(integer()), atom())  
                                                     -> false|list(integer()). 

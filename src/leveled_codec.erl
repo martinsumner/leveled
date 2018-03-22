@@ -92,8 +92,7 @@
 %% speed can be gained if just the segment ID is known - but more can be 
 %% gained should the extended hash (with the second element) is known
 segment_hash(Key) when is_binary(Key) ->
-    <<SegmentID:16/integer, ExtraHash:32/integer, _Rest/binary>> = 
-        crypto:hash(md5, Key),
+    {segment_hash, SegmentID, ExtraHash} = leveled_tictac:keyto_segment48(Key),
     {SegmentID, ExtraHash};
 segment_hash({?RIAK_TAG, Bucket, Key, null}) 
                                     when is_binary(Bucket), is_binary(Key) ->
