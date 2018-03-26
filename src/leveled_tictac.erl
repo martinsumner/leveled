@@ -70,7 +70,8 @@
             valid_size/1,
             keyto_segment32/1,
             keyto_segment48/1,
-            generate_segmentfilter_list/2
+            generate_segmentfilter_list/2,
+            merge_binaries/2
         ]).
 
 
