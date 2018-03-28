@@ -71,7 +71,8 @@
             keyto_segment32/1,
             keyto_segment48/1,
             generate_segmentfilter_list/2,
-            merge_binaries/2
+            merge_binaries/2,
+            join_segment/2
         ]).
 
 
@@ -371,6 +372,12 @@ generate_segmentfilter_list(SegmentList, Size) ->
         true ->
             SegmentList
     end.
+
+-spec join_segment(integer(), integer()) -> integer().
+%% @doc
+%% Generate a segment ID for the Brnahc and Leaf ID co-ordinates
+join_segment(BranchID, LeafID) ->
+    BranchID bsl ?L2_BITSIZE + LeafID.
 
 %%%============================================================================
 %%% Internal functions
