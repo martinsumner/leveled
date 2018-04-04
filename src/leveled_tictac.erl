@@ -375,7 +375,7 @@ generate_segmentfilter_list(SegmentList, Size) ->
 
 -spec join_segment(integer(), integer()) -> integer().
 %% @doc
-%% Generate a segment ID for the Brnahc and Leaf ID co-ordinates
+%% Generate a segment ID for the Branch and Leaf ID co-ordinates
 join_segment(BranchID, LeafID) ->
     BranchID bsl ?L2_BITSIZE + LeafID.
 
@@ -479,6 +479,18 @@ simple_test_withsize(Size) ->
 
     Tree0 = new_tree(0, Size),
     Tree1 = add_kv(Tree0, K1, {caine, 1}, BinFun),
+
+    % Check that we can get to the segment ID that has changed, and confirm it
+    % is the segment ID expected
+    Root1 = fetch_root(Tree1),
+    Root0 = fetch_root(Tree0),
+    [BranchID] = find_dirtysegments(Root0, Root1),
+    [{BranchID, Branch1}] = fetch_leaves(Tree1, [BranchID]),
+    [{BranchID, Branch0}] = fetch_leaves(Tree0, [BranchID]),
+    [LeafID] = find_dirtysegments(Branch0, Branch1),
+    SegK1 = keyto_segment32(K1) band (get_size(Size) * 256 - 1),
+    ?assertMatch(SegK1, join_segment(BranchID, LeafID)),
+
     Tree2 = add_kv(Tree1, K2, {caine, 2}, BinFun),
     Tree3 = add_kv(Tree2, K3, {caine, 3}, BinFun),
     Tree3A = add_kv(Tree3, K3, {caine, 4}, BinFun),
