@@ -95,6 +95,7 @@
         code_change/3,
         ink_start/1,
         ink_put/4,
+        ink_mput/3,
         ink_get/3,
         ink_fetch/3,
         ink_keycheck/3,
@@ -105,6 +106,7 @@
         ink_compactjournal/3,
         ink_compactioncomplete/1,
         ink_compactionpending/1,
+        ink_trim/2,
         ink_getmanifest/1,
         ink_updatemanifest/3,
         ink_printmanifest/1,
@@ -184,6 +186,16 @@ ink_start(InkerOpts) ->
 %% expiry time (or infinity).
 ink_put(Pid, PrimaryKey, Object, KeyChanges) ->
     gen_server:call(Pid, {put, PrimaryKey, Object, KeyChanges}, infinity).
+
+
+-spec ink_mput(pid(), any(), {list(), integer()|infinity}) -> {ok, integer()}.
+%% @doc
+%% MPUT as series of object specifications, which will be converted into 
+%% objects in the Ledger.  This should only be used when the Bookie is 
+%% running in head_only mode.  The journal entries arekept only for handling
+%% consistency on startup
+ink_mput(Pid, PrimaryKey, ObjectChanges) ->
+    gen_server:call(Pid, {mput, PrimaryKey, ObjectChanges}, infinity).
 
 -spec ink_get(pid(),
                 {atom(), any(), any(), any()}|string(),
@@ -361,9 +373,16 @@ ink_compactioncomplete(Pid) ->
 -spec ink_compactionpending(pid()) -> boolean().
 %% @doc
 %% Is there ongoing compaction work?  No compaction work should be initiated
-%5 if there is already some compaction work ongoing.
+%% if there is already some compaction work ongoing.
 ink_compactionpending(Pid) ->
     gen_server:call(Pid, compaction_pending, infinity).
+
+-spec ink_trim(pid(), integer()) -> ok.
+%% @doc
+%% Trim the Journal to just those files that contain entries since the 
+%% Penciller's persisted SQN
+ink_trim(Pid, PersistedSQN) ->
+    gen_server:call(Pid, {trim, PersistedSQN}, infinity).
 
 -spec ink_getmanifest(pid()) -> list().
 %% @doc
@@ -419,6 +438,11 @@ handle_call({put, Key, Object, KeyChanges}, _From, State) ->
     case put_object(Key, Object, KeyChanges, State) of
         {_, UpdState, ObjSize} ->
             {reply, {ok, UpdState#state.journal_sqn, ObjSize}, UpdState}
+    end;
+handle_call({mput, Key, ObjChanges}, _From, State) ->
+    case put_object(Key, head_only, ObjChanges, State) of
+        {_, UpdState, _ObjSize} ->
+            {reply, {ok, UpdState#state.journal_sqn}, UpdState}
     end;
 handle_call({fetch, Key, SQN}, _From, State) ->
     case get_object(Key, SQN, State#state.manifest, true) of
@@ -503,6 +527,9 @@ handle_call(compaction_complete, _From, State) ->
     {reply, ok, State#state{compaction_pending=false}};
 handle_call(compaction_pending, _From, State) ->
     {reply, State#state.compaction_pending, State};
+handle_call({trim, PersistedSQN}, _From, State) ->
+    ok = leveled_iclerk:clerk_trim(State#state.clerk, self(), PersistedSQN),
+    {reply, ok, State};
 handle_call(close, _From, State) ->
     {stop, normal, ok, State};
 handle_call(doom, _From, State) ->

@@ -319,6 +319,13 @@ sst_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
 %%
 %% To make the range open-ended (either to start, end or both) the all atom
 %% can be used in place of the Key tuple.
+%%
+%% A segment list can also be passed, which inidcates a subset of segment 
+%% hashes of interest in the query.  
+%%
+%% TODO: Optimise this so that passing a list of segments that tune to the
+%% same hash is faster - perhaps provide an exportable function in 
+%% leveled_tictac
 sst_getfilteredrange(Pid, StartKey, EndKey, ScanWidth, SegList) ->
     SegList0 = tune_seglist(SegList),
     case gen_fsm:sync_send_event(Pid,

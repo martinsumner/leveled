@@ -20,9 +20,50 @@ There were three primary issues with these mechanisms:
 
 To address these weaknesses Active Anti-Entropy (AAE) was introduced to Riak, as a configurable option.  Configuring Active Anti-Entropy would start a new AAE "hashtree" store for every primary vnode in the ring.  The vnode process would, following a successful put, [update this hashtree store process](https://github.com/basho/riak_kv/blob/2.1.7/src/riak_kv_vnode.erl#L2139-L2169) by sending it the updated object after converting it from its binary format.  This would generally happen in via async message passing, but periodically the change would block the vnode to confirm that the AAE process was keeping up.  The hashtree store process would hash the riak object to create a hash for the update, and hash the Key to map it to one of 1024 * 1024 segments - and then in batches update the store with a key of {$t, Partition, Segment, Key}, and a value of the object hash.
 
-From this persisted store a [Merkle tree](https://en.wikipedia.org/wiki/Merkle_tree) is maintained for each Partition.  These Merkle trees can then then be exchanged with another vnode's AAE hashtree store if that vnode is also a primary vnode for that same partition.  Exchanging the Merkle tree would highlight any segments which had a variance - and then it would be possible to iterate over the store segment by segment to discover which keys actually differed.  The objects associated with these keys could then be re-read within the actual vnode stores, so that read repair would correct any entropy that had been indicated by the discrepancy between the hashtree stores.  
+From this persisted store a [Merkle tree](https://en.wikipedia.org/wiki/Merkle_tree) is maintained for each preflist head and n-val combination supported by the vnode (if and only if the vnode is a primary for that preflist).  So if there was a ring-size of 8 in a cluster there would be 8 preflists for each n-val, so for n-val of 3:
 
-The process of maintaining the hashtree is partially deferred to the point of the exchange, and this update process is of a low but not-necessarily non-trivial cost.  the cost is low enough so that these exchanges can occur with reasonable frequency (i.e. many minutes between exchanges) without creating significant background load.  
+{P0, 3} -> {V0, V1, V2}
+
+{P1, 3} -> {V1, V2, V3}
+
+...
+
+{P7, 3} -> {V7, V0, V1}
+
+
+For n-val of 4:
+
+{P0, 4} -> {V0, V1, V2, V3}
+
+{P1, 4} -> {V1, V2, V3, V4}
+
+...
+
+{P7, 4} -> {V7, V0, V1, V2}
+
+
+So for Vnode0, it would keep 7 hashtrees:
+
+{P0, 3} - to be exchanged with V1 and V2
+
+{P7, 3} - to be exchanged with V7 and V1
+
+{P6, 3} - to be exchanged with V6 and V7
+
+{P0, 4} - to be exchanged with V1 and V2 and V3
+
+{P7, 4} - to be exchanged with V7 and V1 and V2
+
+{P6, 4} - to be exchanged with V6 and V7 and V1
+
+{P5, 4} - to be exchanged with V5 and V6 and V7
+
+
+So with a ring-size of 128, and n-vals of 3 and 5, there would be 8 hashtrees per vnode to be kept (1024 overall), and 26 exchanges per vnode (1,664 exchanges overall for full synchronisation - assuming each exchange achieves bi-directional synchronisation).
+
+[Note that, the volume of hashtrees to be exchanged could be reduced by keeping just a single hashtree for each vnode with which there is a need to exchange.  However, then for each PUT there would be a need to update up to `n-1` hashtrees]
+
+The process of maintaining the hashtree is partially deferred to the point of the exchange, and this update process is of a low but not-necessarily non-trivial cost.  At the point of receiving an PUT the PUT at each vnode will belong to precisely one hashtree, and that hashtree will have the segment of the Merkle tree associated with that Bucket and Key to be marked as dirty.  When an exchange is prompted, for each dirty segment in the hashtree to be exchanges, there must be a range query to discover all the Keys and Hashes for the required combination of `{Partition, NVal, Segment}`, for all dirty segments in that hashtree.
 
 Infrequently, but regularly, the hashtree store would be cleared and rebuilt from an object fold over the vnode store to ensure that it reflected the actual persisted state in the store.  This rebuild process depends on some cluster-wide lock acquisition and other throttling techniques, as it has to avoid generating false negative results from exchanges scheduled to occur during the rebuild, avoid unexpected conditions on shutdown during the rebuild, avoid excessive concurrency of rebuild operations within the cluster, and avoid flooding the cluster with read-repair events following a rebuild.  Despite precautionary measures within the design, the rebuild process is, when compared to other Riak features, a relatively common trigger for production issues.
 
@@ -46,7 +87,7 @@ Although this represented an improvement in terms of entropy management, there w
 
 - The hashtrees are not externally exposed, and so cannot be used for externally managed replication (e.g. to another database).
 
-- The rebuilds of the hashtree still require the relatively expensive fold_objects operation, and so parallelisation of rebuilds may need to be controlled to prevent an impact on cluster performance.  Measuring the impact is difficult in pre-production load tests due to the scheduled and infrequent nature of AAE rebuilds.
+- The rebuilds of the hashtree still require the relatively expensive fold_objects operation, and so parallelisation of rebuilds may need to be controlled to prevent an impact on cluster performance.  Measuring the impact is difficult in pre-production load tests due to the scheduled and infrequent nature of AAE rebuilds, and this was mitigated through the throttling of rebuild folds within Riak.
 
 - Improvements to hashtrees require significant devleopment and test for transition, due to the potential for hashtree changes to break many things (e.g. Solr integration, MDC), and also the difficulty in coordinating changes between different dependent systems that independently build state over long periods of time.
 
@@ -288,9 +329,9 @@ Some notes on re-using this alternative anti-entropy mechanism within Riak:
 
 * A surprising feature of read repair is that it will read repair to fallback nodes, not just primary nodes.  This means that in read-intensive workloads, write activity may dramatically increase during node failure (as a large proportion of reads will become write events) - increasing the chance of servers falling domino style.  However, in some circumstances the extra duplication can also [increase the chance of data loss](https://github.com/russelldb/russelldb.github.io/blob/master/3.2.kv679-solution.md)!  This also increases greatly the volume of unnecessary data to be handed-off when the primary returns.  Without active anti-entropy, and in the absence of other safety checks like `notfound_ok` being set to false, or `pr` being set to at least 1 - there will be scenarios where this feature may be helpful.  As part of improving active anti-entropy, it may be wise to re-visit the tuning of anti-entropy features that existed prior to AAE, in particular should it be possible to configure read-repair to act on primary nodes only.
 
-## Some notes on the experience of Riak implementation
+## Phase 1 - Initial Implementation Notes
 
-### Phase 1 - Initial Test of Folds with Core node_worker_pool
+### Initial Test of Folds with Core node_worker_pool
 
 As an initial proving stage of implementation, the riak_core_node_worker_pool has been implemented in riak_kv and riak_core, and then the listkeys function has been change so that it can be switched between using the node_worker_pool (new behaviour) and running in parallel using the vnode_worker_pool (old behaviour).
 
@@ -384,6 +425,14 @@ The AAE hashtree lock situation is complex, but can be summarised as:
 
 - however during a coverage fold for MDC AAE, a build may crash the fold so there may be a need to check for running folds before prompting a rebuild.
 
-### Phase 2
+## Phase 2 - Reconsider
 
-For phase 2 the issues of how to efficiently manage AAE queries in leveldb and bitcask will be put to one side, and the focus will be on getting an effective solution up and running with leveled.
+Feedback, and the implementation experience of the initial design raised the following issues:
+
+- This was an answer that worked with the Leveled backend, but not other backends (specifically not bitcask).  It would be better if there could be feature compatibility between backends, and in particular can entropy management be improved without requiring a migration of backends.
+
+- Separating out the problem of near real-time anti-entropy adds complexity.  Production experience of AAE full-sync was that hen it worked (and sometimes it didn't), it was very fast (e.g. sub minute) and low cost.  It seems a retrograde step to no longer do full database synchronisation at this speed and cost.
+
+- Timing problems would lead to false negative results, and false negative results were expensive.  For example on a busy cluster it is likely that there may be o(1000) differences just because of timing deltas when vnodes in different clusters received requests (racing with the timing difference in arrivals of PUTs).
+
+## Phase 3 - Redesign

@@ -380,3 +380,21 @@ CPU utilisation was also generally high (and notably higher than in the Riak/lev
 All this has implications for future backend choices, but also for the nature of the GET and PUT FSMs.  The most positive non-functional characteristic is the external response time stability in face of internal resource pressure.  What isn't clear is to the extent that this is delivered simply through a backend change, or by the change in the nature of the FSM which naturally diverts load away from vnodes with longer queues (e.g. delays) evening out the load in face of localised pressures.
 
 It will be interesting to see in the case of both leveldb and leveled backends the potential improvements which may arise from the use of [vnode_proxy soft overload checks and a switch to 1 GET, n-1 HEADS](https://github.com/basho/riak_kv/issues/1661).
+
+### Extending to 24 hours
+
+Running the test over 24 hours provides this comparison between 200M and 400M accumulated operations:
+
+![](pics/28Feb_24HourTest.png)
+
+The trendline has been removed from the Leveled graph as the trend is obvious.  The difference between the trends for the two backends is consistently 30%-35% throughout the extended portion.
+
+These graphs show side-by-side comparisons of disk utilisation (median, mean and max), and read_await and write_await times - with the Leveled test in the first 24 hours, and the leveldb test in the second 24 hour period.
+
+![](pics/28Feb_DiskUtilCompare.png)
+
+![](pics/28Feb_AwaitCompare.png)
+
+Both tests become constrained by disk, but the Leveled test pushes the disk in a more consistent manner producing more predictable results.
+
+The other notable factor in running the test for 24 hours was that the mean 2i response time continued to rise in the Leveldb test, but not the leveled test.  By the 24th hour of the test the Leveldb test had a mean 2i response time of over 3s, whereas the mean response time in the Leveled remained constant at around 120ms.

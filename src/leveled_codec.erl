@@ -62,6 +62,7 @@
         get_size/2,
         get_keyandobjhash/2,
         idx_indexspecs/5,
+        obj_objectspecs/3,
         aae_indexspecs/6,
         generate_uuid/0,
         integer_now/0,
@@ -91,10 +92,15 @@
 %% speed can be gained if just the segment ID is known - but more can be 
 %% gained should the extended hash (with the second element) is known
 segment_hash(Key) when is_binary(Key) ->
-    <<SegmentID:16/integer, ExtraHash:32/integer, _Rest/binary>> = 
-        crypto:hash(md5, Key),
+    {segment_hash, SegmentID, ExtraHash} = leveled_tictac:keyto_segment48(Key),
     {SegmentID, ExtraHash};
 segment_hash({?RIAK_TAG, Bucket, Key, null}) 
+                                    when is_binary(Bucket), is_binary(Key) ->
+    segment_hash(<<Bucket/binary, Key/binary>>);
+segment_hash({?HEAD_TAG, Bucket, Key, SubK})
+                    when is_binary(Bucket), is_binary(Key), is_binary(SubK) ->
+    segment_hash(<<Bucket/binary, Key/binary, SubK/binary>>);
+segment_hash({?HEAD_TAG, Bucket, Key, _SubK})
                                     when is_binary(Bucket), is_binary(Key) ->
     segment_hash(<<Bucket/binary, Key/binary>>);
 segment_hash(Key) ->
@@ -222,14 +228,17 @@ from_ledgerkey({?IDX_TAG, ?ALL_BUCKETS, {_IdxFld, IdxVal}, {Bucket, Key}}) ->
     {Bucket, Key, IdxVal};
 from_ledgerkey({?IDX_TAG, Bucket, {_IdxFld, IdxVal}, Key}) ->
     {Bucket, Key, IdxVal};
-from_ledgerkey({_Tag, Bucket, Key, null}) ->
+from_ledgerkey({_Tag, Bucket, Key, _SubKey}) ->
     {Bucket, Key}.
 
 to_ledgerkey(Bucket, Key, Tag, Field, Value) when Tag == ?IDX_TAG ->
     {?IDX_TAG, Bucket, {Field, Value}, Key}.
 
+to_ledgerkey(Bucket, {Key, SubKey}, ?HEAD_TAG) ->
+    {?HEAD_TAG, Bucket, Key, SubKey};
 to_ledgerkey(Bucket, Key, Tag) ->
     {Tag, Bucket, Key, null}.
+
 
 %% Return the Key, Value and Hash Option for this object.  The hash option
 %% indicates whether the key would ever be looked up directly, and so if it
@@ -404,6 +413,8 @@ split_inkvalue(VBin) when is_binary(VBin) ->
 
 check_forinkertype(_LedgerKey, delete) ->
     ?INKT_TOMB;
+check_forinkertype(_LedgerKey, head_only) ->
+    ?INKT_MPUT;
 check_forinkertype(_LedgerKey, _Object) ->
     ?INKT_STND.
 
@@ -424,6 +435,14 @@ endkey_passed({EK1, EK2, EK3, null}, {CK1, CK2, CK3, _}) ->
 endkey_passed(EndKey, CheckingKey) ->
     EndKey < CheckingKey.
 
+
+obj_objectspecs(ObjectSpecs, SQN, TTL) ->
+    lists:map(fun({IdxOp, Bucket, Key, SubKey, Value}) ->
+                    gen_headspec(Bucket, Key, IdxOp, SubKey, Value, SQN, TTL)
+                end,
+                ObjectSpecs).
+
+
 idx_indexspecs(IndexSpecs, Bucket, Key, SQN, TTL) ->
     lists:map(
             fun({IdxOp, IdxFld, IdxTrm}) ->
@@ -433,14 +452,7 @@ idx_indexspecs(IndexSpecs, Bucket, Key, SQN, TTL) ->
                 ).
 
 gen_indexspec(Bucket, Key, IdxOp, IdxField, IdxTerm, SQN, TTL) ->
-    Status =
-        case IdxOp of
-            add ->
-                {active, TTL};
-            remove ->
-                %% TODO: timestamps for delayed reaping 
-                tomb
-        end,
+    Status = set_status(IdxOp, TTL),
     case Bucket of
         {all, RealBucket} ->    
             {to_ledgerkey(?ALL_BUCKETS,
@@ -457,6 +469,18 @@ gen_indexspec(Bucket, Key, IdxOp, IdxField, IdxTerm, SQN, TTL) ->
                             IdxTerm),
                 {SQN, Status, no_lookup, null}}
     end.
+
+gen_headspec(Bucket, Key, IdxOp, SubKey, Value, SQN, TTL) ->
+    Status = set_status(IdxOp, TTL),
+    K = to_ledgerkey(Bucket, {Key, SubKey}, ?HEAD_TAG),
+    {K, {SQN, Status, segment_hash(K), Value}}.
+
+
+set_status(add, TTL) ->
+    {active, TTL};
+set_status(remove, _TTL) ->
+    %% TODO: timestamps for delayed reaping 
+    tomb.
 
 -spec aae_indexspecs(false|recent_aae(),
                                 any(), any(),
@@ -641,12 +665,14 @@ get_objhash(Tag, ObjMetaData) ->
         
 
 build_metadata_object(PrimaryKey, MD) ->
-    {Tag, _Bucket, _Key, null} = PrimaryKey,
+    {Tag, _Bucket, _Key, _SubKey} = PrimaryKey,
     case Tag of
         ?RIAK_TAG ->
             {SibData, Vclock, _Hash, _Size} = MD,
             riak_metadata_to_binary(Vclock, SibData);
         ?STD_TAG ->
+            MD;
+        ?HEAD_TAG ->
             MD
     end.
 
@@ -936,5 +962,13 @@ delayedupdate_aaeidx_test() ->
     AAESpecs = aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods),
     ?assertMatch(0, length(AAESpecs)).
 
+head_segment_compare_test() ->
+    % Reminder to align native and parallel(leveled_ko) key stores for 
+    % kv_index_tictactree
+    H1 = segment_hash({?HEAD_TAG, <<"B1">>, <<"K1">>, null}),
+    H2 = segment_hash({?RIAK_TAG, <<"B1">>, <<"K1">>, null}),
+    H3 = segment_hash({?HEAD_TAG, <<"B1">>, <<"K1">>, <<>>}),
+    ?assertMatch(H1, H2),
+    ?assertMatch(H1, H3).
 
 -endif.

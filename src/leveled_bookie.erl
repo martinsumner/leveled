@@ -51,6 +51,8 @@
         book_put/5,
         book_put/6,
         book_tempput/7,
+        book_mput/2,
+        book_mput/3,
         book_delete/4,
         book_get/3,
         book_get/4,
@@ -60,8 +62,10 @@
         book_snapshot/4,
         book_compactjournal/2,
         book_islastcompactionpending/1,
+        book_trimjournal/1,
         book_close/1,
-        book_destroy/1]).
+        book_destroy/1,
+        book_isempty/2]).
 
 -export([get_opt/2,
             get_opt/3,
@@ -85,6 +89,7 @@
 -define(COMPRESSION_POINT, on_receipt).
 -define(TIMING_SAMPLESIZE, 100).
 -define(TIMING_SAMPLECOUNTDOWN, 10000).
+-define(DUMMY, dummy). % Dummy key used for mput operations
 
 -record(ledger_cache, {mem :: ets:tab(),
                         loader = leveled_tree:empty(?CACHE_TYPE)
@@ -97,10 +102,14 @@
 -record(state, {inker :: pid() | undefined,
                 penciller :: pid() | undefined,
                 cache_size :: integer() | undefined,
-                recent_aae :: false | #recent_aae{} | undefined,
+                recent_aae :: recent_aae(),
                 ledger_cache = #ledger_cache{},
                 is_snapshot :: boolean() | undefined,
                 slow_offer = false :: boolean(),
+
+                head_only = false :: boolean(),
+                head_lookup = true :: boolean(),
+
                 put_countdown = 0 :: integer(),
                 get_countdown = 0 :: integer(),
                 fold_countdown = 0 :: integer(),
@@ -137,6 +146,7 @@
 -type fold_timings() :: no_timing|#fold_timings{}.
 -type head_timings() :: no_timing|#head_timings{}.
 -type timing_types() :: head|get|put|fold.
+-type recent_aae() :: false|#recent_aae{}|undefined.
 
 %%%============================================================================
 %%% API
@@ -310,6 +320,32 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) ->
                     infinity).
 
 
+-spec book_mput(pid(), list(tuple())) -> ok|pause.
+%% @doc
+%%
+%% When the store is being run in head_only mode, batches fo object specs may
+%% be inserted in to the store using book_mput/2.  ObjectSpecs should be 
+%% of the form {ObjectOp, Bucket, Key, SubKey, Value}.  The Value will be 
+%% stored within the HEAD of the object (in the Ledger), so the full object 
+%% is retrievable using a HEAD request.  The ObjectOp is either add or remove.
+%%
+%% The list should be de-duplicated before it is passed to the bookie.
+book_mput(Pid, ObjectSpecs) ->
+    book_mput(Pid, ObjectSpecs, infinity).
+
+-spec book_mput(pid(), list(tuple()), infinity|integer()) -> ok|pause.
+%% @doc
+%%
+%% When the store is being run in head_only mode, batches fo object specs may
+%% be inserted in to the store using book_mput/2.  ObjectSpecs should be 
+%% of the form {action, Bucket, Key, SubKey, Value}.  The Value will be 
+%% stored within the HEAD of the object (in the Ledger), so the full object 
+%% is retrievable using a HEAD request.
+%%
+%% The list should be de-duplicated before it is passed to the bookie.
+book_mput(Pid, ObjectSpecs, TTL) ->
+    gen_server:call(Pid, {mput, ObjectSpecs, TTL}, infinity).
+
 -spec book_delete(pid(), any(), any(), list()) -> ok|pause.
 
 %% @doc 
@@ -419,6 +455,7 @@ book_snapshot(Pid, SnapType, Query, LongRunning) ->
 
 -spec book_compactjournal(pid(), integer()) -> ok.
 -spec book_islastcompactionpending(pid()) -> boolean().
+-spec book_trimjournal(pid()) -> ok.
 
 %% @doc Call for compaction of the Journal
 %%
@@ -433,6 +470,13 @@ book_compactjournal(Pid, Timeout) ->
 book_islastcompactionpending(Pid) ->
     gen_server:call(Pid, confirm_compact, infinity).
 
+%% @doc Trim the journal when in head_only mode
+%%
+%% In head_only mode the journlacna be trimmed of entries which are before the 
+%% persisted SQN.  This is much quicker than compacting the journal
+
+book_trimjournal(Pid) ->
+    gen_server:call(Pid, trim, infinity).
 
 -spec book_close(pid()) -> ok.
 -spec book_destroy(pid()) -> ok.
@@ -441,14 +485,23 @@ book_islastcompactionpending(Pid) ->
 %%
 %% A clean shutdown will persist all the information in the Penciller memory
 %% before closing, so shutdown is not instantaneous.
-
 book_close(Pid) ->
     gen_server:call(Pid, close, infinity).
 
 %% @doc Close and clean-out files
-
 book_destroy(Pid) ->
     gen_server:call(Pid, destroy, infinity).
+
+
+-spec book_isempty(pid(), atom()) -> boolean().
+%% @doc 
+%% Confirm if the store is empty, or if it contains a Key and Value for a 
+%% given tag
+book_isempty(Pid, Tag) ->
+    FoldAccT = {fun(_B, _Acc) -> false end, true},
+    {async, Runner} = 
+        gen_server:call(Pid, {return_runner, {first_bucket, Tag, FoldAccT}}),
+    Runner().
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -474,18 +527,31 @@ init([Opts]) ->
                                     limit_minutes = LimitMinutes,
                                     unit_minutes = UnitMinutes}
                 end,
+            
+            {HeadOnly, HeadLookup} = 
+                case get_opt(head_only, Opts, false) of 
+                    false ->
+                        {false, true};
+                    with_lookup ->
+                        {true, true};
+                    no_lookup ->
+                        {true, false}
+                end,
+            
+            State0 = #state{cache_size=CacheSize,
+                                recent_aae=RecentAAE,
+                                is_snapshot=false,
+                                head_only=HeadOnly,
+                                head_lookup = HeadLookup},
 
             {Inker, Penciller} = 
-                startup(InkerOpts, PencillerOpts, RecentAAE),
+                startup(InkerOpts, PencillerOpts, State0),
 
             NewETS = ets:new(mem, [ordered_set]),
             leveled_log:log("B0001", [Inker, Penciller]),
-            {ok, #state{inker=Inker,
-                        penciller=Penciller,
-                        cache_size=CacheSize,
-                        recent_aae=RecentAAE,
-                        ledger_cache=#ledger_cache{mem = NewETS},
-                        is_snapshot=false}};
+            {ok, State0#state{inker=Inker,
+                                penciller=Penciller,
+                                ledger_cache=#ledger_cache{mem = NewETS}}};
         Bookie ->
             {ok, Penciller, Inker} = 
                 book_snapshot(Bookie, store, undefined, true),
@@ -496,7 +562,8 @@ init([Opts]) ->
     end.
 
 
-handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State) ->
+handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State)
+                                        when State#state.head_only == false ->
     LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
     SW0 = os:timestamp(),
     {ok, SQN, ObjSize} = leveled_inker:ink_put(State#state.inker,
@@ -511,7 +578,7 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State) ->
                                         Object,
                                         ObjSize,
                                         {IndexSpecs, TTL},
-                                        State#state.recent_aae),
+                                        State),
     Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
     {_SW2, Timings2} = update_timings(SW1, {put, mem}, Timings1),
     
@@ -541,7 +608,34 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State) ->
                                     put_countdown = CountDown,
                                     slow_offer = true}}
     end;
-handle_call({get, Bucket, Key, Tag}, _From, State) ->
+handle_call({mput, ObjectSpecs, TTL}, From, State) 
+                                        when State#state.head_only == true ->
+    {ok, SQN} = 
+        leveled_inker:ink_mput(State#state.inker, dummy, {ObjectSpecs, TTL}),
+    Changes = 
+        preparefor_ledgercache(?INKT_MPUT, ?DUMMY, 
+                                SQN, null, length(ObjectSpecs), 
+                                {ObjectSpecs, TTL}, 
+                                State),
+    Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
+    case State#state.slow_offer of
+        true ->
+            gen_server:reply(From, pause);
+        false ->
+            gen_server:reply(From, ok)
+    end,
+    case maybepush_ledgercache(State#state.cache_size,
+                                    Cache0,
+                                    State#state.penciller) of
+        {ok, NewCache} ->
+            {noreply, State#state{ledger_cache = NewCache,
+                                    slow_offer = false}};
+        {returned, NewCache} ->
+            {noreply, State#state{ledger_cache = NewCache,
+                                    slow_offer = true}}
+    end;
+handle_call({get, Bucket, Key, Tag}, _From, State) 
+                                        when State#state.head_only == false ->
     LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
     SWh = os:timestamp(),
     HeadResult = 
@@ -586,7 +680,8 @@ handle_call({get, Bucket, Key, Tag}, _From, State) ->
         update_statetimings(get, Timings2, State#state.get_countdown),
     {reply, Reply, State#state{get_timings = Timings, 
                                 get_countdown = CountDown}};
-handle_call({head, Bucket, Key, Tag}, _From, State) ->
+handle_call({head, Bucket, Key, Tag}, _From, State) 
+                                        when State#state.head_lookup == true ->
     SWp = os:timestamp(),
     LK = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
     case fetch_head(LK, State#state.penciller, State#state.ledger_cache) of
@@ -634,17 +729,29 @@ handle_call({return_runner, QueryType}, _From, State) ->
         update_statetimings(fold, Timings1, State#state.fold_countdown),
     {reply, Runner, State#state{fold_timings = Timings, 
                                 fold_countdown = CountDown}};
-handle_call({compact_journal, Timeout}, _From, State) ->
+handle_call({compact_journal, Timeout}, _From, State)
+                                        when State#state.head_only == false ->
     ok = leveled_inker:ink_compactjournal(State#state.inker,
                                             self(),
                                             Timeout),
     {reply, ok, State};
-handle_call(confirm_compact, _From, State) ->
+handle_call(confirm_compact, _From, State)
+                                        when State#state.head_only == false ->
     {reply, leveled_inker:ink_compactionpending(State#state.inker), State};
+handle_call(trim, _From, State) when State#state.head_only == true ->
+    PSQN = leveled_penciller:pcl_persistedsqn(State#state.penciller),
+    {reply, leveled_inker:ink_trim(State#state.inker, PSQN), State};
 handle_call(close, _From, State) ->
     {stop, normal, ok, State};
 handle_call(destroy, _From, State=#state{is_snapshot=Snp}) when Snp == false ->
-    {stop, destroy, ok, State}.
+    leveled_log:log("B0011", []),
+    {ok, InkPathList} = leveled_inker:ink_doom(State#state.inker),
+    {ok, PCLPathList} = leveled_penciller:pcl_doom(State#state.penciller),
+    lists:foreach(fun(DirPath) -> delete_path(DirPath) end, InkPathList),
+    lists:foreach(fun(DirPath) -> delete_path(DirPath) end, PCLPathList),
+    {stop, normal, ok, State};
+handle_call(Msg, _From, State) ->
+    {reply, {unsupported_message, element(1, Msg)}, State}.
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -652,17 +759,22 @@ handle_cast(_Msg, State) ->
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(destroy, State) ->
-    leveled_log:log("B0011", []),
-    {ok, InkPathList} = leveled_inker:ink_doom(State#state.inker),
-    {ok, PCLPathList} = leveled_penciller:pcl_doom(State#state.penciller),
-    lists:foreach(fun(DirPath) -> delete_path(DirPath) end, InkPathList),
-    lists:foreach(fun(DirPath) -> delete_path(DirPath) end, PCLPathList),
-    ok;
 terminate(Reason, State) ->
     leveled_log:log("B0003", [Reason]),
-    ok = leveled_inker:ink_close(State#state.inker),
-    ok = leveled_penciller:pcl_close(State#state.penciller).
+    ok = 
+        case is_process_alive(State#state.inker) of 
+            true ->
+                leveled_inker:ink_close(State#state.inker);
+            false ->
+                ok 
+        end,
+    ok =
+        case is_process_alive(State#state.penciller) of 
+            true ->
+                leveled_penciller:pcl_close(State#state.penciller);
+            false ->
+                ok 
+        end.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -839,15 +951,35 @@ get_runner(State,
     SnapFun = return_snapfun(State, store, undefined, true, SnapPreFold),
     leveled_runner:foldobjects_allkeys(SnapFun, Tag, FoldFun, sqn_order);
 get_runner(State,
+            {foldheads_bybucket,
+                Tag, 
+                BucketList, bucket_list,
+                FoldFun,
+                JournalCheck, SnapPreFold, SegmentList}) ->
+    KeyRangeFun = 
+        fun(Bucket) ->
+            {StartKey, EndKey, _} = return_ledger_keyrange(Tag, Bucket, all),
+            {StartKey, EndKey}
+        end,
+    SnapType = snaptype_by_presence(JournalCheck),
+    SnapFun = return_snapfun(State, SnapType, no_lookup, true, SnapPreFold),
+    leveled_runner:foldheads_bybucket(SnapFun,
+                                        Tag,
+                                        lists:map(KeyRangeFun, BucketList),
+                                        FoldFun,
+                                        JournalCheck, SegmentList);
+get_runner(State,
             {foldheads_bybucket, 
-                Tag, Bucket, KeyRange, 
+                Tag, 
+                Bucket, KeyRange, 
                 FoldFun, 
                 JournalCheck, SnapPreFold, SegmentList}) ->
     {StartKey, EndKey, SnapQ} = return_ledger_keyrange(Tag, Bucket, KeyRange),
     SnapType = snaptype_by_presence(JournalCheck),
     SnapFun = return_snapfun(State, SnapType, SnapQ, true, SnapPreFold),
     leveled_runner:foldheads_bybucket(SnapFun, 
-                                        {Tag, StartKey, EndKey}, 
+                                        Tag, 
+                                        [{StartKey, EndKey}], 
                                         FoldFun, 
                                         JournalCheck, SegmentList);
 get_runner(State,
@@ -858,7 +990,8 @@ get_runner(State,
     {StartKey, EndKey, SnapQ} = return_ledger_keyrange(Tag, Bucket, KeyRange),
     SnapFun = return_snapfun(State, store, SnapQ, true, SnapPreFold),
     leveled_runner:foldobjects_bybucket(SnapFun, 
-                                        {Tag, StartKey, EndKey}, 
+                                        Tag, 
+                                        [{StartKey, EndKey}], 
                                         FoldFun);
 get_runner(State, 
             {foldobjects_byindex,
@@ -869,7 +1002,14 @@ get_runner(State,
     leveled_runner:foldobjects_byindex(SnapFun, 
                                         {Tag, Bucket, Field, FromTerm, ToTerm},
                                         FoldObjectsFun);
-
+get_runner(State, {binary_bucketlist, Tag, FoldAccT}) ->
+    {FoldBucketsFun, Acc} = FoldAccT,
+    SnapFun = return_snapfun(State, ledger, no_lookup, false, false),
+    leveled_runner:binary_bucketlist(SnapFun, Tag, FoldBucketsFun, Acc);
+get_runner(State, {first_bucket, Tag, FoldAccT}) ->
+    {FoldBucketsFun, Acc} = FoldAccT,
+    SnapFun = return_snapfun(State, ledger, no_lookup, false, false),
+    leveled_runner:binary_bucketlist(SnapFun, Tag, FoldBucketsFun, Acc, 1);
 %% Set of specific runners, primarily used as exmaples for tests
 get_runner(State, DeprecatedQuery) ->
     get_deprecatedrunner(State, DeprecatedQuery).
@@ -878,7 +1018,7 @@ get_runner(State, DeprecatedQuery) ->
 -spec get_deprecatedrunner(book_state(), tuple()) -> {async, fun()}.
 %% @doc
 %% Get an {async, Runner} for a given fold type.  Fold types have different 
-%% tuple inputs.  These folds are currentyl used in tests, but are deprecated.
+%% tuple inputs.  These folds are currently used in tests, but are deprecated.
 %% Most of these folds should be achievable through other available folds.
 get_deprecatedrunner(State, {bucket_stats, Bucket}) ->
     SnapFun = return_snapfun(State, ledger, no_lookup, true, true),
@@ -886,10 +1026,6 @@ get_deprecatedrunner(State, {bucket_stats, Bucket}) ->
 get_deprecatedrunner(State, {riakbucket_stats, Bucket}) ->
     SnapFun = return_snapfun(State, ledger, no_lookup, true, true),
     leveled_runner:bucket_sizestats(SnapFun, Bucket, ?RIAK_TAG);
-get_deprecatedrunner(State, {binary_bucketlist, Tag, FoldAccT}) ->
-    {FoldKeysFun, Acc} = FoldAccT,
-    SnapFun = return_snapfun(State, ledger, no_lookup, false, false),
-    leveled_runner:binary_bucketlist(SnapFun, Tag, FoldKeysFun, Acc);
 get_deprecatedrunner(State, {hashlist_query, Tag, JournalCheck}) ->
     SnapType = snaptype_by_presence(JournalCheck),
     SnapFun = return_snapfun(State, SnapType, no_lookup, true, true),    
@@ -919,7 +1055,7 @@ get_deprecatedrunner(State,
                                 PartitionFilter).
 
 
--spec return_ledger_keyrange(atom(), any(), tuple()) -> 
+-spec return_ledger_keyrange(atom(), any(), tuple()|all) -> 
                                         {tuple(), tuple(), tuple()|no_lookup}.
 %% @doc
 %% Convert a range of binary keys into a ledger key range, returning 
@@ -950,7 +1086,6 @@ return_ledger_keyrange(Tag, Bucket, KeyRange) ->
         end,
     {StartKey, EndKey, SnapQuery}.
 
-        
 
 maybe_longrunning(SW, Aspect) ->
     case timer:now_diff(os:timestamp(), SW) of
@@ -1081,14 +1216,14 @@ set_options(Opts) ->
                             levelzero_cointoss = true,
                             compression_method = CompressionMethod}}.
 
-startup(InkerOpts, PencillerOpts, RecentAAE) ->
+startup(InkerOpts, PencillerOpts, State) ->
     {ok, Inker} = leveled_inker:ink_start(InkerOpts),
     {ok, Penciller} = leveled_penciller:pcl_start(PencillerOpts),
     LedgerSQN = leveled_penciller:pcl_getstartupsequencenumber(Penciller),
     leveled_log:log("B0005", [LedgerSQN]),
     ok = leveled_inker:ink_loadpcl(Inker,
                                     LedgerSQN + 1,
-                                    get_loadfun(RecentAAE),
+                                    get_loadfun(State),
                                     Penciller),
     {Inker, Penciller}.
 
@@ -1118,22 +1253,34 @@ fetch_head(Key, Penciller, LedgerCache) ->
     end.
 
 
+-spec preparefor_ledgercache(atom(), any(), integer(), any(), 
+                                integer(), tuple(), book_state()) -> 
+                                    {integer()|no_lookup, integer(), list()}.
+%% @doc
+%% Prepare an object and its related key changes for addition to the Ledger 
+%% via the Ledger Cache.
+preparefor_ledgercache(?INKT_MPUT, 
+                        ?DUMMY, SQN, _O, _S, {ObjSpecs, TTL}, 
+                        _State) ->
+    ObjChanges = leveled_codec:obj_objectspecs(ObjSpecs, SQN, TTL),
+    {no_lookup, SQN, ObjChanges};
 preparefor_ledgercache(?INKT_KEYD,
                         LedgerKey, SQN, _Obj, _Size, {IdxSpecs, TTL},
-                        _AAE) ->
+                        _State) ->
     {Bucket, Key} = leveled_codec:from_ledgerkey(LedgerKey),
     KeyChanges =
         leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL),
     {no_lookup, SQN, KeyChanges};
 preparefor_ledgercache(_InkTag,
                         LedgerKey, SQN, Obj, Size, {IdxSpecs, TTL},
-                        AAE) ->
+                        State) ->
     {Bucket, Key, MetaValue, {KeyH, ObjH}, LastMods} =
         leveled_codec:generate_ledgerkv(LedgerKey, SQN, Obj, Size, TTL),
     KeyChanges =
         [{LedgerKey, MetaValue}] ++
             leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL) ++
-            leveled_codec:aae_indexspecs(AAE, Bucket, Key, SQN, ObjH, LastMods),
+            leveled_codec:aae_indexspecs(State#state.recent_aae, 
+                                            Bucket, Key, SQN, ObjH, LastMods),
     {KeyH, SQN, KeyChanges}.
 
 
@@ -1192,10 +1339,10 @@ maybe_withjitter(CacheSize, MaxCacheSize) ->
     end.
 
 
-get_loadfun(RecentAAE) ->
+get_loadfun(State) ->
     PrepareFun =
         fun(Tag, PK, SQN, Obj, VS, IdxSpecs) ->
-            preparefor_ledgercache(Tag, PK, SQN, Obj, VS, IdxSpecs, RecentAAE)
+            preparefor_ledgercache(Tag, PK, SQN, Obj, VS, IdxSpecs, State)
         end,
     LoadFun =
         fun(KeyInJournal, ValueInJournal, _Pos, Acc0, ExtractFun) ->
@@ -1754,7 +1901,7 @@ foldobjects_vs_foldheads_bybucket_testto() ->
                             {foldheads_bybucket,
                                 ?STD_TAG,
                                 "BucketB",
-                                {"Key", "Key4zzzz"},
+                                {"Key", "Key4|"},
                                 FoldHeadsFun,
                                 true, false, false}),
     KeyHashList2E = HTFolder2E(),
@@ -1763,13 +1910,17 @@ foldobjects_vs_foldheads_bybucket_testto() ->
                             {foldheads_bybucket,
                                 ?STD_TAG,
                                 "BucketB",
-                                {"Key5", <<"all">>},
+                                {"Key5", "Key|"},
                                 FoldHeadsFun,
                                 true, false, false}),
     KeyHashList2F = HTFolder2F(),
 
     ?assertMatch(true, length(KeyHashList2E) > 0),
     ?assertMatch(true, length(KeyHashList2F) > 0),
+    io:format("Length of 2B ~w 2E ~w 2F ~w~n", 
+                [length(KeyHashList2B), 
+                    length(KeyHashList2E), 
+                    length(KeyHashList2F)]),
     ?assertMatch(true,
                     lists:usort(KeyHashList2B) == 
                         lists:usort(KeyHashList2E ++ KeyHashList2F)),
@@ -1777,6 +1928,21 @@ foldobjects_vs_foldheads_bybucket_testto() ->
     ok = book_close(Bookie1),
     reset_filestructure().
 
+is_empty_test() ->
+    RootPath = reset_filestructure(),
+    {ok, Bookie1} = book_start([{root_path, RootPath},
+                                    {max_journalsize, 1000000},
+                                    {cache_size, 500}]),
+    % Put in an object with a TTL in the future
+    Future = leveled_codec:integer_now() + 300,
+    ?assertMatch(true, leveled_bookie:book_isempty(Bookie1, ?STD_TAG)),
+    ok = book_tempput(Bookie1, 
+                        <<"B">>, <<"K">>, {value, <<"V">>}, [], 
+                        ?STD_TAG, Future),
+    ?assertMatch(false, leveled_bookie:book_isempty(Bookie1, ?STD_TAG)),
+    ?assertMatch(true, leveled_bookie:book_isempty(Bookie1, ?RIAK_TAG)),
+
+    ok = leveled_bookie:book_close(Bookie1).
 
 scan_table_test() ->
     K1 = leveled_codec:to_ledgerkey(<<"B1">>,
