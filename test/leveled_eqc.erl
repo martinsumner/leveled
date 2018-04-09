@@ -317,16 +317,6 @@ prop_db() ->
                 CallFeatures = call_features(H),
                 AllVals = get_all_vals(S#state.leveled, S#state.leveled_needs_destroy),
 
-                case {S#state.leveled_needs_destroy, S#state.leveled} of
-                    {true, undefined} ->
-                        Pid = init_backend(gen_opts()),
-                        leveled_bookie:book_destroy(Pid);
-                    {false, undefined} ->
-                        ok;
-                    {_, Pid} ->
-                        ok = leveled_bookie:book_destroy(Pid)
-                end,
-
                 pretty_commands(?MODULE, Cmds, {H, S, Res},
                                 aggregate(command_names(Cmds),
                                           aggregate(with_title('Features'), CallFeatures,
@@ -361,8 +351,10 @@ is_leveled_open(#state{leveled=undefined}) ->
 is_leveled_open(_) ->
     true.
 
-get_all_vals(_, false) ->
+get_all_vals(undefined, false) ->
     [];
+get_all_vals(Pid, false) ->
+    ok = leveled_bookie:book_destroy(Pid);
 get_all_vals(undefined, true) ->
     %% start a leveled (may have been stopped in the test)
     {ok, Bookie} = leveled_bookie:book_start(gen_opts()),
@@ -374,6 +366,7 @@ get_all_vals(Pid, true) ->
     AllKeyQuery = {foldobjects_allkeys, o, {FoldFun, Acc}, true},
     {async, Folder} = leveled_bookie:book_returnfolder(Pid, AllKeyQuery),
     AccFinal = Folder(),
+    ok = leveled_bookie:book_destroy(Pid),
     lists:reverse(AccFinal).
 
 vals_equal(Leveled, Model) ->
