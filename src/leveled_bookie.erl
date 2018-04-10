@@ -742,20 +742,8 @@ handle_call(trim, _From, State) when State#state.head_only == true ->
     PSQN = leveled_penciller:pcl_persistedsqn(State#state.penciller),
     {reply, leveled_inker:ink_trim(State#state.inker, PSQN), State};
 handle_call(close, _From, State) ->
-    ok = 
-        case is_process_alive(State#state.inker) of 
-            true ->
-                leveled_inker:ink_close(State#state.inker);
-            false ->
-                ok 
-        end,
-    ok =
-        case is_process_alive(State#state.penciller) of 
-            true ->
-                leveled_penciller:pcl_close(State#state.penciller);
-            false ->
-                ok 
-        end,
+    leveled_inker:ink_close(State#state.inker),
+    leveled_penciller:pcl_close(State#state.penciller),
     {stop, normal, ok, State};
 handle_call(destroy, _From, State=#state{is_snapshot=Snp}) when Snp == false ->
     leveled_log:log("B0011", []),
