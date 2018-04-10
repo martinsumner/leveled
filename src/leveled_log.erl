@@ -79,7 +79,7 @@
     {"P0010",
         {info, "No level zero action on close of Penciller ~w"}},
     {"P0011",
-        {info, "Shutdown complete for Penciller"}},
+        {info, "Shutdown complete for Penciller for reason ~w"}},
     {"P0012",
         {info, "Store to be started based on manifest sequence number of ~w"}},
     {"P0013",
