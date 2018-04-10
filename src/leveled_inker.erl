@@ -531,6 +531,17 @@ handle_call({trim, PersistedSQN}, _From, State) ->
     ok = leveled_iclerk:clerk_trim(State#state.clerk, self(), PersistedSQN),
     {reply, ok, State};
 handle_call(close, _From, State) ->
+    case State#state.is_snapshot of
+        true ->
+            ok = ink_releasesnapshot(State#state.source_inker, self());
+        false ->    
+            leveled_log:log("I0005", [close]),
+            leveled_log:log("I0006", [State#state.journal_sqn,
+                                        State#state.manifest_sqn]),
+            leveled_iclerk:clerk_stop(State#state.clerk),
+            shutdown_snapshots(State#state.registered_snapshots),
+            shutdown_manifest(State#state.manifest)
+    end,
     {stop, normal, ok, State};
 handle_call(doom, _From, State) ->
     FPs = [filepath(State#state.root_path, journal_dir),
@@ -538,6 +549,14 @@ handle_call(doom, _From, State) ->
             filepath(State#state.root_path, journal_compact_dir),
             filepath(State#state.root_path, journal_waste_dir)],
     leveled_log:log("I0018", []),
+
+    leveled_log:log("I0005", [doom]),
+    leveled_log:log("I0006", [State#state.journal_sqn,
+                                State#state.manifest_sqn]),
+    leveled_iclerk:clerk_stop(State#state.clerk),
+    shutdown_snapshots(State#state.registered_snapshots),
+    shutdown_manifest(State#state.manifest),
+    
     {stop, normal, {ok, FPs}, State}.
 
 handle_cast({release_snapshot, Snapshot}, State) ->
@@ -549,22 +568,8 @@ handle_cast({release_snapshot, Snapshot}, State) ->
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(Reason, State) ->
-    case State#state.is_snapshot of
-        true ->
-            ok = ink_releasesnapshot(State#state.source_inker, self());
-        false ->    
-            leveled_log:log("I0005", [Reason]),
-            leveled_log:log("I0006", [State#state.journal_sqn,
-                                        State#state.manifest_sqn]),
-            leveled_iclerk:clerk_stop(State#state.clerk),
-            lists:foreach(fun({Snap, _SQN}) -> ok = ink_close(Snap) end,
-                            State#state.registered_snapshots),
-            leveled_log:log("I0007", []),
-            leveled_imanifest:printer(State#state.manifest),
-            ManAsList = leveled_imanifest:to_list(State#state.manifest),
-            ok = close_allmanifest(ManAsList)
-    end.
+terminate(_Reason, _State) ->
+    ok.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -624,6 +629,22 @@ start_from_file(InkOpts) ->
                     compression_method = PressMethod,
                     compress_on_receipt = PressOnReceipt,
                     clerk = Clerk}}.
+
+
+-spec shutdown_snapshots(list(tuple())) -> ok.
+%% @doc
+%% Shutdown any snapshots before closing the store
+shutdown_snapshots(Snapshots) ->
+    lists:foreach(fun({Snap, _SQN}) -> ok = ink_close(Snap) end, Snapshots).
+
+-spec shutdown_manifest(leveled_imanifest:manifest()) -> ok.
+%% @doc
+%% Shutdown all files in the manifest
+shutdown_manifest(Manifest) ->
+    leveled_log:log("I0007", []),
+    leveled_imanifest:printer(Manifest),
+    ManAsList = leveled_imanifest:to_list(Manifest),
+    close_allmanifest(ManAsList).
 
 get_cdbopts(InkOpts)->
     CDBopts = InkOpts#inker_options.cdb_options,

@@ -763,10 +763,40 @@ handle_call({register_snapshot, Snapshot, Query, BookiesMem, LR}, _From, State) 
         State#state{manifest = Manifest0}};
 handle_call({fetch_levelzero, Slot}, _From, State) ->
     {reply, lists:nth(Slot, State#state.levelzero_cache), State};
+handle_call(close, _From, State=#state{is_snapshot=Snap}) when Snap == true ->
+    ok = pcl_releasesnapshot(State#state.source_penciller, self()),
+    {stop, normal, ok, State};
 handle_call(close, _From, State) ->
+    % Level 0 files lie outside of the manifest, and so if there is no L0
+    % file present it is safe to write the current contents of memory.  If
+    % there is a L0 file present - then the memory can be dropped (it is
+    % recoverable from the ledger, and there should not be a lot to recover
+    % as presumably the ETS file has been recently flushed, hence the presence
+    % of a L0 file).
+    %
+    % The penciller should close each file in the manifest, and call a close
+    % on the clerk.
+    ok = leveled_pclerk:clerk_close(State#state.clerk),
+    leveled_log:log("P0008", [close]),
+
+    L0_Present = leveled_pmanifest:key_lookup(State#state.manifest, 0, all),
+    L0_Left = State#state.levelzero_size > 0,
+    case {State#state.levelzero_pending, L0_Present, L0_Left} of
+        {false, false, true} ->
+            {L0Pid, _L0Bloom} = roll_memory(State, true),
+            ok = leveled_sst:sst_close(L0Pid);
+        StatusTuple ->
+            leveled_log:log("P0010", [StatusTuple])
+    end,
+    
+    shutdown_manifest(State#state.manifest),
     {stop, normal, ok, State};
 handle_call(doom, _From, State) ->
     leveled_log:log("P0030", []),
+    ok = leveled_pclerk:clerk_close(State#state.clerk),
+    
+    shutdown_manifest(State#state.manifest),
+    
     ManifestFP = State#state.root_path ++ "/" ++ ?MANIFEST_FP ++ "/",
     FilesFP = State#state.root_path ++ "/" ++ ?FILES_FP ++ "/",
     {stop, normal, {ok, [ManifestFP, FilesFP]}, State};
@@ -885,47 +915,10 @@ handle_cast(work_for_clerk, State) ->
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(Reason, State=#state{is_snapshot=Snap}) when Snap == true ->
-    ok = pcl_releasesnapshot(State#state.source_penciller, self()),
-    leveled_log:log("P0007", [Reason]),   
-    ok;
-terminate(Reason, State) ->
-    %% Level 0 files lie outside of the manifest, and so if there is no L0
-    %% file present it is safe to write the current contents of memory.  If
-    %% there is a L0 file present - then the memory can be dropped (it is
-    %% recoverable from the ledger, and there should not be a lot to recover
-    %% as presumably the ETS file has been recently flushed, hence the presence
-    %% of a L0 file).
-    %%
-    %% The penciller should close each file in the manifest, and cast a close
-    %% on the clerk.
-    ok = leveled_pclerk:clerk_close(State#state.clerk),
-    
-    leveled_log:log("P0008", [Reason]),
-    L0_Present = leveled_pmanifest:key_lookup(State#state.manifest, 0, all),
-    L0_Left = State#state.levelzero_size > 0,
-    case {State#state.levelzero_pending, L0_Present, L0_Left} of
-        {false, false, true} ->
-            {L0Pid, _L0Bloom} = roll_memory(State, true),
-            ok = leveled_sst:sst_close(L0Pid);
-        StatusTuple ->
-            leveled_log:log("P0010", [StatusTuple])
-    end,
-    
-    % Tidy shutdown of individual files
-    EntryCloseFun =
-        fun(ME) ->
-            case is_record(ME, manifest_entry) of
-                true ->
-                    ok = leveled_sst:sst_close(ME#manifest_entry.owner);
-                false ->
-                    {_SK, ME0} = ME,
-                    ok = leveled_sst:sst_close(ME0#manifest_entry.owner)
-            end
-        end,
-    leveled_pmanifest:close_manifest(State#state.manifest, EntryCloseFun),
-    leveled_log:log("P0011", []),
-    ok.
+terminate(Reason, _State=#state{is_snapshot=Snap}) when Snap == true ->
+    leveled_log:log("P0007", [Reason]);
+terminate(Reason, _State) ->
+    leveled_log:log("P0011", [Reason]).
 
 
 code_change(_OldVsn, State, _Extra) ->
@@ -1023,6 +1016,24 @@ start_from_file(PCLopts) ->
         end,
     ok = archive_files(RootPath, FileList0),
     {ok, State0}.
+
+
+-spec shutdown_manifest(leveled_pmanifest:manifest()) -> ok.
+%% @doc
+%% Shutdown all the SST files within the manifest
+shutdown_manifest(Manifest)->
+    EntryCloseFun =
+        fun(ME) ->
+            case is_record(ME, manifest_entry) of
+                true ->
+                    ok = leveled_sst:sst_close(ME#manifest_entry.owner);
+                false ->
+                    {_SK, ME0} = ME,
+                    ok = leveled_sst:sst_close(ME0#manifest_entry.owner)
+            end
+        end,
+    leveled_pmanifest:close_manifest(Manifest, EntryCloseFun).
+
 
 archive_files(RootPath, UsedFileList) ->
     {ok, AllFiles} = file:list_dir(sst_rootpath(RootPath)),
