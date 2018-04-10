@@ -595,6 +595,7 @@ reader({direct_fetch, PositionList, Info}, _From, State) ->
         end,
     {reply, Reply, reader, State};
 reader(cdb_complete, _From, State) ->
+    leveled_log:log("CDB05", [State#state.filename, reader, cdb_ccomplete]),
     ok = file:close(State#state.handle),
     {stop, normal, {ok, State#state.filename}, State#state{handle=undefined}};
 reader(check_hashtable, _From, State) ->
@@ -642,6 +643,9 @@ delete_pending(timeout, State=#state{delete_point=ManSQN}) when ManSQN > 0 ->
             case leveled_inker:ink_confirmdelete(State#state.inker, ManSQN) of
                 true ->
                     leveled_log:log("CDB04", [State#state.filename, ManSQN]),
+                    close_pendingdelete(State#state.handle, 
+                                        State#state.filename, 
+                                        State#state.waste_path),
                     {stop, normal, State};
                 false ->
                     {next_state,
@@ -650,9 +654,17 @@ delete_pending(timeout, State=#state{delete_point=ManSQN}) when ManSQN > 0 ->
                         ?DELETE_TIMEOUT}
             end;
         false ->
+            leveled_log:log("CDB04", [State#state.filename, ManSQN]),
+            close_pendingdelete(State#state.handle, 
+                                State#state.filename, 
+                                State#state.waste_path),
             {stop, normal, State}
     end;
 delete_pending(destroy, State) ->
+    leveled_log:log("CDB05", [State#state.filename, delete_pending, destroy]),
+    close_pendingdelete(State#state.handle, 
+                        State#state.filename, 
+                        State#state.waste_path),
     {stop, normal, State}.
 
 
@@ -713,7 +725,16 @@ handle_sync_event(cdb_firstkey, _From, StateName, State) ->
     {reply, FirstKey, StateName, State};
 handle_sync_event(cdb_filename, _From, StateName, State) ->
     {reply, State#state.filename, StateName, State};
-handle_sync_event(cdb_close, _From, _StateName, State) ->
+handle_sync_event(cdb_close, _From, delete_pending, State) ->
+    leveled_log:log("CDB05", 
+                        [State#state.filename, delete_pending, cdb_close]),
+    close_pendingdelete(State#state.handle, 
+                        State#state.filename, 
+                        State#state.waste_path),
+    {stop, normal, ok, State};
+handle_sync_event(cdb_close, _From, StateName, State) ->
+    leveled_log:log("CDB05", [State#state.filename, StateName, cdb_close]),
+    file:close(State#state.handle),
     {stop, normal, ok, State}.
 
 handle_event(_Msg, StateName, State) ->
@@ -722,22 +743,10 @@ handle_event(_Msg, StateName, State) ->
 handle_info(_Msg, StateName, State) ->
     {next_state, StateName, State}.
 
-terminate(Reason, StateName, State) ->
-    leveled_log:log("CDB05", [State#state.filename, StateName, Reason]),
-    case {State#state.handle, StateName, State#state.waste_path} of
-        {undefined, _, _} ->
-            ok;
-        {Handle, delete_pending, undefined} ->
-            ok = file:close(Handle),
-            ok = file:delete(State#state.filename);
-        {Handle, delete_pending, WasteFP} ->
-            file:close(Handle),
-            Components = filename:split(State#state.filename),
-            NewName = WasteFP ++ lists:last(Components),
-            file:rename(State#state.filename, NewName);
-        {Handle, _, _} ->
-            file:close(Handle)
-    end.
+terminate(_Reason, _StateName, _State) ->
+    ok.
+    
+
 
 code_change(_OldVsn, StateName, State, _Extra) ->
     {ok, StateName, State}.
@@ -746,6 +755,22 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %%% Internal functions
 %%%============================================================================
 
+
+-spec close_pendingdelete(file:io_device(), list(), list()|undefined) -> ok.
+%% @doc
+%% If delete is pending - thent he close behaviour needs to actuallly delete 
+%% the file
+close_pendingdelete(Handle, Filename, WasteFP) ->
+    case WasteFP of 
+        undefined ->
+            ok = file:close(Handle),
+            ok = file:delete(Filename);
+        WasteFP ->
+            file:close(Handle),
+            Components = filename:split(Filename),
+            NewName = WasteFP ++ lists:last(Components),
+            file:rename(Filename, NewName)
+    end.
 
 -spec set_writeops(sync|riak_sync|none) -> {list(), sync|riak_sync|none}.
 %% Assumption is that sync should be used - it is a transaction log.
