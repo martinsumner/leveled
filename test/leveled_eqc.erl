@@ -22,7 +22,7 @@
 -include_lib("eqc/include/eqc.hrl").
 -include_lib("eqc/include/eqc_statem.hrl").
 -include_lib("eunit/include/eunit.hrl").
--include("include/leveled.hrl").
+-include("../include/leveled.hrl").
 
 -compile(export_all).
 
@@ -298,6 +298,80 @@ delete_features(S, [_Pid, Key], _Res) ->
             [{delete, not_written}]
     end.
 
+%% --- Operation: is_empty ---
+%% @doc is_empty_pre/1 - Precondition for generation
+-spec is_empty_pre(S :: eqc_statem:symbolic_state()) -> boolean().
+is_empty_pre(S) ->
+    is_leveled_open(S).
+
+%% @doc is_empty_args - Argument generator
+-spec is_empty_args(S :: eqc_statem:symbolic_state()) -> eqc_gen:gen([term()]).
+is_empty_args(#state{leveled=Pid}) ->
+    [Pid].
+
+%% @doc is_empty - The actual operation
+is_empty(Pid) ->
+    FoldBucketsFun = fun(B, Acc) -> sets:add_element(B, Acc) end,
+    ListBucketQ = {binary_bucketlist,
+                    ?STD_TAG,
+                    {FoldBucketsFun, sets:new()}},
+    {async, Folder} = leveled_bookie:book_returnfolder(Pid, ListBucketQ),
+    BSet = Folder(),
+    sets:size(BSet) == 0.
+
+%% @doc is_empty_post - Postcondition for is_empty
+-spec is_empty_post(S, Args, Res) -> true | term()
+    when S    :: eqc_state:dynamic_state(),
+         Args :: [term()],
+         Res  :: term().
+is_empty_post(#state{model=[]}, [_Pid], true) ->
+    true;
+is_empty_post(#state{model=Model}, [_Pid], false) when length(Model) > 0 ->
+    true;
+is_empty_post(#state{model=Model}, [_Pid], true) ->
+    {is_empty_post, orddict:size(Model)}.
+
+%% @doc is_empty_features - Collects a list of features of this call with these arguments.
+-spec is_empty_features(S, Args, Res) -> list(any())
+    when S    :: eqc_statem:dynmic_state(),
+         Args :: [term()],
+         Res  :: term().
+is_empty_features(_S, [_Pid], Res) ->
+    [{empty, Res}].
+
+%% --- Operation: drop ---
+%% @doc drop_pre/1 - Precondition for generation
+-spec drop_pre(S :: eqc_statem:symbolic_state()) -> boolean().
+drop_pre(S) ->
+    is_leveled_open(S).
+
+%% @doc drop_args - Argument generator
+-spec drop_args(S :: eqc_statem:symbolic_state()) -> eqc_gen:gen([term()]).
+drop_args(#state{leveled=Pid}) ->
+    [Pid, gen_opts()].
+
+%% @doc drop - The actual operation
+drop(Pid, Opts) ->
+    ok = leveled_bookie:book_destroy(Pid),
+    init_backend(Opts).
+
+%% @doc drop_next - Next state function
+-spec drop_next(S, Var, Args) -> NewS
+    when S    :: eqc_statem:symbolic_state() | eqc_state:dynamic_state(),
+         Var  :: eqc_statem:var() | term(),
+         Args :: [term()],
+         NewS :: eqc_statem:symbolic_state() | eqc_state:dynamic_state().
+drop_next(S, NewPid, [_Pid, _Opts]) ->
+    S#state{leveled=NewPid, model=orddict:new()}.
+
+%% @doc drop_post - Postcondition for drop
+-spec drop_post(S, Args, Res) -> true | term()
+    when S    :: eqc_state:dynamic_state(),
+         Args :: [term()],
+         Res  :: term().
+drop_post(_S, [_Pid, _Opts], NewPid) ->
+    is_empty(NewPid).
+
 weight(#state{previous_keys=[]}, Command) when Command == get;
                                                Command == delete ->
     1;
@@ -360,8 +434,6 @@ is_leveled_open(_) ->
 
 get_all_vals(undefined, false) ->
     [];
-get_all_vals(Pid, false) ->
-    ok = leveled_bookie:book_destroy(Pid);
 get_all_vals(undefined, true) ->
     %% start a leveled (may have been stopped in the test)
     {ok, Bookie} = leveled_bookie:book_start(gen_opts()),
