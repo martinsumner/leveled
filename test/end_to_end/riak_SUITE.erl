@@ -4,12 +4,16 @@
 -export([all/0]).
 -export([
             crossbucket_aae/1,
-            handoff/1
+            handoff/1,
+         dollar_bucket_index/1,
+         dollar_key_index/1
             ]).
 
 all() -> [
             crossbucket_aae,
-            handoff
+            handoff,
+          dollar_bucket_index,
+          dollar_key_index
             ].
 
 -define(MAGIC, 53). % riak_kv -> riak_object
@@ -419,3 +423,87 @@ handoff(_Config) ->
     ok = leveled_bookie:book_close(Bookie2),
     ok = leveled_bookie:book_close(Bookie3),
     ok = leveled_bookie:book_close(Bookie4).
+
+%% @doc test that the riak specific $key index can be iterated using
+%% leveled's existing folders
+dollar_key_index(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    {ok, Bookie1} = leveled_bookie:book_start(RootPath,
+                                              2000,
+                                              50000000,
+                                              testutil:sync_strategy()),
+    ObjectGen = testutil:get_compressiblevalue_andinteger(),
+    IndexGen = fun() -> [] end,
+    ObjL1 = testutil:generate_objects(1300,
+                                      {fixed_binary, 1},
+                                      [],
+                                      ObjectGen,
+                                      IndexGen,
+                                      <<"Bucket1">>),
+    testutil:riakload(Bookie1, ObjL1),
+
+    FoldKeysFun = fun(_B, K, Acc) ->
+                          [ K |Acc]
+                  end,
+
+    StartKey = testutil:fixed_bin_key(123),
+    EndKey = testutil:fixed_bin_key(779),
+
+    Query = {keylist, ?RIAK_TAG, <<"Bucket1">>,  {StartKey, EndKey}, {FoldKeysFun, []}},
+
+    {async, Folder} = leveled_bookie:book_returnfolder(Bookie1, Query),
+    ResLen = length(Folder()),
+    io:format("Length of Result of folder ~w~n", [ResLen]),
+    true = 657 == ResLen,
+
+    ok = leveled_bookie:book_close(Bookie1),
+    testutil:reset_filestructure().
+
+%% @doc test that the riak specific $bucket indexes can be iterated
+%% using leveled's existing folders
+dollar_bucket_index(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    {ok, Bookie1} = leveled_bookie:book_start(RootPath,
+                                              2000,
+                                              50000000,
+                                              testutil:sync_strategy()),
+    ObjectGen = testutil:get_compressiblevalue_andinteger(),
+    IndexGen = fun() -> [] end,
+    ObjL1 = testutil:generate_objects(1300,
+                                      uuid,
+                                      [],
+                                      ObjectGen,
+                                      IndexGen,
+                                      <<"Bucket1">>),
+    testutil:riakload(Bookie1, ObjL1),
+    ObjL2 = testutil:generate_objects(1700,
+                                      uuid,
+                                      [],
+                                      ObjectGen,
+                                      IndexGen,
+                                      <<"Bucket2">>),
+    testutil:riakload(Bookie1, ObjL2),
+    ObjL3 = testutil:generate_objects(7000,
+                                      uuid,
+                                      [],
+                                      ObjectGen,
+                                      IndexGen,
+                                      <<"Bucket3">>),
+
+    testutil:riakload(Bookie1, ObjL3),
+
+    FoldKeysFun = fun(B, K, Acc) ->
+                          [{B, K}|Acc]
+                  end,
+
+    Query = {keylist, ?RIAK_TAG, <<"Bucket2">>, {FoldKeysFun, []}},
+
+    {async, Folder} = leveled_bookie:book_returnfolder(Bookie1, Query),
+    ResLen = length(Folder()),
+
+    io:format("Length of Result of folder ~w~n", [ResLen]),
+
+    true = 1700 == ResLen,
+
+    ok = leveled_bookie:book_close(Bookie1),
+    testutil:reset_filestructure().
