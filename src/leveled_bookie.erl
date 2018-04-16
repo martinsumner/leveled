@@ -567,9 +567,9 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State)
     LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
     SW0 = os:timestamp(),
     {ok, SQN, ObjSize} = leveled_inker:ink_put(State#state.inker,
-                                                LedgerKey,
-                                                Object,
-                                                {IndexSpecs, TTL}),
+                                               LedgerKey,
+                                               Object,
+                                               {IndexSpecs, TTL}),
     {SW1, Timings1} = 
         update_timings(SW0, {put, {inker, ObjSize}}, State#state.put_timings),
     Changes = preparefor_ledgercache(no_type_assigned,
@@ -581,12 +581,12 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State)
                                         State),
     Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
     {_SW2, Timings2} = update_timings(SW1, {put, mem}, Timings1),
-    
+
     {Timings, CountDown} = 
         update_statetimings(put, Timings2, State#state.put_countdown),
-    % If the previous push to memory was returned then punish this PUT with a
-    % delay.  If the back-pressure in the Penciller continues, these delays
-    % will beocme more frequent
+                                                % If the previous push to memory was returned then punish this PUT with a
+                                                % delay.  If the back-pressure in the Penciller continues, these delays
+                                                % will beocme more frequent
     case State#state.slow_offer of
         true ->
             gen_server:reply(From, pause);
@@ -595,18 +595,18 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State)
     end,
     maybe_longrunning(SW0, overall_put),
     case maybepush_ledgercache(State#state.cache_size,
-                                    Cache0,
-                                    State#state.penciller) of
+                               Cache0,
+                               State#state.penciller) of
         {ok, NewCache} ->
             {noreply, State#state{ledger_cache = NewCache,
-                                    put_timings = Timings,
-                                    put_countdown = CountDown,
-                                    slow_offer = false}};
+                                  put_timings = Timings,
+                                  put_countdown = CountDown,
+                                  slow_offer = false}};
         {returned, NewCache} ->
             {noreply, State#state{ledger_cache = NewCache,
-                                    put_timings = Timings,
-                                    put_countdown = CountDown,
-                                    slow_offer = true}}
+                                  put_timings = Timings,
+                                  put_countdown = CountDown,
+                                  slow_offer = true}}
     end;
 handle_call({mput, ObjectSpecs, TTL}, From, State) 
                                         when State#state.head_only == true ->
@@ -696,28 +696,28 @@ handle_call({head, Bucket, Key, Tag}, _From, State)
                         true ->
                             {SWr, UpdTimingsP} = 
                                 update_timings(SWp, 
-                                                {head, pcl}, 
-                                                State#state.head_timings),
+                                               {head, pcl}, 
+                                               State#state.head_timings),
                             OMD = leveled_codec:build_metadata_object(LK, MD),
                             {_SW, UpdTimingsR} = 
                                 update_timings(SWr, {head, rsp}, UpdTimingsP),
                             {UpdTimings, CountDown} =
                                 update_statetimings(head, 
-                                                UpdTimingsR, 
-                                                State#state.head_countdown),
+                                                    UpdTimingsR, 
+                                                    State#state.head_countdown),
                             {reply, 
-                                {ok, OMD}, 
-                                State#state{head_timings = UpdTimings,
-                                            head_countdown = CountDown}};
+                             {ok, OMD}, 
+                             State#state{head_timings = UpdTimings,
+                                         head_countdown = CountDown}};
                         false ->
                             {reply, not_found, State}
                     end
             end
     end;
 handle_call({snapshot, SnapType, Query, LongRunning}, _From, State) ->
-    % Snapshot the store, specifying if the snapshot should be long running 
-    % (i.e. will the snapshot be queued or be required for an extended period 
-    % e.g. many minutes)
+                                                % Snapshot the store, specifying if the snapshot should be long running 
+                                                % (i.e. will the snapshot be queued or be required for an extended period 
+                                                % e.g. many minutes)
     Reply = snapshot_store(State, SnapType, Query, LongRunning),
     {reply, Reply, State};
 handle_call({return_runner, QueryType}, _From, State) ->
@@ -732,8 +732,8 @@ handle_call({return_runner, QueryType}, _From, State) ->
 handle_call({compact_journal, Timeout}, _From, State)
                                         when State#state.head_only == false ->
     ok = leveled_inker:ink_compactjournal(State#state.inker,
-                                            self(),
-                                            Timeout),
+                                          self(),
+                                          Timeout),
     {reply, ok, State};
 handle_call(confirm_compact, _From, State)
                                         when State#state.head_only == false ->
@@ -915,6 +915,9 @@ get_runner(State, {keylist, Tag, FoldAccT}) ->
 get_runner(State, {keylist, Tag, Bucket, FoldAccT}) ->
     SnapFun = return_snapfun(State, ledger, no_lookup, true, true),
     leveled_runner:bucketkey_query(SnapFun, Tag, Bucket, FoldAccT);
+get_runner(State, {keylist, Tag, Bucket, KeyRange, FoldAccT}) ->
+    SnapFun = return_snapfun(State, ledger, no_lookup, true, true),
+    leveled_runner:bucketkey_query(SnapFun, Tag, Bucket, KeyRange, FoldAccT);
 
 %% Set of runners for object or metadata folds
 get_runner(State, 

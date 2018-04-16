@@ -48,7 +48,9 @@
             wait_for_compaction/1,
             foldkeysfun/3,
             foldkeysfun_returnbucket/3,
-            sync_strategy/0]).
+            sync_strategy/0,
+        numbered_key/1,
+        fixed_bin_key/1]).
 
 -define(RETURN_TERMS, {true, undefined}).
 -define(SLOWOFFER_DELAY, 5).
@@ -398,7 +400,7 @@ generate_objects(Count, uuid, ObjL, Value, IndexGen, Bucket) ->
 generate_objects(Count, {binary, KeyNumber}, ObjL, Value, IndexGen, Bucket) ->
     {Obj1, Spec1} = 
         set_object(list_to_binary(Bucket),
-                    list_to_binary("Key" ++ integer_to_list(KeyNumber)),
+                    list_to_binary(numbered_key(KeyNumber)),
                     Value,
                     IndexGen),
     generate_objects(Count - 1,
@@ -407,9 +409,21 @@ generate_objects(Count, {binary, KeyNumber}, ObjL, Value, IndexGen, Bucket) ->
                         Value,
                         IndexGen,
                         Bucket);
+generate_objects(Count, {fixed_binary, KeyNumber}, ObjL, Value, IndexGen, Bucket) ->
+    {Obj1, Spec1} =
+        set_object(Bucket,
+                   fixed_bin_key(KeyNumber),
+                    Value,
+                    IndexGen),
+    generate_objects(Count - 1,
+                        {fixed_binary, KeyNumber + 1},
+                        ObjL ++ [{leveled_rand:uniform(), Obj1, Spec1}],
+                        Value,
+                        IndexGen,
+                        Bucket);
 generate_objects(Count, KeyNumber, ObjL, Value, IndexGen, Bucket) ->
     {Obj1, Spec1} = set_object(Bucket,
-                                "Key" ++ integer_to_list(KeyNumber),
+                                numbered_key(KeyNumber),
                                 Value,
                                 IndexGen),
     generate_objects(Count - 1,
@@ -418,6 +432,19 @@ generate_objects(Count, KeyNumber, ObjL, Value, IndexGen, Bucket) ->
                         Value,
                         IndexGen,
                         Bucket).
+
+%% @doc generates a key, exported so tests can use it without copying
+%% code
+-spec numbered_key(integer()) -> list().
+numbered_key(KeyNumber) when is_integer(KeyNumber) ->
+    "Key" ++ integer_to_list(KeyNumber).
+
+%% @doc generates a key for `KeyNumber' of a fixed size (64bits),
+%% again, exported for tests to generate the same keys as
+%% generate_objects/N without peeking.
+-spec fixed_bin_key(integer()) -> binary().
+fixed_bin_key(KeyNumber) ->
+    <<$K, $e, $y, KeyNumber:64/integer>>.
 
 set_object(Bucket, Key, Value, IndexGen) ->
     set_object(Bucket, Key, Value, IndexGen, []).
