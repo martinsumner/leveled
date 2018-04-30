@@ -1125,7 +1125,14 @@ readycache_forsnapshot(LedgerCache, Query) ->
     end.
 
 scan_table(Table, StartKey, EndKey) ->
-    scan_table(Table, StartKey, EndKey, [], infinity, 0).
+    case ets:lookup(Table, StartKey) of
+        [] ->
+            scan_table(Table, StartKey, EndKey, [], infinity, 0);
+        [{StartKey, StartVal}] ->
+            SQN = leveled_codec:strip_to_seqonly({StartKey, StartVal}),
+            scan_table(Table, StartKey, EndKey, 
+                        [{StartKey, StartVal}], SQN, SQN)
+    end.
 
 scan_table(Table, StartKey, EndKey, Acc, MinSQN, MaxSQN) ->
     case ets:next(Table, StartKey) of
@@ -1884,34 +1891,49 @@ foldobjects_vs_foldheads_bybucket_testto() ->
     ?assertMatch(true,
                     lists:usort(KeyHashList2B) == lists:usort(KeyHashList2D)),
     
-    {async, HTFolder2E} =
-        book_returnfolder(Bookie1,
-                            {foldheads_bybucket,
-                                ?STD_TAG,
-                                "BucketB",
-                                {"Key", "Key4|"},
-                                FoldHeadsFun,
-                                true, false, false}),
-    KeyHashList2E = HTFolder2E(),
-    {async, HTFolder2F} =
-        book_returnfolder(Bookie1,
-                            {foldheads_bybucket,
-                                ?STD_TAG,
-                                "BucketB",
-                                {"Key5", "Key|"},
-                                FoldHeadsFun,
-                                true, false, false}),
-    KeyHashList2F = HTFolder2F(),
 
-    ?assertMatch(true, length(KeyHashList2E) > 0),
-    ?assertMatch(true, length(KeyHashList2F) > 0),
-    io:format("Length of 2B ~w 2E ~w 2F ~w~n", 
-                [length(KeyHashList2B), 
-                    length(KeyHashList2E), 
-                    length(KeyHashList2F)]),
-    ?assertMatch(true,
-                    lists:usort(KeyHashList2B) == 
-                        lists:usort(KeyHashList2E ++ KeyHashList2F)),
+    CheckSplitQueryFun = 
+        fun(SplitInt) ->
+            io:format("Testing SplitInt ~w~n", [SplitInt]),
+            SplitIntEnd = "Key" ++ integer_to_list(SplitInt) ++ "|",
+            SplitIntStart = "Key" ++ integer_to_list(SplitInt + 1),
+            {async, HTFolder2E} =
+                book_returnfolder(Bookie1,
+                                    {foldheads_bybucket,
+                                        ?STD_TAG,
+                                        "BucketB",
+                                        {"Key", SplitIntEnd},
+                                        FoldHeadsFun,
+                                        true, false, false}),
+            KeyHashList2E = HTFolder2E(),
+            {async, HTFolder2F} =
+                book_returnfolder(Bookie1,
+                                    {foldheads_bybucket,
+                                        ?STD_TAG,
+                                        "BucketB",
+                                        {SplitIntStart, "Key|"},
+                                        FoldHeadsFun,
+                                        true, false, false}),
+            KeyHashList2F = HTFolder2F(),
+
+            ?assertMatch(true, length(KeyHashList2E) > 0),
+            ?assertMatch(true, length(KeyHashList2F) > 0),
+            io:format("Length of 2B ~w 2E ~w 2F ~w~n", 
+                        [length(KeyHashList2B), 
+                            length(KeyHashList2E), 
+                            length(KeyHashList2F)]),
+            CompareL = lists:usort(KeyHashList2E ++ KeyHashList2F),
+            SubtractL = lists:subtract(KeyHashList2B, CompareL),
+            case length(SubtractL) of 
+                0 ->
+                    io:format("Test looks like passing~n");
+                _L ->
+                    io:format("Failure on SplitInt ~w~n", [SplitInt])
+            end,
+            ?assertMatch(true, lists:usort(KeyHashList2B) == CompareL)
+        end,
+    
+    lists:foreach(CheckSplitQueryFun, [1, 4, 8, 300, 100, 400]),
 
     ok = book_close(Bookie1),
     reset_filestructure().
