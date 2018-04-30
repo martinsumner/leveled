@@ -1923,13 +1923,6 @@ foldobjects_vs_foldheads_bybucket_testto() ->
                             length(KeyHashList2E), 
                             length(KeyHashList2F)]),
             CompareL = lists:usort(KeyHashList2E ++ KeyHashList2F),
-            SubtractL = lists:subtract(KeyHashList2B, CompareL),
-            case length(SubtractL) of 
-                0 ->
-                    io:format("Test looks like passing~n");
-                _L ->
-                    io:format("Failure on SplitInt ~w~n", [SplitInt])
-            end,
             ?assertMatch(true, lists:usort(KeyHashList2B) == CompareL)
         end,
     
