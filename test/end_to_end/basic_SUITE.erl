@@ -523,7 +523,7 @@ space_clear_ondelete(_Config) ->
                             no_check,
                             G2),
     
-    FoldKeysFun = fun(B, K, Acc) -> Acc ++ [{B, K}] end,
+    FoldKeysFun = fun(B, K, Acc) -> [{B, K}|Acc] end,
     AllKeyQuery = {keylist, o_rkv, {FoldKeysFun, []}},
     {async, F1} = leveled_bookie:book_returnfolder(Book1, AllKeyQuery),
     SW1 = os:timestamp(),
@@ -548,7 +548,12 @@ space_clear_ondelete(_Config) ->
                                                             ?RIAK_TAG,
                                                             FoldObjectsFun,
                                                             false}),
+        % This query does not Snap PreFold - and so will not prevent
+        % pending deletes from prompting actual deletes
+
     {async, KF1} = leveled_bookie:book_returnfolder(Book1, AllKeyQuery),
+        % This query does Snap PreFold, and so will prevent deletes from
+        % the ledger
 
     % Delete the keys
     SW2 = os:timestamp(),
@@ -581,9 +586,14 @@ space_clear_ondelete(_Config) ->
     io:format("Waiting for journal deletes - blocked~n"),
     timer:sleep(20000),
     
-    % for this query snapshot is made at fold time
+    io:format("Sleep over - Fold Objects query ~n"),
+    % for this query snapshot is made at fold time, and so the results are 
+    % empty
     true = length(HTreeF1()) == 0,
+    
     % This query uses a genuine async fold on a snasphot made at request time
+    % and so the results should be non-empty
+    io:format("Now Query 2 - Fold Keys query~n"),
     true = length(KF1()) == 80000, 
     
     io:format("Waiting for journal deletes - unblocked~n"),
