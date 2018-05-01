@@ -21,11 +21,13 @@
 -define(BAND_MASK, ?INTEGER_SIZE - 1). 
 
 
+-type bloom() :: binary().
+
 %%%============================================================================
 %%% API
 %%%============================================================================
 
--spec create_bloom(list(integer())) -> binary().
+-spec create_bloom(list(integer())) -> bloom().
 %% @doc
 %% Create a binary bloom filter from alist of hashes
 create_bloom(HashList) ->
@@ -51,7 +53,7 @@ create_bloom(HashList) ->
     end.
 
 
--spec check_hash(integer(), binary()) -> boolean().
+-spec check_hash(integer(), bloom()) -> boolean().
 %% @doc
 %% Check for the presence of a given hash within a bloom
 check_hash(_Hash, <<>>) ->
