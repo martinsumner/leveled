@@ -175,7 +175,7 @@ aae_bustedjournal(_Config) ->
     testutil:corrupt_journal(RootPath, HeadF, 1000, 2048, 1000),
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts),
     
-    FoldKeysFun = fun(B, K, Acc) -> Acc ++ [{B, K}] end,
+    FoldKeysFun = fun(B, K, Acc) -> [{B, K}|Acc] end,
     AllKeyQuery = {keylist, o_rkv, {FoldKeysFun, []}},
     {async, KeyF} = leveled_bookie:book_returnfolder(Bookie2, AllKeyQuery),
     KeyList = KeyF(),
