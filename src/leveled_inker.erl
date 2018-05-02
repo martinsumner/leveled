@@ -145,6 +145,7 @@
 
 
 -type inker_options() :: #inker_options{}.
+-type ink_state() :: #state{}.
 
 
 %%%============================================================================
@@ -579,6 +580,9 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%============================================================================
 
+-spec start_from_file(inker_options()) -> {ok, ink_state()}.
+%% @doc
+%% Start an Inker from the state on disk (i.e. not a snapshot).  
 start_from_file(InkOpts) ->
     % Setting the correct CDB options is important when starting the inker, in
     % particular for waste retention which is determined by the CDB options 
@@ -646,6 +650,9 @@ shutdown_manifest(Manifest) ->
     ManAsList = leveled_imanifest:to_list(Manifest),
     close_allmanifest(ManAsList).
 
+-spec get_cdbopts(inker_options()) -> #cdb_options{}.
+%% @doc
+%% Extract the options for the indibvidal Journal files from the Inker options
 get_cdbopts(InkOpts)->
     CDBopts = InkOpts#inker_options.cdb_options,
     WasteFP = 
@@ -664,6 +671,14 @@ get_cdbopts(InkOpts)->
     CDBopts#cdb_options{waste_path = WasteFP}.
 
 
+-spec put_object(tuple(), any(), list(), ink_state()) 
+                                        -> {ok|rolling, ink_state(), integer()}.
+%% @doc
+%% Add the object to the current journal if it fits.  If it doesn't fit, a new 
+%% journal must be started, and the old journal is set to "roll" into a read
+%% only Journal. 
+%% The reply contains the byte_size of the object, using the size calculated
+%% to store the object.
 put_object(LedgerKey, Object, KeyChanges, State) ->
     NewSQN = State#state.journal_sqn + 1,
     ActiveJournal = State#state.active_journaldb,
@@ -710,6 +725,12 @@ put_object(LedgerKey, Object, KeyChanges, State) ->
     end.
 
 
+-spec get_object(tuple(), integer(), leveled_imanifest:manifest()) -> any().
+%% @doc
+%% Find the SQN in the manifest and then fetch the object from the Journal, 
+%% in the manifest.  If the fetch is in response to a user GET request then
+%% the KeyChanges are irrelevant, so no need to process them.  In this case
+%% the KeyChanges are processed (as ToIgnoreKeyChanges will be set to false).
 get_object(LedgerKey, SQN, Manifest) ->
     get_object(LedgerKey, SQN, Manifest, false).
 
@@ -720,12 +741,28 @@ get_object(LedgerKey, SQN, Manifest, ToIgnoreKeyChanges) ->
     Obj = leveled_cdb:cdb_get(JournalP, InkerKey),
     leveled_codec:from_inkerkv(Obj, ToIgnoreKeyChanges).
 
+
+-spec key_check(tuple(), integer(), leveled_imanifest:manifest()) 
+                                                        -> missing|probably.
+%% @doc
+%% Checks for the presence of the key at that SQN withing the journal, 
+%% avoiding the cost of actually reading the object from disk.
+%% a KeyCheck is not absolute proof of the existence of the object - there 
+%% could be a hash collision, or the on-disk object could be corrupted.  So
+%% the positive answer is 'probably' not 'true'
 key_check(LedgerKey, SQN, Manifest) ->
     JournalP = leveled_imanifest:find_entry(SQN, Manifest),
     {InkerKey, _V, true} = 
         leveled_codec:to_inkerkv(LedgerKey, SQN, to_fetch),
     leveled_cdb:cdb_keycheck(JournalP, InkerKey).
 
+
+-spec build_manifest(list(), list(), #cdb_options{}) -> 
+                {leveled_imanifest:manifest(), integer(), integer(), pid()}.
+%% @doc
+%% Selectes the correct manifets to open, and the starts a process for each 
+%% file in the manifest, storing the PID for that process within the manifest.
+%% Opens an active journal if one is not present.
 build_manifest(ManifestFilenames,
                 RootPath,
                 CDBopts) ->
@@ -779,6 +816,10 @@ build_manifest(ManifestFilenames,
     {OpenManifest, UpdManifestSQN, JournalSQN, ActiveJournal}.
 
 
+-spec close_allmanifest(list()) -> ok.
+%% @doc
+%% Close every file in the manifest.  Will cause deletion of any delete_pending
+%% files.
 close_allmanifest([]) ->
     ok;
 close_allmanifest([H|ManifestT]) ->
@@ -787,6 +828,11 @@ close_allmanifest([H|ManifestT]) ->
     close_allmanifest(ManifestT).
 
 
+-spec open_all_manifest(leveled_imanifest:manifest(), list(), #cdb_options{})
+                                            -> leveled_imanifest:manifest().
+%% @doc
+%% Open all the files in the manifets, and updating the manifest with the PIDs
+%% of the opened files
 open_all_manifest([], RootPath, CDBOpts) ->
     leveled_log:log("I0011", []),
     leveled_imanifest:add_entry([],
