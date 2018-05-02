@@ -596,12 +596,12 @@ get_randomdate() ->
                                     [Year, Month, Day, Hour, Minute, Second])).
 
 
-foldkeysfun(_Bucket, Item, Acc) -> Acc ++ [Item].
+foldkeysfun(_Bucket, Item, Acc) -> [Item|Acc].
 
 foldkeysfun_returnbucket(Bucket, {Term, Key}, Acc) ->
-    Acc ++ [{Term, {Bucket, Key}}];
+    [{Term, {Bucket, Key}}|Acc];
 foldkeysfun_returnbucket(Bucket, Key, Acc) ->
-    Acc ++ [{Bucket, Key}].
+    [{Bucket, Key}|Acc].
 
 check_indexed_objects(Book, B, KSpecL, V) ->
     % Check all objects match, return what should be the results of an all

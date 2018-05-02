@@ -943,7 +943,10 @@ sst_filename(ManSQN, Level, Count) ->
 %%% Internal functions
 %%%============================================================================
 
-
+-spec start_from_file(penciller_options()) -> {ok, pcl_state()}.
+%% @doc
+%% Normal start of a penciller (i.e. not a snapshot), needs to read the 
+%% filesystem and reconstruct the ledger from the files that it finds
 start_from_file(PCLopts) ->
     RootPath = PCLopts#penciller_options.root_path,
     MaxTableSize = 
@@ -1035,6 +1038,12 @@ shutdown_manifest(Manifest)->
     leveled_pmanifest:close_manifest(Manifest, EntryCloseFun).
 
 
+-spec archive_files(list(), list()) -> ok.
+%% @doc
+%% Archive any sst files in the folder that have not been used to build the 
+%% ledger at startup.  They may have not deeleted as expected, so this saves
+%% them off as non-SST fies to make it easier for an admin to garbage collect 
+%% theses files
 archive_files(RootPath, UsedFileList) ->
     {ok, AllFiles} = file:list_dir(sst_rootpath(RootPath)),
     FileCheckFun =
@@ -1066,9 +1075,20 @@ archive_files(RootPath, UsedFileList) ->
     ok.
 
 
+-spec update_levelzero(integer(), tuple(), integer(), list(), pcl_state()) 
+                                                            -> pcl_state().
+%% @doc
+%% Update the in-memory cache of recent changes for the penciller.  This is 
+%% the level zer at the top of the tree.
+%% Once the update is made, there needs to be a decision to potentially roll
+%% the level-zero memory to an on-disk level zero sst file.  This can only
+%% happen when the cache has exeeded the size threshold (with some jitter 
+%% to prevent coordination across multiple leveled instances), and when there
+%% is no level zero file already present, and when there is no manifest change
+%% pending. 
 update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
                                                 LedgerSQN, L0Cache, State) ->
-    SW = os:timestamp(),
+    SW = os:timestamp(), % Time this for logging purposes
     Update = leveled_pmem:add_to_cache(L0Size,
                                         {PushedTree, MinSQN, MaxSQN},
                                         LedgerSQN,
@@ -1116,7 +1136,12 @@ update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
             end
     end.
 
-
+-spec roll_memory(pcl_state(), boolean()) 
+                                    -> {pid(), leveled_ebloom:bloom()|none}.
+%% @doc
+%% Roll the in-memory cache into a L0 file.  If this is done synchronously, 
+%% will return a bloom representing the contents of the file. 
+%%
 %% Casting a large object (the levelzero cache) to the gen_server did not lead
 %% to an immediate return as expected.  With 32K keys in the TreeList it could
 %% take around 35-40ms.
@@ -1126,7 +1151,6 @@ update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
 %%
 %% The Wait is set to false to use a cast when calling this in normal operation
 %% where as the Wait of true is used at shutdown
-
 roll_memory(State, false) ->
     ManSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest) + 1,
     RootPath = sst_rootpath(State#state.root_path),
@@ -1159,12 +1183,33 @@ roll_memory(State, true) ->
     {ok, Constructor, _, Bloom} = R,
     {Constructor, Bloom}.
 
+
+-spec timed_fetch_mem(tuple(), {integer(), integer()}, 
+                        leveled_pmanifest:manifest(), list(), 
+                        leveled_pmem:index_array(), pcl_timings()) 
+                                                -> {tuple(), pcl_timings()}.
+%% @doc
+%% Fetch the result from the penciller, starting by looking in the memory, 
+%% and if it is not found looking down level by level through the LSM tree.
+%%
+%% This allows for the request to be timed, and the timing result to be added
+%% to the aggregate timings - so that timinings per level can be logged and 
+%% the cost of requests dropping levels can be monitored.
+%%
+%% the result tuple includes the level at which the result was found.
 timed_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, Timings) ->
     SW = os:timestamp(),
     {R, Level} = fetch_mem(Key, Hash, Manifest, L0Cache, L0Index),
     UpdTimings = update_timings(SW, Timings, R, Level),
     {R, UpdTimings}.
 
+
+-spec plain_fetch_mem(tuple(), {integer(), integer()}, 
+                        leveled_pmanifest:manifest(), list(), 
+                        leveled_pmem:index_array()) -> not_present|tuple().
+%% @doc
+%% Fetch the result from the penciller, starting by looking in the memory, 
+%% and if it is not found looking down level by level through the LSM tree.
 plain_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
     R = fetch_mem(Key, Hash, Manifest, L0Cache, L0Index),
     element(1, R).
@@ -1179,6 +1224,14 @@ fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
             {KV, memory}
     end.
 
+-spec fetch(tuple(), {integer(), integer()}, 
+                leveled_pmanifest:manifest(), integer(), 
+                fun()) -> {tuple()|not_present, integer()|basement}.
+%% @doc
+%% Fetch from the persisted portion of the LSM tree, checking each level in 
+%% turn until a match is found.
+%% Levels can be skipped by checking the bloom for the relevant file at that
+%% level.
 fetch(_Key, _Hash, _Manifest, ?MAX_LEVELS + 1, _FetchFun) ->
     {not_present, basement};
 fetch(Key, Hash, Manifest, Level, FetchFun) ->
@@ -1217,6 +1270,12 @@ log_slowfetch(T0, R, PID, Level, FetchTolerance) ->
             R
     end.
 
+
+-spec compare_to_sqn(tuple()|not_present, integer()) -> boolean().
+%% @doc
+%% Check to see if the SQN in the penciller is after the SQN expected for an 
+%% object (used to allow the journal to check compaction status from a cache
+%% of the ledger - objects with a more recent sequence number can be compacted).
 compare_to_sqn(Obj, SQN) ->
     case Obj of
         not_present ->

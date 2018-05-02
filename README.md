@@ -107,7 +107,7 @@ A new database can be started by running
 {ok, Bookie} = leveled_bookie:book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy)   
 ```
 
-This will start a new Bookie.  It will start and look for existing data files, under the RootPath, and start empty if none exist.  A LedgerCacheSize of `2000`, a JournalSize of `500000000` (500MB) and a SyncStrategy of `none` should work OK.
+This will start a new Bookie.  It will start and look for existing data files, under the RootPath, and start empty if none exist.  A LedgerCacheSize of `2000`, a JournalSize of `500000000` (500MB) and a SyncStrategy of `none` should work OK.  Further information on startup options can be found [here](docs/STARTUP_OPTIONS.md).
 
 The book_start method should respond once startup is complete.  The [leveled_bookie module](src/leveled_bookie.erl) includes the full API for external use of the store.
 
