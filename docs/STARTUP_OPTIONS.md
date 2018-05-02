@@ -1,10 +1,10 @@
 # Starting Leveled
 
-There are a number of options that can be passed in when starting Leveled, this is an explainer of these options and what they do.  The options are passed in a list of {option_name, Option} tuples on startup.
+There are a number of options that can be passed in when starting Leveled, this is an explainer of these options and what they do.  The options are passed in a list of `{option_name, Option}` tuples on startup.
 
 ## Head Only
 
-Starting with ``{head_only, true}`` (defaults to false), will start Leveled in a special mode.  In this mode Leveled works a lot more like Leveldb, in that the Journal is just a buffer of recent writes to be used to recover objects on startup.  The actual object value is now stored in the LSM tree itself rather than in the Journal.
+Starting with `{head_only, true}` (defaults to false), will start Leveled in a special mode.  In this mode Leveled works a lot more like Leveldb, in that the Journal is just a buffer of recent writes to be used to recover objects on startup.  The actual object value is now stored in the LSM tree itself rather than in the Journal.
 
 Objects need to be put into the Leveled store using the `book_mput/2` or `book_mput/3` when running in head_only mode.
 
@@ -32,7 +32,7 @@ The default number of objects is 28,000.  A small number may be required if ther
 
 The sync strategy can be set as `{sync_strategy, sync|riak_sync|none}`.  This controls whether each write requires that write to be flushed to disk before the write is acknowledged.  If `none` is set flushing to disk is left in the hands of the operating system.  `riak_sync` is a deprecated option (it is related to the lack of sync flag in OTP 16, and will prompt the flush after the write, rather than as part of the write operation).
 
-The default is `sync`.  Note, that without solid state drives, and/or Flash-Backed Write Caches, this option will have a significant impact on performance.
+The default is `sync`.  Note, that without solid state drives and/or Flash-Backed Write Caches, this option will have a significant impact on performance.
 
 ## Waste Retention Period
 
