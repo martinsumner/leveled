@@ -83,6 +83,7 @@
 -define(SNAPSHOT_TIMEOUT, 300000).
 -define(CACHE_SIZE_JITTER, 25).
 -define(JOURNAL_SIZE_JITTER, 20).
+-define(ABSOLUTEMAX_JOURNALSIZE, 4000000000).
 -define(LONG_RUNNING, 80000).
 -define(RECENT_AAE, false).
 -define(COMPRESSION_METHOD, lz4).
@@ -323,7 +324,7 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) ->
 -spec book_mput(pid(), list(tuple())) -> ok|pause.
 %% @doc
 %%
-%% When the store is being run in head_only mode, batches fo object specs may
+%% When the store is being run in head_only mode, batches of object specs may
 %% be inserted in to the store using book_mput/2.  ObjectSpecs should be 
 %% of the form {ObjectOp, Bucket, Key, SubKey, Value}.  The Value will be 
 %% stored within the HEAD of the object (in the Ledger), so the full object 
@@ -336,7 +337,7 @@ book_mput(Pid, ObjectSpecs) ->
 -spec book_mput(pid(), list(tuple()), infinity|integer()) -> ok|pause.
 %% @doc
 %%
-%% When the store is being run in head_only mode, batches fo object specs may
+%% When the store is being run in head_only mode, batches of object specs may
 %% be inserted in to the store using book_mput/2.  ObjectSpecs should be 
 %% of the form {action, Bucket, Key, SubKey, Value}.  The Value will be 
 %% stored within the HEAD of the object (in the Ledger), so the full object 
@@ -892,10 +893,13 @@ startup(InkerOpts, PencillerOpts, State) ->
 %% Take the passed in property list of operations and extract out any relevant
 %% options to the Inker or the Penciller
 set_options(Opts) ->
-    MaxJournalSize0 = get_opt(max_journalsize, Opts, 10000000000),
+    MaxJournalSize0 = 
+        min(?ABSOLUTEMAX_JOURNALSIZE, 
+                get_opt(max_journalsize, Opts, 1000000000)),
     JournalSizeJitter = MaxJournalSize0 div (100 div ?JOURNAL_SIZE_JITTER),
-    MaxJournalSize = MaxJournalSize0 -
-                        erlang:phash2(self()) rem JournalSizeJitter,
+    MaxJournalSize = 
+        min(?ABSOLUTEMAX_JOURNALSIZE, 
+                MaxJournalSize0 - erlang:phash2(self()) rem JournalSizeJitter),
 
     SyncStrat = get_opt(sync_strategy, Opts, sync),
     WRP = get_opt(waste_retention_period, Opts),
