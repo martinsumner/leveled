@@ -199,6 +199,8 @@ book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy) ->
 %% - compression_method
 %% - compression_point
 %%
+%% For full description of options see ../docs/STARTUP_OPTIONS.md
+%%
 %% Both of the first two options relate to compaction in the Journal.  The 
 %% retain_strategy determines if a skinny record of the object should be 
 %% retained following compaction, and how that should be used when recovering 
