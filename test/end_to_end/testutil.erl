@@ -388,7 +388,7 @@ generate_objects(Count, binary_uuid, ObjL, Value, IndexGen, Bucket) ->
                         Bucket);
 generate_objects(Count, uuid, ObjL, Value, IndexGen, Bucket) ->
     {Obj1, Spec1} = set_object(Bucket,
-                                leveled_codec:generate_uuid(),
+                                leveled_util:generate_uuid(),
                                 Value,
                                 IndexGen),
     generate_objects(Count - 1,

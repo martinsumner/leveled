@@ -81,7 +81,8 @@
                             integer()|null, % Hash of vclock - non-exportable 
                             integer()}. % Size in bytes of real object
 
--type tag() :: ?STD_TAG|?RIAK_TAG|?IDX_TAG|?HEAD_TAG.
+-type tag() :: 
+        ?STD_TAG|?RIAK_TAG|?IDX_TAG|?HEAD_TAG.
 -type segment_hash() :: 
         {integer(), integer()}.
 -type ledger_status() ::
