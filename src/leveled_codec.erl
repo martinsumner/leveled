@@ -313,17 +313,12 @@ compact_inkerkvc({{SQN, ?INKT_STND, LK}, V, CrcCheck}, Strategy) ->
                                                     -> skip|retain|recalc.
 %% @doc
 %% Work out the compaction startegy for the key
-get_tagstrategy(LK, Strategy) ->
-    case LK of
-        {Tag, _, _, _} ->
-            case lists:keyfind(Tag, 1, Strategy) of
-                {Tag, TagStrat} ->
-                    TagStrat;
-                false ->
-                    leveled_log:log("IC012", [Tag, Strategy]),
-                    skip
-            end;
-        _ ->
+get_tagstrategy({Tag, _, _, _}, Strategy) ->
+    case lists:keyfind(Tag, 1, Strategy) of
+        {Tag, TagStrat} ->
+            TagStrat;
+        false ->
+            leveled_log:log("IC012", [Tag, Strategy]),
             skip
     end.
 
