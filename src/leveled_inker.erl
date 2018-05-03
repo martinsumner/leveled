@@ -736,8 +736,7 @@ get_object(LedgerKey, SQN, Manifest) ->
 
 get_object(LedgerKey, SQN, Manifest, ToIgnoreKeyChanges) ->
     JournalP = leveled_imanifest:find_entry(SQN, Manifest),
-    {InkerKey, _V, true} = 
-        leveled_codec:to_inkerkv(LedgerKey, SQN, to_fetch),
+    InkerKey = leveled_codec:to_inkerkey(LedgerKey, SQN),
     Obj = leveled_cdb:cdb_get(JournalP, InkerKey),
     leveled_codec:from_inkerkv(Obj, ToIgnoreKeyChanges).
 
@@ -752,8 +751,7 @@ get_object(LedgerKey, SQN, Manifest, ToIgnoreKeyChanges) ->
 %% the positive answer is 'probably' not 'true'
 key_check(LedgerKey, SQN, Manifest) ->
     JournalP = leveled_imanifest:find_entry(SQN, Manifest),
-    {InkerKey, _V, true} = 
-        leveled_codec:to_inkerkv(LedgerKey, SQN, to_fetch),
+    InkerKey = leveled_codec:to_inkerkey(LedgerKey, SQN),
     leveled_cdb:cdb_keycheck(JournalP, InkerKey).
 
 
@@ -1013,12 +1011,12 @@ filepath(RootPath, journal_waste_dir) ->
 filepath(RootPath, NewSQN, new_journal) ->
     filename:join(filepath(RootPath, journal_dir),
                     integer_to_list(NewSQN) ++ "_"
-                        ++ leveled_codec:generate_uuid()
+                        ++ leveled_util:generate_uuid()
                         ++ "." ++ ?PENDING_FILEX);
 filepath(CompactFilePath, NewSQN, compact_journal) ->
     filename:join(CompactFilePath,
                     integer_to_list(NewSQN) ++ "_"
-                        ++ leveled_codec:generate_uuid()
+                        ++ leveled_util:generate_uuid()
                         ++ "." ++ ?PENDING_FILEX).
 
 

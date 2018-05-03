@@ -255,7 +255,7 @@ book_start(Opts) ->
 %%
 %% Put an item in the store but with a Time To Live - the time when the object
 %% should expire, in gregorian_seconds (add the required number of seconds to
-%% leveled_codec:integer_time/1).
+%% leveled_util:integer_time/1).
 %%
 %% There exists the possibility of per object expiry times, not just whole
 %% store expiry times as has traditionally been the feature in Riak.  Care
@@ -654,7 +654,7 @@ handle_call({get, Bucket, Key, Tag}, _From, State)
                     tomb ->
                         not_found;
                     {active, TS} ->
-                        case TS >= leveled_codec:integer_now() of
+                        case TS >= leveled_util:integer_now() of
                             false ->
                                 not_found;
                             true ->
@@ -695,7 +695,7 @@ handle_call({head, Bucket, Key, Tag}, _From, State)
                 {_SeqN, tomb, _MH, _MD} ->
                     {reply, not_found, State};
                 {_SeqN, {active, TS}, _MH, MD} ->
-                    case TS >= leveled_codec:integer_now() of
+                    case TS >= leveled_util:integer_now() of
                         true ->
                             {SWr, UpdTimingsP} = 
                                 update_timings(SWp, 
@@ -1649,7 +1649,7 @@ ttl_test() ->
     {ok, Bookie1} = book_start([{root_path, RootPath}]),
     ObjL1 = generate_multiple_objects(100, 1),
     % Put in all the objects with a TTL in the future
-    Future = leveled_codec:integer_now() + 300,
+    Future = leveled_util:integer_now() + 300,
     lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
                                                         "Bucket", K, V, S,
                                                         ?STD_TAG,
@@ -1665,7 +1665,7 @@ ttl_test() ->
                     ObjL1),
 
     ObjL2 = generate_multiple_objects(100, 101),
-    Past = leveled_codec:integer_now() - 300,
+    Past = leveled_util:integer_now() - 300,
     lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
                                                         "Bucket", K, V, S,
                                                         ?STD_TAG,
@@ -1741,7 +1741,7 @@ hashlist_query_testto() ->
                                 {cache_size, 500}]),
     ObjL1 = generate_multiple_objects(1200, 1),
     % Put in all the objects with a TTL in the future
-    Future = leveled_codec:integer_now() + 300,
+    Future = leveled_util:integer_now() + 300,
     lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
                                                         "Bucket", K, V, S,
                                                         ?STD_TAG,
@@ -1749,7 +1749,7 @@ hashlist_query_testto() ->
                     ObjL1),
     ObjL2 = generate_multiple_objects(20, 1201),
     % Put in a few objects with a TTL in the past
-    Past = leveled_codec:integer_now() - 300,
+    Past = leveled_util:integer_now() - 300,
     lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
                                                         "Bucket", K, V, S,
                                                         ?STD_TAG,
@@ -1793,7 +1793,7 @@ hashlist_query_withjournalcheck_testto() ->
                                     {cache_size, 500}]),
     ObjL1 = generate_multiple_objects(800, 1),
     % Put in all the objects with a TTL in the future
-    Future = leveled_codec:integer_now() + 300,
+    Future = leveled_util:integer_now() + 300,
     lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
                                                         "Bucket", K, V, S,
                                                         ?STD_TAG,
@@ -1822,7 +1822,7 @@ foldobjects_vs_hashtree_testto() ->
                                     {cache_size, 500}]),
     ObjL1 = generate_multiple_objects(800, 1),
     % Put in all the objects with a TTL in the future
-    Future = leveled_codec:integer_now() + 300,
+    Future = leveled_util:integer_now() + 300,
     lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
                                                         "Bucket", K, V, S,
                                                         ?STD_TAG,
@@ -1896,7 +1896,7 @@ foldobjects_vs_foldheads_bybucket_testto() ->
     ObjL1 = generate_multiple_objects(400, 1),
     ObjL2 = generate_multiple_objects(400, 1),
     % Put in all the objects with a TTL in the future
-    Future = leveled_codec:integer_now() + 300,
+    Future = leveled_util:integer_now() + 300,
     lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
                                                         "BucketA", K, V, S,
                                                         ?STD_TAG,
@@ -2034,7 +2034,7 @@ is_empty_test() ->
                                     {max_journalsize, 1000000},
                                     {cache_size, 500}]),
     % Put in an object with a TTL in the future
-    Future = leveled_codec:integer_now() + 300,
+    Future = leveled_util:integer_now() + 300,
     ?assertMatch(true, leveled_bookie:book_isempty(Bookie1, ?STD_TAG)),
     ok = book_tempput(Bookie1, 
                         <<"B">>, <<"K">>, {value, <<"V">>}, [], 

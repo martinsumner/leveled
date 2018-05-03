@@ -1543,7 +1543,7 @@ endian_flip(Int) ->
     X.
 
 hash(Key) ->
-    leveled_codec:magic_hash(Key).
+    leveled_util:magic_hash(Key).
 
 % Get the least significant 8 bits from the hash.
 hash_to_index(Hash) ->

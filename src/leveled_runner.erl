@@ -403,7 +403,7 @@ foldobjects_byindex(SnapFun, {Tag, Bucket, Field, FromTerm, ToTerm}, FoldFun) ->
 get_nextbucket(_NextB, _NextK, _Tag, _LS, BKList, {Limit, Limit}) ->
     BKList;
 get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList, {C, L}) ->
-    Now = leveled_codec:integer_now(),
+    Now = leveled_util:integer_now(),
     StartKey = leveled_codec:to_ledgerkey(NextBucket, NextKey, Tag),
     EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
     ExtractFun =
@@ -420,7 +420,7 @@ get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList, {C, L}) ->
             leveled_log:log("B0008",[]),
             BKList;
         {{B, K}, V} when is_binary(B), is_binary(K) ->
-            case leveled_codec:is_active({B, K}, V, Now) of
+            case leveled_codec:is_active({Tag, B, K, null}, V, Now) of
                 true ->
                     leveled_log:log("B0009",[B]),
                     get_nextbucket(<<B/binary, 0>>,
@@ -497,7 +497,7 @@ foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, SegmentList) ->
 
 
 accumulate_size() ->
-    Now = leveled_codec:integer_now(),
+    Now = leveled_util:integer_now(),
     AccFun = fun(Key, Value, {Size, Count}) ->
                     case leveled_codec:is_active(Key, Value, Now) of
                             true ->
@@ -533,7 +533,7 @@ accumulate_tree(FilterFun, JournalCheck, InkerClone, HashFun) ->
                         AddKeyFun).
 
 get_hashaccumulator(JournalCheck, InkerClone, AddKeyFun) ->
-    Now = leveled_codec:integer_now(),
+    Now = leveled_util:integer_now(),
     AccFun =
         fun(LK, V, Acc) ->
             case leveled_codec:is_active(LK, V, Now) of
@@ -559,7 +559,7 @@ get_hashaccumulator(JournalCheck, InkerClone, AddKeyFun) ->
 
 
 accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
-    Now = leveled_codec:integer_now(),
+    Now = leveled_util:integer_now(),
     AccFun =
         fun(LK, V, Acc) ->
             % The function takes the Ledger Key and the value from the
@@ -642,7 +642,7 @@ check_presence(Key, Value, InkerClone) ->
     end.
 
 accumulate_keys(FoldKeysFun) ->
-    Now = leveled_codec:integer_now(),
+    Now = leveled_util:integer_now(),
     AccFun = fun(Key, Value, Acc) ->
                     case leveled_codec:is_active(Key, Value, Now) of
                         true ->
@@ -661,7 +661,7 @@ add_terms(ObjKey, IdxValue) ->
     {IdxValue, ObjKey}.
 
 accumulate_index(TermRe, AddFun, FoldKeysFun) ->
-    Now = leveled_codec:integer_now(),
+    Now = leveled_util:integer_now(),
     case TermRe of
         undefined ->
             fun(Key, Value, Acc) ->
