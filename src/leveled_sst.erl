@@ -62,6 +62,14 @@
 
 -behaviour(gen_fsm).
 
+-ifdef(fsm_deprecated).
+-compile({nowarn_deprecated_function, 
+            [{gen_fsm, start, 3},
+                {gen_fsm, sync_send_event, 3},
+                {gen_fsm, send_event, 2},
+                {gen_fsm, send_all_state_event, 2}]}).
+-endif.
+
 -include("include/leveled.hrl").
 
 -define(MAX_SLOTS, 256).
