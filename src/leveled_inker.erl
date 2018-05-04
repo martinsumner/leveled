@@ -127,6 +127,7 @@
 -define(PENDING_FILEX, "pnd").
 -define(LOADING_PAUSE, 1000).
 -define(LOADING_BATCH, 1000).
+-define(TEST_KC, {[], infinity}).
 
 -record(state, {manifest = [] :: list(),
 				manifest_sqn = 0 :: integer(),
@@ -171,17 +172,13 @@ ink_start(InkerOpts) ->
     gen_server:start(?MODULE, [InkerOpts], []).
 
 -spec ink_put(pid(),
-                {atom(), any(), any(), any()}|string(),
+                leveled_codec:ledger_key(),
                 any(),
-                {list(), integer()|infinity}) ->
+                leveled_codec:key_changes()) ->
                                    {ok, integer(), integer()}.
 %% @doc
 %% PUT an object into the journal, returning the sequence number for the PUT
 %% as well as the size of the object (information required by the ledger).
-%%
-%% The primary key is expected to be a tuple of the form 
-%% {Tag, Bucket, Key, null}, but unit tests support pure string Keys and so
-%% these types are also supported.
 %%
 %% KeyChanges is a tuple of {KeyChanges, TTL} where the TTL is an
 %% expiry time (or infinity).
@@ -199,7 +196,7 @@ ink_mput(Pid, PrimaryKey, ObjectChanges) ->
     gen_server:call(Pid, {mput, PrimaryKey, ObjectChanges}, infinity).
 
 -spec ink_get(pid(),
-                {atom(), any(), any(), any()}|string(),
+                leveled_codec:ledger_key(),
                 integer()) ->
                          {{integer(), any()}, {any(), any()}}.
 %% @doc
@@ -221,7 +218,7 @@ ink_fetch(Pid, PrimaryKey, SQN) ->
     gen_server:call(Pid, {fetch, PrimaryKey, SQN}, infinity).
 
 -spec ink_keycheck(pid(), 
-                    {atom(), any(), any(), any()}|string(),
+                    leveled_codec:ledger_key(),
                     integer()) ->
                             probably|missing.
 %% @doc
@@ -671,8 +668,11 @@ get_cdbopts(InkOpts)->
     CDBopts#cdb_options{waste_path = WasteFP}.
 
 
--spec put_object(tuple(), any(), list(), ink_state()) 
-                                        -> {ok|rolling, ink_state(), integer()}.
+-spec put_object(leveled_codec:ledger_key(), 
+                    any(), 
+                    leveled_codec:journal_keychanges(), 
+                    ink_state()) 
+                                    -> {ok|rolling, ink_state(), integer()}.
 %% @doc
 %% Add the object to the current journal if it fits.  If it doesn't fit, a new 
 %% journal must be started, and the old journal is set to "roll" into a read
@@ -725,7 +725,9 @@ put_object(LedgerKey, Object, KeyChanges, State) ->
     end.
 
 
--spec get_object(tuple(), integer(), leveled_imanifest:manifest()) -> any().
+-spec get_object(leveled_codec:ledger_key(), 
+                    integer(), 
+                    leveled_imanifest:manifest()) -> any().
 %% @doc
 %% Find the SQN in the manifest and then fetch the object from the Journal, 
 %% in the manifest.  If the fetch is in response to a user GET request then
@@ -736,14 +738,14 @@ get_object(LedgerKey, SQN, Manifest) ->
 
 get_object(LedgerKey, SQN, Manifest, ToIgnoreKeyChanges) ->
     JournalP = leveled_imanifest:find_entry(SQN, Manifest),
-    {InkerKey, _V, true} = 
-        leveled_codec:to_inkerkv(LedgerKey, SQN, to_fetch),
+    InkerKey = leveled_codec:to_inkerkey(LedgerKey, SQN),
     Obj = leveled_cdb:cdb_get(JournalP, InkerKey),
     leveled_codec:from_inkerkv(Obj, ToIgnoreKeyChanges).
 
 
--spec key_check(tuple(), integer(), leveled_imanifest:manifest()) 
-                                                        -> missing|probably.
+-spec key_check(leveled_codec:ledger_key(), 
+                    integer(), 
+                    leveled_imanifest:manifest()) -> missing|probably.
 %% @doc
 %% Checks for the presence of the key at that SQN withing the journal, 
 %% avoiding the cost of actually reading the object from disk.
@@ -752,8 +754,7 @@ get_object(LedgerKey, SQN, Manifest, ToIgnoreKeyChanges) ->
 %% the positive answer is 'probably' not 'true'
 key_check(LedgerKey, SQN, Manifest) ->
     JournalP = leveled_imanifest:find_entry(SQN, Manifest),
-    {InkerKey, _V, true} = 
-        leveled_codec:to_inkerkv(LedgerKey, SQN, to_fetch),
+    InkerKey = leveled_codec:to_inkerkey(LedgerKey, SQN),
     leveled_cdb:cdb_keycheck(JournalP, InkerKey).
 
 
@@ -1013,12 +1014,12 @@ filepath(RootPath, journal_waste_dir) ->
 filepath(RootPath, NewSQN, new_journal) ->
     filename:join(filepath(RootPath, journal_dir),
                     integer_to_list(NewSQN) ++ "_"
-                        ++ leveled_codec:generate_uuid()
+                        ++ leveled_util:generate_uuid()
                         ++ "." ++ ?PENDING_FILEX);
 filepath(CompactFilePath, NewSQN, compact_journal) ->
     filename:join(CompactFilePath,
                     integer_to_list(NewSQN) ++ "_"
-                        ++ leveled_codec:generate_uuid()
+                        ++ leveled_util:generate_uuid()
                         ++ "." ++ ?PENDING_FILEX).
 
 
@@ -1037,9 +1038,11 @@ initiate_penciller_snapshot(Bookie) ->
 create_value_for_journal(Obj, Comp) ->
     leveled_codec:create_value_for_journal(Obj, Comp, native).
 
+key_converter(K) ->
+    {o, <<"B">>, K, null}.
+
 build_dummy_journal() ->
-    F = fun(X) -> X end,
-    build_dummy_journal(F).
+    build_dummy_journal(fun key_converter/1).
 
 build_dummy_journal(KeyConvertF) ->
     RootPath = "../test/journal",
@@ -1053,12 +1056,14 @@ build_dummy_journal(KeyConvertF) ->
     {ok, J1} = leveled_cdb:cdb_open_writer(F1),
     {K1, V1} = {KeyConvertF("Key1"), "TestValue1"},
     {K2, V2} = {KeyConvertF("Key2"), "TestValue2"},
-    ok = leveled_cdb:cdb_put(J1,
-                                {1, stnd, K1},
-                                create_value_for_journal({V1, []}, false)),
-    ok = leveled_cdb:cdb_put(J1,
-                                {2, stnd, K2},
-                                create_value_for_journal({V2, []}, false)),
+    ok = 
+        leveled_cdb:cdb_put(J1,
+                            {1, stnd, K1},
+                            create_value_for_journal({V1, ?TEST_KC}, false)),
+    ok = 
+        leveled_cdb:cdb_put(J1,
+                            {2, stnd, K2},
+                            create_value_for_journal({V2, ?TEST_KC}, false)),
     ok = leveled_cdb:cdb_roll(J1),
     LK1 = leveled_cdb:cdb_lastkey(J1),
     lists:foldl(fun(X, Closed) ->
@@ -1077,12 +1082,14 @@ build_dummy_journal(KeyConvertF) ->
     {ok, J2} = leveled_cdb:cdb_open_writer(F2),
     {K1, V3} = {KeyConvertF("Key1"), "TestValue3"},
     {K4, V4} = {KeyConvertF("Key4"), "TestValue4"},
-    ok = leveled_cdb:cdb_put(J2,
-                                {3, stnd, K1},
-                                create_value_for_journal({V3, []}, false)),
-    ok = leveled_cdb:cdb_put(J2,
-                                {4, stnd, K4},
-                                create_value_for_journal({V4, []}, false)),
+    ok = 
+        leveled_cdb:cdb_put(J2,
+                            {3, stnd, K1},
+                            create_value_for_journal({V3, ?TEST_KC}, false)),
+    ok = 
+        leveled_cdb:cdb_put(J2,
+                            {4, stnd, K4},
+                            create_value_for_journal({V4, ?TEST_KC}, false)),
     LK2 = leveled_cdb:cdb_lastkey(J2),
     ok = leveled_cdb:cdb_close(J2),
     Manifest = [{1, "../test/journal/journal_files/nursery_1", "pid1", LK1},
@@ -1120,12 +1127,12 @@ simple_inker_test() ->
                                             cdb_options=CDBopts,
                                             compression_method=native,
                                             compress_on_receipt=true}),
-    Obj1 = ink_get(Ink1, "Key1", 1),
-    ?assertMatch({{1, "Key1"}, {"TestValue1", []}}, Obj1),
-    Obj3 = ink_get(Ink1, "Key1", 3),
-    ?assertMatch({{3, "Key1"}, {"TestValue3", []}}, Obj3),
-    Obj4 = ink_get(Ink1, "Key4", 4),
-    ?assertMatch({{4, "Key4"}, {"TestValue4", []}}, Obj4),
+    Obj1 = ink_get(Ink1, key_converter("Key1"), 1),
+    ?assertMatch(Obj1, {{1, key_converter("Key1")}, {"TestValue1", ?TEST_KC}}),
+    Obj3 = ink_get(Ink1, key_converter("Key1"), 3),
+    ?assertMatch(Obj3, {{3, key_converter("Key1")}, {"TestValue3", ?TEST_KC}}),
+    Obj4 = ink_get(Ink1, key_converter("Key4"), 4),
+    ?assertMatch(Obj4, {{4, key_converter("Key4")}, {"TestValue4", ?TEST_KC}}),
     ink_close(Ink1),
     clean_testdir(RootPath).
 
@@ -1144,10 +1151,10 @@ simple_inker_completeactivejournal_test() ->
                                             cdb_options=CDBopts,
                                             compression_method=native,
                                             compress_on_receipt=true}),
-    Obj1 = ink_get(Ink1, "Key1", 1),
-    ?assertMatch({{1, "Key1"}, {"TestValue1", []}}, Obj1),
-    Obj2 = ink_get(Ink1, "Key4", 4),
-    ?assertMatch({{4, "Key4"}, {"TestValue4", []}}, Obj2),
+    Obj1 = ink_get(Ink1, key_converter("Key1"), 1),
+    ?assertMatch(Obj1, {{1, key_converter("Key1")}, {"TestValue1", ?TEST_KC}}),
+    Obj2 = ink_get(Ink1, key_converter("Key4"), 4),
+    ?assertMatch(Obj2, {{4, key_converter("Key4")}, {"TestValue4", ?TEST_KC}}),
     ink_close(Ink1),
     clean_testdir(RootPath).
     
@@ -1241,9 +1248,9 @@ empty_manifest_test() ->
                                             cdb_options=CDBopts,
                                             compression_method=native,
                                             compress_on_receipt=true}),
-    ?assertMatch(not_present, ink_fetch(Ink1, "Key1", 1)),
+    ?assertMatch(not_present, ink_fetch(Ink1, key_converter("Key1"), 1)),
     
-    CheckFun = fun(L, K, SQN) -> lists:member({SQN, K}, L) end,
+    CheckFun = fun(L, K, SQN) -> lists:member({SQN, key_converter(K)}, L) end,
     ?assertMatch(false, CheckFun([], "key", 1)),
     ok = ink_compactjournal(Ink1,
                             [],
@@ -1263,11 +1270,12 @@ empty_manifest_test() ->
                                             cdb_options=CDBopts,
                                             compression_method=native,
                                             compress_on_receipt=false}),
-    ?assertMatch(not_present, ink_fetch(Ink2, "Key1", 1)),
-    {ok, SQN, Size} = ink_put(Ink2, "Key1", "Value1", {[], infinity}),
+    ?assertMatch(not_present, ink_fetch(Ink2, key_converter("Key1"), 1)),
+    {ok, SQN, Size} = 
+        ink_put(Ink2, key_converter("Key1"), "Value1", {[], infinity}),
     ?assertMatch(2, SQN),
     ?assertMatch(true, Size > 0),
-    {ok, V} = ink_fetch(Ink2, "Key1", 2),
+    {ok, V} = ink_fetch(Ink2, key_converter("Key1"), 2),
     ?assertMatch("Value1", V),
     ink_close(Ink2),
     clean_testdir(RootPath).
