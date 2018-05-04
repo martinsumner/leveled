@@ -35,6 +35,7 @@
 %% The Entry should have a pid() as the third element, but a string() may be
 %% used in unit tests
 
+-export_type([manifest/0, manifest_entry/0]).
 
 %%%============================================================================
 %%% API
@@ -73,7 +74,8 @@ add_entry(Manifest, Entry, ToEnd) ->
             from_list(Man1)
     end.
 
--spec append_lastkey(manifest(), pid(), any()) -> manifest().
+-spec append_lastkey(manifest(), pid(), leveled_codec:journal_key()) 
+                                                            -> manifest().
 %% @doc
 %% On discovery of the last key in the last journal entry, the manifest can
 %% be updated through this function to have the last key

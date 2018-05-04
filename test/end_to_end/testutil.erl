@@ -184,7 +184,7 @@ stdload(_Bookie, 0, Acc) ->
     Acc;
 stdload(Bookie, Count, Acc) ->
     B = "Bucket",
-    K = leveled_codec:generate_uuid(),
+    K = leveled_util:generate_uuid(),
     V = get_compressiblevalue(),
     R = leveled_bookie:book_put(Bookie, B, K, V, [], ?STD_TAG),
     case R of
@@ -377,7 +377,7 @@ generate_objects(0, _KeyNumber, ObjL, _Value, _IndexGen, _Bucket) ->
     ObjL;
 generate_objects(Count, binary_uuid, ObjL, Value, IndexGen, Bucket) ->
     {Obj1, Spec1} = set_object(list_to_binary(Bucket),
-                                list_to_binary(leveled_codec:generate_uuid()),
+                                list_to_binary(leveled_util:generate_uuid()),
                                 Value,
                                 IndexGen),
     generate_objects(Count - 1,
@@ -388,7 +388,7 @@ generate_objects(Count, binary_uuid, ObjL, Value, IndexGen, Bucket) ->
                         Bucket);
 generate_objects(Count, uuid, ObjL, Value, IndexGen, Bucket) ->
     {Obj1, Spec1} = set_object(Bucket,
-                                leveled_codec:generate_uuid(),
+                                leveled_util:generate_uuid(),
                                 Value,
                                 IndexGen),
     generate_objects(Count - 1,

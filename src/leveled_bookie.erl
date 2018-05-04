@@ -248,14 +248,15 @@ book_start(Opts) ->
     gen_server:start(?MODULE, [Opts], []).
 
 
--spec book_tempput(pid(), any(), any(), any(), list(), atom(), integer()) ->
-                                                                    ok|pause.
+-spec book_tempput(pid(), any(), any(), any(), 
+                    leveled_codec:index_specs(), 
+                    leveled_codec:tag(), integer()) -> ok|pause.
 
 %% @doc Put an object with an expiry time
 %%
 %% Put an item in the store but with a Time To Live - the time when the object
 %% should expire, in gregorian_seconds (add the required number of seconds to
-%% leveled_codec:integer_time/1).
+%% leveled_util:integer_time/1).
 %%
 %% There exists the possibility of per object expiry times, not just whole
 %% store expiry times as has traditionally been the feature in Riak.  Care
@@ -314,8 +315,9 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs) ->
 book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag) ->
     book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, infinity).
 
--spec book_put(pid(), any(), any(), any(), list(), atom(), infinity|integer()) 
-                                                                -> ok|pause.
+-spec book_put(pid(), any(), any(), any(), 
+                leveled_codec:index_specs(), 
+                leveled_codec:tag(), infinity|integer()) -> ok|pause.
 
 book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) ->
     gen_server:call(Pid,
@@ -349,7 +351,8 @@ book_mput(Pid, ObjectSpecs) ->
 book_mput(Pid, ObjectSpecs, TTL) ->
     gen_server:call(Pid, {mput, ObjectSpecs, TTL}, infinity).
 
--spec book_delete(pid(), any(), any(), list()) -> ok|pause.
+-spec book_delete(pid(), any(), any(), leveled_codec:index_specs()) 
+                                                                -> ok|pause.
 
 %% @doc 
 %%
@@ -360,8 +363,10 @@ book_delete(Pid, Bucket, Key, IndexSpecs) ->
     book_put(Pid, Bucket, Key, delete, IndexSpecs, ?STD_TAG).
 
 
--spec book_get(pid(), any(), any(), atom()) -> {ok, any()}|not_found.
--spec book_head(pid(), any(), any(), atom()) -> {ok, any()}|not_found.
+-spec book_get(pid(), any(), any(), leveled_codec:tag()) 
+                                                    -> {ok, any()}|not_found.
+-spec book_head(pid(), any(), any(), leveled_codec:tag())
+                                                    -> {ok, any()}|not_found.
 
 %% @doc - GET and HEAD requests
 %%
@@ -496,7 +501,7 @@ book_destroy(Pid) ->
     gen_server:call(Pid, destroy, infinity).
 
 
--spec book_isempty(pid(), atom()) -> boolean().
+-spec book_isempty(pid(), leveled_codec:tag()) -> boolean().
 %% @doc 
 %% Confirm if the store is empty, or if it contains a Key and Value for a 
 %% given tag
@@ -575,7 +580,7 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State)
                                                {IndexSpecs, TTL}),
     {SW1, Timings1} = 
         update_timings(SW0, {put, {inker, ObjSize}}, State#state.put_timings),
-    Changes = preparefor_ledgercache(no_type_assigned,
+    Changes = preparefor_ledgercache(null,
                                         LedgerKey,
                                         SQN,
                                         Object,
@@ -654,7 +659,7 @@ handle_call({get, Bucket, Key, Tag}, _From, State)
                     tomb ->
                         not_found;
                     {active, TS} ->
-                        case TS >= leveled_codec:integer_now() of
+                        case TS >= leveled_util:integer_now() of
                             false ->
                                 not_found;
                             true ->
@@ -695,7 +700,7 @@ handle_call({head, Bucket, Key, Tag}, _From, State)
                 {_SeqN, tomb, _MH, _MD} ->
                     {reply, not_found, State};
                 {_SeqN, {active, TS}, _MH, MD} ->
-                    case TS >= leveled_codec:integer_now() of
+                    case TS >= leveled_util:integer_now() of
                         true ->
                             {SWr, UpdTimingsP} = 
                                 update_timings(SWp, 
@@ -1242,8 +1247,11 @@ readycache_forsnapshot(LedgerCache, Query) ->
                             max_sqn=LedgerCache#ledger_cache.max_sqn}
     end.
 
--spec scan_table(ets:tab(), tuple(), tuple()) -> 
-                    {list(), non_neg_integer()|infinity, non_neg_integer()}.
+-spec scan_table(ets:tab(), 
+                    leveled_codec:ledger_key(), leveled_codec:ledger_key()) 
+                        ->  {list(leveled_codec:ledger_kv()), 
+                                non_neg_integer()|infinity, 
+                                non_neg_integer()}.
 %% @doc
 %% Query the ETS table to find a range of keys (start inclusive).  Should also
 %% return the miniumum and maximum sequence number found in the query.  This 
@@ -1280,7 +1288,8 @@ scan_table(Table, StartKey, EndKey, Acc, MinSQN, MaxSQN) ->
     end.
 
 
--spec fetch_head(tuple(), pid(), ledger_cache()) -> not_present|tuple().
+-spec fetch_head(leveled_codec:ledger_key(), pid(), ledger_cache())
+                                    -> not_present|leveled_codec:ledger_value().
 %% @doc
 %% Fetch only the head of the object from the Ledger (or the bookie's recent
 %% ledger cache if it has just been updated).  not_present is returned if the 
@@ -1310,9 +1319,14 @@ fetch_head(Key, Penciller, LedgerCache) ->
     end.
 
 
--spec preparefor_ledgercache(atom(), any(), integer(), any(), 
-                                integer(), tuple(), book_state()) -> 
-                                    {integer()|no_lookup, integer(), list()}.
+-spec preparefor_ledgercache(leveled_codec:journal_key_tag()|null, 
+                                leveled_codec:ledger_key()|?DUMMY,
+                                integer(), any(), integer(), 
+                                leveled_codec:key_changes(), 
+                                book_state())
+                                    -> {integer()|no_lookup, 
+                                            integer(), 
+                                            list(leveled_codec:ledger_kv())}.
 %% @doc
 %% Prepare an object and its related key changes for addition to the Ledger 
 %% via the Ledger Cache.
@@ -1342,8 +1356,10 @@ preparefor_ledgercache(_InkTag,
 
 
 -spec addto_ledgercache({integer()|no_lookup, 
-                            integer(), list()}, ledger_cache()) 
-                                                            -> ledger_cache().
+                                integer(), 
+                                list(leveled_codec:ledger_kv())}, 
+                            ledger_cache()) 
+                                    -> ledger_cache().
 %% @doc
 %% Add a set of changes associated with a single sequence number (journal 
 %% update) and key to the ledger cache.  If the changes are not to be looked
@@ -1356,8 +1372,11 @@ addto_ledgercache({H, SQN, KeyChanges}, Cache) ->
                         max_sqn=max(SQN, Cache#ledger_cache.max_sqn)}.
 
 -spec addto_ledgercache({integer()|no_lookup, 
-                            integer(), list()}, ledger_cache(), loader) 
-                                                            -> ledger_cache().
+                                integer(), 
+                                list(leveled_codec:ledger_kv())}, 
+                            ledger_cache(),
+                            loader) 
+                                    -> ledger_cache().
 %% @doc
 %% Add a set of changes associated witha single sequence number (journal 
 %% update) to the ledger cache.  This is used explicitly when laoding the
@@ -1649,7 +1668,7 @@ ttl_test() ->
     {ok, Bookie1} = book_start([{root_path, RootPath}]),
     ObjL1 = generate_multiple_objects(100, 1),
     % Put in all the objects with a TTL in the future
-    Future = leveled_codec:integer_now() + 300,
+    Future = leveled_util:integer_now() + 300,
     lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
                                                         "Bucket", K, V, S,
                                                         ?STD_TAG,
@@ -1665,7 +1684,7 @@ ttl_test() ->
                     ObjL1),
 
     ObjL2 = generate_multiple_objects(100, 101),
-    Past = leveled_codec:integer_now() - 300,
+    Past = leveled_util:integer_now() - 300,
     lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
                                                         "Bucket", K, V, S,
                                                         ?STD_TAG,
@@ -1741,7 +1760,7 @@ hashlist_query_testto() ->
                                 {cache_size, 500}]),
     ObjL1 = generate_multiple_objects(1200, 1),
     % Put in all the objects with a TTL in the future
-    Future = leveled_codec:integer_now() + 300,
+    Future = leveled_util:integer_now() + 300,
     lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
                                                         "Bucket", K, V, S,
                                                         ?STD_TAG,
@@ -1749,7 +1768,7 @@ hashlist_query_testto() ->
                     ObjL1),
     ObjL2 = generate_multiple_objects(20, 1201),
     % Put in a few objects with a TTL in the past
-    Past = leveled_codec:integer_now() - 300,
+    Past = leveled_util:integer_now() - 300,
     lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
                                                         "Bucket", K, V, S,
                                                         ?STD_TAG,
@@ -1793,7 +1812,7 @@ hashlist_query_withjournalcheck_testto() ->
                                     {cache_size, 500}]),
     ObjL1 = generate_multiple_objects(800, 1),
     % Put in all the objects with a TTL in the future
-    Future = leveled_codec:integer_now() + 300,
+    Future = leveled_util:integer_now() + 300,
     lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
                                                         "Bucket", K, V, S,
                                                         ?STD_TAG,
@@ -1822,7 +1841,7 @@ foldobjects_vs_hashtree_testto() ->
                                     {cache_size, 500}]),
     ObjL1 = generate_multiple_objects(800, 1),
     % Put in all the objects with a TTL in the future
-    Future = leveled_codec:integer_now() + 300,
+    Future = leveled_util:integer_now() + 300,
     lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
                                                         "Bucket", K, V, S,
                                                         ?STD_TAG,
@@ -1896,7 +1915,7 @@ foldobjects_vs_foldheads_bybucket_testto() ->
     ObjL1 = generate_multiple_objects(400, 1),
     ObjL2 = generate_multiple_objects(400, 1),
     % Put in all the objects with a TTL in the future
-    Future = leveled_codec:integer_now() + 300,
+    Future = leveled_util:integer_now() + 300,
     lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
                                                         "BucketA", K, V, S,
                                                         ?STD_TAG,
@@ -2034,7 +2053,7 @@ is_empty_test() ->
                                     {max_journalsize, 1000000},
                                     {cache_size, 500}]),
     % Put in an object with a TTL in the future
-    Future = leveled_codec:integer_now() + 300,
+    Future = leveled_util:integer_now() + 300,
     ?assertMatch(true, leveled_bookie:book_isempty(Bookie1, ?STD_TAG)),
     ok = book_tempput(Bookie1, 
                         <<"B">>, <<"K">>, {value, <<"V">>}, [], 
