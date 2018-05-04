@@ -821,14 +821,14 @@ fetch_testcdb(RP) ->
     {ok,
         CDB1} = leveled_cdb:cdb_open_writer(FN1,
                                             #cdb_options{binary_mode=true}),
-    {K1, V1} = test_inkerkv(1, "Key1", "Value1", []),
-    {K2, V2} = test_inkerkv(2, "Key2", "Value2", []),
-    {K3, V3} = test_inkerkv(3, "Key3", "Value3", []),
-    {K4, V4} = test_inkerkv(4, "Key1", "Value4", []),
-    {K5, V5} = test_inkerkv(5, "Key1", "Value5", []),
-    {K6, V6} = test_inkerkv(6, "Key1", "Value6", []),
-    {K7, V7} = test_inkerkv(7, "Key1", "Value7", []),
-    {K8, V8} = test_inkerkv(8, "Key1", "Value8", []),
+    {K1, V1} = test_inkerkv(1, "Key1", "Value1", {[], infinity}),
+    {K2, V2} = test_inkerkv(2, "Key2", "Value2", {[], infinity}),
+    {K3, V3} = test_inkerkv(3, "Key3", "Value3", {[], infinity}),
+    {K4, V4} = test_inkerkv(4, "Key1", "Value4", {[], infinity}),
+    {K5, V5} = test_inkerkv(5, "Key1", "Value5", {[], infinity}),
+    {K6, V6} = test_inkerkv(6, "Key1", "Value6", {[], infinity}),
+    {K7, V7} = test_inkerkv(7, "Key1", "Value7", {[], infinity}),
+    {K8, V8} = test_inkerkv(8, "Key1", "Value8", {[], infinity}),
     ok = leveled_cdb:cdb_put(CDB1, K1, V1),
     ok = leveled_cdb:cdb_put(CDB1, K2, V2),
     ok = leveled_cdb:cdb_put(CDB1, K3, V3),
@@ -920,7 +920,8 @@ compact_single_file_recovr_test() ->
                                 {2,
                                     stnd,
                                     test_ledgerkey("Key2")}),
-    ?assertMatch({{_, _}, {"Value2", []}}, leveled_codec:from_inkerkv(RKV1)),
+    ?assertMatch({{_, _}, {"Value2", {[], infinity}}}, 
+                    leveled_codec:from_inkerkv(RKV1)),
     ok = leveled_cdb:cdb_deletepending(CDB),
     ok = leveled_cdb:cdb_destroy(CDB).
 
@@ -958,7 +959,8 @@ compact_single_file_retain_test() ->
                                         {2,
                                             stnd,
                                             test_ledgerkey("Key2")}),
-    ?assertMatch({{_, _}, {"Value2", []}}, leveled_codec:from_inkerkv(RKV1)),
+    ?assertMatch({{_, _}, {"Value2", {[], infinity}}}, 
+                    leveled_codec:from_inkerkv(RKV1)),
     ok = leveled_cdb:cdb_deletepending(CDB),
     ok = leveled_cdb:cdb_destroy(CDB).
 
@@ -1001,7 +1003,8 @@ compact_singlefile_totwosmallfiles_testto() ->
                         LK = test_ledgerkey("Key" ++ integer_to_list(X)),
                         Value = leveled_rand:rand_bytes(1024),
                         {IK, IV} = 
-                            leveled_codec:to_inkerkv(LK, X, Value, [], 
+                            leveled_codec:to_inkerkv(LK, X, Value, 
+                                                        {[], infinity},
                                                         native, true),
                         ok = leveled_cdb:cdb_put(CDB1, IK, IV)
                         end,

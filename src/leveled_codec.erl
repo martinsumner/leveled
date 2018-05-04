@@ -84,13 +84,13 @@
 -type tag() :: 
         ?STD_TAG|?RIAK_TAG|?IDX_TAG|?HEAD_TAG.
 -type segment_hash() :: 
-        {integer(), integer()}.
+        {integer(), integer()}|no_lookup.
 -type ledger_status() ::
         tomb|{active, non_neg_integer()|infinity}.
 -type ledger_key() :: 
         {tag(), any(), any(), any()}.
 -type ledger_value() :: 
-        {integer(), ledger_status(), segment_hash(), tuple()}.
+        {integer(), ledger_status(), segment_hash(), tuple()|null}.
 -type ledger_kv() ::
         {ledger_key(), ledger_value()}.
 -type compaction_strategy() ::
@@ -101,6 +101,8 @@
         {integer(), journal_key_tag(), ledger_key()}.
 -type compression_method() ::
         lz4|native.
+-type journal_keychanges() :: 
+        {list(), infinity|integer()}. % {KeyChanges, TTL}
 
 %%%============================================================================
 %%% Ledger Key Manipulation
@@ -333,7 +335,7 @@ to_inkerkey(LedgerKey, SQN) ->
     {SQN, ?INKT_STND, LedgerKey}.
 
 
--spec to_inkerkv(ledger_key(), non_neg_integer(), any(), list(), 
+-spec to_inkerkv(ledger_key(), non_neg_integer(), any(), journal_keychanges(), 
                     compression_method(), boolean()) -> {journal_key(), any()}.
 %% @doc
 %% Convert to the correct format of a Journal key and value
@@ -355,6 +357,11 @@ from_inkerkv(Object, ToIgnoreKeyChanges) ->
             Object
     end.
 
+
+-spec create_value_for_journal({any(), journal_keychanges()|binary()}, 
+                                boolean(), compression_method()) -> binary().
+%% @doc
+%% Serialise the value to be stored in the Journal
 create_value_for_journal({Object, KeyChanges}, Compress, Method)
                                             when not is_binary(KeyChanges) ->
     KeyChangeBin = term_to_binary(KeyChanges, [compressed]),
@@ -402,6 +409,10 @@ serialise_object(Object, false, _Method) ->
 serialise_object(Object, true, _Method) ->
     term_to_binary(Object, [compressed]).
 
+-spec revert_value_from_journal(binary()) -> {any(), journal_keychanges()}.
+%% @doc
+%% Revert the object back to its deserialised state, along with the list of
+%% key changes associated with the change
 revert_value_from_journal(JournalBin) ->
     revert_value_from_journal(JournalBin, false).
 
@@ -415,7 +426,8 @@ revert_value_from_journal(JournalBin, ToIgnoreKeyChanges) ->
     case ToIgnoreKeyChanges of
         true ->
             <<OBin2:Length1/binary, _KCBin2:KeyChangeLength/binary>> = JBin0,
-            {deserialise_object(OBin2, IsBinary, IsCompressed, IsLz4), []};
+            {deserialise_object(OBin2, IsBinary, IsCompressed, IsLz4), 
+                {[], infinity}};
         false ->
             <<OBin2:Length1/binary, KCBin2:KeyChangeLength/binary>> = JBin0,
             {deserialise_object(OBin2, IsBinary, IsCompressed, IsLz4),
@@ -450,12 +462,19 @@ encode_valuetype(IsBinary, IsCompressed, Method) ->
         end,
     Bit1 + Bit2 + Bit3.
 
+
+-spec decode_valuetype(integer()) -> {boolean(), boolean(), boolean()}.
+%% @doc
+%% Check bit flags to confirm how the object has been serialised
 decode_valuetype(TypeInt) ->
     IsCompressed = TypeInt band 1 == 1,
     IsBinary = TypeInt band 2 == 2,
     IsLz4 = TypeInt band 4 == 4,
     {IsBinary, IsCompressed, IsLz4}.
 
+-spec from_journalkey(journal_key()) -> {integer(), ledger_key()}.
+%% @doc
+%% Return just SQN and Ledger Key
 from_journalkey({SQN, _Type, LedgerKey}) ->
     {SQN, LedgerKey}.
 
@@ -480,13 +499,21 @@ hash(Obj) ->
 %%%============================================================================
 
 
+-spec obj_objectspecs(list(tuple()), integer(), integer()|infinity) 
+                                                        -> list(ledger_kv()).
+%% @doc
+%% Convert object specs to KV entries ready for the ledger
 obj_objectspecs(ObjectSpecs, SQN, TTL) ->
     lists:map(fun({IdxOp, Bucket, Key, SubKey, Value}) ->
                     gen_headspec(Bucket, Key, IdxOp, SubKey, Value, SQN, TTL)
                 end,
                 ObjectSpecs).
 
-
+-spec idx_indexspecs(list(tuple()), 
+                        any(), any(), integer(), integer()|infinity) 
+                                                        -> list(ledger_kv()).
+%% @doc
+%% Convert index specs to KV entries ready for the ledger
 idx_indexspecs(IndexSpecs, Bucket, Key, SQN, TTL) ->
     lists:map(
             fun({IdxOp, IdxFld, IdxTrm}) ->
