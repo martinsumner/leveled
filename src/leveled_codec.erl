@@ -103,6 +103,26 @@
         lz4|native.
 -type journal_keychanges() :: 
         {list(), infinity|integer()}. % {KeyChanges, TTL}
+-type index_specs() ::
+        list({add|remove, any(), any()}).
+
+-type segment_list() 
+        :: list(integer())|false.
+
+-export_type([tag/0,
+                segment_hash/0,
+                ledger_status/0,
+                ledger_key/0,
+                ledger_value/0,
+                ledger_kv/0,
+                compaction_strategy/0,
+                journal_key_tag/0,
+                journal_key/0,
+                compression_method/0,
+                journal_keychanges/0,
+                index_specs/0,
+                segment_list/0]).
+
 
 %%%============================================================================
 %%% Ledger Key Manipulation
@@ -495,7 +515,7 @@ hash(Obj) ->
 
 
 %%%============================================================================
-%%% Other functions
+%%% Other Ledger Functions
 %%%============================================================================
 
 
@@ -509,7 +529,7 @@ obj_objectspecs(ObjectSpecs, SQN, TTL) ->
                 end,
                 ObjectSpecs).
 
--spec idx_indexspecs(list(tuple()), 
+-spec idx_indexspecs(index_specs(), 
                         any(), any(), integer(), integer()|infinity) 
                                                         -> list(ledger_kv()).
 %% @doc

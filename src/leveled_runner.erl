@@ -42,14 +42,17 @@
 
 -define(CHECKJOURNAL_PROB, 0.2).
 
--type key_range() :: {StartKey:: any(), EndKey :: any()}.
+-type key_range() 
+            :: {leveled_codec:leveled_key(), leveled_codec:leveled_key()}.
+-type fun_and_acc()
+            :: {fun(), any()}.
 
 %%%============================================================================
 %%% External functions
 %%%============================================================================
 
 
--spec bucket_sizestats(fun(), any(), atom()) -> {async, fun()}.
+-spec bucket_sizestats(fun(), any(), leveled_codec:tag()) -> {async, fun()}.
 %% @doc
 %% Fold over a bucket accumulating the count of objects and their total sizes
 bucket_sizestats(SnapFun, Bucket, Tag) ->
@@ -69,13 +72,14 @@ bucket_sizestats(SnapFun, Bucket, Tag) ->
         end,
     {async, Runner}.
 
--spec binary_bucketlist(fun(), atom(), fun(), any()) -> {async, fun()}.
+-spec binary_bucketlist(fun(), leveled_codec:tag(), fun(), any()) 
+                                                            -> {async, fun()}.
 %% @doc
 %% List buckets for tag, assuming bucket names are all binary type
 binary_bucketlist(SnapFun, Tag, FoldBucketsFun, InitAcc) ->
     binary_bucketlist(SnapFun, Tag, FoldBucketsFun, InitAcc, -1).
 
--spec binary_bucketlist(fun(), atom(), fun(), any(), integer()) 
+-spec binary_bucketlist(fun(), leveled_codec:tag(), fun(), any(), integer()) 
                                                     -> {async, fun()}.
 %% @doc
 %% set Max Buckets to -1 to list all buckets, otherwise will only return
@@ -94,7 +98,11 @@ binary_bucketlist(SnapFun, Tag, FoldBucketsFun, InitAcc, MaxBuckets) ->
         end,
     {async, Runner}.
 
--spec index_query(fun(), tuple(), tuple()) -> {async, fun()}.
+-spec index_query(fun(), 
+                    {leveled_codec:ledger_key(), 
+                        leveled_codec:ledger_key(), 
+                        {boolean(), undefined|re:mp()|iodata()}}, 
+                    fun_and_acc()) -> {async, fun()}.
 %% @doc
 %% Secondary index query
 index_query(SnapFun, {StartKey, EndKey, TermHandling}, FoldAccT) ->
@@ -121,10 +129,13 @@ index_query(SnapFun, {StartKey, EndKey, TermHandling}, FoldAccT) ->
         end,
     {async, Runner}.
 
--spec bucketkey_query(fun(), atom(), any(), key_range(), tuple()) -> {async, fun()}.
+-spec bucketkey_query(fun(), leveled_codec:tag(), any(), 
+                        key_range(), fun_and_acc()) -> {async, fun()}.
 %% @doc
 %% Fold over all keys in `KeyRange' under tag (restricted to a given bucket)
-bucketkey_query(SnapFun, Tag, Bucket, {StartKey, EndKey}, {FoldKeysFun, InitAcc}) ->
+bucketkey_query(SnapFun, Tag, Bucket, 
+                    {StartKey, EndKey}, 
+                    {FoldKeysFun, InitAcc}) ->
     SK = leveled_codec:to_ledgerkey(Bucket, StartKey, Tag),
     EK = leveled_codec:to_ledgerkey(Bucket, EndKey, Tag),
     AccFun = accumulate_keys(FoldKeysFun),
@@ -141,13 +152,14 @@ bucketkey_query(SnapFun, Tag, Bucket, {StartKey, EndKey}, {FoldKeysFun, InitAcc}
         end,
     {async, Runner}.
 
--spec bucketkey_query(fun(), atom(), any(), tuple()) -> {async, fun()}.
+-spec bucketkey_query(fun(), leveled_codec:tag(), any(), fun_and_acc()) 
+                                                        -> {async, fun()}.
 %% @doc
 %% Fold over all keys under tag (potentially restricted to a given bucket)
 bucketkey_query(SnapFun, Tag, Bucket, FunAcc) ->
     bucketkey_query(SnapFun, Tag, Bucket, {null, null}, FunAcc).
 
--spec hashlist_query(fun(), atom(), boolean()) -> {async, fun()}.
+-spec hashlist_query(fun(), leveled_codec:tag(), boolean()) -> {async, fun()}.
 %% @doc
 %% Fold pver the key accumulating the hashes
 hashlist_query(SnapFun, Tag, JournalCheck) ->
@@ -173,7 +185,9 @@ hashlist_query(SnapFun, Tag, JournalCheck) ->
         end,
     {async, Runner}.
 
--spec tictactree(fun(), {atom(), any(), tuple()}, boolean(), atom(), fun()) 
+-spec tictactree(fun(), 
+                    {leveled_codec:tag(), any(), tuple()},
+                    boolean(), atom(), fun()) 
                     -> {async, fun()}.
 %% @doc
 %% Return a merkle tree from the fold, directly accessing hashes cached in the 
@@ -233,7 +247,8 @@ tictactree(SnapFun, {Tag, Bucket, Query}, JournalCheck, TreeSize, Filter) ->
         end,
     {async, Runner}.
 
--spec foldheads_allkeys(fun(), atom(), fun(), boolean(), false|list(integer())) 
+-spec foldheads_allkeys(fun(), leveled_codec:tag(), 
+                        fun(), boolean(), false|list(integer())) 
                                                             -> {async, fun()}.
 %% @doc
 %% Fold over all heads in the store for a given tag - applying the passed 
@@ -248,8 +263,8 @@ foldheads_allkeys(SnapFun, Tag, FoldFun, JournalCheck, SegmentList) ->
                 {true, JournalCheck}, 
                 SegmentList).
 
--spec foldobjects_allkeys(fun(), atom(), fun(), key_order|sqn_order) 
-                                                            -> {async, fun()}.
+-spec foldobjects_allkeys(fun(), leveled_codec:tag(), fun(), 
+                            key_order|sqn_order) -> {async, fun()}.
 %% @doc
 %% Fold over all objects for a given tag
 foldobjects_allkeys(SnapFun, Tag, FoldFun, key_order) ->
@@ -345,8 +360,10 @@ foldobjects_allkeys(SnapFun, Tag, FoldObjectsFun, sqn_order) ->
     {async, Folder}.
             
 
--spec foldobjects_bybucket(fun(), atom(), list({any(), any()}), fun()) -> 
-                                                                {async, fun()}.
+-spec foldobjects_bybucket(fun(), 
+                            leveled_codec:tag(), 
+                            list(key_range()), 
+                            fun()) -> {async, fun()}.
 %% @doc
 %% Fold over all objects within a given key range in a bucket
 foldobjects_bybucket(SnapFun, Tag, KeyRanges, FoldFun) ->

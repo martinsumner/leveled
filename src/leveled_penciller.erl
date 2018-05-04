@@ -347,7 +347,8 @@ pcl_fetchlevelzero(Pid, Slot) ->
     % be stuck in L0 pending
     gen_server:call(Pid, {fetch_levelzero, Slot}, 60000).
 
--spec pcl_fetch(pid(), tuple()) -> {tuple(), tuple()}|not_present.
+-spec pcl_fetch(pid(), leveled_codec:ledger_key()) 
+                                    -> leveled_codec:ledger_kv()|not_present.
 %% @doc
 %% Fetch a key, return the first (highest SQN) occurrence of that Key along
 %% with  the value.
@@ -364,8 +365,10 @@ pcl_fetch(Pid, Key) ->
             gen_server:call(Pid, {fetch, Key, Hash}, infinity)
     end.
 
--spec pcl_fetch(pid(), tuple(), {integer(), integer()}) -> 
-                                            {tuple(), tuple()}|not_present.
+-spec pcl_fetch(pid(), 
+                leveled_codec:ledger_key(), 
+                leveled_codec:segment_hash())
+                                    -> leveled_codec:ledger_kv()|not_present.
 %% @doc
 %% Fetch a key, return the first (highest SQN) occurrence of that Key along
 %% with  the value.
@@ -374,7 +377,10 @@ pcl_fetch(Pid, Key) ->
 pcl_fetch(Pid, Key, Hash) ->
     gen_server:call(Pid, {fetch, Key, Hash}, infinity).
 
--spec pcl_fetchkeys(pid(), tuple(), tuple(), fun(), any()) -> any().
+-spec pcl_fetchkeys(pid(), 
+                    leveled_codec:ledger_key(), 
+                    leveled_codec:ledger_key(), 
+                    fun(), any()) -> any().
 %% @doc
 %% Run a range query between StartKey and EndKey (inclusive).  This will cover
 %% all keys in the range - so must only be run against snapshots of the
@@ -392,8 +398,11 @@ pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc) ->
                         false, -1},
                     infinity).
 
--spec pcl_fetchkeysbysegment(pid(), tuple(), tuple(), fun(), any(), 
-                                            false|list(integer())) -> any().
+-spec pcl_fetchkeysbysegment(pid(), 
+                                leveled_codec:ledger_key(), 
+                                leveled_codec:ledger_key(), 
+                                fun(), any(), 
+                                leveled_codec:segment_list()) -> any().
 %% @doc
 %% Run a range query between StartKey and EndKey (inclusive).  This will cover
 %% all keys in the range - so must only be run against snapshots of the
@@ -414,7 +423,10 @@ pcl_fetchkeysbysegment(Pid, StartKey, EndKey, AccFun, InitAcc, SegmentList) ->
                         SegmentList, -1},
                     infinity).
 
--spec pcl_fetchnextkey(pid(), tuple(), tuple(), fun(), any()) -> any().
+-spec pcl_fetchnextkey(pid(), 
+                        leveled_codec:ledger_key(), 
+                        leveled_codec:ledger_key(), 
+                        fun(), any()) -> any().
 %% @doc
 %% Run a range query between StartKey and EndKey (inclusive).  This has the
 %% same constraints as pcl_fetchkeys/5, but will only return the first key
@@ -427,7 +439,9 @@ pcl_fetchnextkey(Pid, StartKey, EndKey, AccFun, InitAcc) ->
                         false, 1},
                     infinity).
 
--spec pcl_checksequencenumber(pid(), tuple(), integer()) -> boolean().
+-spec pcl_checksequencenumber(pid(), 
+                                leveled_codec:ledger_key(), 
+                                integer()) -> boolean().
 %% @doc
 %% Check if the sequence number of the passed key is not replaced by a change
 %% after the passed sequence number.  Will return true if the Key is present
@@ -450,14 +464,18 @@ pcl_checksequencenumber(Pid, Key, SQN) ->
 pcl_workforclerk(Pid) ->
     gen_server:cast(Pid, work_for_clerk).
 
--spec pcl_manifestchange(pid(), tuple()) -> ok.
+-spec pcl_manifestchange(pid(), leveled_pmanifest:manifest()) -> ok.
 %% @doc
 %% Provide a manifest record (i.e. the output of the leveled_pmanifest module)
 %% that is required to beocme the new manifest.
 pcl_manifestchange(Pid, Manifest) ->
     gen_server:cast(Pid, {manifest_change, Manifest}).
 
--spec pcl_confirml0complete(pid(), string(), tuple(), tuple(), binary()) -> ok.
+-spec pcl_confirml0complete(pid(), 
+                            string(), 
+                            leveled_codec:ledger_key(), 
+                            leveled_codec:ledger_key(), 
+                            binary()) -> ok.
 %% @doc
 %% Allows a SST writer that has written a L0 file to confirm that the file 
 %% is now complete, so the filename and key ranges can be added to the 

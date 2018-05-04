@@ -248,8 +248,9 @@ book_start(Opts) ->
     gen_server:start(?MODULE, [Opts], []).
 
 
--spec book_tempput(pid(), any(), any(), any(), list(), atom(), integer()) ->
-                                                                    ok|pause.
+-spec book_tempput(pid(), any(), any(), any(), 
+                    leveled_codec:index_specs(), 
+                    leveled_codec:tag(), integer()) -> ok|pause.
 
 %% @doc Put an object with an expiry time
 %%
@@ -314,8 +315,9 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs) ->
 book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag) ->
     book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, infinity).
 
--spec book_put(pid(), any(), any(), any(), list(), atom(), infinity|integer()) 
-                                                                -> ok|pause.
+-spec book_put(pid(), any(), any(), any(), 
+                leveled_codec:index_specs(), 
+                leveled_codec:tag(), infinity|integer()) -> ok|pause.
 
 book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) ->
     gen_server:call(Pid,
@@ -349,7 +351,8 @@ book_mput(Pid, ObjectSpecs) ->
 book_mput(Pid, ObjectSpecs, TTL) ->
     gen_server:call(Pid, {mput, ObjectSpecs, TTL}, infinity).
 
--spec book_delete(pid(), any(), any(), list()) -> ok|pause.
+-spec book_delete(pid(), any(), any(), leveled_codec:index_specs()) 
+                                                                -> ok|pause.
 
 %% @doc 
 %%
@@ -360,8 +363,10 @@ book_delete(Pid, Bucket, Key, IndexSpecs) ->
     book_put(Pid, Bucket, Key, delete, IndexSpecs, ?STD_TAG).
 
 
--spec book_get(pid(), any(), any(), atom()) -> {ok, any()}|not_found.
--spec book_head(pid(), any(), any(), atom()) -> {ok, any()}|not_found.
+-spec book_get(pid(), any(), any(), leveled_codec:tag()) 
+                                                    -> {ok, any()}|not_found.
+-spec book_head(pid(), any(), any(), leveled_codec:tag())
+                                                    -> {ok, any()}|not_found.
 
 %% @doc - GET and HEAD requests
 %%
@@ -496,7 +501,7 @@ book_destroy(Pid) ->
     gen_server:call(Pid, destroy, infinity).
 
 
--spec book_isempty(pid(), atom()) -> boolean().
+-spec book_isempty(pid(), leveled_codec:tag()) -> boolean().
 %% @doc 
 %% Confirm if the store is empty, or if it contains a Key and Value for a 
 %% given tag
@@ -575,7 +580,7 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State)
                                                {IndexSpecs, TTL}),
     {SW1, Timings1} = 
         update_timings(SW0, {put, {inker, ObjSize}}, State#state.put_timings),
-    Changes = preparefor_ledgercache(no_type_assigned,
+    Changes = preparefor_ledgercache(null,
                                         LedgerKey,
                                         SQN,
                                         Object,
@@ -1242,8 +1247,11 @@ readycache_forsnapshot(LedgerCache, Query) ->
                             max_sqn=LedgerCache#ledger_cache.max_sqn}
     end.
 
--spec scan_table(ets:tab(), tuple(), tuple()) -> 
-                    {list(), non_neg_integer()|infinity, non_neg_integer()}.
+-spec scan_table(ets:tab(), 
+                    leveled_codec:ledger_key(), leveled_codec:ledger_key()) 
+                        ->  {list(leveled_codec:ledger_kv()), 
+                                non_neg_integer()|infinity, 
+                                non_neg_integer()}.
 %% @doc
 %% Query the ETS table to find a range of keys (start inclusive).  Should also
 %% return the miniumum and maximum sequence number found in the query.  This 
@@ -1280,7 +1288,8 @@ scan_table(Table, StartKey, EndKey, Acc, MinSQN, MaxSQN) ->
     end.
 
 
--spec fetch_head(tuple(), pid(), ledger_cache()) -> not_present|tuple().
+-spec fetch_head(leveled_codec:ledger_key(), pid(), ledger_cache())
+                                    -> not_present|leveled_codec:ledger_value().
 %% @doc
 %% Fetch only the head of the object from the Ledger (or the bookie's recent
 %% ledger cache if it has just been updated).  not_present is returned if the 
@@ -1310,9 +1319,14 @@ fetch_head(Key, Penciller, LedgerCache) ->
     end.
 
 
--spec preparefor_ledgercache(atom(), any(), integer(), any(), 
-                                integer(), tuple(), book_state()) -> 
-                                    {integer()|no_lookup, integer(), list()}.
+-spec preparefor_ledgercache(leveled_codec:journal_key_tag()|null, 
+                                leveled_codec:ledger_key()|?DUMMY,
+                                integer(), any(), integer(), 
+                                leveled_codec:key_changes(), 
+                                book_state())
+                                    -> {integer()|no_lookup, 
+                                            integer(), 
+                                            list(leveled_codec:ledger_kv())}.
 %% @doc
 %% Prepare an object and its related key changes for addition to the Ledger 
 %% via the Ledger Cache.
@@ -1342,8 +1356,10 @@ preparefor_ledgercache(_InkTag,
 
 
 -spec addto_ledgercache({integer()|no_lookup, 
-                            integer(), list()}, ledger_cache()) 
-                                                            -> ledger_cache().
+                                integer(), 
+                                list(leveled_codec:ledger_kv())}, 
+                            ledger_cache()) 
+                                    -> ledger_cache().
 %% @doc
 %% Add a set of changes associated with a single sequence number (journal 
 %% update) and key to the ledger cache.  If the changes are not to be looked
@@ -1356,8 +1372,11 @@ addto_ledgercache({H, SQN, KeyChanges}, Cache) ->
                         max_sqn=max(SQN, Cache#ledger_cache.max_sqn)}.
 
 -spec addto_ledgercache({integer()|no_lookup, 
-                            integer(), list()}, ledger_cache(), loader) 
-                                                            -> ledger_cache().
+                                integer(), 
+                                list(leveled_codec:ledger_kv())}, 
+                            ledger_cache(),
+                            loader) 
+                                    -> ledger_cache().
 %% @doc
 %% Add a set of changes associated witha single sequence number (journal 
 %% update) to the ledger cache.  This is used explicitly when laoding the

@@ -127,7 +127,17 @@
                         size :: integer(),
                         max_sqn :: integer()}).
 
--type press_methods() :: lz4|native|none.
+-type press_methods() 
+        :: lz4|native|none.
+-type range_endpoint() 
+        :: all|leveled_codec:leveled_key().
+-type slot_pointer() 
+        :: {pointer, pid(), integer(), range_endpoint(), range_endpoint()}.
+-type sst_pointer()
+        :: {next, 
+            leveled_pmanifest:manifest_entry(), 
+            leveled_codec:ledger_key()|all}.
+
 
 %% yield_blockquery is used to detemrine if the work necessary to process a
 %% range query beyond the fetching the slot should be managed from within
@@ -177,8 +187,10 @@
 %%% API
 %%%============================================================================
 
--spec sst_open(string(), string()) -> 
-                                {ok, pid(), {tuple(), tuple()}, binary()}.
+-spec sst_open(string(), string())
+            -> {ok, pid(), 
+                    {leveled_codec:ledger_key(), leveled_codec:ledger_key()}, 
+                    binary()}.
 %% @doc
 %% Open an SST file at a given path and filename.  The first and last keys
 %% are returned in response to the request - so that those keys can be used
@@ -197,8 +209,11 @@ sst_open(RootPath, Filename) ->
     end.
 
 -spec sst_new(string(), string(), integer(), 
-                    list(), integer(), press_methods()) ->
-                                    {ok, pid(), {tuple(), tuple()}, binary()}.
+                    list(leveled_codec:ledger_kv()), 
+                    integer(), press_methods()) 
+            -> {ok, pid(), 
+                    {leveled_codec:ledger_key(), leveled_codec:ledger_key()}, 
+                    binary()}.
 %% @doc
 %% Start a new SST file at the assigned level passing in a list of Key, Value
 %% pairs.  This should not be used for basement levels or unexpanded Key/Value
@@ -220,9 +235,17 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod) ->
             {ok, Pid, {SK, EK}, Bloom}
     end.
 
--spec sst_new(string(), string(), list(), list(),
-                boolean(), integer(), integer(), press_methods()) ->
-            empty|{ok, pid(), {{list(), list()}, tuple(), tuple()}, binary()}.
+-spec sst_new(string(), string(), 
+                list(leveled_codec:ledger_kv()|sst_pointer()), 
+                list(leveled_codec:ledger_kv()|sst_pointer()),
+                boolean(), integer(), 
+                integer(), press_methods())
+            -> empty|{ok, pid(), 
+                {{list(leveled_codec:ledger_kv()), 
+                        list(leveled_codec:ledger_kv())}, 
+                    leveled_codec:ledger_key(), 
+                    leveled_codec:ledger_key()}, 
+                    binary()}.
 %% @doc
 %% Start a new SST file at the assigned level passing in a two lists of
 %% {Key, Value} pairs to be merged.  The merge_lists function will use the
@@ -231,7 +254,7 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod) ->
 %%
 %% The remainder of the lists is returned along with the StartKey and EndKey
 %% so that the remainder cna be  used in the next file in the merge.  It might
-%% be that the merge_lists returns nothin (for example when a basement file is
+%% be that the merge_lists returns nothing (for example when a basement file is
 %% all tombstones) - and the atome empty is returned in this case so that the
 %% file is not added to the manifest.
 sst_new(RootPath, Filename, 
@@ -283,7 +306,8 @@ sst_newlevelzero(RootPath, Filename,
                             PressMethod0}),
     {ok, Pid, noreply}.
 
--spec sst_get(pid(), tuple()) -> tuple()|not_present.
+-spec sst_get(pid(), leveled_codec:ledger_key())
+                                    -> leveled_codec:ledger_kv()|not_present.
 %% @doc
 %% Return a Key, Value pair matching a Key or not_present if the Key is not in
 %% the store.  The segment_hash function is used to accelerate the seeking of
@@ -291,7 +315,8 @@ sst_newlevelzero(RootPath, Filename,
 sst_get(Pid, LedgerKey) ->
     sst_get(Pid, LedgerKey, leveled_codec:segment_hash(LedgerKey)).
 
--spec sst_get(pid(), tuple(), {integer(), integer()}) -> tuple()|not_present.
+-spec sst_get(pid(), leveled_codec:ledger_key(), leveled_codec:segment_hash())
+                                    -> leveled_codec:ledger_kv()|not_present.
 %% @doc
 %% Return a Key, Value pair matching a Key or not_present if the Key is not in
 %% the store (with the magic hash precalculated).
@@ -299,7 +324,11 @@ sst_get(Pid, LedgerKey, Hash) ->
     gen_fsm:sync_send_event(Pid, {get_kv, LedgerKey, Hash}, infinity).
 
 
--spec sst_getkvrange(pid(), tuple()|all, tuple()|all, integer()) -> list().
+-spec sst_getkvrange(pid(), 
+                        range_endpoint(), 
+                        range_endpoint(),  
+                        integer()) 
+                            -> list(leveled_codec:ledger_kv()|slot_pointer()).
 %% @doc
 %% Get a range of {Key, Value} pairs as a list between StartKey and EndKey
 %% (inclusive).  The ScanWidth is the maximum size of the range, a pointer
@@ -309,8 +338,12 @@ sst_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
     sst_getfilteredrange(Pid, StartKey, EndKey, ScanWidth, false). 
 
 
--spec sst_getfilteredrange(pid(), tuple()|all, tuple()|all, integer(), 
-                                                    list()|false) -> list().
+-spec sst_getfilteredrange(pid(), 
+                            range_endpoint(), 
+                            range_endpoint(),  
+                            integer(),
+                            leveled_codec:segment_list()) 
+                            -> list(leveled_codec:ledger_kv()|slot_pointer()).
 %% @doc
 %% Get a range of {Key, Value} pairs as a list between StartKey and EndKey
 %% (inclusive).  The ScanWidth is the maximum size of the range, a pointer
@@ -340,7 +373,8 @@ sst_getfilteredrange(Pid, StartKey, EndKey, ScanWidth, SegList) ->
             Reply
     end.
 
--spec sst_getslots(pid(), list()) -> list().
+-spec sst_getslots(pid(), list(slot_pointer()))
+                                        -> list(leveled_codec:ledger_kv()).
 %% @doc
 %% Get a list of slots by their ID. The slot will be converted from the binary
 %% to term form outside of the FSM loop, this is to stop the copying of the 
@@ -348,7 +382,10 @@ sst_getfilteredrange(Pid, StartKey, EndKey, ScanWidth, SegList) ->
 sst_getslots(Pid, SlotList) ->
     sst_getfilteredslots(Pid, SlotList, false).
 
--spec sst_getfilteredslots(pid(), list(), false|list()) -> list().
+-spec sst_getfilteredslots(pid(), 
+                            list(slot_pointer()), 
+                            leveled_codec:segment_list())
+                                        -> list(leveled_codec:ledger_kv()).
 %% @doc
 %% Get a list of slots by their ID. The slot will be converted from the binary
 %% to term form outside of the FSM loop
@@ -392,7 +429,9 @@ sst_clear(Pid) ->
 sst_deleteconfirmed(Pid) ->
     gen_fsm:send_event(Pid, close).
 
--spec sst_checkready(pid()) -> {ok, string(), tuple(), tuple()}.
+-spec sst_checkready(pid()) -> {ok, string(), 
+                                leveled_codec:leveled_key(), 
+                                leveled_codec:leveled_key()}.
 %% @doc
 %% If a file has been set to be built, check that it has been built.  Returns
 %% the filename and the {startKey, EndKey} for the manifest.

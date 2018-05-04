@@ -50,7 +50,7 @@
 %%% API
 %%%============================================================================
 
--spec prepare_for_index(index_array(), {integer(), integer()}|no_lookup) 
+-spec prepare_for_index(index_array(), leveled_codec:segment_hash()) 
                                                             -> index_array().
 %% @doc
 %% Add the hash of a key to the index.  This is 'prepared' in the sense that
