@@ -1630,7 +1630,7 @@ tune_hash(SegHash) ->
 tune_seglist(SegList) ->
     case is_list(SegList) of 
         true ->
-            lists:map(fun tune_hash/1, SegList);
+            lists:usort(lists:map(fun tune_hash/1, SegList));
         false ->
             SegList
     end.
