@@ -403,6 +403,7 @@ sst_getslots(Pid, SlotList) ->
 %% false as a SegList to not filter
 sst_getfilteredslots(Pid, SlotList, SegList) ->
     SegL0 = tune_seglist(SegList),
+    io:format("Tuned seglist of ~w~n", [SegL0]),
     {SlotBins, PressMethod} = 
         gen_fsm:sync_send_event(Pid, {get_slots, SlotList, SegL0}, infinity),
     binaryslot_reader(SlotBins, PressMethod).
