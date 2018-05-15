@@ -677,6 +677,7 @@ handle_call({fetch_keys,
                                 [State#state.levelzero_size],
                                 SW,
                                 0.01),
+    io:format("Fetch keys with segment_list of ~w~n", [SegmentList]),
     SetupFoldFun =
         fun(Level, Acc) ->
             Pointers = leveled_pmanifest:range_lookup(State#state.manifest,
