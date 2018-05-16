@@ -1259,7 +1259,12 @@ generate_binary_slot(Lookup, KVL, PressMethod, BuildTimings0) ->
 
 check_blocks([], _Handle, _StartPos, _BlockLengths, _PosBinLength,
                 _LedgerKeyToCheck, _PressMethod, Acc) ->
-    Acc;
+    case is_list(Acc) of
+        true ->
+            lists:reverse(Acc);
+        false ->
+            Acc
+    end;
 check_blocks([Pos|Rest], Handle, StartPos, BlockLengths, PosBinLength,
                 LedgerKeyToCheck, PressMethod, Acc) ->
     {BlockNumber, BlockPos} = revert_position(Pos),
@@ -1277,7 +1282,10 @@ check_blocks([Pos|Rest], Handle, StartPos, BlockLengths, PosBinLength,
         _ ->
             case LedgerKeyToCheck of 
                 false ->
-                    Acc ++ [{K, V}];
+                    check_blocks(Rest, Handle, StartPos, 
+                                    BlockLengths, PosBinLength, 
+                                    LedgerKeyToCheck, PressMethod, 
+                                    [{K, V}|Acc]);
                 _ ->
                     check_blocks(Rest, Handle, StartPos, 
                                     BlockLengths, PosBinLength, 
@@ -1629,7 +1637,7 @@ tune_hash(SegHash) ->
 tune_seglist(SegList) ->
     case is_list(SegList) of 
         true ->
-            lists:map(fun tune_hash/1, SegList);
+            lists:usort(lists:map(fun tune_hash/1, SegList));
         false ->
             SegList
     end.
