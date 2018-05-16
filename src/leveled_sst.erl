@@ -1381,8 +1381,11 @@ read_slots(Handle, SlotList, {SegList, BlockIndexCache}, PressMethod) ->
                     % other keys
                     case find_pos(BlockIdx, SegList, [], 0) of 
                         [] ->
+                            io:format("Empty postion list for slot~n"),
                             Acc;
                         PositionList ->
+                            io:format("~w positions found for slot~n", 
+                                        [length(PositionList)]),
                             Acc ++ 
                                 check_blocks(PositionList, 
                                                 Handle, SP, 
