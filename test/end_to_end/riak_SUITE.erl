@@ -12,8 +12,8 @@
 all() -> [
             crossbucket_aae,
             handoff,
-          dollar_bucket_index,
-          dollar_key_index
+            dollar_bucket_index,
+            dollar_key_index
             ].
 
 -define(MAGIC, 53). % riak_kv -> riak_object
@@ -80,6 +80,50 @@ crossbucket_aae(_Config) ->
     {ok, Bookie2A} = leveled_bookie:book_start(StartOpts2),
     test_singledelta_stores(Bookie2A, Bookie3, small, {B1, K1}),
     
+    SW0 = os:timestamp(),
+    SliceSize = 20,
+
+    CL1 = lists:sublist(lists:nth(1, CLs), 100, SliceSize),
+    CL2 = lists:sublist(lists:nth(2, CLs), 100, SliceSize),
+    CL3 = lists:sublist(lists:nth(3, CLs), 100, SliceSize),
+    CL4 = lists:sublist(lists:nth(4, CLs), 100, SliceSize),
+
+    SegMapFun = 
+        fun({_RN, RiakObject, _Spc}) ->
+            B = RiakObject#r_object.bucket,
+            K = RiakObject#r_object.key,
+            leveled_tictac:keyto_segment32(<<B/binary, K/binary>>)
+        end,
+    SL1 = lists:map(SegMapFun, CL1),
+    SL2 = lists:map(SegMapFun, CL2),
+    SL3 = lists:map(SegMapFun, CL3),
+    SL4 = lists:map(SegMapFun, CL4),
+
+    HeadSegmentFolderGen =
+        fun(SegL) ->
+            {foldheads_allkeys,
+                ?RIAK_TAG,
+                {fun(_B, _K, _PO, Acc) -> Acc + 1 end,  0},
+                false, true, SegL}
+        end,
+
+    {async, SL1Folder} =
+        leveled_bookie:book_returnfolder(Bookie3, HeadSegmentFolderGen(SL1)),
+    {async, SL2Folder} =
+        leveled_bookie:book_returnfolder(Bookie3, HeadSegmentFolderGen(SL2)),
+    {async, SL3Folder} =
+        leveled_bookie:book_returnfolder(Bookie3, HeadSegmentFolderGen(SL3)),
+    {async, SL4Folder} =
+        leveled_bookie:book_returnfolder(Bookie3, HeadSegmentFolderGen(SL4)),
+
+    Results = [SL1Folder(), SL2Folder(), SL3Folder(), SL4Folder()],
+    lists:foreach(fun(R) -> true = R >= SliceSize end, Results),
+
+    io:format("SegList folders returned results of ~w " ++ 
+                "for SliceSize ~w in ~w ms~n",
+                [Results, SliceSize,
+                    timer:now_diff(os:timestamp(), SW0)/1000]),
+
     ok = leveled_bookie:book_close(Bookie2A),
     ok = leveled_bookie:book_close(Bookie3).
 
