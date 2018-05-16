@@ -369,7 +369,6 @@ sst_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
 %% leveled_tictac
 sst_getfilteredrange(Pid, StartKey, EndKey, ScanWidth, SegList) ->
     SegList0 = tune_seglist(SegList),
-    io:format("Using tuned seglist ~w~n", [SegList0]),
     case gen_fsm:sync_send_event(Pid,
                                     {get_kvrange, 
                                         StartKey, EndKey, 
@@ -1260,7 +1259,12 @@ generate_binary_slot(Lookup, KVL, PressMethod, BuildTimings0) ->
 
 check_blocks([], _Handle, _StartPos, _BlockLengths, _PosBinLength,
                 _LedgerKeyToCheck, _PressMethod, Acc) ->
-    Acc;
+    case is_list(Acc) of
+        true ->
+            lists:reverse(Acc);
+        false ->
+            Acc
+    end;
 check_blocks([Pos|Rest], Handle, StartPos, BlockLengths, PosBinLength,
                 LedgerKeyToCheck, PressMethod, Acc) ->
     {BlockNumber, BlockPos} = revert_position(Pos),
@@ -1278,8 +1282,10 @@ check_blocks([Pos|Rest], Handle, StartPos, BlockLengths, PosBinLength,
         _ ->
             case LedgerKeyToCheck of 
                 false ->
-                    io:format("{K, V} found in block of ~w~n", [{K, V}]),
-                    Acc ++ [{K, V}];
+                    check_blocks(Rest, Handle, StartPos, 
+                                    BlockLengths, PosBinLength, 
+                                    LedgerKeyToCheck, PressMethod, 
+                                    [{K, V}|Acc]);
                 _ ->
                     check_blocks(Rest, Handle, StartPos, 
                                     BlockLengths, PosBinLength, 
@@ -1382,11 +1388,8 @@ read_slots(Handle, SlotList, {SegList, BlockIndexCache}, PressMethod) ->
                     % other keys
                     case find_pos(BlockIdx, SegList, [], 0) of 
                         [] ->
-                            io:format("Empty postion list for slot~n"),
                             Acc;
                         PositionList ->
-                            io:format("~w positions found for slot~n", 
-                                        [length(PositionList)]),
                             Acc ++ 
                                 check_blocks(PositionList, 
                                                 Handle, SP, 
@@ -1686,7 +1689,6 @@ find_pos(<<1:1/integer, PotentialHit:15/integer, T/binary>>,
                         HashList, PosList, Count) when is_list(HashList) ->
     case lists:member(PotentialHit, HashList) of 
         true ->
-            io:format("Found pos based on ~w~n", [PotentialHit]),
             find_pos(T, HashList, PosList ++ [Count], Count + 1);
         false ->
             find_pos(T, HashList, PosList, Count + 1)

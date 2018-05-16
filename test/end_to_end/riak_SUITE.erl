@@ -61,25 +61,11 @@ crossbucket_aae(_Config) ->
     %% Check all the objects are found - used to trigger HEAD performance log
     ok = testutil:checkhead_forlist(Bookie2, lists:nth(1, CLs)),
 
-    % Start a new store, and load the same objects (except fot the original
-    % test object) into this store
-
-    StartOpts3 = [{root_path, RootPathB},
-                    {max_journalsize, 200000000},
-                    {max_pencillercachesize, 16000},
-                    {sync_strategy, testutil:sync_strategy()}],
-    {ok, Bookie3} = leveled_bookie:book_start(StartOpts3),
-    lists:foreach(fun(ObjL) -> testutil:riakload(Bookie3, ObjL) end, CLs),
-    test_singledelta_stores(Bookie2, Bookie3, small, {B1, K1}),
-    test_singledelta_stores(Bookie2, Bookie3, medium, {B1, K1}),
-    test_singledelta_stores(Bookie2, Bookie3, xsmall, {B1, K1}),
-    test_singledelta_stores(Bookie2, Bookie3, xxsmall, {B1, K1}),
-    
-    % Test with a newly opend book (i.e with no blovk indexes cached)
-    ok = leveled_bookie:book_close(Bookie2),
-    {ok, Bookie2A} = leveled_bookie:book_start(StartOpts2),
-    test_singledelta_stores(Bookie2A, Bookie3, small, {B1, K1}),
-    
+    % This part of the test tests an issue with accelerating folds by segment
+    % list, when there is more than one key with a matching segment in the 
+    % slot.  Previously this was not handled correctly - and this test part
+    % of the test detects this, by finding slices of keys which are probably
+    % in the same slot 
     SW0 = os:timestamp(),
     SliceSize = 20,
 
@@ -94,35 +80,78 @@ crossbucket_aae(_Config) ->
             K = RiakObject#r_object.key,
             leveled_tictac:keyto_segment32(<<B/binary, K/binary>>)
         end,
+    BKMapFun = 
+        fun({_RN, RiakObject, _Spc}) ->
+            B = RiakObject#r_object.bucket,
+            K = RiakObject#r_object.key,
+            {B, K}
+        end,
+
     SL1 = lists:map(SegMapFun, CL1),
     SL2 = lists:map(SegMapFun, CL2),
     SL3 = lists:map(SegMapFun, CL3),
     SL4 = lists:map(SegMapFun, CL4),
 
+    BK1 = lists:map(BKMapFun, CL1),
+    BK2 = lists:map(BKMapFun, CL2),
+    BK3 = lists:map(BKMapFun, CL3),
+    BK4 = lists:map(BKMapFun, CL4),
+
     HeadSegmentFolderGen =
-        fun(SegL) ->
+        fun(SegL, BKL) ->
             {foldheads_allkeys,
                 ?RIAK_TAG,
-                {fun(_B, _K, _PO, Acc) -> Acc + 1 end,  0},
+                {fun(B, K, _PO, Acc) -> 
+                        case lists:member({B, K}, BKL) of 
+                            true ->
+                                Acc + 1;
+                            false ->
+                                Acc
+                        end
+                        end,  0},
                 false, true, SegL}
         end,
 
     {async, SL1Folder} =
-        leveled_bookie:book_returnfolder(Bookie3, HeadSegmentFolderGen(SL1)),
+        leveled_bookie:book_returnfolder(Bookie2, 
+                                            HeadSegmentFolderGen(SL1, BK1)),
     {async, SL2Folder} =
-        leveled_bookie:book_returnfolder(Bookie3, HeadSegmentFolderGen(SL2)),
+        leveled_bookie:book_returnfolder(Bookie2, 
+                                            HeadSegmentFolderGen(SL2, BK2)),
     {async, SL3Folder} =
-        leveled_bookie:book_returnfolder(Bookie3, HeadSegmentFolderGen(SL3)),
+        leveled_bookie:book_returnfolder(Bookie2, 
+                                            HeadSegmentFolderGen(SL3, BK3)),
     {async, SL4Folder} =
-        leveled_bookie:book_returnfolder(Bookie3, HeadSegmentFolderGen(SL4)),
+        leveled_bookie:book_returnfolder(Bookie2, 
+                                            HeadSegmentFolderGen(SL4, BK4)),
 
     Results = [SL1Folder(), SL2Folder(), SL3Folder(), SL4Folder()],
-    lists:foreach(fun(R) -> true = R >= SliceSize end, Results),
-
     io:format("SegList folders returned results of ~w " ++ 
                 "for SliceSize ~w in ~w ms~n",
                 [Results, SliceSize,
                     timer:now_diff(os:timestamp(), SW0)/1000]),
+    lists:foreach(fun(R) -> true = R == SliceSize end, Results),
+
+    % Start a new store, and load the same objects (except fot the original
+    % test object) into this store
+    %
+    % This is now the comparison part of the test
+
+    StartOpts3 = [{root_path, RootPathB},
+                    {max_journalsize, 200000000},
+                    {max_pencillercachesize, 16000},
+                    {sync_strategy, testutil:sync_strategy()}],
+    {ok, Bookie3} = leveled_bookie:book_start(StartOpts3),
+    lists:foreach(fun(ObjL) -> testutil:riakload(Bookie3, ObjL) end, CLs),
+    test_singledelta_stores(Bookie2, Bookie3, small, {B1, K1}),
+    test_singledelta_stores(Bookie2, Bookie3, medium, {B1, K1}),
+    test_singledelta_stores(Bookie2, Bookie3, xsmall, {B1, K1}),
+    test_singledelta_stores(Bookie2, Bookie3, xxsmall, {B1, K1}),
+
+    % Test with a newly opend book (i.e with no block indexes cached)
+    ok = leveled_bookie:book_close(Bookie2),
+    {ok, Bookie2A} = leveled_bookie:book_start(StartOpts2),
+    test_singledelta_stores(Bookie2A, Bookie3, small, {B1, K1}),
 
     ok = leveled_bookie:book_close(Bookie2A),
     ok = leveled_bookie:book_close(Bookie3).
@@ -551,3 +580,4 @@ dollar_bucket_index(_Config) ->
 
     ok = leveled_bookie:book_close(Bookie1),
     testutil:reset_filestructure().
+
