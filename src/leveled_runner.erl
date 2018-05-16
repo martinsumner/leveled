@@ -478,7 +478,7 @@ foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, SegmentList) ->
                 % initial accumulator
                 FoldObjFun;
             false ->
-                % no initial accumulatr passed, and so should be just a list
+                % no initial accumulator passed, and so should be just a list
                 {FoldObjFun, []}
         end,
     

@@ -1364,6 +1364,7 @@ read_slots(Handle, SlotList, {SegList, BlockIndexCache}, PressMethod) ->
             BL = ?BLOCK_LENGTHS_LENGTH,
             case array:get(ID - 1, BlockIndexCache) of
                 none ->
+                    io:format("BlockIndex cache not available for fetch_range~n"),
                     % If there is an attempt to use the seg list query and the
                     % index block cache isn't cached for any part this may be 
                     % slower as each slot will be read in turn
@@ -1378,6 +1379,7 @@ read_slots(Handle, SlotList, {SegList, BlockIndexCache}, PressMethod) ->
                     % present without lifting the slot off disk. Also the 
                     % fact that we know position can be used to filter out 
                     % other keys
+                    io:format("BlockIndex cache used in fetch_range~n"),
                     case find_pos(BlockIdx, SegList, [], 0) of 
                         [] ->
                             Acc;
