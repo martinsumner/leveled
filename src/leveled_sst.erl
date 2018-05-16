@@ -1278,6 +1278,7 @@ check_blocks([Pos|Rest], Handle, StartPos, BlockLengths, PosBinLength,
         _ ->
             case LedgerKeyToCheck of 
                 false ->
+                    io:format("{K, V} found in block of ~w~n", [{K, V}]),
                     Acc ++ [{K, V}];
                 _ ->
                     check_blocks(Rest, Handle, StartPos, 
