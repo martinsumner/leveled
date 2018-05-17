@@ -84,6 +84,7 @@ crossbucket_aae(_Config) ->
     {ok, Bookie2A} = leveled_bookie:book_start(StartOpts2),
 
     test_segfilter_query(Bookie2A, CLs),
+    test_segfilter_query(Bookie2A, CLs),
 
     test_singledelta_stores(Bookie2A, Bookie3, small, {B1, K1}),
 
