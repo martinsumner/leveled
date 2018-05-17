@@ -270,28 +270,50 @@ fetchput_snapshot(_Config) ->
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
+    
+    % Load up 5000 objects
+
     ObjList1 = testutil:generate_objects(5000, 2),
     testutil:riakload(Bookie1, ObjList1),
+    
+    % Now take a snapshot - check it has the same objects
+
     SnapOpts1 = [{snapshot_bookie, Bookie1}],
     {ok, SnapBookie1} = leveled_bookie:book_start(SnapOpts1),
     ChkList1 = lists:sublist(lists:sort(ObjList1), 100),
     testutil:check_forlist(Bookie1, ChkList1),
     testutil:check_forlist(SnapBookie1, ChkList1),
+
+    % Close the snapshot, check the original store still has the objects
+
     ok = leveled_bookie:book_close(SnapBookie1),
     testutil:check_forlist(Bookie1, ChkList1),
     ok = leveled_bookie:book_close(Bookie1),
     io:format("Closed initial bookies~n"),
+
+    % all now closed
     
+    % Open a new store (to start with the previously loaded data)
+
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
     SnapOpts2 = [{snapshot_bookie, Bookie2}],
+
+    % And take a snapshot of that store
+
     {ok, SnapBookie2} = leveled_bookie:book_start(SnapOpts2),
     io:format("Bookies restarted~n"),
     
+
+    % Check both the newly opened store and its snapshot have the data
+
     testutil:check_forlist(Bookie2, ChkList1),
     io:format("Check active bookie still contains original data~n"),
     testutil:check_forlist(SnapBookie2, ChkList1),
     io:format("Check snapshot still contains original data~n"),
     
+    % Generate some replacement objects, load them up - check the master 
+    % store has the replacement objects, but the snapshot still has the old
+    % objects
     
     ObjList2 = testutil:generate_objects(5000, 2),
     testutil:riakload(Bookie2, ObjList2),
@@ -303,14 +325,23 @@ fetchput_snapshot(_Config) ->
     io:format("Checked for replacement objects in active bookie" ++
                     ", old objects in snapshot~n"),
     
+    % Check out how many ledger files we now have (should just be 1)
+
     ok = filelib:ensure_dir(RootPath ++ "/ledger/ledger_files"),
     {ok, FNsA} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
+
+    % generate some new objects and load them up.  Check that the master store
+    % has the new objects, and the snapshot doesn't
+
     ObjList3 = testutil:generate_objects(15000, 5002),
     testutil:riakload(Bookie2, ObjList3),
     ChkList3 = lists:sublist(lists:sort(ObjList3), 100),
     testutil:check_forlist(Bookie2, ChkList3),
     testutil:check_formissinglist(SnapBookie2, ChkList3),
-    GenList = [20002, 40002, 60002, 80002],
+
+    % Now loads lots of new objects
+
+    GenList = [20002, 40002, 60002, 80002, 100002],
     CLs2 = testutil:load_objects(20000, GenList, Bookie2, TestObject,
                                     fun testutil:generate_smallobjects/2),
     io:format("Loaded significant numbers of new objects~n"),
@@ -318,6 +349,9 @@ fetchput_snapshot(_Config) ->
     testutil:check_forlist(Bookie2, lists:nth(length(CLs2), CLs2)),
     io:format("Checked active bookie has new objects~n"),
     
+    % Start a second snapshot, which should have the new objects, whilst the
+    % previous snapshot still doesn't
+
     {ok, SnapBookie3} = leveled_bookie:book_start(SnapOpts2),
     testutil:check_forlist(SnapBookie3, lists:nth(length(CLs2), CLs2)),
     testutil:check_formissinglist(SnapBookie2, ChkList3),
@@ -327,6 +361,8 @@ fetchput_snapshot(_Config) ->
     testutil:check_forlist(SnapBookie2, ChkList1),
     io:format("Started new snapshot and check for new objects~n"),
     
+    % Load yet more objects, these are replacement objects for the last load
+
     CLs3 = testutil:load_objects(20000, GenList, Bookie2, TestObject,
                                     fun testutil:generate_smallobjects/2),
     testutil:check_forlist(Bookie2, lists:nth(length(CLs3), CLs3)),
@@ -334,22 +370,41 @@ fetchput_snapshot(_Config) ->
     
     io:format("Starting 15s sleep in which snap2 should block deletion~n"),
     timer:sleep(15000),
+
+    % There should be lots of ledger files, as we have replaced the objects 
+    % which has created new files, but the old files are still in demand from 
+    % the snapshot
+
     {ok, FNsB} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
     ok = leveled_bookie:book_close(SnapBookie2),
     io:format("Starting 15s sleep as snap2 close should unblock deletion~n"),
     timer:sleep(15000),
     io:format("Pause for deletion has ended~n"),
     
+    % So the pause here is to allow for delete pendings to take effect after the 
+    % closing of the snapshot
+
+    % Now check that any deletions haven't impacted the availability of data
     testutil:check_forlist(Bookie2, lists:nth(length(CLs3), CLs3)),
+
+    % Close the other snapshot, and pause - after the pause there should be a 
+    % reduction in the number of ledger files due to the deletes
+
     ok = leveled_bookie:book_close(SnapBookie3),
     io:format("Starting 15s sleep as snap3 close should unblock deletion~n"),
     timer:sleep(15000),
     io:format("Pause for deletion has ended~n"),
     testutil:check_forlist(Bookie2, lists:nth(length(CLs3), CLs3)),
     testutil:check_forlist(Bookie2, lists:nth(1, CLs3)),
+
+
     {ok, FNsC} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
+    io:format("FNsA ~w FNsB ~w FNsC ~w~n", 
+                [length(FNsA), length(FNsB), length(FNsC)]),
     true = length(FNsB) > length(FNsA),
-    true = length(FNsB) > length(FNsC),
+    true = length(FNsB) > length(FNsC), 
+        % smaller due to replacements and files deleting
+        % This is dependent on the sleep though (yuk)
     
     {B1Size, B1Count} = testutil:check_bucket_stats(Bookie2, "Bucket1"),
     true = B1Size > 0,
@@ -357,7 +412,7 @@ fetchput_snapshot(_Config) ->
     {B1Size, B1Count} = testutil:check_bucket_stats(Bookie2, "Bucket1"),
     {BSize, BCount} = testutil:check_bucket_stats(Bookie2, "Bucket"),
     true = BSize > 0,
-    true = BCount == 100000,
+    true = BCount == 120000,
     
     ok = leveled_bookie:book_close(Bookie2),
     testutil:reset_filestructure().
