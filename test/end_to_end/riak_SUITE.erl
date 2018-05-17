@@ -61,6 +61,37 @@ crossbucket_aae(_Config) ->
     %% Check all the objects are found - used to trigger HEAD performance log
     ok = testutil:checkhead_forlist(Bookie2, lists:nth(1, CLs)),
 
+    test_segfilter_query(Bookie2, CLs),
+
+    % Start a new store, and load the same objects (except fot the original
+    % test object) into this store
+    %
+    % This is now the comparison part of the test
+
+    StartOpts3 = [{root_path, RootPathB},
+                    {max_journalsize, 200000000},
+                    {max_pencillercachesize, 16000},
+                    {sync_strategy, testutil:sync_strategy()}],
+    {ok, Bookie3} = leveled_bookie:book_start(StartOpts3),
+    lists:foreach(fun(ObjL) -> testutil:riakload(Bookie3, ObjL) end, CLs),
+    test_singledelta_stores(Bookie2, Bookie3, small, {B1, K1}),
+    test_singledelta_stores(Bookie2, Bookie3, medium, {B1, K1}),
+    test_singledelta_stores(Bookie2, Bookie3, xsmall, {B1, K1}),
+    test_singledelta_stores(Bookie2, Bookie3, xxsmall, {B1, K1}),
+
+    % Test with a newly opened book (i.e with no block indexes cached)
+    ok = leveled_bookie:book_close(Bookie2),
+    {ok, Bookie2A} = leveled_bookie:book_start(StartOpts2),
+
+    test_segfilter_query(Bookie2A, CLs),
+
+    test_singledelta_stores(Bookie2A, Bookie3, small, {B1, K1}),
+
+    ok = leveled_bookie:book_close(Bookie2A),
+    ok = leveled_bookie:book_close(Bookie3).
+
+
+test_segfilter_query(Bookie, CLs) ->
     % This part of the test tests an issue with accelerating folds by segment
     % list, when there is more than one key with a matching segment in the 
     % slot.  Previously this was not handled correctly - and this test part
@@ -113,16 +144,16 @@ crossbucket_aae(_Config) ->
         end,
 
     {async, SL1Folder} =
-        leveled_bookie:book_returnfolder(Bookie2, 
+        leveled_bookie:book_returnfolder(Bookie, 
                                             HeadSegmentFolderGen(SL1, BK1)),
     {async, SL2Folder} =
-        leveled_bookie:book_returnfolder(Bookie2, 
+        leveled_bookie:book_returnfolder(Bookie, 
                                             HeadSegmentFolderGen(SL2, BK2)),
     {async, SL3Folder} =
-        leveled_bookie:book_returnfolder(Bookie2, 
+        leveled_bookie:book_returnfolder(Bookie, 
                                             HeadSegmentFolderGen(SL3, BK3)),
     {async, SL4Folder} =
-        leveled_bookie:book_returnfolder(Bookie2, 
+        leveled_bookie:book_returnfolder(Bookie, 
                                             HeadSegmentFolderGen(SL4, BK4)),
 
     Results = [SL1Folder(), SL2Folder(), SL3Folder(), SL4Folder()],
@@ -130,32 +161,7 @@ crossbucket_aae(_Config) ->
                 "for SliceSize ~w in ~w ms~n",
                 [Results, SliceSize,
                     timer:now_diff(os:timestamp(), SW0)/1000]),
-    lists:foreach(fun(R) -> true = R == SliceSize end, Results),
-
-    % Start a new store, and load the same objects (except fot the original
-    % test object) into this store
-    %
-    % This is now the comparison part of the test
-
-    StartOpts3 = [{root_path, RootPathB},
-                    {max_journalsize, 200000000},
-                    {max_pencillercachesize, 16000},
-                    {sync_strategy, testutil:sync_strategy()}],
-    {ok, Bookie3} = leveled_bookie:book_start(StartOpts3),
-    lists:foreach(fun(ObjL) -> testutil:riakload(Bookie3, ObjL) end, CLs),
-    test_singledelta_stores(Bookie2, Bookie3, small, {B1, K1}),
-    test_singledelta_stores(Bookie2, Bookie3, medium, {B1, K1}),
-    test_singledelta_stores(Bookie2, Bookie3, xsmall, {B1, K1}),
-    test_singledelta_stores(Bookie2, Bookie3, xxsmall, {B1, K1}),
-
-    % Test with a newly opend book (i.e with no block indexes cached)
-    ok = leveled_bookie:book_close(Bookie2),
-    {ok, Bookie2A} = leveled_bookie:book_start(StartOpts2),
-    test_singledelta_stores(Bookie2A, Bookie3, small, {B1, K1}),
-
-    ok = leveled_bookie:book_close(Bookie2A),
-    ok = leveled_bookie:book_close(Bookie3).
-
+    lists:foreach(fun(R) -> true = R == SliceSize end, Results).
 
 
 test_singledelta_stores(BookA, BookB, TreeSize, DeltaKey) ->
