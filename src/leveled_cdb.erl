@@ -1183,6 +1183,9 @@ extract_key_value_check(Handle, Position, BinaryMode) ->
     end.
 
 
+-spec startup_scan_over_file(fle:io_device(), file:location()) 
+                                                -> {file:location(), any()}.
+%% @doc
 %% Scan through the file until there is a failure to crc check an input, and 
 %% at that point return the position and the key dictionary scanned so far
 startup_scan_over_file(Handle, Position) ->
@@ -1204,12 +1207,13 @@ startup_filter(Key, _ValueAsBin, Position, {Hashtree, _LastKey}, _ExtractFun) ->
     {loop, {put_hashtree(Key, Position, Hashtree), Key}}.
 
 
+-spec scan_over_file(file:io_device(), file:location(), fun(), any(), any())
+                                                -> {file:location(), any()}.
 %% Scan for key changes - scan over file returning applying FilterFun
 %% The FilterFun should accept as input:
 %% - Key, ValueBin, Position, Accumulator, Fun (to extract values from Binary)
 %% -> outputting a new Accumulator and a loop|stop instruction as a tuple
 %% i.e. {loop, Acc} or {stop, Acc}
-
 scan_over_file(Handle, Position, FilterFun, Output, LastKey) ->
     case saferead_keyvalue(Handle) of
         false ->
