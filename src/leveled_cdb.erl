@@ -1175,7 +1175,7 @@ extract_key_value_check(Handle, Position, BinaryMode) ->
     {ok, _} = file:position(Handle, Position),
     case {BinaryMode, saferead_keyvalue(Handle)} of 
         {_, false} ->
-            {null, null, false};
+            {null, crc_wonky, false};
         {true, {Key, Value, _KeyL, _ValueL}} ->
             {Key, Value, true};
         {false, {Key, Value, _KeyL, _ValueL}} ->
