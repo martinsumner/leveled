@@ -135,6 +135,7 @@
 
 -type cdb_options() :: #cdb_options{}.
 -type cdb_timings() :: no_timing|#cdb_timings{}.
+-type hashtable_index() :: tuple().
 
 
 
@@ -1016,6 +1017,7 @@ hashtable_calc(HashTree, StartPos) ->
 %% Internal functions
 %%%%%%%%%%%%%%%%%%%%
 
+
 determine_new_filename(Filename) ->
     filename:rootname(Filename, ".pnd") ++ ".cdb".
     
@@ -1024,6 +1026,12 @@ rename_for_read(Filename, NewName) ->
     leveled_log:log("CDB08", [Filename, NewName, filelib:is_file(NewName)]),
     file:rename(Filename, NewName).
 
+
+-spec open_for_readonly(string(), term()) 
+                            -> {file:io_device(), hashtable_index(), term()}.
+%% @doc
+%% Open a CDB file to accept read requests (e.g. key/value lookups) but no 
+%% additions or changes
 open_for_readonly(Filename, LastKeyKnown) ->
     {ok, Handle} = file:open(Filename, [binary, raw, read]),
     Index = load_index(Handle),
@@ -1036,6 +1044,11 @@ open_for_readonly(Filename, LastKeyKnown) ->
         end,
     {Handle, Index, LastKey}.
 
+
+-spec load_index(file:io_device()) -> hashtable_index().
+%% @doc
+%% The CDB file has at the beginning an index of how many keys are present in
+%% each of 256 slices of the hashtable.  This loads that index
 load_index(Handle) ->
     Index = lists:seq(0, 255),
     LoadIndexFun =
@@ -1046,6 +1059,9 @@ load_index(Handle) ->
         end,
     list_to_tuple(lists:map(LoadIndexFun, Index)).
 
+
+-spec find_lastkey(file:io_device(), hashtable_index()) -> empty|term().
+%% @doc
 %% Function to find the LastKey in the file
 find_lastkey(Handle, IndexCache) ->
     ScanIndexFun =
@@ -1062,8 +1078,7 @@ find_lastkey(Handle, IndexCache) ->
         _ ->
             {ok, _} = file:position(Handle, LastPosition),
             {KeyLength, _ValueLength} = read_next_2_integers(Handle),
-            {K, _KB} = safe_read_next_key(Handle, KeyLength),
-            K
+            safe_read_next_key(Handle, KeyLength)
     end.
 
 
@@ -1124,7 +1139,7 @@ extract_kvpair(_H, [], _K, _BinaryMode) ->
 extract_kvpair(Handle, [Position|Rest], Key, BinaryMode) ->
     {ok, _} = file:position(Handle, Position),
     {KeyLength, ValueLength} = read_next_2_integers(Handle),
-    case safe_read_next_key(Handle, KeyLength) of
+    case safe_read_next_keyint(Handle, KeyLength) of
         {Key, KeyBin} ->  % If same key as passed in, then found!
             case checkread_next_value(Handle, ValueLength, KeyBin) of
                 {false, _} -> 
@@ -1144,19 +1159,18 @@ extract_kvpair(Handle, [Position|Rest], Key, BinaryMode) ->
 extract_key(Handle, Position) ->
     {ok, _} = file:position(Handle, Position),
     {KeyLength, _ValueLength} = read_next_2_integers(Handle),
-    {K, _KB} = safe_read_next_key(Handle, KeyLength),
-    {K}.
+    {safe_read_next_key(Handle, KeyLength)}.
 
 extract_key_size(Handle, Position) ->
     {ok, _} = file:position(Handle, Position),
     {KeyLength, ValueLength} = read_next_2_integers(Handle),
-    {K, _KB} = safe_read_next_key(Handle, KeyLength),
+    K = safe_read_next_key(Handle, KeyLength),
     {K, ValueLength}.
 
 extract_key_value_check(Handle, Position, BinaryMode) ->
     {ok, _} = file:position(Handle, Position),
     {KeyLength, ValueLength} = read_next_2_integers(Handle),
-    {K, KB} = safe_read_next_key(Handle, KeyLength),
+    {K, KB} = safe_read_next_keyint(Handle, KeyLength),
     {Check, V} = checkread_next_value(Handle, ValueLength, KB),
     case BinaryMode of
         true ->
@@ -1231,7 +1245,7 @@ scan_over_file(Handle, Position, FilterFun, Output, LastKey) ->
 %% Confirm that the last key has been defined and set to a non-default value
 check_last_key(empty) ->
     empty;
-check_last_key(_)
+check_last_key(_LK) ->
     ok.
 
 
@@ -1246,7 +1260,7 @@ saferead_keyvalue(Handle) ->
         eof ->
             false;
         {KeyL, ValueL} ->
-            case safe_read_next_key(Handle, KeyL) of 
+            case safe_read_next_keyint(Handle, KeyL) of 
                 false ->
                     false;
                 {Key, KeyBin} ->
@@ -1265,11 +1279,26 @@ saferead_keyvalue(Handle) ->
     end.
 
 
--spec safe_read_next_key(file:io_device(), integer())
+-spec safe_read_next_key(file:io_device(), integer()) -> false|term().
+%% @doc
+%% Return the next key or have false returned if there is some sort of 
+%% potentially expected error (e.g. due to file truncation).  Note that no
+%% CRC check has been performed, if CRC check is required then use 
+%% safe_read_next_keyint/2 so that the binary key can also be returned to 
+%% be CRC checked along with the value
+safe_read_next_key(Handle, Length) ->
+    case safe_read_next_keyint(Handle, Length) of
+        {K, _KB} ->
+            K;
+        false ->
+            false
+    end.
+
+-spec safe_read_next_keyint(file:io_device(), integer())
                                                 -> false|{any(), binary()}.
 %% @doc
 %% Return a key masking nay failure in a fixed return of false
-safe_read_next_key(Handle, Length) ->
+safe_read_next_keyint(Handle, Length) ->
     try read_next_item(Handle, Length) of
         eof ->
             false;
@@ -1789,7 +1818,7 @@ dump(FileName) ->
     {ok, _} = file:position(Handle, {bof, 2048}),
     Fn1 = fun(_I, Acc) ->
         {KL, VL} = read_next_2_integers(Handle),
-        {Key, KB} = safe_read_next_key(Handle, KL),
+        {Key, KB} = safe_read_next_keyint(Handle, KL),
         Value =
             case checkread_next_value(Handle, VL, KB) of
                 {true, V0} ->
