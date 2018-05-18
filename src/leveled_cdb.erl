@@ -15,6 +15,10 @@
 %% - The ability to scan a database in blocks of sequence numbers
 %% - The applictaion of a CRC check by default to all values
 %%
+%% Because of the final delta - this is incompatible with standard CDB files 
+%% (in that you won't be able to fetch values if the file was written by 
+%% another CDB writer as the CRC check is missing)
+%%
 %% This module provides functions to create and query a CDB (constant database).
 %% A CDB implements a two-level hashtable which provides fast {key,value} 
 %% lookups that remain fairly constant in speed regardless of the CDBs size.
@@ -1169,15 +1173,15 @@ extract_key_size(Handle, Position) ->
 
 extract_key_value_check(Handle, Position, BinaryMode) ->
     {ok, _} = file:position(Handle, Position),
-    {KeyLength, ValueLength} = read_next_2_integers(Handle),
-    {K, KB} = safe_read_next_keyint(Handle, KeyLength),
-    {Check, V} = checkread_next_value(Handle, ValueLength, KB),
-    case BinaryMode of
-        true ->
-            {K, V, Check};
-        false ->
-            {K, binary_to_term(V), Check}
+    case {BinaryMode, saferead_keyvalue(Handle)} of 
+        {_, false} ->
+            {null, null, false};
+        {true, {Key, Value, _KeyL, _ValueL}} ->
+            {Key, Value, true};
+        {false, {Key, Value, _KeyL, _ValueL}} ->
+            {Key, binary_to_term(Value), true}
     end.
+
 
 %% Scan through the file until there is a failure to crc check an input, and 
 %% at that point return the position and the key dictionary scanned so far
@@ -1267,10 +1271,11 @@ saferead_keyvalue(Handle) ->
                     case file:read(Handle, ValueL) of 
                         {ok, Value} -> 
                             case crccheck(Value, KeyBin) of
-                                true ->
-                                    {Key, Value, KeyL, ValueL};
                                 false ->
-                                    false
+                                    false;
+                                TrueValue ->
+                                    % i.e. value with no CRC
+                                    {Key, TrueValue, KeyL, ValueL}
                             end;
                         eof ->
                             false 
@@ -1321,7 +1326,7 @@ read_next_item(Handle, Length) ->
             eof
     end.
 
--spec crccheck(binary()|bitstring(), binary()) -> boolean().
+-spec crccheck(binary()|bitstring(), binary()) -> any().
 %% @doc
 %% CRC chaeck the value which should be a binary, where the first four bytes
 %% are a CRC check.  If the binary is truncated, it could be a bitstring or
@@ -1329,7 +1334,7 @@ read_next_item(Handle, Length) ->
 crccheck(<<CRC:32/integer, Value/binary>>, KeyBin) when is_binary(KeyBin) ->
     case calc_crc(KeyBin, Value) of 
         CRC -> 
-            true;
+            Value;
         _ -> 
             leveled_log:log("CDB10", []),
             false
@@ -1361,8 +1366,7 @@ checkread_next_value(Handle, Length, KeyBin) ->
 
 %% Extract value and size from binary containing CRC
 extract_valueandsize(ValueAsBin) ->
-    <<_CRC:32/integer, Bin/binary>> = ValueAsBin,
-    {Bin, byte_size(Bin)}.
+    {ValueAsBin, byte_size(ValueAsBin)}.
 
 
 %% Used for reading lengths
@@ -2002,7 +2006,7 @@ crccheck_wronghash_test() ->
     GValueOnDisk = <<GoodHash:32/integer, Value/binary>>,
     BValueOnDisk = <<BadHash:32/integer, Value/binary>>,
     ?assertMatch(false, crccheck(BValueOnDisk, Key)),
-    ?assertMatch(true, crccheck(GValueOnDisk, Key)).
+    ?assertMatch(Value, crccheck(GValueOnDisk, Key)).
 
 crccheck_truncatedvalue_test() ->
     Value = term_to_binary("some text as value"),
@@ -2012,7 +2016,7 @@ crccheck_truncatedvalue_test() ->
     Size = bit_size(ValueOnDisk) - 1,
     <<TruncatedValue:Size/bitstring, _/bitstring>> = ValueOnDisk,
     ?assertMatch(false, crccheck(TruncatedValue, Key)),
-    ?assertMatch(true, crccheck(ValueOnDisk, Key)).
+    ?assertMatch(Value, crccheck(ValueOnDisk, Key)).
 
 activewrite_singlewrite_test() ->
     Key = "0002",
@@ -2402,7 +2406,7 @@ safe_read_test() ->
                 false ->
                     % Result OK to be false - should get that on error
                     ok;
-                {<<"Key">>, ValToWrite, KeyL, BadValueL} ->
+                {<<"Key">>, Value, KeyL, BadValueL} ->
                     % Sometimes corruption may yield a correct answer
                     % for example if Value Length is too big
                     %
@@ -2410,7 +2414,7 @@ safe_read_test() ->
                     % the end of the file - which is just a peculiarity of 
                     % the test
                     ?assertMatch(true, BadValueL > ValueL);
-                {_BadKey, ValToWrite, KeyL, ValueL} ->
+                {_BadKey, Value, KeyL, ValueL} ->
                     % Key is not CRC checked - so may be bit flipped to
                     % something which is still passes through binary_to_term
                     % Assumption is that the application should always 
@@ -2450,7 +2454,7 @@ safe_read_test() ->
     {ok, HandleHappy} = file:open(TestFN, ?WRITE_OPS),
     ok = file:pwrite(HandleHappy, 0, BinToWrite),
     {ok, _} = file:position(HandleHappy, bof),
-    ?assertMatch({<<"Key">>, ValToWrite, KeyL, ValueL}, 
+    ?assertMatch({<<"Key">>, Value, KeyL, ValueL}, 
                     saferead_keyvalue(HandleHappy)),
     
     file:delete(TestFN).
