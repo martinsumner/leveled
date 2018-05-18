@@ -2086,7 +2086,7 @@ create_file_test() ->
                             _ ->
                                 ok
                         end end,
-                    [50, 50, 50, 50, 50]),
+                    [50, 100, 200, 400, 800]),
     {ok, SrcFN, StartKey, EndKey} = checkready(SP),
     io:format("StartKey ~w EndKey ~w~n", [StartKey, EndKey]),
     ?assertMatch({o, _, _, _}, StartKey),
