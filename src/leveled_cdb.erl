@@ -2410,17 +2410,10 @@ safe_read_test() ->
                     % Sometimes corruption may yield a correct answer
                     % for example if Value Length is too big
                     %
-                    % This cna only happen with a corrupted value length at
+                    % This can only happen with a corrupted value length at
                     % the end of the file - which is just a peculiarity of 
                     % the test
-                    ?assertMatch(true, BadValueL > ValueL);
-                {_BadKey, Value, KeyL, ValueL} ->
-                    % Key is not CRC checked - so may be bit flipped to
-                    % something which is still passes through binary_to_term
-                    % Assumption is that the application should always 
-                    % ultimately know the key - and so will be able to check
-                    % against the Key it is trying for.
-                    ok
+                    ?assertMatch(true, BadValueL > ValueL)
             end,
             ok = file:close(Handle)
         end,
