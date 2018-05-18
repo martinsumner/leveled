@@ -1062,7 +1062,8 @@ find_lastkey(Handle, IndexCache) ->
         _ ->
             {ok, _} = file:position(Handle, LastPosition),
             {KeyLength, _ValueLength} = read_next_2_integers(Handle),
-            safe_read_next_key(Handle, KeyLength)
+            {K, _KB} = safe_read_next_key(Handle, KeyLength),
+            K
     end.
 
 
@@ -1124,8 +1125,8 @@ extract_kvpair(Handle, [Position|Rest], Key, BinaryMode) ->
     {ok, _} = file:position(Handle, Position),
     {KeyLength, ValueLength} = read_next_2_integers(Handle),
     case safe_read_next_key(Handle, KeyLength) of
-        Key ->  % If same key as passed in, then found!
-            case read_next_value(Handle, ValueLength, crc) of
+        {Key, KeyBin} ->  % If same key as passed in, then found!
+            case checkread_next_value(Handle, ValueLength, KeyBin) of
                 {false, _} -> 
                     crc_wonky;
                 {_, Value} ->
@@ -1143,18 +1144,20 @@ extract_kvpair(Handle, [Position|Rest], Key, BinaryMode) ->
 extract_key(Handle, Position) ->
     {ok, _} = file:position(Handle, Position),
     {KeyLength, _ValueLength} = read_next_2_integers(Handle),
-    {safe_read_next_key(Handle, KeyLength)}.
+    {K, _KB} = safe_read_next_key(Handle, KeyLength),
+    {K}.
 
 extract_key_size(Handle, Position) ->
     {ok, _} = file:position(Handle, Position),
     {KeyLength, ValueLength} = read_next_2_integers(Handle),
-    {safe_read_next_key(Handle, KeyLength), ValueLength}.
+    {K, _KB} = safe_read_next_key(Handle, KeyLength),
+    {K, ValueLength}.
 
 extract_key_value_check(Handle, Position, BinaryMode) ->
     {ok, _} = file:position(Handle, Position),
     {KeyLength, ValueLength} = read_next_2_integers(Handle),
-    K = safe_read_next_key(Handle, KeyLength),
-    {Check, V} = read_next_value(Handle, ValueLength, crc),
+    {K, KB} = safe_read_next_key(Handle, KeyLength),
+    {Check, V} = checkread_next_value(Handle, ValueLength, KB),
     case BinaryMode of
         true ->
             {K, V, Check};
@@ -1174,18 +1177,13 @@ startup_scan_over_file(Handle, Position) ->
     {ok, FinalPos} = file:position(Handle, cur),
     {FinalPos, Output}.
 
+
+%% @doc
 %% Specific filter to be used at startup to build a hashtree for an incomplete
 %% cdb file, and returns at the end the hashtree and the final Key seen in the
 %% journal
-
-startup_filter(Key, ValueAsBin, Position, {Hashtree, _LastKey}, _ExtractFun) ->
-    case crccheck_value(ValueAsBin) of
-        true ->
-            % This function is preceeded by a "safe read" of the key and value
-            % and so the crccheck should always be true, as a failed check
-            % should not reach this stage
-            {loop, {put_hashtree(Key, Position, Hashtree), Key}}
-    end.
+startup_filter(Key, _ValueAsBin, Position, {Hashtree, _LastKey}, _ExtractFun) ->
+    {loop, {put_hashtree(Key, Position, Hashtree), Key}}.
 
 
 %% Scan for key changes - scan over file returning applying FilterFun
@@ -1228,14 +1226,18 @@ scan_over_file(Handle, Position, FilterFun, Output, LastKey) ->
             end
     end.
 
+
+%% @doc
 %% Confirm that the last key has been defined and set to a non-default value
+check_last_key(empty) ->
+    empty;
+check_last_key(_)
+    ok.
 
-check_last_key(LastKey) ->
-    case LastKey of
-        empty -> empty;
-        _ -> ok
-    end.
 
+-spec saferead_keyvalue(file:io_device()) 
+                                -> false|{any(), any(), integer(), integer()}.
+%% @doc
 %% Read the Key/Value at this point, returning {ok, Key, Value}
 %% catch expected exceptions associated with file corruption (or end) and 
 %% return eof
@@ -1247,10 +1249,10 @@ saferead_keyvalue(Handle) ->
             case safe_read_next_key(Handle, KeyL) of 
                 false ->
                     false;
-                Key ->
+                {Key, KeyBin} ->
                     case file:read(Handle, ValueL) of 
                         {ok, Value} -> 
-                            case crccheck_value(Value) of
+                            case crccheck(Value, KeyBin) of
                                 true ->
                                     {Key, Value, KeyL, ValueL};
                                 false ->
@@ -1263,57 +1265,67 @@ saferead_keyvalue(Handle) ->
     end.
 
 
+-spec safe_read_next_key(file:io_device(), integer())
+                                                -> false|{any(), binary()}.
+%% @doc
+%% Return a key masking nay failure in a fixed return of false
 safe_read_next_key(Handle, Length) ->
-    try read_next_key(Handle, Length) of
+    try read_next_item(Handle, Length) of
         eof ->
             false;
-        Term ->
-            Term
+        SafeResult ->
+            SafeResult
     catch
         error:badarg ->
             false
     end.
 
-%% The first four bytes of the value are the crc check
-crccheck_value(Value) when byte_size(Value) >4 ->
-    << Hash:32/integer, Tail/bitstring>> = Value,
-    case calc_crc(Tail) of 
-        Hash -> 
+-spec read_next_item(file:io_device(), integer()) -> eof|{any(), binary()}.
+%% @doc
+%% Read the next item which is length L, returning both the term and the 
+%% original binary
+read_next_item(Handle, Length) ->
+    case file:read(Handle, Length) of
+        {ok, Bin} -> 
+            {binary_to_term(Bin), Bin};
+        eof ->
+            eof
+    end.
+
+-spec crccheck(binary()|bitstring(), binary()) -> boolean().
+%% @doc
+%% CRC chaeck the value which should be a binary, where the first four bytes
+%% are a CRC check.  If the binary is truncated, it could be a bitstring or
+%% less than 4 bytes - in which case return false to recognise the corruption.
+crccheck(<<CRC:32/integer, Value/binary>>, KeyBin) when is_binary(KeyBin) ->
+    case calc_crc(KeyBin, Value) of 
+        CRC -> 
             true;
         _ -> 
             leveled_log:log("CDB10", []),
             false
         end;
-crccheck_value(_) ->
+crccheck(_V, _KB) ->
     leveled_log:log("CDB11", []),
     false.
 
-%% Run a crc check filling out any values which don't fit on byte boundary
-calc_crc(Value) ->
-    case bit_size(Value) rem 8 of 
-        0 -> 
-            erlang:crc32(Value);
-        N ->
-            M = 8 - N,
-            erlang:crc32(<<Value/bitstring,0:M>>)
-    end.
 
-read_next_key(Handle, Length) ->
-    case file:read(Handle, Length) of
-        {ok, Bin} -> 
-            binary_to_term(Bin);
-        eof ->
-            eof
-    end.
+-spec calc_crc(binary(), binary()) -> integer().
+%% @doc
+%% Do a vaanilla CRC calculation on the binary
+calc_crc(KeyBin, Value) -> erlang:crc32(<<KeyBin/binary, Value/binary>>).
 
 
+-spec checkread_next_value(file:io_device(), integer(), binary()) 
+                                        -> {boolean(), binary()|crc_wonky}.
+%% @doc
 %% Read next string where the string has a CRC prepended - stripping the crc 
 %% and checking if requested
-read_next_value(Handle, Length, crc) ->
-    {ok, <<CRC:32/integer, Bin/binary>>} = file:read(Handle, Length),
-    case calc_crc(Bin) of 
+checkread_next_value(Handle, Length, KeyBin) ->
+    {ok, <<CRC:32/integer, Value/binary>>} = file:read(Handle, Length),
+    case calc_crc(KeyBin, Value) of 
         CRC ->
-            {true, Bin};
+            {true, Value};
         _ ->
             {false, crc_wonky}
     end.
@@ -1573,12 +1585,12 @@ key_value_to_record({Key, Value}, BinaryMode) ->
                 false ->
                     term_to_binary(Value)
             end,
-    LK = byte_size(BK),
-    LV = byte_size(BV),
-    LK_FL = endian_flip(LK),
-    LV_FL = endian_flip(LV + 4),
-    CRC = calc_crc(BV),
-    <<LK_FL:32, LV_FL:32, BK:LK/binary, CRC:32/integer, BV:LV/binary>>.
+    KS = byte_size(BK),
+    VS = byte_size(BV),
+    KS_FL = endian_flip(KS),
+    VS_FL = endian_flip(VS + 4),
+    CRC = calc_crc(BK, BV),
+    <<KS_FL:32, VS_FL:32, BK:KS/binary, CRC:32/integer, BV:VS/binary>>.
 
 
 multi_key_value_to_record(KVList, BinaryMode, LastPosition) ->
@@ -1777,9 +1789,9 @@ dump(FileName) ->
     {ok, _} = file:position(Handle, {bof, 2048}),
     Fn1 = fun(_I, Acc) ->
         {KL, VL} = read_next_2_integers(Handle),
-        Key = read_next_key(Handle, KL),
+        {Key, KB} = safe_read_next_key(Handle, KL),
         Value =
-            case read_next_value(Handle, VL, crc) of
+            case checkread_next_value(Handle, VL, KB) of
                 {true, V0} ->
                     binary_to_term(V0)
             end,
@@ -1943,35 +1955,35 @@ to_dict_test() ->
     ok = file:delete("../test/from_dict_test1.cdb").
 
 crccheck_emptyvalue_test() ->
-    ?assertMatch(false, crccheck_value(<<>>)).    
+    ?assertMatch(false, crccheck(<<>>, <<"Key">>)).    
 
 crccheck_shortvalue_test() ->
     Value = <<128,128,32>>,
-    ?assertMatch(false, crccheck_value(Value)).
+    ?assertMatch(false, crccheck(Value, <<"Key">>)).
 
 crccheck_justshortvalue_test() ->
     Value = <<128,128,32,64>>,
-    ?assertMatch(false, crccheck_value(Value)).
-
-crccheck_correctvalue_test() ->
-    Value = term_to_binary("some text as value"),
-    Hash = erlang:crc32(Value),
-    ValueOnDisk = <<Hash:32/integer, Value/binary>>,
-    ?assertMatch(true, crccheck_value(ValueOnDisk)).
+    ?assertMatch(false, crccheck(Value, <<"Key">>)).
 
 crccheck_wronghash_test() ->
     Value = term_to_binary("some text as value"),
-    Hash = erlang:crc32(Value) + 1,
-    ValueOnDisk = <<Hash:32/integer, Value/binary>>,
-    ?assertMatch(false, crccheck_value(ValueOnDisk)).
+    Key = <<"K">>,
+    BadHash = erlang:crc32(<<Key/binary, Value/binary, 1:8/integer>>),
+    GoodHash = erlang:crc32(<<Key/binary, Value/binary>>),
+    GValueOnDisk = <<GoodHash:32/integer, Value/binary>>,
+    BValueOnDisk = <<BadHash:32/integer, Value/binary>>,
+    ?assertMatch(false, crccheck(BValueOnDisk, Key)),
+    ?assertMatch(true, crccheck(GValueOnDisk, Key)).
 
 crccheck_truncatedvalue_test() ->
     Value = term_to_binary("some text as value"),
-    Hash = erlang:crc32(Value),
+    Key = <<"K">>,
+    Hash = erlang:crc32(<<Key/binary, Value/binary>>),
     ValueOnDisk = <<Hash:32/integer, Value/binary>>,
     Size = bit_size(ValueOnDisk) - 1,
     <<TruncatedValue:Size/bitstring, _/bitstring>> = ValueOnDisk,
-    ?assertMatch(false, crccheck_value(TruncatedValue)).
+    ?assertMatch(false, crccheck(TruncatedValue, Key)),
+    ?assertMatch(true, crccheck(ValueOnDisk, Key)).
 
 activewrite_singlewrite_test() ->
     Key = "0002",
@@ -2330,7 +2342,7 @@ safe_read_test() ->
     % only if we understand why
     Key = term_to_binary(<<"Key">>),
     Value = <<"Value">>,
-    CRC = calc_crc(Value),
+    CRC = calc_crc(Key, Value),
     ValToWrite = <<CRC:32/integer, Value/binary>>,
     KeyL = byte_size(Key),
     FlippedKeyL = endian_flip(KeyL),
