@@ -105,6 +105,9 @@
                         }).
 
 -type tictactree() :: #tictactree{}.
+-type segment48() :: {segment_hash, integer(), integer()}.
+
+-export_type([tictactree/0, segment48/0]).
 
 %%%============================================================================
 %%% External functions
@@ -338,7 +341,7 @@ keyto_segment32(BinKey) when is_binary(BinKey) ->
 keyto_segment32(Key) ->
     keyto_segment32(term_to_binary(Key)).
 
--spec keyto_segment48(binary()) -> {segment_hash, integer(), integer()}.
+-spec keyto_segment48(binary()) -> segment48().
 %% @doc
 %% Produce a segment with an Extra Hash part - for tictac use most of the 
 %% ExtraHash will be discarded
