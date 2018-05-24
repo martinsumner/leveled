@@ -58,6 +58,7 @@
             new_tree/1,
             new_tree/2,
             add_kv/4,
+            add_kv/5,
             alter_segment/3,
             find_dirtyleaves/2,
             find_dirtysegments/2,
@@ -192,6 +193,13 @@ import_tree(ExportedTree) ->
 %% BinExtractFun will also need to do any canonicalisation necessary to make
 %% the hash consistent (such as whitespace removal, or sorting)
 add_kv(TicTacTree, Key, Value, BinExtractFun) ->
+    add_kv(TicTacTree, Key, Value, BinExtractFun, false).
+
+-spec add_kv(tictactree(), tuple(), tuple(), fun(), boolean()) 
+                                    -> tictactree()|{tictactree(), integer()}.
+%% @doc
+%% add_kv with ability to return segment ID of Key added
+add_kv(TicTacTree, Key, Value, BinExtractFun, ReturnSegment) ->
     {BinK, BinV} = BinExtractFun(Key, Value),
     {SegHash, SegChangeHash} = tictac_hash(BinK, BinV),
     Segment = get_segment(SegHash, TicTacTree#tictactree.segment_count),
@@ -202,8 +210,15 @@ add_kv(TicTacTree, Key, Value, BinExtractFun) ->
     SegLeaf2Upd = SegLeaf2 bxor SegChangeHash,
     SegLeaf1Upd = SegLeaf1 bxor SegChangeHash,
 
-    replace_segment(SegLeaf1Upd, SegLeaf2Upd, 
-                    L1Extract, L2Extract, TicTacTree).
+    case ReturnSegment of
+        true -> 
+            {replace_segment(SegLeaf1Upd, SegLeaf2Upd, 
+                            L1Extract, L2Extract, TicTacTree),
+                Segment};
+        false ->
+            replace_segment(SegLeaf1Upd, SegLeaf2Upd, 
+                            L1Extract, L2Extract, TicTacTree)
+    end.
 
 -spec alter_segment(integer(), integer(), tictactree()) -> tictactree().
 %% @doc
@@ -641,8 +656,17 @@ alter_segment_test() ->
     TreeX4A = alter_segment(DeltaSegment, 0, TreeX4),
     TreeY5A = alter_segment(DeltaSegment, 0, TreeY5),
     CompareResult = compare_trees_maxonedelta(TreeX4A, TreeY5A),
-    io:format("Compare Result ~w~n", [CompareResult]),
     ?assertMatch([], CompareResult).
+
+return_segment_test() ->
+    BinFun = fun(K, V) -> {term_to_binary(K), term_to_binary(V)} end,
+    
+    TreeX0 = new_tree(0, small),
+    {TreeX1, SegID} 
+        = add_kv(TreeX0, {o, "B1", "X1", null}, {caine, 1}, BinFun, true),
+    TreeX2 = alter_segment(SegID, 0, TreeX1),
+    ?assertMatch(1, length(compare_trees_maxonedelta(TreeX1, TreeX0))),
+    ?assertMatch(1, length(compare_trees_maxonedelta(TreeX1, TreeX2))).
 
 
 compare_trees_maxonedelta(Tree0, Tree1) ->
