@@ -58,6 +58,7 @@
             new_tree/1,
             new_tree/2,
             add_kv/4,
+            alter_segment/3,
             find_dirtyleaves/2,
             find_dirtysegments/2,
             fetch_root/1,
@@ -106,8 +107,10 @@
 
 -type tictactree() :: #tictactree{}.
 -type segment48() :: {segment_hash, integer(), integer()}.
+-type tree_extract() :: {binary(), integer(), integer(), integer(), binary()}.
 
 -export_type([tictactree/0, segment48/0]).
+
 
 %%%============================================================================
 %%% External functions
@@ -193,38 +196,25 @@ add_kv(TicTacTree, Key, Value, BinExtractFun) ->
     {SegHash, SegChangeHash} = tictac_hash(BinK, BinV),
     Segment = get_segment(SegHash, TicTacTree#tictactree.segment_count),
     
-    Level2Pos =
-        Segment band (?L2_CHUNKSIZE - 1),
-    Level1Pos =
-        (Segment bsr ?L2_BITSIZE)
-            band (TicTacTree#tictactree.width - 1),
-    
-    Level2BytePos = ?HASH_SIZE * Level2Pos,
-    Level1BytePos = ?HASH_SIZE * Level1Pos,
-    
-    Level2 = get_level2(TicTacTree, Level1Pos),
-    
-    HashIntLength = ?HASH_SIZE * 8,
-    <<PreL2:Level2BytePos/binary,
-        SegLeaf2:HashIntLength/integer,
-        PostL2/binary>> = Level2,
-    <<PreL1:Level1BytePos/binary,
-        SegLeaf1:HashIntLength/integer,
-        PostL1/binary>> = TicTacTree#tictactree.level1,
-    
+    {SegLeaf1, SegLeaf2, L1Extract, L2Extract} 
+        = extract_segment(Segment, TicTacTree),
+
     SegLeaf2Upd = SegLeaf2 bxor SegChangeHash,
     SegLeaf1Upd = SegLeaf1 bxor SegChangeHash,
+
+    replace_segment(SegLeaf1Upd, SegLeaf2Upd, 
+                    L1Extract, L2Extract, TicTacTree).
+
+-spec alter_segment(integer(), integer(), tictactree()) -> tictactree().
+%% @doc
+%% Replace the value of a segment in the tree with a new value - for example
+%% to be used in partial rebuilds of trees
+alter_segment(Segment, Hash, Tree) ->
+    {SegLeaf1, SegLeaf2, L1Extract, L2Extract} 
+        = extract_segment(Segment, Tree),
     
-    Level1Upd = <<PreL1:Level1BytePos/binary,
-                    SegLeaf1Upd:HashIntLength/integer,
-                    PostL1/binary>>,
-    Level2Upd = <<PreL2:Level2BytePos/binary,
-                    SegLeaf2Upd:HashIntLength/integer,
-                    PostL2/binary>>,
-    TicTacTree#tictactree{level1 = Level1Upd,
-                            level2 = array:set(Level1Pos,
-                                                Level2Upd,
-                                                TicTacTree#tictactree.level2)}.
+    SegLeaf1Upd = SegLeaf1 bxor SegLeaf2 bxor Hash,
+    replace_segment(SegLeaf1Upd, Hash, L1Extract, L2Extract, Tree).
 
 -spec find_dirtyleaves(tictactree(), tictactree()) -> list(integer()).
 %% @doc
@@ -386,6 +376,55 @@ join_segment(BranchID, LeafID) ->
 %%% Internal functions
 %%%============================================================================
 
+-spec extract_segment(integer(), tictactree()) -> 
+                        {integer(), integer(), tree_extract(), tree_extract()}.
+%% @doc
+%% Extract the Level 1 and Level 2 slices from a tree to prepare an update
+extract_segment(Segment, TicTacTree) ->
+    Level2Pos =
+        Segment band (?L2_CHUNKSIZE - 1),
+    Level1Pos =
+        (Segment bsr ?L2_BITSIZE)
+            band (TicTacTree#tictactree.width - 1),
+    
+    Level2BytePos = ?HASH_SIZE * Level2Pos,
+    Level1BytePos = ?HASH_SIZE * Level1Pos,
+    
+    Level2 = get_level2(TicTacTree, Level1Pos),
+    
+    HashIntLength = ?HASH_SIZE * 8,
+    <<PreL2:Level2BytePos/binary,
+        SegLeaf2:HashIntLength/integer,
+        PostL2/binary>> = Level2,
+    <<PreL1:Level1BytePos/binary,
+        SegLeaf1:HashIntLength/integer,
+        PostL1/binary>> = TicTacTree#tictactree.level1,
+    
+    {SegLeaf1, 
+        SegLeaf2, 
+        {PreL1, Level1BytePos, Level1Pos, HashIntLength, PostL1},
+        {PreL2, Level2BytePos, Level2Pos, HashIntLength, PostL2}}.
+
+
+-spec replace_segment(integer(), integer(), 
+                        tree_extract(), tree_extract(), 
+                        tictactree()) -> tictactree().
+%% @doc
+%% Replace a slice of a tree
+replace_segment(L1Hash, L2Hash, L1Extract, L2Extract, TicTacTree) ->
+    {PreL1, Level1BytePos, Level1Pos, HashIntLength, PostL1} = L1Extract,
+    {PreL2, Level2BytePos, _Level2Pos, HashIntLength, PostL2} = L2Extract,
+
+    Level1Upd = <<PreL1:Level1BytePos/binary,
+                    L1Hash:HashIntLength/integer,
+                    PostL1/binary>>,
+    Level2Upd = <<PreL2:Level2BytePos/binary,
+                    L2Hash:HashIntLength/integer,
+                    PostL2/binary>>,
+    TicTacTree#tictactree{level1 = Level1Upd,
+                            level2 = array:set(Level1Pos,
+                                                Level2Upd,
+                                                TicTacTree#tictactree.level2)}.
 
 get_level2(TicTacTree, L1Pos) ->
     case array:get(L1Pos, TicTacTree#tictactree.level2) of 
@@ -584,6 +623,40 @@ merge_emptytree_test() ->
     TreeB = new_tree("B"),
     TreeC = merge_trees(TreeA, TreeB),
     ?assertMatch([], find_dirtyleaves(TreeA, TreeC)).
+
+alter_segment_test() ->
+    BinFun = fun(K, V) -> {term_to_binary(K), term_to_binary(V)} end,
+    
+    TreeX0 = new_tree(0, small),
+    TreeX1 = add_kv(TreeX0, {o, "B1", "X1", null}, {caine, 1}, BinFun),
+    TreeX2 = add_kv(TreeX1, {o, "B1", "X2", null}, {caine, 2}, BinFun),
+    TreeX3 = add_kv(TreeX2, {o, "B1", "X3", null}, {caine, 3}, BinFun),
+    TreeX4 = add_kv(TreeX3, {o, "B1", "X3", null}, {caine, 4}, BinFun),
+
+    TreeY5 = add_kv(TreeX4, {o, "B1", "Y4", null}, {caine, 5}, BinFun),
+
+    [{DeltaBranch, DeltaLeaf}] = compare_trees_maxonedelta(TreeX4, TreeY5),
+    DeltaSegment = DeltaBranch * ?SMALL + DeltaLeaf,
+    io:format("DeltaSegment ~w", [DeltaSegment]),
+    TreeX4A = alter_segment(DeltaSegment, 0, TreeX4),
+    TreeY5A = alter_segment(DeltaSegment, 0, TreeY5),
+    CompareResult = compare_trees_maxonedelta(TreeX4A, TreeY5A),
+    io:format("Compare Result ~w~n", [CompareResult]),
+    ?assertMatch([], CompareResult).
+
+
+compare_trees_maxonedelta(Tree0, Tree1) ->
+    Root1 = fetch_root(Tree1),
+    Root0 = fetch_root(Tree0),
+    case find_dirtysegments(Root0, Root1) of
+        [BranchID] ->
+            [{BranchID, Branch1}] = fetch_leaves(Tree1, [BranchID]),
+            [{BranchID, Branch0}] = fetch_leaves(Tree0, [BranchID]),
+            [LeafID] = find_dirtysegments(Branch0, Branch1),
+            [{BranchID, LeafID}];
+        [] ->
+            []
+    end.
 
 -endif.
 
