@@ -174,7 +174,7 @@ ink_start(InkerOpts) ->
 -spec ink_put(pid(),
                 leveled_codec:ledger_key(),
                 any(),
-                leveled_codec:key_changes()) ->
+                leveled_codec:journal_keychanges()) ->
                                    {ok, integer(), integer()}.
 %% @doc
 %% PUT an object into the journal, returning the sequence number for the PUT

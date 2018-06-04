@@ -140,6 +140,7 @@
 -type cdb_options() :: #cdb_options{}.
 -type cdb_timings() :: no_timing|#cdb_timings{}.
 -type hashtable_index() :: tuple().
+-type file_location() :: integer()|eof.
 
 
 
@@ -1183,8 +1184,8 @@ extract_key_value_check(Handle, Position, BinaryMode) ->
     end.
 
 
--spec startup_scan_over_file(fle:io_device(), file:location()) 
-                                                -> {file:location(), any()}.
+-spec startup_scan_over_file(file:io_device(), file_location()) 
+                                                -> {file_location(), any()}.
 %% @doc
 %% Scan through the file until there is a failure to crc check an input, and 
 %% at that point return the position and the key dictionary scanned so far
@@ -1207,8 +1208,8 @@ startup_filter(Key, _ValueAsBin, Position, {Hashtree, _LastKey}, _ExtractFun) ->
     {loop, {put_hashtree(Key, Position, Hashtree), Key}}.
 
 
--spec scan_over_file(file:io_device(), file:location(), fun(), any(), any())
-                                                -> {file:location(), any()}.
+-spec scan_over_file(file:io_device(), file_location(), fun(), any(), any())
+                                                -> {file_location(), any()}.
 %% Scan for key changes - scan over file returning applying FilterFun
 %% The FilterFun should accept as input:
 %% - Key, ValueBin, Position, Accumulator, Fun (to extract values from Binary)

@@ -43,7 +43,8 @@
 -define(CHECKJOURNAL_PROB, 0.2).
 
 -type key_range() 
-            :: {leveled_codec:leveled_key(), leveled_codec:leveled_key()}.
+            :: {leveled_codec:ledger_key()|null, 
+                    leveled_codec:ledger_key()|null}.
 -type fun_and_acc()
             :: {fun(), any()}.
 

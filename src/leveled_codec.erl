@@ -101,10 +101,11 @@
         {integer(), journal_key_tag(), ledger_key()}.
 -type compression_method() ::
         lz4|native.
--type journal_keychanges() :: 
-        {list(), infinity|integer()}. % {KeyChanges, TTL}
 -type index_specs() ::
         list({add|remove, any(), any()}).
+-type journal_keychanges() :: 
+        {index_specs(), infinity|integer()}. % {KeyChanges, TTL}
+
 
 -type segment_list() 
         :: list(integer())|false.

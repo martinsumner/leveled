@@ -1322,7 +1322,7 @@ fetch_head(Key, Penciller, LedgerCache) ->
 -spec preparefor_ledgercache(leveled_codec:journal_key_tag()|null, 
                                 leveled_codec:ledger_key()|?DUMMY,
                                 integer(), any(), integer(), 
-                                leveled_codec:key_changes(), 
+                                leveled_codec:journal_keychanges(), 
                                 book_state())
                                     -> {integer()|no_lookup, 
                                             integer(), 

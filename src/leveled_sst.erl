@@ -138,7 +138,7 @@
 -type press_methods() 
         :: lz4|native|none.
 -type range_endpoint() 
-        :: all|leveled_codec:leveled_key().
+        :: all|leveled_codec:ledger_key().
 -type slot_pointer() 
         :: {pointer, pid(), integer(), range_endpoint(), range_endpoint()}.
 -type sst_pointer()
@@ -441,8 +441,8 @@ sst_deleteconfirmed(Pid) ->
     gen_fsm:send_event(Pid, close).
 
 -spec sst_checkready(pid()) -> {ok, string(), 
-                                leveled_codec:leveled_key(), 
-                                leveled_codec:leveled_key()}.
+                                leveled_codec:ledger_key(), 
+                                leveled_codec:ledger_key()}.
 %% @doc
 %% If a file has been set to be built, check that it has been built.  Returns
 %% the filename and the {startKey, EndKey} for the manifest.
