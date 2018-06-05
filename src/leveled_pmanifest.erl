@@ -57,6 +57,7 @@
 -define(TREE_TYPE, idxt).
 -define(TREE_WIDTH, 8).
 -define(PHANTOM_PID, r2d_fail).
+-define(MANIFESTS_TO_RETAIN, 5).
 
 -record(manifest, {levels,
                         % an array of lists or trees representing the manifest
@@ -199,7 +200,21 @@ save_manifest(Manifest, RootPath) ->
                                                 min_snapshot_sqn = 0,
                                                 blooms = dict:new()}),
     CRC = erlang:crc32(ManBin),
-    ok = file:write_file(FP, <<CRC:32/integer, ManBin/binary>>).
+    ok = file:write_file(FP, <<CRC:32/integer, ManBin/binary>>),
+    {ok, <<CRC:32/integer, ManBin/binary>>} = file:read_file(FP),
+    GC_SQN = Manifest#manifest.manifest_sqn - ?MANIFESTS_TO_RETAIN,
+        % If a manifest is corrupted the previous one will be tried, so don't
+        % delete the previous one straight away.  Retain until enough have been
+        % kept to make the probability of all being independently corrupted 
+        % through separate events negligible
+    LFP = filepath(RootPath, GC_SQN, current_manifest),
+    ok = 
+        case filelib:is_file(LFP) of
+            true ->
+                file:delete(LFP);
+            _ ->
+                ok
+        end.
 
 -spec replace_manifest_entry(manifest(), integer(), integer(),
                                     list()|manifest_entry(),
