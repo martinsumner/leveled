@@ -27,6 +27,7 @@
 -define(MANIFEST_FILEX, "man").
 -define(PENDING_FILEX, "pnd").
 -define(SKIP_WIDTH, 16).
+-define(MANIFESTS_TO_RETAIN, 5).
 
 -type manifest() :: list({integer(), list()}).
 %% The manifest is divided into blocks by sequence number, with each block
@@ -169,9 +170,18 @@ writer(Manifest, ManSQN, RootPath) ->
         false ->
             leveled_log:log("I0016", [ManSQN]),
             ok = file:write_file(TmpFN, MBin),
-            ok = file:rename(TmpFN, NewFN),
-            ok
-    end.
+            ok = file:rename(TmpFN, NewFN)
+    end,
+    GC_SQN = ManSQN - ?MANIFESTS_TO_RETAIN,
+    GC_Man = filename:join(ManPath,
+                            integer_to_list(GC_SQN) ++ "." ++ ?MANIFEST_FILEX),
+    ok = 
+        case filelib:is_file(GC_Man) of
+            true ->
+                file:delete(GC_Man);
+            _ ->
+                ok
+        end.
 
 -spec printer(manifest()) -> ok.
 %% @doc
