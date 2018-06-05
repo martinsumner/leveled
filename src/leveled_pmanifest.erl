@@ -57,6 +57,7 @@
 -define(TREE_TYPE, idxt).
 -define(TREE_WIDTH, 8).
 -define(PHANTOM_PID, r2d_fail).
+-define(MANIFESTS_TO_RETAIN, 5).
 
 -record(manifest, {levels,
                         % an array of lists or trees representing the manifest
@@ -199,7 +200,21 @@ save_manifest(Manifest, RootPath) ->
                                                 min_snapshot_sqn = 0,
                                                 blooms = dict:new()}),
     CRC = erlang:crc32(ManBin),
-    ok = file:write_file(FP, <<CRC:32/integer, ManBin/binary>>).
+    ok = file:write_file(FP, <<CRC:32/integer, ManBin/binary>>),
+    {ok, <<CRC:32/integer, ManBin/binary>>} = file:read_file(FP),
+    GC_SQN = Manifest#manifest.manifest_sqn - ?MANIFESTS_TO_RETAIN,
+        % If a manifest is corrupted the previous one will be tried, so don't
+        % delete the previous one straight away.  Retain until enough have been
+        % kept to make the probability of all being independently corrupted 
+        % through separate events negligible
+    LFP = filepath(RootPath, GC_SQN, current_manifest),
+    ok = 
+        case filelib:is_file(LFP) of
+            true ->
+                file:delete(LFP);
+            _ ->
+                ok
+        end.
 
 -spec replace_manifest_entry(manifest(), integer(), integer(),
                                     list()|manifest_entry(),
@@ -854,6 +869,9 @@ seconds_now() ->
 -ifdef(TEST).
 
 initial_setup() -> 
+    initial_setup(single_change).
+
+initial_setup(Changes) ->
     E1 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
                             end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K93"},
                             filename="Z1",
@@ -884,7 +902,10 @@ initial_setup() ->
                             filename="Z6",
                             owner="pid_z6",
                             bloom=none},
-    
+    initial_setup(Changes, E1, E2, E3, E4, E5, E6).    
+
+
+initial_setup(single_change, E1, E2, E3, E4, E5, E6) ->
     Man0 = new_manifest(),
     
     Man1 = insert_manifest_entry(Man0, 1, 1, E1),
@@ -894,7 +915,19 @@ initial_setup() ->
     Man5 = insert_manifest_entry(Man4, 1, 2, E5),
     Man6 = insert_manifest_entry(Man5, 1, 2, E6),
     ?assertMatch(Man6, insert_manifest_entry(Man6, 1, 2, [])),
+    {Man0, Man1, Man2, Man3, Man4, Man5, Man6};
+initial_setup(multi_change, E1, E2, E3, E4, E5, E6) ->
+    Man0 = new_manifest(),
+    
+    Man1 = insert_manifest_entry(Man0, 1, 1, E1),
+    Man2 = insert_manifest_entry(Man1, 2, 1, E2),
+    Man3 = insert_manifest_entry(Man2, 3, 1, E3),
+    Man4 = insert_manifest_entry(Man3, 4, 2, E4),
+    Man5 = insert_manifest_entry(Man4, 5, 2, E5),
+    Man6 = insert_manifest_entry(Man5, 6, 2, E6),
+    ?assertMatch(Man6, insert_manifest_entry(Man6, 6, 2, [])),
     {Man0, Man1, Man2, Man3, Man4, Man5, Man6}.
+
 
 changeup_setup(Man6) ->
     E1 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
@@ -955,6 +988,18 @@ random_select_test() ->
     _L2File = mergefile_selector(LastManifest, 2),
     Level1 = array:get(1, LastManifest#manifest.levels),
     ?assertMatch(true, lists:member(L1File, Level1)).
+
+manifest_gc_test() ->
+    RP = "../test_gc",
+    ok = filelib:ensure_dir(RP),
+    ManifestT = initial_setup(multi_change),
+    ManifestL = tuple_to_list(ManifestT),
+    lists:foreach(fun(M) -> save_manifest(M, RP) end, ManifestL),
+    {ok, FNs} = file:list_dir(filepath(RP, manifest)),
+    io:format("FNs ~w~n", [FNs]),
+    ?assertMatch(true, length(ManifestL) > ?MANIFESTS_TO_RETAIN),
+    ?assertMatch(?MANIFESTS_TO_RETAIN, length(FNs)).
+
 
 keylookup_manifest_test() ->
     {Man0, Man1, Man2, Man3, _Man4, _Man5, Man6} = initial_setup(),
