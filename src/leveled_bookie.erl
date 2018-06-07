@@ -593,9 +593,12 @@ init([Opts]) ->
             % Start from file not snapshot
             {InkerOpts, PencillerOpts} = set_options(Opts),
 
-            CacheJitter = ?CACHE_SIZE div (100 div ?CACHE_SIZE_JITTER),
-            CacheSize = proplists:get_value(cache_size, Opts)
-                        + erlang:phash2(self()) rem CacheJitter,
+            CacheJitter = 
+                proplists:get_value(cache_size, Opts) 
+                    div (100 div ?CACHE_SIZE_JITTER),
+            CacheSize = 
+                proplists:get_value(cache_size, Opts)
+                    + erlang:phash2(self()) rem CacheJitter,
             RecentAAE =
                 case proplists:get_value(recent_aae, Opts) of
                     false ->
