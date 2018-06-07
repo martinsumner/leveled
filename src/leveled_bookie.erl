@@ -794,9 +794,9 @@ handle_call({head, Bucket, Key, Tag}, _From, State)
             end
     end;
 handle_call({snapshot, SnapType, Query, LongRunning}, _From, State) ->
-                                                % Snapshot the store, specifying if the snapshot should be long running 
-                                                % (i.e. will the snapshot be queued or be required for an extended period 
-                                                % e.g. many minutes)
+    % Snapshot the store, specifying if the snapshot should be long running 
+    % (i.e. will the snapshot be queued or be required for an extended period 
+    % e.g. many minutes)
     Reply = snapshot_store(State, SnapType, Query, LongRunning),
     {reply, Reply, State};
 handle_call({return_runner, QueryType}, _From, State) ->
