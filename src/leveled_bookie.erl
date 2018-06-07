@@ -100,7 +100,7 @@
                 {waste_retention_period, undefined},
                 {max_run_length, undefined},
                 {reload_strategy, []},
-                {max_pencillercachesize, undefiend},
+                {max_pencillercachesize, undefined},
                 {compression_method, ?COMPRESSION_METHOD},
                 {compression_point, ?COMPRESSION_POINT}]).
 
