@@ -1971,10 +1971,16 @@ foldobjects_vs_foldheads_bybucket_test_() ->
     {timeout, 60, fun foldobjects_vs_foldheads_bybucket_testto/0}.
 
 foldobjects_vs_foldheads_bybucket_testto() ->
+    folder_cache_test(10),
+    folder_cache_test(100),
+    folder_cache_test(300),
+    folder_cache_test(1000).
+
+folder_cache_test(CacheSize) ->
     RootPath = reset_filestructure(),
     {ok, Bookie1} = book_start([{root_path, RootPath},
                                     {max_journalsize, 1000000},
-                                    {cache_size, 500}]),
+                                    {cache_size, CacheSize}]),
     ObjL1 = generate_multiple_objects(400, 1),
     ObjL2 = generate_multiple_objects(400, 1),
     % Put in all the objects with a TTL in the future
