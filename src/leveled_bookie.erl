@@ -2111,7 +2111,7 @@ folder_cache_test(CacheSize) ->
             ?assertMatch(true, lists:usort(KeyHashList2B) == CompareL)
         end,
     
-    lists:foreach(CheckSplitQueryFun, [1, 4, 8, 300, 100, 400]),
+    lists:foreach(CheckSplitQueryFun, [1, 4, 8, 300, 100, 400, 200, 600]),
 
     ok = book_close(Bookie1),
     reset_filestructure().
