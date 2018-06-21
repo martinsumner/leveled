@@ -971,7 +971,7 @@ start_from_file(PCLopts) ->
         case PCLopts#penciller_options.max_inmemory_tablesize of
             undefined ->
                 ?MAX_TABLESIZE;
-            M ->
+            M when is_integer(M) ->
                 M
         end,
     PressMethod = PCLopts#penciller_options.compression_method,
