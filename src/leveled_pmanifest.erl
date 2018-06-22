@@ -79,8 +79,9 @@
 
 -type manifest() :: #manifest{}.
 -type manifest_entry() :: #manifest_entry{}.
+-type manifest_owner() :: pid()|list().
 
--export_type([manifest/0, manifest_entry/0]).
+-export_type([manifest/0, manifest_entry/0, manifest_owner/0]).
 
 %%%============================================================================
 %%% API
@@ -324,7 +325,7 @@ get_manifest_sqn(Manifest) ->
     Manifest#manifest.manifest_sqn.
 
 -spec key_lookup(manifest(), integer(), leveled_codec:ledger_key()) 
-                                                    -> false|manifest_entry().
+                                                    -> false|manifest_owner().
 %% @doc
 %% For a given key find which manifest entry covers that key at that level,
 %% returning false if there is no covering manifest entry at that level.

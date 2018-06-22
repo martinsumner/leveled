@@ -88,7 +88,7 @@
 -type ledger_status() ::
         tomb|{active, non_neg_integer()|infinity}.
 -type ledger_key() :: 
-        {tag(), any(), any(), any()}.
+        {tag(), any(), any(), any()}|all.
 -type ledger_value() :: 
         {integer(), ledger_status(), segment_hash(), tuple()|null}.
 -type ledger_kv() ::
@@ -647,7 +647,7 @@ aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods) ->
     end.
 
 -spec parse_date(tuple(), integer(), integer(), integer()) ->
-                    no_index|{binary(), integer()}.
+                    no_index|{list(), integer()}.
 %% @doc
 %% Parse the last modified date and the AAE date configuration to return a
 %% binary to be used as the last modified date part of the index, and an
