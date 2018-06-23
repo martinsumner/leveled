@@ -173,8 +173,7 @@
         pcl_start/1,
         pcl_pushmem/2,
         pcl_fetchlevelzero/2,
-        pcl_fetch/2,
-        pcl_fetch/3,
+        pcl_fetch/4,
         pcl_fetchkeys/5,
         pcl_fetchkeysbysegment/6,
         pcl_fetchnextkey/5,
@@ -362,20 +361,20 @@ pcl_fetch(Pid, Key) ->
     Hash = leveled_codec:segment_hash(Key),
     if
         Hash /= no_lookup ->
-            gen_server:call(Pid, {fetch, Key, Hash}, infinity)
+            gen_server:call(Pid, {fetch, Key, Hash, true}, infinity)
     end.
 
 -spec pcl_fetch(pid(), 
                 leveled_codec:ledger_key(), 
-                leveled_codec:segment_hash())
-                                    -> leveled_codec:ledger_kv()|not_present.
+                leveled_codec:segment_hash(),
+                boolean()) -> leveled_codec:ledger_kv()|not_present.
 %% @doc
 %% Fetch a key, return the first (highest SQN) occurrence of that Key along
 %% with  the value.
 %%
 %% Hash should be result of leveled_codec:segment_hash(Key)
-pcl_fetch(Pid, Key, Hash) ->
-    gen_server:call(Pid, {fetch, Key, Hash}, infinity).
+pcl_fetch(Pid, Key, Hash, UseL0Index) ->
+    gen_server:call(Pid, {fetch, Key, Hash, UseL0Index}, infinity).
 
 -spec pcl_fetchkeys(pid(), 
                     leveled_codec:ledger_key(), 
@@ -636,12 +635,19 @@ handle_call({push_mem, {LedgerTable, PushedIdx, MinSQN, MaxSQN}},
                                     State#state.levelzero_cache,
                                     State)}
     end;
-handle_call({fetch, Key, Hash}, _From, State) ->
+handle_call({fetch, Key, Hash, UseL0Index}, _From, State) ->
+    L0Idx = 
+        case UseL0Index of 
+            true ->
+                State#state.levelzero_index;
+            false ->
+                none
+        end,
     {R, UpdTimings} = timed_fetch_mem(Key,
                                         Hash,
                                         State#state.manifest,
                                         State#state.levelzero_cache,
-                                        State#state.levelzero_index,
+                                        L0Idx,
                                         State#state.timings),
     {UpdTimings0, CountDown} = 
         update_statetimings(UpdTimings, State#state.timings_countdown),
@@ -1233,7 +1239,13 @@ plain_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
     element(1, R).
 
 fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
-    PosList = leveled_pmem:check_index(Hash, L0Index),
+    PosList = 
+        case L0Index of
+            none ->
+                lists:seq(1, length(L0Cache));
+            _ ->
+                leveled_pmem:check_index(Hash, L0Index)
+        end,
     L0Check = leveled_pmem:check_levelzero(Key, Hash, PosList, L0Cache),
     case L0Check of
         {false, not_found} ->

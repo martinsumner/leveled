@@ -44,7 +44,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 % -type index_array() :: array:array().
--type index_array() :: any(). % To live with OTP16
+-type index_array() :: any()|none. % To live with OTP16
 
 -export_type([index_array/0]).
 
@@ -214,20 +214,20 @@ split_hash({SegmentID, ExtraHash}) ->
 
 check_slotlist(Key, _Hash, CheckList, TreeList) ->
     SlotCheckFun =
-                fun(SlotToCheck, {Found, KV}) ->
-                    case Found of
-                        true ->
+        fun(SlotToCheck, {Found, KV}) ->
+            case Found of
+                true ->
+                    {Found, KV};
+                false ->
+                    CheckTree = lists:nth(SlotToCheck, TreeList),
+                    case leveled_tree:match(Key, CheckTree) of
+                        none ->
                             {Found, KV};
-                        false ->
-                            CheckTree = lists:nth(SlotToCheck, TreeList),
-                            case leveled_tree:match(Key, CheckTree) of
-                                none ->
-                                    {Found, KV};
-                                {value, Value} ->
-                                    {true, {Key, Value}}
-                            end
+                        {value, Value} ->
+                            {true, {Key, Value}}
                     end
-                    end,
+            end
+            end,
     lists:foldl(SlotCheckFun,
                     {false, not_found},
                     lists:reverse(CheckList)).

@@ -1108,7 +1108,13 @@ basic_headonly_test(ObjectCount, RemoveCount, HeadOnly) ->
                 leveled_bookie:book_head(Bookie1, 
                                             SegmentID0, 
                                             {Bucket0, Key0}, 
-                                            h);
+                                            h),
+            CheckHeadFun = 
+                fun({add, SegID, B, K, H}) ->
+                    {ok, H} = 
+                        leveled_bookie:book_head(Bookie1, SegID, {B, K}, h)
+                end,
+            lists:foreach(CheckHeadFun, ObjectSpecL);
         no_lookup ->
             {unsupported_message, head} = 
                 leveled_bookie:book_head(Bookie1, 
