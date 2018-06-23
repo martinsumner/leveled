@@ -766,7 +766,10 @@ handle_call({head, Bucket, Key, Tag}, _From, State)
                                         when State#state.head_lookup == true ->
     SWp = os:timestamp(),
     LK = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
-    case fetch_head(LK, State#state.penciller, State#state.ledger_cache) of
+    case fetch_head(LK, 
+                    State#state.penciller, 
+                    State#state.ledger_cache, 
+                    State#state.head_only) of
         not_present ->
             {reply, not_found, State};
         Head ->
@@ -1369,6 +1372,13 @@ scan_table(Table, StartKey, EndKey, Acc, MinSQN, MaxSQN) ->
 %% ledger cache if it has just been updated).  not_present is returned if the 
 %% Key is not found
 fetch_head(Key, Penciller, LedgerCache) ->
+    fetch_head(Key, Penciller, LedgerCache, false).
+
+-spec fetch_head(leveled_codec:ledger_key(), pid(), ledger_cache(), boolean())
+                                    -> not_present|leveled_codec:ledger_value().
+%% doc
+%% The L0Index needs to be bypassed when running head_only
+fetch_head(Key, Penciller, LedgerCache, HeadOnly) ->
     SW = os:timestamp(),
     CacheResult =
         case LedgerCache#ledger_cache.mem of
@@ -1382,7 +1392,10 @@ fetch_head(Key, Penciller, LedgerCache) ->
             Head;
         [] ->
             Hash = leveled_codec:segment_hash(Key),
-            case leveled_penciller:pcl_fetch(Penciller, Key, Hash) of
+            UseL0Idx = not HeadOnly, 
+                % don't use the L0Index in head only mode. Object specs don't 
+                % get an addition on the L0 index
+            case leveled_penciller:pcl_fetch(Penciller, Key, Hash, UseL0Idx) of
                 {Key, Head} ->
                     maybe_longrunning(SW, pcl_head),
                     Head;
