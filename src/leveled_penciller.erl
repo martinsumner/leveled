@@ -1236,8 +1236,8 @@ fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
     PosList = leveled_pmem:check_index(Hash, L0Index),
     L0Check = leveled_pmem:check_levelzero(Key, Hash, PosList, L0Cache),
     io:format(user, 
-                "fetch mem for Key ~w PosList ~w L0Check ~w~n", 
-                [Key, PosList, L0Check]),
+                "fetch mem for Key ~w PosList ~w L0Check ~w Hash ~w~n", 
+                [Key, PosList, L0Check, Hash]),
     case L0Check of
         {false, not_found} ->
             fetch(Key, Hash, Manifest, 0, fun timed_sst_get/4);
