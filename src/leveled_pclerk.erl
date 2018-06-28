@@ -59,9 +59,9 @@
 
 clerk_new(Owner, Manifest, CompressionMethod) ->
     {ok, Pid} = 
-        gen_server:start(?MODULE, 
-                            [{compression_method, CompressionMethod}], 
-                            []),
+        gen_server:start_link(?MODULE, 
+                                [{compression_method, CompressionMethod}],
+                                []),
     ok = gen_server:call(Pid, {load, Owner, Manifest}, infinity),
     leveled_log:log("PC001", [Pid, Owner]),
     {ok, Pid}.

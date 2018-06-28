@@ -308,7 +308,7 @@
 %% query is run against the level zero space and just the query results are
 %5 copied into the clone.  
 pcl_start(PCLopts) ->
-    gen_server:start(?MODULE, [PCLopts], []).
+    gen_server:start_link(?MODULE, [PCLopts], []).
 
 -spec pcl_pushmem(pid(), bookies_memory()) -> ok|returned.
 %% @doc

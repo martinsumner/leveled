@@ -169,7 +169,7 @@
 %% The inker will need to know what the reload strategy is, to inform the
 %% clerk about the rules to enforce during compaction.
 ink_start(InkerOpts) ->
-    gen_server:start(?MODULE, [InkerOpts], []).
+    gen_server:start_link(?MODULE, [InkerOpts], []).
 
 -spec ink_put(pid(),
                 leveled_codec:ledger_key(),

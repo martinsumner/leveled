@@ -315,7 +315,7 @@ book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy) ->
 %% comments on the open_options() type
 
 book_start(Opts) ->
-    gen_server:start(?MODULE, [set_defaults(Opts)], []).
+    gen_server:start_link(?MODULE, [set_defaults(Opts)], []).
 
 
 -spec book_tempput(pid(), any(), any(), any(), 

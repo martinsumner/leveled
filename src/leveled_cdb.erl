@@ -53,7 +53,7 @@
 
 -ifdef(fsm_deprecated).
 -compile({nowarn_deprecated_function, 
-            [{gen_fsm, start, 3},
+            [{gen_fsm, start_link, 3},
                 {gen_fsm, sync_send_event, 3},
                 {gen_fsm, sync_send_event, 2},
                 {gen_fsm, send_event, 2},
@@ -162,7 +162,7 @@ cdb_open_writer(Filename) ->
 %% hashtree cached in memory (the file will need to be scanned to build the
 %% hashtree)
 cdb_open_writer(Filename, Opts) ->
-    {ok, Pid} = gen_fsm:start(?MODULE, [Opts], []),
+    {ok, Pid} = gen_fsm:start_link(?MODULE, [Opts], []),
     ok = gen_fsm:sync_send_event(Pid, {open_writer, Filename}, infinity),
     {ok, Pid}.
 
@@ -177,7 +177,9 @@ cdb_open_writer(Filename, Opts) ->
 %% determine when scans over a file have completed.
 cdb_reopen_reader(Filename, LastKey, CDBopts) ->
     {ok, Pid} = 
-        gen_fsm:start(?MODULE, [CDBopts#cdb_options{binary_mode=true}], []),
+        gen_fsm:start_link(?MODULE, 
+                            [CDBopts#cdb_options{binary_mode=true}], 
+                            []),
     ok = gen_fsm:sync_send_event(Pid,
                                     {open_reader, Filename, LastKey},
                                     infinity),
@@ -198,7 +200,7 @@ cdb_open_reader(Filename) ->
 %% to discover the LastKey.
 %% Allows non-default cdb_options to be passed
 cdb_open_reader(Filename, Opts) ->
-    {ok, Pid} = gen_fsm:start(?MODULE, [Opts], []),
+    {ok, Pid} = gen_fsm:start_link(?MODULE, [Opts], []),
     ok = gen_fsm:sync_send_event(Pid, {open_reader, Filename}, infinity),
     {ok, Pid}.
 
@@ -2459,7 +2461,7 @@ safe_read_test() ->
     
 
 nonsense_coverage_test() ->
-    {ok, Pid} = gen_fsm:start(?MODULE, [#cdb_options{}], []),
+    {ok, Pid} = gen_fsm:start_link(?MODULE, [#cdb_options{}], []),
     ok = gen_fsm:send_all_state_event(Pid, nonsense),
     ?assertMatch({next_state, reader, #state{}}, handle_info(nonsense,
                                                                 reader,
