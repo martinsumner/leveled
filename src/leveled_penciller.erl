@@ -170,6 +170,7 @@
         code_change/3]).
 
 -export([
+        pcl_snapstart/1,
         pcl_start/1,
         pcl_pushmem/2,
         pcl_fetchlevelzero/2,
@@ -309,6 +310,12 @@
 %5 copied into the clone.  
 pcl_start(PCLopts) ->
     gen_server:start_link(?MODULE, [PCLopts], []).
+
+-spec pcl_snapstart(penciller_options()) -> {ok, pid()}.
+%% @doc
+%% Don't link to the bookie - this is a snpashot
+pcl_snapstart(PCLopts) ->
+    gen_server:start(?MODULE, [PCLopts], []).
 
 -spec pcl_pushmem(pid(), bookies_memory()) -> ok|returned.
 %% @doc

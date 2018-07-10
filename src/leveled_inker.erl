@@ -94,6 +94,7 @@
         terminate/2,
         code_change/3,
         ink_start/1,
+        ink_snapstart/1,
         ink_put/4,
         ink_mput/3,
         ink_get/3,
@@ -170,6 +171,12 @@
 %% clerk about the rules to enforce during compaction.
 ink_start(InkerOpts) ->
     gen_server:start_link(?MODULE, [InkerOpts], []).
+
+-spec ink_snapstart(inker_options()) -> {ok, pid()}.
+%% @doc
+%% Don't link on startup as snapshot
+ink_snapstart(InkerOpts) ->
+    gen_server:start(?MODULE, [InkerOpts], []).
 
 -spec ink_put(pid(),
                 leveled_codec:ledger_key(),
