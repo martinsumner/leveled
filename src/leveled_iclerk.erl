@@ -127,7 +127,7 @@
 %% @doc
 %% Generate a new clerk
 clerk_new(InkerClerkOpts) ->
-    gen_server:start(?MODULE, [InkerClerkOpts], []).
+    gen_server:start_link(?MODULE, [InkerClerkOpts], []).
 
 -spec clerk_compact(pid(), pid(), 
                     fun(), fun(), fun(),  

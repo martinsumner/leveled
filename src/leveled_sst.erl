@@ -64,7 +64,7 @@
 
 -ifdef(fsm_deprecated).
 -compile({nowarn_deprecated_function, 
-            [{gen_fsm, start, 3},
+            [{gen_fsm, start_link, 3},
                 {gen_fsm, sync_send_event, 3},
                 {gen_fsm, send_event, 2},
                 {gen_fsm, send_all_state_event, 2}]}).
@@ -209,7 +209,7 @@
 %%
 %% The filename should include the file extension.
 sst_open(RootPath, Filename) ->
-    {ok, Pid} = gen_fsm:start(?MODULE, [], []),
+    {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
     case gen_fsm:sync_send_event(Pid,
                                     {sst_open, RootPath, Filename},
                                     infinity) of
@@ -228,7 +228,7 @@ sst_open(RootPath, Filename) ->
 %% pairs.  This should not be used for basement levels or unexpanded Key/Value
 %% lists as merge_lists will not be called.
 sst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod) ->
-    {ok, Pid} = gen_fsm:start(?MODULE, [], []),
+    {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
     PressMethod0 = compress_level(Level, PressMethod),
     {[], [], SlotList, FK}  = merge_lists(KVList, PressMethod0),
     case gen_fsm:sync_send_event(Pid,
@@ -276,7 +276,7 @@ sst_new(RootPath, Filename,
         [] ->
             empty;
         _ ->
-            {ok, Pid} = gen_fsm:start(?MODULE, [], []),
+            {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
             case gen_fsm:sync_send_event(Pid,
                                             {sst_new,
                                                 RootPath,
@@ -303,7 +303,7 @@ sst_newlevelzero(RootPath, Filename,
                     Slots, FetchFun, Penciller,
                     MaxSQN, PressMethod) ->
     PressMethod0 = compress_level(0, PressMethod),
-    {ok, Pid} = gen_fsm:start(?MODULE, [], []),
+    {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
     gen_fsm:send_event(Pid,
                         {sst_newlevelzero,
                             RootPath,
@@ -2802,7 +2802,7 @@ key_dominates_test() ->
                     key_dominates([KV7|KL2], [KV2], {true, 1})).
 
 nonsense_coverage_test() ->
-    {ok, Pid} = gen_fsm:start(?MODULE, [], []),
+    {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
     ok = gen_fsm:send_all_state_event(Pid, nonsense),
     ?assertMatch({next_state, reader, #state{}}, handle_info(nonsense,
                                                                 reader,

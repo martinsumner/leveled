@@ -315,7 +315,7 @@ book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy) ->
 %% comments on the open_options() type
 
 book_start(Opts) ->
-    gen_server:start(?MODULE, [set_defaults(Opts)], []).
+    gen_server:start_link(?MODULE, [set_defaults(Opts)], []).
 
 
 -spec book_tempput(pid(), any(), any(), any(), 
@@ -916,12 +916,12 @@ snapshot_store(LedgerCache, Penciller, Inker, SnapType, Query, LongRunning) ->
                                     snapshot_query = Query,
                                     snapshot_longrunning = LongRunning,
                                     bookies_mem = BookiesMem},
-    {ok, LedgerSnapshot} = leveled_penciller:pcl_start(PCLopts),
+    {ok, LedgerSnapshot} = leveled_penciller:pcl_snapstart(PCLopts),
     case SnapType of
         store ->
             InkerOpts = #inker_options{start_snapshot=true,
                                         source_inker=Inker},
-            {ok, JournalSnapshot} = leveled_inker:ink_start(InkerOpts),
+            {ok, JournalSnapshot} = leveled_inker:ink_snapstart(InkerOpts),
             {ok, LedgerSnapshot, JournalSnapshot};
         ledger ->
             {ok, LedgerSnapshot, null}
