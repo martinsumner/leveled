@@ -136,5 +136,5 @@ ct with 100% coverage.
 
 To have rebar3 execute the full set of tests, run:
 
-    rebar3 as test do cover --reset. eunit --cover, ct --cover, cover --verbose
+    rebar3 as test do cover --reset, eunit --cover, ct --cover, cover --verbose
 
