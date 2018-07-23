@@ -70,3 +70,13 @@ Compression point can be set using `{compression_point, on_receipt|on_compact}`.
 ## Root Path
 
 The root path is the name of the folder in which the database has been (or should be) persisted.
+
+## Journal Compaction
+
+The compaction of the Journal, is the process through which the space of replaced (or deleted) objects can be reclaimed from the journal.  This is controlled through the following parameters:
+
+The `compaction_runs_perday` indicates for the leveled store how many times eahc day it will attempt to run a compaction (it is normal for this to be ~= the numbe rof hours per day that compcation is permitted).
+
+The `compaction_low_hour` and `compaction_high_hour` are the hours of the day which support the compaction window - set to 0 and 23 respectively if compaction is required to be a continuous process.
+
+The `max_run_length` controls how many files can be compacted in a single compaction run.  The scoring of files and runs is controlled through `maxrunlength_compactionpercentage` and `singlefile_compactionpercentage`.
