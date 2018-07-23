@@ -99,6 +99,8 @@
                 {head_only, false},
                 {waste_retention_period, undefined},
                 {max_run_length, undefined},
+                {singlefile_compactionpercentage, 50.0},
+                {maxrunlength_compactionpercentage, 70.0},
                 {reload_strategy, []},
                 {max_pencillercachesize, undefined},
                 {compression_method, ?COMPRESSION_METHOD},
@@ -225,6 +227,15 @@
             % The maximum number of consecutive files that can be compacted in
             % one compaction operation.  
             % Defaults to leveled_iclerk:?MAX_COMPACTION_RUN (if undefined)
+        {singlefile_compactionpercentage, float()} |
+            % What is the percentage of space to be recovered from compacting
+            % a single file, before that file can be a compaction candidate in
+            % a compaction run of length 1
+        {maxrunlength_compactionpercentage, float()} |
+            % What is the percentage of space to be recovered from compacting
+            % a run of max_run_length, before that run can be a compaction 
+            % candidate.  For runs between 1 and max_run_length, a 
+            % proportionate score is calculated
         {reload_strategy, list()} |
             % The reload_strategy is exposed as an option as currently no firm
             % decision has been made about how recovery from failure should
@@ -1008,6 +1019,14 @@ set_options(Opts) ->
     ok = filelib:ensure_dir(JournalFP),
     ok = filelib:ensure_dir(LedgerFP),
 
+    SFL_CompPerc = 
+        proplists:get_value(singlefile_compactionpercentage, Opts),
+    MRL_CompPerc = 
+        proplists:get_value(maxrunlength_compactionpercentage, Opts),
+    true = MRL_CompPerc >= SFL_CompPerc,
+    true = 100.0 >= MRL_CompPerc,
+    true = SFL_CompPerc >= 0.0,
+
     CompressionMethod = proplists:get_value(compression_method, Opts),
     CompressOnReceipt = 
         case proplists:get_value(compression_point, Opts) of 
@@ -1023,6 +1042,8 @@ set_options(Opts) ->
     {#inker_options{root_path = JournalFP,
                         reload_strategy = ReloadStrategy,
                         max_run_length = proplists:get_value(max_run_length, Opts),
+                        singlefile_compactionperc = SFL_CompPerc,
+                        maxrunlength_compactionperc = MRL_CompPerc,
                         waste_retention_period = WRP,
                         compression_method = CompressionMethod,
                         compress_on_receipt = CompressOnReceipt,
