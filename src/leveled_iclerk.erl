@@ -700,13 +700,14 @@ schedule_test() ->
     schedule_test_bycount(4).
 
 schedule_test_bycount(N) ->
-    CurrentTS = {1490,883918,94000}, % Actually 30th March 2017 15:27
+    CurrentTS = {1490,884020,0}, % Actually 30th March 2017 15:27
     SecondsToCompaction0 = schedule_compaction([16], N, CurrentTS),
     io:format("Seconds to compaction ~w~n", [SecondsToCompaction0]),
     ?assertMatch(true, SecondsToCompaction0 > 1800),
     ?assertMatch(true, SecondsToCompaction0 < 5700),
     SecondsToCompaction1 = schedule_compaction([14], N, CurrentTS), % tomorrow!
-    io:format("Seconds to compaction ~w~n", [SecondsToCompaction1]),
+    io:format("Seconds to compaction ~w for count ~w~n", 
+                [SecondsToCompaction1, N]),
     ?assertMatch(true, SecondsToCompaction1 >= 81180),
     ?assertMatch(true, SecondsToCompaction1 =< 84780).
 
