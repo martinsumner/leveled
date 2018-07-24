@@ -126,3 +126,15 @@ Building this from source as part of Riak will require a bit of fiddling around.
 - remember to set the storage backend to leveled in riak.conf
 
 To help with the breakdown of cuttlefish, leveled parameters can be set via riak_kv/include/riak_kv_leveled.hrl - although a new make will be required for these changes to take effect.
+
+### Contributing
+
+In order to contribute to leveled, fork the repository, make a branch
+for your changes, and open a pull request. The acceptance criteria for
+updating leveled is that it passes rebar3 dialyzer, xref, eunit, and
+ct with 100% coverage.
+
+To have rebar3 execute the full set of tests, run:
+
+    rebar3 as test do cover --reset, eunit --cover, ct --cover, cover --verbose
+
