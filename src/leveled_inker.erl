@@ -608,14 +608,20 @@ start_from_file(InkOpts) ->
     WRP = InkOpts#inker_options.waste_retention_period,
     ReloadStrategy = InkOpts#inker_options.reload_strategy,
     MRL = InkOpts#inker_options.max_run_length,
+    SFL_CompactPerc = InkOpts#inker_options.singlefile_compactionperc,
+    MRL_CompactPerc = InkOpts#inker_options.maxrunlength_compactionperc,
     PressMethod = InkOpts#inker_options.compression_method,
     PressOnReceipt = InkOpts#inker_options.compress_on_receipt,
-    IClerkOpts = #iclerk_options{inker = self(),
-                                    cdb_options=IClerkCDBOpts,
-                                    waste_retention_period = WRP,
-                                    reload_strategy = ReloadStrategy,
-                                    compression_method = PressMethod,
-                                    max_run_length = MRL},
+    IClerkOpts = 
+        #iclerk_options{inker = self(),
+                            cdb_options=IClerkCDBOpts,
+                            waste_retention_period = WRP,
+                            reload_strategy = ReloadStrategy,
+                            compression_method = PressMethod,
+                            max_run_length = MRL,
+                            singlefile_compactionperc = SFL_CompactPerc,
+                            maxrunlength_compactionperc = MRL_CompactPerc
+                            },
     
     {ok, Clerk} = leveled_iclerk:clerk_new(IClerkOpts),
     
@@ -1182,6 +1188,8 @@ compact_journal_testto(WRP, ExpectedFiles) ->
                                 cdb_options=CDBopts,
                                 reload_strategy=RStrategy,
                                 waste_retention_period=WRP,
+                                singlefile_compactionperc=40.0,
+                                maxrunlength_compactionperc=70.0,
                                 compression_method=native,
                                 compress_on_receipt=false},
     

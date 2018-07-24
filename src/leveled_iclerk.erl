@@ -95,14 +95,12 @@
 -define(SAMPLE_SIZE, 100).
 -define(BATCH_SIZE, 32).
 -define(BATCHES_TO_CHECK, 8).
-%% How many consecutive files to compact in one run
--define(MAX_COMPACTION_RUN, 8).
-%% Sliding scale to allow preference of longer runs up to maximum
--define(SINGLEFILE_COMPACTION_TARGET, 40.0).
--define(MAXRUN_COMPACTION_TARGET, 70.0).
 -define(CRC_SIZE, 4).
 -define(DEFAULT_RELOAD_STRATEGY, leveled_codec:inker_reload_strategy([])).
 -define(INTERVALS_PER_HOUR, 4).
+-define(MAX_COMPACTION_RUN, 8).
+-define(SINGLEFILE_COMPACTION_TARGET, 50.0).
+-define(MAXRUNLENGTH_COMPACTION_TARGET, 75.0).
 
 -record(state, {inker :: pid() | undefined,
                 max_run_length :: integer() | undefined,
@@ -110,6 +108,8 @@
                 waste_retention_period :: integer() | undefined,
                 waste_path :: string() | undefined,
                 reload_strategy = ?DEFAULT_RELOAD_STRATEGY :: list(),
+                singlefile_compactionperc  = ?SINGLEFILE_COMPACTION_TARGET :: float(),
+                maxrunlength_compactionperc = ?MAXRUNLENGTH_COMPACTION_TARGET ::float(),
                 compression_method = native :: lz4|native}).
 
 -record(candidate, {low_sqn :: integer() | undefined,
@@ -183,13 +183,30 @@ init([IClerkOpts]) ->
             MRL0 ->
                 MRL0
         end,
-            
+    
+    SFL_CompPerc =
+        case IClerkOpts#iclerk_options.singlefile_compactionperc of
+            undefined ->
+                ?SINGLEFILE_COMPACTION_TARGET;
+            SFLCP when is_float(SFLCP) ->
+                SFLCP
+        end,
+    MRL_CompPerc =
+        case IClerkOpts#iclerk_options.maxrunlength_compactionperc of
+            undefined ->
+                ?MAXRUNLENGTH_COMPACTION_TARGET;
+            MRLCP when is_float(MRLCP) ->
+                MRLCP
+        end,
+
     {ok, #state{max_run_length = MRL,
                         inker = IClerkOpts#iclerk_options.inker,
                         cdb_options = CDBopts,
                         reload_strategy = ReloadStrategy,
                         waste_path = WP,
                         waste_retention_period = WRP,
+                        singlefile_compactionperc = SFL_CompPerc,
+                        maxrunlength_compactionperc = MRL_CompPerc,
                         compression_method = 
                             IClerkOpts#iclerk_options.compression_method}}.
 
@@ -208,11 +225,15 @@ handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Inker, _TO},
     CDBopts = State#state.cdb_options,
     
     Candidates = scan_all_files(Manifest, FilterFun, FilterServer, MaxSQN),
-    BestRun0 = assess_candidates(Candidates, MaxRunLength),
-    case score_run(BestRun0, MaxRunLength) of
+    ScoreParams =
+        {MaxRunLength, 
+            State#state.maxrunlength_compactionperc, 
+            State#state.singlefile_compactionperc},
+    BestRun0 = assess_candidates(Candidates, ScoreParams),
+    case score_run(BestRun0, ScoreParams) of
         Score when Score > 0.0 ->
             BestRun1 = sort_run(BestRun0),
-            print_compaction_run(BestRun1, MaxRunLength),
+            print_compaction_run(BestRun1, ScoreParams),
             ManifestSlice = compact_files(BestRun1,
                                             CDBopts,
                                             FilterFun,
@@ -436,13 +457,6 @@ fetch_inbatches(PositionList, BatchSize, CDB, CheckedList) ->
     fetch_inbatches(Tail, BatchSize, CDB, CheckedList ++ KL_List).
 
 
-assess_candidates(AllCandidates, MaxRunLength) when is_integer(MaxRunLength) ->
-    % This will take the defaults for other params.
-    % Unit tests should pass tuple as params including tested defaults
-    assess_candidates(AllCandidates, 
-                        {MaxRunLength,
-                            ?MAXRUN_COMPACTION_TARGET,
-                            ?SINGLEFILE_COMPACTION_TARGET});
 assess_candidates(AllCandidates, Params) ->
     NaiveBestRun = assess_candidates(AllCandidates, Params, [], []),
     MaxRunLength = element(1, Params),
@@ -492,11 +506,7 @@ choose_best_assessment(RunToAssess, BestRun, Params) ->
             end
     end.    
 
-score_run(Run, MaxRunLength) when is_integer(MaxRunLength) ->
-    Params = {MaxRunLength, 
-                    ?MAXRUN_COMPACTION_TARGET,
-                    ?SINGLEFILE_COMPACTION_TARGET},
-    score_run(Run, Params);
+
 score_run([], _Params) ->
     0.0;
 score_run(Run, {MaxRunLength, MR_CT, SF_CT}) ->
@@ -515,9 +525,9 @@ score_run(Run, {MaxRunLength, MR_CT, SF_CT}) ->
     Target - RunTotal / length(Run).
 
 
-print_compaction_run(BestRun, MaxRunLength) ->
+print_compaction_run(BestRun, ScoreParams) ->
     leveled_log:log("IC005", [length(BestRun),
-                                score_run(BestRun, MaxRunLength)]),
+                                score_run(BestRun, ScoreParams)]),
     lists:foreach(fun(File) ->
                         leveled_log:log("IC006", [File#candidate.filename])
                         end,
@@ -717,19 +727,19 @@ simple_score_test() ->
             #candidate{compaction_perc = 75.0},
             #candidate{compaction_perc = 76.0},
             #candidate{compaction_perc = 70.0}],
-    ?assertMatch(-4.0, score_run(Run1, 4)),
+    ?assertMatch(-4.0, score_run(Run1, {4, 70.0, 40.0})),
     Run2 = [#candidate{compaction_perc = 75.0}],
-    ?assertMatch(-35.0, score_run(Run2, 4)),
-    ?assertMatch(0.0, score_run([], 4)),
+    ?assertMatch(-35.0, score_run(Run2, {4, 70.0, 40.0})),
+    ?assertMatch(0.0, score_run([], {4, 40.0, 70.0})),
     Run3 = [#candidate{compaction_perc = 100.0}],
-    ?assertMatch(-60.0, score_run(Run3, 4)).
+    ?assertMatch(-60.0, score_run(Run3, {4, 70.0, 40.0})).
 
 score_compare_test() ->
     Run1 = [#candidate{compaction_perc = 55.0},
             #candidate{compaction_perc = 55.0},
             #candidate{compaction_perc = 56.0},
             #candidate{compaction_perc = 50.0}],
-    ?assertMatch(16.0, score_run(Run1, 4)),
+    ?assertMatch(16.0, score_run(Run1, {4, 70.0, 40.0})),
     Run2 = [#candidate{compaction_perc = 55.0}],
     ?assertMatch(Run1, 
                     choose_best_assessment(Run1, 
@@ -759,7 +769,7 @@ find_bestrun_test() ->
 %% Tests dependent on these defaults
 %% -define(MAX_COMPACTION_RUN, 4).
 %% -define(SINGLEFILE_COMPACTION_TARGET, 40.0).
-%% -define(MAXRUN_COMPACTION_TARGET, 60.0).
+%% -define(MAXRUNLENGTH_COMPACTION_TARGET, 60.0).
 %% Tested first with blocks significant as no back-tracking
     Params = {4, 60.0, 40.0},
     Block1 = [#candidate{compaction_perc = 55.0},

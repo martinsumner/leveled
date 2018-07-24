@@ -89,10 +89,34 @@
 %% In a single compaction run, what is the maximum number of consecutive files
 %% which may be compacted.
 {mapping, "leveled.max_run_length", "leveled.max_run_length", [
-  {default, 8},
-  {datatype, integer},
+  {default, 6},
+  {datatype, integer}
+]}.
+
+%% @doc Target Percentage for Max Run
+%% What is the target score for a maximum run of files, to qualify for 
+%% compaction.  If less than this percentage would be retained after compaction
+%% then it is a candidate (e.g. in default case if 25% of space would be
+%% recovered)
+{mapping, "leveled.maxrunlength_compactionpercentage", "leveled.maxrunlength_compactionpercentage", [
+  {default, 75.0},
+  {datatype, float},
   hidden
 ]}.
+
+%% @doc Target Percentage for Single File
+%% What is the target score for a run of a single file, to qualify for 
+%% compaction.  If less than this percentage would be retained after compaction
+%% then it is a candidate (e.g. in default case if 50% of space would be
+%% recovered)
+{mapping, "leveled.singlefile_compactionpercentage", "leveled.singlefile_compactionpercentage", [
+  {default, 50.0},
+  {datatype, float},
+  hidden
+]}.
+
+
+
 
 
 

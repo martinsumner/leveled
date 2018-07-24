@@ -58,7 +58,9 @@
                         waste_retention_period :: integer() | undefined,
                         compression_method = native :: lz4|native,
                         compress_on_receipt = false :: boolean(),
-                        max_run_length}).
+                        max_run_length,
+                        singlefile_compactionperc :: float()|undefined,
+                        maxrunlength_compactionperc :: float()|undefined}).
 
 -record(penciller_options,
                         {root_path :: string() | undefined,
@@ -77,6 +79,8 @@
                          cdb_options = #cdb_options{} :: #cdb_options{},
                          waste_retention_period :: integer() | undefined,
                          compression_method = native :: lz4|native,
+                         singlefile_compactionperc :: float()|undefined,
+                         maxrunlength_compactionperc :: float()|undefined,
                          reload_strategy = [] :: list()}).
 
 -record(recent_aae, {filter :: whitelist|blacklist,
