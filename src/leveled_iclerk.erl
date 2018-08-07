@@ -712,7 +712,6 @@ schedule_test() ->
 schedule_test_bycount(N) ->
     LocalTimeAsDateTime = {{2017,3,30},{15,27,0}},
     CurrentTS= local_time_to_now(LocalTimeAsDateTime),
-    %% CurrentTS = {1490,884020,0}, % Actually 30th March 2017 15:27
     SecondsToCompaction0 = schedule_compaction([16], N, CurrentTS),
     io:format("Seconds to compaction ~w~n", [SecondsToCompaction0]),
     ?assertMatch(true, SecondsToCompaction0 > 1800),
