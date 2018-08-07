@@ -710,7 +710,9 @@ schedule_test() ->
     schedule_test_bycount(4).
 
 schedule_test_bycount(N) ->
-    CurrentTS = {1490,884020,0}, % Actually 30th March 2017 15:27
+    LocalTimeAsDateTime = {{2017,3,30},{15,27,0}},
+    CurrentTS= local_time_to_now(LocalTimeAsDateTime),
+    %% CurrentTS = {1490,884020,0}, % Actually 30th March 2017 15:27
     SecondsToCompaction0 = schedule_compaction([16], N, CurrentTS),
     io:format("Seconds to compaction ~w~n", [SecondsToCompaction0]),
     ?assertMatch(true, SecondsToCompaction0 > 1800),
@@ -721,6 +723,11 @@ schedule_test_bycount(N) ->
     ?assertMatch(true, SecondsToCompaction1 >= 81180),
     ?assertMatch(true, SecondsToCompaction1 =< 84780).
 
+local_time_to_now(DateTime) ->
+    [UTC] = calendar:local_time_to_universal_time_dst(DateTime),
+    Epoch = calendar:datetime_to_gregorian_seconds({{1970, 1, 1}, {0, 0, 0}}),
+    Seconds = calendar:datetime_to_gregorian_seconds(UTC) - Epoch,
+    {Seconds div 1000000, Seconds rem 1000000, 0}.
 
 simple_score_test() ->
     Run1 = [#candidate{compaction_perc = 75.0},
