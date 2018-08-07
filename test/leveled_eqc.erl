@@ -24,6 +24,7 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("../include/leveled.hrl").
 
+-compile(nowarn_export_all).
 -compile(export_all).
 
 -define(DATA_DIR, "./leveled_eqc").
