@@ -113,11 +113,12 @@ aae_missingjournal(_Config) ->
         fun(B, K, _V, Acc) -> [{B, K}|Acc] end,
     
     {async, AllHeadF1} =
-        leveled_bookie:book_returnfolder(Bookie1,
-                                            {foldheads_allkeys,
-                                                ?RIAK_TAG,
-                                                FoldHeadsFun,
-                                                true, true, false}),
+        leveled_bookie:book_headfold(Bookie1,
+                                     ?RIAK_TAG,
+                                     {FoldHeadsFun, []},
+                                     true,
+                                     true,
+                                     false),
     HeadL1 = length(AllHeadF1()),
     io:format("Fold head returned ~w objects~n", [HeadL1]),
     

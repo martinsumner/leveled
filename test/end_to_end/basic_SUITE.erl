@@ -579,8 +579,9 @@ space_clear_ondelete(_Config) ->
                             G2),
     
     FoldKeysFun = fun(B, K, Acc) -> [{B, K}|Acc] end,
-    AllKeyQuery = {keylist, o_rkv, {FoldKeysFun, []}},
-    {async, F1} = leveled_bookie:book_returnfolder(Book1, AllKeyQuery),
+
+    {async, F1} = leveled_bookie:book_keylist(Book1, o_rkv, {FoldKeysFun, []}),
+
     SW1 = os:timestamp(),
     KL1 = F1(),
     ok = case length(KL1) of
@@ -594,19 +595,20 @@ space_clear_ondelete(_Config) ->
     {ok, FNsA_J} = file:list_dir(RootPath ++ "/journal/journal_files"),
     io:format("FNsA - Bookie created ~w journal files and ~w ledger files~n",
                     [length(FNsA_J), length(FNsA_L)]),
-    
+
     % Get an iterator to lock the inker during compaction
     FoldObjectsFun = fun(B, K, ObjBin, Acc) ->
                             [{B, K, erlang:phash2(ObjBin)}|Acc] end,
-    {async, HTreeF1} = leveled_bookie:book_returnfolder(Book1,
-                                                        {foldobjects_allkeys,
-                                                            ?RIAK_TAG,
-                                                            FoldObjectsFun,
-                                                            false}),
+
+    {async, HTreeF1} = leveled_bookie:book_objectfold(Book1,
+                                                      ?RIAK_TAG,
+                                                      {FoldObjectsFun, []},
+                                                      false),
+
         % This query does not Snap PreFold - and so will not prevent
         % pending deletes from prompting actual deletes
 
-    {async, KF1} = leveled_bookie:book_returnfolder(Book1, AllKeyQuery),
+    {async, KF1} = leveled_bookie:book_keylist(Book1, o_rkv, {FoldKeysFun, []}),
         % This query does Snap PreFold, and so will prevent deletes from
         % the ledger
 
@@ -662,7 +664,7 @@ space_clear_ondelete(_Config) ->
                     "after deletes~n",
                 [PointB_Journals, length(FNsB_L)]),
     
-    {async, F2} = leveled_bookie:book_returnfolder(Book1, AllKeyQuery),
+    {async, F2} = leveled_bookie:book_keylist(Book1, o_rkv, {FoldKeysFun, []}),
     SW3 = os:timestamp(),
     KL2 = F2(),
     ok = case length(KL2) of
@@ -674,7 +676,7 @@ space_clear_ondelete(_Config) ->
     ok = leveled_bookie:book_close(Book1),
     
     {ok, Book2} = leveled_bookie:book_start(StartOpts1),
-    {async, F3} = leveled_bookie:book_returnfolder(Book2, AllKeyQuery),
+    {async, F3} = leveled_bookie:book_keylist(Book2, o_rkv, {FoldKeysFun, []}),
     SW4 = os:timestamp(),
     KL3 = F3(),
     ok = case length(KL3) of

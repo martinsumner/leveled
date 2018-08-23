@@ -147,14 +147,16 @@ many_put_compare(_Config) ->
           leveled_tictac:add_kv(Acc, Key, Value, ExtractClockFun)
       end,
 
-    FoldQ0 = {foldheads_bybucket,
-              o_rkv,
-              "Bucket",
-              all,
-              {FoldObjectsFun, leveled_tictac:new_tree(0, TreeSize)},
-              false, true, false},
+    FoldAccT = {FoldObjectsFun, leveled_tictac:new_tree(0, TreeSize)},
     {async, TreeAObjFolder0} =
-        leveled_bookie:book_returnfolder(Bookie2, FoldQ0),
+        leveled_bookie:book_headfold(Bookie2,
+                                     o_rkv,
+                                     {range, "Bucket", all},
+                                     FoldAccT,
+                                     false,
+                                     true,
+                                     false),
+    
     SWB0Obj = os:timestamp(),
     TreeAObj0 = TreeAObjFolder0(),
     io:format("Build tictac tree via object fold with no "++

@@ -425,26 +425,12 @@ handoff(_Config) ->
         end,
     
     % Handoff the data from the first store to the other three stores
-    HandoffFolder2 = 
-        {foldobjects_allkeys,
-            ?RIAK_TAG,
-            {FoldObjectsFun(Bookie2), ok},
-            false,
-            key_order},
-    HandoffFolder3 = 
-        {foldobjects_allkeys,
-            ?RIAK_TAG,
-            {FoldObjectsFun(Bookie3), ok},
-            true,
-            sqn_order},
-    HandoffFolder4 = 
-        {foldobjects_allkeys,
-            ?RIAK_TAG,
-            {FoldObjectsFun(Bookie4), ok},
-            true,
-            sqn_order},
     {async, Handoff2} =
-        leveled_bookie:book_returnfolder(Bookie1, HandoffFolder2),
+        leveled_bookie:book_objectfold(Bookie1,
+                                       ?RIAK_TAG,
+                                       {FoldObjectsFun(Bookie2), ok},
+                                       false,
+                                       key_order),
     SW2 = os:timestamp(),
     ok = Handoff2(),
     Time_HO2 = timer:now_diff(os:timestamp(), SW2)/1000,
@@ -452,14 +438,23 @@ handoff(_Config) ->
                 [Time_HO2]),
     SW3 = os:timestamp(),
     {async, Handoff3} =
-        leveled_bookie:book_returnfolder(Bookie1, HandoffFolder3),
+        leveled_bookie:book_objectfold(Bookie1,
+                                       ?RIAK_TAG,
+                                       {FoldObjectsFun(Bookie3), ok},
+                                       true,
+                                       sqn_order),
     ok = Handoff3(),
     Time_HO3 = timer:now_diff(os:timestamp(), SW3)/1000,
     io:format("Handoff to Book3 in sqn_order took ~w milliseconds ~n", 
                 [Time_HO3]),
     SW4 = os:timestamp(),
     {async, Handoff4} =
-        leveled_bookie:book_returnfolder(Bookie1, HandoffFolder4),
+        leveled_bookie:book_objectfold(Bookie1,
+                                       ?RIAK_TAG,
+                                       {FoldObjectsFun(Bookie4), ok},
+                                       true,
+                                       sqn_order),
+
     ok = Handoff4(),
     Time_HO4 = timer:now_diff(os:timestamp(), SW4)/1000,
     io:format("Handoff to Book4 in sqn_order took ~w milliseconds ~n", 
@@ -529,9 +524,12 @@ dollar_key_index(_Config) ->
     StartKey = testutil:fixed_bin_key(123),
     EndKey = testutil:fixed_bin_key(779),
 
-    Query = {keylist, ?RIAK_TAG, <<"Bucket1">>,  {StartKey, EndKey}, {FoldKeysFun, []}},
 
-    {async, Folder} = leveled_bookie:book_returnfolder(Bookie1, Query),
+    {async, Folder} = leveled_bookie:book_keylist(Bookie1,
+                                                  ?RIAK_TAG,
+                                                  <<"Bucket1">>,
+                                                  {StartKey, EndKey}, {FoldKeysFun, []}
+                                                 ),
     ResLen = length(Folder()),
     io:format("Length of Result of folder ~w~n", [ResLen]),
     true = 657 == ResLen,
@@ -575,10 +573,9 @@ dollar_bucket_index(_Config) ->
     FoldKeysFun = fun(B, K, Acc) ->
                           [{B, K}|Acc]
                   end,
+    FoldAccT = {FoldKeysFun, []},
 
-    Query = {keylist, ?RIAK_TAG, <<"Bucket2">>, {FoldKeysFun, []}},
-
-    {async, Folder} = leveled_bookie:book_returnfolder(Bookie1, Query),
+    {async, Folder} = leveled_bookie:book_keylist(Bookie1, ?RIAK_TAG, <<"Bucket2">>, FoldAccT),
     ResLen = length(Folder()),
 
     io:format("Length of Result of folder ~w~n", [ResLen]),

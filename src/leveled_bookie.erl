@@ -58,7 +58,6 @@
         book_get/4,
         book_head/3,
         book_head/4,
-        book_returnfolder/2,
         book_snapshot/4,
         book_compactjournal/2,
         book_islastcompactionpending/1,
@@ -66,6 +65,21 @@
         book_close/1,
         book_destroy/1,
         book_isempty/2]).
+
+%% folding API
+-export([
+         book_returnfolder/2,
+         book_indexfold/5,
+         book_bucketlist/4,
+         book_keylist/3,
+         book_keylist/4,
+         book_keylist/5,
+         book_objectfold/4,
+         book_objectfold/5,
+         book_objectfold/6,
+         book_headfold/6,
+         book_headfold/7
+        ]).
 
 -export([empty_ledgercache/0,
             loadqueue_ledgercache/1,
@@ -530,6 +544,298 @@ book_head(Pid, Bucket, Key) ->
 book_returnfolder(Pid, RunnerType) ->
     gen_server:call(Pid, {return_runner, RunnerType}, infinity).
 
+%% @doc Builds and returns an `{async, Runner}' pair for secondary
+%% index queries. Calling `Runner' will fold over keys (ledger) tagged
+%% with the index `?IDX_TAG' and Constrain the fold to a specific
+%% `Bucket''s index fields, as specified by the `Constraint'
+%% argument. If `Constraint' is a tuple of `{Bucket, Key}' the fold
+%% starts at `Key' (this is useful for implementing pagination, for
+%% example.)  Provide a `FoldAccT' tuple of fold fun ( which is 3
+%% arity fun that will be called once per-matching index entry, with
+%% the Bucket, Primary Key (or {IndexVal and Primary key} if
+%% `ReturnTerms' is true)) and an initial Accumulator, which will be
+%% passed as the 3rd argument in the initial call to
+%% FoldFun. Subsequent calls to FoldFun will use the previous return
+%% of FoldFun as the 3rd argument, and the final return of `Runner' is
+%% the final return of `FoldFun', the final Accumulator value. The
+%% query can filter inputs based on `Range' and `TermHandling'.
+%% `Range' specifies the name of `IndexField' to query, and `Start'
+%% and `End' optionally provide the range to query over.
+%% `TermHandling' is a 2-tuple, the first element is a `boolean()',
+%% `true' meaning return terms, (see fold fun above), `false' meaning
+%% just return primary keys. `TermRegex' is either a regular
+%% expression of type `re:mp()' (that will be run against each index
+%% term value, and only those that match will be accumulated) or
+%% `undefined', which means no regular expression filtering of index
+%% values.
+-spec book_indexfold(pid(),
+                     Constraint:: {Bucket, Key} | Bucket,
+                     FoldAccT :: {FoldFun, Acc},
+                     Range :: {IndexField, Start, End},
+                     TermHandling :: {ReturnTerms, TermRegex}) ->
+                            {async, Runner::fun()}
+                                when Bucket::term(),
+                                     Key::term(),
+                                     FoldFun::fun((Bucket, Key | {IndexVal, Key}, Acc) -> Acc),
+                                     Acc::term(),
+                                     IndexField::term(),
+                                     IndexVal::term(),
+                                     Start::IndexVal,
+                                     End::IndexVal,
+                                     ReturnTerms::boolean(),
+                                     TermRegex :: re:mp() | undefined.
+
+book_indexfold(Pid, Constraint, FoldAccT, Range, TermHandling) ->
+    RunnerType = {index_query, Constraint, FoldAccT, Range, TermHandling},
+    book_returnfolder(Pid, RunnerType).
+
+
+%% @doc list buckets. Folds over the ledger only. Given a `Tag' folds
+%% over the keyspace calling `FoldFun' from `FoldAccT' for each
+%% `Bucket'. `FoldFun' is a 2-arity function that is passed `Bucket'
+%% and `Acc'. On first call `Acc' is the initial `Acc' from
+%% `FoldAccT', thereafter the result of the previous call to
+%% `FoldFun'. `Constraint' can be either atom `all' or `first' meaning
+%% return all buckets, or just the first one found. Returns `{async,
+%% Runner}' where `Runner' is a fun that returns the final value of
+%% `FoldFun', the final `Acc' accumulator.
+-spec book_bucketlist(pid(), Tag, FoldAccT, Constraint) ->
+                             {async, Runner} when
+      Tag :: leveled_codec:tag(),
+      FoldAccT :: {FoldFun, Acc},
+      FoldFun :: fun((Bucket, Acc) -> Acc),
+      Acc :: term(),
+      Constraint :: first | all,
+      Bucket :: term(),
+      Acc :: term(),
+      Runner :: fun(() -> Acc).
+book_bucketlist(Pid, Tag, FoldAccT, Constraint) ->
+    RunnerType=
+        case Constraint of
+            first-> {first_bucket, Tag, FoldAccT};
+            all -> {bucket_list, Tag, FoldAccT}
+        end,
+    book_returnfolder(Pid, RunnerType).
+
+
+%% @doc fold over the keys (ledger only) for a given `Tag'. Each key
+%% will result in a call to `FoldFun' from `FoldAccT'. `FoldFun' is a
+%% 3-arity function, called with `Bucket', `Key' and `Acc'. The
+%% initial value of `Acc' is the second element of `FoldAccT'. Returns
+%% `{async, Runner}' where `Runner' is a function that will run the
+%% fold and return the final value of `Acc'
+-spec book_keylist(pid(), Tag, FoldAccT) -> {async, Runner} when
+      Tag :: leveled_codec:tag(),
+      FoldAccT :: {FoldFun, Acc},
+      FoldFun :: fun((Bucket, Key, Acc) -> Acc),
+      Acc :: term(),
+      Bucket :: term(),
+      Key :: term(),
+      Runner :: fun(() -> Acc).
+book_keylist(Pid, Tag, FoldAccT) ->
+    RunnerType = {keylist, Tag, FoldAccT},
+    book_returnfolder(Pid, RunnerType).
+
+%% @doc as for book_keylist/3 but constrained to only those keys in
+%% `Bucket'
+-spec book_keylist(pid(), Tag, Bucket, FoldAccT) -> {async, Runner} when
+      Tag :: leveled_codec:tag(),
+      FoldAccT :: {FoldFun, Acc},
+      FoldFun :: fun((Bucket, Key, Acc) -> Acc),
+      Acc :: term(),
+      Bucket :: term(),
+      Key :: term(),
+      Runner :: fun(() -> Acc).
+book_keylist(Pid, Tag, Bucket, FoldAccT) ->
+    RunnerType = {keylist, Tag, Bucket, FoldAccT},
+    book_returnfolder(Pid, RunnerType).
+
+%% @doc as for book_keylist/4 with additional constraint that only
+%% keys in the `KeyRange' tuple will be folder over, where `KeyRange'
+%% is `StartKey', the first key in the range and `EndKey' the last,
+%% (inclusive.) Or the atom `all', which will return all keys in the
+%% `Bucket'.
+-spec book_keylist(pid(), Tag, Bucket, KeyRange, FoldAccT) -> {async, Runner} when
+      Tag :: leveled_codec:tag(),
+      FoldAccT :: {FoldFun, Acc},
+      FoldFun :: fun((Bucket, Key, Acc) -> Acc),
+      Acc :: term(),
+      Bucket :: term(),
+      KeyRange :: {StartKey, EndKey} | all,
+      StartKey :: Key,
+      EndKey :: Key,
+      Key :: term(),
+      Runner :: fun(() -> Acc).
+book_keylist(Pid, Tag, Bucket, KeyRange, FoldAccT) ->
+    RunnerType = {keylist, Tag, Bucket, KeyRange, FoldAccT},
+    book_returnfolder(Pid, RunnerType).
+
+%% @doc fold over all the objects/values in the store in key
+%% order. `Tag' is the tagged type of object. `FoldAccT' is a 2-tuple,
+%% the first element being a 4-arity fun, that is called once for each
+%% key with the arguments `Bucket', `Key', `Value', `Acc'. The 2nd
+%% element is the initial accumulator `Acc' which is passed to
+%% `FoldFun' on it's first call. Thereafter the return value from
+%% `FoldFun' is the 4th argument to the next call of
+%% `FoldFun'. `SnapPreFold' is a boolean where `true' means take the
+%% snapshot at once, and `false' means take the snapshot when the
+%% returned `Runner' is executed. Return `{async, Runner}' where
+%% `Runner' is a 0-arity function that returns the final accumulator
+%% from `FoldFun'
+-spec book_objectfold(pid(), Tag, FoldAccT, SnapPreFold) -> {async, Runner} when
+      Tag :: leveled_codec:tag(),
+      FoldAccT :: {FoldFun, Acc},
+      FoldFun :: fun((Bucket, Key, Value, Acc) -> Acc),
+      Acc :: term(),
+      Bucket :: term(),
+      Key :: term(),
+      Value :: term(),
+      SnapPreFold :: boolean(),
+      Runner :: fun(() -> Acc).
+book_objectfold(Pid, Tag, FoldAccT, SnapPreFold) ->
+    RunnerType = {foldobjects_allkeys, Tag, FoldAccT, SnapPreFold},
+    book_returnfolder(Pid, RunnerType).
+
+%% @doc exactly as book_objectfold/4 with the additional parameter
+%% `Order'. `Order' can be `sqn_order' or `key_order'. In
+%% book_objectfold/4 and book_objectfold/6 `key_order' is
+%% implied. This function called with `Option == key_order' is
+%% identical to book_objectfold/4. NOTE: if you most fold over ALL
+%% objects, this is quicker than `key_order' due to accessing the
+%% journal objects in thei ron disk order, not via a fold over the
+%% ledger.
+-spec book_objectfold(pid(), Tag, FoldAccT, SnapPreFold, Order) -> {async, Runner} when
+      Tag :: leveled_codec:tag(),
+      FoldAccT :: {FoldFun, Acc},
+      FoldFun :: fun((Bucket, Key, Value, Acc) -> Acc),
+      Acc :: term(),
+      Bucket :: term(),
+      Key :: term(),
+      Value :: term(),
+      SnapPreFold :: boolean(),
+      Runner :: fun(() -> Acc),
+      Order :: key_order | sqn_order.
+book_objectfold(Pid, Tag, FoldAccT, SnapPreFold, Order) ->
+    RunnerType = {foldobjects_allkeys, Tag, FoldAccT, SnapPreFold, Order},
+    book_returnfolder(Pid, RunnerType).
+
+%% @doc as book_objectfold/4, with the addition of some constraints on
+%% the range of objects folded over. The 3rd argument `Bucket' limits
+%% ths fold to that specific bucket only. The 4th argument `Limiter'
+%% further constrains the fold. `Limiter' can be either a `Range' or
+%% `Index' query. `Range' is either that atom `all', meaning {min,
+%% max}, or, a two tuple of start key and end key, inclusive. Index
+%% Query is a 3-tuple of `{IndexField, StartTerm, EndTerm}`, just as
+%% in book_indexfold/5
+-spec book_objectfold(pid(), Tag, Bucket, Limiter, FoldAccT, SnapPreFold) ->
+                             {async, Runner} when
+      Tag :: leveled_codec:tag(),
+      FoldAccT :: {FoldFun, Acc},
+      FoldFun :: fun((Bucket, Key, Value, Acc) -> Acc),
+      Acc :: term(),
+      Bucket :: term(),
+      Key :: term(),
+      Value :: term(),
+      Limiter :: Range | Index,
+      Range :: {StartKey, EndKey} | all,
+      Index :: {IndexField, Start, End},
+      IndexField::term(),
+      IndexVal::term(),
+      Start::IndexVal,
+      End::IndexVal,
+      StartKey :: Key,
+      EndKey :: Key,
+      SnapPreFold :: boolean(),
+      Runner :: fun(() -> Acc).
+book_objectfold(Pid, Tag, Bucket, Limiter, FoldAccT, SnapPreFold) ->
+    RunnerType =
+        case Limiter of
+            all ->
+                {foldobjects_bybucket, Tag, Bucket, all, FoldAccT, SnapPreFold};
+            Range when is_tuple(Range) andalso size(Range) == 2 ->
+                {foldobjects_bybucket, Tag, Bucket, Range, FoldAccT, SnapPreFold};
+            IndexQuery when is_tuple(IndexQuery) andalso size(IndexQuery) == 3 ->
+                IndexQuery = Limiter,
+                {foldobjects_byindex, Tag, Bucket, IndexQuery, FoldAccT, SnapPreFold}
+        end,
+    book_returnfolder(Pid, RunnerType).
+
+
+%% @doc LevelEd stores not just Keys in the ledger, but also may store
+%% object metadata, referred to as heads (after Riak head request for
+%% object metadata) Often when folding over objects all that is really
+%% required is the object metadata. These "headfolds" are an efficient
+%% way to fold over the ledger (possibly wholly in memory) and get
+%% object metadata.
+%%
+%% Fold over the object's head. `Tag' is the tagged type of the
+%% objects to fold over. `FoldAccT' is a 2-tuple. The 1st element is a
+%% 4-arity fold fun, that takes a Bucket, Key, ProxyObject, and the
+%% `Acc'. The ProxyObject is an object that only contains the
+%% head/metadata, and no object data from the journal. The `Acc' in
+%% the first call is that provided as the second element of `FoldAccT'
+%% and thereafter the return of the previous all to the fold fun. If
+%% `JournalCheck' is `true' then the journal is checked to see if the
+%% object in the ledger is present, which means a snapshot of the
+%% whole store is required, if `false', then no such check is
+%% performed, and onlt ledger need be snapshotted. `SnapPreFold' is a
+%% boolean that determines if the snapshot is taken when the folder is
+%% requested `true', or when when run `false'. `SegmentList' can be
+%% `false' meaning, all heads, or a list of integers that designate
+%% segments in a TicTac Tree.
+-spec book_headfold(pid(), Tag, FoldAccT, JournalCheck, SnapPreFold, SegmentList) ->
+                           {async, Runner} when
+      Tag :: leveled_codec:tag(),
+            FoldAccT :: {FoldFun, Acc},
+      FoldFun :: fun((Bucket, Key, Value, Acc) -> Acc),
+      Acc :: term(),
+      Bucket :: term(),
+      Key :: term(),
+      Value :: term(),
+      JournalCheck :: boolean(),
+      SnapPreFold :: boolean(),
+      SegmentList :: false | list(integer()),
+      Runner :: fun(() -> Acc).
+book_headfold(Pid, Tag, FoldAccT, JournalCheck, SnapPreFold, SegmentList) ->
+    RunnerType = {foldheads_allkeys, Tag, FoldAccT, JournalCheck, SnapPreFold, SegmentList},
+    book_returnfolder(Pid, RunnerType).
+
+%% @doc as book_headfold/6, but with the addition of a `Limiter' that
+%% restricts the set of objects folded over. `Limiter' can either be a
+%% bucket list, or a key range of a single bucket. For bucket list,
+%% the `Limiter' should be a 2-tuple, the first element the tag
+%% `bucket_list' and the second a `list()' of `Bucket'. Only heads
+%% from the listed buckets will be folded over. A single bucket key
+%% range may also be used as a `Limiter', in which case the argument
+%% is a 3-tuple of `{range ,Bucket, Range}' where `Bucket' is a
+%% bucket, and `Range' is a 2-tuple of start key and end key,
+%% inclusive, or the atom `all'. The rest of the arguments are as
+%% `book_headfold/6'
+-spec book_headfold(pid(), Tag, Limiter, FoldAccT, JournalCheck, SnapPreFold, SegmentList) ->
+                           {async, Runner} when
+      Tag :: leveled_codec:tag(),
+      Limiter :: BucketList | BucketKeyRange,
+      BucketList :: {bucket_list, list(Bucket)},
+      BucketKeyRange :: {range, Bucket, KeyRange},
+      KeyRange :: {StartKey, EndKey} | all,
+      StartKey :: Key,
+      EndKey :: Key,
+      FoldAccT :: {FoldFun, Acc},
+      FoldFun :: fun((Bucket, Key, Value, Acc) -> Acc),
+      Acc :: term(),
+      Bucket :: term(),
+      Key :: term(),
+      Value :: term(),
+      JournalCheck :: boolean(),
+      SnapPreFold :: boolean(),
+      SegmentList :: false | list(integer()),
+      Runner :: fun(() -> Acc).
+book_headfold(Pid, Tag, {bucket_list, BucketList}, FoldAccT, JournalCheck, SnapPreFold, SegmentList) ->
+    RunnerType = {foldheads_bybucket, Tag, BucketList, bucket_list, FoldAccT, JournalCheck, SnapPreFold, SegmentList},
+    book_returnfolder(Pid, RunnerType);
+book_headfold(Pid, Tag, {range, Bucket, KeyRange}, FoldAccT, JournalCheck, SnapPreFold, SegmentList) ->
+    RunnerType = {foldheads_bybucket, Tag, Bucket, KeyRange, FoldAccT, JournalCheck, SnapPreFold, SegmentList},
+    book_returnfolder(Pid, RunnerType).
 
 -spec book_snapshot(pid(), 
                     store|ledger, 
@@ -593,8 +899,7 @@ book_destroy(Pid) ->
 %% given tag
 book_isempty(Pid, Tag) ->
     FoldAccT = {fun(_B, _Acc) -> false end, true},
-    {async, Runner} = 
-        gen_server:call(Pid, {return_runner, {first_bucket, Tag, FoldAccT}}),
+    {async, Runner} = book_bucketlist(Pid, Tag, FoldAccT, first),
     Runner().
 
 %%%============================================================================

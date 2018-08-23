@@ -10,6 +10,7 @@
             small_load_with2i/1,
             query_count/1,
             multibucket_fold/1,
+            foldobjects_bybucket_range/1,
             rotating_objects/1]).
 
 all() -> [
@@ -34,14 +35,15 @@ single_object_with2i(_Config) ->
     TestSpec = [{add, list_to_binary("integer_int"), 100},
                 {add, list_to_binary("binary_bin"), <<100:32/integer>>}],
     ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
-    
-    IdxQ1 = {index_query,
-                "Bucket1",
-                {fun testutil:foldkeysfun/3, []},
-                {list_to_binary("binary_bin"),
-                    <<99:32/integer>>, <<101:32/integer>>},
-                {true, undefined}},
-    {async, IdxFolder1} = leveled_bookie:book_returnfolder(Bookie1, IdxQ1),
+
+    %% @TODO replace all index queries with new Top-Level API if tests
+    %% pass
+    {async, IdxFolder1} = leveled_bookie:book_indexfold(Bookie1,
+                                                        "Bucket1",
+                                                        {fun testutil:foldkeysfun/3, []},
+                                                        {list_to_binary("binary_bin"),
+                                                         <<99:32/integer>>, <<101:32/integer>>},
+                                                        {true, undefined}),
     R1 = IdxFolder1(),
     io:format("R1 of ~w~n", [R1]),
     true = [{<<100:32/integer>>,"Key1"}] == R1,
@@ -127,28 +129,26 @@ small_load_with2i(_Config) ->
     %% Get the Buckets Keys and Hashes for the whole bucket
     FoldObjectsFun = fun(B, K, V, Acc) -> [{B, K, erlang:phash2(V)}|Acc]
                                             end,
-    {async, HTreeF1} = leveled_bookie:book_returnfolder(Bookie1,
-                                                        {foldobjects_allkeys,
-                                                            ?RIAK_TAG,
-                                                            FoldObjectsFun,
-                                                            false}),
+
+    {async, HTreeF1} = leveled_bookie:book_objectfold(Bookie1,
+                                                      ?RIAK_TAG,
+                                                      {FoldObjectsFun, []},
+                                                      false),
+
     KeyHashList1 = HTreeF1(),
-    {async, HTreeF2} = leveled_bookie:book_returnfolder(Bookie1,
-                                                        {foldobjects_bybucket,
-                                                            ?RIAK_TAG,
-                                                            "Bucket",
-                                                            all,
-                                                            FoldObjectsFun,
-                                                            false}),
+    {async, HTreeF2} = leveled_bookie:book_objectfold(Bookie1,
+                                                      ?RIAK_TAG,
+                                                      "Bucket",
+                                                      all,
+                                                      {FoldObjectsFun, []},
+                                                      false),
     KeyHashList2 = HTreeF2(),
-    {async, HTreeF3} = leveled_bookie:book_returnfolder(Bookie1,
-                                                        {foldobjects_byindex,
-                                                            ?RIAK_TAG,
-                                                            "Bucket",
-                                                            {"idx1_bin",
-                                                                "#", "|"},
-                                                            FoldObjectsFun,
-                                                            false}),
+    {async, HTreeF3} = leveled_bookie:book_objectfold(Bookie1,
+                                                      ?RIAK_TAG,
+                                                      "Bucket",
+                                                      {"idx1_bin", "#", "|"},
+                                                      {FoldObjectsFun, []},
+                                                      false),
     KeyHashList3 = HTreeF3(),
     true = 9901 == length(KeyHashList1), % also includes the test object
     true = 9900 == length(KeyHashList2),
@@ -173,14 +173,12 @@ small_load_with2i(_Config) ->
     true = Total2 == Total1, 
     
     FoldBucketsFun = fun(B, Acc) -> sets:add_element(B, Acc) end,
+
     % this should find Bucket and Bucket1 - as we can now find string-based 
     % buckets using bucket_list - i.e. it isn't just binary buckets now
-    BucketListQuery = {bucket_list,
-                        ?RIAK_TAG,
-                        {FoldBucketsFun, sets:new()}},
-    {async, BL} = leveled_bookie:book_returnfolder(Bookie2, BucketListQuery),
+    {async, BL} = leveled_bookie:book_bucketlist(Bookie2, ?RIAK_TAG, {FoldBucketsFun, sets:new()}, all),
     true = sets:size(BL()) == 2,
-    
+
     ok = leveled_bookie:book_close(Bookie2),
     testutil:reset_filestructure().
 
@@ -511,16 +509,20 @@ multibucket_fold(_Config) ->
                                         IndexGen,
                                         <<"Bucket4">>),
     testutil:riakload(Bookie1, ObjL4),
-    Q1 = {foldheads_bybucket,
-                ?RIAK_TAG, 
-                [<<"Bucket1">>, <<"Bucket4">>], bucket_list,
-                fun(B, K, _PO, Acc) ->
+
+    FF = fun(B, K, _PO, Acc) ->
                     [{B, K}|Acc]
-                end,
-                false, 
-                true, 
-                false},
-    {async, R1} = leveled_bookie:book_returnfolder(Bookie1, Q1),
+         end,
+    FoldAccT = {FF, []},
+
+    {async, R1} = leveled_bookie:book_headfold(Bookie1,
+                                               ?RIAK_TAG,
+                                               {bucket_list, [<<"Bucket1">>, <<"Bucket4">>]},
+                                               FoldAccT,
+                                               false,
+                                               true,
+                                               false),
+
     O1 = length(R1()),
     io:format("Result R1 of length ~w~n", [O1]),
     
@@ -544,10 +546,6 @@ multibucket_fold(_Config) ->
     ok = leveled_bookie:book_close(Bookie1),
     testutil:reset_filestructure().
 
-
-
-
-
 rotating_objects(_Config) ->
     RootPath = testutil:reset_filestructure(),
     ok = testutil:rotating_object_check(RootPath, "Bucket1", 10),
@@ -558,8 +556,50 @@ rotating_objects(_Config) ->
     ok = testutil:rotating_object_check(RootPath, "Bucket6", 9600),
     testutil:reset_filestructure().
 
+foldobjects_bybucket_range(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    {ok, Bookie1} = leveled_bookie:book_start(RootPath,
+                                              2000,
+                                              50000000,
+                                              testutil:sync_strategy()),
+    ObjectGen = testutil:get_compressiblevalue_andinteger(),
+    IndexGen = fun() -> [] end,
+    ObjL1 = testutil:generate_objects(1300,
+                                      {fixed_binary, 1},
+                                      [],
+                                      ObjectGen,
+                                      IndexGen,
+                                      <<"Bucket1">>),
+    testutil:riakload(Bookie1, ObjL1),
 
+    FoldKeysFun = fun(_B, K, Acc) ->
+                          [ K |Acc]
+                  end,
 
+    StartKey = testutil:fixed_bin_key(123),
+    EndKey = testutil:fixed_bin_key(779),
 
-    
+    {async, Folder} = leveled_bookie:book_objectfold(Bookie1,
+                                                     ?RIAK_TAG,
+                                                     <<"Bucket1">>,
+                                                     {StartKey, EndKey}, {FoldKeysFun, []},
+                                                     true
+                                                    ),
+    ResLen = length(Folder()),
+    io:format("Length of Result of folder ~w~n", [ResLen]),
+    true = 657 == ResLen,
 
+    {async, AllFolder} = leveled_bookie:book_objectfold(Bookie1,
+                                                        ?RIAK_TAG,
+                                                        <<"Bucket1">>,
+                                                        all,
+                                                        {FoldKeysFun, []},
+                                                        true
+                                                       ),
+
+    AllResLen = length(AllFolder()),
+    io:format("Length of Result of all keys folder ~w~n", [AllResLen]),
+    true = 1300 == AllResLen,
+
+    ok = leveled_bookie:book_close(Bookie1),
+    testutil:reset_filestructure().
