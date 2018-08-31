@@ -67,7 +67,8 @@
         riak_extract_metadata/2,
         segment_hash/1,
         to_lookup/1,
-        riak_metadata_to_binary/2]).         
+        riak_metadata_to_binary/2,
+        next_key/1]).         
 
 -define(V1_VERS, 1).
 -define(MAGIC, 53). % riak_kv -> riak_object
@@ -252,6 +253,8 @@ from_ledgerkey({?IDX_TAG, ?ALL_BUCKETS, {_IdxFld, IdxVal}, {Bucket, Key}}) ->
     {Bucket, Key, IdxVal};
 from_ledgerkey({?IDX_TAG, Bucket, {_IdxFld, IdxVal}, Key}) ->
     {Bucket, Key, IdxVal};
+from_ledgerkey({?HEAD_TAG, Bucket, Key, SubKey}) ->
+    {Bucket, {Key, SubKey}};
 from_ledgerkey({_Tag, Bucket, Key, _SubKey}) ->
     {Bucket, Key}.
 
@@ -834,6 +837,13 @@ get_metadata_from_siblings(<<ValLen:32/integer, Rest0/binary>>,
                                     MetaBin:MetaLen/binary>>,
                                     [LastMod|LastMods]).
 
+
+next_key(Key) when is_binary(Key) ->
+    <<Key/binary, 0>>;
+next_key(Key) when is_integer(Key) ->
+    Key + 1;
+next_key(Key) when is_list(Key) ->
+    Key ++ [0].
 
 
 

@@ -2166,6 +2166,37 @@ is_empty_test() ->
 
     ok = leveled_bookie:book_close(Bookie1).
 
+is_empty_headonly_test() ->
+    RootPath = reset_filestructure(),
+    {ok, Bookie1} = book_start([{root_path, RootPath},
+                                    {max_journalsize, 1000000},
+                                    {cache_size, 500},
+                                    {head_only, no_lookup}]),
+    ?assertMatch(true, book_isempty(Bookie1, ?HEAD_TAG)),
+    ObjSpecs = 
+        [{add, <<"B1">>, <<"K1">>, 1, 100},
+            {remove, <<"B1">>, <<"K1">>, 0, null}],
+    ok = book_mput(Bookie1, ObjSpecs),
+    ?assertMatch(false, book_isempty(Bookie1, ?HEAD_TAG)),
+    ok = book_close(Bookie1).
+
+is_empty_stringkey_test() ->
+    RootPath = reset_filestructure(),
+    {ok, Bookie1} = book_start([{root_path, RootPath},
+                                    {max_journalsize, 1000000},
+                                    {cache_size, 500}]),
+    ?assertMatch(true, book_isempty(Bookie1, ?STD_TAG)),
+    Past = leveled_util:integer_now() - 300,
+    ?assertMatch(true, leveled_bookie:book_isempty(Bookie1, ?STD_TAG)),
+    ok = book_tempput(Bookie1, 
+                        "B", "K", {value, <<"V">>}, [], 
+                        ?STD_TAG, Past),
+    ok = book_put(Bookie1, 
+                    "B", "K0", {value, <<"V">>}, [], 
+                    ?STD_TAG),
+    ?assertMatch(false, book_isempty(Bookie1, ?STD_TAG)),
+    ok = book_close(Bookie1).
+
 scan_table_test() ->
     K1 = leveled_codec:to_ledgerkey(<<"B1">>,
                                         <<"K1">>,

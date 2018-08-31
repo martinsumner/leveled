@@ -437,23 +437,26 @@ get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList, {C, L}) ->
         null ->
             leveled_log:log("B0008",[]),
             BKList;
-        {{B, K}, V} when is_binary(B), is_binary(K) ->
+        {{B, K}, V} ->
             case leveled_codec:is_active({Tag, B, K, null}, V, Now) of
                 true ->
                     leveled_log:log("B0009",[B]),
-                    get_nextbucket(<<B/binary, 0>>,
+                    get_nextbucket(leveled_codec:next_key(B),
                                     null,
                                     Tag,
                                     LedgerSnapshot,
                                     [{B, K}|BKList],
                                     {C + 1, L});
                 false ->
-                    get_nextbucket(B,
-                                    <<K/binary, 0>>,
-                                    Tag,
-                                    LedgerSnapshot,
-                                    BKList,
-                                    {C, L})
+                    NK = 
+                        case Tag of
+                            ?HEAD_TAG ->
+                                {PK, SK} = K,
+                                {PK, leveled_codec:next_key(SK)};
+                            _ ->
+                                leveled_codec:next_key(K)
+                        end,
+                    get_nextbucket(B, NK, Tag, LedgerSnapshot, BKList, {C, L})
             end;
         {NB, _V} ->
             leveled_log:log("B0010",[NB]),
