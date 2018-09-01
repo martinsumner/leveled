@@ -23,8 +23,8 @@
 
 -export([
             bucket_sizestats/3,
-            binary_bucketlist/4,
-            binary_bucketlist/5,
+            bucket_list/4,
+            bucket_list/5,
             index_query/3,
             bucketkey_query/4,
             bucketkey_query/5,
@@ -73,19 +73,20 @@ bucket_sizestats(SnapFun, Bucket, Tag) ->
         end,
     {async, Runner}.
 
--spec binary_bucketlist(fun(), leveled_codec:tag(), fun(), any()) 
+-spec bucket_list(fun(), leveled_codec:tag(), fun(), any()) 
                                                             -> {async, fun()}.
 %% @doc
-%% List buckets for tag, assuming bucket names are all binary type
-binary_bucketlist(SnapFun, Tag, FoldBucketsFun, InitAcc) ->
-    binary_bucketlist(SnapFun, Tag, FoldBucketsFun, InitAcc, -1).
+%% List buckets for tag, assuming bucket names are all either binary, ascii 
+%% strings or integers 
+bucket_list(SnapFun, Tag, FoldBucketsFun, InitAcc) ->
+    bucket_list(SnapFun, Tag, FoldBucketsFun, InitAcc, -1).
 
--spec binary_bucketlist(fun(), leveled_codec:tag(), fun(), any(), integer()) 
+-spec bucket_list(fun(), leveled_codec:tag(), fun(), any(), integer()) 
                                                     -> {async, fun()}.
 %% @doc
 %% set Max Buckets to -1 to list all buckets, otherwise will only return
 %% MaxBuckets (use 1 to confirm that there exists any bucket for a given Tag)
-binary_bucketlist(SnapFun, Tag, FoldBucketsFun, InitAcc, MaxBuckets) ->
+bucket_list(SnapFun, Tag, FoldBucketsFun, InitAcc, MaxBuckets) ->
     Runner = 
         fun() ->
             {ok, LedgerSnapshot, _JournalSnapshot} = SnapFun(),

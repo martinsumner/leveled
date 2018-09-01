@@ -503,7 +503,7 @@ book_head(Pid, Bucket, Key) ->
 %% {bucket_stats, Bucket}  -> return a key count and total object size within
 %% a bucket
 %% {riakbucket_stats, Bucket} -> as above, but for buckets with the Riak Tag
-%% {binary_bucketlist, Tag, {FoldKeysFun, Acc}} -> if we assume buckets and
+%% {bucket_list, Tag, {FoldKeysFun, Acc}} -> if we assume buckets and
 %% keys are binaries, provides a fast bucket list function
 %% {index_query,
 %%        Constraint,
@@ -1200,14 +1200,14 @@ get_runner(State,
     leveled_runner:foldobjects_byindex(SnapFun, 
                                         {Tag, Bucket, Field, FromTerm, ToTerm},
                                         FoldObjectsFun);
-get_runner(State, {binary_bucketlist, Tag, FoldAccT}) ->
+get_runner(State, {bucket_list, Tag, FoldAccT}) ->
     {FoldBucketsFun, Acc} = FoldAccT,
     SnapFun = return_snapfun(State, ledger, no_lookup, false, false),
-    leveled_runner:binary_bucketlist(SnapFun, Tag, FoldBucketsFun, Acc);
+    leveled_runner:bucket_list(SnapFun, Tag, FoldBucketsFun, Acc);
 get_runner(State, {first_bucket, Tag, FoldAccT}) ->
     {FoldBucketsFun, Acc} = FoldAccT,
     SnapFun = return_snapfun(State, ledger, no_lookup, false, false),
-    leveled_runner:binary_bucketlist(SnapFun, Tag, FoldBucketsFun, Acc, 1);
+    leveled_runner:bucket_list(SnapFun, Tag, FoldBucketsFun, Acc, 1);
 %% Set of specific runners, primarily used as exmaples for tests
 get_runner(State, DeprecatedQuery) ->
     get_deprecatedrunner(State, DeprecatedQuery).
