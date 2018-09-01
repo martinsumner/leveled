@@ -458,10 +458,7 @@ get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList, {C, L}) ->
                                 leveled_codec:next_key(K)
                         end,
                     get_nextbucket(B, NK, Tag, LedgerSnapshot, BKList, {C, L})
-            end;
-        {NB, _V} ->
-            leveled_log:log("B0010",[NB]),
-            []
+            end
     end.
 
 

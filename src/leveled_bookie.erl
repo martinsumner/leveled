@@ -162,6 +162,7 @@
 -type head_timings() :: no_timing|#head_timings{}.
 -type timing_types() :: head|get|put|fold.
 -type recent_aae() :: false|#recent_aae{}|undefined.
+-type key() :: binary()|integer()|string().
 -type open_options() :: 
     %% For full description of options see ../docs/STARTUP_OPTIONS.md
     [{root_path, string()|undefined} |
@@ -329,7 +330,7 @@ book_start(Opts) ->
     gen_server:start_link(?MODULE, [set_defaults(Opts)], []).
 
 
--spec book_tempput(pid(), any(), any(), any(), 
+-spec book_tempput(pid(), key(), key(), any(), 
                     leveled_codec:index_specs(), 
                     leveled_codec:tag(), integer()) -> ok|pause.
 
@@ -396,7 +397,7 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs) ->
 book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag) ->
     book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, infinity).
 
--spec book_put(pid(), any(), any(), any(), 
+-spec book_put(pid(), key(), key(), any(), 
                 leveled_codec:index_specs(), 
                 leveled_codec:tag(), infinity|integer()) -> ok|pause.
 
@@ -432,7 +433,7 @@ book_mput(Pid, ObjectSpecs) ->
 book_mput(Pid, ObjectSpecs, TTL) ->
     gen_server:call(Pid, {mput, ObjectSpecs, TTL}, infinity).
 
--spec book_delete(pid(), any(), any(), leveled_codec:index_specs()) 
+-spec book_delete(pid(), key(), key(), leveled_codec:index_specs()) 
                                                                 -> ok|pause.
 
 %% @doc 
@@ -444,9 +445,9 @@ book_delete(Pid, Bucket, Key, IndexSpecs) ->
     book_put(Pid, Bucket, Key, delete, IndexSpecs, ?STD_TAG).
 
 
--spec book_get(pid(), any(), any(), leveled_codec:tag()) 
+-spec book_get(pid(), key(), key(), leveled_codec:tag()) 
                                                     -> {ok, any()}|not_found.
--spec book_head(pid(), any(), any(), leveled_codec:tag())
+-spec book_head(pid(), key(), key(), leveled_codec:tag())
                                                     -> {ok, any()}|not_found.
 
 %% @doc - GET and HEAD requests
