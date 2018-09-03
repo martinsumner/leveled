@@ -2183,12 +2183,12 @@ is_empty_headonly_test() ->
 
 
 foldkeys_headonly_test() ->
-    foldkeys_headonly_tester(5000, 25).
+    foldkeys_headonly_tester(5000, 25, "BucketStr"),
+    foldkeys_headonly_tester(2000, 25, <<"B0">>).
 
 
-foldkeys_headonly_tester(ObjectCount, BlockSize) ->
+foldkeys_headonly_tester(ObjectCount, BlockSize, BStr) ->
     RootPath = reset_filestructure(),
-    BStr = "BucketStr",
     
     {ok, Bookie1} = book_start([{root_path, RootPath},
                                     {max_journalsize, 1000000},
