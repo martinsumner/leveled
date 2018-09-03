@@ -163,6 +163,8 @@
 -type timing_types() :: head|get|put|fold.
 -type recent_aae() :: false|#recent_aae{}|undefined.
 -type key() :: binary()|string().
+    % Keys SHOULD be binary()
+    % string() support is a legacy of old tests
 -type open_options() :: 
     %% For full description of options see ../docs/STARTUP_OPTIONS.md
     [{root_path, string()|undefined} |
@@ -278,6 +280,8 @@
             % and are only compressed when they are first subject to compaction
             % Defaults to ?COMPRESSION_POINT
         ].
+
+-export_type([key/0]).
 
 
 %%%============================================================================

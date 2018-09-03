@@ -837,14 +837,13 @@ get_metadata_from_siblings(<<ValLen:32/integer, Rest0/binary>>,
                                     MetaBin:MetaLen/binary>>,
                                     [LastMod|LastMods]).
 
-
+-spec next_key(leveled_bookie:key()) -> leveled_bookie:key().
+%% @doc
+%% Get the next key to iterate from a given point
 next_key(Key) when is_binary(Key) ->
     <<Key/binary, 0>>;
-next_key(Key) when is_integer(Key) ->
-    Key + 1;
 next_key(Key) when is_list(Key) ->
     Key ++ [0].
-
 
 
 %%%============================================================================
