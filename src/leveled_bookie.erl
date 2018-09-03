@@ -2181,6 +2181,57 @@ is_empty_headonly_test() ->
     ?assertMatch(false, book_isempty(Bookie1, ?HEAD_TAG)),
     ok = book_close(Bookie1).
 
+
+foldkeys_headonly_test() ->
+    foldkeys_headonly_tester(5000, 25).
+
+
+foldkeys_headonly_tester(ObjectCount, BlockSize) ->
+    RootPath = reset_filestructure(),
+    BStr = "BucketStr",
+    
+    {ok, Bookie1} = book_start([{root_path, RootPath},
+                                    {max_journalsize, 1000000},
+                                    {cache_size, 500},
+                                    {head_only, no_lookup}]),
+    GenObjSpecFun =
+        fun(I) ->
+            Key = I rem 6,
+            {add, BStr, <<Key:8/integer>>, I, erlang:phash2(I)}
+        end,
+    ObjSpecs = lists:map(GenObjSpecFun, lists:seq(1, ObjectCount)),
+    ObjSpecBlocks = 
+        lists:map(fun(I) ->
+                        lists:sublist(ObjSpecs, I * BlockSize + 1, BlockSize)
+                    end,
+                    lists:seq(0, ObjectCount div BlockSize - 1)),
+    lists:map(fun(Block) -> book_mput(Bookie1, Block) end, ObjSpecBlocks),
+    ?assertMatch(false, book_isempty(Bookie1, ?HEAD_TAG)),
+    
+    FolderT = 
+        {keylist, 
+            ?HEAD_TAG, BStr, 
+            {fun(_B, {K, SK}, Acc) -> [{K, SK}|Acc] end, []}
+        },
+    {async, Folder1} = book_returnfolder(Bookie1, FolderT),
+    Key_SKL1 = lists:reverse(Folder1()),
+    Key_SKL_Compare = 
+        lists:usort(lists:map(fun({add, _B, K, SK, _V}) -> {K, SK} end, ObjSpecs)),
+    ?assertMatch(Key_SKL_Compare, Key_SKL1),
+
+    ok = book_close(Bookie1),
+    
+    {ok, Bookie2} = book_start([{root_path, RootPath},
+                                    {max_journalsize, 1000000},
+                                    {cache_size, 500},
+                                    {head_only, no_lookup}]),
+    {async, Folder2} = book_returnfolder(Bookie2, FolderT),
+    Key_SKL2 = lists:reverse(Folder2()),
+    ?assertMatch(Key_SKL_Compare, Key_SKL2),
+
+    ok = book_close(Bookie2).
+
+
 is_empty_stringkey_test() ->
     RootPath = reset_filestructure(),
     {ok, Bookie1} = book_start([{root_path, RootPath},
