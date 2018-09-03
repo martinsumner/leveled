@@ -40,8 +40,6 @@
         {info, "Bucket list finds no more results"}},
     {"B0009",
         {info, "Bucket list finds Bucket ~w"}},
-    {"B0010",
-        {info, "Bucket list finds non-binary Bucket ~w"}},
     {"B0011",
         {warn, "Call to destroy the store and so all files to be removed"}},
     {"B0013",

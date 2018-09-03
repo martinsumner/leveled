@@ -778,7 +778,7 @@ is_empty_test(_Config) ->
     ok = testutil:book_riakput(Bookie1, TestObject3, TestSpec3),
     
     FoldBucketsFun = fun(B, Acc) -> sets:add_element(B, Acc) end,
-    BucketListQuery = {binary_bucketlist,
+    BucketListQuery = {bucket_list,
                         ?RIAK_TAG,
                         {FoldBucketsFun, sets:new()}},
     {async, BL} = leveled_bookie:book_returnfolder(Bookie1, BucketListQuery),

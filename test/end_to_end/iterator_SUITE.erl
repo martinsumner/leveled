@@ -173,13 +173,13 @@ small_load_with2i(_Config) ->
     true = Total2 == Total1, 
     
     FoldBucketsFun = fun(B, Acc) -> sets:add_element(B, Acc) end,
-    % Should not find any buckets - as there is a non-binary bucket, and no
-    % binary ones
-    BucketListQuery = {binary_bucketlist,
+    % this should find Bucket and Bucket1 - as we can now find string-based 
+    % buckets using bucket_list - i.e. it isn't just binary buckets now
+    BucketListQuery = {bucket_list,
                         ?RIAK_TAG,
                         {FoldBucketsFun, sets:new()}},
     {async, BL} = leveled_bookie:book_returnfolder(Bookie2, BucketListQuery),
-    true = sets:size(BL()) == 0,
+    true = sets:size(BL()) == 2,
     
     ok = leveled_bookie:book_close(Bookie2),
     testutil:reset_filestructure().
@@ -394,7 +394,7 @@ query_count(_Config) ->
     testutil:check_forobject(Book4, TestObject),
     
     FoldBucketsFun = fun(B, Acc) -> sets:add_element(B, Acc) end,
-    BucketListQuery = {binary_bucketlist,
+    BucketListQuery = {bucket_list,
                         ?RIAK_TAG,
                         {FoldBucketsFun, sets:new()}},
     {async, BLF1} = leveled_bookie:book_returnfolder(Book4, BucketListQuery),

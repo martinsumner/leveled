@@ -162,6 +162,9 @@
 -type head_timings() :: no_timing|#head_timings{}.
 -type timing_types() :: head|get|put|fold.
 -type recent_aae() :: false|#recent_aae{}|undefined.
+-type key() :: binary()|string().
+    % Keys SHOULD be binary()
+    % string() support is a legacy of old tests
 -type open_options() :: 
     %% For full description of options see ../docs/STARTUP_OPTIONS.md
     [{root_path, string()|undefined} |
@@ -278,6 +281,8 @@
             % Defaults to ?COMPRESSION_POINT
         ].
 
+-export_type([key/0]).
+
 
 %%%============================================================================
 %%% API
@@ -329,7 +334,7 @@ book_start(Opts) ->
     gen_server:start_link(?MODULE, [set_defaults(Opts)], []).
 
 
--spec book_tempput(pid(), any(), any(), any(), 
+-spec book_tempput(pid(), key(), key(), any(), 
                     leveled_codec:index_specs(), 
                     leveled_codec:tag(), integer()) -> ok|pause.
 
@@ -396,7 +401,7 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs) ->
 book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag) ->
     book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, infinity).
 
--spec book_put(pid(), any(), any(), any(), 
+-spec book_put(pid(), key(), key(), any(), 
                 leveled_codec:index_specs(), 
                 leveled_codec:tag(), infinity|integer()) -> ok|pause.
 
@@ -432,7 +437,7 @@ book_mput(Pid, ObjectSpecs) ->
 book_mput(Pid, ObjectSpecs, TTL) ->
     gen_server:call(Pid, {mput, ObjectSpecs, TTL}, infinity).
 
--spec book_delete(pid(), any(), any(), leveled_codec:index_specs()) 
+-spec book_delete(pid(), key(), key(), leveled_codec:index_specs()) 
                                                                 -> ok|pause.
 
 %% @doc 
@@ -444,9 +449,9 @@ book_delete(Pid, Bucket, Key, IndexSpecs) ->
     book_put(Pid, Bucket, Key, delete, IndexSpecs, ?STD_TAG).
 
 
--spec book_get(pid(), any(), any(), leveled_codec:tag()) 
+-spec book_get(pid(), key(), key(), leveled_codec:tag()) 
                                                     -> {ok, any()}|not_found.
--spec book_head(pid(), any(), any(), leveled_codec:tag())
+-spec book_head(pid(), key(), key(), leveled_codec:tag())
                                                     -> {ok, any()}|not_found.
 
 %% @doc - GET and HEAD requests
@@ -503,7 +508,7 @@ book_head(Pid, Bucket, Key) ->
 %% {bucket_stats, Bucket}  -> return a key count and total object size within
 %% a bucket
 %% {riakbucket_stats, Bucket} -> as above, but for buckets with the Riak Tag
-%% {binary_bucketlist, Tag, {FoldKeysFun, Acc}} -> if we assume buckets and
+%% {bucket_list, Tag, {FoldKeysFun, Acc}} -> if we assume buckets and
 %% keys are binaries, provides a fast bucket list function
 %% {index_query,
 %%        Constraint,
@@ -1200,14 +1205,14 @@ get_runner(State,
     leveled_runner:foldobjects_byindex(SnapFun, 
                                         {Tag, Bucket, Field, FromTerm, ToTerm},
                                         FoldObjectsFun);
-get_runner(State, {binary_bucketlist, Tag, FoldAccT}) ->
+get_runner(State, {bucket_list, Tag, FoldAccT}) ->
     {FoldBucketsFun, Acc} = FoldAccT,
     SnapFun = return_snapfun(State, ledger, no_lookup, false, false),
-    leveled_runner:binary_bucketlist(SnapFun, Tag, FoldBucketsFun, Acc);
+    leveled_runner:bucket_list(SnapFun, Tag, FoldBucketsFun, Acc);
 get_runner(State, {first_bucket, Tag, FoldAccT}) ->
     {FoldBucketsFun, Acc} = FoldAccT,
     SnapFun = return_snapfun(State, ledger, no_lookup, false, false),
-    leveled_runner:binary_bucketlist(SnapFun, Tag, FoldBucketsFun, Acc, 1);
+    leveled_runner:bucket_list(SnapFun, Tag, FoldBucketsFun, Acc, 1);
 %% Set of specific runners, primarily used as exmaples for tests
 get_runner(State, DeprecatedQuery) ->
     get_deprecatedrunner(State, DeprecatedQuery).
@@ -2165,6 +2170,88 @@ is_empty_test() ->
     ?assertMatch(true, leveled_bookie:book_isempty(Bookie1, ?RIAK_TAG)),
 
     ok = leveled_bookie:book_close(Bookie1).
+
+is_empty_headonly_test() ->
+    RootPath = reset_filestructure(),
+    {ok, Bookie1} = book_start([{root_path, RootPath},
+                                    {max_journalsize, 1000000},
+                                    {cache_size, 500},
+                                    {head_only, no_lookup}]),
+    ?assertMatch(true, book_isempty(Bookie1, ?HEAD_TAG)),
+    ObjSpecs = 
+        [{add, <<"B1">>, <<"K1">>, <<1:8/integer>>, 100},
+            {remove, <<"B1">>, <<"K1">>, <<0:8/integer>>, null}],
+    ok = book_mput(Bookie1, ObjSpecs),
+    ?assertMatch(false, book_isempty(Bookie1, ?HEAD_TAG)),
+    ok = book_close(Bookie1).
+
+
+foldkeys_headonly_test() ->
+    foldkeys_headonly_tester(5000, 25, "BucketStr"),
+    foldkeys_headonly_tester(2000, 25, <<"B0">>).
+
+
+foldkeys_headonly_tester(ObjectCount, BlockSize, BStr) ->
+    RootPath = reset_filestructure(),
+    
+    {ok, Bookie1} = book_start([{root_path, RootPath},
+                                    {max_journalsize, 1000000},
+                                    {cache_size, 500},
+                                    {head_only, no_lookup}]),
+    GenObjSpecFun =
+        fun(I) ->
+            Key = I rem 6,
+            {add, BStr, <<Key:8/integer>>, integer_to_list(I), I}
+        end,
+    ObjSpecs = lists:map(GenObjSpecFun, lists:seq(1, ObjectCount)),
+    ObjSpecBlocks = 
+        lists:map(fun(I) ->
+                        lists:sublist(ObjSpecs, I * BlockSize + 1, BlockSize)
+                    end,
+                    lists:seq(0, ObjectCount div BlockSize - 1)),
+    lists:map(fun(Block) -> book_mput(Bookie1, Block) end, ObjSpecBlocks),
+    ?assertMatch(false, book_isempty(Bookie1, ?HEAD_TAG)),
+    
+    FolderT = 
+        {keylist, 
+            ?HEAD_TAG, BStr, 
+            {fun(_B, {K, SK}, Acc) -> [{K, SK}|Acc] end, []}
+        },
+    {async, Folder1} = book_returnfolder(Bookie1, FolderT),
+    Key_SKL1 = lists:reverse(Folder1()),
+    Key_SKL_Compare = 
+        lists:usort(lists:map(fun({add, _B, K, SK, _V}) -> {K, SK} end, ObjSpecs)),
+    ?assertMatch(Key_SKL_Compare, Key_SKL1),
+
+    ok = book_close(Bookie1),
+    
+    {ok, Bookie2} = book_start([{root_path, RootPath},
+                                    {max_journalsize, 1000000},
+                                    {cache_size, 500},
+                                    {head_only, no_lookup}]),
+    {async, Folder2} = book_returnfolder(Bookie2, FolderT),
+    Key_SKL2 = lists:reverse(Folder2()),
+    ?assertMatch(Key_SKL_Compare, Key_SKL2),
+
+    ok = book_close(Bookie2).
+
+
+is_empty_stringkey_test() ->
+    RootPath = reset_filestructure(),
+    {ok, Bookie1} = book_start([{root_path, RootPath},
+                                    {max_journalsize, 1000000},
+                                    {cache_size, 500}]),
+    ?assertMatch(true, book_isempty(Bookie1, ?STD_TAG)),
+    Past = leveled_util:integer_now() - 300,
+    ?assertMatch(true, leveled_bookie:book_isempty(Bookie1, ?STD_TAG)),
+    ok = book_tempput(Bookie1, 
+                        "B", "K", {value, <<"V">>}, [], 
+                        ?STD_TAG, Past),
+    ok = book_put(Bookie1, 
+                    "B", "K0", {value, <<"V">>}, [], 
+                    ?STD_TAG),
+    ?assertMatch(false, book_isempty(Bookie1, ?STD_TAG)),
+    ok = book_close(Bookie1).
 
 scan_table_test() ->
     K1 = leveled_codec:to_ledgerkey(<<"B1">>,
