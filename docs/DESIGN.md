@@ -1,4 +1,4 @@
-## Design 
+## Design
 
 The store is written in Erlang using the actor model, the primary actors being:
 
@@ -118,11 +118,17 @@ Three potential recovery strategies are supported to provide some flexibility fo
 
 - retain - on compaction KeyDeltas are retained in the Journal, only values are removed.
 
-- recalc (not yet implemented) - the compaction rules assume that on recovery the key changes will be recalculated by comparing the change with the current database state.
+- recalc (not yet implemented) - the compaction rules assume that on recovery the key changes will be recalculated by comparing the change with the current database state. In recovery the key changes will be recalculated by comparing the change with the current database state.
 
+## Head only
 
+Leveled can be started in `head_only` mode.  This is a special mode which dispenses with the long-term role of the Journal in retaining data.  This is a mode to be used in *special circumstances* when values are small, and Key/Value pairs are added in batches.
 
-n recovery the key changes will be recalculated by comparing the change with the current database state.
+In `head_only` mode, batches of keys and values are stored first in the Journal, however once the last element received by the Journal file has been persisted into the Ledger, the Journal file can be deleted.  The values are never returned from
+Journal except during startup to recover the in-memory part of the Ledger (the Bookie and Penciller's memory).
 
+There are two ways in which `head_only` mode can be enabled - `with_lookup` and `no_lookup`.  In `with_lookup` mode the an individual value can be fetched from Leveled using a HEAD request.  In `no_lookup`  mode, HEAD requests are not supported - values can only be returned using `fold_heads`.  The `no_lookup` mode is marginally more efficient in terms of CPU usage when under write pressure (it avoids generating key hashes and hash-based lookup indexes within the Penciller).
 
+The `head_only` mode was created so that it could be used as an AAE store in Riak - where values may simply be a version vector or a hash, and retention of data is not critical (it is not the primary store of real user's data).  Leveled is not optimised for supporting small values, the `head_only` mode improves on this when supporting small values.  However, the intention is that Leveled should remain for the long-term an LSM tree designed for scenarios with larger values.  Features, testing and support for `head_only` modes will be limited compared to support for Leveled running in its standard mode of operation.  For use cases where there is a need for `head_only` behaviour in the primary data store - then an alternative store would be a safer choice.
 
+There is no ability to mix `head_only` behaviour with standard behaviour.  there is no expected behaviour when switching databases between different `head_only` modes, and data loss is highly likely.
