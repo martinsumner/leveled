@@ -162,7 +162,7 @@
 -type head_timings() :: no_timing|#head_timings{}.
 -type timing_types() :: head|get|put|fold.
 -type recent_aae() :: false|#recent_aae{}|undefined.
--type key() :: binary()|integer()|string().
+-type key() :: binary()|string().
 -type open_options() :: 
     %% For full description of options see ../docs/STARTUP_OPTIONS.md
     [{root_path, string()|undefined} |
@@ -2175,8 +2175,8 @@ is_empty_headonly_test() ->
                                     {head_only, no_lookup}]),
     ?assertMatch(true, book_isempty(Bookie1, ?HEAD_TAG)),
     ObjSpecs = 
-        [{add, <<"B1">>, <<"K1">>, 1, 100},
-            {remove, <<"B1">>, <<"K1">>, 0, null}],
+        [{add, <<"B1">>, <<"K1">>, <<1:8/integer>>, 100},
+            {remove, <<"B1">>, <<"K1">>, <<0:8/integer>>, null}],
     ok = book_mput(Bookie1, ObjSpecs),
     ?assertMatch(false, book_isempty(Bookie1, ?HEAD_TAG)),
     ok = book_close(Bookie1).
@@ -2197,7 +2197,7 @@ foldkeys_headonly_tester(ObjectCount, BlockSize, BStr) ->
     GenObjSpecFun =
         fun(I) ->
             Key = I rem 6,
-            {add, BStr, <<Key:8/integer>>, I, erlang:phash2(I)}
+            {add, BStr, <<Key:8/integer>>, integer_to_list(I), I}
         end,
     ObjSpecs = lists:map(GenObjSpecFun, lists:seq(1, ObjectCount)),
     ObjSpecBlocks = 
