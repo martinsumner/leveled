@@ -18,7 +18,8 @@ all() -> [
             small_load_with2i,
             query_count,
             multibucket_fold,
-            rotating_objects
+            rotating_objects,
+            foldobjects_bybucket_range
             ].
 
 
@@ -572,7 +573,7 @@ foldobjects_bybucket_range(_Config) ->
                                       <<"Bucket1">>),
     testutil:riakload(Bookie1, ObjL1),
 
-    FoldKeysFun = fun(_B, K, Acc) ->
+    FoldKeysFun = fun(_B, K,_V, Acc) ->
                           [ K |Acc]
                   end,
 
