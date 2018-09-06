@@ -374,7 +374,7 @@ generate_objects(Count, KeyNumber, ObjL, Value, IndexGen) ->
     generate_objects(Count, KeyNumber, ObjL, Value, IndexGen, "Bucket").
 
 generate_objects(0, _KeyNumber, ObjL, _Value, _IndexGen, _Bucket) ->
-    ObjL;
+    lists:reverse(ObjL);
 generate_objects(Count, binary_uuid, ObjL, Value, IndexGen, Bucket) ->
     {Obj1, Spec1} = set_object(list_to_binary(Bucket),
                                 list_to_binary(leveled_util:generate_uuid()),
@@ -382,7 +382,7 @@ generate_objects(Count, binary_uuid, ObjL, Value, IndexGen, Bucket) ->
                                 IndexGen),
     generate_objects(Count - 1,
                         binary_uuid,
-                        ObjL ++ [{leveled_rand:uniform(), Obj1, Spec1}],
+                        [{leveled_rand:uniform(), Obj1, Spec1}|ObjL],
                         Value,
                         IndexGen,
                         Bucket);
@@ -393,7 +393,7 @@ generate_objects(Count, uuid, ObjL, Value, IndexGen, Bucket) ->
                                 IndexGen),
     generate_objects(Count - 1,
                         uuid,
-                        ObjL ++ [{leveled_rand:uniform(), Obj1, Spec1}],
+                        [{leveled_rand:uniform(), Obj1, Spec1}|ObjL],
                         Value,
                         IndexGen,
                         Bucket);
@@ -405,7 +405,7 @@ generate_objects(Count, {binary, KeyNumber}, ObjL, Value, IndexGen, Bucket) ->
                     IndexGen),
     generate_objects(Count - 1,
                         {binary, KeyNumber + 1},
-                        ObjL ++ [{leveled_rand:uniform(), Obj1, Spec1}],
+                        [{leveled_rand:uniform(), Obj1, Spec1}|ObjL],
                         Value,
                         IndexGen,
                         Bucket);
@@ -417,7 +417,7 @@ generate_objects(Count, {fixed_binary, KeyNumber}, ObjL, Value, IndexGen, Bucket
                     IndexGen),
     generate_objects(Count - 1,
                         {fixed_binary, KeyNumber + 1},
-                        ObjL ++ [{leveled_rand:uniform(), Obj1, Spec1}],
+                        [{leveled_rand:uniform(), Obj1, Spec1}|ObjL],
                         Value,
                         IndexGen,
                         Bucket);
@@ -428,7 +428,7 @@ generate_objects(Count, KeyNumber, ObjL, Value, IndexGen, Bucket) ->
                                 IndexGen),
     generate_objects(Count - 1,
                         KeyNumber + 1,
-                        ObjL ++ [{leveled_rand:uniform(), Obj1, Spec1}],
+                        [{leveled_rand:uniform(), Obj1, Spec1}|ObjL],
                         Value,
                         IndexGen,
                         Bucket).
