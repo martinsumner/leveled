@@ -140,6 +140,7 @@
                 cdb_options :: #cdb_options{} | undefined,
                 clerk :: pid() | undefined,
                 compaction_pending = false :: boolean(),
+                bookie_monref :: reference() | undefined,
                 is_snapshot = false :: boolean(),
                 compression_method = native :: lz4|native,
                 compress_on_receipt = false :: boolean(),
@@ -426,12 +427,17 @@ init([InkerOpts]) ->
     case {InkerOpts#inker_options.root_path,
             InkerOpts#inker_options.start_snapshot} of
         {undefined, true} ->
+            %% monitor the bookie, and close the snapshot when bookie
+            %% exits
+	    BookieMonitor = erlang:monitor(process, InkerOpts#inker_options.bookies_pid),
+
             SrcInker = InkerOpts#inker_options.source_inker,
             {Manifest,
                 ActiveJournalDB} = ink_registersnapshot(SrcInker, self()),
             {ok, #state{manifest=Manifest,
                             active_journaldb=ActiveJournalDB,
                             source_inker=SrcInker,
+                            bookie_monref=BookieMonitor,
                             is_snapshot=true}};
             %% Need to do something about timeout
         {_RootPath, false} ->
@@ -570,6 +576,12 @@ handle_cast({release_snapshot, Snapshot}, State) ->
     leveled_log:log("I0004", [length(Rs)]),
     {noreply, State#state{registered_snapshots=Rs}}.
 
+%% handle the bookie stopping and stop this snapshot
+handle_info({'DOWN', BookieMonRef, process, _BookiePid, _Info},
+	    State=#state{bookie_monref = BookieMonRef}) ->
+    %% Monitor only registered on snapshots
+    ok = ink_releasesnapshot(State#state.source_inker, self()),
+    {stop, normal, State};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -1298,5 +1310,44 @@ empty_manifest_test() ->
 coverage_cheat_test() ->
     {noreply, _State0} = handle_info(timeout, #state{}),
     {ok, _State1} = code_change(null, #state{}, null).
+
+handle_down_test() ->
+    RootPath = "../test/journal",
+    build_dummy_journal(),
+    CDBopts = #cdb_options{max_size=300000, binary_mode=true},
+    {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,
+                                          cdb_options=CDBopts,
+                                          compression_method=native,
+                                          compress_on_receipt=true}),
+
+    FakeBookie = spawn(fun loop/0),
+
+    Mon = erlang:monitor(process, FakeBookie),
+
+    SnapOpts = #inker_options{start_snapshot=true,
+                              bookies_pid = FakeBookie,
+                              source_inker=Ink1},
+
+    {ok, Snap1} = ink_snapstart(SnapOpts),
+
+    FakeBookie ! stop,
+
+    receive
+        {'DOWN', Mon, process, FakeBookie, normal} ->
+            %% Now we know that inker should have received this too!
+            %% (better than timer:sleep/1)
+            ok
+    end,
+
+    ?assertEqual(undefined, erlang:process_info(Snap1)),
+
+    ink_close(Ink1),
+    clean_testdir(RootPath).
+
+loop() ->
+    receive
+        stop ->
+            ok
+    end.
 
 -endif.
