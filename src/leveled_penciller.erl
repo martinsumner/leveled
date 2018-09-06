@@ -2156,4 +2156,57 @@ coverage_cheat_test() ->
     {noreply, _State0} = handle_info(timeout, #state{}),
     {ok, _State1} = code_change(null, #state{}, null).
 
+handle_down_test() ->
+    RootPath = "../test/ledger",
+    clean_testdir(RootPath),
+    {ok, PCLr} = pcl_start(#penciller_options{root_path=RootPath,
+                                                max_inmemory_tablesize=1000,
+                                                compression_method=native}),
+    FakeBookie = spawn(fun loop/0),
+
+    Mon = erlang:monitor(process, FakeBookie),
+
+    FakeBookie ! {snap, PCLr, self()},
+
+    {ok, PclSnap, null} =
+        receive
+            {FakeBookie, {ok, Snap, null}} ->
+                {ok, Snap, null}
+        end,
+
+    FakeBookie ! stop,
+
+    receive
+        {'DOWN', Mon, process, FakeBookie, normal} ->
+            %% Now we know that pclr should have received this too!
+            %% (better than timer:sleep/1)
+            ok
+    end,
+
+    ?assertEqual(undefined, erlang:process_info(PclSnap)),
+
+    pcl_close(PCLr),
+    clean_testdir(RootPath).
+
+%% the fake bookie. Some calls to leveled_bookie (like the two below)
+%% do not go via the gen_server (but it looks like they expect to be
+%% called by the gen_server, internally!) they use "self()" to
+%% populate the bookie's pid in the pclr. This process wrapping the
+%% calls ensures that the TEST controls the bookie's Pid. The
+%% FakeBookie.
+loop() ->
+    receive
+        {snap, PCLr, TestPid} ->
+            Res = leveled_bookie:snapshot_store(leveled_bookie:empty_ledgercache(),
+                                          PCLr,
+                                          null,
+                                          ledger,
+                                          undefined,
+                                          false),
+            TestPid ! {self(), Res},
+            loop();
+        stop ->
+            ok
+    end.
+
 -endif.
