@@ -100,6 +100,7 @@
             cdb_destroy/1,
             cdb_deletepending/1,
             cdb_deletepending/3,
+            cdb_isrolling/1,
             hashtable_calc/2]).
 
 -include_lib("eunit/include/eunit.hrl").
@@ -379,6 +380,13 @@ cdb_filename(Pid) ->
 %% probably or missing.  Does not do a definitive check
 cdb_keycheck(Pid, Key) ->
     gen_fsm:sync_send_event(Pid, {key_check, Key}, infinity).
+
+-spec cdb_isrolling(pid()) -> boolean().
+%% @doc
+%% Check to see if a cdb file is still rolling
+cdb_isrolling(Pid) ->
+    gen_fsm:sync_send_all_state_event(Pid, cdb_isrolling, infinity).
+
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -744,6 +752,8 @@ handle_sync_event(cdb_firstkey, _From, StateName, State) ->
     {reply, FirstKey, StateName, State};
 handle_sync_event(cdb_filename, _From, StateName, State) ->
     {reply, State#state.filename, StateName, State};
+handle_sync_event(cdb_isrolling, _From, StateName, State) ->
+    {reply, StateName == rolling, StateName, State};
 handle_sync_event(cdb_close, _From, delete_pending, State) ->
     leveled_log:log("CDB05", 
                         [State#state.filename, delete_pending, cdb_close]),

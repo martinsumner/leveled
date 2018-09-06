@@ -280,6 +280,10 @@
     {"I0019",
         {info, "After ~w PUTs total prepare time is ~w total cdb time is ~w "
                 ++ "and max prepare time is ~w and max cdb time is ~w"}},
+    {"I0020",
+        {info, "Journal backup completed to path=~s with file_count=~w"}},
+    {"I0021",
+        {info, "Ingoring filename=~s with SQN=~w and JournalSQN=~w"}},
     
     {"IC001",
         {info, "Closed for reason ~w so maybe leaving garbage"}},

@@ -161,6 +161,8 @@ reader(SQN, RootPath) ->
 %% disk
 writer(Manifest, ManSQN, RootPath) ->
     ManPath = leveled_inker:filepath(RootPath, manifest_dir),
+    ok = filelib:ensure_dir(ManPath), 
+        % When writing during backups, may not have been generated
     NewFN = filename:join(ManPath,
                             integer_to_list(ManSQN) ++ "." ++ ?MANIFEST_FILEX),
     TmpFN = filename:join(ManPath,
@@ -198,16 +200,21 @@ complete_filex() ->
     ?MANIFEST_FILEX.
 
 
-%%%============================================================================
-%%% Internal Functions
-%%%============================================================================
-
+-spec from_list(list()) -> manifest().
+%% @doc
+%% Convert from a flat list into a manifest with lookup jumps.  
+%% The opposite of to_list/1
 from_list(Manifest) ->
     % Manifest should already be sorted with the highest SQN at the head
     % This will be maintained so that we can fold from the left, and find
     % more recently added entries quicker - under the assumptions that fresh
     % reads are more common than stale reads
     lists:foldr(fun prepend_entry/2, [], Manifest).
+
+
+%%%============================================================================
+%%% Internal Functions
+%%%============================================================================
 
 prepend_entry(Entry, AccL) ->
     {SQN, _FN, _PidR, _LastKey} = Entry,
