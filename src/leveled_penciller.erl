@@ -257,6 +257,7 @@
                 is_snapshot = false :: boolean(),
                 snapshot_fully_loaded = false :: boolean(),
                 source_penciller :: pid() | undefined,
+		bookie_monref :: reference() | undefined,
                 levelzero_astree :: list() | undefined,
                 
                 work_ongoing = false :: boolean(), % i.e. compaction work
@@ -583,6 +584,10 @@ init([PCLopts]) ->
         {undefined, _Snapshot=true, Query, BookiesMem} ->
             SrcPenciller = PCLopts#penciller_options.source_penciller,
             LongRunning = PCLopts#penciller_options.snapshot_longrunning,
+            %% monitor the bookie, and close the snapshot when bookie
+            %% exits
+	    BookieMonitor =  erlang:monitor(process, PCLopts#penciller_options.bookies_pid),
+
             {ok, State} = pcl_registersnapshot(SrcPenciller, 
                                                 self(), 
                                                 Query, 
@@ -590,7 +595,8 @@ init([PCLopts]) ->
                                                 LongRunning),
             leveled_log:log("P0001", [self()]),
             {ok, State#state{is_snapshot=true,
-                                source_penciller=SrcPenciller}};
+			     bookie_monref = BookieMonitor,
+			     source_penciller=SrcPenciller}};
         {_RootPath, _Snapshot=false, _Q, _BM} ->
             start_from_file(PCLopts)
     end.    
@@ -943,6 +949,11 @@ handle_cast(work_for_clerk, State) ->
     end.
 
 
+%% handle the bookie stopping and stop this snapshot
+handle_info({'DOWN', BookieMonRef, process, _BookiePid, _Info},
+	    State=#state{bookie_monref = BookieMonRef}) ->
+    ok = pcl_releasesnapshot(State#state.source_penciller, self()),
+    {stop, normal, State};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -2144,5 +2155,58 @@ timings_test() ->
 coverage_cheat_test() ->
     {noreply, _State0} = handle_info(timeout, #state{}),
     {ok, _State1} = code_change(null, #state{}, null).
+
+handle_down_test() ->
+    RootPath = "../test/ledger",
+    clean_testdir(RootPath),
+    {ok, PCLr} = pcl_start(#penciller_options{root_path=RootPath,
+                                                max_inmemory_tablesize=1000,
+                                                compression_method=native}),
+    FakeBookie = spawn(fun loop/0),
+
+    Mon = erlang:monitor(process, FakeBookie),
+
+    FakeBookie ! {snap, PCLr, self()},
+
+    {ok, PclSnap, null} =
+        receive
+            {FakeBookie, {ok, Snap, null}} ->
+                {ok, Snap, null}
+        end,
+
+    FakeBookie ! stop,
+
+    receive
+        {'DOWN', Mon, process, FakeBookie, normal} ->
+            %% Now we know that pclr should have received this too!
+            %% (better than timer:sleep/1)
+            ok
+    end,
+
+    ?assertEqual(undefined, erlang:process_info(PclSnap)),
+
+    pcl_close(PCLr),
+    clean_testdir(RootPath).
+
+%% the fake bookie. Some calls to leveled_bookie (like the two below)
+%% do not go via the gen_server (but it looks like they expect to be
+%% called by the gen_server, internally!) they use "self()" to
+%% populate the bookie's pid in the pclr. This process wrapping the
+%% calls ensures that the TEST controls the bookie's Pid. The
+%% FakeBookie.
+loop() ->
+    receive
+        {snap, PCLr, TestPid} ->
+            Res = leveled_bookie:snapshot_store(leveled_bookie:empty_ledgercache(),
+                                          PCLr,
+                                          null,
+                                          ledger,
+                                          undefined,
+                                          false),
+            TestPid ! {self(), Res},
+            loop();
+        stop ->
+            ok
+    end.
 
 -endif.
