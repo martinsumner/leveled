@@ -4,7 +4,6 @@
 -export([all/0]).
 -export([hot_backup_simple/1,
             hot_backup_changes/1,
-            hot_backup_double/1,
             retain_strategy/1,
             recovr_strategy/1,
             aae_missingjournal/1,
@@ -15,7 +14,6 @@
 all() -> [
             hot_backup_simple,
             hot_backup_changes,
-            hot_backup_double,
             retain_strategy,
             recovr_strategy,
             aae_missingjournal,
@@ -34,6 +32,7 @@ hot_backup_simple(_Config) ->
     % 1 - load a Bookie, take a backup, delete the original path, restore from
     % that path
     RootPath = testutil:reset_filestructure(),
+    BackupPath = testutil:reset_filestructure("backup0"),
     BookOpts = [{root_path, RootPath},
                     {cache_size, 1000},
                     {max_journalsize, 10000000},
@@ -41,34 +40,7 @@ hot_backup_simple(_Config) ->
     {ok, Spcl1, LastV1} = rotating_object_check(BookOpts, "Bucket1", 10000),
     {ok, Book1} = leveled_bookie:book_start(BookOpts),
     {async, BackupFun} = leveled_bookie:book_hotbackup(Book1),
-    BackupPath = testutil:reset_filestructure("backup0"),
     ok = BackupFun(BackupPath),
-    ok = leveled_bookie:book_close(Book1),
-    RootPath = testutil:reset_filestructure(),
-    BookOptsBackup = [{root_path, BackupPath},
-                        {cache_size, 2000},
-                        {max_journalsize, 20000000},
-                        {sync_strategy, testutil:sync_strategy()}],
-    {ok, BookBackup} = leveled_bookie:book_start(BookOptsBackup),
-    ok = testutil:check_indexed_objects(BookBackup, "Bucket1", Spcl1, LastV1),
-    ok = leveled_bookie:book_close(BookBackup),
-    BackupPath = testutil:reset_filestructure("backup0").
-
-hot_backup_double(_Config) ->
-    % As with simple test, but check that calling for backup twice doesn't have
-    % any side effects
-    RootPath = testutil:reset_filestructure(),
-    BookOpts = [{root_path, RootPath},
-                    {cache_size, 1000},
-                    {max_journalsize, 10000000},
-                    {sync_strategy, testutil:sync_strategy()}],
-    {ok, Spcl1, LastV1} = rotating_object_check(BookOpts, "Bucket1", 4000),
-    {ok, Book1} = leveled_bookie:book_start(BookOpts),
-    {async, BackupFun1} = leveled_bookie:book_hotbackup(Book1),
-    BackupPath = testutil:reset_filestructure("backup0"),
-    ok = BackupFun1(BackupPath),
-    {async, BackupFun2} = leveled_bookie:book_hotbackup(Book1),
-    ok = BackupFun2(BackupPath),
     ok = leveled_bookie:book_close(Book1),
     RootPath = testutil:reset_filestructure(),
     BookOptsBackup = [{root_path, BackupPath},
@@ -111,9 +83,15 @@ hot_backup_changes(_Config) ->
     ok = BackupFun3(BackupPath),
     {ok, FileList3} = 
         file:list_dir(filename:join(BackupPath, "journal/journal_files/")),
+    % Confirm null impact of backing up twice in a row
+    {async, BackupFun4} = leveled_bookie:book_hotbackup(Book1),
+    ok = BackupFun4(BackupPath),
+    {ok, FileList4} = 
+        file:list_dir(filename:join(BackupPath, "journal/journal_files/")),
 
     true = length(FileList2) > length(FileList1),
     true = length(FileList2) > length(FileList3),
+    true = length(FileList3) == length(FileList4),
 
     ok = leveled_bookie:book_close(Book1),
 
