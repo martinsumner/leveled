@@ -553,18 +553,23 @@ handle_call({trim, PersistedSQN}, _From, State) ->
     ok = leveled_iclerk:clerk_trim(State#state.clerk, self(), PersistedSQN),
     {reply, ok, State};
 handle_call(roll, _From, State) ->
-    NewSQN = State#state.journal_sqn + 1,
-    {NewJournalP, Manifest1, NewManSQN} = 
-        roll_active(State#state.active_journaldb, 
-                    State#state.manifest, 
-                    NewSQN,
-                    State#state.cdb_options,
-                    State#state.root_path,
-                    State#state.manifest_sqn),
-    {reply, ok, State#state{journal_sqn = NewSQN,
-                                manifest = Manifest1,
-                                manifest_sqn = NewManSQN,
-                                active_journaldb = NewJournalP}};
+    case leveled_cdb:cdb_lastkey(State#state.active_journaldb) of
+        empty ->
+            {reply, ok, State};
+        _ ->
+            NewSQN = State#state.journal_sqn + 1,
+            {NewJournalP, Manifest1, NewManSQN} = 
+                roll_active(State#state.active_journaldb, 
+                            State#state.manifest, 
+                            NewSQN,
+                            State#state.cdb_options,
+                            State#state.root_path,
+                            State#state.manifest_sqn),
+            {reply, ok, State#state{journal_sqn = NewSQN,
+                                        manifest = Manifest1,
+                                        manifest_sqn = NewManSQN,
+                                        active_journaldb = NewJournalP}}
+    end;
 handle_call({backup, BackupPath}, _from, State) 
                                         when State#state.is_snapshot == true ->
     SW = os:timestamp(),
@@ -576,7 +581,7 @@ handle_call({backup, BackupPath}, _from, State)
                 true ->
                     BaseFN = filename:basename(FN),
                     BackupName = filename:join(BackupJFP, BaseFN),
-                    false = when_not_rolling(PidR),
+                    true = leveled_cdb:finished_rolling(PidR),
                     case file:make_link(FN ++ "." ++ ?JOURNAL_FILEX, 
                                             BackupName ++ "." ++ ?JOURNAL_FILEX) of
                         ok ->
@@ -711,19 +716,6 @@ start_from_file(InkOpts) ->
                     compress_on_receipt = PressOnReceipt,
                     clerk = Clerk}}.
 
-
-when_not_rolling(CDB) ->
-    RollerFun = 
-        fun(Sleep, WasRolling) ->
-            case WasRolling of 
-                false ->
-                    false;
-                true ->
-                    timer:sleep(Sleep),
-                    leveled_cdb:cdb_isrolling(CDB)
-            end
-        end,
-    lists:foldl(RollerFun, true, [0, 1000, 10000, 100000]).
 
 -spec shutdown_snapshots(list(tuple())) -> ok.
 %% @doc
@@ -983,9 +975,7 @@ open_all_manifest(Man0, RootPath, CDBOpts) ->
             NewManEntry = start_new_activejournal(LastSQN + 1,
                                                         RootPath,
                                                         CDBOpts),
-            leveled_imanifest:add_entry(ManToHead,
-                                        NewManEntry,
-                                        true);
+            leveled_imanifest:add_entry(ManToHead, NewManEntry, true);
         false ->
             {ok, HeadW} = leveled_cdb:cdb_open_writer(PendingHeadFN,
                                                         CDBOpts),

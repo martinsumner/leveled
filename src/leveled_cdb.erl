@@ -100,7 +100,9 @@
             cdb_destroy/1,
             cdb_deletepending/1,
             cdb_deletepending/3,
-            cdb_isrolling/1,
+            cdb_isrolling/1]).
+
+-export([finished_rolling/1,
             hashtable_calc/2]).
 
 -include_lib("eunit/include/eunit.hrl").
@@ -779,6 +781,25 @@ terminate(_Reason, _StateName, _State) ->
 
 code_change(_OldVsn, StateName, State, _Extra) ->
     {ok, StateName, State}.
+
+
+%%%============================================================================
+%%% External functions
+%%%============================================================================
+
+
+finished_rolling(CDB) ->
+    RollerFun = 
+        fun(Sleep, FinishedRolling) ->
+            case FinishedRolling of 
+                true ->
+                    true;
+                false ->
+                    timer:sleep(Sleep),
+                    not leveled_cdb:cdb_isrolling(CDB)
+            end
+        end,
+    lists:foldl(RollerFun, false, [0, 1000, 10000, 100000]).
 
 %%%============================================================================
 %%% Internal functions
@@ -2126,6 +2147,19 @@ emptyvalue_fromdict_test() ->
     io:format("D_Result is ~w~n", [D_Result]),
     ?assertMatch(KVP, D_Result),
     ok = file:delete("../test/from_dict_test_ev.cdb").
+
+
+empty_roll_test() ->
+    file:delete("../test/empty_roll.cdb"),
+    file:delete("../test/empty_roll.pnd"),
+    {ok, P1} = cdb_open_writer("../test/empty_roll.pnd",
+                                #cdb_options{binary_mode=true}),
+    ok = cdb_roll(P1),
+    true = finished_rolling(P1),
+    {ok, P2} = cdb_open_reader("../test/empty_roll.cdb", 
+                                #cdb_options{binary_mode=true}),
+    ok = cdb_close(P2),
+    ok = file:delete("../test/empty_roll.cdb").
 
 find_lastkey_test() ->
     file:delete("../test/lastkey.pnd"),

@@ -168,12 +168,9 @@ writer(Manifest, ManSQN, RootPath) ->
     TmpFN = filename:join(ManPath,
                             integer_to_list(ManSQN) ++ "." ++ ?PENDING_FILEX),
     MBin = term_to_binary(to_list(Manifest), [compressed]),
-    case filelib:is_file(NewFN) of
-        false ->
-            leveled_log:log("I0016", [ManSQN]),
-            ok = file:write_file(TmpFN, MBin),
-            ok = file:rename(TmpFN, NewFN)
-    end,
+    leveled_log:log("I0016", [ManSQN]),
+    ok = file:write_file(TmpFN, MBin),
+    ok = file:rename(TmpFN, NewFN),
     GC_SQN = ManSQN - ?MANIFESTS_TO_RETAIN,
     GC_Man = filename:join(ManPath,
                             integer_to_list(GC_SQN) ++ "." ++ ?MANIFEST_FILEX),
