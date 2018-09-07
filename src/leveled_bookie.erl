@@ -1169,7 +1169,9 @@ handle_call(hot_backup, _From, State) when State#state.head_only == false ->
             end
         end,
     InkerOpts = 
-        #inker_options{start_snapshot=true, source_inker=State#state.inker},
+        #inker_options{start_snapshot = true, 
+                        source_inker = State#state.inker,
+                        bookies_pid = self()},
     {ok, Snapshot} = leveled_inker:ink_snapstart(InkerOpts),
     {reply, {async, BackupFun(Snapshot)}, State};
 handle_call(close, _From, State) ->

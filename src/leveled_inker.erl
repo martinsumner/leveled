@@ -301,7 +301,7 @@ ink_doom(Pid) ->
 %%
 %% The InitAccFun should return an initial batch accumulator for each subfold.
 %% It is a 2-arity function that takes a filename and a MinSQN as an input 
-%% potentially to be use din logging 
+%% potentially to be used in logging 
 %%
 %% The BatchFun is a two arity function that should take as inputs:
 %% An overall accumulator
@@ -563,6 +563,7 @@ handle_call(roll, _From, State) ->
             {reply, ok, State};
         _ ->
             NewSQN = State#state.journal_sqn + 1,
+            SWroll = os:timestamp(),
             {NewJournalP, Manifest1, NewManSQN} = 
                 roll_active(State#state.active_journaldb, 
                             State#state.manifest, 
@@ -570,6 +571,7 @@ handle_call(roll, _From, State) ->
                             State#state.cdb_options,
                             State#state.root_path,
                             State#state.manifest_sqn),
+            leveled_log:log_timer("I0024", [NewSQN], SWroll),
             {reply, ok, State#state{journal_sqn = NewSQN,
                                         manifest = Manifest1,
                                         manifest_sqn = NewManSQN,
@@ -580,11 +582,14 @@ handle_call({backup, BackupPath}, _from, State)
     SW = os:timestamp(),
     BackupJFP = filepath(filename:join(BackupPath, ?JOURNAL_FP), journal_dir),
     ok = filelib:ensure_dir(BackupJFP),
+    {ok, CurrentFNs} = file:list_dir(BackupJFP),
+    leveled_log:log("I0023", [length(CurrentFNs)]),
     BackupFun =
-        fun({SQN, FN, PidR, LastKey}, Acc) ->
+        fun({SQN, FN, PidR, LastKey}, {ManAcc, FTRAcc}) ->
             case SQN < State#state.journal_sqn of
                 true ->
                     BaseFN = filename:basename(FN),
+                    ExtendedBaseFN = BaseFN ++ "." ++ ?JOURNAL_FILEX,
                     BackupName = filename:join(BackupJFP, BaseFN),
                     true = leveled_cdb:finished_rolling(PidR),
                     case file:make_link(FN ++ "." ++ ?JOURNAL_FILEX, 
@@ -594,16 +599,32 @@ handle_call({backup, BackupPath}, _from, State)
                         {error, eexist} ->
                             ok
                     end,
-                    [{SQN, BackupName, PidR, LastKey}|Acc];
+                    {[{SQN, BackupName, PidR, LastKey}|ManAcc],
+                        [ExtendedBaseFN|FTRAcc]};
                 false ->
                     leveled_log:log("I0021", [FN, SQN, State#state.journal_sqn]),
-                    Acc
+                    {ManAcc, FTRAcc}
             end
         end,
-    BackupManifest = 
+    {BackupManifest, FilesToRetain} = 
         lists:foldr(BackupFun, 
-                    [], 
-                    leveled_imanifest:to_list(State#state.manifest)),
+                    {[], []}, 
+                    leveled_imanifest:to_list(State#state.manifest)),    
+    
+    FilesToRemove = lists:subtract(CurrentFNs, FilesToRetain),
+    RemoveFun = 
+        fun(RFN) -> 
+            leveled_log:log("I0022", [RFN]),
+            RemoveFile = filename:join(BackupJFP, RFN),
+            case filelib:is_file(RemoveFile) 
+                    and not filelib:is_dir(RemoveFile) of 
+                true ->
+                    ok = file:delete(RemoveFile);
+                false ->
+                    ok
+            end
+        end,
+    lists:foreach(RemoveFun, FilesToRemove),
     leveled_imanifest:writer(leveled_imanifest:from_list(BackupManifest),
                                 State#state.manifest_sqn, 
                                 filename:join(BackupPath, ?JOURNAL_FP)),
@@ -793,6 +814,7 @@ put_object(LedgerKey, Object, KeyChanges, State) ->
                 State#state{journal_sqn=NewSQN},
                 byte_size(JournalBin)};
         roll ->
+            SWroll = os:timestamp(),
             {NewJournalP, Manifest1, NewManSQN} = 
                 roll_active(ActiveJournal, 
                             State#state.manifest, 
@@ -800,6 +822,7 @@ put_object(LedgerKey, Object, KeyChanges, State) ->
                             State#state.cdb_options,
                             State#state.root_path,
                             State#state.manifest_sqn),
+            leveled_log:log_timer("I0008", [], SWroll),
             ok = leveled_cdb:cdb_put(NewJournalP,
                                         JournalKey,
                                         JournalBin),
@@ -837,7 +860,6 @@ get_object(LedgerKey, SQN, Manifest, ToIgnoreKeyChanges) ->
 %% Roll the active journal, and start a new active journal, updating the 
 %% manifest
 roll_active(ActiveJournal, Manifest, NewSQN, CDBopts, RootPath, ManifestSQN) ->
-    SWroll = os:timestamp(),
     LastKey = leveled_cdb:cdb_lastkey(ActiveJournal),
     ok = leveled_cdb:cdb_roll(ActiveJournal),
     Manifest0 = 
@@ -847,7 +869,7 @@ roll_active(ActiveJournal, Manifest, NewSQN, CDBopts, RootPath, ManifestSQN) ->
     {_, _, NewJournalP, _} = ManEntry,
     Manifest1 = leveled_imanifest:add_entry(Manifest0, ManEntry, true),
     ok = leveled_imanifest:writer(Manifest1, ManifestSQN + 1, RootPath),
-    leveled_log:log_timer("I0008", [], SWroll),
+    
     {NewJournalP, Manifest1, ManifestSQN + 1}.
 
 -spec key_check(leveled_codec:ledger_key(), 
