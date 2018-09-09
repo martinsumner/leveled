@@ -37,7 +37,7 @@ hot_backup_simple(_Config) ->
                     {cache_size, 1000},
                     {max_journalsize, 10000000},
                     {sync_strategy, testutil:sync_strategy()}],
-    {ok, Spcl1, LastV1} = rotating_object_check(BookOpts, "Bucket1", 10000),
+    {ok, Spcl1, LastV1} = rotating_object_check(BookOpts, "Bucket1", 3200),
     {ok, Book1} = leveled_bookie:book_start(BookOpts),
     {async, BackupFun} = leveled_bookie:book_hotbackup(Book1),
     ok = BackupFun(BackupPath),
