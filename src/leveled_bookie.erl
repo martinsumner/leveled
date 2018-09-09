@@ -62,6 +62,7 @@
         book_compactjournal/2,
         book_islastcompactionpending/1,
         book_trimjournal/1,
+        book_hotbackup/1,
         book_close/1,
         book_destroy/1,
         book_isempty/2]).
@@ -90,8 +91,6 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(CACHE_SIZE, 2500).
--define(JOURNAL_FP, "journal").
--define(LEDGER_FP, "ledger").
 -define(SNAPSHOT_TIMEOUT, 300000).
 -define(CACHE_SIZE_JITTER, 25).
 -define(JOURNAL_SIZE_JITTER, 20).
@@ -893,6 +892,19 @@ book_destroy(Pid) ->
     gen_server:call(Pid, destroy, infinity).
 
 
+-spec book_hotbackup(pid()) -> {async, fun()}.
+%% @doc Backup the Bookie
+%% Return a function that will take a backup of a snapshot of the Journal.
+%% The function will be 1-arity, and can be passed the absolute folder name
+%% to store the backup.
+%% 
+%% Backup files are hard-linked.  Does not work in head_only mode
+%%
+%% TODO: Can extend to head_only mode, and also support another parameter 
+%% which would backup persisted part of ledger (to make restart faster)
+book_hotbackup(Pid) ->
+    gen_server:call(Pid, hot_backup, infinity). 
+
 -spec book_isempty(pid(), leveled_codec:tag()) -> boolean().
 %% @doc 
 %% Confirm if the store is empty, or if it contains a Key and Value for a 
@@ -1147,6 +1159,21 @@ handle_call(confirm_compact, _From, State)
 handle_call(trim, _From, State) when State#state.head_only == true ->
     PSQN = leveled_penciller:pcl_persistedsqn(State#state.penciller),
     {reply, leveled_inker:ink_trim(State#state.inker, PSQN), State};
+handle_call(hot_backup, _From, State) when State#state.head_only == false ->
+    ok = leveled_inker:ink_roll(State#state.inker),
+    BackupFun = 
+        fun(InkerSnapshot) ->
+            fun(BackupPath) ->
+                ok = leveled_inker:ink_backup(InkerSnapshot, BackupPath),
+                ok = leveled_inker:ink_close(InkerSnapshot)
+            end
+        end,
+    InkerOpts = 
+        #inker_options{start_snapshot = true, 
+                        source_inker = State#state.inker,
+                        bookies_pid = self()},
+    {ok, Snapshot} = leveled_inker:ink_snapstart(InkerOpts),
+    {reply, {async, BackupFun(Snapshot)}, State};
 handle_call(close, _From, State) ->
     leveled_inker:ink_close(State#state.inker),
     leveled_penciller:pcl_close(State#state.penciller),
@@ -1326,8 +1353,8 @@ set_options(Opts) ->
     PCLL0CacheSize = proplists:get_value(max_pencillercachesize, Opts),
     RootPath = proplists:get_value(root_path, Opts),
 
-    JournalFP = RootPath ++ "/" ++ ?JOURNAL_FP,
-    LedgerFP = RootPath ++ "/" ++ ?LEDGER_FP,
+    JournalFP = filename:join(RootPath, ?JOURNAL_FP),
+    LedgerFP = filename:join(RootPath, ?LEDGER_FP),
     ok = filelib:ensure_dir(JournalFP),
     ok = filelib:ensure_dir(LedgerFP),
 

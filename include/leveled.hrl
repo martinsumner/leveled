@@ -1,3 +1,6 @@
+% File paths
+-define(JOURNAL_FP, "journal").
+-define(LEDGER_FP, "ledger").
 
 %% Tag to be used on standard Riak KV objects
 -define(RIAK_TAG, o_rkv).

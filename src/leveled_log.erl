@@ -280,7 +280,17 @@
     {"I0019",
         {info, "After ~w PUTs total prepare time is ~w total cdb time is ~w "
                 ++ "and max prepare time is ~w and max cdb time is ~w"}},
-    
+    {"I0020",
+        {info, "Journal backup completed to path=~s with file_count=~w"}},
+    {"I0021",
+        {info, "Ingoring filename=~s with SQN=~w and JournalSQN=~w"}},
+    {"I0022",
+        {info, "Removing filename=~s from backup folder as not in backup"}},
+    {"I0023",
+        {info, "Backup commencing into folder with ~w existing files"}},
+    {"I0024",
+        {info, "Prompted roll at NewSQN=~w"}},
+
     {"IC001",
         {info, "Closed for reason ~w so maybe leaving garbage"}},
     {"IC002",

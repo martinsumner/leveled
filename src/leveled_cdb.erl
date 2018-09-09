@@ -100,6 +100,9 @@
             cdb_destroy/1,
             cdb_deletepending/1,
             cdb_deletepending/3,
+            cdb_isrolling/1]).
+
+-export([finished_rolling/1,
             hashtable_calc/2]).
 
 -include_lib("eunit/include/eunit.hrl").
@@ -379,6 +382,13 @@ cdb_filename(Pid) ->
 %% probably or missing.  Does not do a definitive check
 cdb_keycheck(Pid, Key) ->
     gen_fsm:sync_send_event(Pid, {key_check, Key}, infinity).
+
+-spec cdb_isrolling(pid()) -> boolean().
+%% @doc
+%% Check to see if a cdb file is still rolling
+cdb_isrolling(Pid) ->
+    gen_fsm:sync_send_all_state_event(Pid, cdb_isrolling, infinity).
+
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -744,6 +754,8 @@ handle_sync_event(cdb_firstkey, _From, StateName, State) ->
     {reply, FirstKey, StateName, State};
 handle_sync_event(cdb_filename, _From, StateName, State) ->
     {reply, State#state.filename, StateName, State};
+handle_sync_event(cdb_isrolling, _From, StateName, State) ->
+    {reply, StateName == rolling, StateName, State};
 handle_sync_event(cdb_close, _From, delete_pending, State) ->
     leveled_log:log("CDB05", 
                         [State#state.filename, delete_pending, cdb_close]),
@@ -769,6 +781,25 @@ terminate(_Reason, _StateName, _State) ->
 
 code_change(_OldVsn, StateName, State, _Extra) ->
     {ok, StateName, State}.
+
+
+%%%============================================================================
+%%% External functions
+%%%============================================================================
+
+
+finished_rolling(CDB) ->
+    RollerFun = 
+        fun(Sleep, FinishedRolling) ->
+            case FinishedRolling of 
+                true ->
+                    true;
+                false ->
+                    timer:sleep(Sleep),
+                    not leveled_cdb:cdb_isrolling(CDB)
+            end
+        end,
+    lists:foldl(RollerFun, false, [0, 1000, 10000, 100000]).
 
 %%%============================================================================
 %%% Internal functions
@@ -2116,6 +2147,19 @@ emptyvalue_fromdict_test() ->
     io:format("D_Result is ~w~n", [D_Result]),
     ?assertMatch(KVP, D_Result),
     ok = file:delete("../test/from_dict_test_ev.cdb").
+
+
+empty_roll_test() ->
+    file:delete("../test/empty_roll.cdb"),
+    file:delete("../test/empty_roll.pnd"),
+    {ok, P1} = cdb_open_writer("../test/empty_roll.pnd",
+                                #cdb_options{binary_mode=true}),
+    ok = cdb_roll(P1),
+    true = finished_rolling(P1),
+    {ok, P2} = cdb_open_reader("../test/empty_roll.cdb", 
+                                #cdb_options{binary_mode=true}),
+    ok = cdb_close(P2),
+    ok = file:delete("../test/empty_roll.cdb").
 
 find_lastkey_test() ->
     file:delete("../test/lastkey.pnd"),

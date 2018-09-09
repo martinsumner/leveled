@@ -161,17 +161,16 @@ reader(SQN, RootPath) ->
 %% disk
 writer(Manifest, ManSQN, RootPath) ->
     ManPath = leveled_inker:filepath(RootPath, manifest_dir),
+    ok = filelib:ensure_dir(ManPath), 
+        % When writing during backups, may not have been generated
     NewFN = filename:join(ManPath,
                             integer_to_list(ManSQN) ++ "." ++ ?MANIFEST_FILEX),
     TmpFN = filename:join(ManPath,
                             integer_to_list(ManSQN) ++ "." ++ ?PENDING_FILEX),
     MBin = term_to_binary(to_list(Manifest), [compressed]),
-    case filelib:is_file(NewFN) of
-        false ->
-            leveled_log:log("I0016", [ManSQN]),
-            ok = file:write_file(TmpFN, MBin),
-            ok = file:rename(TmpFN, NewFN)
-    end,
+    leveled_log:log("I0016", [ManSQN]),
+    ok = file:write_file(TmpFN, MBin),
+    ok = file:rename(TmpFN, NewFN),
     GC_SQN = ManSQN - ?MANIFESTS_TO_RETAIN,
     GC_Man = filename:join(ManPath,
                             integer_to_list(GC_SQN) ++ "." ++ ?MANIFEST_FILEX),
@@ -198,16 +197,21 @@ complete_filex() ->
     ?MANIFEST_FILEX.
 
 
-%%%============================================================================
-%%% Internal Functions
-%%%============================================================================
-
+-spec from_list(list()) -> manifest().
+%% @doc
+%% Convert from a flat list into a manifest with lookup jumps.  
+%% The opposite of to_list/1
 from_list(Manifest) ->
     % Manifest should already be sorted with the highest SQN at the head
     % This will be maintained so that we can fold from the left, and find
     % more recently added entries quicker - under the assumptions that fresh
     % reads are more common than stale reads
     lists:foldr(fun prepend_entry/2, [], Manifest).
+
+
+%%%============================================================================
+%%% Internal Functions
+%%%============================================================================
 
 prepend_entry(Entry, AccL) ->
     {SQN, _FN, _PidR, _LastKey} = Entry,

@@ -120,6 +120,16 @@ Three potential recovery strategies are supported to provide some flexibility fo
 
 - recalc (not yet implemented) - the compaction rules assume that on recovery the key changes will be recalculated by comparing the change with the current database state. In recovery the key changes will be recalculated by comparing the change with the current database state.
 
+### Hot Backups
+
+A request can be made to backup a leveled instance, where there is OS support for hard links of files in Erlang.  The backup request will return an `{async, BackupFun}` response, and calling `BackupFun(BackupPath)` will cause a backup to be taken into the given path.  If a backup already exists in that path, then the Backup will be updated.  
+
+Backups are taken of the Journal only, as the Ledger can  be recreated on startup from empty using the KeyChanges in the Journal (backups are not currently an option in `head_only` mode).
+
+The backup uses hard-links, so at the point the backup is taken, there will be a minimal change to the on-disk footprint of the store.  However, as journal compaction is run, the hard-links will prevent space from getting released by the dropping of replaced journal files - so backups will cause the size of the store to grow faster than it would otherwise do.  It is an operator responsibility to garbage collect old backups, to prevent this growth from being an issue.
+
+As backups depend on hard-links, they cannot be taken with a `BackupPath` on a different file system to the standard data path.  The move a backup across to a different file system, standard tools should be used such as rsync.  The leveled backups should be relatively friendly for rsync-like delta-based backup approaches due to significantly lower write amplification when compared to other LSM stores (e.g. leveldb). 
+
 ## Head only
 
 Leveled can be started in `head_only` mode.  This is a special mode which dispenses with the long-term role of the Journal in retaining data.  This is a mode to be used in *special circumstances* when values are small, and Key/Value pairs are added in batches.

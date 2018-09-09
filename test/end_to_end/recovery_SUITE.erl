@@ -2,7 +2,9 @@
 -include_lib("common_test/include/ct.hrl").
 -include("include/leveled.hrl").
 -export([all/0]).
--export([retain_strategy/1,
+-export([hot_backup_simple/1,
+            hot_backup_changes/1,
+            retain_strategy/1,
             recovr_strategy/1,
             aae_missingjournal/1,
             aae_bustedjournal/1,
@@ -10,12 +12,102 @@
             ]).
 
 all() -> [
+            hot_backup_simple,
+            hot_backup_changes,
             retain_strategy,
             recovr_strategy,
             aae_missingjournal,
             aae_bustedjournal,
             journal_compaction_bustedjournal
             ].
+
+
+hot_backup_simple(_Config) ->
+    % The journal may have a hot backup.  This allows for an online Bookie
+    % to be sent a message to prepare a backup function, which an asynchronous
+    % worker can then call to generate a backup taken at the point in time
+    % the original message was processsed.
+    %
+    % The basic test is to:
+    % 1 - load a Bookie, take a backup, delete the original path, restore from
+    % that path
+    RootPath = testutil:reset_filestructure(),
+    BackupPath = testutil:reset_filestructure("backup0"),
+    BookOpts = [{root_path, RootPath},
+                    {cache_size, 1000},
+                    {max_journalsize, 10000000},
+                    {sync_strategy, testutil:sync_strategy()}],
+    {ok, Spcl1, LastV1} = rotating_object_check(BookOpts, "Bucket1", 3200),
+    {ok, Book1} = leveled_bookie:book_start(BookOpts),
+    {async, BackupFun} = leveled_bookie:book_hotbackup(Book1),
+    ok = BackupFun(BackupPath),
+    ok = leveled_bookie:book_close(Book1),
+    RootPath = testutil:reset_filestructure(),
+    BookOptsBackup = [{root_path, BackupPath},
+                        {cache_size, 2000},
+                        {max_journalsize, 20000000},
+                        {sync_strategy, testutil:sync_strategy()}],
+    {ok, BookBackup} = leveled_bookie:book_start(BookOptsBackup),
+    ok = testutil:check_indexed_objects(BookBackup, "Bucket1", Spcl1, LastV1),
+    ok = leveled_bookie:book_close(BookBackup),
+    BackupPath = testutil:reset_filestructure("backup0").
+
+hot_backup_changes(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    BackupPath = testutil:reset_filestructure("backup0"),
+    BookOpts = [{root_path, RootPath},
+                    {cache_size, 1000},
+                    {max_journalsize, 10000000},
+                    {sync_strategy, testutil:sync_strategy()}],
+    B = "Bucket0",    
+
+    {ok, Book1} = leveled_bookie:book_start(BookOpts),
+    {KSpcL1, _V1} = testutil:put_indexed_objects(Book1, B, 20000),
+    
+    {async, BackupFun1} = leveled_bookie:book_hotbackup(Book1),
+    ok = BackupFun1(BackupPath),
+    {ok, FileList1} = 
+        file:list_dir(filename:join(BackupPath, "journal/journal_files/")),
+    
+    {KSpcL2, V2} = testutil:put_altered_indexed_objects(Book1, B, KSpcL1),
+
+    {async, BackupFun2} = leveled_bookie:book_hotbackup(Book1),
+    ok = BackupFun2(BackupPath),
+    {ok, FileList2} = 
+        file:list_dir(filename:join(BackupPath, "journal/journal_files/")),
+
+    ok = testutil:check_indexed_objects(Book1, B, KSpcL2, V2),
+    compact_and_wait(Book1),
+
+    {async, BackupFun3} = leveled_bookie:book_hotbackup(Book1),
+    ok = BackupFun3(BackupPath),
+    {ok, FileList3} = 
+        file:list_dir(filename:join(BackupPath, "journal/journal_files/")),
+    % Confirm null impact of backing up twice in a row
+    {async, BackupFun4} = leveled_bookie:book_hotbackup(Book1),
+    ok = BackupFun4(BackupPath),
+    {ok, FileList4} = 
+        file:list_dir(filename:join(BackupPath, "journal/journal_files/")),
+
+    true = length(FileList2) > length(FileList1),
+    true = length(FileList2) > length(FileList3),
+    true = length(FileList3) == length(FileList4),
+
+    ok = leveled_bookie:book_close(Book1),
+
+    RootPath = testutil:reset_filestructure(),
+    BookOptsBackup = [{root_path, BackupPath},
+                        {cache_size, 2000},
+                        {max_journalsize, 20000000},
+                        {sync_strategy, testutil:sync_strategy()}],
+    {ok, BookBackup} = leveled_bookie:book_start(BookOptsBackup),
+
+    ok = testutil:check_indexed_objects(BookBackup, B, KSpcL2, V2),
+
+    testutil:reset_filestructure("backup0"),
+    testutil:reset_filestructure().
+
+
 
 retain_strategy(_Config) ->
     RootPath = testutil:reset_filestructure(),
@@ -419,22 +511,7 @@ rotating_object_check(BookOpts, B, NumberOfObjects) ->
                                         KSpcL1 ++ KSpcL2 ++ KSpcL3 ++ KSpcL4,
                                         V4),
     
-    ok = leveled_bookie:book_compactjournal(Book2, 30000),
-    F = fun leveled_bookie:book_islastcompactionpending/1,
-    lists:foldl(fun(X, Pending) ->
-                        case Pending of
-                            false ->
-                                false;
-                            true ->
-                                io:format("Loop ~w waiting for journal "
-                                    ++ "compaction to complete~n", [X]),
-                                timer:sleep(20000),
-                                F(Book2)
-                        end end,
-                    true,
-                    lists:seq(1, 15)),
-    io:format("Waiting for journal deletes~n"),
-    timer:sleep(20000),
+    compact_and_wait(Book2),
     
     io:format("Checking index following compaction~n"),
     ok = testutil:check_indexed_objects(Book2,
@@ -444,8 +521,25 @@ rotating_object_check(BookOpts, B, NumberOfObjects) ->
     
     ok = leveled_bookie:book_close(Book2),
     {ok, KSpcL1 ++ KSpcL2 ++ KSpcL3 ++ KSpcL4, V4}.
-    
-    
+
+compact_and_wait(Book) ->
+    ok = leveled_bookie:book_compactjournal(Book, 30000),
+    F = fun leveled_bookie:book_islastcompactionpending/1,
+    lists:foldl(fun(X, Pending) ->
+                        case Pending of
+                            false ->
+                                false;
+                            true ->
+                                io:format("Loop ~w waiting for journal "
+                                    ++ "compaction to complete~n", [X]),
+                                timer:sleep(20000),
+                                F(Book)
+                        end end,
+                    true,
+                    lists:seq(1, 15)),
+    io:format("Waiting for journal deletes~n"),
+    timer:sleep(20000).
+
 restart_from_blankledger(BookOpts, B_SpcL) ->
     leveled_penciller:clean_testdir(proplists:get_value(root_path, BookOpts) ++
                                     "/ledger"),
