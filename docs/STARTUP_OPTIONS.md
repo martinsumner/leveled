@@ -18,6 +18,20 @@ The maximum size of an individual Journal file can be set using `{max_journalsiz
 
 If there are smaller objects then lookups within a Journal may get faster if each individual journal file is smaller.
 
+An object is converted before storing in the Journal. The conversion
+may involve compression, the duplication of index changes prompted by
+the object's storage, and the object's key. The max journal size
+should always be bigger than the biggest object you wish to store,
+accounting for conversion.
+
+Attempting to store a bigger object will crash the store. Ensure there
+is ample room - generally it is anticipated that `max_journalsize`
+should be greater than 100 MB, and maximum object size should be less
+than 10MB.
+
+If you wish to store bigger objects, scale up the `max_journalsize`
+accordingly.
+
 ## Ledger Cache Size
 
 The option `{cache_size, integer()}` is the number of ledger objects that should be cached by the Bookie actor, before being pushed to the Ledger. Note these are ledger objects (so do not normally contain the actual object value, but does include index changes as separate objects).  The default value is 2500.
