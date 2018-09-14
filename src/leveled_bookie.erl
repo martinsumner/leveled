@@ -93,6 +93,8 @@
 -define(CACHE_SIZE, 2500).
 -define(MIN_CACHE_SIZE, 100).
 -define(MIN_PCL_CACHE_SIZE, 400).
+-define(MAX_PCL_CACHE_SIZE, 28000). 
+    % This is less than actual max - but COIN_SIDECOUNT
 -define(SNAPSHOT_TIMEOUT, 300000).
 -define(CACHE_SIZE_JITTER, 25).
 -define(JOURNAL_SIZE_JITTER, 20).
@@ -117,7 +119,7 @@
                 {singlefile_compactionpercentage, 50.0},
                 {maxrunlength_compactionpercentage, 70.0},
                 {reload_strategy, []},
-                {max_pencillercachesize, undefined},
+                {max_pencillercachesize, ?MAX_PCL_CACHE_SIZE},
                 {compression_method, ?COMPRESSION_METHOD},
                 {compression_point, ?COMPRESSION_POINT}]).
 
@@ -283,7 +285,7 @@
         {max_pencillercachesize, pos_integer()|undefined} |
             % How many ledger keys should the penciller retain in memory
             % between flushing new level zero files.
-            % Defaults to leveled_penciller:?MAX_TABLESIZE when undefined
+            % Defaults to ?MAX_PCL_CACHE_SIZE when undefined
             % The minimum size 400 - attempt to set this vlaue lower will be 
             % ignored.  As a rule the value should be at least 4 x the Bookie's
             % cache size
@@ -2503,6 +2505,7 @@ small_cachesize_test() ->
                                     {max_journalsize, 1000000},
                                     {cache_size, 1}]),
     ok = leveled_bookie:book_close(Bookie1).
+
 
 is_empty_test() ->
     RootPath = reset_filestructure(),
