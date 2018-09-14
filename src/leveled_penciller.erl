@@ -226,7 +226,6 @@
 -define(SST_FILEX, ".sst").
 -define(ARCHIVE_FILEX, ".bak").
 -define(MEMTABLE, mem).
--define(MAX_TABLESIZE, 28000). % This is less than max - but COIN_SIDECOUNT
 -define(SUPER_MAX_TABLE_SIZE, 40000).
 -define(PROMPT_WAIT_ONL0, 5).
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
@@ -991,13 +990,7 @@ sst_filename(ManSQN, Level, Count) ->
 %% filesystem and reconstruct the ledger from the files that it finds
 start_from_file(PCLopts) ->
     RootPath = PCLopts#penciller_options.root_path,
-    MaxTableSize = 
-        case PCLopts#penciller_options.max_inmemory_tablesize of
-            undefined ->
-                ?MAX_TABLESIZE;
-            M when is_integer(M) ->
-                M
-        end,
+    MaxTableSize = PCLopts#penciller_options.max_inmemory_tablesize,
     PressMethod = PCLopts#penciller_options.compression_method,
     
     {ok, MergeClerk} = leveled_pclerk:clerk_new(self(), RootPath, PressMethod),

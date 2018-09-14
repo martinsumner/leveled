@@ -91,6 +91,10 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(CACHE_SIZE, 2500).
+-define(MIN_CACHE_SIZE, 100).
+-define(MIN_PCL_CACHE_SIZE, 400).
+-define(MAX_PCL_CACHE_SIZE, 28000). 
+    % This is less than actual max - but COIN_SIDECOUNT
 -define(SNAPSHOT_TIMEOUT, 300000).
 -define(CACHE_SIZE_JITTER, 25).
 -define(JOURNAL_SIZE_JITTER, 20).
@@ -115,7 +119,7 @@
                 {singlefile_compactionpercentage, 50.0},
                 {maxrunlength_compactionpercentage, 70.0},
                 {reload_strategy, []},
-                {max_pencillercachesize, undefined},
+                {max_pencillercachesize, ?MAX_PCL_CACHE_SIZE},
                 {compression_method, ?COMPRESSION_METHOD},
                 {compression_point, ?COMPRESSION_POINT}]).
 
@@ -196,6 +200,7 @@
             % additions to the ledger.  Defaults to ?CACHE_SIZE, plus some
             % randomised jitter (randomised jitter will still be added to 
             % configured values
+            % The minimum value is 100 - any lower value will be ignored
         {max_journalsize, pos_integer()} |
             % The maximum size of a journal file in bytes.  The abolute 
             % maximum must be 4GB due to 4 byte file pointers being used
@@ -280,7 +285,10 @@
         {max_pencillercachesize, pos_integer()|undefined} |
             % How many ledger keys should the penciller retain in memory
             % between flushing new level zero files.
-            % Defaults ot leveled_penciller:?MAX_TABLESIZE when undefined
+            % Defaults to ?MAX_PCL_CACHE_SIZE when undefined
+            % The minimum size 400 - attempt to set this vlaue lower will be 
+            % ignored.  As a rule the value should be at least 4 x the Bookie's
+            % cache size
         {compression_method, native|lz4} |
             % Compression method and point allow Leveled to be switched from
             % using bif based compression (zlib) to using nif based compression
@@ -926,12 +934,12 @@ init([Opts]) ->
             % Start from file not snapshot
             {InkerOpts, PencillerOpts} = set_options(Opts),
 
+            ConfiguredCacheSize = 
+                max(proplists:get_value(cache_size, Opts), ?MIN_CACHE_SIZE),
             CacheJitter = 
-                proplists:get_value(cache_size, Opts) 
-                    div (100 div ?CACHE_SIZE_JITTER),
+                ConfiguredCacheSize div (100 div ?CACHE_SIZE_JITTER),
             CacheSize = 
-                proplists:get_value(cache_size, Opts)
-                    + erlang:phash2(self()) rem CacheJitter,
+                ConfiguredCacheSize + erlang:phash2(self()) rem CacheJitter,
             RecentAAE =
                 case proplists:get_value(recent_aae, Opts) of
                     false ->
@@ -1350,7 +1358,9 @@ set_options(Opts) ->
     AltStrategy = proplists:get_value(reload_strategy, Opts),
     ReloadStrategy = leveled_codec:inker_reload_strategy(AltStrategy),
 
-    PCLL0CacheSize = proplists:get_value(max_pencillercachesize, Opts),
+    PCLL0CacheSize = 
+        max(?MIN_PCL_CACHE_SIZE, 
+            proplists:get_value(max_pencillercachesize, Opts)),
     RootPath = proplists:get_value(root_path, Opts),
 
     JournalFP = filename:join(RootPath, ?JOURNAL_FP),
@@ -2488,6 +2498,14 @@ folder_cache_test(CacheSize) ->
 
     ok = book_close(Bookie1),
     reset_filestructure().
+
+small_cachesize_test() ->
+    RootPath = reset_filestructure(),
+    {ok, Bookie1} = book_start([{root_path, RootPath},
+                                    {max_journalsize, 1000000},
+                                    {cache_size, 1}]),
+    ok = leveled_bookie:book_close(Bookie1).
+
 
 is_empty_test() ->
     RootPath = reset_filestructure(),
