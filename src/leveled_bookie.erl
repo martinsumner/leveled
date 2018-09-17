@@ -929,8 +929,11 @@ book_isempty(Pid, Tag) ->
 -spec init([open_options()]) -> {ok, book_state()}.
 init([Opts]) ->
     leveled_rand:seed(),
-    case proplists:get_value(snapshot_bookie, Opts) of
-        undefined ->
+    case {proplists:get_value(snapshot_bookie, Opts), 
+            proplists:get_value(root_path, Opts)} of
+        {undefined, undefined} ->
+            {stop, no_root_path};
+        {undefined, _RP} ->
             % Start from file not snapshot
             {InkerOpts, PencillerOpts} = set_options(Opts),
 
@@ -975,7 +978,7 @@ init([Opts]) ->
             {ok, State0#state{inker=Inker,
                                 penciller=Penciller,
                                 ledger_cache=#ledger_cache{mem = NewETS}}};
-        Bookie ->
+        {Bookie, undefined} ->
             {ok, Penciller, Inker} = 
                 book_snapshot(Bookie, store, undefined, true),
             leveled_log:log("B0002", [Inker, Penciller]),
@@ -2537,6 +2540,11 @@ is_empty_headonly_test() ->
     ?assertMatch(false, book_isempty(Bookie1, ?HEAD_TAG)),
     ok = book_close(Bookie1).
 
+undefined_rootpath_test() ->
+    Opts = [{max_journalsize, 1000000}, {cache_size, 500}],
+    R = gen_server:start(?MODULE, [set_defaults(Opts)], []),
+    ?assertMatch({error, no_root_path}, R).
+        
 
 foldkeys_headonly_test() ->
     foldkeys_headonly_tester(5000, 25, "BucketStr"),
