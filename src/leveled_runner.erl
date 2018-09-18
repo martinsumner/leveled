@@ -420,7 +420,7 @@ foldobjects_byindex(SnapFun, {Tag, Bucket, Field, FromTerm, ToTerm}, FoldFun) ->
 %%%============================================================================
 
 get_nextbucket(_NextB, _NextK, _Tag, _LS, BKList, {Limit, Limit}) ->
-    BKList;
+    lists:reverse(BKList);
 get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList, {C, L}) ->
     Now = leveled_util:integer_now(),
     StartKey = leveled_codec:to_ledgerkey(NextBucket, NextKey, Tag),
