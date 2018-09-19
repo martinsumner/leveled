@@ -1177,7 +1177,7 @@ extract_kvpair(_H, [], _K, _BinaryMode) ->
 extract_kvpair(Handle, [Position|Rest], Key, BinaryMode) ->
     {ok, _} = file:position(Handle, Position),
     {KeyLength, ValueLength} = read_next_2_integers(Handle),
-    case safe_read_next_keyint(Handle, KeyLength) of
+    case safe_read_next_keybin(Handle, KeyLength) of
         {Key, KeyBin} ->  % If same key as passed in, then found!
             case checkread_next_value(Handle, ValueLength, KeyBin) of
                 {false, _} -> 
@@ -1302,21 +1302,16 @@ saferead_keyvalue(Handle) ->
         eof ->
             false;
         {KeyL, ValueL} ->
-            case safe_read_next_keyint(Handle, KeyL) of 
+            case safe_read_next_keybin(Handle, KeyL) of 
                 false ->
                     false;
                 {Key, KeyBin} ->
-                    case file:read(Handle, ValueL) of 
-                        {ok, Value} -> 
-                            case crccheck(Value, KeyBin) of
-                                false ->
-                                    false;
-                                TrueValue ->
-                                    % i.e. value with no CRC
-                                    {Key, TrueValue, KeyL, ValueL}
-                            end;
-                        eof ->
-                            false 
+                    case safe_read_next_value(Handle, ValueL, KeyBin) of 
+                        false ->
+                            false;
+                        TrueValue ->
+                            % i.e. value with no CRC
+                            {Key, TrueValue, KeyL, ValueL}
                     end
             end
     end.
@@ -1326,43 +1321,57 @@ saferead_keyvalue(Handle) ->
 %% @doc
 %% Return the next key or have false returned if there is some sort of 
 %% potentially expected error (e.g. due to file truncation).  Note that no
-%% CRC check has been performed, if CRC check is required then use 
-%% safe_read_next_keyint/2 so that the binary key can also be returned to 
-%% be CRC checked along with the value
+%% CRC check has been performed
 safe_read_next_key(Handle, Length) ->
-    case safe_read_next_keyint(Handle, Length) of
-        {K, _KB} ->
-            K;
-        false ->
+    ReadFun = fun(Bin) -> binary_to_term(Bin) end,
+    safe_read_next(Handle, Length, ReadFun).
+
+-spec safe_read_next_keybin(file:io_device(), integer()) 
+                                            -> false|{term(), binary()}.
+%% @doc
+%% Return the next key or have false returned if there is some sort of 
+%% potentially expected error (e.g. due to file truncation).  Note that no
+%% CRC check has been performed
+%% Returns both the Key and the Binary version, the binary version being
+%% required for the CRC checking after the value fetch (see 
+%% safe_read_next_value/3)
+safe_read_next_keybin(Handle, Length) ->
+    ReadFun = fun(Bin) -> {binary_to_term(Bin), Bin} end,
+    safe_read_next(Handle, Length, ReadFun).
+
+-spec safe_read_next_value(file:io_device(), integer(), binary()) 
+                                                        -> binary()|false.
+safe_read_next_value(Handle, Length, KeyBin) ->
+    ReadFun =  fun(VBin) -> crccheck(VBin, KeyBin) end,
+    safe_read_next(Handle, Length, ReadFun).
+
+
+-spec safe_read_next(file:io_device(), integer(), fun()) -> any().
+%% @doc
+%% Read the next item of length Length
+%% Previously catching error:badarg was sufficient to capture errors of
+%% corruption, but on some OS versions may need to catch error:einval as well
+safe_read_next(Handle, Length, ReadFun) ->
+    try 
+        loose_read(Handle, Length, ReadFun)
+    catch
+        error:ReadError ->
+            leveled_log:log("CDB20", [ReadError, Length]),
             false
     end.
 
--spec safe_read_next_keyint(file:io_device(), integer())
-                                                -> false|{any(), binary()}.
+-spec loose_read(file:io_device(), integer(), fun()) -> any().
 %% @doc
-%% Return a key masking nay failure in a fixed return of false
-safe_read_next_keyint(Handle, Length) ->
-    try read_next_item(Handle, Length) of
+%% Read with minimal error handling (only eof) - to be wrapped in 
+%% safe_read_next/3 to catch exceptions.
+loose_read(Handle, Length, ReadFun) ->
+    case file:read(Handle, Length) of
         eof ->
             false;
-        SafeResult ->
-            SafeResult
-    catch
-        error:badarg ->
-            false
+        {ok, Result} ->
+            ReadFun(Result)
     end.
 
--spec read_next_item(file:io_device(), integer()) -> eof|{any(), binary()}.
-%% @doc
-%% Read the next item which is length L, returning both the term and the 
-%% original binary
-read_next_item(Handle, Length) ->
-    case file:read(Handle, Length) of
-        {ok, Bin} -> 
-            {binary_to_term(Bin), Bin};
-        eof ->
-            eof
-    end.
 
 -spec crccheck(binary()|bitstring(), binary()) -> any().
 %% @doc
@@ -1860,7 +1869,7 @@ dump(FileName) ->
     {ok, _} = file:position(Handle, {bof, 2048}),
     Fn1 = fun(_I, Acc) ->
         {KL, VL} = read_next_2_integers(Handle),
-        {Key, KB} = safe_read_next_keyint(Handle, KL),
+        {Key, KB} = safe_read_next_keybin(Handle, KL),
         Value =
             case checkread_next_value(Handle, VL, KB) of
                 {true, V0} ->
@@ -2229,13 +2238,17 @@ get_keys_byposition_manykeys_test_() ->
     {timeout, 120, fun get_keys_byposition_manykeys_test_to/0}.
 
 get_keys_byposition_manykeys_test_to() ->
-    KeyCount = 2048,
+    KeyCount = 16384,
     {ok, P1} = cdb_open_writer("../test/poskeymany.pnd",
                                 #cdb_options{binary_mode=false}),
     KVList = generate_sequentialkeys(KeyCount, []),
     lists:foreach(fun({K, V}) -> cdb_put(P1, K, V) end, KVList),
     ok = cdb_roll(P1),
     % Should not return positions when rolling
+    % There is an implicit race here - if cdb_roll is too fast, then the test
+    % will fail.  It appears to be safe that if KeyCount is set to a high value
+    % (e.g. > 10K) it is implausible that cdb_roll will ever finish before the 
+    % call to cdb_getpositions is executed.  So the race is tolerated
     ?assertMatch([], cdb_getpositions(P1, 10)), 
     lists:foldl(fun(X, Complete) ->
                         case Complete of
