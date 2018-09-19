@@ -361,7 +361,9 @@
     {"CDB19",
         {info, "Sample timings in microseconds for sample_count=~w " 
                     ++ "with totals of cycle_count=~w "
-                    ++ "fetch_time=~w index_time=~w"}}
+                    ++ "fetch_time=~w index_time=~w"}},
+    {"CDB20",
+        {error, "Error ~w caught when safe reading a file to length ~w"}}
         ]).
 
 
