@@ -574,7 +574,11 @@ book_returnfolder(Pid, RunnerType) ->
 %% expression of type `re:mp()' (that will be run against each index
 %% term value, and only those that match will be accumulated) or
 %% `undefined', which means no regular expression filtering of index
-%% values.
+%% values. NOTE: Regular Expressions can ONLY be run on indexes that
+%% have binary or string values, NOT integer values. In the Riak sense
+%% of secondary indexes, there are two types of indexes `_bin' indexes
+%% and `_int' indexes. Term regex may only be run against the `_bin'
+%% type.
 -spec book_indexfold(pid(),
                      Constraint:: {Bucket, Key} | Bucket,
                      FoldAccT :: {FoldFun, Acc},
