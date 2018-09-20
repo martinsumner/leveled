@@ -58,6 +58,7 @@
         book_get/4,
         book_head/3,
         book_head/4,
+        book_headonly/4,
         book_snapshot/4,
         book_compactjournal/2,
         book_islastcompactionpending/1,
@@ -474,6 +475,7 @@ book_delete(Pid, Bucket, Key, IndexSpecs) ->
                                                     -> {ok, any()}|not_found.
 -spec book_head(pid(), key(), key(), leveled_codec:tag())
                                                     -> {ok, any()}|not_found.
+-spec book_headonly(pid(), key(), key(), key()) -> {ok, any()}|not_found.
 
 %% @doc - GET and HEAD requests
 %%
@@ -483,6 +485,10 @@ book_delete(Pid, Bucket, Key, IndexSpecs) ->
 %%
 %% GET requests first follow the path of a HEAD request, and if an object is
 %% found, then fetch the value from the Journal via the Inker.
+%% 
+%% to perform a head request in head_only mode with_lookup, book_headonly/4 
+%% should be used.  Not if head_only mode is false or no_lookup, then this
+%% request would not be supported
 
 
 book_get(Pid, Bucket, Key, Tag) ->
@@ -496,6 +502,9 @@ book_get(Pid, Bucket, Key) ->
 
 book_head(Pid, Bucket, Key) ->
     book_head(Pid, Bucket, Key, ?STD_TAG).
+
+book_headonly(Pid, Bucket, Key, SubKey) ->
+    gen_server:call(Pid, {head, Bucket, {Key, SubKey}, ?HEAD_TAG}, infinity).
 
 
 -spec book_returnfolder(pid(), tuple()) -> {async, fun()}.
