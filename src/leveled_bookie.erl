@@ -556,29 +556,31 @@ book_returnfolder(Pid, RunnerType) ->
 %% with the index `?IDX_TAG' and Constrain the fold to a specific
 %% `Bucket''s index fields, as specified by the `Constraint'
 %% argument. If `Constraint' is a tuple of `{Bucket, Key}' the fold
-%% starts at `Key' (this is useful for implementing pagination, for
-%% example.)  Provide a `FoldAccT' tuple of fold fun ( which is 3
-%% arity fun that will be called once per-matching index entry, with
-%% the Bucket, Primary Key (or {IndexVal and Primary key} if
-%% `ReturnTerms' is true)) and an initial Accumulator, which will be
-%% passed as the 3rd argument in the initial call to
-%% FoldFun. Subsequent calls to FoldFun will use the previous return
-%% of FoldFun as the 3rd argument, and the final return of `Runner' is
-%% the final return of `FoldFun', the final Accumulator value. The
-%% query can filter inputs based on `Range' and `TermHandling'.
-%% `Range' specifies the name of `IndexField' to query, and `Start'
-%% and `End' optionally provide the range to query over.
-%% `TermHandling' is a 2-tuple, the first element is a `boolean()',
-%% `true' meaning return terms, (see fold fun above), `false' meaning
-%% just return primary keys. `TermRegex' is either a regular
-%% expression of type `re:mp()' (that will be run against each index
-%% term value, and only those that match will be accumulated) or
-%% `undefined', which means no regular expression filtering of index
-%% values. NOTE: Regular Expressions can ONLY be run on indexes that
-%% have binary or string values, NOT integer values. In the Riak sense
-%% of secondary indexes, there are two types of indexes `_bin' indexes
-%% and `_int' indexes. Term regex may only be run against the `_bin'
-%% type.
+%% starts at `Key', meaning any keys lower than `Key' and which match
+%% the start of the range query, will not be folded over (this is
+%% useful for implementing pagination, for example.)
+%%
+%% Provide a `FoldAccT' tuple of fold fun ( which is 3 arity fun that
+%% will be called once per-matching index entry, with the Bucket,
+%% Primary Key (or {IndexVal and Primary key} if `ReturnTerms' is
+%% true)) and an initial Accumulator, which will be passed as the 3rd
+%% argument in the initial call to FoldFun. Subsequent calls to
+%% FoldFun will use the previous return of FoldFun as the 3rd
+%% argument, and the final return of `Runner' is the final return of
+%% `FoldFun', the final Accumulator value. The query can filter inputs
+%% based on `Range' and `TermHandling'.  `Range' specifies the name of
+%% `IndexField' to query, and `Start' and `End' optionally provide the
+%% range to query over.  `TermHandling' is a 2-tuple, the first
+%% element is a `boolean()', `true' meaning return terms, (see fold
+%% fun above), `false' meaning just return primary keys. `TermRegex'
+%% is either a regular expression of type `re:mp()' (that will be run
+%% against each index term value, and only those that match will be
+%% accumulated) or `undefined', which means no regular expression
+%% filtering of index values. NOTE: Regular Expressions can ONLY be
+%% run on indexes that have binary or string values, NOT integer
+%% values. In the Riak sense of secondary indexes, there are two types
+%% of indexes `_bin' indexes and `_int' indexes. Term regex may only
+%% be run against the `_bin' type.
 -spec book_indexfold(pid(),
                      Constraint:: {Bucket, Key} | Bucket,
                      FoldAccT :: {FoldFun, Acc},
