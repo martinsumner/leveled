@@ -27,7 +27,7 @@
             bucket_list/5,
             index_query/3,
             bucketkey_query/4,
-            bucketkey_query/5,
+            bucketkey_query/6,
             hashlist_query/3,
             tictactree/5,
             foldheads_allkeys/5,
@@ -47,6 +47,7 @@
                     leveled_codec:ledger_key()|null}.
 -type fun_and_acc()
             :: {fun(), any()}.
+-type term_regex() :: re:mp()|undefined.
 
 %%%============================================================================
 %%% External functions
@@ -132,15 +133,16 @@ index_query(SnapFun, {StartKey, EndKey, TermHandling}, FoldAccT) ->
     {async, Runner}.
 
 -spec bucketkey_query(fun(), leveled_codec:tag(), any(), 
-                        key_range(), fun_and_acc()) -> {async, fun()}.
+                        key_range(), fun_and_acc(), term_regex()) -> {async, fun()}.
 %% @doc
 %% Fold over all keys in `KeyRange' under tag (restricted to a given bucket)
 bucketkey_query(SnapFun, Tag, Bucket, 
                     {StartKey, EndKey}, 
-                    {FoldKeysFun, InitAcc}) ->
+                    {FoldKeysFun, InitAcc},
+                    TermRegex) ->
     SK = leveled_codec:to_ledgerkey(Bucket, StartKey, Tag),
     EK = leveled_codec:to_ledgerkey(Bucket, EndKey, Tag),
-    AccFun = accumulate_keys(FoldKeysFun),
+    AccFun = accumulate_keys(FoldKeysFun, TermRegex),
     Runner =
         fun() ->
                 {ok, LedgerSnapshot, _JournalSnapshot} = SnapFun(),
@@ -159,7 +161,7 @@ bucketkey_query(SnapFun, Tag, Bucket,
 %% @doc
 %% Fold over all keys under tag (potentially restricted to a given bucket)
 bucketkey_query(SnapFun, Tag, Bucket, FunAcc) ->
-    bucketkey_query(SnapFun, Tag, Bucket, {null, null}, FunAcc).
+    bucketkey_query(SnapFun, Tag, Bucket, {null, null}, FunAcc, undefined).
 
 -spec hashlist_query(fun(), leveled_codec:tag(), boolean()) -> {async, fun()}.
 %% @doc
@@ -660,17 +662,28 @@ check_presence(Key, Value, InkerClone) ->
             false
     end.
 
-accumulate_keys(FoldKeysFun) ->
+accumulate_keys(FoldKeysFun, TermRegex) ->
     Now = leveled_util:integer_now(),
-    AccFun = fun(Key, Value, Acc) ->
-                    case leveled_codec:is_active(Key, Value, Now) of
-                        true ->
-                            {B, K} = leveled_codec:from_ledgerkey(Key),
+    AccFun = 
+        fun(Key, Value, Acc) ->
+            case leveled_codec:is_active(Key, Value, Now) of
+                true ->
+                    {B, K} = leveled_codec:from_ledgerkey(Key),
+                    case TermRegex of
+                        undefined ->
                             FoldKeysFun(B, K, Acc);
-                        false ->
-                            Acc
-                    end
-                end,
+                        Re ->
+                            case re:run(K, Re) of
+                                nomatch ->
+                                    Acc;
+                                _ ->
+                                    FoldKeysFun(B, K, Acc)
+                            end
+                    end;
+                false ->
+                    Acc
+            end
+        end,
     AccFun.
 
 add_keys(ObjKey, _IdxValue) ->

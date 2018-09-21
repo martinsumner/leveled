@@ -525,14 +525,37 @@ dollar_key_index(_Config) ->
     EndKey = testutil:fixed_bin_key(779),
 
 
-    {async, Folder} = leveled_bookie:book_keylist(Bookie1,
-                                                  ?RIAK_TAG,
-                                                  <<"Bucket1">>,
-                                                  {StartKey, EndKey}, {FoldKeysFun, []}
-                                                 ),
+    {async, Folder} = 
+        leveled_bookie:book_keylist(Bookie1,
+                                    ?RIAK_TAG,
+                                    <<"Bucket1">>,
+                                    {StartKey, EndKey},
+                                    {FoldKeysFun, []}
+                                    ),
     ResLen = length(Folder()),
     io:format("Length of Result of folder ~w~n", [ResLen]),
     true = 657 == ResLen,
+
+    {ok, REMatch} = re:compile("K.y"),
+    {ok, REMiss} = re:compile("key"),
+    
+    {async, FolderREMatch} = 
+        leveled_bookie:book_keylist(Bookie1,
+                                    ?RIAK_TAG,
+                                    <<"Bucket1">>,
+                                    {StartKey, EndKey},
+                                    {FoldKeysFun, []},
+                                    REMatch),
+    {async, FolderREMiss} = 
+        leveled_bookie:book_keylist(Bookie1,
+                                    ?RIAK_TAG,
+                                    <<"Bucket1">>,
+                                    {StartKey, EndKey},
+                                    {FoldKeysFun, []},
+                                    REMiss),
+                                                
+    true = 657 == length(FolderREMatch()),
+    true = 0 == length(FolderREMiss()),
 
     ok = leveled_bookie:book_close(Bookie1),
     testutil:reset_filestructure().
