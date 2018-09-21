@@ -524,7 +524,6 @@ dollar_key_index(_Config) ->
     StartKey = testutil:fixed_bin_key(123),
     EndKey = testutil:fixed_bin_key(779),
 
-
     {async, Folder} = 
         leveled_bookie:book_keylist(Bookie1,
                                     ?RIAK_TAG,
@@ -556,6 +555,42 @@ dollar_key_index(_Config) ->
                                                 
     true = 657 == length(FolderREMatch()),
     true = 0 == length(FolderREMiss()),
+
+    % Delete an object - and check that it does not show in 
+    % $key index query
+    DeleteFun =
+        fun(KeyID) ->
+            ok = leveled_bookie:book_put(Bookie1, 
+                                            <<"Bucket1">>, 
+                                            testutil:fixed_bin_key(KeyID), 
+                                            delete, [],
+                                            ?RIAK_TAG)
+        end,
+    DelList = [200, 400, 600, 800, 1200],
+    lists:foreach(DeleteFun, DelList),
+    
+    {async, DeleteFolder0} = 
+        leveled_bookie:book_keylist(Bookie1,
+                                    ?RIAK_TAG,
+                                    <<"Bucket1">>,
+                                    {StartKey, EndKey},
+                                    {FoldKeysFun, []}
+                                    ),
+    ResultsDeleteFolder0 = length(DeleteFolder0()),
+    io:format("Length of Result of folder ~w~n", [ResultsDeleteFolder0]),
+    true = 657 - 3 == ResultsDeleteFolder0,
+
+    {async, DeleteFolder1} = 
+        leveled_bookie:book_keylist(Bookie1,
+                                    ?RIAK_TAG,
+                                    <<"Bucket1">>,
+                                    {testutil:fixed_bin_key(1151), 
+                                        testutil:fixed_bin_key(1250)},
+                                    {FoldKeysFun, []}
+                                    ),
+    ResultsDeleteFolder1 = length(DeleteFolder1()),
+    io:format("Length of Result of folder ~w~n", [ResultsDeleteFolder1]),
+    true = 100 -1 == ResultsDeleteFolder1,
 
     ok = leveled_bookie:book_close(Bookie1),
     testutil:reset_filestructure().
