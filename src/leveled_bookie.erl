@@ -76,6 +76,7 @@
          book_keylist/3,
          book_keylist/4,
          book_keylist/5,
+         book_keylist/6,
          book_objectfold/4,
          book_objectfold/5,
          book_objectfold/6,
@@ -677,7 +678,8 @@ book_keylist(Pid, Tag, Bucket, FoldAccT) ->
 %% is `StartKey', the first key in the range and `EndKey' the last,
 %% (inclusive.) Or the atom `all', which will return all keys in the
 %% `Bucket'.
--spec book_keylist(pid(), Tag, Bucket, KeyRange, FoldAccT) -> {async, Runner} when
+-spec book_keylist(pid(), Tag, Bucket, KeyRange, FoldAccT) ->
+                                                    {async, Runner} when
       Tag :: leveled_codec:tag(),
       FoldAccT :: {FoldFun, Acc},
       FoldFun :: fun((Bucket, Key, Acc) -> Acc),
@@ -689,8 +691,29 @@ book_keylist(Pid, Tag, Bucket, FoldAccT) ->
       Key :: term(),
       Runner :: fun(() -> Acc).
 book_keylist(Pid, Tag, Bucket, KeyRange, FoldAccT) ->
-    RunnerType = {keylist, Tag, Bucket, KeyRange, FoldAccT},
+    RunnerType = {keylist, Tag, Bucket, KeyRange, FoldAccT, undefined},
     book_returnfolder(Pid, RunnerType).
+
+%% @doc as for book_keylist/5 with additional constraint that a compile regular
+%% expression is passed to be applied against any key that is in the range.
+%% This is always applied to the Key and only the Key, not to any SubKey.
+-spec book_keylist(pid(), Tag, Bucket, KeyRange, FoldAccT, TermRegex) ->
+                                                    {async, Runner} when
+      Tag :: leveled_codec:tag(),
+      FoldAccT :: {FoldFun, Acc},
+      FoldFun :: fun((Bucket, Key, Acc) -> Acc),
+      Acc :: term(),
+      Bucket :: term(),
+      KeyRange :: {StartKey, EndKey} | all,
+      StartKey :: Key,
+      EndKey :: Key,
+      Key :: term(),
+      TermRegex :: re:mp(),
+      Runner :: fun(() -> Acc).
+book_keylist(Pid, Tag, Bucket, KeyRange, FoldAccT, TermRegex) ->
+    RunnerType = {keylist, Tag, Bucket, KeyRange, FoldAccT, TermRegex},
+    book_returnfolder(Pid, RunnerType).
+
 
 %% @doc fold over all the objects/values in the store in key
 %% order. `Tag' is the tagged type of object. `FoldAccT' is a 2-tuple,
@@ -1490,9 +1513,11 @@ get_runner(State, {keylist, Tag, FoldAccT}) ->
 get_runner(State, {keylist, Tag, Bucket, FoldAccT}) ->
     SnapFun = return_snapfun(State, ledger, no_lookup, true, true),
     leveled_runner:bucketkey_query(SnapFun, Tag, Bucket, FoldAccT);
-get_runner(State, {keylist, Tag, Bucket, KeyRange, FoldAccT}) ->
+get_runner(State, {keylist, Tag, Bucket, KeyRange, FoldAccT, TermRegex}) ->
     SnapFun = return_snapfun(State, ledger, no_lookup, true, true),
-    leveled_runner:bucketkey_query(SnapFun, Tag, Bucket, KeyRange, FoldAccT);
+    leveled_runner:bucketkey_query(SnapFun, 
+                                    Tag, Bucket, KeyRange, 
+                                    FoldAccT, TermRegex);
 %% Set of runners for object or metadata folds
 get_runner(State, 
             {foldheads_allkeys, 
