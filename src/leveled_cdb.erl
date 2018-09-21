@@ -61,6 +61,12 @@
                 {gen_fsm, send_all_state_event, 2}]}).
 -endif.
 
+-ifdef(slow_test).
+-define(KEYCOUNT, 2048).
+-else.
+-define(KEYCOUNT, 16384).
+-endif.
+
 -export([init/1,
             handle_sync_event/4,
             handle_event/3,
@@ -2235,10 +2241,10 @@ generate_sequentialkeys(Count, KVList) ->
     generate_sequentialkeys(Count - 1, KVList ++ [KV]).
 
 get_keys_byposition_manykeys_test_() ->
-    {timeout, 120, fun get_keys_byposition_manykeys_test_to/0}.
+    {timeout, 600, fun get_keys_byposition_manykeys_test_to/0}.
 
 get_keys_byposition_manykeys_test_to() ->
-    KeyCount = 16384,
+    KeyCount = ?KEYCOUNT,
     {ok, P1} = cdb_open_writer("../test/poskeymany.pnd",
                                 #cdb_options{binary_mode=false}),
     KVList = generate_sequentialkeys(KeyCount, []),
