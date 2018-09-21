@@ -3,10 +3,10 @@
 -include("include/leveled.hrl").
 -export([all/0]).
 -export([
-            crossbucket_aae/1,
-            handoff/1,
-         dollar_bucket_index/1,
-         dollar_key_index/1
+        crossbucket_aae/1,
+        handoff/1,
+        dollar_bucket_index/1,
+        dollar_key_index/1
             ]).
 
 all() -> [
@@ -598,12 +598,45 @@ dollar_bucket_index(_Config) ->
                   end,
     FoldAccT = {FoldKeysFun, []},
 
-    {async, Folder} = leveled_bookie:book_keylist(Bookie1, ?RIAK_TAG, <<"Bucket2">>, FoldAccT),
-    ResLen = length(Folder()),
+    {async, Folder} = 
+        leveled_bookie:book_keylist(Bookie1, 
+                                    ?RIAK_TAG, 
+                                    <<"Bucket2">>, 
+                                    FoldAccT),
+    Results = Folder(),
+    true = 1700 == length(Results),
+    
+    {<<"Bucket2">>, SampleKey} = lists:nth(100, Results),
+    UUID = "[a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{12}",
+    {ok, RESingleMatch} = re:compile(SampleKey),
+    {ok, REAllMatch} = re:compile(UUID),
+    {ok, REMiss} = re:compile("no_key"),
 
-    io:format("Length of Result of folder ~w~n", [ResLen]),
-
-    true = 1700 == ResLen,
+    {async, FolderREMiss} = 
+        leveled_bookie:book_keylist(Bookie1,
+                                    ?RIAK_TAG,
+                                    <<"Bucket2">>,
+                                    {null, null},
+                                    {FoldKeysFun, []},
+                                    REMiss),
+    {async, FolderRESingleMatch} = 
+        leveled_bookie:book_keylist(Bookie1,
+                                    ?RIAK_TAG,
+                                    <<"Bucket2">>,
+                                    {null, null},
+                                    {FoldKeysFun, []},
+                                    RESingleMatch),
+    {async, FolderREAllMatch} = 
+        leveled_bookie:book_keylist(Bookie1,
+                                    ?RIAK_TAG,
+                                    <<"Bucket2">>,
+                                    {null, null},
+                                    {FoldKeysFun, []},
+                                    REAllMatch),
+    
+    true = 0 == length(FolderREMiss()),
+    true = 1 == length(FolderRESingleMatch()),
+    true = 1700 == length(FolderREAllMatch()),
 
     ok = leveled_bookie:book_close(Bookie1),
     testutil:reset_filestructure().
