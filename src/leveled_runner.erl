@@ -182,7 +182,7 @@ bucketkey_query(SnapFun, Tag, Bucket, FunAcc) ->
 
 -spec hashlist_query(fun(), leveled_codec:tag(), boolean()) -> {async, fun()}.
 %% @doc
-%% Fold pver the key accumulating the hashes
+%% Fold over the keys under a given Tag accumulating the hashes
 hashlist_query(SnapFun, Tag, JournalCheck) ->
     StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
     EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
