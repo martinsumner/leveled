@@ -65,10 +65,11 @@ bucket_sizestats(SnapFun, Bucket, Tag) ->
         fun() ->
             {ok, LedgerSnap, _JournalSnap} = SnapFun(),
             Acc = leveled_penciller:pcl_fetchkeys(LedgerSnap,
-                                                    StartKey,
-                                                    EndKey,
-                                                    AccFun,
-                                                    {0, 0}),
+                                                        StartKey,
+                                                        EndKey,
+                                                        AccFun,
+                                                        {0, 0},
+                                                        as_pcl),
             ok = leveled_penciller:pcl_close(LedgerSnap),
             Acc
         end,
@@ -108,6 +109,13 @@ bucket_list(SnapFun, Tag, FoldBucketsFun, InitAcc, MaxBuckets) ->
                     fun_and_acc()) -> {async, fun()}.
 %% @doc
 %% Secondary index query
+%% This has the special capability that it will expect a message to be thrown
+%% during the query - and handle this without crashing the penciller snapshot
+%% This allows for this query to be used with a max_results check in the 
+%% applictaion - and to throw a stop message to be caught by the worker 
+%% handling the runner.  This behaviour will not prevent the snapshot from
+%% closing neatly, allowing delete_pending files to be cleared without waiting
+%% for a timeout
 index_query(SnapFun, {StartKey, EndKey, TermHandling}, FoldAccT) ->
     {FoldKeysFun, InitAcc} = FoldAccT,
     {ReturnTerms, TermRegex} = TermHandling,
@@ -119,16 +127,21 @@ index_query(SnapFun, {StartKey, EndKey, TermHandling}, FoldAccT) ->
                 fun add_keys/2
         end,
     AccFun = accumulate_index(TermRegex, AddFun, FoldKeysFun),
+
     Runner = 
         fun() ->
             {ok, LedgerSnapshot, _JournalSnapshot} = SnapFun(),
-            Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
-                                                    StartKey,
-                                                    EndKey,
-                                                    AccFun,
-                                                    InitAcc),
-            ok = leveled_penciller:pcl_close(LedgerSnapshot),
-            Acc
+            Folder = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
+                                                        StartKey,
+                                                        EndKey,
+                                                        AccFun,
+                                                        InitAcc,
+                                                        by_runner),
+            AfterFun = 
+                fun() ->
+                    ok = leveled_penciller:pcl_close(LedgerSnapshot)
+                end,
+            wrap_runner(Folder, AfterFun)
         end,
     {async, Runner}.
 
@@ -145,14 +158,18 @@ bucketkey_query(SnapFun, Tag, Bucket,
     AccFun = accumulate_keys(FoldKeysFun, TermRegex),
     Runner =
         fun() ->
-                {ok, LedgerSnapshot, _JournalSnapshot} = SnapFun(),
-                Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
-                                                      SK,
-                                                      EK,
-                                                      AccFun,
-                                                      InitAcc),
-                ok = leveled_penciller:pcl_close(LedgerSnapshot),
-                Acc
+            {ok, LedgerSnapshot, _JournalSnapshot} = SnapFun(),
+            Folder = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
+                                                        SK,
+                                                        EK,
+                                                        AccFun,
+                                                        InitAcc,
+                                                        by_runner),
+            AfterFun = 
+                fun() ->
+                    ok = leveled_penciller:pcl_close(LedgerSnapshot)
+                end,
+            wrap_runner(Folder, AfterFun)
         end,
     {async, Runner}.
 
@@ -165,7 +182,7 @@ bucketkey_query(SnapFun, Tag, Bucket, FunAcc) ->
 
 -spec hashlist_query(fun(), leveled_codec:tag(), boolean()) -> {async, fun()}.
 %% @doc
-%% Fold pver the key accumulating the hashes
+%% Fold over the keys under a given Tag accumulating the hashes
 hashlist_query(SnapFun, Tag, JournalCheck) ->
     StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
     EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
@@ -726,6 +743,21 @@ accumulate_index(TermRe, AddFun, FoldKeysFun) ->
                 end end
     end.
 
+-spec wrap_runner(fun(), fun()) -> any().
+%% @doc
+%% Allow things to be thrown in folds, and ensure clean-up action is still
+%% undertaken if they are.
+%%
+%% It is assumed this is only used at present by index queries and key folds,
+%% but the wrap could be applied more generally with further work
+wrap_runner(FoldAction, AfterAction) ->
+    try FoldAction()
+    catch throw:Throw ->
+        throw(Throw)
+    after AfterAction()
+    end.
+
+
 
 %%%============================================================================
 %%% Test
@@ -733,6 +765,23 @@ accumulate_index(TermRe, AddFun, FoldKeysFun) ->
 
 -ifdef(TEST).
 
+throw_test() ->
+    StoppedFolder =
+        fun() ->
+            throw(stop_fold)
+        end,
+    CompletedFolder =
+        fun() ->
+            {ok, ['1']}
+        end,
+    AfterAction =
+        fun() ->
+            error
+        end,
+    ?assertMatch({ok, ['1']}, 
+                    wrap_runner(CompletedFolder, AfterAction)),
+    ?assertException(throw, stop_fold, 
+                        wrap_runner(StoppedFolder, AfterAction)).
 
 
 -endif.

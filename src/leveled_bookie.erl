@@ -591,6 +591,12 @@ book_returnfolder(Pid, RunnerType) ->
 %% values. In the Riak sense of secondary indexes, there are two types
 %% of indexes `_bin' indexes and `_int' indexes. Term regex may only
 %% be run against the `_bin' type.
+%%
+%% Any book_indexfold query will fold over the snapshot under the control
+%% of the worker process controlling the function - and that process can 
+%% be interrupted by a throw, which will be forwarded to the worker (whilst
+%% still closing down the snapshot).  This may be used, for example, to
+%% curtail a fold in the application at max_results
 -spec book_indexfold(pid(),
                      Constraint:: {Bucket, Key} | Bucket,
                      FoldAccT :: {FoldFun, Acc},
@@ -609,7 +615,8 @@ book_returnfolder(Pid, RunnerType) ->
                                      TermRegex :: re:mp() | undefined.
 
 book_indexfold(Pid, Constraint, FoldAccT, Range, TermHandling) ->
-    RunnerType = {index_query, Constraint, FoldAccT, Range, TermHandling},
+    RunnerType = 
+        {index_query, Constraint, FoldAccT, Range, TermHandling},
     book_returnfolder(Pid, RunnerType).
 
 
@@ -647,6 +654,12 @@ book_bucketlist(Pid, Tag, FoldAccT, Constraint) ->
 %% initial value of `Acc' is the second element of `FoldAccT'. Returns
 %% `{async, Runner}' where `Runner' is a function that will run the
 %% fold and return the final value of `Acc'
+%%
+%% Any book_keylist query will fold over the snapshot under the control
+%% of the worker process controlling the function - and that process can 
+%% be interrupted by a throw, which will be forwarded to the worker (whilst
+%% still closing down the snapshot).  This may be used, for example, to
+%% curtail a fold in the application at max_results
 -spec book_keylist(pid(), Tag, FoldAccT) -> {async, Runner} when
       Tag :: leveled_codec:tag(),
       FoldAccT :: {FoldFun, Acc},
