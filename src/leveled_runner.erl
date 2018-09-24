@@ -109,6 +109,13 @@ bucket_list(SnapFun, Tag, FoldBucketsFun, InitAcc, MaxBuckets) ->
                     fun_and_acc()) -> {async, fun()}.
 %% @doc
 %% Secondary index query
+%% This has the special capability that it will expect a message to be thrown
+%% during the query - and handle this without crashing the penciller snapshot
+%% This allows for this query to be used with a max_results check in the 
+%% applictaion - and to throw a stop message to be caught by the worker 
+%% handling the runner.  This behaviour will not prevent the snapshot from
+%% closing neatly, allowing delete_pending files to be cleared without waiting
+%% for a timeout
 index_query(SnapFun, {StartKey, EndKey, TermHandling}, FoldAccT) ->
     {FoldKeysFun, InitAcc} = FoldAccT,
     {ReturnTerms, TermRegex} = TermHandling,
@@ -739,7 +746,10 @@ accumulate_index(TermRe, AddFun, FoldKeysFun) ->
 -spec wrap_runner(fun(), fun()) -> any().
 %% @doc
 %% Allow things to be thrown in folds, and ensure clean-up action is still
-%% undertaken if they are
+%% undertaken if they are.
+%%
+%% It is assumed this is only used at present by index queries and key folds,
+%% but the wrap could be applied more generally with further work
 wrap_runner(FoldAction, AfterAction) ->
     try FoldAction()
     catch throw:Throw ->
