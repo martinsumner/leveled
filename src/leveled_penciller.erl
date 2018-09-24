@@ -176,6 +176,7 @@
         pcl_fetchlevelzero/2,
         pcl_fetch/4,
         pcl_fetchkeys/5,
+        pcl_fetchkeys/6,
         pcl_fetchkeysbysegment/6,
         pcl_fetchnextkey/5,
         pcl_checksequencenumber/3,
@@ -386,7 +387,7 @@ pcl_fetch(Pid, Key, Hash, UseL0Index) ->
 -spec pcl_fetchkeys(pid(), 
                     leveled_codec:ledger_key(), 
                     leveled_codec:ledger_key(), 
-                    fun(), any()) -> any().
+                    fun(), any(), as_pcl|by_runner) -> any().
 %% @doc
 %% Run a range query between StartKey and EndKey (inclusive).  This will cover
 %% all keys in the range - so must only be run against snapshots of the
@@ -397,12 +398,17 @@ pcl_fetch(Pid, Key, Hash, UseL0Index) ->
 %% the top of the range.  Comparison with the start of the range is based on
 %% Erlang term order.
 pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc) ->
+    pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc, as_pcl).
+
+pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc, By) ->
     gen_server:call(Pid,
                     {fetch_keys, 
                         StartKey, EndKey, 
                         AccFun, InitAcc, 
-                        false, -1},
+                        false, -1,
+                        By},
                     infinity).
+
 
 -spec pcl_fetchkeysbysegment(pid(), 
                                 leveled_codec:ledger_key(), 
@@ -426,7 +432,8 @@ pcl_fetchkeysbysegment(Pid, StartKey, EndKey, AccFun, InitAcc, SegmentList) ->
                     {fetch_keys, 
                         StartKey, EndKey, 
                         AccFun, InitAcc, 
-                        SegmentList, -1},
+                        SegmentList, -1, 
+                        as_pcl},
                     infinity).
 
 -spec pcl_fetchnextkey(pid(), 
@@ -442,7 +449,8 @@ pcl_fetchnextkey(Pid, StartKey, EndKey, AccFun, InitAcc) ->
                     {fetch_keys, 
                         StartKey, EndKey, 
                         AccFun, InitAcc, 
-                        false, 1},
+                        false, 1,
+                        as_pcl},
                     infinity).
 
 -spec pcl_checksequencenumber(pid(), 
@@ -676,7 +684,7 @@ handle_call({check_sqn, Key, Hash, SQN}, _From, State) ->
 handle_call({fetch_keys, 
                     StartKey, EndKey, 
                     AccFun, InitAcc, 
-                    SegmentList, MaxKeys},
+                    SegmentList, MaxKeys, By},
                 _From,
                 State=#state{snapshot_fully_loaded=Ready})
                                                         when Ready == true ->
@@ -707,13 +715,19 @@ handle_call({fetch_keys,
             end
         end,
     SSTiter = lists:foldl(SetupFoldFun, [], lists:seq(0, ?MAX_LEVELS - 1)),
-    
-    Acc = keyfolder({L0AsList, SSTiter},
+    Folder = 
+        fun() -> 
+            keyfolder({L0AsList, SSTiter},
                         {StartKey, EndKey},
                         {AccFun, InitAcc},
-                        {SegmentList, MaxKeys}),
-    
-    {reply, Acc, State};
+                        {SegmentList, MaxKeys})
+        end,
+    case By of 
+        as_pcl ->
+            {reply, Folder(), State};
+        by_runner ->
+            {reply, Folder, State}
+    end;
 handle_call(get_startup_sqn, _From, State) ->
     {reply, State#state.persisted_sqn, State};
 handle_call({register_snapshot, Snapshot, Query, BookiesMem, LR}, _From, State) ->

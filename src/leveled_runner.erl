@@ -65,10 +65,11 @@ bucket_sizestats(SnapFun, Bucket, Tag) ->
         fun() ->
             {ok, LedgerSnap, _JournalSnap} = SnapFun(),
             Acc = leveled_penciller:pcl_fetchkeys(LedgerSnap,
-                                                    StartKey,
-                                                    EndKey,
-                                                    AccFun,
-                                                    {0, 0}),
+                                                        StartKey,
+                                                        EndKey,
+                                                        AccFun,
+                                                        {0, 0},
+                                                        as_pcl),
             ok = leveled_penciller:pcl_close(LedgerSnap),
             Acc
         end,
@@ -119,16 +120,21 @@ index_query(SnapFun, {StartKey, EndKey, TermHandling}, FoldAccT) ->
                 fun add_keys/2
         end,
     AccFun = accumulate_index(TermRegex, AddFun, FoldKeysFun),
+
     Runner = 
         fun() ->
             {ok, LedgerSnapshot, _JournalSnapshot} = SnapFun(),
-            Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
-                                                    StartKey,
-                                                    EndKey,
-                                                    AccFun,
-                                                    InitAcc),
-            ok = leveled_penciller:pcl_close(LedgerSnapshot),
-            Acc
+            Folder = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
+                                                        StartKey,
+                                                        EndKey,
+                                                        AccFun,
+                                                        InitAcc,
+                                                        by_runner),
+            AfterFun = 
+                fun() ->
+                    ok = leveled_penciller:pcl_close(LedgerSnapshot)
+                end,
+            wrap_runner(Folder, AfterFun)
         end,
     {async, Runner}.
 
@@ -145,14 +151,18 @@ bucketkey_query(SnapFun, Tag, Bucket,
     AccFun = accumulate_keys(FoldKeysFun, TermRegex),
     Runner =
         fun() ->
-                {ok, LedgerSnapshot, _JournalSnapshot} = SnapFun(),
-                Acc = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
-                                                      SK,
-                                                      EK,
-                                                      AccFun,
-                                                      InitAcc),
-                ok = leveled_penciller:pcl_close(LedgerSnapshot),
-                Acc
+            {ok, LedgerSnapshot, _JournalSnapshot} = SnapFun(),
+            Folder = leveled_penciller:pcl_fetchkeys(LedgerSnapshot,
+                                                        SK,
+                                                        EK,
+                                                        AccFun,
+                                                        InitAcc,
+                                                        by_runner),
+            AfterFun = 
+                fun() ->
+                    ok = leveled_penciller:pcl_close(LedgerSnapshot)
+                end,
+            wrap_runner(Folder, AfterFun)
         end,
     {async, Runner}.
 
@@ -726,6 +736,18 @@ accumulate_index(TermRe, AddFun, FoldKeysFun) ->
                 end end
     end.
 
+-spec wrap_runner(fun(), fun()) -> any().
+%% @doc
+%% Allow things to be thrown in folds, and ensure clean-up action is still
+%% undertaken if they are
+wrap_runner(FoldAction, AfterAction) ->
+    try FoldAction()
+    catch throw:Throw ->
+        throw(Throw)
+    after AfterAction()
+    end.
+
+
 
 %%%============================================================================
 %%% Test
@@ -733,6 +755,23 @@ accumulate_index(TermRe, AddFun, FoldKeysFun) ->
 
 -ifdef(TEST).
 
+throw_test() ->
+    StoppedFolder =
+        fun() ->
+            throw(stop_fold)
+        end,
+    CompletedFolder =
+        fun() ->
+            {ok, ['1']}
+        end,
+    AfterAction =
+        fun() ->
+            error
+        end,
+    ?assertMatch({ok, ['1']}, 
+                    wrap_runner(CompletedFolder, AfterAction)),
+    ?assertException(throw, stop_fold, 
+                        wrap_runner(StoppedFolder, AfterAction)).
 
 
 -endif.
