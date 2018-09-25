@@ -163,7 +163,20 @@ small_load_with2i(_Config) ->
         {foldobjects_bybucket, ?RIAK_TAG, "Bucket", all, {SumIntFun, 0}, true},
     {async, Sum1} = leveled_bookie:book_returnfolder(Bookie1, BucketObjQ),
     Total1 = Sum1(),
-    true = Total1 > 100000, 
+    io:format("Total from summing all I is ~w~n", [Total1]),
+    SumFromObjLFun = 
+        fun(Obj, Acc) ->
+            {I, _Bin} = testutil:get_value_from_objectlistitem(Obj),
+            Acc + I
+        end,
+    ObjL1Total = 
+        lists:foldl(SumFromObjLFun, 0, ObjL1),
+    ChkList1Total = 
+        lists:foldl(SumFromObjLFun, 0, ChkList1),
+    io:format("Total in original object list ~w and from removed list ~w~n", 
+                [ObjL1Total, ChkList1Total]),
+
+    Total1 = ObjL1Total - ChkList1Total, 
     
     ok = leveled_bookie:book_close(Bookie1),
     

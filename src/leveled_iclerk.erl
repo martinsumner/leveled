@@ -157,7 +157,7 @@ clerk_trim(Pid, Inker, PersistedSQN) ->
 %% of the hastable in the CDB file - so that the file is not blocked during
 %% this calculation
 clerk_hashtablecalc(HashTree, StartPos, CDBpid) ->
-    {ok, Clerk} = gen_server:start(?MODULE, [#iclerk_options{}], []),
+    {ok, Clerk} = gen_server:start_link(?MODULE, [#iclerk_options{}], []),
     gen_server:cast(Clerk, {hashtable_calc, HashTree, StartPos, CDBpid}).
 
 -spec clerk_stop(pid()) -> ok.
