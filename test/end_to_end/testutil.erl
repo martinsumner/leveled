@@ -50,6 +50,7 @@
             foldkeysfun_returnbucket/3,
             sync_strategy/0,
             riak_object/4,
+            get_value_from_objectlistitem/1,
         numbered_key/1,
         fixed_bin_key/1]).
 
@@ -477,6 +478,10 @@ set_object(Bucket, Key, Value, IndexGen, Indexes2Remove) ->
                 contents=[Content],
                 vclock=generate_vclock()},
         Spec1}.
+
+get_value_from_objectlistitem({_Int, Obj, _Spc}) ->
+    [Content] = Obj#r_object.contents,
+    Content#r_content.value.
 
 update_some_objects(Bookie, ObjList, SampleSize) ->
     StartWatchA = os:timestamp(),
