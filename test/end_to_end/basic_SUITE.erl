@@ -10,7 +10,8 @@
             load_and_count_withdelete/1,
             space_clear_ondelete/1,
             is_empty_test/1,
-            many_put_fetch_switchcompression/1
+            many_put_fetch_switchcompression/1,
+            bigjournal_littlejournal/1
             ]).
 
 all() -> [
@@ -22,7 +23,8 @@ all() -> [
             load_and_count_withdelete,
             space_clear_ondelete,
             is_empty_test,
-            many_put_fetch_switchcompression
+            many_put_fetch_switchcompression,
+            bigjournal_littlejournal
             ].
 
 
@@ -110,6 +112,32 @@ many_put_fetch_head(_Config) ->
     testutil:check_forobject(Bookie3, TestObject),
     testutil:check_formissingobject(Bookie3, "Bookie1", "MissingKey0123"),
     ok = leveled_bookie:book_destroy(Bookie3).
+
+bigjournal_littlejournal(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    StartOpts1 = [{root_path, RootPath},
+                    {max_journalsize, 50000000},
+                    {max_pencillercachesize, 32000},
+                    {sync_strategy, testutil:sync_strategy()},
+                    {compression_point, on_compact}],
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+    ObjL1 = 
+        testutil:generate_objects(100, 1, [], 
+                                    leveled_rand:rand_bytes(10000), 
+                                    fun() -> [] end, <<"B">>),
+    testutil:riakload(Bookie1, ObjL1),
+    ok = leveled_bookie:book_close(Bookie1),
+    StartOpts2 = lists:ukeysort(1, [{max_journalsize, 5000}|StartOpts1]),
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
+    ObjL2 = 
+        testutil:generate_objects(10, 1000, [], 
+                                    leveled_rand:rand_bytes(10000), 
+                                    fun() -> [] end, <<"B">>),
+    testutil:riakload(Bookie2, ObjL2),
+    testutil:check_forlist(Bookie2, ObjL1),
+    testutil:check_forlist(Bookie2, ObjL2),
+    ok = leveled_bookie:book_destroy(Bookie2).
+    
 
 journal_compaction(_Config) ->
     journal_compaction_tester(false, 3600),

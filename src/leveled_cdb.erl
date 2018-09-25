@@ -123,6 +123,8 @@
 -define(DELETE_TIMEOUT, 10000).
 -define(TIMING_SAMPLECOUNTDOWN, 1000).
 -define(TIMING_SAMPLESIZE, 100).
+-define(MAX_OBJECT_SIZE, 1000000000). 
+    % 1GB but really should be much smaller than this
 
 -record(state, {hashtree,
                 last_position :: integer() | undefined,
@@ -464,7 +466,8 @@ writer({put_kv, Key, Value}, _From, State) ->
                     Value,
                     {State#state.last_position, State#state.hashtree},
                     State#state.binary_mode,
-                    State#state.max_size),
+                    State#state.max_size,
+                    State#state.last_key == empty),
     case Result of
         roll ->
             %% Key and value could not be written
@@ -891,7 +894,7 @@ open_active_file(FileName) when is_list(FileName) ->
 
 -spec put(list()|file:io_device(), 
             any(), any(), 
-            {integer(), ets:tid()}, boolean(), integer())
+            {integer(), ets:tid()}, boolean(), integer(), boolean())
                             -> roll|{file:io_device(), integer(), ets:tid()}.
 %% @doc
 %% put(Handle, Key, Value, {LastPosition, HashDict}) -> {NewPosition, KeyDict}
@@ -903,20 +906,28 @@ put(FileName,
         Value,
         {LastPosition, HashTree},
         BinaryMode,
-        MaxSize) when is_list(FileName) ->
+        MaxSize,
+        IsEmpty) when is_list(FileName) ->
     {ok, Handle} = file:open(FileName, ?WRITE_OPS),
-    put(Handle, Key, Value, {LastPosition, HashTree}, BinaryMode, MaxSize);
-put(Handle, Key, Value, {LastPosition, HashTree}, BinaryMode, MaxSize) ->
+    put(Handle, Key, Value, {LastPosition, HashTree}, 
+        BinaryMode, MaxSize, IsEmpty);
+put(Handle, Key, Value, {LastPosition, HashTree}, 
+        BinaryMode, MaxSize, IsEmpty) ->
     Bin = key_value_to_record({Key, Value}, BinaryMode),
-    PotentialNewSize = LastPosition + byte_size(Bin),
-    if
-        PotentialNewSize > MaxSize ->
+    ObjectSize = byte_size(Bin),
+    SizeWithinReason = ObjectSize < ?MAX_OBJECT_SIZE,
+    PotentialNewSize = LastPosition + ObjectSize,
+    case {IsEmpty, PotentialNewSize > MaxSize} of
+        {false, true} ->
             roll;
-        true ->
-            ok = file:pwrite(Handle, LastPosition, Bin),
-            {Handle,
-                PotentialNewSize,
-                put_hashtree(Key, LastPosition, HashTree)}
+        _ ->
+            if
+                SizeWithinReason ->
+                    ok = file:pwrite(Handle, LastPosition, Bin),
+                    {Handle,
+                        PotentialNewSize,
+                        put_hashtree(Key, LastPosition, HashTree)}
+            end
     end.
 
 
@@ -1860,7 +1871,7 @@ create(FileName,KeyValueList) ->
 %% should be taken from the startup options not the default
 put(FileName, Key, Value, {LastPosition, HashTree}) ->
     put(FileName, Key, Value, {LastPosition, HashTree},
-            ?BINARY_MODE, ?MAX_FILE_SIZE).
+            ?BINARY_MODE, ?MAX_FILE_SIZE, false).
 
 
 dump(FileName) ->
