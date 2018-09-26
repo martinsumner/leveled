@@ -218,6 +218,10 @@ handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Inker, _TO},
                 State) ->
     % Empty the waste folder
     clear_waste(State),
+    SW = os:timestamp(), 
+        % Clock to record the time it takes to calculate the potential for
+        % compaction
+    
     % Need to fetch manifest at start rather than have it be passed in
     % Don't want to process a queued call waiting on an old manifest
     [_Active|Manifest] = leveled_inker:ink_getmanifest(Inker),
@@ -231,6 +235,7 @@ handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Inker, _TO},
             State#state.maxrunlength_compactionperc, 
             State#state.singlefile_compactionperc},
     {BestRun0, Score} = assess_candidates(Candidates, ScoreParams),
+    leveled_log:log_timer("IC003", [Score, length(BestRun0)], SW),
     case Score > 0.0 of
         true ->
             BestRun1 = sort_run(BestRun0),
@@ -259,7 +264,6 @@ handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Inker, _TO},
                     {noreply, State}
             end;
         false ->
-            leveled_log:log("IC003", [Score]),
             ok = leveled_inker:ink_compactioncomplete(Inker),
             ok = CloseFun(FilterServer),
             {noreply, State}
