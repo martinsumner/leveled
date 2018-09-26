@@ -502,6 +502,8 @@ fetch_inbatches(PositionList, BatchSize, CDB, CheckedList) ->
 assess_candidates(AllCandidates, Params) ->
     MaxRunLength = min(element(1, Params), length(AllCandidates)),
     NaiveBestRun = lists:sublist(AllCandidates, MaxRunLength),
+        % This will end up being scored twice, but lets take a guess at
+        % the best scoring run to take into the loop
     FoldFun =
         fun(RunLength, Best) ->
             assess_for_runlength(RunLength, AllCandidates, Params, Best)
