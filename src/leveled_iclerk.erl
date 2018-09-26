@@ -118,7 +118,19 @@
                     compaction_perc :: float() | undefined}).
 
 -type iclerk_options() :: #iclerk_options{}.
--type candidate():: #candidate{}.
+-type candidate() :: #candidate{}.
+-type score_parameters() :: {integer(), float(), float()}.
+    % Score parameters are a tuple 
+    % - of maximum run length; how long a run of consecutive files can be for 
+    % one compaction run
+    % - maximum run compaction target; percentage space which should be 
+    % released from a compaction run of the maximum length to make it a run
+    % worthwhile of compaction (released space is 100.0 - target e.g. 70.0 
+    % means that 30.0% should be released) 
+    % - single_file compaction target; percentage space which should be 
+    % released from a compaction run of a single file to make it a run
+    % worthwhile of compaction (released space is 100.0 - target e.g. 70.0 
+    % means that 30.0% should be released)
 
 %%%============================================================================
 %%% API
@@ -462,15 +474,31 @@ fetch_inbatches(PositionList, BatchSize, CDB, CheckedList) ->
     fetch_inbatches(Tail, BatchSize, CDB, CheckedList ++ KL_List).
 
 
--spec assess_candidates(list(candidate()), tuple()) 
+-spec assess_candidates(list(candidate()), score_parameters()) 
                                             -> {list(candidate()), float()}.
 %% @doc
-%% For each run length we need to assess all the runs of candidates
-%% The best scoring run should emerge as the winner
+%% For each run length we need to assess all the possible runs of candidates,
+%% to determine which is the best score - to be put forward as the best
+%% candidate run for compaction.
+%% 
 %% Although this requires many loops over the list of the candidate, as the
 %% file scores have already been calculated the cost per loop should not be
 %% a high burden.  Reducing the maximum run length, will reduce the cost of
-%% this exercise should be a problem
+%% this exercise should be a problem.
+%%
+%% The score parameters are used to produce the score of the compaction run,
+%% with a higher score being better.  The parameters are the maximum run 
+%% length and the compaction targets (for max run length and single file).
+%% The score of an individual file is the approximate percentage of the space
+%% that would be retained after compaction (e.g. 100 less the percentage of 
+%% space wasted by historic objects). 
+%%
+%% So a file score of 60% indicates that 40% of the space would be 
+%% reclaimed following compaction.  A single file target of 50% would not be
+%% met for this file.  However, if there are 4 consecutive files scoring 60%,
+%% and the maximum run length is 4, and the maximum run length compaction
+%% target is 70% - then this run of four files would be a viable candidate
+%% for compaction.
 assess_candidates(AllCandidates, Params) ->
     MaxRunLength = min(element(1, Params), length(AllCandidates)),
     NaiveBestRun = lists:sublist(AllCandidates, MaxRunLength),
@@ -478,7 +506,6 @@ assess_candidates(AllCandidates, Params) ->
         fun(RunLength, Best) ->
             assess_for_runlength(RunLength, AllCandidates, Params, Best)
         end,
-    
     % Check all run lengths to find the best candidate.  Reverse the list of
     % run lengths, so that longer runs win on equality of score
     lists:foldl(FoldFun, 
@@ -486,6 +513,14 @@ assess_candidates(AllCandidates, Params) ->
                 lists:reverse(lists:seq(1, MaxRunLength))).
 
 
+-spec assess_for_runlength(integer(), list(candidate()), score_parameters(), 
+                            {list(candidate()), float()}) 
+                                -> {list(candidate()), float()}.
+%% @doc
+%% For a given run length, calculate the scores for all consecutive runs of
+%% files, comparing the score with the best run which has beens een so far.
+%% The best is a tuple of the actual run of candidates, along with the score
+%% achieved for that run
 assess_for_runlength(RunLength, AllCandidates, Params, Best) ->
     NumberOfRuns = 1 + length(AllCandidates) - RunLength,
     FoldFun =
@@ -500,6 +535,12 @@ assess_for_runlength(RunLength, AllCandidates, Params, Best) ->
     lists:foldl(FoldFun, Best, lists:seq(1, NumberOfRuns)).
 
 
+-spec score_run(list(candidate()), score_parameters()) -> float().
+%% @doc
+%% Score a run.  Caluclate the avergae score across all the files in the run, 
+%% and deduct that from a target score.  Good candidate runs for comapction
+%% have larger (positive) scores.  Bad candidate runs for compaction have 
+%% negative scores.
 score_run([], _Params) ->
     0.0;
 score_run(Run, {MaxRunLength, MR_CT, SF_CT}) ->
