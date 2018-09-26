@@ -21,7 +21,7 @@ If there are smaller objects then lookups within a Journal may get faster if eac
 - excessive CPU use and related performance impacts during rolling of CDB files, see log `CDB07`;
 - excessive load caused during journal compaction despite tuning down `max_run_length`.
 
-If the store is used to hold bigger objects, the `max_journalsize` may be scaled up accordingly.  Having fewer Journal files (by using larger objects), will reduce the lookup time to find the right Journal during GET requests, but in most circumstances the impact of this improvement is marginal.
+If the store is used to hold bigger objects, the `max_journalsize` may be scaled up accordingly.  Having fewer Journal files (by using larger objects), will reduce the lookup time to find the right Journal during GET requests, but in most circumstances the impact of this improvement is marginal.  The primary impact of fewer Journal files is the decision-making time of Journal compaction (the time to calculate if a compaction should be undertaken, then what should be compacted) will increase.  The timing for making compaction calculations can be monitored through log `IC003`.
 
 ## Ledger Cache Size
 

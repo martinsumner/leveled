@@ -296,7 +296,8 @@
     {"IC002",
         {info, "Clerk updating Inker as compaction complete of ~w files"}},
     {"IC003",
-        {info, "No compaction run as highest score=~w"}},
+        {info, "Scoring of compaction runs complete with highest score=~w " 
+                ++ "and run to be made=~w"}},
     {"IC004",
         {info, "Score for filename ~s is ~w"}},
     {"IC005",
