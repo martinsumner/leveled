@@ -14,23 +14,14 @@ There is no current support for running leveled so that it supports both `head` 
 
 ## Max Journal Size
 
-The maximum size of an individual Journal file can be set using `{max_journalsize, netger()}`, which sets the size in bytes.  The default value is 1,000,000,000 (~1GB), and the maximum size cannot exceed `2^32`.
+The maximum size of an individual Journal file can be set using `{max_journalsize, integer()}`, which sets the size in bytes.  The default value is 1,000,000,000 (~1GB). The maximum size, which cannot be exceed is `2^32`.  It is not expected that the Journal Size should normally set to lower than 100 MB, it should be sized to hold many thousands of objects at least.
 
-If there are smaller objects then lookups within a Journal may get faster if each individual journal file is smaller.
+If there are smaller objects then lookups within a Journal may get faster if each individual journal file is smaller. Generally there should be o(100K) objects per journal.  Signs that the journal size is too high may include:
 
-An object is converted before storing in the Journal. The conversion
-may involve compression, the duplication of index changes prompted by
-the object's storage, and the object's key. The max journal size
-should always be bigger than the biggest object you wish to store,
-accounting for conversion.
+- excessive CPU use and related performance impacts during rolling of CDB files, see log `CDB07`;
+- excessive load caused during journal compaction despite tuning down `max_run_length`.
 
-Attempting to store a bigger object will crash the store. Ensure there
-is ample room - generally it is anticipated that `max_journalsize`
-should be greater than 100 MB, and maximum object size should be less
-than 10MB.
-
-If you wish to store bigger objects, scale up the `max_journalsize`
-accordingly.
+If the store is used to hold bigger objects, the `max_journalsize` may be scaled up accordingly.  Having fewer Journal files (by using larger objects), will reduce the lookup time to find the right Journal during GET requests, but in most circumstances the impact of this improvement is marginal.  The primary impact of fewer Journal files is the decision-making time of Journal compaction (the time to calculate if a compaction should be undertaken, then what should be compacted) will increase.  The timing for making compaction calculations can be monitored through log `IC003`.
 
 ## Ledger Cache Size
 

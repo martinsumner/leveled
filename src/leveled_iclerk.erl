@@ -118,6 +118,19 @@
                     compaction_perc :: float() | undefined}).
 
 -type iclerk_options() :: #iclerk_options{}.
+-type candidate() :: #candidate{}.
+-type score_parameters() :: {integer(), float(), float()}.
+    % Score parameters are a tuple 
+    % - of maximum run length; how long a run of consecutive files can be for 
+    % one compaction run
+    % - maximum run compaction target; percentage space which should be 
+    % released from a compaction run of the maximum length to make it a run
+    % worthwhile of compaction (released space is 100.0 - target e.g. 70.0 
+    % means that 30.0% should be released) 
+    % - single_file compaction target; percentage space which should be 
+    % released from a compaction run of a single file to make it a run
+    % worthwhile of compaction (released space is 100.0 - target e.g. 70.0 
+    % means that 30.0% should be released)
 
 %%%============================================================================
 %%% API
@@ -217,6 +230,10 @@ handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Inker, _TO},
                 State) ->
     % Empty the waste folder
     clear_waste(State),
+    SW = os:timestamp(), 
+        % Clock to record the time it takes to calculate the potential for
+        % compaction
+    
     % Need to fetch manifest at start rather than have it be passed in
     % Don't want to process a queued call waiting on an old manifest
     [_Active|Manifest] = leveled_inker:ink_getmanifest(Inker),
@@ -229,9 +246,10 @@ handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Inker, _TO},
         {MaxRunLength, 
             State#state.maxrunlength_compactionperc, 
             State#state.singlefile_compactionperc},
-    BestRun0 = assess_candidates(Candidates, ScoreParams),
-    case score_run(BestRun0, ScoreParams) of
-        Score when Score > 0.0 ->
+    {BestRun0, Score} = assess_candidates(Candidates, ScoreParams),
+    leveled_log:log_timer("IC003", [Score, length(BestRun0)], SW),
+    case Score > 0.0 of
+        true ->
             BestRun1 = sort_run(BestRun0),
             print_compaction_run(BestRun1, ScoreParams),
             ManifestSlice = compact_files(BestRun1,
@@ -257,8 +275,7 @@ handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Inker, _TO},
                     ok = CloseFun(FilterServer),
                     {noreply, State}
             end;
-        Score ->
-            leveled_log:log("IC003", [Score]),
+        false ->
             ok = leveled_inker:ink_compactioncomplete(Inker),
             ok = CloseFun(FilterServer),
             {noreply, State}
@@ -457,56 +474,75 @@ fetch_inbatches(PositionList, BatchSize, CDB, CheckedList) ->
     fetch_inbatches(Tail, BatchSize, CDB, CheckedList ++ KL_List).
 
 
+-spec assess_candidates(list(candidate()), score_parameters()) 
+                                            -> {list(candidate()), float()}.
+%% @doc
+%% For each run length we need to assess all the possible runs of candidates,
+%% to determine which is the best score - to be put forward as the best
+%% candidate run for compaction.
+%% 
+%% Although this requires many loops over the list of the candidate, as the
+%% file scores have already been calculated the cost per loop should not be
+%% a high burden.  Reducing the maximum run length, will reduce the cost of
+%% this exercise should be a problem.
+%%
+%% The score parameters are used to produce the score of the compaction run,
+%% with a higher score being better.  The parameters are the maximum run 
+%% length and the compaction targets (for max run length and single file).
+%% The score of an individual file is the approximate percentage of the space
+%% that would be retained after compaction (e.g. 100 less the percentage of 
+%% space wasted by historic objects). 
+%%
+%% So a file score of 60% indicates that 40% of the space would be 
+%% reclaimed following compaction.  A single file target of 50% would not be
+%% met for this file.  However, if there are 4 consecutive files scoring 60%,
+%% and the maximum run length is 4, and the maximum run length compaction
+%% target is 70% - then this run of four files would be a viable candidate
+%% for compaction.
 assess_candidates(AllCandidates, Params) ->
-    NaiveBestRun = assess_candidates(AllCandidates, Params, [], []),
-    MaxRunLength = element(1, Params),
-    case length(AllCandidates) of
-        L when L > MaxRunLength, MaxRunLength > 1 ->
-            %% Assess with different offsets from the start
-            AssessFold = 
-                fun(Counter, BestRun) ->
-                    SubList = lists:nthtail(Counter, AllCandidates),
-                    assess_candidates(SubList, Params, [], BestRun)
-                end,
-
-            lists:foldl(AssessFold, 
-                            NaiveBestRun, 
-                            lists:seq(1, MaxRunLength - 1));
-        _ ->
-            NaiveBestRun
-    end.
-
-assess_candidates([], _Params, _CurrentRun0, BestAssessment) ->
-    BestAssessment;
-assess_candidates([HeadC|Tail], Params, CurrentRun0, BestAssessment) ->
-    CurrentRun1 = choose_best_assessment(CurrentRun0 ++ [HeadC],
-                                            [HeadC],
-                                            Params),
-    assess_candidates(Tail,
-                        Params,
-                        CurrentRun1,
-                        choose_best_assessment(CurrentRun1,
-                                                BestAssessment,
-                                                Params)).
+    MaxRunLength = min(element(1, Params), length(AllCandidates)),
+    NaiveBestRun = lists:sublist(AllCandidates, MaxRunLength),
+        % This will end up being scored twice, but lets take a guess at
+        % the best scoring run to take into the loop
+    FoldFun =
+        fun(RunLength, Best) ->
+            assess_for_runlength(RunLength, AllCandidates, Params, Best)
+        end,
+    % Check all run lengths to find the best candidate.  Reverse the list of
+    % run lengths, so that longer runs win on equality of score
+    lists:foldl(FoldFun, 
+                {NaiveBestRun, score_run(NaiveBestRun, Params)}, 
+                lists:reverse(lists:seq(1, MaxRunLength))).
 
 
-choose_best_assessment(RunToAssess, BestRun, Params) ->
-    {MaxRunLength, _MR_CT, _SF_CT} = Params,
-    case length(RunToAssess) of
-        LR1 when LR1 > MaxRunLength ->
-            BestRun;
-        _ ->
-            AssessScore = score_run(RunToAssess, Params),
-            BestScore = score_run(BestRun, Params),
-            if
-                AssessScore > BestScore ->
-                    RunToAssess;
-                true ->
-                    BestRun
+-spec assess_for_runlength(integer(), list(candidate()), score_parameters(), 
+                            {list(candidate()), float()}) 
+                                -> {list(candidate()), float()}.
+%% @doc
+%% For a given run length, calculate the scores for all consecutive runs of
+%% files, comparing the score with the best run which has beens een so far.
+%% The best is a tuple of the actual run of candidates, along with the score
+%% achieved for that run
+assess_for_runlength(RunLength, AllCandidates, Params, Best) ->
+    NumberOfRuns = 1 + length(AllCandidates) - RunLength,
+    FoldFun =
+        fun(Offset, {BestRun, BestScore}) ->
+            Run = lists:sublist(AllCandidates, Offset, RunLength),
+            Score = score_run(Run, Params),
+            case Score > BestScore of
+                true -> {Run, Score};
+                false -> {BestRun, BestScore}
             end
-    end.    
+        end,
+    lists:foldl(FoldFun, Best, lists:seq(1, NumberOfRuns)).
 
 
+-spec score_run(list(candidate()), score_parameters()) -> float().
+%% @doc
+%% Score a run.  Caluclate the avergae score across all the files in the run, 
+%% and deduct that from a target score.  Good candidate runs for comapction
+%% have larger (positive) scores.  Bad candidate runs for compaction have 
+%% negative scores.
 score_run([], _Params) ->
     0.0;
 score_run(Run, {MaxRunLength, MR_CT, SF_CT}) ->
@@ -740,22 +776,6 @@ simple_score_test() ->
     Run3 = [#candidate{compaction_perc = 100.0}],
     ?assertMatch(-60.0, score_run(Run3, {4, 70.0, 40.0})).
 
-score_compare_test() ->
-    Run1 = [#candidate{compaction_perc = 55.0},
-            #candidate{compaction_perc = 55.0},
-            #candidate{compaction_perc = 56.0},
-            #candidate{compaction_perc = 50.0}],
-    ?assertMatch(16.0, score_run(Run1, {4, 70.0, 40.0})),
-    Run2 = [#candidate{compaction_perc = 55.0}],
-    ?assertMatch(Run1, 
-                    choose_best_assessment(Run1, 
-                                            Run2, 
-                                            {4, 60.0, 40.0})),
-    ?assertMatch(Run2, 
-                    choose_best_assessment(Run1 ++ Run2, 
-                                            Run2, 
-                                            {4, 60.0, 40.0})).
-
 file_gc_test() ->
     State = #state{waste_path="test/waste/",
                     waste_retention_period=1},
@@ -771,6 +791,11 @@ file_gc_test() ->
     {ok, ClearedJournals2} = file:list_dir(State#state.waste_path),
     ?assertMatch([], ClearedJournals2).
 
+
+check_bestrun(CandidateList, Params) ->
+    {BestRun, _Score} = assess_candidates(CandidateList, Params),
+    lists:map(fun(C) -> C#candidate.filename end, BestRun).
+
 find_bestrun_test() ->
 %% Tests dependent on these defaults
 %% -define(MAX_COMPACTION_RUN, 4).
@@ -778,53 +803,35 @@ find_bestrun_test() ->
 %% -define(MAXRUNLENGTH_COMPACTION_TARGET, 60.0).
 %% Tested first with blocks significant as no back-tracking
     Params = {4, 60.0, 40.0},
-    Block1 = [#candidate{compaction_perc = 55.0},
-                #candidate{compaction_perc = 65.0},
-                #candidate{compaction_perc = 42.0},
-                #candidate{compaction_perc = 50.0}],
-    Block2 = [#candidate{compaction_perc = 38.0},
-                #candidate{compaction_perc = 75.0},
-                #candidate{compaction_perc = 75.0},
-                #candidate{compaction_perc = 45.0}],
-    Block3 = [#candidate{compaction_perc = 70.0},
-                #candidate{compaction_perc = 100.0},
-                #candidate{compaction_perc = 100.0},
-                #candidate{compaction_perc = 100.0}],
-    Block4 = [#candidate{compaction_perc = 55.0},
-                #candidate{compaction_perc = 56.0},
-                #candidate{compaction_perc = 57.0},
-                #candidate{compaction_perc = 40.0}],
-    Block5 = [#candidate{compaction_perc = 60.0},
-                #candidate{compaction_perc = 60.0}],
+    Block1 = [#candidate{compaction_perc = 55.0, filename = "a"},
+                #candidate{compaction_perc = 65.0, filename = "b"},
+                #candidate{compaction_perc = 42.0, filename = "c"},
+                #candidate{compaction_perc = 50.0, filename = "d"}],
+    Block2 = [#candidate{compaction_perc = 38.0, filename = "e"},
+                #candidate{compaction_perc = 75.0, filename = "f"},
+                #candidate{compaction_perc = 75.0, filename = "g"},
+                #candidate{compaction_perc = 45.0, filename = "h"}],
+    Block3 = [#candidate{compaction_perc = 70.0, filename = "i"},
+                #candidate{compaction_perc = 100.0, filename = "j"},
+                #candidate{compaction_perc = 100.0, filename = "k"},
+                #candidate{compaction_perc = 100.0, filename = "l"}],
+    Block4 = [#candidate{compaction_perc = 55.0, filename = "m"},
+                #candidate{compaction_perc = 56.0, filename = "n"},
+                #candidate{compaction_perc = 57.0, filename = "o"},
+                #candidate{compaction_perc = 40.0, filename = "p"}],
+    Block5 = [#candidate{compaction_perc = 60.0, filename = "q"},
+                #candidate{compaction_perc = 60.0, filename = "r"}],
     CList0 = Block1 ++ Block2 ++ Block3 ++ Block4 ++ Block5,
-    ?assertMatch(Block4, assess_candidates(CList0, Params, [], [])),
-    CList1 = CList0 ++ [#candidate{compaction_perc = 20.0}],
-    ?assertMatch([#candidate{compaction_perc = 20.0}],
-                    assess_candidates(CList1, Params, [], [])),
+    ?assertMatch(["b", "c", "d", "e"], check_bestrun(CList0, Params)),
+    CList1 = CList0 ++ [#candidate{compaction_perc = 20.0, filename="s"}],
+    ?assertMatch(["s"], check_bestrun(CList1, Params)),
     CList2 = Block4 ++ Block3 ++ Block2 ++ Block1 ++ Block5,
-    ?assertMatch(Block4, assess_candidates(CList2, Params, [], [])),
+    ?assertMatch(["h", "a", "b", "c"], check_bestrun(CList2, Params)),
     CList3 = Block5 ++ Block1 ++ Block2 ++ Block3 ++ Block4,
-    ?assertMatch([#candidate{compaction_perc = 42.0},
-                        #candidate{compaction_perc = 50.0},
-                        #candidate{compaction_perc = 38.0}],
-                    assess_candidates(CList3, Params)),
-    %% Now do some back-tracking to get a genuinely optimal solution without
-    %% needing to re-order
-    ?assertMatch([#candidate{compaction_perc = 42.0},
-                        #candidate{compaction_perc = 50.0},
-                        #candidate{compaction_perc = 38.0}],
-                    assess_candidates(CList0, Params)),
-    ?assertMatch([#candidate{compaction_perc = 42.0},
-                        #candidate{compaction_perc = 50.0},
-                        #candidate{compaction_perc = 38.0}],
-                    assess_candidates(CList0, setelement(1, Params, 5))),
-    ?assertMatch([#candidate{compaction_perc = 42.0},
-                        #candidate{compaction_perc = 50.0},
-                        #candidate{compaction_perc = 38.0},
-                        #candidate{compaction_perc = 75.0},
-                        #candidate{compaction_perc = 75.0},
-                        #candidate{compaction_perc = 45.0}], 
-                    assess_candidates(CList0, setelement(1, Params, 6))).
+    ?assertMatch(["b", "c", "d", "e"],check_bestrun(CList3, Params)).
+
+handle_emptycandidatelist_test() ->
+    ?assertMatch({[], 0.0}, assess_candidates([], {4, 60.0, 40.0})).
 
 test_ledgerkey(Key) ->
     {o, "Bucket", Key, null}.

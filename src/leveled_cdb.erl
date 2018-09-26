@@ -2281,7 +2281,7 @@ get_keys_byposition_manykeys_test_to() ->
                                 end
                         end end,
                         false,
-                        lists:seq(1, 20)),
+                        lists:seq(1, 30)),
     ?assertMatch(10, length(cdb_getpositions(P1, 10))),
     {ok, F2} = cdb_complete(P1),
     
