@@ -11,7 +11,8 @@
             space_clear_ondelete/1,
             is_empty_test/1,
             many_put_fetch_switchcompression/1,
-            bigjournal_littlejournal/1
+            bigjournal_littlejournal/1,
+            safereaderror_startup/1
             ]).
 
 all() -> [
@@ -24,7 +25,8 @@ all() -> [
             space_clear_ondelete,
             is_empty_test,
             many_put_fetch_switchcompression,
-            bigjournal_littlejournal
+            bigjournal_littlejournal,
+            safereaderror_startup
             ].
 
 
@@ -873,3 +875,31 @@ many_put_fetch_switchcompression(_Config) ->
     testutil:check_forobject(Bookie3, TestObject),
     testutil:check_formissingobject(Bookie3, "Bookie1", "MissingKey0123"),
     ok = leveled_bookie:book_destroy(Bookie3).
+
+
+safereaderror_startup(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    StartOpts1 = [{root_path, RootPath}, 
+                    {compression_point, on_compact},
+                    {max_journalsize, 1000}, {cache_size, 2060}],
+    {ok, Bookie1} = leveled_bookie:book_plainstart(StartOpts1),
+    B1 = <<98, 117, 99, 107, 101, 116, 51>>,
+    K1 = 
+        <<38, 50, 201, 47, 167, 125, 57, 232, 84, 38, 14, 114, 24, 62,
+            12, 74>>,
+    Obj1 = 
+        <<87, 150, 217, 230, 4, 81, 170, 68, 181, 224, 60, 232, 4, 74,
+            159, 12, 156, 56, 194, 181, 18, 158, 195, 207, 106, 191, 80,
+            111, 100, 81, 252, 248>>,
+    Obj2 = 
+        <<86, 201, 253, 149, 213, 10, 32, 166, 33, 136, 42, 79, 103, 250,
+            139, 95, 42, 143, 161, 3, 185, 74, 149, 226, 232, 214, 183, 64,
+            69, 56, 167, 78>>,
+    ok = leveled_bookie:book_put(Bookie1, B1, K1, Obj1, []),
+    ok = leveled_bookie:book_put(Bookie1, B1, K1, Obj2, []),
+    exit(Bookie1, kill),
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
+    {ok, ReadBack} = leveled_bookie:book_get(Bookie2, B1, K1),
+    io:format("Read back ~w", [ReadBack]),
+    true = ReadBack == Obj2,
+    ok = leveled_bookie:book_close(Bookie2).
