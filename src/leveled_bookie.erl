@@ -48,6 +48,7 @@
         code_change/3,
         book_start/1,
         book_start/4,
+        book_plainstart/1,
         book_put/5,
         book_put/6,
         book_tempput/7,
@@ -355,6 +356,14 @@ book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy) ->
 
 book_start(Opts) ->
     gen_server:start_link(?MODULE, [set_defaults(Opts)], []).
+
+
+-spec book_plainstart(list(tuple())) -> {ok, pid()}.
+
+%% @doc
+%% Start used in tests to start without linking
+book_plainstart(Opts) ->
+    gen_server:start(?MODULE, [set_defaults(Opts)], []).
 
 
 -spec book_tempput(pid(), key(), key(), any(), 
