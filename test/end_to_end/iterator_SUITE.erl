@@ -500,7 +500,7 @@ multibucket_fold(_Config) ->
                                         [],
                                         ObjectGen,
                                         IndexGen,
-                                        <<"Bucket1">>),
+                                        {<<"Type1">>, <<"Bucket1">>}),
     testutil:riakload(Bookie1, ObjL1),
     ObjL2 = testutil:generate_objects(17000,
                                         uuid,
@@ -521,7 +521,7 @@ multibucket_fold(_Config) ->
                                         [],
                                         ObjectGen,
                                         IndexGen,
-                                        <<"Bucket4">>),
+                                        {<<"Type2">>, <<"Bucket4">>}),
     testutil:riakload(Bookie1, ObjL4),
 
     FF = fun(B, K, _PO, Acc) ->
@@ -531,7 +531,9 @@ multibucket_fold(_Config) ->
 
     {async, R1} = leveled_bookie:book_headfold(Bookie1,
                                                ?RIAK_TAG,
-                                               {bucket_list, [<<"Bucket1">>, <<"Bucket4">>]},
+                                               {bucket_list, 
+                                                [{<<"Type1">>, <<"Bucket1">>}, 
+                                                    {<<"Type2">>, <<"Bucket4">>}]},
                                                FoldAccT,
                                                false,
                                                true,
@@ -556,7 +558,20 @@ multibucket_fold(_Config) ->
 
     true = 36000 == O1,
     true = 24000 == O2,
-    
+
+    FoldBucketsFun = fun(B, Acc) -> [B|Acc] end,
+    {async, Folder} = 
+        leveled_bookie:book_bucketlist(Bookie1, 
+                                        ?RIAK_TAG, 
+                                        {FoldBucketsFun, []}, 
+                                        all),
+    BucketList = Folder(),
+    ExpectedBucketList = 
+        [{<<"Type1">>, <<"Bucket1">>}, {<<"Type2">>, <<"Bucket4">>}, 
+            <<"Bucket2">>, <<"Bucket3">>],
+    io:format("BucketList ~w", [BucketList]),
+    true = ExpectedBucketList == BucketList,
+
     ok = leveled_bookie:book_close(Bookie1),
     testutil:reset_filestructure().
 
