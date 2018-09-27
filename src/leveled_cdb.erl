@@ -1266,6 +1266,8 @@ scan_over_file(Handle, Position, FilterFun, Output, LastKey) ->
     case saferead_keyvalue(Handle) of
         false ->
             leveled_log:log("CDB09", [Position]),
+            % Bring file back to that position
+            {ok, Position} = file:position(Handle, {bof, Position}),
             {eof, Output};
         {Key, ValueAsBin, KeyLength, ValueLength} ->
             NewPosition = case Key of
@@ -1315,7 +1317,7 @@ saferead_keyvalue(Handle) ->
     case read_next_2_integers(Handle) of 
         eof ->
             false;
-        {KeyL, ValueL} ->
+        {KeyL, ValueL} when is_integer(KeyL), is_integer(ValueL) ->
             case safe_read_next_keybin(Handle, KeyL) of 
                 false ->
                     false;
@@ -1327,7 +1329,9 @@ saferead_keyvalue(Handle) ->
                             % i.e. value with no CRC
                             {Key, TrueValue, KeyL, ValueL}
                     end
-            end
+            end;
+        _ ->
+            false
     end.
 
 
@@ -1434,7 +1438,7 @@ extract_valueandsize(ValueAsBin) ->
 %% Note that the endian_flip is required to make the file format compatible 
 %% with CDB 
 read_next_2_integers(Handle) ->
-    case file:read(Handle,?DWORD_SIZE) of 
+    case file:read(Handle, ?DWORD_SIZE) of 
         {ok, <<Int1:32,Int2:32>>} -> 
             {endian_flip(Int1), endian_flip(Int2)};
         ReadError ->
@@ -2565,6 +2569,20 @@ get_positions_corruption_test() ->
     ok = cdb_close(P3),
     file:delete(F2).
     
+badly_written_test() ->
+    F1 = "../test/badfirstwrite_test.pnd",
+    file:delete(F1),
+    {ok, Handle} = file:open(F1, ?WRITE_OPS),
+    ok = file:pwrite(Handle, 256 * ?DWORD_SIZE, <<1:8/integer>>),
+    ok = file:close(Handle),
+    {ok, P1} = cdb_open_writer(F1, #cdb_options{binary_mode=false}),
+    ok = cdb_put(P1, "Key100", "Value100"),
+    ?assertMatch({"Key100", "Value100"}, cdb_get(P1, "Key100")),
+    ok = cdb_close(P1),
+    {ok, P2} = cdb_open_writer(F1, #cdb_options{binary_mode=false}),
+    ?assertMatch({"Key100", "Value100"}, cdb_get(P2, "Key100")),
+    ok = cdb_close(P2),
+    file:delete(F1).
 
 
 nonsense_coverage_test() ->
