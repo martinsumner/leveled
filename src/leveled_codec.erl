@@ -843,7 +843,9 @@ get_metadata_from_siblings(<<ValLen:32/integer, Rest0/binary>>,
 next_key(Key) when is_binary(Key) ->
     <<Key/binary, 0>>;
 next_key(Key) when is_list(Key) ->
-    Key ++ [0].
+    Key ++ [0];
+next_key({Type, Bucket}) when is_binary(Type), is_binary(Bucket) ->
+    {Type, next_key(Bucket)}.
 
 
 %%%============================================================================

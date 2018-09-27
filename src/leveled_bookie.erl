@@ -182,7 +182,7 @@
 -type head_timings() :: no_timing|#head_timings{}.
 -type timing_types() :: head|get|put|fold.
 -type recent_aae() :: false|#recent_aae{}|undefined.
--type key() :: binary()|string().
+-type key() :: binary()|string()|{binary(), binary()}.
     % Keys SHOULD be binary()
     % string() support is a legacy of old tests
 -type open_options() :: 
