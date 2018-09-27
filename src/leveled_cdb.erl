@@ -625,11 +625,8 @@ reader({direct_fetch, PositionList, Info}, _From, State) ->
                         PositionList);
             key_value_check ->
                 BM = State#state.binary_mode,
-                lists:filtermap(
-                    fun(P) ->
-                            FilterFalseKey(extract_key_value_check(H, P, BM))
-                    end,
-                        PositionList)
+                lists:map(fun(P) -> extract_key_value_check(H, P, BM) end,
+                            PositionList)
         end,
     {reply, Reply, reader, State};
 reader(cdb_complete, _From, State) ->
@@ -2444,7 +2441,7 @@ crc_corrupt_writer_test() ->
     ok = file:close(Handle),
     {ok, P2} = cdb_open_writer("../test/corruptwrt_test.pnd",
                                 #cdb_options{binary_mode=false}),
-                                ?assertMatch(probably, cdb_keycheck(P2, "Key1")),
+    ?assertMatch(probably, cdb_keycheck(P2, "Key1")),
     ?assertMatch({"Key1", "Value1"}, cdb_get(P2, "Key1")),
     ?assertMatch(missing, cdb_get(P2, "Key100")),
     ok = cdb_put(P2, "Key100", "Value100"),
@@ -2532,7 +2529,43 @@ safe_read_test() ->
                     saferead_keyvalue(HandleHappy)),
     
     file:delete(TestFN).
+
+
+get_positions_corruption_test() ->
+    F1 = "../test/corruptpos_test.pnd",
+    file:delete(F1),
+    {ok, P1} = cdb_open_writer(F1, #cdb_options{binary_mode=false}),
+    KVList = generate_sequentialkeys(1000, []),
+    ok = cdb_mput(P1, KVList),
+    ?assertMatch(probably, cdb_keycheck(P1, "Key1")),
+    ?assertMatch({"Key1", "Value1"}, cdb_get(P1, "Key1")),
+    ?assertMatch({"Key100", "Value100"}, cdb_get(P1, "Key100")),
+    {ok, F2} = cdb_complete(P1),
+    {ok, P2} = cdb_open_reader(F2, #cdb_options{binary_mode=false}),
+    PositionList = cdb_getpositions(P2, all),
+    ?assertMatch(1000, length(PositionList)),
+    ok = cdb_close(P2),
+
+    {ok, Handle} = file:open(F2, ?WRITE_OPS),
+    Positions = lists:sublist(PositionList, 200, 10),
+    CorruptFun = 
+        fun(Offset) ->
+            ok = file:pwrite(Handle, Offset, <<0:8/integer>>)
+        end,
+    ok = lists:foreach(CorruptFun, Positions),
+    ok = file:close(Handle),
     
+    {ok, P3} = cdb_open_reader(F2, #cdb_options{binary_mode=false}),
+    
+    PositionList = cdb_getpositions(P3, all),
+    ?assertMatch(1000, length(PositionList)),
+    
+    KVCL = cdb_directfetch(P3, PositionList, key_size),
+    ?assertMatch(true, length(KVCL) < 1000),
+    ok = cdb_close(P3),
+    file:delete(F2).
+    
+
 
 nonsense_coverage_test() ->
     {ok, Pid} = gen_fsm:start_link(?MODULE, [#cdb_options{}], []),
