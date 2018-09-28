@@ -1192,7 +1192,14 @@ handle_call({head, Bucket, Key, Tag}, _From, State)
                     {SeqN, {active, TS}, _MH, MD} ->
                         case TS >= leveled_util:integer_now() of
                             true ->
-                                case journal_notfound(State#state.ink_checking, 
+                                CheckFrequency =
+                                    case State#state.head_only of
+                                        true ->
+                                            0;
+                                        false ->
+                                            State#state.ink_checking
+                                    end,
+                                case journal_notfound(CheckFrequency, 
                                                         State#state.inker,
                                                         LK,
                                                         SeqN) of
@@ -2847,7 +2854,9 @@ check_notfound_test() ->
     ?assertMatch(?MIN_KEYCHECK_FREQUENCY, MinFreq),
     
     ?assertMatch({true, ?MAX_KEYCHECK_FREQUENCY}, 
-                    check_notfound(?MAX_KEYCHECK_FREQUENCY, MissingFun)).
+                    check_notfound(?MAX_KEYCHECK_FREQUENCY, MissingFun)),
+    
+    ?assertMatch({false, 0}, check_notfound(0, MissingFun)).
 
 
 -endif.
