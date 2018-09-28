@@ -1870,11 +1870,19 @@ fetch_head(Key, Penciller, LedgerCache, HeadOnly) ->
 %% should be made.  If it is not_found, this is not expected so up the check
 %% frequency to the maximum value
 journal_notfound(CheckFrequency, Inker, LK, SQN) ->
+    check_notfound(CheckFrequency, 
+                    fun() ->
+                        leveled_inker:ink_keycheck(Inker, LK, SQN)
+                    end).
+
+
+-spec check_notfound(integer(), fun(() -> probably|missing)) ->
+                                                    {boolean(), integer()}.
+%% @doc Use a function to check if an item is found
+check_notfound(CheckFrequency, CheckFun) ->
     case leveled_rand:uniform(?MAX_KEYCHECK_FREQUENCY) of 
         X when X =< CheckFrequency ->
-            InJournal =
-                leveled_inker:ink_keycheck(Inker, LK, SQN),
-            case InJournal of
+            case CheckFun() of
                 probably ->
                     {false, max(?MIN_KEYCHECK_FREQUENCY, CheckFrequency - 1)};
                 missing ->
@@ -2824,8 +2832,22 @@ erase_journal_test() ->
     ?assertMatch(500, HeadsNotFound2),
     ok = book_destroy(Bookie2).
     
-
-
+check_notfound_test() ->
+    ProbablyFun = fun() -> probably end,
+    MissingFun = fun() -> missing end,
+    MinFreq = lists:foldl(fun(_I, Freq) ->
+                                {false, Freq0} = 
+                                    check_notfound(Freq, ProbablyFun),
+                                Freq0
+                            end,
+                            100,
+                            lists:seq(1, 5000)), 
+                                % 5000 as needs to be a lot as doesn't decrement
+                                % when random interval is not hit
+    ?assertMatch(?MIN_KEYCHECK_FREQUENCY, MinFreq),
+    
+    ?assertMatch({true, ?MAX_KEYCHECK_FREQUENCY}, 
+                    check_notfound(?MAX_KEYCHECK_FREQUENCY, MissingFun)).
 
 
 -endif.
