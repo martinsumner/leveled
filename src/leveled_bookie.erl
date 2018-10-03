@@ -1419,6 +1419,7 @@ startup(InkerOpts, PencillerOpts, State) ->
                                     LedgerSQN + 1,
                                     get_loadfun(State),
                                     Penciller),
+    ok = leveled_inker:ink_checksqn(Inker, LedgerSQN),
     {Inker, Penciller}.
 
 

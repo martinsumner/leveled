@@ -17,17 +17,17 @@
             ]).
 
 all() -> [
-            % simple_put_fetch_head_delete,
-            % many_put_fetch_head,
-            % journal_compaction,
-            % fetchput_snapshot,
-            % load_and_count,
-            % load_and_count_withdelete,
-            % space_clear_ondelete,
-            % is_empty_test,
-            % many_put_fetch_switchcompression,
-            % bigjournal_littlejournal,
-            % safereaderror_startup,
+            simple_put_fetch_head_delete,
+            many_put_fetch_head,
+            journal_compaction,
+            fetchput_snapshot,
+            load_and_count,
+            load_and_count_withdelete,
+            space_clear_ondelete,
+            is_empty_test,
+            many_put_fetch_switchcompression,
+            bigjournal_littlejournal,
+            safereaderror_startup,
             remove_journal_test
             ].
 
