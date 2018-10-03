@@ -115,6 +115,7 @@
         ink_doom/1,
         ink_roll/1,
         ink_backup/2,
+        ink_checksqn/2,
         build_dummy_journal/0,
         clean_testdir/1,
         filepath/2,
@@ -432,6 +433,12 @@ ink_updatemanifest(Pid, ManifestSnippet, DeletedFiles) ->
 ink_printmanifest(Pid) ->
     gen_server:call(Pid, print_manifest, infinity).
 
+-spec ink_checksqn(pid(), integer()) -> ok.
+%% @doc
+%% Check that the Inker doesn't have a SQN behind that of the Ledger
+ink_checksqn(Pid, LedgerSQN) ->
+    gen_server:call(Pid, {check_sqn, LedgerSQN}).
+
 %%%============================================================================
 %%% gen_server callbacks
 %%%============================================================================
@@ -633,6 +640,14 @@ handle_call({backup, BackupPath}, _from, State)
                                 length(BackupManifest)], 
                             SW),
     {reply, ok, State};
+handle_call({check_sqn, LedgerSQN}, _From, State) ->
+    case State#state.journal_sqn of
+        JSQN when JSQN < LedgerSQN ->
+            leveled_log:log("I0025", [JSQN, LedgerSQN]),
+            {reply, ok, State#state{journal_sqn = LedgerSQN}};
+        _JSQN ->
+            {reply, ok, State}
+    end;
 handle_call(close, _From, State) ->
     case State#state.is_snapshot of
         true ->

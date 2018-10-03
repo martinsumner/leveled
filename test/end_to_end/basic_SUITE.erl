@@ -12,7 +12,8 @@
             is_empty_test/1,
             many_put_fetch_switchcompression/1,
             bigjournal_littlejournal/1,
-            safereaderror_startup/1
+            safereaderror_startup/1,
+            remove_journal_test/1
             ]).
 
 all() -> [
@@ -26,7 +27,8 @@ all() -> [
             is_empty_test,
             many_put_fetch_switchcompression,
             bigjournal_littlejournal,
-            safereaderror_startup
+            safereaderror_startup,
+            remove_journal_test
             ].
 
 
@@ -829,6 +831,42 @@ is_empty_test(_Config) ->
     true = sets:size(BLpd3()) == 0,
     
     ok = leveled_bookie:book_close(Bookie1).
+
+
+remove_journal_test(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    StartOpts1 = [{root_path, RootPath},
+                    {max_pencillercachesize, 16000},
+                    {sync_strategy, testutil:sync_strategy()},
+                    {compression_point, on_compact}],
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+    GenList = [1, 20001, 40001, 60001],
+    CLs = testutil:load_objects(20000, GenList, Bookie1, no_check,
+                                fun testutil:generate_smallobjects/2),
+    CheckList1 = lists:sublist(lists:nth(1, CLs), 100, 1000),
+    CheckList2 = lists:sublist(lists:nth(2, CLs), 100, 1000),
+    CheckList3 = lists:sublist(lists:nth(3, CLs), 100, 1000),
+    CheckList4 = lists:sublist(lists:nth(4, CLs), 100, 1000),
+    testutil:check_forlist(Bookie1, CheckList1),
+    testutil:check_forlist(Bookie1, CheckList2),
+    testutil:check_forlist(Bookie1, CheckList3),
+    testutil:check_forlist(Bookie1, CheckList4),
+    
+    ok = leveled_bookie:book_close(Bookie1),
+    leveled_inker:clean_testdir(RootPath ++ "/journal"),
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
+
+    % If we're not careful here new data will be added, and we 
+    % won't be able to read it
+    [NewCheckList] = 
+        testutil:load_objects(1000, [80001], Bookie2, no_check,
+                                fun testutil:generate_smallobjects/2),
+    
+    ok = leveled_bookie:book_close(Bookie2),
+    {ok, Bookie3} = leveled_bookie:book_start(StartOpts1),
+    testutil:check_forlist(Bookie3, NewCheckList),
+    ok = leveled_bookie:book_destroy(Bookie3).
+
 
 
 many_put_fetch_switchcompression(_Config) ->

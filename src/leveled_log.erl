@@ -290,6 +290,9 @@
         {info, "Backup commencing into folder with ~w existing files"}},
     {"I0024",
         {info, "Prompted roll at NewSQN=~w"}},
+    {"I0025",
+        {warn, "Journal SQN of ~w is below Ledger SQN of ~w " ++
+                "anti-entropy will be required"}},
 
     {"IC001",
         {info, "Closed for reason ~w so maybe leaving garbage"}},
