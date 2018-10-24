@@ -390,6 +390,24 @@ generate_segmentfilter_list(SegmentList, Size) ->
 %% If we have dirty segments discovered by comparing trees of size CompareSize,
 %% and we want to see if it matches a segment for a key which was created for a
 %% tree of size Store Size, then we need to alter the segment list
+%%
+%% See timing_test/0 when considering using this or match_segment/2
+%%
+%% Check with KeyCount=10000 SegCount=4 TreeSizes small large:
+%% adjust_segmentmatch_list check took 1.256 ms match_segment took 5.229 ms
+
+%% Check with KeyCount=10000 SegCount=8 TreeSizes small large:
+%% adjust_segmentmatch_list check took 2.065 ms match_segment took 8.637 ms
+
+%% Check with KeyCount=10000 SegCount=4 TreeSizes medium large:
+%% adjust_segmentmatch_list check took 0.453 ms match_segment took 4.843 ms
+
+%% Check with KeyCount=10000 SegCount=4 TreeSizes small medium:
+%% adjust_segmentmatch_list check took 0.451 ms match_segment took 5.528 ms
+
+%% Check with KeyCount=100000 SegCount=4 TreeSizes small large:
+%% adjust_segmentmatch_list check took 11.986 ms match_segment took 56.522 ms
+%%
 adjust_segmentmatch_list(SegmentList, CompareSize, StoreSize) ->
     CompareSizeI = get_size(CompareSize),
     StoreSizeI = get_size(StoreSize),
@@ -756,6 +774,68 @@ segment_expandsimple_test() ->
     ?assertMatch(8, length(AdjList)),
     OrigList = adjust_segmentmatch_list([1, 100], medium, medium),
     ?assertMatch([1, 100], OrigList).
+
+
+timing_test() ->
+    timing_tester(10000, 4, small, large),
+    timing_tester(10000, 8, small, large),
+    timing_tester(10000, 4, medium, large),
+    timing_tester(10000, 4, small, medium),
+    timing_tester(100000, 4, small, large).
+
+
+timing_tester(KeyCount, SegCount, SmallSize, LargeSize) ->
+    SegList =
+        lists:map(fun(_C) -> 
+                        leveled_rand:uniform(get_size(SmallSize) * ?L2_CHUNKSIZE - 1)
+                    end, 
+                    lists:seq(1, SegCount)),
+    KeyToSegFun =
+        fun(I) ->
+            HK = keyto_segment32(integer_to_binary(I)),
+            {I, get_segment(HK, LargeSize)}
+        end,
+    
+    MatchList = lists:map(KeyToSegFun, lists:seq(1, KeyCount)),
+
+    {T0, Out0} =
+        adjustsegmentlist_check(SegList, MatchList, SmallSize, LargeSize),
+    {T1, Out1} =
+        matchbysegment_check(SegList, MatchList, SmallSize, LargeSize),
+    ?assertMatch(true, Out0 == Out1),
+    io:format(user, "~nCheck with KeyCount=~w SegCount=~w TreeSizes ~w ~w:~n", 
+                [KeyCount, SegCount, SmallSize, LargeSize]),
+    io:format(user, 
+                "adjust_segmentmatch_list check took ~w ms " ++
+                    "match_segment took ~w ms~n", 
+                [T0, T1]).
+    
+
+adjustsegmentlist_check(SegList, MatchList, SmallSize, LargeSize) ->
+    SW = os:timestamp(),
+    AdjList = adjust_segmentmatch_list(SegList, SmallSize, LargeSize),
+    PredFun =
+        fun({_I, S}) ->
+            lists:member(S, AdjList)
+        end,
+    OL = lists:filter(PredFun, MatchList),
+    {timer:now_diff(os:timestamp(), SW)/1000, OL}.
+
+matchbysegment_check(SegList, MatchList, SmallSize, LargeSize) ->
+    SW = os:timestamp(),
+    PredFun =
+        fun({_I, S}) ->
+            FoldFun =
+                fun(_SM, true) ->
+                    true;
+                (SM, false) ->
+                    match_segment({SM, SmallSize}, {S, LargeSize})
+                end,
+            lists:foldl(FoldFun, false, SegList)
+        end,
+    OL = lists:filter(PredFun, MatchList),
+    {timer:now_diff(os:timestamp(), SW)/1000, OL}.
+    
 
 -endif.
 
