@@ -74,7 +74,8 @@
             keyto_segment48/1,
             generate_segmentfilter_list/2,
             merge_binaries/2,
-            join_segment/2
+            join_segment/2,
+            match_segment/2
         ]).
 
 
@@ -99,7 +100,7 @@
 -define(VALID_SIZES, [xxsmall, xsmall, small, medium, large, xlarge]).
 
 -record(tictactree, {treeID :: any(),
-                        size  :: xxsmall|xsmall|small|medium|large|xlarge,
+                        size  :: tree_size(),
                         width :: integer(),
                         segment_count :: integer(),
                         level1 :: binary(),
@@ -109,8 +110,9 @@
 -type tictactree() :: #tictactree{}.
 -type segment48() :: {segment_hash, integer(), integer()}.
 -type tree_extract() :: {binary(), integer(), integer(), integer(), binary()}.
+-type tree_size() :: xxsmall|xsmall|small|medium|large|xlarge.
 
--export_type([tictactree/0, segment48/0]).
+-export_type([tictactree/0, segment48/0, tree_size/0]).
 
 
 %%%============================================================================
@@ -355,7 +357,7 @@ keyto_segment48(BinKey) ->
         crypto:hash(md5, BinKey),
     {segment_hash, SegmentID, ExtraHash}.
 
--spec generate_segmentfilter_list(list(integer()), atom())  
+-spec generate_segmentfilter_list(list(integer()), tree_size())  
                                                     -> false|list(integer()). 
 %% @doc
 %% Cannot accelerate segment listing for trees below certain sizes, so check
@@ -380,6 +382,17 @@ generate_segmentfilter_list(SegmentList, Size) ->
         true ->
             SegmentList
     end.
+
+-spec match_segment({integer(), tree_size()}, {integer(), tree_size()}) 
+                                                            -> boolean().
+%% @doc
+%% Does segment A match segment B - given that segment A was generated using
+%% Tree size A and segment B was generated using Tree Size B
+match_segment({SegIDA, TreeSizeA}, {SegIDB, TreeSizeB}) ->
+    SmallestTreeSize = 
+        min(get_size(TreeSizeA), get_size(TreeSizeB)) * ?L2_CHUNKSIZE,
+    get_segment(SegIDA, SmallestTreeSize)
+        == get_segment(SegIDB, SmallestTreeSize).
 
 -spec join_segment(integer(), integer()) -> integer().
 %% @doc
@@ -681,6 +694,17 @@ compare_trees_maxonedelta(Tree0, Tree1) ->
         [] ->
             []
     end.
+
+segment_match_test() ->
+    segment_match_tester(small, large),
+    segment_match_tester(xlarge, medium).
+
+segment_match_tester(Size1, Size2) ->
+    HashKey = keyto_segment32(<<"K0">>),
+    Segment1 = get_segment(HashKey, Size1),
+    Segment2 = get_segment(HashKey, Size2),
+    ?assertMatch(true, match_segment({Segment1, Size1}, {Segment2, Size2})).
+
 
 -endif.
 
