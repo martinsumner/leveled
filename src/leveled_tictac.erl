@@ -73,6 +73,7 @@
             keyto_segment32/1,
             keyto_segment48/1,
             generate_segmentfilter_list/2,
+            adjust_segmentmatch_list/3,
             merge_binaries/2,
             join_segment/2,
             match_segment/2
@@ -382,6 +383,31 @@ generate_segmentfilter_list(SegmentList, Size) ->
         true ->
             SegmentList
     end.
+
+-spec adjust_segmentmatch_list(list(integer()), tree_size(), tree_size())
+                                                            -> list(integer()).
+%% @doc
+%% If we have dirty segments discovered by comparing trees of size CompareSize,
+%% and we want to see if it matches a segment for a key which was created for a
+%% tree of size Store Size, then we need to alter the segment list
+adjust_segmentmatch_list(SegmentList, CompareSize, StoreSize) ->
+    CompareSizeI = get_size(CompareSize),
+    StoreSizeI = get_size(StoreSize),
+    if CompareSizeI =< StoreSizeI ->
+        ExpItems = StoreSizeI div CompareSizeI - 1,
+        ShiftFactor = trunc(math:log2(CompareSizeI * ?L2_CHUNKSIZE)),
+        ExpList = 
+            lists:map(fun(X) -> X bsl ShiftFactor end, lists:seq(1, ExpItems)),
+        UpdSegmentList = 
+            lists:foldl(fun(S, Acc) -> 
+                            L = lists:map(fun(F) -> F + S end, ExpList),
+                            L ++ Acc
+                        end,
+                        [],
+                        SegmentList),
+        lists:usort(UpdSegmentList ++ SegmentList)
+    end.
+
 
 -spec match_segment({integer(), tree_size()}, {integer(), tree_size()}) 
                                                             -> boolean().
@@ -696,15 +722,40 @@ compare_trees_maxonedelta(Tree0, Tree1) ->
     end.
 
 segment_match_test() ->
-    segment_match_tester(small, large),
-    segment_match_tester(xlarge, medium).
+    segment_match_tester(small, large, <<"K0">>),
+    segment_match_tester(xlarge, medium, <<"K1">>),
+    expand_membershiplist_tester(small, large, <<"K0">>),
+    expand_membershiplist_tester(xsmall, large, <<"K1">>),
+    expand_membershiplist_tester(large, xlarge, <<"K2">>).
 
-segment_match_tester(Size1, Size2) ->
-    HashKey = keyto_segment32(<<"K0">>),
+segment_match_tester(Size1, Size2, Key) ->
+    HashKey = keyto_segment32(Key),
     Segment1 = get_segment(HashKey, Size1),
     Segment2 = get_segment(HashKey, Size2),
     ?assertMatch(true, match_segment({Segment1, Size1}, {Segment2, Size2})).
 
+expand_membershiplist_tester(SmallSize, LargeSize, Key) ->
+    HashKey = keyto_segment32(Key),
+    Segment1 = get_segment(HashKey, SmallSize),
+    Segment2 = get_segment(HashKey, LargeSize),
+    AdjList = adjust_segmentmatch_list([Segment1], SmallSize, LargeSize),
+    ?assertMatch(true, lists:member(Segment2, AdjList)).
+
+
+segment_expandsimple_test() ->
+    AdjList = adjust_segmentmatch_list([1, 100], small, medium),
+    io:format("List adjusted to ~w~n", [AdjList]),
+    ?assertMatch(true, lists:member(1, AdjList)),
+    ?assertMatch(true, lists:member(100, AdjList)),
+    ?assertMatch(true, lists:member(65537, AdjList)),
+    ?assertMatch(true, lists:member(131073, AdjList)),
+    ?assertMatch(true, lists:member(196609, AdjList)),
+    ?assertMatch(true, lists:member(65636, AdjList)),
+    ?assertMatch(true, lists:member(131172, AdjList)),
+    ?assertMatch(true, lists:member(196708, AdjList)),
+    ?assertMatch(8, length(AdjList)),
+    OrigList = adjust_segmentmatch_list([1, 100], medium, medium),
+    ?assertMatch([1, 100], OrigList).
 
 -endif.
 
