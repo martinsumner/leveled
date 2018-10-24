@@ -777,11 +777,11 @@ segment_expandsimple_test() ->
 
 
 timing_test() ->
-    timing_tester(10000, 4, small, large),
-    timing_tester(10000, 8, small, large),
-    timing_tester(10000, 4, medium, large),
-    timing_tester(10000, 4, small, medium),
-    timing_tester(100000, 4, small, large).
+    timing_tester(100000, 4, small, large),
+    timing_tester(100000, 8, small, large),
+    timing_tester(100000, 4, medium, large),
+    timing_tester(100000, 4, small, medium),
+    timing_tester(1000000, 4, small, large).
 
 
 timing_tester(KeyCount, SegCount, SmallSize, LargeSize) ->
