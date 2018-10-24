@@ -395,16 +395,16 @@ generate_segmentfilter_list(SegmentList, Size) ->
 %%
 %% Check with KeyCount=10000 SegCount=4 TreeSizes small large:
 %% adjust_segmentmatch_list check took 1.256 ms match_segment took 5.229 ms
-
+%%
 %% Check with KeyCount=10000 SegCount=8 TreeSizes small large:
 %% adjust_segmentmatch_list check took 2.065 ms match_segment took 8.637 ms
-
+%%
 %% Check with KeyCount=10000 SegCount=4 TreeSizes medium large:
 %% adjust_segmentmatch_list check took 0.453 ms match_segment took 4.843 ms
-
+%%
 %% Check with KeyCount=10000 SegCount=4 TreeSizes small medium:
 %% adjust_segmentmatch_list check took 0.451 ms match_segment took 5.528 ms
-
+%%
 %% Check with KeyCount=100000 SegCount=4 TreeSizes small large:
 %% adjust_segmentmatch_list check took 11.986 ms match_segment took 56.522 ms
 %%
