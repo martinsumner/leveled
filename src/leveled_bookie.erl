@@ -1116,7 +1116,7 @@ handle_call({get, Bucket, Key, Tag}, _From, State)
                 not_found;
             Head ->
                 {Seqn, Status, _MH, _MD} = 
-                    leveled_codec:striphead_to_details(Head),
+                    leveled_codec:striphead_to_v1details(Head),
                 case Status of
                     tomb ->
                         not_found;
@@ -1165,7 +1165,7 @@ handle_call({head, Bucket, Key, Tag}, _From, State)
             not_present ->
                 {not_found, State#state.ink_checking};
             Head ->
-                case leveled_codec:striphead_to_details(Head) of
+                case leveled_codec:striphead_to_v1details(Head) of
                     {_SeqN, tomb, _MH, _MD} ->
                         {not_found, State#state.ink_checking};
                     {SeqN, {active, TS}, _MH, MD} ->

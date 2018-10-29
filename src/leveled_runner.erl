@@ -612,7 +612,7 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
             case leveled_codec:is_active(LK, V, Now) of
                 true ->
                     {SQN, _St, _MH, MD} =
-                        leveled_codec:striphead_to_details(V),
+                        leveled_codec:striphead_to_v1details(V),
                     {B, K} =
                         case leveled_codec:from_ledgerkey(LK) of
                             {B0, K0} ->

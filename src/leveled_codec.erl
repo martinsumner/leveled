@@ -38,7 +38,7 @@
         strip_to_statusonly/1,
         strip_to_keyseqonly/1,
         strip_to_seqnhashonly/1,
-        striphead_to_details/1,
+        striphead_to_v1details/1,
         is_active/3,
         endkey_passed/2,
         key_dominates/2,
@@ -167,36 +167,35 @@ to_lookup(Key) ->
 %% Some helper functions to get a sub_components of the key/value
 
 -spec strip_to_statusonly(ledger_kv()) -> ledger_status().
-strip_to_statusonly({_, {_, St, _, _}}) -> St.
+strip_to_statusonly({_, V}) -> element(2, V).
 
 -spec strip_to_seqonly(ledger_kv()) -> non_neg_integer().
-strip_to_seqonly({_, {SeqN, _, _, _}}) -> SeqN.
+strip_to_seqonly({_, V}) -> element(1, V).
 
 -spec strip_to_keyseqonly(ledger_kv()) -> {ledger_key(), integer()}.
-strip_to_keyseqonly({LK, {SeqN, _, _, _}}) -> {LK, SeqN}.
+strip_to_keyseqonly({LK, V}) -> {LK, element(1, V)}.
 
 -spec strip_to_seqnhashonly(ledger_kv()) -> {integer(), segment_hash()}.
-strip_to_seqnhashonly({_, {SeqN, _, MH, _}}) -> {SeqN, MH}.
+strip_to_seqnhashonly({_, V}) -> {element(1, V), element(3, V)}.
 
--spec striphead_to_details(ledger_value()) -> ledger_value().
-striphead_to_details({SeqN, St, MH, MD}) -> {SeqN, St, MH, MD}.
+-spec striphead_to_v1details(ledger_value()) -> ledger_value().
+striphead_to_v1details(V) -> 
+    {element(1, V), element(2, V), element(3, V), element(4, V)}.
 
 -spec key_dominates(ledger_kv(), ledger_kv()) -> 
     left_hand_first|right_hand_first|left_hand_dominant|right_hand_dominant.
 %% @doc
 %% When comparing two keys in the ledger need to find if one key comes before 
 %% the other, or if the match, which key is "better" and should be the winner
-key_dominates(LeftKey, RightKey) ->
-    case {LeftKey, RightKey} of
-        {{LK, _LVAL}, {RK, _RVAL}} when LK < RK ->
-            left_hand_first;
-        {{LK, _LVAL}, {RK, _RVAL}} when RK < LK ->
-            right_hand_first;
-        {{LK, {LSN, _LST, _LMH, _LMD}}, {RK, {RSN, _RST, _RMH, _RMD}}}
-                                                when LK == RK, LSN >= RSN ->
+key_dominates({LK, _LVAL}, {RK, _RVAL}) when LK < RK ->
+    left_hand_first;
+key_dominates({LK, _LVAL}, {RK, _RVAL}) when RK < LK ->
+    right_hand_first;
+key_dominates(LObj, RObj) ->
+    case strip_to_seqonly(LObj) >= strip_to_seqonly(RObj) of
+        true ->
             left_hand_dominant;
-        {{LK, {LSN, _LST, _LMH, _LMD}}, {RK, {RSN, _RST, _RMH, _RMD}}}
-                                                when LK == RK, LSN < RSN ->
+        false ->
             right_hand_dominant
     end.
 
