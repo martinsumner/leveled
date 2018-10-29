@@ -37,7 +37,7 @@
         strip_to_seqonly/1,
         strip_to_statusonly/1,
         strip_to_keyseqonly/1,
-        strip_to_seqnhashonly/1,
+        strip_to_indexdetails/1,
         striphead_to_v1details/1,
         is_active/3,
         endkey_passed/2,
@@ -81,14 +81,30 @@
 
 -type tag() :: 
         ?STD_TAG|?RIAK_TAG|?IDX_TAG|?HEAD_TAG.
+-type sqn() ::
+        % SQN of the object in the Journal
+        pos_integer().
 -type segment_hash() :: 
+        % hash of the key to an aae segment - to be used in ledger filters
         {integer(), integer()}|no_lookup.
+-type metadata() ::
+        tuple()|null. % null for empty metadata
+-type last_moddate() ::
+        % modified date as determined by the object (not this store)
+        % if the object has siblings in the store will be the maximum of those
+        % dates
+        integer()|undefined.
+
 -type ledger_status() ::
         tomb|{active, non_neg_integer()|infinity}.
 -type ledger_key() :: 
         {tag(), any(), any(), any()}|all.
--type ledger_value() :: 
-        {integer(), ledger_status(), segment_hash(), tuple()|null}.
+-type ledger_value() ::
+        ledger_value_v1()|ledger_value_v2().
+-type ledger_value_v1() ::
+        {sqn(), ledger_status(), segment_hash(), metadata()}.
+-type ledger_value_v2() ::
+        {sqn(), ledger_status(), segment_hash(), metadata(), last_moddate()}.
 -type ledger_kv() ::
         {ledger_key(), ledger_value()}.
 -type compaction_strategy() ::
@@ -103,6 +119,8 @@
         list({add|remove, any(), any()}).
 -type journal_keychanges() :: 
         {index_specs(), infinity|integer()}. % {KeyChanges, TTL}
+-type maybe_lookup() ::
+        lookup|no_lookup.
 
 
 -type segment_list() 
@@ -120,7 +138,8 @@
                 compression_method/0,
                 journal_keychanges/0,
                 index_specs/0,
-                segment_list/0]).
+                segment_list/0,
+                maybe_lookup/0]).
 
 
 %%%============================================================================
@@ -149,7 +168,7 @@ segment_hash(Key) ->
     segment_hash(term_to_binary(Key)).
 
 
--spec to_lookup(ledger_key()) -> lookup|no_lookup.
+-spec to_lookup(ledger_key()) -> maybe_lookup().
 %% @doc
 %% Should it be possible to lookup a key in the merge tree.  This is not true
 %% For keys that should only be read through range queries.  Direct lookup
@@ -175,8 +194,8 @@ strip_to_seqonly({_, V}) -> element(1, V).
 -spec strip_to_keyseqonly(ledger_kv()) -> {ledger_key(), integer()}.
 strip_to_keyseqonly({LK, V}) -> {LK, element(1, V)}.
 
--spec strip_to_seqnhashonly(ledger_kv()) -> {integer(), segment_hash()}.
-strip_to_seqnhashonly({_, V}) -> {element(1, V), element(3, V)}.
+-spec strip_to_indexdetails(ledger_kv()) -> {integer(), segment_hash()}.
+strip_to_indexdetails({_, V}) -> {element(1, V), element(3, V)}.
 
 -spec striphead_to_v1details(ledger_value()) -> ledger_value().
 striphead_to_v1details(V) -> 

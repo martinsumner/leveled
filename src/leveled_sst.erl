@@ -135,7 +135,7 @@
                         size :: integer(),
                         max_sqn :: integer()}).
 
--type press_methods() 
+-type press_method() 
         :: lz4|native|none.
 -type range_endpoint() 
         :: all|leveled_codec:ledger_key().
@@ -163,7 +163,7 @@
                     filename,
                     yield_blockquery = false :: boolean(),
                     blockindex_cache,
-                    compression_method = native :: press_methods(),
+                    compression_method = native :: press_method(),
                     timings = no_timing :: sst_timings(),
                     timings_countdown = 0 :: integer(),
                     fetch_cache = array:new([{size, ?CACHE_SIZE}])}).
@@ -219,7 +219,7 @@ sst_open(RootPath, Filename) ->
 
 -spec sst_new(string(), string(), integer(), 
                     list(leveled_codec:ledger_kv()), 
-                    integer(), press_methods()) 
+                    integer(), press_method()) 
             -> {ok, pid(), 
                     {leveled_codec:ledger_key(), leveled_codec:ledger_key()}, 
                     binary()}.
@@ -248,7 +248,7 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod) ->
                 list(leveled_codec:ledger_kv()|sst_pointer()), 
                 list(leveled_codec:ledger_kv()|sst_pointer()),
                 boolean(), integer(), 
-                integer(), press_methods())
+                integer(), press_method())
             -> empty|{ok, pid(), 
                 {{list(leveled_codec:ledger_kv()), 
                         list(leveled_codec:ledger_kv())}, 
@@ -293,7 +293,7 @@ sst_new(RootPath, Filename,
 
 -spec sst_newlevelzero(string(), string(),
                             integer(), fun(), pid()|undefined, integer(), 
-                            press_methods()) ->
+                            press_method()) ->
                                                     {ok, pid(), noreply}.
 %% @doc
 %% Start a new file at level zero.  At this level the file size is not fixed -
@@ -860,7 +860,7 @@ fetch_range(StartKey, EndKey, ScanWidth, SegList, State) ->
                     State#state.compression_method),
     {SlotsToFetchBinList, SlotsToPoint}.
 
--spec compress_level(integer(), press_methods()) -> press_methods().
+-spec compress_level(integer(), press_method()) -> press_method().
 %% @doc
 %% disable compression at higher levels for improved performance
 compress_level(Level, _PressMethod) when Level < ?COMPRESS_AT_LEVEL ->
@@ -1016,7 +1016,7 @@ generate_filenames(RootFilename) ->
     end.    
 
 
--spec serialise_block(any(), press_methods()) -> binary().
+-spec serialise_block(any(), press_method()) -> binary().
 %% @doc
 %% Convert term to binary
 %% Function split out to make it easier to experiment with different 
@@ -1036,7 +1036,7 @@ serialise_block(Term, none) ->
     <<Bin/binary, CRC32:32/integer>>.
 
 
--spec deserialise_block(binary(), press_methods()) -> any().
+-spec deserialise_block(binary(), press_method()) -> any().
 %% @doc
 %% Convert binary to term
 %% Function split out to make it easier to experiment with different 
@@ -1131,48 +1131,54 @@ lookup_slots(StartKey, EndKey, Tree) ->
 %% based on a 17-bit hash (so 0.0039 fpr).
 
 
+accumulate_positions({K, V}, {PosBinAcc, NoHashCount, HashAcc}) ->
+    {_SQN, H1} = leveled_codec:strip_to_indexdetails({K, V}),
+    PosH1 = extra_hash(H1),
+    case is_integer(PosH1) of 
+        true ->
+            case NoHashCount of 
+                0 ->
+                    {<<1:1/integer, PosH1:15/integer,PosBinAcc/binary>>,
+                        0,
+                        [H1|HashAcc]};
+                N ->
+                    % The No Hash Count is an integer between 0 and 127
+                    % and so at read time should count NHC + 1
+                    NHC = N - 1,
+                    {<<1:1/integer,
+                            PosH1:15/integer, 
+                            0:1/integer,
+                            NHC:7/integer, 
+                            PosBinAcc/binary>>,
+                        0,
+                        HashAcc}
+            end;
+        false ->
+            {PosBinAcc, NoHashCount + 1, HashAcc}
+    end.
+
+-spec generate_binary_slot(leveled_codec:lookup(),
+                            list(leveled_codec:ledger_kv()),
+                            press_method(),
+                            build_timings()) ->
+                                {{binary(),
+                                    binary(),
+                                    list(integer()),
+                                    leveled_codec:ledger_key()},
+                                    build_timings()}.
+%% @doc
+%% Generate the serialised slot to be used when storing this sublist of keys
+%% and values
 generate_binary_slot(Lookup, KVL, PressMethod, BuildTimings0) ->
     
     SW0 = os:timestamp(),
-
-    HashFoldFun =
-        fun({K, V}, {PosBinAcc, NoHashCount, HashAcc}) ->
-            
-            {_SQN, H1} = leveled_codec:strip_to_seqnhashonly({K, V}),
-            PosH1 = extra_hash(H1),
-            case is_integer(PosH1) of 
-                true ->
-                    case NoHashCount of 
-                        0 ->
-                            {<<1:1/integer, 
-                                    PosH1:15/integer, 
-                                    PosBinAcc/binary>>,
-                                0,
-                                [H1|HashAcc]};
-                        N ->
-                            % The No Hash Count is an integer between 0 and 127
-                            % and so at read time should count NHC + 1
-                            NHC = N - 1,
-                            {<<1:1/integer,
-                                    PosH1:15/integer, 
-                                    0:1/integer,
-                                    NHC:7/integer, 
-                                    PosBinAcc/binary>>,
-                                0,
-                                HashAcc}
-                    end;
-                false ->
-                    {PosBinAcc, NoHashCount + 1, HashAcc}
-            end
-         
-         end,
     
     {HashL, PosBinIndex} = 
         case Lookup of
             lookup ->
-                {PosBinIndex0,
-                    NHC,
-                    HashL0} = lists:foldr(HashFoldFun, {<<>>, 0, []}, KVL),
+                InitAcc = {<<>>, 0, []},
+                {PosBinIndex0, NHC, HashL0} = 
+                    lists:foldr(fun accumulate_positions/2, InitAcc, KVL),
                 PosBinIndex1 = 
                     case NHC of
                         0 ->
@@ -1276,7 +1282,7 @@ generate_binary_slot(Lookup, KVL, PressMethod, BuildTimings0) ->
                     binary(),
                     integer(),
                     leveled_codec:ledger_key()|false,
-                    press_methods(),
+                    press_method(),
                     list()|not_present) -> list()|not_present.
 %% @doc
 %% Acc should start as not_present if LedgerKey is a key, and a list if
@@ -1368,7 +1374,7 @@ binarysplit_mapfun(MultiSlotBin, StartPos) ->
 
 
 -spec read_slots(file:io_device(), list(), 
-                    {false|list(), any()}, press_methods()) 
+                    {false|list(), any()}, press_method()) 
                                                 -> list(binaryslot_element()).
 %% @doc
 %% The reading of sots will return a list of either 2-tuples containing 
