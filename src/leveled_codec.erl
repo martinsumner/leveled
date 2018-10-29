@@ -73,7 +73,6 @@
 -define(MAGIC, 53). % riak_kv -> riak_object
 -define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
 -define(NRT_IDX, "$aae.").
--define(ALL_BUCKETS, <<"$all">>).
 
 -type riak_metadata() :: {binary()|delete, % Sibling Metadata
                             binary()|null, % Vclock Metadata
@@ -247,8 +246,6 @@ from_ledgerkey(_ExpectedTag, _OtherKey) ->
 -spec from_ledgerkey(tuple()) -> tuple().
 %% @doc
 %% Return identifying information from the LedgerKey
-from_ledgerkey({?IDX_TAG, ?ALL_BUCKETS, {_IdxFld, IdxVal}, {Bucket, Key}}) ->
-    {Bucket, Key, IdxVal};
 from_ledgerkey({?IDX_TAG, Bucket, {_IdxFld, IdxVal}, Key}) ->
     {Bucket, Key, IdxVal};
 from_ledgerkey({?HEAD_TAG, Bucket, Key, SubKey}) ->
@@ -546,22 +543,8 @@ idx_indexspecs(IndexSpecs, Bucket, Key, SQN, TTL) ->
 
 gen_indexspec(Bucket, Key, IdxOp, IdxField, IdxTerm, SQN, TTL) ->
     Status = set_status(IdxOp, TTL),
-    case Bucket of
-        {all, RealBucket} ->    
-            {to_ledgerkey(?ALL_BUCKETS,
-                            {RealBucket, Key},
-                            ?IDX_TAG,
-                            IdxField,
-                            IdxTerm),
-                {SQN, Status, no_lookup, null}};
-        _ ->
-            {to_ledgerkey(Bucket,
-                            Key,
-                            ?IDX_TAG,
-                            IdxField,
-                            IdxTerm),
-                {SQN, Status, no_lookup, null}}
-    end.
+    {to_ledgerkey(Bucket, Key, ?IDX_TAG, IdxField, IdxTerm),
+        {SQN, Status, no_lookup, null}}.
 
 gen_headspec(Bucket, Key, IdxOp, SubKey, Value, SQN, TTL) ->
     Status = set_status(IdxOp, TTL),
