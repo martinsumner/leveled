@@ -104,7 +104,6 @@
 -define(JOURNAL_SIZE_JITTER, 20).
 -define(ABSOLUTEMAX_JOURNALSIZE, 4000000000).
 -define(LONG_RUNNING, 80000).
--define(RECENT_AAE, false).
 -define(COMPRESSION_METHOD, lz4).
 -define(COMPRESSION_POINT, on_receipt).
 -define(TIMING_SAMPLESIZE, 100).
@@ -118,7 +117,6 @@
                 {cache_size, ?CACHE_SIZE},
                 {max_journalsize, 1000000000},
                 {sync_strategy, none},
-                {recent_aae, ?RECENT_AAE},
                 {head_only, false},
                 {waste_retention_period, undefined},
                 {max_run_length, undefined},
@@ -140,7 +138,6 @@
 -record(state, {inker :: pid() | undefined,
                 penciller :: pid() | undefined,
                 cache_size :: integer() | undefined,
-                recent_aae :: recent_aae(),
                 ledger_cache = #ledger_cache{},
                 is_snapshot :: boolean() | undefined,
                 slow_offer = false :: boolean(),
@@ -186,7 +183,6 @@
 -type fold_timings() :: no_timing|#fold_timings{}.
 -type head_timings() :: no_timing|#head_timings{}.
 -type timing_types() :: head|get|put|fold.
--type recent_aae() :: false|#recent_aae{}|undefined.
 -type key() :: binary()|string()|{binary(), binary()}.
     % Keys SHOULD be binary()
     % string() support is a legacy of old tests
@@ -220,12 +216,6 @@
             % riak_sync is used for backwards compatability with OTP16 - and 
             % will manually call sync() after each write (rather than use the
             % O_SYNC option on startup
-        {recent_aae, false|{atom(), list(), integer(), integer()}} |
-            % DEPRECATED
-            % Before working on kv_index_tictactree looked at the possibility
-            % of maintaining AAE just for recent changes.  Given the efficiency
-            % of the kv_index_tictactree approach this is unecessary.
-            % Should be set to false
         {head_only, false|with_lookup|no_lookup} |
             % When set to true, there are three fundamental changes as to how
             % leveled will work:
@@ -1008,16 +998,6 @@ init([Opts]) ->
                 ConfiguredCacheSize div (100 div ?CACHE_SIZE_JITTER),
             CacheSize = 
                 ConfiguredCacheSize + erlang:phash2(self()) rem CacheJitter,
-            RecentAAE =
-                case proplists:get_value(recent_aae, Opts) of
-                    false ->
-                        false;
-                    {FilterType, BucketList, LimitMinutes, UnitMinutes} ->
-                        #recent_aae{filter = FilterType,
-                                    buckets = BucketList,
-                                    limit_minutes = LimitMinutes,
-                                    unit_minutes = UnitMinutes}
-                end,
             
             {HeadOnly, HeadLookup} = 
                 case proplists:get_value(head_only, Opts) of 
@@ -1030,7 +1010,6 @@ init([Opts]) ->
                 end,
             
             State0 = #state{cache_size=CacheSize,
-                                recent_aae=RecentAAE,
                                 is_snapshot=false,
                                 head_only=HeadOnly,
                                 head_lookup = HeadLookup},
@@ -1926,14 +1905,12 @@ preparefor_ledgercache(?INKT_KEYD,
     {no_lookup, SQN, KeyChanges};
 preparefor_ledgercache(_InkTag,
                         LedgerKey, SQN, Obj, Size, {IdxSpecs, TTL},
-                        State) ->
-    {Bucket, Key, MetaValue, {KeyH, ObjH}, LastMods} =
+                        _State) ->
+    {Bucket, Key, MetaValue, {KeyH, _ObjH}, _LastMods} =
         leveled_codec:generate_ledgerkv(LedgerKey, SQN, Obj, Size, TTL),
     KeyChanges =
         [{LedgerKey, MetaValue}] ++
-            leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL) ++
-            leveled_codec:aae_indexspecs(State#state.recent_aae, 
-                                            Bucket, Key, SQN, ObjH, LastMods),
+            leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL),
     {KeyH, SQN, KeyChanges}.
 
 

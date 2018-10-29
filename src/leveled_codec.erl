@@ -63,7 +63,6 @@
         get_keyandobjhash/2,
         idx_indexspecs/5,
         obj_objectspecs/3,
-        aae_indexspecs/6,
         riak_extract_metadata/2,
         segment_hash/1,
         to_lookup/1,
@@ -76,7 +75,6 @@
 -define(NRT_IDX, "$aae.").
 -define(ALL_BUCKETS, <<"$all">>).
 
--type recent_aae() :: #recent_aae{}.
 -type riak_metadata() :: {binary()|delete, % Sibling Metadata
                             binary()|null, % Vclock Metadata
                             integer()|null, % Hash of vclock - non-exportable 
@@ -577,103 +575,6 @@ set_status(remove, _TTL) ->
     %% TODO: timestamps for delayed reaping 
     tomb.
 
--spec aae_indexspecs(false|recent_aae(),
-                                any(), any(),
-                                integer(), integer(),
-                                list())
-                                    -> list().
-%% @doc
-%% Generate an additional index term representing the change, if the last
-%% modified date for the change is within the definition of recency.
-%%
-%% The object may have multiple last modified dates (siblings), and in this
-%% case index entries for all dates within the range are added.
-%%
-%% The index should entry auto-expire in the future (when it is no longer
-%% relevant to assessing recent changes)
-aae_indexspecs(false, _Bucket, _Key, _SQN, _H, _LastMods) ->
-    [];
-aae_indexspecs(_AAE, _Bucket, _Key, _SQN, _H, []) ->
-    [];
-aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods) ->
-    InList = lists:member(Bucket, AAE#recent_aae.buckets),
-    Bucket0 =
-        case AAE#recent_aae.filter of
-            blacklist ->
-                case InList of
-                    true ->
-                        false;
-                    false ->
-                        {all, Bucket}
-                end;
-            whitelist ->
-                case InList of
-                    true ->
-                        Bucket;
-                    false ->
-                        false
-                end
-        end,
-    case Bucket0 of
-        false ->
-            [];
-        Bucket0 ->
-            GenIdxFun =
-                fun(LMD0, Acc) ->
-                    Dates = parse_date(LMD0,
-                                        AAE#recent_aae.unit_minutes,
-                                        AAE#recent_aae.limit_minutes,
-                                        leveled_util:integer_now()),
-                    case Dates of
-                        no_index ->
-                            Acc;
-                        {LMD1, TTL} ->
-                            TreeSize = AAE#recent_aae.tree_size,
-                            SegID32 = leveled_tictac:keyto_segment32(Key),
-                            SegID =
-                                leveled_tictac:get_segment(SegID32, TreeSize),
-                            IdxFldStr = ?NRT_IDX ++ LMD1 ++ "_bin",
-                            IdxTrmStr =
-                                string:right(integer_to_list(SegID), 8, $0) ++
-                                "." ++
-                                string:right(integer_to_list(H), 8, $0),
-                            {IdxK, IdxV} =
-                                gen_indexspec(Bucket0, Key,
-                                                add,
-                                                list_to_binary(IdxFldStr),
-                                                list_to_binary(IdxTrmStr),
-                                                SQN, TTL),
-                            [{IdxK, IdxV}|Acc]
-                    end
-                end,
-            lists:foldl(GenIdxFun, [], LastMods)
-    end.
-
--spec parse_date(tuple(), integer(), integer(), integer()) ->
-                    no_index|{list(), integer()}.
-%% @doc
-%% Parse the last modified date and the AAE date configuration to return a
-%% binary to be used as the last modified date part of the index, and an
-%% integer to be used as the TTL of the index entry.
-%% Return no_index if the change is not recent.
-parse_date(LMD, UnitMins, LimitMins, Now) ->
-    LMDsecs = leveled_util:integer_time(LMD),
-    Recent = (LMDsecs + LimitMins * 60) > Now,
-    case Recent of
-        false ->
-            no_index;
-        true ->
-            {{Y, M, D}, {Hour, Minute, _Second}} =
-                calendar:now_to_datetime(LMD),
-            RoundMins =
-                UnitMins * (Minute div UnitMins),
-            StrTime =
-                lists:flatten(io_lib:format(?LMD_FORMAT,
-                                                [Y, M, D, Hour, RoundMins])),
-            TTL = min(Now, LMDsecs) + (LimitMins + UnitMins) * 60,
-            {StrTime, TTL}
-    end.
-
 -spec generate_ledgerkv(
             tuple(), integer(), any(), integer(), tuple()|infinity) ->
             {any(), any(), any(), 
@@ -926,95 +827,6 @@ hashperf_test() ->
     _HL = lists:map(fun(Obj) -> erlang:phash2(Obj) end, OL),
     io:format(user, "1000 object hashes in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SW)]).
-
-parsedate_test() ->
-    {MeS, S, MiS} = os:timestamp(),
-    timer:sleep(100),
-    Now = leveled_util:integer_now(),
-    UnitMins = 5,
-    LimitMins = 60,
-    PD = parse_date({MeS, S, MiS}, UnitMins, LimitMins, Now),
-    io:format("Parsed Date ~w~n", [PD]),
-    ?assertMatch(true, is_tuple(PD)),
-    check_pd(PD, UnitMins),
-    CheckFun =
-        fun(Offset) ->
-            ModDate = {MeS, S + Offset * 60, MiS},
-            check_pd(parse_date(ModDate, UnitMins, LimitMins, Now), UnitMins)
-        end,  
-    lists:foreach(CheckFun, lists:seq(1, 60)).
-    
-check_pd(PD, UnitMins) ->
-    {LMDstr, _TTL} = PD,
-    Minutes = list_to_integer(lists:nthtail(10, LMDstr)),
-    ?assertMatch(0, Minutes rem UnitMins).
-
-parseolddate_test() ->
-    LMD = os:timestamp(),
-    timer:sleep(100),
-    Now = leveled_util:integer_now() + 60 * 60,
-    UnitMins = 5,
-    LimitMins = 60,
-    PD = parse_date(LMD, UnitMins, LimitMins, Now),
-    io:format("Parsed Date ~w~n", [PD]),
-    ?assertMatch(no_index, PD).
-
-genaaeidx_test() ->
-    AAE = #recent_aae{filter=blacklist,
-                        buckets=[],
-                        limit_minutes=60,
-                        unit_minutes=5},
-    Bucket = <<"Bucket1">>,
-    Key = <<"Key1">>,
-    SQN = 1,
-    H = erlang:phash2(null),
-    LastMods = [os:timestamp(), os:timestamp()],
-
-    AAESpecs = aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods),
-    ?assertMatch(2, length(AAESpecs)),
-    
-    LastMods1 = [os:timestamp()],
-    AAESpecs1 = aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods1),
-    ?assertMatch(1, length(AAESpecs1)),
-    IdxB = element(2, element(1, lists:nth(1, AAESpecs1))),
-    io:format(user, "AAE IDXSpecs1 ~w~n", [AAESpecs1]),
-    ?assertMatch(<<"$all">>, IdxB),
-    
-    LastMods0 = [],
-    AAESpecs0 = aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods0),
-    ?assertMatch(0, length(AAESpecs0)),
-    
-    AAE0 = AAE#recent_aae{filter=whitelist,
-                            buckets=[<<"Bucket0">>]},
-    AAESpecsB0 = aae_indexspecs(AAE0, Bucket, Key, SQN, H, LastMods1),
-    ?assertMatch(0, length(AAESpecsB0)),
-    
-    AAESpecsB1 = aae_indexspecs(AAE0, <<"Bucket0">>, Key, SQN, H, LastMods1),
-    ?assertMatch(1, length(AAESpecsB1)),
-    [{{?IDX_TAG, <<"Bucket0">>, {Fld, Term}, <<"Key1">>},
-        {SQN, {active, TS}, no_lookup, null}}] = AAESpecsB1,
-    ?assertMatch(true, is_integer(TS)),
-    ?assertMatch(17, length(binary_to_list(Term))),
-    ?assertMatch("$aae.", lists:sublist(binary_to_list(Fld), 5)),
-    
-    AAE1 = AAE#recent_aae{filter=blacklist,
-                            buckets=[<<"Bucket0">>]},
-    AAESpecsB2 = aae_indexspecs(AAE1, <<"Bucket0">>, Key, SQN, H, LastMods1),
-    ?assertMatch(0, length(AAESpecsB2)).
-
-delayedupdate_aaeidx_test() ->
-    AAE = #recent_aae{filter=blacklist,
-                        buckets=[],
-                        limit_minutes=60,
-                        unit_minutes=5},
-    Bucket = <<"Bucket1">>,
-    Key = <<"Key1">>,
-    SQN = 1,
-    H = erlang:phash2(null),
-    {Mega, Sec, MSec} = os:timestamp(),
-    LastMods = [{Mega -1, Sec, MSec}],
-    AAESpecs = aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods),
-    ?assertMatch(0, length(AAESpecs)).
 
 head_segment_compare_test() ->
     % Reminder to align native and parallel(leveled_ko) key stores for 
