@@ -139,7 +139,8 @@
                 journal_keychanges/0,
                 index_specs/0,
                 segment_list/0,
-                maybe_lookup/0]).
+                maybe_lookup/0,
+                last_moddate/0]).
 
 
 %%%============================================================================
@@ -194,8 +195,10 @@ strip_to_seqonly({_, V}) -> element(1, V).
 -spec strip_to_keyseqonly(ledger_kv()) -> {ledger_key(), integer()}.
 strip_to_keyseqonly({LK, V}) -> {LK, element(1, V)}.
 
--spec strip_to_indexdetails(ledger_kv()) -> {integer(), segment_hash()}.
-strip_to_indexdetails({_, V}) -> {element(1, V), element(3, V)}.
+-spec strip_to_indexdetails(ledger_kv()) ->
+                                {integer(), segment_hash(), last_moddate()}.
+strip_to_indexdetails({_, V}) when tuple_size(V) == 4 -> 
+    {element(1, V), element(3, V), undefined}.
 
 -spec striphead_to_v1details(ledger_value()) -> ledger_value().
 striphead_to_v1details(V) -> 

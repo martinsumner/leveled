@@ -1131,8 +1131,21 @@ lookup_slots(StartKey, EndKey, Tree) ->
 %% based on a 17-bit hash (so 0.0039 fpr).
 
 
-accumulate_positions({K, V}, {PosBinAcc, NoHashCount, HashAcc}) ->
-    {_SQN, H1} = leveled_codec:strip_to_indexdetails({K, V}),
+-spec accumulate_positions(leveled_codec:ledger_kv(),
+                            {binary(),
+                                non_neg_integer(),
+                                list(non_neg_integer()),
+                                leveled_codec:last_moddate()}) ->
+                                    {binary(),
+                                        non_neg_integer(),
+                                        list(non_neg_integer()),
+                                        leveled_codec:last_moddate()}.
+%% @doc
+%% Fold function use to accumulate the position information needed to
+%% populate the summary of the slot
+accumulate_positions({K, V}, {PosBinAcc, NoHashCount, HashAcc, LMDAcc}) ->
+    {_SQN, H1, LMD} = leveled_codec:strip_to_indexdetails({K, V}),
+    LMDAcc0 = take_max_lastmoddate(LMD, LMDAcc),
     PosH1 = extra_hash(H1),
     case is_integer(PosH1) of 
         true ->
@@ -1140,7 +1153,8 @@ accumulate_positions({K, V}, {PosBinAcc, NoHashCount, HashAcc}) ->
                 0 ->
                     {<<1:1/integer, PosH1:15/integer,PosBinAcc/binary>>,
                         0,
-                        [H1|HashAcc]};
+                        [H1|HashAcc],
+                        LMDAcc0};
                 N ->
                     % The No Hash Count is an integer between 0 and 127
                     % and so at read time should count NHC + 1
@@ -1151,11 +1165,26 @@ accumulate_positions({K, V}, {PosBinAcc, NoHashCount, HashAcc}) ->
                             NHC:7/integer, 
                             PosBinAcc/binary>>,
                         0,
-                        HashAcc}
+                        HashAcc,
+                        LMDAcc0}
             end;
         false ->
-            {PosBinAcc, NoHashCount + 1, HashAcc}
+            {PosBinAcc, NoHashCount + 1, HashAcc, LMDAcc0}
     end.
+
+
+-spec take_max_lastmoddate(leveled_codec:last_moddate(),
+                            leveled_codec:last_moddate()) -> 
+                                leveled_codec:last_moddate().
+%% @doc
+%% Get the last modified date.  If no Last Modified Date on any object, can't
+%% add the accelerator and should check each object in turn
+take_max_lastmoddate(_LMD, undefined) ->
+    undefined;
+take_max_lastmoddate(undefined, _LMDAcc) ->
+    undefined;
+take_max_lastmoddate(LMD, LMDAcc) ->
+    max(LMD, LMDAcc).
 
 -spec generate_binary_slot(leveled_codec:lookup(),
                             list(leveled_codec:ledger_kv()),
@@ -1176,8 +1205,8 @@ generate_binary_slot(Lookup, KVL, PressMethod, BuildTimings0) ->
     {HashL, PosBinIndex} = 
         case Lookup of
             lookup ->
-                InitAcc = {<<>>, 0, []},
-                {PosBinIndex0, NHC, HashL0} = 
+                InitAcc = {<<>>, 0, [], 0},
+                {PosBinIndex0, NHC, HashL0, _LMD} = 
                     lists:foldr(fun accumulate_positions/2, InitAcc, KVL),
                 PosBinIndex1 = 
                     case NHC of
@@ -1273,8 +1302,6 @@ generate_binary_slot(Lookup, KVL, PressMethod, BuildTimings0) ->
     BuildTimings3 = update_buildtimings(SW2, BuildTimings2, slot_finish),
 
     {{Header, SlotBin, HashL, LastKey}, BuildTimings3}.
-
-
 
 
 -spec check_blocks(list(integer()), 
@@ -2877,6 +2904,13 @@ timings_test() ->
     ?assertMatch(1, T4#sst_timings.slot_fetch_count),
     ?assertMatch(true, T4#sst_timings.slot_fetch_time > 
                             T3#sst_timings.slot_fetch_time).
+
+take_max_lastmoddate_test() ->
+    % TODO: Remove this test
+    % Temporarily added to make dialyzer happy (until we've made use of last
+    % modified dates
+    ?assertMatch(1, take_max_lastmoddate(0, 1)).
+
 
 
 -endif.
