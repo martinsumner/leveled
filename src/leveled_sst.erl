@@ -2910,7 +2910,10 @@ simple_persisted_slotsize_tester(SSTNewFun) ->
     ok = sst_close(Pid),
     ok = file:delete(filename:join(RP, Filename ++ ".sst")).
 
-simple_persisted_test() ->
+simple_persisted_test_() ->
+    {timeout, 60, fun simple_persisted_test_bothformats/0}.
+
+simple_persisted_test_bothformats() ->
     simple_persisted_tester(fun testsst_new/6),
     simple_persisted_tester(fun sst_new/6).
 
