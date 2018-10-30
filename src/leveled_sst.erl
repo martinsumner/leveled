@@ -242,10 +242,15 @@ sst_open(RootPath, Filename) ->
 %% pairs.  This should not be used for basement levels or unexpanded Key/Value
 %% lists as merge_lists will not be called.
 sst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod) ->
+    sst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod,
+                                                            ?INDEX_MODDATE).
+
+sst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod,
+                                                            IndexModDate) ->
     {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
     PressMethod0 = compress_level(Level, PressMethod),
     {[], [], SlotList, FK}  =
-        merge_lists(KVList, PressMethod0, ?INDEX_MODDATE),
+        merge_lists(KVList, PressMethod0, IndexModDate),
     case gen_fsm:sync_send_event(Pid,
                                     {sst_new,
                                         RootPath,
@@ -254,7 +259,7 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod) ->
                                         {SlotList, FK},
                                         MaxSQN,
                                         PressMethod0,
-                                        ?INDEX_MODDATE},
+                                        IndexModDate},
                                     infinity) of
         {ok, {SK, EK}, Bloom} ->
             {ok, Pid, {SK, EK}, Bloom}
@@ -285,10 +290,17 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod) ->
 sst_new(RootPath, Filename, 
         KVL1, KVL2, IsBasement, Level, 
         MaxSQN, PressMethod) ->
+    sst_new(RootPath, Filename, 
+        KVL1, KVL2, IsBasement, Level, 
+        MaxSQN, PressMethod, ?INDEX_MODDATE).
+
+sst_new(RootPath, Filename, 
+        KVL1, KVL2, IsBasement, Level, 
+        MaxSQN, PressMethod, IndexModDate) ->
     PressMethod0 = compress_level(Level, PressMethod),
     {Rem1, Rem2, SlotList, FK} = 
         merge_lists(KVL1, KVL2, {IsBasement, Level},
-                    PressMethod0, ?INDEX_MODDATE),
+                    PressMethod0, IndexModDate),
     case SlotList of
         [] ->
             empty;
@@ -302,7 +314,7 @@ sst_new(RootPath, Filename,
                                                 {SlotList, FK},
                                                 MaxSQN,
                                                 PressMethod0,
-                                                ?INDEX_MODDATE},
+                                                IndexModDate},
                                             infinity) of
                 {ok, {SK, EK}, Bloom} ->
                     {ok, Pid, {{Rem1, Rem2}, SK, EK}, Bloom}
@@ -869,6 +881,7 @@ fetch(LedgerKey, Hash, State, Timings0) ->
                 Timings3};
         {BlockLengths, _LMD, PosBin} ->
             PosList = find_pos(PosBin, extra_hash(Hash), [], 0),
+            io:format("Fetching referring to cache with PosList ~w~n", [PosList]),
             case PosList of 
                 [] ->
                     {_SW3, Timings3} =
@@ -1330,7 +1343,7 @@ take_max_lastmoddate(LMD, LMDAcc) ->
 %% @doc
 %% Generate the serialised slot to be used when storing this sublist of keys
 %% and values
-generate_binary_slot(Lookup, KVL, PressMethod, _IndexModDate, BuildTimings0) ->
+generate_binary_slot(Lookup, KVL, PressMethod, IndexModDate, BuildTimings0) ->
     
     SW0 = os:timestamp(),
     
@@ -1411,20 +1424,37 @@ generate_binary_slot(Lookup, KVL, PressMethod, _IndexModDate, BuildTimings0) ->
     BuildTimings2 = update_buildtimings(SW1, BuildTimings1, slot_serialise),
     SW2 = os:timestamp(), 
 
-    B1P = byte_size(PosBinIndex) + ?BLOCK_LENGTHS_LENGTH + ?LMD_LENGTH,
+    B1P = 
+        case IndexModDate of 
+            true ->
+                byte_size(PosBinIndex) + ?BLOCK_LENGTHS_LENGTH + ?LMD_LENGTH;
+            false ->
+                byte_size(PosBinIndex) + ?BLOCK_LENGTHS_LENGTH
+        end,
     CheckB1P = hmac(B1P),
     B1L = byte_size(B1),
     B2L = byte_size(B2),
     B3L = byte_size(B3),
     B4L = byte_size(B4),
     B5L = byte_size(B5),
-    Header = <<B1L:32/integer, 
-                B2L:32/integer, 
-                B3L:32/integer, 
-                B4L:32/integer,
-                B5L:32/integer,
-                LMD:48/integer,
-                PosBinIndex/binary>>,
+    Header = 
+        case IndexModDate of 
+            true ->
+                <<B1L:32/integer, 
+                    B2L:32/integer, 
+                    B3L:32/integer, 
+                    B4L:32/integer,
+                    B5L:32/integer,
+                    LMD:48/integer,
+                    PosBinIndex/binary>>;
+            false ->
+                <<B1L:32/integer, 
+                    B2L:32/integer, 
+                    B3L:32/integer, 
+                    B4L:32/integer,
+                    B5L:32/integer,
+                    PosBinIndex/binary>>
+        end,
     CheckH = hmac(Header),
     SlotBin = <<CheckB1P:32/integer, B1P:32/integer,
                     CheckH:32/integer, Header/binary, 
@@ -1466,8 +1496,12 @@ check_blocks([Pos|Rest], BlockPointer, BlockLengths, PosBinLength,
                     additional_offset(IdxModDate)),
     BlockL = deserialise_block(BlockBin, PressMethod),
     {K, V} = lists:nth(BlockPos, BlockL),
+    io:format("K of ~w found for ~w~n", 
+                [K, LedgerKeyToCheck]),
+    io:format("Search found ~w~n", [lists:keyfind(K, 1, BlockL)]),
     case K of 
         LedgerKeyToCheck ->
+            io:format("Key matched~n"),
             {K, V};
         _ ->
             case LedgerKeyToCheck of 
@@ -1596,10 +1630,14 @@ read_slots(Handle, SlotList, {SegList, LowLastMod, BlockIndexCache},
                     % Note that LMD will be 0 if the indexing of last mod
                     % date was not enable at creation time.  So in this
                     % case the filter should always map
-                    case LMD >= LowLastMod of
-                        false ->
-                            Acc;
+                    case LowLastMod > LMD of
                         true ->
+                            % The highest LMD on the slot was before the
+                            % LowLastMod date passed in the query - therefore
+                            % there ar eno interetsing modifictaions in this
+                            % slot - it is all too old
+                            Acc;
+                        false ->
                             PositionList = find_pos(BlockIdx, SegList, [], 0),
                             Acc ++ 
                                 check_blocks(PositionList,
@@ -2344,6 +2382,14 @@ update_timings(SW, Timings, Stage, Continue) ->
 
 -ifdef(TEST).
 
+testsst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod) ->
+    sst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod, false).
+
+testsst_new(RootPath, Filename, 
+            KVL1, KVL2, IsBasement, Level, MaxSQN, PressMethod) ->
+    sst_new(RootPath, Filename, KVL1, KVL2, IsBasement, Level, MaxSQN,
+            PressMethod, false).
+
 generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
     generate_randomkeys(Seqn,
                         Count,
@@ -2495,7 +2541,7 @@ indexed_list_allindexkeys_test() ->
     LMD = ?FLIPPER48,
     ?assertMatch(<<_BL:20/binary, LMD:48/integer, EmptySlotSize:8/integer>>, 
                     HeaderT),
-    ?assertMatch(<<_BL:20/binary, LMD:48/integer, EmptySlotSize:8/integer>>, 
+    ?assertMatch(<<_BL:20/binary, EmptySlotSize:8/integer>>, 
                     HeaderF),
     % SW = os:timestamp(),
     BinToListT = binaryslot_tolist(FullBinT, native, true),
@@ -2678,17 +2724,21 @@ test_binary_slot(FullBin, Key, Hash, ExpectedValue) ->
     %             [timer:now_diff(os:timestamp(), SW)]).
 
     
-
 merge_test() ->
+    merge_tester(fun testsst_new/6, fun testsst_new/8),
+    merge_tester(fun sst_new/6, fun sst_new/8).
+
+
+merge_tester(NewFunS, NewFunM) ->
     N = 3000,
     KVL1 = lists:ukeysort(1, generate_randomkeys(N + 1, N, 1, 20)),
     KVL2 = lists:ukeysort(1, generate_randomkeys(1, N, 1, 20)),
     KVL3 = lists:ukeymerge(1, KVL1, KVL2),
     SW0 = os:timestamp(),
     {ok, P1, {FK1, LK1}, _Bloom1} = 
-        sst_new("../test/", "level1_src", 1, KVL1, 6000, native),
+        NewFunS("../test/", "level1_src", 1, KVL1, 6000, native),
     {ok, P2, {FK2, LK2}, _Bloom2} = 
-        sst_new("../test/", "level2_src", 2, KVL2, 3000, native),
+        NewFunS("../test/", "level2_src", 2, KVL2, 3000, native),
     ExpFK1 = element(1, lists:nth(1, KVL1)),
     ExpLK1 = element(1, lists:last(KVL1)),
     ExpFK2 = element(1, lists:nth(1, KVL2)),
@@ -2700,7 +2750,7 @@ merge_test() ->
     ML1 = [{next, #manifest_entry{owner = P1}, FK1}],
     ML2 = [{next, #manifest_entry{owner = P2}, FK2}],
     NewR = 
-        sst_new("../test/", "level2_merge", ML1, ML2, false, 2, N * 2, native),
+        NewFunM("../test/", "level2_merge", ML1, ML2, false, 2, N * 2, native),
     {ok, P3, {{Rem1, Rem2}, FK3, LK3}, _Bloom3} = NewR,
     ?assertMatch([], Rem1),
     ?assertMatch([], Rem2),
@@ -2729,13 +2779,17 @@ merge_test() ->
     
 
 simple_persisted_range_test() ->
+    simple_persisted_range_tester(fun testsst_new/6),
+    simple_persisted_range_tester(fun sst_new/6).
+
+simple_persisted_range_tester(SSTNewFun) ->
     {RP, Filename} = {"../test/", "simple_test"},
     KVList0 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 16, 1, 20),
     KVList1 = lists:ukeysort(1, KVList0),
     [{FirstKey, _FV}|_Rest] = KVList1,
     {LastKey, _LV} = lists:last(KVList1),
     {ok, Pid, {FirstKey, LastKey}, _Bloom} = 
-        sst_new(RP, Filename, 1, KVList1, length(KVList1), native),
+        SSTNewFun(RP, Filename, 1, KVList1, length(KVList1), native),
     
     {o, B, K, null} = LastKey,
     SK1 = {o, B, K, 0},
@@ -2836,6 +2890,11 @@ additional_range_test() ->
     
 
 simple_persisted_slotsize_test() ->
+    simple_persisted_slotsize_tester(fun testsst_new/6),
+    simple_persisted_slotsize_tester(fun sst_new/6).
+
+
+simple_persisted_slotsize_tester(SSTNewFun) ->
     {RP, Filename} = {"../test/", "simple_slotsize_test"},
     KVList0 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 2, 1, 20),
     KVList1 = lists:sublist(lists:ukeysort(1, KVList0),
@@ -2843,7 +2902,7 @@ simple_persisted_slotsize_test() ->
     [{FirstKey, _FV}|_Rest] = KVList1,
     {LastKey, _LV} = lists:last(KVList1),
     {ok, Pid, {FirstKey, LastKey}, _Bloom} = 
-        sst_new(RP, Filename, 1, KVList1, length(KVList1), native),
+        SSTNewFun(RP, Filename, 1, KVList1, length(KVList1), native),
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({K, V}, sst_get(Pid, K))
                         end,
@@ -2852,13 +2911,17 @@ simple_persisted_slotsize_test() ->
     ok = file:delete(filename:join(RP, Filename ++ ".sst")).
 
 simple_persisted_test() ->
+    simple_persisted_tester(fun testsst_new/6),
+    simple_persisted_tester(fun sst_new/6).
+
+simple_persisted_tester(SSTNewFun) ->
     {RP, Filename} = {"../test/", "simple_test"},
     KVList0 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 32, 1, 20),
     KVList1 = lists:ukeysort(1, KVList0),
     [{FirstKey, _FV}|_Rest] = KVList1,
     {LastKey, _LV} = lists:last(KVList1),
     {ok, Pid, {FirstKey, LastKey}, _Bloom} = 
-        sst_new(RP, Filename, 1, KVList1, length(KVList1), native),
+        SSTNewFun(RP, Filename, 1, KVList1, length(KVList1), native),
     SW0 = os:timestamp(),
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({K, V}, sst_get(Pid, K))
