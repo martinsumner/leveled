@@ -1709,8 +1709,7 @@ binaryslot_trimmedlist(FullBin, StartKey, EndKey,
             {Acc, _Continue} = lists:foldl(BlockCheckFun, {[], true}, BlocksToCheck),
             {Acc, none};
         {{Header, _Blocks}, SegList} ->
-            BL = ?BLOCK_LENGTHS_LENGTH,
-            <<BlockLengths:BL/binary, BlockIdx/binary>> = Header,
+            {BlockLengths, _LMD, BlockIdx} = extract_header(Header, IdxModDate),
             PosList = find_pos(BlockIdx, SegList, [], 0),
             KVL = check_blocks(PosList,
                                 FullBin,
