@@ -1519,10 +1519,11 @@ find_nextkey(QueryArray, LCnt,
             % The first key at this level is pointer to a file - need to query
             % the file to expand this level out before proceeding
             Pointer = {next, Owner, StartKey, EndKey},
-            UpdList = leveled_sst:expand_list_by_pointer(Pointer,
-                                                            RestOfKeys,
-                                                            Width,
-                                                            SegList),
+            UpdList = leveled_sst:sst_expandpointer(Pointer,
+                                                        RestOfKeys,
+                                                        Width,
+                                                        SegList,
+                                                        0),
             NewEntry = {LCnt, UpdList},
             % Need to loop around at this level (LCnt) as we have not yet
             % examined a real key at this level
@@ -1535,10 +1536,11 @@ find_nextkey(QueryArray, LCnt,
             % The first key at this level is pointer within a file  - need to
             % query the file to expand this level out before proceeding
             Pointer = {pointer, SSTPid, Slot, PSK, PEK},
-            UpdList = leveled_sst:expand_list_by_pointer(Pointer,
-                                                            RestOfKeys,
-                                                            Width,
-                                                            SegList),
+            UpdList = leveled_sst:sst_expandpointer(Pointer,
+                                                        RestOfKeys,
+                                                        Width,
+                                                        SegList,
+                                                        0),
             NewEntry = {LCnt, UpdList},
             % Need to loop around at this level (LCnt) as we have not yet
             % examined a real key at this level
