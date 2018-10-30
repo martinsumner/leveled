@@ -667,8 +667,9 @@ delete_pending({get_kvrange, StartKey, EndKey, ScanWidth, SegList},
                                                         State),
     % Always yield as about to clear and de-reference
     PressMethod = State#state.compression_method,
+    IdxModDate = State#state.index_moddate,
     {reply,
-        {yield, SlotsToFetchBinList, SlotsToPoint, PressMethod}, 
+        {yield, SlotsToFetchBinList, SlotsToPoint, PressMethod, IdxModDate},
         delete_pending,
         State,
         ?DELETE_TIMEOUT};
