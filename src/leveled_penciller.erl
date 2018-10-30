@@ -248,7 +248,7 @@
                 
                 levelzero_pending = false :: boolean(),
                 levelzero_constructor :: pid() | undefined,
-                levelzero_cache = [] :: list(), % a list of trees
+                levelzero_cache = [] :: levelzero_cache(),
                 levelzero_size = 0 :: integer(),
                 levelzero_maxcachesize :: integer() | undefined,
                 levelzero_cointoss = false :: boolean(),
@@ -293,6 +293,12 @@
                             integer()}.
 -type pcl_state() :: #state{}.
 -type pcl_timings() :: no_timing|#pcl_timings{}.
+-type levelzero_cacheentry() :: {pos_integer(), levled_tree:leveled_tree()}.
+-type levelzero_cache() :: list(levelzero_cacheentry()).
+-type iterator_entry() 
+    :: {pos_integer(), 
+        list(leveled_codec:ledger_kv()|leveled_sst:expandable_pointer())}.
+-type iterator() :: list(iterator_entry()).
 
 %%%============================================================================
 %%% API
@@ -720,7 +726,8 @@ handle_call({fetch_keys,
             keyfolder({L0AsList, SSTiter},
                         {StartKey, EndKey},
                         {AccFun, InitAcc},
-                        {SegmentList, MaxKeys})
+                        {SegmentList, {0, infinity}, MaxKeys}) 
+                            % TODO: Allow query to set last mod range
         end,
     case By of 
         as_pcl ->
@@ -1375,27 +1382,31 @@ keyfolder(IMMiter, SSTiter, StartKey, EndKey, {AccFun, Acc}) ->
     keyfolder({IMMiter, SSTiter}, 
                 {StartKey, EndKey},
                 {AccFun, Acc}, 
-                {false, -1}).
+                {false, {0, infinity}, -1}).
 
-keyfolder(_Iterators, _KeyRange, {_AccFun, Acc}, {_SegmentList, MaxKeys}) 
-                                                        when MaxKeys == 0 ->
+keyfolder(_Iterators, _KeyRange, {_AccFun, Acc}, 
+                    {_SegmentList, _LastModRange, MaxKeys}) when MaxKeys == 0 ->
     Acc;
-keyfolder({[], SSTiter}, KeyRange, {AccFun, Acc}, {SegmentList, MaxKeys}) ->
+keyfolder({[], SSTiter}, KeyRange, {AccFun, Acc}, 
+                    {SegmentList, LastModRange, MaxKeys}) ->
     {StartKey, EndKey} = KeyRange,
-    case find_nextkey(SSTiter, StartKey, EndKey, SegmentList) of
+    case find_nextkey(SSTiter, StartKey, EndKey, 
+                        SegmentList, element(1, LastModRange)) of
         no_more_keys ->
             Acc;
         {NxSSTiter, {SSTKey, SSTVal}} ->
-            Acc1 = AccFun(SSTKey, SSTVal, Acc),
+            {Acc1, MK1} = 
+                maybe_accumulate(SSTKey, SSTVal, Acc, AccFun,
+                                    MaxKeys, LastModRange),
             keyfolder({[], NxSSTiter}, 
                         KeyRange, 
                         {AccFun, Acc1}, 
-                        {SegmentList, MaxKeys - 1})
+                        {SegmentList, LastModRange, MK1})
     end;
 keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SSTiterator}, 
             KeyRange, 
             {AccFun, Acc}, 
-            {SegmentList, MaxKeys}) ->
+            {SegmentList, LastModRange, MaxKeys}) ->
     {StartKey, EndKey} = KeyRange,
     case {IMMKey < StartKey, leveled_codec:endkey_passed(EndKey, IMMKey)} of
         {false, true} ->
@@ -1405,18 +1416,21 @@ keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SSTiterator},
             keyfolder({[], SSTiterator},
                         KeyRange,
                         {AccFun, Acc},
-                        {SegmentList, MaxKeys});
+                        {SegmentList, LastModRange, MaxKeys});
         {false, false} ->
-            case find_nextkey(SSTiterator, StartKey, EndKey, SegmentList) of
+            case find_nextkey(SSTiterator, StartKey, EndKey,
+                                SegmentList, element(1, LastModRange)) of
                 no_more_keys ->
                     % No more keys in range in the persisted store, so use the
                     % in-memory KV as the next
-                    Acc1 = AccFun(IMMKey, IMMVal, Acc),
+                    {Acc1, MK1} = 
+                        maybe_accumulate(IMMKey, IMMVal, Acc, AccFun,
+                                            MaxKeys, LastModRange),
                     keyfolder({NxIMMiterator, 
                                     []},
                                 KeyRange,
                                 {AccFun, Acc1},
-                                {SegmentList, MaxKeys - 1});
+                                {SegmentList, LastModRange, MK1});
                 {NxSSTiterator, {SSTKey, SSTVal}} ->
                     % There is a next key, so need to know which is the
                     % next key between the two (and handle two keys
@@ -1426,7 +1440,9 @@ keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SSTiterator},
                                                         {SSTKey,
                                                             SSTVal}) of
                         left_hand_first ->
-                            Acc1 = AccFun(IMMKey, IMMVal, Acc),
+                            {Acc1, MK1} = 
+                                maybe_accumulate(IMMKey, IMMVal, Acc, AccFun,
+                                                    MaxKeys, LastModRange),
                             % Stow the previous best result away at Level -1 
                             % so that there is no need to iterate to it again
                             NewEntry = {-1, [{SSTKey, SSTVal}]},
@@ -1437,16 +1453,20 @@ keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SSTiterator},
                                                             NewEntry)},
                                         KeyRange,
                                         {AccFun, Acc1},
-                                        {SegmentList, MaxKeys - 1});
+                                        {SegmentList, LastModRange, MK1});
                         right_hand_first ->
-                            Acc1 = AccFun(SSTKey, SSTVal, Acc),
+                            {Acc1, MK1} = 
+                                maybe_accumulate(SSTKey, SSTVal, Acc, AccFun,
+                                                    MaxKeys, LastModRange),
                             keyfolder({[{IMMKey, IMMVal}|NxIMMiterator],
                                             NxSSTiterator},
                                         KeyRange,
                                         {AccFun, Acc1},
-                                        {SegmentList, MaxKeys - 1});
+                                        {SegmentList, LastModRange, MK1});
                         left_hand_dominant ->
-                            Acc1 = AccFun(IMMKey, IMMVal, Acc),
+                            {Acc1, MK1} = 
+                                maybe_accumulate(IMMKey, IMMVal, Acc, AccFun,
+                                                    MaxKeys, LastModRange),
                             % We can add to the accumulator here.  As the SST
                             % key was the most dominant across all SST levels,
                             % so there is no need to hold off until the IMMKey
@@ -1455,30 +1475,55 @@ keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SSTiterator},
                                             NxSSTiterator},
                                         KeyRange,
                                         {AccFun, Acc1},
-                                        {SegmentList, MaxKeys - 1})
+                                        {SegmentList, LastModRange, MK1})
                     end
             end
     end.    
 
+-spec maybe_accumulate(leveled_codec:ledger_key(),
+                        leveled_codec:ledger_value(),
+                        any(), fun(), integer(),
+                        {non_neg_integer(), non_neg_integer()|infinity}) ->
+                            any().
+%% @doc
+%% Make an accumulation decision based one the date range
+maybe_accumulate(LK, LV, Acc, AccFun, MaxKeys, {LowLastMod, HighLastMod}) ->
+    {_SQN, _SH, LMD} = leveled_codec:strip_to_indexdetails({LK, LV}),
+    RunAcc = 
+        (LMD == undefined) or ((LMD >= LowLastMod) and (LMD =< HighLastMod)),
+    case RunAcc of
+        true ->
+            {AccFun(LK, LV, Acc), MaxKeys - 1};
+        false ->
+            {Acc, MaxKeys}
+    end.
+
+
+-spec find_nextkey(iterator(), 
+                    leveled_codec:ledger_key(), leveled_codec:ledger_key()) ->
+                        no_more_keys|{iterator(), leveled_codec:ledger_kv()}.
+%% @doc
 %% Looks to find the best choice for the next key across the levels (other
 %% than in-memory table)
 %% In finding the best choice, the next key in a given level may be a next
 %% block or next file pointer which will need to be expanded
 
 find_nextkey(QueryArray, StartKey, EndKey) ->
-    find_nextkey(QueryArray, StartKey, EndKey, false).
+    find_nextkey(QueryArray, StartKey, EndKey, false, 0).
 
-find_nextkey(QueryArray, StartKey, EndKey, SegmentList) ->
+find_nextkey(QueryArray, StartKey, EndKey, SegmentList, LowLastMod) ->
     find_nextkey(QueryArray,
                     -1,
                     {null, null},
                     StartKey, EndKey,
-                    SegmentList, ?ITERATOR_SCANWIDTH).
+                    SegmentList,
+                    LowLastMod,
+                    ?ITERATOR_SCANWIDTH).
 
 find_nextkey(_QueryArray, LCnt, 
                 {null, null}, 
                 _StartKey, _EndKey, 
-                _SegList, _Width) when LCnt > ?MAX_LEVELS ->
+                _SegList, _LowLastMod, _Width) when LCnt > ?MAX_LEVELS ->
     % The array has been scanned wihtout finding a best key - must be
     % exhausted - respond to indicate no more keys to be found by the
     % iterator
@@ -1486,7 +1531,7 @@ find_nextkey(_QueryArray, LCnt,
 find_nextkey(QueryArray, LCnt, 
                 {BKL, BestKV}, 
                 _StartKey, _EndKey, 
-                _SegList, _Width) when LCnt > ?MAX_LEVELS ->
+                _SegList, _LowLastMod, _Width) when LCnt > ?MAX_LEVELS ->
     % All levels have been scanned, so need to remove the best result from
     % the array, and return that array along with the best key/sqn/status
     % combination
@@ -1495,7 +1540,7 @@ find_nextkey(QueryArray, LCnt,
 find_nextkey(QueryArray, LCnt, 
                 {BestKeyLevel, BestKV}, 
                 StartKey, EndKey, 
-                SegList, Width) ->
+                SegList, LowLastMod, Width) ->
     % Get the next key at this level
     {NextKey, RestOfKeys} = 
         case lists:keyfind(LCnt, 1, QueryArray) of
@@ -1514,7 +1559,7 @@ find_nextkey(QueryArray, LCnt,
                             LCnt + 1,
                             {BKL, BKV},
                             StartKey, EndKey, 
-                            SegList, Width);
+                            SegList, LowLastMod, Width);
         {{next, Owner, _SK}, BKL, BKV} ->
             % The first key at this level is pointer to a file - need to query
             % the file to expand this level out before proceeding
@@ -1523,7 +1568,7 @@ find_nextkey(QueryArray, LCnt,
                                                         RestOfKeys,
                                                         Width,
                                                         SegList,
-                                                        0),
+                                                        LowLastMod),
             NewEntry = {LCnt, UpdList},
             % Need to loop around at this level (LCnt) as we have not yet
             % examined a real key at this level
@@ -1531,7 +1576,7 @@ find_nextkey(QueryArray, LCnt,
                             LCnt,
                             {BKL, BKV},
                             StartKey, EndKey, 
-                            SegList, Width);
+                            SegList, LowLastMod, Width);
         {{pointer, SSTPid, Slot, PSK, PEK}, BKL, BKV} ->
             % The first key at this level is pointer within a file  - need to
             % query the file to expand this level out before proceeding
@@ -1540,7 +1585,7 @@ find_nextkey(QueryArray, LCnt,
                                                         RestOfKeys,
                                                         Width,
                                                         SegList,
-                                                        0),
+                                                        LowLastMod),
             NewEntry = {LCnt, UpdList},
             % Need to loop around at this level (LCnt) as we have not yet
             % examined a real key at this level
@@ -1548,7 +1593,7 @@ find_nextkey(QueryArray, LCnt,
                             LCnt,
                             {BKL, BKV},
                             StartKey, EndKey, 
-                            SegList, Width);
+                            SegList, LowLastMod, Width);
         {{Key, Val}, null, null} ->
             % No best key set - so can assume that this key is the best key,
             % and check the lower levels
@@ -1556,7 +1601,7 @@ find_nextkey(QueryArray, LCnt,
                             LCnt + 1,
                             {LCnt, {Key, Val}},
                             StartKey, EndKey, 
-                            SegList, Width);
+                            SegList, LowLastMod, Width);
         {{Key, Val}, _BKL, {BestKey, _BestVal}} when Key < BestKey ->
             % There is a real key and a best key to compare, and the real key
             % at this level is before the best key, and so is now the new best
@@ -1566,7 +1611,7 @@ find_nextkey(QueryArray, LCnt,
                             LCnt + 1,
                             {LCnt, {Key, Val}},
                             StartKey, EndKey, 
-                            SegList, Width);
+                            SegList, LowLastMod, Width);
         {{Key, Val}, BKL, {BestKey, BestVal}} when Key == BestKey ->
             SQN = leveled_codec:strip_to_seqonly({Key, Val}),
             BestSQN = leveled_codec:strip_to_seqonly({BestKey, BestVal}),
@@ -1581,7 +1626,7 @@ find_nextkey(QueryArray, LCnt,
                                     LCnt + 1,
                                     {BKL, {BestKey, BestVal}},
                                     StartKey, EndKey, 
-                                    SegList, Width);
+                                    SegList, LowLastMod, Width);
                 SQN > BestSQN ->
                     % There is a real key at the front of this level and it has
                     % a higher SQN than the best key, so we should use this as
@@ -1597,7 +1642,7 @@ find_nextkey(QueryArray, LCnt,
                                     LCnt + 1,
                                     {LCnt, {Key, Val}},
                                     StartKey, EndKey, 
-                                    SegList, Width)
+                                    SegList, LowLastMod, Width)
             end;
         {_, BKL, BKV} ->
             % This is not the best key
@@ -1605,7 +1650,7 @@ find_nextkey(QueryArray, LCnt,
                             LCnt + 1,
                             {BKL, BKV},
                             StartKey, EndKey, 
-                            SegList, Width)
+                            SegList, LowLastMod, Width)
     end.
 
 
@@ -1966,84 +2011,98 @@ simple_server_test() ->
 
 simple_findnextkey_test() ->
     QueryArray = [
-    {2, [{{o, "Bucket1", "Key1"}, {5, {active, infinity}, null}},
-            {{o, "Bucket1", "Key5"}, {4, {active, infinity}, null}}]},
-    {3, [{{o, "Bucket1", "Key3"}, {3, {active, infinity}, null}}]},
-    {5, [{{o, "Bucket1", "Key2"}, {2, {active, infinity}, null}}]}
+    {2, [{{o, "Bucket1", "Key1", null}, {5, {active, infinity}, {0, 0}, null}},
+        {{o, "Bucket1", "Key5", null}, {4, {active, infinity}, {0, 0}, null}}]},
+    {3, [{{o, "Bucket1", "Key3", null}, {3, {active, infinity}, {0, 0}, null}}]},
+    {5, [{{o, "Bucket1", "Key2", null}, {2, {active, infinity}, {0, 0}, null}}]}
     ],
     {Array2, KV1} = find_nextkey(QueryArray,
-                                    {o, "Bucket1", "Key0"},
-                                    {o, "Bucket1", "Key5"}),
-    ?assertMatch({{o, "Bucket1", "Key1"}, {5, {active, infinity}, null}}, KV1),
+                                    {o, "Bucket1", "Key0", null},
+                                    {o, "Bucket1", "Key5", null}),
+    ?assertMatch({{o, "Bucket1", "Key1", null}, 
+                        {5, {active, infinity}, {0, 0}, null}},
+                    KV1),
     {Array3, KV2} = find_nextkey(Array2,
-                                    {o, "Bucket1", "Key0"},
-                                    {o, "Bucket1", "Key5"}),
-    ?assertMatch({{o, "Bucket1", "Key2"}, {2, {active, infinity}, null}}, KV2),
+                                    {o, "Bucket1", "Key0", null},
+                                    {o, "Bucket1", "Key5", null}),
+    ?assertMatch({{o, "Bucket1", "Key2", null}, 
+                        {2, {active, infinity}, {0, 0}, null}},
+                    KV2),
     {Array4, KV3} = find_nextkey(Array3,
-                                    {o, "Bucket1", "Key0"},
-                                    {o, "Bucket1", "Key5"}),
-    ?assertMatch({{o, "Bucket1", "Key3"}, {3, {active, infinity}, null}}, KV3),
+                                    {o, "Bucket1", "Key0", null},
+                                    {o, "Bucket1", "Key5", null}),
+    ?assertMatch({{o, "Bucket1", "Key3", null}, 
+                        {3, {active, infinity}, {0, 0}, null}},
+                    KV3),
     {Array5, KV4} = find_nextkey(Array4,
-                                    {o, "Bucket1", "Key0"},
-                                    {o, "Bucket1", "Key5"}),
-    ?assertMatch({{o, "Bucket1", "Key5"}, {4, {active, infinity}, null}}, KV4),
+                                    {o, "Bucket1", "Key0", null},
+                                    {o, "Bucket1", "Key5", null}),
+    ?assertMatch({{o, "Bucket1", "Key5", null}, 
+                        {4, {active, infinity}, {0, 0}, null}},
+                    KV4),
     ER = find_nextkey(Array5,
-                        {o, "Bucket1", "Key0"},
-                        {o, "Bucket1", "Key5"}),
+                        {o, "Bucket1", "Key0", null},
+                        {o, "Bucket1", "Key5", null}),
     ?assertMatch(no_more_keys, ER).
 
 sqnoverlap_findnextkey_test() ->
     QueryArray = [
-    {2, [{{o, "Bucket1", "Key1"}, {5, {active, infinity}, 0, null}},
-            {{o, "Bucket1", "Key5"}, {4, {active, infinity}, 0, null}}]},
-    {3, [{{o, "Bucket1", "Key3"}, {3, {active, infinity}, 0, null}}]},
-    {5, [{{o, "Bucket1", "Key5"}, {2, {active, infinity}, 0, null}}]}
+    {2, [{{o, "Bucket1", "Key1", null}, {5, {active, infinity}, {0, 0}, null}},
+        {{o, "Bucket1", "Key5", null}, {4, {active, infinity}, {0, 0}, null}}]},
+    {3, [{{o, "Bucket1", "Key3", null}, {3, {active, infinity}, {0, 0}, null}}]},
+    {5, [{{o, "Bucket1", "Key5", null}, {2, {active, infinity}, {0, 0}, null}}]}
     ],
     {Array2, KV1} = find_nextkey(QueryArray,
-                                    {o, "Bucket1", "Key0"},
-                                    {o, "Bucket1", "Key5"}),
-    ?assertMatch({{o, "Bucket1", "Key1"}, {5, {active, infinity}, 0, null}},
+                                    {o, "Bucket1", "Key0", null},
+                                    {o, "Bucket1", "Key5", null}),
+    ?assertMatch({{o, "Bucket1", "Key1", null}, 
+                        {5, {active, infinity}, {0, 0}, null}},
                     KV1),
     {Array3, KV2} = find_nextkey(Array2,
-                                    {o, "Bucket1", "Key0"},
-                                    {o, "Bucket1", "Key5"}),
-    ?assertMatch({{o, "Bucket1", "Key3"}, {3, {active, infinity}, 0, null}},
+                                    {o, "Bucket1", "Key0", null},
+                                    {o, "Bucket1", "Key5", null}),
+    ?assertMatch({{o, "Bucket1", "Key3", null}, 
+                        {3, {active, infinity}, {0, 0}, null}},
                     KV2),
     {Array4, KV3} = find_nextkey(Array3,
-                                    {o, "Bucket1", "Key0"},
-                                    {o, "Bucket1", "Key5"}),
-    ?assertMatch({{o, "Bucket1", "Key5"}, {4, {active, infinity}, 0, null}},
+                                    {o, "Bucket1", "Key0", null},
+                                    {o, "Bucket1", "Key5", null}),
+    ?assertMatch({{o, "Bucket1", "Key5", null}, 
+                        {4, {active, infinity}, {0, 0}, null}},
                     KV3),
     ER = find_nextkey(Array4,
-                        {o, "Bucket1", "Key0"},
-                        {o, "Bucket1", "Key5"}),
+                        {o, "Bucket1", "Key0", null},
+                        {o, "Bucket1", "Key5", null}),
     ?assertMatch(no_more_keys, ER).
 
 sqnoverlap_otherway_findnextkey_test() ->
     QueryArray = [
-    {2, [{{o, "Bucket1", "Key1"}, {5, {active, infinity}, 0, null}},
-            {{o, "Bucket1", "Key5"}, {1, {active, infinity}, 0, null}}]},
-    {3, [{{o, "Bucket1", "Key3"}, {3, {active, infinity}, 0, null}}]},
-    {5, [{{o, "Bucket1", "Key5"}, {2, {active, infinity}, 0, null}}]}
+    {2, [{{o, "Bucket1", "Key1", null}, {5, {active, infinity}, {0, 0}, null}},
+        {{o, "Bucket1", "Key5", null}, {1, {active, infinity}, {0, 0}, null}}]},
+    {3, [{{o, "Bucket1", "Key3", null}, {3, {active, infinity}, {0, 0}, null}}]},
+    {5, [{{o, "Bucket1", "Key5", null}, {2, {active, infinity}, {0, 0}, null}}]}
     ],
     {Array2, KV1} = find_nextkey(QueryArray,
-                                    {o, "Bucket1", "Key0"},
-                                    {o, "Bucket1", "Key5"}),
-    ?assertMatch({{o, "Bucket1", "Key1"}, {5, {active, infinity}, 0, null}},
+                                    {o, "Bucket1", "Key0", null},
+                                    {o, "Bucket1", "Key5", null}),
+    ?assertMatch({{o, "Bucket1", "Key1", null},
+                        {5, {active, infinity}, {0, 0}, null}},
                     KV1),
     {Array3, KV2} = find_nextkey(Array2,
-                                    {o, "Bucket1", "Key0"},
-                                    {o, "Bucket1", "Key5"}),
-    ?assertMatch({{o, "Bucket1", "Key3"}, {3, {active, infinity}, 0, null}},
+                                    {o, "Bucket1", "Key0", null},
+                                    {o, "Bucket1", "Key5", null}),
+    ?assertMatch({{o, "Bucket1", "Key3", null},
+                        {3, {active, infinity}, {0, 0}, null}},
                     KV2),
     {Array4, KV3} = find_nextkey(Array3,
-                                    {o, "Bucket1", "Key0"},
-                                    {o, "Bucket1", "Key5"}),
-    ?assertMatch({{o, "Bucket1", "Key5"}, {2, {active, infinity}, 0, null}},
+                                    {o, "Bucket1", "Key0", null},
+                                    {o, "Bucket1", "Key5", null}),
+    ?assertMatch({{o, "Bucket1", "Key5", null},
+                        {2, {active, infinity}, {0, 0}, null}},
                     KV3),
     ER = find_nextkey(Array4,
-                        {o, "Bucket1", "Key0"},
-                        {o, "Bucket1", "Key5"}),
+                        {o, "Bucket1", "Key0", null},
+                        {o, "Bucket1", "Key5", null}),
     ?assertMatch(no_more_keys, ER).
 
 foldwithimm_simple_test() ->

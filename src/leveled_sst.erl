@@ -204,6 +204,8 @@
 -type sst_timings() :: no_timing|#sst_timings{}.
 -type build_timings() :: no_timing|#build_timings{}.
 
+-export_type([expandable_pointer/0]).
+
 %%%============================================================================
 %%% API
 %%%============================================================================
