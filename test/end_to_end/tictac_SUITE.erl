@@ -156,14 +156,15 @@ many_put_compare(_Config) ->
                 [timer:now_diff(os:timestamp(), SWB0Obj)]),
     true = length(leveled_tictac:find_dirtyleaves(TreeA, TreeAObj0)) == 0,
 
-    FoldQ1 = {foldheads_bybucket,
-              o_rkv,
-              "Bucket",
-              all,
-              {FoldObjectsFun, leveled_tictac:new_tree(0, TreeSize)},
-              true, true, false},
+    InitAccTree = leveled_tictac:new_tree(0, TreeSize),
+    
     {async, TreeAObjFolder1} =
-        leveled_bookie:book_returnfolder(Bookie2, FoldQ1),
+        leveled_bookie:book_headfold(Bookie2, 
+                                        ?RIAK_TAG,
+                                        {range, "Bucket", all},
+                                        {FoldObjectsFun, 
+                                            InitAccTree},
+                                        true, true, false),
     SWB1Obj = os:timestamp(),
     TreeAObj1 = TreeAObjFolder1(),
     io:format("Build tictac tree via object fold with "++
@@ -184,21 +185,26 @@ many_put_compare(_Config) ->
         fun(_Bucket, Key, Value, Acc) ->
             leveled_tictac:add_kv(Acc, Key, Value, AltExtractFun)
         end,
-    AltFoldQ0 = {foldheads_bybucket,
-                    o_rkv,
-                    "Bucket",
-                    all,
-                    {AltFoldObjectsFun, leveled_tictac:new_tree(0, TreeSize)},
-                    false, true, false},
+    
     {async, TreeAAltObjFolder0} =
-        leveled_bookie:book_returnfolder(Bookie2, AltFoldQ0),
+        leveled_bookie:book_headfold(Bookie2, 
+                                        ?RIAK_TAG,
+                                        {range, "Bucket", all},
+                                        {AltFoldObjectsFun, 
+                                            InitAccTree},
+                                        false, true, false),
     SWB2Obj = os:timestamp(),
     TreeAAltObj = TreeAAltObjFolder0(),
     io:format("Build tictac tree via object fold with no "++
                     "presence check and 200K objects  and alt hash in ~w~n",
                 [timer:now_diff(os:timestamp(), SWB2Obj)]),
     {async, TreeBAltObjFolder0} =
-        leveled_bookie:book_returnfolder(Bookie3, AltFoldQ0),
+        leveled_bookie:book_headfold(Bookie3, 
+                                        ?RIAK_TAG,
+                                        {range, "Bucket", all},
+                                        {AltFoldObjectsFun, 
+                                            InitAccTree},
+                                        false, true, false),
     SWB3Obj = os:timestamp(),
     TreeBAltObj = TreeBAltObjFolder0(),
     io:format("Build tictac tree via object fold with no "++

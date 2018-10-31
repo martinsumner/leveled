@@ -529,30 +529,31 @@ multibucket_fold(_Config) ->
          end,
     FoldAccT = {FF, []},
 
-    {async, R1} = leveled_bookie:book_headfold(Bookie1,
-                                               ?RIAK_TAG,
-                                               {bucket_list, 
-                                                [{<<"Type1">>, <<"Bucket1">>}, 
-                                                    {<<"Type2">>, <<"Bucket4">>}]},
-                                               FoldAccT,
-                                               false,
-                                               true,
-                                               false),
+    {async, R1} = 
+        leveled_bookie:book_headfold(Bookie1,
+                                        ?RIAK_TAG,
+                                        {bucket_list, 
+                                        [{<<"Type1">>, <<"Bucket1">>}, 
+                                            {<<"Type2">>, <<"Bucket4">>}]},
+                                        FoldAccT,
+                                        false,
+                                        true,
+                                        false),
 
     O1 = length(R1()),
     io:format("Result R1 of length ~w~n", [O1]),
     
-    Q2 = {foldheads_bybucket,
-                ?RIAK_TAG, 
-                [<<"Bucket2">>, <<"Bucket3">>], bucket_list,
-                {fun(_B, _K, _PO, Acc) ->
-                        Acc +1
-                    end,
-                    0},
-                false, 
-                true, 
-                false},
-    {async, R2} = leveled_bookie:book_returnfolder(Bookie1, Q2),
+    {async, R2} = 
+        leveled_bookie:book_headfold(Bookie1,
+                                        ?RIAK_TAG,
+                                        {bucket_list, 
+                                            [<<"Bucket2">>, 
+                                                <<"Bucket3">>]},
+                                        {fun(_B, _K, _PO, Acc) ->
+                                                Acc +1
+                                            end,
+                                            0},
+                                        false, true, false),
     O2 = R2(),
     io:format("Result R2 of ~w~n", [O2]),
 

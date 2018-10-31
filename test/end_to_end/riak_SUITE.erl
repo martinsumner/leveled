@@ -182,7 +182,7 @@ test_singledelta_stores(BookA, BookB, TreeSize, DeltaKey) ->
                 all, 
                 {fun head_tictac_foldfun/4, 
                     {0, leveled_tictac:new_tree(test, TreeSize)}},
-                false, false, false},
+                false, false, false, false, false},
 
     DLs = check_tictacfold(BookA, BookB, 
                             TicTacFolder, 
