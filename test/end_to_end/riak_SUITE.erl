@@ -35,7 +35,7 @@ fetchclocks_modifiedbetween(_Config) ->
     {ok, Bookie1A} = leveled_bookie:book_start(StartOpts1A),
     {ok, Bookie1B} = leveled_bookie:book_start(StartOpts1B),
 
-    _ObjL1StartTS = testutil:convert_to_seconds(os:timestamp()),
+    ObjL1StartTS = testutil:convert_to_seconds(os:timestamp()),
     ObjList1 = 
         testutil:generate_objects(20000, 
                                     {fixed_binary, 1}, [],
@@ -43,7 +43,7 @@ fetchclocks_modifiedbetween(_Config) ->
                                     fun() -> [] end,
                                     <<"B0">>),
     timer:sleep(1000),
-    _ObjL1EndTS = testutil:convert_to_seconds(os:timestamp()),
+    ObjL1EndTS = testutil:convert_to_seconds(os:timestamp()),
     timer:sleep(1000),
 
     _ObjL2StartTS = testutil:convert_to_seconds(os:timestamp()),
@@ -84,9 +84,10 @@ fetchclocks_modifiedbetween(_Config) ->
     testutil:riakload(Bookie1A, ObjList3),
     testutil:riakload(Bookie1A, ObjList4),
 
+    testutil:riakload(Bookie1B, ObjList4),
     testutil:riakload(Bookie1B, ObjList1),
     testutil:riakload(Bookie1B, ObjList3),
-    testutil:riakload(Bookie1B, ObjList4),
+    
 
     RevertFixedBinKey = 
         fun(FBK) ->
@@ -108,7 +109,7 @@ fetchclocks_modifiedbetween(_Config) ->
     
     % Count with max object count
     FoldRangesFun =
-        fun(FoldTarget, ModRange, EndNumber) ->
+        fun(FoldTarget, ModRange, EndNumber, MaxCount) ->
             fun(_I, {LKN, KC}) ->
                 {async, Runner} = 
                     leveled_bookie:book_headfold(FoldTarget,
@@ -120,41 +121,93 @@ fetchclocks_modifiedbetween(_Config) ->
                                                     true,
                                                     false,
                                                     ModRange,
-                                                    13000),
+                                                    MaxCount),
                 {_, {LKN0, KC0}} = Runner(),
                 {LKN0, KC0}
             end
         end,
 
-    R1A = lists:foldl(FoldRangesFun(Bookie1A, false, 50000),
+    R1A = lists:foldl(FoldRangesFun(Bookie1A, false, 50000, 13000),
                         {0, 0}, lists:seq(1, 4)),
     io:format("R1A ~w~n", [R1A]),
     true = {50000, 50000} == R1A,
     
-    R1B = lists:foldl(FoldRangesFun(Bookie1B, false, 50000),
+    R1B = lists:foldl(FoldRangesFun(Bookie1B, false, 50000, 13000),
                         {0, 0}, lists:seq(1, 3)),
     io:format("R1B ~w~n", [R1B]),
     true = {50000, 35000} == R1B,
 
     R2A = lists:foldl(FoldRangesFun(Bookie1A, 
                                     {ObjL3StartTS, ObjL3EndTS},
-                                    60000),
+                                    60000,
+                                    13000),
                         {10000, 0}, lists:seq(1, 2)),
     io:format("R2A ~w~n", [R2A]),
     true = {60000, 25000} == R2A,
     R2A_SR = lists:foldl(FoldRangesFun(Bookie1A, 
                                     {ObjL3StartTS, ObjL3EndTS},
-                                    60000),
-                        {10000, 0}, lists:seq(1, 1)),
-    io:format("R2A_SingleRotation ~w~n", [R2A]),
+                                    60000,
+                                    13000),
+                        {10000, 0}, lists:seq(1, 1)), % Only single rotation
+    io:format("R2A_SingleRotation ~w~n", [R2A_SR]),
     true = {48000, 13000} == R2A_SR, % Hit at max results
     R2B = lists:foldl(FoldRangesFun(Bookie1B, 
                                     {ObjL3StartTS, ObjL3EndTS},
-                                    60000),
+                                    60000,
+                                    13000),
                         {10000, 0}, lists:seq(1, 2)),
     io:format("R2B ~w~n", [R1B]),
     true = {60000, 25000} == R2B,
 
+    CrudeStoreFoldFun = 
+        fun(LowLMD, HighLMD) ->
+            fun(_B, K, V, {LK, AccC}) ->
+                % Value is proxy_object?  Can we get the metadata and
+                % read the last modified date?  The do a non-accelerated
+                % fold to chekc that it is slower
+                {proxy_object, MDBin, _Size, _Fetcher} = binary_to_term(V),
+                LMDTS = testutil:get_lastmodified(MDBin),
+                LMD = testutil:convert_to_seconds(LMDTS),
+                case (LMD >= LowLMD) and (LMD =< HighLMD) of
+                    true ->
+                        {RevertFixedBinKey(K), AccC + 1};
+                    false ->
+                        {LK, AccC}
+                end
+            end
+        end,
+
+    io:format("Comparing queries for Obj1 TS range ~w ~w~n",
+                [ObjL1StartTS, ObjL1EndTS]),
+
+    PlusFilterStart = os:timestamp(),
+    R3A_PlusFilter = lists:foldl(FoldRangesFun(Bookie1A, 
+                                    {ObjL1StartTS, ObjL1EndTS},
+                                    100000,
+                                    100000),
+                        {0, 0}, lists:seq(1, 1)),
+    PlusFilterTime = timer:now_diff(os:timestamp(), PlusFilterStart)/1000,
+    io:format("R3A_PlusFilter ~w~n", [R3A_PlusFilter]),
+    true = {20000, 20000} == R3A_PlusFilter,
+
+    NoFilterStart = os:timestamp(),
+    {async, R3A_NoFilterRunner} = 
+        leveled_bookie:book_headfold(Bookie1A,
+                                        ?RIAK_TAG,
+                                        KeyRangeFun(1, 100000),
+                                        {CrudeStoreFoldFun(ObjL1StartTS, 
+                                                            ObjL1EndTS),
+                                            {0, 0}},
+                                        false,
+                                        true,
+                                        false),
+    R3A_NoFilter = R3A_NoFilterRunner(),
+    NoFilterTime = timer:now_diff(os:timestamp(), NoFilterStart)/1000,
+    io:format("R3A_NoFilter ~w~n", [R3A_NoFilter]),
+    true = {20000, 20000} == R3A_NoFilter,
+    io:format("Filtered query ~w ms and unfiltered query ~w ms~n", 
+                [PlusFilterTime, NoFilterTime]),
+    true = NoFilterTime > PlusFilterTime,
                 
     ok = leveled_bookie:book_destroy(Bookie1A),
     ok = leveled_bookie:book_destroy(Bookie1B).

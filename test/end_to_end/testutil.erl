@@ -28,6 +28,7 @@
             get_key/1,
             get_value/1,
             get_vclock/1,
+            get_lastmodified/1,
             get_compressiblevalue/0,
             get_compressiblevalue_andinteger/0,
             get_randomindexes_generator/1,
@@ -550,6 +551,24 @@ get_value(ObjectBin) ->
         N ->
             io:format("SibCount of ~w with ObjectBin ~w~n", [N, ObjectBin]),
             error
+    end.
+
+get_lastmodified(ObjectBin) ->
+    <<_Magic:8/integer, _Vers:8/integer, VclockLen:32/integer,
+            Rest1/binary>> = ObjectBin,
+    <<_VclockBin:VclockLen/binary, SibCount:32/integer, SibsBin/binary>> = Rest1,
+    case SibCount of
+        1 ->
+            <<SibLength:32/integer, Rest2/binary>> = SibsBin,
+            <<_ContentBin:SibLength/binary, 
+                MetaLength:32/integer, 
+                MetaBin:MetaLength/binary,
+                _Rest3/binary>> = Rest2,
+            <<MegaSec:32/integer,
+                Sec:32/integer,
+                MicroSec:32/integer,
+                _RestMetaBin/binary>> = MetaBin,
+            {MegaSec, Sec, MicroSec}
     end.
 
 get_vclock(ObjectBin) ->
