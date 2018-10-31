@@ -3,6 +3,7 @@
 -include("include/leveled.hrl").
 -export([all/0]).
 -export([
+        fetchclocks_modifiedbetween/1,
         crossbucket_aae/1,
         handoff/1,
         dollar_bucket_index/1,
@@ -10,6 +11,7 @@
             ]).
 
 all() -> [
+            fetchclocks_modifiedbetween,
             crossbucket_aae,
             handoff,
             dollar_bucket_index,
@@ -17,6 +19,147 @@ all() -> [
             ].
 
 -define(MAGIC, 53). % riak_kv -> riak_object
+
+
+fetchclocks_modifiedbetween(_Config) ->
+    RootPathA = testutil:reset_filestructure("fetchClockA"),
+    RootPathB = testutil:reset_filestructure("fetchClockB"),
+    StartOpts1A = [{root_path, RootPathA},
+                    {max_journalsize, 500000000},
+                    {max_pencillercachesize, 16000},
+                    {sync_strategy, testutil:sync_strategy()}],
+    StartOpts1B = [{root_path, RootPathB},
+                    {max_journalsize, 500000000},
+                    {max_pencillercachesize, 16000},
+                    {sync_strategy, testutil:sync_strategy()}],
+    {ok, Bookie1A} = leveled_bookie:book_start(StartOpts1A),
+    {ok, Bookie1B} = leveled_bookie:book_start(StartOpts1B),
+
+    _ObjL1StartTS = testutil:convert_to_seconds(os:timestamp()),
+    ObjList1 = 
+        testutil:generate_objects(20000, 
+                                    {fixed_binary, 1}, [],
+                                    leveled_rand:rand_bytes(512),
+                                    fun() -> [] end,
+                                    <<"B0">>),
+    timer:sleep(1000),
+    _ObjL1EndTS = testutil:convert_to_seconds(os:timestamp()),
+    timer:sleep(1000),
+
+    _ObjL2StartTS = testutil:convert_to_seconds(os:timestamp()),
+    ObjList2 = 
+        testutil:generate_objects(15000, 
+                                    {fixed_binary, 20001}, [],
+                                    leveled_rand:rand_bytes(512),
+                                    fun() -> [] end,
+                                    <<"B0">>),
+    timer:sleep(1000),
+    _ObjList2EndTS = testutil:convert_to_seconds(os:timestamp()),
+    timer:sleep(1000),
+
+    ObjL3StartTS = testutil:convert_to_seconds(os:timestamp()),
+    ObjList3 = 
+        testutil:generate_objects(35000, 
+                                    {fixed_binary, 35001}, [],
+                                    leveled_rand:rand_bytes(512),
+                                    fun() -> [] end,
+                                    <<"B0">>),
+    timer:sleep(1000),
+    ObjL3EndTS = testutil:convert_to_seconds(os:timestamp()),
+    timer:sleep(1000),
+
+    _ObjL4StartTS = testutil:convert_to_seconds(os:timestamp()),
+    ObjList4 = 
+        testutil:generate_objects(30000, 
+                                    {fixed_binary, 70001}, [],
+                                    leveled_rand:rand_bytes(512),
+                                    fun() -> [] end,
+                                    "B0"),
+    timer:sleep(1000),
+    _ObjL4EndTS = testutil:convert_to_seconds(os:timestamp()),
+    timer:sleep(1000),
+
+    testutil:riakload(Bookie1A, ObjList1),
+    testutil:riakload(Bookie1A, ObjList2),
+    testutil:riakload(Bookie1A, ObjList3),
+    testutil:riakload(Bookie1A, ObjList4),
+
+    testutil:riakload(Bookie1B, ObjList1),
+    testutil:riakload(Bookie1B, ObjList3),
+    testutil:riakload(Bookie1B, ObjList4),
+
+    RevertFixedBinKey = 
+        fun(FBK) ->
+            <<$K, $e, $y, KeyNumber:64/integer>> = FBK,
+            KeyNumber
+        end,
+    StoreFoldFun = 
+        fun(_B, K, _V, {_LK, AccC}) ->
+            {RevertFixedBinKey(K), AccC + 1}
+        end,
+
+    KeyRangeFun = 
+        fun(StartNumber, EndNumber) ->
+            {range,
+                <<"B0">>,
+                {testutil:fixed_bin_key(StartNumber), 
+                    testutil:fixed_bin_key(EndNumber)}}
+        end,
+    
+    % Count with max object count
+    FoldRangesFun =
+        fun(FoldTarget, ModRange, EndNumber) ->
+            fun(_I, {LKN, KC}) ->
+                {async, Runner} = 
+                    leveled_bookie:book_headfold(FoldTarget,
+                                                    ?RIAK_TAG,
+                                                    KeyRangeFun(LKN + 1,
+                                                                EndNumber),
+                                                    {StoreFoldFun, {LKN, KC}},
+                                                    false,
+                                                    true,
+                                                    false,
+                                                    ModRange,
+                                                    13000),
+                {_, {LKN0, KC0}} = Runner(),
+                {LKN0, KC0}
+            end
+        end,
+
+    R1A = lists:foldl(FoldRangesFun(Bookie1A, false, 50000),
+                        {0, 0}, lists:seq(1, 4)),
+    io:format("R1A ~w~n", [R1A]),
+    true = {50000, 50000} == R1A,
+    
+    R1B = lists:foldl(FoldRangesFun(Bookie1B, false, 50000),
+                        {0, 0}, lists:seq(1, 3)),
+    io:format("R1B ~w~n", [R1B]),
+    true = {50000, 35000} == R1B,
+
+    R2A = lists:foldl(FoldRangesFun(Bookie1A, 
+                                    {ObjL3StartTS, ObjL3EndTS},
+                                    60000),
+                        {10000, 0}, lists:seq(1, 2)),
+    io:format("R2A ~w~n", [R2A]),
+    true = {60000, 25000} == R2A,
+    R2A_SR = lists:foldl(FoldRangesFun(Bookie1A, 
+                                    {ObjL3StartTS, ObjL3EndTS},
+                                    60000),
+                        {10000, 0}, lists:seq(1, 1)),
+    io:format("R2A_SingleRotation ~w~n", [R2A]),
+    true = {48000, 13000} == R2A_SR, % Hit at max results
+    R2B = lists:foldl(FoldRangesFun(Bookie1B, 
+                                    {ObjL3StartTS, ObjL3EndTS},
+                                    60000),
+                        {10000, 0}, lists:seq(1, 2)),
+    io:format("R2B ~w~n", [R1B]),
+    true = {60000, 25000} == R2B,
+
+                
+    ok = leveled_bookie:book_destroy(Bookie1A),
+    ok = leveled_bookie:book_destroy(Bookie1B).
+    
+
 
 crossbucket_aae(_Config) ->
     % Test requires multiple different databases, so want to mount them all

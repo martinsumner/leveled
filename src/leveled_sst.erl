@@ -1590,10 +1590,9 @@ binarysplit_mapfun(MultiSlotBin, StartPos) ->
 %% may be intermittently removed from the result set
 read_slots(Handle, SlotList, {false, 0, _BlockIndexCache},
                 _PressMethod, _IdxModDate) ->
-    % No list of segments passed or usefult Low LastModified Date
-    LengthList = lists:map(fun pointer_mapfun/1, SlotList),
-    {MultiSlotBin, StartPos} = read_length_list(Handle, LengthList),
-    lists:map(binarysplit_mapfun(MultiSlotBin, StartPos), LengthList);
+    % No list of segments passed or useful Low LastModified Date
+    % Just read slots in SlotList
+    read_slotlist(SlotList, Handle);
 read_slots(Handle, SlotList, {SegList, LowLastMod, BlockIndexCache}, 
                 PressMethod, IdxModDate) ->
     % List of segments passed so only {K, V} pairs matching those segments
@@ -1609,11 +1608,7 @@ read_slots(Handle, SlotList, {SegList, LowLastMod, BlockIndexCache},
                     % If there is an attempt to use the seg list query and the
                     % index block cache isn't cached for any part this may be 
                     % slower as each slot will be read in turn
-                    LengthDetails = pointer_mapfun(Pointer),
-                    {MultiSlotBin, StartPos} = 
-                        read_length_list(Handle, [LengthDetails]),
-                    MapFun = binarysplit_mapfun(MultiSlotBin, StartPos),
-                    Acc ++ [MapFun(LengthDetails)];
+                    Acc ++ read_slotlist([Pointer], Handle);
                 {BlockLengths, LMD, BlockIdx} ->
                     % If there is a BlockIndex cached then we can use it to 
                     % check to see if any of the expected segments are 
@@ -1628,24 +1623,40 @@ read_slots(Handle, SlotList, {SegList, LowLastMod, BlockIndexCache},
                         true ->
                             % The highest LMD on the slot was before the
                             % LowLastMod date passed in the query - therefore
-                            % there ar eno interetsing modifictaions in this
+                            % there are no interesting modifications in this
                             % slot - it is all too old
                             Acc;
                         false ->
-                            PositionList = find_pos(BlockIdx, SegList, [], 0),
-                            Acc ++ 
-                                check_blocks(PositionList,
-                                                {Handle, SP}, 
-                                                BlockLengths, 
-                                                byte_size(BlockIdx), 
-                                                false, PressMethod, IdxModDate,
-                                                [])
-                                % Note check_blocks shouldreturn [] if 
-                                % PositionList is empty
+                            case SegList of
+                                false ->
+                                    % Need all the slot now
+                                    Acc ++ read_slotlist([Pointer], Handle);
+                                _SL ->
+                                    % Need to find just the right keys
+                                    PositionList = 
+                                        find_pos(BlockIdx, SegList, [], 0),
+                                    Acc ++ 
+                                        check_blocks(PositionList,
+                                                        {Handle, SP}, 
+                                                        BlockLengths, 
+                                                        byte_size(BlockIdx),
+                                                        false,
+                                                        PressMethod,
+                                                        IdxModDate,
+                                                        [])
+                                        % Note check_blocks shouldreturn [] if
+                                        % PositionList is empty
+                            end
                     end
             end 
         end,
     lists:foldl(BinMapFun, [], SlotList).
+
+
+read_slotlist(SlotList, Handle) ->
+    LengthList = lists:map(fun pointer_mapfun/1, SlotList),
+    {MultiSlotBin, StartPos} = read_length_list(Handle, LengthList),
+    lists:map(binarysplit_mapfun(MultiSlotBin, StartPos), LengthList).
 
 
 -spec binaryslot_reader(list(binaryslot_element()), 

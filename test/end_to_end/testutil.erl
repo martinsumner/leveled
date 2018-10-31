@@ -51,8 +51,9 @@
             sync_strategy/0,
             riak_object/4,
             get_value_from_objectlistitem/1,
-        numbered_key/1,
-        fixed_bin_key/1]).
+            numbered_key/1,
+            fixed_bin_key/1,
+            convert_to_seconds/1]).
 
 -define(RETURN_TERMS, {true, undefined}).
 -define(SLOWOFFER_DELAY, 5).
@@ -771,3 +772,5 @@ find_journals(RootPath) ->
                                 FNsA_J),
     CDBFiles.
 
+convert_to_seconds({MegaSec, Seconds, _MicroSec}) ->
+    MegaSec * 1000000 + Seconds.
