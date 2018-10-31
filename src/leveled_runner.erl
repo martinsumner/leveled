@@ -461,10 +461,10 @@ get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList, {C, L}) ->
                                                     ExtractFun,
                                                     null),
     case R of
-        null ->
+        {no_more_keys, null} ->
             leveled_log:log("B0008",[]),
             BKList;
-        {{B, K}, V} ->
+        {_, {{B, K}, V}} ->
             case leveled_codec:is_active({Tag, B, K, null}, V, Now) of
                 true ->
                     leveled_log:log("B0009",[B]),

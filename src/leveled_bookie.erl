@@ -906,12 +906,20 @@ book_headfold(Pid, Tag, {range, Bucket, KeyRange}, FoldAccT, JournalCheck, SnapP
     book_returnfolder(Pid, RunnerType).
 
 %% @doc as book_headfold/7, but with the addition of a Last Modified Date
-%% Range and Max Head Count.  For version 2 objects this will filter out
+%% Range and Max Object Count.  For version 2 objects this will filter out
 %% all objects with a highest Last Modified Date that is outside of the range.
 %% All version 1 objects will be included in the result set regardless of Last
 %% Modified Date.
-%% The Max Head Count will stop the fold once the count has been reached on
-%% this store only
+%% The Max Object Count will stop the fold once the count has been reached on
+%% this store only.  The Max Object Count if provided will mean that on
+%% completion of the fold the accumulator will be wrapped in a tuple to
+%% indicate the reason for completion:
+%% - {no_more_keys, Acc} if the end of the range was reached wihtout hitting
+%% the Max Object Count limit
+%% - {max_count, Acc} if the Max Object Count limit was reached before 
+%% reaching the end of the range
+%% If MaxObjectCount is false then the Acc will be returned not wrapped in a
+%% tuple
 -spec book_headfold(pid(), Tag, Limiter, FoldAccT, JournalCheck, SnapPreFold,
                         SegmentList, LastModRange, MaxObjectCount) ->
                            {async, Runner} when

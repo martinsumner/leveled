@@ -1405,14 +1405,21 @@ keyfolder(IMMiter, SSTiter, StartKey, EndKey, {AccFun, Acc}) ->
 
 keyfolder(_Iterators, _KeyRange, {_AccFun, Acc}, 
                     {_SegmentList, _LastModRange, MaxKeys}) when MaxKeys == 0 ->
-    Acc;
+    {max_count, Acc};
 keyfolder({[], SSTiter}, KeyRange, {AccFun, Acc}, 
                     {SegmentList, LastModRange, MaxKeys}) ->
     {StartKey, EndKey} = KeyRange,
     case find_nextkey(SSTiter, StartKey, EndKey, 
                         SegmentList, element(1, LastModRange)) of
         no_more_keys ->
-            Acc;
+            case MaxKeys > 0 of
+                true ->
+                    % Need to single this query ended not because the
+                    % MaxKeys was reached
+                    {no_more_keys, Acc};
+                false ->
+                    Acc
+            end;
         {NxSSTiter, {SSTKey, SSTVal}} ->
             {Acc1, MK1} = 
                 maybe_accumulate(SSTKey, SSTVal, Acc, AccFun,
