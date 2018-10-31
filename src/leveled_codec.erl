@@ -200,7 +200,11 @@ strip_to_keyseqonly({LK, V}) -> {LK, element(1, V)}.
 -spec strip_to_indexdetails(ledger_kv()) ->
                                 {integer(), segment_hash(), last_moddate()}.
 strip_to_indexdetails({_, V}) when tuple_size(V) == 4 -> 
-    {element(1, V), element(3, V), undefined}.
+    % A v1 value
+    {element(1, V), element(3, V), undefined};
+strip_to_indexdetails({_, V}) when tuple_size(V) > 4 ->
+    % A v2 value should have a fith element - Last Modified Date
+    {element(1, V), element(3, V), element(5, V)}.
 
 -spec striphead_to_v1details(ledger_value()) -> ledger_value().
 striphead_to_v1details(V) -> 
@@ -612,8 +616,19 @@ generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS) ->
     Value = {SQN,
                 Status,
                 Hash,
-                MD},
+                MD,
+                get_last_lastmodification(LastMods)},
     {Bucket, Key, Value, {Hash, ObjHash}, LastMods}.
+
+-spec get_last_lastmodification(list(erlang:timestamp())) -> non_neg_integer().
+%% @doc
+%% Get the highest of the last modifications measured in seconds.  This will be
+%% stored as 4 bytes (unsigned) so will last for another 80 + years
+get_last_lastmodification([]) ->
+    0;
+get_last_lastmodification(LastMods) ->
+    {Mega, Sec, _Micro} = lists:max(LastMods),
+    Mega * 1000000 + Sec.
 
 
 extract_metadata(Obj, Size, ?RIAK_TAG) ->
@@ -623,7 +638,7 @@ extract_metadata(Obj, Size, ?STD_TAG) ->
 
 get_size(PK, Value) ->
     {Tag, _Bucket, _Key, _} = PK,
-    {_, _, _, MD} = Value,
+    MD = element(4, Value),
     case Tag of
         ?RIAK_TAG ->
             {_RMD, _VC, _Hash, Size} = MD,
@@ -640,7 +655,7 @@ get_size(PK, Value) ->
 %% the sorted vclock)
 get_keyandobjhash(LK, Value) ->
     {Tag, Bucket, Key, _} = LK,
-    {_, _, _, MD} = Value,
+    MD = element(4, Value),
     case Tag of
         ?IDX_TAG ->
             from_ledgerkey(LK); % returns {Bucket, Key, IdxValue}

@@ -88,9 +88,8 @@
 -define(TIMING_SAMPLESIZE, 100).
 -define(CACHE_SIZE, 32).
 -define(BLOCK_LENGTHS_LENGTH, 20).
--define(LMD_LENGTH, 6).
+-define(LMD_LENGTH, 4).
 -define(FLIPPER32, 4294967295).
--define(FLIPPER48, 281474976710655).
 -define(COMPRESS_AT_LEVEL, 1).
 -define(INDEX_MODDATE, true).
 
@@ -881,7 +880,6 @@ fetch(LedgerKey, Hash, State, Timings0) ->
                 Timings3};
         {BlockLengths, _LMD, PosBin} ->
             PosList = find_pos(PosBin, extra_hash(Hash), [], 0),
-            io:format("Fetching referring to cache with PosList ~w~n", [PosList]),
             case PosList of 
                 [] ->
                     {_SW3, Timings3} =
@@ -1326,7 +1324,7 @@ accumulate_positions({K, V}, {PosBinAcc, NoHashCount, HashAcc, LMDAcc}) ->
 %% Get the last modified date.  If no Last Modified Date on any object, can't
 %% add the accelerator and should check each object in turn
 take_max_lastmoddate(undefined, _LMDAcc) ->
-    ?FLIPPER48;
+    ?FLIPPER32;
 take_max_lastmoddate(LMD, LMDAcc) ->
     max(LMD, LMDAcc).
 
@@ -1445,7 +1443,7 @@ generate_binary_slot(Lookup, KVL, PressMethod, IndexModDate, BuildTimings0) ->
                     B3L:32/integer, 
                     B4L:32/integer,
                     B5L:32/integer,
-                    LMD:48/integer,
+                    LMD:32/integer,
                     PosBinIndex/binary>>;
             false ->
                 <<B1L:32/integer, 
@@ -1496,12 +1494,8 @@ check_blocks([Pos|Rest], BlockPointer, BlockLengths, PosBinLength,
                     additional_offset(IdxModDate)),
     BlockL = deserialise_block(BlockBin, PressMethod),
     {K, V} = lists:nth(BlockPos, BlockL),
-    io:format("K of ~w found for ~w~n", 
-                [K, LedgerKeyToCheck]),
-    io:format("Search found ~w~n", [lists:keyfind(K, 1, BlockL)]),
     case K of 
         LedgerKeyToCheck ->
-            io:format("Key matched~n"),
             {K, V};
         _ ->
             case LedgerKeyToCheck of 
@@ -1520,10 +1514,10 @@ check_blocks([Pos|Rest], BlockPointer, BlockLengths, PosBinLength,
 
 -spec additional_offset(boolean()) -> pos_integer().
 %% @doc
-%% 4-byte CRC, 4-byte pos, 4-byte CRC, 5x4 byte lengths, 6 byte LMD
+%% 4-byte CRC, 4-byte pos, 4-byte CRC, 5x4 byte lengths, 4 byte LMD
 %% LMD may not be present
 additional_offset(true) ->
-    ?BLOCK_LENGTHS_LENGTH + 4 + 4 + 4 + 6;
+    ?BLOCK_LENGTHS_LENGTH + 4 + 4 + 4 + ?LMD_LENGTH;
 additional_offset(false) ->
     ?BLOCK_LENGTHS_LENGTH + 4 + 4 + 4.
 
@@ -1707,7 +1701,7 @@ extract_header(none, _IdxModDate) ->
     none; % used when the block cache has returned none 
 extract_header(Header, true) ->
     BL = ?BLOCK_LENGTHS_LENGTH,
-    <<BlockLengths:BL/binary, LMD:48/integer, PosBinIndex/binary>> = Header,
+    <<BlockLengths:BL/binary, LMD:32/integer, PosBinIndex/binary>> = Header,
     {BlockLengths, LMD, PosBinIndex};
 extract_header(Header, false) ->
     BL = ?BLOCK_LENGTHS_LENGTH,
@@ -2538,8 +2532,8 @@ indexed_list_allindexkeys_test() ->
     {{HeaderF, FullBinF, _HL, _LK}, no_timing} = 
         generate_binary_slot(lookup, Keys, native, false, no_timing),
     EmptySlotSize = ?LOOK_SLOTSIZE - 1,
-    LMD = ?FLIPPER48,
-    ?assertMatch(<<_BL:20/binary, LMD:48/integer, EmptySlotSize:8/integer>>, 
+    LMD = ?FLIPPER32,
+    ?assertMatch(<<_BL:20/binary, LMD:32/integer, EmptySlotSize:8/integer>>, 
                     HeaderT),
     ?assertMatch(<<_BL:20/binary, EmptySlotSize:8/integer>>, 
                     HeaderF),
@@ -2567,7 +2561,7 @@ indexed_list_allindexkeys_nolookup_test() ->
                             ?NOLOOK_SLOTSIZE),
     {{Header, FullBin, _HL, _LK}, no_timing} = 
         generate_binary_slot(no_lookup, Keys, native, ?INDEX_MODDATE,no_timing),
-    ?assertMatch(<<_BL:20/binary, _LMD:48/integer, 127:8/integer>>, Header),
+    ?assertMatch(<<_BL:20/binary, _LMD:32/integer, 127:8/integer>>, Header),
     % SW = os:timestamp(),
     BinToList = binaryslot_tolist(FullBin, native, ?INDEX_MODDATE),
     % io:format(user,
@@ -2586,7 +2580,7 @@ indexed_list_allindexkeys_trimmed_test() ->
     {{Header, FullBin, _HL, _LK}, no_timing} = 
         generate_binary_slot(lookup, Keys, native, ?INDEX_MODDATE,no_timing),
     EmptySlotSize = ?LOOK_SLOTSIZE - 1,
-    ?assertMatch(<<_BL:20/binary, _LMD:48/integer, EmptySlotSize:8/integer>>,
+    ?assertMatch(<<_BL:20/binary, _LMD:32/integer, EmptySlotSize:8/integer>>,
                     Header),
     ?assertMatch({Keys, none}, binaryslot_trimmedlist(FullBin,
                                                         {i, 
@@ -2640,7 +2634,7 @@ indexed_list_mixedkeys_bitflip_test() ->
         _B3L:32/integer, 
         _B4L:32/integer, 
         _B5L:32/integer,
-        _LMD:48/integer,
+        _LMD:32/integer,
         PosBin/binary>> = Header,
     
     TestKey1 = element(1, lists:nth(1, KVL1)), 
