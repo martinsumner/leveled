@@ -94,6 +94,7 @@
         % if the object has siblings in the store will be the maximum of those
         % dates
         integer()|undefined.
+-type lastmod_range() :: {integer(), pos_integer()|infinity}.
 
 -type ledger_status() ::
         tomb|{active, non_neg_integer()|infinity}.
@@ -140,7 +141,8 @@
                 index_specs/0,
                 segment_list/0,
                 maybe_lookup/0,
-                last_moddate/0]).
+                last_moddate/0,
+                lastmod_range/0]).
 
 
 %%%============================================================================

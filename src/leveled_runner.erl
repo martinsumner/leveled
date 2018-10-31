@@ -32,7 +32,7 @@
             tictactree/5,
             foldheads_allkeys/5,
             foldobjects_allkeys/4,
-            foldheads_bybucket/6,
+            foldheads_bybucket/8,
             foldobjects_bybucket/4,
             foldobjects_byindex/3
         ]).
@@ -48,6 +48,7 @@
 -type fun_and_acc()
             :: {fun(), any()}.
 -type term_regex() :: re:mp()|undefined.
+
 
 %%%============================================================================
 %%% External functions
@@ -399,7 +400,10 @@ foldobjects_bybucket(SnapFun, Tag, KeyRanges, FoldFun) ->
                             atom(), 
                             list({any(), any()}), 
                             fun(), 
-                            boolean(), false|list(integer())) 
+                            boolean(),
+                            false|list(integer()),
+                            false|leveled_codec:lastmod_range(),
+                            false|pos_integer()) 
                                                         -> {async, fun()}.
 %% @doc
 %% Fold over all object metadata within a given key range in a bucket
@@ -407,13 +411,16 @@ foldheads_bybucket(SnapFun,
                     Tag, 
                     KeyRanges, 
                     FoldFun, 
-                    JournalCheck, SegmentList) ->
+                    JournalCheck,
+                    SegmentList, LastModRange, MaxObjectCount) ->
     foldobjects(SnapFun, 
                 Tag, 
                 KeyRanges, 
                 FoldFun, 
                 {true, JournalCheck}, 
-                SegmentList).
+                SegmentList,
+                LastModRange,
+                MaxObjectCount).
 
 -spec foldobjects_byindex(fun(), tuple(), fun()) -> {async, fun()}.
 %% @doc
@@ -484,6 +491,16 @@ get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList, {C, L}) ->
 -spec foldobjects(fun(), atom(), list(), fun(), 
                     false|{true, boolean()}, false|list(integer())) ->
                                                             {async, fun()}.
+foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, SegmentList) ->
+    foldobjects(SnapFun, Tag, KeyRanges,
+                    FoldObjFun, DeferredFetch, SegmentList, false, false).
+
+-spec foldobjects(fun(), atom(), list(), fun(), 
+                    false|{true, boolean()},
+                    false|list(integer()),
+                    false|leveled_codec:lastmod_range(),
+                    false|pos_integer()) ->
+                                                            {async, fun()}.
 %% @doc
 %% The object folder should be passed DeferredFetch.
 %% DeferredFetch can either be false (which will return to the fold function
@@ -491,7 +508,8 @@ get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList, {C, L}) ->
 %% will be created that if understood by the fold function will allow the fold
 %% function to work on the head of the object, and defer fetching the body in
 %% case such a fetch is unecessary.
-foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, SegmentList) ->
+foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, 
+                                SegmentList, LastModRange, MaxObjectCount) ->
     {FoldFun, InitAcc} =
         case is_tuple(FoldObjFun) of
             true ->
@@ -519,7 +537,9 @@ foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, SegmentList) ->
                                                                 EndKey,
                                                                 AccFun,
                                                                 FoldAcc, 
-                                                                SegmentList)
+                                                                SegmentList,
+                                                                LastModRange,
+                                                                MaxObjectCount)
                 end,
             Acc = lists:foldl(ListFoldFun, InitAcc, KeyRanges),
             ok = leveled_penciller:pcl_close(LedgerSnapshot),

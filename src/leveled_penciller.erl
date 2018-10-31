@@ -177,7 +177,7 @@
         pcl_fetch/4,
         pcl_fetchkeys/5,
         pcl_fetchkeys/6,
-        pcl_fetchkeysbysegment/6,
+        pcl_fetchkeysbysegment/8,
         pcl_fetchnextkey/5,
         pcl_checksequencenumber/3,
         pcl_workforclerk/1,
@@ -237,6 +237,7 @@
 -define(SNAPSHOT_TIMEOUT_SHORT, 600).
 -define(TIMING_SAMPLECOUNTDOWN, 10000).
 -define(TIMING_SAMPLESIZE, 100).
+-define(OPEN_LASTMOD_RANGE, {0, infinity}).
 
 -record(state, {manifest, % a manifest record from the leveled_manifest module
                 persisted_sqn = 0 :: integer(), % The highest SQN persisted
@@ -411,7 +412,7 @@ pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc, By) ->
                     {fetch_keys, 
                         StartKey, EndKey, 
                         AccFun, InitAcc, 
-                        false, -1,
+                        false, false, -1,
                         By},
                     infinity).
 
@@ -420,7 +421,9 @@ pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc, By) ->
                                 leveled_codec:ledger_key(), 
                                 leveled_codec:ledger_key(), 
                                 fun(), any(), 
-                                leveled_codec:segment_list()) -> any().
+                                leveled_codec:segment_list(),
+                                false | leveled_codec:lastmod_range(),
+                                false | pos_integer()) -> any().
 %% @doc
 %% Run a range query between StartKey and EndKey (inclusive).  This will cover
 %% all keys in the range - so must only be run against snapshots of the
@@ -433,12 +436,22 @@ pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc, By) ->
 %% Note that segment must be false unless the object Tag supports additional
 %% indexing by segment.  This cannot be used on ?IDX_TAG and other tags that
 %% use the no_lookup hash
-pcl_fetchkeysbysegment(Pid, StartKey, EndKey, AccFun, InitAcc, SegmentList) ->
+pcl_fetchkeysbysegment(Pid, StartKey, EndKey, AccFun, InitAcc,
+                                SegmentList, LastModRange, MaxObjectCount) ->
+    MaxKeys =
+        case MaxObjectCount of
+            false ->
+                -1;
+            MOC when is_integer(MOC) ->
+                MOC
+        end,
     gen_server:call(Pid,
                     {fetch_keys, 
                         StartKey, EndKey, 
                         AccFun, InitAcc, 
-                        SegmentList, -1, 
+                        SegmentList, 
+                        LastModRange,
+                        MaxKeys, 
                         as_pcl},
                     infinity).
 
@@ -455,7 +468,7 @@ pcl_fetchnextkey(Pid, StartKey, EndKey, AccFun, InitAcc) ->
                     {fetch_keys, 
                         StartKey, EndKey, 
                         AccFun, InitAcc, 
-                        false, 1,
+                        false, false, 1,
                         as_pcl},
                     infinity).
 
@@ -690,10 +703,17 @@ handle_call({check_sqn, Key, Hash, SQN}, _From, State) ->
 handle_call({fetch_keys, 
                     StartKey, EndKey, 
                     AccFun, InitAcc, 
-                    SegmentList, MaxKeys, By},
+                    SegmentList, LastModRange, MaxKeys, By},
                 _From,
                 State=#state{snapshot_fully_loaded=Ready})
                                                         when Ready == true ->
+    LastModRange0 =
+        case LastModRange of
+            false ->
+                ?OPEN_LASTMOD_RANGE;
+            R ->
+                R
+        end,
     SW = os:timestamp(),
     L0AsList =
         case State#state.levelzero_astree of
@@ -726,8 +746,7 @@ handle_call({fetch_keys,
             keyfolder({L0AsList, SSTiter},
                         {StartKey, EndKey},
                         {AccFun, InitAcc},
-                        {SegmentList, {0, infinity}, MaxKeys}) 
-                            % TODO: Allow query to set last mod range
+                        {SegmentList, LastModRange0, MaxKeys})
         end,
     case By of 
         as_pcl ->
