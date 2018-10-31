@@ -493,7 +493,10 @@ update_some_objects(Bookie, ObjList, SampleSize) ->
             VC = Obj#r_object.vclock,
             VC0 = update_vclock(VC),
             [C] = Obj#r_object.contents,
-            C0 = C#r_content{value = leveled_rand:rand_bytes(512)},
+            MD = C#r_content.metadata,
+            MD0 = dict:store(?MD_LASTMOD, os:timestamp(), MD),
+            C0 = C#r_content{value = leveled_rand:rand_bytes(512), 
+                                metadata = MD0},
             UpdObj = Obj#r_object{vclock = VC0, contents = [C0]},
             {R, UpdObj, Spec}
         end,

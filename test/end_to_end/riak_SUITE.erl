@@ -26,11 +26,11 @@ fetchclocks_modifiedbetween(_Config) ->
     RootPathB = testutil:reset_filestructure("fetchClockB"),
     StartOpts1A = [{root_path, RootPathA},
                     {max_journalsize, 500000000},
-                    {max_pencillercachesize, 16000},
+                    {max_pencillercachesize, 8000},
                     {sync_strategy, testutil:sync_strategy()}],
     StartOpts1B = [{root_path, RootPathB},
                     {max_journalsize, 500000000},
-                    {max_pencillercachesize, 16000},
+                    {max_pencillercachesize, 12000},
                     {sync_strategy, testutil:sync_strategy()}],
     {ok, Bookie1A} = leveled_bookie:book_start(StartOpts1A),
     {ok, Bookie1B} = leveled_bookie:book_start(StartOpts1B),
@@ -68,27 +68,52 @@ fetchclocks_modifiedbetween(_Config) ->
     ObjL3EndTS = testutil:convert_to_seconds(os:timestamp()),
     timer:sleep(1000),
 
-    _ObjL4StartTS = testutil:convert_to_seconds(os:timestamp()),
+    ObjL4StartTS = testutil:convert_to_seconds(os:timestamp()),
     ObjList4 = 
         testutil:generate_objects(30000, 
                                     {fixed_binary, 70001}, [],
                                     leveled_rand:rand_bytes(512),
                                     fun() -> [] end,
-                                    "B0"),
+                                    <<"B0">>),
     timer:sleep(1000),
     _ObjL4EndTS = testutil:convert_to_seconds(os:timestamp()),
     timer:sleep(1000),
 
+    _ObjL5StartTS = testutil:convert_to_seconds(os:timestamp()),
+    ObjList5 = 
+        testutil:generate_objects(8000, 
+                                    {fixed_binary, 1}, [],
+                                    leveled_rand:rand_bytes(512),
+                                    fun() -> [] end,
+                                    <<"B1">>),
+    timer:sleep(1000),
+    _ObjL5EndTS = testutil:convert_to_seconds(os:timestamp()),
+    timer:sleep(1000),
+
+    _ObjL6StartTS = testutil:convert_to_seconds(os:timestamp()),
+    ObjList6 = 
+        testutil:generate_objects(7000, 
+                                    {fixed_binary, 1}, [],
+                                    leveled_rand:rand_bytes(512),
+                                    fun() -> [] end,
+                                    <<"B2">>),
+    timer:sleep(1000),
+    ObjL6EndTS = testutil:convert_to_seconds(os:timestamp()),
+    timer:sleep(1000),
+
+    testutil:riakload(Bookie1A, ObjList5),
     testutil:riakload(Bookie1A, ObjList1),
     testutil:riakload(Bookie1A, ObjList2),
     testutil:riakload(Bookie1A, ObjList3),
     testutil:riakload(Bookie1A, ObjList4),
+    testutil:riakload(Bookie1A, ObjList6),
 
     testutil:riakload(Bookie1B, ObjList4),
+    testutil:riakload(Bookie1B, ObjList5),
     testutil:riakload(Bookie1B, ObjList1),
+    testutil:riakload(Bookie1B, ObjList6),
     testutil:riakload(Bookie1B, ObjList3),
     
-
     RevertFixedBinKey = 
         fun(FBK) ->
             <<$K, $e, $y, KeyNumber:64/integer>> = FBK,
@@ -208,7 +233,67 @@ fetchclocks_modifiedbetween(_Config) ->
     io:format("Filtered query ~w ms and unfiltered query ~w ms~n", 
                 [PlusFilterTime, NoFilterTime]),
     true = NoFilterTime > PlusFilterTime,
-                
+
+    SimpleCountFun =
+        fun(_B, _K, _V, AccC) -> AccC + 1 end,
+
+    {async, R4A_MultiBucketRunner} = 
+        leveled_bookie:book_headfold(Bookie1A,
+                                        ?RIAK_TAG,
+                                        {bucket_list, [<<"B0">>, <<"B2">>]},
+                                        {SimpleCountFun, 0},
+                                        false,
+                                        true,
+                                        false,
+                                        {ObjL4StartTS, ObjL6EndTS},
+                                            % Range includes ObjjL5 LMDs, 
+                                            % but these ar enot in bucket list
+                                        false),
+    R4A_MultiBucket = R4A_MultiBucketRunner(),
+    io:format("R4A_MultiBucket ~w ~n", [R4A_MultiBucket]),
+    true = R4A_MultiBucket == 37000,
+
+    {async, R5A_MultiBucketRunner} = 
+        leveled_bookie:book_headfold(Bookie1A,
+                                        ?RIAK_TAG,
+                                        {bucket_list, [<<"B2">>, <<"B0">>]},
+                                            % Reverse the buckets in the bucket
+                                            % list
+                                        {SimpleCountFun, 0},
+                                        false,
+                                        true,
+                                        false,
+                                        {ObjL4StartTS, ObjL6EndTS},
+                                        false),
+    R5A_MultiBucket = R5A_MultiBucketRunner(),
+    io:format("R5A_MultiBucket ~w ~n", [R5A_MultiBucket]),
+    true = R5A_MultiBucket == 37000,
+
+
+    {async, R5B_MultiBucketRunner} = 
+        leveled_bookie:book_headfold(Bookie1B,
+                                            % Same query - other bookie
+                                        ?RIAK_TAG,
+                                        {bucket_list, [<<"B2">>, <<"B0">>]},
+                                        {SimpleCountFun, 0},
+                                        false,
+                                        true,
+                                        false,
+                                        {ObjL4StartTS, ObjL6EndTS},
+                                        false),
+    R5B_MultiBucket = R5B_MultiBucketRunner(),
+    io:format("R5B_MultiBucket ~w ~n", [R5B_MultiBucket]),
+    true = R5A_MultiBucket == 37000,
+
+    testutil:update_some_objects(Bookie1A, ObjList1, 1000),
+    R6A_PlusFilter = lists:foldl(FoldRangesFun(Bookie1A, 
+                                    {ObjL1StartTS, ObjL1EndTS},
+                                    100000,
+                                    100000),
+                        {0, 0}, lists:seq(1, 1)),
+    io:format("R6A_PlusFilter ~w~n", [R6A_PlusFilter]),
+    true = 19000 == element(2, R6A_PlusFilter),
+
     ok = leveled_bookie:book_destroy(Bookie1A),
     ok = leveled_bookie:book_destroy(Bookie1B).
     
