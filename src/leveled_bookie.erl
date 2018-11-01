@@ -960,7 +960,6 @@ book_headfold(Pid, Tag, all, FoldAccT, JournalCheck, SnapPreFold,
         {foldheads_allkeys, Tag, FoldAccT,
                     JournalCheck, SnapPreFold, 
                     SegmentList, LastModRange, MaxObjectCount},
-    io:format("RunnerType ~w~n", [RunnerType]),
     book_returnfolder(Pid, RunnerType).
 
 -spec book_snapshot(pid(), 
