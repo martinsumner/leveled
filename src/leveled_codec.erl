@@ -120,8 +120,11 @@
         {integer(), journal_key_tag(), ledger_key()}.
 -type object_spec_v0() ::
         {add|remove, key(), key(), key()|null, any()}.
+-type object_spec_v1() ::
+        {add|remove, v1, key(), key(), key()|null, 
+            list(erlang:timestamp())|undefined, any()}.
 -type object_spec() ::
-        object_spec_v0().
+        object_spec_v0()|object_spec_v1().
 -type compression_method() ::
         lz4|native.
 -type index_specs() ::
@@ -586,11 +589,17 @@ gen_indexspec(Bucket, Key, IdxOp, IdxField, IdxTerm, SQN, TTL) ->
 %% Take an object_spec as passed in a book_mput, and convert it into to a
 %% valid ledger key and value.  Supports different shaped tuples for different
 %% versions of the object_spec
+gen_headspec({IdxOp, v1, Bucket, Key, SubKey, LMD, Value}, SQN, TTL) ->
+     % v1 object spec
+    Status = set_status(IdxOp, TTL),
+    K = to_ledgerkey(Bucket, {Key, SubKey}, ?HEAD_TAG),
+    {K, {SQN, Status, segment_hash(K), Value, get_last_lastmodification(LMD)}};
 gen_headspec({IdxOp, Bucket, Key, SubKey, Value}, SQN, TTL) ->
     % v0 object spec
     Status = set_status(IdxOp, TTL),
     K = to_ledgerkey(Bucket, {Key, SubKey}, ?HEAD_TAG),
-    {K, {SQN, Status, segment_hash(K), Value}}.
+    {K, {SQN, Status, segment_hash(K), Value, undefined}}.
+
 
 
 set_status(add, TTL) ->
@@ -634,12 +643,15 @@ generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS) ->
                 get_last_lastmodification(LastMods)},
     {Bucket, Key, Value, {Hash, ObjHash}, LastMods}.
 
--spec get_last_lastmodification(list(erlang:timestamp())) -> non_neg_integer().
+-spec get_last_lastmodification(list(erlang:timestamp())|undefined) 
+                                                -> pos_integer()|undefined.
 %% @doc
 %% Get the highest of the last modifications measured in seconds.  This will be
 %% stored as 4 bytes (unsigned) so will last for another 80 + years
+get_last_lastmodification(undefined) ->
+    undefined;
 get_last_lastmodification([]) ->
-    0;
+    undefined;
 get_last_lastmodification(LastMods) ->
     {Mega, Sec, _Micro} = lists:max(LastMods),
     Mega * 1000000 + Sec.
@@ -871,5 +883,14 @@ head_segment_compare_test() ->
     H3 = segment_hash({?HEAD_TAG, <<"B1">>, <<"K1">>, <<>>}),
     ?assertMatch(H1, H2),
     ?assertMatch(H1, H3).
+
+headspec_v0v1_test() ->
+    % A v0 object spec generates the same outcome as a v1 object spec with the
+    % last modified date undefined
+    V1 = {add, v1, <<"B">>, <<"K">>, <<"SK">>, undefined, <<"V">>},
+    V0 = {add, <<"B">>, <<"K">>, <<"SK">>, <<"V">>},
+    TTL = infinity,
+    ?assertMatch(true, gen_headspec(V0, 1, TTL) == gen_headspec(V1, 1, TTL)).
+
 
 -endif.
