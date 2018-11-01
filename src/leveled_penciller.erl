@@ -1517,7 +1517,6 @@ maybe_accumulate(LK, LV, Acc, AccFun, MaxKeys, {LowLastMod, HighLastMod}) ->
     {_SQN, _SH, LMD} = leveled_codec:strip_to_indexdetails({LK, LV}),
     RunAcc = 
         (LMD == undefined) or ((LMD >= LowLastMod) and (LMD =< HighLastMod)),
-    io:format("Checking ~w to see if between ~w and ~w", [LMD, LowLastMod, HighLastMod]),
     case RunAcc of
         true ->
             {AccFun(LK, LV, Acc), MaxKeys - 1};
