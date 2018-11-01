@@ -422,7 +422,7 @@ test_segfilter_query(Bookie, CLs) ->
                                 Acc
                         end
                         end,  0},
-                false, true, SegL}
+                false, true, SegL, false, false}
         end,
 
     {async, SL1Folder} =
@@ -455,7 +455,7 @@ test_singledelta_stores(BookA, BookB, TreeSize, DeltaKey) ->
             ?RIAK_TAG,
             {fun head_tictac_foldfun/4, 
                 {0, leveled_tictac:new_tree(test, TreeSize)}},
-            false, true, false},
+            false, true, false, false, false},
     % tictac query by bucket (should be same result as all stores)
     TicTacByBucketFolder = 
         {foldheads_bybucket, 
@@ -478,7 +478,7 @@ test_singledelta_stores(BookA, BookB, TreeSize, DeltaKey) ->
         {foldheads_allkeys,
             ?RIAK_TAG,
             {get_segment_folder(DLs, TreeSize),  []},
-            false, true, false},
+            false, true, false, false, false},
     
     SW_SL0 = os:timestamp(),
     {async, BookASegFolder} =
@@ -502,7 +502,7 @@ test_singledelta_stores(BookA, BookB, TreeSize, DeltaKey) ->
         {foldheads_allkeys,
             ?RIAK_TAG,
             {get_segment_folder(DLs, TreeSize),  []},
-            false, true, SegFilterList},
+            false, true, SegFilterList, false, false},
     
     SW_SL1 = os:timestamp(),
     {async, BookASegFolder1} =
@@ -521,7 +521,7 @@ test_singledelta_stores(BookA, BookB, TreeSize, DeltaKey) ->
         {foldheads_allkeys,
             ?RIAK_TAG,
             {get_segment_folder(DLs, TreeSize),  []},
-            true, true, SegFilterList},
+            true, true, SegFilterList, false, false},
     
     SW_SL1CP = os:timestamp(),
     {async, BookASegFolder1CP} =
@@ -545,7 +545,7 @@ test_singledelta_stores(BookA, BookB, TreeSize, DeltaKey) ->
         {foldheads_allkeys,
             ?RIAK_TAG,
             {get_segment_folder(DLs, TreeSize),  []},
-            false, true, SegFilterListF},
+            false, true, SegFilterListF, false, false},
     
     SW_SL1F = os:timestamp(),
     {async, BookASegFolder1F} =
@@ -749,7 +749,7 @@ handoff(_Config) ->
             ?RIAK_TAG,
             {fun head_tictac_foldfun/4, 
                 {0, leveled_tictac:new_tree(test, TreeSize)}},
-            false, true, false},
+            false, true, false, false, false},
     check_tictacfold(Bookie1, Bookie2, TicTacFolder, none, TreeSize),
     check_tictacfold(Bookie2, Bookie3, TicTacFolder, none, TreeSize),
     check_tictacfold(Bookie3, Bookie4, TicTacFolder, none, TreeSize),

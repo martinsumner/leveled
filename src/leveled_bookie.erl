@@ -864,8 +864,9 @@ book_objectfold(Pid, Tag, Bucket, Limiter, FoldAccT, SnapPreFold) ->
       SegmentList :: false | list(integer()),
       Runner :: fun(() -> Acc).
 book_headfold(Pid, Tag, FoldAccT, JournalCheck, SnapPreFold, SegmentList) ->
-    RunnerType = {foldheads_allkeys, Tag, FoldAccT, JournalCheck, SnapPreFold, SegmentList},
-    book_returnfolder(Pid, RunnerType).
+    book_headfold(Pid, Tag, all, 
+                    FoldAccT, JournalCheck, SnapPreFold, 
+                    SegmentList, false, false).
 
 %% @doc as book_headfold/6, but with the addition of a `Limiter' that
 %% restricts the set of objects folded over. `Limiter' can either be a
@@ -897,16 +898,10 @@ book_headfold(Pid, Tag, FoldAccT, JournalCheck, SnapPreFold, SegmentList) ->
       SnapPreFold :: boolean(),
       SegmentList :: false | list(integer()),
       Runner :: fun(() -> Acc).
-book_headfold(Pid, Tag, {bucket_list, BucketList}, FoldAccT, JournalCheck, SnapPreFold, SegmentList) ->
-    RunnerType = 
-        {foldheads_bybucket, Tag, BucketList, bucket_list, FoldAccT,
-            JournalCheck, SnapPreFold, SegmentList, false, false},
-    book_returnfolder(Pid, RunnerType);
-book_headfold(Pid, Tag, {range, Bucket, KeyRange}, FoldAccT, JournalCheck, SnapPreFold, SegmentList) ->
-    RunnerType = 
-        {foldheads_bybucket, Tag, Bucket, KeyRange, FoldAccT,
-            JournalCheck, SnapPreFold, SegmentList, false, false},
-    book_returnfolder(Pid, RunnerType).
+book_headfold(Pid, Tag, Limiter, FoldAccT, JournalCheck, SnapPreFold, SegmentList) ->
+    book_headfold(Pid, Tag, Limiter, 
+                    FoldAccT, JournalCheck, SnapPreFold, 
+                    SegmentList, false, false).
 
 %% @doc as book_headfold/7, but with the addition of a Last Modified Date
 %% Range and Max Object Count.  For version 2 objects this will filter out
@@ -927,7 +922,7 @@ book_headfold(Pid, Tag, {range, Bucket, KeyRange}, FoldAccT, JournalCheck, SnapP
                         SegmentList, LastModRange, MaxObjectCount) ->
                            {async, Runner} when
       Tag :: leveled_codec:tag(),
-      Limiter :: BucketList | BucketKeyRange,
+      Limiter :: BucketList | BucketKeyRange | all,
       BucketList :: {bucket_list, list(Bucket)},
       BucketKeyRange :: {range, Bucket, KeyRange},
       KeyRange :: {StartKey, EndKey} | all,
@@ -953,12 +948,17 @@ book_headfold(Pid, Tag, {bucket_list, BucketList}, FoldAccT, JournalCheck, SnapP
             SegmentList, LastModRange, MaxObjectCount},
     book_returnfolder(Pid, RunnerType);
 book_headfold(Pid, Tag, {range, Bucket, KeyRange}, FoldAccT, JournalCheck, SnapPreFold,
-            SegmentList, LastModRange, MaxObjectCount) ->
-    
+                SegmentList, LastModRange, MaxObjectCount) ->
     RunnerType = 
         {foldheads_bybucket, Tag, Bucket, KeyRange, FoldAccT,
             JournalCheck, SnapPreFold,
             SegmentList, LastModRange, MaxObjectCount},
+    book_returnfolder(Pid, RunnerType);
+book_headfold(Pid, Tag, all, FoldAccT, JournalCheck, SnapPreFold,
+                SegmentList, LastModRange, MaxObjectCount) ->
+    RunnerType = {foldheads_allkeys, Tag, FoldAccT,
+                    JournalCheck, SnapPreFold, 
+                    SegmentList, LastModRange, MaxObjectCount},
     book_returnfolder(Pid, RunnerType).
 
 -spec book_snapshot(pid(), 
@@ -1615,12 +1615,14 @@ get_runner(State, {keylist, Tag, Bucket, KeyRange, FoldAccT, TermRegex}) ->
 get_runner(State, 
             {foldheads_allkeys, 
                 Tag, FoldFun, 
-                JournalCheck, SnapPreFold, SegmentList}) ->
+                JournalCheck, SnapPreFold, SegmentList,
+                LastModRange, MaxObjectCount}) ->
     SnapType = snaptype_by_presence(JournalCheck),
     SnapFun = return_snapfun(State, SnapType, no_lookup, true, SnapPreFold),
     leveled_runner:foldheads_allkeys(SnapFun, 
                                         Tag, FoldFun, 
-                                        JournalCheck, SegmentList);
+                                        JournalCheck, SegmentList,
+                                        LastModRange, MaxObjectCount);
 get_runner(State,
             {foldobjects_allkeys, Tag, FoldFun, SnapPreFold}) ->
     get_runner(State, 
@@ -2494,7 +2496,7 @@ foldobjects_vs_hashtree_testto() ->
                             {foldheads_allkeys, 
                                 ?STD_TAG, 
                                 FoldHeadsFun, 
-                                true, true, false}),
+                                true, true, false, false, false}),
     KeyHashList3 = HTFolder3(),
     ?assertMatch(KeyHashList1, lists:usort(KeyHashList3)),
 
@@ -2513,7 +2515,7 @@ foldobjects_vs_hashtree_testto() ->
                             {foldheads_allkeys, 
                                 ?STD_TAG, 
                                 FoldHeadsFun2,
-                                false, false, false}),
+                                false, false, false, false, false}),
     KeyHashList4 = HTFolder4(),
     ?assertMatch(KeyHashList1, lists:usort(KeyHashList4)),
 

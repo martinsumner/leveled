@@ -30,7 +30,7 @@
             bucketkey_query/6,
             hashlist_query/3,
             tictactree/5,
-            foldheads_allkeys/5,
+            foldheads_allkeys/7,
             foldobjects_allkeys/4,
             foldheads_bybucket/8,
             foldobjects_bybucket/4,
@@ -270,12 +270,14 @@ tictactree(SnapFun, {Tag, Bucket, Query}, JournalCheck, TreeSize, Filter) ->
     {async, Runner}.
 
 -spec foldheads_allkeys(fun(), leveled_codec:tag(), 
-                        fun(), boolean(), false|list(integer())) 
-                                                            -> {async, fun()}.
+                        fun(), boolean(), false|list(integer()),
+                        false|leveled_codec:lastmod_range(),
+                        false|pos_integer()) -> {async, fun()}.
 %% @doc
 %% Fold over all heads in the store for a given tag - applying the passed 
 %% function to each proxy object
-foldheads_allkeys(SnapFun, Tag, FoldFun, JournalCheck, SegmentList) ->
+foldheads_allkeys(SnapFun, Tag, FoldFun, JournalCheck,
+                    SegmentList, LastModRange, MaxObjectCount) ->
     StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
     EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
     foldobjects(SnapFun, 
@@ -283,7 +285,9 @@ foldheads_allkeys(SnapFun, Tag, FoldFun, JournalCheck, SegmentList) ->
                 [{StartKey, EndKey}], 
                 FoldFun, 
                 {true, JournalCheck}, 
-                SegmentList).
+                SegmentList,
+                LastModRange,
+                MaxObjectCount).
 
 -spec foldobjects_allkeys(fun(), leveled_codec:tag(), fun(), 
                             key_order|sqn_order) -> {async, fun()}.

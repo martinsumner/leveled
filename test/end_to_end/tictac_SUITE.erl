@@ -595,7 +595,8 @@ basic_headonly_test(ObjectCount, RemoveCount, HeadOnly) ->
     InitAcc = {0, 0},
 
     RunnerDefinition = 
-        {foldheads_allkeys, h, {FoldFun, InitAcc}, false, false, false},
+        {foldheads_allkeys, h, {FoldFun, InitAcc}, 
+            false, false, false, false, false},
     {async, Runner1} = 
         leveled_bookie:book_returnfolder(Bookie1, RunnerDefinition),
 
