@@ -79,7 +79,7 @@ fetchclocks_modifiedbetween(_Config) ->
     _ObjL4EndTS = testutil:convert_to_seconds(os:timestamp()),
     timer:sleep(1000),
 
-    _ObjL5StartTS = testutil:convert_to_seconds(os:timestamp()),
+    ObjL5StartTS = testutil:convert_to_seconds(os:timestamp()),
     ObjList5 = 
         testutil:generate_objects(8000, 
                                     {fixed_binary, 1}, [],
@@ -293,6 +293,36 @@ fetchclocks_modifiedbetween(_Config) ->
                         {0, 0}, lists:seq(1, 1)),
     io:format("R6A_PlusFilter ~w~n", [R6A_PlusFilter]),
     true = 19000 == element(2, R6A_PlusFilter),
+
+    % Hit limit of max count before trying next bucket, with and without a
+    % timestamp filter
+    {async, R7A_MultiBucketRunner} = 
+        leveled_bookie:book_headfold(Bookie1A,
+                                        ?RIAK_TAG,
+                                        {bucket_list, [<<"B1">>, <<"B2">>]},
+                                        {SimpleCountFun, 0},
+                                        false,
+                                        true,
+                                        false,
+                                        {ObjL5StartTS, ObjL6EndTS},
+                                        5000),
+    R7A_MultiBucket = R7A_MultiBucketRunner(),
+    io:format("R7A_MultiBucket ~w ~n", [R7A_MultiBucket]),
+    true = R7A_MultiBucket == {0, 5000},
+
+    {async, R8A_MultiBucketRunner} = 
+        leveled_bookie:book_headfold(Bookie1A,
+                                        ?RIAK_TAG,
+                                        {bucket_list, [<<"B1">>, <<"B2">>]},
+                                        {SimpleCountFun, 0},
+                                        false,
+                                        true,
+                                        false,
+                                        false,
+                                        5000),
+    R8A_MultiBucket = R8A_MultiBucketRunner(),
+    io:format("R8A_MultiBucket ~w ~n", [R8A_MultiBucket]),
+    true = R8A_MultiBucket == {0, 5000},
 
     ok = leveled_bookie:book_destroy(Bookie1A),
     ok = leveled_bookie:book_destroy(Bookie1B).

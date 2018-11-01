@@ -465,10 +465,10 @@ get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList, {C, L}) ->
                                                     ExtractFun,
                                                     null),
     case R of
-        {no_more_keys, null} ->
+        {1, null} ->
             leveled_log:log("B0008",[]),
             BKList;
-        {_, {{B, K}, V}} ->
+        {0, {{B, K}, V}} ->
             case leveled_codec:is_active({Tag, B, K, null}, V, Now) of
                 true ->
                     leveled_log:log("B0009",[B]),
@@ -524,16 +524,24 @@ foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch,
                 % no initial accumulator passed, and so should be just a list
                 {FoldObjFun, []}
         end,
+    {LimitByCount, InitAcc0} = 
+        case MaxObjectCount of
+            false ->
+                {false, InitAcc};
+            MOC when is_integer(MOC) ->
+                {true, {MOC, InitAcc}}
+        end,
     
     Folder =
         fun() ->
             {ok, LedgerSnapshot, JournalSnapshot} = SnapFun(),
 
-            AccFun = accumulate_objects(FoldFun,
-                                        JournalSnapshot,
-                                        Tag,
-                                        DeferredFetch),
-
+            AccFun =
+                accumulate_objects(FoldFun,
+                                    JournalSnapshot,
+                                    Tag,
+                                    DeferredFetch),
+            
             ListFoldFun = 
                 fun({StartKey, EndKey}, FoldAcc) ->
                     leveled_penciller:pcl_fetchkeysbysegment(LedgerSnapshot,
@@ -543,9 +551,9 @@ foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch,
                                                                 FoldAcc, 
                                                                 SegmentList,
                                                                 LastModRange,
-                                                                MaxObjectCount)
+                                                                LimitByCount)
                 end,
-            Acc = lists:foldl(ListFoldFun, InitAcc, KeyRanges),
+            Acc = lists:foldl(ListFoldFun, InitAcc0, KeyRanges),
             ok = leveled_penciller:pcl_close(LedgerSnapshot),
             case DeferredFetch of 
                 {true, false} ->

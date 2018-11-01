@@ -423,7 +423,7 @@ pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc, By) ->
                                 fun(), any(), 
                                 leveled_codec:segment_list(),
                                 false | leveled_codec:lastmod_range(),
-                                false | pos_integer()) -> any().
+                                boolean()) -> any().
 %% @doc
 %% Run a range query between StartKey and EndKey (inclusive).  This will cover
 %% all keys in the range - so must only be run against snapshots of the
@@ -437,21 +437,20 @@ pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc, By) ->
 %% indexing by segment.  This cannot be used on ?IDX_TAG and other tags that
 %% use the no_lookup hash
 pcl_fetchkeysbysegment(Pid, StartKey, EndKey, AccFun, InitAcc,
-                                SegmentList, LastModRange, MaxObjectCount) ->
-    MaxKeys =
-        case MaxObjectCount of
+                                SegmentList, LastModRange, LimitByCount) ->
+    {MaxKeys, InitAcc0} = 
+        case LimitByCount of
+            true ->
+                % The passed in accumulator should have the Max Key Count
+                % as the first element of a tuple with the actual accumulator
+                InitAcc;
             false ->
-                -1;
-            MOC when is_integer(MOC) ->
-                MOC
+                {-1, InitAcc}
         end,
     gen_server:call(Pid,
                     {fetch_keys, 
-                        StartKey, EndKey, 
-                        AccFun, InitAcc, 
-                        SegmentList, 
-                        LastModRange,
-                        MaxKeys, 
+                        StartKey, EndKey, AccFun, InitAcc0, 
+                        SegmentList, LastModRange, MaxKeys, 
                         as_pcl},
                     infinity).
 
@@ -1405,7 +1404,7 @@ keyfolder(IMMiter, SSTiter, StartKey, EndKey, {AccFun, Acc}) ->
 
 keyfolder(_Iterators, _KeyRange, {_AccFun, Acc}, 
                     {_SegmentList, _LastModRange, MaxKeys}) when MaxKeys == 0 ->
-    {max_count, Acc};
+    {0, Acc};
 keyfolder({[], SSTiter}, KeyRange, {AccFun, Acc}, 
                     {SegmentList, LastModRange, MaxKeys}) ->
     {StartKey, EndKey} = KeyRange,
@@ -1414,10 +1413,12 @@ keyfolder({[], SSTiter}, KeyRange, {AccFun, Acc},
         no_more_keys ->
             case MaxKeys > 0 of
                 true ->
-                    % Need to single this query ended not because the
-                    % MaxKeys was reached
-                    {no_more_keys, Acc};
+                    % This query had a max count, so we must respond with the
+                    % remainder on the count
+                    {MaxKeys, Acc};
                 false ->
+                    % This query started with a MaxKeys set to -1.  Query is 
+                    % not interested in having MaxKeys in Response
                     Acc
             end;
         {NxSSTiter, {SSTKey, SSTVal}} ->
