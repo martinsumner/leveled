@@ -73,6 +73,7 @@
             keyto_segment32/1,
             keyto_segment48/1,
             generate_segmentfilter_list/2,
+            adjust_segmentmatch_list/3,
             merge_binaries/2,
             join_segment/2,
             match_segment/2
@@ -382,6 +383,49 @@ generate_segmentfilter_list(SegmentList, Size) ->
         true ->
             SegmentList
     end.
+
+-spec adjust_segmentmatch_list(list(integer()), tree_size(), tree_size())
+                                                            -> list(integer()).
+%% @doc
+%% If we have dirty segments discovered by comparing trees of size CompareSize,
+%% and we want to see if it matches a segment for a key which was created for a
+%% tree of size Store Size, then we need to alter the segment list
+%%
+%% See timing_test/0 when considering using this or match_segment/2
+%%
+%% Check with KeyCount=10000 SegCount=4 TreeSizes small large:
+%% adjust_segmentmatch_list check took 1.256 ms match_segment took 5.229 ms
+%%
+%% Check with KeyCount=10000 SegCount=8 TreeSizes small large:
+%% adjust_segmentmatch_list check took 2.065 ms match_segment took 8.637 ms
+%%
+%% Check with KeyCount=10000 SegCount=4 TreeSizes medium large:
+%% adjust_segmentmatch_list check took 0.453 ms match_segment took 4.843 ms
+%%
+%% Check with KeyCount=10000 SegCount=4 TreeSizes small medium:
+%% adjust_segmentmatch_list check took 0.451 ms match_segment took 5.528 ms
+%%
+%% Check with KeyCount=100000 SegCount=4 TreeSizes small large:
+%% adjust_segmentmatch_list check took 11.986 ms match_segment took 56.522 ms
+%%
+adjust_segmentmatch_list(SegmentList, CompareSize, StoreSize) ->
+    CompareSizeI = get_size(CompareSize),
+    StoreSizeI = get_size(StoreSize),
+    if CompareSizeI =< StoreSizeI ->
+        ExpItems = StoreSizeI div CompareSizeI - 1,
+        ShiftFactor = round(leveled_math:log2(CompareSizeI * ?L2_CHUNKSIZE)),
+        ExpList = 
+            lists:map(fun(X) -> X bsl ShiftFactor end, lists:seq(1, ExpItems)),
+        UpdSegmentList = 
+            lists:foldl(fun(S, Acc) -> 
+                            L = lists:map(fun(F) -> F + S end, ExpList),
+                            L ++ Acc
+                        end,
+                        [],
+                        SegmentList),
+        lists:usort(UpdSegmentList ++ SegmentList)
+    end.
+
 
 -spec match_segment({integer(), tree_size()}, {integer(), tree_size()}) 
                                                             -> boolean().
@@ -696,15 +740,102 @@ compare_trees_maxonedelta(Tree0, Tree1) ->
     end.
 
 segment_match_test() ->
-    segment_match_tester(small, large),
-    segment_match_tester(xlarge, medium).
+    segment_match_tester(small, large, <<"K0">>),
+    segment_match_tester(xlarge, medium, <<"K1">>),
+    expand_membershiplist_tester(small, large, <<"K0">>),
+    expand_membershiplist_tester(xsmall, large, <<"K1">>),
+    expand_membershiplist_tester(large, xlarge, <<"K2">>).
 
-segment_match_tester(Size1, Size2) ->
-    HashKey = keyto_segment32(<<"K0">>),
+segment_match_tester(Size1, Size2, Key) ->
+    HashKey = keyto_segment32(Key),
     Segment1 = get_segment(HashKey, Size1),
     Segment2 = get_segment(HashKey, Size2),
     ?assertMatch(true, match_segment({Segment1, Size1}, {Segment2, Size2})).
 
+expand_membershiplist_tester(SmallSize, LargeSize, Key) ->
+    HashKey = keyto_segment32(Key),
+    Segment1 = get_segment(HashKey, SmallSize),
+    Segment2 = get_segment(HashKey, LargeSize),
+    AdjList = adjust_segmentmatch_list([Segment1], SmallSize, LargeSize),
+    ?assertMatch(true, lists:member(Segment2, AdjList)).
+
+
+segment_expandsimple_test() ->
+    AdjList = adjust_segmentmatch_list([1, 100], small, medium),
+    io:format("List adjusted to ~w~n", [AdjList]),
+    ?assertMatch(true, lists:member(1, AdjList)),
+    ?assertMatch(true, lists:member(100, AdjList)),
+    ?assertMatch(true, lists:member(65537, AdjList)),
+    ?assertMatch(true, lists:member(131073, AdjList)),
+    ?assertMatch(true, lists:member(196609, AdjList)),
+    ?assertMatch(true, lists:member(65636, AdjList)),
+    ?assertMatch(true, lists:member(131172, AdjList)),
+    ?assertMatch(true, lists:member(196708, AdjList)),
+    ?assertMatch(8, length(AdjList)),
+    OrigList = adjust_segmentmatch_list([1, 100], medium, medium),
+    ?assertMatch([1, 100], OrigList).
+
+
+timing_test() ->
+    timing_tester(10000, 4, small, large),
+    timing_tester(10000, 8, small, large),
+    timing_tester(10000, 4, medium, large),
+    timing_tester(10000, 4, small, medium),
+    timing_tester(100000, 4, small, large).
+
+
+timing_tester(KeyCount, SegCount, SmallSize, LargeSize) ->
+    SegList =
+        lists:map(fun(_C) -> 
+                        leveled_rand:uniform(get_size(SmallSize) * ?L2_CHUNKSIZE - 1)
+                    end, 
+                    lists:seq(1, SegCount)),
+    KeyToSegFun =
+        fun(I) ->
+            HK = keyto_segment32(integer_to_binary(I)),
+            {I, get_segment(HK, LargeSize)}
+        end,
+    
+    MatchList = lists:map(KeyToSegFun, lists:seq(1, KeyCount)),
+
+    {T0, Out0} =
+        adjustsegmentlist_check(SegList, MatchList, SmallSize, LargeSize),
+    {T1, Out1} =
+        matchbysegment_check(SegList, MatchList, SmallSize, LargeSize),
+    ?assertMatch(true, Out0 == Out1),
+    io:format(user, "~nCheck with KeyCount=~w SegCount=~w TreeSizes ~w ~w:~n", 
+                [KeyCount, SegCount, SmallSize, LargeSize]),
+    io:format(user, 
+                "adjust_segmentmatch_list check took ~w ms " ++
+                    "match_segment took ~w ms~n", 
+                [T0, T1]).
+    
+
+adjustsegmentlist_check(SegList, MatchList, SmallSize, LargeSize) ->
+    SW = os:timestamp(),
+    AdjList = adjust_segmentmatch_list(SegList, SmallSize, LargeSize),
+    PredFun =
+        fun({_I, S}) ->
+            lists:member(S, AdjList)
+        end,
+    OL = lists:filter(PredFun, MatchList),
+    {timer:now_diff(os:timestamp(), SW)/1000, OL}.
+
+matchbysegment_check(SegList, MatchList, SmallSize, LargeSize) ->
+    SW = os:timestamp(),
+    PredFun =
+        fun({_I, S}) ->
+            FoldFun =
+                fun(_SM, true) ->
+                    true;
+                (SM, false) ->
+                    match_segment({SM, SmallSize}, {S, LargeSize})
+                end,
+            lists:foldl(FoldFun, false, SegList)
+        end,
+    OL = lists:filter(PredFun, MatchList),
+    {timer:now_diff(os:timestamp(), SW)/1000, OL}.
+    
 
 -endif.
 
