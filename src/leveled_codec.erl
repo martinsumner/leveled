@@ -81,6 +81,10 @@
 
 -type tag() :: 
         ?STD_TAG|?RIAK_TAG|?IDX_TAG|?HEAD_TAG.
+-type key() :: 
+        binary()|string()|{binary(), binary()}.
+        % Keys SHOULD be binary()
+        % string() support is a legacy of old tests
 -type sqn() ::
         % SQN of the object in the Journal
         pos_integer().
@@ -114,6 +118,10 @@
         ?INKT_STND|?INKT_TOMB|?INKT_MPUT|?INKT_KEYD.
 -type journal_key() ::
         {integer(), journal_key_tag(), ledger_key()}.
+-type object_spec_v0() ::
+        {add|remove, key(), key(), key()|null, any()}.
+-type object_spec() ::
+        object_spec_v0().
 -type compression_method() ::
         lz4|native.
 -type index_specs() ::
@@ -128,6 +136,8 @@
         :: list(integer())|false.
 
 -export_type([tag/0,
+                key/0,
+                object_spec/0,
                 segment_hash/0,
                 ledger_status/0,
                 ledger_key/0,
@@ -550,9 +560,7 @@ hash(Obj) ->
 %% @doc
 %% Convert object specs to KV entries ready for the ledger
 obj_objectspecs(ObjectSpecs, SQN, TTL) ->
-    lists:map(fun({IdxOp, Bucket, Key, SubKey, Value}) ->
-                    gen_headspec(Bucket, Key, IdxOp, SubKey, Value, SQN, TTL)
-                end,
+    lists:map(fun(ObjectSpec) -> gen_headspec(ObjectSpec, SQN, TTL) end,
                 ObjectSpecs).
 
 -spec idx_indexspecs(index_specs(), 
@@ -573,7 +581,13 @@ gen_indexspec(Bucket, Key, IdxOp, IdxField, IdxTerm, SQN, TTL) ->
     {to_ledgerkey(Bucket, Key, ?IDX_TAG, IdxField, IdxTerm),
         {SQN, Status, no_lookup, null}}.
 
-gen_headspec(Bucket, Key, IdxOp, SubKey, Value, SQN, TTL) ->
+-spec gen_headspec(object_spec(), integer(), integer()|infinity) -> ledger_kv().
+%% @doc
+%% Take an object_spec as passed in a book_mput, and convert it into to a
+%% valid ledger key and value.  Supports different shaped tuples for different
+%% versions of the object_spec
+gen_headspec({IdxOp, Bucket, Key, SubKey, Value}, SQN, TTL) ->
+    % v0 object spec
     Status = set_status(IdxOp, TTL),
     K = to_ledgerkey(Bucket, {Key, SubKey}, ?HEAD_TAG),
     {K, {SQN, Status, segment_hash(K), Value}}.
