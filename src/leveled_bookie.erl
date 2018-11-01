@@ -956,7 +956,8 @@ book_headfold(Pid, Tag, {range, Bucket, KeyRange}, FoldAccT, JournalCheck, SnapP
     book_returnfolder(Pid, RunnerType);
 book_headfold(Pid, Tag, all, FoldAccT, JournalCheck, SnapPreFold,
                 SegmentList, LastModRange, MaxObjectCount) ->
-    RunnerType = {foldheads_allkeys, Tag, FoldAccT,
+    RunnerType = 
+        {foldheads_allkeys, Tag, FoldAccT,
                     JournalCheck, SnapPreFold, 
                     SegmentList, LastModRange, MaxObjectCount},
     book_returnfolder(Pid, RunnerType).
