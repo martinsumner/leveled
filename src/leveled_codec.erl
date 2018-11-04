@@ -37,8 +37,8 @@
         strip_to_seqonly/1,
         strip_to_statusonly/1,
         strip_to_keyseqonly/1,
-        strip_to_seqnhashonly/1,
-        striphead_to_details/1,
+        strip_to_indexdetails/1,
+        striphead_to_v1details/1,
         is_active/3,
         endkey_passed/2,
         key_dominates/2,
@@ -63,7 +63,6 @@
         get_keyandobjhash/2,
         idx_indexspecs/5,
         obj_objectspecs/3,
-        aae_indexspecs/6,
         riak_extract_metadata/2,
         segment_hash/1,
         to_lookup/1,
@@ -74,9 +73,7 @@
 -define(MAGIC, 53). % riak_kv -> riak_object
 -define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
 -define(NRT_IDX, "$aae.").
--define(ALL_BUCKETS, <<"$all">>).
 
--type recent_aae() :: #recent_aae{}.
 -type riak_metadata() :: {binary()|delete, % Sibling Metadata
                             binary()|null, % Vclock Metadata
                             integer()|null, % Hash of vclock - non-exportable 
@@ -84,14 +81,35 @@
 
 -type tag() :: 
         ?STD_TAG|?RIAK_TAG|?IDX_TAG|?HEAD_TAG.
+-type key() :: 
+        binary()|string()|{binary(), binary()}.
+        % Keys SHOULD be binary()
+        % string() support is a legacy of old tests
+-type sqn() ::
+        % SQN of the object in the Journal
+        pos_integer().
 -type segment_hash() :: 
+        % hash of the key to an aae segment - to be used in ledger filters
         {integer(), integer()}|no_lookup.
+-type metadata() ::
+        tuple()|null. % null for empty metadata
+-type last_moddate() ::
+        % modified date as determined by the object (not this store)
+        % if the object has siblings in the store will be the maximum of those
+        % dates
+        integer()|undefined.
+-type lastmod_range() :: {integer(), pos_integer()|infinity}.
+
 -type ledger_status() ::
         tomb|{active, non_neg_integer()|infinity}.
 -type ledger_key() :: 
         {tag(), any(), any(), any()}|all.
--type ledger_value() :: 
-        {integer(), ledger_status(), segment_hash(), tuple()|null}.
+-type ledger_value() ::
+        ledger_value_v1()|ledger_value_v2().
+-type ledger_value_v1() ::
+        {sqn(), ledger_status(), segment_hash(), metadata()}.
+-type ledger_value_v2() ::
+        {sqn(), ledger_status(), segment_hash(), metadata(), last_moddate()}.
 -type ledger_kv() ::
         {ledger_key(), ledger_value()}.
 -type compaction_strategy() ::
@@ -100,18 +118,29 @@
         ?INKT_STND|?INKT_TOMB|?INKT_MPUT|?INKT_KEYD.
 -type journal_key() ::
         {integer(), journal_key_tag(), ledger_key()}.
+-type object_spec_v0() ::
+        {add|remove, key(), key(), key()|null, any()}.
+-type object_spec_v1() ::
+        {add|remove, v1, key(), key(), key()|null, 
+            list(erlang:timestamp())|undefined, any()}.
+-type object_spec() ::
+        object_spec_v0()|object_spec_v1().
 -type compression_method() ::
         lz4|native.
 -type index_specs() ::
         list({add|remove, any(), any()}).
 -type journal_keychanges() :: 
         {index_specs(), infinity|integer()}. % {KeyChanges, TTL}
+-type maybe_lookup() ::
+        lookup|no_lookup.
 
 
 -type segment_list() 
         :: list(integer())|false.
 
 -export_type([tag/0,
+                key/0,
+                object_spec/0,
                 segment_hash/0,
                 ledger_status/0,
                 ledger_key/0,
@@ -123,7 +152,10 @@
                 compression_method/0,
                 journal_keychanges/0,
                 index_specs/0,
-                segment_list/0]).
+                segment_list/0,
+                maybe_lookup/0,
+                last_moddate/0,
+                lastmod_range/0]).
 
 
 %%%============================================================================
@@ -152,7 +184,7 @@ segment_hash(Key) ->
     segment_hash(term_to_binary(Key)).
 
 
--spec to_lookup(ledger_key()) -> lookup|no_lookup.
+-spec to_lookup(ledger_key()) -> maybe_lookup().
 %% @doc
 %% Should it be possible to lookup a key in the merge tree.  This is not true
 %% For keys that should only be read through range queries.  Direct lookup
@@ -170,36 +202,41 @@ to_lookup(Key) ->
 %% Some helper functions to get a sub_components of the key/value
 
 -spec strip_to_statusonly(ledger_kv()) -> ledger_status().
-strip_to_statusonly({_, {_, St, _, _}}) -> St.
+strip_to_statusonly({_, V}) -> element(2, V).
 
 -spec strip_to_seqonly(ledger_kv()) -> non_neg_integer().
-strip_to_seqonly({_, {SeqN, _, _, _}}) -> SeqN.
+strip_to_seqonly({_, V}) -> element(1, V).
 
 -spec strip_to_keyseqonly(ledger_kv()) -> {ledger_key(), integer()}.
-strip_to_keyseqonly({LK, {SeqN, _, _, _}}) -> {LK, SeqN}.
+strip_to_keyseqonly({LK, V}) -> {LK, element(1, V)}.
 
--spec strip_to_seqnhashonly(ledger_kv()) -> {integer(), segment_hash()}.
-strip_to_seqnhashonly({_, {SeqN, _, MH, _}}) -> {SeqN, MH}.
+-spec strip_to_indexdetails(ledger_kv()) ->
+                                {integer(), segment_hash(), last_moddate()}.
+strip_to_indexdetails({_, V}) when tuple_size(V) == 4 -> 
+    % A v1 value
+    {element(1, V), element(3, V), undefined};
+strip_to_indexdetails({_, V}) when tuple_size(V) > 4 ->
+    % A v2 value should have a fith element - Last Modified Date
+    {element(1, V), element(3, V), element(5, V)}.
 
--spec striphead_to_details(ledger_value()) -> ledger_value().
-striphead_to_details({SeqN, St, MH, MD}) -> {SeqN, St, MH, MD}.
+-spec striphead_to_v1details(ledger_value()) -> ledger_value().
+striphead_to_v1details(V) -> 
+    {element(1, V), element(2, V), element(3, V), element(4, V)}.
 
 -spec key_dominates(ledger_kv(), ledger_kv()) -> 
     left_hand_first|right_hand_first|left_hand_dominant|right_hand_dominant.
 %% @doc
 %% When comparing two keys in the ledger need to find if one key comes before 
 %% the other, or if the match, which key is "better" and should be the winner
-key_dominates(LeftKey, RightKey) ->
-    case {LeftKey, RightKey} of
-        {{LK, _LVAL}, {RK, _RVAL}} when LK < RK ->
-            left_hand_first;
-        {{LK, _LVAL}, {RK, _RVAL}} when RK < LK ->
-            right_hand_first;
-        {{LK, {LSN, _LST, _LMH, _LMD}}, {RK, {RSN, _RST, _RMH, _RMD}}}
-                                                when LK == RK, LSN >= RSN ->
+key_dominates({LK, _LVAL}, {RK, _RVAL}) when LK < RK ->
+    left_hand_first;
+key_dominates({LK, _LVAL}, {RK, _RVAL}) when RK < LK ->
+    right_hand_first;
+key_dominates(LObj, RObj) ->
+    case strip_to_seqonly(LObj) >= strip_to_seqonly(RObj) of
+        true ->
             left_hand_dominant;
-        {{LK, {LSN, _LST, _LMH, _LMD}}, {RK, {RSN, _RST, _RMH, _RMD}}}
-                                                when LK == RK, LSN < RSN ->
+        false ->
             right_hand_dominant
     end.
 
@@ -249,8 +286,6 @@ from_ledgerkey(_ExpectedTag, _OtherKey) ->
 -spec from_ledgerkey(tuple()) -> tuple().
 %% @doc
 %% Return identifying information from the LedgerKey
-from_ledgerkey({?IDX_TAG, ?ALL_BUCKETS, {_IdxFld, IdxVal}, {Bucket, Key}}) ->
-    {Bucket, Key, IdxVal};
 from_ledgerkey({?IDX_TAG, Bucket, {_IdxFld, IdxVal}, Key}) ->
     {Bucket, Key, IdxVal};
 from_ledgerkey({?HEAD_TAG, Bucket, Key, SubKey}) ->
@@ -528,9 +563,7 @@ hash(Obj) ->
 %% @doc
 %% Convert object specs to KV entries ready for the ledger
 obj_objectspecs(ObjectSpecs, SQN, TTL) ->
-    lists:map(fun({IdxOp, Bucket, Key, SubKey, Value}) ->
-                    gen_headspec(Bucket, Key, IdxOp, SubKey, Value, SQN, TTL)
-                end,
+    lists:map(fun(ObjectSpec) -> gen_headspec(ObjectSpec, SQN, TTL) end,
                 ObjectSpecs).
 
 -spec idx_indexspecs(index_specs(), 
@@ -548,27 +581,25 @@ idx_indexspecs(IndexSpecs, Bucket, Key, SQN, TTL) ->
 
 gen_indexspec(Bucket, Key, IdxOp, IdxField, IdxTerm, SQN, TTL) ->
     Status = set_status(IdxOp, TTL),
-    case Bucket of
-        {all, RealBucket} ->    
-            {to_ledgerkey(?ALL_BUCKETS,
-                            {RealBucket, Key},
-                            ?IDX_TAG,
-                            IdxField,
-                            IdxTerm),
-                {SQN, Status, no_lookup, null}};
-        _ ->
-            {to_ledgerkey(Bucket,
-                            Key,
-                            ?IDX_TAG,
-                            IdxField,
-                            IdxTerm),
-                {SQN, Status, no_lookup, null}}
-    end.
+    {to_ledgerkey(Bucket, Key, ?IDX_TAG, IdxField, IdxTerm),
+        {SQN, Status, no_lookup, null}}.
 
-gen_headspec(Bucket, Key, IdxOp, SubKey, Value, SQN, TTL) ->
+-spec gen_headspec(object_spec(), integer(), integer()|infinity) -> ledger_kv().
+%% @doc
+%% Take an object_spec as passed in a book_mput, and convert it into to a
+%% valid ledger key and value.  Supports different shaped tuples for different
+%% versions of the object_spec
+gen_headspec({IdxOp, v1, Bucket, Key, SubKey, LMD, Value}, SQN, TTL) ->
+     % v1 object spec
     Status = set_status(IdxOp, TTL),
     K = to_ledgerkey(Bucket, {Key, SubKey}, ?HEAD_TAG),
-    {K, {SQN, Status, segment_hash(K), Value}}.
+    {K, {SQN, Status, segment_hash(K), Value, get_last_lastmodification(LMD)}};
+gen_headspec({IdxOp, Bucket, Key, SubKey, Value}, SQN, TTL) ->
+    % v0 object spec
+    Status = set_status(IdxOp, TTL),
+    K = to_ledgerkey(Bucket, {Key, SubKey}, ?HEAD_TAG),
+    {K, {SQN, Status, segment_hash(K), Value, undefined}}.
+
 
 
 set_status(add, TTL) ->
@@ -576,103 +607,6 @@ set_status(add, TTL) ->
 set_status(remove, _TTL) ->
     %% TODO: timestamps for delayed reaping 
     tomb.
-
--spec aae_indexspecs(false|recent_aae(),
-                                any(), any(),
-                                integer(), integer(),
-                                list())
-                                    -> list().
-%% @doc
-%% Generate an additional index term representing the change, if the last
-%% modified date for the change is within the definition of recency.
-%%
-%% The object may have multiple last modified dates (siblings), and in this
-%% case index entries for all dates within the range are added.
-%%
-%% The index should entry auto-expire in the future (when it is no longer
-%% relevant to assessing recent changes)
-aae_indexspecs(false, _Bucket, _Key, _SQN, _H, _LastMods) ->
-    [];
-aae_indexspecs(_AAE, _Bucket, _Key, _SQN, _H, []) ->
-    [];
-aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods) ->
-    InList = lists:member(Bucket, AAE#recent_aae.buckets),
-    Bucket0 =
-        case AAE#recent_aae.filter of
-            blacklist ->
-                case InList of
-                    true ->
-                        false;
-                    false ->
-                        {all, Bucket}
-                end;
-            whitelist ->
-                case InList of
-                    true ->
-                        Bucket;
-                    false ->
-                        false
-                end
-        end,
-    case Bucket0 of
-        false ->
-            [];
-        Bucket0 ->
-            GenIdxFun =
-                fun(LMD0, Acc) ->
-                    Dates = parse_date(LMD0,
-                                        AAE#recent_aae.unit_minutes,
-                                        AAE#recent_aae.limit_minutes,
-                                        leveled_util:integer_now()),
-                    case Dates of
-                        no_index ->
-                            Acc;
-                        {LMD1, TTL} ->
-                            TreeSize = AAE#recent_aae.tree_size,
-                            SegID32 = leveled_tictac:keyto_segment32(Key),
-                            SegID =
-                                leveled_tictac:get_segment(SegID32, TreeSize),
-                            IdxFldStr = ?NRT_IDX ++ LMD1 ++ "_bin",
-                            IdxTrmStr =
-                                string:right(integer_to_list(SegID), 8, $0) ++
-                                "." ++
-                                string:right(integer_to_list(H), 8, $0),
-                            {IdxK, IdxV} =
-                                gen_indexspec(Bucket0, Key,
-                                                add,
-                                                list_to_binary(IdxFldStr),
-                                                list_to_binary(IdxTrmStr),
-                                                SQN, TTL),
-                            [{IdxK, IdxV}|Acc]
-                    end
-                end,
-            lists:foldl(GenIdxFun, [], LastMods)
-    end.
-
--spec parse_date(tuple(), integer(), integer(), integer()) ->
-                    no_index|{list(), integer()}.
-%% @doc
-%% Parse the last modified date and the AAE date configuration to return a
-%% binary to be used as the last modified date part of the index, and an
-%% integer to be used as the TTL of the index entry.
-%% Return no_index if the change is not recent.
-parse_date(LMD, UnitMins, LimitMins, Now) ->
-    LMDsecs = leveled_util:integer_time(LMD),
-    Recent = (LMDsecs + LimitMins * 60) > Now,
-    case Recent of
-        false ->
-            no_index;
-        true ->
-            {{Y, M, D}, {Hour, Minute, _Second}} =
-                calendar:now_to_datetime(LMD),
-            RoundMins =
-                UnitMins * (Minute div UnitMins),
-            StrTime =
-                lists:flatten(io_lib:format(?LMD_FORMAT,
-                                                [Y, M, D, Hour, RoundMins])),
-            TTL = min(Now, LMDsecs) + (LimitMins + UnitMins) * 60,
-            {StrTime, TTL}
-    end.
 
 -spec generate_ledgerkv(
             tuple(), integer(), any(), integer(), tuple()|infinity) ->
@@ -705,8 +639,22 @@ generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS) ->
     Value = {SQN,
                 Status,
                 Hash,
-                MD},
+                MD,
+                get_last_lastmodification(LastMods)},
     {Bucket, Key, Value, {Hash, ObjHash}, LastMods}.
+
+-spec get_last_lastmodification(list(erlang:timestamp())|undefined) 
+                                                -> pos_integer()|undefined.
+%% @doc
+%% Get the highest of the last modifications measured in seconds.  This will be
+%% stored as 4 bytes (unsigned) so will last for another 80 + years
+get_last_lastmodification(undefined) ->
+    undefined;
+get_last_lastmodification([]) ->
+    undefined;
+get_last_lastmodification(LastMods) ->
+    {Mega, Sec, _Micro} = lists:max(LastMods),
+    Mega * 1000000 + Sec.
 
 
 extract_metadata(Obj, Size, ?RIAK_TAG) ->
@@ -716,7 +664,7 @@ extract_metadata(Obj, Size, ?STD_TAG) ->
 
 get_size(PK, Value) ->
     {Tag, _Bucket, _Key, _} = PK,
-    {_, _, _, MD} = Value,
+    MD = element(4, Value),
     case Tag of
         ?RIAK_TAG ->
             {_RMD, _VC, _Hash, Size} = MD,
@@ -733,7 +681,7 @@ get_size(PK, Value) ->
 %% the sorted vclock)
 get_keyandobjhash(LK, Value) ->
     {Tag, Bucket, Key, _} = LK,
-    {_, _, _, MD} = Value,
+    MD = element(4, Value),
     case Tag of
         ?IDX_TAG ->
             from_ledgerkey(LK); % returns {Bucket, Key, IdxValue}
@@ -927,95 +875,6 @@ hashperf_test() ->
     io:format(user, "1000 object hashes in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), SW)]).
 
-parsedate_test() ->
-    {MeS, S, MiS} = os:timestamp(),
-    timer:sleep(100),
-    Now = leveled_util:integer_now(),
-    UnitMins = 5,
-    LimitMins = 60,
-    PD = parse_date({MeS, S, MiS}, UnitMins, LimitMins, Now),
-    io:format("Parsed Date ~w~n", [PD]),
-    ?assertMatch(true, is_tuple(PD)),
-    check_pd(PD, UnitMins),
-    CheckFun =
-        fun(Offset) ->
-            ModDate = {MeS, S + Offset * 60, MiS},
-            check_pd(parse_date(ModDate, UnitMins, LimitMins, Now), UnitMins)
-        end,  
-    lists:foreach(CheckFun, lists:seq(1, 60)).
-    
-check_pd(PD, UnitMins) ->
-    {LMDstr, _TTL} = PD,
-    Minutes = list_to_integer(lists:nthtail(10, LMDstr)),
-    ?assertMatch(0, Minutes rem UnitMins).
-
-parseolddate_test() ->
-    LMD = os:timestamp(),
-    timer:sleep(100),
-    Now = leveled_util:integer_now() + 60 * 60,
-    UnitMins = 5,
-    LimitMins = 60,
-    PD = parse_date(LMD, UnitMins, LimitMins, Now),
-    io:format("Parsed Date ~w~n", [PD]),
-    ?assertMatch(no_index, PD).
-
-genaaeidx_test() ->
-    AAE = #recent_aae{filter=blacklist,
-                        buckets=[],
-                        limit_minutes=60,
-                        unit_minutes=5},
-    Bucket = <<"Bucket1">>,
-    Key = <<"Key1">>,
-    SQN = 1,
-    H = erlang:phash2(null),
-    LastMods = [os:timestamp(), os:timestamp()],
-
-    AAESpecs = aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods),
-    ?assertMatch(2, length(AAESpecs)),
-    
-    LastMods1 = [os:timestamp()],
-    AAESpecs1 = aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods1),
-    ?assertMatch(1, length(AAESpecs1)),
-    IdxB = element(2, element(1, lists:nth(1, AAESpecs1))),
-    io:format(user, "AAE IDXSpecs1 ~w~n", [AAESpecs1]),
-    ?assertMatch(<<"$all">>, IdxB),
-    
-    LastMods0 = [],
-    AAESpecs0 = aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods0),
-    ?assertMatch(0, length(AAESpecs0)),
-    
-    AAE0 = AAE#recent_aae{filter=whitelist,
-                            buckets=[<<"Bucket0">>]},
-    AAESpecsB0 = aae_indexspecs(AAE0, Bucket, Key, SQN, H, LastMods1),
-    ?assertMatch(0, length(AAESpecsB0)),
-    
-    AAESpecsB1 = aae_indexspecs(AAE0, <<"Bucket0">>, Key, SQN, H, LastMods1),
-    ?assertMatch(1, length(AAESpecsB1)),
-    [{{?IDX_TAG, <<"Bucket0">>, {Fld, Term}, <<"Key1">>},
-        {SQN, {active, TS}, no_lookup, null}}] = AAESpecsB1,
-    ?assertMatch(true, is_integer(TS)),
-    ?assertMatch(17, length(binary_to_list(Term))),
-    ?assertMatch("$aae.", lists:sublist(binary_to_list(Fld), 5)),
-    
-    AAE1 = AAE#recent_aae{filter=blacklist,
-                            buckets=[<<"Bucket0">>]},
-    AAESpecsB2 = aae_indexspecs(AAE1, <<"Bucket0">>, Key, SQN, H, LastMods1),
-    ?assertMatch(0, length(AAESpecsB2)).
-
-delayedupdate_aaeidx_test() ->
-    AAE = #recent_aae{filter=blacklist,
-                        buckets=[],
-                        limit_minutes=60,
-                        unit_minutes=5},
-    Bucket = <<"Bucket1">>,
-    Key = <<"Key1">>,
-    SQN = 1,
-    H = erlang:phash2(null),
-    {Mega, Sec, MSec} = os:timestamp(),
-    LastMods = [{Mega -1, Sec, MSec}],
-    AAESpecs = aae_indexspecs(AAE, Bucket, Key, SQN, H, LastMods),
-    ?assertMatch(0, length(AAESpecs)).
-
 head_segment_compare_test() ->
     % Reminder to align native and parallel(leveled_ko) key stores for 
     % kv_index_tictactree
@@ -1024,5 +883,14 @@ head_segment_compare_test() ->
     H3 = segment_hash({?HEAD_TAG, <<"B1">>, <<"K1">>, <<>>}),
     ?assertMatch(H1, H2),
     ?assertMatch(H1, H3).
+
+headspec_v0v1_test() ->
+    % A v0 object spec generates the same outcome as a v1 object spec with the
+    % last modified date undefined
+    V1 = {add, v1, <<"B">>, <<"K">>, <<"SK">>, undefined, <<"V">>},
+    V0 = {add, <<"B">>, <<"K">>, <<"SK">>, <<"V">>},
+    TTL = infinity,
+    ?assertMatch(true, gen_headspec(V0, 1, TTL) == gen_headspec(V1, 1, TTL)).
+
 
 -endif.

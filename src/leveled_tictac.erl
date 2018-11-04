@@ -189,7 +189,7 @@ import_tree(ExportedTree) ->
                     level2 = Lv2}.
 
 
--spec add_kv(tictactree(), tuple(), tuple(), fun()) -> tictactree().
+-spec add_kv(tictactree(), term(), term(), fun()) -> tictactree().
 %% @doc
 %% Add a Key and value to a tictactree using the BinExtractFun to extract a 
 %% binary from the Key and value from which to generate the hash.  The 
@@ -198,7 +198,7 @@ import_tree(ExportedTree) ->
 add_kv(TicTacTree, Key, Value, BinExtractFun) ->
     add_kv(TicTacTree, Key, Value, BinExtractFun, false).
 
--spec add_kv(tictactree(), tuple(), tuple(), fun(), boolean()) 
+-spec add_kv(tictactree(), term(), term(), fun(), boolean()) 
                                     -> tictactree()|{tictactree(), integer()}.
 %% @doc
 %% add_kv with ability to return segment ID of Key added
@@ -523,8 +523,15 @@ get_size(Size) ->
             ?XLARGE
     end.
 
-segmentcompare(SrcBin, SinkBin) when byte_size(SrcBin)==byte_size(SinkBin) ->
-    segmentcompare(SrcBin, SinkBin, [], 0).
+
+segmentcompare(SrcBin, SinkBin) when byte_size(SrcBin) == byte_size(SinkBin) ->
+    segmentcompare(SrcBin, SinkBin, [], 0);
+segmentcompare(<<>>, SinkBin) ->
+    Size = bit_size(SinkBin),
+    segmentcompare(<<0:Size/integer>>, SinkBin);
+segmentcompare(SrcBin, <<>>) ->
+    Size = bit_size(SrcBin),
+    segmentcompare(SrcBin, <<0:Size/integer>>).
 
 segmentcompare(<<>>, <<>>, Acc, _Counter) ->
     Acc;
@@ -836,6 +843,19 @@ matchbysegment_check(SegList, MatchList, SmallSize, LargeSize) ->
     OL = lists:filter(PredFun, MatchList),
     {timer:now_diff(os:timestamp(), SW)/1000, OL}.
     
+find_dirtysegments_withanemptytree_test() ->
+    T1 = new_tree(t1),
+    T2 = new_tree(t2),
+    ?assertMatch([], find_dirtysegments(fetch_root(T1), fetch_root(T2))),
+
+    {T3, DS1} =
+        add_kv(T2, <<"TestKey">>, <<"V1">>, fun(B, K) -> {B, K} end, true),
+    ExpectedAnswer = [DS1 div 256],
+    ?assertMatch(ExpectedAnswer, find_dirtysegments(<<>>, fetch_root(T3))),
+    ?assertMatch(ExpectedAnswer, find_dirtysegments(fetch_root(T3), <<>>)).
+
+
+
 
 -endif.
 

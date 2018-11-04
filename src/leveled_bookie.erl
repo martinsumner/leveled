@@ -82,7 +82,8 @@
          book_objectfold/5,
          book_objectfold/6,
          book_headfold/6,
-         book_headfold/7
+         book_headfold/7,
+         book_headfold/9
         ]).
 
 -export([empty_ledgercache/0,
@@ -104,7 +105,6 @@
 -define(JOURNAL_SIZE_JITTER, 20).
 -define(ABSOLUTEMAX_JOURNALSIZE, 4000000000).
 -define(LONG_RUNNING, 80000).
--define(RECENT_AAE, false).
 -define(COMPRESSION_METHOD, lz4).
 -define(COMPRESSION_POINT, on_receipt).
 -define(TIMING_SAMPLESIZE, 100).
@@ -112,13 +112,13 @@
 -define(DUMMY, dummy). % Dummy key used for mput operations
 -define(MAX_KEYCHECK_FREQUENCY, 100).
 -define(MIN_KEYCHECK_FREQUENCY, 1).
+-define(OPEN_LASTMOD_RANGE, {0, infinity}).
 -define(OPTION_DEFAULTS,
             [{root_path, undefined},
                 {snapshot_bookie, undefined},
                 {cache_size, ?CACHE_SIZE},
                 {max_journalsize, 1000000000},
                 {sync_strategy, none},
-                {recent_aae, ?RECENT_AAE},
                 {head_only, false},
                 {waste_retention_period, undefined},
                 {max_run_length, undefined},
@@ -140,7 +140,6 @@
 -record(state, {inker :: pid() | undefined,
                 penciller :: pid() | undefined,
                 cache_size :: integer() | undefined,
-                recent_aae :: recent_aae(),
                 ledger_cache = #ledger_cache{},
                 is_snapshot :: boolean() | undefined,
                 slow_offer = false :: boolean(),
@@ -186,10 +185,7 @@
 -type fold_timings() :: no_timing|#fold_timings{}.
 -type head_timings() :: no_timing|#head_timings{}.
 -type timing_types() :: head|get|put|fold.
--type recent_aae() :: false|#recent_aae{}|undefined.
--type key() :: binary()|string()|{binary(), binary()}.
-    % Keys SHOULD be binary()
-    % string() support is a legacy of old tests
+
 -type open_options() :: 
     %% For full description of options see ../docs/STARTUP_OPTIONS.md
     [{root_path, string()|undefined} |
@@ -220,12 +216,6 @@
             % riak_sync is used for backwards compatability with OTP16 - and 
             % will manually call sync() after each write (rather than use the
             % O_SYNC option on startup
-        {recent_aae, false|{atom(), list(), integer(), integer()}} |
-            % DEPRECATED
-            % Before working on kv_index_tictactree looked at the possibility
-            % of maintaining AAE just for recent changes.  Given the efficiency
-            % of the kv_index_tictactree approach this is unecessary.
-            % Should be set to false
         {head_only, false|with_lookup|no_lookup} |
             % When set to true, there are three fundamental changes as to how
             % leveled will work:
@@ -310,7 +300,6 @@
             % Defaults to ?COMPRESSION_POINT
         ].
 
--export_type([key/0]).
 
 
 %%%============================================================================
@@ -371,7 +360,7 @@ book_plainstart(Opts) ->
     gen_server:start(?MODULE, [set_defaults(Opts)], []).
 
 
--spec book_tempput(pid(), key(), key(), any(), 
+-spec book_tempput(pid(), leveled_codec:key(), leveled_codec:key(), any(), 
                     leveled_codec:index_specs(), 
                     leveled_codec:tag(), integer()) -> ok|pause.
 
@@ -438,7 +427,7 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs) ->
 book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag) ->
     book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, infinity).
 
--spec book_put(pid(), key(), key(), any(), 
+-spec book_put(pid(), leveled_codec:key(), leveled_codec:key(), any(), 
                 leveled_codec:index_specs(), 
                 leveled_codec:tag(), infinity|integer()) -> ok|pause.
 
@@ -448,7 +437,7 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) ->
                     infinity).
 
 
--spec book_mput(pid(), list(tuple())) -> ok|pause.
+-spec book_mput(pid(), list(leveled_codec:object_spec())) -> ok|pause.
 %% @doc
 %%
 %% When the store is being run in head_only mode, batches of object specs may
@@ -461,7 +450,8 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) ->
 book_mput(Pid, ObjectSpecs) ->
     book_mput(Pid, ObjectSpecs, infinity).
 
--spec book_mput(pid(), list(tuple()), infinity|integer()) -> ok|pause.
+-spec book_mput(pid(), list(leveled_codec:object_spec()), infinity|integer())
+                                                                -> ok|pause.
 %% @doc
 %%
 %% When the store is being run in head_only mode, batches of object specs may
@@ -474,8 +464,9 @@ book_mput(Pid, ObjectSpecs) ->
 book_mput(Pid, ObjectSpecs, TTL) ->
     gen_server:call(Pid, {mput, ObjectSpecs, TTL}, infinity).
 
--spec book_delete(pid(), key(), key(), leveled_codec:index_specs()) 
-                                                                -> ok|pause.
+-spec book_delete(pid(), 
+                    leveled_codec:key(), leveled_codec:key(), 
+                    leveled_codec:index_specs()) -> ok|pause.
 
 %% @doc 
 %%
@@ -486,11 +477,15 @@ book_delete(Pid, Bucket, Key, IndexSpecs) ->
     book_put(Pid, Bucket, Key, delete, IndexSpecs, ?STD_TAG).
 
 
--spec book_get(pid(), key(), key(), leveled_codec:tag()) 
+-spec book_get(pid(), 
+                leveled_codec:key(), leveled_codec:key(), leveled_codec:tag())
                                                     -> {ok, any()}|not_found.
--spec book_head(pid(), key(), key(), leveled_codec:tag())
+-spec book_head(pid(), 
+                leveled_codec:key(), leveled_codec:key(), leveled_codec:tag())
                                                     -> {ok, any()}|not_found.
--spec book_headonly(pid(), key(), key(), key()) -> {ok, any()}|not_found.
+-spec book_headonly(pid(), 
+                    leveled_codec:key(), leveled_codec:key(), leveled_codec:key())
+                                                    -> {ok, any()}|not_found.
 
 %% @doc - GET and HEAD requests
 %%
@@ -869,8 +864,9 @@ book_objectfold(Pid, Tag, Bucket, Limiter, FoldAccT, SnapPreFold) ->
       SegmentList :: false | list(integer()),
       Runner :: fun(() -> Acc).
 book_headfold(Pid, Tag, FoldAccT, JournalCheck, SnapPreFold, SegmentList) ->
-    RunnerType = {foldheads_allkeys, Tag, FoldAccT, JournalCheck, SnapPreFold, SegmentList},
-    book_returnfolder(Pid, RunnerType).
+    book_headfold(Pid, Tag, all, 
+                    FoldAccT, JournalCheck, SnapPreFold, 
+                    SegmentList, false, false).
 
 %% @doc as book_headfold/6, but with the addition of a `Limiter' that
 %% restricts the set of objects folded over. `Limiter' can either be a
@@ -902,11 +898,61 @@ book_headfold(Pid, Tag, FoldAccT, JournalCheck, SnapPreFold, SegmentList) ->
       SnapPreFold :: boolean(),
       SegmentList :: false | list(integer()),
       Runner :: fun(() -> Acc).
-book_headfold(Pid, Tag, {bucket_list, BucketList}, FoldAccT, JournalCheck, SnapPreFold, SegmentList) ->
-    RunnerType = {foldheads_bybucket, Tag, BucketList, bucket_list, FoldAccT, JournalCheck, SnapPreFold, SegmentList},
+book_headfold(Pid, Tag, Limiter, FoldAccT, JournalCheck, SnapPreFold, SegmentList) ->
+    book_headfold(Pid, Tag, Limiter, 
+                    FoldAccT, JournalCheck, SnapPreFold, 
+                    SegmentList, false, false).
+
+%% @doc as book_headfold/7, but with the addition of a Last Modified Date
+%% Range and Max Object Count.  For version 2 objects this will filter out
+%% all objects with a highest Last Modified Date that is outside of the range.
+%% All version 1 objects will be included in the result set regardless of Last
+%% Modified Date.
+%% The Max Object Count will stop the fold once the count has been reached on
+%% this store only.  The Max Object Count if provided will mean that the runner
+%% will return {RemainingCount, Acc} not just Acc
+-spec book_headfold(pid(), Tag, Limiter, FoldAccT, JournalCheck, SnapPreFold,
+                        SegmentList, LastModRange, MaxObjectCount) ->
+                           {async, Runner} when
+      Tag :: leveled_codec:tag(),
+      Limiter :: BucketList | BucketKeyRange | all,
+      BucketList :: {bucket_list, list(Bucket)},
+      BucketKeyRange :: {range, Bucket, KeyRange},
+      KeyRange :: {StartKey, EndKey} | all,
+      StartKey :: Key,
+      EndKey :: Key,
+      FoldAccT :: {FoldFun, Acc},
+      FoldFun :: fun((Bucket, Key, Value, Acc) -> Acc),
+      Acc :: term(),
+      Bucket :: term(),
+      Key :: term(),
+      Value :: term(),
+      JournalCheck :: boolean(),
+      SnapPreFold :: boolean(),
+      SegmentList :: false | list(integer()),
+      LastModRange :: false | leveled_codec:lastmod_range(),
+      MaxObjectCount :: false | pos_integer(),
+      Runner :: fun(() -> ResultingAcc),
+      ResultingAcc :: Acc | {non_neg_integer(), Acc}.
+book_headfold(Pid, Tag, {bucket_list, BucketList}, FoldAccT, JournalCheck, SnapPreFold,
+                SegmentList, LastModRange, MaxObjectCount) ->
+    RunnerType = 
+        {foldheads_bybucket, Tag, BucketList, bucket_list, FoldAccT, 
+            JournalCheck, SnapPreFold, 
+            SegmentList, LastModRange, MaxObjectCount},
     book_returnfolder(Pid, RunnerType);
-book_headfold(Pid, Tag, {range, Bucket, KeyRange}, FoldAccT, JournalCheck, SnapPreFold, SegmentList) ->
-    RunnerType = {foldheads_bybucket, Tag, Bucket, KeyRange, FoldAccT, JournalCheck, SnapPreFold, SegmentList},
+book_headfold(Pid, Tag, {range, Bucket, KeyRange}, FoldAccT, JournalCheck, SnapPreFold,
+                SegmentList, LastModRange, MaxObjectCount) ->
+    RunnerType = 
+        {foldheads_bybucket, Tag, Bucket, KeyRange, FoldAccT,
+            JournalCheck, SnapPreFold,
+            SegmentList, LastModRange, MaxObjectCount},
+    book_returnfolder(Pid, RunnerType);
+book_headfold(Pid, Tag, all, FoldAccT, JournalCheck, SnapPreFold,
+                SegmentList, LastModRange, MaxObjectCount) ->
+    RunnerType = {foldheads_allkeys, Tag, FoldAccT,
+                    JournalCheck, SnapPreFold, 
+                    SegmentList, LastModRange, MaxObjectCount},
     book_returnfolder(Pid, RunnerType).
 
 -spec book_snapshot(pid(), 
@@ -1008,16 +1054,6 @@ init([Opts]) ->
                 ConfiguredCacheSize div (100 div ?CACHE_SIZE_JITTER),
             CacheSize = 
                 ConfiguredCacheSize + erlang:phash2(self()) rem CacheJitter,
-            RecentAAE =
-                case proplists:get_value(recent_aae, Opts) of
-                    false ->
-                        false;
-                    {FilterType, BucketList, LimitMinutes, UnitMinutes} ->
-                        #recent_aae{filter = FilterType,
-                                    buckets = BucketList,
-                                    limit_minutes = LimitMinutes,
-                                    unit_minutes = UnitMinutes}
-                end,
             
             {HeadOnly, HeadLookup} = 
                 case proplists:get_value(head_only, Opts) of 
@@ -1030,7 +1066,6 @@ init([Opts]) ->
                 end,
             
             State0 = #state{cache_size=CacheSize,
-                                recent_aae=RecentAAE,
                                 is_snapshot=false,
                                 head_only=HeadOnly,
                                 head_lookup = HeadLookup},
@@ -1137,7 +1172,7 @@ handle_call({get, Bucket, Key, Tag}, _From, State)
                 not_found;
             Head ->
                 {Seqn, Status, _MH, _MD} = 
-                    leveled_codec:striphead_to_details(Head),
+                    leveled_codec:striphead_to_v1details(Head),
                 case Status of
                     tomb ->
                         not_found;
@@ -1186,7 +1221,7 @@ handle_call({head, Bucket, Key, Tag}, _From, State)
             not_present ->
                 {not_found, State#state.ink_checking};
             Head ->
-                case leveled_codec:striphead_to_details(Head) of
+                case leveled_codec:striphead_to_v1details(Head) of
                     {_SeqN, tomb, _MH, _MD} ->
                         {not_found, State#state.ink_checking};
                     {SeqN, {active, TS}, _MH, MD} ->
@@ -1574,12 +1609,14 @@ get_runner(State, {keylist, Tag, Bucket, KeyRange, FoldAccT, TermRegex}) ->
 get_runner(State, 
             {foldheads_allkeys, 
                 Tag, FoldFun, 
-                JournalCheck, SnapPreFold, SegmentList}) ->
+                JournalCheck, SnapPreFold, SegmentList,
+                LastModRange, MaxObjectCount}) ->
     SnapType = snaptype_by_presence(JournalCheck),
     SnapFun = return_snapfun(State, SnapType, no_lookup, true, SnapPreFold),
     leveled_runner:foldheads_allkeys(SnapFun, 
                                         Tag, FoldFun, 
-                                        JournalCheck, SegmentList);
+                                        JournalCheck, SegmentList,
+                                        LastModRange, MaxObjectCount);
 get_runner(State,
             {foldobjects_allkeys, Tag, FoldFun, SnapPreFold}) ->
     get_runner(State, 
@@ -1597,7 +1634,8 @@ get_runner(State,
                 Tag, 
                 BucketList, bucket_list,
                 FoldFun,
-                JournalCheck, SnapPreFold, SegmentList}) ->
+                JournalCheck, SnapPreFold,
+                SegmentList, LastModRange, MaxObjectCount}) ->
     KeyRangeFun = 
         fun(Bucket) ->
             {StartKey, EndKey, _} = return_ledger_keyrange(Tag, Bucket, all),
@@ -1609,13 +1647,16 @@ get_runner(State,
                                         Tag,
                                         lists:map(KeyRangeFun, BucketList),
                                         FoldFun,
-                                        JournalCheck, SegmentList);
+                                        JournalCheck,
+                                        SegmentList,
+                                        LastModRange, MaxObjectCount);
 get_runner(State,
             {foldheads_bybucket, 
                 Tag, 
                 Bucket, KeyRange, 
                 FoldFun, 
-                JournalCheck, SnapPreFold, SegmentList}) ->
+                JournalCheck, SnapPreFold,
+                SegmentList, LastModRange, MaxObjectCount}) ->
     {StartKey, EndKey, SnapQ} = return_ledger_keyrange(Tag, Bucket, KeyRange),
     SnapType = snaptype_by_presence(JournalCheck),
     SnapFun = return_snapfun(State, SnapType, SnapQ, true, SnapPreFold),
@@ -1623,7 +1664,9 @@ get_runner(State,
                                         Tag, 
                                         [{StartKey, EndKey}], 
                                         FoldFun, 
-                                        JournalCheck, SegmentList);
+                                        JournalCheck,
+                                        SegmentList,
+                                        LastModRange, MaxObjectCount);
 get_runner(State,
             {foldobjects_bybucket, 
                 Tag, Bucket, KeyRange, 
@@ -1926,14 +1969,12 @@ preparefor_ledgercache(?INKT_KEYD,
     {no_lookup, SQN, KeyChanges};
 preparefor_ledgercache(_InkTag,
                         LedgerKey, SQN, Obj, Size, {IdxSpecs, TTL},
-                        State) ->
-    {Bucket, Key, MetaValue, {KeyH, ObjH}, LastMods} =
+                        _State) ->
+    {Bucket, Key, MetaValue, {KeyH, _ObjH}, _LastMods} =
         leveled_codec:generate_ledgerkv(LedgerKey, SQN, Obj, Size, TTL),
     KeyChanges =
         [{LedgerKey, MetaValue}] ++
-            leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL) ++
-            leveled_codec:aae_indexspecs(State#state.recent_aae, 
-                                            Bucket, Key, SQN, ObjH, LastMods),
+            leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL),
     {KeyH, SQN, KeyChanges}.
 
 
@@ -2449,7 +2490,7 @@ foldobjects_vs_hashtree_testto() ->
                             {foldheads_allkeys, 
                                 ?STD_TAG, 
                                 FoldHeadsFun, 
-                                true, true, false}),
+                                true, true, false, false, false}),
     KeyHashList3 = HTFolder3(),
     ?assertMatch(KeyHashList1, lists:usort(KeyHashList3)),
 
@@ -2468,7 +2509,7 @@ foldobjects_vs_hashtree_testto() ->
                             {foldheads_allkeys, 
                                 ?STD_TAG, 
                                 FoldHeadsFun2,
-                                false, false, false}),
+                                false, false, false, false, false}),
     KeyHashList4 = HTFolder4(),
     ?assertMatch(KeyHashList1, lists:usort(KeyHashList4)),
 
@@ -2544,7 +2585,8 @@ folder_cache_test(CacheSize) ->
                                 "BucketA",
                                 all,
                                 FoldHeadsFun,
-                                true, true, false}),
+                                true, true,
+                                false, false, false}),
     KeyHashList2A = HTFolder2A(),
     {async, HTFolder2B} =
         book_returnfolder(Bookie1,
@@ -2553,7 +2595,8 @@ folder_cache_test(CacheSize) ->
                                 "BucketB",
                                 all,
                                 FoldHeadsFun,
-                                true, false, false}),
+                                true, false,
+                                false, false, false}),
     KeyHashList2B = HTFolder2B(),
     
     ?assertMatch(true,
@@ -2568,7 +2611,8 @@ folder_cache_test(CacheSize) ->
                                 "BucketB",
                                 {"Key", <<"$all">>},
                                 FoldHeadsFun,
-                                true, false, false}),
+                                true, false,
+                                false, false, false}),
     KeyHashList2C = HTFolder2C(),
     {async, HTFolder2D} =
         book_returnfolder(Bookie1,
@@ -2577,7 +2621,8 @@ folder_cache_test(CacheSize) ->
                                 "BucketB",
                                 {"Key", "Keyzzzzz"},
                                 FoldHeadsFun,
-                                true, true, false}),
+                                true, true,
+                                false, false, false}),
     KeyHashList2D = HTFolder2D(),
     ?assertMatch(true,
                     lists:usort(KeyHashList2B) == lists:usort(KeyHashList2C)),
@@ -2597,7 +2642,8 @@ folder_cache_test(CacheSize) ->
                                         "BucketB",
                                         {"Key", SplitIntEnd},
                                         FoldHeadsFun,
-                                        true, false, false}),
+                                        true, false,
+                                        false, false, false}),
             KeyHashList2E = HTFolder2E(),
             {async, HTFolder2F} =
                 book_returnfolder(Bookie1,
@@ -2606,7 +2652,8 @@ folder_cache_test(CacheSize) ->
                                         "BucketB",
                                         {SplitIntStart, "Key|"},
                                         FoldHeadsFun,
-                                        true, false, false}),
+                                        true, false,
+                                        false, false, false}),
             KeyHashList2F = HTFolder2F(),
 
             ?assertMatch(true, length(KeyHashList2E) > 0),

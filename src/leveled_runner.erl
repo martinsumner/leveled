@@ -30,9 +30,9 @@
             bucketkey_query/6,
             hashlist_query/3,
             tictactree/5,
-            foldheads_allkeys/5,
+            foldheads_allkeys/7,
             foldobjects_allkeys/4,
-            foldheads_bybucket/6,
+            foldheads_bybucket/8,
             foldobjects_bybucket/4,
             foldobjects_byindex/3
         ]).
@@ -48,6 +48,7 @@
 -type fun_and_acc()
             :: {fun(), any()}.
 -type term_regex() :: re:mp()|undefined.
+
 
 %%%============================================================================
 %%% External functions
@@ -269,12 +270,14 @@ tictactree(SnapFun, {Tag, Bucket, Query}, JournalCheck, TreeSize, Filter) ->
     {async, Runner}.
 
 -spec foldheads_allkeys(fun(), leveled_codec:tag(), 
-                        fun(), boolean(), false|list(integer())) 
-                                                            -> {async, fun()}.
+                        fun(), boolean(), false|list(integer()),
+                        false|leveled_codec:lastmod_range(),
+                        false|pos_integer()) -> {async, fun()}.
 %% @doc
 %% Fold over all heads in the store for a given tag - applying the passed 
 %% function to each proxy object
-foldheads_allkeys(SnapFun, Tag, FoldFun, JournalCheck, SegmentList) ->
+foldheads_allkeys(SnapFun, Tag, FoldFun, JournalCheck,
+                    SegmentList, LastModRange, MaxObjectCount) ->
     StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
     EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
     foldobjects(SnapFun, 
@@ -282,7 +285,9 @@ foldheads_allkeys(SnapFun, Tag, FoldFun, JournalCheck, SegmentList) ->
                 [{StartKey, EndKey}], 
                 FoldFun, 
                 {true, JournalCheck}, 
-                SegmentList).
+                SegmentList,
+                LastModRange,
+                MaxObjectCount).
 
 -spec foldobjects_allkeys(fun(), leveled_codec:tag(), fun(), 
                             key_order|sqn_order) -> {async, fun()}.
@@ -399,7 +404,10 @@ foldobjects_bybucket(SnapFun, Tag, KeyRanges, FoldFun) ->
                             atom(), 
                             list({any(), any()}), 
                             fun(), 
-                            boolean(), false|list(integer())) 
+                            boolean(),
+                            false|list(integer()),
+                            false|leveled_codec:lastmod_range(),
+                            false|pos_integer()) 
                                                         -> {async, fun()}.
 %% @doc
 %% Fold over all object metadata within a given key range in a bucket
@@ -407,13 +415,16 @@ foldheads_bybucket(SnapFun,
                     Tag, 
                     KeyRanges, 
                     FoldFun, 
-                    JournalCheck, SegmentList) ->
+                    JournalCheck,
+                    SegmentList, LastModRange, MaxObjectCount) ->
     foldobjects(SnapFun, 
                 Tag, 
                 KeyRanges, 
                 FoldFun, 
                 {true, JournalCheck}, 
-                SegmentList).
+                SegmentList,
+                LastModRange,
+                MaxObjectCount).
 
 -spec foldobjects_byindex(fun(), tuple(), fun()) -> {async, fun()}.
 %% @doc
@@ -454,10 +465,10 @@ get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList, {C, L}) ->
                                                     ExtractFun,
                                                     null),
     case R of
-        null ->
+        {1, null} ->
             leveled_log:log("B0008",[]),
             BKList;
-        {{B, K}, V} ->
+        {0, {{B, K}, V}} ->
             case leveled_codec:is_active({Tag, B, K, null}, V, Now) of
                 true ->
                     leveled_log:log("B0009",[B]),
@@ -484,6 +495,16 @@ get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList, {C, L}) ->
 -spec foldobjects(fun(), atom(), list(), fun(), 
                     false|{true, boolean()}, false|list(integer())) ->
                                                             {async, fun()}.
+foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, SegmentList) ->
+    foldobjects(SnapFun, Tag, KeyRanges,
+                    FoldObjFun, DeferredFetch, SegmentList, false, false).
+
+-spec foldobjects(fun(), atom(), list(), fun(), 
+                    false|{true, boolean()},
+                    false|list(integer()),
+                    false|leveled_codec:lastmod_range(),
+                    false|pos_integer()) ->
+                                                            {async, fun()}.
 %% @doc
 %% The object folder should be passed DeferredFetch.
 %% DeferredFetch can either be false (which will return to the fold function
@@ -491,7 +512,8 @@ get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList, {C, L}) ->
 %% will be created that if understood by the fold function will allow the fold
 %% function to work on the head of the object, and defer fetching the body in
 %% case such a fetch is unecessary.
-foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, SegmentList) ->
+foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, 
+                                SegmentList, LastModRange, MaxObjectCount) ->
     {FoldFun, InitAcc} =
         case is_tuple(FoldObjFun) of
             true ->
@@ -502,16 +524,24 @@ foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, SegmentList) ->
                 % no initial accumulator passed, and so should be just a list
                 {FoldObjFun, []}
         end,
+    {LimitByCount, InitAcc0} = 
+        case MaxObjectCount of
+            false ->
+                {false, InitAcc};
+            MOC when is_integer(MOC) ->
+                {true, {MOC, InitAcc}}
+        end,
     
     Folder =
         fun() ->
             {ok, LedgerSnapshot, JournalSnapshot} = SnapFun(),
 
-            AccFun = accumulate_objects(FoldFun,
-                                        JournalSnapshot,
-                                        Tag,
-                                        DeferredFetch),
-
+            AccFun =
+                accumulate_objects(FoldFun,
+                                    JournalSnapshot,
+                                    Tag,
+                                    DeferredFetch),
+            
             ListFoldFun = 
                 fun({StartKey, EndKey}, FoldAcc) ->
                     leveled_penciller:pcl_fetchkeysbysegment(LedgerSnapshot,
@@ -519,9 +549,11 @@ foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, SegmentList) ->
                                                                 EndKey,
                                                                 AccFun,
                                                                 FoldAcc, 
-                                                                SegmentList)
+                                                                SegmentList,
+                                                                LastModRange,
+                                                                LimitByCount)
                 end,
-            Acc = lists:foldl(ListFoldFun, InitAcc, KeyRanges),
+            Acc = lists:foldl(ListFoldFun, InitAcc0, KeyRanges),
             ok = leveled_penciller:pcl_close(LedgerSnapshot),
             case DeferredFetch of 
                 {true, false} ->
@@ -612,7 +644,7 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
             case leveled_codec:is_active(LK, V, Now) of
                 true ->
                     {SQN, _St, _MH, MD} =
-                        leveled_codec:striphead_to_details(V),
+                        leveled_codec:striphead_to_v1details(V),
                     {B, K} =
                         case leveled_codec:from_ledgerkey(LK) of
                             {B0, K0} ->

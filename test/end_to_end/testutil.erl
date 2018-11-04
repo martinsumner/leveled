@@ -28,6 +28,7 @@
             get_key/1,
             get_value/1,
             get_vclock/1,
+            get_lastmodified/1,
             get_compressiblevalue/0,
             get_compressiblevalue_andinteger/0,
             get_randomindexes_generator/1,
@@ -51,8 +52,9 @@
             sync_strategy/0,
             riak_object/4,
             get_value_from_objectlistitem/1,
-        numbered_key/1,
-        fixed_bin_key/1]).
+            numbered_key/1,
+            fixed_bin_key/1,
+            convert_to_seconds/1]).
 
 -define(RETURN_TERMS, {true, undefined}).
 -define(SLOWOFFER_DELAY, 5).
@@ -491,7 +493,10 @@ update_some_objects(Bookie, ObjList, SampleSize) ->
             VC = Obj#r_object.vclock,
             VC0 = update_vclock(VC),
             [C] = Obj#r_object.contents,
-            C0 = C#r_content{value = leveled_rand:rand_bytes(512)},
+            MD = C#r_content.metadata,
+            MD0 = dict:store(?MD_LASTMOD, os:timestamp(), MD),
+            C0 = C#r_content{value = leveled_rand:rand_bytes(512), 
+                                metadata = MD0},
             UpdObj = Obj#r_object{vclock = VC0, contents = [C0]},
             {R, UpdObj, Spec}
         end,
@@ -549,6 +554,24 @@ get_value(ObjectBin) ->
         N ->
             io:format("SibCount of ~w with ObjectBin ~w~n", [N, ObjectBin]),
             error
+    end.
+
+get_lastmodified(ObjectBin) ->
+    <<_Magic:8/integer, _Vers:8/integer, VclockLen:32/integer,
+            Rest1/binary>> = ObjectBin,
+    <<_VclockBin:VclockLen/binary, SibCount:32/integer, SibsBin/binary>> = Rest1,
+    case SibCount of
+        1 ->
+            <<SibLength:32/integer, Rest2/binary>> = SibsBin,
+            <<_ContentBin:SibLength/binary, 
+                MetaLength:32/integer, 
+                MetaBin:MetaLength/binary,
+                _Rest3/binary>> = Rest2,
+            <<MegaSec:32/integer,
+                Sec:32/integer,
+                MicroSec:32/integer,
+                _RestMetaBin/binary>> = MetaBin,
+            {MegaSec, Sec, MicroSec}
     end.
 
 get_vclock(ObjectBin) ->
@@ -771,3 +794,5 @@ find_journals(RootPath) ->
                                 FNsA_J),
     CDBFiles.
 
+convert_to_seconds({MegaSec, Seconds, _MicroSec}) ->
+    MegaSec * 1000000 + Seconds.
