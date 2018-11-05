@@ -187,12 +187,12 @@ segment_hash({?HEAD_TAG, Bucket, Key, SubK})
 segment_hash({?HEAD_TAG, Bucket, Key, _SubK})
                                     when is_binary(Bucket), is_binary(Key) ->
     segment_hash(<<Bucket/binary, Key/binary>>);
-% segment_hash({?HEAD_TAG, {BucketType, Bucket}, Key, SubKey})
-%                             when is_binary(BucketType), is_binary(Bucket) ->
-%     segment_hash({?HEAD_TAG,
-%                     <<BucketType/binary, Bucket/binary>>, 
-%                     Key,
-%                     SubKey});
+segment_hash({?HEAD_TAG, {BucketType, Bucket}, Key, SubKey})
+                            when is_binary(BucketType), is_binary(Bucket) ->
+    segment_hash({?HEAD_TAG,
+                    <<BucketType/binary, Bucket/binary>>, 
+                    Key,
+                    SubKey});
 segment_hash(Key) ->
     segment_hash(term_to_binary(Key)).
 

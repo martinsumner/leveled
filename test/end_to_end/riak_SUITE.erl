@@ -199,7 +199,7 @@ basic_riak_tester(Bucket, KeyCount) ->
     {_I2L, Obj2L, _Spc2L} = lists:last(ObjList2),
 
     SegList =
-        lists:map(fun(Obj) -> get_aae_segment(Obj) end, 
+        lists:map(fun(Obj) -> testutil:get_aae_segment(Obj) end, 
                     [Obj1, Obj2, Obj3, Obj4, Obj5, Obj2L]),
     BKList = 
         lists:map(fun(Obj) -> 
@@ -221,15 +221,6 @@ basic_riak_tester(Bucket, KeyCount) ->
     true = length(KLBySeg) - length(KLBySegRem) == length(BKList),
 
     ok = leveled_bookie:book_destroy(Bookie2).
-
-
-get_aae_segment(Obj) ->
-    get_aae_segment(testutil:get_bucket(Obj), testutil:get_key(Obj)).
-
-get_aae_segment({Type, Bucket}, Key) ->
-    leveled_tictac:keyto_segment32(<<Type/binary, Bucket/binary, Key/binary>>);
-get_aae_segment(Bucket, Key) ->
-    leveled_tictac:keyto_segment32(<<Bucket/binary, Key/binary>>).
 
 
 fetchclocks_modifiedbetween(_Config) ->

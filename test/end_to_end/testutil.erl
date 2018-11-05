@@ -33,6 +33,8 @@
             get_compressiblevalue/0,
             get_compressiblevalue_andinteger/0,
             get_randomindexes_generator/1,
+            get_aae_segment/1,
+            get_aae_segment/2,
             name_list/0,
             load_objects/5,
             load_objects/6,
@@ -800,3 +802,13 @@ find_journals(RootPath) ->
 
 convert_to_seconds({MegaSec, Seconds, _MicroSec}) ->
     MegaSec * 1000000 + Seconds.
+
+
+
+get_aae_segment(Obj) ->
+    get_aae_segment(testutil:get_bucket(Obj), testutil:get_key(Obj)).
+
+get_aae_segment({Type, Bucket}, Key) ->
+    leveled_tictac:keyto_segment32(<<Type/binary, Bucket/binary, Key/binary>>);
+get_aae_segment(Bucket, Key) ->
+    leveled_tictac:keyto_segment32(<<Bucket/binary, Key/binary>>).
