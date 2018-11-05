@@ -186,6 +186,7 @@
 -type head_timings() :: no_timing|#head_timings{}.
 -type timing_types() :: head|get|put|fold.
 
+
 -type open_options() :: 
     %% For full description of options see ../docs/STARTUP_OPTIONS.md
     [{root_path, string()|undefined} |
@@ -621,7 +622,7 @@ book_returnfolder(Pid, RunnerType) ->
                                      Start::IndexVal,
                                      End::IndexVal,
                                      ReturnTerms::boolean(),
-                                     TermRegex :: re:mp() | undefined.
+                                     TermRegex :: leveled_codec:regular_expression().
 
 book_indexfold(Pid, Constraint, FoldAccT, Range, TermHandling) ->
     RunnerType = 
@@ -730,7 +731,7 @@ book_keylist(Pid, Tag, Bucket, KeyRange, FoldAccT) ->
       StartKey :: Key,
       EndKey :: Key,
       Key :: term(),
-      TermRegex :: re:mp(),
+      TermRegex :: leveled_codec:regular_expression(),
       Runner :: fun(() -> Acc).
 book_keylist(Pid, Tag, Bucket, KeyRange, FoldAccT, TermRegex) ->
     RunnerType = {keylist, Tag, Bucket, KeyRange, FoldAccT, TermRegex},

@@ -134,6 +134,11 @@
         {index_specs(), infinity|integer()}. % {KeyChanges, TTL}
 -type maybe_lookup() ::
         lookup|no_lookup.
+-type regular_expression() ::
+        {re_pattern, term(), term(), term(), term()}|undefined. 
+    % first element must be re_pattern, but tuple may change legnth with
+    % versions
+
 
 
 -type segment_list() 
@@ -156,7 +161,8 @@
                 segment_list/0,
                 maybe_lookup/0,
                 last_moddate/0,
-                lastmod_range/0]).
+                lastmod_range/0,
+                regular_expression/0]).
 
 
 %%%============================================================================
@@ -801,7 +807,7 @@ get_metadata_from_siblings(<<ValLen:32/integer, Rest0/binary>>,
                                     MetaBin:MetaLen/binary>>,
                                     [LastMod|LastMods]).
 
--spec next_key(leveled_bookie:key()) -> leveled_bookie:key().
+-spec next_key(key()) -> key().
 %% @doc
 %% Get the next key to iterate from a given point
 next_key(Key) when is_binary(Key) ->

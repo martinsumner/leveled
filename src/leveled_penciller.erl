@@ -294,7 +294,7 @@
                             integer()}.
 -type pcl_state() :: #state{}.
 -type pcl_timings() :: no_timing|#pcl_timings{}.
--type levelzero_cacheentry() :: {pos_integer(), levled_tree:leveled_tree()}.
+-type levelzero_cacheentry() :: {pos_integer(), leveled_tree:leveled_tree()}.
 -type levelzero_cache() :: list(levelzero_cacheentry()).
 -type iterator_entry() 
     :: {pos_integer(), 
