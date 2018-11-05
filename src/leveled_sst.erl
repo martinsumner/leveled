@@ -1328,7 +1328,7 @@ take_max_lastmoddate(undefined, _LMDAcc) ->
 take_max_lastmoddate(LMD, LMDAcc) ->
     max(LMD, LMDAcc).
 
--spec generate_binary_slot(leveled_codec:lookup(),
+-spec generate_binary_slot(leveled_codec:maybe_lookup(),
                             list(leveled_codec:ledger_kv()),
                             press_method(),
                             boolean(),

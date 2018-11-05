@@ -47,7 +47,6 @@
                     leveled_codec:ledger_key()|null}.
 -type fun_and_acc()
             :: {fun(), any()}.
--type term_regex() :: re:mp()|undefined.
 
 
 %%%============================================================================
@@ -147,7 +146,8 @@ index_query(SnapFun, {StartKey, EndKey, TermHandling}, FoldAccT) ->
     {async, Runner}.
 
 -spec bucketkey_query(fun(), leveled_codec:tag(), any(), 
-                        key_range(), fun_and_acc(), term_regex()) -> {async, fun()}.
+                        key_range(), fun_and_acc(),
+                        leveled_codec:regular_expression()) -> {async, fun()}.
 %% @doc
 %% Fold over all keys in `KeyRange' under tag (restricted to a given bucket)
 bucketkey_query(SnapFun, Tag, Bucket, 
