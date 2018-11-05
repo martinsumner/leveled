@@ -25,6 +25,7 @@
             generate_objects/5,
             generate_objects/6,
             set_object/5,
+            get_bucket/1,
             get_key/1,
             get_value/1,
             get_vclock/1,
@@ -32,6 +33,8 @@
             get_compressiblevalue/0,
             get_compressiblevalue_andinteger/0,
             get_randomindexes_generator/1,
+            get_aae_segment/1,
+            get_aae_segment/2,
             name_list/0,
             load_objects/5,
             load_objects/6,
@@ -536,6 +539,9 @@ actor_list() ->
     [{1, albert}, {2, bertie}, {3, clara}, {4, dave}, {5, elton},
         {6, fred}, {7, george}, {8, harry}, {9, isaac}, {10, leila}].
 
+get_bucket(Object) ->
+    Object#r_object.bucket.
+
 get_key(Object) ->
     Object#r_object.key.
 
@@ -796,3 +802,13 @@ find_journals(RootPath) ->
 
 convert_to_seconds({MegaSec, Seconds, _MicroSec}) ->
     MegaSec * 1000000 + Seconds.
+
+
+
+get_aae_segment(Obj) ->
+    get_aae_segment(testutil:get_bucket(Obj), testutil:get_key(Obj)).
+
+get_aae_segment({Type, Bucket}, Key) ->
+    leveled_tictac:keyto_segment32(<<Type/binary, Bucket/binary, Key/binary>>);
+get_aae_segment(Bucket, Key) ->
+    leveled_tictac:keyto_segment32(<<Bucket/binary, Key/binary>>).

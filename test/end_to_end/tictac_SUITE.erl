@@ -5,13 +5,15 @@
 -export([
             many_put_compare/1,
             index_compare/1,
-            basic_headonly/1
+            basic_headonly/1,
+            tuplebuckets_headonly/1
             ]).
 
 all() -> [
             many_put_compare,
             index_compare,
-            basic_headonly
+            basic_headonly,
+            tuplebuckets_headonly
             ].
 
 -define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
@@ -538,6 +540,100 @@ index_compare(_Config) ->
     ok = leveled_bookie:book_close(Book2B),
     ok = leveled_bookie:book_close(Book2C),
     ok = leveled_bookie:book_close(Book2D).
+
+
+tuplebuckets_headonly(_Config) ->
+    ObjectCount = 60000,
+
+    RootPathHO = testutil:reset_filestructure("testTBHO"),
+    StartOpts1 = [{root_path, RootPathHO},
+                    {max_pencillercachesize, 16000},
+                    {sync_strategy, none},
+                    {head_only, with_lookup},
+                    {max_journalsize, 500000}],
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+
+    ObjectSpecFun =
+        fun(Op) -> 
+            fun(N) ->
+                Bucket = {<<"BucketType">>, <<"B", 0:4/integer, N:4/integer>>},
+                Key = <<"K", N:32/integer>>,
+                <<Hash:32/integer, _RestBN/bitstring>> =
+                    crypto:hash(md5, <<N:32/integer>>),
+                {Op, Bucket, Key, null, Hash}
+            end 
+        end,
+    
+    ObjectSpecL = lists:map(ObjectSpecFun(add), lists:seq(1, ObjectCount)),
+
+    SW0 = os:timestamp(),
+    ok = load_objectspecs(ObjectSpecL, 32, Bookie1),
+    io:format("Loaded an object count of ~w in ~w ms~n", 
+                [ObjectCount, timer:now_diff(os:timestamp(), SW0)/1000]),
+    
+    CheckHeadFun = 
+        fun({add, B, K, null, H}) ->
+            {ok, H} = 
+                leveled_bookie:book_headonly(Bookie1, B, K, null)
+        end,
+    lists:foreach(CheckHeadFun, ObjectSpecL),
+
+    BucketList = 
+        lists:map(fun(I) ->
+                        {<<"BucketType">>, <<"B", 0:4/integer, I:4/integer>>}
+                    end,
+                    lists:seq(0, 15)),
+
+    FoldHeadFun =
+        fun(B, {K, null}, V, Acc) ->
+            [{add, B, K, null, V}|Acc]
+        end,
+    SW1 = os:timestamp(),
+
+    {async, HeadRunner1} =
+        leveled_bookie:book_headfold(Bookie1,
+                                        ?HEAD_TAG,
+                                        {bucket_list, BucketList},
+                                        {FoldHeadFun, []},
+                                        false, false,
+                                        false),
+    ReturnedObjSpecL1 = lists:reverse(HeadRunner1()),
+    [FirstItem|_Rest] = ReturnedObjSpecL1,
+    LastItem = lists:last(ReturnedObjSpecL1),
+
+    io:format("Returned ~w objects with first ~w and last ~w in ~w ms~n",
+                [length(ReturnedObjSpecL1),
+                    FirstItem, LastItem,
+                    timer:now_diff(os:timestamp(), SW1)/1000]),
+
+    true = ReturnedObjSpecL1 == lists:sort(ObjectSpecL),
+
+    {add, {TB, B1}, K1, null, _H1} = FirstItem,
+    {add, {TB, BL}, KL, null, _HL} = LastItem,
+    SegList = [testutil:get_aae_segment({TB, B1}, K1),
+                testutil:get_aae_segment({TB, BL}, KL)],
+    
+    SW2 = os:timestamp(),
+    {async, HeadRunner2} =
+        leveled_bookie:book_headfold(Bookie1,
+                                        ?HEAD_TAG,
+                                        {bucket_list, BucketList},
+                                        {FoldHeadFun, []},
+                                        false, false,
+                                        SegList),
+    ReturnedObjSpecL2 = lists:reverse(HeadRunner2()),
+
+    io:format("Returned ~w objects using seglist in ~w ms~n",
+                [length(ReturnedObjSpecL2),
+                    timer:now_diff(os:timestamp(), SW2)/1000]),
+    
+    true = length(ReturnedObjSpecL2) < (ObjectCount/1000 + 2),
+        % Not too many false positives
+    true = lists:member(FirstItem, ReturnedObjSpecL2),
+    true = lists:member(LastItem, ReturnedObjSpecL2),
+
+    leveled_bookie:book_destroy(Bookie1).
+
 
 
 basic_headonly(_Config) ->
