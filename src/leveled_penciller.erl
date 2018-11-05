@@ -724,6 +724,22 @@ handle_call({fetch_keys,
             List ->
                 List
         end,
+    FilteredL0 = 
+        case SegmentList of
+            false ->
+                L0AsList;
+            _ ->
+                TunedList = leveled_sst:tune_seglist(SegmentList),
+                FilterFun =
+                    fun(LKV) ->
+                        CheckSeg = 
+                            leveled_sst:extract_hash(
+                                leveled_codec:strip_to_segmentonly(LKV)),
+                        lists:member(CheckSeg, TunedList)
+                    end,
+                lists:filter(FilterFun, L0AsList)
+        end,
+    
     leveled_log:log_randomtimer("P0037",
                                 [State#state.levelzero_size],
                                 SW,
@@ -742,7 +758,7 @@ handle_call({fetch_keys,
     SSTiter = lists:foldl(SetupFoldFun, [], lists:seq(0, ?MAX_LEVELS - 1)),
     Folder = 
         fun() -> 
-            keyfolder({L0AsList, SSTiter},
+            keyfolder({FilteredL0, SSTiter},
                         {StartKey, EndKey},
                         {AccFun, InitAcc},
                         {SegmentList, LastModRange0, MaxKeys})

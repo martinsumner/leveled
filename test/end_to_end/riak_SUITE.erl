@@ -3,6 +3,7 @@
 -include("include/leveled.hrl").
 -export([all/0]).
 -export([
+        basic_riak/1,
         fetchclocks_modifiedbetween/1,
         crossbucket_aae/1,
         handoff/1,
@@ -11,6 +12,7 @@
             ]).
 
 all() -> [
+            basic_riak,
             fetchclocks_modifiedbetween,
             crossbucket_aae,
             handoff,
@@ -19,6 +21,215 @@ all() -> [
             ].
 
 -define(MAGIC, 53). % riak_kv -> riak_object
+
+
+basic_riak(_Config) ->
+    basic_riak_tester(<<"B0">>, 120000),
+    basic_riak_tester({<<"Type0">>, <<"B0">>}, 80000).
+
+
+basic_riak_tester(Bucket, KeyCount) ->
+    % Key Count should be > 10K and divisible by 5
+    io:format("Basic riak test with Bucket ~w KeyCount ~w~n",
+                [Bucket, KeyCount]),
+    IndexCount = 20,
+
+    RootPath = testutil:reset_filestructure("basicRiak"),
+    StartOpts1 = [{root_path, RootPath},
+                    {max_journalsize, 500000000},
+                    {max_pencillercachesize, 24000},
+                    {sync_strategy, testutil:sync_strategy()}],
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+
+    IndexGenFun =
+        fun(ListID) ->
+            fun() ->
+                RandInt = leveled_rand:uniform(IndexCount),
+                ID = integer_to_list(ListID),
+                [{add, 
+                    list_to_binary("integer" ++ ID ++ "_int"),
+                    RandInt},
+                    {add, 
+                        list_to_binary("binary" ++ ID ++ "_bin"),
+                        <<RandInt:32/integer>>}]
+            end
+        end,
+
+    CountPerList = KeyCount div 5,
+
+    ObjList1 = 
+        testutil:generate_objects(CountPerList, 
+                                    {fixed_binary, 1}, [],
+                                    leveled_rand:rand_bytes(512),
+                                    IndexGenFun(1),
+                                    Bucket),
+    ObjList2 =
+        testutil:generate_objects(CountPerList, 
+                                    {fixed_binary, CountPerList + 1}, [],
+                                    leveled_rand:rand_bytes(512),
+                                    IndexGenFun(2),
+                                    Bucket),
+    
+    ObjList3 =
+        testutil:generate_objects(CountPerList, 
+                                    {fixed_binary, 2 * CountPerList + 1}, [],
+                                    leveled_rand:rand_bytes(512),
+                                    IndexGenFun(3),
+                                    Bucket),
+    
+    ObjList4 =
+        testutil:generate_objects(CountPerList, 
+                                    {fixed_binary, 3 * CountPerList + 1}, [],
+                                    leveled_rand:rand_bytes(512),
+                                    IndexGenFun(4),
+                                    Bucket),
+    
+    ObjList5 =
+        testutil:generate_objects(CountPerList, 
+                                    {fixed_binary, 4 * CountPerList + 1}, [],
+                                    leveled_rand:rand_bytes(512),
+                                    IndexGenFun(5),
+                                    Bucket),
+    
+    % Mix with the ordering on the load, just in case ordering hides issues
+    testutil:riakload(Bookie1, ObjList4),
+    testutil:riakload(Bookie1, ObjList1),
+    testutil:riakload(Bookie1, ObjList3),
+    testutil:riakload(Bookie1, ObjList5),
+    testutil:riakload(Bookie1, ObjList2), 
+        % This needs to stay last,
+        % as the last key of this needs to be the last key added
+        % so that headfold check, checks something in memory
+
+    % Take a subset, and do some HEAD/GET requests
+    SubList1 = lists:sublist(lists:ukeysort(1, ObjList1), 1000),
+    SubList5 = lists:sublist(lists:ukeysort(1, ObjList5), 1000),
+
+    ok = testutil:check_forlist(Bookie1, SubList1),
+    ok = testutil:check_forlist(Bookie1, SubList5),
+    ok = testutil:checkhead_forlist(Bookie1, SubList1),
+    ok = testutil:checkhead_forlist(Bookie1, SubList5),
+
+    FoldKeysFun =  fun(_B, K, Acc) -> [K|Acc] end,
+    IntIndexFold =
+        fun(Idx, Book) ->
+            fun(IC, CountAcc) ->
+                ID = integer_to_list(Idx),
+                Index = list_to_binary("integer" ++ ID ++ "_int"),
+                {async, R} = 
+                    leveled_bookie:book_indexfold(Book,
+                                                    {Bucket, <<>>},
+                                                    {FoldKeysFun, []},
+                                                    {Index, 
+                                                        IC, 
+                                                        IC},
+                                                    {true, undefined}),
+                KTL = R(),
+                CountAcc + length(KTL)
+            end
+        end,
+    BinIndexFold =
+        fun(Idx, Book) ->
+            fun(IC, CountAcc) ->
+                ID = integer_to_list(Idx),
+                Index = list_to_binary("binary" ++ ID ++ "_bin"),
+                {async, R} = 
+                    leveled_bookie:book_indexfold(Book,
+                                                    {Bucket, <<>>},
+                                                    {FoldKeysFun, []},
+                                                    {Index, 
+                                                        <<IC:32/integer>>, 
+                                                        <<IC:32/integer>>},
+                                                    {true, undefined}),
+                KTL = R(),
+                CountAcc + length(KTL)
+            end
+        end,
+
+    SWA = os:timestamp(),
+    TotalIndexEntries2 =
+        lists:foldl(IntIndexFold(2, Bookie1), 0, lists:seq(1, IndexCount)),
+    io:format("~w queries returned count=~w in ~w ms~n",
+                [IndexCount, 
+                    TotalIndexEntries2,
+                    timer:now_diff(os:timestamp(), SWA)/1000]),
+    true = TotalIndexEntries2 == length(ObjList2),
+    SWB = os:timestamp(),
+
+    TotalIndexEntries4 =
+        lists:foldl(IntIndexFold(4, Bookie1), 0, lists:seq(1, IndexCount)),
+    io:format("~w queries returned count=~w in ~w ms~n",
+                [IndexCount, 
+                    TotalIndexEntries4,
+                    timer:now_diff(os:timestamp(), SWB)/1000]),
+    true = TotalIndexEntries4 == length(ObjList4),
+    
+    SWC = os:timestamp(),
+    TotalIndexEntries3 =
+        lists:foldl(BinIndexFold(3, Bookie1), 0, lists:seq(1, IndexCount)),
+    io:format("~w queries returned count=~w in ~w ms~n",
+                [IndexCount, 
+                    TotalIndexEntries3,
+                    timer:now_diff(os:timestamp(), SWC)/1000]),
+    true = TotalIndexEntries3 == length(ObjList3),
+    
+    ok = leveled_bookie:book_close(Bookie1),
+
+    StartOpts2 = [{root_path, RootPath},
+                    {max_journalsize, 200000000},
+                    {max_pencillercachesize, 12000},
+                    {sync_strategy, testutil:sync_strategy()}],
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
+
+    ok = testutil:check_forlist(Bookie2, SubList5),
+    ok = testutil:checkhead_forlist(Bookie2, SubList1),
+    TotalIndexEntries4B =
+        lists:foldl(IntIndexFold(4, Bookie2), 0, lists:seq(1, IndexCount)),
+    true = TotalIndexEntries4B == length(ObjList4),
+    TotalIndexEntries3B =
+        lists:foldl(BinIndexFold(3, Bookie2), 0, lists:seq(1, IndexCount)),
+    true = TotalIndexEntries3B == length(ObjList3),
+
+    HeadFoldFun = fun(B, K, _Hd, Acc) -> [{B, K}|Acc] end,
+    [{_I1, Obj1, _Spc1}|_Rest1] = ObjList1,
+    [{_I2, Obj2, _Spc2}|_Rest2] = ObjList2,
+    [{_I3, Obj3, _Spc3}|_Rest3] = ObjList3,
+    [{_I4, Obj4, _Spc4}|_Rest4] = ObjList4,
+    [{_I5, Obj5, _Spc5}|_Rest5] = ObjList5,
+    {_I2L, Obj2L, _Spc2L} = lists:last(ObjList2),
+
+    SegList =
+        lists:map(fun(Obj) -> get_aae_segment(Obj) end, 
+                    [Obj1, Obj2, Obj3, Obj4, Obj5, Obj2L]),
+    BKList = 
+        lists:map(fun(Obj) -> 
+                        {testutil:get_bucket(Obj), testutil:get_key(Obj)}
+                    end, 
+                    [Obj1, Obj2, Obj3, Obj4, Obj5, Obj2L]),
+    
+    {async, HeadR} =
+        leveled_bookie:book_headfold(Bookie2, 
+                                        ?RIAK_TAG,
+                                        {HeadFoldFun, []},
+                                        true, false,
+                                        SegList),
+    
+    KLBySeg = HeadR(),
+    io:format("SegList Headfold returned ~w heads~n", [length(KLBySeg)]),
+    true = length(KLBySeg) < KeyCount div 1000, % not too many false answers
+    KLBySegRem = lists:subtract(KLBySeg, BKList),
+    true = length(KLBySeg) - length(KLBySegRem) == length(BKList),
+
+    ok = leveled_bookie:book_destroy(Bookie2).
+
+
+get_aae_segment(Obj) ->
+    get_aae_segment(testutil:get_bucket(Obj), testutil:get_key(Obj)).
+
+get_aae_segment({Type, Bucket}, Key) ->
+    leveled_tictac:keyto_segment32(<<Type/binary, Bucket/binary, Key/binary>>);
+get_aae_segment(Bucket, Key) ->
+    leveled_tictac:keyto_segment32(<<Bucket/binary, Key/binary>>).
 
 
 fetchclocks_modifiedbetween(_Config) ->

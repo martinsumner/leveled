@@ -25,6 +25,7 @@
             generate_objects/5,
             generate_objects/6,
             set_object/5,
+            get_bucket/1,
             get_key/1,
             get_value/1,
             get_vclock/1,
@@ -535,6 +536,9 @@ update_vclock(VC) ->
 actor_list() ->
     [{1, albert}, {2, bertie}, {3, clara}, {4, dave}, {5, elton},
         {6, fred}, {7, george}, {8, harry}, {9, isaac}, {10, leila}].
+
+get_bucket(Object) ->
+    Object#r_object.bucket.
 
 get_key(Object) ->
     Object#r_object.key.

@@ -36,6 +36,7 @@
         inker_reload_strategy/1,
         strip_to_seqonly/1,
         strip_to_statusonly/1,
+        strip_to_segmentonly/1,
         strip_to_keyseqonly/1,
         strip_to_indexdetails/1,
         striphead_to_v1details/1,
@@ -174,12 +175,24 @@ segment_hash(Key) when is_binary(Key) ->
 segment_hash({?RIAK_TAG, Bucket, Key, null}) 
                                     when is_binary(Bucket), is_binary(Key) ->
     segment_hash(<<Bucket/binary, Key/binary>>);
+segment_hash({?RIAK_TAG, {BucketType, Bucket}, Key, SubKey})
+                            when is_binary(BucketType), is_binary(Bucket) ->
+    segment_hash({?RIAK_TAG,
+                    <<BucketType/binary, Bucket/binary>>,
+                    Key,
+                    SubKey});
 segment_hash({?HEAD_TAG, Bucket, Key, SubK})
                     when is_binary(Bucket), is_binary(Key), is_binary(SubK) ->
     segment_hash(<<Bucket/binary, Key/binary, SubK/binary>>);
 segment_hash({?HEAD_TAG, Bucket, Key, _SubK})
                                     when is_binary(Bucket), is_binary(Key) ->
     segment_hash(<<Bucket/binary, Key/binary>>);
+% segment_hash({?HEAD_TAG, {BucketType, Bucket}, Key, SubKey})
+%                             when is_binary(BucketType), is_binary(Bucket) ->
+%     segment_hash({?HEAD_TAG,
+%                     <<BucketType/binary, Bucket/binary>>, 
+%                     Key,
+%                     SubKey});
 segment_hash(Key) ->
     segment_hash(term_to_binary(Key)).
 
@@ -206,6 +219,9 @@ strip_to_statusonly({_, V}) -> element(2, V).
 
 -spec strip_to_seqonly(ledger_kv()) -> non_neg_integer().
 strip_to_seqonly({_, V}) -> element(1, V).
+
+-spec strip_to_segmentonly(ledger_kv()) -> segment_hash().
+strip_to_segmentonly({_LK, LV}) -> element(3, LV).
 
 -spec strip_to_keyseqonly(ledger_kv()) -> {ledger_key(), integer()}.
 strip_to_keyseqonly({LK, V}) -> {LK, element(1, V)}.

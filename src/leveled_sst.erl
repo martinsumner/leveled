@@ -121,7 +121,7 @@
             sst_deleteconfirmed/1,
             sst_close/1]).
 
-
+-export([tune_seglist/1, extract_hash/1]).
 
 -record(slot_index_value, {slot_id :: integer(),
                             start_position :: integer(),
@@ -879,7 +879,7 @@ fetch(LedgerKey, Hash, State, Timings0) ->
                 State#state{blockindex_cache = BlockIndexCache}, 
                 Timings3};
         {BlockLengths, _LMD, PosBin} ->
-            PosList = find_pos(PosBin, extra_hash(Hash), [], 0),
+            PosList = find_pos(PosBin, extract_hash(Hash), [], 0),
             case PosList of 
                 [] ->
                     {_SW3, Timings3} =
@@ -1290,7 +1290,7 @@ lookup_slots(StartKey, EndKey, Tree) ->
 accumulate_positions({K, V}, {PosBinAcc, NoHashCount, HashAcc, LMDAcc}) ->
     {_SQN, H1, LMD} = leveled_codec:strip_to_indexdetails({K, V}),
     LMDAcc0 = take_max_lastmoddate(LMD, LMDAcc),
-    PosH1 = extra_hash(H1),
+    PosH1 = extract_hash(H1),
     case is_integer(PosH1) of 
         true ->
             case NoHashCount of 
@@ -1725,7 +1725,7 @@ binaryslot_get(FullBin, Key, Hash, PressMethod, IdxModDate) ->
             {BlockLengths, _LMD, PosBinIndex} =
                 extract_header(Header, IdxModDate),
             PosList = find_pos(PosBinIndex,
-                                extra_hash(Hash), 
+                                extract_hash(Hash), 
                                 [], 
                                 0),
             {fetch_value(PosList, BlockLengths, Blocks, Key, PressMethod),
@@ -1926,9 +1926,9 @@ block_offsetandlength(BlockLengths, BlockID) ->
             {B1L + B2L + B3L + B4L, B5L}
     end.
 
-extra_hash({SegHash, _ExtraHash}) when is_integer(SegHash) ->
+extract_hash({SegHash, _ExtraHash}) when is_integer(SegHash) ->
     tune_hash(SegHash);
-extra_hash(NotHash) ->
+extract_hash(NotHash) ->
     NotHash.
 
 cache_hash({_SegHash, ExtraHash}) when is_integer(ExtraHash) ->
@@ -2658,8 +2658,8 @@ indexed_list_mixedkeys_bitflip_test() ->
     ToList = binaryslot_tolist(SlotBin, native, ?INDEX_MODDATE),
     ?assertMatch(Keys, ToList),
 
-    [Pos1] = find_pos(PosBin, extra_hash(MH1), [], 0),
-    [Pos2] = find_pos(PosBin, extra_hash(MH2), [], 0),
+    [Pos1] = find_pos(PosBin, extract_hash(MH1), [], 0),
+    [Pos2] = find_pos(PosBin, extract_hash(MH2), [], 0),
     {BN1, _BP1} = revert_position(Pos1),
     {BN2, _BP2} = revert_position(Pos2),
     {Offset1, Length1} = block_offsetandlength(Header, BN1),
