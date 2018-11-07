@@ -92,6 +92,7 @@
 -define(FLIPPER32, 4294967295).
 -define(COMPRESS_AT_LEVEL, 1).
 -define(INDEX_MODDATE, true).
+-define(USE_SET_FOR_SPEED, 64).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -121,7 +122,7 @@
             sst_deleteconfirmed/1,
             sst_close/1]).
 
--export([tune_seglist/1, extract_hash/1]).
+-export([tune_seglist/1, extract_hash/1, member_check/2]).
 
 -record(slot_index_value, {slot_id :: integer(),
                             start_position :: integer(),
@@ -838,6 +839,78 @@ sst_getfilteredslots(Pid, SlotList, SegList, LowLastMod) ->
                                 infinity),
     {L, _BIC} = binaryslot_reader(SlotBins, PressMethod, IdxModDate, SegL0),
     L.
+
+
+-spec find_pos(binary(),
+                non_neg_integer()|
+                    {list, list(non_neg_integer())}|
+                    {sets, sets:set(non_neg_integer())},
+                list(non_neg_integer()),
+                non_neg_integer()) -> list(non_neg_integer()).
+%% @doc
+%% Find a list of positions where there is an element with a matching segment
+%% ID to the expected segments (which cna either be a single segment, a list of
+%% segments or a set of segments depending on size.
+find_pos(<<>>, _Hash, PosList, _Count) ->
+    PosList;
+find_pos(<<1:1/integer, PotentialHit:15/integer, T/binary>>,
+                                        Checker, PosList, Count) ->
+    case member_check(PotentialHit, Checker) of
+        true ->
+            find_pos(T, Checker, PosList ++ [Count], Count + 1);
+        false ->
+            find_pos(T, Checker, PosList, Count + 1)
+    end;
+find_pos(<<0:1/integer, NHC:7/integer, T/binary>>, Checker, PosList, Count) ->
+    find_pos(T, Checker, PosList, Count + NHC + 1).
+
+
+-spec member_check(non_neg_integer(), 
+                    non_neg_integer()|
+                        {list, list(non_neg_integer())}|
+                        {sets, sets:set(non_neg_integer())}) -> boolean().
+member_check(Hash, Hash) ->
+    true;
+member_check(Hash, {list, HashList}) ->
+    lists:member(Hash, HashList);
+member_check(Hash, {sets, HashSet}) ->
+    sets:is_element(Hash, HashSet);
+member_check(_Miss, _Checker) ->
+    false.
+
+
+extract_hash({SegHash, _ExtraHash}) when is_integer(SegHash) ->
+    tune_hash(SegHash);
+extract_hash(NotHash) ->
+    NotHash.
+
+cache_hash({_SegHash, ExtraHash}) when is_integer(ExtraHash) ->
+    ExtraHash band (?CACHE_SIZE - 1).
+
+-spec tune_hash(non_neg_integer()) -> non_neg_integer().
+%% @doc
+%% Only 15 bits of the hash is ever interesting
+tune_hash(SegHash) ->
+    SegHash band 32767.
+
+-spec tune_seglist(leveled_codec:segment_list())
+                                            -> leveled_codec:segment_list().
+%% @doc
+%% Only 15 bits of the hash is ever interesting
+tune_seglist(SegList) ->
+    case is_list(SegList) of 
+        true ->
+            SL0 = lists:usort(lists:map(fun tune_hash/1, SegList)),
+            case length(SL0) > ?USE_SET_FOR_SPEED of
+                true ->
+                    {sets, sets:from_list(SL0)};
+                false ->
+                    {list, SL0}
+            end;
+        false ->
+            false
+    end.
+
 
 %%%============================================================================
 %%% Internal Functions
@@ -1926,25 +1999,6 @@ block_offsetandlength(BlockLengths, BlockID) ->
             {B1L + B2L + B3L + B4L, B5L}
     end.
 
-extract_hash({SegHash, _ExtraHash}) when is_integer(SegHash) ->
-    tune_hash(SegHash);
-extract_hash(NotHash) ->
-    NotHash.
-
-cache_hash({_SegHash, ExtraHash}) when is_integer(ExtraHash) ->
-    ExtraHash band (?CACHE_SIZE - 1).
-
-tune_hash(SegHash) ->
-    SegHash band 32767.
-
-tune_seglist(SegList) ->
-    case is_list(SegList) of 
-        true ->
-            lists:usort(lists:map(fun tune_hash/1, SegList));
-        false ->
-            SegList
-    end.
-
 fetch_value([], _BlockLengths, _Blocks, _Key, _PressMethod) ->
     not_present;
 fetch_value([Pos|Rest], BlockLengths, Blocks, Key, PressMethod) ->
@@ -1985,23 +2039,6 @@ revert_position(Pos) ->
                         (TailPos rem SideBlockSize) + 1}
             end
     end.
-
-find_pos(<<>>, _Hash, PosList, _Count) ->
-    PosList;
-find_pos(<<1:1/integer, PotentialHit:15/integer, T/binary>>,
-                        HashList, PosList, Count) when is_list(HashList) ->
-    case lists:member(PotentialHit, HashList) of 
-        true ->
-            find_pos(T, HashList, PosList ++ [Count], Count + 1);
-        false ->
-            find_pos(T, HashList, PosList, Count + 1)
-    end;
-find_pos(<<1:1/integer, Hash:15/integer, T/binary>>, Hash, PosList, Count) ->
-    find_pos(T, Hash, PosList ++ [Count], Count + 1);
-find_pos(<<1:1/integer, _Miss:15/integer, T/binary>>, Hash, PosList, Count) ->
-    find_pos(T, Hash, PosList, Count + 1);
-find_pos(<<0:1/integer, NHC:7/integer, T/binary>>, Hash, PosList, Count) ->
-    find_pos(T, Hash, PosList, Count + NHC + 1).
 
 
 

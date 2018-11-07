@@ -213,12 +213,30 @@ basic_riak_tester(Bucket, KeyCount) ->
                                         {HeadFoldFun, []},
                                         true, false,
                                         SegList),
-    
+    SW_SL0 = os:timestamp(),
     KLBySeg = HeadR(),
-    io:format("SegList Headfold returned ~w heads~n", [length(KLBySeg)]),
+    io:format("SegList Headfold returned ~w heads in ~w ms~n", 
+                [length(KLBySeg),
+                    timer:now_diff(os:timestamp(), SW_SL0)/1000]),
     true = length(KLBySeg) < KeyCount div 1000, % not too many false answers
     KLBySegRem = lists:subtract(KLBySeg, BKList),
     true = length(KLBySeg) - length(KLBySegRem) == length(BKList),
+
+    {async, HeadRFalsePositive} =
+        leveled_bookie:book_headfold(Bookie2, 
+                                        ?RIAK_TAG,
+                                        {HeadFoldFun, []},
+                                        true, false,
+                                        SegList ++ lists:seq(1, 256)),
+                                        % Make it a large seg list
+    SW_SL1 = os:timestamp(),
+    KLByXcessSeg = HeadRFalsePositive(),
+    io:format("SegList Headfold with xcess segments returned ~w heads in ~w ms~n",
+                [length(KLByXcessSeg),
+                    timer:now_diff(os:timestamp(), SW_SL1)/1000]),
+    true = length(KLByXcessSeg) < KeyCount div 10, % Still not too many false answers
+    KLByXcessSegRem = lists:subtract(KLByXcessSeg, BKList),
+    true = length(KLByXcessSeg) - length(KLByXcessSegRem) == length(BKList),
 
     ok = leveled_bookie:book_destroy(Bookie2).
 
