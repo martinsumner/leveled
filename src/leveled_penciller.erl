@@ -735,7 +735,7 @@ handle_call({fetch_keys,
                         CheckSeg = 
                             leveled_sst:extract_hash(
                                 leveled_codec:strip_to_segmentonly(LKV)),
-                        lists:member(CheckSeg, TunedList)
+                        leveled_sst:member_check(CheckSeg, TunedList)
                     end,
                 lists:filter(FilterFun, L0AsList)
         end,
