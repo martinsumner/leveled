@@ -11,7 +11,7 @@ segments(Length) ->
         lists:foldl(fun(I, Acc) -> <<Acc/binary, (I - 1):16/integer>> end, 
                         <<>>,
                         AllSegs),
-    StartPos = random:uniform(length(AllSegs) - Length),
+    StartPos = leveled_rand:uniform(length(AllSegs) - Length),
     {<<AllSegsBin/binary, AllSegsBin/binary, 
             AllSegsBin/binary, AllSegsBin/binary>>,
         lists:sublist(AllSegs, StartPos, Length)}.
