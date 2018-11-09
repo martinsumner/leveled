@@ -66,17 +66,18 @@
             fetch_leaves/2,
             merge_trees/2,
             get_segment/2,
-            tictac_hash/2,
             export_tree/1,
             import_tree/1,
             valid_size/1,
             keyto_segment32/1,
+            keyto_doublesegment32/1,
             keyto_segment48/1,
             generate_segmentfilter_list/2,
             adjust_segmentmatch_list/3,
             merge_binaries/2,
             join_segment/2,
-            match_segment/2
+            match_segment/2,
+            tictac_hash/2 % called by kv_index_tictactree
         ]).
 
 
@@ -108,10 +109,14 @@
                         level2 :: any() % an array - but OTP compatibility
                         }).
 
--type tictactree() :: #tictactree{}.
--type segment48() :: {segment_hash, integer(), integer()}.
--type tree_extract() :: {binary(), integer(), integer(), integer(), binary()}.
--type tree_size() :: xxsmall|xsmall|small|medium|large|xlarge.
+-type tictactree() ::
+    #tictactree{}.
+-type segment48() ::
+    {segment_hash, non_neg_integer(), non_neg_integer(), non_neg_integer()}.
+-type tree_extract() ::
+    {binary(), integer(), integer(), integer(), binary()}.
+-type tree_size() :: 
+    xxsmall|xsmall|small|medium|large|xlarge.
 
 -export_type([tictactree/0, segment48/0, tree_size/0]).
 
@@ -327,7 +332,7 @@ get_segment(Hash, TreeSize) ->
 %% erlang:phash2.  If an exportable hash of the value is required this should
 %% be managed through the add_kv ExtractFun providing a pre-prepared Hash.
 tictac_hash(BinKey, Val) when is_binary(BinKey) ->
-    HashKey = keyto_segment32(BinKey),
+    {HashKeyToSeg, AltHashKey} = keyto_doublesegment32(BinKey),
     HashVal = 
         case Val of 
             {is_hash, HashedVal} ->
@@ -335,13 +340,23 @@ tictac_hash(BinKey, Val) when is_binary(BinKey) ->
             _ ->
                 erlang:phash2(Val)
         end,
-    {HashKey, HashKey bxor HashVal}.
+    {HashKeyToSeg, AltHashKey bxor HashVal}.
+
+-spec keyto_doublesegment32(binary())
+                                    -> {non_neg_integer(), non_neg_integer()}.
+%% @doc
+%% Used in tictac_hash/2 to provide an alternative hash of the key to bxor with
+%% the value, as well as the segment hash to locate the leaf of the tree to be
+%% updated
+keyto_doublesegment32(BinKey) when is_binary(BinKey) ->
+    Segment48 = keyto_segment48(BinKey),
+    {keyto_segment32(Segment48), element(4, Segment48)}.
 
 -spec keyto_segment32(any()) -> integer().
 %% @doc
 %% The first 16 bits of the segment hash used in the tictac tree should be 
 %% made up of the segment ID part (which is used to accelerate queries)
-keyto_segment32({segment_hash, SegmentID, ExtraHash}) 
+keyto_segment32({segment_hash, SegmentID, ExtraHash, _AltHash}) 
                         when is_integer(SegmentID), is_integer(ExtraHash) ->
     (ExtraHash band 65535) bsl 16 + SegmentID;
 keyto_segment32(BinKey) when is_binary(BinKey) ->
@@ -354,9 +369,11 @@ keyto_segment32(Key) ->
 %% Produce a segment with an Extra Hash part - for tictac use most of the 
 %% ExtraHash will be discarded
 keyto_segment48(BinKey) ->
-    <<SegmentID:16/integer, ExtraHash:32/integer, _Rest/binary>> = 
-        crypto:hash(md5, BinKey),
-    {segment_hash, SegmentID, ExtraHash}.
+    <<SegmentID:16/integer,
+        ExtraHash:32/integer,
+        AltHash:32/integer,
+        _Rest/binary>> =  crypto:hash(md5, BinKey),
+    {segment_hash, SegmentID, ExtraHash, AltHash}.
 
 -spec generate_segmentfilter_list(list(integer()), tree_size())  
                                                     -> false|list(integer()). 
