@@ -70,6 +70,7 @@
             import_tree/1,
             valid_size/1,
             keyto_segment32/1,
+            keyto_doublesegment32/1,
             keyto_segment48/1,
             generate_segmentfilter_list/2,
             adjust_segmentmatch_list/3,
