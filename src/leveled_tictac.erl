@@ -75,7 +75,8 @@
             adjust_segmentmatch_list/3,
             merge_binaries/2,
             join_segment/2,
-            match_segment/2
+            match_segment/2,
+            tictac_hash/2 % called by kv_index_tictactree
         ]).
 
 
