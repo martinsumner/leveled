@@ -1719,11 +1719,14 @@ read_slots(Handle, SlotList, {SegList, LowLastMod, BlockIndexCache},
                                                         PressMethod,
                                                         IdxModDate,
                                                         []),
+                                    % There is no range passed through to the
+                                    % binaryslot_reader, so this needs to
+                                    % filtered
                                     FilterFun =
                                         fun(KV) -> in_range(KV, SK, EK) end,
                                     Acc ++ lists:filter(FilterFun, KVL)
-                                        % Note check_blocks shouldreturn [] if
-                                        % PositionList is empty
+                                    % Note check_blocks shouldreturn [] if
+                                    % PositionList is empty
                             end
                     end
             end 
@@ -1733,6 +1736,8 @@ read_slots(Handle, SlotList, {SegList, LowLastMod, BlockIndexCache},
 
 -spec in_range(leveled_codec:ledger_kv(),
                 range_endpoint(), range_endpoint()) -> boolean().
+%% @doc
+%% Is the ledger key in the range.
 in_range({_LK, _LV}, all, all) ->
     true;
 in_range({LK, _LV}, all, EK) ->
