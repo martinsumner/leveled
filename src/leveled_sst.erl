@@ -1710,6 +1710,8 @@ read_slots(Handle, SlotList, {SegList, LowLastMod, BlockIndexCache},
                                     % Need to find just the right keys
                                     PositionList = 
                                         find_pos(BlockIdx, SegList, [], 0),
+                                    % Note check_blocks should return [] if
+                                    % PositionList is empty (which it may be)
                                     KVL =
                                         check_blocks(PositionList,
                                                         {Handle, SP}, 
@@ -1720,13 +1722,11 @@ read_slots(Handle, SlotList, {SegList, LowLastMod, BlockIndexCache},
                                                         IdxModDate,
                                                         []),
                                     % There is no range passed through to the
-                                    % binaryslot_reader, so this needs to
-                                    % filtered
+                                    % binaryslot_reader, so these results need
+                                    % to be filtered
                                     FilterFun =
                                         fun(KV) -> in_range(KV, SK, EK) end,
                                     Acc ++ lists:filter(FilterFun, KVL)
-                                    % Note check_blocks shouldreturn [] if
-                                    % PositionList is empty
                             end
                     end
             end 
@@ -1760,8 +1760,25 @@ read_slotlist(SlotList, Handle) ->
                                     list({integer(), binary()})}.
 %% @doc
 %% Read the binary slots converting them to {K, V} pairs if they were not 
-%% already {K, V} pairs
+%% already {K, V} pairs.  If they are already {K, V} pairs it is assumed
+%% that they have already been range checked before extraction.
+%%
+%% Keys which are still to be extracted from the slot, are accompanied at
+%% this function by the range against which the keys need to be checked. 
+%% This range is passed with the slot to binaryslot_trimmedlist which should
+%% open the slot block by block, filtering individual keys where the endpoints
+%% of the block are outside of the range, and leaving blocks already proven to
+%% be outside of the range unopened.
 binaryslot_reader(SlotBinsToFetch, PressMethod, IdxModDate, SegList) ->
+    % Two accumulators are added.
+    % One to collect the list of keys and values found in the binary slots
+    % (subject to range filtering if the slot is still deserialised at this
+    % stage.  
+    % The second accumulator extracts the header information from the slot, so
+    % that the cache can be built for that slot.  This is used by the handling
+    % of get_kvreader calls.  This means that slots which are only used in
+    % range queries can still populate their block_index caches (on the FSM
+    % loop state), and those caches can be used for future queries.
     binaryslot_reader(SlotBinsToFetch, 
                         PressMethod, IdxModDate, SegList, [], []).
 
@@ -1769,6 +1786,11 @@ binaryslot_reader([], _PressMethod, _IdxModDate, _SegList, Acc, BIAcc) ->
     {Acc, BIAcc};
 binaryslot_reader([{SlotBin, ID, SK, EK}|Tail], 
                     PressMethod, IdxModDate, SegList, Acc, BIAcc) ->
+    % The start key and end key here, may not the start key and end key the
+    % application passed into the query.  If the slot is known to lie entirely
+    % inside the range, on either of both sides, the SK and EK may be
+    % substituted for the 'all' key work to indicate there is no need for
+    % entries in this slot to be trimmed from either or both sides.
     {TrimmedL, BICache} = 
         binaryslot_trimmedlist(SlotBin, 
                                 SK, EK, 
@@ -1783,6 +1805,8 @@ binaryslot_reader([{SlotBin, ID, SK, EK}|Tail],
                         [{ID, BICache}|BIAcc]);
 binaryslot_reader([{K, V}|Tail], 
                     PressMethod, IdxModDate, SegList, Acc, BIAcc) ->
+    % These entries must already have been filtered for membership inside any
+    % range used in the query.
     binaryslot_reader(Tail, 
                         PressMethod, IdxModDate, SegList,
                         Acc ++ [{K, V}], BIAcc).
