@@ -95,10 +95,22 @@ bucket_list(SnapFun, Tag, FoldBucketsFun, InitAcc, MaxBuckets) ->
             BucketAcc = 
                 get_nextbucket(null, null, 
                                 Tag, LedgerSnapshot, [], {0, MaxBuckets}),
-            ok = leveled_penciller:pcl_close(LedgerSnapshot),
-            lists:foldl(fun({B, _K}, Acc) -> FoldBucketsFun(B, Acc) end,
-                            InitAcc,
-                            BucketAcc)
+            AfterFun =
+                fun() ->
+                    ok = leveled_penciller:pcl_close(LedgerSnapshot)
+                end,
+            FoldRunner =
+                fun() ->
+                    lists:foldr(fun({B, _K}, Acc) -> FoldBucketsFun(B, Acc) end,
+                                    InitAcc,
+                                    BucketAcc)
+                        % Buckets in reverse alphabetical order so foldr
+                end,
+            % For this fold, the fold over the store is actually completed
+            % before results are passed to the FoldBucketsFun to be
+            % accumulated.  Using a throw to exit the fold early will not
+            % in this case save significant time.
+            wrap_runner(FoldRunner, AfterFun)
         end,
     {async, Runner}.
 

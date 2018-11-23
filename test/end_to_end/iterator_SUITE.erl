@@ -182,7 +182,57 @@ breaking_folds(_Config) ->
                                         sqn_order),
     ObjSizeList2_SO = lists:reverse(CatchingFold(ObjFolderTo1K)),
     io:format("Object fold with result size ~w~n", [length(ObjSizeList2_SO)]),
-    true = 1000 == length(ObjSizeList2_SO),  
+    true = 1000 == length(ObjSizeList2_SO),
+
+    ObjL2 = testutil:generate_objects(10,
+                                        binary_uuid,
+                                        [],
+                                        ObjectGen,
+                                        IndexGen,
+                                        "B2"),
+    ObjL3 = testutil:generate_objects(10,
+                                        binary_uuid,
+                                        [],
+                                        ObjectGen,
+                                        IndexGen,
+                                        "B3"),
+    ObjL4 = testutil:generate_objects(10,
+                                        binary_uuid,
+                                        [],
+                                        ObjectGen,
+                                        IndexGen,
+                                        "B4"),
+    testutil:riakload(Bookie1, ObjL2),
+    testutil:riakload(Bookie1, ObjL3),
+    testutil:riakload(Bookie1, ObjL4),
+
+    FBAccT = {fun(B, Acc) -> [B|Acc] end, []},
+    {async, BucketFolder} = 
+        leveled_bookie:book_bucketlist(Bookie1, ?RIAK_TAG, FBAccT, all),
+    BucketList1 = lists:reverse(BucketFolder()),
+    io:format("bucket list with result size ~w~n", [length(BucketList1)]),
+    true = 4 == length(BucketList1),
+
+    StopAt3Fun =
+        fun(B, Acc) ->
+            Acc0 = [B|Acc],
+            case B of
+                <<"B3">> ->
+                    throw({stop_fold, Acc0});
+                _ ->
+                    Acc0
+            end
+        end,
+    
+    {async, StopAt3BucketFolder} = 
+        leveled_bookie:book_bucketlist(Bookie1,
+                                        ?RIAK_TAG,
+                                        {StopAt3Fun, []},
+                                        all),
+    BucketListSA3 = lists:reverse(CatchingFold(StopAt3BucketFolder)),
+    io:format("bucket list with result ~w~n", [BucketListSA3]),
+    true = [<<"B2">>, <<"B3">>] == BucketListSA3,
+
 
     ok = leveled_bookie:book_close(Bookie1),
     testutil:reset_filestructure().
