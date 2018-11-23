@@ -451,7 +451,7 @@ pcl_fetchkeysbysegment(Pid, StartKey, EndKey, AccFun, InitAcc,
                     {fetch_keys, 
                         StartKey, EndKey, AccFun, InitAcc0, 
                         SegmentList, LastModRange, MaxKeys, 
-                        as_pcl},
+                        by_runner},
                     infinity).
 
 -spec pcl_fetchnextkey(pid(), 
