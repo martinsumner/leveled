@@ -782,7 +782,7 @@ multibucket_fold(_Config) ->
                                         ?RIAK_TAG, 
                                         {FoldBucketsFun, []}, 
                                         all),
-    BucketList = Folder(),
+    BucketList = lists:reverse(Folder()),
     ExpectedBucketList = 
         [{<<"Type1">>, <<"Bucket1">>}, {<<"Type2">>, <<"Bucket4">>}, 
             <<"Bucket2">>, <<"Bucket3">>],
