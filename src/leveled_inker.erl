@@ -274,7 +274,7 @@ ink_close(Pid) ->
 ink_doom(Pid) ->
     gen_server:call(Pid, doom, 60000).
 
--spec ink_fold(pid(), integer(), {fun(), fun(), fun()}, any()) -> ok.
+-spec ink_fold(pid(), integer(), {fun(), fun(), fun()}, any()) -> fun().
 %% @doc
 %% Fold over the journal from a starting sequence number (MinSQN), passing 
 %% in three functions and a snapshot of the penciller.  The Fold functions
@@ -307,8 +307,14 @@ ink_doom(Pid) ->
 %% The BatchFun is a two arity function that should take as inputs:
 %% An overall accumulator
 %% The batch accumulator built over the sub-fold
+%%
+%% The output of ink_fold is a folder, that may actually run the fold.  The
+%% type of the output of the function when called will depend on the type of
+%% the accumulator
 ink_fold(Pid, MinSQN, FoldFuns, Acc) ->
-    gen_server:call(Pid, {fold, MinSQN, FoldFuns, Acc}, infinity).
+    gen_server:call(Pid,
+                    {fold, MinSQN, FoldFuns, Acc, by_runner},
+                    infinity).
 
 -spec ink_loadpcl(pid(), integer(), fun(), pid()) -> ok.
 %%
@@ -333,7 +339,8 @@ ink_loadpcl(Pid, MinSQN, FilterFun, Penciller) ->
                     {fold, 
                         MinSQN, 
                         {FilterFun, InitAccFun, BatchFun}, 
-                        ok}, 
+                        ok,
+                        as_ink},
                     infinity).
 
 -spec ink_compactjournal(pid(), pid(), integer()) -> ok.
@@ -492,14 +499,22 @@ handle_call({key_check, Key, SQN}, _From, State) ->
 handle_call({fold, 
                 StartSQN, 
                 {FilterFun, InitAccFun, FoldFun}, 
-                Acc}, _From, State) ->
+                Acc,
+                By}, _From, State) ->
     Manifest = lists:reverse(leveled_imanifest:to_list(State#state.manifest)),
-    Reply = 
-        fold_from_sequence(StartSQN, 
-                            {FilterFun, InitAccFun, FoldFun}, 
-                            Acc, 
-                            Manifest),
-    {reply, Reply, State};
+    Folder = 
+        fun() ->
+            fold_from_sequence(StartSQN, 
+                                {FilterFun, InitAccFun, FoldFun}, 
+                                Acc, 
+                                Manifest)
+        end,
+    case By of
+        as_ink ->
+            {reply, Folder(), State};
+        by_runner ->
+            {reply, Folder, State}
+    end;
 handle_call({register_snapshot, Requestor}, _From , State) ->
     Rs = [{Requestor,
             State#state.manifest_sqn}|State#state.registered_snapshots],

@@ -520,56 +520,34 @@ book_headonly(Pid, Bucket, Key, SubKey) ->
 
 -spec book_returnfolder(pid(), tuple()) -> {async, fun()}.
 
-%% @doc Snapshots/Clones
+%% @doc Folds over store - deprecated
+%% The tuple() is a query, and book_returnfolder will return an {async, Folder}
+%% whereby calling Folder() will run a particular fold over a snapshot of the
+%% store, and close the snapshot when complete
 %%
-%% If there is a snapshot request (e.g. to iterate over the keys) the Bookie
-%% may request a clone of the Penciller, or clones of both the Penciller and
-%% the Inker should values also need to be accessed.  The snapshot clone is 
-%% made available through a "runner" - a new trasnportable PID through which
-%% the previous state of the store can be queried.  So, for example, a 
-%% riak_kv_vnode_worker in the pool could host the runner.
-%%
-%% The clone is seeded with the manifest SQN.  The clone should be registered
-%% with the real Inker/Penciller, so that the real Inker/Penciller may prevent
-%% the deletion of files still in use by a snapshot clone.
-%%
-%% Iterators should de-register themselves from the Penciller on completion.
-%% Iterators should be automatically release after a timeout period.  A file
-%% can only be deleted from the Ledger if it is no longer in the manifest, and
-%% there are no registered iterators from before the point the file was
-%% removed from the manifest.
-%%
-%% Clones are simply new gen_servers with copies of the relevant
-%% StateData.
-%%
-%% There are a series of specific folders implemented that provide pre-canned
-%% snapshot functionality, more folders can be seen in the get_runner/2 
-%% function:
-%%
-%% {bucket_stats, Bucket}  -> return a key count and total object size within
-%% a bucket
-%% {riakbucket_stats, Bucket} -> as above, but for buckets with the Riak Tag
-%% {bucket_list, Tag, {FoldKeysFun, Acc}} -> if we assume buckets and
-%% keys are binaries, provides a fast bucket list function
-%% {index_query,
-%%        Constraint,
-%%        {FoldKeysFun, Acc},
-%%        {IdxField, StartValue, EndValue},
-%%        {ReturnTerms, TermRegex}} -> secondray index query
-%% {keylist, Tag, {FoldKeysFun, Acc}} -> list all keys with tag
-%% {keylist, Tag, Bucket, {FoldKeysFun, Acc}} -> list all keys within given
-%% bucket
-%% {foldobjects_bybucket, Tag, Bucket, FoldObjectsFun} -> fold over all objects
-%% in a given bucket
-%% {foldobjects_byindex,
-%%        Tag,
-%%        Bucket,
-%%        {Field, FromTerm, ToTerm},
-%%        FoldObjectsFun} -> fold over all objects with an entry in a given
-%% range on a given index
+%% For any new application requiring a fold - use the API below instead, and
+%% one of:
+%% - book_indexfold
+%% - book_bucketlist
+%% - book_keylist
+%% - book_headfold
+%% - book_objectfold
 
 book_returnfolder(Pid, RunnerType) ->
     gen_server:call(Pid, {return_runner, RunnerType}, infinity).
+
+%% Different runner types for async queries:
+%% - book_indexfold
+%% - book_bucketlist
+%% - book_keylist
+%% - book_headfold
+%% - book_objectfold
+%%
+%% See individual instructions for each one.  All folds can be completed early
+%% by using a fold_function that throws an exception when some threshold is
+%% reached - and a worker that catches that exception.
+%%
+%% See test/end_to_end/iterator_SUITE:breaking_folds/1
 
 %% @doc Builds and returns an `{async, Runner}' pair for secondary
 %% index queries. Calling `Runner' will fold over keys (ledger) tagged

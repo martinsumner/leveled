@@ -95,10 +95,22 @@ bucket_list(SnapFun, Tag, FoldBucketsFun, InitAcc, MaxBuckets) ->
             BucketAcc = 
                 get_nextbucket(null, null, 
                                 Tag, LedgerSnapshot, [], {0, MaxBuckets}),
-            ok = leveled_penciller:pcl_close(LedgerSnapshot),
-            lists:foldl(fun({B, _K}, Acc) -> FoldBucketsFun(B, Acc) end,
-                            InitAcc,
-                            BucketAcc)
+            AfterFun =
+                fun() ->
+                    ok = leveled_penciller:pcl_close(LedgerSnapshot)
+                end,
+            FoldRunner =
+                fun() ->
+                    lists:foldr(fun({B, _K}, Acc) -> FoldBucketsFun(B, Acc) end,
+                                    InitAcc,
+                                    BucketAcc)
+                        % Buckets in reverse alphabetical order so foldr
+                end,
+            % For this fold, the fold over the store is actually completed
+            % before results are passed to the FoldBucketsFun to be
+            % accumulated.  Using a throw to exit the fold early will not
+            % in this case save significant time.
+            wrap_runner(FoldRunner, AfterFun)
         end,
     {async, Runner}.
 
@@ -374,14 +386,19 @@ foldobjects_allkeys(SnapFun, Tag, FoldObjectsFun, sqn_order) ->
                     lists:foldr(ObjFun, ObjAcc, BatchAcc)
                 end,
             
-            Acc = 
+            InkFolder = 
                 leveled_inker:ink_fold(JournalSnapshot, 
-                                        0,
-                                        {FilterFun, InitAccFun, BatchFoldFun},
-                                        InitAcc),
-            ok = leveled_penciller:pcl_close(LedgerSnapshot),
-            ok = leveled_inker:ink_close(JournalSnapshot),
-            Acc 
+                                            0,
+                                            {FilterFun,
+                                                InitAccFun,
+                                                BatchFoldFun},
+                                            InitAcc),
+            AfterFun = 
+                fun() ->
+                    ok = leveled_penciller:pcl_close(LedgerSnapshot),
+                    ok = leveled_inker:ink_close(JournalSnapshot)
+                end,
+            wrap_runner(InkFolder, AfterFun) 
         end,
     {async, Folder}.
             
@@ -535,14 +552,12 @@ foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch,
     Folder =
         fun() ->
             {ok, LedgerSnapshot, JournalSnapshot} = SnapFun(),
-
             AccFun =
                 accumulate_objects(FoldFun,
                                     JournalSnapshot,
                                     Tag,
                                     DeferredFetch),
-            
-            ListFoldFun = 
+            FoldFunGen = 
                 fun({StartKey, EndKey}, FoldAcc) ->
                     leveled_penciller:pcl_fetchkeysbysegment(LedgerSnapshot,
                                                                 StartKey,
@@ -553,15 +568,24 @@ foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch,
                                                                 LastModRange,
                                                                 LimitByCount)
                 end,
-            Acc = lists:foldl(ListFoldFun, InitAcc0, KeyRanges),
-            ok = leveled_penciller:pcl_close(LedgerSnapshot),
-            case DeferredFetch of 
-                {true, false} ->
-                    ok;
-                _ ->
-                    ok = leveled_inker:ink_close(JournalSnapshot)
-            end,
-            Acc
+            AfterFun = 
+                fun() ->
+                    ok = leveled_penciller:pcl_close(LedgerSnapshot),
+                    case DeferredFetch of 
+                        {true, false} ->
+                            ok;
+                        _ ->
+                            ok = leveled_inker:ink_close(JournalSnapshot)
+                    end
+                end,
+            ListFoldFun = 
+                fun(KeyRange, Acc) ->
+                    Folder = FoldFunGen(KeyRange, Acc),
+                    Folder()
+                end,
+            FolderToWrap =
+                fun() -> lists:foldl(ListFoldFun, InitAcc0, KeyRanges) end,
+            wrap_runner(FolderToWrap, AfterFun)
         end,
     {async, Folder}.
 
@@ -788,7 +812,6 @@ wrap_runner(FoldAction, AfterAction) ->
         throw(Throw)
     after AfterAction()
     end.
-
 
 
 %%%============================================================================

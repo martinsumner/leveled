@@ -6,7 +6,8 @@
 -define(KEY_ONLY, {false, undefined}).
 
 -export([all/0]).
--export([single_object_with2i/1,
+-export([breaking_folds/1,
+            single_object_with2i/1,
             small_load_with2i/1,
             query_count/1,
             multibucket_fold/1,
@@ -14,6 +15,7 @@
             rotating_objects/1]).
 
 all() -> [
+            breaking_folds,
             single_object_with2i,
             small_load_with2i,
             query_count,
@@ -21,6 +23,220 @@ all() -> [
             rotating_objects,
             foldobjects_bybucket_range
             ].
+
+
+breaking_folds(_Config) ->
+    % Run various iterators and show that they can be broken by throwing an
+    % exception from within the fold
+    KeyCount = 10000,
+
+    RootPath = testutil:reset_filestructure(),
+    StartOpts1 = [{root_path, RootPath},
+                    {max_journalsize, 10000000},
+                    {sync_strategy, testutil:sync_strategy()}],
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+    ObjectGen = testutil:get_compressiblevalue_andinteger(),
+    IndexGen = testutil:get_randomindexes_generator(8),
+    ObjL1 = testutil:generate_objects(KeyCount,
+                                        binary_uuid,
+                                        [],
+                                        ObjectGen,
+                                        IndexGen),
+    testutil:riakload(Bookie1, ObjL1),
+
+    % Find all keys index, and then same again but stop at a midpoint using a
+    % throw
+    {async, IdxFolder} =
+        leveled_bookie:book_indexfold(Bookie1,
+                                        list_to_binary("Bucket"), 
+                                        {fun testutil:foldkeysfun/3, []}, 
+                                        {"idx1_bin", "#", "|"},
+                                        {true, undefined}),
+    KeyList1 = lists:reverse(IdxFolder()),
+    io:format("Index fold with result size ~w~n", [length(KeyList1)]),
+    true = KeyCount == length(KeyList1),
+
+
+    {MidTerm, MidKey} = lists:nth(KeyCount div 2, KeyList1),
+    
+    FoldKeyThrowFun =
+        fun(_B, {Term, Key}, Acc) ->
+            case {Term, Key} > {MidTerm, MidKey} of
+                true ->
+                    throw({stop_fold, Acc});
+                false ->
+                    [{Term, Key}|Acc]
+            end
+        end,
+    {async, IdxFolderToMidK} =
+        leveled_bookie:book_indexfold(Bookie1,
+                                        list_to_binary("Bucket"), 
+                                        {FoldKeyThrowFun, []}, 
+                                        {"idx1_bin", "#", "|"},
+                                        {true, undefined}),
+    CatchingFold =
+        fun(AsyncFolder) ->
+            try
+                AsyncFolder()
+            catch
+                throw:{stop_fold, Acc} ->
+                    Acc
+            end
+        end,
+
+    KeyList2 = lists:reverse(CatchingFold(IdxFolderToMidK)),
+    io:format("Index fold with result size ~w~n", [length(KeyList2)]),
+    true = KeyCount div 2 == length(KeyList2),
+
+
+    HeadFoldFun = 
+        fun(_B, K, PO, Acc) ->
+            {proxy_object, _MDBin, Size, _FF} = binary_to_term(PO),
+            [{K, Size}|Acc]
+        end,
+    {async, HeadFolder} = 
+        leveled_bookie:book_headfold(Bookie1,
+                                        ?RIAK_TAG, 
+                                        {HeadFoldFun, []}, 
+                                        true, true, false),
+    KeySizeList1 = lists:reverse(HeadFolder()),
+    io:format("Head fold with result size ~w~n", [length(KeySizeList1)]),
+    true = KeyCount == length(KeySizeList1),
+
+    {MidHeadKey, _MidSize} = lists:nth(KeyCount div 2, KeySizeList1),
+    FoldThrowFun =
+        fun(FoldFun) ->
+            fun(B, K, PO, Acc) ->
+                case K > MidHeadKey of
+                    true ->
+                        throw({stop_fold, Acc});
+                    false ->
+                        FoldFun(B, K, PO, Acc)
+                end
+            end
+        end,
+    {async, HeadFolderToMidK} = 
+        leveled_bookie:book_headfold(Bookie1,
+                                        ?RIAK_TAG, 
+                                        {FoldThrowFun(HeadFoldFun), []}, 
+                                        true, true, false),
+    KeySizeList2 = lists:reverse(CatchingFold(HeadFolderToMidK)),
+    io:format("Head fold with result size ~w~n", [length(KeySizeList2)]),
+    true = KeyCount div 2 == length(KeySizeList2),    
+
+    ObjFoldFun = 
+        fun(_B, K, V, Acc) ->
+            [{K,byte_size(V)}|Acc]
+        end,
+    {async, ObjectFolderKO} = 
+        leveled_bookie:book_objectfold(Bookie1,
+                                        ?RIAK_TAG,
+                                        {ObjFoldFun, []},
+                                        false,
+                                        key_order),
+    ObjSizeList1 = lists:reverse(ObjectFolderKO()),
+    io:format("Obj fold with result size ~w~n", [length(ObjSizeList1)]),
+    true = KeyCount == length(ObjSizeList1),
+
+    {async, ObjFolderToMidK} = 
+        leveled_bookie:book_objectfold(Bookie1,
+                                        ?RIAK_TAG, 
+                                        {FoldThrowFun(ObjFoldFun), []}, 
+                                        false,
+                                        key_order),
+    ObjSizeList2 = lists:reverse(CatchingFold(ObjFolderToMidK)),
+    io:format("Object fold with result size ~w~n", [length(ObjSizeList2)]),
+    true = KeyCount div 2 == length(ObjSizeList2),  
+
+    % Object folds which are SQN order use a different path through the code,
+    % so testing that here.  Note that it would not make sense to have a fold
+    % that was terminated by reaching a point in the key range .. as results
+    % will not be passed to the fold function in key order
+    {async, ObjectFolderSO} = 
+        leveled_bookie:book_objectfold(Bookie1,
+                                        ?RIAK_TAG,
+                                        {ObjFoldFun, []},
+                                        false,
+                                        sqn_order),
+    ObjSizeList1_SO = lists:reverse(ObjectFolderSO()),
+    io:format("Obj fold with result size ~w~n", [length(ObjSizeList1_SO)]),
+    true = KeyCount == length(ObjSizeList1_SO),
+
+    % Exit fold when we've reached a thousand accumulated obects
+    FoldThrowThousandFun =
+        fun(FoldFun) ->
+            fun(B, K, PO, Acc) ->
+                case length(Acc) == 1000 of
+                    true ->
+                        throw({stop_fold, Acc});
+                    false ->
+                        FoldFun(B, K, PO, Acc)
+                end
+            end
+        end,
+    {async, ObjFolderTo1K} = 
+        leveled_bookie:book_objectfold(Bookie1,
+                                        ?RIAK_TAG, 
+                                        {FoldThrowThousandFun(ObjFoldFun), []}, 
+                                        false,
+                                        sqn_order),
+    ObjSizeList2_SO = lists:reverse(CatchingFold(ObjFolderTo1K)),
+    io:format("Object fold with result size ~w~n", [length(ObjSizeList2_SO)]),
+    true = 1000 == length(ObjSizeList2_SO),
+
+    ObjL2 = testutil:generate_objects(10,
+                                        binary_uuid,
+                                        [],
+                                        ObjectGen,
+                                        IndexGen,
+                                        "B2"),
+    ObjL3 = testutil:generate_objects(10,
+                                        binary_uuid,
+                                        [],
+                                        ObjectGen,
+                                        IndexGen,
+                                        "B3"),
+    ObjL4 = testutil:generate_objects(10,
+                                        binary_uuid,
+                                        [],
+                                        ObjectGen,
+                                        IndexGen,
+                                        "B4"),
+    testutil:riakload(Bookie1, ObjL2),
+    testutil:riakload(Bookie1, ObjL3),
+    testutil:riakload(Bookie1, ObjL4),
+
+    FBAccT = {fun(B, Acc) -> [B|Acc] end, []},
+    {async, BucketFolder} = 
+        leveled_bookie:book_bucketlist(Bookie1, ?RIAK_TAG, FBAccT, all),
+    BucketList1 = lists:reverse(BucketFolder()),
+    io:format("bucket list with result size ~w~n", [length(BucketList1)]),
+    true = 4 == length(BucketList1),
+
+    StopAt3Fun =
+        fun(B, Acc) ->
+            Acc0 = [B|Acc],
+            case B of
+                <<"B3">> ->
+                    throw({stop_fold, Acc0});
+                _ ->
+                    Acc0
+            end
+        end,
+    
+    {async, StopAt3BucketFolder} = 
+        leveled_bookie:book_bucketlist(Bookie1,
+                                        ?RIAK_TAG,
+                                        {StopAt3Fun, []},
+                                        all),
+    BucketListSA3 = lists:reverse(CatchingFold(StopAt3BucketFolder)),
+    io:format("bucket list with result ~w~n", [BucketListSA3]),
+    true = [<<"B2">>, <<"B3">>] == BucketListSA3,
+
+
+    ok = leveled_bookie:book_close(Bookie1),
+    testutil:reset_filestructure().
+
 
 
 single_object_with2i(_Config) ->
@@ -566,7 +782,7 @@ multibucket_fold(_Config) ->
                                         ?RIAK_TAG, 
                                         {FoldBucketsFun, []}, 
                                         all),
-    BucketList = Folder(),
+    BucketList = lists:reverse(Folder()),
     ExpectedBucketList = 
         [{<<"Type1">>, <<"Bucket1">>}, {<<"Type2">>, <<"Bucket4">>}, 
             <<"Bucket2">>, <<"Bucket3">>],
