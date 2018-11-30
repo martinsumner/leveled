@@ -11,7 +11,9 @@
             log_timer/3,
             log_randomtimer/4]).         
 
--define(LOG_LEVEL, [info, warn, error, critical]).
+-define(LOG_LEVEL, [debug, info, warn, error, critical]).
+
+-define(DEFAULT_LOG_LEVEL, error).
 
 -define(LOGBASE, [
 
@@ -377,12 +379,12 @@ log(LogReference, Subs) ->
 log(LogRef, Subs, SupportedLogLevels) ->
     case lists:keyfind(LogRef, 1, ?LOGBASE) of
         {LogRef, {LogLevel, LogText}} ->
-            case lists:member(LogLevel, SupportedLogLevels) of
+            case should_i_log(LogLevel, SupportedLogLevels) of
                 true ->
                     io:format(format_time()
-                                ++ " " ++ LogRef ++ " ~w "
-                                ++ LogText ++ "~n",
-                                [self()|Subs]);
+                              ++ " " ++ LogRef ++ " ~w "
+                              ++ LogText ++ "~n",
+                              [self()|Subs]);
                 false ->
                     ok
             end;
@@ -390,6 +392,17 @@ log(LogRef, Subs, SupportedLogLevels) ->
             ok
     end.
 
+should_i_log(LogLevel, Levels) ->
+    case application:get_env(leveled, log_level, ?DEFAULT_LOG_LEVEL) of
+        LogLevel -> true;
+        CurLevel ->
+            is_active_level(Levels, CurLevel, LogLevel)
+    end.
+
+is_active_level([L|_], L, _) -> true;
+is_active_level([L|_], _, L) -> false;
+is_active_level([_|T], C, L) -> is_active_level(T, C, L);
+is_active_level([]   , _, _) -> false.
 
 log_timer(LogReference, Subs, StartTime) ->
     log_timer(LogReference, Subs, StartTime, ?LOG_LEVEL).
@@ -397,7 +410,7 @@ log_timer(LogReference, Subs, StartTime) ->
 log_timer(LogRef, Subs, StartTime, SupportedLogLevels) ->
     case lists:keyfind(LogRef, 1, ?LOGBASE) of
         {LogRef, {LogLevel, LogText}} ->
-            case lists:member(LogLevel, SupportedLogLevels) of
+            case should_i_log(LogLevel, SupportedLogLevels) of
                 true ->
                     MicroS = timer:now_diff(os:timestamp(), StartTime),
                     {Unit, Time} = case MicroS of
