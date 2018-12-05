@@ -57,6 +57,9 @@
     {"B0018",
         {info, "Positive HEAD responses timed with sample_count=~w and "
                 ++ " pcl_time=~w rsp_time=~w"}},
+    {"B0019",
+        {warn, "Use of book_indexfold with constraint of Bucket ~w with "
+                    ++ "no StartKey is deprecated"}},
 
     {"R0001",
         {debug, "Object fold to process batch of ~w objects"}},

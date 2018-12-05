@@ -610,13 +610,13 @@ book_returnfolder(Pid, RunnerType) ->
 %% still closing down the snapshot).  This may be used, for example, to
 %% curtail a fold in the application at max_results
 -spec book_indexfold(pid(),
-                     Constraint:: {Bucket, Key} | Bucket,
+                     Constraint:: {Bucket, StartKey},
                      FoldAccT :: {FoldFun, Acc},
                      Range :: {IndexField, Start, End},
                      TermHandling :: {ReturnTerms, TermRegex}) ->
                             {async, Runner::fun()}
                                 when Bucket::term(),
-                                     Key::term(),
+                                     StartKey::term(),
                                      FoldFun::fun((Bucket, Key | {IndexVal, Key}, Acc) -> Acc),
                                      Acc::term(),
                                      IndexField::term(),
@@ -626,10 +626,19 @@ book_returnfolder(Pid, RunnerType) ->
                                      ReturnTerms::boolean(),
                                      TermRegex :: leveled_codec:regular_expression().
 
-book_indexfold(Pid, Constraint, FoldAccT, Range, TermHandling) ->
+book_indexfold(Pid, Constraint, FoldAccT, Range, TermHandling)
+                                                when is_tuple(Constraint) ->
     RunnerType = 
         {index_query, Constraint, FoldAccT, Range, TermHandling},
-    book_returnfolder(Pid, RunnerType).
+    book_returnfolder(Pid, RunnerType);
+book_indexfold(Pid, Bucket, FoldAccT, Range, TermHandling) ->
+    % StartKey must be specified to avoid confusion when bucket is a tuple.
+    % Use an empty StartKey if no StartKey is required (e.g. <<>>).  In a
+    % future release this code branch may be removed, and such queries may
+    % instead return `error`.  For now null is assumed to be lower than any
+    % key
+    leveled_log:log("B0019", [Bucket]),
+    book_indexfold(Pid, {Bucket, null}, FoldAccT, Range, TermHandling).
 
 
 %% @doc list buckets. Folds over the ledger only. Given a `Tag' folds
@@ -2913,6 +2922,5 @@ check_notfound_test() ->
                     check_notfound(?MAX_KEYCHECK_FREQUENCY, MissingFun)),
     
     ?assertMatch({false, 0}, check_notfound(0, MissingFun)).
-
 
 -endif.
