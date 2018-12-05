@@ -7,6 +7,5 @@
                   kernel,
                   stdlib
                  ]},
-  {mod, { leveled_app, []}},
   {env, [{root_path, "test"}]}
  ]}.
