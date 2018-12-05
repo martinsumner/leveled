@@ -8,6 +8,8 @@
             book_riakhead/3,
             riakload/2,
             stdload/2,
+            stdload_expiring/3,
+            stdload_object/6,
             reset_filestructure/0,
             reset_filestructure/1,
             check_bucket_stats/2,
@@ -208,6 +210,43 @@ stdload(Bookie, Count, Acc) ->
         pause -> timer:sleep(?SLOWOFFER_DELAY)
     end,
     stdload(Bookie, Count - 1, [{B, K, erlang:phash2(V)}|Acc]).
+
+stdload_expiring(Book, KeyCount, When) ->
+    % Adds KeyCount object that will expire When seconds in the future.
+    % Each object will have a single entry on the <<"temp_int">> index.
+    ExpiryTime = leveled_util:integer_now() + When,
+    V = get_compressiblevalue(),
+    stdload_expiring(Book, KeyCount, ExpiryTime, V, []).
+
+stdload_expiring(_Book, 0, _TLL, _V, Acc) ->
+    lists:sort(Acc);
+stdload_expiring(Book, KeyCount, TTL, V, Acc) ->
+    B = <<"Bucket">>,
+    K = list_to_binary(leveled_util:generate_uuid()),
+    I = KeyCount rem 1000,
+    stdload_object(Book, B, K, I, V, TTL),
+    stdload_expiring(Book, KeyCount - 1, TTL, V, [{I, B, K}|Acc]).
+
+stdload_object(Book, B, K, I, V, TTL) ->
+    Obj = [{index, I}, {value, V}],
+    IdxSpecs = 
+        case leveled_bookie:book_get(Book, B, K) of
+            {ok, PrevObj} ->
+                {index, OldI} = lists:keyfind(index, 1, PrevObj),
+                io:format("Remove index ~w for ~w~n", [OldI, I]),
+                [{remove, <<"temp_int">>, OldI}, {add, <<"temp_int">>, I}];
+            not_found ->
+                [{add, <<"temp_int">>, I}]
+        end,
+    R = leveled_bookie:book_tempput(Book, B, K, Obj, IdxSpecs, ?STD_TAG, TTL),
+    case R of
+        ok -> 
+            ok;
+        pause -> 
+            io:format("Slow offer needed~n"),
+            timer:sleep(?SLOWOFFER_DELAY)
+    end.
+
 
 
 reset_filestructure() ->
