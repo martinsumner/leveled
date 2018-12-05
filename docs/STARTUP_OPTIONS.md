@@ -12,11 +12,21 @@ This mode was specifically added to support Leveled's use as a dedicated aae_sto
 
 There is no current support for running leveled so that it supports both `head` objects which are stored entirely in the Ledger, along side other objects stored as normal split between the Journal and the Ledger.  Setting `head_only` fundamentally changes the way the store works.
 
+## Log Level
+
+The log level can be set to `debug`, `info`, `warn`, `error`, `critical`.  The `info` log level will generate a significant amount of logs, and in testing this volume of logs has not currently been shown to be detrimental to performance.  The log level has been set to be 'noisy' in this way to suit environments which make use of log indexers which can consume large volumes of logs, and allow operators freedom to build queries and dashboards from those indexes.
+
+There is no stats facility within leveled, the stats are only available from the logs.  In the future, a stats facility may be added to provide access to this information without having to run at `info` log levels.  [Forced Logs](#Forced Logs) may be used to add stats or other info logs selectively.
+
+## Forced logs
+
+The `forced_logs` option will force a particular log reference to be logged regardless of the log level that has been set.  This can be used to log at a higher level than `info`, whilst allowing for specific logs to still be logged out, such as logs providing sample performance statistics.
+
 ## Max Journal Size
 
 The maximum size of an individual Journal file can be set using `{max_journalsize, integer()}`, which sets the size in bytes.  The default value is 1,000,000,000 (~1GB). The maximum size, which cannot be exceed is `2^32`.  It is not expected that the Journal Size should normally set to lower than 100 MB, it should be sized to hold many thousands of objects at least.
 
-If there are smaller objects then lookups within a Journal may get faster if each individual journal file is smaller. Generally there should be o(100K) objects per journal.  Signs that the journal size is too high may include:
+If there are smaller objects, then lookups within a Journal may get faster if each individual journal file is smaller. Generally there should be o(100K) objects per journal, to control the maximum size of the hash table within each file.  Signs that the journal size is too high may include:
 
 - excessive CPU use and related performance impacts during rolling of CDB files, see log `CDB07`;
 - excessive load caused during journal compaction despite tuning down `max_run_length`.

@@ -107,6 +107,7 @@
 -define(LONG_RUNNING, 80000).
 -define(COMPRESSION_METHOD, lz4).
 -define(COMPRESSION_POINT, on_receipt).
+-define(LOG_LEVEL, info).
 -define(TIMING_SAMPLESIZE, 100).
 -define(TIMING_SAMPLECOUNTDOWN, 10000).
 -define(DUMMY, dummy). % Dummy key used for mput operations
@@ -127,7 +128,9 @@
                 {reload_strategy, []},
                 {max_pencillercachesize, ?MAX_PCL_CACHE_SIZE},
                 {compression_method, ?COMPRESSION_METHOD},
-                {compression_point, ?COMPRESSION_POINT}]).
+                {compression_point, ?COMPRESSION_POINT},
+                {log_level, ?LOG_LEVEL},
+                {forced_logs, []}]).
 
 -record(ledger_cache, {mem :: ets:tab(),
                         loader = leveled_tree:empty(?CACHE_TYPE)
@@ -293,12 +296,33 @@
             % using bif based compression (zlib) to using nif based compression
             % (lz4).
             % Defaults to ?COMPRESSION_METHOD
-        {compression_point, on_compact|on_receipt}
+        {compression_point, on_compact|on_receipt} |
             % The =compression point can be changed between on_receipt (all
             % values are compressed as they are received), to on_compact where
             % values are originally stored uncompressed (speeding PUT times),
             % and are only compressed when they are first subject to compaction
             % Defaults to ?COMPRESSION_POINT
+        {log_level, debug|info|warn|error|critical} |
+            % Set the log level.  The default log_level of info is noisy - the
+            % current implementation was targetted at environments that have
+            % facilities to index large proportions of logs and allow for
+            % dynamic querying of those indexes to output relevant stats.
+            %
+            % As an alternative a higher log_level can be used to reduce this
+            % 'noise', however, there is currently no separate stats facility
+            % to gather relevant information outside of info level logs.  So
+            % moving to higher log levels will at present make the operator
+            % blind to sample performance statistics of leveled sub-components
+            % etc
+        {forced_logs, list(string())}
+            % Forced logs allow for specific info level logs, such as those
+            % logging stats to be logged even when the default log level has
+            % been set to a higher log level.  Using:
+            % {forced_logs, 
+            %   ["B0015", "B0016", "B0017", "B0018",
+            %       "P0032", "SST12", "CDB19", "SST13", "I0019"]}
+            % Will log all timing points even when log_level is not set to
+            % support info
         ].
 
 
@@ -1026,6 +1050,11 @@ init([Opts]) ->
         {undefined, _RP} ->
             % Start from file not snapshot
             {InkerOpts, PencillerOpts} = set_options(Opts),
+
+            LogLevel = proplists:get_value(log_level, Opts),
+            ok = application:set_env(leveled, log_level, LogLevel),
+            ForcedLogs = proplists:get_value(forced_logs, Opts),
+            ok = application:set_env(leveled, forced_logs, ForcedLogs),
 
             ConfiguredCacheSize = 
                 max(proplists:get_value(cache_size, Opts), ?MIN_CACHE_SIZE),
