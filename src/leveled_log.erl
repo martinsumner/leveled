@@ -11,7 +11,7 @@
             log_timer/3,
             log_randomtimer/4]).         
 
--define(LOG_LEVEL, [debug, info, warn, error, critical]).
+-define(LOG_LEVELS, [debug, info, warn, error, critical]).
 
 -define(DEFAULT_LOG_LEVEL, error).
 
@@ -374,12 +374,12 @@
 
 
 log(LogReference, Subs) ->
-    log(LogReference, Subs, ?LOG_LEVEL).
+    log(LogReference, Subs, ?LOG_LEVELS).
 
 log(LogRef, Subs, SupportedLogLevels) ->
     case lists:keyfind(LogRef, 1, ?LOGBASE) of
         {LogRef, {LogLevel, LogText}} ->
-            case should_i_log(LogLevel, SupportedLogLevels) of
+            case should_i_log(LogLevel, SupportedLogLevels, LogRef) of
                 true ->
                     io:format(format_time()
                               ++ " " ++ LogRef ++ " ~w "
@@ -392,11 +392,18 @@ log(LogRef, Subs, SupportedLogLevels) ->
             ok
     end.
 
-should_i_log(LogLevel, Levels) ->
-    case application:get_env(leveled, log_level, ?DEFAULT_LOG_LEVEL) of
-        LogLevel -> true;
-        CurLevel ->
-            is_active_level(Levels, CurLevel, LogLevel)
+should_i_log(LogLevel, Levels, LogRef) ->
+    ForcedLogs = application:get_env(leveled, forced_logs, []),
+    case lists:member(LogRef, ForcedLogs) of
+        true ->
+            true;
+        false ->
+            case application:get_env(leveled, log_level, ?DEFAULT_LOG_LEVEL) of
+                LogLevel ->
+                    true;
+                CurLevel ->
+                    is_active_level(Levels, CurLevel, LogLevel)
+            end
     end.
 
 is_active_level([L|_], L, _) -> true;
@@ -405,12 +412,12 @@ is_active_level([_|T], C, L) -> is_active_level(T, C, L);
 is_active_level([]   , _, _) -> false.
 
 log_timer(LogReference, Subs, StartTime) ->
-    log_timer(LogReference, Subs, StartTime, ?LOG_LEVEL).
+    log_timer(LogReference, Subs, StartTime, ?LOG_LEVELS).
 
 log_timer(LogRef, Subs, StartTime, SupportedLogLevels) ->
     case lists:keyfind(LogRef, 1, ?LOGBASE) of
         {LogRef, {LogLevel, LogText}} ->
-            case should_i_log(LogLevel, SupportedLogLevels) of
+            case should_i_log(LogLevel, SupportedLogLevels, LogRef) of
                 true ->
                     MicroS = timer:now_diff(os:timestamp(), StartTime),
                     {Unit, Time} = case MicroS of
@@ -470,5 +477,23 @@ log_warn_test() ->
     ok = log("G8888", [], [info, warn, error]),
     ok = log_timer("G0001", [], os:timestamp(), [warn, error]),
     ok = log_timer("G8888", [], os:timestamp(), [info, warn, error]).
+
+shouldilog_test() ->
+    % What if an unsupported option is set for the log level
+    % don't log
+    ok = application:set_env(leveled, log_level, unsupported),
+    ?assertMatch(false, should_i_log(info, ?LOG_LEVELS, "G0001")),
+    ?assertMatch(false, should_i_log(inform, ?LOG_LEVELS, "G0001")),
+    ok = application:set_env(leveled, log_level, debug),
+    ?assertMatch(true, should_i_log(info, ?LOG_LEVELS, "G0001")),
+    ok = application:set_env(leveled, log_level, info),
+    ?assertMatch(true, should_i_log(info, ?LOG_LEVELS, "G0001")),
+    ok = application:set_env(leveled, forced_logs, ["G0001"]),
+    ok = application:set_env(leveled, log_level, error),
+    ?assertMatch(true, should_i_log(info, ?LOG_LEVELS, "G0001")),
+    ?assertMatch(false, should_i_log(info, ?LOG_LEVELS, "G0002")),
+    ok = application:set_env(leveled, forced_logs, []),
+    ok = application:set_env(leveled, log_level, info),
+    ?assertMatch(false, should_i_log(debug, ?LOG_LEVELS, "D0001")).
 
 -endif.

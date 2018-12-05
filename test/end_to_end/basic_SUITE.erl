@@ -33,9 +33,20 @@ all() -> [
 
 
 simple_put_fetch_head_delete(_Config) ->
+    io:format("simple test with info and no forced logs~n"),
+    simple_test_withlog(info, []),
+    io:format("simple test with error and no forced logs~n"),
+    simple_test_withlog(error, []),
+    io:format("simple test with error and stats logs~n"),
+    simple_test_withlog(error, ["B0015", "B0016", "B0017", "B0018", 
+                                "P0032", "SST12", "CDB19", "SST13", "I0019"]).
+
+simple_test_withlog(LogLevel, ForcedLogs) ->
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = [{root_path, RootPath},
-                    {sync_strategy, testutil:sync_strategy()}],
+                    {sync_strategy, testutil:sync_strategy()},
+                    {log_level, LogLevel},
+                    {forced_logs, ForcedLogs}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
@@ -44,7 +55,9 @@ simple_put_fetch_head_delete(_Config) ->
     ok = leveled_bookie:book_close(Bookie1),
     StartOpts2 = [{root_path, RootPath},
                     {max_journalsize, 3000000},
-                    {sync_strategy, testutil:sync_strategy()}],
+                    {sync_strategy, testutil:sync_strategy()},
+                    {log_level, LogLevel},
+                    {forced_logs, ForcedLogs}],
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
     testutil:check_forobject(Bookie2, TestObject),
     ObjList1 = testutil:generate_objects(5000, 2),
