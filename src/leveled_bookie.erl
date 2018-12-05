@@ -311,12 +311,12 @@
             % As an alternative a higher log_level can be used to reduce this
             % 'noise', however, there is currently no separate stats facility
             % to gather relevant information outside of info level logs.  So
-            % moving to higher log levels will at present make the opertaor
+            % moving to higher log levels will at present make the operator
             % blind to sample performance statistics of leveled sub-components
             % etc
         {forced_logs, list(string())}
             % Forced logs allow for specific info level logs, such as those
-            % logging stats to be logged even when the defualt log level has
+            % logging stats to be logged even when the default log level has
             % been set to a higher log level.  Using:
             % {forced_logs, 
             %   ["B0015", "B0016", "B0017", "B0018",
