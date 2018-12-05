@@ -56,9 +56,21 @@ expiring_indexes(_Config) ->
         % need 30 seconds spare to run query
         % and add replacements
 
-    {_I0, B0, K0} = hd(IBKL1),
+    {I0, B0, K0} = hd(IBKL1),
     false = FilterFun(hd(IBKL1)), 
         % The head entry should not have index between 5 and 8
+
+    CountI0Fold =
+        fun() ->
+            leveled_bookie:book_indexfold(Bookie1,
+                                            B0,
+                                            {fun(_BF, _KT, Acc) -> Acc + 1 end,
+                                                0},
+                                            {<<"temp_int">>, I0, I0},
+                                            {true, undefined})
+        end,
+    {async, I0Counter1} = CountI0Fold(),
+    I0Count1 = I0Counter1(),
 
     FoldFun = fun(BF, {IdxV, KeyF}, Acc) -> [{IdxV, BF, KeyF}|Acc] end,
     InitAcc = [],
@@ -77,6 +89,12 @@ expiring_indexes(_Config) ->
     % Replace object with one with an index value of 6
     testutil:stdload_object(Bookie1, B0, K0, 6, <<"value">>,
                             leveled_util:integer_now() + 600),
+    % Confirm that this has reduced the index entries in I0 by 1
+    {async, I0Counter2} = CountI0Fold(),
+    I0Count2 = I0Counter2(),
+    io:format("Count with index value ~w changed from ~w to ~w~n",
+                [I0, I0Count1, I0Count2]),
+    true = I0Count2 == (I0Count1 - 1),
     % Now replace again, shortening the timeout to 15s,
     % this time index value of 6
     testutil:stdload_object(Bookie1, B0, K0, 5, <<"value">>,
