@@ -33,9 +33,10 @@
         from_inkerkv/1,
         from_inkerkv/2,
         from_journalkey/1,
-        compact_inkerkvc/2,
+        revert_to_keydeltas/2,
         split_inkvalue/1,
         check_forinkertype/2,
+        get_tagstrategy/2,
         maybe_compress/2,
         create_value_for_journal/3,
         generate_ledgerkv/5,
@@ -170,7 +171,32 @@ segment_hash(Key) when is_binary(Key) ->
         = leveled_tictac:keyto_segment48(Key),
     {SegmentID, ExtraHash};
 segment_hash(KeyTuple) when is_tuple(KeyTuple) ->
-    segment_hash(leveled_head:key_to_canonicalbinary(KeyTuple)).
+    BinKey = 
+        case element(1, Keytuple) of
+            ?HEAD_TAG ->
+                headkey_to_canonicalbinary(KeyTuple);
+            _ ->
+                leveled_head:key_to_canonicalbinary(KeyTuple)
+        end,
+    segment_hash(BinKey).
+
+
+headkey_to_canonicalbinary({?HEAD_TAG, Bucket, Key, SubK})
+                    when is_binary(Bucket), is_binary(Key), is_binary(SubK) ->
+    <<Bucket/binary, Key/binary, SubK/binary>>;
+headkey_to_canonicalbinary({?HEAD_TAG, Bucket, Key, null})
+                                    when is_binary(Bucket), is_binary(Key) ->
+    <<Bucket/binary, Key/binary>>;
+headkey_to_canonicalbinary({?HEAD_TAG, {BucketType, Bucket}, Key, SubKey})
+                            when is_binary(BucketType), is_binary(Bucket) ->
+    headkey_to_canonicalbinary({?HEAD_TAG,
+                                <<BucketType/binary, Bucket/binary>>, 
+                                Key,
+                                SubKey});
+headkey_to_canonicalbinary(Key) when element(1, Key) == ?HEAD_TAG ->
+    % In unit tests head specs can have non-binary keys, so handle
+    % this through hashing the whole key
+    term_to_binary(Key).
 
 
 -spec to_lookup(ledger_key()) -> maybe_lookup().
@@ -334,36 +360,6 @@ inker_reload_strategy(AltList) ->
                     AltList).
 
 
--spec compact_inkerkvc({journal_key(), any(), boolean()}, 
-                            compaction_strategy()) -> 
-                            skip|{retain, any()}|{recalc, null}.
-%% @doc
-%% Decide whether a superceded object should be replicated in the compacted
-%% file and in what format. 
-compact_inkerkvc({_InkerKey, crc_wonky, false}, _Strategy) ->
-    skip;
-compact_inkerkvc({{_SQN, ?INKT_TOMB, _LK}, _V, _CrcCheck}, _Strategy) ->
-    skip;
-compact_inkerkvc({{SQN, ?INKT_KEYD, LK}, V, CrcCheck}, Strategy) ->
-    case get_tagstrategy(LK, Strategy) of
-        skip ->
-            skip;
-        retain ->
-            {retain, {{SQN, ?INKT_KEYD, LK}, V, CrcCheck}};
-        TagStrat ->
-            {TagStrat, null}
-    end;
-compact_inkerkvc({{SQN, ?INKT_STND, LK}, V, CrcCheck}, Strategy) ->
-    case get_tagstrategy(LK, Strategy) of
-        skip ->
-            skip;
-        retain ->
-            {_V, KeyDeltas} = revert_value_from_journal(V),    
-            {retain, {{SQN, ?INKT_KEYD, LK}, {null, KeyDeltas}, CrcCheck}};
-        TagStrat ->
-            {TagStrat, null}
-    end.
-
 -spec get_tagstrategy(ledger_key(), compaction_strategy()) 
                                                     -> skip|retain|recalc.
 %% @doc
@@ -397,6 +393,17 @@ to_inkerkv(LedgerKey, SQN, Object, KeyChanges, PressMethod, Compress) ->
     Value = 
         create_value_for_journal({Object, KeyChanges}, Compress, PressMethod),
     {{SQN, InkerType, LedgerKey}, Value}.
+
+-spec revert_to_keydeltas(journal_key(), any()) -> {journal_key(), any()}.
+%% @doc
+%% If we wish to retain key deltas when an object in the Journal has been
+%% replaced - then this converts a Journal Key and Value into one which has no
+%% object body just the key deltas.
+revert_to_keydeltas({SQN, ?INKT_STND, LedgerKey}, InkerV) ->
+    {_V, KeyDeltas} = revert_value_from_journal(InkerV),
+    {{SQN, ?INKT_KEYD, LedgerKey}, {null, KeyDeltas}};
+revert_to_keydeltas(JournalKey, InkerV) ->
+    {JournalKey, InkerV}.
 
 %% Used when fetching objects, so only handles standard, hashable entries
 from_inkerkv(Object) ->
@@ -730,44 +737,6 @@ endkey_passed_test() ->
     ?assertMatch(true, endkey_passed(TestKey, K2)).
 
 
-general_skip_strategy_test() ->
-    % Confirm that we will skip if the strategy says so
-    TagStrat1 = compact_inkerkvc({{1,
-                                        ?INKT_STND,
-                                        {?STD_TAG, "B1", "K1andSK", null}},
-                                    {},
-                                    true},
-                                    [{?STD_TAG, skip}]),
-    ?assertMatch(skip, TagStrat1),
-    TagStrat2 = compact_inkerkvc({{1,
-                                        ?INKT_KEYD,
-                                        {?STD_TAG, "B1", "K1andSK", null}},
-                                    {},
-                                    true},
-                                    [{?STD_TAG, skip}]),
-    ?assertMatch(skip, TagStrat2),
-    TagStrat3 = compact_inkerkvc({{1,
-                                        ?INKT_KEYD,
-                                        {?IDX_TAG, "B1", "K1", "SK"}},
-                                    {},
-                                    true},
-                                    [{?STD_TAG, skip}]),
-    ?assertMatch(skip, TagStrat3),
-    TagStrat4 = compact_inkerkvc({{1,
-                                        ?INKT_KEYD,
-                                        {?IDX_TAG, "B1", "K1", "SK"}},
-                                    {},
-                                    true},
-                                    [{?STD_TAG, skip}, {?IDX_TAG, recalc}]),
-    ?assertMatch({recalc, null}, TagStrat4),
-    TagStrat5 = compact_inkerkvc({{1,
-                                        ?INKT_TOMB,
-                                        {?IDX_TAG, "B1", "K1", "SK"}},
-                                    {},
-                                    true},
-                                    [{?STD_TAG, skip}, {?IDX_TAG, recalc}]),
-    ?assertMatch(skip, TagStrat5).
-    
 
 %% Test below proved that the overhead of performing hashes was trivial
 %% Maybe 5 microseconds per hash

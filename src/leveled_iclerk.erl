@@ -654,29 +654,56 @@ split_positions_into_batches(Positions, Journal, Batches) ->
                                     Batches ++ [{Journal, ThisBatch}]).
 
 
+%% @doc
+%% For the Keys and values taken from the Journal file, which are required
+%% in the compacted journal file.  To be required, they must still be active
+%% (i.e. be the current SQN for that LedgerKey in the Ledger).  However, if
+%% it is not active, we still need to retain some information if for this
+%% object tag we want to be able to rebuild the KeyStore by relaoding the 
+%% KeyDeltas (the retain reload strategy)
+%%
+%% If the reload strategy is recalc, we assume that we can reload by
+%% recalculating the KeyChanges by looking at the object when we reload.  So
+%% old objects can be discarded.
+%%
+%% If the strategy is skip, we don't care about KeyDeltas.  Note though, that
+%% if the ledger is deleted it may not be possible to safely rebuild a KeyStore
+%% if it contains index entries.  The hot_backup approach is also not safe with
+%% a `skip` strategy.
 filter_output(KVCs, FilterFun, FilterServer, MaxSQN, ReloadStrategy) ->
-    lists:foldl(fun(KVC0, Acc) ->
-                    R = leveled_codec:compact_inkerkvc(KVC0, ReloadStrategy),
-                    case R of
-                        skip ->
-                            Acc;
-                        {TStrat, KVC1} ->
-                            {K, _V, CrcCheck} = KVC0,
-                            {SQN, LedgerKey} = leveled_codec:from_journalkey(K),
-                            KeyValid = FilterFun(FilterServer, LedgerKey, SQN),
-                            case {KeyValid, CrcCheck, SQN > MaxSQN, TStrat} of
-                                {false, true, false, retain} ->
-                                    Acc ++ [KVC1];
-                                {false, true, false, _} ->
-                                    Acc;
-                                _ ->
-                                    Acc ++ [KVC0]
-                            end
+    FoldFun =
+        fun(KVC0, Acc) ->
+            case KVC0 of
+                {_InkKey, crc_wonky, false} ->
+                    % Bad entry, disregard, don't check
+                    Acc;
+                {JK, JV, _Check} ->
+                    {SQN, LK} =
+                        leveled_codec:from_journalkey(JK),
+                    CompactStrategy =
+                        leveled_codec:get_tagstrategy(LK, ReloadStrategy),
+                    KeyValid = FilterFun(FilterServer, LK, SQN),
+                    IsInMemory = SQN > MaxSQN,
+                    case {KeyValid or IsInMemory, CompactStrategy} of
+                        {true, _} ->
+                            % This entry may still be required regardless of
+                            % strategy
+                            [KVC0|Acc];
+                        {false, retain} ->
+                            % If we have a retain startegy, it can't be
+                            % discarded - but the value part is no longer
+                            % required as this version has been replaced
+                            {JK0, JV0} =
+                                leveled_codec:revert_to_keydeltas(JK, JV),
+                            [{JK0, JV0, null}|Acc];
+                        {false, _} ->
+                            % This is out of date and not retained - discard
+                            Acc
                     end
-                    end,
-                [],
-                KVCs).
-    
+            end
+        end,
+    lists:reverse(lists:foldl(FoldFun, [], KVCs)).
+
 
 write_values([], _CDBopts, Journal0, ManSlice0, _PressMethod) ->
     {Journal0, ManSlice0};

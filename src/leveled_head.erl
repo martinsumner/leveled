@@ -93,22 +93,6 @@
 %%% Mutable External Functions
 %%%============================================================================
 
--spec get_appdefined_function(appdefinable_function(),
-                                fun(),
-                                non_neg_integer()) -> fun().
-%% @doc
-%% If a keylist of [{function_name, fun()}] has been set as an environment 
-%% variable for a tag, then this FunctionName can be used instead of the
-%% default
-get_appdefined_function(FunctionName, DefaultFun, RequiredArity) ->
-    case application:get_env(leveled, FunctionName) of
-        undefined ->
-            DefaultFun;
-        {ok, Fun} when is_function(Fun, RequiredArity) ->
-            Fun
-    end.
-
-
 -spec key_to_canonicalbinary(tuple()) -> binary().
 %% @doc
 %% Convert a key to a binary in a consistent way for the tag.  The binary will
@@ -122,22 +106,6 @@ key_to_canonicalbinary({?RIAK_TAG, {BucketType, Bucket}, Key, SubKey})
                             <<BucketType/binary, Bucket/binary>>,
                             Key,
                             SubKey});
-key_to_canonicalbinary({?HEAD_TAG, Bucket, Key, SubK})
-                    when is_binary(Bucket), is_binary(Key), is_binary(SubK) ->
-    <<Bucket/binary, Key/binary, SubK/binary>>;
-key_to_canonicalbinary({?HEAD_TAG, Bucket, Key, null})
-                                    when is_binary(Bucket), is_binary(Key) ->
-    <<Bucket/binary, Key/binary>>;
-key_to_canonicalbinary({?HEAD_TAG, {BucketType, Bucket}, Key, SubKey})
-                            when is_binary(BucketType), is_binary(Bucket) ->
-    key_to_canonicalbinary({?HEAD_TAG,
-                                <<BucketType/binary, Bucket/binary>>, 
-                                Key,
-                                SubKey});
-key_to_canonicalbinary(Key) when element(1, Key) == ?HEAD_TAG ->
-    % In unit tests head specs can have non-binary keys, so handle
-    % this through hashing the whole key
-    default_key_to_canonicalbinary(Key);
 key_to_canonicalbinary(Key) when element(1, Key) == ?STD_TAG ->
     default_key_to_canonicalbinary(Key);
 key_to_canonicalbinary(Key) ->
@@ -154,12 +122,13 @@ default_key_to_canonicalbinary(Key) ->
 -spec build_head(object_tag()|headonly_tag(), object_metadata()) -> head().
 %% @doc
 %% Return the object metadata as a binary to be the "head" of the object
+build_head(?HEAD_TAG, Value) ->
+    % Metadata is not extracted with head objects, the head response is
+    % just the unfiltered value that was input.  
+    default_build_head(?HEAD_TAG, Value);
 build_head(?RIAK_TAG, Metadata) ->
     {SibData, Vclock, _Hash, _Size} = Metadata,
     riak_metadata_to_binary(Vclock, SibData);
-build_head(?HEAD_TAG, Metadata) ->
-    % term_to_binary(Metadata).
-    default_build_head(?HEAD_TAG, Metadata);
 build_head(?STD_TAG, Metadata) ->
     default_build_head(?STD_TAG, Metadata);
 build_head(Tag, Metadata) ->
@@ -173,7 +142,7 @@ default_build_head(_Tag, Metadata) ->
     Metadata.
 
 
--spec extract_metadata(object_tag()|headonly_tag(), non_neg_integer(), any())
+-spec extract_metadata(object_tag(), non_neg_integer(), any())
                             -> {object_metadata(), list(erlang:timestamp())}.
 %% @doc
 %% Take the inbound object and extract from it the metadata to be stored within
@@ -187,10 +156,10 @@ default_build_head(_Tag, Metadata) ->
 %% The Object Size passed in to this function is as calculated when writing
 %% the object to the Journal.  It may be recalculated here, if an alternative
 %% view of size is required within the header
+%%
+%% Note objects with a ?HEAD_TAG should never be passed, as there is no
 extract_metadata(?RIAK_TAG, SizeAsStoredInJournal, RiakObj) ->
     riak_extract_metadata(RiakObj, SizeAsStoredInJournal);
-extract_metadata(?HEAD_TAG, SizeAsStoredInJournal, Obj) ->
-    {{standard_hash(Obj), SizeAsStoredInJournal}, []};
 extract_metadata(?STD_TAG, SizeAsStoredInJournal, Obj) ->
     default_extract_metadata(?STD_TAG, SizeAsStoredInJournal, Obj);
 extract_metadata(Tag, SizeAsStoredInJournal, Obj) ->
@@ -250,6 +219,26 @@ get_hash(_Tag, ObjectMetadata) ->
 %% Hash the whole object
 standard_hash(Obj) ->
     erlang:phash2(term_to_binary(Obj)).
+
+
+%%%============================================================================
+%%% Handling Override Functions
+%%%============================================================================
+
+-spec get_appdefined_function(appdefinable_function(),
+                                fun(),
+                                non_neg_integer()) -> fun().
+%% @doc
+%% If a keylist of [{function_name, fun()}] has been set as an environment 
+%% variable for a tag, then this FunctionName can be used instead of the
+%% default
+get_appdefined_function(FunctionName, DefaultFun, RequiredArity) ->
+    case application:get_env(leveled, FunctionName) of
+        undefined ->
+            DefaultFun;
+        {ok, Fun} when is_function(Fun, RequiredArity) ->
+            Fun
+    end.
 
 %%%============================================================================
 %%% Tag-specific Internal Functions

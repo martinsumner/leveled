@@ -1033,10 +1033,8 @@ book_destroy(Pid) ->
 %% The function will be 1-arity, and can be passed the absolute folder name
 %% to store the backup.
 %% 
-%% Backup files are hard-linked.  Does not work in head_only mode
-%%
-%% TODO: Can extend to head_only mode, and also support another parameter 
-%% which would backup persisted part of ledger (to make restart faster)
+%% Backup files are hard-linked.  Does not work in head_only mode, or if
+%% index changes are used with a `skip` compaction/reload strategy
 book_hotbackup(Pid) ->
     gen_server:call(Pid, hot_backup, infinity). 
 
