@@ -172,7 +172,7 @@ segment_hash(Key) when is_binary(Key) ->
     {SegmentID, ExtraHash};
 segment_hash(KeyTuple) when is_tuple(KeyTuple) ->
     BinKey = 
-        case element(1, Keytuple) of
+        case element(1, KeyTuple) of
             ?HEAD_TAG ->
                 headkey_to_canonicalbinary(KeyTuple);
             _ ->
