@@ -1270,7 +1270,7 @@ handle_call({head, Bucket, Key, Tag}, _From, State)
             not_found ->
                 not_found;
             _ ->
-                {ok, leveled_codec:build_metadata_object(LK, LedgerMD)}
+                {ok, leveled_head:build_head(Tag, LedgerMD)}
         end,
     {_SW, UpdTimingsR} = 
         update_timings(SWr, {head, rsp}, UpdTimingsP),
@@ -1437,7 +1437,7 @@ snapshot_store(State, SnapType, Query, LongRunning) ->
                     Query,
                     LongRunning).
 
--spec fetch_value(pid(), {any(), integer()}) -> not_present|any().
+-spec fetch_value(pid(), leveled_codec:journal_ref()) -> not_present|any().
 %% @doc
 %% Fetch a value from the Journal
 fetch_value(Inker, {Key, SQN}) ->
@@ -2517,7 +2517,7 @@ foldobjects_vs_hashtree_testto() ->
                 MD,
                 _Size,
                 _Fetcher} = binary_to_term(ProxyV),
-            {Hash, _Size} = MD,
+            {Hash, _Size, _UserDefinedMD} = MD,
             [{B, K, Hash}|Acc]
         end,
 

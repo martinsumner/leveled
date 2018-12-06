@@ -2,28 +2,8 @@
 %%
 %% Functions for manipulating keys and values within leveled.
 %%
-%%
-%% Within the LEDGER:
-%% Keys are of the form -
-%% {Tag, Bucket, Key, SubKey|null}
-%% Values are of the form
-%% {SQN, Status, MD}
-%%
-%% Within the JOURNAL:
-%% Keys are of the form -
-%% {SQN, LedgerKey}
-%% Values are of the form
-%% {Object, IndexSpecs} (as a binary)
-%%
-%% IndexSpecs are of the form of a Ledger Key/Value
-%%
-%% Tags need to be set during PUT operations and each Tag used must be
-%% supported in an extract_metadata and a build_metadata_object function clause
-%%
-%% Currently the only tags supported are:
-%% - o (standard objects)
-%% - o_rkv (riak objects)
-%% - i (index entries)
+%% Any thing specific to handling of a given tag should be encapsulated 
+%% within the leveled_head module
 
 
 -module(leveled_codec).
@@ -58,30 +38,20 @@
         check_forinkertype/2,
         maybe_compress/2,
         create_value_for_journal/3,
-        build_metadata_object/2,
         generate_ledgerkv/5,
         get_size/2,
         get_keyandobjhash/2,
         idx_indexspecs/5,
         obj_objectspecs/3,
-        riak_extract_metadata/2,
         segment_hash/1,
         to_lookup/1,
-        riak_metadata_to_binary/2,
         next_key/1]).         
 
--define(V1_VERS, 1).
--define(MAGIC, 53). % riak_kv -> riak_object
 -define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
 -define(NRT_IDX, "$aae.").
 
--type riak_metadata() :: {binary()|delete, % Sibling Metadata
-                            binary()|null, % Vclock Metadata
-                            integer()|null, % Hash of vclock - non-exportable 
-                            integer()}. % Size in bytes of real object
-
 -type tag() :: 
-        ?STD_TAG|?RIAK_TAG|?IDX_TAG|?HEAD_TAG.
+        leveled_head:object_tag()|?IDX_TAG|?HEAD_TAG.
 -type key() :: 
         binary()|string()|{binary(), binary()}.
         % Keys SHOULD be binary()
@@ -113,12 +83,16 @@
         {sqn(), ledger_status(), segment_hash(), metadata(), last_moddate()}.
 -type ledger_kv() ::
         {ledger_key(), ledger_value()}.
+-type compaction_method() ::
+        retain|skip|recalc.
 -type compaction_strategy() ::
-        list({tag(), retain|skip|recalc}).
+        list({tag(), compaction_method()}).
 -type journal_key_tag() ::
         ?INKT_STND|?INKT_TOMB|?INKT_MPUT|?INKT_KEYD.
 -type journal_key() ::
-        {integer(), journal_key_tag(), ledger_key()}.
+        {sqn(), journal_key_tag(), ledger_key()}.
+-type journal_ref() ::
+        {ledger_key(), sqn()}.
 -type object_spec_v0() ::
         {add|remove, key(), key(), key()|null, any()}.
 -type object_spec_v1() ::
@@ -153,8 +127,10 @@
                 ledger_value/0,
                 ledger_kv/0,
                 compaction_strategy/0,
+                compaction_method/0,
                 journal_key_tag/0,
                 journal_key/0,
+                journal_ref/0,
                 compression_method/0,
                 journal_keychanges/0,
                 index_specs/0,
@@ -179,29 +155,8 @@ segment_hash(Key) when is_binary(Key) ->
     {segment_hash, SegmentID, ExtraHash, _AltHash}
         = leveled_tictac:keyto_segment48(Key),
     {SegmentID, ExtraHash};
-segment_hash({?RIAK_TAG, Bucket, Key, null}) 
-                                    when is_binary(Bucket), is_binary(Key) ->
-    segment_hash(<<Bucket/binary, Key/binary>>);
-segment_hash({?RIAK_TAG, {BucketType, Bucket}, Key, SubKey})
-                            when is_binary(BucketType), is_binary(Bucket) ->
-    segment_hash({?RIAK_TAG,
-                    <<BucketType/binary, Bucket/binary>>,
-                    Key,
-                    SubKey});
-segment_hash({?HEAD_TAG, Bucket, Key, SubK})
-                    when is_binary(Bucket), is_binary(Key), is_binary(SubK) ->
-    segment_hash(<<Bucket/binary, Key/binary, SubK/binary>>);
-segment_hash({?HEAD_TAG, Bucket, Key, _SubK})
-                                    when is_binary(Bucket), is_binary(Key) ->
-    segment_hash(<<Bucket/binary, Key/binary>>);
-segment_hash({?HEAD_TAG, {BucketType, Bucket}, Key, SubKey})
-                            when is_binary(BucketType), is_binary(Bucket) ->
-    segment_hash({?HEAD_TAG,
-                    <<BucketType/binary, Bucket/binary>>, 
-                    Key,
-                    SubKey});
-segment_hash(Key) ->
-    segment_hash(term_to_binary(Key)).
+segment_hash(KeyTuple) when is_tuple(KeyTuple) ->
+    segment_hash(leveled_head:key_to_canonicalbinary(KeyTuple)).
 
 
 -spec to_lookup(ledger_key()) -> maybe_lookup().
@@ -355,7 +310,9 @@ endkey_passed(EndKey, CheckingKey) ->
 %% Take the default startegy for compaction, and override the approach for any 
 %% tags passed in
 inker_reload_strategy(AltList) ->
-    ReloadStrategy0 = [{?RIAK_TAG, retain}, {?STD_TAG, retain}],
+    ReloadStrategy0 = 
+        lists:map(fun leveled_head:default_reload_strategy/1,
+                    leveled_head:defined_objecttags()),
     lists:foldl(fun({X, Y}, SList) ->
                         lists:keyreplace(X, 1, SList, {X, Y})
                         end,
@@ -571,8 +528,6 @@ check_forinkertype(_LedgerKey, head_only) ->
 check_forinkertype(_LedgerKey, _Object) ->
     ?INKT_STND.
 
-hash(Obj) ->
-    erlang:phash2(term_to_binary(Obj)).
 
 
 
@@ -657,8 +612,8 @@ generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS) ->
                         {active, TS}
                 end,
     Hash = segment_hash(PrimaryKey),
-    {MD, LastMods} = extract_metadata(Obj, Size, Tag),
-    ObjHash = get_objhash(Tag, MD),
+    {MD, LastMods} = leveled_head:extract_metadata(Tag, Size, Obj),
+    ObjHash = leveled_head:get_hash(Tag, MD),
     Value = {SQN,
                 Status,
                 Hash,
@@ -679,23 +634,10 @@ get_last_lastmodification(LastMods) ->
     {Mega, Sec, _Micro} = lists:max(LastMods),
     Mega * 1000000 + Sec.
 
-
-extract_metadata(Obj, Size, ?RIAK_TAG) ->
-    riak_extract_metadata(Obj, Size);
-extract_metadata(Obj, Size, ?STD_TAG) ->
-    {{hash(Obj), Size}, []}.
-
 get_size(PK, Value) ->
     {Tag, _Bucket, _Key, _} = PK,
     MD = element(4, Value),
-    case Tag of
-        ?RIAK_TAG ->
-            {_RMD, _VC, _Hash, Size} = MD,
-            Size;
-        ?STD_TAG ->
-            {_Hash, Size} = MD,
-            Size
-    end.
+    leveled_head:get_size(Tag, MD).
 
 -spec get_keyandobjhash(tuple(), tuple()) -> tuple().
 %% @doc
@@ -709,104 +651,8 @@ get_keyandobjhash(LK, Value) ->
         ?IDX_TAG ->
             from_ledgerkey(LK); % returns {Bucket, Key, IdxValue}
         _ ->
-            {Bucket, Key, get_objhash(Tag, MD)}
+            {Bucket, Key, leveled_head:get_hash(Tag, MD)}
     end.
-
-get_objhash(Tag, ObjMetaData) ->
-    case Tag of
-        ?RIAK_TAG ->
-            {_RMD, _VC, Hash, _Size} = ObjMetaData,
-            Hash;
-        ?STD_TAG ->
-            {Hash, _Size} = ObjMetaData,
-            Hash
-    end.
-        
-
-build_metadata_object(PrimaryKey, MD) ->
-    {Tag, _Bucket, _Key, _SubKey} = PrimaryKey,
-    case Tag of
-        ?RIAK_TAG ->
-            {SibData, Vclock, _Hash, _Size} = MD,
-            riak_metadata_to_binary(Vclock, SibData);
-        ?STD_TAG ->
-            MD;
-        ?HEAD_TAG ->
-            MD
-    end.
-
-
--spec riak_extract_metadata(binary()|delete, non_neg_integer()) -> 
-                            {riak_metadata(), list()}.
-%% @doc
-%% Riak extract metadata should extract a metadata object which is a 
-%% five-tuple of:
-%% - Binary of sibling Metadata
-%% - Binary of vector clock metadata
-%% - Non-exportable hash of the vector clock metadata
-%% - The largest last modified date of the object
-%% - Size of the object
-%%
-%% The metadata object should be returned with the full list of last 
-%% modified dates (which will be used for recent anti-entropy index creation)
-riak_extract_metadata(delete, Size) ->
-    {{delete, null, null, Size}, []};
-riak_extract_metadata(ObjBin, Size) ->
-    {VclockBin, SibBin, LastMods} = riak_metadata_from_binary(ObjBin),
-    {{SibBin, 
-            VclockBin, 
-            erlang:phash2(lists:sort(binary_to_term(VclockBin))), 
-            Size},
-        LastMods}.
-
-%% <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
-%%%     VclockBin/binary, SibCount:32/integer, SibsBin/binary>>.
-
-riak_metadata_to_binary(VclockBin, SibMetaBin) ->
-    VclockLen = byte_size(VclockBin),
-    <<?MAGIC:8/integer, ?V1_VERS:8/integer,
-        VclockLen:32/integer, VclockBin/binary,
-        SibMetaBin/binary>>.
-    
-riak_metadata_from_binary(V1Binary) ->
-    <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
-            Rest/binary>> = V1Binary,
-    <<VclockBin:VclockLen/binary, SibCount:32/integer, SibsBin/binary>> = Rest,
-    {SibMetaBin, LastMods} =
-        case SibCount of
-            SC when is_integer(SC) ->
-                get_metadata_from_siblings(SibsBin,
-                                            SibCount,
-                                            <<SibCount:32/integer>>,
-                                            [])
-        end,
-    {VclockBin, SibMetaBin, LastMods}.
-
-get_metadata_from_siblings(<<>>, 0, SibMetaBin, LastMods) ->
-    {SibMetaBin, LastMods};
-get_metadata_from_siblings(<<ValLen:32/integer, Rest0/binary>>,
-                            SibCount,
-                            SibMetaBin,
-                            LastMods) ->
-    <<_ValBin:ValLen/binary, MetaLen:32/integer, Rest1/binary>> = Rest0,
-    <<MetaBin:MetaLen/binary, Rest2/binary>> = Rest1,
-    LastMod =
-        case MetaBin of 
-            <<MegaSec:32/integer,
-                Sec:32/integer,
-                MicroSec:32/integer,
-                _Rest/binary>> ->
-                    {MegaSec, Sec, MicroSec};
-            _ ->
-                {0, 0, 0}
-        end,
-    get_metadata_from_siblings(Rest2,
-                                SibCount - 1,
-                                <<SibMetaBin/binary,
-                                    0:32/integer,
-                                    MetaLen:32/integer,
-                                    MetaBin:MetaLen/binary>>,
-                                    [LastMod|LastMods]).
 
 -spec next_key(key()) -> key().
 %% @doc
