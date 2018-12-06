@@ -45,7 +45,8 @@
         obj_objectspecs/3,
         segment_hash/1,
         to_lookup/1,
-        next_key/1]).         
+        next_key/1,
+        return_proxy/4]).         
 
 -define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
 -define(NRT_IDX, "$aae.").
@@ -113,6 +114,17 @@
     % first element must be re_pattern, but tuple may change legnth with
     % versions
 
+-type value_fetcher() ::
+    {fun((pid(), leveled_codec:journal_key()) -> any()),
+        pid(), leveled_codec:journal_key()}.
+    % A 2-arity function, which when passed the other two elements of the tuple
+    % will return the value
+-type proxy_object() ::
+    {proxy_object, leveled_head:head(), non_neg_integer(), value_fetcher()}.
+    % Returns the head, size and a tuple for accessing the value
+-type proxy_objectbin() ::
+    binary().
+    % using term_to_binary(proxy_object())
 
 
 -type segment_list() 
@@ -138,7 +150,9 @@
                 maybe_lookup/0,
                 last_moddate/0,
                 lastmod_range/0,
-                regular_expression/0]).
+                regular_expression/0,
+                value_fetcher/0,
+                proxy_object/0]).
 
 
 %%%============================================================================
@@ -353,7 +367,7 @@ compact_inkerkvc({{SQN, ?INKT_STND, LK}, V, CrcCheck}, Strategy) ->
 -spec get_tagstrategy(ledger_key(), compaction_strategy()) 
                                                     -> skip|retain|recalc.
 %% @doc
-%% Work out the compaction startegy for the key
+%% Work out the compaction strategy for the key
 get_tagstrategy({Tag, _, _, _}, Strategy) ->
     case lists:keyfind(Tag, 1, Strategy) of
         {Tag, TagStrat} ->
@@ -579,6 +593,27 @@ gen_headspec({IdxOp, Bucket, Key, SubKey, Value}, SQN, TTL) ->
     {K, {SQN, Status, segment_hash(K), Value, undefined}}.
 
 
+-spec return_proxy(leveled_head:object_tag()|leveled_head:headonly_tag(),
+                    leveled_head:object_metadata(),
+                    pid(), journal_ref())
+                        -> proxy_objectbin()|leveled_head:object_metadata().
+%% @doc
+%% If the object has a value, return the metadata and a proxy through which
+%% the applictaion or runner can access the value.  If it is a ?HEAD_TAG
+%% then it has no value, so just return the metadata
+return_proxy(?HEAD_TAG, ObjectMetadata, _InkerClone, _JR) ->
+    % Object has no value - so proxy object makese no sense, just return the
+    % metadata as is
+    ObjectMetadata;
+return_proxy(Tag, ObjMetadata, InkerClone, JournalRef) ->
+    Size = leveled_head:get_size(Tag, ObjMetadata),
+    HeadBin = leveled_head:build_head(Tag, ObjMetadata),
+    term_to_binary({proxy_object,
+                    HeadBin,
+                    Size,
+                    {fun leveled_bookie:fetch_value/2,
+                        InkerClone,
+                        JournalRef}}).
 
 set_status(add, TTL) ->
     {active, TTL};

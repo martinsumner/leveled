@@ -130,7 +130,8 @@
                 {compression_method, ?COMPRESSION_METHOD},
                 {compression_point, ?COMPRESSION_POINT},
                 {log_level, ?LOG_LEVEL},
-                {forced_logs, []}]).
+                {forced_logs, []},
+                {override_functions, []}]).
 
 -record(ledger_cache, {mem :: ets:tab(),
                         loader = leveled_tree:empty(?CACHE_TYPE)
@@ -314,7 +315,7 @@
             % moving to higher log levels will at present make the operator
             % blind to sample performance statistics of leveled sub-components
             % etc
-        {forced_logs, list(string())}
+        {forced_logs, list(string())} |
             % Forced logs allow for specific info level logs, such as those
             % logging stats to be logged even when the default log level has
             % been set to a higher log level.  Using:
@@ -323,6 +324,9 @@
             %       "P0032", "SST12", "CDB19", "SST13", "I0019"]}
             % Will log all timing points even when log_level is not set to
             % support info
+        {override_functions, list(leveled_head:appdefinable_function_tuple())}
+            % Provide a list of override functions that will be used for
+            % user-defined tags
         ].
 
 
@@ -1064,6 +1068,13 @@ init([Opts]) ->
             ok = application:set_env(leveled, log_level, LogLevel),
             ForcedLogs = proplists:get_value(forced_logs, Opts),
             ok = application:set_env(leveled, forced_logs, ForcedLogs),
+
+            OverrideFunctions = proplists:get_value(override_functions, Opts),
+            SetFun =
+                fun({FuncName, Func}) ->
+                    application:set_env(leveled, FuncName, Func)
+                end,
+            lists:foreach(SetFun, OverrideFunctions),
 
             ConfiguredCacheSize = 
                 max(proplists:get_value(cache_size, Opts), ?MIN_CACHE_SIZE),

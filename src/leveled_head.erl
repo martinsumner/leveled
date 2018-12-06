@@ -6,6 +6,13 @@
 %% For the ?RIAK tag this is pre-defined.  For the ?STD_TAG there is minimal
 %% definition.  For best use of Riak define a new tag and use pattern matching
 %% to extend these exported functions.
+%%
+%% Dynamic user-defined tags are allowed, and to support these user-defined
+%% shadow versions of the functions:
+%% - key_to_canonicalbinary/1 -> binary(),
+%% - build_head/2 -> head(),
+%% - extract_metadata/3 -> {std_metadata(), list(erlang:timestamp()}
+%% That support all the user-defined tags that are to be used
 
 -module(leveled_head).
 
@@ -13,14 +20,17 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--export([build_head/2,
-            maybe_build_proxy/4,
-            extract_metadata/3,
-            get_size/2,
+-export([key_to_canonicalbinary/1,
+            build_head/2,
+            extract_metadata/3
+            ]).
+
+-export([get_size/2,
             get_hash/2,
-            default_reload_strategy/1,
             defined_objecttags/0,
-            key_to_canonicalbinary/1]).
+            default_reload_strategy/1,
+            standard_hash/1
+            ]).
 
 %% Exported for testing purposes
 -export([riak_metadata_to_binary/2,
@@ -30,55 +40,73 @@
 -define(MAGIC, 53). % riak_kv -> riak_object
 -define(V1_VERS, 1).
 
--type riak_metadata() :: {binary()|delete, % Sibling Metadata
-                            binary()|null, % Vclock Metadata
-                            non_neg_integer()|null, % Hash of vclock - non-exportable 
-                            non_neg_integer()}. % Size in bytes of real object
--type std_metadata() :: {non_neg_integer()|null, % Hash of value 
-                            non_neg_integer(), % Size in bytes of real object
-                            list(tuple())|undefined}.
-
-
 -type object_tag() :: ?STD_TAG|?RIAK_TAG.
     % tags assigned to objects
     % (not other special entities such as ?HEAD or ?IDX)
 -type headonly_tag() :: ?HEAD_TAG.
     % Tag assigned to head_only objects.  Behaviour cannot be changed
 
--type object_metadata() :: riak_metadata()|std_metadata().
--type head_bin() ::
+-type riak_metadata() :: {binary()|delete, 
+                                % Sibling Metadata
+                            binary()|null, 
+                                % Vclock Metadata
+                            non_neg_integer()|null, 
+                                % Hash of vclock - non-exportable 
+                            non_neg_integer()
+                                % Size in bytes of real object
+                            }. 
+-type std_metadata() :: {non_neg_integer()|null, 
+                                % Hash of value 
+                            non_neg_integer(), 
+                                % Size in bytes of real object
+                            list(tuple())|undefined
+                                % User-define metadata
+                            }.
+-type head_metadata() :: {non_neg_integer()|null, 
+                                % Hash of value 
+                            non_neg_integer()
+                                % Size in bytes of real object
+                            }.
+
+-type object_metadata() :: riak_metadata()|std_metadata()|head_metadata().
+
+-type appdefinable_function() ::
+    key_to_canonicalbinary | build_head | extract_metadata.
+        % Functions for which default behaviour can be over-written for the
+        % application's own tags
+-type appdefinable_function_tuple() ::
+    {appdefinable_function(), fun()}.
+
+-type head() ::
     binary()|tuple().
     % TODO:
     % This is currently not always a binary.  Wish is to migrate this so that
     % it is predictably a binary
--type value_fetcher() ::
-    {fun((pid(), leveled_codec:journal_key()) -> any()),
-        pid(), leveled_codec:journal_key()}.
-    % A 2-arity function, which when passed the other two elements of the tuple
-    % will return the value
--type proxy_object() ::
-    {proxy_object, head_bin(), non_neg_integer(), value_fetcher()}.
-    % Returns the head, size and a tuple for accessing the value
--type proxy_objectbin() ::
-    binary().
-    % using term_to_binary(proxy_object())
 
 
 -export_type([object_tag/0,
-                proxy_object/0,
-                value_fetcher/0,
-                head_bin/0,
-                proxy_objectbin/0]).
+                head/0,
+                object_metadata/0,
+                appdefinable_function_tuple/0]).
 
 %%%============================================================================
-%%% External Functions
+%%% Mutable External Functions
 %%%============================================================================
 
--spec defined_objecttags() -> list(object_tag()).
+-spec get_appdefined_function(appdefinable_function(),
+                                fun(),
+                                non_neg_integer()) -> fun().
 %% @doc
-%% Return the list of object tags
-defined_objecttags() ->
-    [?STD_TAG, ?RIAK_TAG].
+%% If a keylist of [{function_name, fun()}] has been set as an environment 
+%% variable for a tag, then this FunctionName can be used instead of the
+%% default
+get_appdefined_function(FunctionName, DefaultFun, RequiredArity) ->
+    case application:get_env(leveled, FunctionName) of
+        undefined ->
+            DefaultFun;
+        {ok, Fun} when is_function(Fun, RequiredArity) ->
+            Fun
+    end.
 
 
 -spec key_to_canonicalbinary(tuple()) -> binary().
@@ -97,7 +125,7 @@ key_to_canonicalbinary({?RIAK_TAG, {BucketType, Bucket}, Key, SubKey})
 key_to_canonicalbinary({?HEAD_TAG, Bucket, Key, SubK})
                     when is_binary(Bucket), is_binary(Key), is_binary(SubK) ->
     <<Bucket/binary, Key/binary, SubK/binary>>;
-key_to_canonicalbinary({?HEAD_TAG, Bucket, Key, _SubK})
+key_to_canonicalbinary({?HEAD_TAG, Bucket, Key, null})
                                     when is_binary(Bucket), is_binary(Key) ->
     <<Bucket/binary, Key/binary>>;
 key_to_canonicalbinary({?HEAD_TAG, {BucketType, Bucket}, Key, SubKey})
@@ -106,40 +134,43 @@ key_to_canonicalbinary({?HEAD_TAG, {BucketType, Bucket}, Key, SubKey})
                                 <<BucketType/binary, Bucket/binary>>, 
                                 Key,
                                 SubKey});
+key_to_canonicalbinary(Key) when element(1, Key) == ?HEAD_TAG ->
+    % In unit tests head specs can have non-binary keys, so handle
+    % this through hashing the whole key
+    default_key_to_canonicalbinary(Key);
+key_to_canonicalbinary(Key) when element(1, Key) == ?STD_TAG ->
+    default_key_to_canonicalbinary(Key);
 key_to_canonicalbinary(Key) ->
+    OverrideFun =
+        get_appdefined_function(key_to_canonicalbinary, 
+                                    fun default_key_to_canonicalbinary/1,
+                                    1),
+    OverrideFun(Key).
+    
+default_key_to_canonicalbinary(Key) ->
     term_to_binary(Key).
 
--spec build_head(object_tag()|headonly_tag(), object_metadata()) -> head_bin().
+
+-spec build_head(object_tag()|headonly_tag(), object_metadata()) -> head().
 %% @doc
 %% Return the object metadata as a binary to be the "head" of the object
 build_head(?RIAK_TAG, Metadata) ->
     {SibData, Vclock, _Hash, _Size} = Metadata,
     riak_metadata_to_binary(Vclock, SibData);
-build_head(_Tag, Metadata) ->
+build_head(?HEAD_TAG, Metadata) ->
     % term_to_binary(Metadata).
+    default_build_head(?HEAD_TAG, Metadata);
+build_head(?STD_TAG, Metadata) ->
+    default_build_head(?STD_TAG, Metadata);
+build_head(Tag, Metadata) ->
+    OverrideFun =
+        get_appdefined_function(build_head, 
+                                fun default_build_head/2,
+                                2),
+    OverrideFun(Tag, Metadata).
+
+default_build_head(_Tag, Metadata) ->
     Metadata.
-
-
--spec maybe_build_proxy(object_tag()|headonly_tag(), object_metadata(),
-                                pid(), leveled_codec:journal_ref())
-                                    -> proxy_objectbin()|object_metadata().
-%% @doc
-%% Return a proxyObject (e.g. form a head fold, so that the potential fetching
-%% of an object can be deferred (e.g. it can be make dependent on the
-%% applictaion making a decision on the contents of the object_metadata
-maybe_build_proxy(?HEAD_TAG, ObjectMetadata, _InkerClone, _JR) ->
-    % Object has no value - so proxy object makese no sense, just return the
-    % metadata as is
-    ObjectMetadata;
-maybe_build_proxy(Tag, ObjMetadata, InkerClone, JournalRef) ->
-    Size = get_size(Tag, ObjMetadata),
-    HeadBin = build_head(Tag, ObjMetadata),
-    term_to_binary({proxy_object,
-                    HeadBin,
-                    Size,
-                    {fun leveled_bookie:fetch_value/2,
-                        InkerClone,
-                        JournalRef}}).
 
 
 -spec extract_metadata(object_tag()|headonly_tag(), non_neg_integer(), any())
@@ -158,8 +189,41 @@ maybe_build_proxy(Tag, ObjMetadata, InkerClone, JournalRef) ->
 %% view of size is required within the header
 extract_metadata(?RIAK_TAG, SizeAsStoredInJournal, RiakObj) ->
     riak_extract_metadata(RiakObj, SizeAsStoredInJournal);
-extract_metadata(_Tag, SizeAsStoredInJournal, Obj) ->
+extract_metadata(?HEAD_TAG, SizeAsStoredInJournal, Obj) ->
+    {{standard_hash(Obj), SizeAsStoredInJournal}, []};
+extract_metadata(?STD_TAG, SizeAsStoredInJournal, Obj) ->
+    default_extract_metadata(?STD_TAG, SizeAsStoredInJournal, Obj);
+extract_metadata(Tag, SizeAsStoredInJournal, Obj) ->
+    OverrideFun =
+        get_appdefined_function(extract_metadata, 
+                                fun default_extract_metadata/3,
+                                3),
+    OverrideFun(Tag, SizeAsStoredInJournal, Obj).
+
+default_extract_metadata(_Tag, SizeAsStoredInJournal, Obj) ->
     {{standard_hash(Obj), SizeAsStoredInJournal, undefined}, []}.
+
+
+%%%============================================================================
+%%% Standard External Functions
+%%%============================================================================
+
+-spec defined_objecttags() -> list(object_tag()).
+%% @doc
+%% Return the list of object tags
+defined_objecttags() ->
+    [?STD_TAG, ?RIAK_TAG].
+
+
+-spec default_reload_strategy(object_tag())
+                                    -> {object_tag(), 
+                                        leveled_codec:compaction_method()}.
+%% @doc
+%% State the compaction_method to be used when reloading the Ledger from the
+%% journal for each object tag.  Note, no compaction startegy required for 
+%% head_only tag
+default_reload_strategy(Tag) ->
+    {Tag, retain}.
 
 
 -spec get_size(object_tag()|headonly_tag(), object_metadata())
@@ -181,24 +245,15 @@ get_hash(?RIAK_TAG, RiakObjectMetadata) ->
 get_hash(_Tag, ObjectMetadata) ->
     element(1, ObjectMetadata).
 
-
--spec default_reload_strategy(object_tag())
-                                    -> {object_tag(), 
-                                        leveled_codec:compaction_method()}.
+-spec standard_hash(any()) -> non_neg_integer().
 %% @doc
-%% State the compaction_method to be used when reloading the Ledger from the
-%% journal for each object tag.  Note, no compaction startegy required for 
-%% head_only tag
-default_reload_strategy(Tag) ->
-    {Tag, retain}.
-
-
-%%%============================================================================
-%%% Tag-specific Functions
-%%%============================================================================
-
+%% Hash the whole object
 standard_hash(Obj) ->
     erlang:phash2(term_to_binary(Obj)).
+
+%%%============================================================================
+%%% Tag-specific Internal Functions
+%%%============================================================================
 
 
 -spec riak_extract_metadata(binary()|delete, non_neg_integer()) -> 

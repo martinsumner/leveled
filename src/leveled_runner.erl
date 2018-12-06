@@ -680,10 +680,8 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
                     case DeferredFetch of
                         {true, JournalCheck} ->
                             ProxyObj = 
-                                leveled_head:maybe_build_proxy(Tag,
-                                                                MD,
-                                                                InkerClone,
-                                                                JK),
+                                leveled_codec:return_proxy(Tag, MD,
+                                                            InkerClone, JK),
                             case JournalCheck of
                                 true ->
                                     InJournal =
