@@ -82,6 +82,8 @@ Three types are initially supported:
 
 All Ledger Keys created for any type must be 4-tuples starting with the tag.  Abstraction with regards to types is currently imperfect, but the expectation is that these types will make support for application specific behaviours easier to achieve, such as behaviours which maybe required to support different [CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type).
 
+Currently user-defined tags are supported as an experimental feature along with the ability to override the function which controls how metadata is split from the object value.  Good choice of metadata is important to ensure the improved efficiency of folds over heads (as opposed to folds over objects), and the use of HEAD requests (as opposed to GET requests), can be exploited by applications using leveled.
+
 ## GET/PUT Paths
 
 The PUT path for new objects and object changes depends on the Bookie interacting with the Inker to ensure that the change has been persisted with the Journal, the Ledger is updated in batches after the PUT has been completed.
@@ -128,7 +130,7 @@ Backups are taken of the Journal only, as the Ledger can  be recreated on startu
 
 The backup uses hard-links, so at the point the backup is taken, there will be a minimal change to the on-disk footprint of the store.  However, as journal compaction is run, the hard-links will prevent space from getting released by the dropping of replaced journal files - so backups will cause the size of the store to grow faster than it would otherwise do.  It is an operator responsibility to garbage collect old backups, to prevent this growth from being an issue.
 
-As backups depend on hard-links, they cannot be taken with a `BackupPath` on a different file system to the standard data path.  The move a backup across to a different file system, standard tools should be used such as rsync.  The leveled backups should be relatively friendly for rsync-like delta-based backup approaches due to significantly lower write amplification when compared to other LSM stores (e.g. leveldb). 
+As backups depend on hard-links, they cannot be taken with a `BackupPath` on a different file system to the standard data path.  The move a backup across to a different file system, standard tools should be used such as rsync.  The leveled backups should be relatively friendly for rsync-like delta-based backup approaches due to significantly lower write amplification when compared to other LSM stores (e.g. leveldb).
 
 ## Head only
 
