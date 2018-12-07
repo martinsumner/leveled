@@ -130,7 +130,8 @@
                 {compression_method, ?COMPRESSION_METHOD},
                 {compression_point, ?COMPRESSION_POINT},
                 {log_level, ?LOG_LEVEL},
-                {forced_logs, []}]).
+                {forced_logs, []},
+                {override_functions, []}]).
 
 -record(ledger_cache, {mem :: ets:tab(),
                         loader = leveled_tree:empty(?CACHE_TYPE)
@@ -314,7 +315,7 @@
             % moving to higher log levels will at present make the operator
             % blind to sample performance statistics of leveled sub-components
             % etc
-        {forced_logs, list(string())}
+        {forced_logs, list(string())} |
             % Forced logs allow for specific info level logs, such as those
             % logging stats to be logged even when the default log level has
             % been set to a higher log level.  Using:
@@ -323,6 +324,9 @@
             %       "P0032", "SST12", "CDB19", "SST13", "I0019"]}
             % Will log all timing points even when log_level is not set to
             % support info
+        {override_functions, list(leveled_head:appdefinable_function_tuple())}
+            % Provide a list of override functions that will be used for
+            % user-defined tags
         ].
 
 
@@ -456,7 +460,7 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag) ->
                 leveled_codec:index_specs(), 
                 leveled_codec:tag(), infinity|integer()) -> ok|pause.
 
-book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) ->
+book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) when is_atom(Tag) ->
     gen_server:call(Pid,
                     {put, Bucket, Key, Object, IndexSpecs, Tag, TTL},
                     infinity).
@@ -1029,10 +1033,8 @@ book_destroy(Pid) ->
 %% The function will be 1-arity, and can be passed the absolute folder name
 %% to store the backup.
 %% 
-%% Backup files are hard-linked.  Does not work in head_only mode
-%%
-%% TODO: Can extend to head_only mode, and also support another parameter 
-%% which would backup persisted part of ledger (to make restart faster)
+%% Backup files are hard-linked.  Does not work in head_only mode, or if
+%% index changes are used with a `skip` compaction/reload strategy
 book_hotbackup(Pid) ->
     gen_server:call(Pid, hot_backup, infinity). 
 
@@ -1064,6 +1066,13 @@ init([Opts]) ->
             ok = application:set_env(leveled, log_level, LogLevel),
             ForcedLogs = proplists:get_value(forced_logs, Opts),
             ok = application:set_env(leveled, forced_logs, ForcedLogs),
+
+            OverrideFunctions = proplists:get_value(override_functions, Opts),
+            SetFun =
+                fun({FuncName, Func}) ->
+                    application:set_env(leveled, FuncName, Func)
+                end,
+            lists:foreach(SetFun, OverrideFunctions),
 
             ConfiguredCacheSize = 
                 max(proplists:get_value(cache_size, Opts), ?MIN_CACHE_SIZE),
@@ -1270,7 +1279,7 @@ handle_call({head, Bucket, Key, Tag}, _From, State)
             not_found ->
                 not_found;
             _ ->
-                {ok, leveled_codec:build_metadata_object(LK, LedgerMD)}
+                {ok, leveled_head:build_head(Tag, LedgerMD)}
         end,
     {_SW, UpdTimingsR} = 
         update_timings(SWr, {head, rsp}, UpdTimingsP),
@@ -1437,7 +1446,7 @@ snapshot_store(State, SnapType, Query, LongRunning) ->
                     Query,
                     LongRunning).
 
--spec fetch_value(pid(), {any(), integer()}) -> not_present|any().
+-spec fetch_value(pid(), leveled_codec:journal_ref()) -> not_present|any().
 %% @doc
 %% Fetch a value from the Journal
 fetch_value(Inker, {Key, SQN}) ->
@@ -2517,7 +2526,7 @@ foldobjects_vs_hashtree_testto() ->
                 MD,
                 _Size,
                 _Fetcher} = binary_to_term(ProxyV),
-            {Hash, _Size} = MD,
+            {Hash, _Size, _UserDefinedMD} = MD,
             [{B, K, Hash}|Acc]
         end,
 

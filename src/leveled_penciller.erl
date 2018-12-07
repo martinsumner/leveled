@@ -300,6 +300,7 @@
     :: {pos_integer(), 
         list(leveled_codec:ledger_kv()|leveled_sst:expandable_pointer())}.
 -type iterator() :: list(iterator_entry()).
+-type bad_ledgerkey() :: list().
 
 %%%============================================================================
 %%% API
@@ -472,7 +473,7 @@ pcl_fetchnextkey(Pid, StartKey, EndKey, AccFun, InitAcc) ->
                     infinity).
 
 -spec pcl_checksequencenumber(pid(), 
-                                leveled_codec:ledger_key(), 
+                                leveled_codec:ledger_key()|bad_ledgerkey(), 
                                 integer()) -> boolean().
 %% @doc
 %% Check if the sequence number of the passed key is not replaced by a change
@@ -2003,6 +2004,7 @@ simple_server_test() ->
                                                     "Key0004",
                                                     null},
                                                 3004)),
+
     % Add some more keys and confirm that check sequence number still
     % sees the old version in the previous snapshot, but will see the new 
     % version in a new snapshot
@@ -2298,6 +2300,7 @@ handle_down_test() ->
 
     pcl_close(PCLr),
     clean_testdir(RootPath).
+
 
 %% the fake bookie. Some calls to leveled_bookie (like the two below)
 %% do not go via the gen_server (but it looks like they expect to be

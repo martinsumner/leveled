@@ -2,17 +2,19 @@
 
 ## Introduction
 
-Leveled is a <b>work-in-progress</b> prototype of a simple Key-Value store based on the concept of Log-Structured Merge Trees, with the following characteristics:
+Leveled is a simple Key-Value store based on the concept of Log-Structured Merge Trees, with the following characteristics:
 
 - Optimised for workloads with <b>larger values</b> (e.g. > 4KB).
 
-- Explicitly supports <b>HEAD requests</b> in addition to GET requests.
-  - Splits the storage of value between keys/metadata and body,
+- Explicitly supports <b>HEAD requests</b> in addition to GET requests:
+  - Splits the storage of value between keys/metadata and body (assuming some definition of metadata is provided);
+  - Allows for the application to define what constitutes object metadata and what constitutes the body (value-part) of the object - and assign tags to objects to manage multiple object-types with different extract rules;
   - Stores keys/metadata in a merge tree and the full object in a journal of [CDB files](https://en.wikipedia.org/wiki/Cdb_(software))
-  - allowing for HEAD requests which have lower overheads than GET requests, and
-  - queries which traverse keys/metadatas to be supported with fewer side effects on the page cache.
+  - allowing for HEAD requests which have lower overheads than GET requests; and
+  - queries which traverse keys/metadatas to be supported with fewer side effects on the page cache than folds over keys/objects.
 
 - Support for tagging of <b>object types</b> and the implementation of alternative store behaviour based on type.
+  - Allows for changes to extract specific information as metadata to be returned from HEAD requests;
   - Potentially usable for objects with special retention or merge properties.
 
 - Support for low-cost clones without locking to provide for <b>scanning queries</b> (e.g. secondary indexes).
@@ -23,6 +25,10 @@ Leveled is a <b>work-in-progress</b> prototype of a simple Key-Value store based
 The store has been developed with a <b>focus on being a potential backend to a Riak KV</b> database, rather than as a generic store.  It is intended to be a fully-featured backend - including support for secondary indexes, multiple fold types and auto-expiry of objects.
 
 An optimised version of Riak KV has been produced in parallel which will exploit the availability of HEAD requests (to access object metadata including version vectors), where a full GET is not required.  This, along with reduced write amplification when compared to leveldb, is expected to offer significant improvement in the volume and predictability of throughput for workloads with larger (> 4KB) object sizes, as well as reduced tail latency.
+
+There may be more general uses of Leveled, with the following caveats:
+  - Leveled should be extended to define new tags that specify what metadata is to be extracted for the inserted objects (or to override the behaviour for the ?STD_TAG).  Without this, there will be limited scope to take advantage of the relative efficiency of HEAD and FOLD_HEAD requests.
+  - If objects are small, the [`head_only` mode](docs/STARTUP_OPTIONS.md#head-only) may be used, which will cease separation of object body from header and use the Key/Metadata store as the only long-term persisted store.  In this mode all of the object is treated as Metadata, and the behaviour is closer to that of the leveldb LSM-tree, although with higher median latency.
 
 ## More Details
 
@@ -71,28 +77,6 @@ More information can be found in the [volume testing section](docs/VOLUME.md).
 
 As a general rule though, the most interesting thing is the potential to enable [new features](docs/FUTURE.md).  The tagging of different object types, with an ability to set different rules for both compaction and metadata creation by tag, is a potential enabler for further change.   Further, having a separate key/metadata store which can be scanned without breaking the page cache or working against mitigation for write amplifications, is also potentially an enabler to offer features to both the developer and the operator.
 
-## Next Steps
-
-Further volume test scenarios are the immediate priority, in particular volume test scenarios with:
-
-- Significant use of secondary indexes;
-
-- Use of newly available [EC2 hardware](https://aws.amazon.com/about-aws/whats-new/2017/02/now-available-amazon-ec2-i3-instances-next-generation-storage-optimized-high-i-o-instances/) which potentially is a significant changes to assumptions about hardware efficiency and cost.
-
-- Create riak_test tests for new Riak features enabled by leveled.
-
-However a number of other changes are planned in the next month to (my branch of) riak_kv to better use leveled:
-
-- Support for rapid rebuild of hashtrees
-
-- Fixes to [priority issues](https://github.com/martinsumner/leveled/issues)
-
-- Experiments with flexible sync on write settings
-
-- A cleaner and easier build of Riak with leveled included, including cuttlefish configuration support
-
-More information can be found in the [future section](docs/FUTURE.md).
-
 ## Feedback
 
 Please create an issue if you have any suggestions.  You can ping me <b>@masleeds</b> if you wish
@@ -104,28 +88,14 @@ Unit and current tests in leveled should run with rebar3.  Leveled has been test
 A new database can be started by running
 
 ```
-{ok, Bookie} = leveled_bookie:book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy)   
+{ok, Bookie} = leveled_bookie:book_start(StartupOptions)   
 ```
 
-This will start a new Bookie.  It will start and look for existing data files, under the RootPath, and start empty if none exist.  A LedgerCacheSize of `2000`, a JournalSize of `500000000` (500MB) and a SyncStrategy of `none` should work OK.  Further information on startup options can be found [here](docs/STARTUP_OPTIONS.md).
+This will start a new Bookie.  It will start and look for existing data files, under the RootPath, and start empty if none exist.  Further information on startup options can be found here [here](docs/STARTUP_OPTIONS.md).
 
 The book_start method should respond once startup is complete.  The [leveled_bookie module](src/leveled_bookie.erl) includes the full API for external use of the store.
 
-It should run anywhere that OTP will run - it has been tested on Ubuntu 14, MAC OS X and Windows 10.
-
-Running in Riak requires one of the branches of riak_kv referenced [here](docs/FUTURE.md). There is a [Riak branch](https://github.com/martinsumner/riak/tree/mas-leveleddb) intended to support the automatic build of this, and the configuration via cuttlefish.  However, the auto-build fails due to other dependencies (e.g. riak_search) bringing in an alternative version of riak_kv, and the configuration via cuttlefish is broken for reasons unknown.  
-
-Building this from source as part of Riak will require a bit of fiddling around.
-
-- clone and build [riak](https://github.com/martinsumner/riak/tree/mas-leveleddb)
-- cd deps
-- rm -rf riak_kv
-- git clone -b mas-leveled-putfsm --single-branch https://github.com/martinsumner/riak_kv.git
-- cd ..
-- make rel
-- remember to set the storage backend to leveled in riak.conf
-
-To help with the breakdown of cuttlefish, leveled parameters can be set via riak_kv/include/riak_kv_leveled.hrl - although a new make will be required for these changes to take effect.
+Running in Riak requires Riak 2.9 or beyond, which is available from January 2019.
 
 ### Contributing
 
@@ -136,5 +106,4 @@ ct with 100% coverage.
 
 To have rebar3 execute the full set of tests, run:
 
-    rebar3 as test do cover --reset, eunit --cover, ct --cover, cover --verbose
-
+    `rebar3 as test do cover --reset, eunit --cover, ct --cover, cover --verbose`

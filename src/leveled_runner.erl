@@ -678,27 +678,25 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
                         end,
                     JK = {leveled_codec:to_ledgerkey(B, K, Tag), SQN},
                     case DeferredFetch of
-                        {true, true} ->
-                            InJournal =
-                                leveled_inker:ink_keycheck(InkerClone,
-                                                            LK,
-                                                            SQN),
-                            case InJournal of
-                                probably ->
-                                    ProxyObj = 
-                                        make_proxy_object(Tag, 
-                                                            LK, JK, MD, V,
-                                                            InkerClone),
-                                    FoldObjectsFun(B, K, ProxyObj, Acc);
-                                missing ->
-                                    Acc
-                            end;
-                        {true, false} ->
+                        {true, JournalCheck} ->
                             ProxyObj = 
-                                make_proxy_object(Tag, 
-                                                    LK, JK, MD, V,
-                                                    InkerClone),
-                            FoldObjectsFun(B, K, ProxyObj, Acc);
+                                leveled_codec:return_proxy(Tag, MD,
+                                                            InkerClone, JK),
+                            case JournalCheck of
+                                true ->
+                                    InJournal =
+                                        leveled_inker:ink_keycheck(InkerClone,
+                                                                    LK,
+                                                                    SQN),
+                                    case InJournal of
+                                        probably ->
+                                            FoldObjectsFun(B, K, ProxyObj, Acc);
+                                        missing ->
+                                            Acc
+                                    end;
+                                false ->
+                                    FoldObjectsFun(B, K, ProxyObj, Acc)
+                            end;
                         false ->
                             R = leveled_bookie:fetch_value(InkerClone, JK),
                             case R of
@@ -706,7 +704,6 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
                                     Acc;
                                 Value ->
                                     FoldObjectsFun(B, K, Value, Acc)
-
                             end
                     end;
                 false ->
@@ -715,16 +712,6 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
         end,
     AccFun.
 
-
-make_proxy_object(?HEAD_TAG, _LK, _JK, MD, _V, _InkerClone) ->
-    MD;
-make_proxy_object(_Tag, LK, JK, MD, V, InkerClone) ->
-    Size = leveled_codec:get_size(LK, V),
-    MDBin = leveled_codec:build_metadata_object(LK, MD),
-    term_to_binary({proxy_object,
-                    MDBin,
-                    Size,
-                    {fun leveled_bookie:fetch_value/2, InkerClone, JK}}).
 
 check_presence(Key, Value, InkerClone) ->
     {LedgerKey, SQN} = leveled_codec:strip_to_keyseqonly({Key, Value}),

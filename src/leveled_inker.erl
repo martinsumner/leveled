@@ -357,7 +357,8 @@ ink_loadpcl(Pid, MinSQN, FilterFun, Penciller) ->
 ink_compactjournal(Pid, Bookie, Timeout) ->
     CheckerInitiateFun = fun initiate_penciller_snapshot/1,
     CheckerCloseFun = fun leveled_penciller:pcl_close/1,
-    CheckerFilterFun = fun leveled_penciller:pcl_checksequencenumber/3,
+    CheckerFilterFun =
+        wrap_checkfilterfun(fun leveled_penciller:pcl_checksequencenumber/3),
     gen_server:call(Pid,
                         {compact,
                             Bookie,
@@ -1185,6 +1186,20 @@ initiate_penciller_snapshot(Bookie) ->
     MaxSQN = leveled_penciller:pcl_getstartupsequencenumber(LedgerSnap),
     {LedgerSnap, MaxSQN}.
 
+
+-spec wrap_checkfilterfun(fun()) -> fun().
+%% @doc
+%% Make a check of the validity of the key being passed into the CheckFilterFun
+wrap_checkfilterfun(CheckFilterFun) ->
+    fun(Pcl, LK, SQN) ->
+        case leveled_codec:isvalid_ledgerkey(LK) of
+            true ->
+                CheckFilterFun(Pcl, LK, SQN);
+            false ->
+                false
+        end
+    end.
+
 %%%============================================================================
 %%% Test
 %%%============================================================================
@@ -1437,6 +1452,16 @@ empty_manifest_test() ->
     ?assertMatch("Value1", V),
     ink_close(Ink2),
     clean_testdir(RootPath).
+
+
+wrapper_test() ->
+    KeyNotTuple = [?STD_TAG, <<"B">>, <<"K">>, null],
+    TagNotAtom = {"tag", <<"B">>, <<"K">>, null},
+    CheckFilterFun = fun(_Pcl, _LK, _SQN) -> true end,
+    WrappedFun = wrap_checkfilterfun(CheckFilterFun),
+    ?assertMatch(false, WrappedFun(null, KeyNotTuple, 1)),
+    ?assertMatch(false, WrappedFun(null, TagNotAtom, 1)).
+    
 
 coverage_cheat_test() ->
     {noreply, _State0} = handle_info(timeout, #state{}),

@@ -2,28 +2,8 @@
 %%
 %% Functions for manipulating keys and values within leveled.
 %%
-%%
-%% Within the LEDGER:
-%% Keys are of the form -
-%% {Tag, Bucket, Key, SubKey|null}
-%% Values are of the form
-%% {SQN, Status, MD}
-%%
-%% Within the JOURNAL:
-%% Keys are of the form -
-%% {SQN, LedgerKey}
-%% Values are of the form
-%% {Object, IndexSpecs} (as a binary)
-%%
-%% IndexSpecs are of the form of a Ledger Key/Value
-%%
-%% Tags need to be set during PUT operations and each Tag used must be
-%% supported in an extract_metadata and a build_metadata_object function clause
-%%
-%% Currently the only tags supported are:
-%% - o (standard objects)
-%% - o_rkv (riak objects)
-%% - i (index entries)
+%% Any thing specific to handling of a given tag should be encapsulated 
+%% within the leveled_head module
 
 
 -module(leveled_codec).
@@ -48,40 +28,33 @@
         to_ledgerkey/5,
         from_ledgerkey/1,
         from_ledgerkey/2,
+        isvalid_ledgerkey/1,
         to_inkerkey/2,
         to_inkerkv/6,
         from_inkerkv/1,
         from_inkerkv/2,
         from_journalkey/1,
-        compact_inkerkvc/2,
+        revert_to_keydeltas/2,
         split_inkvalue/1,
         check_forinkertype/2,
+        get_tagstrategy/2,
         maybe_compress/2,
         create_value_for_journal/3,
-        build_metadata_object/2,
         generate_ledgerkv/5,
         get_size/2,
         get_keyandobjhash/2,
         idx_indexspecs/5,
         obj_objectspecs/3,
-        riak_extract_metadata/2,
         segment_hash/1,
         to_lookup/1,
-        riak_metadata_to_binary/2,
-        next_key/1]).         
+        next_key/1,
+        return_proxy/4]).         
 
--define(V1_VERS, 1).
--define(MAGIC, 53). % riak_kv -> riak_object
 -define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
 -define(NRT_IDX, "$aae.").
 
--type riak_metadata() :: {binary()|delete, % Sibling Metadata
-                            binary()|null, % Vclock Metadata
-                            integer()|null, % Hash of vclock - non-exportable 
-                            integer()}. % Size in bytes of real object
-
 -type tag() :: 
-        ?STD_TAG|?RIAK_TAG|?IDX_TAG|?HEAD_TAG.
+        leveled_head:object_tag()|?IDX_TAG|?HEAD_TAG|atom().
 -type key() :: 
         binary()|string()|{binary(), binary()}.
         % Keys SHOULD be binary()
@@ -113,12 +86,16 @@
         {sqn(), ledger_status(), segment_hash(), metadata(), last_moddate()}.
 -type ledger_kv() ::
         {ledger_key(), ledger_value()}.
+-type compaction_method() ::
+        retain|skip|recalc.
 -type compaction_strategy() ::
-        list({tag(), retain|skip|recalc}).
+        list({tag(), compaction_method()}).
 -type journal_key_tag() ::
         ?INKT_STND|?INKT_TOMB|?INKT_MPUT|?INKT_KEYD.
 -type journal_key() ::
-        {integer(), journal_key_tag(), ledger_key()}.
+        {sqn(), journal_key_tag(), ledger_key()}.
+-type journal_ref() ::
+        {ledger_key(), sqn()}.
 -type object_spec_v0() ::
         {add|remove, key(), key(), key()|null, any()}.
 -type object_spec_v1() ::
@@ -139,6 +116,17 @@
     % first element must be re_pattern, but tuple may change legnth with
     % versions
 
+-type value_fetcher() ::
+    {fun((pid(), leveled_codec:journal_key()) -> any()),
+        pid(), leveled_codec:journal_key()}.
+    % A 2-arity function, which when passed the other two elements of the tuple
+    % will return the value
+-type proxy_object() ::
+    {proxy_object, leveled_head:head(), non_neg_integer(), value_fetcher()}.
+    % Returns the head, size and a tuple for accessing the value
+-type proxy_objectbin() ::
+    binary().
+    % using term_to_binary(proxy_object())
 
 
 -type segment_list() 
@@ -153,8 +141,10 @@
                 ledger_value/0,
                 ledger_kv/0,
                 compaction_strategy/0,
+                compaction_method/0,
                 journal_key_tag/0,
                 journal_key/0,
+                journal_ref/0,
                 compression_method/0,
                 journal_keychanges/0,
                 index_specs/0,
@@ -162,7 +152,9 @@
                 maybe_lookup/0,
                 last_moddate/0,
                 lastmod_range/0,
-                regular_expression/0]).
+                regular_expression/0,
+                value_fetcher/0,
+                proxy_object/0]).
 
 
 %%%============================================================================
@@ -179,29 +171,33 @@ segment_hash(Key) when is_binary(Key) ->
     {segment_hash, SegmentID, ExtraHash, _AltHash}
         = leveled_tictac:keyto_segment48(Key),
     {SegmentID, ExtraHash};
-segment_hash({?RIAK_TAG, Bucket, Key, null}) 
-                                    when is_binary(Bucket), is_binary(Key) ->
-    segment_hash(<<Bucket/binary, Key/binary>>);
-segment_hash({?RIAK_TAG, {BucketType, Bucket}, Key, SubKey})
-                            when is_binary(BucketType), is_binary(Bucket) ->
-    segment_hash({?RIAK_TAG,
-                    <<BucketType/binary, Bucket/binary>>,
-                    Key,
-                    SubKey});
-segment_hash({?HEAD_TAG, Bucket, Key, SubK})
+segment_hash(KeyTuple) when is_tuple(KeyTuple) ->
+    BinKey = 
+        case element(1, KeyTuple) of
+            ?HEAD_TAG ->
+                headkey_to_canonicalbinary(KeyTuple);
+            _ ->
+                leveled_head:key_to_canonicalbinary(KeyTuple)
+        end,
+    segment_hash(BinKey).
+
+
+headkey_to_canonicalbinary({?HEAD_TAG, Bucket, Key, SubK})
                     when is_binary(Bucket), is_binary(Key), is_binary(SubK) ->
-    segment_hash(<<Bucket/binary, Key/binary, SubK/binary>>);
-segment_hash({?HEAD_TAG, Bucket, Key, _SubK})
+    <<Bucket/binary, Key/binary, SubK/binary>>;
+headkey_to_canonicalbinary({?HEAD_TAG, Bucket, Key, null})
                                     when is_binary(Bucket), is_binary(Key) ->
-    segment_hash(<<Bucket/binary, Key/binary>>);
-segment_hash({?HEAD_TAG, {BucketType, Bucket}, Key, SubKey})
+    <<Bucket/binary, Key/binary>>;
+headkey_to_canonicalbinary({?HEAD_TAG, {BucketType, Bucket}, Key, SubKey})
                             when is_binary(BucketType), is_binary(Bucket) ->
-    segment_hash({?HEAD_TAG,
-                    <<BucketType/binary, Bucket/binary>>, 
-                    Key,
-                    SubKey});
-segment_hash(Key) ->
-    segment_hash(term_to_binary(Key)).
+    headkey_to_canonicalbinary({?HEAD_TAG,
+                                <<BucketType/binary, Bucket/binary>>, 
+                                Key,
+                                SubKey});
+headkey_to_canonicalbinary(Key) when element(1, Key) == ?HEAD_TAG ->
+    % In unit tests head specs can have non-binary keys, so handle
+    % this through hashing the whole key
+    term_to_binary(Key).
 
 
 -spec to_lookup(ledger_key()) -> maybe_lookup().
@@ -330,6 +326,15 @@ to_ledgerkey(Bucket, {Key, SubKey}, ?HEAD_TAG) ->
 to_ledgerkey(Bucket, Key, Tag) ->
     {Tag, Bucket, Key, null}.
 
+%% No spec - due to tests
+%% @doc
+%% Check that the ledgerkey is a valid format, to handle un-checksummed keys
+%% that may be returned corrupted (such as from the Journal)
+isvalid_ledgerkey({Tag, _B, _K, _SK}) ->
+    is_atom(Tag);
+isvalid_ledgerkey(_LK) ->
+    false.
+
 -spec endkey_passed(ledger_key(), ledger_key()) -> boolean().
 %% @oc
 %% Compare a key against a query key, only comparing elements that are non-null
@@ -355,7 +360,9 @@ endkey_passed(EndKey, CheckingKey) ->
 %% Take the default startegy for compaction, and override the approach for any 
 %% tags passed in
 inker_reload_strategy(AltList) ->
-    ReloadStrategy0 = [{?RIAK_TAG, retain}, {?STD_TAG, retain}],
+    ReloadStrategy0 = 
+        lists:map(fun leveled_head:default_reload_strategy/1,
+                    leveled_head:defined_objecttags()),
     lists:foldl(fun({X, Y}, SList) ->
                         lists:keyreplace(X, 1, SList, {X, Y})
                         end,
@@ -363,47 +370,17 @@ inker_reload_strategy(AltList) ->
                     AltList).
 
 
--spec compact_inkerkvc({journal_key(), any(), boolean()}, 
-                            compaction_strategy()) -> 
-                            skip|{retain, any()}|{recalc, null}.
-%% @doc
-%% Decide whether a superceded object should be replicated in the compacted
-%% file and in what format. 
-compact_inkerkvc({_InkerKey, crc_wonky, false}, _Strategy) ->
-    skip;
-compact_inkerkvc({{_SQN, ?INKT_TOMB, _LK}, _V, _CrcCheck}, _Strategy) ->
-    skip;
-compact_inkerkvc({{SQN, ?INKT_KEYD, LK}, V, CrcCheck}, Strategy) ->
-    case get_tagstrategy(LK, Strategy) of
-        skip ->
-            skip;
-        retain ->
-            {retain, {{SQN, ?INKT_KEYD, LK}, V, CrcCheck}};
-        TagStrat ->
-            {TagStrat, null}
-    end;
-compact_inkerkvc({{SQN, ?INKT_STND, LK}, V, CrcCheck}, Strategy) ->
-    case get_tagstrategy(LK, Strategy) of
-        skip ->
-            skip;
-        retain ->
-            {_V, KeyDeltas} = revert_value_from_journal(V),    
-            {retain, {{SQN, ?INKT_KEYD, LK}, {null, KeyDeltas}, CrcCheck}};
-        TagStrat ->
-            {TagStrat, null}
-    end.
-
 -spec get_tagstrategy(ledger_key(), compaction_strategy()) 
                                                     -> skip|retain|recalc.
 %% @doc
-%% Work out the compaction startegy for the key
+%% Work out the compaction strategy for the key
 get_tagstrategy({Tag, _, _, _}, Strategy) ->
     case lists:keyfind(Tag, 1, Strategy) of
         {Tag, TagStrat} ->
             TagStrat;
         false ->
             leveled_log:log("IC012", [Tag, Strategy]),
-            skip
+            retain
     end.
 
 %%%============================================================================
@@ -426,6 +403,17 @@ to_inkerkv(LedgerKey, SQN, Object, KeyChanges, PressMethod, Compress) ->
     Value = 
         create_value_for_journal({Object, KeyChanges}, Compress, PressMethod),
     {{SQN, InkerType, LedgerKey}, Value}.
+
+-spec revert_to_keydeltas(journal_key(), any()) -> {journal_key(), any()}.
+%% @doc
+%% If we wish to retain key deltas when an object in the Journal has been
+%% replaced - then this converts a Journal Key and Value into one which has no
+%% object body just the key deltas.
+revert_to_keydeltas({SQN, ?INKT_STND, LedgerKey}, InkerV) ->
+    {_V, KeyDeltas} = revert_value_from_journal(InkerV),
+    {{SQN, ?INKT_KEYD, LedgerKey}, {null, KeyDeltas}};
+revert_to_keydeltas(JournalKey, InkerV) ->
+    {JournalKey, InkerV}.
 
 %% Used when fetching objects, so only handles standard, hashable entries
 from_inkerkv(Object) ->
@@ -571,8 +559,6 @@ check_forinkertype(_LedgerKey, head_only) ->
 check_forinkertype(_LedgerKey, _Object) ->
     ?INKT_STND.
 
-hash(Obj) ->
-    erlang:phash2(term_to_binary(Obj)).
 
 
 
@@ -624,6 +610,27 @@ gen_headspec({IdxOp, Bucket, Key, SubKey, Value}, SQN, TTL) ->
     {K, {SQN, Status, segment_hash(K), Value, undefined}}.
 
 
+-spec return_proxy(leveled_head:object_tag()|leveled_head:headonly_tag(),
+                    leveled_head:object_metadata(),
+                    pid(), journal_ref())
+                        -> proxy_objectbin()|leveled_head:object_metadata().
+%% @doc
+%% If the object has a value, return the metadata and a proxy through which
+%% the applictaion or runner can access the value.  If it is a ?HEAD_TAG
+%% then it has no value, so just return the metadata
+return_proxy(?HEAD_TAG, ObjectMetadata, _InkerClone, _JR) ->
+    % Object has no value - so proxy object makese no sense, just return the
+    % metadata as is
+    ObjectMetadata;
+return_proxy(Tag, ObjMetadata, InkerClone, JournalRef) ->
+    Size = leveled_head:get_size(Tag, ObjMetadata),
+    HeadBin = leveled_head:build_head(Tag, ObjMetadata),
+    term_to_binary({proxy_object,
+                    HeadBin,
+                    Size,
+                    {fun leveled_bookie:fetch_value/2,
+                        InkerClone,
+                        JournalRef}}).
 
 set_status(add, TTL) ->
     {active, TTL};
@@ -657,8 +664,8 @@ generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS) ->
                         {active, TS}
                 end,
     Hash = segment_hash(PrimaryKey),
-    {MD, LastMods} = extract_metadata(Obj, Size, Tag),
-    ObjHash = get_objhash(Tag, MD),
+    {MD, LastMods} = leveled_head:extract_metadata(Tag, Size, Obj),
+    ObjHash = leveled_head:get_hash(Tag, MD),
     Value = {SQN,
                 Status,
                 Hash,
@@ -679,23 +686,10 @@ get_last_lastmodification(LastMods) ->
     {Mega, Sec, _Micro} = lists:max(LastMods),
     Mega * 1000000 + Sec.
 
-
-extract_metadata(Obj, Size, ?RIAK_TAG) ->
-    riak_extract_metadata(Obj, Size);
-extract_metadata(Obj, Size, ?STD_TAG) ->
-    {{hash(Obj), Size}, []}.
-
 get_size(PK, Value) ->
     {Tag, _Bucket, _Key, _} = PK,
     MD = element(4, Value),
-    case Tag of
-        ?RIAK_TAG ->
-            {_RMD, _VC, _Hash, Size} = MD,
-            Size;
-        ?STD_TAG ->
-            {_Hash, Size} = MD,
-            Size
-    end.
+    leveled_head:get_size(Tag, MD).
 
 -spec get_keyandobjhash(tuple(), tuple()) -> tuple().
 %% @doc
@@ -709,104 +703,8 @@ get_keyandobjhash(LK, Value) ->
         ?IDX_TAG ->
             from_ledgerkey(LK); % returns {Bucket, Key, IdxValue}
         _ ->
-            {Bucket, Key, get_objhash(Tag, MD)}
+            {Bucket, Key, leveled_head:get_hash(Tag, MD)}
     end.
-
-get_objhash(Tag, ObjMetaData) ->
-    case Tag of
-        ?RIAK_TAG ->
-            {_RMD, _VC, Hash, _Size} = ObjMetaData,
-            Hash;
-        ?STD_TAG ->
-            {Hash, _Size} = ObjMetaData,
-            Hash
-    end.
-        
-
-build_metadata_object(PrimaryKey, MD) ->
-    {Tag, _Bucket, _Key, _SubKey} = PrimaryKey,
-    case Tag of
-        ?RIAK_TAG ->
-            {SibData, Vclock, _Hash, _Size} = MD,
-            riak_metadata_to_binary(Vclock, SibData);
-        ?STD_TAG ->
-            MD;
-        ?HEAD_TAG ->
-            MD
-    end.
-
-
--spec riak_extract_metadata(binary()|delete, non_neg_integer()) -> 
-                            {riak_metadata(), list()}.
-%% @doc
-%% Riak extract metadata should extract a metadata object which is a 
-%% five-tuple of:
-%% - Binary of sibling Metadata
-%% - Binary of vector clock metadata
-%% - Non-exportable hash of the vector clock metadata
-%% - The largest last modified date of the object
-%% - Size of the object
-%%
-%% The metadata object should be returned with the full list of last 
-%% modified dates (which will be used for recent anti-entropy index creation)
-riak_extract_metadata(delete, Size) ->
-    {{delete, null, null, Size}, []};
-riak_extract_metadata(ObjBin, Size) ->
-    {VclockBin, SibBin, LastMods} = riak_metadata_from_binary(ObjBin),
-    {{SibBin, 
-            VclockBin, 
-            erlang:phash2(lists:sort(binary_to_term(VclockBin))), 
-            Size},
-        LastMods}.
-
-%% <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
-%%%     VclockBin/binary, SibCount:32/integer, SibsBin/binary>>.
-
-riak_metadata_to_binary(VclockBin, SibMetaBin) ->
-    VclockLen = byte_size(VclockBin),
-    <<?MAGIC:8/integer, ?V1_VERS:8/integer,
-        VclockLen:32/integer, VclockBin/binary,
-        SibMetaBin/binary>>.
-    
-riak_metadata_from_binary(V1Binary) ->
-    <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer,
-            Rest/binary>> = V1Binary,
-    <<VclockBin:VclockLen/binary, SibCount:32/integer, SibsBin/binary>> = Rest,
-    {SibMetaBin, LastMods} =
-        case SibCount of
-            SC when is_integer(SC) ->
-                get_metadata_from_siblings(SibsBin,
-                                            SibCount,
-                                            <<SibCount:32/integer>>,
-                                            [])
-        end,
-    {VclockBin, SibMetaBin, LastMods}.
-
-get_metadata_from_siblings(<<>>, 0, SibMetaBin, LastMods) ->
-    {SibMetaBin, LastMods};
-get_metadata_from_siblings(<<ValLen:32/integer, Rest0/binary>>,
-                            SibCount,
-                            SibMetaBin,
-                            LastMods) ->
-    <<_ValBin:ValLen/binary, MetaLen:32/integer, Rest1/binary>> = Rest0,
-    <<MetaBin:MetaLen/binary, Rest2/binary>> = Rest1,
-    LastMod =
-        case MetaBin of 
-            <<MegaSec:32/integer,
-                Sec:32/integer,
-                MicroSec:32/integer,
-                _Rest/binary>> ->
-                    {MegaSec, Sec, MicroSec};
-            _ ->
-                {0, 0, 0}
-        end,
-    get_metadata_from_siblings(Rest2,
-                                SibCount - 1,
-                                <<SibMetaBin/binary,
-                                    0:32/integer,
-                                    MetaLen:32/integer,
-                                    MetaBin:MetaLen/binary>>,
-                                    [LastMod|LastMods]).
 
 -spec next_key(key()) -> key().
 %% @doc
@@ -825,6 +723,14 @@ next_key({Type, Bucket}) when is_binary(Type), is_binary(Bucket) ->
 
 -ifdef(TEST).
 
+valid_ledgerkey_test() ->
+    UserDefTag = {user_defined, <<"B">>, <<"K">>, null},
+    ?assertMatch(true, isvalid_ledgerkey(UserDefTag)),
+    KeyNotTuple = [?STD_TAG, <<"B">>, <<"K">>, null],
+    ?assertMatch(false, isvalid_ledgerkey(KeyNotTuple)),
+    TagNotAtom = {"tag", <<"B">>, <<"K">>, null},
+    ?assertMatch(false, isvalid_ledgerkey(TagNotAtom)),
+    ?assertMatch(retain, get_tagstrategy(UserDefTag, inker_reload_strategy([]))).
 
 indexspecs_test() ->
     IndexSpecs = [{add, "t1_int", 456},
@@ -849,44 +755,6 @@ endkey_passed_test() ->
     ?assertMatch(true, endkey_passed(TestKey, K2)).
 
 
-general_skip_strategy_test() ->
-    % Confirm that we will skip if the strategy says so
-    TagStrat1 = compact_inkerkvc({{1,
-                                        ?INKT_STND,
-                                        {?STD_TAG, "B1", "K1andSK", null}},
-                                    {},
-                                    true},
-                                    [{?STD_TAG, skip}]),
-    ?assertMatch(skip, TagStrat1),
-    TagStrat2 = compact_inkerkvc({{1,
-                                        ?INKT_KEYD,
-                                        {?STD_TAG, "B1", "K1andSK", null}},
-                                    {},
-                                    true},
-                                    [{?STD_TAG, skip}]),
-    ?assertMatch(skip, TagStrat2),
-    TagStrat3 = compact_inkerkvc({{1,
-                                        ?INKT_KEYD,
-                                        {?IDX_TAG, "B1", "K1", "SK"}},
-                                    {},
-                                    true},
-                                    [{?STD_TAG, skip}]),
-    ?assertMatch(skip, TagStrat3),
-    TagStrat4 = compact_inkerkvc({{1,
-                                        ?INKT_KEYD,
-                                        {?IDX_TAG, "B1", "K1", "SK"}},
-                                    {},
-                                    true},
-                                    [{?STD_TAG, skip}, {?IDX_TAG, recalc}]),
-    ?assertMatch({recalc, null}, TagStrat4),
-    TagStrat5 = compact_inkerkvc({{1,
-                                        ?INKT_TOMB,
-                                        {?IDX_TAG, "B1", "K1", "SK"}},
-                                    {},
-                                    true},
-                                    [{?STD_TAG, skip}, {?IDX_TAG, recalc}]),
-    ?assertMatch(skip, TagStrat5).
-    
 
 %% Test below proved that the overhead of performing hashes was trivial
 %% Maybe 5 microseconds per hash

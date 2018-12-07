@@ -22,6 +22,18 @@ There is no stats facility within leveled, the stats are only available from the
 
 The `forced_logs` option will force a particular log reference to be logged regardless of the log level that has been set.  This can be used to log at a higher level than `info`, whilst allowing for specific logs to still be logged out, such as logs providing sample performance statistics.
 
+## User-Defined Tags
+
+There are 2 primary object tags - ?STD_TAG (o) which is the default, and ?RIAK_TAG (o_rkv).  Objects PUT into the store with different tags may have different behaviours in leveled.
+
+The differences between tags are encapsulated within the `leveled_head` module.  The primary difference of interest is the alternative handling within the function `extract_metadata/3`.  Significant efficiency can be gained in leveled (as opposed to other LSM-stores) through using book_head requests when book_get would otherwise be necessary.  If 80% of the requests are interested in less than 20% of the information within an object, then having that 20% in the object metadata and switching fetch requests to the book_head API, will improve efficiency.  Also folds over heads are much more efficient that folds over objects, so significant improvements can be also be made within folds by having the right information within the metadata.
+
+To make use of this efficiency, metadata needs to be extracted on PUT, and made into leveled object metadata.  For the ?RIAK_TAG this work is within the `leveled_head` module.  If an application wants to control this behaviour for its application, then a tag can be created, and the `leveled_head` module updated.  However, it is also possible to have more dynamic definitions for handling of application-defined tags, by passing in alternative versions of one or more of the functions `extract_metadata/3`, `build_head/1` and `key_to_canonicalbinary/1` on start-up.  These functions will be applied to user-defined tags (but will not override the behaviour for pre-defined tags).
+
+The startup option `override_functions` can be used to manage this override.  [This test](../test/end_to_end/appdefined_SUITE.erl) provides a simple example of using override_functions.
+
+This option is currently experimental.  Issues such as versioning, and handling a failure to consistently start a store with the same override_functions, should be handled by the application.
+
 ## Max Journal Size
 
 The maximum size of an individual Journal file can be set using `{max_journalsize, integer()}`, which sets the size in bytes.  The default value is 1,000,000,000 (~1GB). The maximum size, which cannot be exceed is `2^32`.  It is not expected that the Journal Size should normally set to lower than 100 MB, it should be sized to hold many thousands of objects at least.
@@ -61,13 +73,13 @@ The purpose of the reload strategy is to define the behaviour at compaction of t
 
 By default nothing is compacted from the Journal if the SQN of the Journal entry is greater than the largest sequence number which has been persisted in the Ledger.  So when an object is compacted in the Journal (as it has been replaced), it should not need to be replayed from the Journal into the Ledger in the future - as it, and all its related key changes, have already been persisted to the Ledger.
 
-However, what if the Ledger had been erased?  This could happen due to some corruption, or perhaps because only the Journal is to be backed up.  As the object has been replaced, the value is not required - however KeyChanges ay be required (such as indexes which are built incrementally across a series of object changes).  So to revert the indexes to their previous state the Key Changes would need to be retained in this case, so the indexes in the Ledger would be correctly rebuilt.
+However, what if the Ledger had been erased?  This could happen due to some corruption, or perhaps because only the Journal is to be backed up.  As the object has been replaced, the value is not required - however KeyChanges may be required (such as indexes which are built incrementally across a series of object changes).  So to revert the indexes to their previous state the Key Changes would need to be retained in this case, so the indexes in the Ledger would be correctly rebuilt.
 
 The are three potential strategies:
 
-`skip` - don't worry about this scenario, require the Ledger to be backed up;
-`retain` - discard the object itself on compaction but keep the key changes;
-`recalc` - recalculate the indexes on reload by comparing the information on the object with the current state of the Ledger (as would be required by the PUT process when comparing IndexSpecs at PUT time).
+ - `skip` - don't worry about this scenario, require the Ledger to be backed up;
+ - `retain` - discard the object itself on compaction but keep the key changes;
+ - `recalc` - recalculate the indexes on reload by comparing the information on the object with the current state of the Ledger (as would be required by the PUT process when comparing IndexSpecs at PUT time).
 
 There is no code for `recalc` at present it is simply a logical possibility.  So to set a reload strategy there should be an entry like `{reload_strategy, [{TagName, skip|retain}]}`.  By default tags are pre-set to `retain`.  If there is no need to handle a corrupted Ledger, then all tags could be set to `skip`.
 

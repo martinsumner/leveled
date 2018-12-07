@@ -3259,7 +3259,7 @@ nonsense_coverage_test() ->
 
 hashmatching_bytreesize_test() ->
     B = <<"Bucket">>,
-    V = leveled_codec:riak_metadata_to_binary(term_to_binary([{"actor1", 1}]), 
+    V = leveled_head:riak_metadata_to_binary(term_to_binary([{"actor1", 1}]), 
                                                 <<1:32/integer, 
                                                     0:32/integer,
                                                     0:32/integer>>),
