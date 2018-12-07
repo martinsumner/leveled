@@ -300,6 +300,7 @@
     :: {pos_integer(), 
         list(leveled_codec:ledger_kv()|leveled_sst:expandable_pointer())}.
 -type iterator() :: list(iterator_entry()).
+-type bad_ledgerkey() :: list().
 
 %%%============================================================================
 %%% API
@@ -472,7 +473,7 @@ pcl_fetchnextkey(Pid, StartKey, EndKey, AccFun, InitAcc) ->
                     infinity).
 
 -spec pcl_checksequencenumber(pid(), 
-                                leveled_codec:ledger_key(), 
+                                leveled_codec:ledger_key()|bad_ledgerkey(), 
                                 integer()) -> boolean().
 %% @doc
 %% Check if the sequence number of the passed key is not replaced by a change
@@ -482,10 +483,18 @@ pcl_fetchnextkey(Pid, StartKey, EndKey, AccFun, InitAcc) ->
 %% If the key is not present, it will be assumed that a higher sequence number
 %% tombstone once existed, and false will be returned.
 pcl_checksequencenumber(Pid, Key, SQN) ->
-    Hash = leveled_codec:segment_hash(Key),
-    if
-        Hash /= no_lookup ->
-            gen_server:call(Pid, {check_sqn, Key, Hash, SQN}, infinity)
+    try
+        Hash = leveled_codec:segment_hash(Key),
+        if
+            Hash /= no_lookup ->
+                gen_server:call(Pid, {check_sqn, Key, Hash, SQN}, infinity)
+        end
+    catch
+        % Can't let this crash here, as when journal files are corrupted,
+        % corrupted input might be received by the penciller for this check.
+        % Want to be able to compact away this corruption - not end up with
+        % perpetually failing compaction jobs
+        _Type:_Error -> false
     end.
 
 -spec pcl_workforclerk(pid()) -> ok.
@@ -2003,6 +2012,17 @@ simple_server_test() ->
                                                     "Key0004",
                                                     null},
                                                 3004)),
+    
+    % Try a busted key - and get false, as the exception should be handled
+    % Mimics a bad ledger key being discovered in the Journal, want to get
+    % false rather than just crashing.  
+    ?assertMatch(false, pcl_checksequencenumber(PclSnap,
+                                                    [o,
+                                                        "Bucket0004",
+                                                        "Key0004",
+                                                        null],
+                                                    3004)),
+
     % Add some more keys and confirm that check sequence number still
     % sees the old version in the previous snapshot, but will see the new 
     % version in a new snapshot
@@ -2298,6 +2318,7 @@ handle_down_test() ->
 
     pcl_close(PCLr),
     clean_testdir(RootPath).
+
 
 %% the fake bookie. Some calls to leveled_bookie (like the two below)
 %% do not go via the gen_server (but it looks like they expect to be
