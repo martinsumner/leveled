@@ -1,11 +1,14 @@
 {application, leveled,
  [
   {description, "Key Value store based on LSM-Tree and designed for larger values"},
-  {vsn, "1"},
+  {vsn, "0.9.3"},
   {registered, []},
   {applications, [
                   kernel,
                   stdlib
                  ]},
+  {maintainers, ["Martin Sumner"]},
+  {licenses, ["Apache"]},
+  {links, [{"Github", "https://github.com/martinsumner/leveled"}]},
   {env, [{root_path, "test"}]}
  ]}.
