@@ -460,7 +460,7 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag) ->
                 leveled_codec:index_specs(), 
                 leveled_codec:tag(), infinity|integer()) -> ok|pause.
 
-book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) ->
+book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) when is_atom(Tag) ->
     gen_server:call(Pid,
                     {put, Bucket, Key, Object, IndexSpecs, Tag, TTL},
                     infinity).

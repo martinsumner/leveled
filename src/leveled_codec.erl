@@ -28,6 +28,7 @@
         to_ledgerkey/5,
         from_ledgerkey/1,
         from_ledgerkey/2,
+        isvalid_ledgerkey/1,
         to_inkerkey/2,
         to_inkerkv/6,
         from_inkerkv/1,
@@ -53,7 +54,7 @@
 -define(NRT_IDX, "$aae.").
 
 -type tag() :: 
-        leveled_head:object_tag()|?IDX_TAG|?HEAD_TAG.
+        leveled_head:object_tag()|?IDX_TAG|?HEAD_TAG|atom().
 -type key() :: 
         binary()|string()|{binary(), binary()}.
         % Keys SHOULD be binary()
@@ -325,6 +326,15 @@ to_ledgerkey(Bucket, {Key, SubKey}, ?HEAD_TAG) ->
 to_ledgerkey(Bucket, Key, Tag) ->
     {Tag, Bucket, Key, null}.
 
+%% No spec - due to tests
+%% @doc
+%% Check that the ledgerkey is a valid format, to handle un-checksummed keys
+%% that may be returned corrupted (such as from the Journal)
+isvalid_ledgerkey({Tag, _B, _K, _SK}) ->
+    is_atom(Tag);
+isvalid_ledgerkey(_LK) ->
+    false.
+
 -spec endkey_passed(ledger_key(), ledger_key()) -> boolean().
 %% @oc
 %% Compare a key against a query key, only comparing elements that are non-null
@@ -370,7 +380,7 @@ get_tagstrategy({Tag, _, _, _}, Strategy) ->
             TagStrat;
         false ->
             leveled_log:log("IC012", [Tag, Strategy]),
-            skip
+            retain
     end.
 
 %%%============================================================================
@@ -713,6 +723,14 @@ next_key({Type, Bucket}) when is_binary(Type), is_binary(Bucket) ->
 
 -ifdef(TEST).
 
+valid_ledgerkey_test() ->
+    UserDefTag = {user_defined, <<"B">>, <<"K">>, null},
+    ?assertMatch(true, isvalid_ledgerkey(UserDefTag)),
+    KeyNotTuple = [?STD_TAG, <<"B">>, <<"K">>, null],
+    ?assertMatch(false, isvalid_ledgerkey(KeyNotTuple)),
+    TagNotAtom = {"tag", <<"B">>, <<"K">>, null},
+    ?assertMatch(false, isvalid_ledgerkey(TagNotAtom)),
+    ?assertMatch(retain, get_tagstrategy(UserDefTag, inker_reload_strategy([]))).
 
 indexspecs_test() ->
     IndexSpecs = [{add, "t1_int", 456},

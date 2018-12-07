@@ -483,18 +483,10 @@ pcl_fetchnextkey(Pid, StartKey, EndKey, AccFun, InitAcc) ->
 %% If the key is not present, it will be assumed that a higher sequence number
 %% tombstone once existed, and false will be returned.
 pcl_checksequencenumber(Pid, Key, SQN) ->
-    try
-        Hash = leveled_codec:segment_hash(Key),
-        if
-            Hash /= no_lookup ->
-                gen_server:call(Pid, {check_sqn, Key, Hash, SQN}, infinity)
-        end
-    catch
-        % Can't let this crash here, as when journal files are corrupted,
-        % corrupted input might be received by the penciller for this check.
-        % Want to be able to compact away this corruption - not end up with
-        % perpetually failing compaction jobs
-        _Type:_Error -> false
+    Hash = leveled_codec:segment_hash(Key),
+    if
+        Hash /= no_lookup ->
+            gen_server:call(Pid, {check_sqn, Key, Hash, SQN}, infinity)
     end.
 
 -spec pcl_workforclerk(pid()) -> ok.
@@ -2012,16 +2004,6 @@ simple_server_test() ->
                                                     "Key0004",
                                                     null},
                                                 3004)),
-    
-    % Try a busted key - and get false, as the exception should be handled
-    % Mimics a bad ledger key being discovered in the Journal, want to get
-    % false rather than just crashing.  
-    ?assertMatch(false, pcl_checksequencenumber(PclSnap,
-                                                    [o,
-                                                        "Bucket0004",
-                                                        "Key0004",
-                                                        null],
-                                                    3004)),
 
     % Add some more keys and confirm that check sequence number still
     % sees the old version in the previous snapshot, but will see the new 
