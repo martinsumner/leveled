@@ -263,9 +263,11 @@ generate_randomkeys(Count, BucketRangeLow, BucketRangeHigh) ->
 generate_randomkeys(0, Acc, _BucketLow, _BucketHigh) ->
     Acc;
 generate_randomkeys(Count, Acc, BucketLow, BRange) ->
-    BNumber = string:right(integer_to_list(BucketLow + leveled_rand:uniform(BRange)),
-                                            4, $0),
-    KNumber = string:right(integer_to_list(leveled_rand:uniform(1000)), 4, $0),
+    BNumber = leveled_util:string_right(
+                integer_to_list(BucketLow + leveled_rand:uniform(BRange)),
+                4, $0),
+    KNumber = leveled_util:string_right(
+                integer_to_list(leveled_rand:uniform(1000)), 4, $0),
     K = {o, "Bucket" ++ BNumber, "Key" ++ KNumber, null},
     RandKey = {K, {Count + 1,
                     {active, infinity},

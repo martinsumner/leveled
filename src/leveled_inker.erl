@@ -1386,7 +1386,8 @@ compact_journal_testto(WRP, ExpectedFiles) ->
     timer:sleep(1000),
     CompactedManifest2 = ink_getmanifest(Ink1),
     lists:foreach(fun({_SQN, FN, _P, _LK}) ->
-                            ?assertMatch(0, string:str(FN, ?COMPACT_FP))
+                            ?assertMatch(0, leveled_util:string_str(
+                                              FN, ?COMPACT_FP))
                         end,
                     CompactedManifest2),
     ?assertMatch(2, length(CompactedManifest2)),
