@@ -160,6 +160,10 @@
         :: leveled_codec:ledger_kv()|expandable_pointer().
 -type binaryslot_element()
         :: {tuple(), tuple()}|{binary(), integer(), tuple(), tuple()}.
+-type tuned_seglist()
+        :: false|
+            {sets, sets:set(non_neg_integer())}|
+            {list, list(non_neg_integer())}.
 
 %% yield_blockquery is used to detemrine if the work necessary to process a
 %% range query beyond the fetching the slot should be managed from within
@@ -895,8 +899,7 @@ cache_hash({_SegHash, ExtraHash}) when is_integer(ExtraHash) ->
 tune_hash(SegHash) ->
     SegHash band 32767.
 
--spec tune_seglist(leveled_codec:segment_list())
-                                            -> leveled_codec:segment_list().
+-spec tune_seglist(leveled_codec:segment_list()) -> tuned_seglist().
 %% @doc
 %% Only 15 bits of the hash is ever interesting
 tune_seglist(SegList) ->
