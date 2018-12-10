@@ -60,7 +60,8 @@
 clerk_new(Owner, Manifest, CompressionMethod) ->
     {ok, Pid} = 
         gen_server:start_link(?MODULE, 
-                                [{compression_method, CompressionMethod}],
+                                [leveled_log:get_opts(),
+                                 {compression_method, CompressionMethod}],
                                 []),
     ok = gen_server:call(Pid, {load, Owner, Manifest}, infinity),
     leveled_log:log("PC001", [Pid, Owner]),
@@ -82,7 +83,8 @@ clerk_close(Pid) ->
 %%% gen_server callbacks
 %%%============================================================================
 
-init([{compression_method, CompressionMethod}]) ->
+init([LogOpts, {compression_method, CompressionMethod}]) ->
+    leveled_log:save(LogOpts),
     {ok, #state{compression_method = CompressionMethod}}.
 
 handle_call({load, Owner, RootPath}, _From, State) ->

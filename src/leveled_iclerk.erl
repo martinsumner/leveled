@@ -140,7 +140,7 @@
 %% @doc
 %% Generate a new clerk
 clerk_new(InkerClerkOpts) ->
-    gen_server:start_link(?MODULE, [InkerClerkOpts], []).
+    gen_server:start_link(?MODULE, [leveled_log:get_opts(), InkerClerkOpts], []).
 
 -spec clerk_compact(pid(), pid(), 
                     fun(), fun(), fun(),  
@@ -170,7 +170,8 @@ clerk_trim(Pid, Inker, PersistedSQN) ->
 %% of the hastable in the CDB file - so that the file is not blocked during
 %% this calculation
 clerk_hashtablecalc(HashTree, StartPos, CDBpid) ->
-    {ok, Clerk} = gen_server:start_link(?MODULE, [#iclerk_options{}], []),
+    {ok, Clerk} = gen_server:start_link(?MODULE, [leveled_log:get_opts(),
+                                                  #iclerk_options{}], []),
     gen_server:cast(Clerk, {hashtable_calc, HashTree, StartPos, CDBpid}).
 
 -spec clerk_stop(pid()) -> ok.
@@ -183,7 +184,8 @@ clerk_stop(Pid) ->
 %%% gen_server callbacks
 %%%============================================================================
 
-init([IClerkOpts]) ->
+init([LogOpts, IClerkOpts]) ->
+    leveled_log:save(LogOpts),
     ReloadStrategy = IClerkOpts#iclerk_options.reload_strategy,
     CDBopts = IClerkOpts#iclerk_options.cdb_options,
     WP = CDBopts#cdb_options.waste_path,
