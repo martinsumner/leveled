@@ -2,7 +2,9 @@
 -include_lib("common_test/include/ct.hrl").
 -include("include/leveled.hrl").
 -export([all/0]).
--export([hot_backup_simple/1,
+-export([
+            recovery_with_samekeyupdates/1,
+            hot_backup_simple/1,
             hot_backup_changes/1,
             retain_strategy/1,
             recovr_strategy/1,
@@ -12,6 +14,7 @@
             ]).
 
 all() -> [
+            recovery_with_samekeyupdates,
             hot_backup_simple,
             hot_backup_changes,
             retain_strategy,
@@ -20,6 +23,104 @@ all() -> [
             aae_bustedjournal,
             journal_compaction_bustedjournal
             ].
+
+
+recovery_with_samekeyupdates(_Config) ->
+    % Setup to prove https://github.com/martinsumner/leveled/issues/229
+    % run a test that involves many updates to the same key, and check that
+    % this doesn't cause performance to flatline in either the normal "PUT"
+    % case, or in the case of the recovery from a lost keystore
+    AcceptableDuration = 300, % 5 minutes
+    E2E_SW = os:timestamp(), % Used to track time for overall job
+    
+    RootPath = testutil:reset_filestructure(),
+    BackupPath = testutil:reset_filestructure("backupSKU"),
+    BookOpts = [{root_path, RootPath},
+                    {cache_size, 2000},
+                    {max_journalsize, 20000000},
+                    {sync_strategy, testutil:sync_strategy()}],
+    {ok, Book1} = leveled_bookie:book_start(BookOpts),
+
+    % Load in 5K different keys
+    % Load 5 keys in 5K times each
+    % Load in 5K different keys
+    io:format("Commence object generation and load~n"),
+    ObjectGen = testutil:get_compressiblevalue_andinteger(),
+    IndexGen = fun() -> [] end,
+    ObjL1 = testutil:generate_objects(5000,
+                                      {fixed_binary, 1},
+                                      [],
+                                      ObjectGen,
+                                      IndexGen,
+                                      <<"Bucket1">>),
+    testutil:riakload(Book1, ObjL1),
+    RepeatedLoadFun =
+        fun(_I, _Acc) ->
+            ObjRL =
+                testutil:generate_objects(5,
+                                            {fixed_binary, 5001},
+                                            [],
+                                            ObjectGen,
+                                            IndexGen,
+                                            <<"Bucket1">>),
+            testutil:riakload(Book1, ObjRL),
+            ObjRL
+        end,
+    FinalObjRL = lists:foldl(RepeatedLoadFun, [], lists:seq(1, 5000)),
+    ObjL2 = testutil:generate_objects(5000,
+                                      {fixed_binary, 6001},
+                                      [],
+                                      ObjectGen,
+                                      IndexGen,
+                                      <<"Bucket1">>),
+    testutil:riakload(Book1, ObjL2),
+
+    % Fetch all of ObjL1
+    io:format("Check for presence of unique objects~n"),
+    ok = testutil:checkhead_forlist(Book1, ObjL1),
+    % Fetch all of ObjL2
+    ok = testutil:checkhead_forlist(Book1, ObjL2),
+    io:format("Check for presence of repeated objects~n"),
+    % Fetch repeated objects 200 times each
+    CheckFun1 = 
+        fun(_I) -> ok = testutil:checkhead_forlist(Book1, FinalObjRL) end,
+    lists:foreach(CheckFun1, lists:seq(1, 200)),
+    io:format("Checks complete~n"),
+
+    io:format("Backup - get journal with no ledger~n"),
+    {async, BackupFun} = leveled_bookie:book_hotbackup(Book1),
+    ok = BackupFun(BackupPath),
+
+    io:format("Restarting without key store~n"),
+    ok = leveled_bookie:book_close(Book1),
+
+    BookOptsBackup = [{root_path, BackupPath},
+                        {cache_size, 2000},
+                        {max_journalsize, 20000000},
+                        {sync_strategy, testutil:sync_strategy()}],
+    {ok, Book2} = leveled_bookie:book_start(BookOptsBackup),
+
+    % Fetch all of ObjL1
+    io:format("Check for presence of unique objects~n"),
+    ok = testutil:checkhead_forlist(Book2, ObjL1),
+    % Fetch all of ObjL2
+    ok = testutil:checkhead_forlist(Book2, ObjL2),
+    io:format("Check for presence of repeated objects~n"),
+    % Fetch repeated objects 200 times each
+    CheckFun2 = 
+        fun(_I) -> ok = testutil:checkhead_forlist(Book2, FinalObjRL) end,
+    lists:foreach(CheckFun2, lists:seq(1, 200)),
+    io:format("Checks complete from backup~n"),
+    
+    DurationOfTest = timer:now_diff(os:timestamp(), E2E_SW)/(1000 * 1000),
+    io:format("Duration of test was ~w s~n", [DurationOfTest]),
+    true = DurationOfTest < AcceptableDuration,
+
+    ok = leveled_bookie:book_close(Book2),
+    testutil:reset_filestructure(BackupPath),
+    testutil:reset_filestructure().
+
+
 
 
 hot_backup_simple(_Config) ->
