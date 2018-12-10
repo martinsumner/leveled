@@ -200,7 +200,12 @@ merge_trees(StartKey, EndKey, TreeList, LevelMinus1) ->
 find_pos(<<>>, _Hash, PosList, _SlotID) ->
     PosList;
 find_pos(<<1:1/integer, Hash:23/integer, T/binary>>, Hash, PosList, SlotID) ->
-    find_pos(T, Hash, PosList ++ [SlotID], SlotID);
+    case lists:member(SlotID, PosList) of
+        true ->
+            find_pos(T, Hash, PosList, SlotID);
+        false ->
+            find_pos(T, Hash, PosList ++ [SlotID], SlotID)
+    end;
 find_pos(<<1:1/integer, _Miss:23/integer, T/binary>>, Hash, PosList, SlotID) ->
     find_pos(T, Hash, PosList, SlotID);
 find_pos(<<0:1/integer, NxtSlot:7/integer, T/binary>>, Hash, PosList, _SlotID) ->

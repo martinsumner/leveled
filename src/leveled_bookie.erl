@@ -2028,7 +2028,7 @@ addto_ledgercache({H, SQN, KeyChanges}, Cache) ->
                                     -> ledger_cache().
 %% @doc
 %% Add a set of changes associated witha single sequence number (journal 
-%% update) to the ledger cache.  This is used explicitly when laoding the
+%% update) to the ledger cache.  This is used explicitly when loading the
 %% ledger from the Journal (i.e. at startup) - and in this case the ETS insert
 %% can be bypassed, as all changes will be flushed to the Penciller before the
 %% load is complete.
