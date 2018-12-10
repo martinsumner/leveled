@@ -30,7 +30,7 @@ recovery_with_samekeyupdates(_Config) ->
     % run a test that involves many updates to the same key, and check that
     % this doesn't cause performance to flatline in either the normal "PUT"
     % case, or in the case of the recovery from a lost keystore
-    AcceptableDuration = 300, % 5 minutes
+    AcceptableDuration = 180, % 3 minutes
     E2E_SW = os:timestamp(), % Used to track time for overall job
     
     RootPath = testutil:reset_filestructure(),
