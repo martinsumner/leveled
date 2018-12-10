@@ -16,6 +16,18 @@
             integer_time/1,
             magic_hash/1]).
 
+-export([string_right/3,
+         string_str/2]).
+
+-ifdef(OTP_RELEASE).
+
+-if(?OTP_RELEASE >= 21).
+-else.
+-define(LEGACY_OTP, true).
+-endif.
+
+-endif.  % (OTP_RELEASE)
+
 
 -spec generate_uuid() -> list().
 %% @doc
@@ -64,8 +76,47 @@ hash1(H, <<B:8/integer, Rest/bytes>>) ->
     H2 = H1 bxor B,
     hash1(H2, Rest).
 
+%% A number of string functions have become deprecated in OTP 21
+%%
+-ifdef(LEGACY_OTP).
+
+string_right(String, Len, Char) ->
+    string:right(String, Len, Char).
+
+string_str(S, Sub) ->
+    string:str(S, Sub).
+
+-else.
+
+string_right(String, Len, Char) when is_list(String), is_integer(Char) ->
+    Slen = length(String),
+    if
+	Slen > Len -> lists:nthtail(Slen-Len, String);
+	Slen < Len -> chars(Char, Len-Slen, String);
+	Slen =:= Len -> String
+    end.
+
+chars(C, N, Tail) when N > 0 ->
+    chars(C, N-1, [C|Tail]);
+chars(C, 0, Tail) when is_integer(C) ->
+    Tail.
 
 
+string_str(S, Sub) when is_list(Sub) -> str(S, Sub, 1).
+
+str([C|S], [C|Sub], I) ->
+    case l_prefix(Sub, S) of
+        true -> I;
+        false -> str(S, [C|Sub], I+1)
+    end;
+str([_|S], Sub, I) -> str(S, Sub, I+1);
+str([], _Sub, _I) -> 0.
+
+l_prefix([C|Pre], [C|String]) -> l_prefix(Pre, String);
+l_prefix([], String) when is_list(String) -> true;
+l_prefix(Pre, String) when is_list(Pre), is_list(String) -> false.
+
+-endif.
 
 %%%============================================================================
 %%% Test

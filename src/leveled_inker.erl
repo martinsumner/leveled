@@ -174,13 +174,13 @@
 %% The inker will need to know what the reload strategy is, to inform the
 %% clerk about the rules to enforce during compaction.
 ink_start(InkerOpts) ->
-    gen_server:start_link(?MODULE, [InkerOpts], []).
+    gen_server:start_link(?MODULE, [leveled_log:get_opts(), InkerOpts], []).
 
 -spec ink_snapstart(inker_options()) -> {ok, pid()}.
 %% @doc
 %% Don't link on startup as snapshot
 ink_snapstart(InkerOpts) ->
-    gen_server:start(?MODULE, [InkerOpts], []).
+    gen_server:start(?MODULE, [leveled_log:get_opts(), InkerOpts], []).
 
 -spec ink_put(pid(),
                 leveled_codec:ledger_key(),
@@ -451,7 +451,8 @@ ink_checksqn(Pid, LedgerSQN) ->
 %%% gen_server callbacks
 %%%============================================================================
 
-init([InkerOpts]) ->
+init([LogOpts, InkerOpts]) ->
+    leveled_log:save(LogOpts),
     leveled_rand:seed(),
     case {InkerOpts#inker_options.root_path,
             InkerOpts#inker_options.start_snapshot} of
@@ -1401,7 +1402,8 @@ compact_journal_testto(WRP, ExpectedFiles) ->
     timer:sleep(1000),
     CompactedManifest2 = ink_getmanifest(Ink1),
     lists:foreach(fun({_SQN, FN, _P, _LK}) ->
-                            ?assertMatch(0, string:str(FN, ?COMPACT_FP))
+                            ?assertMatch(0, leveled_util:string_str(
+                                              FN, ?COMPACT_FP))
                         end,
                     CompactedManifest2),
     ?assertMatch(2, length(CompactedManifest2)),

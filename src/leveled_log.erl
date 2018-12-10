@@ -9,9 +9,14 @@
 
 -export([log/2,
             log_timer/3,
-            log_randomtimer/4]).         
+            log_randomtimer/4]).
 
--define(LOG_LEVELS, [debug, info, warn, error, critical]).
+-export([save/1, save/2,
+         get_opts/0]).
+
+-type log_level()  ::  debug | info | warn | error | critical.
+-type log_levels() :: [log_level()].
+-define(LOG_LEVELS,   [debug, info, warn, error, critical]).
 
 -define(DEFAULT_LOG_LEVEL, error).
 
@@ -375,6 +380,28 @@
         {warn, "Error ~w caught when safe reading a file to length ~w"}}
         ]).
 
+-record(log_options,
+                     {log_level = info :: leveled_log:log_levels(),
+                      forced_logs = [] :: [string()]}).
+
+save(LogLevel, ForcedLogs) when is_list(ForcedLogs), is_atom(LogLevel) ->
+    save(#log_options{log_level = LogLevel,
+                      forced_logs = ForcedLogs}).
+
+save(#log_options{} = LO) ->
+    put('$leveled_log_options', LO),
+    ok.
+
+get_opts() ->
+    case get('$leveled_log_options') of
+        undefined ->
+            LogLevel = application:get_env(leveled, log_level, ?DEFAULT_LOG_LEVEL),
+            ForcedLogs = application:get_env(leveled, forced_logs, []),
+            #log_options{log_level = LogLevel,
+                         forced_logs = ForcedLogs};
+        #log_options{} = LO ->
+            LO
+    end.
 
 log(LogReference, Subs) ->
     log(LogReference, Subs, ?LOG_LEVELS).
@@ -396,15 +423,15 @@ log(LogRef, Subs, SupportedLogLevels) ->
     end.
 
 should_i_log(LogLevel, Levels, LogRef) ->
-    ForcedLogs = application:get_env(leveled, forced_logs, []),
+    #log_options{log_level = CurLevel, forced_logs = ForcedLogs} = get_opts(),
     case lists:member(LogRef, ForcedLogs) of
         true ->
             true;
         false ->
-            case application:get_env(leveled, log_level, ?DEFAULT_LOG_LEVEL) of
-                LogLevel ->
+            if CurLevel == LogLevel ->
                     true;
-                CurLevel ->
+                    true;
+               true ->
                     is_active_level(Levels, CurLevel, LogLevel)
             end
     end.
@@ -497,6 +524,20 @@ shouldilog_test() ->
     ?assertMatch(false, should_i_log(info, ?LOG_LEVELS, "G0002")),
     ok = application:set_env(leveled, forced_logs, []),
     ok = application:set_env(leveled, log_level, info),
+    ?assertMatch(false, should_i_log(debug, ?LOG_LEVELS, "D0001")).
+
+shouldilog2_test() ->
+    ok = save(unsupported, []),
+    ?assertMatch(false, should_i_log(info, ?LOG_LEVELS, "G0001")),
+    ?assertMatch(false, should_i_log(inform, ?LOG_LEVELS, "G0001")),
+    ok = save(debug, []),
+    ?assertMatch(true, should_i_log(info, ?LOG_LEVELS, "G0001")),
+    ok = save(info, []),
+    ?assertMatch(true, should_i_log(info, ?LOG_LEVELS, "G0001")),
+    ok = save(error, ["G0001"]),
+    ?assertMatch(true, should_i_log(info, ?LOG_LEVELS, "G0001")),
+    ?assertMatch(false, should_i_log(info, ?LOG_LEVELS, "G0002")),
+    ok = save(info, []),
     ?assertMatch(false, should_i_log(debug, ?LOG_LEVELS, "D0001")).
 
 -endif.

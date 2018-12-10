@@ -60,7 +60,8 @@
 clerk_new(Owner, Manifest, CompressionMethod) ->
     {ok, Pid} = 
         gen_server:start_link(?MODULE, 
-                                [{compression_method, CompressionMethod}],
+                                [leveled_log:get_opts(),
+                                 {compression_method, CompressionMethod}],
                                 []),
     ok = gen_server:call(Pid, {load, Owner, Manifest}, infinity),
     leveled_log:log("PC001", [Pid, Owner]),
@@ -82,7 +83,8 @@ clerk_close(Pid) ->
 %%% gen_server callbacks
 %%%============================================================================
 
-init([{compression_method, CompressionMethod}]) ->
+init([LogOpts, {compression_method, CompressionMethod}]) ->
+    leveled_log:save(LogOpts),
     {ok, #state{compression_method = CompressionMethod}}.
 
 handle_call({load, Owner, RootPath}, _From, State) ->
@@ -263,9 +265,11 @@ generate_randomkeys(Count, BucketRangeLow, BucketRangeHigh) ->
 generate_randomkeys(0, Acc, _BucketLow, _BucketHigh) ->
     Acc;
 generate_randomkeys(Count, Acc, BucketLow, BRange) ->
-    BNumber = string:right(integer_to_list(BucketLow + leveled_rand:uniform(BRange)),
-                                            4, $0),
-    KNumber = string:right(integer_to_list(leveled_rand:uniform(1000)), 4, $0),
+    BNumber = leveled_util:string_right(
+                integer_to_list(BucketLow + leveled_rand:uniform(BRange)),
+                4, $0),
+    KNumber = leveled_util:string_right(
+                integer_to_list(leveled_rand:uniform(1000)), 4, $0),
     K = {o, "Bucket" ++ BNumber, "Key" ++ KNumber, null},
     RandKey = {K, {Count + 1,
                     {active, infinity},

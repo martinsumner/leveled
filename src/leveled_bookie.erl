@@ -1063,9 +1063,8 @@ init([Opts]) ->
             {InkerOpts, PencillerOpts} = set_options(Opts),
 
             LogLevel = proplists:get_value(log_level, Opts),
-            ok = application:set_env(leveled, log_level, LogLevel),
             ForcedLogs = proplists:get_value(forced_logs, Opts),
-            ok = application:set_env(leveled, forced_logs, ForcedLogs),
+            leveled_log:save(LogLevel, ForcedLogs),
 
             OverrideFunctions = proplists:get_value(override_functions, Opts),
             SetFun =

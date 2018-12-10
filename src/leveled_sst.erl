@@ -2490,8 +2490,10 @@ generate_randomkeys(_Seqn, 0, Acc, _BucketLow, _BucketHigh) ->
     Acc;
 generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
     BRand = leveled_rand:uniform(BRange),
-    BNumber = string:right(integer_to_list(BucketLow + BRand), 4, $0),
-    KNumber = string:right(integer_to_list(leveled_rand:uniform(1000)), 6, $0),
+    BNumber = leveled_util:string_right(
+                integer_to_list(BucketLow + BRand), 4, $0),
+    KNumber = leveled_util:string_right(
+                integer_to_list(leveled_rand:uniform(1000)), 6, $0),
     LK = leveled_codec:to_ledgerkey("Bucket" ++ BNumber, "Key" ++ KNumber, o),
     Chunk = leveled_rand:rand_bytes(64),
     {_B, _K, MV, _H, _LMs} =

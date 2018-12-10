@@ -318,13 +318,13 @@
 %% query is run against the level zero space and just the query results are
 %5 copied into the clone.  
 pcl_start(PCLopts) ->
-    gen_server:start_link(?MODULE, [PCLopts], []).
+    gen_server:start_link(?MODULE, [leveled_log:get_opts(), PCLopts], []).
 
 -spec pcl_snapstart(penciller_options()) -> {ok, pid()}.
 %% @doc
 %% Don't link to the bookie - this is a snpashot
 pcl_snapstart(PCLopts) ->
-    gen_server:start(?MODULE, [PCLopts], []).
+    gen_server:start(?MODULE, [leveled_log:get_opts(), PCLopts], []).
 
 -spec pcl_pushmem(pid(), bookies_memory()) -> ok|returned.
 %% @doc
@@ -601,7 +601,8 @@ pcl_checkforwork(Pid) ->
 %%% gen_server callbacks
 %%%============================================================================
 
-init([PCLopts]) ->
+init([LogOpts, PCLopts]) ->
+    leveled_log:save(LogOpts),
     leveled_rand:seed(),
     case {PCLopts#penciller_options.root_path,
             PCLopts#penciller_options.start_snapshot,
