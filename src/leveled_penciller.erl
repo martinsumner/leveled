@@ -258,7 +258,7 @@
                 is_snapshot = false :: boolean(),
                 snapshot_fully_loaded = false :: boolean(),
                 source_penciller :: pid() | undefined,
-		bookie_monref :: reference() | undefined,
+		        bookie_monref :: reference() | undefined,
                 levelzero_astree :: list() | undefined,
                 
                 work_ongoing = false :: boolean(), % i.e. compaction work
@@ -267,7 +267,7 @@
                 timings = no_timing :: pcl_timings(),
                 timings_countdown = 0 :: integer(),
 
-                compression_method = native :: lz4|native}).
+                sst_options = #sst_options{} :: #sst_options{}}).
 
 -record(pcl_timings, 
                     {sample_count = 0 :: integer(),
@@ -1048,9 +1048,9 @@ sst_filename(ManSQN, Level, Count) ->
 start_from_file(PCLopts) ->
     RootPath = PCLopts#penciller_options.root_path,
     MaxTableSize = PCLopts#penciller_options.max_inmemory_tablesize,
-    PressMethod = PCLopts#penciller_options.compression_method,
+    OptsSST = PCLopts#penciller_options.sst_options,
     
-    {ok, MergeClerk} = leveled_pclerk:clerk_new(self(), RootPath, PressMethod),
+    {ok, MergeClerk} = leveled_pclerk:clerk_new(self(), RootPath, OptsSST),
     
     CoinToss = PCLopts#penciller_options.levelzero_cointoss,
     % Used to randomly defer the writing of L0 file.  Intended to help with
@@ -1062,14 +1062,14 @@ start_from_file(PCLopts) ->
                         levelzero_maxcachesize = MaxTableSize,
                         levelzero_cointoss = CoinToss,
                         levelzero_index = leveled_pmem:new_index(),
-                        compression_method = PressMethod},
+                        sst_options = OptsSST},
     
     %% Open manifest
     Manifest0 = leveled_pmanifest:open_manifest(RootPath),
     OpenFun =
         fun(FN) ->
             {ok, Pid, {_FK, _LK}, Bloom} = 
-                leveled_sst:sst_open(sst_rootpath(RootPath), FN),
+                leveled_sst:sst_open(sst_rootpath(RootPath), FN, OptsSST),
             {Pid, Bloom}
         end,
     SQNFun = fun leveled_sst:sst_getmaxsequencenumber/1,
@@ -1084,7 +1084,9 @@ start_from_file(PCLopts) ->
         case filelib:is_file(filename:join(sst_rootpath(RootPath), L0FN)) of
             true ->
                 leveled_log:log("P0015", [L0FN]),
-                L0Open = leveled_sst:sst_open(sst_rootpath(RootPath), L0FN),
+                L0Open = leveled_sst:sst_open(sst_rootpath(RootPath),
+                                                L0FN,
+                                                OptsSST),
                 {ok, L0Pid, {L0StartKey, L0EndKey}, Bloom} = L0Open,
                 L0SQN = leveled_sst:sst_getmaxsequencenumber(L0Pid),
                 L0Entry = #manifest_entry{start_key = L0StartKey,
@@ -1092,10 +1094,11 @@ start_from_file(PCLopts) ->
                                             filename = L0FN,
                                             owner = L0Pid,
                                             bloom = Bloom},
-                Manifest2 = leveled_pmanifest:insert_manifest_entry(Manifest1,
-                                                                    ManSQN + 1,
-                                                                    0,
-                                                                    L0Entry),
+                Manifest2 = 
+                    leveled_pmanifest:insert_manifest_entry(Manifest1,
+                                                            ManSQN + 1,
+                                                            0,
+                                                            L0Entry),
                 leveled_log:log("P0016", [L0SQN]),
                 LedgerSQN = max(MaxSQN, L0SQN),
                 {InitState#state{manifest = Manifest2,
@@ -1256,7 +1259,7 @@ roll_memory(State, false) ->
                                         FetchFun,
                                         PCL,
                                         State#state.ledger_sqn,
-                                        State#state.compression_method),
+                                        State#state.sst_options),
     {ok, Constructor, _} = R,
     {Constructor, none};
 roll_memory(State, true) ->
@@ -1271,7 +1274,7 @@ roll_memory(State, true) ->
                             0,
                             KVList,
                             State#state.ledger_sqn,
-                            State#state.compression_method),
+                            State#state.sst_options),
     {ok, Constructor, _, Bloom} = R,
     {Constructor, Bloom}.
 
@@ -1905,9 +1908,10 @@ shutdown_when_compact(Pid) ->
 simple_server_test() ->
     RootPath = "../test/ledger",
     clean_testdir(RootPath),
-    {ok, PCL} = pcl_start(#penciller_options{root_path=RootPath,
-                                                max_inmemory_tablesize=1000,
-                                                compression_method=native}),
+    {ok, PCL} = 
+        pcl_start(#penciller_options{root_path=RootPath,
+                                        max_inmemory_tablesize=1000,
+                                        sst_options=#sst_options{}}),
     Key1_Pre = {{o,"Bucket0001", "Key0001", null},
                     {1, {active, infinity}, null}},
     Key1 = add_missing_hash(Key1_Pre),
@@ -1948,9 +1952,10 @@ simple_server_test() ->
     
     ok = shutdown_when_compact(PCL),
     
-    {ok, PCLr} = pcl_start(#penciller_options{root_path=RootPath,
-                                                max_inmemory_tablesize=1000,
-                                                compression_method=native}),
+    {ok, PCLr} = 
+        pcl_start(#penciller_options{root_path=RootPath,
+                                        max_inmemory_tablesize=1000,
+                                        sst_options=#sst_options{}}),
     ?assertMatch(2003, pcl_getstartupsequencenumber(PCLr)),
     % ok = maybe_pause_push(PCLr, [Key2] ++ KL2 ++ [Key3]),
     true = pcl_checkbloomtest(PCLr, {o,"Bucket0001", "Key0001", null}),
@@ -2214,15 +2219,14 @@ create_file_test() ->
     KVL = lists:usort(generate_randomkeys({50000, 0})),
     Tree = leveled_tree:from_orderedlist(KVL, ?CACHE_TYPE),
     FetchFun = fun(Slot) -> lists:nth(Slot, [Tree]) end,
-    {ok,
-        SP,
-        noreply} = leveled_sst:sst_newlevelzero(RP,
-                                                Filename,
-                                                1,
-                                                FetchFun,
-                                                undefined,
-                                                50000,
-                                                native),
+    {ok, SP, noreply} = 
+        leveled_sst:sst_newlevelzero(RP,
+                                        Filename,
+                                        1,
+                                        FetchFun,
+                                        undefined,
+                                        50000,
+                                        #sst_options{press_method = native}),
     lists:foreach(fun(X) ->
                         case checkready(SP) of
                             timeout ->
@@ -2273,9 +2277,10 @@ coverage_cheat_test() ->
 handle_down_test() ->
     RootPath = "../test/ledger",
     clean_testdir(RootPath),
-    {ok, PCLr} = pcl_start(#penciller_options{root_path=RootPath,
-                                                max_inmemory_tablesize=1000,
-                                                compression_method=native}),
+    {ok, PCLr} = 
+        pcl_start(#penciller_options{root_path=RootPath,
+                                        max_inmemory_tablesize=1000,
+                                        sst_options=#sst_options{}}),
     FakeBookie = spawn(fun loop/0),
 
     Mon = erlang:monitor(process, FakeBookie),

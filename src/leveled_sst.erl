@@ -111,7 +111,7 @@
 -export([sst_new/6,
             sst_new/8,
             sst_newlevelzero/7,
-            sst_open/2,
+            sst_open/3,
             sst_get/2,
             sst_get/3,
             sst_expandpointer/5,
@@ -164,6 +164,8 @@
         :: false|
             {sets, sets:set(non_neg_integer())}|
             {list, list(non_neg_integer())}.
+-type sst_options() 
+        :: #sst_options{}. 
 
 %% yield_blockquery is used to detemrine if the work necessary to process a
 %% range query beyond the fetching the slot should be managed from within
@@ -210,13 +212,13 @@
 -type sst_timings() :: no_timing|#sst_timings{}.
 -type build_timings() :: no_timing|#build_timings{}.
 
--export_type([expandable_pointer/0]).
+-export_type([expandable_pointer/0, press_method/0]).
 
 %%%============================================================================
 %%% API
 %%%============================================================================
 
--spec sst_open(string(), string())
+-spec sst_open(string(), string(), sst_options())
             -> {ok, pid(), 
                     {leveled_codec:ledger_key(), leveled_codec:ledger_key()}, 
                     binary()}.
@@ -228,10 +230,10 @@
 %% term order.
 %%
 %% The filename should include the file extension.
-sst_open(RootPath, Filename) ->
+sst_open(RootPath, Filename, OptsSST) ->
     {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
     case gen_fsm:sync_send_event(Pid,
-                                    {sst_open, RootPath, Filename},
+                                    {sst_open, RootPath, Filename, OptsSST},
                                     infinity) of
         {ok, {SK, EK}, Bloom} ->
             {ok, Pid, {SK, EK}, Bloom}
@@ -239,7 +241,7 @@ sst_open(RootPath, Filename) ->
 
 -spec sst_new(string(), string(), integer(), 
                     list(leveled_codec:ledger_kv()), 
-                    integer(), press_method()) 
+                    integer(), sst_options()) 
             -> {ok, pid(), 
                     {leveled_codec:ledger_key(), leveled_codec:ledger_key()}, 
                     binary()}.
@@ -247,14 +249,14 @@ sst_open(RootPath, Filename) ->
 %% Start a new SST file at the assigned level passing in a list of Key, Value
 %% pairs.  This should not be used for basement levels or unexpanded Key/Value
 %% lists as merge_lists will not be called.
-sst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod) ->
-    sst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod,
-                                                            ?INDEX_MODDATE).
+sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST) ->
+    sst_new(RootPath, Filename, Level,
+            KVList, MaxSQN, OptsSST, ?INDEX_MODDATE).
 
-sst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod,
-                                                            IndexModDate) ->
+sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST, IndexModDate) ->
     {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
-    PressMethod0 = compress_level(Level, PressMethod),
+    PressMethod0 = compress_level(Level, OptsSST#sst_options.press_method),
+    OptsSST0 = OptsSST#sst_options{press_method = PressMethod0},
     {[], [], SlotList, FK}  =
         merge_lists(KVList, PressMethod0, IndexModDate),
     case gen_fsm:sync_send_event(Pid,
@@ -264,7 +266,7 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod,
                                         Level,
                                         {SlotList, FK},
                                         MaxSQN,
-                                        PressMethod0,
+                                        OptsSST0,
                                         IndexModDate},
                                     infinity) of
         {ok, {SK, EK}, Bloom} ->
@@ -275,7 +277,7 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod,
                 list(leveled_codec:ledger_kv()|sst_pointer()), 
                 list(leveled_codec:ledger_kv()|sst_pointer()),
                 boolean(), integer(), 
-                integer(), press_method())
+                integer(), sst_options())
             -> empty|{ok, pid(), 
                 {{list(leveled_codec:ledger_kv()), 
                         list(leveled_codec:ledger_kv())}, 
@@ -295,15 +297,16 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod,
 %% file is not added to the manifest.
 sst_new(RootPath, Filename, 
         KVL1, KVL2, IsBasement, Level, 
-        MaxSQN, PressMethod) ->
+        MaxSQN, OptsSST) ->
     sst_new(RootPath, Filename, 
         KVL1, KVL2, IsBasement, Level, 
-        MaxSQN, PressMethod, ?INDEX_MODDATE).
+        MaxSQN, OptsSST, ?INDEX_MODDATE).
 
 sst_new(RootPath, Filename, 
         KVL1, KVL2, IsBasement, Level, 
-        MaxSQN, PressMethod, IndexModDate) ->
-    PressMethod0 = compress_level(Level, PressMethod),
+        MaxSQN, OptsSST, IndexModDate) ->
+    PressMethod0 = compress_level(Level, OptsSST#sst_options.press_method),
+    OptsSST0 = OptsSST#sst_options{press_method = PressMethod0},
     {Rem1, Rem2, SlotList, FK} = 
         merge_lists(KVL1, KVL2, {IsBasement, Level},
                     PressMethod0, IndexModDate),
@@ -319,7 +322,7 @@ sst_new(RootPath, Filename,
                                                 Level,
                                                 {SlotList, FK},
                                                 MaxSQN,
-                                                PressMethod0,
+                                                OptsSST0,
                                                 IndexModDate},
                                             infinity) of
                 {ok, {SK, EK}, Bloom} ->
@@ -329,7 +332,7 @@ sst_new(RootPath, Filename,
 
 -spec sst_newlevelzero(string(), string(),
                             integer(), fun(), pid()|undefined, integer(), 
-                            press_method()) ->
+                            sst_options()) ->
                                                     {ok, pid(), noreply}.
 %% @doc
 %% Start a new file at level zero.  At this level the file size is not fixed -
@@ -337,8 +340,9 @@ sst_new(RootPath, Filename,
 %% fetched slot by slot using the FetchFun
 sst_newlevelzero(RootPath, Filename, 
                     Slots, FetchFun, Penciller,
-                    MaxSQN, PressMethod) ->
-    PressMethod0 = compress_level(0, PressMethod),
+                    MaxSQN, OptsSST) ->
+    PressMethod0 = compress_level(0, OptsSST#sst_options.press_method),
+    OptsSST0 = OptsSST#sst_options{press_method = PressMethod0},
     {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
     gen_fsm:send_event(Pid,
                         {sst_newlevelzero,
@@ -348,7 +352,7 @@ sst_newlevelzero(RootPath, Filename,
                             FetchFun,
                             Penciller,
                             MaxSQN,
-                            PressMethod0,
+                            OptsSST0,
                             ?INDEX_MODDATE}),
     {ok, Pid, noreply}.
 
@@ -448,7 +452,8 @@ sst_printtimings(Pid) ->
 init([]) ->
     {ok, starting, #state{}}.
 
-starting({sst_open, RootPath, Filename}, _From, State) ->
+starting({sst_open, RootPath, Filename, OptsSST}, _From, State) ->
+    leveled_log:save(OptsSST#sst_options.log_options),
     {UpdState, Bloom} = 
         read_file(Filename, State#state{root_path=RootPath}),
     Summary = UpdState#state.summary,
@@ -459,8 +464,10 @@ starting({sst_open, RootPath, Filename}, _From, State) ->
 starting({sst_new, 
             RootPath, Filename, Level, 
             {SlotList, FirstKey}, MaxSQN,
-            PressMethod, IdxModDate}, _From, State) ->
+            OptsSST, IdxModDate}, _From, State) ->
     SW = os:timestamp(),
+    leveled_log:save(OptsSST#sst_options.log_options),
+    PressMethod = OptsSST#sst_options.press_method,
     {Length, SlotIndex, BlockIndex, SlotsBin, Bloom} = 
         build_all_slots(SlotList),
     SummaryBin = 
@@ -483,8 +490,10 @@ starting({sst_new,
 
 starting({sst_newlevelzero, RootPath, Filename,
                     Slots, FetchFun, Penciller, MaxSQN,
-                    PressMethod, IdxModDate}, State) ->
+                    OptsSST, IdxModDate}, State) ->
     SW0 = os:timestamp(),
+    leveled_log:save(OptsSST#sst_options.log_options),
+    PressMethod = OptsSST#sst_options.press_method,
     KVList = leveled_pmem:to_list(Slots, FetchFun),
     Time0 = timer:now_diff(os:timestamp(), SW0),
     
@@ -2472,12 +2481,18 @@ update_timings(SW, Timings, Stage, Continue) ->
 -ifdef(TEST).
 
 testsst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod) ->
-    sst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod, false).
+    OptsSST = 
+        #sst_options{press_method=PressMethod,
+                        log_options=leveled_log:get_opts()},
+    sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST, false).
 
 testsst_new(RootPath, Filename, 
             KVL1, KVL2, IsBasement, Level, MaxSQN, PressMethod) ->
+    OptsSST = 
+        #sst_options{press_method=PressMethod,
+                        log_options=leveled_log:get_opts()},
     sst_new(RootPath, Filename, KVL1, KVL2, IsBasement, Level, MaxSQN,
-            PressMethod, false).
+            OptsSST, false).
 
 generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
     generate_randomkeys(Seqn,
@@ -2816,8 +2831,7 @@ test_binary_slot(FullBin, Key, Hash, ExpectedValue) ->
 
     
 merge_test() ->
-    merge_tester(fun testsst_new/6, fun testsst_new/8),
-    merge_tester(fun sst_new/6, fun sst_new/8).
+    merge_tester(fun testsst_new/6, fun testsst_new/8).
 
 
 merge_tester(NewFunS, NewFunM) ->
@@ -2870,8 +2884,7 @@ merge_tester(NewFunS, NewFunM) ->
     
 
 simple_persisted_range_test() ->
-    simple_persisted_range_tester(fun testsst_new/6),
-    simple_persisted_range_tester(fun sst_new/6).
+    simple_persisted_range_tester(fun testsst_new/6).
 
 simple_persisted_range_tester(SSTNewFun) ->
     {RP, Filename} = {"../test/", "simple_test"},
@@ -2913,8 +2926,7 @@ simple_persisted_range_tester(SSTNewFun) ->
 
 
 simple_persisted_rangesegfilter_test() ->
-    simple_persisted_rangesegfilter_tester(fun testsst_new/6),
-    simple_persisted_rangesegfilter_tester(fun sst_new/6).
+    simple_persisted_rangesegfilter_tester(fun testsst_new/6).
 
 simple_persisted_rangesegfilter_tester(SSTNewFun) ->
     {RP, Filename} = {"../test/", "range_segfilter_test"},
@@ -3009,7 +3021,7 @@ additional_range_test() ->
                         lists:seq(?NOLOOK_SLOTSIZE + Gap + 1,
                                     2 * ?NOLOOK_SLOTSIZE + Gap)),
     {ok, P1, {{Rem1, Rem2}, SK, EK}, _Bloom1} = 
-        sst_new("../test/", "range1_src", IK1, IK2, false, 1, 9999, native),
+        testsst_new("../test/", "range1_src", IK1, IK2, false, 1, 9999, native),
     ?assertMatch([], Rem1),
     ?assertMatch([], Rem2),
     ?assertMatch(SK, element(1, lists:nth(1, IK1))),
@@ -3060,8 +3072,7 @@ additional_range_test() ->
     
 
 simple_persisted_slotsize_test() ->
-    simple_persisted_slotsize_tester(fun testsst_new/6),
-    simple_persisted_slotsize_tester(fun sst_new/6).
+    simple_persisted_slotsize_tester(fun testsst_new/6).
 
 
 simple_persisted_slotsize_tester(SSTNewFun) ->
@@ -3084,8 +3095,7 @@ simple_persisted_test_() ->
     {timeout, 60, fun simple_persisted_test_bothformats/0}.
 
 simple_persisted_test_bothformats() ->
-    simple_persisted_tester(fun testsst_new/6),
-    simple_persisted_tester(fun sst_new/6).
+    simple_persisted_tester(fun testsst_new/6).
 
 simple_persisted_tester(SSTNewFun) ->
     {RP, Filename} = {"../test/", "simple_test"},

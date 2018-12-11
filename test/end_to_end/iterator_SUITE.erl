@@ -445,10 +445,12 @@ small_load_with2i(_Config) ->
     
     %% Delete the objects from the ChkList removing the indexes
     lists:foreach(fun({_RN, Obj, Spc}) ->
-                        DSpc = lists:map(fun({add, F, T}) -> {remove, F, T}
-                                                                end,
+                        DSpc = lists:map(fun({add, F, T}) -> 
+                                                {remove, F, T}
+                                            end,
                                             Spc),
-                        {B, K} = {Obj#r_object.bucket, Obj#r_object.key},
+                        {B, K} =
+                            {testutil:get_bucket(Obj), testutil:get_key(Obj)},
                         testutil:book_riakdelete(Bookie1, B, K, DSpc)
                         end,
                     ChkList1),

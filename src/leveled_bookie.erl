@@ -1060,11 +1060,15 @@ init([Opts]) ->
             {stop, no_root_path};
         {undefined, _RP} ->
             % Start from file not snapshot
-            {InkerOpts, PencillerOpts} = set_options(Opts),
 
+            % Must set log level first - as log level will be fetched within
+            % set_options/1.  Also logs can now be added to set_options/1
             LogLevel = proplists:get_value(log_level, Opts),
+            leveled_log:set_loglevel(LogLevel),
             ForcedLogs = proplists:get_value(forced_logs, Opts),
-            leveled_log:save(LogLevel, ForcedLogs),
+            leveled_log:add_forcedlogs(ForcedLogs),
+
+            {InkerOpts, PencillerOpts} = set_options(Opts),
 
             OverrideFunctions = proplists:get_value(override_functions, Opts),
             SetFun =
@@ -1551,12 +1555,16 @@ set_options(Opts) ->
                         compress_on_receipt = CompressOnReceipt,
                         cdb_options = 
                             #cdb_options{max_size=MaxJournalSize,
-                                            binary_mode=true,
-                                            sync_strategy=SyncStrat}},
+                                        binary_mode=true,
+                                        sync_strategy=SyncStrat,
+                                        log_options=leveled_log:get_opts()}},
         #penciller_options{root_path = LedgerFP,
                             max_inmemory_tablesize = PCLL0CacheSize,
                             levelzero_cointoss = true,
-                            compression_method = CompressionMethod}}.
+                            sst_options =
+                                #sst_options{press_method = CompressionMethod,
+                                            log_options=leveled_log:get_opts()}}
+        }.
 
 
 -spec return_snapfun(book_state(), store|ledger, 

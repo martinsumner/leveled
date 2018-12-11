@@ -11,13 +11,22 @@
             log_timer/3,
             log_randomtimer/4]).
 
--export([save/1, save/2,
-         get_opts/0]).
+-export([set_loglevel/1, 
+            add_forcedlogs/1,
+            remove_forcedlogs/1,
+            get_opts/0,
+            save/1]).
+
+
+-record(log_options, {log_level = info :: log_level(), 
+                        forced_logs = [] :: [string()]}).
 
 -type log_level()  ::  debug | info | warn | error | critical.
--type log_levels() :: [log_level()].
--define(LOG_LEVELS,   [debug, info, warn, error, critical]).
+-type log_options() :: #log_options{}.
 
+-export_type([log_options/0]).
+
+-define(LOG_LEVELS, [debug, info, warn, error, critical]).
 -define(DEFAULT_LOG_LEVEL, error).
 
 -define(LOGBASE, [
@@ -380,28 +389,64 @@
         {warn, "Error ~w caught when safe reading a file to length ~w"}}
         ]).
 
--record(log_options,
-                     {log_level = info :: leveled_log:log_levels(),
-                      forced_logs = [] :: [string()]}).
 
-save(LogLevel, ForcedLogs) when is_list(ForcedLogs), is_atom(LogLevel) ->
-    save(#log_options{log_level = LogLevel,
-                      forced_logs = ForcedLogs}).
+%%%============================================================================
+%%% Manage Log Options
+%%%============================================================================
 
+-spec set_loglevel(log_level()) -> ok.
+%% @doc
+%% Set the log level for this PID
+set_loglevel(LogLevel) when is_atom(LogLevel) ->
+    LO = get_opts(),
+    UpdLO = LO#log_options{log_level = LogLevel},
+    save(UpdLO).
+
+-spec add_forcedlogs(list(string())) -> ok.
+%% @doc
+%% Add a forced log to the list of forced logs. this will cause the log of this
+%% logReference to be logged even if the log_level of the process would not
+%% otherwise require it to be logged - e.g. to fire an 'INFO' log when running
+%% at an 'ERROR' log level.
+add_forcedlogs(LogRefs) ->
+    LO = get_opts(),
+    ForcedLogs = LO#log_options.forced_logs,
+    UpdLO = LO#log_options{forced_logs = lists:usort(LogRefs ++ ForcedLogs)},
+    save(UpdLO).
+
+-spec remove_forcedlogs(list(string())) -> ok.
+%% @doc
+%% Remove a forced log from the list of forced logs
+remove_forcedlogs(LogRefs) ->
+    LO = get_opts(),
+    ForcedLogs = LO#log_options.forced_logs,
+    UpdLO = LO#log_options{forced_logs = lists:subtract(ForcedLogs, LogRefs)},
+    save(UpdLO).
+
+-spec save(log_options()) -> ok.
+%% @doc
+%% Save the log options to the process dictionary
 save(#log_options{} = LO) ->
     put('$leveled_log_options', LO),
     ok.
 
+-spec get_opts() -> log_options().
+%% @doc
+%% Retrieve the log options from the process dictionary if present.
 get_opts() ->
     case get('$leveled_log_options') of
-        undefined ->
-            LogLevel = application:get_env(leveled, log_level, ?DEFAULT_LOG_LEVEL),
-            ForcedLogs = application:get_env(leveled, forced_logs, []),
-            #log_options{log_level = LogLevel,
-                         forced_logs = ForcedLogs};
         #log_options{} = LO ->
-            LO
+            LO;
+        _ ->
+            #log_options{log_level = ?DEFAULT_LOG_LEVEL,
+                         forced_logs = []}
     end.
+
+
+%%%============================================================================
+%%% Prompt Logs
+%%%============================================================================
+
 
 log(LogReference, Subs) ->
     log(LogReference, Subs, ?LOG_LEVELS).
@@ -429,7 +474,6 @@ should_i_log(LogLevel, Levels, LogRef) ->
             true;
         false ->
             if CurLevel == LogLevel ->
-                    true;
                     true;
                true ->
                     is_active_level(Levels, CurLevel, LogLevel)
@@ -509,35 +553,16 @@ log_warn_test() ->
     ok = log_timer("G8888", [], os:timestamp(), [info, warn, error]).
 
 shouldilog_test() ->
-    % What if an unsupported option is set for the log level
-    % don't log
-    ok = application:set_env(leveled, log_level, unsupported),
-    ?assertMatch(false, should_i_log(info, ?LOG_LEVELS, "G0001")),
-    ?assertMatch(false, should_i_log(inform, ?LOG_LEVELS, "G0001")),
-    ok = application:set_env(leveled, log_level, debug),
+    ok = set_loglevel(debug),
     ?assertMatch(true, should_i_log(info, ?LOG_LEVELS, "G0001")),
-    ok = application:set_env(leveled, log_level, info),
+    ok = set_loglevel(info),
     ?assertMatch(true, should_i_log(info, ?LOG_LEVELS, "G0001")),
-    ok = application:set_env(leveled, forced_logs, ["G0001"]),
-    ok = application:set_env(leveled, log_level, error),
+    ok = add_forcedlogs(["G0001"]),
+    ok = set_loglevel(error),
     ?assertMatch(true, should_i_log(info, ?LOG_LEVELS, "G0001")),
     ?assertMatch(false, should_i_log(info, ?LOG_LEVELS, "G0002")),
-    ok = application:set_env(leveled, forced_logs, []),
-    ok = application:set_env(leveled, log_level, info),
-    ?assertMatch(false, should_i_log(debug, ?LOG_LEVELS, "D0001")).
-
-shouldilog2_test() ->
-    ok = save(unsupported, []),
-    ?assertMatch(false, should_i_log(info, ?LOG_LEVELS, "G0001")),
-    ?assertMatch(false, should_i_log(inform, ?LOG_LEVELS, "G0001")),
-    ok = save(debug, []),
-    ?assertMatch(true, should_i_log(info, ?LOG_LEVELS, "G0001")),
-    ok = save(info, []),
-    ?assertMatch(true, should_i_log(info, ?LOG_LEVELS, "G0001")),
-    ok = save(error, ["G0001"]),
-    ?assertMatch(true, should_i_log(info, ?LOG_LEVELS, "G0001")),
-    ?assertMatch(false, should_i_log(info, ?LOG_LEVELS, "G0002")),
-    ok = save(info, []),
+    ok = remove_forcedlogs(["G0001"]),
+    ok = set_loglevel(info),
     ?assertMatch(false, should_i_log(debug, ?LOG_LEVELS, "D0001")).
 
 -endif.

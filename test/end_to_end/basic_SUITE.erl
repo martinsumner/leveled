@@ -197,8 +197,8 @@ journal_compaction_tester(Restart, WRP) ->
     ObjListD = testutil:generate_objects(10000, 2),
     lists:foreach(fun({_R, O, _S}) ->
                         testutil:book_riakdelete(Bookie0,
-                                                    O#r_object.bucket,
-                                                    O#r_object.key,
+                                                    testutil:get_bucket(O),
+                                                    testutil:get_key(O),
                                                     [])
                         end,
                     ObjListD),
@@ -577,8 +577,8 @@ load_and_count_withdelete(_Config) ->
                         0,
                         lists:seq(1, 20)),
     testutil:check_forobject(Bookie1, TestObject),
-    {BucketD, KeyD} = {TestObject#r_object.bucket,
-                            TestObject#r_object.key},
+    {BucketD, KeyD} =
+        {testutil:get_bucket(TestObject), testutil:get_key(TestObject)},
     {_, 1} = testutil:check_bucket_stats(Bookie1, BucketD),
     ok = testutil:book_riakdelete(Bookie1, BucketD, KeyD, []),
     not_found = testutil:book_riakget(Bookie1, BucketD, KeyD),
