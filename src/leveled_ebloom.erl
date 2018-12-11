@@ -498,11 +498,11 @@ generate_orderedkeys(_Seqn, 0, Acc, _BucketLow, _BucketHigh) ->
     Acc;
 generate_orderedkeys(Seqn, Count, Acc, BucketLow, BucketHigh) ->
     BNumber = Seqn div (BucketHigh - BucketLow),
-    BucketExt = leveled_util:string_right(
-                  integer_to_list(BucketLow + BNumber), 4, $0),
-    KNumber = Seqn * 100 + leveled_rand:uniform(100),
-    KeyExt = 
-        leveled_util:string_right(integer_to_list(KNumber), 8, $0),
+    BucketExt =
+        io_lib:format("K~4..0B", [BucketLow + BNumber]),
+    KeyExt =
+        io_lib:format("K~8..0B", [Seqn * 100 + leveled_rand:uniform(100)]),
+    
     LK = leveled_codec:to_ledgerkey("Bucket" ++ BucketExt, "Key" ++ KeyExt, o),
     Chunk = leveled_rand:rand_bytes(16),
     {_B, _K, MV, _H, _LMs} =
