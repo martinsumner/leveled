@@ -41,6 +41,7 @@ simple_put_fetch_head_delete(_Config) ->
     simple_test_withlog(error, ["B0015", "B0016", "B0017", "B0018", 
                                 "P0032", "SST12", "CDB19", "SST13", "I0019"]).
 
+
 simple_test_withlog(LogLevel, ForcedLogs) ->
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = [{root_path, RootPath},
@@ -59,6 +60,7 @@ simple_test_withlog(LogLevel, ForcedLogs) ->
                     {log_level, LogLevel},
                     {forced_logs, ForcedLogs}],
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
+    
     testutil:check_forobject(Bookie2, TestObject),
     ObjList1 = testutil:generate_objects(5000, 2),
     testutil:riakload(Bookie2, ObjList1),
@@ -106,14 +108,20 @@ many_put_fetch_head(_Config) ->
                     {sync_strategy, testutil:sync_strategy()},
                     {compression_point, on_receipt}],
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
+    ok = leveled_bookie:book_loglevel(Bookie2, error),
+    ok = leveled_bookie:book_addlogs(Bookie2, ["B0015"]),
     testutil:check_forobject(Bookie2, TestObject),
     GenList = [2, 20002, 40002, 60002, 80002,
                 100002, 120002, 140002, 160002, 180002],
     CLs = testutil:load_objects(20000, GenList, Bookie2, TestObject,
                                 fun testutil:generate_smallobjects/2),
+    {error, ["B0015"]} = leveled_bookie:book_logsettings(Bookie2),
+    ok = leveled_bookie:book_removelogs(Bookie2, ["B0015"]),
     CL1A = lists:nth(1, CLs),
     ChkListFixed = lists:nth(length(CLs), CLs),
     testutil:check_forlist(Bookie2, CL1A),
+    {error, []} = leveled_bookie:book_logsettings(Bookie2),
+    ok = leveled_bookie:book_loglevel(Bookie2, info),
     ObjList2A = testutil:generate_objects(5000, 2),
     testutil:riakload(Bookie2, ObjList2A),
     ChkList2A = lists:sublist(lists:sort(ObjList2A), 1000),

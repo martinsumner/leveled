@@ -39,7 +39,10 @@
         clerk_prompt/1,
         clerk_push/2,
         clerk_close/1,
-        clerk_promptdeletions/2
+        clerk_promptdeletions/2,
+        clerk_loglevel/2,
+        clerk_addlogs/2,
+        clerk_removelogs/2
         ]).      
 
 -include_lib("eunit/include/eunit.hrl").
@@ -76,6 +79,24 @@ clerk_promptdeletions(Pid, ManifestSQN) ->
 clerk_push(Pid, Work) ->
     gen_server:cast(Pid, {push_work, Work}).
 
+-spec clerk_loglevel(pid(), leveled_log:log_level()) -> ok.
+%% @doc
+%% Change the log level of the Journal
+clerk_loglevel(Pid, LogLevel) ->
+    gen_server:cast(Pid, {log_level, LogLevel}).
+
+-spec clerk_addlogs(pid(), list(string())) -> ok.
+%% @doc
+%% Add to the list of forced logs, a list of more forced logs
+clerk_addlogs(Pid, ForcedLogs) ->
+    gen_server:cast(Pid, {add_logs, ForcedLogs}).
+
+-spec clerk_removelogs(pid(), list(string())) -> ok.
+%% @doc
+%% Remove from the list of forced logs, a list of forced logs
+clerk_removelogs(Pid, ForcedLogs) ->
+    gen_server:cast(Pid, {remove_logs, ForcedLogs}).
+
 clerk_close(Pid) ->
     gen_server:call(Pid, close, 20000).
 
@@ -103,7 +124,22 @@ handle_cast({prompt_deletions, ManifestSQN}, State) ->
     {Deletions, UpdD} = return_deletions(ManifestSQN,
                                             State#state.pending_deletions),
     ok = notify_deletions(Deletions, State#state.owner),
-    {noreply, State#state{pending_deletions = UpdD}, ?MIN_TIMEOUT}.
+    {noreply, State#state{pending_deletions = UpdD}, ?MIN_TIMEOUT};
+handle_cast({log_level, LogLevel}, State) ->
+    ok = leveled_log:set_loglevel(LogLevel),
+    SSTopts = State#state.sst_options,
+    SSTopts0 = SSTopts#sst_options{log_options = leveled_log:get_opts()},
+    {noreply, State#state{sst_options = SSTopts0}};
+handle_cast({add_logs, ForcedLogs}, State) ->
+    ok = leveled_log:add_forcedlogs(ForcedLogs),
+    SSTopts = State#state.sst_options,
+    SSTopts0 = SSTopts#sst_options{log_options = leveled_log:get_opts()},
+    {noreply, State#state{sst_options = SSTopts0}};
+handle_cast({remove_logs, ForcedLogs}, State) ->
+    ok = leveled_log:remove_forcedlogs(ForcedLogs),
+    SSTopts = State#state.sst_options,
+    SSTopts0 = SSTopts#sst_options{log_options = leveled_log:get_opts()},
+    {noreply, State#state{sst_options = SSTopts0}}.
 
 handle_info(timeout, State) ->
     request_work(State),

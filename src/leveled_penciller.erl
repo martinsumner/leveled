@@ -191,7 +191,10 @@
         pcl_getstartupsequencenumber/1,
         pcl_checkbloomtest/2,
         pcl_checkforwork/1,
-        pcl_persistedsqn/1]).
+        pcl_persistedsqn/1,
+        pcl_loglevel/2,
+        pcl_addlogs/2,
+        pcl_removelogs/2]).
 
 -export([
         sst_rootpath/1,
@@ -578,7 +581,6 @@ pcl_close(Pid) ->
 pcl_doom(Pid) ->
     gen_server:call(Pid, doom, 60000).
 
-
 -spec pcl_checkbloomtest(pid(), tuple()) -> boolean().
 %% @doc
 %% Function specifically added to help testing.  In particular to make sure 
@@ -596,6 +598,24 @@ pcl_checkbloomtest(Pid, Key) ->
 %% Used in test only to confim compaction work complete before closing
 pcl_checkforwork(Pid) ->
     gen_server:call(Pid, check_for_work, 2000).
+
+-spec pcl_loglevel(pid(), leveled_log:log_level()) -> ok.
+%% @doc
+%% Change the log level of the Journal
+pcl_loglevel(Pid, LogLevel) ->
+    gen_server:cast(Pid, {log_level, LogLevel}).
+
+-spec pcl_addlogs(pid(), list(string())) -> ok.
+%% @doc
+%% Add to the list of forced logs, a list of more forced logs
+pcl_addlogs(Pid, ForcedLogs) ->
+    gen_server:cast(Pid, {add_logs, ForcedLogs}).
+
+-spec pcl_removelogs(pid(), list(string())) -> ok.
+%% @doc
+%% Remove from the list of forced logs, a list of forced logs
+pcl_removelogs(Pid, ForcedLogs) ->
+    gen_server:cast(Pid, {remove_logs, ForcedLogs}).
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -1002,7 +1022,28 @@ handle_cast(work_for_clerk, State) ->
             end;
         _ ->
             {noreply, State}
-    end.
+    end;
+handle_cast({log_level, LogLevel}, State) ->
+    PC = State#state.clerk,
+    ok = leveled_pclerk:clerk_loglevel(PC, LogLevel),
+    ok = leveled_log:set_loglevel(LogLevel),
+    SSTopts = State#state.sst_options,
+    SSTopts0 = SSTopts#sst_options{log_options = leveled_log:get_opts()},
+    {noreply, State#state{sst_options = SSTopts0}};
+handle_cast({add_logs, ForcedLogs}, State) ->
+    PC = State#state.clerk,
+    ok = leveled_pclerk:clerk_addlogs(PC, ForcedLogs),
+    ok = leveled_log:add_forcedlogs(ForcedLogs),
+    SSTopts = State#state.sst_options,
+    SSTopts0 = SSTopts#sst_options{log_options = leveled_log:get_opts()},
+    {noreply, State#state{sst_options = SSTopts0}};
+handle_cast({remove_logs, ForcedLogs}, State) ->
+    PC = State#state.clerk,
+    ok = leveled_pclerk:clerk_removelogs(PC, ForcedLogs),
+    ok = leveled_log:remove_forcedlogs(ForcedLogs),
+    SSTopts = State#state.sst_options,
+    SSTopts0 = SSTopts#sst_options{log_options = leveled_log:get_opts()},
+    {noreply, State#state{sst_options = SSTopts0}}.
 
 
 %% handle the bookie stopping and stop this snapshot

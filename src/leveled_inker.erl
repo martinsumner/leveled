@@ -116,7 +116,11 @@
         ink_roll/1,
         ink_backup/2,
         ink_checksqn/2,
-        build_dummy_journal/0,
+        ink_loglevel/2,
+        ink_addlogs/2,
+        ink_removelogs/2]).
+
+-export([build_dummy_journal/0,
         clean_testdir/1,
         filepath/2,
         filepath/3]).
@@ -447,6 +451,24 @@ ink_printmanifest(Pid) ->
 ink_checksqn(Pid, LedgerSQN) ->
     gen_server:call(Pid, {check_sqn, LedgerSQN}).
 
+-spec ink_loglevel(pid(), leveled_log:log_level()) -> ok.
+%% @doc
+%% Change the log level of the Journal
+ink_loglevel(Pid, LogLevel) ->
+    gen_server:cast(Pid, {log_level, LogLevel}).
+
+-spec ink_addlogs(pid(), list(string())) -> ok.
+%% @doc
+%% Add to the list of forced logs, a list of more forced logs
+ink_addlogs(Pid, ForcedLogs) ->
+    gen_server:cast(Pid, {add_logs, ForcedLogs}).
+
+-spec ink_removelogs(pid(), list(string())) -> ok.
+%% @doc
+%% Remove from the list of forced logs, a list of forced logs
+ink_removelogs(Pid, ForcedLogs) ->
+    gen_server:cast(Pid, {remove_logs, ForcedLogs}).
+
 %%%============================================================================
 %%% gen_server callbacks
 %%%============================================================================
@@ -698,7 +720,28 @@ handle_cast({release_snapshot, Snapshot}, State) ->
     Rs = lists:keydelete(Snapshot, 1, State#state.registered_snapshots),
     leveled_log:log("I0003", [Snapshot]),
     leveled_log:log("I0004", [length(Rs)]),
-    {noreply, State#state{registered_snapshots=Rs}}.
+    {noreply, State#state{registered_snapshots=Rs}};
+handle_cast({log_level, LogLevel}, State) ->
+    INC = State#state.clerk,
+    ok = leveled_iclerk:clerk_loglevel(INC, LogLevel),
+    ok = leveled_log:set_loglevel(LogLevel),
+    CDBopts = State#state.cdb_options,
+    CDBopts0 = CDBopts#cdb_options{log_options = leveled_log:get_opts()},
+    {noreply, State#state{cdb_options = CDBopts0}};
+handle_cast({add_logs, ForcedLogs}, State) ->
+    INC = State#state.clerk,
+    ok = leveled_iclerk:clerk_addlogs(INC, ForcedLogs),
+    ok = leveled_log:add_forcedlogs(ForcedLogs),
+    CDBopts = State#state.cdb_options,
+    CDBopts0 = CDBopts#cdb_options{log_options = leveled_log:get_opts()},
+    {noreply, State#state{cdb_options = CDBopts0}};
+handle_cast({remove_logs, ForcedLogs}, State) ->
+    INC = State#state.clerk,
+    ok = leveled_iclerk:clerk_removelogs(INC, ForcedLogs),
+    ok = leveled_log:remove_forcedlogs(ForcedLogs),
+    CDBopts = State#state.cdb_options,
+    CDBopts0 = CDBopts#cdb_options{log_options = leveled_log:get_opts()},
+    {noreply, State#state{cdb_options = CDBopts0}}.
 
 %% handle the bookie stopping and stop this snapshot
 handle_info({'DOWN', BookieMonRef, process, _BookiePid, _Info},

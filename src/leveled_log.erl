@@ -15,7 +15,8 @@
             add_forcedlogs/1,
             remove_forcedlogs/1,
             get_opts/0,
-            save/1]).
+            save/1,
+            return_settings/0]).
 
 
 -record(log_options, {log_level = info :: log_level(), 
@@ -24,7 +25,7 @@
 -type log_level()  ::  debug | info | warn | error | critical.
 -type log_options() :: #log_options{}.
 
--export_type([log_options/0]).
+-export_type([log_options/0, log_level/0]).
 
 -define(LOG_LEVELS, [debug, info, warn, error, critical]).
 -define(DEFAULT_LOG_LEVEL, error).
@@ -442,6 +443,12 @@ get_opts() ->
                          forced_logs = []}
     end.
 
+-spec return_settings() -> {log_level(), list(string())}.
+%% @doc
+%% Return the settings outside of the record
+return_settings() ->
+    LO = get_opts(),
+    {LO#log_options.log_level, LO#log_options.forced_logs}.
 
 %%%============================================================================
 %%% Prompt Logs
