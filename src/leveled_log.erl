@@ -489,8 +489,7 @@ should_i_log(LogLevel, Levels, LogRef) ->
 
 is_active_level([L|_], L, _) -> true;
 is_active_level([L|_], _, L) -> false;
-is_active_level([_|T], C, L) -> is_active_level(T, C, L);
-is_active_level([]   , _, _) -> false.
+is_active_level([_|T], C, L) -> is_active_level(T, C, L).
 
 log_timer(LogReference, Subs, StartTime) ->
     log_timer(LogReference, Subs, StartTime, ?LOG_LEVELS).
@@ -571,5 +570,10 @@ shouldilog_test() ->
     ok = remove_forcedlogs(["G0001"]),
     ok = set_loglevel(info),
     ?assertMatch(false, should_i_log(debug, ?LOG_LEVELS, "D0001")).
+
+badloglevel_test() ->
+    % Set a bad log level - and everything logs
+    ?assertMatch(true, is_active_level(?LOG_LEVELS, debug, unsupported)),
+    ?assertMatch(true, is_active_level(?LOG_LEVELS, critical, unsupported)).
 
 -endif.
