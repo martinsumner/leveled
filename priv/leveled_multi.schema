@@ -1,0 +1,123 @@
+%% -*- erlang -*-
+
+%%%% leveled
+
+%% @doc A path under which leveled data files will be stored.
+{mapping, "multi_backend.$name.leveled.data_root", "riak_kv.multi_backend", [
+  {default, "$(platform_data_dir)/leveled"},
+  {datatype, directory}
+]}.
+
+%% @doc Strategy for flushing data to disk
+%% Can be set to riak_sync, sync (if OTP > 16) or none.  Use none, and the OS
+%% will flush when most efficient.  Use riak_sync or sync to flush after every
+%% PUT (not recommended wihtout some hardware support e.g. flash drives and/or
+%% Flash-backed Write Caches) 
+{mapping, "multi_backend.$name.leveled.sync_strategy", "riak_kv.multi_backend", [
+  {default, none},
+  {datatype, atom}
+]}.
+
+
+%% @doc The key size of the Bookie's in-memory cache 
+{mapping, "multi_backend.$name.leveled.cache_size", "riak_kv.multi_backend", [
+  {default, 4000},
+  {datatype, integer},
+  hidden
+]}.
+
+%% @doc The key size of the Penciller's in-memory cache
+{mapping, "multi_backend.$name.leveled.penciller_cache_size", "riak_kv.multi_backend", [
+  {default, 28000},
+  {datatype, integer},
+  hidden
+]}.
+
+%% @doc Compression method
+%% Can be lz4 or native (which will use the Erlang native zlib compression)
+%% within term_to_binary
+{mapping, "multi_backend.$name.leveled.compression_method", "riak_kv.multi_backend", [
+  {default, lz4},
+  {datatype, atom}
+]}.
+
+%% @doc Compression point
+%% The point at which compression is applied to the Journal (the Ledger is 
+%% always compressed).  Use on_receipt or on_compact.  on_compact is suitable
+%% when values are unlikely to yield much benefit from compression 
+%% (compression is only attempted when compacting)
+{mapping, "multi_backend.$name.leveled.compression_point", "riak_kv.multi_backend", [
+  {default, on_receipt},
+  {datatype, atom}
+]}.
+
+
+%% @doc The approximate size (in bytes) when a Journal file should be rolled.
+%% Normally keep this as around the size of o(100K) objects.  Default is 500MB
+{mapping, "multi_backend.$name.leveled.journal_size", "riak_kv.multi_backend", [
+  {default, 500000000},
+  {datatype, integer}
+]}.
+
+%% @doc The number of journal compactions per vnode per day
+%% The higher the value, the more compaction runs, and the sooner space is 
+%% recovered.  But each run has a cost
+{mapping, "multi_backend.$name.leveled.compaction_runs_perday", "riak_kv.multi_backend", [
+  {default, 16},
+  {datatype, integer}
+]}.
+
+%% @doc Compaction Low Hour
+%% The hour of the day in which journal compaction can start.  Use Low hour 
+%% of 0 and High hour of 23 to have no compaction window (i.e. always compact 
+%% regardless of time of day)
+{mapping, "multi_backend.$name.leveled.compaction_low_hour", "riak_kv.multi_backend", [
+  {default, 0},
+  {datatype, integer}
+]}.
+
+%% @doc Compaction Top Hour
+%% The hour of the day, after which journal compaction should stop.
+%% If low hour > top hour then, compaction will work overnight between low
+%% hour and top hour (inclusive).  Timings rely on server's view of local time
+{mapping, "multi_backend.$name.leveled.compaction_top_hour", "riak_kv.multi_backend", [
+  {default, 23},
+  {datatype, integer}
+]}.
+
+%% @doc Max Journal Files Per Compaction Run
+%% In a single compaction run, what is the maximum number of consecutive files
+%% which may be compacted.
+{mapping, "multi_backend.$name.leveled.max_run_length", "riak_kv.multi_backend", [
+  {default, 6},
+  {datatype, integer}
+]}.
+
+%% @doc Target Percentage for Max Run
+%% What is the target score for a maximum run of files, to qualify for 
+%% compaction.  If less than this percentage would be retained after compaction
+%% then it is a candidate (e.g. in default case if 25% of space would be
+%% recovered)
+{mapping, "multi_backend.$name.leveled.maxrunlength_compactionpercentage", "riak_kv.multi_backend", [
+  {default, 75.0},
+  {datatype, float},
+  hidden
+]}.
+
+%% @doc Target Percentage for Single File
+%% What is the target score for a run of a single file, to qualify for 
+%% compaction.  If less than this percentage would be retained after compaction
+%% then it is a candidate (e.g. in default case if 50% of space would be
+%% recovered)
+{mapping, "multi_backend.$name.leveled.singlefile_compactionpercentage", "riak_kv.multi_backend", [
+  {default, 50.0},
+  {datatype, float},
+  hidden
+]}.
+
+
+
+
+
+
+
