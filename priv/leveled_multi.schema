@@ -6,6 +6,7 @@
 {mapping, "multi_backend.$name.leveled.data_root", "riak_kv.multi_backend", [
   {default, "$(platform_data_dir)/leveled"},
   {datatype, directory}
+  hidden
 ]}.
 
 %% @doc Strategy for flushing data to disk
@@ -16,6 +17,7 @@
 {mapping, "multi_backend.$name.leveled.sync_strategy", "riak_kv.multi_backend", [
   {default, none},
   {datatype, atom}
+  hidden
 ]}.
 
 
