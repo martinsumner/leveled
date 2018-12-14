@@ -140,7 +140,9 @@
                 waste_path :: string() | undefined,
                 sync_strategy = none,
                 timings = no_timing :: cdb_timings(),
-                timings_countdown = 0 :: integer()}).
+                timings_countdown = 0 :: integer(),
+                log_options = leveled_log:get_opts()
+                    :: leveled_log:log_options()}).
 
 -record(cdb_timings, {sample_count = 0 :: integer(),
                         sample_cyclecount = 0 :: integer(),
@@ -414,9 +416,11 @@ init([Opts]) ->
         #state{max_size=MaxSize,
                 binary_mode=Opts#cdb_options.binary_mode,
                 waste_path=Opts#cdb_options.waste_path,
-                sync_strategy=Opts#cdb_options.sync_strategy}}.
+                sync_strategy=Opts#cdb_options.sync_strategy,
+                log_options=Opts#cdb_options.log_options}}.
 
 starting({open_writer, Filename}, _From, State) ->
+    leveled_log:save(State#state.log_options),
     leveled_log:log("CDB01", [Filename]),
     {LastPosition, HashTree, LastKey} = open_active_file(Filename),
     {WriteOps, UpdStrategy} = set_writeops(State#state.sync_strategy),
@@ -429,6 +433,7 @@ starting({open_writer, Filename}, _From, State) ->
                                         filename=Filename,
                                         hashtree=HashTree}};
 starting({open_reader, Filename}, _From, State) ->
+    leveled_log:save(State#state.log_options),
     leveled_log:log("CDB02", [Filename]),
     {Handle, Index, LastKey} = open_for_readonly(Filename, false),
     {reply, ok, reader, State#state{handle=Handle,
@@ -436,6 +441,7 @@ starting({open_reader, Filename}, _From, State) ->
                                         filename=Filename,
                                         hash_index=Index}};
 starting({open_reader, Filename, LastKey}, _From, State) ->
+    leveled_log:save(State#state.log_options),
     leveled_log:log("CDB02", [Filename]),
     {Handle, Index, LastKey} = open_for_readonly(Filename, LastKey),
     {reply, ok, reader, State#state{handle=Handle,

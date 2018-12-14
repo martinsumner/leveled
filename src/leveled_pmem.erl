@@ -262,9 +262,12 @@ generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
 generate_randomkeys(_Seqn, 0, Acc, _BucketLow, _BucketHigh) ->
     Acc;
 generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
-    BNumber = string:right(integer_to_list(BucketLow + leveled_rand:uniform(BRange)),
-                                            4, $0),
-    KNumber = string:right(integer_to_list(leveled_rand:uniform(1000)), 4, $0),
+    BNumber =
+        lists:flatten(
+            io_lib:format("~4..0B",
+                            [BucketLow + leveled_rand:uniform(BRange)])),
+    KNumber =
+        lists:flatten(io_lib:format("~4..0B", [leveled_rand:uniform(1000)])),
     {K, V} = {{o, "Bucket" ++ BNumber, "Key" ++ KNumber, null},
                 {Seqn, {active, infinity}, null}},
     generate_randomkeys(Seqn + 1,

@@ -639,14 +639,14 @@ test_segfilter_query(Bookie, CLs) ->
 
     SegMapFun = 
         fun({_RN, RiakObject, _Spc}) ->
-            B = RiakObject#r_object.bucket,
-            K = RiakObject#r_object.key,
+            B = testutil:get_bucket(RiakObject),
+            K = testutil:get_key(RiakObject),
             leveled_tictac:keyto_segment32(<<B/binary, K/binary>>)
         end,
     BKMapFun = 
         fun({_RN, RiakObject, _Spc}) ->
-            B = RiakObject#r_object.bucket,
-            K = RiakObject#r_object.key,
+            B = testutil:get_bucket(RiakObject),
+            K = testutil:get_key(RiakObject),
             {B, K}
         end,
 

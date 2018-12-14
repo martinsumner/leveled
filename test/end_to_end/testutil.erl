@@ -71,6 +71,18 @@
 -define(EMPTY_VTAG_BIN, <<"e">>).
 -define(ROOT_PATH, "test").
 
+-record(r_content, {
+          metadata,
+          value :: term()
+         }).
+
+-record(r_object, {
+          bucket,
+          key,
+          contents :: [#r_content{}],
+          vclock,
+          updatemetadata=dict:store(clean, true, dict:new()),
+          updatevalue :: term()}).
 
 riak_object(Bucket, Key, Value, MetaData) ->
     Content = #r_content{metadata=dict:from_list(MetaData), value=Value},
