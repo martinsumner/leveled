@@ -116,6 +116,25 @@
 ]}.
 
 
+%% @doc Snapshot timeout (short)
+%% Maximum expected time for an index query.  A query which is taking longer
+%% than this may fail as it will be released - potentially allowing for some
+%% file processes to delete.  Timeout is in seconds.
+{mapping, "leveled.snapshot_timeout_short", "leveled.snapshot_timeout_short", [
+  {default, 1800},
+  {datatype, integer},
+  hidden
+]}.
+
+%% @doc Snapshot timeout (long)
+%% Maximum expected time for any othe rfold.  A fold which is taking longer
+%% than this may fail as it will be released - potentially allowing for some
+%% file processes to delete.  Timeout is in seconds.
+{mapping, "leveled.snapshot_timeout_long", "leveled.snapshot_timeout_long", [
+  {default, 86400},
+  {datatype, integer},
+  hidden
+]}.
 
 
 
