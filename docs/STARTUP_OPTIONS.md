@@ -107,3 +107,15 @@ The `compaction_runs_perday` indicates for the leveled store how many times eahc
 The `compaction_low_hour` and `compaction_high_hour` are the hours of the day which support the compaction window - set to 0 and 23 respectively if compaction is required to be a continuous process.
 
 The `max_run_length` controls how many files can be compacted in a single compaction run.  The scoring of files and runs is controlled through `maxrunlength_compactionpercentage` and `singlefile_compactionpercentage`.
+
+
+## Snapshot Timeouts
+
+There are two snapshot timeouts that can be configured:
+
+- `snapshot_timeout_short`
+- `snapshot_timeout_long`
+
+These set the period in seconds before a snapshot which has not shutdown, is declared to have been released - so that any file deletions which are awaiting the snapshot's completion can go ahead.
+
+This covers only silently failing snapshots.  Snapshots that shutdown neatly will be released from locking deleted files when they shutdown.  The 'short' timeout is used for snapshots which support index queries and bucket listing.  The 'long' timeout is used for all other folds (e.g. key lists, head folds and object folds).

@@ -65,7 +65,8 @@
                         compress_on_receipt = false :: boolean(),
                         max_run_length,
                         singlefile_compactionperc :: float()|undefined,
-                        maxrunlength_compactionperc :: float()|undefined}).
+                        maxrunlength_compactionperc :: float()|undefined,
+                        snaptimeout_long :: pos_integer() | undefined}).
 
 -record(penciller_options,
                         {root_path :: string() | undefined,
