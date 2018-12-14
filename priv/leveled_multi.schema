@@ -5,7 +5,7 @@
 %% @doc A path under which leveled data files will be stored.
 {mapping, "multi_backend.$name.leveled.data_root", "riak_kv.multi_backend", [
   {default, "$(platform_data_dir)/leveled"},
-  {datatype, directory}
+  {datatype, directory},
   hidden
 ]}.
 
@@ -16,7 +16,7 @@
 %% Flash-backed Write Caches) 
 {mapping, "multi_backend.$name.leveled.sync_strategy", "riak_kv.multi_backend", [
   {default, none},
-  {datatype, atom}
+  {datatype, atom},
   hidden
 ]}.
 
