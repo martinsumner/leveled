@@ -39,7 +39,10 @@
         clerk_prompt/1,
         clerk_push/2,
         clerk_close/1,
-        clerk_promptdeletions/2
+        clerk_promptdeletions/2,
+        clerk_loglevel/2,
+        clerk_addlogs/2,
+        clerk_removelogs/2
         ]).      
 
 -include_lib("eunit/include/eunit.hrl").
@@ -50,17 +53,18 @@
 -record(state, {owner :: pid() | undefined,
                 root_path :: string() | undefined,
                 pending_deletions = dict:new(), % OTP 16 does not like type
-                compression_method = native :: lz4|native
+                sst_options :: #sst_options{}
                 }).
 
 %%%============================================================================
 %%% API
 %%%============================================================================
 
-clerk_new(Owner, Manifest, CompressionMethod) ->
+clerk_new(Owner, Manifest, OptsSST) ->
     {ok, Pid} = 
         gen_server:start_link(?MODULE, 
-                                [{compression_method, CompressionMethod}],
+                                [leveled_log:get_opts(),
+                                 {sst_options, OptsSST}],
                                 []),
     ok = gen_server:call(Pid, {load, Owner, Manifest}, infinity),
     leveled_log:log("PC001", [Pid, Owner]),
@@ -75,6 +79,24 @@ clerk_promptdeletions(Pid, ManifestSQN) ->
 clerk_push(Pid, Work) ->
     gen_server:cast(Pid, {push_work, Work}).
 
+-spec clerk_loglevel(pid(), leveled_log:log_level()) -> ok.
+%% @doc
+%% Change the log level of the Journal
+clerk_loglevel(Pid, LogLevel) ->
+    gen_server:cast(Pid, {log_level, LogLevel}).
+
+-spec clerk_addlogs(pid(), list(string())) -> ok.
+%% @doc
+%% Add to the list of forced logs, a list of more forced logs
+clerk_addlogs(Pid, ForcedLogs) ->
+    gen_server:cast(Pid, {add_logs, ForcedLogs}).
+
+-spec clerk_removelogs(pid(), list(string())) -> ok.
+%% @doc
+%% Remove from the list of forced logs, a list of forced logs
+clerk_removelogs(Pid, ForcedLogs) ->
+    gen_server:cast(Pid, {remove_logs, ForcedLogs}).
+
 clerk_close(Pid) ->
     gen_server:call(Pid, close, 20000).
 
@@ -82,8 +104,9 @@ clerk_close(Pid) ->
 %%% gen_server callbacks
 %%%============================================================================
 
-init([{compression_method, CompressionMethod}]) ->
-    {ok, #state{compression_method = CompressionMethod}}.
+init([LogOpts, {sst_options, OptsSST}]) ->
+    leveled_log:save(LogOpts),
+    {ok, #state{sst_options = OptsSST}}.
 
 handle_call({load, Owner, RootPath}, _From, State) ->
     {reply, ok, State#state{owner=Owner, root_path=RootPath}, ?MIN_TIMEOUT};
@@ -101,7 +124,22 @@ handle_cast({prompt_deletions, ManifestSQN}, State) ->
     {Deletions, UpdD} = return_deletions(ManifestSQN,
                                             State#state.pending_deletions),
     ok = notify_deletions(Deletions, State#state.owner),
-    {noreply, State#state{pending_deletions = UpdD}, ?MIN_TIMEOUT}.
+    {noreply, State#state{pending_deletions = UpdD}, ?MIN_TIMEOUT};
+handle_cast({log_level, LogLevel}, State) ->
+    ok = leveled_log:set_loglevel(LogLevel),
+    SSTopts = State#state.sst_options,
+    SSTopts0 = SSTopts#sst_options{log_options = leveled_log:get_opts()},
+    {noreply, State#state{sst_options = SSTopts0}};
+handle_cast({add_logs, ForcedLogs}, State) ->
+    ok = leveled_log:add_forcedlogs(ForcedLogs),
+    SSTopts = State#state.sst_options,
+    SSTopts0 = SSTopts#sst_options{log_options = leveled_log:get_opts()},
+    {noreply, State#state{sst_options = SSTopts0}};
+handle_cast({remove_logs, ForcedLogs}, State) ->
+    ok = leveled_log:remove_forcedlogs(ForcedLogs),
+    SSTopts = State#state.sst_options,
+    SSTopts0 = SSTopts#sst_options{log_options = leveled_log:get_opts()},
+    {noreply, State#state{sst_options = SSTopts0}}.
 
 handle_info(timeout, State) ->
     request_work(State),
@@ -125,7 +163,7 @@ handle_work({SrcLevel, Manifest}, State) ->
     {UpdManifest, EntriesToDelete} = merge(SrcLevel,
                                             Manifest,
                                             State#state.root_path,
-                                            State#state.compression_method),
+                                            State#state.sst_options),
     leveled_log:log("PC007", []),
     SWMC = os:timestamp(),
     ok = leveled_penciller:pcl_manifestchange(State#state.owner,
@@ -137,7 +175,7 @@ handle_work({SrcLevel, Manifest}, State) ->
     leveled_log:log_timer("PC018", [], SWSM),
     {leveled_pmanifest:get_manifest_sqn(UpdManifest), EntriesToDelete}.
 
-merge(SrcLevel, Manifest, RootPath, CompressionMethod) ->
+merge(SrcLevel, Manifest, RootPath, OptsSST) ->
     Src = leveled_pmanifest:mergefile_selector(Manifest, SrcLevel),
     NewSQN = leveled_pmanifest:get_manifest_sqn(Manifest) + 1,
     SinkList = leveled_pmanifest:merge_lookup(Manifest,
@@ -159,7 +197,7 @@ merge(SrcLevel, Manifest, RootPath, CompressionMethod) ->
             SST_RP = leveled_penciller:sst_rootpath(RootPath),
             perform_merge(Manifest, 
                             Src, SinkList, SrcLevel, 
-                            SST_RP, NewSQN, CompressionMethod)
+                            SST_RP, NewSQN, OptsSST)
     end.
 
 notify_deletions([], _Penciller) ->
@@ -177,7 +215,7 @@ notify_deletions([Head|Tail], Penciller) ->
 perform_merge(Manifest, 
                 Src, SinkList, SrcLevel, 
                 RootPath, NewSQN, 
-                CompressionMethod) ->
+                OptsSST) ->
     leveled_log:log("PC010", [Src#manifest_entry.filename, NewSQN]),
     SrcList = [{next, Src, all}],
     MaxSQN = leveled_sst:sst_getmaxsequencenumber(Src#manifest_entry.owner),
@@ -187,7 +225,7 @@ perform_merge(Manifest,
         do_merge(SrcList, SinkList,
                     SinkLevel, SinkBasement,
                     RootPath, NewSQN, MaxSQN,
-                    CompressionMethod,
+                    OptsSST,
                     []),
     RevertPointerFun =
         fun({next, ME, _SK}) ->
@@ -205,23 +243,24 @@ perform_merge(Manifest,
                                                     Src),
     {Man2, [Src|SinkManifestList]}.
 
-do_merge([], [], SinkLevel, _SinkB, _RP, NewSQN, _MaxSQN, _CM, Additions) ->
+do_merge([], [], SinkLevel, _SinkB, _RP, NewSQN, _MaxSQN, _Opts, Additions) ->
     leveled_log:log("PC011", [NewSQN, SinkLevel, length(Additions)]),
     Additions;
-do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, CM, Additions) ->
+do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, OptsSST, Additions) ->
     FileName = leveled_penciller:sst_filename(NewSQN,
                                                 SinkLevel,
                                                 length(Additions)),
     leveled_log:log("PC012", [NewSQN, FileName, SinkB]),
     TS1 = os:timestamp(),
     case leveled_sst:sst_new(RP, FileName,
-                                KL1, KL2, SinkB, SinkLevel, MaxSQN, CM) of
+                                KL1, KL2, SinkB, SinkLevel, MaxSQN, 
+                                OptsSST) of
         empty ->
             leveled_log:log("PC013", [FileName]),
             do_merge([], [],
                         SinkLevel, SinkB,
                         RP, NewSQN, MaxSQN,
-                        CM, 
+                        OptsSST, 
                         Additions);                        
         {ok, Pid, Reply, Bloom} ->
             {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} = Reply,
@@ -234,7 +273,7 @@ do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, CM, Additions) ->
                 do_merge(KL1Rem, KL2Rem,
                             SinkLevel, SinkB,
                             RP, NewSQN, MaxSQN,
-                            CM,
+                            OptsSST,
                             Additions ++ [Entry])
     end.
 
@@ -263,9 +302,13 @@ generate_randomkeys(Count, BucketRangeLow, BucketRangeHigh) ->
 generate_randomkeys(0, Acc, _BucketLow, _BucketHigh) ->
     Acc;
 generate_randomkeys(Count, Acc, BucketLow, BRange) ->
-    BNumber = string:right(integer_to_list(BucketLow + leveled_rand:uniform(BRange)),
-                                            4, $0),
-    KNumber = string:right(integer_to_list(leveled_rand:uniform(1000)), 4, $0),
+    BNumber =
+        lists:flatten(
+            io_lib:format("~4..0B",
+                            [BucketLow + leveled_rand:uniform(BRange)])),
+    KNumber =
+        lists:flatten(
+            io_lib:format("~4..0B", [leveled_rand:uniform(1000)])),
     K = {o, "Bucket" ++ BNumber, "Key" ++ KNumber, null},
     RandKey = {K, {Count + 1,
                     {active, infinity},
@@ -282,7 +325,7 @@ merge_file_test() ->
                             1,
                             KL1_L1,
                             999999,
-                            native),
+                            #sst_options{}),
     KL1_L2 = lists:sort(generate_randomkeys(8000, 0, 250)),
     {ok, PidL2_1, _, _} = 
         leveled_sst:sst_new("../test/",
@@ -290,7 +333,7 @@ merge_file_test() ->
                             2,
                             KL1_L2,
                             999999,
-                            native),
+                            #sst_options{}),
     KL2_L2 = lists:sort(generate_randomkeys(8000, 250, 250)),
     {ok, PidL2_2, _, _} = 
         leveled_sst:sst_new("../test/",
@@ -298,7 +341,7 @@ merge_file_test() ->
                                 2,
                                 KL2_L2,
                                 999999,
-                                lz4),
+                                #sst_options{press_method = lz4}),
     KL3_L2 = lists:sort(generate_randomkeys(8000, 500, 250)),
     {ok, PidL2_3, _, _} = 
         leveled_sst:sst_new("../test/",
@@ -306,7 +349,7 @@ merge_file_test() ->
                                 2,
                                 KL3_L2,
                                 999999,
-                                lz4),
+                                #sst_options{press_method = lz4}),
     KL4_L2 = lists:sort(generate_randomkeys(8000, 750, 250)),
     {ok, PidL2_4, _, _} = 
         leveled_sst:sst_new("../test/",
@@ -314,7 +357,7 @@ merge_file_test() ->
                                 2,
                                 KL4_L2,
                                 999999,
-                                lz4),
+                                #sst_options{press_method = lz4}),
     
     E1 = #manifest_entry{owner = PidL1_1,
                             filename = "./KL1_L1.sst",
@@ -347,11 +390,12 @@ merge_file_test() ->
     PointerList = lists:map(fun(ME) -> {next, ME, all} end,
                             [E2, E3, E4, E5]),
     {Man6, _Dels} = 
-        perform_merge(Man5, E1, PointerList, 1, "../test", 3, native),
+        perform_merge(Man5, E1, PointerList, 1, "../test", 3, #sst_options{}),
     
     ?assertMatch(3, leveled_pmanifest:get_manifest_sqn(Man6)).
 
 coverage_cheat_test() ->
-    {ok, _State1} = code_change(null, #state{}, null).
+    {ok, _State1} =
+        code_change(null, #state{sst_options=#sst_options{}}, null).
 
 -endif.

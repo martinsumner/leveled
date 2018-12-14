@@ -79,12 +79,16 @@
         handle_cast/2,
         handle_info/2,
         terminate/2,
-        clerk_new/1,
+        code_change/3]).
+
+-export([clerk_new/1,
         clerk_compact/7,
         clerk_hashtablecalc/3,
         clerk_trim/3,
         clerk_stop/1,
-        code_change/3]).      
+        clerk_loglevel/2,
+        clerk_addlogs/2,
+        clerk_removelogs/2]).   
 
 -export([schedule_compaction/3]).
 
@@ -104,7 +108,7 @@
 
 -record(state, {inker :: pid() | undefined,
                 max_run_length :: integer() | undefined,
-                cdb_options,
+                cdb_options = #cdb_options{} :: #cdb_options{},
                 waste_retention_period :: integer() | undefined,
                 waste_path :: string() | undefined,
                 reload_strategy = ?DEFAULT_RELOAD_STRATEGY :: list(),
@@ -140,7 +144,7 @@
 %% @doc
 %% Generate a new clerk
 clerk_new(InkerClerkOpts) ->
-    gen_server:start_link(?MODULE, [InkerClerkOpts], []).
+    gen_server:start_link(?MODULE, [leveled_log:get_opts(), InkerClerkOpts], []).
 
 -spec clerk_compact(pid(), pid(), 
                     fun(), fun(), fun(),  
@@ -170,7 +174,8 @@ clerk_trim(Pid, Inker, PersistedSQN) ->
 %% of the hastable in the CDB file - so that the file is not blocked during
 %% this calculation
 clerk_hashtablecalc(HashTree, StartPos, CDBpid) ->
-    {ok, Clerk} = gen_server:start_link(?MODULE, [#iclerk_options{}], []),
+    {ok, Clerk} = gen_server:start_link(?MODULE, [leveled_log:get_opts(),
+                                                  #iclerk_options{}], []),
     gen_server:cast(Clerk, {hashtable_calc, HashTree, StartPos, CDBpid}).
 
 -spec clerk_stop(pid()) -> ok.
@@ -179,11 +184,30 @@ clerk_hashtablecalc(HashTree, StartPos, CDBpid) ->
 clerk_stop(Pid) ->
     gen_server:cast(Pid, stop).
 
+-spec clerk_loglevel(pid(), leveled_log:log_level()) -> ok.
+%% @doc
+%% Change the log level of the Journal
+clerk_loglevel(Pid, LogLevel) ->
+    gen_server:cast(Pid, {log_level, LogLevel}).
+
+-spec clerk_addlogs(pid(), list(string())) -> ok.
+%% @doc
+%% Add to the list of forced logs, a list of more forced logs
+clerk_addlogs(Pid, ForcedLogs) ->
+    gen_server:cast(Pid, {add_logs, ForcedLogs}).
+
+-spec clerk_removelogs(pid(), list(string())) -> ok.
+%% @doc
+%% Remove from the list of forced logs, a list of forced logs
+clerk_removelogs(Pid, ForcedLogs) ->
+    gen_server:cast(Pid, {remove_logs, ForcedLogs}).
+
 %%%============================================================================
 %%% gen_server callbacks
 %%%============================================================================
 
-init([IClerkOpts]) ->
+init([LogOpts, IClerkOpts]) ->
+    leveled_log:save(LogOpts),
     ReloadStrategy = IClerkOpts#iclerk_options.reload_strategy,
     CDBopts = IClerkOpts#iclerk_options.cdb_options,
     WP = CDBopts#cdb_options.waste_path,
@@ -290,6 +314,21 @@ handle_cast({hashtable_calc, HashTree, StartPos, CDBpid}, State) ->
     {IndexList, HashTreeBin} = leveled_cdb:hashtable_calc(HashTree, StartPos),
     ok = leveled_cdb:cdb_returnhashtable(CDBpid, IndexList, HashTreeBin),
     {stop, normal, State};
+handle_cast({log_level, LogLevel}, State) ->
+    ok = leveled_log:set_loglevel(LogLevel),
+    CDBopts = State#state.cdb_options,
+    CDBopts0 = CDBopts#cdb_options{log_options = leveled_log:get_opts()},
+    {noreply, State#state{cdb_options = CDBopts0}};
+handle_cast({add_logs, ForcedLogs}, State) ->
+    ok = leveled_log:add_forcedlogs(ForcedLogs),
+    CDBopts = State#state.cdb_options,
+    CDBopts0 = CDBopts#cdb_options{log_options = leveled_log:get_opts()},
+    {noreply, State#state{cdb_options = CDBopts0}};
+handle_cast({remove_logs, ForcedLogs}, State) ->
+    ok = leveled_log:remove_forcedlogs(ForcedLogs),
+    CDBopts = State#state.cdb_options,
+    CDBopts0 = CDBopts#cdb_options{log_options = leveled_log:get_opts()},
+    {noreply, State#state{cdb_options = CDBopts0}};
 handle_cast(stop, State) ->
     {stop, normal, State}.
 

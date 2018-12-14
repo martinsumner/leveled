@@ -256,8 +256,8 @@ recovr_strategy(_Config) ->
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = testutil:book_riakput(Book1, TestObject, TestSpec),
     ok = testutil:book_riakdelete(Book1,
-                                    TestObject#r_object.bucket,
-                                    TestObject#r_object.key,
+                                    testutil:get_bucket(TestObject),
+                                    testutil:get_key(TestObject),
                                     []),
     
     lists:foreach(fun({K, _SpcL}) -> 

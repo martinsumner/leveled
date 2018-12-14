@@ -116,7 +116,11 @@
         ink_roll/1,
         ink_backup/2,
         ink_checksqn/2,
-        build_dummy_journal/0,
+        ink_loglevel/2,
+        ink_addlogs/2,
+        ink_removelogs/2]).
+
+-export([build_dummy_journal/0,
         clean_testdir/1,
         filepath/2,
         filepath/3]).
@@ -174,13 +178,13 @@
 %% The inker will need to know what the reload strategy is, to inform the
 %% clerk about the rules to enforce during compaction.
 ink_start(InkerOpts) ->
-    gen_server:start_link(?MODULE, [InkerOpts], []).
+    gen_server:start_link(?MODULE, [leveled_log:get_opts(), InkerOpts], []).
 
 -spec ink_snapstart(inker_options()) -> {ok, pid()}.
 %% @doc
 %% Don't link on startup as snapshot
 ink_snapstart(InkerOpts) ->
-    gen_server:start(?MODULE, [InkerOpts], []).
+    gen_server:start(?MODULE, [leveled_log:get_opts(), InkerOpts], []).
 
 -spec ink_put(pid(),
                 leveled_codec:ledger_key(),
@@ -447,11 +451,30 @@ ink_printmanifest(Pid) ->
 ink_checksqn(Pid, LedgerSQN) ->
     gen_server:call(Pid, {check_sqn, LedgerSQN}).
 
+-spec ink_loglevel(pid(), leveled_log:log_level()) -> ok.
+%% @doc
+%% Change the log level of the Journal
+ink_loglevel(Pid, LogLevel) ->
+    gen_server:cast(Pid, {log_level, LogLevel}).
+
+-spec ink_addlogs(pid(), list(string())) -> ok.
+%% @doc
+%% Add to the list of forced logs, a list of more forced logs
+ink_addlogs(Pid, ForcedLogs) ->
+    gen_server:cast(Pid, {add_logs, ForcedLogs}).
+
+-spec ink_removelogs(pid(), list(string())) -> ok.
+%% @doc
+%% Remove from the list of forced logs, a list of forced logs
+ink_removelogs(Pid, ForcedLogs) ->
+    gen_server:cast(Pid, {remove_logs, ForcedLogs}).
+
 %%%============================================================================
 %%% gen_server callbacks
 %%%============================================================================
 
-init([InkerOpts]) ->
+init([LogOpts, InkerOpts]) ->
+    leveled_log:save(LogOpts),
     leveled_rand:seed(),
     case {InkerOpts#inker_options.root_path,
             InkerOpts#inker_options.start_snapshot} of
@@ -697,7 +720,28 @@ handle_cast({release_snapshot, Snapshot}, State) ->
     Rs = lists:keydelete(Snapshot, 1, State#state.registered_snapshots),
     leveled_log:log("I0003", [Snapshot]),
     leveled_log:log("I0004", [length(Rs)]),
-    {noreply, State#state{registered_snapshots=Rs}}.
+    {noreply, State#state{registered_snapshots=Rs}};
+handle_cast({log_level, LogLevel}, State) ->
+    INC = State#state.clerk,
+    ok = leveled_iclerk:clerk_loglevel(INC, LogLevel),
+    ok = leveled_log:set_loglevel(LogLevel),
+    CDBopts = State#state.cdb_options,
+    CDBopts0 = CDBopts#cdb_options{log_options = leveled_log:get_opts()},
+    {noreply, State#state{cdb_options = CDBopts0}};
+handle_cast({add_logs, ForcedLogs}, State) ->
+    INC = State#state.clerk,
+    ok = leveled_iclerk:clerk_addlogs(INC, ForcedLogs),
+    ok = leveled_log:add_forcedlogs(ForcedLogs),
+    CDBopts = State#state.cdb_options,
+    CDBopts0 = CDBopts#cdb_options{log_options = leveled_log:get_opts()},
+    {noreply, State#state{cdb_options = CDBopts0}};
+handle_cast({remove_logs, ForcedLogs}, State) ->
+    INC = State#state.clerk,
+    ok = leveled_iclerk:clerk_removelogs(INC, ForcedLogs),
+    ok = leveled_log:remove_forcedlogs(ForcedLogs),
+    CDBopts = State#state.cdb_options,
+    CDBopts0 = CDBopts#cdb_options{log_options = leveled_log:get_opts()},
+    {noreply, State#state{cdb_options = CDBopts0}}.
 
 %% handle the bookie stopping and stop this snapshot
 handle_info({'DOWN', BookieMonRef, process, _BookiePid, _Info},
@@ -1400,8 +1444,9 @@ compact_journal_testto(WRP, ExpectedFiles) ->
                             5000),
     timer:sleep(1000),
     CompactedManifest2 = ink_getmanifest(Ink1),
+    {ok, PrefixTest} = re:compile(?COMPACT_FP),
     lists:foreach(fun({_SQN, FN, _P, _LK}) ->
-                            ?assertMatch(0, string:str(FN, ?COMPACT_FP))
+                            nomatch = re:run(FN, PrefixTest)
                         end,
                     CompactedManifest2),
     ?assertMatch(2, length(CompactedManifest2)),

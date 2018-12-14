@@ -67,7 +67,11 @@
         book_hotbackup/1,
         book_close/1,
         book_destroy/1,
-        book_isempty/2]).
+        book_isempty/2,
+        book_logsettings/1,
+        book_loglevel/2,
+        book_addlogs/2,
+        book_removelogs/2]).
 
 %% folding API
 -export([
@@ -1047,6 +1051,31 @@ book_isempty(Pid, Tag) ->
     {async, Runner} = book_bucketlist(Pid, Tag, FoldAccT, first),
     Runner().
 
+-spec book_logsettings(pid()) -> {leveled_log:log_level(), list(string())}.
+%% @doc
+%% Retrieve the current log settings
+book_logsettings(Pid) ->
+    gen_server:call(Pid, log_settings, infinity).
+
+-spec book_loglevel(pid(), leveled_log:log_level()) -> ok.
+%% @doc
+%% Change the log level of the store
+book_loglevel(Pid, LogLevel) ->
+    gen_server:cast(Pid, {log_level, LogLevel}).
+
+-spec book_addlogs(pid(), list(string())) -> ok.
+%% @doc
+%% Add to the list of forced logs, a list of more forced logs
+book_addlogs(Pid, ForcedLogs) ->
+    gen_server:cast(Pid, {add_logs, ForcedLogs}).
+
+-spec book_removelogs(pid(), list(string())) -> ok.
+%% @doc
+%% Remove from the list of forced logs, a list of forced logs
+book_removelogs(Pid, ForcedLogs) ->
+    gen_server:cast(Pid, {remove_logs, ForcedLogs}).
+
+
 %%%============================================================================
 %%% gen_server callbacks
 %%%============================================================================
@@ -1060,12 +1089,15 @@ init([Opts]) ->
             {stop, no_root_path};
         {undefined, _RP} ->
             % Start from file not snapshot
-            {InkerOpts, PencillerOpts} = set_options(Opts),
 
+            % Must set log level first - as log level will be fetched within
+            % set_options/1.  Also logs can now be added to set_options/1
             LogLevel = proplists:get_value(log_level, Opts),
-            ok = application:set_env(leveled, log_level, LogLevel),
+            leveled_log:set_loglevel(LogLevel),
             ForcedLogs = proplists:get_value(forced_logs, Opts),
-            ok = application:set_env(leveled, forced_logs, ForcedLogs),
+            leveled_log:add_forcedlogs(ForcedLogs),
+
+            {InkerOpts, PencillerOpts} = set_options(Opts),
 
             OverrideFunctions = proplists:get_value(override_functions, Opts),
             SetFun =
@@ -1299,6 +1331,8 @@ handle_call({snapshot, SnapType, Query, LongRunning}, _From, State) ->
     % e.g. many minutes)
     Reply = snapshot_store(State, SnapType, Query, LongRunning),
     {reply, Reply, State};
+handle_call(log_settings, _From, State) ->
+    {reply, leveled_log:return_settings(), State};
 handle_call({return_runner, QueryType}, _From, State) ->
     SW = os:timestamp(),
     Runner = get_runner(State, QueryType),
@@ -1349,8 +1383,29 @@ handle_call(destroy, _From, State=#state{is_snapshot=Snp}) when Snp == false ->
 handle_call(Msg, _From, State) ->
     {reply, {unsupported_message, element(1, Msg)}, State}.
 
-handle_cast(_Msg, State) ->
+
+handle_cast({log_level, LogLevel}, State) ->
+    PCL = State#state.penciller,
+    INK = State#state.inker,
+    ok = leveled_penciller:pcl_loglevel(PCL, LogLevel),
+    ok = leveled_inker:ink_loglevel(INK, LogLevel),
+    ok = leveled_log:set_loglevel(LogLevel),
+    {noreply, State};
+handle_cast({add_logs, ForcedLogs}, State) ->
+    PCL = State#state.penciller,
+    INK = State#state.inker,
+    ok = leveled_penciller:pcl_addlogs(PCL, ForcedLogs),
+    ok = leveled_inker:ink_addlogs(INK, ForcedLogs),
+    ok = leveled_log:add_forcedlogs(ForcedLogs),
+    {noreply, State};
+handle_cast({remove_logs, ForcedLogs}, State) ->
+    PCL = State#state.penciller,
+    INK = State#state.inker,
+    ok = leveled_penciller:pcl_removelogs(PCL, ForcedLogs),
+    ok = leveled_inker:ink_removelogs(INK, ForcedLogs),
+    ok = leveled_log:remove_forcedlogs(ForcedLogs),
     {noreply, State}.
+
 
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -1552,12 +1607,16 @@ set_options(Opts) ->
                         compress_on_receipt = CompressOnReceipt,
                         cdb_options = 
                             #cdb_options{max_size=MaxJournalSize,
-                                            binary_mode=true,
-                                            sync_strategy=SyncStrat}},
+                                        binary_mode=true,
+                                        sync_strategy=SyncStrat,
+                                        log_options=leveled_log:get_opts()}},
         #penciller_options{root_path = LedgerFP,
                             max_inmemory_tablesize = PCLL0CacheSize,
                             levelzero_cointoss = true,
-                            compression_method = CompressionMethod}}.
+                            sst_options =
+                                #sst_options{press_method = CompressionMethod,
+                                            log_options=leveled_log:get_opts()}}
+        }.
 
 
 -spec return_snapfun(book_state(), store|ledger, 
@@ -2872,8 +2931,7 @@ longrunning_test() ->
 
 coverage_cheat_test() ->
     {noreply, _State0} = handle_info(timeout, #state{}),
-    {ok, _State1} = code_change(null, #state{}, null),
-    {noreply, _State2} = handle_cast(null, #state{}).
+    {ok, _State1} = code_change(null, #state{}, null).
 
 erase_journal_test() ->
     RootPath = reset_filestructure(),
