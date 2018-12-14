@@ -65,7 +65,8 @@
                         compress_on_receipt = false :: boolean(),
                         max_run_length,
                         singlefile_compactionperc :: float()|undefined,
-                        maxrunlength_compactionperc :: float()|undefined}).
+                        maxrunlength_compactionperc :: float()|undefined,
+                        snaptimeout_long :: pos_integer() | undefined}).
 
 -record(penciller_options,
                         {root_path :: string() | undefined,
@@ -78,7 +79,9 @@
                         source_penciller :: pid() | undefined,
                         snapshot_longrunning = true :: boolean(),
                         compression_method = native :: lz4|native,
-                        levelzero_cointoss = false :: boolean()}).
+                        levelzero_cointoss = false :: boolean(),
+                        snaptimeout_short :: pos_integer() | undefined,
+                        snaptimeout_long :: pos_integer() | undefined}).
 
 -record(iclerk_options,
                         {inker :: pid() | undefined,
