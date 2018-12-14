@@ -104,7 +104,6 @@
 -define(MIN_PCL_CACHE_SIZE, 400).
 -define(MAX_PCL_CACHE_SIZE, 28000). 
     % This is less than actual max - but COIN_SIDECOUNT
--define(SNAPSHOT_TIMEOUT, 300000).
 -define(CACHE_SIZE_JITTER, 25).
 -define(JOURNAL_SIZE_JITTER, 20).
 -define(ABSOLUTEMAX_JOURNALSIZE, 4000000000).
@@ -118,6 +117,8 @@
 -define(MAX_KEYCHECK_FREQUENCY, 100).
 -define(MIN_KEYCHECK_FREQUENCY, 1).
 -define(OPEN_LASTMOD_RANGE, {0, infinity}).
+-define(PCL_SNAPTIMEOUT_SHORT, 900). % 15 minutes
+-define(PCL_SNAPTIMEOUT_LONG, 43200). % 12 hours
 -define(OPTION_DEFAULTS,
             [{root_path, undefined},
                 {snapshot_bookie, undefined},
@@ -135,7 +136,9 @@
                 {compression_point, ?COMPRESSION_POINT},
                 {log_level, ?LOG_LEVEL},
                 {forced_logs, []},
-                {override_functions, []}]).
+                {override_functions, []},
+                {pcl_snapshottimeout_short, ?PCL_SNAPTIMEOUT_SHORT},
+                {pcl_snapshottimeout_long, ?PCL_SNAPTIMEOUT_LONG}]).
 
 -record(ledger_cache, {mem :: ets:tab(),
                         loader = leveled_tree:empty(?CACHE_TYPE)
@@ -328,9 +331,19 @@
             %       "P0032", "SST12", "CDB19", "SST13", "I0019"]}
             % Will log all timing points even when log_level is not set to
             % support info
-        {override_functions, list(leveled_head:appdefinable_function_tuple())}
+        {override_functions, list(leveled_head:appdefinable_function_tuple())} |
             % Provide a list of override functions that will be used for
             % user-defined tags
+        {pcl_snapshottimeout_short, pos_integer()} |
+            % Time in seconds before a snapshot that has not been shutdown is
+            % assumed to have failed, and so requires to be torndown.  The
+            % short timeout is applied to queries where long_running is set to
+            % false
+        {pcl_snapshottimeout_long, pos_integer()}
+            % Time in seconds before a snapshot that has not been shutdown is
+            % assumed to have failed, and so requires to be torndown.  The
+            % short timeout is applied to queries where long_running is set to
+            % true
         ].
 
 
@@ -1564,6 +1577,9 @@ set_options(Opts) ->
     SyncStrat = proplists:get_value(sync_strategy, Opts),
     WRP = proplists:get_value(waste_retention_period, Opts),
 
+    SnapTimeoutShort = proplists:get_value(pcl_snapshottimeout_short, Opts),
+    SnapTimeoutLong = proplists:get_value(pcl_snapshottimeout_long, Opts),
+
     AltStrategy = proplists:get_value(reload_strategy, Opts),
     ReloadStrategy = leveled_codec:inker_reload_strategy(AltStrategy),
 
@@ -1613,6 +1629,8 @@ set_options(Opts) ->
         #penciller_options{root_path = LedgerFP,
                             max_inmemory_tablesize = PCLL0CacheSize,
                             levelzero_cointoss = true,
+                            snaptimeout_short = SnapTimeoutShort,
+                            snaptimeout_long = SnapTimeoutLong,
                             sst_options =
                                 #sst_options{press_method = CompressionMethod,
                                             log_options=leveled_log:get_opts()}}

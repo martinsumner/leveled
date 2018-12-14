@@ -236,8 +236,6 @@
 -define(COIN_SIDECOUNT, 5).
 -define(SLOW_FETCH, 20000).
 -define(ITERATOR_SCANWIDTH, 4).
--define(SNAPSHOT_TIMEOUT_LONG, 3600).
--define(SNAPSHOT_TIMEOUT_SHORT, 600).
 -define(TIMING_SAMPLECOUNTDOWN, 10000).
 -define(TIMING_SAMPLESIZE, 100).
 -define(OPEN_LASTMOD_RANGE, {0, infinity}).
@@ -269,6 +267,9 @@
                 
                 timings = no_timing :: pcl_timings(),
                 timings_countdown = 0 :: integer(),
+
+                snaptimeout_short :: pos_integer()|undefined,
+                snaptimeout_long :: pos_integer()|undefined,
 
                 sst_options = #sst_options{} :: #sst_options{}}).
 
@@ -633,7 +634,8 @@ init([LogOpts, PCLopts]) ->
             LongRunning = PCLopts#penciller_options.snapshot_longrunning,
             %% monitor the bookie, and close the snapshot when bookie
             %% exits
-	    BookieMonitor =  erlang:monitor(process, PCLopts#penciller_options.bookies_pid),
+	        BookieMonitor = 
+                erlang:monitor(process, PCLopts#penciller_options.bookies_pid),
 
             {ok, State} = pcl_registersnapshot(SrcPenciller, 
                                                 self(), 
@@ -793,25 +795,25 @@ handle_call({fetch_keys,
     end;
 handle_call(get_startup_sqn, _From, State) ->
     {reply, State#state.persisted_sqn, State};
-handle_call({register_snapshot, Snapshot, Query, BookiesMem, LR}, _From, State) ->
+handle_call({register_snapshot, Snapshot, Query, BookiesMem, LongRunning},
+                                                            _From, State) ->
     % Register and load a snapshot
     %
     % For setup of the snapshot to be efficient should pass a query
     % of (StartKey, EndKey) - this will avoid a fully copy of the penciller's
     % memory being required to be trasnferred to the clone.  However, this
     % will not be a valid clone for fetch
-    Timeout = 
-        case LR of
-            true ->
-                ?SNAPSHOT_TIMEOUT_LONG;
-            false ->
-                ?SNAPSHOT_TIMEOUT_SHORT
-        end,
-
-    Manifest0 = leveled_pmanifest:add_snapshot(State#state.manifest,
-                                                Snapshot,
-                                                Timeout),
     
+    TimeO = 
+        case LongRunning of
+            true ->
+                State#state.snaptimeout_long;
+            false ->
+                State#state.snaptimeout_short
+        end,
+    Manifest0 =
+        leveled_pmanifest:add_snapshot(State#state.manifest, Snapshot, TimeO),
+
     {BookieIncrTree, BookieIdx, MinSQN, MaxSQN} = BookiesMem,
     LM1Cache =
         case BookieIncrTree of
@@ -1090,6 +1092,9 @@ start_from_file(PCLopts) ->
     RootPath = PCLopts#penciller_options.root_path,
     MaxTableSize = PCLopts#penciller_options.max_inmemory_tablesize,
     OptsSST = PCLopts#penciller_options.sst_options,
+
+    SnapTimeoutShort = PCLopts#penciller_options.snaptimeout_short,
+    SnapTimeoutLong = PCLopts#penciller_options.snaptimeout_long,
     
     {ok, MergeClerk} = leveled_pclerk:clerk_new(self(), RootPath, OptsSST),
     
@@ -1103,6 +1108,8 @@ start_from_file(PCLopts) ->
                         levelzero_maxcachesize = MaxTableSize,
                         levelzero_cointoss = CoinToss,
                         levelzero_index = leveled_pmem:new_index(),
+                        snaptimeout_short = SnapTimeoutShort,
+                        snaptimeout_long = SnapTimeoutLong,
                         sst_options = OptsSST},
     
     %% Open manifest

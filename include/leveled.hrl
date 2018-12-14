@@ -78,7 +78,9 @@
                         source_penciller :: pid() | undefined,
                         snapshot_longrunning = true :: boolean(),
                         compression_method = native :: lz4|native,
-                        levelzero_cointoss = false :: boolean()}).
+                        levelzero_cointoss = false :: boolean(),
+                        snaptimeout_short :: pos_integer() | undefined,
+                        snaptimeout_long :: pos_integer() | undefined}).
 
 -record(iclerk_options,
                         {inker :: pid() | undefined,
