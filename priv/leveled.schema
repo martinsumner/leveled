@@ -122,7 +122,8 @@
 %% file processes to delete.  Timeout is in seconds.
 {mapping, "leveled.snapshot_timeout_short", "leveled.snapshot_timeout_short", [
   {default, 1800},
-  {datatype, integer}
+  {datatype, integer},
+  hidden
 ]}.
 
 %% @doc Snapshot timeout (long)
@@ -131,7 +132,8 @@
 %% file processes to delete.  Timeout is in seconds.
 {mapping, "leveled.snapshot_timeout_long", "leveled.snapshot_timeout_long", [
   {default, 86400},
-  {datatype, integer}
+  {datatype, integer},
+  hidden
 ]}.
 
 
