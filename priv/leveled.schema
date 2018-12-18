@@ -37,7 +37,7 @@
 %% Can be lz4 or native (which will use the Erlang native zlib compression)
 %% within term_to_binary
 {mapping, "leveled.compression_method", "leveled.compression_method", [
-  {default, lz4},
+  {default, native},
   {datatype, atom}
 ]}.
 
@@ -55,7 +55,7 @@
 %% @doc The approximate size (in bytes) when a Journal file should be rolled.
 %% Normally keep this as around the size of o(100K) objects.  Default is 500MB
 {mapping, "leveled.journal_size", "leveled.journal_size", [
-  {default, 500000000},
+  {default, 1000000000},
   {datatype, integer}
 ]}.
 
@@ -63,7 +63,7 @@
 %% The higher the value, the more compaction runs, and the sooner space is 
 %% recovered.  But each run has a cost
 {mapping, "leveled.compaction_runs_perday", "leveled.compaction_runs_perday", [
-  {default, 16},
+  {default, 24},
   {datatype, integer}
 ]}.
 
@@ -89,7 +89,7 @@
 %% In a single compaction run, what is the maximum number of consecutive files
 %% which may be compacted.
 {mapping, "leveled.max_run_length", "leveled.max_run_length", [
-  {default, 6},
+  {default, 4},
   {datatype, integer}
 ]}.
 
