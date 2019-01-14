@@ -75,6 +75,9 @@
     {"B0019",
         {warn, "Use of book_indexfold with constraint of Bucket ~w with "
                     ++ "no StartKey is deprecated"}},
+    {"B0020",
+        {warn, "Ratio of penciller cache size ~w to bookie's memory "
+                    ++ "cache size ~w is larger than expected"}},
 
     {"R0001",
         {debug, "Object fold to process batch of ~w objects"}},
