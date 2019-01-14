@@ -75,6 +75,9 @@
     {"B0019",
         {warn, "Use of book_indexfold with constraint of Bucket ~w with "
                     ++ "no StartKey is deprecated"}},
+    {"B0020",
+        {warn, "Ratio of penciller cache size ~w to bookie's memory "
+                    ++ "cache size ~w is larger than expected"}},
 
     {"R0001",
         {debug, "Object fold to process batch of ~w objects"}},
@@ -139,7 +142,7 @@
         {warn, "We're doomed - intention recorded to destroy all files"}},
     {"P0031",
         {info, "Completion of update to levelzero"
-                    ++ " with cache size status ~w ~w"}},
+                    ++ " with cache_size=~w status=~w and update_success=~w"}},
     {"P0032",
         {info, "Fetch head timing with sample_count=~w and level timings of"
                     ++ " foundmem_time=~w found0_time=~w found1_time=~w" 
@@ -171,6 +174,8 @@
         {info, "Archiving filename ~s as unused at startup"}},
     {"P0041",
         {info, "Penciller manifest switched from SQN ~w to ~w"}},
+    {"P0042",
+        {warn, "Cache full so attempting roll memory with l0_size=~w"}},
         
     {"PC001",
         {info, "Penciller's clerk ~w started with owner ~w"}},

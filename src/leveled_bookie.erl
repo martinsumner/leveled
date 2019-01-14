@@ -1125,6 +1125,20 @@ init([Opts]) ->
                 ConfiguredCacheSize div (100 div ?CACHE_SIZE_JITTER),
             CacheSize = 
                 ConfiguredCacheSize + erlang:phash2(self()) rem CacheJitter,
+            PCLMaxSize =
+                PencillerOpts#penciller_options.max_inmemory_tablesize,
+            CacheRatio = PCLMaxSize div ConfiguredCacheSize,
+                % It is expected that the maximum size of the penciller
+                % in-memory store should not be more than about 10 x the size
+                % of the ledger cache.  In this case there will be a larger
+                % than tested list of ledger_caches in the penciller memory,
+                % and performance may be unpredictable
+            case CacheRatio > 32 of
+                true ->
+                    leveled_log:log("B0020", [PCLMaxSize, ConfiguredCacheSize]);
+                false ->
+                    ok
+            end,
             
             {HeadOnly, HeadLookup} = 
                 case proplists:get_value(head_only, Opts) of 
