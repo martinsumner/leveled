@@ -38,7 +38,8 @@
         add_to_index/3,
         new_index/0,
         clear_index/1,
-        check_index/2
+        check_index/2,
+        cache_full/1
         ]).      
 
 -include_lib("eunit/include/eunit.hrl").
@@ -51,6 +52,12 @@
 %%%============================================================================
 %%% API
 %%%============================================================================
+
+-spec cache_full(list()) -> boolean().
+%% @doc
+%% If there are already 127 entries in the cache then the cache is full
+cache_full(L0Cache) ->
+    length(L0Cache) == 127.
 
 -spec prepare_for_index(index_array(), leveled_codec:segment_hash()) 
                                                             -> index_array().

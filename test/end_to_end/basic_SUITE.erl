@@ -474,9 +474,16 @@ fetchput_snapshot(_Config) ->
 load_and_count(_Config) ->
     % Use artificially small files, and the load keys, counting they're all
     % present
+    load_and_count(50000000, 2500, 28000),
+    load_and_count(200000000, 100, 300000).
+
+
+load_and_count(JournalSize, BookiesMemSize, PencillerMemSize) ->
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = [{root_path, RootPath},
-                    {max_journalsize, 50000000},
+                    {max_journalsize, JournalSize},
+                    {cache_size, BookiesMemSize},
+                    {max_pencillercachesize, PencillerMemSize},
                     {sync_strategy, testutil:sync_strategy()}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
