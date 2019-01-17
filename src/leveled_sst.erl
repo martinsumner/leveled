@@ -2841,9 +2841,9 @@ merge_tester(NewFunS, NewFunM) ->
     KVL3 = lists:ukeymerge(1, KVL1, KVL2),
     SW0 = os:timestamp(),
     {ok, P1, {FK1, LK1}, _Bloom1} = 
-        NewFunS("../test/", "level1_src", 1, KVL1, 6000, native),
+        NewFunS("test/test_area/", "level1_src", 1, KVL1, 6000, native),
     {ok, P2, {FK2, LK2}, _Bloom2} = 
-        NewFunS("../test/", "level2_src", 2, KVL2, 3000, native),
+        NewFunS("test/test_area/", "level2_src", 2, KVL2, 3000, native),
     ExpFK1 = element(1, lists:nth(1, KVL1)),
     ExpLK1 = element(1, lists:last(KVL1)),
     ExpFK2 = element(1, lists:nth(1, KVL2)),
@@ -2855,7 +2855,7 @@ merge_tester(NewFunS, NewFunM) ->
     ML1 = [{next, #manifest_entry{owner = P1}, FK1}],
     ML2 = [{next, #manifest_entry{owner = P2}, FK2}],
     NewR = 
-        NewFunM("../test/", "level2_merge", ML1, ML2, false, 2, N * 2, native),
+        NewFunM("test/test_area/", "level2_merge", ML1, ML2, false, 2, N * 2, native),
     {ok, P3, {{Rem1, Rem2}, FK3, LK3}, _Bloom3} = NewR,
     ?assertMatch([], Rem1),
     ?assertMatch([], Rem2),
@@ -2878,16 +2878,16 @@ merge_tester(NewFunS, NewFunM) ->
     ok = sst_close(P1),
     ok = sst_close(P2),
     ok = sst_close(P3),
-    ok = file:delete("../test/level1_src.sst"),
-    ok = file:delete("../test/level2_src.sst"),
-    ok = file:delete("../test/level2_merge.sst").
+    ok = file:delete("test/test_area/level1_src.sst"),
+    ok = file:delete("test/test_area/level2_src.sst"),
+    ok = file:delete("test/test_area/level2_merge.sst").
     
 
 simple_persisted_range_test() ->
     simple_persisted_range_tester(fun testsst_new/6).
 
 simple_persisted_range_tester(SSTNewFun) ->
-    {RP, Filename} = {"../test/", "simple_test"},
+    {RP, Filename} = {"test/test_area/", "simple_test"},
     KVList0 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 16, 1, 20),
     KVList1 = lists:ukeysort(1, KVList0),
     [{FirstKey, _FV}|_Rest] = KVList1,
@@ -2929,7 +2929,7 @@ simple_persisted_rangesegfilter_test() ->
     simple_persisted_rangesegfilter_tester(fun testsst_new/6).
 
 simple_persisted_rangesegfilter_tester(SSTNewFun) ->
-    {RP, Filename} = {"../test/", "range_segfilter_test"},
+    {RP, Filename} = {"test/test_area/", "range_segfilter_test"},
     KVList0 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 16, 1, 20),
     KVList1 = lists:ukeysort(1, KVList0),
     [{FirstKey, _FV}|_Rest] = KVList1,
@@ -3021,7 +3021,7 @@ additional_range_test() ->
                         lists:seq(?NOLOOK_SLOTSIZE + Gap + 1,
                                     2 * ?NOLOOK_SLOTSIZE + Gap)),
     {ok, P1, {{Rem1, Rem2}, SK, EK}, _Bloom1} = 
-        testsst_new("../test/", "range1_src", IK1, IK2, false, 1, 9999, native),
+        testsst_new("test/test_area/", "range1_src", IK1, IK2, false, 1, 9999, native),
     ?assertMatch([], Rem1),
     ?assertMatch([], Rem2),
     ?assertMatch(SK, element(1, lists:nth(1, IK1))),
@@ -3076,7 +3076,7 @@ simple_persisted_slotsize_test() ->
 
 
 simple_persisted_slotsize_tester(SSTNewFun) ->
-    {RP, Filename} = {"../test/", "simple_slotsize_test"},
+    {RP, Filename} = {"test/test_area/", "simple_slotsize_test"},
     KVList0 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 2, 1, 20),
     KVList1 = lists:sublist(lists:ukeysort(1, KVList0),
                             ?LOOK_SLOTSIZE),
@@ -3098,7 +3098,7 @@ simple_persisted_test_bothformats() ->
     simple_persisted_tester(fun testsst_new/6).
 
 simple_persisted_tester(SSTNewFun) ->
-    {RP, Filename} = {"../test/", "simple_test"},
+    {RP, Filename} = {"test/test_area/", "simple_test"},
     KVList0 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 32, 1, 20),
     KVList1 = lists:ukeysort(1, KVList0),
     [{FirstKey, _FV}|_Rest] = KVList1,

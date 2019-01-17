@@ -244,7 +244,7 @@
                 persisted_sqn = 0 :: integer(), % The highest SQN persisted
                 
                 ledger_sqn = 0 :: integer(), % The highest SQN added to L0
-                root_path = "../test" :: string(),
+                root_path = "test" :: string(),
                 
                 clerk :: pid() | undefined,
                 
@@ -1947,7 +1947,7 @@ add_missing_hash({K, {SQN, ST, MD}}) ->
 
 
 archive_files_test() ->
-    RootPath = "../test/ledger",
+    RootPath = "test/test_area/ledger",
     SSTPath = sst_rootpath(RootPath),
     ok = filelib:ensure_dir(SSTPath),
     ok = file:write_file(SSTPath ++ "/test1.sst", "hello_world"),
@@ -1978,7 +1978,7 @@ shutdown_when_compact(Pid) ->
     pcl_close(Pid).
 
 simple_server_test() ->
-    RootPath = "../test/ledger",
+    RootPath = "test/test_area/ledger",
     clean_testdir(RootPath),
     {ok, PCL} = 
         pcl_start(#penciller_options{root_path=RootPath,
@@ -2286,7 +2286,7 @@ foldwithimm_simple_test() ->
                     {{o, "Bucket1", "Key6", null}, 7}], AccB).
 
 create_file_test() ->
-    {RP, Filename} = {"../test/", "new_file.sst"},
+    {RP, Filename} = {"test/test_area/", "new_file.sst"},
     ok = file:write_file(filename:join(RP, Filename), term_to_binary("hello")),
     KVL = lists:usort(generate_randomkeys({50000, 0})),
     Tree = leveled_tree:from_orderedlist(KVL, ?CACHE_TYPE),
@@ -2313,7 +2313,7 @@ create_file_test() ->
     ?assertMatch({o, _, _, _}, EndKey),
     ?assertMatch("./new_file.sst", SrcFN),
     ok = leveled_sst:sst_clear(SP),
-    {ok, Bin} = file:read_file("../test/new_file.sst.discarded"),
+    {ok, Bin} = file:read_file("test/test_area/new_file.sst.discarded"),
     ?assertMatch("hello", binary_to_term(Bin)).
 
 slow_fetch_test() ->
@@ -2347,7 +2347,7 @@ coverage_cheat_test() ->
     {ok, _State1} = code_change(null, #state{}, null).
 
 handle_down_test() ->
-    RootPath = "../test/ledger",
+    RootPath = "test/test_area/ledger",
     clean_testdir(RootPath),
     {ok, PCLr} = 
         pcl_start(#penciller_options{root_path=RootPath,

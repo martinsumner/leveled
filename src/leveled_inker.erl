@@ -1279,7 +1279,7 @@ build_dummy_journal() ->
     build_dummy_journal(fun key_converter/1).
 
 build_dummy_journal(KeyConvertF) ->
-    RootPath = "../test/journal",
+    RootPath = "test/test_area/journal",
     clean_testdir(RootPath),
     JournalFP = filepath(RootPath, journal_dir),
     ManifestFP = filepath(RootPath, manifest_dir),
@@ -1326,8 +1326,8 @@ build_dummy_journal(KeyConvertF) ->
                             create_value_for_journal({V4, ?TEST_KC}, false)),
     LK2 = leveled_cdb:cdb_lastkey(J2),
     ok = leveled_cdb:cdb_close(J2),
-    Manifest = [{1, "../test/journal/journal_files/nursery_1", "pid1", LK1},
-                    {3, "../test/journal/journal_files/nursery_3", "pid2", LK2}],
+    Manifest = [{1, "test/test_area/journal/journal_files/nursery_1", "pid1", LK1},
+                    {3, "test/test_area/journal/journal_files/nursery_3", "pid2", LK2}],
     ManifestBin = term_to_binary(Manifest),
     {ok, MF1} = file:open(filename:join(ManifestFP, "1.man"),
                             [binary, raw, read, write]),
@@ -1354,7 +1354,7 @@ clean_subdir(DirPath) ->
                     Files).
 
 simple_inker_test() ->
-    RootPath = "../test/journal",
+    RootPath = "test/test_area/journal",
     build_dummy_journal(),
     CDBopts = #cdb_options{max_size=300000, binary_mode=true},
     {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,
@@ -1371,7 +1371,7 @@ simple_inker_test() ->
     clean_testdir(RootPath).
 
 simple_inker_completeactivejournal_test() ->
-    RootPath = "../test/journal",
+    RootPath = "test/test_area/journal",
     build_dummy_journal(),
     CDBopts = #cdb_options{max_size=300000, binary_mode=true},
     JournalFP = filepath(RootPath, journal_dir),
@@ -1402,7 +1402,7 @@ compact_journal_wastediscarded_test_() ->
     {timeout, 60, fun() -> compact_journal_testto(undefined, false) end}.
 
 compact_journal_testto(WRP, ExpectedFiles) ->
-    RootPath = "../test/journal",
+    RootPath = "test/test_area/journal",
     CDBopts = #cdb_options{max_size=300000},
     RStrategy = [{?STD_TAG, recovr}],
     InkOpts = #inker_options{root_path=RootPath,
@@ -1478,7 +1478,7 @@ compact_journal_testto(WRP, ExpectedFiles) ->
     clean_testdir(RootPath).
 
 empty_manifest_test() ->
-    RootPath = "../test/journal",
+    RootPath = "test/test_area/journal",
     clean_testdir(RootPath),
     CDBopts = #cdb_options{max_size=300000},
     {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,
@@ -1532,7 +1532,7 @@ coverage_cheat_test() ->
     {ok, _State1} = code_change(null, #state{}, null).
 
 handle_down_test() ->
-    RootPath = "../test/journal",
+    RootPath = "test/test_area/journal",
     build_dummy_journal(),
     CDBopts = #cdb_options{max_size=300000, binary_mode=true},
     {ok, Ink1} = ink_start(#inker_options{root_path=RootPath,

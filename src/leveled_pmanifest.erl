@@ -991,8 +991,9 @@ random_select_test() ->
     ?assertMatch(true, lists:member(L1File, Level1)).
 
 manifest_gc_test() ->
-    RP = "../test_gc",
+    RP = "test/test_area/",
     ok = filelib:ensure_dir(RP),
+    ok = leveled_penciller:clean_testdir(RP),
     ManifestT = initial_setup(multi_change),
     ManifestL = tuple_to_list(ManifestT),
     lists:foreach(fun(M) -> save_manifest(M, RP) end, ManifestL),
@@ -1049,7 +1050,8 @@ keylookup_manifest_test() ->
     ?assertMatch("pid_z5", key_lookup(Man13, 2, LK1_4)).
 
 ext_keylookup_manifest_test() ->
-    RP = "../test",
+    RP = "test/test_area",
+    ok = leveled_penciller:clean_testdir(RP),
     {_Man0, _Man1, _Man2, _Man3, _Man4, _Man5, Man6} = initial_setup(),
     save_manifest(Man6, RP),
     

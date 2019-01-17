@@ -311,7 +311,7 @@ buildrandomfashion_test() ->
     ?assertMatch(ManL0, to_list(Man2)).
 
 empty_active_journal_test() ->
-    Path = "../test/journal/journal_files/",
+    Path = "test/test_area/journal/journal_files/",
     ok = filelib:ensure_dir(Path),
     {ok, ActJ} = leveled_cdb:cdb_open_writer(Path ++ "test_emptyactive_file.pnd"),
     ?assertMatch([], generate_entry(ActJ)),
