@@ -2373,7 +2373,7 @@ update_timings(SW, {fold, setup}, Timings) ->
 -ifdef(TEST).
 
 reset_filestructure() ->
-    RootPath  = "../test",
+    RootPath  = "test/test_area",
     leveled_inker:clean_testdir(RootPath ++ "/" ++ ?JOURNAL_FP),
     leveled_penciller:clean_testdir(RootPath ++ "/" ++ ?LEDGER_FP),
     RootPath.

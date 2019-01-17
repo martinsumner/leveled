@@ -1996,7 +1996,7 @@ cyclecount_test() ->
                             end end,
                         [],
                         KVL1),
-    {ok, P1} = cdb_open_writer("../test/cycle_count.pnd",
+    {ok, P1} = cdb_open_writer("test/test_area/cycle_count.pnd",
                                 #cdb_options{binary_mode=false}),
     ok = cdb_mput(P1, KVL2),
     {ok, F2} = cdb_complete(P1),
@@ -2012,16 +2012,16 @@ cyclecount_test() ->
                     lists:seq(1, 5000)),
 
     ok = cdb_close(P2),
-    ok = file:delete("../test/cycle_count.cdb").
+    ok = file:delete("test/test_area/cycle_count.cdb").
     
 
 full_1_test() ->
     List1 = lists:sort([{"key1","value1"},{"key2","value2"}]),
-    create("../test/simple.cdb",
+    create("test/test_area/simple.cdb",
             lists:sort([{"key1","value1"},{"key2","value2"}])),
-    List2 = lists:sort(dump("../test/simple.cdb")),
+    List2 = lists:sort(dump("test/test_area/simple.cdb")),
     ?assertMatch(List1,List2),
-    ok = file:delete("../test/simple.cdb").
+    ok = file:delete("test/test_area/simple.cdb").
 
 full_2_test() ->
     List1 = lists:sort([{lists:flatten(io_lib:format("~s~p",[Prefix,Plug])),
@@ -2029,34 +2029,34 @@ full_2_test() ->
                 ||  Plug <- lists:seq(1,200),
                 Prefix <- ["dsd","so39ds","oe9%#*(","020dkslsldclsldowlslf%$#",
                   "tiep4||","qweq"]]),
-    create("../test/full.cdb",List1),
-    List2 = lists:sort(dump("../test/full.cdb")),
+    create("test/test_area/full.cdb",List1),
+    List2 = lists:sort(dump("test/test_area/full.cdb")),
     ?assertMatch(List1,List2),
-    ok = file:delete("../test/full.cdb").
+    ok = file:delete("test/test_area/full.cdb").
 
 from_dict_test() ->
     D = dict:new(),
     D1 = dict:store("a","b",D),
     D2 = dict:store("c","d",D1),
-    ok = from_dict("../test/from_dict_test.cdb",D2),
+    ok = from_dict("test/test_area/from_dict_test.cdb",D2),
     io:format("Store created ~n", []),
-    KVP = lists:sort(dump("../test/from_dict_test.cdb")),
+    KVP = lists:sort(dump("test/test_area/from_dict_test.cdb")),
     D3 = lists:sort(dict:to_list(D2)),
     io:format("KVP is ~w~n", [KVP]),
     io:format("D3 is ~w~n", [D3]),
     ?assertMatch(KVP, D3),
-    ok = file:delete("../test/from_dict_test.cdb").
+    ok = file:delete("test/test_area/from_dict_test.cdb").
 
 to_dict_test() ->
     D = dict:new(),
     D1 = dict:store("a","b",D),
     D2 = dict:store("c","d",D1),
-    ok = from_dict("../test/from_dict_test1.cdb",D2),
-    Dict = to_dict("../test/from_dict_test1.cdb"),
+    ok = from_dict("test/test_area/from_dict_test1.cdb",D2),
+    Dict = to_dict("test/test_area/from_dict_test1.cdb"),
     D3 = lists:sort(dict:to_list(D2)),
     D4 = lists:sort(dict:to_list(Dict)),
     ?assertMatch(D4,D3),
-    ok = file:delete("../test/from_dict_test1.cdb").
+    ok = file:delete("test/test_area/from_dict_test1.cdb").
 
 crccheck_emptyvalue_test() ->
     ?assertMatch(false, crccheck(<<>>, <<"Key">>)).    
@@ -2094,32 +2094,42 @@ activewrite_singlewrite_test() ->
     Value = "some text as new value",
     InitialD = dict:new(),
     InitialD1 = dict:store("0001", "Initial value", InitialD),
-    ok = from_dict("../test/test_mem.cdb", InitialD1),
+    ok = from_dict("test/test_area/test_mem.cdb", InitialD1),
     io:format("New db file created ~n", []),
-    {LastPosition, KeyDict, _} = open_active_file("../test/test_mem.cdb"),
+    {LastPosition, KeyDict, _} =
+        open_active_file("test/test_area/test_mem.cdb"),
     io:format("File opened as new active file " 
                     "with LastPosition=~w ~n", [LastPosition]),
-    {_, _, UpdKeyDict} = put("../test/test_mem.cdb",
+    {_, _, UpdKeyDict} = put("test/test_area/test_mem.cdb",
                                 Key, Value,
                                 {LastPosition, KeyDict}),
     io:format("New key and value added to active file ~n", []),
     ?assertMatch({Key, Value},
-                    get_mem(Key, "../test/test_mem.cdb", UpdKeyDict, false)),
+                    get_mem(Key,
+                            "test/test_area/test_mem.cdb",
+                            UpdKeyDict,
+                            false)),
     ?assertMatch(probably,
-                    get_mem(Key, "../test/test_mem.cdb", UpdKeyDict,
-                                false, loose_presence)),
+                    get_mem(Key,
+                            "test/test_area/test_mem.cdb",
+                            UpdKeyDict,
+                            false,
+                            loose_presence)),
     ?assertMatch(missing,
-                    get_mem("not_present", "../test/test_mem.cdb", UpdKeyDict,
-                                false, loose_presence)),
-    ok = file:delete("../test/test_mem.cdb").
+                    get_mem("not_present",
+                            "test/test_area/test_mem.cdb",
+                            UpdKeyDict,
+                            false,
+                            loose_presence)),
+    ok = file:delete("test/test_area/test_mem.cdb").
 
 search_hash_table_findinslot_test() ->
     Key1 = "key1", % this is in slot 3 if count is 8
     D = dict:from_list([{Key1, "value1"}, {"K2", "V2"}, {"K3", "V3"}, 
       {"K4", "V4"}, {"K5", "V5"}, {"K6", "V6"}, {"K7", "V7"}, 
       {"K8", "V8"}]),
-    ok = from_dict("../test/hashtable1_test.cdb",D),
-    {ok, Handle} = file:open("../test/hashtable1_test.cdb",
+    ok = from_dict("test/test_area/hashtable1_test.cdb",D),
+    {ok, Handle} = file:open("test/test_area/hashtable1_test.cdb",
                                 [binary, raw, read, write]),
     Hash = hash(Key1),
     Index = hash_to_index(Hash),
@@ -2158,13 +2168,13 @@ search_hash_table_findinslot_test() ->
                         RBin),
     ok = file:close(Handle),
     io:format("Find key following change to hash table~n"),
-    ?assertMatch(missing, get("../test/hashtable1_test.cdb", Key1, false)),
-    ok = file:delete("../test/hashtable1_test.cdb").
+    ?assertMatch(missing, get("test/test_area/hashtable1_test.cdb", Key1, false)),
+    ok = file:delete("test/test_area/hashtable1_test.cdb").
 
 newactivefile_test() ->
-    {LastPosition, _, _} = open_active_file("../test/activefile_test.cdb"),
+    {LastPosition, _, _} = open_active_file("test/test_area/activefile_test.cdb"),
     ?assertMatch(256 * ?DWORD_SIZE, LastPosition),
-    ok = file:delete("../test/activefile_test.cdb").
+    ok = file:delete("test/test_area/activefile_test.cdb").
 
 emptyvalue_fromdict_test() ->
     D = dict:new(),
@@ -2172,31 +2182,31 @@ emptyvalue_fromdict_test() ->
     D2 = dict:store("K2", "", D1),
     D3 = dict:store("K3", "V3", D2),
     D4 = dict:store("K4", "", D3),
-    ok = from_dict("../test/from_dict_test_ev.cdb",D4),
+    ok = from_dict("test/test_area/from_dict_test_ev.cdb",D4),
     io:format("Store created ~n", []),
-    KVP = lists:sort(dump("../test/from_dict_test_ev.cdb")),
+    KVP = lists:sort(dump("test/test_area/from_dict_test_ev.cdb")),
     D_Result = lists:sort(dict:to_list(D4)),
     io:format("KVP is ~w~n", [KVP]),
     io:format("D_Result is ~w~n", [D_Result]),
     ?assertMatch(KVP, D_Result),
-    ok = file:delete("../test/from_dict_test_ev.cdb").
+    ok = file:delete("test/test_area/from_dict_test_ev.cdb").
 
 
 empty_roll_test() ->
-    file:delete("../test/empty_roll.cdb"),
-    file:delete("../test/empty_roll.pnd"),
-    {ok, P1} = cdb_open_writer("../test/empty_roll.pnd",
+    file:delete("test/test_area/empty_roll.cdb"),
+    file:delete("test/test_area/empty_roll.pnd"),
+    {ok, P1} = cdb_open_writer("test/test_area/empty_roll.pnd",
                                 #cdb_options{binary_mode=true}),
     ok = cdb_roll(P1),
     true = finished_rolling(P1),
-    {ok, P2} = cdb_open_reader("../test/empty_roll.cdb", 
+    {ok, P2} = cdb_open_reader("test/test_area/empty_roll.cdb", 
                                 #cdb_options{binary_mode=true}),
     ok = cdb_close(P2),
-    ok = file:delete("../test/empty_roll.cdb").
+    ok = file:delete("test/test_area/empty_roll.cdb").
 
 find_lastkey_test() ->
-    file:delete("../test/lastkey.pnd"),
-    {ok, P1} = cdb_open_writer("../test/lastkey.pnd",
+    file:delete("test/test_area/lastkey.pnd"),
+    {ok, P1} = cdb_open_writer("test/test_area/lastkey.pnd",
                                 #cdb_options{binary_mode=false}),
     ok = cdb_put(P1, "Key1", "Value1"),
     ok = cdb_put(P1, "Key3", "Value3"),
@@ -2205,7 +2215,7 @@ find_lastkey_test() ->
     ?assertMatch("Key1", cdb_firstkey(P1)),
     probably = cdb_keycheck(P1, "Key2"),
     ok = cdb_close(P1),
-    {ok, P2} = cdb_open_writer("../test/lastkey.pnd",
+    {ok, P2} = cdb_open_writer("test/test_area/lastkey.pnd",
                                 #cdb_options{binary_mode=false}),
     ?assertMatch("Key2", cdb_lastkey(P2)),
     probably = cdb_keycheck(P2, "Key2"),
@@ -2216,10 +2226,10 @@ find_lastkey_test() ->
     {ok, P4} = cdb_open_reader(F2),
     ?assertMatch("Key2", cdb_lastkey(P4)),
     ok = cdb_close(P4),
-    ok = file:delete("../test/lastkey.cdb").
+    ok = file:delete("test/test_area/lastkey.cdb").
 
 get_keys_byposition_simple_test() ->
-    {ok, P1} = cdb_open_writer("../test/poskey.pnd",
+    {ok, P1} = cdb_open_writer("test/test_area/poskey.pnd",
                                 #cdb_options{binary_mode=false}),
     ok = cdb_put(P1, "Key1", "Value1"),
     ok = cdb_put(P1, "Key3", "Value3"),
@@ -2263,7 +2273,7 @@ get_keys_byposition_manykeys_test_() ->
 
 get_keys_byposition_manykeys_test_to() ->
     KeyCount = ?KEYCOUNT,
-    {ok, P1} = cdb_open_writer("../test/poskeymany.pnd",
+    {ok, P1} = cdb_open_writer("test/test_area/poskeymany.pnd",
                                 #cdb_options{binary_mode=false}),
     KVList = generate_sequentialkeys(KeyCount, []),
     lists:foreach(fun({K, V}) -> cdb_put(P1, K, V) end, KVList),
@@ -2310,7 +2320,7 @@ get_keys_byposition_manykeys_test_to() ->
 
 
 nokeys_test() ->
-    {ok, P1} = cdb_open_writer("../test/nohash_emptyfile.pnd",
+    {ok, P1} = cdb_open_writer("test/test_area/nohash_emptyfile.pnd",
                                 #cdb_options{binary_mode=false}),
     {ok, F2} = cdb_complete(P1),
     {ok, P2} = cdb_open_reader(F2, #cdb_options{binary_mode=false}),
@@ -2323,7 +2333,7 @@ nokeys_test() ->
 
 mput_test() ->
     KeyCount = 1024,
-    {ok, P1} = cdb_open_writer("../test/nohash_keysinfile.pnd",
+    {ok, P1} = cdb_open_writer("test/test_area/nohash_keysinfile.pnd",
                                 #cdb_options{binary_mode=false}),
     KVList = generate_sequentialkeys(KeyCount, []),
     ok = cdb_mput(P1, KVList),
@@ -2343,7 +2353,7 @@ mput_test() ->
     ok = file:delete(F2).
 
 state_test() ->
-    {ok, P1} = cdb_open_writer("../test/state_test.pnd",
+    {ok, P1} = cdb_open_writer("test/test_area/state_test.pnd",
                                 #cdb_options{binary_mode=false}),
     KVList = generate_sequentialkeys(1000, []),
     ok = cdb_mput(P1, KVList),
@@ -2362,7 +2372,7 @@ state_test() ->
 
 
 hashclash_test() ->
-    {ok, P1} = cdb_open_writer("../test/hashclash_test.pnd",
+    {ok, P1} = cdb_open_writer("test/test_area/hashclash_test.pnd",
                                 #cdb_options{binary_mode=false}),
     Key1 = "Key4184465780",
     Key99 = "Key4254669179",
@@ -2405,8 +2415,8 @@ hashclash_test() ->
     ok = cdb_close(P2).
 
 corruptfile_test() ->
-    file:delete("../test/corrupt_test.pnd"),
-    {ok, P1} = cdb_open_writer("../test/corrupt_test.pnd",
+    file:delete("test/test_area/corrupt_test.pnd"),
+    {ok, P1} = cdb_open_writer("test/test_area/corrupt_test.pnd",
                                 #cdb_options{binary_mode=false}),
     KVList = generate_sequentialkeys(100, []),
     ok = cdb_mput(P1, []), % Not relevant to this test, but needs testing
@@ -2417,15 +2427,15 @@ corruptfile_test() ->
     ok = cdb_close(P1),
     lists:foreach(fun(Offset) -> corrupt_testfile_at_offset(Offset) end,
                     lists:seq(1, 40)),
-    ok = file:delete("../test/corrupt_test.pnd").
+    ok = file:delete("test/test_area/corrupt_test.pnd").
 
 corrupt_testfile_at_offset(Offset) ->
-    {ok, F1} = file:open("../test/corrupt_test.pnd", ?WRITE_OPS),
+    {ok, F1} = file:open("test/test_area/corrupt_test.pnd", ?WRITE_OPS),
     {ok, EofPos} = file:position(F1, eof),
     file:position(F1, EofPos - Offset),
     ok = file:truncate(F1),
     ok = file:close(F1),
-    {ok, P2} = cdb_open_writer("../test/corrupt_test.pnd",
+    {ok, P2} = cdb_open_writer("test/test_area/corrupt_test.pnd",
                                 #cdb_options{binary_mode=false}),
     ?assertMatch(probably, cdb_keycheck(P2, "Key1")),
     ?assertMatch({"Key1", "Value1"}, cdb_get(P2, "Key1")),
@@ -2435,8 +2445,8 @@ corrupt_testfile_at_offset(Offset) ->
     ok = cdb_close(P2).
 
 crc_corrupt_writer_test() ->
-    file:delete("../test/corruptwrt_test.pnd"),
-    {ok, P1} = cdb_open_writer("../test/corruptwrt_test.pnd",
+    file:delete("test/test_area/corruptwrt_test.pnd"),
+    {ok, P1} = cdb_open_writer("test/test_area/corruptwrt_test.pnd",
                                 #cdb_options{binary_mode=false}),
     KVList = generate_sequentialkeys(100, []),
     ok = cdb_mput(P1, KVList),
@@ -2444,12 +2454,12 @@ crc_corrupt_writer_test() ->
     ?assertMatch({"Key1", "Value1"}, cdb_get(P1, "Key1")),
     ?assertMatch({"Key100", "Value100"}, cdb_get(P1, "Key100")),
     ok = cdb_close(P1),
-    {ok, Handle} = file:open("../test/corruptwrt_test.pnd", ?WRITE_OPS),
+    {ok, Handle} = file:open("test/test_area/corruptwrt_test.pnd", ?WRITE_OPS),
     {ok, EofPos} = file:position(Handle, eof),
     % zero the last byte of the last value
     ok = file:pwrite(Handle, EofPos - 5, <<0:8/integer>>),
     ok = file:close(Handle),
-    {ok, P2} = cdb_open_writer("../test/corruptwrt_test.pnd",
+    {ok, P2} = cdb_open_writer("test/test_area/corruptwrt_test.pnd",
                                 #cdb_options{binary_mode=false}),
     ?assertMatch(probably, cdb_keycheck(P2, "Key1")),
     ?assertMatch({"Key1", "Value1"}, cdb_get(P2, "Key1")),
@@ -2470,7 +2480,7 @@ safe_read_test() ->
     ValueL= byte_size(ValToWrite),
     FlippedValL = endian_flip(ValueL),
     
-    TestFN = "../test/saferead.pnd",
+    TestFN = "test/test_area/saferead.pnd",
     BinToWrite = 
         <<FlippedKeyL:32/integer, 
             FlippedValL:32/integer, 
@@ -2542,7 +2552,7 @@ safe_read_test() ->
 
 
 get_positions_corruption_test() ->
-    F1 = "../test/corruptpos_test.pnd",
+    F1 = "test/test_area/corruptpos_test.pnd",
     file:delete(F1),
     {ok, P1} = cdb_open_writer(F1, #cdb_options{binary_mode=false}),
     KVList = generate_sequentialkeys(1000, []),
@@ -2576,7 +2586,7 @@ get_positions_corruption_test() ->
     file:delete(F2).
     
 badly_written_test() ->
-    F1 = "../test/badfirstwrite_test.pnd",
+    F1 = "test/test_area/badfirstwrite_test.pnd",
     file:delete(F1),
     {ok, Handle} = file:open(F1, ?WRITE_OPS),
     ok = file:pwrite(Handle, 256 * ?DWORD_SIZE, <<1:8/integer>>),

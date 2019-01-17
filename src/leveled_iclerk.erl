@@ -843,7 +843,7 @@ simple_score_test() ->
     ?assertMatch(-60.0, score_run(Run3, {4, 70.0, 40.0})).
 
 file_gc_test() ->
-    State = #state{waste_path="test/waste/",
+    State = #state{waste_path="test/test_area/waste/",
                     waste_retention_period=1},
     ok = filelib:ensure_dir(State#state.waste_path),
     file:write_file(State#state.waste_path ++ "1.cdb", term_to_binary("Hello")),
@@ -931,7 +931,8 @@ fetch_testcdb(RP) ->
     leveled_cdb:cdb_open_reader(FN2, #cdb_options{binary_mode=true}).
 
 check_single_file_test() ->
-    RP = "../test/journal",
+    RP = "test/test_area/",
+    ok = filelib:ensure_dir(leveled_inker:filepath(RP, journal_dir)),
     {ok, CDB} = fetch_testcdb(RP),
     LedgerSrv1 = [{8, {o, "Bucket", "Key1", null}},
                     {2, {o, "Bucket", "Key2", null}},
@@ -957,7 +958,8 @@ check_single_file_test() ->
 
 
 compact_single_file_setup() ->
-    RP = "../test/journal",
+    RP = "test/test_area/",
+    ok = filelib:ensure_dir(leveled_inker:filepath(RP, journal_dir)),
     {ok, CDB} = fetch_testcdb(RP),
     Candidate = #candidate{journal = CDB,
                             low_sqn = 1,
@@ -1055,7 +1057,8 @@ compact_single_file_retain_test() ->
     ok = leveled_cdb:cdb_destroy(CDB).
 
 compact_empty_file_test() ->
-    RP = "../test/journal",
+    RP = "test/test_area/",
+    ok = filelib:ensure_dir(leveled_inker:filepath(RP, journal_dir)),
     FN1 = leveled_inker:filepath(RP, 1, new_journal),
     CDBopts = #cdb_options{binary_mode=true},
     {ok, CDB1} = leveled_cdb:cdb_open_writer(FN1, CDBopts),
@@ -1083,8 +1086,8 @@ compact_singlefile_totwosmallfiles_test_() ->
     {timeout, 60, fun compact_singlefile_totwosmallfiles_testto/0}.
 
 compact_singlefile_totwosmallfiles_testto() ->
-    RP = "../test/journal",
-    CP = "../test/journal/journal_file/post_compact/",
+    RP = "test/test_area/",
+    CP = "test/test_area/journal/journal_file/post_compact/",
     ok = filelib:ensure_dir(CP),
     FN1 = leveled_inker:filepath(RP, 1, new_journal),
     CDBoptsLarge = #cdb_options{binary_mode=true, max_size=30000000},

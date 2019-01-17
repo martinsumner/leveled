@@ -318,9 +318,10 @@ generate_randomkeys(Count, Acc, BucketLow, BRange) ->
 
 
 merge_file_test() ->
+    ok = filelib:ensure_dir("test/test_area/ledger_files/"),
     KL1_L1 = lists:sort(generate_randomkeys(8000, 0, 1000)),
     {ok, PidL1_1, _, _} = 
-        leveled_sst:sst_new("../test/",
+        leveled_sst:sst_new("test/test_area/ledger_files/",
                             "KL1_L1.sst",
                             1,
                             KL1_L1,
@@ -328,7 +329,7 @@ merge_file_test() ->
                             #sst_options{}),
     KL1_L2 = lists:sort(generate_randomkeys(8000, 0, 250)),
     {ok, PidL2_1, _, _} = 
-        leveled_sst:sst_new("../test/",
+        leveled_sst:sst_new("test/test_area/ledger_files/",
                             "KL1_L2.sst",
                             2,
                             KL1_L2,
@@ -336,7 +337,7 @@ merge_file_test() ->
                             #sst_options{}),
     KL2_L2 = lists:sort(generate_randomkeys(8000, 250, 250)),
     {ok, PidL2_2, _, _} = 
-        leveled_sst:sst_new("../test/",
+        leveled_sst:sst_new("test/test_area/ledger_files/",
                                 "KL2_L2.sst",
                                 2,
                                 KL2_L2,
@@ -344,7 +345,7 @@ merge_file_test() ->
                                 #sst_options{press_method = lz4}),
     KL3_L2 = lists:sort(generate_randomkeys(8000, 500, 250)),
     {ok, PidL2_3, _, _} = 
-        leveled_sst:sst_new("../test/",
+        leveled_sst:sst_new("test/test_area/ledger_files/",
                                 "KL3_L2.sst",
                                 2,
                                 KL3_L2,
@@ -352,13 +353,12 @@ merge_file_test() ->
                                 #sst_options{press_method = lz4}),
     KL4_L2 = lists:sort(generate_randomkeys(8000, 750, 250)),
     {ok, PidL2_4, _, _} = 
-        leveled_sst:sst_new("../test/",
+        leveled_sst:sst_new("test/test_area/ledger_files/",
                                 "KL4_L2.sst",
                                 2,
                                 KL4_L2,
                                 999999,
                                 #sst_options{press_method = lz4}),
-    
     E1 = #manifest_entry{owner = PidL1_1,
                             filename = "./KL1_L1.sst",
                             end_key = lists:last(KL1_L1),
@@ -386,11 +386,12 @@ merge_file_test() ->
     Man3 = leveled_pmanifest:insert_manifest_entry(Man2, 1, 2, E4),
     Man4 = leveled_pmanifest:insert_manifest_entry(Man3, 1, 2, E5),
     Man5 = leveled_pmanifest:insert_manifest_entry(Man4, 2, 1, E1),
-    
     PointerList = lists:map(fun(ME) -> {next, ME, all} end,
                             [E2, E3, E4, E5]),
     {Man6, _Dels} = 
-        perform_merge(Man5, E1, PointerList, 1, "../test", 3, #sst_options{}),
+        perform_merge(Man5, E1, PointerList, 1,
+                        "test/test_area/ledger_files/",
+                        3, #sst_options{}),
     
     ?assertMatch(3, leveled_pmanifest:get_manifest_sqn(Man6)).
 
