@@ -1946,15 +1946,6 @@ add_missing_hash({K, {SQN, ST, MD}}) ->
     {K, {SQN, ST, leveled_codec:segment_hash(K), MD}}.
 
 
-clean_dir_test() ->
-    % Pointless gesture to test coverage
-    RootPath = "../test/ledger",
-    ok = filelib:ensure_dir(RootPath),
-    ?assertMatch(ok, file:write_file(RootPath ++ "/test.bob", "hello")),
-    ok = clean_subdir(RootPath ++ "/test.bob"),
-    ok = file:delete(RootPath ++ "/test.bob").
-
-
 archive_files_test() ->
     RootPath = "../test/ledger",
     SSTPath = sst_rootpath(RootPath),
