@@ -847,7 +847,7 @@ start_from_file(InkOpts) ->
 %% @doc
 %% Shutdown any snapshots before closing the store
 shutdown_snapshots(Snapshots) ->
-    lists:foreach(fun({Snap, _SQN}) -> ok = ink_close(Snap) end, Snapshots).
+    lists:foreach(fun({Snap, _TS, _SQN}) -> ok = ink_close(Snap) end, Snapshots).
 
 -spec shutdown_manifest(leveled_imanifest:manifest()) -> ok.
 %% @doc
