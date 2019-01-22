@@ -62,6 +62,7 @@
         book_headonly/4,
         book_snapshot/4,
         book_compactjournal/2,
+        book_eqccompactjournal/2,
         book_islastcompactionpending/1,
         book_trimjournal/1,
         book_hotbackup/1,
@@ -100,8 +101,8 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(CACHE_SIZE, 2500).
--define(MIN_CACHE_SIZE, 100).
--define(MIN_PCL_CACHE_SIZE, 400).
+-define(MIN_CACHE_SIZE, 1).
+-define(MIN_PCL_CACHE_SIZE, 4).
 -define(MAX_PCL_CACHE_SIZE, 28000). 
     % This is less than actual max - but COIN_SIDECOUNT
 -define(CACHE_SIZE_JITTER, 25).
@@ -1005,6 +1006,7 @@ book_snapshot(Pid, SnapType, Query, LongRunning) ->
 
 
 -spec book_compactjournal(pid(), integer()) -> ok.
+-spec book_eqccompactjournal(pid(), integer()) -> {ok, pid()}.
 -spec book_islastcompactionpending(pid()) -> boolean().
 -spec book_trimjournal(pid()) -> ok.
 
@@ -1013,8 +1015,12 @@ book_snapshot(Pid, SnapType, Query, LongRunning) ->
 %% the scheduling of Journla compaction is called externally, so it is assumed
 %% in Riak it will be triggered by a vnode callback.
 
-book_compactjournal(Pid, Timeout) ->
+book_eqccompactjournal(Pid, Timeout) ->
     gen_server:call(Pid, {compact_journal, Timeout}, infinity).
+
+book_compactjournal(Pid, Timeout) ->
+    {ok, _P} = gen_server:call(Pid, {compact_journal, Timeout}, infinity),
+    ok.
 
 %% @doc Check on progress of the last compaction
 
@@ -1371,10 +1377,10 @@ handle_call({return_runner, QueryType}, _From, State) ->
                                 fold_countdown = CountDown}};
 handle_call({compact_journal, Timeout}, _From, State)
                                         when State#state.head_only == false ->
-    ok = leveled_inker:ink_compactjournal(State#state.inker,
+    R = leveled_inker:ink_compactjournal(State#state.inker,
                                           self(),
                                           Timeout),
-    {reply, ok, State};
+    {reply, R, State};
 handle_call(confirm_compact, _From, State)
                                         when State#state.head_only == false ->
     {reply, leveled_inker:ink_compactionpending(State#state.inker), State};

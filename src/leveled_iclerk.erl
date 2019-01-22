@@ -182,6 +182,7 @@ clerk_hashtablecalc(HashTree, StartPos, CDBpid) ->
 %% @doc
 %% Stop the clerk
 clerk_stop(Pid) ->
+    unlink(Pid),
     gen_server:cast(Pid, stop).
 
 -spec clerk_loglevel(pid(), leveled_log:log_level()) -> ok.
