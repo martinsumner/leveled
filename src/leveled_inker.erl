@@ -142,7 +142,7 @@
                 journal_sqn = 0 :: integer(),
                 active_journaldb :: pid() | undefined,
                 pending_removals = [] :: list(),
-                registered_snapshots = [] :: list(),
+                registered_snapshots = [] :: list(registered_snapshot()),
                 root_path :: string() | undefined,
                 cdb_options :: #cdb_options{} | undefined,
                 clerk :: pid() | undefined,
@@ -157,7 +157,7 @@
 
 -type inker_options() :: #inker_options{}.
 -type ink_state() :: #state{}.
-
+-type registered_snapshot() :: {pid(), os:timestamp(), integer()}.
 
 %%%============================================================================
 %%% API
@@ -843,11 +843,12 @@ start_from_file(InkOpts) ->
                     clerk = Clerk}}.
 
 
--spec shutdown_snapshots(list(tuple())) -> ok.
+-spec shutdown_snapshots(list(registered_snapshot())) -> ok.
 %% @doc
 %% Shutdown any snapshots before closing the store
 shutdown_snapshots(Snapshots) ->
-    lists:foreach(fun({Snap, _SQN}) -> ok = ink_close(Snap) end, Snapshots).
+    lists:foreach(fun({Snap, _TS, _SQN}) -> ok = ink_close(Snap) end,
+                    Snapshots).
 
 -spec shutdown_manifest(leveled_imanifest:manifest()) -> ok.
 %% @doc
