@@ -1004,7 +1004,7 @@ book_snapshot(Pid, SnapType, Query, LongRunning) ->
     gen_server:call(Pid, {snapshot, SnapType, Query, LongRunning}, infinity).
 
 
--spec book_compactjournal(pid(), integer()) -> ok.
+-spec book_compactjournal(pid(), integer()) -> ok|busy.
 -spec book_islastcompactionpending(pid()) -> boolean().
 -spec book_trimjournal(pid()) -> ok.
 
@@ -1371,10 +1371,10 @@ handle_call({return_runner, QueryType}, _From, State) ->
                                 fold_countdown = CountDown}};
 handle_call({compact_journal, Timeout}, _From, State)
                                         when State#state.head_only == false ->
-    ok = leveled_inker:ink_compactjournal(State#state.inker,
+    R = leveled_inker:ink_compactjournal(State#state.inker,
                                           self(),
                                           Timeout),
-    {reply, ok, State};
+    {reply, R, State};
 handle_call(confirm_compact, _From, State)
                                         when State#state.head_only == false ->
     {reply, leveled_inker:ink_compactionpending(State#state.inker), State};

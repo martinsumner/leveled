@@ -348,7 +348,7 @@ ink_loadpcl(Pid, MinSQN, FilterFun, Penciller) ->
                         as_ink},
                     infinity).
 
--spec ink_compactjournal(pid(), pid(), integer()) -> ok.
+-spec ink_compactjournal(pid(), pid(), integer()) -> ok|busy.
 %% @doc
 %% Trigger a compaction event.  the compaction event will use a sqn check
 %% against the Ledger to see if a value can be compacted - if the penciller
@@ -605,14 +605,19 @@ handle_call({compact,
                 FilterFun,
                 Timeout},
                     _From, State) ->
-    leveled_iclerk:clerk_compact(State#state.clerk,
-                                    Checker,
-                                    InitiateFun,
-                                    CloseFun,
-                                    FilterFun,
-                                    self(),
-                                    Timeout),
-    {reply, ok, State#state{compaction_pending=true}};
+    case State#state.compaction_pending of
+        true ->
+            {reply, busy, State};
+        false ->
+            leveled_iclerk:clerk_compact(State#state.clerk,
+                                            Checker,
+                                            InitiateFun,
+                                            CloseFun,
+                                            FilterFun,
+                                            self(),
+                                            Timeout),
+            {reply, ok, State#state{compaction_pending=true}}
+    end;
 handle_call(compaction_complete, _From, State) ->
     {reply, ok, State#state{compaction_pending=false}};
 handle_call(compaction_pending, _From, State) ->
