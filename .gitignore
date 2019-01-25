@@ -5,3 +5,4 @@
 .DS_Store
 rebar.lock
 test/test_area/*
+leveled_data/*
