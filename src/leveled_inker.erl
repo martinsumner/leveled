@@ -699,14 +699,20 @@ handle_call(doom, _From, State) ->
 
 
 handle_cast({clerk_complete, ManifestSnippet, FilesToDelete}, State) ->
+    CDBOpts = State#state.cdb_options,
     DropFun =
         fun(E, Acc) ->
             leveled_imanifest:remove_entry(Acc, E)
         end,
     Man0 = lists:foldl(DropFun, State#state.manifest, FilesToDelete),                    
     AddFun =
-        fun(E, Acc) ->
-            leveled_imanifest:add_entry(Acc, E, false)
+        fun(ManEntry, Acc) ->
+            {LowSQN, FN, _, LK_RO} = ManEntry,
+                % At this stage the FN has a .cdb extension, which will be
+                % stripped during add_entry - so need to add the .cdb here
+            {ok, Pid} = leveled_cdb:cdb_reopen_reader(FN, LK_RO, CDBOpts),
+            UpdEntry = {LowSQN, FN, Pid, LK_RO},
+            leveled_imanifest:add_entry(Acc, UpdEntry, false)
         end,
     Man1 = lists:foldl(AddFun, Man0, ManifestSnippet),
     NewManifestSQN = State#state.manifest_sqn + 1,
