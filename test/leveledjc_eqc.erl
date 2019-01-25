@@ -93,8 +93,8 @@ init_backend_adapt(S, [Tag, Options, Name]) ->
 
 %% @doc init_backend - The actual operation
 %% Start the database and read data from disk
-init_backend(_Tag, Options, Name) ->
-    Options0 = proplists:delete(log_level, Options),
+init_backend(_Tag, Options0, Name) ->
+    % Options0 = proplists:delete(log_level, Options),
     case leveled_bookie:book_start(Options0) of
         {ok, Bookie} ->
             unlink(Bookie),

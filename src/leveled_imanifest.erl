@@ -57,6 +57,7 @@ generate_entry(Journal) ->
             ok = leveled_cdb:cdb_close(PidR),
             [{StartSQN, NewFN, PidR, LastKey}];
         empty ->
+            ok = leveled_cdb:cdb_close(PidR),
             leveled_log:log("IC013", [NewFN]),
             []
     end.
