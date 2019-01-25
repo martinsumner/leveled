@@ -10,7 +10,8 @@
             recovr_strategy/1,
             aae_missingjournal/1,
             aae_bustedjournal/1,
-            journal_compaction_bustedjournal/1
+            journal_compaction_bustedjournal/1,
+            close_duringcompaction/1
             ]).
 
 all() -> [
@@ -21,9 +22,28 @@ all() -> [
             recovr_strategy,
             aae_missingjournal,
             aae_bustedjournal,
-            journal_compaction_bustedjournal
+            journal_compaction_bustedjournal,
+            close_duringcompaction
             ].
 
+
+close_duringcompaction(_Config) ->
+    % Prompt a compaction, and close immedately - confirm that the close 
+    % happens without error.
+    % This should trigger the iclerk to receive a close during the file
+    % scoring stage
+    RootPath = testutil:reset_filestructure(),
+    BookOpts = [{root_path, RootPath},
+                    {cache_size, 2000},
+                    {max_journalsize, 2000000},
+                    {sync_strategy, testutil:sync_strategy()}],
+    {ok, Spcl1, LastV1} = rotating_object_check(BookOpts, "Bucket1", 6400),
+    {ok, Book1} = leveled_bookie:book_start(BookOpts),
+    ok = leveled_bookie:book_compactjournal(Book1, 30000),
+    ok = leveled_bookie:book_close(Book1),
+    {ok, Book2} = leveled_bookie:book_start(BookOpts),
+    ok = testutil:check_indexed_objects(Book2, "Bucket1", Spcl1, LastV1),
+    ok = leveled_bookie:book_close(Book2).
 
 recovery_with_samekeyupdates(_Config) ->
     % Setup to prove https://github.com/martinsumner/leveled/issues/229
