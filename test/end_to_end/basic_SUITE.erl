@@ -300,6 +300,7 @@ journal_compaction_tester(Restart, WRP) ->
                     {sync_strategy, testutil:sync_strategy()}],
     {ok, Bookie3} = leveled_bookie:book_start(StartOpts2),
     ok = leveled_bookie:book_compactjournal(Bookie3, 30000),
+    busy = leveled_bookie:book_compactjournal(Bookie3, 30000),
     testutil:wait_for_compaction(Bookie3),
     ok = leveled_bookie:book_close(Bookie3),
     

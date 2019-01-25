@@ -724,6 +724,9 @@ basic_headonly_test(ObjectCount, RemoveCount, HeadOnly) ->
     
     {ok, FinalFNs} = file:list_dir(JFP),
 
+    ok = leveled_bookie:book_trimjournal(Bookie1),
+    % CCheck a second trim is still OK
+
     [{add, SegmentID0, Bucket0, Key0, Hash0}|_Rest] = ObjectSpecL,
     case HeadOnly of 
         with_lookup ->

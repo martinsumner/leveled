@@ -1005,7 +1005,7 @@ book_snapshot(Pid, SnapType, Query, LongRunning) ->
     gen_server:call(Pid, {snapshot, SnapType, Query, LongRunning}, infinity).
 
 
--spec book_compactjournal(pid(), integer()) -> ok.
+-spec book_compactjournal(pid(), integer()) -> ok|busy.
 -spec book_eqccompactjournal(pid(), integer()) -> {ok, pid()}.
 -spec book_islastcompactionpending(pid()) -> boolean().
 -spec book_trimjournal(pid()) -> ok.
@@ -1016,11 +1016,12 @@ book_snapshot(Pid, SnapType, Query, LongRunning) ->
 %% in Riak it will be triggered by a vnode callback.
 
 book_eqccompactjournal(Pid, Timeout) ->
-    gen_server:call(Pid, {compact_journal, Timeout}, infinity).
+    {_R, P} = gen_server:call(Pid, {compact_journal, Timeout}, infinity),
+    {ok, P}.
 
 book_compactjournal(Pid, Timeout) ->
-    {ok, _P} = gen_server:call(Pid, {compact_journal, Timeout}, infinity),
-    ok.
+    {R, _P} = gen_server:call(Pid, {compact_journal, Timeout}, infinity),
+    R.
 
 %% @doc Check on progress of the last compaction
 

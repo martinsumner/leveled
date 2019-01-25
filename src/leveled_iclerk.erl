@@ -82,9 +82,10 @@
         code_change/3]).
 
 -export([clerk_new/1,
-        clerk_compact/7,
+        clerk_compact/6,
         clerk_hashtablecalc/3,
         clerk_trim/3,
+        clerk_promptdeletions/3,
         clerk_stop/1,
         clerk_loglevel/2,
         clerk_addlogs/2,
@@ -148,25 +149,30 @@ clerk_new(InkerClerkOpts) ->
 
 -spec clerk_compact(pid(), pid(), 
                     fun(), fun(), fun(),  
-                    pid(), integer()) -> ok.
+                    list()) -> ok.
 %% @doc
 %% Trigger a compaction for this clerk if the threshold of data recovery has 
 %% been met
-clerk_compact(Pid, Checker, InitiateFun, CloseFun, FilterFun, Inker, TimeO) ->
+clerk_compact(Pid, Checker, InitiateFun, CloseFun, FilterFun, Manifest) ->
     gen_server:cast(Pid,
                     {compact,
                     Checker,
                     InitiateFun,
                     CloseFun,
                     FilterFun,
-                    Inker,
-                    TimeO}).
+                    Manifest}).
 
--spec clerk_trim(pid(), pid(), integer()) -> ok.
+-spec clerk_trim(pid(), integer(), list()) -> ok.
 %% @doc
 %% Trim the Inker back to the persisted SQN
-clerk_trim(Pid, Inker, PersistedSQN) ->
-    gen_server:cast(Pid, {trim, Inker, PersistedSQN}).
+clerk_trim(Pid, PersistedSQN, ManifestAsList) ->
+    gen_server:cast(Pid, {trim, PersistedSQN, ManifestAsList}).
+
+-spec clerk_promptdeletions(pid(), pos_integer(), list()) -> ok. 
+%% @doc
+%%
+clerk_promptdeletions(Pid, ManifestSQN, DeletedFiles) ->
+    gen_server:cast(Pid, {prompt_deletions, ManifestSQN, DeletedFiles}).
 
 -spec clerk_hashtablecalc(ets:tid(), integer(), pid()) -> ok.
 %% @doc
@@ -182,8 +188,7 @@ clerk_hashtablecalc(HashTree, StartPos, CDBpid) ->
 %% @doc
 %% Stop the clerk
 clerk_stop(Pid) ->
-    unlink(Pid),
-    gen_server:cast(Pid, stop).
+    gen_server:call(Pid, stop, 60000).
 
 -spec clerk_loglevel(pid(), leveled_log:log_level()) -> ok.
 %% @doc
@@ -248,10 +253,10 @@ init([LogOpts, IClerkOpts]) ->
                         compression_method = 
                             IClerkOpts#iclerk_options.compression_method}}.
 
-handle_call(_Msg, _From, State) ->
-    {reply, not_supported, State}.
+handle_call(stop, _From, State) ->
+    {stop, normal, ok, State}.
 
-handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Inker, _TO},
+handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Manifest0},
                 State) ->
     % Empty the waste folder
     clear_waste(State),
@@ -261,7 +266,8 @@ handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Inker, _TO},
     
     % Need to fetch manifest at start rather than have it be passed in
     % Don't want to process a queued call waiting on an old manifest
-    [_Active|Manifest] = leveled_inker:ink_getmanifest(Inker),
+    [_Active|Manifest] = Manifest0,
+    Inker = State#state.inker,
     MaxRunLength = State#state.max_run_length,
     {FilterServer, MaxSQN} = InitiateFun(Checker),
     CDBopts = State#state.cdb_options,
@@ -292,24 +298,29 @@ handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Inker, _TO},
                                             end,
                                         BestRun1),
             leveled_log:log("IC002", [length(FilesToDelete)]),
-            case is_process_alive(Inker) of
-                true ->
-                    update_inker(Inker,
-                                    ManifestSlice,
-                                    FilesToDelete),
-                    ok = CloseFun(FilterServer),
-                    {noreply, State}
-            end;
+            ok = leveled_inker:ink_clerkcomplete(Inker,
+                                                    ManifestSlice,
+                                                    FilesToDelete),
+            ok = CloseFun(FilterServer),
+            {noreply, State};
         false ->
-            ok = leveled_inker:ink_compactioncomplete(Inker),
+            ok = leveled_inker:ink_clerkcomplete(Inker, [], []),
             ok = CloseFun(FilterServer),
             {noreply, State}
     end;
-handle_cast({trim, Inker, PersistedSQN}, State) ->
-    ManifestAsList = leveled_inker:ink_getmanifest(Inker),
+handle_cast({trim, PersistedSQN, ManifestAsList}, State) ->
     FilesToDelete = 
         leveled_imanifest:find_persistedentries(PersistedSQN, ManifestAsList),
-    ok = update_inker(Inker, [], FilesToDelete),
+    leveled_log:log("IC007", []),
+    ok = leveled_inker:ink_clerkcomplete(State#state.inker, [], FilesToDelete),
+    {noreply, State};
+handle_cast({prompt_deletions, ManifestSQN, FilesToDelete}, State) ->
+    lists:foreach(fun({_SQN, _FN, J2D, _LK}) ->
+                        leveled_cdb:cdb_deletepending(J2D,
+                                                        ManifestSQN,
+                                                        State#state.inker)
+                        end,
+                    FilesToDelete),
     {noreply, State};
 handle_cast({hashtable_calc, HashTree, StartPos, CDBpid}, State) ->
     {IndexList, HashTreeBin} = leveled_cdb:hashtable_calc(HashTree, StartPos),
@@ -329,9 +340,7 @@ handle_cast({remove_logs, ForcedLogs}, State) ->
     ok = leveled_log:remove_forcedlogs(ForcedLogs),
     CDBopts = State#state.cdb_options,
     CDBopts0 = CDBopts#cdb_options{log_options = leveled_log:get_opts()},
-    {noreply, State#state{cdb_options = CDBopts0}};
-handle_cast(stop, State) ->
-    {stop, normal, State}.
+    {noreply, State#state{cdb_options = CDBopts0}}.
 
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -613,20 +622,6 @@ sort_run(RunOfFiles) ->
     CompareFun = fun(Cand1, Cand2) ->
                     Cand1#candidate.low_sqn =< Cand2#candidate.low_sqn end,
     lists:sort(CompareFun, RunOfFiles).
-
-update_inker(Inker, ManifestSlice, FilesToDelete) ->
-    {ok, ManSQN} = leveled_inker:ink_updatemanifest(Inker,
-                                                    ManifestSlice,
-                                                    FilesToDelete),
-    ok = leveled_inker:ink_compactioncomplete(Inker),
-    leveled_log:log("IC007", []),
-    lists:foreach(fun({_SQN, _FN, J2D, _LK}) ->
-                        leveled_cdb:cdb_deletepending(J2D,
-                                                        ManSQN,
-                                                        Inker)
-                        end,
-                    FilesToDelete),
-    ok.
 
 compact_files(BestRun, CDBopts, FilterFun, FilterServer, 
                                             MaxSQN, RStrategy, PressMethod) ->
@@ -1148,7 +1143,6 @@ size_score_test() ->
 coverage_cheat_test() ->
     {noreply, _State0} = handle_info(timeout, #state{}),
     {ok, _State1} = code_change(null, #state{}, null),
-    {reply, not_supported, _State2} = handle_call(null, null, #state{}),
     terminate(error, #state{}).    
 
 -endif.
