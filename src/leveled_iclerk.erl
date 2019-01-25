@@ -227,6 +227,7 @@ clerk_scorefilelist(Pid, []) ->
 clerk_scorefilelist(Pid, CandidateList) ->
     gen_server:cast(Pid, {score_filelist, CandidateList}).
 
+
 %%%============================================================================
 %%% gen_server callbacks
 %%%============================================================================
@@ -357,14 +358,14 @@ handle_cast(scoring_complete, State) ->
                                             end,
                                         BestRun1),
             leveled_log:log("IC002", [length(FilesToDelete)]),
+            ok = CloseFun(FilterServer),
             ok = leveled_inker:ink_clerkcomplete(State#state.inker,
                                                     ManifestSlice,
                                                     FilesToDelete),
-            ok = CloseFun(FilterServer),
             {noreply, State#state{scoring_state = undefined}};
         false ->
-            ok = leveled_inker:ink_clerkcomplete(State#state.inker, [], []),
             ok = CloseFun(FilterServer),
+            ok = leveled_inker:ink_clerkcomplete(State#state.inker, [], []),
             {noreply, State#state{scoring_state = undefined}}
     end;
 handle_cast({trim, PersistedSQN, ManifestAsList}, State) ->
@@ -794,8 +795,7 @@ write_values(KVCList, CDBopts, Journal0, ManSlice0, PressMethod) ->
                                                             SQN,
                                                             compact_journal),
                                 leveled_log:log("IC009", [FN]),
-                                leveled_cdb:cdb_open_writer(FN,
-                                                            CDBopts);
+                                leveled_cdb:cdb_open_writer(FN, CDBopts);
                             _ ->
                                 {ok, Journal0}
                         end,
@@ -1018,9 +1018,10 @@ compact_single_file_recovr_test() ->
         LedgerFun1,
         CompactFP,
         CDB} = compact_single_file_setup(),
-    [{LowSQN, FN, PidR, _LastKey}] =
+    CDBOpts = #cdb_options{binary_mode=true},
+    [{LowSQN, FN, _PidOldR, LastKey}] =
         compact_files([Candidate],
-                        #cdb_options{file_path=CompactFP, binary_mode=true},
+                        CDBOpts#cdb_options{file_path=CompactFP},
                         LedgerFun1,
                         LedgerSrv1,
                         9,
@@ -1028,6 +1029,7 @@ compact_single_file_recovr_test() ->
                         native),
     io:format("FN of ~s~n", [FN]),
     ?assertMatch(2, LowSQN),
+    {ok, PidR} = leveled_cdb:cdb_reopen_reader(FN, LastKey, CDBOpts),
     ?assertMatch(probably,
                     leveled_cdb:cdb_keycheck(PidR,
                                                 {8,
@@ -1047,6 +1049,7 @@ compact_single_file_recovr_test() ->
                                     test_ledgerkey("Key2")}),
     ?assertMatch({{_, _}, {"Value2", {[], infinity}}}, 
                     leveled_codec:from_inkerkv(RKV1)),
+    ok = leveled_cdb:cdb_close(PidR),
     ok = leveled_cdb:cdb_deletepending(CDB),
     ok = leveled_cdb:cdb_destroy(CDB).
 
@@ -1057,9 +1060,10 @@ compact_single_file_retain_test() ->
         LedgerFun1,
         CompactFP,
         CDB} = compact_single_file_setup(),
-    [{LowSQN, FN, PidR, _LK}] =
+    CDBOpts = #cdb_options{binary_mode=true},
+    [{LowSQN, FN, _PidOldR, LastKey}] =
         compact_files([Candidate],
-                        #cdb_options{file_path=CompactFP, binary_mode=true},
+                        CDBOpts#cdb_options{file_path=CompactFP},
                         LedgerFun1,
                         LedgerSrv1,
                         9,
@@ -1067,6 +1071,7 @@ compact_single_file_retain_test() ->
                         native),
     io:format("FN of ~s~n", [FN]),
     ?assertMatch(1, LowSQN),
+    {ok, PidR} = leveled_cdb:cdb_reopen_reader(FN, LastKey, CDBOpts),
     ?assertMatch(probably,
                     leveled_cdb:cdb_keycheck(PidR,
                                                 {8,
@@ -1081,11 +1086,12 @@ compact_single_file_retain_test() ->
                                                     stnd,
                                                     test_ledgerkey("Key1")})),
     RKV1 = leveled_cdb:cdb_get(PidR,
-                                        {2,
-                                            stnd,
-                                            test_ledgerkey("Key2")}),
+                                {2,
+                                    stnd,
+                                    test_ledgerkey("Key2")}),
     ?assertMatch({{_, _}, {"Value2", {[], infinity}}}, 
                     leveled_codec:from_inkerkv(RKV1)),
+    ok = leveled_cdb:cdb_close(PidR),
     ok = leveled_cdb:cdb_deletepending(CDB),
     ok = leveled_cdb:cdb_destroy(CDB).
 
