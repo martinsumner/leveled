@@ -823,15 +823,21 @@ finished_rolling(CDB) ->
 %% If delete is pending - thent he close behaviour needs to actuallly delete 
 %% the file
 close_pendingdelete(Handle, Filename, WasteFP) ->
-    case WasteFP of 
-        undefined ->
-            ok = file:close(Handle),
-            ok = file:delete(Filename);
-        WasteFP ->
-            file:close(Handle),
-            Components = filename:split(Filename),
-            NewName = WasteFP ++ lists:last(Components),
-            file:rename(Filename, NewName)
+    ok = file:close(Handle),
+    case filelib:is_file(Filename) of
+        true ->
+            case WasteFP of 
+                undefined ->
+                    ok = file:delete(Filename);
+                WasteFP ->
+                    Components = filename:split(Filename),
+                    NewName = WasteFP ++ lists:last(Components),
+                    file:rename(Filename, NewName)
+            end;
+        false ->
+            % This may happen when there has been a destroy while files are
+            % still pending deletion
+            leveled_log:log("CDB21", [Filename])
     end.
 
 -spec set_writeops(sync|riak_sync|none) -> {list(), sync|riak_sync|none}.

@@ -94,8 +94,8 @@ init_backend_adapt(S, [Tag, Options, Name]) ->
 %% @doc init_backend - The actual operation
 %% Start the database and read data from disk
 init_backend(_Tag, Options, Name) ->
-    % Options0 = proplists:delete(log_level, Options),
-    case leveled_bookie:book_start(Options) of
+    Options0 = proplists:delete(log_level, Options),
+    case leveled_bookie:book_start(Options0) of
         {ok, Bookie} ->
             unlink(Bookie),
             erlang:register(Name, Bookie),
@@ -570,32 +570,8 @@ kill_next(S, Value, [Pid]) ->
 
 
 
-%% --- Operation: compactisalive ---
-
-compactisalive_pre(S) ->
-    is_leveled_open(S) andalso maps:get(iclerk, S, undefined) /= undefined.
-
-compactisalive_args(#{iclerk := IClerk}) ->
-    [IClerk].
-
-compactisalive_pre(#{iclerk := Pid}, [IClerk]) ->
-    Pid == IClerk.
-
-compactisalive(IClerk) ->
-    is_process_alive(IClerk).
-
-compactisalive_post(_S, [_IClerk], Res) ->
-    Res.
-
 
 %% --- Operation: compacthappened ---
-
-compacthappened_pre(S) ->
-    is_leveled_open(S) andalso maps:get(iclerk, S, undefined) /= undefined.
-
-%% Commenting out args disables the operation
-%% compacthappened_args(#{dir := DataDir}) ->
-%%    [DataDir].
 
 compacthappened(DataDir) ->
     PostCompact = filename:join(DataDir, "journal/journal_files/post_compact"),
@@ -627,10 +603,6 @@ journalwritten(DataDir) ->
             []
     end.
 
-compacthappened_post(_S, [_DataDir], Res) ->
-    eq(Res, []).
-
-
 
 %% --- Operation: compact journal ---
 
@@ -647,27 +619,27 @@ compact_adapt(#{leveled := Leveled}, [_Pid, TS]) ->
     [ Leveled, TS ].
 
 compact(Pid, TS) ->
-    {ok, IClerk} = leveled_bookie:book_eqccompactjournal(Pid, TS),
-    IClerk.
+    {R, _IClerk} = leveled_bookie:book_eqccompactjournal(Pid, TS),
+    R.
 
-compact_next(S, IClerk, [_Pid, _TS]) ->
-    case maps:get(iclerk, S, undefined) of
-        undefined ->
-            S#{iclerk => IClerk};
+compact_next(S, R, [_Pid, _TS]) ->
+    case {R, maps:get(previous_compact, S, undefined)} of
+        {ok, undefined} ->
+            S#{previous_compact => true};
         _ ->
             S
     end.
 
 compact_post(S, [_Pid, _TS], Res) ->
-    case maps:get(iclerk, S, undefined) of
-        undefined ->
-            is_pid(Res);
-        IClerk ->
-            IClerk == Res
+    case Res of
+        ok ->
+            true;
+        busy ->
+            true == maps:get(previous_compact, S, undefined)
     end.
 
 compact_features(S, [_Pid, _TS], _Res) ->
-    case maps:get(iclerk, S, undefined) of
+    case maps:get(previous_compact, S, undefined) of
         undefined ->
             [{compact, fresh}];
         _ ->
@@ -1054,12 +1026,16 @@ prop_db() ->
             CompactionFiles = compacthappened(Dir),
             LedgerFiles = ledgerpersisted(Dir),
             JournalFiles = journalwritten(Dir),
-            io:format("File counts: Compacted ~w Journal ~w Ledger ~w~n", [length(CompactionFiles), length(LedgerFiles), length(JournalFiles)]),
+            % io:format("File counts: Compacted ~w Journal ~w Ledger ~w~n", [length(CompactionFiles), length(LedgerFiles), length(JournalFiles)]),
             
 
+
             case whereis(maps:get(sut, initial_state())) of
-                undefined -> delete_level_data(Dir);
+                undefined -> 
+                    % io:format("Init state undefined - deleting~n"),
+                    delete_level_data(Dir);
                 Pid when is_pid(Pid) ->
+                    % io:format("Init state defined - destroying~n"),
                     leveled_bookie:book_destroy(Pid)
             end,
 
@@ -1236,18 +1212,14 @@ in_head_only_mode(S) ->
 wait_for_procs(Known, Timeout) ->
     case erlang:processes() -- Known of
         [] -> [];
-        Running ->
+        _NonEmptyList ->
             if
-                Timeout > 100 ->
-                    timer:sleep(100),
-                    wait_for_procs(Known, Timeout - 100);
-                Timeout >= 0 ->
-                    lists:map(fun(P) -> io:format("********* Sending timeout to ~w *********~n", [P]), gen_fsm:send_event(P, timeout) end, Running),
+                Timeout > 0 ->
                     timer:sleep(100),
                     wait_for_procs(Known, Timeout - 100);
                 true ->
-                    lists:foreach(fun(P) -> io:format("Process info : ~w~n", [process_info(P)]) end, Running),
-                    Running
+                    timer:sleep(10000),
+                    erlang:processes() -- Known
             end
     end.
 

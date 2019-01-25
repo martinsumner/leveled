@@ -276,7 +276,7 @@ ink_close(Pid) ->
 %% Test function used to close a file, and return all file paths (potentially
 %% to erase all persisted existence)
 ink_doom(Pid) ->
-    gen_server:call(Pid, doom, 60000).
+    gen_server:call(Pid, doom, infinity).
 
 -spec ink_fold(pid(), integer(), {fun(), fun(), fun()}, any()) -> fun().
 %% @doc
@@ -566,19 +566,14 @@ handle_call({compact,
                 FilterFun},
                     _From, State) ->
     Clerk = State#state.clerk,
-    case State#state.compaction_pending of
-        true ->
-            {reply, {busy, Clerk}, State};
-        false ->
-            Manifest = leveled_imanifest:to_list(State#state.manifest),
-            leveled_iclerk:clerk_compact(State#state.clerk,
-                                            Checker,
-                                            InitiateFun,
-                                            CloseFun,
-                                            FilterFun,
-                                            Manifest),
-            {reply, {ok, Clerk}, State#state{compaction_pending=true}}
-    end;
+    Manifest = leveled_imanifest:to_list(State#state.manifest),
+    leveled_iclerk:clerk_compact(State#state.clerk,
+                                    Checker,
+                                    InitiateFun,
+                                    CloseFun,
+                                    FilterFun,
+                                    Manifest),
+    {reply, {ok, Clerk}, State#state{compaction_pending=true}};
 handle_call(compaction_pending, _From, State) ->
     {reply, State#state.compaction_pending, State};
 handle_call({trim, PersistedSQN}, _From, State) ->
@@ -1230,9 +1225,7 @@ filepath(CompactFilePath, NewSQN, compact_journal) ->
                         ++ "." ++ ?PENDING_FILEX).
 
 
-initiate_penciller_snapshot(Bookie) ->
-    {ok, LedgerSnap, _} = 
-        leveled_bookie:book_snapshot(Bookie, ledger, undefined, true),
+initiate_penciller_snapshot(LedgerSnap) ->
     MaxSQN = leveled_penciller:pcl_getstartupsequencenumber(LedgerSnap),
     {LedgerSnap, MaxSQN}.
 

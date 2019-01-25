@@ -1006,7 +1006,7 @@ book_snapshot(Pid, SnapType, Query, LongRunning) ->
 
 
 -spec book_compactjournal(pid(), integer()) -> ok|busy.
--spec book_eqccompactjournal(pid(), integer()) -> {ok, pid()}.
+-spec book_eqccompactjournal(pid(), integer()) -> {ok|busy, pid()|undefined}.
 -spec book_islastcompactionpending(pid()) -> boolean().
 -spec book_trimjournal(pid()) -> ok.
 
@@ -1016,8 +1016,7 @@ book_snapshot(Pid, SnapType, Query, LongRunning) ->
 %% in Riak it will be triggered by a vnode callback.
 
 book_eqccompactjournal(Pid, Timeout) ->
-    {_R, P} = gen_server:call(Pid, {compact_journal, Timeout}, infinity),
-    {ok, P}.
+    gen_server:call(Pid, {compact_journal, Timeout}, infinity).
 
 book_compactjournal(Pid, Timeout) ->
     {R, _P} = gen_server:call(Pid, {compact_journal, Timeout}, infinity),
@@ -1129,7 +1128,7 @@ init([Opts]) ->
             ConfiguredCacheSize = 
                 max(proplists:get_value(cache_size, Opts), ?MIN_CACHE_SIZE),
             CacheJitter = 
-                ConfiguredCacheSize div (100 div ?CACHE_SIZE_JITTER),
+                max(1, ConfiguredCacheSize div (100 div ?CACHE_SIZE_JITTER)),
             CacheSize = 
                 ConfiguredCacheSize + erlang:phash2(self()) rem CacheJitter,
             PCLMaxSize =
@@ -1378,10 +1377,17 @@ handle_call({return_runner, QueryType}, _From, State) ->
                                 fold_countdown = CountDown}};
 handle_call({compact_journal, Timeout}, _From, State)
                                         when State#state.head_only == false ->
-    R = leveled_inker:ink_compactjournal(State#state.inker,
-                                          self(),
-                                          Timeout),
-    {reply, R, State};
+    case leveled_inker:ink_compactionpending(State#state.inker) of
+        true ->
+            {reply, {busy, undefined}, State};
+        false ->
+            {ok, PclSnap, null} =
+                snapshot_store(State, ledger, undefined, true),
+            R = leveled_inker:ink_compactjournal(State#state.inker,
+                                                    PclSnap,
+                                                    Timeout),
+            {reply, R, State}
+    end;
 handle_call(confirm_compact, _From, State)
                                         when State#state.head_only == false ->
     {reply, leveled_inker:ink_compactionpending(State#state.inker), State};
