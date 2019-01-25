@@ -5,3 +5,6 @@
 .DS_Store
 rebar.lock
 test/test_area/*
+cover
+cover_*
+.eqc-info
