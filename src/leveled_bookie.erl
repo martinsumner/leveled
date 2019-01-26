@@ -62,7 +62,6 @@
         book_headonly/4,
         book_snapshot/4,
         book_compactjournal/2,
-        book_eqccompactjournal/2,
         book_islastcompactionpending/1,
         book_trimjournal/1,
         book_hotbackup/1,
@@ -101,8 +100,8 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(CACHE_SIZE, 2500).
--define(MIN_CACHE_SIZE, 1).
--define(MIN_PCL_CACHE_SIZE, 4).
+-define(MIN_CACHE_SIZE, 100).
+-define(MIN_PCL_CACHE_SIZE, 400).
 -define(MAX_PCL_CACHE_SIZE, 28000). 
     % This is less than actual max - but COIN_SIDECOUNT
 -define(CACHE_SIZE_JITTER, 25).
@@ -125,6 +124,7 @@
                 {snapshot_bookie, undefined},
                 {cache_size, ?CACHE_SIZE},
                 {max_journalsize, 1000000000},
+                {max_sstslots, 256},
                 {sync_strategy, none},
                 {head_only, false},
                 {waste_retention_period, undefined},
@@ -221,6 +221,10 @@
         {max_journalsize, pos_integer()} |
             % The maximum size of a journal file in bytes.  The abolute 
             % maximum must be 4GB due to 4 byte file pointers being used
+        {max_sstslots, pos_integer()} |
+            % The maximum number of slots in a SST file.  All testing is done
+            % at a size of 256 (except for Quickcheck tests}, altering this
+            % value is not recommended
         {sync_strategy, sync_mode()} |
             % Should be sync if it is necessary to flush to disk after every
             % write, or none if not (allow the OS to schecdule).  This has a
@@ -1006,7 +1010,6 @@ book_snapshot(Pid, SnapType, Query, LongRunning) ->
 
 
 -spec book_compactjournal(pid(), integer()) -> ok|busy.
--spec book_eqccompactjournal(pid(), integer()) -> {ok|busy, pid()|undefined}.
 -spec book_islastcompactionpending(pid()) -> boolean().
 -spec book_trimjournal(pid()) -> ok.
 
@@ -1014,9 +1017,6 @@ book_snapshot(Pid, SnapType, Query, LongRunning) ->
 %%
 %% the scheduling of Journla compaction is called externally, so it is assumed
 %% in Riak it will be triggered by a vnode callback.
-
-book_eqccompactjournal(Pid, Timeout) ->
-    gen_server:call(Pid, {compact_journal, Timeout}, infinity).
 
 book_compactjournal(Pid, Timeout) ->
     {R, _P} = gen_server:call(Pid, {compact_journal, Timeout}, infinity),
@@ -1639,6 +1639,8 @@ set_options(Opts) ->
                 % If using lz4 this is not recommended
                 false 
         end,
+    
+    MaxSSTSlots = proplists:get_value(max_sstslots, Opts),
 
     {#inker_options{root_path = JournalFP,
                         reload_strategy = ReloadStrategy,
@@ -1660,8 +1662,9 @@ set_options(Opts) ->
                             snaptimeout_short = SnapTimeoutShort,
                             snaptimeout_long = SnapTimeoutLong,
                             sst_options =
-                                #sst_options{press_method = CompressionMethod,
-                                            log_options=leveled_log:get_opts()}}
+                                #sst_options{press_method=CompressionMethod,
+                                            log_options=leveled_log:get_opts(),
+                                            max_sstslots=MaxSSTSlots}}
         }.
 
 

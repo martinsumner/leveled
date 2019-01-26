@@ -820,7 +820,7 @@ finished_rolling(CDB) ->
 
 -spec close_pendingdelete(file:io_device(), list(), list()|undefined) -> ok.
 %% @doc
-%% If delete is pending - thent he close behaviour needs to actuallly delete 
+%% If delete is pending - then the close behaviour needs to actuallly delete 
 %% the file
 close_pendingdelete(Handle, Filename, WasteFP) ->
     ok = file:close(Handle),
@@ -2605,6 +2605,24 @@ badly_written_test() ->
     ?assertMatch({"Key100", "Value100"}, cdb_get(P2, "Key100")),
     ok = cdb_close(P2),
     file:delete(F1).
+
+pendingdelete_test() ->
+    F1 = "test/test_area/deletfile_test.pnd",
+    file:delete(F1),
+    {ok, P1} = cdb_open_writer(F1, #cdb_options{binary_mode=false}),
+    KVList = generate_sequentialkeys(1000, []),
+    ok = cdb_mput(P1, KVList),
+    ?assertMatch(probably, cdb_keycheck(P1, "Key1")),
+    ?assertMatch({"Key1", "Value1"}, cdb_get(P1, "Key1")),
+    ?assertMatch({"Key100", "Value100"}, cdb_get(P1, "Key100")),
+    {ok, F2} = cdb_complete(P1),
+    {ok, P2} = cdb_open_reader(F2, #cdb_options{binary_mode=false}),
+    ?assertMatch({"Key1", "Value1"}, cdb_get(P2, "Key1")),
+    ?assertMatch({"Key100", "Value100"}, cdb_get(P2, "Key100")),
+    file:delete(F2),
+    ok = cdb_deletepending(P2),
+        % No issues destroying even though the file has already been removed
+    ok = cdb_destroy(P2).
 
 
 nonsense_coverage_test() ->

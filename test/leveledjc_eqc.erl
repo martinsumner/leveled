@@ -76,7 +76,8 @@ init_backend_args(#{dir := Dir, sut := Name} = S) ->
     case maps:get(start_opts, S, undefined) of
         undefined ->
             [ default(?RIAK_TAG, ?STD_TAG),  %% Just test one tag at a time
-              [{root_path, Dir}, {log_level, error}, {cache_size, 10}, {max_pencillercachesize, 40}, {max_journalsize, 20000} | gen_opts()], Name ];
+              [{root_path, Dir}, {log_level, error},
+                {max_sstslots, 2}, {cache_size, 10}, {max_pencillercachesize, 40}, {max_journalsize, 20000} | gen_opts()], Name ];
         Opts ->
             %% root_path is part of existing options
             [ maps:get(tag, S), Opts, Name ]
@@ -619,8 +620,7 @@ compact_adapt(#{leveled := Leveled}, [_Pid, TS]) ->
     [ Leveled, TS ].
 
 compact(Pid, TS) ->
-    {R, _IClerk} = leveled_bookie:book_eqccompactjournal(Pid, TS),
-    R.
+    leveled_bookie:book_compactjournal(Pid, TS).
 
 compact_next(S, R, [_Pid, _TS]) ->
     case {R, maps:get(previous_compact, S, undefined)} of

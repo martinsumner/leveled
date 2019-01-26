@@ -72,7 +72,6 @@
 
 -include("include/leveled.hrl").
 
--define(MAX_SLOTS, 2).
 -define(LOOK_SLOTSIZE, 128). % Maximum of 128
 -define(LOOK_BLOCKSIZE, {24, 32}). % 4x + y = ?LOOK_SLOTSIZE
 -define(NOLOOK_SLOTSIZE, 256).
@@ -258,7 +257,7 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST, IndexModDate) ->
     PressMethod0 = compress_level(Level, OptsSST#sst_options.press_method),
     OptsSST0 = OptsSST#sst_options{press_method = PressMethod0},
     {[], [], SlotList, FK}  =
-        merge_lists(KVList, PressMethod0, IndexModDate),
+        merge_lists(KVList, OptsSST0, IndexModDate),
     case gen_fsm:sync_send_event(Pid,
                                     {sst_new,
                                         RootPath,
@@ -309,7 +308,7 @@ sst_new(RootPath, Filename,
     OptsSST0 = OptsSST#sst_options{press_method = PressMethod0},
     {Rem1, Rem2, SlotList, FK} = 
         merge_lists(KVL1, KVL2, {IsBasement, Level},
-                    PressMethod0, IndexModDate),
+                    OptsSST0, IndexModDate),
     case SlotList of
         [] ->
             empty;
@@ -499,7 +498,7 @@ starting({sst_newlevelzero, RootPath, Filename,
     
     SW1 = os:timestamp(),
     {[], [], SlotList, FirstKey} =
-        merge_lists(KVList, PressMethod, IdxModDate),
+        merge_lists(KVList, OptsSST, IdxModDate),
     Time1 = timer:now_diff(os:timestamp(), SW1),
 
     SW2 = os:timestamp(),
@@ -2131,16 +2130,17 @@ revert_position(Pos) ->
 %% there are matching keys then the highest sequence number must be chosen and
 %% any lower sequence numbers should be compacted out of existence
 
--spec merge_lists(list(), press_method(), boolean()) 
+-spec merge_lists(list(), sst_options(), boolean()) 
                             -> {list(), list(), list(tuple()), tuple()|null}.
 %% @doc
 %%
 %% Merge from asingle list (i.e. at Level 0)
-merge_lists(KVList1, PressMethod, IdxModDate) ->
+merge_lists(KVList1, SSTOpts, IdxModDate) ->
     SlotCount = length(KVList1) div ?LOOK_SLOTSIZE, 
     {[],
         [],
-        split_lists(KVList1, [], SlotCount, PressMethod, IdxModDate),
+        split_lists(KVList1, [],
+                    SlotCount, SSTOpts#sst_options.press_method, IdxModDate),
         element(1, lists:nth(1, KVList1))}.
 
 
@@ -2157,33 +2157,34 @@ split_lists(KVList1, SlotLists, N, PressMethod, IdxModDate) ->
     split_lists(KVListRem, [SlotD|SlotLists], N - 1, PressMethod, IdxModDate).
 
 
--spec merge_lists(list(), list(), tuple(), press_method(), boolean()) ->
+-spec merge_lists(list(), list(), tuple(), sst_options(), boolean()) ->
                                 {list(), list(), list(tuple()), tuple()|null}.
 %% @doc
 %% Merge lists when merging across more thna one file.  KVLists that are 
 %% provided may include pointers to fetch more Keys/Values from the source
 %% file
-merge_lists(KVList1, KVList2, LevelInfo, PressMethod, IndexModDate) ->
+merge_lists(KVList1, KVList2, LevelInfo, SSTOpts, IndexModDate) ->
     merge_lists(KVList1, KVList2, 
                 LevelInfo, 
                 [], null, 0, 
-                PressMethod,
+                SSTOpts#sst_options.max_sstslots,
+                SSTOpts#sst_options.press_method,
                 IndexModDate,
                 #build_timings{}).
 
 
-merge_lists(KVL1, KVL2, LI, SlotList, FirstKey, ?MAX_SLOTS, 
+merge_lists(KVL1, KVL2, LI, SlotList, FirstKey, MaxSlots, MaxSlots, 
                                             _PressMethod, _IdxModDate, T0) ->
     % This SST file is full, move to complete file, and return the 
     % remainder
     log_buildtimings(T0, LI),
     {KVL1, KVL2, lists:reverse(SlotList), FirstKey};
-merge_lists([], [], LI, SlotList, FirstKey, _SlotCount, 
+merge_lists([], [], LI, SlotList, FirstKey, _SlotCount, _MaxSlots,
                                             _PressMethod, _IdxModDate, T0) ->
     % the source files are empty, complete the file 
     log_buildtimings(T0, LI),
     {[], [], lists:reverse(SlotList), FirstKey};
-merge_lists(KVL1, KVL2, LI, SlotList, FirstKey, SlotCount, 
+merge_lists(KVL1, KVL2, LI, SlotList, FirstKey, SlotCount, MaxSlots,
                                             PressMethod, IdxModDate, T0) ->
     % Form a slot by merging the two lists until the next 128 K/V pairs have 
     % been determined
@@ -2200,6 +2201,7 @@ merge_lists(KVL1, KVL2, LI, SlotList, FirstKey, SlotCount,
                         SlotList,
                         FK0,
                         SlotCount,
+                        MaxSlots,
                         PressMethod,
                         IdxModDate,
                         T1);
@@ -2214,6 +2216,7 @@ merge_lists(KVL1, KVL2, LI, SlotList, FirstKey, SlotCount,
                         [SlotD|SlotList],
                         FK0,
                         SlotCount + 1,
+                        MaxSlots,
                         PressMethod,
                         IdxModDate,
                         T2)
@@ -2560,7 +2563,8 @@ merge_tombstonelist_test() ->
     R = merge_lists([SkippingKV1, SkippingKV3, SkippingKV5],
                         [SkippingKV2, SkippingKV4],
                         {true, 9999999},
-                        native,
+                        #sst_options{press_method = native,
+                                        max_sstslots = 256},
                         ?INDEX_MODDATE),
     ?assertMatch({[], [], [], null}, R).
 
