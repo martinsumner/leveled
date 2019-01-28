@@ -105,11 +105,10 @@
         ink_registersnapshot/2,
         ink_confirmdelete/2,
         ink_compactjournal/3,
-        ink_compactioncomplete/1,
+        ink_clerkcomplete/3,
         ink_compactionpending/1,
         ink_trim/2,
         ink_getmanifest/1,
-        ink_updatemanifest/3,
         ink_printmanifest/1,
         ink_close/1,
         ink_doom/1,
@@ -142,7 +141,7 @@
                 journal_sqn = 0 :: integer(),
                 active_journaldb :: pid() | undefined,
                 pending_removals = [] :: list(),
-                registered_snapshots = [] :: list(),
+                registered_snapshots = [] :: list(registered_snapshot()),
                 root_path :: string() | undefined,
                 cdb_options :: #cdb_options{} | undefined,
                 clerk :: pid() | undefined,
@@ -157,7 +156,7 @@
 
 -type inker_options() :: #inker_options{}.
 -type ink_state() :: #state{}.
-
+-type registered_snapshot() :: {pid(), os:timestamp(), integer()}.
 
 %%%============================================================================
 %%% API
@@ -277,7 +276,7 @@ ink_close(Pid) ->
 %% Test function used to close a file, and return all file paths (potentially
 %% to erase all persisted existence)
 ink_doom(Pid) ->
-    gen_server:call(Pid, doom, 60000).
+    gen_server:call(Pid, doom, infinity).
 
 -spec ink_fold(pid(), integer(), {fun(), fun(), fun()}, any()) -> fun().
 %% @doc
@@ -348,7 +347,7 @@ ink_loadpcl(Pid, MinSQN, FilterFun, Penciller) ->
                         as_ink},
                     infinity).
 
--spec ink_compactjournal(pid(), pid(), integer()) -> ok.
+-spec ink_compactjournal(pid(), pid(), integer()) -> {ok|busy, pid()}.
 %% @doc
 %% Trigger a compaction event.  the compaction event will use a sqn check
 %% against the Ledger to see if a value can be compacted - if the penciller
@@ -359,7 +358,7 @@ ink_loadpcl(Pid, MinSQN, FilterFun, Penciller) ->
 %% that any value that was written more recently than the last flush to disk
 %% of the Ledger will not be considered for compaction (as this may be
 %% required to reload the Ledger on startup).
-ink_compactjournal(Pid, Bookie, Timeout) ->
+ink_compactjournal(Pid, Bookie, _Timeout) ->
     CheckerInitiateFun = fun initiate_penciller_snapshot/1,
     CheckerCloseFun = fun leveled_penciller:pcl_close/1,
     CheckerFilterFun =
@@ -369,28 +368,26 @@ ink_compactjournal(Pid, Bookie, Timeout) ->
                             Bookie,
                             CheckerInitiateFun,
                             CheckerCloseFun,
-                            CheckerFilterFun,
-                            Timeout},
+                            CheckerFilterFun},
                         infinity).
 
 %% Allows the Checker to be overriden in test, use something other than a
 %% penciller
-ink_compactjournal(Pid, Checker, InitiateFun, CloseFun, FilterFun, Timeout) ->
+ink_compactjournal(Pid, Checker, InitiateFun, CloseFun, FilterFun, _Timeout) ->
     gen_server:call(Pid,
                         {compact,
                             Checker,
                             InitiateFun,
                             CloseFun,
-                            FilterFun,
-                            Timeout},
+                            FilterFun},
                         infinity).
 
--spec ink_compactioncomplete(pid()) -> ok.
+-spec ink_clerkcomplete(pid(), list(), list()) -> ok.
 %% @doc
 %% Used by a clerk to state that a compaction process is over, only change
 %% is to unlock the Inker for further compactions.
-ink_compactioncomplete(Pid) ->
-    gen_server:call(Pid, compaction_complete, infinity).
+ink_clerkcomplete(Pid, ManifestSnippet, FilesToDelete) ->
+    gen_server:cast(Pid, {clerk_complete, ManifestSnippet, FilesToDelete}).
 
 -spec ink_compactionpending(pid()) -> boolean().
 %% @doc
@@ -424,21 +421,6 @@ ink_backup(Pid, BackupPath) ->
 %% job
 ink_getmanifest(Pid) ->
     gen_server:call(Pid, get_manifest, infinity).
-
--spec ink_updatemanifest(pid(), list(), list()) -> {ok, integer()}.
-%% @doc
-%% Add a section of new entries into the manifest, and drop a bunch of deleted
-%% files out of the manifest.  Used to update the manifest after a compaction
-%% job.
-%%
-%% Returns {ok, ManSQN} with the ManSQN being the sequence number of the
-%% updated manifest
-ink_updatemanifest(Pid, ManifestSnippet, DeletedFiles) ->
-    gen_server:call(Pid,
-                        {update_manifest,
-                            ManifestSnippet,
-                            DeletedFiles},
-                        infinity).
 
 -spec ink_printmanifest(pid()) -> ok.
 %% @doc 
@@ -574,27 +556,6 @@ handle_call({confirm_delete, ManSQN}, _From, State) ->
         State#state{registered_snapshots = RegisteredSnapshots0}};
 handle_call(get_manifest, _From, State) ->
     {reply, leveled_imanifest:to_list(State#state.manifest), State};
-handle_call({update_manifest,
-                ManifestSnippet,
-                DeletedFiles}, _From, State) ->
-    DropFun =
-        fun(E, Acc) ->
-            leveled_imanifest:remove_entry(Acc, E)
-        end,
-    Man0 = lists:foldl(DropFun, State#state.manifest, DeletedFiles),                    
-    AddFun =
-        fun(E, Acc) ->
-            leveled_imanifest:add_entry(Acc, E, false)
-        end,
-    Man1 = lists:foldl(AddFun, Man0, ManifestSnippet),
-    NewManifestSQN = State#state.manifest_sqn + 1,
-    leveled_imanifest:printer(Man1),
-    leveled_imanifest:writer(Man1, NewManifestSQN, State#state.root_path),
-    {reply,
-        {ok, NewManifestSQN},
-        State#state{manifest=Man1,
-                        manifest_sqn=NewManifestSQN,
-                        pending_removals=DeletedFiles}};
 handle_call(print_manifest, _From, State) ->
     leveled_imanifest:printer(State#state.manifest),
     {reply, ok, State};
@@ -602,23 +563,22 @@ handle_call({compact,
                 Checker,
                 InitiateFun,
                 CloseFun,
-                FilterFun,
-                Timeout},
+                FilterFun},
                     _From, State) ->
+    Clerk = State#state.clerk,
+    Manifest = leveled_imanifest:to_list(State#state.manifest),
     leveled_iclerk:clerk_compact(State#state.clerk,
                                     Checker,
                                     InitiateFun,
                                     CloseFun,
                                     FilterFun,
-                                    self(),
-                                    Timeout),
-    {reply, ok, State#state{compaction_pending=true}};
-handle_call(compaction_complete, _From, State) ->
-    {reply, ok, State#state{compaction_pending=false}};
+                                    Manifest),
+    {reply, {ok, Clerk}, State#state{compaction_pending=true}};
 handle_call(compaction_pending, _From, State) ->
     {reply, State#state.compaction_pending, State};
 handle_call({trim, PersistedSQN}, _From, State) ->
-    ok = leveled_iclerk:clerk_trim(State#state.clerk, self(), PersistedSQN),
+    Manifest = leveled_imanifest:to_list(State#state.manifest),
+    ok = leveled_iclerk:clerk_trim(State#state.clerk, PersistedSQN, Manifest),
     {reply, ok, State};
 handle_call(roll, _From, State) ->
     case leveled_cdb:cdb_lastkey(State#state.active_journaldb) of
@@ -712,7 +672,7 @@ handle_call(close, _From, State) ->
             leveled_log:log("I0005", [close]),
             leveled_log:log("I0006", [State#state.journal_sqn,
                                         State#state.manifest_sqn]),
-            leveled_iclerk:clerk_stop(State#state.clerk),
+            ok = leveled_iclerk:clerk_stop(State#state.clerk),
             shutdown_snapshots(State#state.registered_snapshots),
             shutdown_manifest(State#state.manifest)
     end,
@@ -727,12 +687,39 @@ handle_call(doom, _From, State) ->
     leveled_log:log("I0005", [doom]),
     leveled_log:log("I0006", [State#state.journal_sqn,
                                 State#state.manifest_sqn]),
-    leveled_iclerk:clerk_stop(State#state.clerk),
+    ok = leveled_iclerk:clerk_stop(State#state.clerk),
     shutdown_snapshots(State#state.registered_snapshots),
     shutdown_manifest(State#state.manifest),
-    
     {stop, normal, {ok, FPs}, State}.
 
+
+handle_cast({clerk_complete, ManifestSnippet, FilesToDelete}, State) ->
+    CDBOpts = State#state.cdb_options,
+    DropFun =
+        fun(E, Acc) ->
+            leveled_imanifest:remove_entry(Acc, E)
+        end,
+    Man0 = lists:foldl(DropFun, State#state.manifest, FilesToDelete),                    
+    AddFun =
+        fun(ManEntry, Acc) ->
+            {LowSQN, FN, _, LK_RO} = ManEntry,
+                % At this stage the FN has a .cdb extension, which will be
+                % stripped during add_entry - so need to add the .cdb here
+            {ok, Pid} = leveled_cdb:cdb_reopen_reader(FN, LK_RO, CDBOpts),
+            UpdEntry = {LowSQN, FN, Pid, LK_RO},
+            leveled_imanifest:add_entry(Acc, UpdEntry, false)
+        end,
+    Man1 = lists:foldl(AddFun, Man0, ManifestSnippet),
+    NewManifestSQN = State#state.manifest_sqn + 1,
+    leveled_imanifest:printer(Man1),
+    leveled_imanifest:writer(Man1, NewManifestSQN, State#state.root_path),
+    ok = leveled_iclerk:clerk_promptdeletions(State#state.clerk,
+                                                NewManifestSQN,
+                                                FilesToDelete),
+    {noreply, State#state{manifest=Man1,
+                            manifest_sqn=NewManifestSQN,
+                            pending_removals=FilesToDelete,
+                            compaction_pending=false}};
 handle_cast({release_snapshot, Snapshot}, State) ->
     Rs = lists:keydelete(Snapshot, 1, State#state.registered_snapshots),
     leveled_log:log("I0003", [Snapshot]),
@@ -843,11 +830,12 @@ start_from_file(InkOpts) ->
                     clerk = Clerk}}.
 
 
--spec shutdown_snapshots(list(tuple())) -> ok.
+-spec shutdown_snapshots(list(registered_snapshot())) -> ok.
 %% @doc
 %% Shutdown any snapshots before closing the store
 shutdown_snapshots(Snapshots) ->
-    lists:foreach(fun({Snap, _SQN}) -> ok = ink_close(Snap) end, Snapshots).
+    lists:foreach(fun({Snap, _TS, _SQN}) -> ok = ink_close(Snap) end,
+                    Snapshots).
 
 -spec shutdown_manifest(leveled_imanifest:manifest()) -> ok.
 %% @doc
@@ -1243,9 +1231,7 @@ filepath(CompactFilePath, NewSQN, compact_journal) ->
                         ++ "." ++ ?PENDING_FILEX).
 
 
-initiate_penciller_snapshot(Bookie) ->
-    {ok, LedgerSnap, _} = 
-        leveled_bookie:book_snapshot(Bookie, ledger, undefined, true),
+initiate_penciller_snapshot(LedgerSnap) ->
     MaxSQN = leveled_penciller:pcl_getstartupsequencenumber(LedgerSnap),
     {LedgerSnap, MaxSQN}.
 
@@ -1445,22 +1431,26 @@ compact_journal_testto(WRP, ExpectedFiles) ->
     ActualManifest = ink_getmanifest(Ink1),
     ok = ink_printmanifest(Ink1),
     ?assertMatch(3, length(ActualManifest)),
-    ok = ink_compactjournal(Ink1,
-                            Checker,
-                            fun(X) -> {X, 55} end,
-                            fun(_F) -> ok end,
-                            fun(L, K, SQN) -> lists:member({SQN, K}, L) end,
-                            5000),
+    {ok, _ICL1} = ink_compactjournal(Ink1,
+                                    Checker,
+                                    fun(X) -> {X, 55} end,
+                                    fun(_F) -> ok end,
+                                    fun(L, K, SQN) ->
+                                        lists:member({SQN, K}, L)
+                                    end,
+                                    5000),
     timer:sleep(1000),
     CompactedManifest1 = ink_getmanifest(Ink1),
     ?assertMatch(2, length(CompactedManifest1)),
     Checker2 = lists:sublist(Checker, 16),
-    ok = ink_compactjournal(Ink1,
-                            Checker2,
-                            fun(X) -> {X, 55} end,
-                            fun(_F) -> ok end,
-                            fun(L, K, SQN) -> lists:member({SQN, K}, L) end,
-                            5000),
+    {ok, _ICL2} = ink_compactjournal(Ink1,
+                                        Checker2,
+                                        fun(X) -> {X, 55} end,
+                                        fun(_F) -> ok end,
+                                        fun(L, K, SQN) ->
+                                            lists:member({SQN, K}, L)
+                                        end,
+                                        5000),
     timer:sleep(1000),
     CompactedManifest2 = ink_getmanifest(Ink1),
     {ok, PrefixTest} = re:compile(?COMPACT_FP),
@@ -1489,12 +1479,12 @@ empty_manifest_test() ->
     
     CheckFun = fun(L, K, SQN) -> lists:member({SQN, key_converter(K)}, L) end,
     ?assertMatch(false, CheckFun([], "key", 1)),
-    ok = ink_compactjournal(Ink1,
-                            [],
-                            fun(X) -> {X, 55} end,
-                            fun(_F) -> ok end,
-                            CheckFun,
-                            5000),
+    {ok, _ICL1} = ink_compactjournal(Ink1,
+                                        [],
+                                        fun(X) -> {X, 55} end,
+                                        fun(_F) -> ok end,
+                                        CheckFun,
+                                        5000),
     timer:sleep(1000),
     ?assertMatch(1, length(ink_getmanifest(Ink1))),
     ok = ink_close(Ink1),

@@ -124,6 +124,7 @@
                 {snapshot_bookie, undefined},
                 {cache_size, ?CACHE_SIZE},
                 {max_journalsize, 1000000000},
+                {max_sstslots, 256},
                 {sync_strategy, none},
                 {head_only, false},
                 {waste_retention_period, undefined},
@@ -220,6 +221,10 @@
         {max_journalsize, pos_integer()} |
             % The maximum size of a journal file in bytes.  The abolute 
             % maximum must be 4GB due to 4 byte file pointers being used
+        {max_sstslots, pos_integer()} |
+            % The maximum number of slots in a SST file.  All testing is done
+            % at a size of 256 (except for Quickcheck tests}, altering this
+            % value is not recommended
         {sync_strategy, sync_mode()} |
             % Should be sync if it is necessary to flush to disk after every
             % write, or none if not (allow the OS to schecdule).  This has a
@@ -1004,7 +1009,7 @@ book_snapshot(Pid, SnapType, Query, LongRunning) ->
     gen_server:call(Pid, {snapshot, SnapType, Query, LongRunning}, infinity).
 
 
--spec book_compactjournal(pid(), integer()) -> ok.
+-spec book_compactjournal(pid(), integer()) -> ok|busy.
 -spec book_islastcompactionpending(pid()) -> boolean().
 -spec book_trimjournal(pid()) -> ok.
 
@@ -1014,7 +1019,8 @@ book_snapshot(Pid, SnapType, Query, LongRunning) ->
 %% in Riak it will be triggered by a vnode callback.
 
 book_compactjournal(Pid, Timeout) ->
-    gen_server:call(Pid, {compact_journal, Timeout}, infinity).
+    {R, _P} = gen_server:call(Pid, {compact_journal, Timeout}, infinity),
+    R.
 
 %% @doc Check on progress of the last compaction
 
@@ -1122,7 +1128,7 @@ init([Opts]) ->
             ConfiguredCacheSize = 
                 max(proplists:get_value(cache_size, Opts), ?MIN_CACHE_SIZE),
             CacheJitter = 
-                ConfiguredCacheSize div (100 div ?CACHE_SIZE_JITTER),
+                max(1, ConfiguredCacheSize div (100 div ?CACHE_SIZE_JITTER)),
             CacheSize = 
                 ConfiguredCacheSize + erlang:phash2(self()) rem CacheJitter,
             PCLMaxSize =
@@ -1371,10 +1377,17 @@ handle_call({return_runner, QueryType}, _From, State) ->
                                 fold_countdown = CountDown}};
 handle_call({compact_journal, Timeout}, _From, State)
                                         when State#state.head_only == false ->
-    ok = leveled_inker:ink_compactjournal(State#state.inker,
-                                          self(),
-                                          Timeout),
-    {reply, ok, State};
+    case leveled_inker:ink_compactionpending(State#state.inker) of
+        true ->
+            {reply, {busy, undefined}, State};
+        false ->
+            {ok, PclSnap, null} =
+                snapshot_store(State, ledger, undefined, true),
+            R = leveled_inker:ink_compactjournal(State#state.inker,
+                                                    PclSnap,
+                                                    Timeout),
+            {reply, R, State}
+    end;
 handle_call(confirm_compact, _From, State)
                                         when State#state.head_only == false ->
     {reply, leveled_inker:ink_compactionpending(State#state.inker), State};
@@ -1626,6 +1639,8 @@ set_options(Opts) ->
                 % If using lz4 this is not recommended
                 false 
         end,
+    
+    MaxSSTSlots = proplists:get_value(max_sstslots, Opts),
 
     {#inker_options{root_path = JournalFP,
                         reload_strategy = ReloadStrategy,
@@ -1647,8 +1662,9 @@ set_options(Opts) ->
                             snaptimeout_short = SnapTimeoutShort,
                             snaptimeout_long = SnapTimeoutLong,
                             sst_options =
-                                #sst_options{press_method = CompressionMethod,
-                                            log_options=leveled_log:get_opts()}}
+                                #sst_options{press_method=CompressionMethod,
+                                            log_options=leveled_log:get_opts(),
+                                            max_sstslots=MaxSSTSlots}}
         }.
 
 

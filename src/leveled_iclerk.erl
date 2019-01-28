@@ -82,9 +82,10 @@
         code_change/3]).
 
 -export([clerk_new/1,
-        clerk_compact/7,
+        clerk_compact/6,
         clerk_hashtablecalc/3,
         clerk_trim/3,
+        clerk_promptdeletions/3,
         clerk_stop/1,
         clerk_loglevel/2,
         clerk_addlogs/2,
@@ -114,15 +115,24 @@
                 reload_strategy = ?DEFAULT_RELOAD_STRATEGY :: list(),
                 singlefile_compactionperc  = ?SINGLEFILE_COMPACTION_TARGET :: float(),
                 maxrunlength_compactionperc = ?MAXRUNLENGTH_COMPACTION_TARGET ::float(),
-                compression_method = native :: lz4|native}).
+                compression_method = native :: lz4|native,
+                scored_files = [] :: list(candidate()),
+                scoring_state :: scoring_state()|undefined}).
 
 -record(candidate, {low_sqn :: integer() | undefined,
                     filename :: string() | undefined,
                     journal :: pid() | undefined,
                     compaction_perc :: float() | undefined}).
 
+-record(scoring_state, {filter_fun :: fun(),
+                        filter_server :: pid(),
+                        max_sqn :: non_neg_integer(),
+                        close_fun :: fun(),
+                        start_time :: erlang:timestamp()}).
+
 -type iclerk_options() :: #iclerk_options{}.
 -type candidate() :: #candidate{}.
+-type scoring_state() :: #scoring_state{}.
 -type score_parameters() :: {integer(), float(), float()}.
     % Score parameters are a tuple 
     % - of maximum run length; how long a run of consecutive files can be for 
@@ -148,25 +158,30 @@ clerk_new(InkerClerkOpts) ->
 
 -spec clerk_compact(pid(), pid(), 
                     fun(), fun(), fun(),  
-                    pid(), integer()) -> ok.
+                    list()) -> ok.
 %% @doc
 %% Trigger a compaction for this clerk if the threshold of data recovery has 
 %% been met
-clerk_compact(Pid, Checker, InitiateFun, CloseFun, FilterFun, Inker, TimeO) ->
+clerk_compact(Pid, Checker, InitiateFun, CloseFun, FilterFun, Manifest) ->
     gen_server:cast(Pid,
                     {compact,
                     Checker,
                     InitiateFun,
                     CloseFun,
                     FilterFun,
-                    Inker,
-                    TimeO}).
+                    Manifest}).
 
--spec clerk_trim(pid(), pid(), integer()) -> ok.
+-spec clerk_trim(pid(), integer(), list()) -> ok.
 %% @doc
 %% Trim the Inker back to the persisted SQN
-clerk_trim(Pid, Inker, PersistedSQN) ->
-    gen_server:cast(Pid, {trim, Inker, PersistedSQN}).
+clerk_trim(Pid, PersistedSQN, ManifestAsList) ->
+    gen_server:cast(Pid, {trim, PersistedSQN, ManifestAsList}).
+
+-spec clerk_promptdeletions(pid(), pos_integer(), list()) -> ok. 
+%% @doc
+%%
+clerk_promptdeletions(Pid, ManifestSQN, DeletedFiles) ->
+    gen_server:cast(Pid, {prompt_deletions, ManifestSQN, DeletedFiles}).
 
 -spec clerk_hashtablecalc(ets:tid(), integer(), pid()) -> ok.
 %% @doc
@@ -182,7 +197,7 @@ clerk_hashtablecalc(HashTree, StartPos, CDBpid) ->
 %% @doc
 %% Stop the clerk
 clerk_stop(Pid) ->
-    gen_server:cast(Pid, stop).
+    gen_server:call(Pid, stop, infinity).
 
 -spec clerk_loglevel(pid(), leveled_log:log_level()) -> ok.
 %% @doc
@@ -201,6 +216,17 @@ clerk_addlogs(Pid, ForcedLogs) ->
 %% Remove from the list of forced logs, a list of forced logs
 clerk_removelogs(Pid, ForcedLogs) ->
     gen_server:cast(Pid, {remove_logs, ForcedLogs}).
+
+
+-spec clerk_scorefilelist(pid(), list(candidate())) -> ok.
+%% @doc
+%% Score the file at the head of the list and then send the tail of the list to
+%% be scored
+clerk_scorefilelist(Pid, []) ->
+    gen_server:cast(Pid, scoring_complete);
+clerk_scorefilelist(Pid, CandidateList) ->
+    gen_server:cast(Pid, {score_filelist, CandidateList}).
+
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -247,10 +273,20 @@ init([LogOpts, IClerkOpts]) ->
                         compression_method = 
                             IClerkOpts#iclerk_options.compression_method}}.
 
-handle_call(_Msg, _From, State) ->
-    {reply, not_supported, State}.
+handle_call(stop, _From, State) ->
+    case State#state.scoring_state of
+        undefined ->
+            ok;
+        ScoringState ->
+            % Closed when scoring files, and so need to shutdown FilterServer
+            % to close down neatly
+        CloseFun = ScoringState#scoring_state.close_fun,
+        FilterServer = ScoringState#scoring_state.filter_server,
+        CloseFun(FilterServer)
+    end,
+    {stop, normal, ok, State}.
 
-handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Inker, _TO},
+handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Manifest0},
                 State) ->
     % Empty the waste folder
     clear_waste(State),
@@ -260,12 +296,43 @@ handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Inker, _TO},
     
     % Need to fetch manifest at start rather than have it be passed in
     % Don't want to process a queued call waiting on an old manifest
-    [_Active|Manifest] = leveled_inker:ink_getmanifest(Inker),
-    MaxRunLength = State#state.max_run_length,
+    [_Active|Manifest] = Manifest0,
     {FilterServer, MaxSQN} = InitiateFun(Checker),
+    ok = clerk_scorefilelist(self(), Manifest),
+    ScoringState =
+        #scoring_state{filter_fun = FilterFun,
+                        filter_server = FilterServer,
+                        max_sqn = MaxSQN,
+                        close_fun = CloseFun,
+                        start_time = SW},
+    {noreply, State#state{scored_files = [], scoring_state = ScoringState}};
+handle_cast({score_filelist, [Entry|Tail]}, State) ->
+    Candidates = State#state.scored_files,
+    {LowSQN, FN, JournalP, _LK} = Entry,
+    ScoringState = State#state.scoring_state,
+    CpctPerc = check_single_file(JournalP,
+                                    ScoringState#scoring_state.filter_fun,
+                                    ScoringState#scoring_state.filter_server,
+                                    ScoringState#scoring_state.max_sqn,
+                                    ?SAMPLE_SIZE,
+                                    ?BATCH_SIZE),
+    Candidate =
+        #candidate{low_sqn = LowSQN,
+                    filename = FN,
+                    journal = JournalP,
+                    compaction_perc = CpctPerc},
+    ok = clerk_scorefilelist(self(), Tail),
+    {noreply, State#state{scored_files = [Candidate|Candidates]}};
+handle_cast(scoring_complete, State) ->
+    MaxRunLength = State#state.max_run_length,
     CDBopts = State#state.cdb_options,
-    
-    Candidates = scan_all_files(Manifest, FilterFun, FilterServer, MaxSQN),
+    Candidates = lists:reverse(State#state.scored_files),
+    ScoringState = State#state.scoring_state,
+    FilterFun = ScoringState#scoring_state.filter_fun,
+    FilterServer = ScoringState#scoring_state.filter_server,
+    MaxSQN = ScoringState#scoring_state.max_sqn,
+    CloseFun = ScoringState#scoring_state.close_fun,
+    SW = ScoringState#scoring_state.start_time,
     ScoreParams =
         {MaxRunLength, 
             State#state.maxrunlength_compactionperc, 
@@ -291,24 +358,29 @@ handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Inker, _TO},
                                             end,
                                         BestRun1),
             leveled_log:log("IC002", [length(FilesToDelete)]),
-            case is_process_alive(Inker) of
-                true ->
-                    update_inker(Inker,
-                                    ManifestSlice,
-                                    FilesToDelete),
-                    ok = CloseFun(FilterServer),
-                    {noreply, State}
-            end;
-        false ->
-            ok = leveled_inker:ink_compactioncomplete(Inker),
             ok = CloseFun(FilterServer),
-            {noreply, State}
+            ok = leveled_inker:ink_clerkcomplete(State#state.inker,
+                                                    ManifestSlice,
+                                                    FilesToDelete),
+            {noreply, State#state{scoring_state = undefined}};
+        false ->
+            ok = CloseFun(FilterServer),
+            ok = leveled_inker:ink_clerkcomplete(State#state.inker, [], []),
+            {noreply, State#state{scoring_state = undefined}}
     end;
-handle_cast({trim, Inker, PersistedSQN}, State) ->
-    ManifestAsList = leveled_inker:ink_getmanifest(Inker),
+handle_cast({trim, PersistedSQN, ManifestAsList}, State) ->
     FilesToDelete = 
         leveled_imanifest:find_persistedentries(PersistedSQN, ManifestAsList),
-    ok = update_inker(Inker, [], FilesToDelete),
+    leveled_log:log("IC007", []),
+    ok = leveled_inker:ink_clerkcomplete(State#state.inker, [], FilesToDelete),
+    {noreply, State};
+handle_cast({prompt_deletions, ManifestSQN, FilesToDelete}, State) ->
+    lists:foreach(fun({_SQN, _FN, J2D, _LK}) ->
+                        leveled_cdb:cdb_deletepending(J2D,
+                                                        ManifestSQN,
+                                                        State#state.inker)
+                        end,
+                    FilesToDelete),
     {noreply, State};
 handle_cast({hashtable_calc, HashTree, StartPos, CDBpid}, State) ->
     {IndexList, HashTreeBin} = leveled_cdb:hashtable_calc(HashTree, StartPos),
@@ -328,9 +400,7 @@ handle_cast({remove_logs, ForcedLogs}, State) ->
     ok = leveled_log:remove_forcedlogs(ForcedLogs),
     CDBopts = State#state.cdb_options,
     CDBopts0 = CDBopts#cdb_options{log_options = leveled_log:get_opts()},
-    {noreply, State#state{cdb_options = CDBopts0}};
-handle_cast(stop, State) ->
-    {stop, normal, State}.
+    {noreply, State#state{cdb_options = CDBopts0}}.
 
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -477,28 +547,6 @@ size_comparison_score(KeySizeList, FilterFun, FilterServer, MaxSQN) ->
             100 * ActiveSize / (ActiveSize + ReplacedSize)
     end.
 
-scan_all_files(Manifest, FilterFun, FilterServer, MaxSQN) ->
-    scan_all_files(Manifest, FilterFun, FilterServer, MaxSQN, []).
-
-scan_all_files([], _FilterFun, _FilterServer, _MaxSQN, CandidateList) ->
-    CandidateList;
-scan_all_files([Entry|Tail], FilterFun, FilterServer, MaxSQN, CandidateList) ->
-    {LowSQN, FN, JournalP, _LK} = Entry,
-    CpctPerc = check_single_file(JournalP,
-                                    FilterFun,
-                                    FilterServer,
-                                    MaxSQN,
-                                    ?SAMPLE_SIZE,
-                                    ?BATCH_SIZE),
-    scan_all_files(Tail,
-                    FilterFun,
-                    FilterServer,
-                    MaxSQN,
-                    CandidateList ++
-                        [#candidate{low_sqn = LowSQN,
-                                    filename = FN,
-                                    journal = JournalP,
-                                    compaction_perc = CpctPerc}]).
 
 fetch_inbatches([], _BatchSize, _CDB, CheckedList) ->
     CheckedList;
@@ -612,20 +660,6 @@ sort_run(RunOfFiles) ->
     CompareFun = fun(Cand1, Cand2) ->
                     Cand1#candidate.low_sqn =< Cand2#candidate.low_sqn end,
     lists:sort(CompareFun, RunOfFiles).
-
-update_inker(Inker, ManifestSlice, FilesToDelete) ->
-    {ok, ManSQN} = leveled_inker:ink_updatemanifest(Inker,
-                                                    ManifestSlice,
-                                                    FilesToDelete),
-    ok = leveled_inker:ink_compactioncomplete(Inker),
-    leveled_log:log("IC007", []),
-    lists:foreach(fun({_SQN, _FN, J2D, _LK}) ->
-                        leveled_cdb:cdb_deletepending(J2D,
-                                                        ManSQN,
-                                                        Inker)
-                        end,
-                    FilesToDelete),
-    ok.
 
 compact_files(BestRun, CDBopts, FilterFun, FilterServer, 
                                             MaxSQN, RStrategy, PressMethod) ->
@@ -761,8 +795,7 @@ write_values(KVCList, CDBopts, Journal0, ManSlice0, PressMethod) ->
                                                             SQN,
                                                             compact_journal),
                                 leveled_log:log("IC009", [FN]),
-                                leveled_cdb:cdb_open_writer(FN,
-                                                            CDBopts);
+                                leveled_cdb:cdb_open_writer(FN, CDBopts);
                             _ ->
                                 {ok, Journal0}
                         end,
@@ -985,9 +1018,10 @@ compact_single_file_recovr_test() ->
         LedgerFun1,
         CompactFP,
         CDB} = compact_single_file_setup(),
-    [{LowSQN, FN, PidR, _LastKey}] =
+    CDBOpts = #cdb_options{binary_mode=true},
+    [{LowSQN, FN, _PidOldR, LastKey}] =
         compact_files([Candidate],
-                        #cdb_options{file_path=CompactFP, binary_mode=true},
+                        CDBOpts#cdb_options{file_path=CompactFP},
                         LedgerFun1,
                         LedgerSrv1,
                         9,
@@ -995,6 +1029,7 @@ compact_single_file_recovr_test() ->
                         native),
     io:format("FN of ~s~n", [FN]),
     ?assertMatch(2, LowSQN),
+    {ok, PidR} = leveled_cdb:cdb_reopen_reader(FN, LastKey, CDBOpts),
     ?assertMatch(probably,
                     leveled_cdb:cdb_keycheck(PidR,
                                                 {8,
@@ -1014,6 +1049,7 @@ compact_single_file_recovr_test() ->
                                     test_ledgerkey("Key2")}),
     ?assertMatch({{_, _}, {"Value2", {[], infinity}}}, 
                     leveled_codec:from_inkerkv(RKV1)),
+    ok = leveled_cdb:cdb_close(PidR),
     ok = leveled_cdb:cdb_deletepending(CDB),
     ok = leveled_cdb:cdb_destroy(CDB).
 
@@ -1024,9 +1060,10 @@ compact_single_file_retain_test() ->
         LedgerFun1,
         CompactFP,
         CDB} = compact_single_file_setup(),
-    [{LowSQN, FN, PidR, _LK}] =
+    CDBOpts = #cdb_options{binary_mode=true},
+    [{LowSQN, FN, _PidOldR, LastKey}] =
         compact_files([Candidate],
-                        #cdb_options{file_path=CompactFP, binary_mode=true},
+                        CDBOpts#cdb_options{file_path=CompactFP},
                         LedgerFun1,
                         LedgerSrv1,
                         9,
@@ -1034,6 +1071,7 @@ compact_single_file_retain_test() ->
                         native),
     io:format("FN of ~s~n", [FN]),
     ?assertMatch(1, LowSQN),
+    {ok, PidR} = leveled_cdb:cdb_reopen_reader(FN, LastKey, CDBOpts),
     ?assertMatch(probably,
                     leveled_cdb:cdb_keycheck(PidR,
                                                 {8,
@@ -1048,11 +1086,12 @@ compact_single_file_retain_test() ->
                                                     stnd,
                                                     test_ledgerkey("Key1")})),
     RKV1 = leveled_cdb:cdb_get(PidR,
-                                        {2,
-                                            stnd,
-                                            test_ledgerkey("Key2")}),
+                                {2,
+                                    stnd,
+                                    test_ledgerkey("Key2")}),
     ?assertMatch({{_, _}, {"Value2", {[], infinity}}}, 
                     leveled_codec:from_inkerkv(RKV1)),
+    ok = leveled_cdb:cdb_close(PidR),
     ok = leveled_cdb:cdb_deletepending(CDB),
     ok = leveled_cdb:cdb_destroy(CDB).
 
@@ -1147,7 +1186,6 @@ size_score_test() ->
 coverage_cheat_test() ->
     {noreply, _State0} = handle_info(timeout, #state{}),
     {ok, _State1} = code_change(null, #state{}, null),
-    {reply, not_supported, _State2} = handle_call(null, null, #state{}),
     terminate(error, #state{}).    
 
 -endif.

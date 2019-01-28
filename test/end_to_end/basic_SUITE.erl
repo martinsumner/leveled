@@ -12,6 +12,7 @@
             is_empty_test/1,
             many_put_fetch_switchcompression/1,
             bigjournal_littlejournal/1,
+            bigsst_littlesst/1,
             safereaderror_startup/1,
             remove_journal_test/1
             ]).
@@ -27,6 +28,7 @@ all() -> [
             is_empty_test,
             many_put_fetch_switchcompression,
             bigjournal_littlejournal,
+            bigsst_littlesst,
             safereaderror_startup,
             remove_journal_test
             ].
@@ -164,6 +166,39 @@ bigjournal_littlejournal(_Config) ->
     ok = leveled_bookie:book_destroy(Bookie2).
     
 
+bigsst_littlesst(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    StartOpts1 = [{root_path, RootPath},
+                    {max_journalsize, 50000000},
+                    {cache_size, 1000},
+                    {max_pencillercachesize, 16000},
+                    {max_sstslots, 256},
+                    {sync_strategy, testutil:sync_strategy()},
+                    {compression_point, on_compact}],
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+    ObjL1 = 
+        testutil:generate_objects(60000, 1, [], 
+                                    leveled_rand:rand_bytes(100), 
+                                    fun() -> [] end, <<"B">>),
+    testutil:riakload(Bookie1, ObjL1),
+    testutil:check_forlist(Bookie1, ObjL1),
+    JFP = RootPath ++ "/ledger/ledger_files/",
+    {ok, FNS1} = file:list_dir(JFP),
+    ok = leveled_bookie:book_destroy(Bookie1),
+
+
+    StartOpts2 = lists:ukeysort(1, [{max_sstslots, 24}|StartOpts1]),
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
+    testutil:riakload(Bookie2, ObjL1),
+    testutil:check_forlist(Bookie2, ObjL1),
+    {ok, FNS2} = file:list_dir(JFP),
+    ok = leveled_bookie:book_destroy(Bookie2),
+    io:format("Big SST ~w files Little SST ~w files~n",
+                [length(FNS1), length(FNS2)]),
+    true = length(FNS2) >  (2 * length(FNS1)).
+    
+
+
 journal_compaction(_Config) ->
     journal_compaction_tester(false, 3600),
     journal_compaction_tester(false, undefined),
@@ -300,6 +335,7 @@ journal_compaction_tester(Restart, WRP) ->
                     {sync_strategy, testutil:sync_strategy()}],
     {ok, Bookie3} = leveled_bookie:book_start(StartOpts2),
     ok = leveled_bookie:book_compactjournal(Bookie3, 30000),
+    busy = leveled_bookie:book_compactjournal(Bookie3, 30000),
     testutil:wait_for_compaction(Bookie3),
     ok = leveled_bookie:book_close(Bookie3),
     

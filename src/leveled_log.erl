@@ -392,8 +392,11 @@
                     ++ "with totals of cycle_count=~w "
                     ++ "fetch_time=~w index_time=~w"}},
     {"CDB20",
-        {warn, "Error ~w caught when safe reading a file to length ~w"}}
-        ]).
+        {warn, "Error ~w caught when safe reading a file to length ~w"}},
+    {"CDB21",
+        {warn, "File ~s to be deleted but already gone"}}
+        
+    ]).
 
 
 %%%============================================================================

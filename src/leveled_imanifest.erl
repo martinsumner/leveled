@@ -52,8 +52,12 @@ generate_entry(Journal) ->
     case leveled_cdb:cdb_firstkey(PidR) of
         {StartSQN, _Type, _PK} ->
             LastKey = leveled_cdb:cdb_lastkey(PidR),
+            % close the file here.  This will then be re-opened by the inker
+            % and so will be correctly linked to the inker not to the iclerk
+            ok = leveled_cdb:cdb_close(PidR),
             [{StartSQN, NewFN, PidR, LastKey}];
         empty ->
+            ok = leveled_cdb:cdb_close(PidR),
             leveled_log:log("IC013", [NewFN]),
             []
     end.
