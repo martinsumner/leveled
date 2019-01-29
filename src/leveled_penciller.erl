@@ -923,13 +923,13 @@ handle_call(close, _From, State) ->
             leveled_log:log("P0010", [StatusTuple])
     end,
     
-    shutdown_manifest(State#state.manifest),
+    shutdown_manifest(State#state.manifest, State#state.levelzero_constructor),
     {stop, normal, ok, State};
 handle_call(doom, _From, State) ->
     leveled_log:log("P0030", []),
     ok = leveled_pclerk:clerk_close(State#state.clerk),
     
-    shutdown_manifest(State#state.manifest),
+    shutdown_manifest(State#state.manifest,  State#state.levelzero_constructor),
     
     ManifestFP = State#state.root_path ++ "/" ++ ?MANIFEST_FP ++ "/",
     FilesFP = State#state.root_path ++ "/" ++ ?FILES_FP ++ "/",
@@ -1183,21 +1183,34 @@ start_from_file(PCLopts) ->
     {ok, State0}.
 
 
--spec shutdown_manifest(leveled_pmanifest:manifest()) -> ok.
+-spec shutdown_manifest(leveled_pmanifest:manifest(), pid()|undefined) -> ok.
 %% @doc
 %% Shutdown all the SST files within the manifest
-shutdown_manifest(Manifest)->
+shutdown_manifest(Manifest, L0Constructor) ->
     EntryCloseFun =
         fun(ME) ->
-            case is_record(ME, manifest_entry) of
-                true ->
-                    ok = leveled_sst:sst_close(ME#manifest_entry.owner);
-                false ->
-                    {_SK, ME0} = ME,
-                    ok = leveled_sst:sst_close(ME0#manifest_entry.owner)
-            end
+            Owner =
+                case is_record(ME, manifest_entry) of
+                    true ->
+                        ME#manifest_entry.owner;
+                    false ->
+                        case ME of
+                            {_SK, ME0} ->
+                                ME0#manifest_entry.owner;
+                            ME ->
+                                ME
+                        end
+                end,
+            ok = 
+                case is_pid(Owner) of
+                    true ->
+                        leveled_sst:sst_close(Owner);
+                    false ->
+                        ok
+                end
         end,
-    leveled_pmanifest:close_manifest(Manifest, EntryCloseFun).
+    leveled_pmanifest:close_manifest(Manifest, EntryCloseFun),
+    EntryCloseFun(L0Constructor).
 
 
 -spec archive_files(list(), list()) -> ok.
