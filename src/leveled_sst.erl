@@ -638,8 +638,12 @@ reader(close, _From, State) ->
     {stop, normal, ok, State}.
 
 reader(timeout, State) ->
-    true = is_process_alive(State#state.starting_pid),
-    {next_state, reader, State}.
+    case is_process_alive(State#state.starting_pid) of
+        true ->
+            {next_state, reader, State};
+        false ->
+            {stop, normal, State}
+    end.
 
 
 delete_pending({get_kv, LedgerKey, Hash}, _From, State) ->
