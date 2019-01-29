@@ -170,7 +170,7 @@ bigsst_littlesst(_Config) ->
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = [{root_path, RootPath},
                     {max_journalsize, 50000000},
-                    {cache_size, 1000},
+                    {cache_size, 500},
                     {max_pencillercachesize, 16000},
                     {max_sstslots, 256},
                     {sync_strategy, testutil:sync_strategy()},
@@ -195,7 +195,7 @@ bigsst_littlesst(_Config) ->
     ok = leveled_bookie:book_destroy(Bookie2),
     io:format("Big SST ~w files Little SST ~w files~n",
                 [length(FNS1), length(FNS2)]),
-    true = length(FNS2) >  (2 * length(FNS1)).
+    true = length(FNS2) >=  (2 * length(FNS1)).
     
 
 
