@@ -86,6 +86,7 @@
 
 -export_type([object_tag/0,
                 head/0,
+                head_only/0,
                 object_metadata/0,
                 appdefinable_function_tuple/0]).
 
