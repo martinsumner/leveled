@@ -234,7 +234,7 @@
 -define(PROMPT_WAIT_ONL0, 5).
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
 -define(COIN_SIDECOUNT, 5).
--define(SLOW_FETCH, 20000).
+-define(SLOW_FETCH, 100000).
 -define(ITERATOR_SCANWIDTH, 4).
 -define(TIMING_SAMPLECOUNTDOWN, 10000).
 -define(TIMING_SAMPLESIZE, 100).
@@ -693,7 +693,7 @@ handle_call({push_mem, {LedgerTable, PushedIdx, MinSQN, MaxSQN}},
                 State#state{levelzero_pending=L0Pend,
                             levelzero_constructor=L0Constructor}};
         {false, false} ->
-            leveled_log:log("P0018", [ok, false, false]),
+            % leveled_log:log("P0018", [ok, false, false]),
             PushedTree =
                 case is_tuple(LedgerTable) of
                     true ->
@@ -1254,7 +1254,7 @@ archive_files(RootPath, UsedFileList) ->
                                                             -> pcl_state().
 %% @doc
 %% Update the in-memory cache of recent changes for the penciller.  This is 
-%% the level zer at the top of the tree.
+%% the level zero at the top of the tree.
 %% Once the update is made, there needs to be a decision to potentially roll
 %% the level-zero memory to an on-disk level zero sst file.  This can only
 %% happen when the cache has exeeded the size threshold (with some jitter 
@@ -1295,17 +1295,18 @@ update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
                 end,
             NoPendingManifestChange = not State#state.work_ongoing,
             JitterCheck = RandomFactor or CacheMuchTooBig,
-            case {CacheTooBig, JitterCheck, NoPendingManifestChange} of
-                {true, true, true}  ->
+            Due = CacheTooBig and JitterCheck,
+            case {Due, NoPendingManifestChange} of
+                {true, true}  ->
                     {L0Pend, L0Constructor, none} =
                         maybe_roll_memory(UpdState, false),
-                    leveled_log:log_timer("P0031", [true, true, L0Pend], SW),
+                    LogSubs = [NewL0Size, true, true],
+                    leveled_log:log_timer("P0031", LogSubs, SW),
                     UpdState#state{levelzero_pending=L0Pend,
                                     levelzero_constructor=L0Constructor};
                 _ ->
-                    leveled_log:log_timer("P0031", 
-                                            [CacheTooBig, JitterCheck, false], 
-                                            SW),
+                    LogSubs = [NewL0Size, Due, NoPendingManifestChange],
+                    leveled_log:log_timer("P0031", LogSubs, SW),
                     UpdState
             end
     end.

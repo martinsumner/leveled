@@ -894,7 +894,12 @@ open_active_file(FileName) when is_list(FileName) ->
         {ok, LastPosition} ->
             ok = file:close(Handle);
         {ok, EndPosition} ->
-            leveled_log:log("CDB06", [LastPosition, EndPosition]),
+            case {LastPosition, EndPosition} of
+                {?BASE_POSITION, 0} ->
+                    ok;
+                _ ->
+                    leveled_log:log("CDB06", [LastPosition, EndPosition])
+            end,
             {ok, _LastPosition} = file:position(Handle, LastPosition),
             ok = file:truncate(Handle),
             ok = file:close(Handle)
@@ -1277,7 +1282,13 @@ startup_filter(Key, _ValueAsBin, Position, {Hashtree, _LastKey}, _ExtractFun) ->
 scan_over_file(Handle, Position, FilterFun, Output, LastKey) ->
     case saferead_keyvalue(Handle) of
         false ->
-            leveled_log:log("CDB09", [Position]),
+            case {LastKey, Position} of
+                {empty, ?BASE_POSITION} ->
+                    % Not interesting that we've nothing to read at base
+                    ok;
+                _ ->
+                    leveled_log:log("CDB09", [Position])
+            end,
             % Bring file back to that position
             {ok, Position} = file:position(Handle, {bof, Position}),
             {eof, Output};
@@ -1896,7 +1907,7 @@ dump(FileName) ->
     end,
     NumberOfPairs = lists:foldl(Fn, 0, lists:seq(0,255)) bsr 1,
     io:format("Count of keys in db is ~w~n", [NumberOfPairs]),  
-    {ok, _} = file:position(Handle, {bof, 2048}),
+    {ok, _} = file:position(Handle, {bof, ?BASE_POSITION}),
     Fn1 = fun(_I, Acc) ->
         {KL, VL} = read_next_2_integers(Handle),
         {Key, KB} = safe_read_next_keybin(Handle, KL),

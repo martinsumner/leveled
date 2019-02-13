@@ -60,7 +60,7 @@
     {"B0011",
         {warn, "Call to destroy the store and so all files to be removed"}},
     {"B0013",
-        {warn, "Long running task took ~w microseconds with task of type ~w"}},
+        {warn, "Long running task took ~w microseconds with task_type=~w"}},
     {"B0015",
         {info, "Put timing with sample_count=~w and mem_time=~w ink_time=~w"
                 ++ " with total_object_size=~w"}},
@@ -142,7 +142,8 @@
         {warn, "We're doomed - intention recorded to destroy all files"}},
     {"P0031",
         {info, "Completion of update to levelzero"
-                    ++ " with cache_size=~w status=~w and update_success=~w"}},
+                    ++ " with cache_size=~w level0_due=~w"
+                    ++ " and change_pending=~w"}},
     {"P0032",
         {info, "Fetch head timing with sample_count=~w and level timings of"
                     ++ " foundmem_time=~w found0_time=~w found1_time=~w" 
@@ -207,7 +208,7 @@
     {"PC015",
         {info, "File created"}},
     {"PC016",
-        {info, "Slow fetch from SFT ~w of ~w microseconds at level ~w "
+        {info, "Slow fetch from SFT ~w of ~w us at level ~w "
                     ++ "with result ~w"}},
     {"PC017",
         {info, "Notified clerk of manifest change"}},
@@ -222,18 +223,18 @@
     {"PC022",
         {info, "Storing reference to deletions at ManifestSQN=~w"}},
     {"PM002",
-        {info, "Completed dump of L0 cache to list of size ~w"}},
+        {info, "Completed dump of L0 cache to list of l0cache_size=~w"}},
     
     {"SST01",
-        {info, "SST timing for result ~w is sample ~w total ~w and max ~w"}},
+        {info, "SST timing for result=~w is sample=~w total=~w and max=~w"}},
     {"SST02",
         {error, "False result returned from SST with filename ~s as "
                     ++ "slot ~w has failed crc check"}},
     {"SST03",
-        {info, "Opening SST file with filename ~s slots ~w and"
+        {info, "Opening SST file with filename ~s slot_count=~w and"
                 ++ " max sqn ~w"}},
     {"SST04",
-        {info, "Exit called for reason ~w on filename ~s"}},
+        {debug, "Exit called for reason ~w on filename ~s"}},
     {"SST05",
         {warn, "Rename rogue filename ~s to ~s"}},
     {"SST06",
@@ -359,14 +360,15 @@
     {"CDB05",
         {info, "Closing of filename ~s from state ~w for reason ~w"}},
     {"CDB06",
-        {info, "File to be truncated at last position of ~w with end of "
+        {warn, "File to be truncated at last position of ~w with end of "
                 ++ "file at ~w"}},
     {"CDB07",
         {info, "Hashtree computed"}},
     {"CDB08",
         {info, "Renaming file from ~s to ~s for which existence is ~w"}},
     {"CDB09",
-        {info, "Failure to read Key/Value at Position ~w in scan"}},
+        {info, "Failure to read Key/Value at Position ~w in scan " ++ 
+                "this may be the end of the file"}},
     {"CDB10",
         {info, "CRC check failed due to mismatch"}},
     {"CDB11",
@@ -374,17 +376,17 @@
     {"CDB12",
         {info, "HashTree written"}},
     {"CDB13",
-        {info, "Write options of ~w"}},
+        {debug, "Write options of ~w"}},
     {"CDB14",
         {info, "Microsecond timings for hashtree build of "
-                ++ "to_list ~w sort ~w build ~w"}},
+                ++ "to_list=~w sort=~w build=~w"}},
     {"CDB15",
         {info, "Collision in search for hash ~w"}},
     {"CDB16",
         {info, "CDB scan from start ~w in file with end ~w and last_key ~w"}},
     {"CDB17",
-        {info, "After ~w PUTs total write time is ~w total sync time is ~w "
-                ++ "and max write time is ~w and max sync time is ~w"}},
+        {info, "After ~w PUTs total_write_time=~w total_sync_time=~w "
+                ++ "and max_write_time=~w and max_sync_time=~w"}},
     {"CDB18",
         {info, "Handled return and write of hashtable"}},
     {"CDB19",
@@ -471,9 +473,10 @@ log(LogRef, Subs, SupportedLogLevels) ->
         {LogRef, {LogLevel, LogText}} ->
             case should_i_log(LogLevel, SupportedLogLevels, LogRef) of
                 true ->
-                    io:format(format_time()
-                              ++ " " ++ LogRef ++ " ~w "
-                              ++ LogText ++ "~n",
+                    io:format(format_time() ++ " "
+                                ++ atom_to_list(LogLevel) ++ " "
+                                ++ LogRef ++ " ~w "
+                                ++ LogText ++ "~n",
                               [self()|Subs]);
                 false ->
                     ok
@@ -507,18 +510,21 @@ log_timer(LogRef, Subs, StartTime, SupportedLogLevels) ->
         {LogRef, {LogLevel, LogText}} ->
             case should_i_log(LogLevel, SupportedLogLevels, LogRef) of
                 true ->
-                    MicroS = timer:now_diff(os:timestamp(), StartTime),
-                    {Unit, Time} = case MicroS of
-                                        MicroS when MicroS < 1000 ->
-                                            {"microsec", MicroS};
-                                        MicroS ->
-                                            {"ms", MicroS div 1000}
-                                    end,
-                    io:format(format_time()
-                                    ++ " " ++ LogRef ++ " ~w "
-                                    ++ LogText
-                                    ++ " with time taken ~w " ++ Unit ++ "~n",
-                                [self()|Subs] ++ [Time]);
+                    DurationText =
+                        case timer:now_diff(os:timestamp(), StartTime) of
+                            US when US > 1000 ->
+                                " with us_duration=" ++ integer_to_list(US) ++
+                                " or ms_duration="
+                                ++ integer_to_list(US div 1000);
+                            US ->
+                                " with us_duration=" ++ integer_to_list(US)
+                        end,
+                    io:format(format_time() ++ " "
+                                ++ atom_to_list(LogLevel) ++ " "
+                                ++ LogRef ++ " ~w "
+                                ++ LogText
+                                ++ DurationText ++ "~n",
+                                [self()|Subs]);
                 false ->
                     ok
             end;
