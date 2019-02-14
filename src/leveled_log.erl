@@ -89,7 +89,7 @@
     {"P0004",
         {debug, "Remaining ledger snapshots are ~w"}},
     {"P0005",
-        {info, "Delete confirmed as file ~s is removed from Manifest"}},
+        {debug, "Delete confirmed as file ~s is removed from Manifest"}},
     {"P0006",
         {info, "Orphaned reply after timeout on L0 file write ~s"}},
     {"P0007",
@@ -201,7 +201,7 @@
     {"PC011",
         {info, "Merge completed with MSN=~w to Level=~w and FileCounter=~w"}},
     {"PC012",
-        {info, "File to be created as part of MSN=~w Filename=~s "
+        {debug, "File to be created as part of MSN=~w Filename=~s "
                     ++ "IsBasement=~w"}},
     {"PC013",
         {warn, "Merge resulted in empty file ~s"}},
