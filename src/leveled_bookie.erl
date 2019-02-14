@@ -2976,7 +2976,7 @@ scan_table_test() ->
 
 longrunning_test() ->
     SW = os:timestamp(),
-    timer:sleep(100),
+    timer:sleep(?LONG_RUNNING div 1000 + 100),
     ok = maybe_longrunning(SW, put).
 
 coverage_cheat_test() ->
@@ -3020,7 +3020,7 @@ erase_journal_test() ->
     HeadsNotFound2 = lists:foldl(CheckHeadFun(Bookie2), 0, ObjL1),
     ?assertMatch(500, HeadsNotFound2),
     ok = book_destroy(Bookie2).
-    
+
 check_notfound_test() ->
     ProbablyFun = fun() -> probably end,
     MissingFun = fun() -> missing end,
