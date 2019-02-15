@@ -117,7 +117,8 @@
         ink_checksqn/2,
         ink_loglevel/2,
         ink_addlogs/2,
-        ink_removelogs/2]).
+        ink_removelogs/2,
+        ink_getjournalsqn/1]).
 
 -export([build_dummy_journal/0,
         clean_testdir/1,
@@ -452,6 +453,13 @@ ink_addlogs(Pid, ForcedLogs) ->
 ink_removelogs(Pid, ForcedLogs) ->
     gen_server:cast(Pid, {remove_logs, ForcedLogs}).
 
+-spec ink_getjournalsqn(pid()) -> {ok, pos_integer()}.
+%% @doc
+%% Return the current Journal SQN, which may be in the actual past if the Inker
+%% is in fact a snapshot
+ink_getjournalsqn(Pid) ->
+    gen_server:call(Pid, get_journalsqn).
+
 %%%============================================================================
 %%% gen_server callbacks
 %%%============================================================================
@@ -481,12 +489,14 @@ init([LogOpts, InkerOpts]) ->
     end.
 
 
-handle_call({put, Key, Object, KeyChanges}, _From, State) ->
+handle_call({put, Key, Object, KeyChanges}, _From,
+                State=#state{is_snapshot=Snap}) when Snap == false ->
     case put_object(Key, Object, KeyChanges, State) of
         {_, UpdState, ObjSize} ->
             {reply, {ok, UpdState#state.journal_sqn, ObjSize}, UpdState}
     end;
-handle_call({mput, Key, ObjChanges}, _From, State) ->
+handle_call({mput, Key, ObjChanges}, _From,
+                State=#state{is_snapshot=Snap}) when Snap == false ->
     case put_object(Key, head_only, ObjChanges, State) of
         {_, UpdState, _ObjSize} ->
             {reply, {ok, UpdState#state.journal_sqn}, UpdState}
@@ -504,10 +514,8 @@ handle_call({get, Key, SQN}, _From, State) ->
 handle_call({key_check, Key, SQN}, _From, State) ->
     {reply, key_check(Key, SQN, State#state.manifest), State};
 handle_call({fold, 
-                StartSQN, 
-                {FilterFun, InitAccFun, FoldFun}, 
-                Acc,
-                By}, _From, State) ->
+                StartSQN, {FilterFun, InitAccFun, FoldFun}, Acc, By},
+                _From, State) ->
     Manifest = lists:reverse(leveled_imanifest:to_list(State#state.manifest)),
     Folder = 
         fun() ->
@@ -522,7 +530,8 @@ handle_call({fold,
         by_runner ->
             {reply, Folder, State}
     end;
-handle_call({register_snapshot, Requestor}, _From , State) ->
+handle_call({register_snapshot, Requestor},
+            _From , State=#state{is_snapshot=Snap}) when Snap == false ->
     Rs = [{Requestor,
             os:timestamp(),
             State#state.manifest_sqn}|State#state.registered_snapshots],
@@ -564,7 +573,7 @@ handle_call({compact,
                 InitiateFun,
                 CloseFun,
                 FilterFun},
-                    _From, State) ->
+                _From, State=#state{is_snapshot=Snap}) when Snap == false ->
     Clerk = State#state.clerk,
     Manifest = leveled_imanifest:to_list(State#state.manifest),
     leveled_iclerk:clerk_compact(State#state.clerk,
@@ -576,11 +585,12 @@ handle_call({compact,
     {reply, {ok, Clerk}, State#state{compaction_pending=true}};
 handle_call(compaction_pending, _From, State) ->
     {reply, State#state.compaction_pending, State};
-handle_call({trim, PersistedSQN}, _From, State) ->
+handle_call({trim, PersistedSQN}, _From, State=#state{is_snapshot=Snap})
+                                                        when Snap == false ->
     Manifest = leveled_imanifest:to_list(State#state.manifest),
     ok = leveled_iclerk:clerk_trim(State#state.clerk, PersistedSQN, Manifest),
     {reply, ok, State};
-handle_call(roll, _From, State) ->
+handle_call(roll, _From, State=#state{is_snapshot=Snap}) when Snap == false ->
     case leveled_cdb:cdb_lastkey(State#state.active_journaldb) of
         empty ->
             {reply, ok, State};
@@ -664,6 +674,8 @@ handle_call({check_sqn, LedgerSQN}, _From, State) ->
         _JSQN ->
             {reply, ok, State}
     end;
+handle_call(get_journalsqn, _From, State) ->
+    {reply, {ok, State#state.journal_sqn}, State};
 handle_call(close, _From, State) ->
     case State#state.is_snapshot of
         true ->

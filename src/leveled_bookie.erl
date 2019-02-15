@@ -3021,6 +3021,71 @@ erase_journal_test() ->
     ?assertMatch(500, HeadsNotFound2),
     ok = book_destroy(Bookie2).
 
+sqnorder_fold_test() ->
+    RootPath = reset_filestructure(),
+    {ok, Bookie1} = book_start([{root_path, RootPath},
+                                    {max_journalsize, 1000000},
+                                    {cache_size, 500}]),
+    ok = book_put(Bookie1, 
+                    <<"B">>, <<"K1">>, {value, <<"V1">>}, [], 
+                    ?STD_TAG),
+    ok = book_put(Bookie1, 
+                    <<"B">>, <<"K2">>, {value, <<"V2">>}, [], 
+                    ?STD_TAG),
+    
+    FoldObjectsFun = fun(B, K, V, Acc) -> Acc ++ [{B, K, V}] end,
+    {async, ObjFPre} =
+        book_objectfold(Bookie1,
+                        ?STD_TAG, {FoldObjectsFun, []}, true, sqn_order),
+    {async, ObjFPost} =
+        book_objectfold(Bookie1,
+                        ?STD_TAG, {FoldObjectsFun, []}, false, sqn_order),
+    
+    ok = book_put(Bookie1, 
+                    <<"B">>, <<"K3">>, {value, <<"V3">>}, [], 
+                    ?STD_TAG),
+
+    ObjLPre = ObjFPre(),
+    ?assertMatch([{<<"B">>, <<"K1">>, {value, <<"V1">>}},
+                    {<<"B">>, <<"K2">>, {value, <<"V2">>}}], ObjLPre),
+    ObjLPost = ObjFPost(),
+    ?assertMatch([{<<"B">>, <<"K1">>, {value, <<"V1">>}},
+                    {<<"B">>, <<"K2">>, {value, <<"V2">>}},
+                    {<<"B">>, <<"K3">>, {value, <<"V3">>}}], ObjLPost),
+    
+    ok = book_destroy(Bookie1).
+
+sqnorder_mutatefold_test() ->
+    RootPath = reset_filestructure(),
+    {ok, Bookie1} = book_start([{root_path, RootPath},
+                                    {max_journalsize, 1000000},
+                                    {cache_size, 500}]),
+    ok = book_put(Bookie1, 
+                    <<"B">>, <<"K1">>, {value, <<"V1">>}, [], 
+                    ?STD_TAG),
+    ok = book_put(Bookie1, 
+                    <<"B">>, <<"K1">>, {value, <<"V2">>}, [], 
+                    ?STD_TAG),
+    
+    FoldObjectsFun = fun(B, K, V, Acc) -> Acc ++ [{B, K, V}] end,
+    {async, ObjFPre} =
+        book_objectfold(Bookie1,
+                        ?STD_TAG, {FoldObjectsFun, []}, true, sqn_order),
+    {async, ObjFPost} =
+        book_objectfold(Bookie1,
+                        ?STD_TAG, {FoldObjectsFun, []}, false, sqn_order),
+    
+    ok = book_put(Bookie1, 
+                    <<"B">>, <<"K1">>, {value, <<"V3">>}, [], 
+                    ?STD_TAG),
+
+    ObjLPre = ObjFPre(),
+    ?assertMatch([{<<"B">>, <<"K1">>, {value, <<"V2">>}}], ObjLPre),
+    ObjLPost = ObjFPost(),
+    ?assertMatch([{<<"B">>, <<"K1">>, {value, <<"V3">>}}], ObjLPost),
+    
+    ok = book_destroy(Bookie1).
+
 check_notfound_test() ->
     ProbablyFun = fun() -> probably end,
     MissingFun = fun() -> missing end,

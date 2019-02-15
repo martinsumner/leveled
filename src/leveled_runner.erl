@@ -363,12 +363,18 @@ foldobjects_allkeys(SnapFun, Tag, FoldObjectsFun, sqn_order) ->
         fun() ->
 
             {ok, LedgerSnapshot, JournalSnapshot} = SnapFun(),
+            {ok, JournalSQN} = leveled_inker:ink_getjournalsqn(JournalSnapshot),
             IsValidFun = 
                 fun(Bucket, Key, SQN) ->
                     LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
-                    leveled_penciller:pcl_checksequencenumber(LedgerSnapshot, 
-                                                                LedgerKey, 
-                                                                SQN)
+                    CheckSQN =
+                        leveled_penciller:pcl_checksequencenumber(LedgerSnapshot, 
+                                                                    LedgerKey, 
+                                                                    SQN),
+                    % Need to check that we have not folded past the point
+                    % at which the snapshot was taken
+                    (JournalSQN >= SQN) and CheckSQN
+                        
                 end,
 
             BatchFoldFun = 

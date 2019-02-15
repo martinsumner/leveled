@@ -1482,6 +1482,11 @@ compare_to_sqn(Obj, SQN) ->
                 SQNToCompare > SQN ->
                     false;
                 true ->
+                    % Normally we would expect the SQN to be equal here, but
+                    % this also allows for the Journal to have a more advanced
+                    % value. We return true here as we wouldn't want to
+                    % compact thta more advanced value, but this may cause
+                    % confusion in snapshots.
                     true
             end
     end.
