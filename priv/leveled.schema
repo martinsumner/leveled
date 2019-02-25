@@ -21,7 +21,7 @@
 
 %% @doc The key size of the Bookie's in-memory cache 
 {mapping, "leveled.cache_size", "leveled.cache_size", [
-  {default, 4000},
+  {default, 2500},
   {datatype, integer},
   hidden
 ]}.

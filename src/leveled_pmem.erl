@@ -44,6 +44,8 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+-define(MAX_CACHE_LINES, 31). % Must be less than 128
+
 % -type index_array() :: array:array().
 -type index_array() :: any()|none. % To live with OTP16
 
@@ -55,9 +57,9 @@
 
 -spec cache_full(list()) -> boolean().
 %% @doc
-%% If there are already 127 entries in the cache then the cache is full
+%% If there are already 31 entries in the cache then the cache is full
 cache_full(L0Cache) ->
-    length(L0Cache) == 127.
+    length(L0Cache) == ?MAX_CACHE_LINES.
 
 -spec prepare_for_index(index_array(), leveled_codec:segment_hash()) 
                                                             -> index_array().
