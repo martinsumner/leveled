@@ -906,10 +906,9 @@ handle_call(close, _From, State) ->
     % on the clerk.
     ok = leveled_pclerk:clerk_close(State#state.clerk),
     leveled_log:log("P0008", [close]),
-    case State#state.levelzero_pending of
+    L0Empty = State#state.levelzero_size == 0,
+    case (not State#state.levelzero_pending and not L0Empty) of
         true ->
-            leveled_log:log("P0010", [State#state.levelzero_size]);
-        false ->
             L0_Left = State#state.levelzero_size > 0,
             {UpdState, _L0Bloom} = maybe_roll_memory(State, L0_Left, true),
             L0Pid = UpdState#state.levelzero_constructor,
@@ -917,10 +916,11 @@ handle_call(close, _From, State) ->
                 true ->
                     ok = leveled_sst:sst_close(L0Pid);
                 false ->
-                    ok
-            end
+                    leveled_log:log("P0010", [State#state.levelzero_size])
+            end;
+        false ->
+            leveled_log:log("P0010", [State#state.levelzero_size])
     end,
-    
     shutdown_manifest(State#state.manifest, State#state.levelzero_constructor),
     {stop, normal, ok, State};
 handle_call(doom, _From, State) ->

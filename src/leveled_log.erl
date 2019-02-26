@@ -98,7 +98,7 @@
     {"P0008",
         {info, "Penciller closing for reason ~w"}},
     {"P0010",
-        {info, "No level zero action on close of Penciller discarded=~w"}},
+        {info, "discarded=~w level zero on close of Penciller"}},
     {"P0011",
         {info, "Shutdown complete for Penciller for reason ~w"}},
     {"P0012",
