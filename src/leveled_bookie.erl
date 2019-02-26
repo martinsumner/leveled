@@ -2187,21 +2187,13 @@ maybepush_ledgercache(MaxCacheSize, Cache, Penciller) ->
 
 -spec maybe_withjitter(integer(), integer()) -> boolean().
 %% @doc
-%% Push down randomly, but the closer to the maximum size, the more likely a 
-%% push should be
-maybe_withjitter(CacheSize, MaxCacheSize) ->
-    if
-        CacheSize > MaxCacheSize ->
-            R = leveled_rand:uniform(7 * MaxCacheSize),
-            if
-                (CacheSize - MaxCacheSize) > R ->
-                    true;
-                true ->
-                    false
-            end;
-        true ->
-            false
-    end.
+%% Push down randomly, but the closer to 4 * the maximum size, the more likely
+%% a push should be
+maybe_withjitter(CacheSize, MaxCacheSize) when CacheSize > MaxCacheSize ->
+    R = leveled_rand:uniform(4 * MaxCacheSize),
+    (CacheSize - MaxCacheSize) > R;
+maybe_withjitter(_CacheSize, _MaxCacheSize) ->
+    false.
 
 
 -spec get_loadfun(book_state()) -> fun().

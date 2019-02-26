@@ -65,6 +65,7 @@
 -ifdef(fsm_deprecated).
 -compile({nowarn_deprecated_function, 
             [{gen_fsm, start_link, 3},
+                {gen_fsm, sync_send_event, 2},
                 {gen_fsm, sync_send_event, 3},
                 {gen_fsm, send_event, 2},
                 {gen_fsm, send_all_state_event, 2}]}).
@@ -188,7 +189,9 @@
                     timings = no_timing :: sst_timings(),
                     timings_countdown = 0 :: integer(),
                     starting_pid :: pid()|undefined,
-                    fetch_cache = array:new([{size, ?CACHE_SIZE}])}).
+                    fetch_cache = array:new([{size, ?CACHE_SIZE}]),
+                    new_slots :: list()|undefined,
+                    deferred_startup_tuple :: tuple()|undefined}).
 
 -record(sst_timings, 
                 {sample_count = 0 :: integer(),
@@ -335,30 +338,41 @@ sst_new(RootPath, Filename,
     end.
 
 -spec sst_newlevelzero(string(), string(),
-                            integer(), fun(), pid()|undefined, integer(), 
+                            integer(), fun()|list(), pid()|undefined, integer(), 
                             sst_options()) ->
-                                                    {ok, pid(), noreply}.
+                                        {ok, pid(), noreply}.
 %% @doc
 %% Start a new file at level zero.  At this level the file size is not fixed -
 %% it will be as big as the input.  Also the KVList is not passed in, it is 
 %% fetched slot by slot using the FetchFun
 sst_newlevelzero(RootPath, Filename, 
-                    Slots, FetchFun, Penciller,
+                    Slots, Fetcher, Penciller,
                     MaxSQN, OptsSST) ->
     PressMethod0 = compress_level(0, OptsSST#sst_options.press_method),
     OptsSST0 = OptsSST#sst_options{press_method = PressMethod0},
     {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
-    gen_fsm:send_event(Pid,
-                        {sst_newlevelzero,
-                            RootPath,
-                            Filename,
-                            Slots,
-                            FetchFun,
-                            Penciller,
-                            MaxSQN,
-                            OptsSST0,
-                            ?INDEX_MODDATE}),
+    % Initiate the file into the "starting" state
+    ok = gen_fsm:sync_send_event(Pid,
+                                {sst_newlevelzero,
+                                    RootPath,
+                                    Filename,
+                                    Penciller,
+                                    MaxSQN,
+                                    OptsSST0,
+                                    ?INDEX_MODDATE}),
+    ok = 
+        case is_list(Fetcher) of
+            true ->
+                gen_fsm:send_event(Pid, {complete_l0startup, Fetcher});
+            false ->
+                % Fetcher is a function
+                gen_fsm:send_event(Pid, {sst_returnslot, none, Fetcher, Slots})
+                % Start the fetch loop (async).  Having the fetch loop running
+                % on async message passing means that the SST file can now be
+                % closed while the fetch loop is still completing
+        end,
     {ok, Pid, noreply}.
+
 
 -spec sst_get(pid(), leveled_codec:ledger_key())
                                     -> leveled_codec:ledger_kv()|not_present.
@@ -415,7 +429,7 @@ sst_setfordelete(Pid, Penciller) ->
 %% For this file to be closed and deleted
 sst_clear(Pid) ->
     gen_fsm:sync_send_event(Pid, {set_for_delete, false}, infinity),
-    gen_fsm:sync_send_event(Pid, close, 1000).
+    gen_fsm:sync_send_event(Pid, close).
 
 -spec sst_deleteconfirmed(pid()) -> ok.
 %% @doc
@@ -432,13 +446,13 @@ sst_deleteconfirmed(Pid) ->
 %% the filename and the {startKey, EndKey} for the manifest.
 sst_checkready(Pid) ->
     %% Only used in test
-    gen_fsm:sync_send_event(Pid, background_complete, 100).
+    gen_fsm:sync_send_event(Pid, background_complete).
 
 -spec sst_close(pid()) -> ok.
 %% @doc
 %% Close the file
 sst_close(Pid) ->
-    gen_fsm:sync_send_event(Pid, close, 2000).
+    gen_fsm:sync_send_event(Pid, close).
 
 -spec sst_printtimings(pid()) -> ok.
 %% @doc
@@ -446,7 +460,7 @@ sst_close(Pid) ->
 %% forced to be printed.
 %% Used in unit tests to force the printing of timings
 sst_printtimings(Pid) ->
-    gen_fsm:sync_send_event(Pid, print_timings, 1000).
+    gen_fsm:sync_send_event(Pid, print_timings).
 
 
 %%%============================================================================
@@ -492,15 +506,29 @@ starting({sst_new,
         reader,
         UpdState#state{blockindex_cache = BlockIndex,
                         starting_pid = StartingPID},
-        ?STARTUP_TIMEOUT}.
-
+        ?STARTUP_TIMEOUT};
 starting({sst_newlevelzero, RootPath, Filename,
-                    Slots, FetchFun, Penciller, MaxSQN,
-                    OptsSST, IdxModDate}, State) ->
+                    Penciller, MaxSQN,
+                    OptsSST, IdxModDate}, _From, State) -> 
+    DeferredStartupTuple = 
+        {RootPath, Filename, Penciller, MaxSQN, OptsSST, IdxModDate},
+    {reply, ok, starting,
+        State#state{deferred_startup_tuple = DeferredStartupTuple}};
+starting(close, _From, State) ->
+    % No file should have been created, so nothing to close.
+    {stop, normal, ok, State}.
+    
+starting({complete_l0startup, Slots}, State) ->
+    starting(complete_l0startup, State#state{new_slots = Slots});
+starting(complete_l0startup, State) ->
+    {RootPath, Filename, Penciller, MaxSQN, OptsSST, IdxModDate} =
+        State#state.deferred_startup_tuple,
     SW0 = os:timestamp(),
+    FetchedSlots = State#state.new_slots,
     leveled_log:save(OptsSST#sst_options.log_options),
     PressMethod = OptsSST#sst_options.press_method,
-    KVList = leveled_pmem:to_list(Slots, FetchFun),
+    FetchFun = fun(Slot) -> lists:nth(Slot, FetchedSlots) end,
+    KVList = leveled_pmem:to_list(length(FetchedSlots), FetchFun),
     Time0 = timer:now_diff(os:timestamp(), SW0),
     
     SW1 = os:timestamp(),
@@ -524,7 +552,12 @@ starting({sst_newlevelzero, RootPath, Filename,
                     PressMethod, IdxModDate),
     {UpdState, Bloom} = 
         read_file(ActualFilename,
-                    State#state{root_path=RootPath, yield_blockquery=true}),
+                    State#state{root_path=RootPath,
+                                yield_blockquery=true,
+                                % Important to empty this from state rather
+                                % than carry it through to the next stage
+                                new_slots=undefined,
+                                deferred_startup_tuple=undefined}),
     Summary = UpdState#state.summary,
     Time4 = timer:now_diff(os:timestamp(), SW4),
     
@@ -547,8 +580,36 @@ starting({sst_newlevelzero, RootPath, Filename,
             {next_state, 
                 reader, 
                 UpdState#state{blockindex_cache = BlockIndex}}
+    end;
+starting({sst_returnslot, FetchedSlot, FetchFun, SlotCount}, State) ->
+    Self = self(),
+    FetchedSlots = 
+        case FetchedSlot of
+            none ->
+                [];
+            _ ->
+                [FetchedSlot|State#state.new_slots]
+        end, 
+    case length(FetchedSlots) == SlotCount of
+        true ->
+            gen_fsm:send_event(Self, complete_l0startup),
+            {next_state,
+                starting,
+                % Reverse the slots so that they are back in the expected
+                % order
+                State#state{new_slots = lists:reverse(FetchedSlots)}};
+        false ->
+            ReturnFun =
+                fun(NextSlot) ->
+                    gen_fsm:send_event(Self, 
+                                        {sst_returnslot, NextSlot,
+                                            FetchFun, SlotCount})
+                end,
+            FetchFun(length(FetchedSlots) + 1, ReturnFun),
+            {next_state,
+                starting,
+                State#state{new_slots = FetchedSlots}}
     end.
-
 
 reader({get_kv, LedgerKey, Hash}, _From, State) ->
     % Get a KV value and potentially take sample timings
@@ -3351,6 +3412,10 @@ take_max_lastmoddate_test() ->
     % modified dates
     ?assertMatch(1, take_max_lastmoddate(0, 1)).
 
-
+stopstart_test() ->
+    {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
+    % check we can close in the starting state.  This may happen due to the 
+    % fetcher on new level zero files working in a loop
+    ok = sst_close(Pid).
 
 -endif.
