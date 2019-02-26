@@ -173,7 +173,7 @@
         pcl_snapstart/1,
         pcl_start/1,
         pcl_pushmem/2,
-        pcl_fetchlevelzero/2,
+        pcl_fetchlevelzero/3,
         pcl_fetch/4,
         pcl_fetchkeys/5,
         pcl_fetchkeys/6,
@@ -306,6 +306,8 @@
 -type iterator() :: list(iterator_entry()).
 -type bad_ledgerkey() :: list().
 
+-export_type([levelzero_cacheentry/0]).
+
 %%%============================================================================
 %%% API
 %%%============================================================================
@@ -348,7 +350,7 @@ pcl_pushmem(Pid, LedgerCache) ->
     %% Bookie to dump memory onto penciller
     gen_server:call(Pid, {push_mem, LedgerCache}, infinity).
 
--spec pcl_fetchlevelzero(pid(), integer()) -> tuple().
+-spec pcl_fetchlevelzero(pid(), non_neg_integer(), fun()) -> ok.
 %% @doc
 %% Allows a single slot of the penciller's levelzero cache to be fetched.  The
 %% levelzero cache can be up to 40K keys - sending this to the process that is
@@ -358,13 +360,13 @@ pcl_pushmem(Pid, LedgerCache) ->
 %%
 %% The return value will be a leveled_skiplist that forms that part of the
 %% cache
-pcl_fetchlevelzero(Pid, Slot) ->
+pcl_fetchlevelzero(Pid, Slot, ReturnFun) ->
     % Timeout to cause crash of L0 file when it can't get the close signal
     % as it is deadlocked making this call.
     %
     % If the timeout gets hit outside of close scenario the Penciller will
     % be stuck in L0 pending
-    gen_server:call(Pid, {fetch_levelzero, Slot}, 60000).
+    gen_server:cast(Pid, {fetch_levelzero, Slot, ReturnFun}).
 
 -spec pcl_fetch(pid(), leveled_codec:ledger_key()) 
                                     -> leveled_codec:ledger_kv()|not_present.
@@ -889,8 +891,6 @@ handle_call({register_snapshot, Snapshot, Query, BookiesMem, LongRunning},
             CloneState#state{snapshot_fully_loaded=true,
                                 manifest=ManifestClone}},
         State#state{manifest = Manifest0}};
-handle_call({fetch_levelzero, Slot}, _From, State) ->
-    {reply, lists:nth(Slot, State#state.levelzero_cache), State};
 handle_call(close, _From, State=#state{is_snapshot=Snap}) when Snap == true ->
     ok = pcl_releasesnapshot(State#state.source_penciller, self()),
     {stop, normal, ok, State};
@@ -1049,6 +1049,9 @@ handle_cast(work_for_clerk, State) ->
         _ ->
             {noreply, State}
     end;
+handle_cast({fetch_levelzero, Slot, ReturnFun}, State) ->
+    ReturnFun(lists:nth(Slot, State#state.levelzero_cache)),
+    {noreply, State};
 handle_cast({log_level, LogLevel}, State) ->
     PC = State#state.clerk,
     ok = leveled_pclerk:clerk_loglevel(PC, LogLevel),
@@ -1352,7 +1355,8 @@ roll_memory(State, false) ->
     FileName = sst_filename(ManSQN, 0, 0),
     leveled_log:log("P0019", [FileName, State#state.ledger_sqn]),
     PCL = self(),
-    FetchFun = fun(Slot) -> pcl_fetchlevelzero(PCL, Slot) end,
+    FetchFun =
+        fun(Slot, ReturnFun) -> pcl_fetchlevelzero(PCL, Slot, ReturnFun) end,
     R = leveled_sst:sst_newlevelzero(RootPath,
                                         FileName,
                                         length(State#state.levelzero_cache),
@@ -2047,7 +2051,7 @@ simple_server_test() ->
     false = pcl_checkbloomtest(PCL, {o,"Bucket9999", "Key9999", null}),
     
     ok = shutdown_when_compact(PCL),
-    
+
     {ok, PCLr} = 
         pcl_start(#penciller_options{root_path=RootPath,
                                         max_inmemory_tablesize=1000,
@@ -2314,12 +2318,12 @@ create_file_test() ->
     ok = file:write_file(filename:join(RP, Filename), term_to_binary("hello")),
     KVL = lists:usort(generate_randomkeys({50000, 0})),
     Tree = leveled_tree:from_orderedlist(KVL, ?CACHE_TYPE),
-    FetchFun = fun(Slot) -> lists:nth(Slot, [Tree]) end,
+    
     {ok, SP, noreply} = 
         leveled_sst:sst_newlevelzero(RP,
                                         Filename,
                                         1,
-                                        FetchFun,
+                                        [Tree],
                                         undefined,
                                         50000,
                                         #sst_options{press_method = native}),
