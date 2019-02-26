@@ -415,7 +415,7 @@ sst_setfordelete(Pid, Penciller) ->
 %% For this file to be closed and deleted
 sst_clear(Pid) ->
     gen_fsm:sync_send_event(Pid, {set_for_delete, false}, infinity),
-    gen_fsm:sync_send_event(Pid, close, 1000).
+    gen_fsm:sync_send_event(Pid, close).
 
 -spec sst_deleteconfirmed(pid()) -> ok.
 %% @doc
@@ -432,13 +432,13 @@ sst_deleteconfirmed(Pid) ->
 %% the filename and the {startKey, EndKey} for the manifest.
 sst_checkready(Pid) ->
     %% Only used in test
-    gen_fsm:sync_send_event(Pid, background_complete, 100).
+    gen_fsm:sync_send_event(Pid, background_complete).
 
 -spec sst_close(pid()) -> ok.
 %% @doc
 %% Close the file
 sst_close(Pid) ->
-    gen_fsm:sync_send_event(Pid, close, 2000).
+    gen_fsm:sync_send_event(Pid, close).
 
 -spec sst_printtimings(pid()) -> ok.
 %% @doc
@@ -446,7 +446,7 @@ sst_close(Pid) ->
 %% forced to be printed.
 %% Used in unit tests to force the printing of timings
 sst_printtimings(Pid) ->
-    gen_fsm:sync_send_event(Pid, print_timings, 1000).
+    gen_fsm:sync_send_event(Pid, print_timings).
 
 
 %%%============================================================================
