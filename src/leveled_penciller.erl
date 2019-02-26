@@ -2327,15 +2327,7 @@ create_file_test() ->
                                         undefined,
                                         50000,
                                         #sst_options{press_method = native}),
-    lists:foreach(fun(X) ->
-                        case checkready(SP) of
-                            timeout ->
-                                timer:sleep(X);
-                            _ ->
-                                ok
-                        end end,
-                    [50, 100, 200, 400, 800]),
-    {ok, SrcFN, StartKey, EndKey} = checkready(SP),
+    {ok, SrcFN, StartKey, EndKey} = leveled_sst:sst_checkready(SP),
     io:format("StartKey ~w EndKey ~w~n", [StartKey, EndKey]),
     ?assertMatch({o, _, _, _}, StartKey),
     ?assertMatch({o, _, _, _}, EndKey),
@@ -2347,14 +2339,6 @@ create_file_test() ->
 slow_fetch_test() ->
     ?assertMatch(not_present, log_slowfetch(2, not_present, "fake", 0, 1)),
     ?assertMatch("value", log_slowfetch(2, "value", "fake", 0, 1)).
-
-checkready(Pid) ->
-    try
-        leveled_sst:sst_checkready(Pid)
-    catch
-        exit:{timeout, _} ->
-            timeout
-    end.
 
 timings_test() ->
     SW = os:timestamp(),
