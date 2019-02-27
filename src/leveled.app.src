@@ -1,7 +1,7 @@
 {application, leveled,
  [
   {description, "Key Value store based on LSM-Tree and designed for larger values"},
-  {vsn, "0.9.4"},
+  {vsn, "0.9.13"},
   {registered, []},
   {applications, [
                   kernel,
