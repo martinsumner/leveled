@@ -289,7 +289,9 @@ cdb_getpositions(Pid, SampleSize) ->
     end.
 
 cdb_getpositions_fromidx(Pid, SampleSize, Index, Acc) ->
-    gen_fsm:sync_send_event(Pid, {get_positions, SampleSize, Index, Acc}).
+    gen_fsm:sync_send_event(Pid,
+                            {get_positions, SampleSize, Index, Acc},
+                            infinity).
 
 -spec cdb_directfetch(pid(), list(), key_only|key_size|key_value_check) ->
                                                                         list().
@@ -336,6 +338,7 @@ cdb_returnhashtable(Pid, IndexList, HashTreeBin) ->
 %% @doc
 %% Hash the hashtable been written for this file?
 cdb_checkhashtable(Pid) ->
+    % only used in tests - so OK to be sync_send_event/2
     gen_fsm:sync_send_event(Pid, check_hashtable).
 
 -spec cdb_destroy(pid()) -> ok.
@@ -2641,6 +2644,27 @@ pendingdelete_test() ->
     ok = cdb_deletepending(P2),
         % No issues destroying even though the file has already been removed
     ok = cdb_destroy(P2).
+
+getpositions_sample_test() ->
+    % what if we try and get positions with a file with o(1000) entries
+    F1 = "test/test_area/getpos_sample_test.pnd",
+    {ok, P1} = cdb_open_writer(F1, #cdb_options{binary_mode=false}),
+    KVList = generate_sequentialkeys(1000, []),
+    ok = cdb_mput(P1, KVList),
+    {ok, F2} = cdb_complete(P1),
+    {ok, P2} = cdb_open_reader(F2, #cdb_options{binary_mode=false}),
+
+    PositionList100 = cdb_getpositions(P2, 100),
+    PositionList101 = cdb_getpositions(P2, 101),
+    PositionList102 = cdb_getpositions(P2, 102),
+    PositionList103 = cdb_getpositions(P2, 103),
+    ?assertMatch(100, length(PositionList100)),
+    ?assertMatch(101, length(PositionList101)),
+    ?assertMatch(102, length(PositionList102)),
+    ?assertMatch(103, length(PositionList103)),
+
+    ok = cdb_close(P2),
+    file:delete(F2).
 
 
 nonsense_coverage_test() ->

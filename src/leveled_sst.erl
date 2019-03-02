@@ -359,7 +359,8 @@ sst_newlevelzero(RootPath, Filename,
                                     Penciller,
                                     MaxSQN,
                                     OptsSST0,
-                                    ?INDEX_MODDATE}),
+                                    ?INDEX_MODDATE}, 
+                                infinity),
     ok = 
         case is_list(Fetcher) of
             true ->
