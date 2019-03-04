@@ -121,6 +121,7 @@
             sst_setfordelete/2,
             sst_clear/1,
             sst_checkready/1,
+            sst_switchlevels/2,
             sst_deleteconfirmed/1,
             sst_close/1]).
 
@@ -449,6 +450,15 @@ sst_checkready(Pid) ->
     %% Only used in test
     gen_fsm:sync_send_event(Pid, background_complete).
 
+-spec sst_switchlevels(pid(), pos_integer()) -> ok.
+%% @doc
+%% Notify the SST file that it is now working at a new level
+%% This simply prompts a GC on the PID now (as this may now be a long-lived
+%% file, so don't want all the startup state to be held on memory - want to
+%% proactively drop it
+sst_switchlevels(Pid, _NewLevel) ->
+    gen_fsm:send_event(Pid, switch_levels).
+
 -spec sst_close(pid()) -> ok.
 %% @doc
 %% Close the file
@@ -699,6 +709,9 @@ reader(close, _From, State) ->
     ok = file:close(State#state.handle),
     {stop, normal, ok, State}.
 
+reader(switch_levels, State) ->
+    erlang:garbage_collect(self()),
+    {next_state, reader, State};
 reader(timeout, State) ->
     case is_process_alive(State#state.starting_pid) of
         true ->
