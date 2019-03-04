@@ -186,8 +186,9 @@ merge(SrcLevel, Manifest, RootPath, OptsSST) ->
     leveled_log:log("PC008", [SrcLevel, Candidates]),
     case Candidates of
         0 ->
-            leveled_log:log("PC009",
-                                [Src#manifest_entry.filename, SrcLevel + 1]),
+            NewLevel = SrcLevel + 1,
+            leveled_log:log("PC009", [Src#manifest_entry.filename, NewLevel]),
+            leveled_sst:sst_switchlevels(Src#manifest_entry.owner, NewLevel),
             Man0 = leveled_pmanifest:switch_manifest_entry(Manifest,
                                                             NewSQN,
                                                             SrcLevel,
