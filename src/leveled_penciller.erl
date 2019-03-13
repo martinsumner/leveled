@@ -1210,7 +1210,7 @@ shutdown_manifest(Manifest, L0Constructor) ->
                         end
                 end,
             ok = 
-                case is_pid(Owner) of
+                case check_alive(Owner) of
                     true ->
                         leveled_sst:sst_close(Owner);
                     false ->
@@ -1219,6 +1219,15 @@ shutdown_manifest(Manifest, L0Constructor) ->
         end,
     leveled_pmanifest:close_manifest(Manifest, EntryCloseFun),
     EntryCloseFun(L0Constructor).
+
+
+-spec check_alive(pid()|undefined) -> boolean().
+%% @doc
+%% Double-check a processis active before attempting to terminate
+check_alive(Owner) when is_pid(Owner) ->
+    is_process_alive(Owner);
+check_alive(_Owner) ->
+    false.
 
 
 -spec archive_files(list(), list()) -> ok.
