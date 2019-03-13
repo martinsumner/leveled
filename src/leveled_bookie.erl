@@ -59,6 +59,8 @@
         book_get/4,
         book_head/3,
         book_head/4,
+        book_sqn/3,
+        book_sqn/4,
         book_headonly/4,
         book_snapshot/4,
         book_compactjournal/2,
@@ -535,6 +537,11 @@ book_delete(Pid, Bucket, Key, IndexSpecs) ->
 -spec book_head(pid(), 
                 leveled_codec:key(), leveled_codec:key(), leveled_codec:tag())
                                                     -> {ok, any()}|not_found.
+
+-spec book_sqn(pid(), 
+                leveled_codec:key(), leveled_codec:key(), leveled_codec:tag())
+                                        -> {ok, non_neg_integer()}|not_found.
+
 -spec book_headonly(pid(), 
                     leveled_codec:key(), leveled_codec:key(), leveled_codec:key())
                                                     -> {ok, any()}|not_found.
@@ -557,7 +564,7 @@ book_get(Pid, Bucket, Key, Tag) ->
     gen_server:call(Pid, {get, Bucket, Key, Tag}, infinity).
 
 book_head(Pid, Bucket, Key, Tag) ->
-    gen_server:call(Pid, {head, Bucket, Key, Tag}, infinity).
+    gen_server:call(Pid, {head, Bucket, Key, Tag, false}, infinity).
 
 book_get(Pid, Bucket, Key) ->
     book_get(Pid, Bucket, Key, ?STD_TAG).
@@ -566,8 +573,16 @@ book_head(Pid, Bucket, Key) ->
     book_head(Pid, Bucket, Key, ?STD_TAG).
 
 book_headonly(Pid, Bucket, Key, SubKey) ->
-    gen_server:call(Pid, {head, Bucket, {Key, SubKey}, ?HEAD_TAG}, infinity).
+    gen_server:call(Pid,
+                    {head, Bucket, {Key, SubKey}, ?HEAD_TAG, false},
+                    infinity).
 
+
+book_sqn(Pid, Bucket, Key) ->
+    book_sqn(Pid, Bucket, Key, ?STD_TAG).
+
+book_sqn(Pid, Bucket, Key, Tag) ->
+    gen_server:call(Pid, {head, Bucket, Key, Tag, true}, infinity).
 
 -spec book_returnfolder(pid(), tuple()) -> {async, fun()}.
 
@@ -1298,7 +1313,7 @@ handle_call({get, Bucket, Key, Tag}, _From, State)
         update_statetimings(get, Timings2, State#state.get_countdown),
     {reply, Reply, State#state{get_timings = Timings, 
                                 get_countdown = CountDown}};
-handle_call({head, Bucket, Key, Tag}, _From, State) 
+handle_call({head, Bucket, Key, Tag, SQNOnly}, _From, State) 
                                         when State#state.head_lookup == true ->
     SWp = os:timestamp(),
     LK = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
@@ -1308,14 +1323,14 @@ handle_call({head, Bucket, Key, Tag}, _From, State)
                         State#state.head_only),
     {SWr, UpdTimingsP} = 
             update_timings(SWp, {head, pcl}, State#state.head_timings),
-    {LedgerMD, JournalCheckFrequency} =
+    {LedgerMD, SQN, JournalCheckFrequency} =
         case Head of
             not_present ->
-                {not_found, State#state.ink_checking};
+                {not_found, null, State#state.ink_checking};
             Head ->
                 case leveled_codec:striphead_to_v1details(Head) of
                     {_SeqN, tomb, _MH, _MD} ->
-                        {not_found, State#state.ink_checking};
+                        {not_found, null, State#state.ink_checking};
                     {SeqN, {active, TS}, _MH, MD} ->
                         case TS >= leveled_util:integer_now() of
                             true ->
@@ -1331,21 +1346,23 @@ handle_call({head, Bucket, Key, Tag}, _From, State)
                                                         LK,
                                                         SeqN) of
                                     {true, UppedFrequency} ->
-                                        {not_found, UppedFrequency};
+                                        {not_found, null, UppedFrequency};
                                     {false, ReducedFrequency} ->
-                                        {MD, ReducedFrequency}
+                                        {MD, SeqN, ReducedFrequency}
                                 end;
                             false ->
-                                {not_found, State#state.ink_checking}
+                                {not_found, null, State#state.ink_checking}
                         end
                 end
         end,
     Reply = 
-        case LedgerMD of
-            not_found ->
+        case {LedgerMD, SQNOnly} of
+            {not_found, _} ->
                 not_found;
-            _ ->
-                {ok, leveled_head:build_head(Tag, LedgerMD)}
+            {_, false} ->
+                {ok, leveled_head:build_head(Tag, LedgerMD)};
+            {_, true} ->
+                {ok, SQN}
         end,
     {_SW, UpdTimingsR} = 
         update_timings(SWr, {head, rsp}, UpdTimingsP),

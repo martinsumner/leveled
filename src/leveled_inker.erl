@@ -1060,7 +1060,7 @@ close_allmanifest([H|ManifestT]) ->
 open_all_manifest([], RootPath, CDBOpts) ->
     leveled_log:log("I0011", []),
     leveled_imanifest:add_entry([],
-                                start_new_activejournal(1, RootPath, CDBOpts),
+                                start_new_activejournal(0, RootPath, CDBOpts),
                                 true);
 open_all_manifest(Man0, RootPath, CDBOpts) ->
     Man1 = leveled_imanifest:to_list(Man0),
@@ -1512,9 +1512,9 @@ empty_manifest_test() ->
     ?assertMatch(not_present, ink_fetch(Ink2, key_converter("Key1"), 1)),
     {ok, SQN, Size} = 
         ink_put(Ink2, key_converter("Key1"), "Value1", {[], infinity}),
-    ?assertMatch(2, SQN),
+    ?assertMatch(1, SQN), % This is the first key - so should have SQN of 1
     ?assertMatch(true, Size > 0),
-    {ok, V} = ink_fetch(Ink2, key_converter("Key1"), 2),
+    {ok, V} = ink_fetch(Ink2, key_converter("Key1"), 1),
     ?assertMatch("Value1", V),
     ink_close(Ink2),
     clean_testdir(RootPath).
