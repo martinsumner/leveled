@@ -153,6 +153,9 @@ many_put_fetch_head(_Config) ->
                                         testutil:get_bucket(TestObject),
                                         testutil:get_key(TestObject),
                                         ?STD_TAG),
+    not_found = leveled_bookie:book_sqn(Bookie3,
+                                        testutil:get_bucket(TestObject),
+                                        testutil:get_key(TestObject)),
     testutil:check_formissingobject(Bookie3, "Bookie1", "MissingKey0123"),
     ok = leveled_bookie:book_destroy(Bookie3).
 
