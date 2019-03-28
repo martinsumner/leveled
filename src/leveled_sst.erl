@@ -512,7 +512,7 @@ starting({sst_new,
     leveled_log:log_timer("SST08",
                             [ActualFilename, Level, Summary#summary.max_sqn],
                             SW),
-    erlang:send_after(?STARTUP_TIMEOUT, self(), timeout),
+    gen_fsm:send_event(self(), timeout),
         % always want to have an opportunity to GC - so force the timeout to
         % occur whether or not there is an intervening message
     {reply,
