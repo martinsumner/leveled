@@ -512,12 +512,14 @@ starting({sst_new,
     leveled_log:log_timer("SST08",
                             [ActualFilename, Level, Summary#summary.max_sqn],
                             SW),
+    erlang:send_after(?STARTUP_TIMEOUT, self(), timeout),
+        % always want to have an opportunity to GC - so force the timeout to
+        % occur whether or not there is an intervening message
     {reply,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}, Bloom},
         reader,
         UpdState#state{blockindex_cache = BlockIndex,
-                        starting_pid = StartingPID},
-        ?STARTUP_TIMEOUT};
+                        starting_pid = StartingPID}};
 starting({sst_newlevelzero, RootPath, Filename,
                     Penciller, MaxSQN,
                     OptsSST, IdxModDate}, _From, State) -> 
@@ -715,6 +717,7 @@ reader(switch_levels, State) ->
 reader(timeout, State) ->
     case is_process_alive(State#state.starting_pid) of
         true ->
+            erlang:garbage_collect(self()),
             {next_state, reader, State};
         false ->
             {stop, normal, State}
