@@ -512,12 +512,14 @@ starting({sst_new,
     leveled_log:log_timer("SST08",
                             [ActualFilename, Level, Summary#summary.max_sqn],
                             SW),
+    erlang:send_after(?STARTUP_TIMEOUT, self(), tidyup_after_startup),
+        % always want to have an opportunity to GC - so force the timeout to
+        % occur whether or not there is an intervening message
     {reply,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}, Bloom},
         reader,
         UpdState#state{blockindex_cache = BlockIndex,
-                        starting_pid = StartingPID},
-        ?STARTUP_TIMEOUT};
+                        starting_pid = StartingPID}};
 starting({sst_newlevelzero, RootPath, Filename,
                     Penciller, MaxSQN,
                     OptsSST, IdxModDate}, _From, State) -> 
@@ -711,14 +713,7 @@ reader(close, _From, State) ->
 
 reader(switch_levels, State) ->
     erlang:garbage_collect(self()),
-    {next_state, reader, State};
-reader(timeout, State) ->
-    case is_process_alive(State#state.starting_pid) of
-        true ->
-            {next_state, reader, State};
-        false ->
-            {stop, normal, State}
-    end.
+    {next_state, reader, State}.
 
 
 delete_pending({get_kv, LedgerKey, Hash}, _From, State) ->
@@ -781,8 +776,14 @@ handle_sync_event(_Msg, _From, StateName, State) ->
 handle_event(_Msg, StateName, State) ->
     {next_state, StateName, State}.
 
-handle_info(_Msg, StateName, State) ->
-    {next_state, StateName, State}.
+handle_info(tidyup_after_startup, StateName, State) ->
+    case is_process_alive(State#state.starting_pid) of
+        true ->
+            erlang:garbage_collect(self()),
+            {next_state, StateName, State};
+        false ->
+            {stop, normal, State}
+    end.
 
 terminate(normal, delete_pending, _State) ->
     ok;
@@ -3352,9 +3353,6 @@ key_dominates_test() ->
 nonsense_coverage_test() ->
     {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
     ok = gen_fsm:send_all_state_event(Pid, nonsense),
-    ?assertMatch({next_state, reader, #state{}}, handle_info(nonsense,
-                                                                reader,
-                                                                #state{})),
     ?assertMatch({ok, reader, #state{}}, code_change(nonsense,
                                                         reader,
                                                         #state{},
@@ -3431,5 +3429,41 @@ stopstart_test() ->
     % check we can close in the starting state.  This may happen due to the 
     % fetcher on new level zero files working in a loop
     ok = sst_close(Pid).
+
+stop_whenstarter_stopped_test_() ->
+    {timeout, 60, fun() -> stop_whenstarter_stopped_testto() end}.
+
+stop_whenstarter_stopped_testto() ->
+    RP = spawn(fun receive_fun/0),
+    spawn(fun() -> start_sst_fun(RP) end),
+    TestFun =
+        fun(X, Acc) ->
+            case Acc of
+                false -> false;
+                true -> 
+                    timer:sleep(X),
+                    is_process_alive(RP)
+            end
+        end,
+    ?assertMatch(false, lists:foldl(TestFun, true, [10000, 2000, 2000, 2000])).
+    
+
+receive_fun() ->
+    receive
+        {sst_pid, SST_P} ->
+            timer:sleep(?STARTUP_TIMEOUT + 1000),
+            ?assertMatch(false, is_process_alive(SST_P))
+    end.
+
+start_sst_fun(ProcessToInform) ->
+    N = 3000,
+    KVL1 = lists:ukeysort(1, generate_randomkeys(N + 1, N, 1, 20)),
+    OptsSST = 
+        #sst_options{press_method=native,
+                        log_options=leveled_log:get_opts()},
+    {ok, P1, {_FK1, _LK1}, _Bloom1} = 
+        sst_new("test/test_area/", "level1_src", 1, KVL1, 6000, OptsSST),
+    ProcessToInform ! {sst_pid, P1}.
+
 
 -endif.
