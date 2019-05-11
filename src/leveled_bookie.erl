@@ -115,7 +115,7 @@
 -define(COMPRESSION_POINT, on_receipt).
 -define(LOG_LEVEL, info).
 -define(TIMING_SAMPLESIZE, 100).
--define(TIMING_SAMPLECOUNTDOWN, 10000).
+-define(TIMING_SAMPLECOUNTDOWN, 50000).
 -define(DUMMY, dummy). % Dummy key used for mput operations
 -define(MAX_KEYCHECK_FREQUENCY, 100).
 -define(MIN_KEYCHECK_FREQUENCY, 1).

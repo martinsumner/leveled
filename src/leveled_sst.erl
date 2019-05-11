@@ -84,7 +84,7 @@
 -define(DELETE_TIMEOUT, 10000).
 -define(TREE_TYPE, idxt).
 -define(TREE_SIZE, 4).
--define(TIMING_SAMPLECOUNTDOWN, 10000).
+-define(TIMING_SAMPLECOUNTDOWN, 20000).
 -define(TIMING_SAMPLESIZE, 100).
 -define(CACHE_SIZE, 32).
 -define(BLOCK_LENGTHS_LENGTH, 20).
@@ -113,7 +113,7 @@
 -export([sst_new/6,
             sst_new/8,
             sst_newlevelzero/7,
-            sst_open/3,
+            sst_open/4,
             sst_get/2,
             sst_get/3,
             sst_expandpointer/5,
@@ -192,7 +192,8 @@
                     starting_pid :: pid()|undefined,
                     fetch_cache = array:new([{size, ?CACHE_SIZE}]),
                     new_slots :: list()|undefined,
-                    deferred_startup_tuple :: tuple()|undefined}).
+                    deferred_startup_tuple :: tuple()|undefined,
+                    level :: non_neg_integer()|undefined}).
 
 -record(sst_timings, 
                 {sample_count = 0 :: integer(),
@@ -224,7 +225,7 @@
 %%% API
 %%%============================================================================
 
--spec sst_open(string(), string(), sst_options())
+-spec sst_open(string(), string(), sst_options(), non_neg_integer())
             -> {ok, pid(), 
                     {leveled_codec:ledger_key(), leveled_codec:ledger_key()}, 
                     binary()}.
@@ -236,10 +237,11 @@
 %% term order.
 %%
 %% The filename should include the file extension.
-sst_open(RootPath, Filename, OptsSST) ->
+sst_open(RootPath, Filename, OptsSST, Level) ->
     {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
     case gen_fsm:sync_send_event(Pid,
-                                    {sst_open, RootPath, Filename, OptsSST},
+                                    {sst_open,
+                                        RootPath, Filename, OptsSST, Level},
                                     infinity) of
         {ok, {SK, EK}, Bloom} ->
             {ok, Pid, {SK, EK}, Bloom}
@@ -456,8 +458,8 @@ sst_checkready(Pid) ->
 %% This simply prompts a GC on the PID now (as this may now be a long-lived
 %% file, so don't want all the startup state to be held on memory - want to
 %% proactively drop it
-sst_switchlevels(Pid, _NewLevel) ->
-    gen_fsm:send_event(Pid, switch_levels).
+sst_switchlevels(Pid, NewLevel) ->
+    gen_fsm:send_event(Pid, {switch_levels, NewLevel}).
 
 -spec sst_close(pid()) -> ok.
 %% @doc
@@ -481,7 +483,7 @@ sst_printtimings(Pid) ->
 init([]) ->
     {ok, starting, #state{}}.
 
-starting({sst_open, RootPath, Filename, OptsSST}, _From, State) ->
+starting({sst_open, RootPath, Filename, OptsSST, Level}, _From, State) ->
     leveled_log:save(OptsSST#sst_options.log_options),
     {UpdState, Bloom} = 
         read_file(Filename, State#state{root_path=RootPath}),
@@ -489,7 +491,7 @@ starting({sst_open, RootPath, Filename, OptsSST}, _From, State) ->
     {reply,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}, Bloom},
         reader,
-        UpdState};
+        UpdState#state{level = Level}};
 starting({sst_new, 
             RootPath, Filename, Level, 
             {SlotList, FirstKey}, MaxSQN,
@@ -519,14 +521,15 @@ starting({sst_new,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}, Bloom},
         reader,
         UpdState#state{blockindex_cache = BlockIndex,
-                        starting_pid = StartingPID}};
+                        starting_pid = StartingPID,
+                        level = Level}};
 starting({sst_newlevelzero, RootPath, Filename,
                     Penciller, MaxSQN,
                     OptsSST, IdxModDate}, _From, State) -> 
     DeferredStartupTuple = 
         {RootPath, Filename, Penciller, MaxSQN, OptsSST, IdxModDate},
     {reply, ok, starting,
-        State#state{deferred_startup_tuple = DeferredStartupTuple}};
+        State#state{deferred_startup_tuple = DeferredStartupTuple, level = 0}};
 starting(close, _From, State) ->
     % No file should have been created, so nothing to close.
     {stop, normal, ok, State}.
@@ -630,7 +633,9 @@ reader({get_kv, LedgerKey, Hash}, _From, State) ->
         fetch(LedgerKey, Hash, State, State#state.timings),
 
     {UpdTimings0, CountDown} = 
-        update_statetimings(UpdTimings, State#state.timings_countdown),
+        update_statetimings(UpdTimings,
+                            State#state.timings_countdown,
+                            State#state.level),
     
     {reply, Result, reader, UpdState#state{timings = UpdTimings0,
                                             timings_countdown = CountDown}};
@@ -689,7 +694,7 @@ reader(get_maxsequencenumber, _From, State) ->
     Summary = State#state.summary,
     {reply, Summary#summary.max_sqn, reader, State};
 reader(print_timings, _From, State) ->
-    log_timings(State#state.timings),
+    log_timings(State#state.timings, State#state.level),
     {reply, ok, reader, State};
 reader({set_for_delete, Penciller}, _From, State) ->
     leveled_log:log("SST06", [State#state.filename]),
@@ -711,9 +716,9 @@ reader(close, _From, State) ->
     ok = file:close(State#state.handle),
     {stop, normal, ok, State}.
 
-reader(switch_levels, State) ->
+reader({switch_levels, NewLevel}, State) ->
     erlang:garbage_collect(self()),
-    {next_state, reader, State}.
+    {next_state, reader, State#state{level = NewLevel}}.
 
 
 delete_pending({get_kv, LedgerKey, Hash}, _From, State) ->
@@ -2479,7 +2484,7 @@ log_buildtimings(Timings, LI) ->
                                 element(2, LI)]).
 
 
--spec update_statetimings(sst_timings(), integer()) 
+-spec update_statetimings(sst_timings(), integer(), non_neg_integer()) 
                                             -> {sst_timings(), integer()}.
 %% @doc
 %%
@@ -2490,23 +2495,27 @@ log_buildtimings(Timings, LI) ->
 %%
 %% Outside of sample windows the timings object should be set to the atom
 %% no_timing.  no_timing is a valid state for the cdb_timings type.
-update_statetimings(no_timing, 0) ->
+update_statetimings(no_timing, 0, _Level) ->
     {#sst_timings{}, 0};
-update_statetimings(Timings, 0) ->
+update_statetimings(Timings, 0, Level) ->
     case Timings#sst_timings.sample_count of 
         SC when SC >= ?TIMING_SAMPLESIZE ->
-            log_timings(Timings),
-            {no_timing, leveled_rand:uniform(2 * ?TIMING_SAMPLECOUNTDOWN)};
+            log_timings(Timings, Level),
+                % If file at lower level wait longer before tsking another
+                % sample
+            {no_timing,
+                leveled_rand:uniform(2 * ?TIMING_SAMPLECOUNTDOWN)};
         _SC ->
             {Timings, 0}
     end;
-update_statetimings(no_timing, N) ->
+update_statetimings(no_timing, N, _Level) ->
     {no_timing, N - 1}.
 
-log_timings(no_timing) ->
+log_timings(no_timing, _Level) ->
     ok;
-log_timings(Timings) ->
-    leveled_log:log("SST12", [Timings#sst_timings.sample_count, 
+log_timings(Timings, Level) ->
+    leveled_log:log("SST12", [Level,
+                                Timings#sst_timings.sample_count, 
                                 Timings#sst_timings.index_query_time,
                                 Timings#sst_timings.lookup_cache_time,
                                 Timings#sst_timings.slot_index_time,

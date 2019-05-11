@@ -252,7 +252,7 @@
                 ++ "pmem_fetch=~w merge_lists=~w build_slots=~w " 
                 ++ "build_summary=~w read_switch=~w"}},
     {"SST12",
-        {info, "SST Timings for sample_count=~w"
+        {info, "SST Timings at level=~w for sample_count=~w"
                 ++ " at timing points index_query_time=~w"
                 ++ " lookup_cache_time=~w slot_index_time=~w "
                 ++ " fetch_cache_time=~w slot_fetch_time=~w"
