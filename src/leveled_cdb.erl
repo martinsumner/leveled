@@ -128,7 +128,7 @@
 -define(WRITE_OPS, [binary, raw, read, write]).
 -define(PENDING_ROLL_WAIT, 30).
 -define(DELETE_TIMEOUT, 10000).
--define(TIMING_SAMPLECOUNTDOWN, 1000).
+-define(TIMING_SAMPLECOUNTDOWN, 5000).
 -define(TIMING_SAMPLESIZE, 100).
 -define(MAX_OBJECT_SIZE, 1000000000). 
     % 1GB but really should be much smaller than this

@@ -557,7 +557,7 @@ load_level(LevelIdx, Level, LoadFun, SQNFun) ->
     HigherLevelLoadFun =
         fun(ME, {L_Out, L_MaxSQN, FileList, BloomL}) ->
             FN = ME#manifest_entry.filename,
-            {P, Bloom} = LoadFun(FN),
+            {P, Bloom} = LoadFun(FN, LevelIdx),
             SQN = SQNFun(P),
             {[ME#manifest_entry{owner=P}|L_Out], 
                 max(SQN, L_MaxSQN),
@@ -567,7 +567,7 @@ load_level(LevelIdx, Level, LoadFun, SQNFun) ->
     LowerLevelLoadFun =
         fun({EK, ME}, {L_Out, L_MaxSQN, FileList, BloomL}) ->
             FN = ME#manifest_entry.filename,
-            {P, Bloom} = LoadFun(FN),
+            {P, Bloom} = LoadFun(FN, LevelIdx),
             SQN = SQNFun(P),
             {[{EK, ME#manifest_entry{owner=P}}|L_Out], 
                 max(SQN, L_MaxSQN),

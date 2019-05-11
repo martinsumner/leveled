@@ -109,13 +109,13 @@
 -define(CACHE_SIZE_JITTER, 25).
 -define(JOURNAL_SIZE_JITTER, 20).
 -define(ABSOLUTEMAX_JOURNALSIZE, 4000000000).
--define(LONG_RUNNING, 200000).
-    % An individual task taking > 200ms gets a specific log
+-define(LONG_RUNNING, 1000000).
+    % An individual task taking > 1s gets a specific log
 -define(COMPRESSION_METHOD, lz4).
 -define(COMPRESSION_POINT, on_receipt).
 -define(LOG_LEVEL, info).
 -define(TIMING_SAMPLESIZE, 100).
--define(TIMING_SAMPLECOUNTDOWN, 10000).
+-define(TIMING_SAMPLECOUNTDOWN, 50000).
 -define(DUMMY, dummy). % Dummy key used for mput operations
 -define(MAX_KEYCHECK_FREQUENCY, 100).
 -define(MIN_KEYCHECK_FREQUENCY, 1).

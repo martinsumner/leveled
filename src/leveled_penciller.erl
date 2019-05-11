@@ -234,7 +234,7 @@
 -define(PROMPT_WAIT_ONL0, 5).
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
 -define(COIN_SIDECOUNT, 5).
--define(SLOW_FETCH, 100000).
+-define(SLOW_FETCH, 500000). % Log a very slow fetch - longer than 500ms
 -define(ITERATOR_SCANWIDTH, 4).
 -define(TIMING_SAMPLECOUNTDOWN, 10000).
 -define(TIMING_SAMPLESIZE, 100).
@@ -1142,9 +1142,10 @@ start_from_file(PCLopts) ->
     %% Open manifest
     Manifest0 = leveled_pmanifest:open_manifest(RootPath),
     OpenFun =
-        fun(FN) ->
+        fun(FN, Level) ->
             {ok, Pid, {_FK, _LK}, Bloom} = 
-                leveled_sst:sst_open(sst_rootpath(RootPath), FN, OptsSST),
+                leveled_sst:sst_open(sst_rootpath(RootPath),
+                                        FN, OptsSST, Level),
             {Pid, Bloom}
         end,
     SQNFun = fun leveled_sst:sst_getmaxsequencenumber/1,
@@ -1161,7 +1162,8 @@ start_from_file(PCLopts) ->
                 leveled_log:log("P0015", [L0FN]),
                 L0Open = leveled_sst:sst_open(sst_rootpath(RootPath),
                                                 L0FN,
-                                                OptsSST),
+                                                OptsSST,
+                                                0),
                 {ok, L0Pid, {L0StartKey, L0EndKey}, Bloom} = L0Open,
                 L0SQN = leveled_sst:sst_getmaxsequencenumber(L0Pid),
                 L0Entry = #manifest_entry{start_key = L0StartKey,

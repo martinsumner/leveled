@@ -56,7 +56,7 @@
     {"B0008",
         {info, "Bucket list finds no more results"}},
     {"B0009",
-        {info, "Bucket list finds Bucket ~w"}},
+        {debug, "Bucket list finds Bucket ~w"}},
     {"B0011",
         {warn, "Call to destroy the store and so all files to be removed"}},
     {"B0013",
@@ -191,7 +191,7 @@
     {"PC006",
         {debug, "Work prompted but none needed"}},
     {"PC007",
-        {info, "Clerk prompting Penciller regarding manifest change"}},
+        {debug, "Clerk prompting Penciller regarding manifest change"}},
     {"PC008",
         {info, "Merge from level ~w to merge into ~w files below"}},
     {"PC009",
@@ -252,7 +252,7 @@
                 ++ "pmem_fetch=~w merge_lists=~w build_slots=~w " 
                 ++ "build_summary=~w read_switch=~w"}},
     {"SST12",
-        {info, "SST Timings for sample_count=~w"
+        {info, "SST Timings at level=~w for sample_count=~w"
                 ++ " at timing points index_query_time=~w"
                 ++ " lookup_cache_time=~w slot_index_time=~w "
                 ++ " fetch_cache_time=~w slot_fetch_time=~w"
@@ -269,9 +269,9 @@
         {info, "Unexpected failure to fetch value for Key=~w SQN=~w "
                 ++ "with reason ~w"}},
     {"I0002",
-        {info, "Journal snapshot ~w registered at SQN ~w"}},
+        {debug, "Journal snapshot ~w registered at SQN ~w"}},
     {"I0003",
-        {info, "Journal snapshot ~w released"}},
+        {debug, "Journal snapshot ~w released"}},
     {"I0004",
         {info, "Remaining number of journal snapshots is ~w"}},
     {"I0005",
