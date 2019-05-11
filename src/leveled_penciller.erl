@@ -234,7 +234,7 @@
 -define(PROMPT_WAIT_ONL0, 5).
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
 -define(COIN_SIDECOUNT, 5).
--define(SLOW_FETCH, 100000).
+-define(SLOW_FETCH, 500000). % Log a very slow fetch - longer than 500ms
 -define(ITERATOR_SCANWIDTH, 4).
 -define(TIMING_SAMPLECOUNTDOWN, 10000).
 -define(TIMING_SAMPLESIZE, 100).

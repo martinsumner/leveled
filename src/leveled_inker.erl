@@ -733,10 +733,14 @@ handle_cast({clerk_complete, ManifestSnippet, FilesToDelete}, State) ->
                             pending_removals=FilesToDelete,
                             compaction_pending=false}};
 handle_cast({release_snapshot, Snapshot}, State) ->
-    Rs = lists:keydelete(Snapshot, 1, State#state.registered_snapshots),
     leveled_log:log("I0003", [Snapshot]),
-    leveled_log:log("I0004", [length(Rs)]),
-    {noreply, State#state{registered_snapshots=Rs}};
+    case lists:keydelete(Snapshot, 1, State#state.registered_snapshots) of
+        [] ->
+            {noreply, State#state{registered_snapshots=[]}};
+        Rs ->
+            leveled_log:log("I0004", [length(Rs)]),
+            {noreply, State#state{registered_snapshots=Rs}}
+    end;
 handle_cast({log_level, LogLevel}, State) ->
     INC = State#state.clerk,
     ok = leveled_iclerk:clerk_loglevel(INC, LogLevel),
