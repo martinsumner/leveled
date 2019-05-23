@@ -208,6 +208,13 @@ save_manifest(Manifest, RootPath) ->
         % delete the previous one straight away.  Retain until enough have been
         % kept to make the probability of all being independently corrupted 
         % through separate events negligible
+    ok = remove_manifest(RootPath, GC_SQN),
+        % Sometimes we skip a SQN, so to GC all may need to clear up previous
+        % as well
+    ok = remove_manifest(RootPath, GC_SQN - 1).
+
+-spec remove_manifest(string(), integer()) -> ok.
+remove_manifest(RootPath, GC_SQN) ->
     LFP = filepath(RootPath, GC_SQN, current_manifest),
     ok = 
         case filelib:is_file(LFP) of
@@ -216,6 +223,7 @@ save_manifest(Manifest, RootPath) ->
             _ ->
                 ok
         end.
+
 
 -spec replace_manifest_entry(manifest(), integer(), integer(),
                                     list()|manifest_entry(),

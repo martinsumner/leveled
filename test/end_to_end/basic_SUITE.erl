@@ -618,6 +618,14 @@ load_and_count(JournalSize, BookiesMemSize, PencillerMemSize) ->
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
     {_, 300000} = testutil:check_bucket_stats(Bookie2, "Bucket"),
     ok = leveled_bookie:book_close(Bookie2),
+    ManifestFP =
+        leveled_pmanifest:filepath(filename:join(RootPath, ?LEDGER_FP),
+                                    manifest),
+    IsManifest = fun(FN) -> filename:extension(FN) == ".man" end,
+    {ok, RawManList} = file:list_dir(ManifestFP),
+    ManList = lists:filter(IsManifest, RawManList),
+    io:format("Length of manifest file list ~w~n", [length(ManList)]),
+    true = length(ManList) =< 5,
     testutil:reset_filestructure().
 
 load_and_count_withdelete(_Config) ->
