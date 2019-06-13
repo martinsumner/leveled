@@ -222,6 +222,9 @@
         {info, "Prompting deletions at ManifestSQN=~w"}},
     {"PC022",
         {info, "Storing reference to deletions at ManifestSQN=~w"}},
+    {"PC023",
+        {info, "At level=~w file_count=~w avg_mem=~w " 
+                ++ "file with most memory fn=~s p=~w mem=~w"}},
     {"PM002",
         {info, "Completed dump of L0 cache to list of l0cache_size=~w"}},
     
