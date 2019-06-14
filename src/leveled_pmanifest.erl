@@ -42,7 +42,8 @@
         check_for_work/2,
         is_basement/2,
         levelzero_present/1,
-        check_bloom/3
+        check_bloom/3,
+        report_manifest_level/2
         ]).      
 
 -export([
@@ -223,6 +224,50 @@ remove_manifest(RootPath, GC_SQN) ->
             _ ->
                 ok
         end.
+
+
+-spec report_manifest_level(manifest(), non_neg_integer()) ->
+                            {non_neg_integer(),
+                                non_neg_integer(),
+                                {string(), pid(), non_neg_integer()} |
+                                    undefined}.
+%% @doc
+%% Report on a level in the manifest
+%% - How many files in the level
+%% - The average size of the memory occupied by a files in the level
+%% - The file with the largest memory footprint {Filename, Pid, Memory}
+report_manifest_level(Manifest, LevelIdx) ->
+    Levels = Manifest#manifest.levels,
+    Level = array:get(LevelIdx, Levels),
+    {LevelSize, LevelList} = 
+        case is_list(Level) of
+            true ->
+                {length(Level), Level};
+            _ ->
+                {leveled_tree:tsize(Level), leveled_tree:to_list(Level)}
+        end,
+    AccMemFun = 
+        fun(MaybeME, {MemAcc, Max}) ->
+            ME = get_manifest_entry(MaybeME),
+            P = ME#manifest_entry.owner,
+            {memory, PM} = process_info(P, memory),
+            UpdMax = 
+                case Max of
+                    {_MaxFN, _MaxP, MaxPM} when MaxPM > PM ->
+                        Max;
+                    _ ->
+                        {ME#manifest_entry.filename, P, PM}
+                end,
+            {MemAcc + PM, UpdMax}
+        end,
+    case LevelSize of
+        0 ->
+            {0, 0, undefined};
+        _ ->
+            {TotalMem, BiggestMem} =
+                lists:foldl(AccMemFun, {0, undefined}, LevelList),
+            {LevelSize, TotalMem div LevelSize, BiggestMem}
+    end.
 
 
 -spec replace_manifest_entry(manifest(), integer(), integer(),
@@ -555,6 +600,15 @@ check_bloom(Manifest, FP, Hash) ->
 %%% Internal Functions
 %%%============================================================================
 
+-spec get_manifest_entry({tuple(), manifest_entry()}|manifest_entry())
+                            -> manifest_entry().
+%% @doc
+%% Manifest levels can have entries of two forms, use this if only interested
+%% in the latter form
+get_manifest_entry({_EndKey, ManifestEntry}) ->
+    ManifestEntry;
+get_manifest_entry(ManifestEntry) ->
+    ManifestEntry.
 
 %% All these internal functions that work on a level are also passed LeveIdx
 %% even if this is not presently relevant.  Currnetly levels are lists, but

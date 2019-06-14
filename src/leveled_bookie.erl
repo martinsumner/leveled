@@ -140,6 +140,7 @@
                 {compression_point, ?COMPRESSION_POINT},
                 {log_level, ?LOG_LEVEL},
                 {forced_logs, []},
+                {database_id, 0},
                 {override_functions, []},
                 {snapshot_timeout_short, ?SNAPTIMEOUT_SHORT},
                 {snapshot_timeout_long, ?SNAPTIMEOUT_LONG}]).
@@ -339,6 +340,8 @@
             %       "P0032", "SST12", "CDB19", "SST13", "I0019"]}
             % Will log all timing points even when log_level is not set to
             % support info
+        {database_id, non_neg_integer()} |
+            % Integer database ID to be used in logs
         {override_functions, list(leveled_head:appdefinable_function_tuple())} |
             % Provide a list of override functions that will be used for
             % user-defined tags
@@ -1131,6 +1134,8 @@ init([Opts]) ->
             leveled_log:set_loglevel(LogLevel),
             ForcedLogs = proplists:get_value(forced_logs, Opts),
             leveled_log:add_forcedlogs(ForcedLogs),
+            DatabaseID = proplists:get_value(database_id, Opts),
+            leveled_log:set_databaseid(DatabaseID),
 
             {InkerOpts, PencillerOpts} = set_options(Opts),
 

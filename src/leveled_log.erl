@@ -12,6 +12,7 @@
             log_randomtimer/4]).
 
 -export([set_loglevel/1, 
+            set_databaseid/1,
             add_forcedlogs/1,
             remove_forcedlogs/1,
             get_opts/0,
@@ -20,7 +21,8 @@
 
 
 -record(log_options, {log_level = info :: log_level(), 
-                        forced_logs = [] :: [string()]}).
+                        forced_logs = [] :: [string()],
+                        database_id = 0 :: non_neg_integer()}).
 
 -type log_level()  ::  debug | info | warn | error | critical.
 -type log_options() :: #log_options{}.
@@ -222,6 +224,9 @@
         {info, "Prompting deletions at ManifestSQN=~w"}},
     {"PC022",
         {info, "Storing reference to deletions at ManifestSQN=~w"}},
+    {"PC023",
+        {info, "At level=~w file_count=~w avg_mem=~w " 
+                ++ "file with most memory fn=~s p=~w mem=~w"}},
     {"PM002",
         {info, "Completed dump of L0 cache to list of l0cache_size=~w"}},
     
@@ -413,6 +418,14 @@ set_loglevel(LogLevel) when is_atom(LogLevel) ->
     UpdLO = LO#log_options{log_level = LogLevel},
     save(UpdLO).
 
+-spec set_databaseid(non_neg_integer()) -> ok.
+%% @doc
+%% Set the Database ID for this PID
+set_databaseid(DBid) when is_integer(DBid) ->
+    LO = get_opts(),
+    UpdLO = LO#log_options{database_id = DBid},
+    save(UpdLO).
+
 -spec add_forcedlogs(list(string())) -> ok.
 %% @doc
 %% Add a forced log to the list of forced logs. this will cause the log of this
@@ -471,13 +484,16 @@ log(LogReference, Subs) ->
 log(LogRef, Subs, SupportedLogLevels) ->
     case lists:keyfind(LogRef, 1, ?LOGBASE) of
         {LogRef, {LogLevel, LogText}} ->
-            case should_i_log(LogLevel, SupportedLogLevels, LogRef) of
+            LogOpts = get_opts(),
+            case should_i_log(LogLevel, SupportedLogLevels, LogRef, LogOpts) of
                 true ->
+                    DBid = LogOpts#log_options.database_id,
                     io:format(format_time() ++ " "
-                                ++ atom_to_list(LogLevel) ++ " "
-                                ++ LogRef ++ " ~w "
+                                ++ " log_level="
+                                ++ atom_to_list(LogLevel) ++ " log_ref="
+                                ++ LogRef ++ " db_id=~w pid=~w "
                                 ++ LogText ++ "~n",
-                              [self()|Subs]);
+                                [DBid|[self()|Subs]]);
                 false ->
                     ok
             end;
@@ -486,7 +502,10 @@ log(LogRef, Subs, SupportedLogLevels) ->
     end.
 
 should_i_log(LogLevel, Levels, LogRef) ->
-    #log_options{log_level = CurLevel, forced_logs = ForcedLogs} = get_opts(),
+    should_i_log(LogLevel, Levels, LogRef, get_opts()).
+
+should_i_log(LogLevel, Levels, LogRef, LogOpts) ->
+    #log_options{log_level = CurLevel, forced_logs = ForcedLogs} = LogOpts,
     case lists:member(LogRef, ForcedLogs) of
         true ->
             true;
@@ -505,10 +524,11 @@ is_active_level([_|T], C, L) -> is_active_level(T, C, L).
 log_timer(LogReference, Subs, StartTime) ->
     log_timer(LogReference, Subs, StartTime, ?LOG_LEVELS).
 
-log_timer(LogRef, Subs, StartTime, SupportedLogLevels) ->
+log_timer(LogRef, Subs, StartTime, SupportedLevels) ->
     case lists:keyfind(LogRef, 1, ?LOGBASE) of
         {LogRef, {LogLevel, LogText}} ->
-            case should_i_log(LogLevel, SupportedLogLevels, LogRef) of
+            LogOpts = get_opts(),
+            case should_i_log(LogLevel, SupportedLevels, LogRef, LogOpts) of
                 true ->
                     DurationText =
                         case timer:now_diff(os:timestamp(), StartTime) of
@@ -519,12 +539,14 @@ log_timer(LogRef, Subs, StartTime, SupportedLogLevels) ->
                             US ->
                                 " with us_duration=" ++ integer_to_list(US)
                         end,
+                    DBid = LogOpts#log_options.database_id,
                     io:format(format_time() ++ " "
-                                ++ atom_to_list(LogLevel) ++ " "
-                                ++ LogRef ++ " ~w "
+                                ++ " log_level="
+                                ++ atom_to_list(LogLevel) ++ " log_ref="
+                                ++ LogRef ++ " db_id=~w pid=~w "
                                 ++ LogText
                                 ++ DurationText ++ "~n",
-                                [self()|Subs]);
+                                [DBid|[self()|Subs]]);
                 false ->
                     ok
             end;

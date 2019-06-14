@@ -176,6 +176,13 @@ handle_work({SrcLevel, Manifest}, State) ->
     {leveled_pmanifest:get_manifest_sqn(UpdManifest), EntriesToDelete}.
 
 merge(SrcLevel, Manifest, RootPath, OptsSST) ->
+    case leveled_pmanifest:report_manifest_level(Manifest, SrcLevel + 1) of
+        {0, 0, undefined} ->
+            ok;
+        {FCnt, AvgMem, {MaxFN, MaxP, MaxMem}} ->
+            leveled_log:log("PC023",
+                            [SrcLevel + 1, FCnt, AvgMem, MaxFN, MaxP, MaxMem])
+    end,
     Src = leveled_pmanifest:mergefile_selector(Manifest, SrcLevel),
     NewSQN = leveled_pmanifest:get_manifest_sqn(Manifest) + 1,
     SinkList = leveled_pmanifest:merge_lookup(Manifest,
