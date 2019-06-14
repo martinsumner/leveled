@@ -115,6 +115,7 @@
 -define(COMPRESSION_POINT, on_receipt).
 -define(LOG_LEVEL, info).
 -define(TIMING_SAMPLESIZE, 100).
+-define(DEFAULT_DBID, 65536).
 -define(TIMING_SAMPLECOUNTDOWN, 50000).
 -define(DUMMY, dummy). % Dummy key used for mput operations
 -define(MAX_KEYCHECK_FREQUENCY, 100).
@@ -140,7 +141,7 @@
                 {compression_point, ?COMPRESSION_POINT},
                 {log_level, ?LOG_LEVEL},
                 {forced_logs, []},
-                {database_id, 0},
+                {database_id, ?DEFAULT_DBID},
                 {override_functions, []},
                 {snapshot_timeout_short, ?SNAPTIMEOUT_SHORT},
                 {snapshot_timeout_long, ?SNAPTIMEOUT_LONG}]).
