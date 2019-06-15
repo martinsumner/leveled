@@ -99,6 +99,10 @@
             fetch_value/2,
             journal_notfound/4]).
 
+-ifdef(TEST).
+-export([book_returnactors/1]).
+-endif.
+
 -include_lib("eunit/include/eunit.hrl").
 
 -define(CACHE_SIZE, 2500).
@@ -1114,6 +1118,11 @@ book_addlogs(Pid, ForcedLogs) ->
 book_removelogs(Pid, ForcedLogs) ->
     gen_server:cast(Pid, {remove_logs, ForcedLogs}).
 
+%% @doc
+%% Return the Inker and Penciller - {ok, Inker, Penciller}.  Used only in tests
+book_returnactors(Pid) ->
+    gen_server:call(Pid, return_actors).
+
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -1444,6 +1453,8 @@ handle_call(destroy, _From, State=#state{is_snapshot=Snp}) when Snp == false ->
     lists:foreach(fun(DirPath) -> delete_path(DirPath) end, InkPathList),
     lists:foreach(fun(DirPath) -> delete_path(DirPath) end, PCLPathList),
     {stop, normal, ok, State};
+handle_call(return_actors, _From, State) ->
+    {reply, {ok, State#state.inker, State#state.penciller}, State};
 handle_call(Msg, _From, State) ->
     {reply, {unsupported_message, element(1, Msg)}, State}.
 
@@ -2680,6 +2691,7 @@ folder_cache_test(CacheSize) ->
     {ok, Bookie1} = book_start([{root_path, RootPath},
                                     {max_journalsize, 1000000},
                                     {cache_size, CacheSize}]),
+    _ = book_returnactors(Bookie1),
     ObjL1 = generate_multiple_objects(400, 1),
     ObjL2 = generate_multiple_objects(400, 1),
     % Put in all the objects with a TTL in the future

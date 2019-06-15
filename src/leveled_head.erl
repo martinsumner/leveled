@@ -263,8 +263,8 @@ riak_extract_metadata(delete, Size) ->
     {{delete, null, null, Size}, []};
 riak_extract_metadata(ObjBin, Size) ->
     {VclockBin, SibBin, LastMods} = riak_metadata_from_binary(ObjBin),
-    {{SibBin, 
-            VclockBin, 
+    {{binary:copy(SibBin), 
+            binary:copy(VclockBin), 
             erlang:phash2(lists:sort(binary_to_term(VclockBin))), 
             Size},
         LastMods}.
