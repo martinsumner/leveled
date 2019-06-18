@@ -8,7 +8,8 @@
         crossbucket_aae/1,
         handoff/1,
         dollar_bucket_index/1,
-        dollar_key_index/1
+        dollar_key_index/1,
+        bigobject_memorycheck/1
             ]).
 
 all() -> [
@@ -17,7 +18,8 @@ all() -> [
             crossbucket_aae,
             handoff,
             dollar_bucket_index,
-            dollar_key_index
+            dollar_key_index,
+            bigobject_memorycheck
             ].
 
 -define(MAGIC, 53). % riak_kv -> riak_object
@@ -1208,3 +1210,30 @@ dollar_bucket_index(_Config) ->
     ok = leveled_bookie:book_close(Bookie1),
     testutil:reset_filestructure().
 
+
+bigobject_memorycheck(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    {ok, Bookie} = leveled_bookie:book_start(RootPath,
+                                              100,
+                                              100000000,
+                                              testutil:sync_strategy()),
+    Bucket = <<"B">>,
+    IndexGen = fun() -> [] end,
+    ObjPutFun = 
+        fun(I) ->
+            Key = base64:encode(<<I:32/integer>>),
+            Value = leveled_rand:rand_bytes(1024 * 1024),
+                % a big object each time!
+            {Obj, Spc} = testutil:set_object(Bucket, Key, Value, IndexGen, []),
+            testutil:book_riakput(Bookie, Obj, Spc)
+        end,
+    lists:foreach(ObjPutFun, lists:seq(1, 600)),
+    {ok, _Ink, Pcl} = leveled_bookie:book_returnactors(Bookie),
+    {binary, BL} = process_info(Pcl, binary),
+    {memory, M0} = process_info(Pcl, memory),
+    B0 = lists:foldl(fun({_R, Sz, _C}, Acc) -> Acc + Sz end, 0, BL),
+    io:format("Pcl binary memory ~w ~w memory ~w~n", [B0, length(BL), M0]),
+    true = B0 < 500 * 4000,
+    true = M0 < 500 * 4000,
+    ok = leveled_bookie:book_close(Bookie),
+    testutil:reset_filestructure(). 
