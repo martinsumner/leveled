@@ -1214,8 +1214,8 @@ dollar_bucket_index(_Config) ->
 bigobject_memorycheck(_Config) ->
     RootPath = testutil:reset_filestructure(),
     {ok, Bookie} = leveled_bookie:book_start(RootPath,
-                                              100,
-                                              100000000,
+                                              200,
+                                              1000000000,
                                               testutil:sync_strategy()),
     Bucket = <<"B">>,
     IndexGen = fun() -> [] end,
@@ -1227,7 +1227,7 @@ bigobject_memorycheck(_Config) ->
             {Obj, Spc} = testutil:set_object(Bucket, Key, Value, IndexGen, []),
             testutil:book_riakput(Bookie, Obj, Spc)
         end,
-    lists:foreach(ObjPutFun, lists:seq(1, 600)),
+    lists:foreach(ObjPutFun, lists:seq(1, 700)),
     {ok, _Ink, Pcl} = leveled_bookie:book_returnactors(Bookie),
     {binary, BL} = process_info(Pcl, binary),
     {memory, M0} = process_info(Pcl, memory),
@@ -1235,5 +1235,54 @@ bigobject_memorycheck(_Config) ->
     io:format("Pcl binary memory ~w ~w memory ~w~n", [B0, length(BL), M0]),
     true = B0 < 500 * 4000,
     true = M0 < 500 * 4000,
+    % All processes
+    {_TotalCDBBinMem, _TotalCDBProcesses} = cdb_memory_check(),
     ok = leveled_bookie:book_close(Bookie),
+    {ok, BookieR} = leveled_bookie:book_start(RootPath,
+                                              2000,
+                                              1000000000,
+                                              testutil:sync_strategy()),
+    {RS_TotalCDBBinMem, _RS_TotalCDBProcesses} = cdb_memory_check(),
+    true = RS_TotalCDBBinMem < 1024 * 1024,
+        % No binary object references exist after startup
+    ok = leveled_bookie:book_close(BookieR),
     testutil:reset_filestructure(). 
+
+
+cdb_memory_check() ->
+    TotalCDBProcesses =
+        lists:filter(fun(P) ->
+                        {dictionary, PD} = 
+                            process_info(P, dictionary),
+                        case lists:keyfind('$initial_call', 1, PD) of
+                            {'$initial_call',{leveled_cdb,init,1}} ->
+                                true;
+                            _ ->
+                                false
+                        end
+                        end,
+                        processes()),
+    TotalCDBBinMem =
+        lists:foldl(fun(P, Acc) ->
+                        BinMem = calc_total_binary_memory(P),
+                        io:format("Memory for pid ~w is ~w~n", [P, BinMem]),
+                        BinMem + Acc
+                    end,
+                        0,
+                        TotalCDBProcesses),
+    io:format("Total binary memory ~w in ~w CDB processes~n",
+                [TotalCDBBinMem, length(TotalCDBProcesses)]),
+    {TotalCDBBinMem, TotalCDBProcesses}.
+
+calc_total_binary_memory(Pid) ->
+    {binary, BL} = process_info(Pid, binary),
+    TBM = lists:foldl(fun({_R, Sz, _C}, Acc) -> Acc + Sz end, 0, BL),
+    case TBM > 1000000 of
+        true ->
+            FilteredBL =
+                lists:filter(fun(BMD) -> element(2, BMD) > 1024 end, BL),
+            io:format("Big-ref details for ~w ~w~n", [Pid, FilteredBL]);
+        false ->
+            ok
+    end,
+    TBM.

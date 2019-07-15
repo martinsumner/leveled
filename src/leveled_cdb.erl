@@ -1301,6 +1301,7 @@ scan_over_file(Handle, Position, FilterFun, Output, LastKey) ->
             end,
             % Bring file back to that position
             {ok, Position} = file:position(Handle, {bof, Position}),
+            garbage_collect(),
             {eof, Output};
         {Key, ValueAsBin, KeyLength, ValueLength} ->
             NewPosition = case Key of
@@ -1316,10 +1317,12 @@ scan_over_file(Handle, Position, FilterFun, Output, LastKey) ->
                             Output,
                             fun extract_valueandsize/1) of
                 {stop, UpdOutput} ->
+                    garbage_collect(),
                     {Position, UpdOutput};
                 {loop, UpdOutput} ->
                     case NewPosition of
                         eof ->
+                            garbage_collect(),
                             {eof, UpdOutput};
                         _ ->
                             scan_over_file(Handle,

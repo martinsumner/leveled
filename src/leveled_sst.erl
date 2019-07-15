@@ -1277,6 +1277,7 @@ open_reader(Filename) ->
     <<FileVersion:8/integer, 
         SlotsLength:32/integer, 
         SummaryLength:32/integer>> = Lengths,
+    ok = file:advise(Handle, 9, SlotsLength, will_need),
     {ok, SummaryBin} = file:pread(Handle, SlotsLength + 9, SummaryLength),
     {Handle, FileVersion, SummaryBin}.
 
