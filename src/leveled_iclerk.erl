@@ -361,13 +361,12 @@ handle_cast(scoring_complete, State) ->
             ok = CloseFun(FilterServer),
             ok = leveled_inker:ink_clerkcomplete(State#state.inker,
                                                     ManifestSlice,
-                                                    FilesToDelete),
-            {noreply, State#state{scoring_state = undefined}};
+                                                    FilesToDelete);
         false ->
             ok = CloseFun(FilterServer),
-            ok = leveled_inker:ink_clerkcomplete(State#state.inker, [], []),
-            {noreply, State#state{scoring_state = undefined}}
-    end;
+            ok = leveled_inker:ink_clerkcomplete(State#state.inker, [], [])
+    end,
+    {noreply, State#state{scoring_state = undefined}, hibernate};
 handle_cast({trim, PersistedSQN, ManifestAsList}, State) ->
     FilesToDelete = 
         leveled_imanifest:find_persistedentries(PersistedSQN, ManifestAsList),
