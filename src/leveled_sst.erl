@@ -486,7 +486,9 @@ init([]) ->
 starting({sst_open, RootPath, Filename, OptsSST, Level}, _From, State) ->
     leveled_log:save(OptsSST#sst_options.log_options),
     {UpdState, Bloom} = 
-        read_file(Filename, State#state{root_path=RootPath}),
+        read_file(Filename,
+                    State#state{root_path=RootPath},
+                    OptsSST#sst_options.pagecache_level >= Level),
     Summary = UpdState#state.summary,
     {reply,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}, Bloom},
@@ -509,7 +511,8 @@ starting({sst_new,
     YBQ = Level =< 2,
     {UpdState, Bloom} = 
         read_file(ActualFilename,
-                    State#state{root_path=RootPath, yield_blockquery=YBQ}),
+                    State#state{root_path=RootPath, yield_blockquery=YBQ},
+                    OptsSST#sst_options.pagecache_level >= Level),
     Summary = UpdState#state.summary,
     leveled_log:log_timer("SST08",
                             [ActualFilename, Level, Summary#summary.max_sqn],
@@ -573,7 +576,8 @@ starting(complete_l0startup, State) ->
                                 % Important to empty this from state rather
                                 % than carry it through to the next stage
                                 new_slots=undefined,
-                                deferred_startup_tuple=undefined}),
+                                deferred_startup_tuple=undefined},
+                    true),
     Summary = UpdState#state.summary,
     Time4 = timer:now_diff(os:timestamp(), SW4),
     
@@ -1215,9 +1219,10 @@ write_file(RootPath, Filename, SummaryBin, SlotsBin,
                 filename:join(RootPath, FinalName)),
     FinalName.
 
-read_file(Filename, State) ->
+read_file(Filename, State, LoadPageCache) ->
     {Handle, FileVersion, SummaryBin} = 
-        open_reader(filename:join(State#state.root_path, Filename)),
+        open_reader(filename:join(State#state.root_path, Filename),
+                    LoadPageCache),
     UpdState0 = imp_fileversion(FileVersion, State),
     {Summary, Bloom, SlotList} = read_table_summary(SummaryBin),
     BlockIndexCache = array:new([{size, Summary#summary.size},
@@ -1269,13 +1274,18 @@ imp_fileversion(VersionInt, State) ->
         end,
     UpdState1.
 
-open_reader(Filename) ->
+open_reader(Filename, LoadPageCache) ->
     {ok, Handle} = file:open(Filename, [binary, raw, read]),
     {ok, Lengths} = file:pread(Handle, 0, 9),
     <<FileVersion:8/integer, 
         SlotsLength:32/integer, 
         SummaryLength:32/integer>> = Lengths,
-    ok = file:advise(Handle, 9, SlotsLength, will_need),
+    case LoadPageCache of
+        true ->
+            file:advise(Handle, 9, SlotsLength, will_need);
+        false ->
+            ok
+    end,
     {ok, SummaryBin} = file:pread(Handle, SlotsLength + 9, SummaryLength),
     {Handle, FileVersion, SummaryBin}.
 

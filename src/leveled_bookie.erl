@@ -127,6 +127,8 @@
 -define(OPEN_LASTMOD_RANGE, {0, infinity}).
 -define(SNAPTIMEOUT_SHORT, 900). % 15 minutes
 -define(SNAPTIMEOUT_LONG, 43200). % 12 hours
+-define(SST_PAGECACHELEVEL_NOLOOKUP, 1).
+-define(SST_PAGECACHELEVEL_LOOKUP, 4).
 -define(OPTION_DEFAULTS,
             [{root_path, undefined},
                 {snapshot_bookie, undefined},
@@ -1177,15 +1179,22 @@ init([Opts]) ->
                     ok
             end,
             
-            {HeadOnly, HeadLookup} = 
+            {HeadOnly, HeadLookup, SSTPageCacheLevel} = 
                 case proplists:get_value(head_only, Opts) of 
                     false ->
-                        {false, true};
+                        {false, true, ?SST_PAGECACHELEVEL_LOOKUP};
                     with_lookup ->
-                        {true, true};
+                        {true, true, ?SST_PAGECACHELEVEL_LOOKUP};
                     no_lookup ->
-                        {true, false}
+                        {true, false, ?SST_PAGECACHELEVEL_NOLOOKUP}
                 end,
+            % Override the default page cache level - we want to load into the
+            % page cache many levels if we intend to support lookups, and only
+            % levels 0 and 1 otherwise
+            SSTOpts = PencillerOpts#penciller_options.sst_options,
+            SSTOpts0 = SSTOpts#sst_options{pagecache_level = SSTPageCacheLevel},
+            PencillerOpts0 =
+                PencillerOpts#penciller_options{sst_options = SSTOpts0},
             
             State0 = #state{cache_size=CacheSize,
                                 is_snapshot=false,
@@ -1193,7 +1202,7 @@ init([Opts]) ->
                                 head_lookup = HeadLookup},
 
             {Inker, Penciller} = 
-                startup(InkerOpts, PencillerOpts, State0),
+                startup(InkerOpts, PencillerOpts0, State0),
 
             NewETS = ets:new(mem, [ordered_set]),
             leveled_log:log("B0001", [Inker, Penciller]),
