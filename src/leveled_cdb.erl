@@ -58,7 +58,8 @@
                 {gen_fsm, sync_send_event, 2},
                 {gen_fsm, send_event, 2},
                 {gen_fsm, sync_send_all_state_event, 3},
-                {gen_fsm, send_all_state_event, 2}]}).
+                {gen_fsm, send_all_state_event, 2},
+                {gen_fsm, reply, 2}]}).
 -endif.
 
 -ifdef(slow_test).
@@ -441,7 +442,7 @@ starting({open_writer, Filename}, _From, State) ->
                             last_position=LastPosition,
                             last_key=LastKey,
                             filename=Filename,
-                            hashtree=HashTree}
+                            hashtree=HashTree},
     {reply, ok, writer, State0, hibernate};
 starting({open_reader, Filename}, _From, State) ->
     leveled_log:save(State#state.log_options),
@@ -450,7 +451,7 @@ starting({open_reader, Filename}, _From, State) ->
     State0 = State#state{handle=Handle,
                             last_key=LastKey,
                             filename=Filename,
-                            hash_index=Index}
+                            hash_index=Index},
     {reply, ok, reader, State0, hibernate};
 starting({open_reader, Filename, LastKey}, _From, State) ->
     leveled_log:save(State#state.log_options),
@@ -459,7 +460,7 @@ starting({open_reader, Filename, LastKey}, _From, State) ->
     State0 = State#state{handle=Handle,
                             last_key=LastKey,
                             filename=Filename,
-                            hash_index=Index}
+                            hash_index=Index},
     {reply, ok, reader, State0, hibernate}.
 
 writer({get_kv, Key}, _From, State) ->

@@ -717,8 +717,7 @@ reader(close, _From, State) ->
     {stop, normal, ok, State}.
 
 reader({switch_levels, NewLevel}, State) ->
-    erlang:garbage_collect(self()),
-    {next_state, reader, State#state{level = NewLevel}}.
+    {next_state, reader, State#state{level = NewLevel}, hibernate}.
 
 
 delete_pending({get_kv, LedgerKey, Hash}, _From, State) ->
@@ -792,8 +791,7 @@ handle_info(tidyup_after_startup, delete_pending, State) ->
 handle_info(tidyup_after_startup, StateName, State) ->
     case is_process_alive(State#state.starting_pid) of
         true ->
-            erlang:garbage_collect(self()),
-            {next_state, StateName, State};
+            {next_state, StateName, State, hibernate};
         false ->
             {stop, normal, State}
     end.
