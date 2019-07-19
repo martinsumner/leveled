@@ -547,7 +547,8 @@ size_comparison_score(KeySizeList, FilterFun, FilterServer, MaxSQN) ->
     end.
 
 
-fetch_inbatches([], _BatchSize, _CDB, CheckedList) ->
+fetch_inbatches([], _BatchSize, CDB, CheckedList) ->
+    ok = leveled_cdb:cdb_clerkcomplete(CDB),
     CheckedList;
 fetch_inbatches(PositionList, BatchSize, CDB, CheckedList) ->
     {Batch, Tail} = if
@@ -698,6 +699,11 @@ compact_files([Batch|T], CDBopts, ActiveJournal0,
                                                 ActiveJournal0,
                                                 ManSlice0,
                                                 PressMethod),
+    % The inker's clerk will no longer need these (potentially large) binaries,
+    % so force garbage collection at this point.  This will mean when we roll
+    % each CDB file there will be no remaining references to the binaries that
+    % have been transferred and the memory can immediately be cleared
+    garbage_collect(),
     compact_files(T, CDBopts, ActiveJournal1, FilterFun, FilterServer, MaxSQN,
                                 RStrategy, PressMethod, ManSlice1).
 
@@ -762,7 +768,7 @@ filter_output(KVCs, FilterFun, FilterServer, MaxSQN, ReloadStrategy) ->
                             % strategy
                             [KVC0|Acc];
                         {false, retain} ->
-                            % If we have a retain startegy, it can't be
+                            % If we have a retain strategy, it can't be
                             % discarded - but the value part is no longer
                             % required as this version has been replaced
                             {JK0, JV0} =
