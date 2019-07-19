@@ -675,7 +675,7 @@ reader({get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
                         {_ID, none} ->
                             Cache;
                         {ID, Header} ->
-                            array:set(ID - 1, Header, Cache)
+                            array:set(ID - 1, binary:copy(Header), Cache)
                     end
                 end,
             BlockIdxC0 = lists:foldl(FoldFun, State#state.blockindex_cache, BIC),
@@ -1064,7 +1064,9 @@ fetch(LedgerKey, Hash, State, Timings0) ->
             {Result, Header} = 
                 binaryslot_get(SlotBin, LedgerKey, Hash, PressMethod, IdxModDate),
             BlockIndexCache = 
-                array:set(SlotID - 1, Header, State#state.blockindex_cache),
+                array:set(SlotID - 1,
+                            binary:copy(Header),
+                            State#state.blockindex_cache),
             {_SW3, Timings3} = 
                 update_timings(SW2, Timings2, noncached_block, false),
             {Result, 
