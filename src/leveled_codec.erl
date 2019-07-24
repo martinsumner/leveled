@@ -35,6 +35,7 @@
         from_inkerkv/2,
         from_journalkey/1,
         revert_to_keydeltas/2,
+        is_compaction_candidate/1,
         split_inkvalue/1,
         check_forinkertype/2,
         get_tagstrategy/2,
@@ -559,7 +560,13 @@ check_forinkertype(_LedgerKey, head_only) ->
 check_forinkertype(_LedgerKey, _Object) ->
     ?INKT_STND.
 
-
+-spec is_compaction_candidate(journal_key()) -> boolean().
+%% @doc
+%% Only journal keys with standard objects should be scored for compaction
+is_compaction_candidate({_SQN, ?INKT_STND, _LK}) ->
+    true;
+is_compaction_candidate(_OtherJKType) ->
+    false.
 
 
 %%%============================================================================
