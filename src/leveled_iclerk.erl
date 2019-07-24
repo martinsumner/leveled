@@ -518,15 +518,22 @@ size_comparison_score(KeySizeList, FilterFun, FilterServer, MaxSQN) ->
     FoldFunForSizeCompare =
         fun(KS, {ActSize, RplSize}) ->
             case KS of
-                {{SQN, _Type, PK}, Size} ->
-                    Check = FilterFun(FilterServer, PK, SQN),
-                    case {Check, SQN > MaxSQN} of
-                        {true, _} ->
+                {{SQN, Type, PK}, Size} ->
+                    MayScore =
+                        leveled_codec:is_compaction_candidate({SQN, Type, PK}),
+                    case MayScore of
+                        false ->
                             {ActSize + Size - ?CRC_SIZE, RplSize};
-                        {false, true} ->
-                            {ActSize + Size - ?CRC_SIZE, RplSize};
-                        _ ->
-                            {ActSize, RplSize + Size - ?CRC_SIZE}
+                        true ->
+                            Check = FilterFun(FilterServer, PK, SQN),
+                            case {Check, SQN > MaxSQN} of
+                                {true, _} ->
+                                    {ActSize + Size - ?CRC_SIZE, RplSize};
+                                {false, true} ->
+                                    {ActSize + Size - ?CRC_SIZE, RplSize};
+                                _ ->
+                                    {ActSize, RplSize + Size - ?CRC_SIZE}
+                            end
                     end;
                 _ ->
                     % There is a key which is not in expected format
@@ -1174,13 +1181,13 @@ compact_singlefile_totwosmallfiles_testto() ->
 
 size_score_test() ->
     KeySizeList = 
-        [{{1, "INK", "Key1"}, 104},
-            {{2, "INK", "Key2"}, 124},
-            {{3, "INK", "Key3"}, 144},
-            {{4, "INK", "Key4"}, 154},
-            {{5, "INK", "Key5", "Subk1"}, 164},
-            {{6, "INK", "Key6"}, 174},
-            {{7, "INK", "Key7"}, 184}],
+        [{{1, ?INKT_STND, "Key1"}, 104},
+            {{2, ?INKT_STND, "Key2"}, 124},
+            {{3, ?INKT_STND, "Key3"}, 144},
+            {{4, ?INKT_STND, "Key4"}, 154},
+            {{5, ?INKT_STND, "Key5", "Subk1"}, 164},
+            {{6, ?INKT_STND, "Key6"}, 174},
+            {{7, ?INKT_STND, "Key7"}, 184}],
     MaxSQN = 6,
     CurrentList = ["Key1", "Key4", "Key5", "Key6"],
     FilterFun = fun(L, K, _SQN) -> lists:member(K, L) end,

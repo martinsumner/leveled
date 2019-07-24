@@ -11,7 +11,8 @@
             aae_missingjournal/1,
             aae_bustedjournal/1,
             journal_compaction_bustedjournal/1,
-            close_duringcompaction/1
+            close_duringcompaction/1,
+            allkeydelta_journal_multicompact/1
             ]).
 
 all() -> [
@@ -23,7 +24,8 @@ all() -> [
             aae_missingjournal,
             aae_bustedjournal,
             journal_compaction_bustedjournal,
-            close_duringcompaction
+            close_duringcompaction,
+            allkeydelta_journal_multicompact
             ].
 
 
@@ -597,6 +599,62 @@ busted_journal_test(MaxJournalSize, PressMethod, PressPoint, Bust) ->
     testutil:reset_filestructure(10000).
 
 
+allkeydelta_journal_multicompact(_Config) ->
+    % Simply confirms that none of this causes a crash
+    RootPath = testutil:reset_filestructure(),
+    B = <<"test_bucket">>,
+    StartOpts1 = [{root_path, RootPath},
+                    {max_journalsize, 50000000},
+                    {max_run_length, 6},
+                    {sync_strategy, testutil:sync_strategy()}],
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+    {KSpcL1, _V1} = testutil:put_indexed_objects(Bookie1, B, 40000),
+    {KSpcL2, V2} = testutil:put_altered_indexed_objects(Bookie1,
+                                                        B,
+                                                        KSpcL1,
+                                                        false),
+    compact_and_wait(Bookie1, 0),
+    compact_and_wait(Bookie1, 0),
+    {ok, FileList1} = 
+        file:list_dir(
+            filename:join(RootPath, "journal/journal_files/post_compact")),
+    io:format("Number of files after compaction ~w~n", [length(FileList1)]),
+    compact_and_wait(Bookie1, 0),
+    {ok, FileList2} = 
+        file:list_dir(
+            filename:join(RootPath, "journal/journal_files/post_compact")),
+    io:format("Number of files after compaction ~w~n", [length(FileList2)]),
+    true = FileList1 == FileList2,
+
+    ok = testutil:check_indexed_objects(Bookie1,
+                                        B,
+                                        KSpcL1 ++ KSpcL2,
+                                        V2),
+
+    ok = leveled_bookie:book_close(Bookie1),
+    leveled_penciller:clean_testdir(RootPath ++ "/ledger"),
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
+
+    ok = testutil:check_indexed_objects(Bookie2,
+                                        B,
+                                        KSpcL1 ++ KSpcL2,
+                                        V2),
+    
+    {KSpcL3, V3} = testutil:put_altered_indexed_objects(Bookie2,
+                                                        B,
+                                                        KSpcL2,
+                                                        false),
+    compact_and_wait(Bookie2, 0),
+
+    ok = testutil:check_indexed_objects(Bookie2,
+                                        B,
+                                        KSpcL1 ++ KSpcL2 ++ KSpcL3,
+                                        V3),
+
+
+    ok = leveled_bookie:book_close(Bookie2),
+    testutil:reset_filestructure(10000).
+
 
 rotating_object_check(BookOpts, B, NumberOfObjects) ->
     {ok, Book1} = leveled_bookie:book_start(BookOpts),
@@ -645,6 +703,9 @@ rotating_object_check(BookOpts, B, NumberOfObjects) ->
     {ok, KSpcL1 ++ KSpcL2 ++ KSpcL3 ++ KSpcL4, V4}.
 
 compact_and_wait(Book) ->
+    compact_and_wait(Book, 20000).
+
+compact_and_wait(Book, WaitForDelete) ->
     ok = leveled_bookie:book_compactjournal(Book, 30000),
     F = fun leveled_bookie:book_islastcompactionpending/1,
     lists:foldl(fun(X, Pending) ->
@@ -660,7 +721,7 @@ compact_and_wait(Book) ->
                     true,
                     lists:seq(1, 15)),
     io:format("Waiting for journal deletes~n"),
-    timer:sleep(20000).
+    timer:sleep(WaitForDelete).
 
 restart_from_blankledger(BookOpts, B_SpcL) ->
     leveled_penciller:clean_testdir(proplists:get_value(root_path, BookOpts) ++
