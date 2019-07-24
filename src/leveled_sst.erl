@@ -486,7 +486,9 @@ init([]) ->
 starting({sst_open, RootPath, Filename, OptsSST, Level}, _From, State) ->
     leveled_log:save(OptsSST#sst_options.log_options),
     {UpdState, Bloom} = 
-        read_file(Filename, State#state{root_path=RootPath}),
+        read_file(Filename,
+                    State#state{root_path=RootPath},
+                    OptsSST#sst_options.pagecache_level >= Level),
     Summary = UpdState#state.summary,
     {reply,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}, Bloom},
@@ -509,7 +511,8 @@ starting({sst_new,
     YBQ = Level =< 2,
     {UpdState, Bloom} = 
         read_file(ActualFilename,
-                    State#state{root_path=RootPath, yield_blockquery=YBQ}),
+                    State#state{root_path=RootPath, yield_blockquery=YBQ},
+                    OptsSST#sst_options.pagecache_level >= Level),
     Summary = UpdState#state.summary,
     leveled_log:log_timer("SST08",
                             [ActualFilename, Level, Summary#summary.max_sqn],
@@ -573,7 +576,8 @@ starting(complete_l0startup, State) ->
                                 % Important to empty this from state rather
                                 % than carry it through to the next stage
                                 new_slots=undefined,
-                                deferred_startup_tuple=undefined}),
+                                deferred_startup_tuple=undefined},
+                    true),
     Summary = UpdState#state.summary,
     Time4 = timer:now_diff(os:timestamp(), SW4),
     
@@ -671,7 +675,7 @@ reader({get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
                         {_ID, none} ->
                             Cache;
                         {ID, Header} ->
-                            array:set(ID - 1, Header, Cache)
+                            array:set(ID - 1, binary:copy(Header), Cache)
                     end
                 end,
             BlockIdxC0 = lists:foldl(FoldFun, State#state.blockindex_cache, BIC),
@@ -717,8 +721,7 @@ reader(close, _From, State) ->
     {stop, normal, ok, State}.
 
 reader({switch_levels, NewLevel}, State) ->
-    erlang:garbage_collect(self()),
-    {next_state, reader, State#state{level = NewLevel}}.
+    {next_state, reader, State#state{level = NewLevel}, hibernate}.
 
 
 delete_pending({get_kv, LedgerKey, Hash}, _From, State) ->
@@ -792,8 +795,7 @@ handle_info(tidyup_after_startup, delete_pending, State) ->
 handle_info(tidyup_after_startup, StateName, State) ->
     case is_process_alive(State#state.starting_pid) of
         true ->
-            erlang:garbage_collect(self()),
-            {next_state, StateName, State};
+            {next_state, StateName, State, hibernate};
         false ->
             {stop, normal, State}
     end.
@@ -1062,7 +1064,9 @@ fetch(LedgerKey, Hash, State, Timings0) ->
             {Result, Header} = 
                 binaryslot_get(SlotBin, LedgerKey, Hash, PressMethod, IdxModDate),
             BlockIndexCache = 
-                array:set(SlotID - 1, Header, State#state.blockindex_cache),
+                array:set(SlotID - 1,
+                            binary:copy(Header),
+                            State#state.blockindex_cache),
             {_SW3, Timings3} = 
                 update_timings(SW2, Timings2, noncached_block, false),
             {Result, 
@@ -1217,9 +1221,10 @@ write_file(RootPath, Filename, SummaryBin, SlotsBin,
                 filename:join(RootPath, FinalName)),
     FinalName.
 
-read_file(Filename, State) ->
+read_file(Filename, State, LoadPageCache) ->
     {Handle, FileVersion, SummaryBin} = 
-        open_reader(filename:join(State#state.root_path, Filename)),
+        open_reader(filename:join(State#state.root_path, Filename),
+                    LoadPageCache),
     UpdState0 = imp_fileversion(FileVersion, State),
     {Summary, Bloom, SlotList} = read_table_summary(SummaryBin),
     BlockIndexCache = array:new([{size, Summary#summary.size},
@@ -1271,12 +1276,18 @@ imp_fileversion(VersionInt, State) ->
         end,
     UpdState1.
 
-open_reader(Filename) ->
+open_reader(Filename, LoadPageCache) ->
     {ok, Handle} = file:open(Filename, [binary, raw, read]),
     {ok, Lengths} = file:pread(Handle, 0, 9),
     <<FileVersion:8/integer, 
         SlotsLength:32/integer, 
         SummaryLength:32/integer>> = Lengths,
+    case LoadPageCache of
+        true ->
+            file:advise(Handle, 9, SlotsLength, will_need);
+        false ->
+            ok
+    end,
     {ok, SummaryBin} = file:pread(Handle, SlotsLength + 9, SummaryLength),
     {Handle, FileVersion, SummaryBin}.
 
@@ -2117,7 +2128,7 @@ crc_check_slot(FullBin) ->
         CRC32H:32/integer,
         Rest/binary>> = FullBin,
     PosBL0 = min(PosBL, byte_size(FullBin) - 12), 
-        % If the position has been bit-flipped to beyond the maximum paossible
+        % If the position has been bit-flipped to beyond the maximum possible
         % length, use the maximum possible length
     <<Header:PosBL0/binary, Blocks/binary>> = Rest,
     case {hmac(Header), hmac(PosBL0)} of 
@@ -2619,16 +2630,20 @@ generate_randomkeys(_Seqn, 0, Acc, _BucketLow, _BucketHigh) ->
 generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
     BRand = leveled_rand:uniform(BRange),
     BNumber =
-        lists:flatten(io_lib:format("K~4..0B", [BucketLow + BRand])),
+        lists:flatten(io_lib:format("B~6..0B", [BucketLow + BRand])),
     KNumber =
-        lists:flatten(io_lib:format("K~6..0B", [leveled_rand:uniform(1000)])),
+        lists:flatten(io_lib:format("K~8..0B", [leveled_rand:uniform(1000000)])),
     LK = leveled_codec:to_ledgerkey("Bucket" ++ BNumber, "Key" ++ KNumber, o),
     Chunk = leveled_rand:rand_bytes(64),
     {_B, _K, MV, _H, _LMs} =
         leveled_codec:generate_ledgerkv(LK, Seqn, Chunk, 64, infinity),
+    MD = element(4, MV),
+    ?assertMatch(undefined, element(3, MD)),
+    MD0 = [{magic_md, [<<0:32/integer>>, base64:encode(Chunk)]}],
+    MV0 = setelement(4, MV, setelement(3, MD, MD0)),
     generate_randomkeys(Seqn + 1,
                         Count - 1,
-                        [{LK, MV}|Acc],
+                        [{LK, MV0}|Acc],
                         BucketLow,
                         BRange).
 
@@ -2649,6 +2664,7 @@ generate_indexkey(Term, Count) ->
                                     "Key" ++ integer_to_list(Count), 
                                     Count, 
                                     infinity).
+
 
 form_slot_test() ->
     % If a skip key happens, mustn't switch to loookup by accident as could be
@@ -3232,13 +3248,17 @@ simple_persisted_test_bothformats() ->
     simple_persisted_tester(fun testsst_new/6).
 
 simple_persisted_tester(SSTNewFun) ->
+    Level = 3,
     {RP, Filename} = {?TEST_AREA, "simple_test"},
     KVList0 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 32, 1, 20),
     KVList1 = lists:ukeysort(1, KVList0),
     [{FirstKey, _FV}|_Rest] = KVList1,
     {LastKey, _LV} = lists:last(KVList1),
     {ok, Pid, {FirstKey, LastKey}, _Bloom} = 
-        SSTNewFun(RP, Filename, 1, KVList1, length(KVList1), native),
+        SSTNewFun(RP, Filename, Level, KVList1, length(KVList1), native),
+    
+    B0 = check_binary_references(Pid),
+
     SW0 = os:timestamp(),
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({K, V}, sst_get(Pid, K))
@@ -3335,8 +3355,43 @@ simple_persisted_tester(SSTNewFun) ->
     FetchedListB4 = lists:foldl(FoldFun, [], FetchListB4),
     ?assertMatch([{Eight000Key, _v800}], FetchedListB4),
     
+    B1 = check_binary_references(Pid),
+
     ok = sst_close(Pid),
+
+    io:format(user, "Reopen SST file~n", []),
+    OptsSST = #sst_options{press_method=native,
+                            log_options=leveled_log:get_opts()},
+    {ok, OpenP, {FirstKey, LastKey}, _Bloom} =
+        sst_open(RP, Filename ++ ".sst", OptsSST, Level),
+
+    B2 = check_binary_references(OpenP),
+
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sst_get(OpenP, K)),
+                        ?assertMatch({K, V}, sst_get(OpenP, K))
+                        end,
+                    KVList1),
+
+    garbage_collect(OpenP),
+    B3 = check_binary_references(OpenP),
+    ?assertMatch(0, B2), % Opens with an empty cache
+    ?assertMatch(true, B3 > B2), % Now has headers in cache
+    ?assertMatch(false, B3 > B0 * 2), 
+        % Not significantly bigger than when created new
+    ?assertMatch(false, B3 > B1 * 2), 
+        % Not significantly bigger than when created new
+
+    ok = sst_close(OpenP),
     ok = file:delete(filename:join(RP, Filename ++ ".sst")).
+
+check_binary_references(Pid) ->
+    garbage_collect(Pid),
+    {binary, BinList} = process_info(Pid, binary),
+    TotalBinMem = 
+        lists:foldl(fun({_R, BM, _RC}, Acc) -> Acc + BM end, 0, BinList),
+    io:format(user, "Total binary memory ~w~n", [TotalBinMem]),
+    TotalBinMem.
 
 key_dominates_test() ->
     KV1 = {{o, "Bucket", "Key1", null}, {5, {active, infinity}, 0, []}},

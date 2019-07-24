@@ -51,7 +51,8 @@
                             :: leveled_sst:press_method(),
                         log_options = leveled_log:get_opts() 
                             :: leveled_log:log_options(),
-                        max_sstslots = 256 :: pos_integer()}).
+                        max_sstslots = 256 :: pos_integer(),
+                        pagecache_level = 1 :: pos_integer()}).
 
 -record(inker_options,
                         {cdb_max_size :: integer() | undefined,

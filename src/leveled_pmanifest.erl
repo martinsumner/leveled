@@ -152,6 +152,11 @@ copy_manifest(Manifest) ->
 %% manifest.  The PidFun should be able to return the Pid of a file process
 %% (having started one).  The SQNFun will return the max sequence number
 %% of that file, if passed the Pid that owns it.
+%%
+%% The manifest is started from the basement first, and then the higher levels
+%% as the page cache will be loaded with each file, and it would be
+%% preferable to have the higher levels in the cache if memory is insufficient 
+%% to load each level
 load_manifest(Manifest, LoadFun, SQNFun) ->
     UpdateLevelFun =
         fun(LevelIdx, {AccMaxSQN, AccMan, AccFL}) ->
@@ -171,7 +176,7 @@ load_manifest(Manifest, LoadFun, SQNFun) ->
         end,
     lists:foldl(UpdateLevelFun, 
                 {0, Manifest, []}, 
-                lists:seq(0, Manifest#manifest.basement)).
+                lists:reverse(lists:seq(0, Manifest#manifest.basement))).
 
 -spec close_manifest(manifest(), fun()) -> ok.
 %% @doc
