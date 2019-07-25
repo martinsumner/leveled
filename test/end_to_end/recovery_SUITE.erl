@@ -603,11 +603,14 @@ allkeydelta_journal_multicompact(_Config) ->
     % Simply confirms that none of this causes a crash
     RootPath = testutil:reset_filestructure(),
     B = <<"test_bucket">>,
-    StartOpts1 = [{root_path, RootPath},
-                    {max_journalsize, 50000000},
-                    {max_run_length, 6},
-                    {sync_strategy, testutil:sync_strategy()}],
-    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+    StartOptsFun = 
+        fun(JOC) ->
+            [{root_path, RootPath},
+                {max_journalobjectcount, JOC},
+                {max_run_length, 6},
+                {sync_strategy, testutil:sync_strategy()}]
+        end,
+    {ok, Bookie1} = leveled_bookie:book_start(StartOptsFun(16000)),
     {KSpcL1, _V1} = testutil:put_indexed_objects(Bookie1, B, 40000),
     {KSpcL2, V2} = testutil:put_altered_indexed_objects(Bookie1,
                                                         B,
@@ -633,26 +636,47 @@ allkeydelta_journal_multicompact(_Config) ->
 
     ok = leveled_bookie:book_close(Bookie1),
     leveled_penciller:clean_testdir(RootPath ++ "/ledger"),
-    {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
+    io:format("Restart without ledger~n"),
+    {ok, Bookie2} = leveled_bookie:book_start(StartOptsFun(24000)),
 
     ok = testutil:check_indexed_objects(Bookie2,
                                         B,
                                         KSpcL1 ++ KSpcL2,
                                         V2),
     
-    {KSpcL3, V3} = testutil:put_altered_indexed_objects(Bookie2,
+    {KSpcL3, _V3} = testutil:put_altered_indexed_objects(Bookie2,
                                                         B,
                                                         KSpcL2,
                                                         false),
     compact_and_wait(Bookie2, 0),
-
-    ok = testutil:check_indexed_objects(Bookie2,
-                                        B,
-                                        KSpcL1 ++ KSpcL2 ++ KSpcL3,
-                                        V3),
-
+    {ok, FileList3} = 
+        file:list_dir(
+            filename:join(RootPath, "journal/journal_files/post_compact")),
+    io:format("Number of files after compaction ~w~n", [length(FileList3)]),
 
     ok = leveled_bookie:book_close(Bookie2),
+
+    io:format("Restart with smaller journal object count~n"),
+    {ok, Bookie3} = leveled_bookie:book_start(StartOptsFun(8000)),
+
+    {KSpcL4, V4} = testutil:put_altered_indexed_objects(Bookie3,
+                                                        B,
+                                                        KSpcL3,
+                                                        false),
+    
+    compact_and_wait(Bookie3, 0),
+    
+    ok = testutil:check_indexed_objects(Bookie3,
+                                        B,
+                                        KSpcL1 ++ KSpcL2 ++ KSpcL3 ++ KSpcL4,
+                                        V4),
+    {ok, FileList4} = 
+        file:list_dir(
+            filename:join(RootPath, "journal/journal_files/post_compact")),
+    io:format("Number of files after compaction ~w~n", [length(FileList4)]),
+    true = length(FileList4) >= length(FileList3) + 4,
+
+    ok = leveled_bookie:book_close(Bookie3),
     testutil:reset_filestructure(10000).
 
 

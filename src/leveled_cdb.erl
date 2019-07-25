@@ -138,10 +138,12 @@
 -record(state, {hashtree,
                 last_position :: integer() | undefined,
                 last_key = empty,
+                current_count = 0 :: non_neg_integer(),
                 hash_index = {} :: tuple(),
                 filename :: string() | undefined,
                 handle :: file:fd() | undefined,
-                max_size :: integer() | undefined,
+                max_size :: pos_integer() | undefined,
+                max_count :: pos_integer() | undefined,
                 binary_mode = false :: boolean(),
                 delete_point = 0 :: integer(),
                 inker :: pid() | undefined,
@@ -425,15 +427,24 @@ cdb_clerkcomplete(Pid) ->
 %%%============================================================================
 
 init([Opts]) ->
-    MaxSize = case Opts#cdb_options.max_size of
-                    undefined ->
-                        ?MAX_FILE_SIZE;
-                    M ->
-                        M
-                end,
+    MaxSize = 
+        case Opts#cdb_options.max_size of
+            undefined ->
+                ?MAX_FILE_SIZE;
+            MS ->
+                MS
+        end,
+    MaxCount =
+        case Opts#cdb_options.max_count of
+            undefined ->
+                ?MAX_FILE_SIZE div 1000;
+            MC ->
+                MC
+        end,
     {ok,
         starting,
         #state{max_size=MaxSize,
+                max_count=MaxCount,
                 binary_mode=Opts#cdb_options.binary_mode,
                 waste_path=Opts#cdb_options.waste_path,
                 sync_strategy=Opts#cdb_options.sync_strategy,
@@ -447,6 +458,7 @@ starting({open_writer, Filename}, _From, State) ->
     leveled_log:log("CDB13", [WriteOps]),
     {ok, Handle} = file:open(Filename, WriteOps),
     State0 = State#state{handle=Handle,
+                            current_count = size_hashtree(HashTree),
                             sync_strategy = UpdStrategy,
                             last_position=LastPosition,
                             last_key=LastKey,
@@ -490,47 +502,63 @@ writer({key_check, Key}, _From, State) ->
         writer,
         State};
 writer({put_kv, Key, Value}, _From, State) ->
-    Result = put(State#state.handle,
-                    Key,
-                    Value,
-                    {State#state.last_position, State#state.hashtree},
-                    State#state.binary_mode,
-                    State#state.max_size,
-                    State#state.last_key == empty),
-    case Result of
-        roll ->
-            %% Key and value could not be written
+    NewCount = State#state.current_count + 1,
+    case NewCount >= State#state.max_count of
+        true ->
             {reply, roll, writer, State};
-        {UpdHandle, NewPosition, HashTree} ->
-            ok =
-                case State#state.sync_strategy of
-                    riak_sync ->
-                        file:datasync(UpdHandle);
-                    _ ->
-                        ok
-                end,
-            {reply, ok, writer, State#state{handle=UpdHandle,
-                                                last_position=NewPosition,
-                                                last_key=Key,
-                                                hashtree=HashTree}}
+        false ->
+            Result = put(State#state.handle,
+                            Key,
+                            Value,
+                            {State#state.last_position, State#state.hashtree},
+                            State#state.binary_mode,
+                            State#state.max_size,
+                            State#state.last_key == empty),
+            case Result of
+                roll ->
+                    %% Key and value could not be written
+                    {reply, roll, writer, State};
+                {UpdHandle, NewPosition, HashTree} ->
+                    ok =
+                        case State#state.sync_strategy of
+                            riak_sync ->
+                                file:datasync(UpdHandle);
+                            _ ->
+                                ok
+                        end,
+                    {reply, ok, writer, State#state{handle=UpdHandle,
+                                                    current_count=NewCount,
+                                                    last_position=NewPosition,
+                                                    last_key=Key,
+                                                    hashtree=HashTree}}
+            end
     end;
 writer({mput_kv, []}, _From, State) ->
     {reply, ok, writer, State};
 writer({mput_kv, KVList}, _From, State) ->
-    Result = mput(State#state.handle,
-                    KVList,
-                    {State#state.last_position, State#state.hashtree},
-                    State#state.binary_mode,
-                    State#state.max_size),
-    case Result of
-        roll ->
-            %% Keys and values could not be written
+    NewCount = State#state.current_count + length(KVList),
+    TooMany = NewCount >= State#state.max_count,
+    NotEmpty = State#state.current_count > 0,
+    case (TooMany and NotEmpty) of
+        true ->
             {reply, roll, writer, State};
-        {UpdHandle, NewPosition, HashTree, LastKey} ->
-            {reply, ok, writer, State#state{handle=UpdHandle,
-                                                last_position=NewPosition,
-                                                last_key=LastKey,
-                                                hashtree=HashTree}}
+        false ->
+            Result = mput(State#state.handle,
+                            KVList,
+                            {State#state.last_position, State#state.hashtree},
+                            State#state.binary_mode,
+                            State#state.max_size),
+            case Result of
+                roll ->
+                    %% Keys and values could not be written
+                    {reply, roll, writer, State};
+                {UpdHandle, NewPosition, HashTree, LastKey} ->
+                    {reply, ok, writer, State#state{handle=UpdHandle,
+                                                    current_count=NewCount,
+                                                    last_position=NewPosition,
+                                                    last_key=LastKey,
+                                                    hashtree=HashTree}}
+            end
     end;
 writer(cdb_complete, _From, State) ->
     NewName = determine_new_filename(State#state.filename),
@@ -1774,6 +1802,9 @@ add_position_tohashtree(HashTree, Index, Hash, Position) ->
 
 new_hashtree() ->
     ets:new(hashtree, [ordered_set]).
+
+size_hashtree(HashTree) ->
+    ets:info(HashTree, size).
 
 to_list(HashTree, Index) ->
     to_list(HashTree, Index, {0, -1}, []).

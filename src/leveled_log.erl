@@ -305,7 +305,7 @@
     {"I0016",
         {info, "Writing new version of manifest for manifestSQN=~w"}},
     {"I0017",
-        {info, "At SQN=~w journal has filename ~s"}},
+        {debug, "At SQN=~w journal has filename ~s"}},
     {"I0018",
         {warn, "We're doomed - intention recorded to destroy all files"}},
     {"I0019",
