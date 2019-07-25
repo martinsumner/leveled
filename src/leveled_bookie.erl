@@ -134,6 +134,7 @@
                 {snapshot_bookie, undefined},
                 {cache_size, ?CACHE_SIZE},
                 {max_journalsize, 1000000000},
+                {max_journalobjectcount, 200000},
                 {max_sstslots, 256},
                 {sync_strategy, none},
                 {head_only, false},
@@ -230,8 +231,12 @@
             % configured values
             % The minimum value is 100 - any lower value will be ignored
         {max_journalsize, pos_integer()} |
-            % The maximum size of a journal file in bytes.  The abolute 
+            % The maximum size of a journal file in bytes.  The absolute 
             % maximum must be 4GB due to 4 byte file pointers being used
+        {max_journalobjectcount, pos_integer()} |
+            % The maximum size of the journal by count of the objects.  The
+            % journal must remian within the limit set by both this figures and
+            % the max_journalsize
         {max_sstslots, pos_integer()} |
             % The maximum number of slots in a SST file.  All testing is done
             % at a size of 256 (except for Quickcheck tests}, altering this
@@ -1644,6 +1649,11 @@ set_options(Opts) ->
     MaxJournalSize = 
         min(?ABSOLUTEMAX_JOURNALSIZE, 
                 MaxJournalSize0 - erlang:phash2(self()) rem JournalSizeJitter),
+    MaxJournalCount0 =
+        proplists:get_value(max_journalobjectcount, Opts),
+    JournalCountJitter = MaxJournalCount0 div (100 div ?JOURNAL_SIZE_JITTER),
+    MaxJournalCount = 
+        MaxJournalCount0 - erlang:phash2(self()) rem JournalCountJitter,
 
     SyncStrat = proplists:get_value(sync_strategy, Opts),
     WRP = proplists:get_value(waste_retention_period, Opts),
@@ -1697,6 +1707,7 @@ set_options(Opts) ->
                         compress_on_receipt = CompressOnReceipt,
                         cdb_options = 
                             #cdb_options{max_size=MaxJournalSize,
+                                        max_count=MaxJournalCount,
                                         binary_mode=true,
                                         sync_strategy=SyncStrat,
                                         log_options=leveled_log:get_opts()}},

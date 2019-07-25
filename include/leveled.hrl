@@ -38,7 +38,8 @@
                         bloom :: binary() | none | undefined}).
 
 -record(cdb_options,
-                        {max_size :: integer() | undefined,
+                        {max_size :: pos_integer() | undefined,
+                        max_count :: pos_integer() | undefined,
                         file_path :: string() | undefined,
                         waste_path :: string() | undefined,
                         binary_mode = false :: boolean(),

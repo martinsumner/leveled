@@ -57,11 +57,24 @@
 
 
 %% @doc The approximate size (in bytes) when a Journal file should be rolled.
-%% Normally keep this as around the size of o(100K) objects.  Default is 500MB
+%% Normally keep this as around the size of o(100K) objects.  Default is 1GB.
+%% Note that on startup an actual maximum size will be chosen which varies by
+%% a random factor from this point - to avoid coordination of roll events
+%% across vnodes.
 {mapping, "multi_backend.$name.leveled.journal_size", "riak_kv.multi_backend", [
-  {default, 500000000},
-  {datatype, integer},
-  hidden
+  {default, 1000000000},
+  {datatype, integer}
+]}.
+
+%% @doc The approximate size (in bytes) when a Journal file should be rolled.
+%% This time measured in object count, a file will be rolled if either the
+%% object count or the journal size limit is reached.  Default 200K.
+%% Note that on startup an actual maximum size will be chosen which varies by
+%% a random factor from this point - to avoid coordination of roll events
+%% across vnodes.
+{mapping, "multi_backend.$name.leveled.journal_objectcount", "riak_kv.multi_backend", [
+  {default, 200000},
+  {datatype, integer}
 ]}.
 
 %% @doc The number of journal compactions per vnode per day
