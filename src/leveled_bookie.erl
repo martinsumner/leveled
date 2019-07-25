@@ -144,6 +144,7 @@
                 {maxrunlength_compactionpercentage, 70.0},
                 {reload_strategy, []},
                 {max_pencillercachesize, ?MAX_PCL_CACHE_SIZE},
+                {ledger_preloadpagecache_level, ?SST_PAGECACHELEVEL_LOOKUP},
                 {compression_method, ?COMPRESSION_METHOD},
                 {compression_point, ?COMPRESSION_POINT},
                 {log_level, ?LOG_LEVEL},
@@ -320,6 +321,10 @@
             % The minimum size 400 - attempt to set this vlaue lower will be 
             % ignored.  As a rule the value should be at least 4 x the Bookie's
             % cache size
+        {ledger_preloadpagecache_level, pos_integer()} |
+            % To which level of the ledger should the ledger contents be
+            % pre-loaded into the pagecache (using fadvise on creation and
+            % startup)
         {compression_method, native|lz4} |
             % Compression method and point allow Leveled to be switched from
             % using bif based compression (zlib) to using nif based compression
@@ -1183,13 +1188,15 @@ init([Opts]) ->
                 false ->
                     ok
             end,
-            
+
+            PageCacheLevel = proplists:get_value(ledger_preloadpagecache_level, Opts),    
+
             {HeadOnly, HeadLookup, SSTPageCacheLevel} = 
                 case proplists:get_value(head_only, Opts) of 
                     false ->
-                        {false, true, ?SST_PAGECACHELEVEL_LOOKUP};
+                        {false, true, PageCacheLevel};
                     with_lookup ->
-                        {true, true, ?SST_PAGECACHELEVEL_LOOKUP};
+                        {true, true, PageCacheLevel};
                     no_lookup ->
                         {true, false, ?SST_PAGECACHELEVEL_NOLOOKUP}
                 end,
