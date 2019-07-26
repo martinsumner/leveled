@@ -793,24 +793,24 @@ filter_output(KVCs, FilterFun, FilterServer, MaxSQN, ReloadStrategy) ->
 write_values([], _CDBopts, Journal0, ManSlice0, _PressMethod) ->
     {Journal0, ManSlice0};
 write_values(KVCList, CDBopts, Journal0, ManSlice0, PressMethod) ->
-    KVList = lists:map(fun({K, V, _C}) ->
+    KVList = 
+        lists:map(fun({K, V, _C}) ->
                             % Compress the value as part of compaction
-                            {K, leveled_codec:maybe_compress(V, PressMethod)}
-                            end,
-                        KVCList),
-    {ok, Journal1} = case Journal0 of
-                            null ->
-                                {TK, _TV} = lists:nth(1, KVList),
-                                {SQN, _LK} = leveled_codec:from_journalkey(TK),
-                                FP = CDBopts#cdb_options.file_path,
-                                FN = leveled_inker:filepath(FP,
-                                                            SQN,
-                                                            compact_journal),
-                                leveled_log:log("IC009", [FN]),
-                                leveled_cdb:cdb_open_writer(FN, CDBopts);
-                            _ ->
-                                {ok, Journal0}
-                        end,
+                        {K, leveled_codec:maybe_compress(V, PressMethod)}
+                    end,
+                    KVCList),
+    {ok, Journal1} = 
+        case Journal0 of
+            null ->
+                {TK, _TV} = lists:nth(1, KVList),
+                {SQN, _LK} = leveled_codec:from_journalkey(TK),
+                FP = CDBopts#cdb_options.file_path,
+                FN = leveled_inker:filepath(FP, SQN, compact_journal),
+                leveled_log:log("IC009", [FN]),
+                leveled_cdb:cdb_open_writer(FN, CDBopts);
+            _ ->
+                {ok, Journal0}
+        end,
     R = leveled_cdb:cdb_mput(Journal1, KVList),
     case R of
         ok ->

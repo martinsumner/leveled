@@ -12,7 +12,8 @@
             aae_bustedjournal/1,
             journal_compaction_bustedjournal/1,
             close_duringcompaction/1,
-            allkeydelta_journal_multicompact/1
+            allkeydelta_journal_multicompact/1,
+            recompact_keydeltas/1
             ]).
 
 all() -> [
@@ -25,7 +26,8 @@ all() -> [
             aae_bustedjournal,
             journal_compaction_bustedjournal,
             close_duringcompaction,
-            allkeydelta_journal_multicompact
+            allkeydelta_journal_multicompact,
+            recompact_keydeltas
             ].
 
 
@@ -600,18 +602,19 @@ busted_journal_test(MaxJournalSize, PressMethod, PressPoint, Bust) ->
 
 
 allkeydelta_journal_multicompact(_Config) ->
-    % Simply confirms that none of this causes a crash
     RootPath = testutil:reset_filestructure(),
     B = <<"test_bucket">>,
     StartOptsFun = 
         fun(JOC) ->
             [{root_path, RootPath},
                 {max_journalobjectcount, JOC},
-                {max_run_length, 6},
+                {max_run_length, 4},
+                {singlefile_compactionpercentage, 70.0},
+                {maxrunlength_compactionpercentage, 85.0},
                 {sync_strategy, testutil:sync_strategy()}]
         end,
-    {ok, Bookie1} = leveled_bookie:book_start(StartOptsFun(16000)),
-    {KSpcL1, _V1} = testutil:put_indexed_objects(Bookie1, B, 40000),
+    {ok, Bookie1} = leveled_bookie:book_start(StartOptsFun(14000)),
+    {KSpcL1, _V1} = testutil:put_indexed_objects(Bookie1, B, 24000),
     {KSpcL2, V2} = testutil:put_altered_indexed_objects(Bookie1,
                                                         B,
                                                         KSpcL1,
@@ -637,7 +640,7 @@ allkeydelta_journal_multicompact(_Config) ->
     ok = leveled_bookie:book_close(Bookie1),
     leveled_penciller:clean_testdir(RootPath ++ "/ledger"),
     io:format("Restart without ledger~n"),
-    {ok, Bookie2} = leveled_bookie:book_start(StartOptsFun(24000)),
+    {ok, Bookie2} = leveled_bookie:book_start(StartOptsFun(13000)),
 
     ok = testutil:check_indexed_objects(Bookie2,
                                         B,
@@ -657,7 +660,7 @@ allkeydelta_journal_multicompact(_Config) ->
     ok = leveled_bookie:book_close(Bookie2),
 
     io:format("Restart with smaller journal object count~n"),
-    {ok, Bookie3} = leveled_bookie:book_start(StartOptsFun(8000)),
+    {ok, Bookie3} = leveled_bookie:book_start(StartOptsFun(7000)),
 
     {KSpcL4, V4} = testutil:put_altered_indexed_objects(Bookie3,
                                                         B,
@@ -674,10 +677,44 @@ allkeydelta_journal_multicompact(_Config) ->
         file:list_dir(
             filename:join(RootPath, "journal/journal_files/post_compact")),
     io:format("Number of files after compaction ~w~n", [length(FileList4)]),
-    true = length(FileList4) >= length(FileList3) + 4,
+    true = length(FileList4) >= length(FileList3) + 3,
 
     ok = leveled_bookie:book_close(Bookie3),
     testutil:reset_filestructure(10000).
+
+recompact_keydeltas(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    B = <<"test_bucket">>,
+    StartOptsFun = 
+        fun(JOC) ->
+            [{root_path, RootPath},
+                {max_journalobjectcount, JOC},
+                {max_run_length, 4},
+                {singlefile_compactionpercentage, 70.0},
+                {maxrunlength_compactionpercentage, 85.0},
+                {sync_strategy, testutil:sync_strategy()}]
+        end,
+    {ok, Bookie1} = leveled_bookie:book_start(StartOptsFun(45000)),
+    {KSpcL1, _V1} = testutil:put_indexed_objects(Bookie1, B, 24000),
+    {KSpcL2, _V2} = testutil:put_altered_indexed_objects(Bookie1,
+                                                        B,
+                                                        KSpcL1,
+                                                        false),
+    ok = leveled_bookie:book_close(Bookie1),
+    {ok, Bookie2} = leveled_bookie:book_start(StartOptsFun(45000)),                 
+    compact_and_wait(Bookie2, 0),
+    {KSpcL3, V3} = testutil:put_altered_indexed_objects(Bookie2,
+                                                        B,
+                                                        KSpcL2,
+                                                        false),
+    compact_and_wait(Bookie2, 0),
+    ok = testutil:check_indexed_objects(Bookie2,
+                                        B,
+                                        KSpcL1 ++ KSpcL2 ++ KSpcL3,
+                                        V3),
+    ok = leveled_bookie:book_close(Bookie2),
+    testutil:reset_filestructure(10000).
+
 
 
 rotating_object_check(BookOpts, B, NumberOfObjects) ->
