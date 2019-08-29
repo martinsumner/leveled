@@ -603,6 +603,7 @@ busted_journal_test(MaxJournalSize, PressMethod, PressPoint, Bust) ->
 
 allkeydelta_journal_multicompact(_Config) ->
     RootPath = testutil:reset_filestructure(),
+    CompPath = filename:join(RootPath, "journal/journal_files/post_compact"),
     B = <<"test_bucket">>,
     StartOptsFun = 
         fun(JOC) ->
@@ -621,14 +622,10 @@ allkeydelta_journal_multicompact(_Config) ->
                                                         false),
     compact_and_wait(Bookie1, 0),
     compact_and_wait(Bookie1, 0),
-    {ok, FileList1} = 
-        file:list_dir(
-            filename:join(RootPath, "journal/journal_files/post_compact")),
+    {ok, FileList1} =  file:list_dir(CompPath),
     io:format("Number of files after compaction ~w~n", [length(FileList1)]),
     compact_and_wait(Bookie1, 0),
-    {ok, FileList2} = 
-        file:list_dir(
-            filename:join(RootPath, "journal/journal_files/post_compact")),
+    {ok, FileList2} =  file:list_dir(CompPath),
     io:format("Number of files after compaction ~w~n", [length(FileList2)]),
     true = FileList1 == FileList2,
 
@@ -652,9 +649,7 @@ allkeydelta_journal_multicompact(_Config) ->
                                                         KSpcL2,
                                                         false),
     compact_and_wait(Bookie2, 0),
-    {ok, FileList3} = 
-        file:list_dir(
-            filename:join(RootPath, "journal/journal_files/post_compact")),
+    {ok, FileList3} = file:list_dir(CompPath),
     io:format("Number of files after compaction ~w~n", [length(FileList3)]),
 
     ok = leveled_bookie:book_close(Bookie2),
@@ -673,13 +668,25 @@ allkeydelta_journal_multicompact(_Config) ->
                                         B,
                                         KSpcL1 ++ KSpcL2 ++ KSpcL3 ++ KSpcL4,
                                         V4),
-    {ok, FileList4} = 
-        file:list_dir(
-            filename:join(RootPath, "journal/journal_files/post_compact")),
+    {ok, FileList4} = file:list_dir(CompPath),
     io:format("Number of files after compaction ~w~n", [length(FileList4)]),
-    true = length(FileList4) >= length(FileList3) + 3,
 
     ok = leveled_bookie:book_close(Bookie3),
+
+    NewlyCompactedFiles = lists:subtract(FileList4, FileList3),
+    true = length(NewlyCompactedFiles) >= 3,
+    CDBFilterFun = fun(_K, _V, _P, Acc, _EF) -> {loop, Acc + 1} end,
+    CheckLengthFun =
+        fun(FN) ->
+            {ok, CF} =
+                leveled_cdb:cdb_open_reader(filename:join(CompPath, FN)),
+            {_LP, TK} =
+                leveled_cdb:cdb_scan(CF, CDBFilterFun, 0, undefined),
+            io:format("File ~s has ~w keys~n", [FN, TK]),
+            true = TK =< 7000
+        end,
+    lists:foreach(CheckLengthFun, NewlyCompactedFiles),
+
     testutil:reset_filestructure(10000).
 
 recompact_keydeltas(_Config) ->
