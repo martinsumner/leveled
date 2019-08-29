@@ -63,7 +63,6 @@
 -endif.
 
 -ifdef(slow_test).
--define(KEYCOUNT, 2048).
 -define(SPECIAL_DELFUN, fun(_F) -> ok end).
     % There are problems with the pendingdelete_test/0 in riak make test
     % The deletion of the file causes the process to crash and the test to
@@ -71,7 +70,6 @@
     % Workaround this problem by not performing the delete when running unit
     % tests in R16
 -else.
--define(KEYCOUNT, 16384).
 -define(SPECIAL_DELFUN, fun(F) -> file:delete(F) end).
 -endif.
 
@@ -2341,18 +2339,19 @@ get_keys_byposition_simple_test() ->
     ok = file:delete(F2).
 
 generate_sequentialkeys(0, KVList) ->
-    lists:reverse(KVList);
+    KVList;
 generate_sequentialkeys(Count, KVList) ->
     KV = {"Key" ++ integer_to_list(Count), "Value" ++ integer_to_list(Count)},
-    generate_sequentialkeys(Count - 1, KVList ++ [KV]).
+    generate_sequentialkeys(Count - 1, [KV|KVList]).
 
 get_keys_byposition_manykeys_test_() ->
     {timeout, 600, fun get_keys_byposition_manykeys_test_to/0}.
 
 get_keys_byposition_manykeys_test_to() ->
-    KeyCount = ?KEYCOUNT,
+    KeyCount = 16384,
     {ok, P1} = cdb_open_writer("test/test_area/poskeymany.pnd",
-                                #cdb_options{binary_mode=false}),
+                                #cdb_options{binary_mode=false,
+                                                sync_strategy=none}),
     KVList = generate_sequentialkeys(KeyCount, []),
     lists:foreach(fun({K, V}) -> cdb_put(P1, K, V) end, KVList),
     ok = cdb_roll(P1),
