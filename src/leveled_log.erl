@@ -80,6 +80,8 @@
     {"B0020",
         {warn, "Ratio of penciller cache size ~w to bookie's memory "
                     ++ "cache size ~w is larger than expected"}},
+    {"B0021",
+        {info, "Bookie fetch RequestCount=~w and CacheCount=~w"}},
 
     {"R0001",
         {debug, "Object fold to process batch of ~w objects"}},
