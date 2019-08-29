@@ -129,7 +129,7 @@
 -define(SNAPTIMEOUT_LONG, 43200). % 12 hours
 -define(SST_PAGECACHELEVEL_NOLOOKUP, 1).
 -define(SST_PAGECACHELEVEL_LOOKUP, 4).
--define(CACHE_LOGPOINT, 100000).
+-define(CACHE_LOGPOINT, 50000).
 -define(OPTION_DEFAULTS,
             [{root_path, undefined},
                 {snapshot_bookie, undefined},
@@ -179,7 +179,7 @@
                 get_countdown = 0 :: integer(),
                 fold_countdown = 0 :: integer(),
                 head_countdown = 0 :: integer(),
-                cache_ratio = {0, 0} :: cache_ratio(),
+                cache_ratio = {0, 0, 0} :: cache_ratio(),
                 get_timings = no_timing :: get_timings(),
                 put_timings = no_timing :: put_timings(),
                 fold_timings = no_timing :: fold_timings(),
@@ -212,7 +212,8 @@
 -type fold_timings() :: no_timing|#fold_timings{}.
 -type head_timings() :: no_timing|#head_timings{}.
 -type timing_types() :: head|get|put|fold.
--type cache_ratio() :: {non_neg_integer(), non_neg_integer()}.
+-type cache_ratio() ::
+    {non_neg_integer(), non_neg_integer(), non_neg_integer()}.
 
 
 -type open_options() :: 
@@ -1353,9 +1354,12 @@ handle_call({get, Bucket, Key, Tag}, _From, State)
         end,
     {Timings, CountDown} = 
         update_statetimings(get, Timings2, State#state.get_countdown),
-    {reply, Reply, State#state{get_timings = Timings, 
-                                get_countdown = CountDown,
-                                cache_ratio = maybelog_cacheratio(UpdCR)}};
+    {reply,
+        Reply,
+        State#state{get_timings = Timings, 
+                    get_countdown = CountDown,
+                    cache_ratio =
+                        maybelog_cacheratio(UpdCR, State#state.is_snapshot)}};
 handle_call({head, Bucket, Key, Tag, SQNOnly}, _From, State) 
                                         when State#state.head_lookup == true ->
     SWp = os:timestamp(),
@@ -1421,7 +1425,8 @@ handle_call({head, Bucket, Key, Tag, SQNOnly}, _From, State)
         State#state{head_timings = UpdTimings,
                     head_countdown = CountDown,
                     ink_checking = JournalCheckFrequency,
-                    cache_ratio = maybelog_cacheratio(UpdCR)}};
+                    cache_ratio =
+                        maybelog_cacheratio(UpdCR, State#state.is_snapshot)}};
 handle_call({snapshot, SnapType, Query, LongRunning}, _From, State) ->
     % Snapshot the store, specifying if the snapshot should be long running 
     % (i.e. will the snapshot be queued or be required for an extended period 
@@ -2096,7 +2101,7 @@ fetch_head(Key, Penciller, LedgerCache, CacheRatio) ->
                             cache_ratio()}.
 %% doc
 %% The L0Index needs to be bypassed when running head_only
-fetch_head(Key, Penciller, LedgerCache, {RC, CC}, HeadOnly) ->
+fetch_head(Key, Penciller, LedgerCache, {RC, CC, HC}, HeadOnly) ->
     SW = os:timestamp(),
     CacheResult =
         case LedgerCache#ledger_cache.mem of
@@ -2107,7 +2112,7 @@ fetch_head(Key, Penciller, LedgerCache, {RC, CC}, HeadOnly) ->
         end,
     case CacheResult of
         [{Key, Head}] ->
-            {Head, {RC + 1, CC + 1}};
+            {Head, {RC + 1, CC + 1, HC + 1}};
         [] ->
             Hash = leveled_codec:segment_hash(Key),
             UseL0Idx = not HeadOnly, 
@@ -2116,10 +2121,10 @@ fetch_head(Key, Penciller, LedgerCache, {RC, CC}, HeadOnly) ->
             case leveled_penciller:pcl_fetch(Penciller, Key, Hash, UseL0Idx) of
                 {Key, Head} ->
                     maybe_longrunning(SW, pcl_head),
-                    {Head, {RC + 1, CC}};
+                    {Head, {RC + 1, CC, HC + 1}};
                 not_present ->
                     maybe_longrunning(SW, pcl_head),
-                    {not_present, {RC + 1, CC}}
+                    {not_present, {RC + 1, CC, HC}}
             end
     end.
 
@@ -2451,11 +2456,11 @@ update_timings(SW, {fold, setup}, Timings) ->
     {no_timing, Timings0}.
 
 
--spec maybelog_cacheratio(cache_ratio()) -> cache_ratio().
-maybelog_cacheratio({?CACHE_LOGPOINT, CC}) ->
-    leveled_log:log("B0021", [?CACHE_LOGPOINT, CC]),
-    {0, 0};
-maybelog_cacheratio(CR) ->
+-spec maybelog_cacheratio(cache_ratio(), boolean()) -> cache_ratio().
+maybelog_cacheratio({?CACHE_LOGPOINT, CC, HC}, false) ->
+    leveled_log:log("B0021", [?CACHE_LOGPOINT, CC, HC]),
+    {0, 0, 0};
+maybelog_cacheratio(CR, _IsSnap) ->
     CR.
 %%%============================================================================
 %%% Test
