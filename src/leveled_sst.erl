@@ -1672,14 +1672,18 @@ generate_binary_slot(Lookup, KVL, PressMethod, IndexModDate, BuildTimings0) ->
                     binary()|{file:io_device(), integer()},
                     binary(),
                     integer(),
-                    leveled_codec:ledger_key()|false,
+                    leveled_codec:ledger_key()|false, 
+                        %% if false the acc is a list, and if true
+                        %% Acc will be initially not_present, and may
+                        %% result in a {K, V} tuple
                     press_method(),
                     boolean(),
-                    list()|not_present) -> list()|not_present.
+                    list()|not_present) ->
+                        list(leveled_codec:ledger_kv())|
+                            not_present|leveled_codec:ledger_kv().
 %% @doc
 %% Acc should start as not_present if LedgerKey is a key, and a list if
 %% LedgerKey is false
-
 check_blocks([], _BlockPointer, _BlockLengths, _PosBinLength,
                 _LedgerKeyToCheck, _PressMethod, _IdxModDate, not_present) ->
     not_present;
@@ -2193,11 +2197,26 @@ fetch_value([Pos|Rest], BlockLengths, Blocks, Key, PressMethod) ->
             fetch_value(Rest, BlockLengths, Blocks, Key, PressMethod)
     end.
 
-fetchfrom_rawblock(_BlockPos, []) ->
+-spec fetchfrom_rawblock(pos_integer(), list(leveled_codec:ledger_kv())) ->
+                                        not_present|leveled_codec:ledger_kv().
+%% @doc
+%% Fetch from a deserialised block, but accounting for potential corruption
+%% in that block which may lead to it returning as an empty list if that
+%% corruption is detected by the deserialising function
+fetchfrom_rawblock(BlockPos, RawBlock) when BlockPos > length(RawBlock) ->
+    %% Capture the slightly more general case than this being an empty list
+    %% in case of some other unexpected misalignement that would otherwise
+    %% crash the leveled_sst file process
     not_present;
 fetchfrom_rawblock(BlockPos, RawBlock) ->
     lists:nth(BlockPos, RawBlock).
 
+-spec fetchends_rawblock(list(leveled_codec:ledger_kv())) ->
+                    {not_present, not_present}|
+                    {leveled_codec:ledger_key(), leveled_codec:ledger_key()}.
+%% @doc
+%% Fetch the first and last key from a block, and not_present if the block
+%% is empty (rather than crashing)
 fetchends_rawblock([]) ->
     {not_present, not_present};
 fetchends_rawblock(RawBlock) ->
@@ -3603,6 +3622,63 @@ corrupted_block_rangetester(PressMethod, TestCount) ->
             lists:foreach(fun({_K, _V}) -> ok end, BRL)
     end,
     lists:foreach(CheckFun, RandomRanges).
+
+corrupted_block_fetch_test() ->
+    corrupted_block_fetch_tester(native),
+    corrupted_block_fetch_tester(lz4),
+    corrupted_block_fetch_tester(none).
+
+corrupted_block_fetch_tester(PressMethod) ->
+    KC = 120,
+    KVL1 = lists:ukeysort(1, generate_randomkeys(1, KC, 1, 2)),
+
+    {{Header, SlotBin, _HashL, _LastKey}, _BT} = 
+        generate_binary_slot(lookup, KVL1, PressMethod, false, no_timing),
+    <<B1L:32/integer, 
+        B2L:32/integer, 
+        B3L:32/integer, 
+        B4L:32/integer,
+        B5L:32/integer,
+        PosBinIndex/binary>> = Header,
+    HS = byte_size(Header),
+    
+    <<CheckB1P:32/integer, B1P:32/integer,
+        CheckH:32/integer, Header:HS/binary, 
+        B1:B1L/binary, B2:B2L/binary, B3:B3L/binary,
+            B4:B4L/binary, B5:B5L/binary>> = SlotBin,
+    
+    CorruptB3 = flip_byte(B3, 0 , B3L),
+    CorruptSlotBin =
+        <<CheckB1P:32/integer, B1P:32/integer,
+            CheckH:32/integer, Header/binary, 
+            B1/binary, B2/binary, CorruptB3/binary, B4/binary, B5/binary>>,
+    
+    CheckFun = 
+        fun(N, {AccHit, AccMiss}) ->
+            PosL = [min(0, leveled_rand:uniform(N - 2)), N - 1],
+            {LK, LV} = lists:nth(N, KVL1),
+            {BlockLengths, 0, PosBinIndex} =
+                extract_header(Header, false),
+            R = check_blocks(PosL,
+                                CorruptSlotBin,
+                                BlockLengths,
+                                byte_size(PosBinIndex),
+                                LK,
+                                PressMethod,
+                                false,
+                                not_present),
+            case R of
+                not_present ->
+                    {AccHit, AccMiss + 1};
+                {LK, LV} ->
+                    {AccHit + 1, AccMiss}
+            end
+        end,
+    {_HitCount, MissCount} =
+        lists:foldl(CheckFun, {0, 0}, lists:seq(16, length(KVL1))),
+    ExpectedMisses = element(2, ?LOOK_BLOCKSIZE),
+    ?assertMatch(ExpectedMisses, MissCount).
+
 
 receive_fun() ->
     receive
