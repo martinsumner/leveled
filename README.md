@@ -2,6 +2,8 @@
 
 ## Introduction
 
+[![Build Status](https://travis-ci.com/martinsumner/leveled.svg?branch=master)](https://travis-ci.com/martinsumner/leveled)
+
 Leveled is a simple Key-Value store based on the concept of Log-Structured Merge Trees, with the following characteristics:
 
 - Optimised for workloads with <b>larger values</b> (e.g. > 4KB).
