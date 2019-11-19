@@ -151,6 +151,10 @@ to_list(Manifest) ->
 -spec reader(integer(), string()) -> manifest().
 %% @doc
 %% Given a file path and a manifest SQN return the inker manifest
+%% If the reader crashes on startup the database cannot be started.  However,
+%% previous versions of the manifest are kept - and so a rollback can be
+%% performed.  If waste is not retained though, there may be unresolvable data
+%% loss on rollback.
 reader(SQN, RootPath) ->
     ManifestPath = leveled_inker:filepath(RootPath, manifest_dir),
     leveled_log:log("I0015", [ManifestPath, SQN]),
@@ -171,6 +175,9 @@ writer(Manifest, ManSQN, RootPath) ->
                             integer_to_list(ManSQN) ++ "." ++ ?MANIFEST_FILEX),
     TmpFN = filename:join(ManPath,
                             integer_to_list(ManSQN) ++ "." ++ ?PENDING_FILEX),
+    %% TODO: This should support a CRC check, but issues with making the CRC
+    %% check backwards compatible (so that the reader can read manifests both
+    %% with and without a CRC check)
     MBin = term_to_binary(to_list(Manifest), [compressed]),
     leveled_log:log("I0016", [ManSQN]),
     ok = leveled_util:safe_rename(TmpFN, NewFN, MBin, true),
