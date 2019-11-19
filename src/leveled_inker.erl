@@ -323,7 +323,7 @@ ink_fold(Pid, MinSQN, FoldFuns, Acc) ->
 
 -spec ink_loadpcl(pid(), integer(), fun(), pid()) -> ok.
 %%
-%% Function to prompt load of the Ledger at startup.  the Penciller should
+%% Function to prompt load of the Ledger at startup.  The Penciller should
 %% have determined the lowest SQN not present in the Ledger, and the inker
 %% should fold over the Journal from that point, using the function to load
 %% penciller with the results.
@@ -988,7 +988,7 @@ key_check(LedgerKey, SQN, Manifest) ->
 -spec build_manifest(list(), list(), #cdb_options{}) -> 
                 {leveled_imanifest:manifest(), integer(), integer(), pid()}.
 %% @doc
-%% Selectes the correct manifets to open, and the starts a process for each 
+%% Selects the correct manifest to open, and then starts a process for each 
 %% file in the manifest, storing the PID for that process within the manifest.
 %% Opens an active journal if one is not present.
 build_manifest(ManifestFilenames,
@@ -1026,7 +1026,7 @@ build_manifest(ManifestFilenames,
                             JSQN
                     end,
     
-    % Update the manifest if it has been changed by the process of laoding 
+    % Update the manifest if it has been changed by the process of loading 
     % the manifest (must also increment the manifest SQN).
     UpdManifestSQN =
         if

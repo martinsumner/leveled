@@ -1201,13 +1201,6 @@ write_file(RootPath, Filename, SummaryBin, SlotsBin,
     SlotsLength = byte_size(SlotsBin),
     {PendingName, FinalName} = generate_filenames(Filename),
     FileVersion = gen_fileversion(PressMethod, IdxModDate),
-    ok = file:write_file(filename:join(RootPath, PendingName),
-                            <<FileVersion:8/integer,
-                                SlotsLength:32/integer,
-                                SummaryLength:32/integer,    
-                                SlotsBin/binary,
-                                SummaryBin/binary>>,
-                            [raw]),
     case filelib:is_file(filename:join(RootPath, FinalName)) of
         true ->
             AltName = filename:join(RootPath, filename:basename(FinalName))
@@ -1217,8 +1210,14 @@ write_file(RootPath, Filename, SummaryBin, SlotsBin,
         false ->
             ok
     end,
-    file:rename(filename:join(RootPath, PendingName),
-                filename:join(RootPath, FinalName)),
+    ok = leveled_util:safe_rename(filename:join(RootPath, PendingName),
+                                    filename:join(RootPath, FinalName),
+                                    <<FileVersion:8/integer,
+                                        SlotsLength:32/integer,
+                                        SummaryLength:32/integer,
+                                        SlotsBin/binary,
+                                        SummaryBin/binary>>,
+                                        false),
     FinalName.
 
 read_file(Filename, State, LoadPageCache) ->
