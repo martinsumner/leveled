@@ -53,6 +53,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(MANIFEST_FILEX, "man").
+-define(PENDING_FILEX, "pnd").
 -define(MANIFEST_FP, "ledger_manifest").
 -define(MAX_LEVELS, 8).
 -define(TREE_TYPE, idxt).
@@ -201,14 +202,15 @@ close_manifest(Manifest, CloseEntryFun) ->
 %% @doc
 %% Save the manifest to file (with a checksum)
 save_manifest(Manifest, RootPath) ->
-    FP = filepath(RootPath, Manifest#manifest.manifest_sqn, current_manifest),
+    TFP = filepath(RootPath, Manifest#manifest.manifest_sqn, pending_manifest),
+    AFP = filepath(RootPath, Manifest#manifest.manifest_sqn, current_manifest),
     ManBin = term_to_binary(Manifest#manifest{snapshots = [],
                                                 pending_deletes = dict:new(),
                                                 min_snapshot_sqn = 0,
                                                 blooms = dict:new()}),
     CRC = erlang:crc32(ManBin),
-    ok = file:write_file(FP, <<CRC:32/integer, ManBin/binary>>),
-    {ok, <<CRC:32/integer, ManBin/binary>>} = file:read_file(FP),
+    ToPersist = <<CRC:32/integer, ManBin/binary>>,
+    ok = leveled_util:safe_rename(TFP, AFP, ToPersist, true),
     GC_SQN = Manifest#manifest.manifest_sqn - ?MANIFESTS_TO_RETAIN,
         % If a manifest is corrupted the previous one will be tried, so don't
         % delete the previous one straight away.  Retain until enough have been
@@ -906,7 +908,12 @@ filepath(RootPath, manifest) ->
 
 filepath(RootPath, NewMSN, current_manifest) ->
     filepath(RootPath, manifest)  ++ "nonzero_"
-                ++ integer_to_list(NewMSN) ++ "." ++ ?MANIFEST_FILEX.
+                ++ integer_to_list(NewMSN) ++ "." ++ ?MANIFEST_FILEX;
+filepath(RootPath, NewMSN, pending_manifest) ->
+    filepath(RootPath, manifest)  ++ "nonzero_"
+                ++ integer_to_list(NewMSN) ++ "." ++ ?PENDING_FILEX.
+
+
 
 
 open_manifestfile(_RootPath, L) when L == [] orelse L == [0] ->
