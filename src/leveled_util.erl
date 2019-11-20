@@ -14,7 +14,10 @@
 -export([generate_uuid/0,
             integer_now/0,
             integer_time/1,
-            magic_hash/1]).
+            magic_hash/1,
+            safe_rename/4]).
+
+-define(WRITE_OPS, [binary, raw, read, write]).
 
 
 -spec generate_uuid() -> list().
@@ -65,12 +68,33 @@ hash1(H, <<B:8/integer, Rest/bytes>>) ->
     hash1(H2, Rest).
 
 
+-spec safe_rename(string(), string(), binary(), boolean()) -> ok.
+%% @doc
+%% Write a file, sync it and rename it (and for super-safe mode read it back)
+%% An attempt to prevent crashes leaving files with empty or partially written
+%% values
+safe_rename(TempFN, RealFN, BinData, ReadCheck) ->
+    {ok, TempFH} = file:open(TempFN, ?WRITE_OPS),
+    ok = file:write(TempFH, BinData),
+    ok = file:sync(TempFH),
+    ok = file:close(TempFH),
+    ok = file:rename(TempFN, RealFN),
+    case ReadCheck of
+        true ->
+            {ok, ReadBack} = file:read_file(RealFN),
+            true = (ReadBack == BinData),
+            ok;
+        false ->
+            ok
+    end.
+
 %%%============================================================================
 %%% Test
 %%%============================================================================
 
 -ifdef(TEST).
 
+-define(TEST_AREA, "test/test_area/util/").
 
 magichashperf_test() ->
     KeyFun =
@@ -85,5 +109,18 @@ magichashperf_test() ->
     io:format(user, "1000 keys phash2 hashed in ~w microseconds~n", [TimePH]),
     {TimeMH2, _HL1} = timer:tc(lists, map, [fun(K) -> magic_hash(K) end, KL]),
     io:format(user, "1000 keys magic hashed in ~w microseconds~n", [TimeMH2]).
+
+
+safe_rename_test() ->
+    ok = filelib:ensure_dir(?TEST_AREA),
+    TempFN = filename:join(?TEST_AREA, "test_manifest0.pnd"),
+    RealFN = filename:join(?TEST_AREA, "test_manifest0.man"),
+    ok = safe_rename(TempFN, RealFN, <<1:128/integer>>, false),
+    ?assertMatch({ok, <<1:128/integer>>}, file:read_file(RealFN)),
+    TempFN1 = filename:join(?TEST_AREA, "test_manifest1.pnd"),
+    RealFN1 = filename:join(?TEST_AREA, "test_manifest1.man"),
+    ok = safe_rename(TempFN1, RealFN1, <<2:128/integer>>, true),
+    ?assertMatch({ok, <<2:128/integer>>}, file:read_file(RealFN1)).
+
 
 -endif.
