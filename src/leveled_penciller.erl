@@ -2387,6 +2387,23 @@ handle_down_test() ->
             {FakeBookie, {ok, Snap, null}} ->
                 {ok, Snap, null}
         end,
+    
+    CheckSnapDiesFun =
+        fun(_X, IsDead) ->
+            case IsDead of
+                true ->
+                    true;
+                false ->
+                    case erlang:process_info(PclSnap) of
+                        undefined ->
+                            true;
+                        _ ->
+                            timer:sleep(100),
+                            false
+                    end
+            end
+        end,
+    ?assertNot(lists:foldl(CheckSnapDiesFun, false, [1, 2])),
 
     FakeBookie ! stop,
 
@@ -2397,7 +2414,7 @@ handle_down_test() ->
             ok
     end,
 
-    ?assertEqual(undefined, erlang:process_info(PclSnap)),
+    ?assert(lists:foldl(CheckSnapDiesFun, false, lists:seq(1, 10))),
 
     pcl_close(PCLr),
     clean_testdir(RootPath).

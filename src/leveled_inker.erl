@@ -1553,8 +1553,24 @@ handle_down_test() ->
     SnapOpts = #inker_options{start_snapshot=true,
                               bookies_pid = FakeBookie,
                               source_inker=Ink1},
-
     {ok, Snap1} = ink_snapstart(SnapOpts),
+
+    CheckSnapDiesFun =
+        fun(_X, IsDead) ->
+            case IsDead of
+                true ->
+                    true;
+                false ->
+                    case erlang:process_info(Snap1) of
+                        undefined ->
+                            true;
+                        _ ->
+                            timer:sleep(100),
+                            false
+                    end
+            end
+        end,
+    ?assertNot(lists:foldl(CheckSnapDiesFun, false, [1, 2])),
 
     FakeBookie ! stop,
 
@@ -1565,7 +1581,7 @@ handle_down_test() ->
             ok
     end,
 
-    ?assertEqual(undefined, erlang:process_info(Snap1)),
+    ?assert(lists:foldl(CheckSnapDiesFun, false, lists:seq(1, 10))),
 
     ink_close(Ink1),
     clean_testdir(RootPath).
