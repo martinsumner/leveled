@@ -508,6 +508,10 @@ schedule_compaction(CompactionHours, RunsPerDay, CurrentTS) ->
 check_single_file(CDB, FilterFun, FilterServer, MaxSQN, SampleSize, BatchSize) ->
     FN = leveled_cdb:cdb_filename(CDB),
     PositionList = leveled_cdb:cdb_getpositions(CDB, SampleSize),
+    AvgJump =
+        (lists:last(PositionList) - lists:nth(1, PositionList))
+            div length(PositionList),
+    leveled_log:log("IC014", [AvgJump]),
     KeySizeList = fetch_inbatches(PositionList, BatchSize, CDB, []),
     Score = 
         size_comparison_score(KeySizeList, FilterFun, FilterServer, MaxSQN),

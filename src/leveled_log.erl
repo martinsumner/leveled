@@ -356,6 +356,8 @@
     {"IC013",
         {warn, "File with name ~s to be ignored in manifest as scanning for "
                 ++ "first key returned empty - maybe corrupted"}},
+    {"IC014",
+        {info, "Fetching position list with average byte jump ~p"}},
 
     {"CDB01",
         {info, "Opening file for writing with filename ~s"}},
@@ -404,7 +406,9 @@
     {"CDB20",
         {warn, "Error ~w caught when safe reading a file to length ~w"}},
     {"CDB21",
-        {warn, "File ~s to be deleted but already gone"}}
+        {warn, "File ~s to be deleted but already gone"}},
+    {"CDB22",
+        {info, "Positions ~w fetch"}}
         
     ]).
 
