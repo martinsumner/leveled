@@ -1,7 +1,7 @@
 {application, leveled,
  [
   {description, "Key Value store based on LSM-Tree and designed for larger values"},
-  {vsn, "riak_kv-2.9.1"},
+  {vsn, "0.9.21"},
   {registered, []},
   {applications, [
                   kernel,
