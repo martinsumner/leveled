@@ -519,17 +519,17 @@ size_comparison_score(KeySizeList, FilterFun, FilterServer, MaxSQN) ->
         fun(KS, {ActSize, RplSize}) ->
             case KS of
                 {{SQN, Type, PK}, Size} ->
-                    MayScore =
-                        leveled_codec:is_compaction_candidate({SQN, Type, PK}),
-                    case MayScore of
+                    IsJournalEntry =
+                        leveled_codec:is_full_journalentry({SQN, Type, PK}),
+                    case IsJournalEntry of
                         false ->
                             {ActSize + Size - ?CRC_SIZE, RplSize};
                         true ->
                             Check = FilterFun(FilterServer, PK, SQN),
                             case {Check, SQN > MaxSQN} of
-                                {true, _} ->
+                                {current, _} ->
                                     {ActSize + Size - ?CRC_SIZE, RplSize};
-                                {false, true} ->
+                                {_, true} ->
                                     {ActSize + Size - ?CRC_SIZE, RplSize};
                                 _ ->
                                     {ActSize, RplSize + Size - ?CRC_SIZE}
@@ -542,7 +542,7 @@ size_comparison_score(KeySizeList, FilterFun, FilterServer, MaxSQN) ->
                     % expected format of the key
                     {ActSize, RplSize}
             end
-            end,
+        end,
             
     R0 = lists:foldl(FoldFunForSizeCompare, {0, 0}, KeySizeList),
     {ActiveSize, ReplacedSize} = R0,
@@ -757,38 +757,50 @@ split_positions_into_batches(Positions, Journal, Batches) ->
 %% a `skip` strategy.
 filter_output(KVCs, FilterFun, FilterServer, MaxSQN, ReloadStrategy) ->
     FoldFun =
-        fun(KVC0, Acc) ->
-            case KVC0 of
-                {_InkKey, crc_wonky, false} ->
-                    % Bad entry, disregard, don't check
-                    Acc;
-                {JK, JV, _Check} ->
-                    {SQN, LK} =
-                        leveled_codec:from_journalkey(JK),
-                    CompactStrategy =
-                        leveled_codec:get_tagstrategy(LK, ReloadStrategy),
-                    KeyValid = FilterFun(FilterServer, LK, SQN),
-                    IsInMemory = SQN > MaxSQN,
-                    case {KeyValid or IsInMemory, CompactStrategy} of
-                        {true, _} ->
-                            % This entry may still be required regardless of
-                            % strategy
-                            [KVC0|Acc];
-                        {false, retain} ->
-                            % If we have a retain strategy, it can't be
-                            % discarded - but the value part is no longer
-                            % required as this version has been replaced
-                            {JK0, JV0} =
-                                leveled_codec:revert_to_keydeltas(JK, JV),
-                            [{JK0, JV0, null}|Acc];
-                        {false, _} ->
-                            % This is out of date and not retained - discard
-                            Acc
-                    end
-            end
-        end,
+        filter_output_fun(FilterFun, FilterServer, MaxSQN, ReloadStrategy),
     lists:reverse(lists:foldl(FoldFun, [], KVCs)).
 
+
+filter_output_fun(FilterFun, FilterServer, MaxSQN, ReloadStrategy) ->
+    fun(KVC0, Acc) ->
+        case KVC0 of
+            {_InkKey, crc_wonky, false} ->
+                % Bad entry, disregard, don't check
+                Acc;
+            {JK, JV, _Check} ->
+                {SQN, LK} =
+                    leveled_codec:from_journalkey(JK),
+                CompactStrategy =
+                    leveled_codec:get_tagstrategy(LK, ReloadStrategy),
+                IsJournalEntry =
+                    leveled_codec:is_full_journalentry(JK),
+                case {CompactStrategy, IsJournalEntry} of
+                    {retain, false} ->
+                        [KVC0|Acc];
+                    _ ->
+                        KeyCurrent = FilterFun(FilterServer, LK, SQN),
+                        IsInMemory = SQN > MaxSQN,
+                        case {KeyCurrent, IsInMemory, CompactStrategy} of
+                            {KC, InMem, _} when KC == current; InMem ->
+                                % This entry may still be required
+                                % regardless of strategy
+                                [KVC0|Acc];
+                            {_, _, retain} ->
+                                % If we have a retain strategy, it can't be
+                                % discarded - but the value part is no
+                                % longer required as this version has been
+                                % replaced
+                                {JK0, JV0} =
+                                    leveled_codec:revert_to_keydeltas(JK, JV),
+                                [{JK0, JV0, null}|Acc];
+                            {_, _, _} ->
+                                % This is out of date and not retained so
+                                % discard
+                                Acc
+                        end
+                end
+        end
+    end.
 
 write_values([], _CDBopts, Journal0, ManSlice0, _PressMethod) ->
     {Journal0, ManSlice0};
@@ -985,13 +997,13 @@ check_single_file_test() ->
     LedgerFun1 = fun(Srv, Key, ObjSQN) ->
                     case lists:keyfind(ObjSQN, 1, Srv) of
                         {ObjSQN, Key} ->
-                            true;
+                            current;
                         _ ->
-                            false
+                            replaced
                     end end,
     Score1 = check_single_file(CDB, LedgerFun1, LedgerSrv1, 9, 8, 4),
     ?assertMatch(37.5, Score1),
-    LedgerFun2 = fun(_Srv, _Key, _ObjSQN) -> true end,
+    LedgerFun2 = fun(_Srv, _Key, _ObjSQN) -> current end,
     Score2 = check_single_file(CDB, LedgerFun2, LedgerSrv1, 9, 8, 4),
     ?assertMatch(100.0, Score2),
     Score3 = check_single_file(CDB, LedgerFun1, LedgerSrv1, 9, 8, 3),
@@ -1016,9 +1028,9 @@ compact_single_file_setup() ->
     LedgerFun1 = fun(Srv, Key, ObjSQN) ->
                     case lists:keyfind(ObjSQN, 1, Srv) of
                         {ObjSQN, Key} ->
-                            true;
+                            current;
                         _ ->
-                            false
+                            replaced
                     end end,
     CompactFP = leveled_inker:filepath(RP, journal_compact_dir),
     ok = filelib:ensure_dir(CompactFP),
@@ -1119,7 +1131,7 @@ compact_empty_file_test() ->
     LedgerSrv1 = [{8, {o, "Bucket", "Key1", null}},
                     {2, {o, "Bucket", "Key2", null}},
                     {3, {o, "Bucket", "Key3", null}}],
-    LedgerFun1 = fun(_Srv, _Key, _ObjSQN) -> false end,
+    LedgerFun1 = fun(_Srv, _Key, _ObjSQN) -> replaced end,
     Score1 = check_single_file(CDB2, LedgerFun1, LedgerSrv1, 9, 8, 4),
     ?assertMatch(100.0, Score1),
     ok = leveled_cdb:cdb_deletepending(CDB2),
@@ -1161,7 +1173,13 @@ compact_singlefile_totwosmallfiles_testto() ->
                             filename=leveled_cdb:cdb_filename(CDBr),
                             journal=CDBr,
                             compaction_perc=50.0}],
-    FakeFilterFun = fun(_FS, _LK, SQN) -> SQN rem 2 == 0 end,
+    FakeFilterFun =
+        fun(_FS, _LK, SQN) -> 
+            case SQN rem 2 of
+                0 -> current;
+                _ -> replaced
+            end
+        end,
     
     ManifestSlice = compact_files(BestRun1,
                                     CDBoptsSmall,
@@ -1190,7 +1208,13 @@ size_score_test() ->
             {{7, ?INKT_STND, "Key7"}, 184}],
     MaxSQN = 6,
     CurrentList = ["Key1", "Key4", "Key5", "Key6"],
-    FilterFun = fun(L, K, _SQN) -> lists:member(K, L) end,
+    FilterFun =
+        fun(L, K, _SQN) ->
+            case lists:member(K, L) of
+                true -> current;
+                false -> replaced
+            end
+        end,
     Score = size_comparison_score(KeySizeList, FilterFun, CurrentList, MaxSQN),
     ?assertMatch(true, Score > 69.0),
     ?assertMatch(true, Score < 70.0).
