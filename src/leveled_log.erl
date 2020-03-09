@@ -356,8 +356,6 @@
     {"IC013",
         {warn, "File with name ~s to be ignored in manifest as scanning for "
                 ++ "first key returned empty - maybe corrupted"}},
-    {"IC014",
-        {info, "Fetching position list with average byte jump ~p"}},
 
     {"CDB01",
         {info, "Opening file for writing with filename ~s"}},
