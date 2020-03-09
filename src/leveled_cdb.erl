@@ -267,36 +267,33 @@ cdb_getpositions(Pid, SampleSize) ->
     % requests waiting for this to complete, loop over each of the 256 indexes
     % outside of the FSM processing loop - to allow for other messages to be
     % interleaved
-    SW = os:timestamp(),
-    PosList =  
-        case SampleSize of
-            all ->
-                FoldFun = 
-                    fun(Index, Acc) ->
-                        cdb_getpositions_fromidx(Pid, all, Index, Acc)
-                    end,
-                IdxList = lists:seq(0, 255),
-                lists:foldl(FoldFun, [], IdxList);
-            S0 ->
-                FC = ?GETPOS_FACTOR * S0,
-                FoldFun = 
-                    fun({_R, Index}, Acc) ->
-                        case length(Acc) of
-                            FC ->
-                                Acc;
-                            L when L < FC ->
-                                cdb_getpositions_fromidx(Pid, FC, Index, Acc)
-                        end
-                    end,
-                RandFun = fun(X) -> {leveled_rand:uniform(), X} end,
-                SeededL = lists:map(RandFun, lists:seq(0, 255)),
-                SortedL = lists:keysort(1, SeededL),
-                PosList0 = lists:foldl(FoldFun, [], SortedL),
-                P1 = leveled_rand:uniform(max(1, length(PosList0) - S0)),
-                lists:sublist(lists:sort(PosList0), P1, S0)
-        end,
-    leveled_log:log_timer("CDB22", [length(PosList)], SW),
-    PosList.
+    case SampleSize of
+        all ->
+            FoldFun = 
+                fun(Index, Acc) ->
+                    PosList = cdb_getpositions_fromidx(Pid, all, Index, []),
+                    lists:merge(Acc, lists:sort(PosList))
+                end,
+            IdxList = lists:seq(0, 255),
+            lists:foldl(FoldFun, [], IdxList);
+        S0 ->
+            FC = ?GETPOS_FACTOR * S0,
+            FoldFun = 
+                fun({_R, Index}, Acc) ->
+                    case length(Acc) of
+                        FC ->
+                            Acc;
+                        L when L < FC ->
+                            cdb_getpositions_fromidx(Pid, FC, Index, Acc)
+                    end
+                end,
+            RandFun = fun(X) -> {leveled_rand:uniform(), X} end,
+            SeededL = lists:map(RandFun, lists:seq(0, 255)),
+            SortedL = lists:keysort(1, SeededL),
+            PosList0 = lists:foldl(FoldFun, [], SortedL),
+            P1 = leveled_rand:uniform(max(1, length(PosList0) - S0)),
+            lists:sublist(lists:sort(PosList0), P1, S0)
+    end.
 
 cdb_getpositions_fromidx(Pid, SampleSize, Index, Acc) ->
     gen_fsm:sync_send_event(Pid,
@@ -1234,10 +1231,9 @@ scan_index_returnpositions(Handle, Position, Count, PosList0) ->
                     [HPosition|PosList]
             end
         end,
-    PosList = lists:foldl(AddPosFun,
-                            PosList0,
-                            read_next_n_integerpairs(Handle, Count)),
-    lists:reverse(PosList).
+    lists:foldl(AddPosFun,
+                PosList0,
+                read_next_n_integerpairs(Handle, Count)).
 
 
 %% Take an active file and write the hash details necessary to close that

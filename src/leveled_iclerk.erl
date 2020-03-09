@@ -507,16 +507,21 @@ schedule_compaction(CompactionHours, RunsPerDay, CurrentTS) ->
 %% calls.
 check_single_file(CDB, FilterFun, FilterServer, MaxSQN, SampleSize, BatchSize) ->
     FN = leveled_cdb:cdb_filename(CDB),
+    SW = os:timestamp(),
     PositionList = leveled_cdb:cdb_getpositions(CDB, SampleSize),
-    AvgJump =
-        (lists:last(PositionList) - lists:nth(1, PositionList))
-            div length(PositionList),
-    leveled_log:log("IC014", [AvgJump]),
     KeySizeList = fetch_inbatches(PositionList, BatchSize, CDB, []),
     Score = 
         size_comparison_score(KeySizeList, FilterFun, FilterServer, MaxSQN),
-    leveled_log:log("IC004", [FN, Score]),
+    safely_log_filescore(PositionList, FN, Score, SW),
     Score.
+
+safely_log_filescore([], FN, Score, SW) ->
+    leveled_log:log_timer("IC004", [Score, empty, FN], SW);
+safely_log_filescore(PositionList, FN, Score, SW) ->
+    AvgJump =
+        (lists:last(PositionList) - lists:nth(1, PositionList))
+            div length(PositionList),
+    leveled_log:log_timer("IC004", [Score, AvgJump, FN], SW).
 
 size_comparison_score(KeySizeList, FilterFun, FilterServer, MaxSQN) ->
     FoldFunForSizeCompare =
@@ -546,13 +551,13 @@ size_comparison_score(KeySizeList, FilterFun, FilterServer, MaxSQN) ->
                     % expected format of the key
                     {ActSize, RplSize}
             end
-            end,
+        end,
             
     R0 = lists:foldl(FoldFunForSizeCompare, {0, 0}, KeySizeList),
     {ActiveSize, ReplacedSize} = R0,
     case ActiveSize + ReplacedSize of
         0 ->
-            100.0;
+            0.0;
         _ ->
             100 * ActiveSize / (ActiveSize + ReplacedSize)
     end.
@@ -1117,7 +1122,6 @@ compact_empty_file_test() ->
     FN1 = leveled_inker:filepath(RP, 1, new_journal),
     CDBopts = #cdb_options{binary_mode=true},
     {ok, CDB1} = leveled_cdb:cdb_open_writer(FN1, CDBopts),
-    ok = leveled_cdb:cdb_put(CDB1, {1, stnd, test_ledgerkey("Key1")}, <<>>),
     {ok, FN2} = leveled_cdb:cdb_complete(CDB1),
     {ok, CDB2} = leveled_cdb:cdb_open_reader(FN2),
     LedgerSrv1 = [{8, {o, "Bucket", "Key1", null}},
@@ -1125,7 +1129,7 @@ compact_empty_file_test() ->
                     {3, {o, "Bucket", "Key3", null}}],
     LedgerFun1 = fun(_Srv, _Key, _ObjSQN) -> false end,
     Score1 = check_single_file(CDB2, LedgerFun1, LedgerSrv1, 9, 8, 4),
-    ?assertMatch(100.0, Score1),
+    ?assertMatch(0.0, Score1),
     ok = leveled_cdb:cdb_deletepending(CDB2),
     ok = leveled_cdb:cdb_destroy(CDB2).
 
