@@ -336,7 +336,7 @@
         {info, "Scoring of compaction runs complete with highest score=~w " 
                 ++ "with run of run_length=~w"}},
     {"IC004",
-        {info, "Score for filename ~s is ~w"}},
+        {info, "Score=~w with mean_byte_jump=~w for filename ~s"}},
     {"IC005",
         {info, "Compaction to be performed on ~w files with score of ~w"}},
     {"IC006",
