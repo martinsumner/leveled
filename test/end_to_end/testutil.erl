@@ -535,13 +535,13 @@ set_object(Bucket, Key, Value, IndexGen, Indexes2Remove, IndexesNotToRemove) ->
                 {<<"MDK2">>, "MDV" ++ Key},
                 {?MD_LASTMOD, os:timestamp()},
                 {?MD_INDEX, Indexes}]},
-    {B1, K1, V1, Spec1, MD} = Obj,
+    {B1, K1, V1, DeltaSpecs, MD} = Obj,
     Content = #r_content{metadata=dict:from_list(MD), value=V1},
     {#r_object{bucket=B1,
                 key=K1,
                 contents=[Content],
                 vclock=generate_vclock()},
-        Spec1 ++ IndexesNotToRemove}.
+        DeltaSpecs}.
 
 get_value_from_objectlistitem({_Int, Obj, _Spc}) ->
     [Content] = Obj#r_object.contents,
@@ -775,21 +775,32 @@ put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i) ->
     FindAdditionFun = fun(SpcItem) -> element(1, SpcItem) == add end,
     MapFun = 
         fun({K, Spc}) ->
+            OldSpecs = lists:filter(FindAdditionFun, Spc),
             {RemoveSpc, AddSpc} =
                 case RemoveOld2i of
                     true ->
-                        {lists:filter(FindAdditionFun, Spc), []};
+                        {OldSpecs, []};
                     false ->
-                        {[], lists:filter(FindAdditionFun, Spc)}
+                        {[], OldSpecs}
                 end,
-            {O, AltSpc} =
+            {O, DeltaSpecs} =
                 set_object(Bucket, K, V,
                             IndexGen, RemoveSpc, AddSpc),
-            case book_riakput(Book, O, AltSpc) of
+            % DeltaSpecs should be new indexes added, and any old indexes which
+            % have been removed by this change where RemoveOld2i is true.
+            %
+            % The actual indexes within the object should reflect any history
+            % of indexes i.e. when RemoveOld2i is false.
+            %
+            % The [{Key, SpecL}] returned should accrue additions over loops if
+            % RemoveOld2i is false
+            case book_riakput(Book, O, DeltaSpecs) of
                 ok -> ok;
                 pause -> timer:sleep(?SLOWOFFER_DELAY)
             end,
-            {K, AltSpc}
+            % Note that order in the SpecL is important, as
+            % check_indexed_objects, needs to find the latest item added
+            {K, DeltaSpecs ++ AddSpc}
         end,
     RplKSpecL = lists:map(MapFun, KSpecL),
     {RplKSpecL, V}.
