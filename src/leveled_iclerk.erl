@@ -145,6 +145,15 @@
     % released from a compaction run of a single file to make it a run
     % worthwhile of compaction (released space is 100.0 - target e.g. 70.0 
     % means that 30.0% should be released)
+-type key_size() ::
+    {{non_neg_integer(),
+        leveled_codec:journal_key_tag(),
+        leveled_codec:ledger_key()}, non_neg_integer()}.
+-type corrupted_test_key_size() ::
+    {{non_neg_integer(),
+        leveled_codec:journal_key_tag(),
+        leveled_codec:ledger_key(),
+        null}, non_neg_integer()}.
 
 %%%============================================================================
 %%% API
@@ -315,7 +324,8 @@ handle_cast({score_filelist, [Entry|Tail]}, State) ->
                                     ScoringState#scoring_state.filter_server,
                                     ScoringState#scoring_state.max_sqn,
                                     ?SAMPLE_SIZE,
-                                    ?BATCH_SIZE),
+                                    ?BATCH_SIZE,
+                                    State#state.reload_strategy),
     Candidate =
         #candidate{low_sqn = LowSQN,
                     filename = FN,
@@ -493,7 +503,10 @@ schedule_compaction(CompactionHours, RunsPerDay, CurrentTS) ->
 %%% Internal functions
 %%%============================================================================
 
-
+-spec check_single_file(pid(), fun(), any(), non_neg_integer(),
+                        non_neg_integer(), non_neg_integer(),
+                        leveled_codec:compaction_strategy()) ->
+                            float().
 %% @doc
 %% Get a score for a single CDB file in the journal.  This will pull out a bunch 
 %% of keys and sizes at random in an efficient way (by scanning the hashtable
@@ -505,13 +518,19 @@ schedule_compaction(CompactionHours, RunsPerDay, CurrentTS) ->
 %% 
 %% The score is based on a random sample - so will not be consistent between 
 %% calls.
-check_single_file(CDB, FilterFun, FilterServer, MaxSQN, SampleSize, BatchSize) ->
+check_single_file(CDB, FilterFun, FilterServer, MaxSQN,
+                    SampleSize, BatchSize,
+                    ReloadStrategy) ->
     FN = leveled_cdb:cdb_filename(CDB),
     SW = os:timestamp(),
     PositionList = leveled_cdb:cdb_getpositions(CDB, SampleSize),
     KeySizeList = fetch_inbatches(PositionList, BatchSize, CDB, []),
     Score = 
-        size_comparison_score(KeySizeList, FilterFun, FilterServer, MaxSQN),
+        size_comparison_score(KeySizeList,
+                                FilterFun,
+                                FilterServer,
+                                MaxSQN,
+                                ReloadStrategy),
     safely_log_filescore(PositionList, FN, Score, SW),
     Score.
 
@@ -523,7 +542,15 @@ safely_log_filescore(PositionList, FN, Score, SW) ->
             div length(PositionList),
     leveled_log:log_timer("IC004", [Score, AvgJump, FN], SW).
 
-size_comparison_score(KeySizeList, FilterFun, FilterServer, MaxSQN) ->
+-spec size_comparison_score(list(key_size() | corrupted_test_key_size()),
+                                    fun(),
+                                    any(),
+                                    non_neg_integer(),
+                                    leveled_codec:compaction_strategy()) ->
+                                        float().
+size_comparison_score(KeySizeList,
+                        FilterFun, FilterServer, MaxSQN,
+                        RS) ->
     FoldFunForSizeCompare =
         fun(KS, {ActSize, RplSize}) ->
             case KS of
@@ -532,7 +559,18 @@ size_comparison_score(KeySizeList, FilterFun, FilterServer, MaxSQN) ->
                         leveled_codec:is_full_journalentry({SQN, Type, PK}),
                     case IsJournalEntry of
                         false ->
-                            {ActSize + Size - ?CRC_SIZE, RplSize};
+                            TS = leveled_codec:get_tagstrategy(PK, RS),
+                            % If the strategy is to retain key deltas, then
+                            % scoring must reflect that.  Key deltas are
+                            % possible even if strategy does not allow as
+                            % there is support for changing strategy from
+                            % retain to recalc
+                            case TS of
+                                retain ->
+                                    {ActSize + Size - ?CRC_SIZE, RplSize};
+                                _ ->
+                                    {ActSize, RplSize + Size - ?CRC_SIZE}
+                            end;
                         true ->
                             Check = FilterFun(FilterServer, PK, SQN),
                             case {Check, SQN > MaxSQN} of
@@ -567,12 +605,13 @@ fetch_inbatches([], _BatchSize, CDB, CheckedList) ->
     ok = leveled_cdb:cdb_clerkcomplete(CDB),
     CheckedList;
 fetch_inbatches(PositionList, BatchSize, CDB, CheckedList) ->
-    {Batch, Tail} = if
-                        length(PositionList) >= BatchSize ->
-                            lists:split(BatchSize, PositionList);
-                        true ->
-                            {PositionList, []}
-                    end,
+    {Batch, Tail} = 
+        if
+            length(PositionList) >= BatchSize ->
+                lists:split(BatchSize, PositionList);
+            true ->
+                {PositionList, []}
+        end,
     KL_List = leveled_cdb:cdb_directfetch(CDB, Batch, key_size),
     fetch_inbatches(Tail, BatchSize, CDB, CheckedList ++ KL_List).
 
@@ -998,6 +1037,7 @@ fetch_testcdb(RP) ->
 
 check_single_file_test() ->
     RP = "test/test_area/",
+    RS = leveled_codec:inker_reload_strategy([]),
     ok = filelib:ensure_dir(leveled_inker:filepath(RP, journal_dir)),
     {ok, CDB} = fetch_testcdb(RP),
     LedgerSrv1 = [{8, {o, "Bucket", "Key1", null}},
@@ -1010,14 +1050,14 @@ check_single_file_test() ->
                         _ ->
                             replaced
                     end end,
-    Score1 = check_single_file(CDB, LedgerFun1, LedgerSrv1, 9, 8, 4),
+    Score1 = check_single_file(CDB, LedgerFun1, LedgerSrv1, 9, 8, 4, RS),
     ?assertMatch(37.5, Score1),
     LedgerFun2 = fun(_Srv, _Key, _ObjSQN) -> current end,
-    Score2 = check_single_file(CDB, LedgerFun2, LedgerSrv1, 9, 8, 4),
+    Score2 = check_single_file(CDB, LedgerFun2, LedgerSrv1, 9, 8, 4, RS),
     ?assertMatch(100.0, Score2),
-    Score3 = check_single_file(CDB, LedgerFun1, LedgerSrv1, 9, 8, 3),
+    Score3 = check_single_file(CDB, LedgerFun1, LedgerSrv1, 9, 8, 3, RS),
     ?assertMatch(37.5, Score3),
-    Score4 = check_single_file(CDB, LedgerFun1, LedgerSrv1, 4, 8, 4),
+    Score4 = check_single_file(CDB, LedgerFun1, LedgerSrv1, 4, 8, 4, RS),
     ?assertMatch(75.0, Score4),
     ok = leveled_cdb:cdb_deletepending(CDB),
     ok = leveled_cdb:cdb_destroy(CDB).
@@ -1132,6 +1172,7 @@ compact_empty_file_test() ->
     RP = "test/test_area/",
     ok = filelib:ensure_dir(leveled_inker:filepath(RP, journal_dir)),
     FN1 = leveled_inker:filepath(RP, 1, new_journal),
+    RS = leveled_codec:inker_reload_strategy([]),
     CDBopts = #cdb_options{binary_mode=true},
     {ok, CDB1} = leveled_cdb:cdb_open_writer(FN1, CDBopts),
     {ok, FN2} = leveled_cdb:cdb_complete(CDB1),
@@ -1140,7 +1181,7 @@ compact_empty_file_test() ->
                     {2, {o, "Bucket", "Key2", null}},
                     {3, {o, "Bucket", "Key3", null}}],
     LedgerFun1 = fun(_Srv, _Key, _ObjSQN) -> replaced end,
-    Score1 = check_single_file(CDB2, LedgerFun1, LedgerSrv1, 9, 8, 4),
+    Score1 = check_single_file(CDB2, LedgerFun1, LedgerSrv1, 9, 8, 4, RS),
     ?assertMatch(0.0, Score1),
     ok = leveled_cdb:cdb_deletepending(CDB2),
     ok = leveled_cdb:cdb_destroy(CDB2).
@@ -1207,15 +1248,22 @@ compact_singlefile_totwosmallfiles_testto() ->
 
 size_score_test() ->
     KeySizeList = 
-        [{{1, ?INKT_STND, "Key1"}, 104},
-            {{2, ?INKT_STND, "Key2"}, 124},
-            {{3, ?INKT_STND, "Key3"}, 144},
-            {{4, ?INKT_STND, "Key4"}, 154},
-            {{5, ?INKT_STND, "Key5", "Subk1"}, 164},
-            {{6, ?INKT_STND, "Key6"}, 174},
-            {{7, ?INKT_STND, "Key7"}, 184}],
+        [{{1, ?INKT_STND, {?STD_TAG, <<"B">>, <<"Key1">>, null}}, 104},
+            {{2, ?INKT_STND, {?STD_TAG, <<"B">>, <<"Key2">>, null}}, 124},
+            {{3, ?INKT_STND, {?STD_TAG, <<"B">>, <<"Key3">>, null}}, 144},
+            {{4, ?INKT_STND, {?STD_TAG, <<"B">>, <<"Key4">>, null}}, 154},
+            {{5,
+                ?INKT_STND,
+                {?STD_TAG, <<"B">>, <<"Key5">>, <<"Subk1">>}, null},
+                164},
+            {{6, ?INKT_STND, {?STD_TAG, <<"B">>, <<"Key6">>, null}}, 174},
+            {{7, ?INKT_STND, {?STD_TAG, <<"B">>, <<"Key7">>, null}}, 184}],
     MaxSQN = 6,
-    CurrentList = ["Key1", "Key4", "Key5", "Key6"],
+    CurrentList =
+        [{?STD_TAG, <<"B">>, <<"Key1">>, null}, 
+            {?STD_TAG, <<"B">>, <<"Key4">>, null}, 
+            {?STD_TAG, <<"B">>, <<"Key5">>, <<"Subk1">>}, 
+            {?STD_TAG, <<"B">>, <<"Key6">>, null}],
     FilterFun =
         fun(L, K, _SQN) ->
             case lists:member(K, L) of
@@ -1223,7 +1271,13 @@ size_score_test() ->
                 false -> replaced
             end
         end,
-    Score = size_comparison_score(KeySizeList, FilterFun, CurrentList, MaxSQN),
+    Score =
+        size_comparison_score(KeySizeList,
+                                FilterFun,
+                                CurrentList,
+                                MaxSQN,
+                                leveled_codec:inker_reload_strategy([])),
+    io:format("Score ~w", [Score]),
     ?assertMatch(true, Score > 69.0),
     ?assertMatch(true, Score < 70.0).
 

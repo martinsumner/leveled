@@ -68,6 +68,7 @@
 -define(MD_VTAG,     <<"X-Riak-VTag">>).
 -define(MD_LASTMOD,  <<"X-Riak-Last-Modified">>).
 -define(MD_DELETED,  <<"X-Riak-Deleted">>).
+-define(MD_INDEX, <<"index">>).
 -define(EMPTY_VTAG_BIN, <<"e">>).
 -define(ROOT_PATH, "test").
 
@@ -517,23 +518,30 @@ set_object(Bucket, Key, Value, IndexGen) ->
     set_object(Bucket, Key, Value, IndexGen, []).
 
 set_object(Bucket, Key, Value, IndexGen, Indexes2Remove) ->
-    
+    set_object(Bucket, Key, Value, IndexGen, Indexes2Remove, []).
+
+set_object(Bucket, Key, Value, IndexGen, Indexes2Remove, IndexesNotToRemove) ->
+    IdxSpecs = IndexGen(),
+    Indexes =
+        lists:map(fun({add, IdxF, IdxV}) -> {IdxF, IdxV} end,
+                    IdxSpecs ++ IndexesNotToRemove),
     Obj = {Bucket,
             Key,
             Value,
-            IndexGen() ++ lists:map(fun({add, IdxF, IdxV}) ->
-                                            {remove, IdxF, IdxV} end,
-                                        Indexes2Remove),
-            [{"MDK", "MDV" ++ Key},
-                {"MDK2", "MDV" ++ Key},
-                {?MD_LASTMOD, os:timestamp()}]},
+            IdxSpecs ++
+                lists:map(fun({add, IdxF, IdxV}) -> {remove, IdxF, IdxV} end,
+                            Indexes2Remove),
+            [{<<"MDK">>, "MDV" ++ Key},
+                {<<"MDK2">>, "MDV" ++ Key},
+                {?MD_LASTMOD, os:timestamp()},
+                {?MD_INDEX, Indexes}]},
     {B1, K1, V1, Spec1, MD} = Obj,
     Content = #r_content{metadata=dict:from_list(MD), value=V1},
     {#r_object{bucket=B1,
                 key=K1,
                 contents=[Content],
                 vclock=generate_vclock()},
-        Spec1}.
+        Spec1 ++ IndexesNotToRemove}.
 
 get_value_from_objectlistitem({_Int, Obj, _Spc}) ->
     [Content] = Obj#r_object.contents,
@@ -762,26 +770,28 @@ put_altered_indexed_objects(Book, Bucket, KSpecL) ->
     put_altered_indexed_objects(Book, Bucket, KSpecL, true).
 
 put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i) ->
-    IndexGen = testutil:get_randomindexes_generator(1),
-    V = testutil:get_compressiblevalue(),
-    RplKSpecL = lists:map(fun({K, Spc}) ->
-                                AddSpc = if
-                                            RemoveOld2i == true ->
-                                                [lists:keyfind(add, 1, Spc)];
-                                            RemoveOld2i == false ->
-                                                []
-                                        end,
-                                {O, AltSpc} = testutil:set_object(Bucket,
-                                                                    K,
-                                                                    V,
-                                                                    IndexGen,
-                                                                    AddSpc),
-                                case book_riakput(Book, O, AltSpc) of
-                                    ok -> ok;
-                                    pause -> timer:sleep(?SLOWOFFER_DELAY)
-                                end,
-                                {K, AltSpc} end,
-                            KSpecL),
+    IndexGen = get_randomindexes_generator(1),
+    V = get_compressiblevalue(),
+    FindAdditionFun = fun(SpcItem) -> element(1, SpcItem) == add end,
+    MapFun = 
+        fun({K, Spc}) ->
+            {RemoveSpc, AddSpc} =
+                case RemoveOld2i of
+                    true ->
+                        {lists:filter(FindAdditionFun, Spc), []};
+                    false ->
+                        {[], lists:filter(FindAdditionFun, Spc)}
+                end,
+            {O, AltSpc} =
+                set_object(Bucket, K, V,
+                            IndexGen, RemoveSpc, AddSpc),
+            case book_riakput(Book, O, AltSpc) of
+                ok -> ok;
+                pause -> timer:sleep(?SLOWOFFER_DELAY)
+            end,
+            {K, AltSpc}
+        end,
+    RplKSpecL = lists:map(MapFun, KSpecL),
     {RplKSpecL, V}.
 
 rotating_object_check(RootPath, B, NumberOfObjects) ->
@@ -790,16 +800,16 @@ rotating_object_check(RootPath, B, NumberOfObjects) ->
                     {max_journalsize, 5000000},
                     {sync_strategy, sync_strategy()}],
     {ok, Book1} = leveled_bookie:book_start(BookOpts),
-    {KSpcL1, V1} = testutil:put_indexed_objects(Book1, B, NumberOfObjects),
-    ok = testutil:check_indexed_objects(Book1, B, KSpcL1, V1),
-    {KSpcL2, V2} = testutil:put_altered_indexed_objects(Book1, B, KSpcL1),
-    ok = testutil:check_indexed_objects(Book1, B, KSpcL2, V2),
-    {KSpcL3, V3} = testutil:put_altered_indexed_objects(Book1, B, KSpcL2),
+    {KSpcL1, V1} = put_indexed_objects(Book1, B, NumberOfObjects),
+    ok = check_indexed_objects(Book1, B, KSpcL1, V1),
+    {KSpcL2, V2} = put_altered_indexed_objects(Book1, B, KSpcL1),
+    ok = check_indexed_objects(Book1, B, KSpcL2, V2),
+    {KSpcL3, V3} = put_altered_indexed_objects(Book1, B, KSpcL2),
     ok = leveled_bookie:book_close(Book1),
     {ok, Book2} = leveled_bookie:book_start(BookOpts),
-    ok = testutil:check_indexed_objects(Book2, B, KSpcL3, V3),
-    {KSpcL4, V4} = testutil:put_altered_indexed_objects(Book2, B, KSpcL3),
-    ok = testutil:check_indexed_objects(Book2, B, KSpcL4, V4),
+    ok = check_indexed_objects(Book2, B, KSpcL3, V3),
+    {KSpcL4, V4} = put_altered_indexed_objects(Book2, B, KSpcL3),
+    ok = check_indexed_objects(Book2, B, KSpcL4, V4),
     Query = {keylist, ?RIAK_TAG, B, {fun foldkeysfun/3, []}},
     {async, BList} = leveled_bookie:book_returnfolder(Book2, Query),
     true = NumberOfObjects == length(BList()),

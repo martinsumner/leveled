@@ -49,7 +49,8 @@
         segment_hash/1,
         to_lookup/1,
         next_key/1,
-        return_proxy/4]).         
+        return_proxy/4,
+        get_metadata/1]).         
 
 -define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
 -define(NRT_IDX, "$aae.").
@@ -243,6 +244,10 @@ strip_to_indexdetails({_, V}) when tuple_size(V) > 4 ->
 striphead_to_v1details(V) -> 
     {element(1, V), element(2, V), element(3, V), element(4, V)}.
 
+-spec get_metadata(ledger_value()) -> metadata().
+get_metadata(LV) ->
+    element(4, LV).
+
 -spec key_dominates(ledger_kv(), ledger_kv()) -> 
     left_hand_first|right_hand_first|left_hand_dominant|right_hand_dominant.
 %% @doc
@@ -358,7 +363,7 @@ endkey_passed(EndKey, CheckingKey) ->
 
 -spec inker_reload_strategy(compaction_strategy()) -> compaction_strategy().
 %% @doc
-%% Take the default startegy for compaction, and override the approach for any 
+%% Take the default strategy for compaction, and override the approach for any 
 %% tags passed in
 inker_reload_strategy(AltList) ->
     ReloadStrategy0 = 
@@ -371,11 +376,13 @@ inker_reload_strategy(AltList) ->
                     AltList).
 
 
--spec get_tagstrategy(ledger_key(), compaction_strategy()) 
+-spec get_tagstrategy(ledger_key()|tag()|dummy, compaction_strategy()) 
                                                     -> skip|retain|recalc.
 %% @doc
 %% Work out the compaction strategy for the key
 get_tagstrategy({Tag, _, _, _}, Strategy) ->
+    get_tagstrategy(Tag, Strategy);
+get_tagstrategy(Tag, Strategy) ->
     case lists:keyfind(Tag, 1, Strategy) of
         {Tag, TagStrat} ->
             TagStrat;
