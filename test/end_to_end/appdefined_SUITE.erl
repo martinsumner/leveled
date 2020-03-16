@@ -8,7 +8,7 @@
             ]).
 
 all() -> [
-            % application_defined_tag,
+            application_defined_tag,
             bespoketag_recalc
             ].
 
