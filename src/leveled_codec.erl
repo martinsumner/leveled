@@ -366,14 +366,12 @@ endkey_passed(EndKey, CheckingKey) ->
 %% Take the default strategy for compaction, and override the approach for any 
 %% tags passed in
 inker_reload_strategy(AltList) ->
-    ReloadStrategy0 = 
+    DefaultList = 
         lists:map(fun leveled_head:default_reload_strategy/1,
                     leveled_head:defined_objecttags()),
-    lists:foldl(fun({X, Y}, SList) ->
-                        lists:keyreplace(X, 1, SList, {X, Y})
-                        end,
-                    ReloadStrategy0,
-                    AltList).
+    lists:ukeymerge(1,
+                    lists:ukeysort(1, AltList),
+                    lists:ukeysort(1, DefaultList)).
 
 
 -spec get_tagstrategy(ledger_key()|tag()|dummy, compaction_strategy()) 

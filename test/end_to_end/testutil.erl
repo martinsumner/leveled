@@ -10,6 +10,7 @@
             stdload/2,
             stdload_expiring/3,
             stdload_object/6,
+            stdload_object/9,
             reset_filestructure/0,
             reset_filestructure/1,
             check_bucket_stats/2,
@@ -59,7 +60,8 @@
             get_value_from_objectlistitem/1,
             numbered_key/1,
             fixed_bin_key/1,
-            convert_to_seconds/1]).
+            convert_to_seconds/1,
+            compact_and_wait/1]).
 
 -define(RETURN_TERMS, {true, undefined}).
 -define(SLOWOFFER_DELAY, 5).
@@ -241,17 +243,46 @@ stdload_expiring(Book, KeyCount, TTL, V, Acc) ->
     stdload_expiring(Book, KeyCount - 1, TTL, V, [{I, B, K}|Acc]).
 
 stdload_object(Book, B, K, I, V, TTL) ->
-    Obj = [{index, I}, {value, V}],
-    IdxSpecs = 
-        case leveled_bookie:book_get(Book, B, K) of
-            {ok, PrevObj} ->
-                {index, OldI} = lists:keyfind(index, 1, PrevObj),
-                io:format("Remove index ~w for ~w~n", [OldI, I]),
-                [{remove, <<"temp_int">>, OldI}, {add, <<"temp_int">>, I}];
-            not_found ->
-                [{add, <<"temp_int">>, I}]
+    stdload_object(Book, B, K, I, V, TTL, ?STD_TAG, true, false).
+
+stdload_object(Book, B, K, I, V, TTL, Tag, RemovePrev2i, MustFind) ->
+    Obj = [{index, [I]}, {value, V}],
+    {IdxSpecs, Obj0} = 
+        case {leveled_bookie:book_get(Book, B, K, Tag), MustFind} of
+            {{ok, PrevObj}, _} ->
+                {index, PrevIs} = lists:keyfind(index, 1, PrevObj),
+                case RemovePrev2i of
+                    true ->
+                        MapFun =
+                            fun(OldI) -> {remove, <<"temp_int">>, OldI} end,
+                        {[{add, <<"temp_int">>, I}|lists:map(MapFun, PrevIs)],
+                            Obj};
+                    false ->
+                        {[{add, <<"temp_int">>, I}],
+                            [{index, [I|PrevIs]}, {value, V}]}
+                end;
+            {not_found, false} ->
+                {[{add, <<"temp_int">>, I}], Obj};
+            {not_found, true} ->
+                HR = leveled_bookie:book_head(Book, B, K, Tag),
+                io:format("Unexpected not_found for key=~w I=~w HR=~w~n ",
+                            [K, I, HR]), 
+                {[{add, <<"temp_int">>, I}], Obj}
         end,
-    R = leveled_bookie:book_tempput(Book, B, K, Obj, IdxSpecs, ?STD_TAG, TTL),
+    R =
+        case TTL of
+            infinity ->
+                leveled_bookie:book_put(Book, B, K, Obj0, IdxSpecs, Tag);
+            TTL when is_integer(TTL) ->
+                leveled_bookie:book_tempput(Book, B, K, Obj0,
+                                            IdxSpecs, Tag, TTL)
+        end,
+    case K of
+        <<57, 57, 57>> ->
+            io:format("K ~w I ~w R ~w~n", [K, I, R]);
+        _ ->
+            ok
+    end,
     case R of
         ok -> 
             ok;
@@ -259,6 +290,7 @@ stdload_object(Book, B, K, I, V, TTL) ->
             io:format("Slow offer needed~n"),
             timer:sleep(?SLOWOFFER_DELAY)
     end.
+
 
 
 
@@ -884,3 +916,24 @@ get_aae_segment({Type, Bucket}, Key) ->
     leveled_tictac:keyto_segment32(<<Type/binary, Bucket/binary, Key/binary>>);
 get_aae_segment(Bucket, Key) ->
     leveled_tictac:keyto_segment32(<<Bucket/binary, Key/binary>>).
+
+compact_and_wait(Book) ->
+    compact_and_wait(Book, 20000).
+
+compact_and_wait(Book, WaitForDelete) ->
+    ok = leveled_bookie:book_compactjournal(Book, 30000),
+    F = fun leveled_bookie:book_islastcompactionpending/1,
+    lists:foldl(fun(X, Pending) ->
+                        case Pending of
+                            false ->
+                                false;
+                            true ->
+                                io:format("Loop ~w waiting for journal "
+                                    ++ "compaction to complete~n", [X]),
+                                timer:sleep(20000),
+                                F(Book)
+                        end end,
+                    true,
+                    lists:seq(1, 15)),
+    io:format("Waiting for journal deletes~n"),
+    timer:sleep(WaitForDelete).

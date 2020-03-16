@@ -3276,6 +3276,10 @@ sqnorder_mutatefold_test() ->
     
     ok = book_destroy(Bookie1).
 
+search_test() ->
+    ?assertMatch({value, 5}, search(fun(X) -> X == 5 end, lists:seq(1, 10))),
+    ?assertMatch(false, search(fun(X) -> X == 55 end, lists:seq(1, 10))).
+
 check_notfound_test() ->
     ProbablyFun = fun() -> probably end,
     MissingFun = fun() -> missing end,

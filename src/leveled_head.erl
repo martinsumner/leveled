@@ -472,4 +472,13 @@ diff_index_test() ->
     ?assertMatch([{add, <<"idx1_bin">>, <<"20840930001702Zoe">>},
                     {remove, <<"idx1_bin">>,<<"20231126131808Madison">>}], IdxSpecs).
 
+decode_test() ->
+    Bin = <<"999">>,
+    BinTerm = term_to_binary("999"),
+    ?assertMatch("999", binary_to_list(
+                            decode_maybe_binary(<<1:8/integer, Bin/binary>>))),
+    ?assertMatch("999", decode_maybe_binary(<<0:8/integer, BinTerm/binary>>)),
+    ?assertMatch("999", binary_to_list(
+                            decode_maybe_binary(<<2:8/integer, Bin/binary>>))).
+
 -endif.

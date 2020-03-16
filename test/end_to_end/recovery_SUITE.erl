@@ -10,6 +10,7 @@
             recalc_strategy/1,
             recalc_transition_strategy/1,
             recovr_strategy/1,
+            stdtag_recalc/1,
             aae_missingjournal/1,
             aae_bustedjournal/1,
             journal_compaction_bustedjournal/1,
@@ -31,7 +32,8 @@ all() -> [
             journal_compaction_bustedjournal,
             close_duringcompaction,
             allkeydelta_journal_multicompact,
-            recompact_keydeltas
+            recompact_keydeltas,
+            stdtag_recalc
             ].
 
 
@@ -147,8 +149,6 @@ recovery_with_samekeyupdates(_Config) ->
     ok = leveled_bookie:book_close(Book2),
     testutil:reset_filestructure(BackupPath),
     testutil:reset_filestructure().
-
-
 
 
 hot_backup_simple(_Config) ->
@@ -328,6 +328,81 @@ rotate_wipe_compact(Strategy1, Strategy2) ->
 
     ok = leveled_bookie:book_close(Book4),
 
+    testutil:reset_filestructure().
+
+
+stdtag_recalc(_Config) ->
+    %% Setting the ?STD_TAG to do recalc, should result in the ?STD_TAG
+    %% behaving like recovr - as no recalc is done for ?STD_TAG
+
+    %% NOTE -This is a test to confirm bad things happen!
+
+    RootPath = testutil:reset_filestructure(),
+    B0 = <<"B0">>,
+    KeyCount = 7000,
+    BookOpts = [{root_path, RootPath},
+                    {cache_size, 1000},
+                    {max_journalobjectcount, 5000},
+                    {max_pencillercachesize, 10000},
+                    {sync_strategy, testutil:sync_strategy()},
+                    {reload_strategy, [{?STD_TAG, recalc}]}],
+    {ok, Book1} = leveled_bookie:book_start(BookOpts),
+    LoadFun =
+        fun(Book) ->
+            fun(I) ->
+                testutil:stdload_object(Book,
+                                        B0, erlang:phash2(I rem KeyCount),
+                                        I, erlang:phash2({value, I}),
+                                        infinity, ?STD_TAG, false, false)
+            end
+        end,
+    lists:foreach(LoadFun(Book1), lists:seq(1, KeyCount)),
+    lists:foreach(LoadFun(Book1), lists:seq(KeyCount + 1, KeyCount * 2)),
+
+    CountFold =
+        fun(Book, CurrentCount) ->
+            leveled_bookie:book_indexfold(Book,
+                                            B0,
+                                            {fun(_BF, _KT, Acc) -> Acc + 1 end,
+                                                0},
+                                            {<<"temp_int">>, 0, CurrentCount},
+                                            {true, undefined})
+        end,
+
+    {async, FolderA} = CountFold(Book1, 2 * KeyCount),
+    CountA = FolderA(),
+    io:format("Counted double index entries ~w - everything loaded OK~n",
+                [CountA]),
+    true = 2 * KeyCount == CountA,
+
+    ok = leveled_bookie:book_close(Book1),
+
+    {ok, Book2} = leveled_bookie:book_start(BookOpts),
+    lists:foreach(LoadFun(Book2), lists:seq(KeyCount * 2 + 1, KeyCount * 3)),
+
+    {async, FolderB} = CountFold(Book2, 3 * KeyCount),
+    CountB = FolderB(),
+    io:format("Maybe counted less index entries ~w - everything not loaded~n",
+                [CountB]),
+    true = 3 * KeyCount >= CountB,
+
+    compact_and_wait(Book2),
+    ok = leveled_bookie:book_close(Book2),
+
+    io:format("Restart from blank ledger"),
+
+    leveled_penciller:clean_testdir(proplists:get_value(root_path, BookOpts) ++
+                                    "/ledger"),
+    {ok, Book3} = leveled_bookie:book_start(BookOpts),
+
+    {async, FolderC} = CountFold(Book3, 3 * KeyCount),
+    CountC = FolderC(),
+    io:format("Missing index entries ~w - recalc not supported on ?STD_TAG~n",
+                [CountC]),
+    true = 3 * KeyCount > CountC,
+
+    ok = leveled_bookie:book_close(Book3),
+    
     testutil:reset_filestructure().
 
 
