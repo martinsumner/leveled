@@ -262,11 +262,6 @@ stdload_object(Book, B, K, I, V, TTL, Tag, RemovePrev2i, MustFind) ->
                             [{index, [I|PrevIs]}, {value, V}]}
                 end;
             {not_found, false} ->
-                {[{add, <<"temp_int">>, I}], Obj};
-            {not_found, true} ->
-                HR = leveled_bookie:book_head(Book, B, K, Tag),
-                io:format("Unexpected not_found for key=~w I=~w HR=~w~n ",
-                            [K, I, HR]), 
                 {[{add, <<"temp_int">>, I}], Obj}
         end,
     R =
@@ -277,12 +272,6 @@ stdload_object(Book, B, K, I, V, TTL, Tag, RemovePrev2i, MustFind) ->
                 leveled_bookie:book_tempput(Book, B, K, Obj0,
                                             IdxSpecs, Tag, TTL)
         end,
-    case K of
-        <<57, 57, 57>> ->
-            io:format("K ~w I ~w R ~w~n", [K, I, R]);
-        _ ->
-            ok
-    end,
     case R of
         ok -> 
             ok;

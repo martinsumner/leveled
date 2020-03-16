@@ -171,7 +171,7 @@ bespoketag_recalc(_Config) ->
         fun(Book, MustFind) ->
             fun(I) ->
                 testutil:stdload_object(Book,
-                                        B0, list_to_binary(["A"|integer_to_list(I rem KeyCount)]),
+                                        B0, integer_to_binary(I rem KeyCount),
                                         I, erlang:phash2({value, I}),
                                         infinity, bespoke_tag, false, MustFind)
             end
@@ -205,24 +205,13 @@ bespoketag_recalc(_Config) ->
                 [CountA]),
     true = 2 * KeyCount == CountA,
 
-    io:format("Before close looking for Key 999 ~w~n",
-                [leveled_bookie:book_head(Book1, B0, <<"A999">>, bespoke_tag)]),
-
     ok = leveled_bookie:book_close(Book1),
 
     {ok, Book2} = leveled_bookie:book_start(BookOpts),
-    io:format("After opening looking for Key 999 ~w~n",
-                [leveled_bookie:book_head(Book2, B0, <<"A999">>, bespoke_tag)]),
-
     lists:foreach(LoadFun(Book2, true), lists:seq(KeyCount * 2 + 1, KeyCount * 3)),
-
-    io:format("After fresh load looking for Key 999 ~w~n",
-                [leveled_bookie:book_head(Book2, B0, <<"A999">>, bespoke_tag)]),
 
     {async, FolderB} = CountFold(Book2, 3 * KeyCount),
     CountB = FolderB(),
-    io:format("Counted triple index entries ~w - everything re-loaded~n",
-                [CountB]),
     true = 3 * KeyCount == CountB,
 
     testutil:compact_and_wait(Book2),
