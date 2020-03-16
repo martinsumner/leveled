@@ -307,7 +307,11 @@ handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Manifest0},
     % Don't want to process a queued call waiting on an old manifest
     [_Active|Manifest] = Manifest0,
     {FilterServer, MaxSQN} = InitiateFun(Checker),
-    ok = clerk_scorefilelist(self(), Manifest),
+    NotRollingFun =
+        fun({_LowSQN, _FN, Pid, _LK}) ->
+            not leveled_cdb:cdb_isrolling(Pid)
+        end,
+    ok = clerk_scorefilelist(self(), lists:filter(NotRollingFun, Manifest)),
     ScoringState =
         #scoring_state{filter_fun = FilterFun,
                         filter_server = FilterServer,
