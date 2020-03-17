@@ -3319,6 +3319,7 @@ simple_persisted_tester(SSTNewFun) ->
                     Acc
             end
         end,
+    true = [] == MapFun({FirstKey, "V"}, []), % coverage cheat within MapFun
     KVList3 = lists:foldl(MapFun, [], KVList2),
     SW2 = os:timestamp(),
     lists:foreach(fun({K, H, _V}) ->
