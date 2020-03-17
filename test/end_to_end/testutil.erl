@@ -881,16 +881,9 @@ restore_topending(RootPath, FileName) ->
 
 find_journals(RootPath) ->
     {ok, FNsA_J} = file:list_dir(RootPath ++ "/journal/journal_files"),
-    {ok, Regex} = re:compile(".*\.cdb"),
-    CDBFiles = lists:foldl(fun(FN, Acc) -> case re:run(FN, Regex) of
-                                                nomatch ->
-                                                    Acc;
-                                                _ ->
-                                                    [FN|Acc]
-                                            end
-                                            end,
-                                [],
-                                FNsA_J),
+    % Must not return a file with the .pnd extension
+    CDBFiles =
+        lists:filter(fun(FN) -> filename:extension(FN) == ".cdb" end, FNsA_J),
     CDBFiles.
 
 convert_to_seconds({MegaSec, Seconds, _MicroSec}) ->
