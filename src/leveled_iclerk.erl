@@ -297,6 +297,8 @@ handle_call(stop, _From, State) ->
 
 handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Manifest0},
                 State) ->
+    leveled_log:log("IC014", [State#state.reload_strategy,
+                                State#state.max_run_length]),
     % Empty the waste folder
     clear_waste(State),
     SW = os:timestamp(), 
