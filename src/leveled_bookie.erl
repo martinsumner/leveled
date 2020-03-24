@@ -309,10 +309,14 @@
             % resilience outside of the store), or retain (retain a history of
             % key changes, even when the object value has been compacted). 
             %
-            % There is a third, theoretical and untested strategy, which is
-            % recalc - which would require when reloading the Ledger from the
-            % Journal, to recalculate the index changes based on the current
-            % state of the Ledger and the object metadata.
+            % There is a third strategy, which is recalc, where on reloading 
+            % the Ledger from the Journal, the key changes are recalculated by
+            % comparing the extracted metadata from the Journal object, with the
+            % extracted metadata from the current Ledger object it is set to
+            % replace (should one be present).  Implementing the recalc
+            % strategy requires a override function for 
+            % `leveled_head:diff_indexspecs/3`.
+            % A function for the ?RIAK_TAG is provided and tested.
             %
             % reload_strategy options are a list - to map from a tag to the
             % strategy (recovr|retain|recalc).  Defualt strategies are:
