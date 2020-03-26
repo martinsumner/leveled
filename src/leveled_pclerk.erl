@@ -183,7 +183,7 @@ merge(SrcLevel, Manifest, RootPath, OptsSST) ->
             leveled_log:log("PC023",
                             [SrcLevel + 1, FCnt, AvgMem, MaxFN, MaxP, MaxMem])
     end,
-    Src = leveled_pmanifest:mergefile_selector(Manifest, SrcLevel),
+    Src = leveled_pmanifest:mergefile_selector(Manifest, SrcLevel, random),
     NewSQN = leveled_pmanifest:get_manifest_sqn(Manifest) + 1,
     SinkList = leveled_pmanifest:merge_lookup(Manifest,
                                                 SrcLevel + 1,

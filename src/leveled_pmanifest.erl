@@ -34,7 +34,7 @@
         remove_manifest_entry/4,
         replace_manifest_entry/5,
         switch_manifest_entry/4,
-        mergefile_selector/2,
+        mergefile_selector/3,
         add_snapshot/3,
         release_snapshot/2,
         merge_snapshot/2,
@@ -82,6 +82,7 @@
 -type manifest() :: #manifest{}.
 -type manifest_entry() :: #manifest_entry{}.
 -type manifest_owner() :: pid()|list().
+-type selector_strategy() :: random.
 
 -export_type([manifest/0, manifest_entry/0, manifest_owner/0]).
 
@@ -429,7 +430,8 @@ merge_lookup(Manifest, LevelIdx, StartKey, EndKey) ->
     range_lookup_int(Manifest, LevelIdx, StartKey, EndKey, MakePointerFun).
 
 
--spec mergefile_selector(manifest(), integer()) -> manifest_entry().
+-spec mergefile_selector(manifest(), integer(), selector_strategy()) 
+                                                        -> manifest_entry().
 %% @doc
 %% An algorithm for discovering which files to merge ....
 %% We can find the most optimal file:
@@ -441,10 +443,10 @@ merge_lookup(Manifest, LevelIdx, StartKey, EndKey) ->
 %% genuinely better - eventually every file has to be compacted.
 %%
 %% Hence, the initial implementation is to select files to merge at random
-mergefile_selector(Manifest, LevelIdx) when LevelIdx =< 1 ->
+mergefile_selector(Manifest, LevelIdx, _Strategy) when LevelIdx =< 1 ->
     Level = array:get(LevelIdx, Manifest#manifest.levels),
     lists:nth(leveled_rand:uniform(length(Level)), Level);
-mergefile_selector(Manifest, LevelIdx) ->
+mergefile_selector(Manifest, LevelIdx, random) ->
     Level = leveled_tree:to_list(array:get(LevelIdx,
                                             Manifest#manifest.levels)),
     {_SK, ME} = lists:nth(leveled_rand:uniform(length(Level)), Level),
@@ -1057,10 +1059,10 @@ changeup_setup(Man6) ->
 random_select_test() ->
     ManTuple = initial_setup(),
     LastManifest = element(7, ManTuple),
-    L1File = mergefile_selector(LastManifest, 1),
+    L1File = mergefile_selector(LastManifest, 1, random),
     % This blows up if the function is not prepared for the different format
     % https://github.com/martinsumner/leveled/issues/43
-    _L2File = mergefile_selector(LastManifest, 2),
+    _L2File = mergefile_selector(LastManifest, 2, random),
     Level1 = array:get(1, LastManifest#manifest.levels),
     ?assertMatch(true, lists:member(L1File, Level1)).
 
