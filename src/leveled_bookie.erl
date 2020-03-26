@@ -1109,7 +1109,7 @@ book_destroy(Pid) ->
 %% to store the backup.
 %% 
 %% Backup files are hard-linked.  Does not work in head_only mode, or if
-%% index changes are used with a `skip` compaction/reload strategy
+%% index changes are used with a `recovr` compaction/reload strategy
 book_hotbackup(Pid) ->
     gen_server:call(Pid, hot_backup, infinity). 
 

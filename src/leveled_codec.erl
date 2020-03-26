@@ -89,7 +89,7 @@
 -type ledger_kv() ::
         {ledger_key(), ledger_value()}.
 -type compaction_method() ::
-        retain|skip|recalc.
+        retain|recovr|recalc.
 -type compaction_strategy() ::
         list({tag(), compaction_method()}).
 -type journal_key_tag() ::
@@ -375,7 +375,7 @@ inker_reload_strategy(AltList) ->
 
 
 -spec get_tagstrategy(ledger_key()|tag()|dummy, compaction_strategy()) 
-                                                    -> skip|retain|recalc.
+                                                    -> compaction_method().
 %% @doc
 %% Work out the compaction strategy for the key
 get_tagstrategy({Tag, _, _, _}, Strategy) ->

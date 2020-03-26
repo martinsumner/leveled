@@ -120,7 +120,7 @@ Three potential recovery strategies are supported to provide some flexibility fo
 
 - retain - on compaction KeyDeltas are retained in the Journal, only values are removed.
 
-- recalc - the compaction rules assume that on recovery the key changes will be recalculated by comparing the change with the current database state. In recovery the key changes will be recalculated by comparing the change with the current database state.  A user-defined function should be passed in at startup to achieve this recalculation (to override `leveled_head:diff_indexspeacs/3`).
+- recalc - the compaction rules assume that on recovery the key changes will be recalculated by comparing the change with the current database state. In recovery the key changes will be recalculated by comparing the change with the current database state.  A user-defined function should be passed in at startup to achieve this recalculation (to override `leveled_head:diff_indexspecs/3`).
 
 ### Hot Backups
 

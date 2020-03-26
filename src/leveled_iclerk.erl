@@ -805,10 +805,11 @@ split_positions_into_batches(Positions, Journal, Batches) ->
 %% recalculating the KeyChanges by looking at the object when we reload.  So
 %% old objects can be discarded.
 %%
-%% If the strategy is skip, we don't care about KeyDeltas.  Note though, that
+%% If the strategy is recovr, we don't care about KeyDeltas.  Note though, that
 %% if the ledger is deleted it may not be possible to safely rebuild a KeyStore
 %% if it contains index entries.  The hot_backup approach is also not safe with
-%% a `skip` strategy.
+%% a `recovr` strategy.  The recovr strategy assumes faults in the ledger will
+%% be resolved via application-level anti-entropy
 filter_output(KVCs, FilterFun, FilterServer, MaxSQN, ReloadStrategy) ->
     FoldFun =
         filter_output_fun(FilterFun, FilterServer, MaxSQN, ReloadStrategy),
