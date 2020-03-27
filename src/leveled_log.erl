@@ -230,6 +230,8 @@
     {"PC023",
         {info, "At level=~w file_count=~w avg_mem=~w " 
                 ++ "file with most memory fn=~s p=~w mem=~w"}},
+    {"PC024",
+        {info, "Grooming compaction picked file with tomb_count=~w"}},
     {"PM002",
         {info, "Completed dump of L0 cache to list of l0cache_size=~w"}},
     

@@ -49,12 +49,15 @@
 
 -define(MAX_TIMEOUT, 2000).
 -define(MIN_TIMEOUT, 200).
+-define(GROOMING_PERC, 50).
 
 -record(state, {owner :: pid() | undefined,
                 root_path :: string() | undefined,
                 pending_deletions = dict:new(), % OTP 16 does not like type
                 sst_options :: #sst_options{}
                 }).
+
+-type manifest_entry() :: #manifest_entry{}.
 
 %%%============================================================================
 %%% API
@@ -183,7 +186,15 @@ merge(SrcLevel, Manifest, RootPath, OptsSST) ->
             leveled_log:log("PC023",
                             [SrcLevel + 1, FCnt, AvgMem, MaxFN, MaxP, MaxMem])
     end,
-    Src = leveled_pmanifest:mergefile_selector(Manifest, SrcLevel, random),
+    SelectMethod =
+        case leveled_rand:uniform(100) of
+            R when R < ?GROOMING_PERC ->
+                {grooming, fun grooming_scorer/1};
+            _ ->
+                random
+        end,
+    Src =
+        leveled_pmanifest:mergefile_selector(Manifest, SrcLevel, SelectMethod),
     NewSQN = leveled_pmanifest:get_manifest_sqn(Manifest) + 1,
     SinkList = leveled_pmanifest:merge_lookup(Manifest,
                                                 SrcLevel + 1,
@@ -285,6 +296,18 @@ do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, OptsSST, Additions) ->
                             Additions ++ [Entry])
     end.
 
+-spec grooming_scorer(list(manifest_entry())) -> manifest_entry().
+grooming_scorer(Sample) ->
+    ScoringFun = 
+        fun(ME) ->
+            TombCount = leveled_sst:sst_gettombcount(ME#manifest_entry.owner),
+            {TombCount, ME}
+        end,
+    ScoredSample =
+        lists:reverse(lists:ukeysort(1, lists:map(ScoringFun, Sample))),
+    [{HighestTC, BestME}|_Rest] = ScoredSample,
+    leveled_log:log("PC024", [HighestTC]),
+    BestME.
 
 return_deletions(ManifestSQN, PendingDeletionD) ->
     % The returning of deletions had been seperated out as a failure to fetch
@@ -323,6 +346,82 @@ generate_randomkeys(Count, Acc, BucketLow, BRange) ->
                     leveled_codec:segment_hash(K),
                     null}},
     generate_randomkeys(Count - 1, [RandKey|Acc], BucketLow, BRange).
+
+
+grooming_score_test() ->
+    ok = filelib:ensure_dir("test/test_area/ledger_files/"),
+    KL1_L3 = lists:sort(generate_randomkeys(2000, 0, 100)),
+    KL2_L3 = lists:sort(generate_randomkeys(2000, 101, 250)),
+    KL3_L3 = lists:sort(generate_randomkeys(2000, 251, 300)),
+    KL4_L3 = lists:sort(generate_randomkeys(2000, 301, 400)),
+    [{HeadK, HeadV}|RestKL2] = KL2_L3,
+
+    {ok, PidL3_1, _, _} = 
+        leveled_sst:sst_newmerge("test/test_area/ledger_files/",
+                                    "1_L3.sst",
+                                    KL1_L3,
+                                    [{HeadK, setelement(2, HeadV, tomb)}
+                                        |RestKL2],
+                                    false,
+                                    3,
+                                    999999,
+                                    #sst_options{},
+                                    true,
+                                    true),
+    {ok, PidL3_1B, _, _} = 
+        leveled_sst:sst_newmerge("test/test_area/ledger_files/",
+                                    "1B_L3.sst",
+                                    KL1_L3,
+                                    [{HeadK, setelement(2, HeadV, tomb)}
+                                        |RestKL2],
+                                    true,
+                                    3,
+                                    999999,
+                                    #sst_options{},
+                                    true,
+                                    true),
+    
+    {ok, PidL3_2, _, _} = 
+        leveled_sst:sst_newmerge("test/test_area/ledger_files/",
+                                    "2_L3.sst",
+                                    KL3_L3,
+                                    KL4_L3,
+                                    false,
+                                    3,
+                                    999999,
+                                    #sst_options{},
+                                    true,
+                                    true),
+    {ok, PidL3_2NC, _, _} = 
+        leveled_sst:sst_newmerge("test/test_area/ledger_files/",
+                                    "2NC_L3.sst",
+                                    KL3_L3,
+                                    KL4_L3,
+                                    false,
+                                    3,
+                                    999999,
+                                    #sst_options{},
+                                    true,
+                                    false),
+    
+    ME1 = #manifest_entry{owner=PidL3_1},
+    ME1B = #manifest_entry{owner=PidL3_1B},
+    ME2 = #manifest_entry{owner=PidL3_2},
+    ME2NC = #manifest_entry{owner=PidL3_2NC},
+    ?assertMatch(ME1, grooming_scorer([ME1, ME2])),
+    ?assertMatch(ME1, grooming_scorer([ME2, ME1])),
+        % prefer the file with the tombstone
+    ?assertMatch(ME2NC, grooming_scorer([ME1, ME2NC])),
+    ?assertMatch(ME2NC, grooming_scorer([ME2NC, ME1])),
+        % not_counted > 1 - we will merge files in unexpected (i.e. legacy)
+        % format first
+    ?assertMatch(ME1B, grooming_scorer([ME1B, ME2])),
+    ?assertMatch(ME2, grooming_scorer([ME2, ME1B])),
+        % If the file with the tombstone is in the basement, it will have
+        % no tombstone so the first file will be chosen
+    
+    lists:foreach(fun(P) -> leveled_sst:sst_clear(P) end,
+                    [PidL3_1, PidL3_1B, PidL3_2, PidL3_2NC]).
 
 
 merge_file_test() ->
@@ -401,7 +500,10 @@ merge_file_test() ->
                         "test/test_area/ledger_files/",
                         3, #sst_options{}),
     
-    ?assertMatch(3, leveled_pmanifest:get_manifest_sqn(Man6)).
+    ?assertMatch(3, leveled_pmanifest:get_manifest_sqn(Man6)),
+    
+    lists:foreach(fun(P) -> leveled_sst:sst_clear(P) end,
+                    [PidL1_1, PidL2_1, PidL2_2, PidL2_3, PidL2_4]).
 
 coverage_cheat_test() ->
     {ok, _State1} =

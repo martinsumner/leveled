@@ -127,6 +127,12 @@
             sst_gettombcount/1,
             sst_close/1]).
 
+-ifdef(TEST).
+
+-export([sst_newmerge/10]).
+
+-endif.
+
 -export([tune_seglist/1, extract_hash/1, member_check/2]).
 
 -export([in_range/3]).

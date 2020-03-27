@@ -60,6 +60,7 @@
 -define(TREE_WIDTH, 8).
 -define(PHANTOM_PID, r2d_fail).
 -define(MANIFESTS_TO_RETAIN, 5).
+-define(GROOM_SAMPLE, 8).
 
 -record(manifest, {levels,
                         % an array of lists or trees representing the manifest
@@ -82,7 +83,8 @@
 -type manifest() :: #manifest{}.
 -type manifest_entry() :: #manifest_entry{}.
 -type manifest_owner() :: pid()|list().
--type selector_strategy() :: random.
+-type selector_strategy() ::
+        random|{grooming, fun((list(manifest_entry())) -> manifest_entry())}.
 
 -export_type([manifest/0, manifest_entry/0, manifest_owner/0]).
 
@@ -450,7 +452,21 @@ mergefile_selector(Manifest, LevelIdx, random) ->
     Level = leveled_tree:to_list(array:get(LevelIdx,
                                             Manifest#manifest.levels)),
     {_SK, ME} = lists:nth(leveled_rand:uniform(length(Level)), Level),
-    ME.
+    ME;
+mergefile_selector(Manifest, LevelIdx, {grooming, ScoringFun}) ->
+    Level = leveled_tree:to_list(array:get(LevelIdx,
+                                            Manifest#manifest.levels)),
+    SelectorFun =
+        fun(_I, Acc) ->
+            {_SK, ME} = lists:nth(leveled_rand:uniform(length(Level)), Level),
+            [ME|Acc]
+        end,
+    Sample =
+        lists:usort(lists:foldl(SelectorFun, [], lists:seq(1, ?GROOM_SAMPLE))),
+    % Note that Entries may be less than GROOM_SAMPLE, if same one picked
+    % multiple times
+    ScoringFun(Sample).
+    
 
 -spec merge_snapshot(manifest(), manifest()) -> manifest().
 %% @doc
@@ -608,6 +624,7 @@ check_bloom(Manifest, FP, Hash) ->
 %%%============================================================================
 %%% Internal Functions
 %%%============================================================================
+
 
 -spec get_manifest_entry({tuple(), manifest_entry()}|manifest_entry())
                             -> manifest_entry().
