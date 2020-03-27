@@ -1142,18 +1142,18 @@ fold_from_sequence(_MinSQN, _FoldFuns, Acc, []) ->
     Acc;
 fold_from_sequence(MinSQN, FoldFuns, Acc, [{LowSQN, FN, Pid, _LK}|Rest])
                                                     when LowSQN >= MinSQN ->    
-    Acc0 = foldfile_between_sequence(MinSQN,
-                                        MinSQN + ?LOADING_BATCH,
-                                        FoldFuns,
-                                        Acc,
-                                        Pid,
-                                        undefined,
-                                        FN),
-    fold_from_sequence(MinSQN, FoldFuns, Acc0, Rest);
+    {NextMinSQN, Acc0} = foldfile_between_sequence(MinSQN,
+                                                    MinSQN + ?LOADING_BATCH,
+                                                    FoldFuns,
+                                                    Acc,
+                                                    Pid,
+                                                    undefined,
+                                                    FN),
+    fold_from_sequence(NextMinSQN, FoldFuns, Acc0, Rest);
 fold_from_sequence(MinSQN, FoldFuns, Acc, [{_LowSQN, FN, Pid, _LK}|Rest]) ->
     % If this file has a LowSQN less than the minimum, we can skip it if the 
     % next file also has a LowSQN below the minimum
-    Acc0 = 
+    {NextMinSQN, Acc0} = 
         case Rest of
             [] ->
                 foldfile_between_sequence(MinSQN,
@@ -1172,9 +1172,9 @@ fold_from_sequence(MinSQN, FoldFuns, Acc, [{_LowSQN, FN, Pid, _LK}|Rest]) ->
                                             undefined,
                                             FN);
             _ ->
-                Acc    
+                {MinSQN, Acc}    
         end,
-    fold_from_sequence(MinSQN, FoldFuns, Acc0, Rest).
+    fold_from_sequence(NextMinSQN, FoldFuns, Acc0, Rest).
 
 foldfile_between_sequence(MinSQN, MaxSQN, FoldFuns, 
                                                 Acc, CDBpid, StartPos, FN) ->
@@ -1182,8 +1182,8 @@ foldfile_between_sequence(MinSQN, MaxSQN, FoldFuns,
     InitBatchAcc = {MinSQN, MaxSQN, InitAccFun(FN, MinSQN)},
     
     case leveled_cdb:cdb_scan(CDBpid, FilterFun, InitBatchAcc, StartPos) of
-        {eof, {_AccMinSQN, _AccMaxSQN, BatchAcc}} ->
-            FoldFun(BatchAcc, Acc);
+        {eof, {AccMinSQN, _AccMaxSQN, BatchAcc}} ->
+            {AccMinSQN, FoldFun(BatchAcc, Acc)};
         {LastPosition, {_AccMinSQN, _AccMaxSQN, BatchAcc}} ->
             UpdAcc = FoldFun(BatchAcc, Acc),
             NextSQN = MaxSQN + 1,
@@ -1452,7 +1452,10 @@ compact_journal_testto(WRP, ExpectedFiles) ->
                                     fun(X) -> {X, 55} end,
                                     fun(_F) -> ok end,
                                     fun(L, K, SQN) ->
-                                        lists:member({SQN, K}, L)
+                                        case lists:member({SQN, K}, L) of
+                                            true -> current;
+                                            false -> replaced
+                                        end
                                     end,
                                     5000),
     timer:sleep(1000),
@@ -1464,7 +1467,10 @@ compact_journal_testto(WRP, ExpectedFiles) ->
                                         fun(X) -> {X, 55} end,
                                         fun(_F) -> ok end,
                                         fun(L, K, SQN) ->
-                                            lists:member({SQN, K}, L)
+                                            case lists:member({SQN, K}, L) of
+                                                true -> current;
+                                                false -> replaced
+                                            end
                                         end,
                                         5000),
     timer:sleep(1000),
