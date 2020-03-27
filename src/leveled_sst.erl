@@ -1364,7 +1364,7 @@ build_table_summary(SlotIndex, _Level, FirstKey,
                                 not_counted|non_neg_integer()}.
 %% @doc
 %% Read the table summary - format varies depending on file version (presence
-%5 of tomb count)
+%% of tomb count)
 read_table_summary(BinWithCheck, TombCount) ->
     <<SummCRC:32/integer, SummBin/binary>> = BinWithCheck,
     CRCCheck = hmac(SummBin),
