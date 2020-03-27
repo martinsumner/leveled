@@ -260,9 +260,9 @@ do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, OptsSST, Additions) ->
                                                 length(Additions)),
     leveled_log:log("PC012", [NewSQN, FileName, SinkB]),
     TS1 = os:timestamp(),
-    case leveled_sst:sst_new(RP, FileName,
-                                KL1, KL2, SinkB, SinkLevel, MaxSQN, 
-                                OptsSST) of
+    case leveled_sst:sst_newmerge(RP, FileName,
+                                    KL1, KL2, SinkB, SinkLevel, MaxSQN,
+                                    OptsSST) of
         empty ->
             leveled_log:log("PC013", [FileName]),
             do_merge([], [],

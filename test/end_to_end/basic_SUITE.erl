@@ -196,7 +196,7 @@ bigsst_littlesst(_Config) ->
                     {compression_point, on_compact}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     ObjL1 = 
-        testutil:generate_objects(60000, 1, [], 
+        testutil:generate_objects(80000, 1, [], 
                                     leveled_rand:rand_bytes(100), 
                                     fun() -> [] end, <<"B">>),
     testutil:riakload(Bookie1, ObjL1),
