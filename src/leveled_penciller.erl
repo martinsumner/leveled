@@ -305,8 +305,9 @@
         list(leveled_codec:ledger_kv()|leveled_sst:expandable_pointer())}.
 -type iterator() :: list(iterator_entry()).
 -type bad_ledgerkey() :: list().
+-type sqn_check() :: current|replaced|missing.
 
--export_type([levelzero_cacheentry/0]).
+-export_type([levelzero_cacheentry/0, sqn_check/0]).
 
 %%%============================================================================
 %%% API
@@ -480,14 +481,13 @@ pcl_fetchnextkey(Pid, StartKey, EndKey, AccFun, InitAcc) ->
 
 -spec pcl_checksequencenumber(pid(), 
                                 leveled_codec:ledger_key()|bad_ledgerkey(), 
-                                integer()) -> boolean().
+                                integer()) -> sqn_check().
 %% @doc
 %% Check if the sequence number of the passed key is not replaced by a change
-%% after the passed sequence number.  Will return true if the Key is present
-%% and either is equal to, or prior to the passed SQN.
-%%
-%% If the key is not present, it will be assumed that a higher sequence number
-%% tombstone once existed, and false will be returned.
+%% after the passed sequence number.  Will return:
+%% - current
+%% - replaced
+%% - missing
 pcl_checksequencenumber(Pid, Key, SQN) ->
     Hash = leveled_codec:segment_hash(Key),
     if
@@ -1487,7 +1487,7 @@ log_slowfetch(T0, R, PID, Level, FetchTolerance) ->
     end.
 
 
--spec compare_to_sqn(tuple()|not_present, integer()) -> boolean().
+-spec compare_to_sqn(tuple()|not_present, integer()) -> sqn_check().
 %% @doc
 %% Check to see if the SQN in the penciller is after the SQN expected for an 
 %% object (used to allow the journal to check compaction status from a cache
@@ -1495,19 +1495,19 @@ log_slowfetch(T0, R, PID, Level, FetchTolerance) ->
 compare_to_sqn(Obj, SQN) ->
     case Obj of
         not_present ->
-            false;
+            missing;
         Obj ->
             SQNToCompare = leveled_codec:strip_to_seqonly(Obj),
             if
                 SQNToCompare > SQN ->
-                    false;
+                    replaced;
                 true ->
                     % Normally we would expect the SQN to be equal here, but
                     % this also allows for the Journal to have a more advanced
                     % value. We return true here as we wouldn't want to
                     % compact thta more advanced value, but this may cause
                     % confusion in snapshots.
-                    true
+                    current
             end
     end.
 
@@ -2097,25 +2097,25 @@ simple_server_test() ->
     ?assertMatch(Key2, pcl_fetch(PclSnap, {o,"Bucket0002", "Key0002", null})),
     ?assertMatch(Key3, pcl_fetch(PclSnap, {o,"Bucket0003", "Key0003", null})),
     ?assertMatch(Key4, pcl_fetch(PclSnap, {o,"Bucket0004", "Key0004", null})),
-    ?assertMatch(true, pcl_checksequencenumber(PclSnap,
+    ?assertMatch(current, pcl_checksequencenumber(PclSnap,
                                                 {o,
                                                     "Bucket0001",
                                                     "Key0001",
                                                     null},
                                                 1)),
-    ?assertMatch(true, pcl_checksequencenumber(PclSnap,
+    ?assertMatch(current, pcl_checksequencenumber(PclSnap,
                                                 {o,
                                                     "Bucket0002",
                                                     "Key0002",
                                                     null},
                                                 1002)),
-    ?assertMatch(true, pcl_checksequencenumber(PclSnap,
+    ?assertMatch(current, pcl_checksequencenumber(PclSnap,
                                                 {o,
                                                     "Bucket0003",
                                                     "Key0003",
                                                     null},
                                                 2003)),
-    ?assertMatch(true, pcl_checksequencenumber(PclSnap,
+    ?assertMatch(current, pcl_checksequencenumber(PclSnap,
                                                 {o,
                                                     "Bucket0004",
                                                     "Key0004",
@@ -2132,7 +2132,7 @@ simple_server_test() ->
     KL1A = generate_randomkeys({2000, 4006}),
     ok = maybe_pause_push(PCLr, [Key1A]),
     ok = maybe_pause_push(PCLr, KL1A),
-    ?assertMatch(true, pcl_checksequencenumber(PclSnap,
+    ?assertMatch(current, pcl_checksequencenumber(PclSnap,
                                                 {o,
                                                     "Bucket0001",
                                                     "Key0001",
@@ -2148,19 +2148,19 @@ simple_server_test() ->
                                         undefined,
                                         false),
     
-    ?assertMatch(false, pcl_checksequencenumber(PclSnap2,
+    ?assertMatch(replaced, pcl_checksequencenumber(PclSnap2,
                                                 {o,
                                                     "Bucket0001",
                                                     "Key0001",
                                                     null},
                                                 1)),
-    ?assertMatch(true, pcl_checksequencenumber(PclSnap2,
+    ?assertMatch(current, pcl_checksequencenumber(PclSnap2,
                                                 {o,
                                                     "Bucket0001",
                                                     "Key0001",
                                                     null},
                                                 4005)),
-    ?assertMatch(true, pcl_checksequencenumber(PclSnap2,
+    ?assertMatch(current, pcl_checksequencenumber(PclSnap2,
                                                 {o,
                                                     "Bucket0002",
                                                     "Key0002",

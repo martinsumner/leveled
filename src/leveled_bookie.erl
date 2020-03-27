@@ -2278,7 +2278,7 @@ maybe_withjitter(_CacheSize, _MaxCacheSize) ->
 
 -spec get_loadfun(book_state()) -> fun().
 %% @doc
-%% The LoadFun will be sued by the Inker when walking across the Journal to 
+%% The LoadFun will be used by the Inker when walking across the Journal to 
 %% load the Penciller at startup
 get_loadfun(State) ->
     PrepareFun =

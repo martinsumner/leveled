@@ -35,7 +35,7 @@
         from_inkerkv/2,
         from_journalkey/1,
         revert_to_keydeltas/2,
-        is_compaction_candidate/1,
+        is_full_journalentry/1,
         split_inkvalue/1,
         check_forinkertype/2,
         get_tagstrategy/2,
@@ -410,11 +410,12 @@ to_inkerkv(LedgerKey, SQN, Object, KeyChanges, PressMethod, Compress) ->
 %% If we wish to retain key deltas when an object in the Journal has been
 %% replaced - then this converts a Journal Key and Value into one which has no
 %% object body just the key deltas.
+%% Only called if retain strategy and has passed
+%% leveled_codec:is_full_journalentry/1 - so no need to consider other key
+%% types
 revert_to_keydeltas({SQN, ?INKT_STND, LedgerKey}, InkerV) ->
     {_V, KeyDeltas} = revert_value_from_journal(InkerV),
-    {{SQN, ?INKT_KEYD, LedgerKey}, {null, KeyDeltas}};
-revert_to_keydeltas(JournalKey, InkerV) ->
-    {JournalKey, InkerV}.
+    {{SQN, ?INKT_KEYD, LedgerKey}, {null, KeyDeltas}}.
 
 %% Used when fetching objects, so only handles standard, hashable entries
 from_inkerkv(Object) ->
@@ -560,12 +561,12 @@ check_forinkertype(_LedgerKey, head_only) ->
 check_forinkertype(_LedgerKey, _Object) ->
     ?INKT_STND.
 
--spec is_compaction_candidate(journal_key()) -> boolean().
+-spec is_full_journalentry(journal_key()) -> boolean().
 %% @doc
 %% Only journal keys with standard objects should be scored for compaction
-is_compaction_candidate({_SQN, ?INKT_STND, _LK}) ->
+is_full_journalentry({_SQN, ?INKT_STND, _LK}) ->
     true;
-is_compaction_candidate(_OtherJKType) ->
+is_full_journalentry(_OtherJKType) ->
     false.
 
 

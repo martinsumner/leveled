@@ -238,12 +238,12 @@ retain_strategy(_Config) ->
     RootPath = testutil:reset_filestructure(),
     BookOpts = [{root_path, RootPath},
                     {cache_size, 1000},
-                    {max_journalsize, 5000000},
+                    {max_journalobjectcount, 5000},
                     {sync_strategy, testutil:sync_strategy()},
                     {reload_strategy, [{?RIAK_TAG, retain}]}],
     BookOptsAlt = [{root_path, RootPath},
                     {cache_size, 1000},
-                    {max_journalsize, 100000},
+                    {max_journalobjectcount, 2000},
                     {sync_strategy, testutil:sync_strategy()},
                     {reload_strategy, [{?RIAK_TAG, retain}]},
                     {max_run_length, 8}],
@@ -260,6 +260,58 @@ retain_strategy(_Config) ->
                                                 {"Bucket4", Spcl4, LastV4},
                                                 {"Bucket5", Spcl5, LastV5},
                                                 {"Bucket6", Spcl6, LastV6}]),
+
+    {ok, Book1} = leveled_bookie:book_start(BookOpts),
+    compact_and_wait(Book1),
+    compact_and_wait(Book1),
+    ok = leveled_bookie:book_close(Book1),
+
+    ok = restart_from_blankledger(BookOpts, [{"Bucket3", Spcl3, LastV3},
+                                                {"Bucket4", Spcl4, LastV4},
+                                                {"Bucket5", Spcl5, LastV5},
+                                                {"Bucket6", Spcl6, LastV6}]),
+
+    {ok, Book2} = leveled_bookie:book_start(BookOptsAlt),
+
+    {KSpcL2, _V2} = testutil:put_indexed_objects(Book2, "AltBucket6", 3000),
+    Q2 = fun(RT) -> {index_query,
+                        "AltBucket6",
+                        {fun testutil:foldkeysfun/3, []},
+                        {"idx1_bin", "#", "|"},
+                        {RT, undefined}}
+                    end,
+    {async, KFolder2A} = leveled_bookie:book_returnfolder(Book2, Q2(false)),
+    KeyList2A = lists:usort(KFolder2A()),
+    true = length(KeyList2A) == 3000,
+
+    DeleteFun =
+        fun({DK, [{add, DIdx, DTerm}]}) ->
+            ok = testutil:book_riakdelete(Book2,
+                                            "AltBucket6",
+                                            DK,
+                                            [{remove, DIdx, DTerm}])
+        end,
+    lists:foreach(DeleteFun, KSpcL2),
+
+    {async, KFolder2AD} = leveled_bookie:book_returnfolder(Book2, Q2(false)),
+    KeyList2AD = lists:usort(KFolder2AD()),
+    true = length(KeyList2AD) == 0,
+
+    ok = leveled_bookie:book_close(Book2),
+
+    {ok, Book3} = leveled_bookie:book_start(BookOptsAlt),
+
+    io:format("Compact after deletions~n"),
+
+    compact_and_wait(Book3),
+    compact_and_wait(Book3),
+    
+    {async, KFolder3AD} = leveled_bookie:book_returnfolder(Book3, Q2(false)),
+    KeyList3AD = lists:usort(KFolder3AD()),
+    true = length(KeyList3AD) == 0,
+
+    ok = leveled_bookie:book_close(Book3),
+
     testutil:reset_filestructure().
 
 
@@ -267,7 +319,7 @@ recovr_strategy(_Config) ->
     RootPath = testutil:reset_filestructure(),
     BookOpts = [{root_path, RootPath},
                     {cache_size, 1000},
-                    {max_journalsize, 5000000},
+                    {max_journalobjectcount, 8000},
                     {sync_strategy, testutil:sync_strategy()},
                     {reload_strategy, [{?RIAK_TAG, recovr}]}],
     
@@ -309,7 +361,57 @@ recovr_strategy(_Config) ->
     true = length(KeyList) == 6400,
     true = length(KeyList) < length(KeyTermList),
     true = length(KeyTermList) < 25600,
+
     ok = leveled_bookie:book_close(Book1),
+
+    RevisedOpts = [{root_path, RootPath},
+                    {cache_size, 1000},
+                    {max_journalobjectcount, 2000},
+                    {sync_strategy, testutil:sync_strategy()},
+                    {reload_strategy, [{?RIAK_TAG, recovr}]}],
+
+    {ok, Book2} = leveled_bookie:book_start(RevisedOpts),
+
+    {KSpcL2, _V2} = testutil:put_indexed_objects(Book2, "AltBucket6", 3000),
+    {async, KFolder2} = leveled_bookie:book_returnfolder(Book2, Q(false)),
+    KeyList2 = lists:usort(KFolder2()),
+    true = length(KeyList2) == 6400,
+
+    Q2 = fun(RT) -> {index_query,
+                        "AltBucket6",
+                        {fun testutil:foldkeysfun/3, []},
+                        {"idx1_bin", "#", "|"},
+                        {RT, undefined}}
+                    end,
+    {async, KFolder2A} = leveled_bookie:book_returnfolder(Book2, Q2(false)),
+    KeyList2A = lists:usort(KFolder2A()),
+    true = length(KeyList2A) == 3000,
+
+    DeleteFun =
+        fun({DK, [{add, DIdx, DTerm}]}) ->
+            ok = testutil:book_riakdelete(Book2,
+                                            "AltBucket6",
+                                            DK,
+                                            [{remove, DIdx, DTerm}])
+        end,
+    lists:foreach(DeleteFun, KSpcL2),
+
+    {async, KFolder2AD} = leveled_bookie:book_returnfolder(Book2, Q2(false)),
+    KeyList2AD = lists:usort(KFolder2AD()),
+    true = length(KeyList2AD) == 0,
+
+    compact_and_wait(Book2),
+    compact_and_wait(Book2),
+
+    ok = leveled_bookie:book_close(Book2),
+
+    {ok, Book3} = leveled_bookie:book_start(RevisedOpts),
+    {async, KFolder3AD} = leveled_bookie:book_returnfolder(Book3, Q2(false)),
+    KeyList3AD = lists:usort(KFolder3AD()),
+    true = length(KeyList3AD) == 0,
+
+    ok = leveled_bookie:book_close(Book3),
+
     testutil:reset_filestructure().
 
 
