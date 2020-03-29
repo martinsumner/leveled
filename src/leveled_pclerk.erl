@@ -188,7 +188,7 @@ merge(SrcLevel, Manifest, RootPath, OptsSST) ->
     end,
     SelectMethod =
         case leveled_rand:uniform(100) of
-            R when R < ?GROOMING_PERC ->
+            R when R =< ?GROOMING_PERC ->
                 {grooming, fun grooming_scorer/1};
             _ ->
                 random
@@ -297,17 +297,22 @@ do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, OptsSST, Additions) ->
     end.
 
 -spec grooming_scorer(list(manifest_entry())) -> manifest_entry().
-grooming_scorer(Sample) ->
-    ScoringFun = 
-        fun(ME) ->
-            TombCount = leveled_sst:sst_gettombcount(ME#manifest_entry.owner),
-            {TombCount, ME}
-        end,
-    ScoredSample =
-        lists:reverse(lists:ukeysort(1, lists:map(ScoringFun, Sample))),
-    [{HighestTC, BestME}|_Rest] = ScoredSample,
+grooming_scorer([ME  | MEs]) ->
+    InitTombCount = leveled_sst:sst_gettombcount(ME#manifest_entry.owner),
+    {HighestTC, BestME} = grooming_scorer(InitTombCount, ME, MEs),
     leveled_log:log("PC024", [HighestTC]),
     BestME.
+
+grooming_scorer(HighestTC, BestME, []) ->
+     {HighestTC, BestME};
+grooming_scorer(HighestTC, BestME, [ME | MEs]) ->
+    TombCount = leveled_sst:sst_gettombcount(ME#manifest_entry.owner),
+    case TombCount > HighestTC of
+        true ->
+            grooming_scorer(TombCount, ME, MEs);
+        false ->
+            grooming_scorer(HighestTC, BestME, MEs)
+   end.
 
 return_deletions(ManifestSQN, PendingDeletionD) ->
     % The returning of deletions had been seperated out as a failure to fetch

@@ -464,7 +464,8 @@ mergefile_selector(Manifest, LevelIdx, {grooming, ScoringFun}) ->
     Sample =
         lists:usort(lists:foldl(SelectorFun, [], lists:seq(1, ?GROOM_SAMPLE))),
     % Note that Entries may be less than GROOM_SAMPLE, if same one picked
-    % multiple times
+    % multiple times.  Level cannot be empty, as otherwise a merge would not
+    % have been chosen at this level
     ScoringFun(Sample).
     
 
