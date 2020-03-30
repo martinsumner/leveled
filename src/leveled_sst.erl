@@ -1581,7 +1581,7 @@ accumulate_positions({K, V}, {PosBinAcc, NoHashCount, HashAcc, LMDAcc}) ->
                             NHC:7/integer, 
                             PosBinAcc/binary>>,
                         0,
-                        HashAcc,
+                        [H1|HashAcc],
                         LMDAcc0}
             end;
         false ->
@@ -3501,6 +3501,7 @@ simple_persisted_tester(SSTNewFun) ->
                     Acc
             end
         end,
+    true = [] == MapFun({FirstKey, "V"}, []), % coverage cheat within MapFun
     KVList3 = lists:foldl(MapFun, [], KVList2),
     SW2 = os:timestamp(),
     lists:foreach(fun({K, H, _V}) ->

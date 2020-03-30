@@ -77,11 +77,11 @@ However, what if the Ledger had been erased?  This could happen due to some corr
 
 The are three potential strategies:
 
- - `skip` - don't worry about this scenario, require the Ledger to be backed up;
+ - `recovr` - don't worry about this scenario, require the Ledger to be backed up;
  - `retain` - discard the object itself on compaction but keep the key changes;
  - `recalc` - recalculate the indexes on reload by comparing the information on the object with the current state of the Ledger (as would be required by the PUT process when comparing IndexSpecs at PUT time).
 
-There is no code for `recalc` at present it is simply a logical possibility.  So to set a reload strategy there should be an entry like `{reload_strategy, [{TagName, skip|retain}]}`.  By default tags are pre-set to `retain`.  If there is no need to handle a corrupted Ledger, then all tags could be set to `skip`.
+To set a reload strategy requires a list of tuples to match tag names to strategy `{reload_strategy, [{TagName, recovr|retain|recalc}]}`.  By default tags are pre-set to `retain`.  If there is no need to handle a corrupted Ledger, then all tags could be set to `recovr` - this assumes that either the ledger files are protected by some other means from corruption, or an external anti-entropy mechanism will recover the lost data.
 
 
 ## Compression Method
