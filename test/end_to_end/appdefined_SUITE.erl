@@ -2,11 +2,14 @@
 -include_lib("common_test/include/ct.hrl").
 -include("include/leveled.hrl").
 -export([all/0]).
--export([application_defined_tag/1
+-export([
+            application_defined_tag/1,
+            bespoketag_recalc/1
             ]).
 
 all() -> [
-            application_defined_tag
+            application_defined_tag,
+            bespoketag_recalc
             ].
 
 
@@ -62,6 +65,8 @@ application_defined_tag_tester(KeyCount, Tag, Functions, ExpectMD) ->
     StartOpts1 = [{root_path, RootPath},
                     {sync_strategy, testutil:sync_strategy()},
                     {log_level, warn},
+                    {reload_strategy,
+                        [{bespoke_tag1, retain}, {bespoke_tag2, retain}]},
                     {override_functions, Functions}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     Value = leveled_rand:rand_bytes(512),
@@ -107,8 +112,6 @@ application_defined_tag_tester(KeyCount, Tag, Functions, ExpectMD) ->
 
     ok = leveled_bookie:book_close(Bookie2).
 
-    
-
 
 object_generator(Count, V) ->
     Hash = erlang:phash2({count, V}),
@@ -119,3 +122,113 @@ object_generator(Count, V) ->
         Key,
         [{hash, Hash}, {shard, Count rem 10},
             {random, Random}, {value, V}]}.
+
+
+
+bespoketag_recalc(_Config) ->
+    %% Get a sensible behaviour using the recalc compaction strategy with a
+    %% bespoke tag
+
+    RootPath = testutil:reset_filestructure(),
+    B0 = <<"B0">>,
+    KeyCount = 7000,
+
+    ExtractMDFun = 
+        fun(bespoke_tag, Size, Obj) ->
+            [{index, IL}, {value, _V}] = Obj,
+            {{erlang:phash2(term_to_binary(Obj)), 
+                    Size,
+                    {index, IL}},
+                [os:timestamp()]}
+        end,
+    CalcIndexFun =
+        fun(bespoke_tag, UpdMeta, PrvMeta) ->
+            % io:format("UpdMeta ~w PrvMeta ~w~n", [UpdMeta, PrvMeta]),
+            {index, UpdIndexes} = element(3, UpdMeta),
+            IndexDeltas =
+                case PrvMeta of
+                    not_present ->
+                        UpdIndexes;
+                    PrvMeta when is_tuple(PrvMeta) ->
+                        {index, PrvIndexes} = element(3, PrvMeta),
+                        lists:subtract(UpdIndexes, PrvIndexes)
+                end,
+            lists:map(fun(I) -> {add, <<"temp_int">>, I} end, IndexDeltas)
+        end,
+
+    BookOpts = [{root_path, RootPath},
+                    {cache_size, 1000},
+                    {max_journalobjectcount, 6000},
+                    {max_pencillercachesize, 8000},
+                    {sync_strategy, testutil:sync_strategy()},
+                    {reload_strategy, [{bespoke_tag, recalc}]},
+                    {override_functions,
+                        [{extract_metadata, ExtractMDFun},
+                            {diff_indexspecs, CalcIndexFun}]}],
+    
+    {ok, Book1} = leveled_bookie:book_start(BookOpts),
+    LoadFun =
+        fun(Book, MustFind) ->
+            fun(I) ->
+                testutil:stdload_object(Book,
+                                        B0, integer_to_binary(I rem KeyCount),
+                                        I, erlang:phash2({value, I}),
+                                        infinity, bespoke_tag, false, MustFind)
+            end
+        end,
+    lists:foreach(LoadFun(Book1, false), lists:seq(1, KeyCount)),
+    lists:foreach(LoadFun(Book1, true), lists:seq(KeyCount + 1, KeyCount * 2)),
+
+    FoldFun =
+        fun(_B0, {IV0, _K0}, Acc) -> 
+            case IV0 - 1 of
+                Acc ->
+                    Acc + 1;
+                _Unexpected ->
+                    % io:format("Eh? - ~w ~w~n", [Unexpected, Acc]),
+                    Acc + 1
+            end
+        end,
+
+    CountFold =
+        fun(Book, CurrentCount) ->
+            leveled_bookie:book_indexfold(Book,
+                                            B0,
+                                            {FoldFun, 0},
+                                            {<<"temp_int">>, 0, CurrentCount},
+                                            {true, undefined})
+        end,
+
+    {async, FolderA} = CountFold(Book1, 2 * KeyCount),
+    CountA = FolderA(),
+    io:format("Counted double index entries ~w - everything loaded OK~n",
+                [CountA]),
+    true = 2 * KeyCount == CountA,
+
+    ok = leveled_bookie:book_close(Book1),
+
+    {ok, Book2} = leveled_bookie:book_start(BookOpts),
+    lists:foreach(LoadFun(Book2, true), lists:seq(KeyCount * 2 + 1, KeyCount * 3)),
+
+    {async, FolderB} = CountFold(Book2, 3 * KeyCount),
+    CountB = FolderB(),
+    true = 3 * KeyCount == CountB,
+
+    testutil:compact_and_wait(Book2),
+    ok = leveled_bookie:book_close(Book2),
+
+    io:format("Restart from blank ledger~n"),
+
+    leveled_penciller:clean_testdir(proplists:get_value(root_path, BookOpts) ++
+                                    "/ledger"),
+    {ok, Book3} = leveled_bookie:book_start(BookOpts),
+
+    {async, FolderC} = CountFold(Book3, 3 * KeyCount),
+    CountC = FolderC(),
+    io:format("All index entries ~w present - recalc ok~n",
+                [CountC]),
+    true = 3 * KeyCount == CountC,
+
+    ok = leveled_bookie:book_close(Book3),
+    
+    testutil:reset_filestructure().

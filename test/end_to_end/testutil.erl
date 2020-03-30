@@ -10,6 +10,7 @@
             stdload/2,
             stdload_expiring/3,
             stdload_object/6,
+            stdload_object/9,
             reset_filestructure/0,
             reset_filestructure/1,
             check_bucket_stats/2,
@@ -59,7 +60,8 @@
             get_value_from_objectlistitem/1,
             numbered_key/1,
             fixed_bin_key/1,
-            convert_to_seconds/1]).
+            convert_to_seconds/1,
+            compact_and_wait/1]).
 
 -define(RETURN_TERMS, {true, undefined}).
 -define(SLOWOFFER_DELAY, 5).
@@ -68,6 +70,7 @@
 -define(MD_VTAG,     <<"X-Riak-VTag">>).
 -define(MD_LASTMOD,  <<"X-Riak-Last-Modified">>).
 -define(MD_DELETED,  <<"X-Riak-Deleted">>).
+-define(MD_INDEX, <<"index">>).
 -define(EMPTY_VTAG_BIN, <<"e">>).
 -define(ROOT_PATH, "test").
 
@@ -240,17 +243,35 @@ stdload_expiring(Book, KeyCount, TTL, V, Acc) ->
     stdload_expiring(Book, KeyCount - 1, TTL, V, [{I, B, K}|Acc]).
 
 stdload_object(Book, B, K, I, V, TTL) ->
-    Obj = [{index, I}, {value, V}],
-    IdxSpecs = 
-        case leveled_bookie:book_get(Book, B, K) of
-            {ok, PrevObj} ->
-                {index, OldI} = lists:keyfind(index, 1, PrevObj),
-                io:format("Remove index ~w for ~w~n", [OldI, I]),
-                [{remove, <<"temp_int">>, OldI}, {add, <<"temp_int">>, I}];
-            not_found ->
-                [{add, <<"temp_int">>, I}]
+    stdload_object(Book, B, K, I, V, TTL, ?STD_TAG, true, false).
+
+stdload_object(Book, B, K, I, V, TTL, Tag, RemovePrev2i, MustFind) ->
+    Obj = [{index, [I]}, {value, V}],
+    {IdxSpecs, Obj0} = 
+        case {leveled_bookie:book_get(Book, B, K, Tag), MustFind} of
+            {{ok, PrevObj}, _} ->
+                {index, PrevIs} = lists:keyfind(index, 1, PrevObj),
+                case RemovePrev2i of
+                    true ->
+                        MapFun =
+                            fun(OldI) -> {remove, <<"temp_int">>, OldI} end,
+                        {[{add, <<"temp_int">>, I}|lists:map(MapFun, PrevIs)],
+                            Obj};
+                    false ->
+                        {[{add, <<"temp_int">>, I}],
+                            [{index, [I|PrevIs]}, {value, V}]}
+                end;
+            {not_found, false} ->
+                {[{add, <<"temp_int">>, I}], Obj}
         end,
-    R = leveled_bookie:book_tempput(Book, B, K, Obj, IdxSpecs, ?STD_TAG, TTL),
+    R =
+        case TTL of
+            infinity ->
+                leveled_bookie:book_put(Book, B, K, Obj0, IdxSpecs, Tag);
+            TTL when is_integer(TTL) ->
+                leveled_bookie:book_tempput(Book, B, K, Obj0,
+                                            IdxSpecs, Tag, TTL)
+        end,
     case R of
         ok -> 
             ok;
@@ -258,6 +279,7 @@ stdload_object(Book, B, K, I, V, TTL) ->
             io:format("Slow offer needed~n"),
             timer:sleep(?SLOWOFFER_DELAY)
     end.
+
 
 
 
@@ -517,23 +539,30 @@ set_object(Bucket, Key, Value, IndexGen) ->
     set_object(Bucket, Key, Value, IndexGen, []).
 
 set_object(Bucket, Key, Value, IndexGen, Indexes2Remove) ->
-    
+    set_object(Bucket, Key, Value, IndexGen, Indexes2Remove, []).
+
+set_object(Bucket, Key, Value, IndexGen, Indexes2Remove, IndexesNotToRemove) ->
+    IdxSpecs = IndexGen(),
+    Indexes =
+        lists:map(fun({add, IdxF, IdxV}) -> {IdxF, IdxV} end,
+                    IdxSpecs ++ IndexesNotToRemove),
     Obj = {Bucket,
             Key,
             Value,
-            IndexGen() ++ lists:map(fun({add, IdxF, IdxV}) ->
-                                            {remove, IdxF, IdxV} end,
-                                        Indexes2Remove),
-            [{"MDK", "MDV" ++ Key},
-                {"MDK2", "MDV" ++ Key},
-                {?MD_LASTMOD, os:timestamp()}]},
-    {B1, K1, V1, Spec1, MD} = Obj,
+            IdxSpecs ++
+                lists:map(fun({add, IdxF, IdxV}) -> {remove, IdxF, IdxV} end,
+                            Indexes2Remove),
+            [{<<"MDK">>, "MDV" ++ Key},
+                {<<"MDK2">>, "MDV" ++ Key},
+                {?MD_LASTMOD, os:timestamp()},
+                {?MD_INDEX, Indexes}]},
+    {B1, K1, V1, DeltaSpecs, MD} = Obj,
     Content = #r_content{metadata=dict:from_list(MD), value=V1},
     {#r_object{bucket=B1,
                 key=K1,
                 contents=[Content],
                 vclock=generate_vclock()},
-        Spec1}.
+        DeltaSpecs}.
 
 get_value_from_objectlistitem({_Int, Obj, _Spc}) ->
     [Content] = Obj#r_object.contents,
@@ -762,26 +791,39 @@ put_altered_indexed_objects(Book, Bucket, KSpecL) ->
     put_altered_indexed_objects(Book, Bucket, KSpecL, true).
 
 put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i) ->
-    IndexGen = testutil:get_randomindexes_generator(1),
-    V = testutil:get_compressiblevalue(),
-    RplKSpecL = lists:map(fun({K, Spc}) ->
-                                AddSpc = if
-                                            RemoveOld2i == true ->
-                                                [lists:keyfind(add, 1, Spc)];
-                                            RemoveOld2i == false ->
-                                                []
-                                        end,
-                                {O, AltSpc} = testutil:set_object(Bucket,
-                                                                    K,
-                                                                    V,
-                                                                    IndexGen,
-                                                                    AddSpc),
-                                case book_riakput(Book, O, AltSpc) of
-                                    ok -> ok;
-                                    pause -> timer:sleep(?SLOWOFFER_DELAY)
-                                end,
-                                {K, AltSpc} end,
-                            KSpecL),
+    IndexGen = get_randomindexes_generator(1),
+    V = get_compressiblevalue(),
+    FindAdditionFun = fun(SpcItem) -> element(1, SpcItem) == add end,
+    MapFun = 
+        fun({K, Spc}) ->
+            OldSpecs = lists:filter(FindAdditionFun, Spc),
+            {RemoveSpc, AddSpc} =
+                case RemoveOld2i of
+                    true ->
+                        {OldSpecs, []};
+                    false ->
+                        {[], OldSpecs}
+                end,
+            {O, DeltaSpecs} =
+                set_object(Bucket, K, V,
+                            IndexGen, RemoveSpc, AddSpc),
+            % DeltaSpecs should be new indexes added, and any old indexes which
+            % have been removed by this change where RemoveOld2i is true.
+            %
+            % The actual indexes within the object should reflect any history
+            % of indexes i.e. when RemoveOld2i is false.
+            %
+            % The [{Key, SpecL}] returned should accrue additions over loops if
+            % RemoveOld2i is false
+            case book_riakput(Book, O, DeltaSpecs) of
+                ok -> ok;
+                pause -> timer:sleep(?SLOWOFFER_DELAY)
+            end,
+            % Note that order in the SpecL is important, as
+            % check_indexed_objects, needs to find the latest item added
+            {K, DeltaSpecs ++ AddSpc}
+        end,
+    RplKSpecL = lists:map(MapFun, KSpecL),
     {RplKSpecL, V}.
 
 rotating_object_check(RootPath, B, NumberOfObjects) ->
@@ -790,16 +832,16 @@ rotating_object_check(RootPath, B, NumberOfObjects) ->
                     {max_journalsize, 5000000},
                     {sync_strategy, sync_strategy()}],
     {ok, Book1} = leveled_bookie:book_start(BookOpts),
-    {KSpcL1, V1} = testutil:put_indexed_objects(Book1, B, NumberOfObjects),
-    ok = testutil:check_indexed_objects(Book1, B, KSpcL1, V1),
-    {KSpcL2, V2} = testutil:put_altered_indexed_objects(Book1, B, KSpcL1),
-    ok = testutil:check_indexed_objects(Book1, B, KSpcL2, V2),
-    {KSpcL3, V3} = testutil:put_altered_indexed_objects(Book1, B, KSpcL2),
+    {KSpcL1, V1} = put_indexed_objects(Book1, B, NumberOfObjects),
+    ok = check_indexed_objects(Book1, B, KSpcL1, V1),
+    {KSpcL2, V2} = put_altered_indexed_objects(Book1, B, KSpcL1),
+    ok = check_indexed_objects(Book1, B, KSpcL2, V2),
+    {KSpcL3, V3} = put_altered_indexed_objects(Book1, B, KSpcL2),
     ok = leveled_bookie:book_close(Book1),
     {ok, Book2} = leveled_bookie:book_start(BookOpts),
-    ok = testutil:check_indexed_objects(Book2, B, KSpcL3, V3),
-    {KSpcL4, V4} = testutil:put_altered_indexed_objects(Book2, B, KSpcL3),
-    ok = testutil:check_indexed_objects(Book2, B, KSpcL4, V4),
+    ok = check_indexed_objects(Book2, B, KSpcL3, V3),
+    {KSpcL4, V4} = put_altered_indexed_objects(Book2, B, KSpcL3),
+    ok = check_indexed_objects(Book2, B, KSpcL4, V4),
     Query = {keylist, ?RIAK_TAG, B, {fun foldkeysfun/3, []}},
     {async, BList} = leveled_bookie:book_returnfolder(Book2, Query),
     true = NumberOfObjects == length(BList()),
@@ -839,16 +881,9 @@ restore_topending(RootPath, FileName) ->
 
 find_journals(RootPath) ->
     {ok, FNsA_J} = file:list_dir(RootPath ++ "/journal/journal_files"),
-    {ok, Regex} = re:compile(".*\.cdb"),
-    CDBFiles = lists:foldl(fun(FN, Acc) -> case re:run(FN, Regex) of
-                                                nomatch ->
-                                                    Acc;
-                                                _ ->
-                                                    [FN|Acc]
-                                            end
-                                            end,
-                                [],
-                                FNsA_J),
+    % Must not return a file with the .pnd extension
+    CDBFiles =
+        lists:filter(fun(FN) -> filename:extension(FN) == ".cdb" end, FNsA_J),
     CDBFiles.
 
 convert_to_seconds({MegaSec, Seconds, _MicroSec}) ->
@@ -863,3 +898,24 @@ get_aae_segment({Type, Bucket}, Key) ->
     leveled_tictac:keyto_segment32(<<Type/binary, Bucket/binary, Key/binary>>);
 get_aae_segment(Bucket, Key) ->
     leveled_tictac:keyto_segment32(<<Bucket/binary, Key/binary>>).
+
+compact_and_wait(Book) ->
+    compact_and_wait(Book, 20000).
+
+compact_and_wait(Book, WaitForDelete) ->
+    ok = leveled_bookie:book_compactjournal(Book, 30000),
+    F = fun leveled_bookie:book_islastcompactionpending/1,
+    lists:foldl(fun(X, Pending) ->
+                        case Pending of
+                            false ->
+                                false;
+                            true ->
+                                io:format("Loop ~w waiting for journal "
+                                    ++ "compaction to complete~n", [X]),
+                                timer:sleep(20000),
+                                F(Book)
+                        end end,
+                    true,
+                    lists:seq(1, 15)),
+    io:format("Waiting for journal deletes~n"),
+    timer:sleep(WaitForDelete).

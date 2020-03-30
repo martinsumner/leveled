@@ -1511,7 +1511,7 @@ accumulate_positions({K, V}, {PosBinAcc, NoHashCount, HashAcc, LMDAcc}) ->
                             NHC:7/integer, 
                             PosBinAcc/binary>>,
                         0,
-                        HashAcc,
+                        [H1|HashAcc],
                         LMDAcc0}
             end;
         false ->
@@ -2304,7 +2304,7 @@ split_lists(KVList1, SlotLists, N, PressMethod, IdxModDate) ->
 -spec merge_lists(list(), list(), tuple(), sst_options(), boolean()) ->
                                 {list(), list(), list(tuple()), tuple()|null}.
 %% @doc
-%% Merge lists when merging across more thna one file.  KVLists that are 
+%% Merge lists when merging across more than one file.  KVLists that are 
 %% provided may include pointers to fetch more Keys/Values from the source
 %% file
 merge_lists(KVList1, KVList2, LevelInfo, SSTOpts, IndexModDate) ->
@@ -3319,6 +3319,7 @@ simple_persisted_tester(SSTNewFun) ->
                     Acc
             end
         end,
+    true = [] == MapFun({FirstKey, "V"}, []), % coverage cheat within MapFun
     KVList3 = lists:foldl(MapFun, [], KVList2),
     SW2 = os:timestamp(),
     lists:foreach(fun({K, H, _V}) ->

@@ -905,7 +905,7 @@ handoff(_Config) ->
                     {sync_strategy, sync}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
 
-    % Add some noe Riak objects in - which should be ignored in folds.
+    % Add some none Riak objects in - which should be ignored in folds.
     Hashes = testutil:stdload(Bookie1, 1000),
     % Generate 200K objects to be used within the test, and load them into
     % the first store (outputting the generated objects as a list of lists)

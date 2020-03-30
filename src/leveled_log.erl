@@ -356,6 +356,8 @@
     {"IC013",
         {warn, "File with name ~s to be ignored in manifest as scanning for "
                 ++ "first key returned empty - maybe corrupted"}},
+    {"IC014",
+        {info, "Compaction to be run with strategy ~w and max_run_length ~w"}},
 
     {"CDB01",
         {info, "Opening file for writing with filename ~s"}},
