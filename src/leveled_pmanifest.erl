@@ -60,7 +60,7 @@
 -define(TREE_WIDTH, 8).
 -define(PHANTOM_PID, r2d_fail).
 -define(MANIFESTS_TO_RETAIN, 5).
--define(GROOM_SAMPLE, 8).
+-define(GROOM_SAMPLE, 16).
 
 -record(manifest, {levels,
                         % an array of lists or trees representing the manifest
