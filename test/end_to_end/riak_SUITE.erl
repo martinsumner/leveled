@@ -26,7 +26,7 @@ all() -> [
 
 
 basic_riak(_Config) ->
-    basic_riak_tester(<<"B0">>, 120000),
+    basic_riak_tester(<<"B0">>, 640000),
     basic_riak_tester({<<"Type0">>, <<"B0">>}, 80000).
 
 
