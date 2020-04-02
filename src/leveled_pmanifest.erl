@@ -34,7 +34,7 @@
         remove_manifest_entry/4,
         replace_manifest_entry/5,
         switch_manifest_entry/4,
-        mergefile_selector/2,
+        mergefile_selector/3,
         add_snapshot/3,
         release_snapshot/2,
         merge_snapshot/2,
@@ -60,6 +60,7 @@
 -define(TREE_WIDTH, 8).
 -define(PHANTOM_PID, r2d_fail).
 -define(MANIFESTS_TO_RETAIN, 5).
+-define(GROOM_SAMPLE, 16).
 
 -record(manifest, {levels,
                         % an array of lists or trees representing the manifest
@@ -82,6 +83,8 @@
 -type manifest() :: #manifest{}.
 -type manifest_entry() :: #manifest_entry{}.
 -type manifest_owner() :: pid()|list().
+-type selector_strategy() ::
+        random|{grooming, fun((list(manifest_entry())) -> manifest_entry())}.
 
 -export_type([manifest/0, manifest_entry/0, manifest_owner/0]).
 
@@ -429,7 +432,8 @@ merge_lookup(Manifest, LevelIdx, StartKey, EndKey) ->
     range_lookup_int(Manifest, LevelIdx, StartKey, EndKey, MakePointerFun).
 
 
--spec mergefile_selector(manifest(), integer()) -> manifest_entry().
+-spec mergefile_selector(manifest(), integer(), selector_strategy()) 
+                                                        -> manifest_entry().
 %% @doc
 %% An algorithm for discovering which files to merge ....
 %% We can find the most optimal file:
@@ -441,14 +445,29 @@ merge_lookup(Manifest, LevelIdx, StartKey, EndKey) ->
 %% genuinely better - eventually every file has to be compacted.
 %%
 %% Hence, the initial implementation is to select files to merge at random
-mergefile_selector(Manifest, LevelIdx) when LevelIdx =< 1 ->
+mergefile_selector(Manifest, LevelIdx, _Strategy) when LevelIdx =< 1 ->
     Level = array:get(LevelIdx, Manifest#manifest.levels),
     lists:nth(leveled_rand:uniform(length(Level)), Level);
-mergefile_selector(Manifest, LevelIdx) ->
+mergefile_selector(Manifest, LevelIdx, random) ->
     Level = leveled_tree:to_list(array:get(LevelIdx,
                                             Manifest#manifest.levels)),
     {_SK, ME} = lists:nth(leveled_rand:uniform(length(Level)), Level),
-    ME.
+    ME;
+mergefile_selector(Manifest, LevelIdx, {grooming, ScoringFun}) ->
+    Level = leveled_tree:to_list(array:get(LevelIdx,
+                                            Manifest#manifest.levels)),
+    SelectorFun =
+        fun(_I, Acc) ->
+            {_SK, ME} = lists:nth(leveled_rand:uniform(length(Level)), Level),
+            [ME|Acc]
+        end,
+    Sample =
+        lists:usort(lists:foldl(SelectorFun, [], lists:seq(1, ?GROOM_SAMPLE))),
+    % Note that Entries may be less than GROOM_SAMPLE, if same one picked
+    % multiple times.  Level cannot be empty, as otherwise a merge would not
+    % have been chosen at this level
+    ScoringFun(Sample).
+    
 
 -spec merge_snapshot(manifest(), manifest()) -> manifest().
 %% @doc
@@ -606,6 +625,7 @@ check_bloom(Manifest, FP, Hash) ->
 %%%============================================================================
 %%% Internal Functions
 %%%============================================================================
+
 
 -spec get_manifest_entry({tuple(), manifest_entry()}|manifest_entry())
                             -> manifest_entry().
@@ -1057,10 +1077,10 @@ changeup_setup(Man6) ->
 random_select_test() ->
     ManTuple = initial_setup(),
     LastManifest = element(7, ManTuple),
-    L1File = mergefile_selector(LastManifest, 1),
+    L1File = mergefile_selector(LastManifest, 1, random),
     % This blows up if the function is not prepared for the different format
     % https://github.com/martinsumner/leveled/issues/43
-    _L2File = mergefile_selector(LastManifest, 2),
+    _L2File = mergefile_selector(LastManifest, 2, random),
     Level1 = array:get(1, LastManifest#manifest.levels),
     ?assertMatch(true, lists:member(L1File, Level1)).
 
