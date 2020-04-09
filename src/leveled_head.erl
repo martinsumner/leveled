@@ -22,7 +22,8 @@
 
 -export([key_to_canonicalbinary/1,
             build_head/2,
-            extract_metadata/3
+            extract_metadata/3,
+            diff_indexspecs/3
             ]).
 
 -export([get_size/2,
@@ -71,11 +72,14 @@
 -type object_metadata() :: riak_metadata()|std_metadata()|head_metadata().
 
 -type appdefinable_function() ::
-    key_to_canonicalbinary | build_head | extract_metadata.
+    key_to_canonicalbinary | build_head | extract_metadata | diff_indexspecs.
         % Functions for which default behaviour can be over-written for the
         % application's own tags
 -type appdefinable_function_tuple() ::
     {appdefinable_function(), fun()}.
+
+-type index_op() :: add | remove.
+-type index_value() :: integer() | binary().
 
 -type head() ::
     binary()|tuple().
@@ -174,6 +178,41 @@ default_extract_metadata(_Tag, SizeAsStoredInJournal, Obj) ->
     {{standard_hash(Obj), SizeAsStoredInJournal, undefined}, []}.
 
 
+-spec diff_indexspecs(object_tag(),
+                        object_metadata(),
+                        object_metadata()|not_present)
+                            -> leveled_codec:index_specs().
+%% @doc
+%% Take an object metadata part from within the journal, and an object metadata
+%% part from the ledger (which should have a lower SQN), and generate index
+%% specs by determining the difference between the index specs on the object
+%% to be loaded and that on object already stored.
+%%
+%% This is only relevant where the journal compaction strategy of `recalc` is
+%% used, the Keychanges will be used when `retain` is the compaction strategy
+diff_indexspecs(?RIAK_TAG, UpdatedMetadata, OldMetadata) ->
+    UpdIndexes =
+        get_indexes_from_siblingmetabin(element(1, UpdatedMetadata), []),
+    OldIndexes =
+        case OldMetadata of
+            not_present ->
+                [];
+            _ ->
+                get_indexes_from_siblingmetabin(element(1, OldMetadata), [])
+        end,
+    diff_index_data(OldIndexes, UpdIndexes);
+diff_indexspecs(?STD_TAG, UpdatedMetadata, CurrentMetadata) ->
+    default_diff_indexspecs(?STD_TAG, UpdatedMetadata, CurrentMetadata);
+diff_indexspecs(Tag, UpdatedMetadata, CurrentMetadata) ->
+    OverrideFun =
+        get_appdefined_function(diff_indexspecs, 
+                                fun default_diff_indexspecs/3,
+                                3),
+    OverrideFun(Tag, UpdatedMetadata, CurrentMetadata).
+
+default_diff_indexspecs(_Tag, _UpdatedMetadata, _CurrentMetadata) ->
+    [].
+
 %%%============================================================================
 %%% Standard External Functions
 %%%============================================================================
@@ -190,7 +229,7 @@ defined_objecttags() ->
                                         leveled_codec:compaction_method()}.
 %% @doc
 %% State the compaction_method to be used when reloading the Ledger from the
-%% journal for each object tag.  Note, no compaction startegy required for 
+%% journal for each object tag.  Note, no compaction strategy required for 
 %% head_only tag
 default_reload_strategy(Tag) ->
     {Tag, retain}.
@@ -317,3 +356,155 @@ get_metadata_from_siblings(<<ValLen:32/integer, Rest0/binary>>,
                                     MetaLen:32/integer,
                                     MetaBin:MetaLen/binary>>,
                                     [LastMod|LastMods]).
+
+
+get_indexes_from_siblingmetabin(<<0:32/integer,
+                                        MetaLen:32/integer,
+                                        MetaBin:MetaLen/binary,
+                                        RestBin/binary>>,
+                                    Indexes) ->
+    UpdIndexes = lists:umerge(get_indexes_frommetabin(MetaBin), Indexes),
+    get_indexes_from_siblingmetabin(RestBin, UpdIndexes);
+get_indexes_from_siblingmetabin(<<SibCount:32/integer, RestBin/binary>>,
+                                    Indexes) when SibCount > 0 ->
+    get_indexes_from_siblingmetabin(RestBin, Indexes);
+get_indexes_from_siblingmetabin(_, Indexes) ->
+    Indexes.
+
+
+%% @doc
+%% Parse the metabinary for an individual sibling and return a list of index
+%% entries.
+get_indexes_frommetabin(<<_LMD1:32/integer, _LMD2:32/integer, _LMD3:32/integer,
+                                VTagLen:8/integer, _VTag:VTagLen/binary,
+                                Deleted:1/binary-unit:8,
+                                MetaRestBin/binary>>) when Deleted /= <<1>> ->
+    lists:usort(indexes_of_metabinary(MetaRestBin));
+get_indexes_frommetabin(_) ->
+    [].
+
+
+indexes_of_metabinary(<<>>) ->
+    [];
+indexes_of_metabinary(<<KeyLen:32/integer, KeyBin:KeyLen/binary,
+                        ValueLen:32/integer, ValueBin:ValueLen/binary,
+                        Rest/binary>>) ->
+    Key = decode_maybe_binary(KeyBin),
+    case Key of
+        <<"index">> ->
+            Value = decode_maybe_binary(ValueBin),
+            Value;
+        _ ->
+            indexes_of_metabinary(Rest)
+    end.
+
+
+decode_maybe_binary(<<1, Bin/binary>>) ->
+    Bin;
+decode_maybe_binary(<<0, Bin/binary>>) ->
+    binary_to_term(Bin);
+decode_maybe_binary(<<_Other:8, Bin/binary>>) ->
+    Bin.
+
+-spec diff_index_data([{binary(), index_value()}],
+                      [{binary(), index_value()}]) ->
+    [{index_op(), binary(), index_value()}].
+diff_index_data(OldIndexes, AllIndexes) ->
+    OldIndexSet = ordsets:from_list(OldIndexes),
+    AllIndexSet = ordsets:from_list(AllIndexes),
+    diff_specs_core(AllIndexSet, OldIndexSet).
+
+
+diff_specs_core(AllIndexSet, OldIndexSet) ->
+    NewIndexSet = ordsets:subtract(AllIndexSet, OldIndexSet),
+    RemoveIndexSet =
+        ordsets:subtract(OldIndexSet, AllIndexSet),
+    NewIndexSpecs =
+        assemble_index_specs(ordsets:subtract(NewIndexSet, OldIndexSet),
+                             add),
+    RemoveIndexSpecs =
+        assemble_index_specs(RemoveIndexSet,
+                             remove),
+    NewIndexSpecs ++ RemoveIndexSpecs.
+
+%% @doc Assemble a list of index specs in the
+%% form of triplets of the form
+%% {IndexOperation, IndexField, IndexValue}.
+-spec assemble_index_specs([{binary(), binary()}], index_op()) ->
+                                  [{index_op(), binary(), binary()}].
+assemble_index_specs(Indexes, IndexOp) ->
+    [{IndexOp, Index, Value} || {Index, Value} <- Indexes].
+
+
+%%%============================================================================
+%%% Test
+%%%============================================================================
+
+-ifdef(TEST).
+
+
+index_extract_test() ->
+    SibMetaBin =
+        <<0,0,0,1,0,0,0,0,0,0,0,221,0,0,6,48,0,4,130,247,0,1,250,134,
+            1,101,0,0,0,0,4,1,77,68,75,0,0,0,44,0,131,107,0,39,77,68,
+            86,101,49,55,52,55,48,50,55,45,54,50,99,49,45,52,48,57,55,
+            45,97,53,102,50,45,53,54,98,51,98,97,57,57,99,55,56,50,0,0,
+            0,6,1,105,110,100,101,120,0,0,0,79,0,131,108,0,0,0,2,104,2,
+            107,0,8,105,100,120,49,95,98,105,110,107,0,20,50,49,53,50,
+            49,49,48,55,50,51,49,55,51,48,83,111,112,104,105,97,104,2,
+            107,0,8,105,100,120,49,95,98,105,110,107,0,19,50,49,56,50,
+            48,53,49,48,49,51,48,49,52,54,65,118,101,114,121,106,0,0,0,
+            5,1,77,68,75,50,0,0,0,44,0,131,107,0,39,77,68,86,101,49,55,
+            52,55,48,50,55,45,54,50,99,49,45,52,48,57,55,45,97,53,102,
+            50,45,53,54,98,51,98,97,57,57,99,55,56,50>>,
+    Indexes = get_indexes_from_siblingmetabin(SibMetaBin, []),
+    ExpIndexes = [{"idx1_bin","21521107231730Sophia"},
+                    {"idx1_bin","21820510130146Avery"}],
+    ?assertMatch(ExpIndexes, Indexes),
+    SibMetaBinNoIdx =
+        <<0,0,0,1,0,0,0,0,0,0,0,128,0,0,6,48,0,4,130,247,0,1,250,134,
+            1,101,0,0,0,0,4,1,77,68,75,0,0,0,44,0,131,107,0,39,77,68,
+            86,101,49,55,52,55,48,50,55,45,54,50,99,49,45,52,48,57,55,
+            45,97,53,102,50,45,53,54,98,51,98,97,57,57,99,55,56,50,0,0,0,
+            5,1,77,68,75,50,0,0,0,44,0,131,107,0,39,77,68,86,101,49,55,
+            52,55,48,50,55,45,54,50,99,49,45,52,48,57,55,45,97,53,102,
+            50,45,53,54,98,51,98,97,57,57,99,55,56,50>>,
+    ?assertMatch([], get_indexes_from_siblingmetabin(SibMetaBinNoIdx, [])),
+    SibMetaBinOverhang =
+        <<0,0,0,1,0,0,0,0,0,0,0,221,0,0,6,48,0,4,130,247,0,1,250,134,
+            1,101,0,0,0,0,4,1,77,68,75,0,0,0,44,0,131,107,0,39,77,68,
+            86,101,49,55,52,55,48,50,55,45,54,50,99,49,45,52,48,57,55,
+            45,97,53,102,50,45,53,54,98,51,98,97,57,57,99,55,56,50,0,0,
+            0,6,1,105,110,100,101,120,0,0,0,79,0,131,108,0,0,0,2,104,2,
+            107,0,8,105,100,120,49,95,98,105,110,107,0,20,50,49,53,50,
+            49,49,48,55,50,51,49,55,51,48,83,111,112,104,105,97,104,2,
+            107,0,8,105,100,120,49,95,98,105,110,107,0,19,50,49,56,50,
+            48,53,49,48,49,51,48,49,52,54,65,118,101,114,121,106,0,0,0,
+            5,1,77,68,75,50,0,0,0,44,0,131,107,0,39,77,68,86,101,49,55,
+            52,55,48,50,55,45,54,50,99,49,45,52,48,57,55,45,97,53,102,
+            50,45,53,54,98,51,98,97,57,57,99,55,56,50,0,0,0,0,0,0,0,4,
+            0,0,0,0>>,
+    ?assertMatch(ExpIndexes,
+                    get_indexes_from_siblingmetabin(SibMetaBinOverhang, [])).
+
+diff_index_test() ->
+    UpdIndexes =
+        [{<<"idx1_bin">>,<<"20840930001702Zoe">>},
+            {<<"idx1_bin">>,<<"20931011172606Emily">>}],
+    OldIndexes =
+        [{<<"idx1_bin">>,<<"20231126131808Madison">>},
+            {<<"idx1_bin">>,<<"20931011172606Emily">>}],
+    IdxSpecs = diff_index_data(OldIndexes, UpdIndexes),
+    ?assertMatch([{add, <<"idx1_bin">>, <<"20840930001702Zoe">>},
+                    {remove, <<"idx1_bin">>,<<"20231126131808Madison">>}], IdxSpecs).
+
+decode_test() ->
+    Bin = <<"999">>,
+    BinTerm = term_to_binary("999"),
+    ?assertMatch("999", binary_to_list(
+                            decode_maybe_binary(<<1:8/integer, Bin/binary>>))),
+    ?assertMatch("999", decode_maybe_binary(<<0:8/integer, BinTerm/binary>>)),
+    ?assertMatch("999", binary_to_list(
+                            decode_maybe_binary(<<2:8/integer, Bin/binary>>))).
+
+-endif.

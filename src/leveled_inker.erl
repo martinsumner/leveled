@@ -101,7 +101,7 @@
         ink_fetch/3,
         ink_keycheck/3,
         ink_fold/4,
-        ink_loadpcl/4,
+        ink_loadpcl/5,
         ink_registersnapshot/2,
         ink_confirmdelete/2,
         ink_compactjournal/3,
@@ -133,7 +133,6 @@
 -define(WASTE_FP, "waste").
 -define(JOURNAL_FILEX, "cdb").
 -define(PENDING_FILEX, "pnd").
--define(LOADING_PAUSE, 1000).
 -define(LOADING_BATCH, 1000).
 -define(TEST_KC, {[], infinity}).
 
@@ -321,7 +320,11 @@ ink_fold(Pid, MinSQN, FoldFuns, Acc) ->
                     {fold, MinSQN, FoldFuns, Acc, by_runner},
                     infinity).
 
--spec ink_loadpcl(pid(), integer(), fun(), pid()) -> ok.
+-spec ink_loadpcl(pid(),
+                    integer(),
+                    leveled_bookie:initial_loadfun(),
+                    fun((string(), non_neg_integer()) -> any()),
+                    fun((any(), any()) -> ok)) -> ok.
 %%
 %% Function to prompt load of the Ledger at startup.  The Penciller should
 %% have determined the lowest SQN not present in the Ledger, and the inker
@@ -330,20 +333,11 @@ ink_fold(Pid, MinSQN, FoldFuns, Acc) ->
 %%
 %% The load fun should be a five arity function like:
 %% load_fun(KeyInJournal, ValueInJournal, _Position, Acc0, ExtractFun)
-ink_loadpcl(Pid, MinSQN, FilterFun, Penciller) ->
-    BatchFun = 
-        fun(BatchAcc, _Acc) ->
-            push_to_penciller(Penciller, BatchAcc)
-        end,
-    InitAccFun =
-        fun(FN, CurrentMinSQN) ->
-            leveled_log:log("I0014", [FN, CurrentMinSQN]),
-            leveled_bookie:empty_ledgercache()
-        end,
+ink_loadpcl(Pid, MinSQN, LoadFun, InitAccFun, BatchFun) ->
     gen_server:call(Pid, 
                     {fold, 
                         MinSQN, 
-                        {FilterFun, InitAccFun, BatchFun}, 
+                        {LoadFun, InitAccFun, BatchFun}, 
                         ok,
                         as_ink},
                     infinity).
@@ -1142,18 +1136,18 @@ fold_from_sequence(_MinSQN, _FoldFuns, Acc, []) ->
     Acc;
 fold_from_sequence(MinSQN, FoldFuns, Acc, [{LowSQN, FN, Pid, _LK}|Rest])
                                                     when LowSQN >= MinSQN ->    
-    Acc0 = foldfile_between_sequence(MinSQN,
-                                        MinSQN + ?LOADING_BATCH,
-                                        FoldFuns,
-                                        Acc,
-                                        Pid,
-                                        undefined,
-                                        FN),
-    fold_from_sequence(MinSQN, FoldFuns, Acc0, Rest);
+    {NextMinSQN, Acc0} = foldfile_between_sequence(MinSQN,
+                                                    MinSQN + ?LOADING_BATCH,
+                                                    FoldFuns,
+                                                    Acc,
+                                                    Pid,
+                                                    undefined,
+                                                    FN),
+    fold_from_sequence(NextMinSQN, FoldFuns, Acc0, Rest);
 fold_from_sequence(MinSQN, FoldFuns, Acc, [{_LowSQN, FN, Pid, _LK}|Rest]) ->
     % If this file has a LowSQN less than the minimum, we can skip it if the 
     % next file also has a LowSQN below the minimum
-    Acc0 = 
+    {NextMinSQN, Acc0} = 
         case Rest of
             [] ->
                 foldfile_between_sequence(MinSQN,
@@ -1172,9 +1166,9 @@ fold_from_sequence(MinSQN, FoldFuns, Acc, [{_LowSQN, FN, Pid, _LK}|Rest]) ->
                                             undefined,
                                             FN);
             _ ->
-                Acc    
+                {MinSQN, Acc}    
         end,
-    fold_from_sequence(MinSQN, FoldFuns, Acc0, Rest).
+    fold_from_sequence(NextMinSQN, FoldFuns, Acc0, Rest).
 
 foldfile_between_sequence(MinSQN, MaxSQN, FoldFuns, 
                                                 Acc, CDBpid, StartPos, FN) ->
@@ -1182,8 +1176,8 @@ foldfile_between_sequence(MinSQN, MaxSQN, FoldFuns,
     InitBatchAcc = {MinSQN, MaxSQN, InitAccFun(FN, MinSQN)},
     
     case leveled_cdb:cdb_scan(CDBpid, FilterFun, InitBatchAcc, StartPos) of
-        {eof, {_AccMinSQN, _AccMaxSQN, BatchAcc}} ->
-            FoldFun(BatchAcc, Acc);
+        {eof, {AccMinSQN, _AccMaxSQN, BatchAcc}} ->
+            {AccMinSQN, FoldFun(BatchAcc, Acc)};
         {LastPosition, {_AccMinSQN, _AccMaxSQN, BatchAcc}} ->
             UpdAcc = FoldFun(BatchAcc, Acc),
             NextSQN = MaxSQN + 1,
@@ -1194,22 +1188,6 @@ foldfile_between_sequence(MinSQN, MaxSQN, FoldFuns,
                                         CDBpid,
                                         LastPosition,
                                         FN)
-    end.
-
-
-push_to_penciller(Penciller, LedgerCache) ->
-    % The push to penciller must start as a tree to correctly de-duplicate
-    % the list by order before becoming a de-duplicated list for loading
-    LC0 = leveled_bookie:loadqueue_ledgercache(LedgerCache),
-    push_to_penciller_loop(Penciller, LC0).
-
-push_to_penciller_loop(Penciller, LedgerCache) ->
-    case leveled_bookie:push_ledgercache(Penciller, LedgerCache) of
-        returned ->
-            timer:sleep(?LOADING_PAUSE),
-            push_to_penciller_loop(Penciller, LedgerCache);
-        ok ->
-            ok
     end.
             
 
@@ -1452,7 +1430,10 @@ compact_journal_testto(WRP, ExpectedFiles) ->
                                     fun(X) -> {X, 55} end,
                                     fun(_F) -> ok end,
                                     fun(L, K, SQN) ->
-                                        lists:member({SQN, K}, L)
+                                        case lists:member({SQN, K}, L) of
+                                            true -> current;
+                                            false -> replaced
+                                        end
                                     end,
                                     5000),
     timer:sleep(1000),
@@ -1464,7 +1445,10 @@ compact_journal_testto(WRP, ExpectedFiles) ->
                                         fun(X) -> {X, 55} end,
                                         fun(_F) -> ok end,
                                         fun(L, K, SQN) ->
-                                            lists:member({SQN, K}, L)
+                                            case lists:member({SQN, K}, L) of
+                                                true -> current;
+                                                false -> replaced
+                                            end
                                         end,
                                         5000),
     timer:sleep(1000),

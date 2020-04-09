@@ -373,7 +373,7 @@ foldobjects_allkeys(SnapFun, Tag, FoldObjectsFun, sqn_order) ->
                                                                     SQN),
                     % Need to check that we have not folded past the point
                     % at which the snapshot was taken
-                    (JournalSQN >= SQN) and CheckSQN
+                    (JournalSQN >= SQN) and (CheckSQN == current)
                         
                 end,
 

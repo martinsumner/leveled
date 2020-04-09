@@ -35,7 +35,7 @@
         from_inkerkv/2,
         from_journalkey/1,
         revert_to_keydeltas/2,
-        is_compaction_candidate/1,
+        is_full_journalentry/1,
         split_inkvalue/1,
         check_forinkertype/2,
         get_tagstrategy/2,
@@ -49,7 +49,8 @@
         segment_hash/1,
         to_lookup/1,
         next_key/1,
-        return_proxy/4]).         
+        return_proxy/4,
+        get_metadata/1]).         
 
 -define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
 -define(NRT_IDX, "$aae.").
@@ -88,7 +89,7 @@
 -type ledger_kv() ::
         {ledger_key(), ledger_value()}.
 -type compaction_method() ::
-        retain|skip|recalc.
+        retain|recovr|recalc.
 -type compaction_strategy() ::
         list({tag(), compaction_method()}).
 -type journal_key_tag() ::
@@ -243,6 +244,10 @@ strip_to_indexdetails({_, V}) when tuple_size(V) > 4 ->
 striphead_to_v1details(V) -> 
     {element(1, V), element(2, V), element(3, V), element(4, V)}.
 
+-spec get_metadata(ledger_value()) -> metadata().
+get_metadata(LV) ->
+    element(4, LV).
+
 -spec key_dominates(ledger_kv(), ledger_kv()) -> 
     left_hand_first|right_hand_first|left_hand_dominant|right_hand_dominant.
 %% @doc
@@ -358,24 +363,24 @@ endkey_passed(EndKey, CheckingKey) ->
 
 -spec inker_reload_strategy(compaction_strategy()) -> compaction_strategy().
 %% @doc
-%% Take the default startegy for compaction, and override the approach for any 
+%% Take the default strategy for compaction, and override the approach for any 
 %% tags passed in
 inker_reload_strategy(AltList) ->
-    ReloadStrategy0 = 
+    DefaultList = 
         lists:map(fun leveled_head:default_reload_strategy/1,
                     leveled_head:defined_objecttags()),
-    lists:foldl(fun({X, Y}, SList) ->
-                        lists:keyreplace(X, 1, SList, {X, Y})
-                        end,
-                    ReloadStrategy0,
-                    AltList).
+    lists:ukeymerge(1,
+                    lists:ukeysort(1, AltList),
+                    lists:ukeysort(1, DefaultList)).
 
 
--spec get_tagstrategy(ledger_key(), compaction_strategy()) 
-                                                    -> skip|retain|recalc.
+-spec get_tagstrategy(ledger_key()|tag()|dummy, compaction_strategy()) 
+                                                    -> compaction_method().
 %% @doc
 %% Work out the compaction strategy for the key
 get_tagstrategy({Tag, _, _, _}, Strategy) ->
+    get_tagstrategy(Tag, Strategy);
+get_tagstrategy(Tag, Strategy) ->
     case lists:keyfind(Tag, 1, Strategy) of
         {Tag, TagStrat} ->
             TagStrat;
@@ -410,11 +415,12 @@ to_inkerkv(LedgerKey, SQN, Object, KeyChanges, PressMethod, Compress) ->
 %% If we wish to retain key deltas when an object in the Journal has been
 %% replaced - then this converts a Journal Key and Value into one which has no
 %% object body just the key deltas.
+%% Only called if retain strategy and has passed
+%% leveled_codec:is_full_journalentry/1 - so no need to consider other key
+%% types
 revert_to_keydeltas({SQN, ?INKT_STND, LedgerKey}, InkerV) ->
     {_V, KeyDeltas} = revert_value_from_journal(InkerV),
-    {{SQN, ?INKT_KEYD, LedgerKey}, {null, KeyDeltas}};
-revert_to_keydeltas(JournalKey, InkerV) ->
-    {JournalKey, InkerV}.
+    {{SQN, ?INKT_KEYD, LedgerKey}, {null, KeyDeltas}}.
 
 %% Used when fetching objects, so only handles standard, hashable entries
 from_inkerkv(Object) ->
@@ -560,12 +566,12 @@ check_forinkertype(_LedgerKey, head_only) ->
 check_forinkertype(_LedgerKey, _Object) ->
     ?INKT_STND.
 
--spec is_compaction_candidate(journal_key()) -> boolean().
+-spec is_full_journalentry(journal_key()) -> boolean().
 %% @doc
 %% Only journal keys with standard objects should be scored for compaction
-is_compaction_candidate({_SQN, ?INKT_STND, _LK}) ->
+is_full_journalentry({_SQN, ?INKT_STND, _LK}) ->
     true;
-is_compaction_candidate(_OtherJKType) ->
+is_full_journalentry(_OtherJKType) ->
     false.
 
 

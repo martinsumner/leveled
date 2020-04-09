@@ -230,6 +230,8 @@
     {"PC023",
         {info, "At level=~w file_count=~w avg_mem=~w " 
                 ++ "file with most memory fn=~s p=~w mem=~w"}},
+    {"PC024",
+        {info, "Grooming compaction picked file with tomb_count=~w"}},
     {"PM002",
         {info, "Completed dump of L0 cache to list of l0cache_size=~w"}},
     
@@ -336,7 +338,7 @@
         {info, "Scoring of compaction runs complete with highest score=~w " 
                 ++ "with run of run_length=~w"}},
     {"IC004",
-        {info, "Score for filename ~s is ~w"}},
+        {info, "Score=~w with mean_byte_jump=~w for filename ~s"}},
     {"IC005",
         {info, "Compaction to be performed on ~w files with score of ~w"}},
     {"IC006",
@@ -356,6 +358,8 @@
     {"IC013",
         {warn, "File with name ~s to be ignored in manifest as scanning for "
                 ++ "first key returned empty - maybe corrupted"}},
+    {"IC014",
+        {info, "Compaction to be run with strategy ~w and max_run_length ~w"}},
 
     {"CDB01",
         {info, "Opening file for writing with filename ~s"}},
