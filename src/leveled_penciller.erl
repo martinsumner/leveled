@@ -1316,7 +1316,12 @@ update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
             Due = CacheTooBig and JitterCheck,
             {UpdState0, _L0Bloom} = maybe_roll_memory(UpdState, Due, false),
             LogSubs = [NewL0Size, Due, State#state.work_ongoing],
-            leveled_log:log_timer("P0031", LogSubs, SW),
+            case Due of
+                true ->
+                    leveled_log:log_timer("P0031", LogSubs, SW);
+                _ ->
+                    ok
+            end,
             UpdState0
     end.
 
