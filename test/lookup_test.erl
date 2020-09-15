@@ -1,31 +1,33 @@
 -module(lookup_test).
 
--export([go_dict/1, 
-    go_ets/1, 
-    go_gbtree/1, 
-    go_arrayofdict/1, 
-    go_arrayofgbtree/1, 
+-export([
+    go_dict/1,
+    go_ets/1,
+    go_gbtree/1,
+    go_arrayofdict/1,
+    go_arrayofgbtree/1,
     go_arrayofdict_withcache/1,
     create_blocks/3,
     size_testblocks/1,
-    test_testblocks/2]).
+    test_testblocks/2
+]).
 
 -define(CACHE_SIZE, 512).
 
 hash(Key) ->
-  H = 5381,
-  hash1(H,Key) band 16#FFFFFFFF.
+    H = 5381,
+    hash1(H, Key) band 16#FFFFFFFF.
 
-hash1(H,[]) ->H;
-hash1(H,[B|Rest]) ->
-  H1 = H * 33,
-  H2 = H1 bxor B,
-  hash1(H2,Rest).
+hash1(H, []) ->
+    H;
+hash1(H, [B | Rest]) ->
+    H1 = H * 33,
+    H2 = H1 bxor B,
+    hash1(H2, Rest).
 
 % Get the least significant 8 bits from the hash.
 hash_to_index(Hash) ->
-  Hash band 255.
-
+    Hash band 255.
 
 %%
 %% Timings (microseconds):
@@ -37,7 +39,7 @@ hash_to_index(Hash) ->
 go_dict(N) ->
     go_dict(dict:new(), N, N).
 
-go_dict(_, 0, _) -> 
+go_dict(_, 0, _) ->
     {erlang:memory(), statistics(garbage_collection)};
 go_dict(D, N, M) ->
     % Lookup a random key - which may not be present
@@ -48,14 +50,12 @@ go_dict(D, N, M) ->
     % Add a new key - which may be present so value to be appended
     Key = lists:concat(["key-", N]),
     Hash = hash(Key),
-    case dict:find(Hash, D) of 
+    case dict:find(Hash, D) of
         error ->
-            go_dict(dict:store(Hash, [N], D), N-1, M);
+            go_dict(dict:store(Hash, [N], D), N - 1, M);
         {ok, List} ->
-            go_dict(dict:store(Hash, [N|List], D), N-1, M)
+            go_dict(dict:store(Hash, [N | List], D), N - 1, M)
     end.
-
-
 
 %%
 %% Timings (microseconds):
@@ -102,13 +102,12 @@ go_gbtree(Tree, N, M) ->
     % Add a new key - which may be present so value to be appended
     Key = lists:concat(["key-", N]),
     Hash = hash(Key),
-    case gb_trees:lookup(Hash, Tree) of 
+    case gb_trees:lookup(Hash, Tree) of
         none ->
             go_gbtree(gb_trees:insert(Hash, [N], Tree), N - 1, M);
         {value, List} ->
-            go_gbtree(gb_trees:update(Hash, [N|List], Tree), N - 1, M)
+            go_gbtree(gb_trees:update(Hash, [N | List], Tree), N - 1, M)
     end.
-
 
 %%
 %% Timings (microseconds):
@@ -144,13 +143,27 @@ go_arrayofdict(Array, N, M) ->
     Hash = hash(Key),
     Index = hash_to_index(Hash),
     D = array:get(Index, Array),
-    case dict:find(Hash, D) of 
+    case dict:find(Hash, D) of
         error ->
-            go_arrayofdict(array:set(Index, 
-                dict:store(Hash, [N], D), Array), N-1, M);
+            go_arrayofdict(
+                array:set(
+                    Index,
+                    dict:store(Hash, [N], D),
+                    Array
+                ),
+                N - 1,
+                M
+            );
         {ok, List} ->
-            go_arrayofdict(array:set(Index, 
-                dict:store(Hash, [N|List], D), Array), N-1, M)
+            go_arrayofdict(
+                array:set(
+                    Index,
+                    dict:store(Hash, [N | List], D),
+                    Array
+                ),
+                N - 1,
+                M
+            )
     end.
 
 %%
@@ -187,15 +200,28 @@ go_arrayofgbtree(Array, N, M) ->
     Hash = hash(Key),
     Index = hash_to_index(Hash),
     Tree = array:get(Index, Array),
-    case gb_trees:lookup(Hash, Tree) of 
+    case gb_trees:lookup(Hash, Tree) of
         none ->
-            go_arrayofgbtree(array:set(Index, 
-                gb_trees:insert(Hash, [N], Tree), Array), N - 1, M);
+            go_arrayofgbtree(
+                array:set(
+                    Index,
+                    gb_trees:insert(Hash, [N], Tree),
+                    Array
+                ),
+                N - 1,
+                M
+            );
         {value, List} ->
-            go_arrayofgbtree(array:set(Index, 
-                gb_trees:update(Hash, [N|List], Tree), Array), N - 1, M)
+            go_arrayofgbtree(
+                array:set(
+                    Index,
+                    gb_trees:update(Hash, [N | List], Tree),
+                    Array
+                ),
+                N - 1,
+                M
+            )
     end.
-
 
 %%
 %% Timings (microseconds):
@@ -205,8 +231,11 @@ go_arrayofgbtree(Array, N, M) ->
 %% go_arrayofdict_withcache(5000000) : 59435511
 
 go_arrayofdict_withcache(N) ->
-    go_arrayofdict_withcache({array:new(256, {default, dict:new()}), 
-        array:new(256, {default, dict:new()})}, N, N).
+    go_arrayofdict_withcache(
+        {array:new(256, {default, dict:new()}), array:new(256, {default, dict:new()})},
+        N,
+        N
+    ).
 
 go_arrayofdict_withcache(_, 0, _) ->
     {erlang:memory(), statistics(garbage_collection)};
@@ -223,27 +252,28 @@ go_arrayofdict_withcache({MArray, CArray}, N, M) ->
     Hash = hash(Key),
     Index = hash_to_index(Hash),
     Cache = array:get(Index, CArray),
-    case dict:find(Hash, Cache) of 
+    case dict:find(Hash, Cache) of
         error ->
             UpdCache = dict:store(Hash, [N], Cache);
         {ok, _} ->
             UpdCache = dict:append(Hash, N, Cache)
     end,
-    case dict:size(UpdCache) of 
+    case dict:size(UpdCache) of
         ?CACHE_SIZE ->
             UpdCArray = array:set(Index, dict:new(), CArray),
-            UpdMArray = array:set(Index, dict:merge(fun merge_values/3, UpdCache, array:get(Index, MArray)), MArray),
+            UpdMArray = array:set(
+                Index,
+                dict:merge(fun merge_values/3, UpdCache, array:get(Index, MArray)),
+                MArray
+            ),
             go_arrayofdict_withcache({UpdMArray, UpdCArray}, N - 1, M);
         _ ->
             UpdCArray = array:set(Index, UpdCache, CArray),
             go_arrayofdict_withcache({MArray, UpdCArray}, N - 1, M)
     end.
 
-
-
 merge_values(_, Value1, Value2) ->
     lists:append(Value1, Value2).
-
 
 %% Some functions for testing options compressing term_to_binary
 
@@ -266,15 +296,22 @@ create_block(N, BlockType, KeyStruct) ->
             Key = lists:concat(["key-", N, "-", leveled_rand:uniform(1000)])
     end,
     SequenceNumber = leveled_rand:uniform(1000000000),
-    Indexes = [{<<"DateOfBirth_int">>, leveled_rand:uniform(10000)}, {<<"index1_bin">>, lists:concat([leveled_rand:uniform(1000), "SomeCommonText"])}, {<<"index2_bin">>, <<"RepetitionRepetitionRepetition">>}],
+    Indexes = [
+        {<<"DateOfBirth_int">>, leveled_rand:uniform(10000)},
+        {<<"index1_bin">>, lists:concat([leveled_rand:uniform(1000), "SomeCommonText"])},
+        {<<"index2_bin">>, <<"RepetitionRepetitionRepetition">>}
+    ],
     case BlockType of
         keylist ->
             Term = {o, Bucket, Key, {Indexes, SequenceNumber}},
-            create_block(N-1, BlockType, [Term|KeyStruct]);
+            create_block(N - 1, BlockType, [Term | KeyStruct]);
         keygbtree ->
-            create_block(N-1, BlockType, gb_trees:insert({o, Bucket, Key}, {Indexes, SequenceNumber}, KeyStruct))
+            create_block(
+                N - 1,
+                BlockType,
+                gb_trees:insert({o, Bucket, Key}, {Indexes, SequenceNumber}, KeyStruct)
+            )
     end.
-
 
 create_blocks(N, Compression, BlockType) ->
     create_blocks(N, Compression, BlockType, 10000, []).
@@ -283,19 +320,19 @@ create_blocks(_, _, _, 0, BlockList) ->
     BlockList;
 create_blocks(N, Compression, BlockType, TestLoops, BlockList) ->
     NewBlock = term_to_binary(create_block(N, BlockType), [{compressed, Compression}]),
-    create_blocks(N, Compression, BlockType, TestLoops - 1, [NewBlock|BlockList]).
-    
+    create_blocks(N, Compression, BlockType, TestLoops - 1, [NewBlock | BlockList]).
+
 size_testblocks(BlockList) ->
-    size_testblocks(BlockList,0).
+    size_testblocks(BlockList, 0).
 
 size_testblocks([], Acc) ->
     Acc;
-size_testblocks([H|T], Acc) ->
+size_testblocks([H | T], Acc) ->
     size_testblocks(T, Acc + byte_size(H)).
 
 test_testblocks([], _) ->
     true;
-test_testblocks([H|T], BlockType) ->
+test_testblocks([H | T], BlockType) ->
     Block = binary_to_term(H),
     case findkey("key-20-special", Block, BlockType) of
         true ->
@@ -306,12 +343,12 @@ test_testblocks([H|T], BlockType) ->
 
 findkey(_, [], keylist) ->
     not_found;
-findkey(Key, [H|T], keylist) ->
+findkey(Key, [H | T], keylist) ->
     case H of
         {o, <<"pdsRecord">>, Key, _} ->
             true;
         _ ->
-        findkey(Key,T, keylist)     
+            findkey(Key, T, keylist)
     end;
 findkey(Key, Tree, keygbtree) ->
     case gb_trees:lookup({o, <<"pdsRecord">>, Key}, Tree) of
@@ -320,4 +357,3 @@ findkey(Key, Tree, keygbtree) ->
         _ ->
             true
     end.
-    

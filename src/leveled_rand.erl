@@ -5,12 +5,11 @@
 
 %% API
 -export([
-         uniform/0,
-         uniform/1,
-         seed/0,
-         rand_bytes/1
-        ]).
-
+    uniform/0,
+    uniform/1,
+    seed/0,
+    rand_bytes/1
+]).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -48,7 +47,6 @@ rand_bytes(Size) ->
     crypto:rand_bytes(Size).
 
 -endif.
-
 
 -ifdef(TEST).
 

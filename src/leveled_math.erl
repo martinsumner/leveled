@@ -4,9 +4,8 @@
 
 %% API
 -export([
-         log2/1
-        ]).
-
+    log2/1
+]).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -27,7 +26,6 @@ log2(X) ->
     math:log(X) / 0.6931471805599453.
 
 -endif.
-
 
 -ifdef(TEST).
 

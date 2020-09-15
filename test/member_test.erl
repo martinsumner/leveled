@@ -2,23 +2,25 @@
 
 -export([test_membership/0]).
 
--define(SEGMENTS_TO_CHECK, 32768). % a whole SST file
+% a whole SST file
+-define(SEGMENTS_TO_CHECK, 32768).
 -define(MEMBERSHIP_LENGTHS, [8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096]).
 
 segments(Length) ->
     AllSegs = lists:seq(1, ?SEGMENTS_TO_CHECK),
-    AllSegsBin = 
-        lists:foldl(fun(I, Acc) -> <<Acc/binary, (I - 1):16/integer>> end, 
-                        <<>>,
-                        AllSegs),
+    AllSegsBin =
+        lists:foldl(
+            fun(I, Acc) -> <<Acc/binary, (I - 1):16/integer>> end,
+            <<>>,
+            AllSegs
+        ),
     StartPos = leveled_rand:uniform(length(AllSegs) - Length),
-    {<<AllSegsBin/binary, AllSegsBin/binary, 
-            AllSegsBin/binary, AllSegsBin/binary>>,
+    {<<AllSegsBin/binary, AllSegsBin/binary, AllSegsBin/binary, AllSegsBin/binary>>,
         lists:sublist(AllSegs, StartPos, Length)}.
 
 test_membership(Length) ->
     {AllSegsBin, TestList} = segments(Length),
-    ExpectedOutput = 
+    ExpectedOutput =
         lists:reverse(TestList ++ TestList ++ TestList ++ TestList),
 
     SW0 = os:timestamp(),
@@ -32,17 +34,19 @@ test_membership(Length) ->
     true = test_binary(AllSegsBin, [], TestSetsFun) == ExpectedOutput,
     SetsT = timer:now_diff(os:timestamp(), SW1) / 131072,
 
-    io:format("Test with segment count ~w  ..."
-                ++ " took ~w ms per 1000 checks with list ..." 
-                ++ " took ~w ms per 1000 checks with set~n", [Length, ListT, SetsT]).
-
+    io:format(
+        "Test with segment count ~w  ..." ++
+            " took ~w ms per 1000 checks with list ..." ++
+            " took ~w ms per 1000 checks with set~n",
+        [Length, ListT, SetsT]
+    ).
 
 test_binary(<<>>, Acc, _TestFun) ->
     Acc;
 test_binary(<<0:1/integer, TestSeg:15/integer, Rest/binary>>, Acc, TestFun) ->
     case TestFun(TestSeg) of
         true ->
-            test_binary(Rest, [TestSeg|Acc], TestFun);
+            test_binary(Rest, [TestSeg | Acc], TestFun);
         false ->
             test_binary(Rest, Acc, TestFun)
     end.
