@@ -57,6 +57,7 @@
 -export([
             new_tree/1,
             new_tree/2,
+            add_hash/3,
             add_kv/4,
             add_kv/5,
             alter_segment/3,
@@ -117,6 +118,8 @@
     {binary(), integer(), integer(), integer(), binary()}.
 -type tree_size() :: 
     xxsmall|xsmall|small|medium|large|xlarge.
+-type binextract_fun() ::
+    fun((any(), any()) -> {binary(), any()}).
 
 -export_type([tictactree/0, segment48/0, tree_size/0]).
 
@@ -194,7 +197,7 @@ import_tree(ExportedTree) ->
                     level2 = Lv2}.
 
 
--spec add_kv(tictactree(), term(), term(), fun()) -> tictactree().
+-spec add_kv(tictactree(), term(), term(), binextract_fun()) -> tictactree().
 %% @doc
 %% Add a Key and value to a tictactree using the BinExtractFun to extract a 
 %% binary from the Key and value from which to generate the hash.  The 
@@ -203,7 +206,7 @@ import_tree(ExportedTree) ->
 add_kv(TicTacTree, Key, Value, BinExtractFun) ->
     add_kv(TicTacTree, Key, Value, BinExtractFun, false).
 
--spec add_kv(tictactree(), term(), term(), fun(), boolean()) 
+-spec add_kv(tictactree(), term(), term(), binextract_fun(), boolean()) 
                                     -> tictactree()|{tictactree(), integer()}.
 %% @doc
 %% add_kv with ability to return segment ID of Key added
@@ -211,22 +214,32 @@ add_kv(TicTacTree, Key, Value, BinExtractFun, ReturnSegment) ->
     {BinK, BinV} = BinExtractFun(Key, Value),
     {SegHash, SegChangeHash} = tictac_hash(BinK, BinV),
     Segment = get_segment(SegHash, TicTacTree#tictactree.segment_count),
-    
+    TictacTree0 = add_hash(TicTacTree, Segment, SegChangeHash),
+    case ReturnSegment of
+        true ->
+            {TictacTree0, Segment};
+        false ->
+            TictacTree0
+    end.
+
+-spec add_hash(tictactree(),
+                non_neg_integer(),
+                non_neg_integer()) -> tictactree().
+%% @doc
+%% Add hashes to tictactree - can be called directly when used out of the
+%% standard context, and things like segment-based acceleration are not a
+%% concern
+add_hash(TicTacTree, Segment, SegChangeHash) ->
     {SegLeaf1, SegLeaf2, L1Extract, L2Extract} 
         = extract_segment(Segment, TicTacTree),
 
     SegLeaf2Upd = SegLeaf2 bxor SegChangeHash,
     SegLeaf1Upd = SegLeaf1 bxor SegChangeHash,
 
-    case ReturnSegment of
-        true -> 
-            {replace_segment(SegLeaf1Upd, SegLeaf2Upd, 
-                            L1Extract, L2Extract, TicTacTree),
-                Segment};
-        false ->
-            replace_segment(SegLeaf1Upd, SegLeaf2Upd, 
-                            L1Extract, L2Extract, TicTacTree)
-    end.
+    replace_segment(SegLeaf1Upd, SegLeaf2Upd, 
+                        L1Extract, L2Extract,
+                        TicTacTree).
+
 
 -spec alter_segment(integer(), integer(), tictactree()) -> tictactree().
 %% @doc
@@ -338,6 +351,11 @@ tictac_hash(BinKey, Val) when is_binary(BinKey) ->
             {is_hash, HashedVal} ->
                 HashedVal;
             _ ->
+                %% By default phash2 is a 27-bit hash - and using it here with
+                %% just 27 bits is probably a mistake.  This will be bxor'd
+                %% with AltHashKey which is a 32-bit hash.  It would be better
+                %% for these to be both 32-bit hashes, however - migration is
+                %% a concern. 
                 erlang:phash2(Val)
         end,
     {HashKeyToSeg, AltHashKey bxor HashVal}.
