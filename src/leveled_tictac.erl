@@ -57,6 +57,7 @@
 -export([
             new_tree/1,
             new_tree/2,
+            is_tree/1,
             add_hash/3,
             add_kv/4,
             add_kv/5,
@@ -133,6 +134,12 @@
 %% For validation of input
 valid_size(Size) ->
     lists:member(Size, ?VALID_SIZES).
+
+-spec is_tree(any()) -> boolean().
+%% @doc
+%% Type heck for tictactree
+is_tree(MaybeTree) ->
+    is_record(MaybeTree, tictactree).
 
 -spec new_tree(any()) -> tictactree().
 %% @doc
@@ -736,6 +743,7 @@ merge_emptytree_test() ->
     TreeA = new_tree("A"),
     TreeB = new_tree("B"),
     TreeC = merge_trees(TreeA, TreeB),
+    ?assertMatch(true, is_tree(TreeC)),
     ?assertMatch([], find_dirtyleaves(TreeA, TreeC)).
 
 alter_segment_test() ->
