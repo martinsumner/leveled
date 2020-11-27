@@ -103,8 +103,7 @@
 %% @doc The number of times per day to score an individual file for compaction
 {mapping, "leveled.compaction_scores_perday", "leveled.compaction_scores_perday", [
   {default, 1},
-  {datatype, integer},
-  hidden
+  {datatype, integer}
 ]}.
 
 %% @doc Compaction Low Hour
