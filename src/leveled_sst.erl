@@ -850,7 +850,7 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %% @doc
 %% Expand a list of pointers, maybe ending up with a list of keys and values
 %% with a tail of pointers
-%% By defauls will not have a segment filter, or a low last_modified_date, but
+%% By default will not have a segment filter, or a low last_modified_date, but
 %% they can be used. Range checking a last modified date must still be made on
 %% the output - at this stage the low last_modified_date has been used to bulk
 %% skip those slots not containing any information over the low last modified
@@ -1867,7 +1867,7 @@ read_slots(Handle, SlotList, {SegList, LowLastMod, BlockIndexCache},
     % List of segments passed so only {K, V} pairs matching those segments
     % should be returned.  This required the {K, V} pair to have been added 
     % with the appropriate hash - if the pair were added with no_lookup as 
-    % the hash value this will fial unexpectedly.
+    % the hash value this will fail unexpectedly.
     BinMapFun = 
         fun(Pointer, Acc) ->
             {SP, _L, ID, SK, EK} = pointer_mapfun(Pointer),

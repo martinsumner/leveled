@@ -97,7 +97,7 @@
 
 -define(JOURNAL_FILEX, "cdb").
 -define(PENDING_FILEX, "pnd").
--define(SAMPLE_SIZE, 100).
+-define(SAMPLE_SIZE, 192).
 -define(BATCH_SIZE, 32).
 -define(BATCHES_TO_CHECK, 8).
 -define(CRC_SIZE, 4).
@@ -331,9 +331,11 @@ handle_cast({score_filelist, [Entry|Tail]}, State) ->
     ScoringState = State#state.scoring_state,
     CpctPerc =
         case {leveled_cdb:cdb_getcachedscore(JournalP, os:timestamp()),
-                leveled_rand:uniform(State#state.score_onein) == 1} of
-            {CachedScore, UseNewScore} 
-                    when CachedScore == undefined; UseNewScore ->
+                leveled_rand:uniform(State#state.score_onein) == 1,
+                State#state.score_onein} of
+            {CachedScore, _UseNewScore, ScoreOneIn} 
+                    when CachedScore == undefined; ScoreOneIn == 1 ->
+                % If caches are not used, always use the current score
                 check_single_file(JournalP,
                                     ScoringState#scoring_state.filter_fun,
                                     ScoringState#scoring_state.filter_server,
@@ -341,7 +343,21 @@ handle_cast({score_filelist, [Entry|Tail]}, State) ->
                                     ?SAMPLE_SIZE,
                                     ?BATCH_SIZE,
                                     State#state.reload_strategy);
-            {CachedScore, false} ->
+            {CachedScore, true, _ScoreOneIn} ->
+                % If caches are used roll the score towards the current score
+                % Expectation is that this will reduce instances of individual
+                % files being compacted when a run is missed due to cached
+                % scores being used in surrounding journals
+                NewScore = 
+                    check_single_file(JournalP,
+                                    ScoringState#scoring_state.filter_fun,
+                                    ScoringState#scoring_state.filter_server,
+                                    ScoringState#scoring_state.max_sqn,
+                                    ?SAMPLE_SIZE,
+                                    ?BATCH_SIZE,
+                                    State#state.reload_strategy),
+                (NewScore + CachedScore) / 2;
+            {CachedScore, false, _ScoreOneIn} ->
                 CachedScore
         end,
     ok = leveled_cdb:cdb_putcachedscore(JournalP, CpctPerc),
