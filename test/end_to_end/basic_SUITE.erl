@@ -299,7 +299,7 @@ journal_compaction_tester(Restart, WRP) ->
     end,
     ok = leveled_penciller:pcl_close(PclClone),
     ok = leveled_inker:ink_close(InkClone),
-    % Snapshot released so deletes shoudl occur at next timeout
+    % Snapshot released so deletes should occur at next timeout
     case WRP of 
         undefined ->
             timer:sleep(10100); % wait for delete_pending timeout

@@ -113,7 +113,9 @@
             cdb_deletepending/1,
             cdb_deletepending/3,
             cdb_isrolling/1,
-            cdb_clerkcomplete/1]).
+            cdb_clerkcomplete/1,
+            cdb_getcachedscore/1,
+            cdb_putcachedscore/2]).
 
 -export([finished_rolling/1,
             hashtable_calc/2]).
@@ -152,7 +154,8 @@
                 timings = no_timing :: cdb_timings(),
                 timings_countdown = 0 :: integer(),
                 log_options = leveled_log:get_opts()
-                    :: leveled_log:log_options()}).
+                    :: leveled_log:log_options(),
+                cached_score :: float()|undefined}).
 
 -record(cdb_timings, {sample_count = 0 :: integer(),
                         sample_cyclecount = 0 :: integer(),
@@ -164,6 +167,9 @@
 -type cdb_timings() :: no_timing|#cdb_timings{}.
 -type hashtable_index() :: tuple().
 -type file_location() :: integer()|eof.
+-type filter_fun() ::
+        fun((any(), binary(), integer(), any(), fun((binary()) -> any())) ->
+            {stop|loop, any()}).
 
 
 
@@ -369,7 +375,7 @@ cdb_deletepending(Pid) ->
 cdb_deletepending(Pid, ManSQN, Inker) ->
     gen_fsm:send_event(Pid, {delete_pending, ManSQN, Inker}).
 
--spec cdb_scan(pid(), fun(), any(), integer()|undefined) ->
+-spec cdb_scan(pid(), filter_fun(), any(), integer()|undefined) ->
                                                     {integer()|eof, any()}.
 %% @doc
 %% cdb_scan returns {LastPosition, Acc}.  Use LastPosition as StartPosiiton to
@@ -423,6 +429,20 @@ cdb_isrolling(Pid) ->
 %% not be needed for a period.  
 cdb_clerkcomplete(Pid) ->
     gen_fsm:send_all_state_event(Pid, clerk_complete).
+
+-spec cdb_getcachedscore(pid()) -> undefined|float().
+%% @doc
+%% Return the cached score for a CDB file
+cdb_getcachedscore(Pid) ->
+    gen_fsm:sync_send_all_state_event(Pid, get_cachedscore, infinity).
+
+
+-spec cdb_putcachedscore(pid(), float()) -> ok.
+%% @doc
+%% Return the cached score for a CDB file
+cdb_putcachedscore(Pid, Score) ->
+    gen_fsm:sync_send_all_state_event(Pid, {put_cachedscore, Score}, infinity).
+
 
 
 %%%============================================================================
@@ -829,6 +849,10 @@ handle_sync_event(cdb_filename, _From, StateName, State) ->
     {reply, State#state.filename, StateName, State};
 handle_sync_event(cdb_isrolling, _From, StateName, State) ->
     {reply, StateName == rolling, StateName, State};
+handle_sync_event(get_cachedscore, _From, StateName, State) ->
+    {reply, State#state.cached_score, StateName, State};
+handle_sync_event({put_cachedscore, Score}, _From, StateName, State) ->
+    {reply, ok, StateName, State#state{cached_score = Score}};
 handle_sync_event(cdb_close, _From, delete_pending, State) ->
     leveled_log:log("CDB05", 
                         [State#state.filename, delete_pending, cdb_close]),
@@ -836,8 +860,7 @@ handle_sync_event(cdb_close, _From, delete_pending, State) ->
                         State#state.filename, 
                         State#state.waste_path),
     {stop, normal, ok, State};
-handle_sync_event(cdb_close, _From, StateName, State) ->
-    leveled_log:log("CDB05", [State#state.filename, StateName, cdb_close]),
+handle_sync_event(cdb_close, _From, _StateName, State) ->
     file:close(State#state.handle),
     {stop, normal, ok, State}.
 
@@ -2396,6 +2419,10 @@ get_keys_byposition_manykeys_test_to() ->
     SampleList3 = cdb_getpositions(P2, KeyCount + 1),
     ?assertMatch(KeyCount, length(SampleList3)),
     
+    ?assertMatch(undefined, cdb_getcachedscore(P2)),
+    ok = cdb_putcachedscore(P2, 80.0),
+    ?assertMatch(80.0, cdb_getcachedscore(P2)),
+
     ok = cdb_close(P2),
     ok = file:delete(F2).
 

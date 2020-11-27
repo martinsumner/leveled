@@ -117,7 +117,8 @@
                 maxrunlength_compactionperc = ?MAXRUNLENGTH_COMPACTION_TARGET ::float(),
                 compression_method = native :: lz4|native,
                 scored_files = [] :: list(candidate()),
-                scoring_state :: scoring_state()|undefined}).
+                scoring_state :: scoring_state()|undefined,
+                score_onein = 1 :: pos_integer()}).
 
 -record(candidate, {low_sqn :: integer() | undefined,
                     filename :: string() | undefined,
@@ -270,7 +271,7 @@ init([LogOpts, IClerkOpts]) ->
             MRLCP when is_float(MRLCP) ->
                 MRLCP
         end,
-
+    
     {ok, #state{max_run_length = MRL,
                         inker = IClerkOpts#iclerk_options.inker,
                         cdb_options = CDBopts,
@@ -280,7 +281,10 @@ init([LogOpts, IClerkOpts]) ->
                         singlefile_compactionperc = SFL_CompPerc,
                         maxrunlength_compactionperc = MRL_CompPerc,
                         compression_method = 
-                            IClerkOpts#iclerk_options.compression_method}}.
+                            IClerkOpts#iclerk_options.compression_method,
+                        score_onein = 
+                            IClerkOpts#iclerk_options.score_onein
+                        }}.
 
 handle_call(stop, _From, State) ->
     case State#state.scoring_state of
@@ -325,13 +329,22 @@ handle_cast({score_filelist, [Entry|Tail]}, State) ->
     Candidates = State#state.scored_files,
     {LowSQN, FN, JournalP, _LK} = Entry,
     ScoringState = State#state.scoring_state,
-    CpctPerc = check_single_file(JournalP,
+    CpctPerc =
+        case {leveled_cdb:cdb_getcachedscore(JournalP),
+                leveled_rand:uniform(State#state.score_onein) == 1} of
+            {CachedScore, UseNewScore} 
+                    when CachedScore == undefined; UseNewScore ->
+                check_single_file(JournalP,
                                     ScoringState#scoring_state.filter_fun,
                                     ScoringState#scoring_state.filter_server,
                                     ScoringState#scoring_state.max_sqn,
                                     ?SAMPLE_SIZE,
                                     ?BATCH_SIZE,
-                                    State#state.reload_strategy),
+                                    State#state.reload_strategy);
+            {CachedScore, false} ->
+                CachedScore
+        end,
+    ok = leveled_cdb:cdb_putcachedscore(JournalP, CpctPerc),
     Candidate =
         #candidate{low_sqn = LowSQN,
                     filename = FN,

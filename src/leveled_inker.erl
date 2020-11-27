@@ -806,6 +806,7 @@ start_from_file(InkOpts) ->
     PressMethod = InkOpts#inker_options.compression_method,
     PressOnReceipt = InkOpts#inker_options.compress_on_receipt,
     SnapTimeout = InkOpts#inker_options.snaptimeout_long,
+    ScoreOneIn = InkOpts#inker_options.score_onein,
 
     IClerkOpts = 
         #iclerk_options{inker = self(),
@@ -815,7 +816,8 @@ start_from_file(InkOpts) ->
                             compression_method = PressMethod,
                             max_run_length = MRL,
                             singlefile_compactionperc = SFL_CompactPerc,
-                            maxrunlength_compactionperc = MRL_CompactPerc},
+                            maxrunlength_compactionperc = MRL_CompactPerc,
+                            score_onein = ScoreOneIn},
     
     {ok, Clerk} = leveled_iclerk:clerk_new(IClerkOpts),
     
