@@ -330,7 +330,7 @@ handle_cast({score_filelist, [Entry|Tail]}, State) ->
     {LowSQN, FN, JournalP, _LK} = Entry,
     ScoringState = State#state.scoring_state,
     CpctPerc =
-        case {leveled_cdb:cdb_getcachedscore(JournalP),
+        case {leveled_cdb:cdb_getcachedscore(JournalP, os:timestamp()),
                 leveled_rand:uniform(State#state.score_onein) == 1} of
             {CachedScore, UseNewScore} 
                     when CachedScore == undefined; UseNewScore ->

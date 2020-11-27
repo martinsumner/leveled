@@ -114,7 +114,7 @@
             cdb_deletepending/3,
             cdb_isrolling/1,
             cdb_clerkcomplete/1,
-            cdb_getcachedscore/1,
+            cdb_getcachedscore/2,
             cdb_putcachedscore/2]).
 
 -export([finished_rolling/1,
@@ -135,6 +135,8 @@
 -define(GETPOS_FACTOR, 8).
 -define(MAX_OBJECT_SIZE, 1000000000). 
     % 1GB but really should be much smaller than this
+-define(MEGA, 1000000).
+-define(CACHE_LIFE, 86400).
 
 -record(state, {hashtree,
                 last_position :: integer() | undefined,
@@ -155,7 +157,7 @@
                 timings_countdown = 0 :: integer(),
                 log_options = leveled_log:get_opts()
                     :: leveled_log:log_options(),
-                cached_score :: float()|undefined}).
+                cached_score :: {float(), erlang:timestamp()}|undefined}).
 
 -record(cdb_timings, {sample_count = 0 :: integer(),
                         sample_cyclecount = 0 :: integer(),
@@ -430,11 +432,11 @@ cdb_isrolling(Pid) ->
 cdb_clerkcomplete(Pid) ->
     gen_fsm:send_all_state_event(Pid, clerk_complete).
 
--spec cdb_getcachedscore(pid()) -> undefined|float().
+-spec cdb_getcachedscore(pid(), erlang:timestamp()) -> undefined|float().
 %% @doc
 %% Return the cached score for a CDB file
-cdb_getcachedscore(Pid) ->
-    gen_fsm:sync_send_all_state_event(Pid, get_cachedscore, infinity).
+cdb_getcachedscore(Pid, Now) ->
+    gen_fsm:sync_send_all_state_event(Pid, {get_cachedscore, Now}, infinity).
 
 
 -spec cdb_putcachedscore(pid(), float()) -> ok.
@@ -849,10 +851,24 @@ handle_sync_event(cdb_filename, _From, StateName, State) ->
     {reply, State#state.filename, StateName, State};
 handle_sync_event(cdb_isrolling, _From, StateName, State) ->
     {reply, StateName == rolling, StateName, State};
-handle_sync_event(get_cachedscore, _From, StateName, State) ->
-    {reply, State#state.cached_score, StateName, State};
+handle_sync_event({get_cachedscore, {NowMega, NowSecs, _}},
+                                                    _From, StateName, State) ->
+    ScoreToReturn =
+        case State#state.cached_score of
+            undefined ->
+                undefined;
+            {Score, {CacheMega, CacheSecs, _}} ->
+                case (NowMega * ?MEGA + NowSecs) >
+                        (CacheMega * ?MEGA + CacheSecs + ?CACHE_LIFE) of
+                    true ->
+                        undefined;
+                    false ->
+                        Score
+                end
+        end,
+    {reply, ScoreToReturn, StateName, State};
 handle_sync_event({put_cachedscore, Score}, _From, StateName, State) ->
-    {reply, ok, StateName, State#state{cached_score = Score}};
+    {reply, ok, StateName, State#state{cached_score = {Score,os:timestamp()}}};
 handle_sync_event(cdb_close, _From, delete_pending, State) ->
     leveled_log:log("CDB05", 
                         [State#state.filename, delete_pending, cdb_close]),
@@ -2419,9 +2435,15 @@ get_keys_byposition_manykeys_test_to() ->
     SampleList3 = cdb_getpositions(P2, KeyCount + 1),
     ?assertMatch(KeyCount, length(SampleList3)),
     
-    ?assertMatch(undefined, cdb_getcachedscore(P2)),
+    ?assertMatch(undefined, cdb_getcachedscore(P2, os:timestamp())),
     ok = cdb_putcachedscore(P2, 80.0),
-    ?assertMatch(80.0, cdb_getcachedscore(P2)),
+    ?assertMatch(80.0, cdb_getcachedscore(P2, os:timestamp())),
+    timer:sleep(1000),
+    {NowMega, NowSecs, _} = Now = os:timestamp(),
+    ?assertMatch(80.0, cdb_getcachedscore(P2, Now)),
+    FutureEpoch = NowMega * ?MEGA + NowSecs + ?CACHE_LIFE,
+    Future = {FutureEpoch div ?MEGA, FutureEpoch rem ?MEGA, 0},
+    ?assertMatch(undefined, cdb_getcachedscore(P2, Future)),
 
     ok = cdb_close(P2),
     ok = file:delete(F2).
