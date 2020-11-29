@@ -157,6 +157,14 @@
 -type inker_options() :: #inker_options{}.
 -type ink_state() :: #state{}.
 -type registered_snapshot() :: {pid(), os:timestamp(), integer()}.
+-type filterserver() :: pid()|list(tuple()).
+-type filterfun() ::
+    fun((filterserver(), leveled_codec:ledger_key(), leveled_codec:sqn()) ->
+            current|replaced|missing).
+-type filterclosefun() :: fun((filterserver()) -> ok).
+-type filterinitfun() :: fun((pid()) -> {filterserver(), leveled_codec:sqn()}).
+
+-export_type([filterserver/0, filterfun/0, filterclosefun/0, filterinitfun/0]).
 
 %%%============================================================================
 %%% API
