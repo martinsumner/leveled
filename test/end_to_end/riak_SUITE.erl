@@ -258,6 +258,13 @@ fetchclocks_modifiedbetween(_Config) ->
     {ok, Bookie1A} = leveled_bookie:book_start(StartOpts1A),
     {ok, Bookie1B} = leveled_bookie:book_start(StartOpts1B),
 
+    ObjList0 = 
+        testutil:generate_objects(100000, 
+                                    {fixed_binary, 1}, [],
+                                    leveled_rand:rand_bytes(32),
+                                    fun() -> [] end,
+                                    <<"BaselineB">>),
+
     ObjL1StartTS = testutil:convert_to_seconds(os:timestamp()),
     ObjList1 = 
         testutil:generate_objects(20000, 
@@ -331,6 +338,7 @@ fetchclocks_modifiedbetween(_Config) ->
     testutil:riakload(Bookie1A, ObjList4),
     testutil:riakload(Bookie1A, ObjList6),
 
+    testutil:riakload(Bookie1B, ObjList0),
     testutil:riakload(Bookie1B, ObjList4),
     testutil:riakload(Bookie1B, ObjList5),
     testutil:riakload(Bookie1B, ObjList1),
@@ -412,7 +420,7 @@ fetchclocks_modifiedbetween(_Config) ->
             fun(_B, K, V, {LK, AccC}) ->
                 % Value is proxy_object?  Can we get the metadata and
                 % read the last modified date?  The do a non-accelerated
-                % fold to chekc that it is slower
+                % fold to check that it is slower
                 {proxy_object, MDBin, _Size, _Fetcher} = binary_to_term(V),
                 LMDTS = testutil:get_lastmodified(MDBin),
                 LMD = testutil:convert_to_seconds(LMDTS),
@@ -458,13 +466,20 @@ fetchclocks_modifiedbetween(_Config) ->
     true = NoFilterTime > PlusFilterTime,
 
     SimpleCountFun =
-        fun(_B, _K, _V, AccC) -> AccC + 1 end,
+        fun(BucketList) ->
+            fun(B, _K, _V, AccC) -> 
+                case lists:member(B, BucketList) of
+                    true -> AccC + 1;
+                    false -> AccC
+                end
+            end
+        end,
 
     {async, R4A_MultiBucketRunner} = 
         leveled_bookie:book_headfold(Bookie1A,
                                         ?RIAK_TAG,
                                         {bucket_list, [<<"B0">>, <<"B2">>]},
-                                        {SimpleCountFun, 0},
+                                        {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
                                         false,
                                         true,
                                         false,
@@ -482,7 +497,7 @@ fetchclocks_modifiedbetween(_Config) ->
                                         {bucket_list, [<<"B2">>, <<"B0">>]},
                                             % Reverse the buckets in the bucket
                                             % list
-                                        {SimpleCountFun, 0},
+                                        {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
                                         false,
                                         true,
                                         false,
@@ -495,10 +510,10 @@ fetchclocks_modifiedbetween(_Config) ->
 
     {async, R5B_MultiBucketRunner} = 
         leveled_bookie:book_headfold(Bookie1B,
-                                            % Same query - other bookie
                                         ?RIAK_TAG,
-                                        {bucket_list, [<<"B2">>, <<"B0">>]},
-                                        {SimpleCountFun, 0},
+                                        {bucket_list,
+                                            [<<"BaselineB">>, <<"B2">>, <<"B0">>]},
+                                        {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
                                         false,
                                         true,
                                         false,
@@ -506,7 +521,7 @@ fetchclocks_modifiedbetween(_Config) ->
                                         false),
     R5B_MultiBucket = R5B_MultiBucketRunner(),
     io:format("R5B_MultiBucket ~w ~n", [R5B_MultiBucket]),
-    true = R5A_MultiBucket == 37000,
+    true = R5B_MultiBucket == 37000,
 
     testutil:update_some_objects(Bookie1A, ObjList1, 1000),
     R6A_PlusFilter = lists:foldl(FoldRangesFun(Bookie1A, 
@@ -523,7 +538,7 @@ fetchclocks_modifiedbetween(_Config) ->
         leveled_bookie:book_headfold(Bookie1A,
                                         ?RIAK_TAG,
                                         {bucket_list, [<<"B1">>, <<"B2">>]},
-                                        {SimpleCountFun, 0},
+                                        {SimpleCountFun([<<"B1">>, <<"B2">>]), 0},
                                         false,
                                         true,
                                         false,
@@ -537,7 +552,7 @@ fetchclocks_modifiedbetween(_Config) ->
         leveled_bookie:book_headfold(Bookie1A,
                                         ?RIAK_TAG,
                                         {bucket_list, [<<"B1">>, <<"B2">>]},
-                                        {SimpleCountFun, 0},
+                                        {SimpleCountFun([<<"B1">>, <<"B2">>]), 0},
                                         false,
                                         true,
                                         false,
@@ -547,8 +562,39 @@ fetchclocks_modifiedbetween(_Config) ->
     io:format("R8A_MultiBucket ~w ~n", [R8A_MultiBucket]),
     true = R8A_MultiBucket == {0, 5000},
 
+    ok = leveled_bookie:book_close(Bookie1B),
+    io:format("Double query to generate index cache and use~n"),
+    {ok, Bookie1BS} = leveled_bookie:book_start(StartOpts1B),
+    {async, R5B_MultiBucketRunner0} = 
+        leveled_bookie:book_headfold(Bookie1BS,
+                                        ?RIAK_TAG,
+                                        all,
+                                        {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
+                                        false,
+                                        true,
+                                        false,
+                                        {ObjL4StartTS, ObjL6EndTS},
+                                        false),
+    R5B_MultiBucket0 = R5B_MultiBucketRunner0(),
+    io:format("R5B_MultiBucket ~w ~n", [R5B_MultiBucket0]),
+    true = R5B_MultiBucket0 == 37000,
+    {async, R5B_MultiBucketRunner1} = 
+        leveled_bookie:book_headfold(Bookie1BS,
+                                        ?RIAK_TAG,
+                                        all,
+                                        {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
+                                        false,
+                                        true,
+                                        false,
+                                        {ObjL4StartTS, ObjL6EndTS},
+                                        false),
+    R5B_MultiBucket1 = R5B_MultiBucketRunner1(),
+    io:format("R5B_MultiBucket ~w ~n", [R5B_MultiBucket1]),
+    true = R5B_MultiBucket1 == 37000,
+
+
     ok = leveled_bookie:book_destroy(Bookie1A),
-    ok = leveled_bookie:book_destroy(Bookie1B).
+    ok = leveled_bookie:book_destroy(Bookie1BS).
     
 
 

@@ -146,7 +146,7 @@
 %% @doc Target Percentage for Single File
 %% What is the target score for a run of a single file, to qualify for 
 %% compaction.  If less than this percentage would be retained after compaction
-%% then it is a candidate (e.g. in default case if 50% of space would be
+%% then it is a candidate (e.g. in default case if 70% of space would be
 %% recovered)
 {mapping, "leveled.singlefile_compactionpercentage", "leveled.singlefile_compactionpercentage", [
   {default, 30.0},
