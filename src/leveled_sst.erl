@@ -689,10 +689,19 @@ reader({get_kv, LedgerKey, Hash}, _From, State) ->
                                             timings_countdown = CountDown}};
 reader({get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
                                                             _From, State) ->
+    ReadNeeded =
+        check_modified(State#state.high_modified_date,
+                        LowLastMod,
+                        State#state.index_moddate),
     {NeedBlockIdx, SlotsToFetchBinList, SlotsToPoint} =
-        fetch_range(StartKey, EndKey, ScanWidth,
+        case ReadNeeded of
+            true -> 
+                fetch_range(StartKey, EndKey, ScanWidth,
                             SegList, LowLastMod,
-                            State),
+                            State);
+            false ->
+                {false, [], []}
+        end,
     PressMethod = State#state.compression_method,
     IdxModDate = State#state.index_moddate,
     
@@ -727,23 +736,14 @@ reader({get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
 reader({get_slots, SlotList, SegList, LowLastMod}, _From, State) ->
     PressMethod = State#state.compression_method,
     IdxModDate = State#state.index_moddate,
-    ReadNeeded =
-        check_modified(State#state.high_modified_date,
-                        LowLastMod,
-                        State#state.index_moddate),
     {NeedBlockIdx, SlotBins} = 
-        case ReadNeeded of
-            true ->
-                read_slots(State#state.handle, 
-                            SlotList, 
-                            {SegList,
-                                LowLastMod,
-                                State#state.blockindex_cache},
-                            State#state.compression_method,
-                            State#state.index_moddate);
-            false ->
-                {false, []}
-        end,
+        read_slots(State#state.handle, 
+                        SlotList, 
+                        {SegList,
+                            LowLastMod,
+                            State#state.blockindex_cache},
+                        State#state.compression_method,
+                        State#state.index_moddate),
     {reply,
         {NeedBlockIdx, SlotBins, PressMethod, IdxModDate},
         reader,

@@ -320,7 +320,7 @@ fetchclocks_modifiedbetween(_Config) ->
     _ObjL5EndTS = testutil:convert_to_seconds(os:timestamp()),
     timer:sleep(1000),
 
-    _ObjL6StartTS = testutil:convert_to_seconds(os:timestamp()),
+    ObjL6StartTS = testutil:convert_to_seconds(os:timestamp()),
     ObjList6 = 
         testutil:generate_objects(7000, 
                                     {fixed_binary, 1}, [],
@@ -563,8 +563,33 @@ fetchclocks_modifiedbetween(_Config) ->
     true = R8A_MultiBucket == {0, 5000},
 
     ok = leveled_bookie:book_close(Bookie1B),
+
     io:format("Double query to generate index cache and use~n"),
     {ok, Bookie1BS} = leveled_bookie:book_start(StartOpts1B),
+    
+    TooLate = testutil:convert_to_seconds(os:timestamp()),
+
+    lmdrange_tester(Bookie1BS, SimpleCountFun,
+                    ObjL4StartTS, ObjL6StartTS, ObjL6EndTS, TooLate),
+
+    io:format("Push tested keys down levels with new objects~n"),
+    ObjList7 = 
+        testutil:generate_objects(200000, 
+                                    {fixed_binary, 1}, [],
+                                    leveled_rand:rand_bytes(32),
+                                    fun() -> [] end,
+                                    <<"B1.9">>),
+    testutil:riakload(Bookie1BS, ObjList7),
+
+    lmdrange_tester(Bookie1BS, SimpleCountFun,
+                    ObjL4StartTS, ObjL6StartTS, ObjL6EndTS, TooLate),
+
+    ok = leveled_bookie:book_destroy(Bookie1A),
+    ok = leveled_bookie:book_destroy(Bookie1BS).
+    
+
+lmdrange_tester(Bookie1BS, SimpleCountFun,
+                ObjL4StartTS, ObjL6StartTS, ObjL6EndTS, TooLate) ->
     {async, R5B_MultiBucketRunner0} = 
         leveled_bookie:book_headfold(Bookie1BS,
                                         ?RIAK_TAG,
@@ -576,7 +601,7 @@ fetchclocks_modifiedbetween(_Config) ->
                                         {ObjL4StartTS, ObjL6EndTS},
                                         false),
     R5B_MultiBucket0 = R5B_MultiBucketRunner0(),
-    io:format("R5B_MultiBucket ~w ~n", [R5B_MultiBucket0]),
+    io:format("R5B_MultiBucket0 ~w ~n", [R5B_MultiBucket0]),
     true = R5B_MultiBucket0 == 37000,
     {async, R5B_MultiBucketRunner1} = 
         leveled_bookie:book_headfold(Bookie1BS,
@@ -589,13 +614,89 @@ fetchclocks_modifiedbetween(_Config) ->
                                         {ObjL4StartTS, ObjL6EndTS},
                                         false),
     R5B_MultiBucket1 = R5B_MultiBucketRunner1(),
-    io:format("R5B_MultiBucket ~w ~n", [R5B_MultiBucket1]),
+    io:format("R5B_MultiBucket1 ~w ~n", [R5B_MultiBucket1]),
     true = R5B_MultiBucket1 == 37000,
+    SimpleMinMaxFun = 
+        fun(B, K, _V, Acc) ->
+            case lists:keyfind(B, 1, Acc) of
+                {B, MinK, MaxK} ->
+                    lists:ukeysort(1, [{B, min(K, MinK), max(K, MaxK)}|Acc]);
+                false ->
+                    lists:ukeysort(1, [{B, K, K}|Acc])
+            end
+        end,
+    {async, R5B_MultiBucketRunner2} = 
+        leveled_bookie:book_headfold(Bookie1BS,
+                                        ?RIAK_TAG,
+                                        {bucket_list, [<<"B0">>, <<"B2">>]},
+                                        {SimpleMinMaxFun, []},
+                                        false,
+                                        true,
+                                        false,
+                                        {ObjL4StartTS, ObjL6EndTS},
+                                        false),
+    [{<<"B0">>, MinB0K, MaxB0K}, {<<"B2">>, MinB2K, MaxB2K}] =
+        R5B_MultiBucketRunner2(),
+    io:format("Found Min and Max Keys~n"),
+    io:format("B ~s MinK ~s MaxK ~s~n", [<<"B0">>, MinB0K, MaxB0K]),
+    io:format("B ~s MinK ~s MaxK ~s~n", [<<"B2">>, MinB2K, MaxB2K]),
+    {async, R5B_MultiBucketRunner3a} = 
+        leveled_bookie:book_headfold(Bookie1BS,
+                                        ?RIAK_TAG,
+                                        {range, <<"B0">>, {MinB0K, MaxB0K}},
+                                        {SimpleCountFun([<<"B0">>]), 0},
+                                        false,
+                                        true,
+                                        false,
+                                        {ObjL4StartTS, ObjL6EndTS},
+                                        false),
+    {async, R5B_MultiBucketRunner3b} = 
+        leveled_bookie:book_headfold(Bookie1BS,
+                                        ?RIAK_TAG,
+                                        {range, <<"B2">>, {MinB2K, MaxB2K}},
+                                        {SimpleCountFun([<<"B2">>]), 0},
+                                        false,
+                                        true,
+                                        false,
+                                        {ObjL4StartTS, ObjL6EndTS},
+                                        false),
+    R5B_MultiBucket3a = R5B_MultiBucketRunner3a(),
+    io:format("R5B_MultiBucket3a ~w ~n", [R5B_MultiBucket3a]),
+    R5B_MultiBucket3b = R5B_MultiBucketRunner3b(),
+    io:format("R5B_MultiBucket3b ~w ~n", [R5B_MultiBucket3b]),
+    true = (R5B_MultiBucket3a + R5B_MultiBucket3b) == 37000,
 
+    io:format("Query outside of time range~n"),
+    {async, R5B_MultiBucketRunner4} = 
+        leveled_bookie:book_headfold(Bookie1BS,
+                                        ?RIAK_TAG,
+                                        all,
+                                        {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
+                                        false,
+                                        true,
+                                        false,
+                                        {ObjL6EndTS,
+                                            TooLate},
+                                        false),
+    R5B_MultiBucket4 = R5B_MultiBucketRunner4(),
+    io:format("R5B_MultiBucket4 ~w ~n", [R5B_MultiBucket4]),
+    true = R5B_MultiBucket4 == 0,
 
-    ok = leveled_bookie:book_destroy(Bookie1A),
-    ok = leveled_bookie:book_destroy(Bookie1BS).
-    
+    io:format("Query with one foot inside of time range~n"),
+    {async, R5B_MultiBucketRunner5} = 
+        leveled_bookie:book_headfold(Bookie1BS,
+                                        ?RIAK_TAG,
+                                        all,
+                                        {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
+                                        false,
+                                        true,
+                                        false,
+                                        {ObjL6StartTS,
+                                            TooLate},
+                                        false),
+    R5B_MultiBucket5 = R5B_MultiBucketRunner5(),
+    io:format("R5B_MultiBucket5 ~w ~n", [R5B_MultiBucket5]),
+    true = R5B_MultiBucket5 == 7000.
 
 
 crossbucket_aae(_Config) ->
