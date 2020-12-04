@@ -106,8 +106,9 @@ The `compaction_runs_perday` indicates for the leveled store how many times eahc
 
 The `compaction_low_hour` and `compaction_high_hour` are the hours of the day which support the compaction window - set to 0 and 23 respectively if compaction is required to be a continuous process.
 
-The `max_run_length` controls how many files can be compacted in a single compaction run.  The scoring of files and runs is controlled through `maxrunlength_compactionpercentage` and `singlefile_compactionpercentage`.
+The `max_run_length` controls how many files can be compacted in a single compaction run.  The scoring of files and runs is controlled through `maxrunlength_compactionpercentage` and `singlefile_compactionpercentage`.  The `singlefile_compactionpercentage` is an acceptable compaction score for a file to be eligible for compaction on its own, where as the `maxrunlength_compactionpercentage` is the score required for a run of the `max_run_length` to be considered eligible.  The higher the `maxrunlength_compactionpercentage` and the lower the `singlefile_compactionpercentage` - the more likely a longer run will be chosen over a shorter run.
 
+The `journalcompaction_scoreonein` option controls how frequently a file will be scored.  If this is set to one, then each and every file will be scored each and every compaction run.  If this is set to an integer greater than one ('n'), then on average any given file will only be score on one in 'n' runs.  On other runs. a cached score for the file will be used.  On startup all files will be scored on the first run.  As journals get very large, and where frequent comapction is required due to mutating objects, this can save significant resource.  In Riak, this option is controlled via `leveled.compaction_scores_perday`, with the number of `leveled.compaction_runs_perday` being divided by this to produce the `journalcompaction_scoreonein`.  By default each file will only be scored once per day.
 
 ## Snapshot Timeouts
 

@@ -19,9 +19,9 @@ The store supports all the required Riak backend capabilities.  A number of furt
 - The potential to support Map/Reduce functions on object metadata not values, so that cache-pollution and disk i/o overheads of full object Map/Reduce can be eliminated by smarter object construction strategies that promote information designed for queries from values into metadata.
 
 
-## Outstanding work
+## Production Ready
 
-There is some work required before LevelEd could be considered production ready:
+Leveled has been running in a stable way in production-like environments for over 9 months.  The following requirements which had previously stated as the outstanding work items for production readiness, have all been completed:
 
 - A strategy for the supervision and restart of processes, in particular for clerks.
 
