@@ -45,8 +45,26 @@
 -type key_range() 
             :: {leveled_codec:ledger_key()|null, 
                     leveled_codec:ledger_key()|null}.
--type fun_and_acc()
-            :: {fun(), any()}.
+-type foldacc() :: any().
+    % Can't currently be specific about what an acc might be
+
+-type fold_objects_fun()
+    :: fun((leveled_codec:key(), leveled_codec:key(), any(), foldacc())
+                -> foldacc()).
+-type fold_keys_fun()
+    :: fun((leveled_codec:key(), leveled_codec:key(), foldacc())
+                -> foldacc()).
+-type fold_buckets_fun()
+    :: fun((leveled_codec:key(), foldacc()) -> foldacc()).
+-type fold_filter_fun()
+    :: fun((leveled_codec:key(), leveled_codec:key()) -> accumulate|pass).
+
+-type snap_fun()
+    :: fun(() -> {ok, pid(), pid()|null}).
+-type runner_fun()
+    :: fun(() -> foldacc()).
+-type acc_fun()
+    :: fun((leveled_codec:key(), any(), foldacc()) -> foldacc()).
 
 
 %%%============================================================================
@@ -54,7 +72,8 @@
 %%%============================================================================
 
 
--spec bucket_sizestats(fun(), any(), leveled_codec:tag()) -> {async, fun()}.
+-spec bucket_sizestats(snap_fun(),leveled_codec:key(), leveled_codec:tag())
+                                                    -> {async, runner_fun()}.
 %% @doc
 %% Fold over a bucket accumulating the count of objects and their total sizes
 bucket_sizestats(SnapFun, Bucket, Tag) ->
@@ -75,16 +94,19 @@ bucket_sizestats(SnapFun, Bucket, Tag) ->
         end,
     {async, Runner}.
 
--spec bucket_list(fun(), leveled_codec:tag(), fun(), any()) 
-                                                            -> {async, fun()}.
+-spec bucket_list(snap_fun(),
+                    leveled_codec:tag(),
+                    fold_buckets_fun(), foldacc()) -> {async, runner_fun()}.
 %% @doc
 %% List buckets for tag, assuming bucket names are all either binary, ascii 
 %% strings or integers 
 bucket_list(SnapFun, Tag, FoldBucketsFun, InitAcc) ->
     bucket_list(SnapFun, Tag, FoldBucketsFun, InitAcc, -1).
 
--spec bucket_list(fun(), leveled_codec:tag(), fun(), any(), integer()) 
-                                                    -> {async, fun()}.
+-spec bucket_list(snap_fun(),
+                    leveled_codec:tag(),
+                    fold_buckets_fun(), foldacc(), 
+                    integer()) -> {async, runner_fun()}.
 %% @doc
 %% set Max Buckets to -1 to list all buckets, otherwise will only return
 %% MaxBuckets (use 1 to confirm that there exists any bucket for a given Tag)
@@ -114,11 +136,12 @@ bucket_list(SnapFun, Tag, FoldBucketsFun, InitAcc, MaxBuckets) ->
         end,
     {async, Runner}.
 
--spec index_query(fun(), 
+-spec index_query(snap_fun(), 
                     {leveled_codec:ledger_key(), 
                         leveled_codec:ledger_key(), 
                         {boolean(), undefined|re:mp()|iodata()}}, 
-                    fun_and_acc()) -> {async, fun()}.
+                    {fold_keys_fun(), foldacc()})
+                        -> {async, runner_fun()}.
 %% @doc
 %% Secondary index query
 %% This has the special capability that it will expect a message to be thrown
@@ -157,9 +180,13 @@ index_query(SnapFun, {StartKey, EndKey, TermHandling}, FoldAccT) ->
         end,
     {async, Runner}.
 
--spec bucketkey_query(fun(), leveled_codec:tag(), any(), 
-                        key_range(), fun_and_acc(),
-                        leveled_codec:regular_expression()) -> {async, fun()}.
+-spec bucketkey_query(snap_fun(),
+                        leveled_codec:tag(),
+                        leveled_codec:key()|null, 
+                        key_range(),
+                        {fold_keys_fun(), foldacc()},
+                        leveled_codec:regular_expression())
+                        -> {async, runner_fun()}.
 %% @doc
 %% Fold over all keys in `KeyRange' under tag (restricted to a given bucket)
 bucketkey_query(SnapFun, Tag, Bucket, 
@@ -186,14 +213,18 @@ bucketkey_query(SnapFun, Tag, Bucket,
         end,
     {async, Runner}.
 
--spec bucketkey_query(fun(), leveled_codec:tag(), any(), fun_and_acc()) 
-                                                        -> {async, fun()}.
+-spec bucketkey_query(snap_fun(),
+                        leveled_codec:tag(),
+                        leveled_codec:key()|null,
+                        {fold_keys_fun(), foldacc()}) -> {async, runner_fun()}.
 %% @doc
 %% Fold over all keys under tag (potentially restricted to a given bucket)
 bucketkey_query(SnapFun, Tag, Bucket, FunAcc) ->
     bucketkey_query(SnapFun, Tag, Bucket, {null, null}, FunAcc, undefined).
 
--spec hashlist_query(fun(), leveled_codec:tag(), boolean()) -> {async, fun()}.
+-spec hashlist_query(snap_fun(),
+                        leveled_codec:tag(),
+                        boolean()) -> {async, runner_fun()}.
 %% @doc
 %% Fold over the keys under a given Tag accumulating the hashes
 hashlist_query(SnapFun, Tag, JournalCheck) ->
@@ -219,10 +250,10 @@ hashlist_query(SnapFun, Tag, JournalCheck) ->
         end,
     {async, Runner}.
 
--spec tictactree(fun(), 
-                    {leveled_codec:tag(), any(), tuple()},
-                    boolean(), atom(), fun()) 
-                    -> {async, fun()}.
+-spec tictactree(snap_fun(), 
+                    {leveled_codec:tag(), leveled_codec:key(), tuple()},
+                    boolean(), atom(), fold_filter_fun()) 
+                    -> {async, runner_fun()}.
 %% @doc
 %% Return a merkle tree from the fold, directly accessing hashes cached in the 
 %% metadata
@@ -281,10 +312,11 @@ tictactree(SnapFun, {Tag, Bucket, Query}, JournalCheck, TreeSize, Filter) ->
         end,
     {async, Runner}.
 
--spec foldheads_allkeys(fun(), leveled_codec:tag(), 
-                        fun(), boolean(), false|list(integer()),
+-spec foldheads_allkeys(snap_fun(), leveled_codec:tag(), 
+                        fold_objects_fun()|{fold_objects_fun(), foldacc()}, 
+                        boolean(), false|list(integer()),
                         false|leveled_codec:lastmod_range(),
-                        false|pos_integer()) -> {async, fun()}.
+                        false|pos_integer()) -> {async, runner_fun()}.
 %% @doc
 %% Fold over all heads in the store for a given tag - applying the passed 
 %% function to each proxy object
@@ -301,8 +333,11 @@ foldheads_allkeys(SnapFun, Tag, FoldFun, JournalCheck,
                 LastModRange,
                 MaxObjectCount).
 
--spec foldobjects_allkeys(fun(), leveled_codec:tag(), fun(), 
-                            key_order|sqn_order) -> {async, fun()}.
+-spec foldobjects_allkeys(snap_fun(),
+                            leveled_codec:tag(),
+                            fold_objects_fun()|{fold_objects_fun(), foldacc()}, 
+                            key_order|sqn_order)
+                                -> {async, runner_fun()}.
 %% @doc
 %% Fold over all objects for a given tag
 foldobjects_allkeys(SnapFun, Tag, FoldFun, key_order) ->
@@ -409,10 +444,11 @@ foldobjects_allkeys(SnapFun, Tag, FoldObjectsFun, sqn_order) ->
     {async, Folder}.
             
 
--spec foldobjects_bybucket(fun(), 
+-spec foldobjects_bybucket(snap_fun(), 
                             leveled_codec:tag(), 
                             list(key_range()), 
-                            fun()) -> {async, fun()}.
+                            fold_objects_fun()|{fold_objects_fun(), foldacc()})
+                                -> {async, runner_fun()}.
 %% @doc
 %% Fold over all objects within a given key range in a bucket
 foldobjects_bybucket(SnapFun, Tag, KeyRanges, FoldFun) ->
@@ -423,15 +459,15 @@ foldobjects_bybucket(SnapFun, Tag, KeyRanges, FoldFun) ->
                 false, 
                 false).
 
--spec foldheads_bybucket(fun(), 
-                            atom(), 
-                            list({any(), any()}), 
-                            fun(), 
+-spec foldheads_bybucket(snap_fun(), 
+                            leveled_codec:tag(), 
+                            list(key_range()), 
+                            fold_objects_fun()|{fold_objects_fun(), foldacc()},
                             boolean(),
                             false|list(integer()),
                             false|leveled_codec:lastmod_range(),
                             false|pos_integer()) 
-                                                        -> {async, fun()}.
+                                -> {async, runner_fun()}.
 %% @doc
 %% Fold over all object metadata within a given key range in a bucket
 foldheads_bybucket(SnapFun, 
@@ -449,7 +485,10 @@ foldheads_bybucket(SnapFun,
                 LastModRange,
                 MaxObjectCount).
 
--spec foldobjects_byindex(fun(), tuple(), fun()) -> {async, fun()}.
+-spec foldobjects_byindex(snap_fun(),
+                            tuple(),
+                            fold_objects_fun()|{fold_objects_fun(), foldacc()})
+                                -> {async, runner_fun()}.
 %% @doc
 %% Folds over an index, fetching the objects associated with the keys returned 
 %% and passing those objects into the fold function
@@ -501,19 +540,22 @@ get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList, {C, L}) ->
     end.
 
 
--spec foldobjects(fun(), atom(), list(), fun(), 
+-spec foldobjects(snap_fun(),
+                    atom(),
+                    list(), 
+                    fold_objects_fun()|{fold_objects_fun(), foldacc()}, 
                     false|{true, boolean()}, false|list(integer())) ->
-                                                            {async, fun()}.
+                                                        {async, runner_fun()}.
 foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, SegmentList) ->
     foldobjects(SnapFun, Tag, KeyRanges,
                     FoldObjFun, DeferredFetch, SegmentList, false, false).
 
--spec foldobjects(fun(), atom(), list(), fun(), 
+-spec foldobjects(snap_fun(), atom(), list(),
+                    fold_objects_fun()|{fold_objects_fun(), foldacc()}, 
                     false|{true, boolean()},
                     false|list(integer()),
                     false|leveled_codec:lastmod_range(),
-                    false|pos_integer()) ->
-                                                            {async, fun()}.
+                    false|pos_integer()) -> {async, runner_fun()}.
 %% @doc
 %% The object folder should be passed DeferredFetch.
 %% DeferredFetch can either be false (which will return to the fold function
@@ -617,8 +659,8 @@ get_hashaccumulator(JournalCheck, InkerClone, AddKeyFun) ->
         fun(LK, V, Acc) ->
             {B, K, H} = leveled_codec:get_keyandobjhash(LK, V),
             Check = leveled_rand:uniform() < ?CHECKJOURNAL_PROB,
-            case {JournalCheck, Check} of
-                {true, true} ->
+            case JournalCheck and Check of
+                true ->
                     case check_presence(LK, V, InkerClone) of
                         true ->
                             AddKeyFun(B, K, H, Acc);
@@ -631,7 +673,11 @@ get_hashaccumulator(JournalCheck, InkerClone, AddKeyFun) ->
         end,
     AccFun.
 
-
+-spec accumulate_objects(fold_objects_fun(),
+                            pid()|null,
+                            leveled_codec:tag(),
+                            false|{true, boolean()})
+                                -> acc_fun().
 accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
     AccFun =
         fun(LK, V, Acc) ->
