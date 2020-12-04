@@ -606,7 +606,7 @@ size_comparison_score(KeySizeList,
                         true ->
                             {ActSize + Size - ?CRC_SIZE, RplSize};
                         convert ->
-                            {ActSize, RplSize  + Size - ?CRC_SIZE};
+                            {ActSize, RplSize + Size - ?CRC_SIZE};
                         false ->
                             {ActSize, RplSize + Size - ?CRC_SIZE}
                     end;
