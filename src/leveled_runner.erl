@@ -475,7 +475,6 @@ foldobjects_byindex(SnapFun, {Tag, Bucket, Field, FromTerm, ToTerm}, FoldFun) ->
 get_nextbucket(_NextB, _NextK, _Tag, _LS, BKList, {Limit, Limit}) ->
     lists:reverse(BKList);
 get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList, {C, L}) ->
-    Now = leveled_util:integer_now(),
     StartKey = leveled_codec:to_ledgerkey(NextBucket, NextKey, Tag),
     EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
     ExtractFun =
@@ -491,27 +490,14 @@ get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList, {C, L}) ->
         {1, null} ->
             leveled_log:log("B0008",[]),
             BKList;
-        {0, {{B, K}, V}} ->
-            case leveled_codec:is_active({Tag, B, K, null}, V, Now) of
-                true ->
-                    leveled_log:log("B0009",[B]),
-                    get_nextbucket(leveled_codec:next_key(B),
-                                    null,
-                                    Tag,
-                                    LedgerSnapshot,
-                                    [{B, K}|BKList],
-                                    {C + 1, L});
-                false ->
-                    NK = 
-                        case Tag of
-                            ?HEAD_TAG ->
-                                {PK, SK} = K,
-                                {PK, leveled_codec:next_key(SK)};
-                            _ ->
-                                leveled_codec:next_key(K)
-                        end,
-                    get_nextbucket(B, NK, Tag, LedgerSnapshot, BKList, {C, L})
-            end
+        {0, {{B, K}, _V}} ->
+            leveled_log:log("B0009",[B]),
+            get_nextbucket(leveled_codec:next_key(B),
+                            null,
+                            Tag,
+                            LedgerSnapshot,
+                            [{B, K}|BKList],
+                            {C + 1, L})
     end.
 
 
@@ -597,16 +583,10 @@ foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch,
 
 
 accumulate_size() ->
-    Now = leveled_util:integer_now(),
-    AccFun = fun(Key, Value, {Size, Count}) ->
-                    case leveled_codec:is_active(Key, Value, Now) of
-                            true ->
-                                {Size + leveled_codec:get_size(Key, Value),
-                                    Count + 1};
-                            false ->
-                                {Size, Count}
-                        end
-                end,
+    AccFun =
+        fun(Key, Value, {Size, Count}) ->
+            {Size + leveled_codec:get_size(Key, Value), Count + 1}
+        end,
     AccFun.
 
 accumulate_hashes(JournalCheck, InkerClone) ->
@@ -633,33 +613,26 @@ accumulate_tree(FilterFun, JournalCheck, InkerClone, HashFun) ->
                         AddKeyFun).
 
 get_hashaccumulator(JournalCheck, InkerClone, AddKeyFun) ->
-    Now = leveled_util:integer_now(),
     AccFun =
         fun(LK, V, Acc) ->
-            case leveled_codec:is_active(LK, V, Now) of
-                true ->
-                    {B, K, H} = leveled_codec:get_keyandobjhash(LK, V),
-                    Check = leveled_rand:uniform() < ?CHECKJOURNAL_PROB,
-                    case {JournalCheck, Check} of
-                        {true, true} ->
-                            case check_presence(LK, V, InkerClone) of
-                                true ->
-                                    AddKeyFun(B, K, H, Acc);
-                                false ->
-                                    Acc
-                            end;
-                        _ ->
-                            AddKeyFun(B, K, H, Acc)
+            {B, K, H} = leveled_codec:get_keyandobjhash(LK, V),
+            Check = leveled_rand:uniform() < ?CHECKJOURNAL_PROB,
+            case {JournalCheck, Check} of
+                {true, true} ->
+                    case check_presence(LK, V, InkerClone) of
+                        true ->
+                            AddKeyFun(B, K, H, Acc);
+                        false ->
+                            Acc
                     end;
-                false ->
-                    Acc
+                _ ->
+                    AddKeyFun(B, K, H, Acc)
             end
         end,
     AccFun.
 
 
 accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
-    Now = leveled_util:integer_now(),
     AccFun =
         fun(LK, V, Acc) ->
             % The function takes the Ledger Key and the value from the
@@ -671,49 +644,43 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
             % a fold_objects), then a metadata object needs to be built to be
             % returned - but a quick check that Key is present in the Journal
             % is made first
-            case leveled_codec:is_active(LK, V, Now) of
-                true ->
-                    {SQN, _St, _MH, MD} =
-                        leveled_codec:striphead_to_v1details(V),
-                    {B, K} =
-                        case leveled_codec:from_ledgerkey(LK) of
-                            {B0, K0} ->
-                                {B0, K0};
-                            {B0, K0, _T0} ->
-                                {B0, K0}
-                        end,
-                    JK = {leveled_codec:to_ledgerkey(B, K, Tag), SQN},
-                    case DeferredFetch of
-                        {true, JournalCheck} ->
-                            ProxyObj = 
-                                leveled_codec:return_proxy(Tag, MD,
-                                                            InkerClone, JK),
-                            case JournalCheck of
-                                true ->
-                                    InJournal =
-                                        leveled_inker:ink_keycheck(InkerClone,
-                                                                    LK,
-                                                                    SQN),
-                                    case InJournal of
-                                        probably ->
-                                            FoldObjectsFun(B, K, ProxyObj, Acc);
-                                        missing ->
-                                            Acc
-                                    end;
-                                false ->
-                                    FoldObjectsFun(B, K, ProxyObj, Acc)
+            {SQN, _St, _MH, MD} =
+                leveled_codec:striphead_to_v1details(V),
+            {B, K} =
+                case leveled_codec:from_ledgerkey(LK) of
+                    {B0, K0} ->
+                        {B0, K0};
+                    {B0, K0, _T0} ->
+                        {B0, K0}
+                end,
+            JK = {leveled_codec:to_ledgerkey(B, K, Tag), SQN},
+            case DeferredFetch of
+                {true, JournalCheck} ->
+                    ProxyObj = 
+                        leveled_codec:return_proxy(Tag, MD, InkerClone, JK),
+                    case JournalCheck of
+                        true ->
+                            InJournal =
+                                leveled_inker:ink_keycheck(InkerClone,
+                                                            LK,
+                                                            SQN),
+                            case InJournal of
+                                probably ->
+                                    FoldObjectsFun(B, K, ProxyObj, Acc);
+                                missing ->
+                                    Acc
                             end;
                         false ->
-                            R = leveled_bookie:fetch_value(InkerClone, JK),
-                            case R of
-                                not_present ->
-                                    Acc;
-                                Value ->
-                                    FoldObjectsFun(B, K, Value, Acc)
-                            end
+                            FoldObjectsFun(B, K, ProxyObj, Acc)
                     end;
                 false ->
-                    Acc
+                    R = leveled_bookie:fetch_value(InkerClone, JK),
+                    case R of
+                        not_present ->
+                            Acc;
+                        Value ->
+                            FoldObjectsFun(B, K, Value, Acc)
+                    end
             end
         end,
     AccFun.
@@ -729,25 +696,19 @@ check_presence(Key, Value, InkerClone) ->
     end.
 
 accumulate_keys(FoldKeysFun, TermRegex) ->
-    Now = leveled_util:integer_now(),
     AccFun = 
-        fun(Key, Value, Acc) ->
-            case leveled_codec:is_active(Key, Value, Now) of
-                true ->
-                    {B, K} = leveled_codec:from_ledgerkey(Key),
-                    case TermRegex of
-                        undefined ->
-                            FoldKeysFun(B, K, Acc);
-                        Re ->
-                            case re:run(K, Re) of
-                                nomatch ->
-                                    Acc;
-                                _ ->
-                                    FoldKeysFun(B, K, Acc)
-                            end
-                    end;
-                false ->
-                    Acc
+        fun(Key, _Value, Acc) ->
+            {B, K} = leveled_codec:from_ledgerkey(Key),
+            case TermRegex of
+                undefined ->
+                    FoldKeysFun(B, K, Acc);
+                Re ->
+                    case re:run(K, Re) of
+                        nomatch ->
+                            Acc;
+                        _ ->
+                            FoldKeysFun(B, K, Acc)
+                    end
             end
         end,
     AccFun.
@@ -759,37 +720,22 @@ add_terms(ObjKey, IdxValue) ->
     {IdxValue, ObjKey}.
 
 accumulate_index(TermRe, AddFun, FoldKeysFun) ->
-    Now = leveled_util:integer_now(),
     case TermRe of
         undefined ->
-            fun(Key, Value, Acc) ->
-                case leveled_codec:is_active(Key, Value, Now) of
-                    true ->
-                        {Bucket,
-                            ObjKey,
-                            IdxValue} = leveled_codec:from_ledgerkey(Key),
-                        FoldKeysFun(Bucket, AddFun(ObjKey, IdxValue), Acc);
-                    false ->
-                        Acc
-                end end;
+            fun(Key, _Value, Acc) ->
+                {Bucket, ObjKey, IdxValue} = leveled_codec:from_ledgerkey(Key),
+                FoldKeysFun(Bucket, AddFun(ObjKey, IdxValue), Acc)
+            end;
         TermRe ->
-            fun(Key, Value, Acc) ->
-                case leveled_codec:is_active(Key, Value, Now) of
-                    true ->
-                        {Bucket,
-                            ObjKey,
-                            IdxValue} = leveled_codec:from_ledgerkey(Key),
-                        case re:run(IdxValue, TermRe) of
-                            nomatch ->
-                                Acc;
-                            _ ->
-                                FoldKeysFun(Bucket,
-                                            AddFun(ObjKey, IdxValue),
-                                            Acc)
-                        end;
-                    false ->
-                        Acc
-                end end
+            fun(Key, _Value, Acc) ->
+                {Bucket, ObjKey, IdxValue} = leveled_codec:from_ledgerkey(Key),
+                case re:run(IdxValue, TermRe) of
+                    nomatch ->
+                        Acc;
+                    _ ->
+                        FoldKeysFun(Bucket, AddFun(ObjKey, IdxValue), Acc)
+                end
+            end
     end.
 
 -spec wrap_runner(fun(), fun()) -> any().
