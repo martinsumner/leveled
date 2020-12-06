@@ -140,8 +140,9 @@
                 {head_only, false},
                 {waste_retention_period, undefined},
                 {max_run_length, undefined},
-                {singlefile_compactionpercentage, 50.0},
+                {singlefile_compactionpercentage, 30.0},
                 {maxrunlength_compactionpercentage, 70.0},
+                {journalcompaction_scoreonein, 1},
                 {reload_strategy, []},
                 {max_pencillercachesize, ?MAX_PCL_CACHE_SIZE},
                 {ledger_preloadpagecache_level, ?SST_PAGECACHELEVEL_LOOKUP},
@@ -292,6 +293,11 @@
             % a run of max_run_length, before that run can be a compaction 
             % candidate.  For runs between 1 and max_run_length, a 
             % proportionate score is calculated
+        {journalcompaction_scoreonein, pos_integer()} |
+            % When scoring for compaction run a probability (1 in x) of whether
+            % any file will be scored this run.  If not scored a cached score
+            % will be used, and the cached score is the average of the latest
+            % score and the rolling average of previous scores
         {reload_strategy, list()} |
             % The reload_strategy is exposed as an option as currently no firm
             % decision has been made about how recovery from failure should
@@ -1757,6 +1763,8 @@ set_options(Opts) ->
     
     MaxSSTSlots = proplists:get_value(max_sstslots, Opts),
 
+    ScoreOneIn = proplists:get_value(journalcompaction_scoreonein, Opts),
+
     {#inker_options{root_path = JournalFP,
                         reload_strategy = ReloadStrategy,
                         max_run_length = proplists:get_value(max_run_length, Opts),
@@ -1766,6 +1774,7 @@ set_options(Opts) ->
                         snaptimeout_long = SnapTimeoutLong,
                         compression_method = CompressionMethod,
                         compress_on_receipt = CompressOnReceipt,
+                        score_onein = ScoreOneIn,
                         cdb_options = 
                             #cdb_options{max_size=MaxJournalSize,
                                         max_count=MaxJournalCount,

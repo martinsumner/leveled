@@ -157,6 +157,14 @@
 -type inker_options() :: #inker_options{}.
 -type ink_state() :: #state{}.
 -type registered_snapshot() :: {pid(), os:timestamp(), integer()}.
+-type filterserver() :: pid()|list(tuple()).
+-type filterfun() ::
+    fun((filterserver(), leveled_codec:ledger_key(), leveled_codec:sqn()) ->
+            current|replaced|missing).
+-type filterclosefun() :: fun((filterserver()) -> ok).
+-type filterinitfun() :: fun((pid()) -> {filterserver(), leveled_codec:sqn()}).
+
+-export_type([filterserver/0, filterfun/0, filterclosefun/0, filterinitfun/0]).
 
 %%%============================================================================
 %%% API
@@ -806,6 +814,7 @@ start_from_file(InkOpts) ->
     PressMethod = InkOpts#inker_options.compression_method,
     PressOnReceipt = InkOpts#inker_options.compress_on_receipt,
     SnapTimeout = InkOpts#inker_options.snaptimeout_long,
+    ScoreOneIn = InkOpts#inker_options.score_onein,
 
     IClerkOpts = 
         #iclerk_options{inker = self(),
@@ -815,7 +824,8 @@ start_from_file(InkOpts) ->
                             compression_method = PressMethod,
                             max_run_length = MRL,
                             singlefile_compactionperc = SFL_CompactPerc,
-                            maxrunlength_compactionperc = MRL_CompactPerc},
+                            maxrunlength_compactionperc = MRL_CompactPerc,
+                            score_onein = ScoreOneIn},
     
     {ok, Clerk} = leveled_iclerk:clerk_new(IClerkOpts),
     
@@ -1537,8 +1547,24 @@ handle_down_test() ->
     SnapOpts = #inker_options{start_snapshot=true,
                               bookies_pid = FakeBookie,
                               source_inker=Ink1},
-
     {ok, Snap1} = ink_snapstart(SnapOpts),
+
+    CheckSnapDiesFun =
+        fun(_X, IsDead) ->
+            case IsDead of
+                true ->
+                    true;
+                false ->
+                    case erlang:process_info(Snap1) of
+                        undefined ->
+                            true;
+                        _ ->
+                            timer:sleep(100),
+                            false
+                    end
+            end
+        end,
+    ?assertNot(lists:foldl(CheckSnapDiesFun, false, [1, 2])),
 
     FakeBookie ! stop,
 
@@ -1549,7 +1575,7 @@ handle_down_test() ->
             ok
     end,
 
-    ?assertEqual(undefined, erlang:process_info(Snap1)),
+    ?assert(lists:foldl(CheckSnapDiesFun, false, lists:seq(1, 10))),
 
     ink_close(Ink1),
     clean_testdir(RootPath).
