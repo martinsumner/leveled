@@ -181,6 +181,8 @@
         :: {binary(), binary(), list(integer()), leveled_codec:ledger_key()}.
 -type sst_summary()
         :: #summary{}.
+-type blockindex_cache()
+        :: any().  % An array but OTP 16 types
 
 %% yield_blockquery is used to determine if the work necessary to process a
 %% range query beyond the fetching the slot should be managed from within
@@ -196,7 +198,7 @@
                     root_path,
                     filename,
                     yield_blockquery = false :: boolean(),
-                    blockindex_cache,
+                    blockindex_cache :: blockindex_cache()|undefined,
                     compression_method = native :: press_method(),
                     index_moddate = ?INDEX_MODDATE :: boolean(),
                     timings = no_timing :: sst_timings(),
@@ -207,7 +209,8 @@
                     deferred_startup_tuple :: tuple()|undefined,
                     level :: non_neg_integer()|undefined,
                     tomb_count = not_counted
-                            :: non_neg_integer()|not_counted}).
+                            :: non_neg_integer()|not_counted,
+                    high_modified_date :: non_neg_integer()|undefined}).
 
 -record(sst_timings, 
                 {sample_count = 0 :: integer(),
@@ -526,8 +529,14 @@ starting({sst_new,
     SW = os:timestamp(),
     leveled_log:save(OptsSST#sst_options.log_options),
     PressMethod = OptsSST#sst_options.press_method,
-    {Length, SlotIndex, BlockIndex, SlotsBin, Bloom} = 
+    {Length, SlotIndex, BlockEntries, SlotsBin, Bloom} = 
         build_all_slots(SlotList),
+    {BlockIndex, HighModDate} =
+        update_blockindex_cache(true,
+                                BlockEntries,
+                                new_blockindex_cache(Length),
+                                undefined,
+                                IdxModDate),
     SummaryBin = 
         build_table_summary(SlotIndex, Level, FirstKey, Length,
                             MaxSQN, Bloom, CountOfTombs),
@@ -550,6 +559,7 @@ starting({sst_new,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}, Bloom},
         reader,
         UpdState#state{blockindex_cache = BlockIndex,
+                        high_modified_date = HighModDate,
                         starting_pid = StartingPID,
                         level = Level}};
 starting({sst_newlevelzero, RootPath, Filename,
@@ -583,8 +593,14 @@ starting(complete_l0startup, State) ->
     Time1 = timer:now_diff(os:timestamp(), SW1),
 
     SW2 = os:timestamp(),
-    {SlotCount, SlotIndex, BlockIndex, SlotsBin,Bloom} =
+    {SlotCount, SlotIndex, BlockEntries, SlotsBin,Bloom} =
         build_all_slots(SlotList),
+    {BlockIndex, HighModDate} =
+        update_blockindex_cache(true,
+                                BlockEntries,
+                                new_blockindex_cache(SlotCount),
+                                undefined,
+                                IdxModDate),
     Time2 = timer:now_diff(os:timestamp(), SW2),
     
     SW3 = os:timestamp(),
@@ -616,19 +632,19 @@ starting(complete_l0startup, State) ->
 
     case Penciller of
         undefined ->
-            {next_state, 
-                reader, 
-                UpdState#state{blockindex_cache = BlockIndex}};
+            ok;
         _ ->
             leveled_penciller:pcl_confirml0complete(Penciller,
                                                     UpdState#state.filename,
                                                     Summary#summary.first_key,
                                                     Summary#summary.last_key,
                                                     Bloom),
-            {next_state, 
-                reader, 
-                UpdState#state{blockindex_cache = BlockIndex}}
-    end;
+            ok
+    end,
+    {next_state,
+        reader,
+        UpdState#state{blockindex_cache = BlockIndex,
+                        high_modified_date = HighModDate}};
 starting({sst_returnslot, FetchedSlot, FetchFun, SlotCount}, State) ->
     Self = self(),
     FetchedSlots = 
@@ -673,13 +689,19 @@ reader({get_kv, LedgerKey, Hash}, _From, State) ->
                                             timings_countdown = CountDown}};
 reader({get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
                                                             _From, State) ->
-    {SlotsToFetchBinList, SlotsToPoint} = fetch_range(StartKey,
-                                                        EndKey,
-                                                        ScanWidth,
-                                                        SegList,
-                                                        LowLastMod,
-                                                        State),
-    
+    ReadNeeded =
+        check_modified(State#state.high_modified_date,
+                        LowLastMod,
+                        State#state.index_moddate),
+    {NeedBlockIdx, SlotsToFetchBinList, SlotsToPoint} =
+        case ReadNeeded of
+            true -> 
+                fetch_range(StartKey, EndKey, ScanWidth,
+                            SegList, LowLastMod,
+                            State);
+            false ->
+                {false, [], []}
+        end,
     PressMethod = State#state.compression_method,
     IdxModDate = State#state.index_moddate,
     
@@ -694,34 +716,38 @@ reader({get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
                 reader,
                 State};
         false ->
-            {L, BIC} = 
+            {L, FoundBIC} = 
                 binaryslot_reader(SlotsToFetchBinList, 
-                                    PressMethod, IdxModDate, SegList),
-            FoldFun = 
-                fun(CacheEntry, Cache) ->
-                    case CacheEntry of
-                        {_ID, none} ->
-                            Cache;
-                        {ID, Header} ->
-                            array:set(ID - 1, binary:copy(Header), Cache)
-                    end
-                end,
-            BlockIdxC0 = lists:foldl(FoldFun, State#state.blockindex_cache, BIC),
+                                    PressMethod,
+                                    IdxModDate,
+                                    SegList),
+            {BlockIdxC0, HighModDate} =
+                update_blockindex_cache(NeedBlockIdx,
+                                        FoundBIC,
+                                        State#state.blockindex_cache,
+                                        State#state.high_modified_date,
+                                        State#state.index_moddate),
             {reply, 
                 L ++ SlotsToPoint, 
                 reader, 
-                State#state{blockindex_cache = BlockIdxC0}}
+                State#state{blockindex_cache = BlockIdxC0,
+                            high_modified_date = HighModDate}}
     end;
 reader({get_slots, SlotList, SegList, LowLastMod}, _From, State) ->
     PressMethod = State#state.compression_method,
     IdxModDate = State#state.index_moddate,
-    SlotBins = 
+    {NeedBlockIdx, SlotBins} = 
         read_slots(State#state.handle, 
-                    SlotList, 
-                    {SegList, LowLastMod, State#state.blockindex_cache},
-                    State#state.compression_method,
-                    State#state.index_moddate),
-    {reply, {SlotBins, PressMethod, IdxModDate}, reader, State};
+                        SlotList, 
+                        {SegList,
+                            LowLastMod,
+                            State#state.blockindex_cache},
+                        State#state.compression_method,
+                        State#state.index_moddate),
+    {reply,
+        {NeedBlockIdx, SlotBins, PressMethod, IdxModDate},
+        reader,
+        State};
 reader(get_maxsequencenumber, _From, State) ->
     Summary = State#state.summary,
     {reply, Summary#summary.max_sqn, reader, State};
@@ -759,12 +785,8 @@ delete_pending({get_kv, LedgerKey, Hash}, _From, State) ->
     {reply, Result, delete_pending, UpdState, ?DELETE_TIMEOUT};
 delete_pending({get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
                                                             _From, State) ->
-    {SlotsToFetchBinList, SlotsToPoint} = fetch_range(StartKey,
-                                                        EndKey,
-                                                        ScanWidth,
-                                                        SegList,
-                                                        LowLastMod,
-                                                        State),
+    {_NeedBlockIdx, SlotsToFetchBinList, SlotsToPoint} =
+        fetch_range(StartKey, EndKey, ScanWidth, SegList, LowLastMod, State),
     % Always yield as about to clear and de-reference
     PressMethod = State#state.compression_method,
     IdxModDate = State#state.index_moddate,
@@ -776,14 +798,14 @@ delete_pending({get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
 delete_pending({get_slots, SlotList, SegList, LowLastMod}, _From, State) ->
     PressMethod = State#state.compression_method,
     IdxModDate = State#state.index_moddate,
-    SlotBins = 
+    {_NeedBlockIdx, SlotBins} = 
         read_slots(State#state.handle, 
                     SlotList, 
                     {SegList, LowLastMod, State#state.blockindex_cache},
                     PressMethod,
                     IdxModDate),
     {reply, 
-        {SlotBins, PressMethod, IdxModDate}, 
+        {false, SlotBins, PressMethod, IdxModDate}, 
         delete_pending, 
         State, 
         ?DELETE_TIMEOUT};
@@ -815,8 +837,17 @@ delete_pending(close, State) ->
 handle_sync_event(_Msg, _From, StateName, State) ->
     {reply, undefined, StateName, State}.
 
-handle_event(_Msg, StateName, State) ->
-    {next_state, StateName, State}.
+handle_event({update_blockindex_cache, BIC}, StateName, State) ->
+    {BlockIndexCache, HighModDate} =
+        update_blockindex_cache(true,
+                                BIC,
+                                State#state.blockindex_cache,
+                                State#state.high_modified_date,
+                                State#state.index_moddate),
+    {next_state,
+        StateName,
+        State#state{blockindex_cache = BlockIndexCache,
+                    high_modified_date = HighModDate}}.
 
 handle_info(tidyup_after_startup, delete_pending, State) ->
     % No need to GC, this file is to be shutdown.  This message may have
@@ -850,7 +881,7 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %% @doc
 %% Expand a list of pointers, maybe ending up with a list of keys and values
 %% with a tail of pointers
-%% By defauls will not have a segment filter, or a low last_modified_date, but
+%% By default will not have a segment filter, or a low last_modified_date, but
 %% they can be used. Range checking a last modified date must still be made on
 %% the output - at this stage the low last_modified_date has been used to bulk
 %% skip those slots not containing any information over the low last modified
@@ -983,11 +1014,17 @@ sst_getslots(Pid, SlotList) ->
 %% of the object, if the object is to be covered by the query
 sst_getfilteredslots(Pid, SlotList, SegList, LowLastMod) ->
     SegL0 = tune_seglist(SegList),
-    {SlotBins, PressMethod, IdxModDate} = 
+    {NeedBlockIdx, SlotBins, PressMethod, IdxModDate} = 
         gen_fsm:sync_send_event(Pid, 
                                 {get_slots, SlotList, SegL0, LowLastMod},
                                 infinity),
-    {L, _BIC} = binaryslot_reader(SlotBins, PressMethod, IdxModDate, SegL0),
+    {L, BIC} = binaryslot_reader(SlotBins, PressMethod, IdxModDate, SegL0),
+    case NeedBlockIdx of
+        true ->
+            gen_fsm:send_all_state_event(Pid, {update_blockindex_cache, BIC});
+        false ->
+            ok
+    end,
     L.
 
 
@@ -1065,6 +1102,62 @@ tune_seglist(SegList) ->
 %%% Internal Functions
 %%%============================================================================
 
+-spec new_blockindex_cache(pos_integer()) -> blockindex_cache().
+new_blockindex_cache(Size) ->
+    array:new([{size, Size}, {default, none}]).
+
+-spec update_blockindex_cache(boolean(),
+                                list({integer(), binary()}),
+                                blockindex_cache(),
+                                non_neg_integer()|undefined,
+                                boolean()) ->
+                                    {blockindex_cache(),
+                                        non_neg_integer()|undefined}.
+update_blockindex_cache(Needed, Entries, BIC, HighModDate, IdxModDate)
+                                            when Needed,
+                                                    HighModDate == undefined ->
+    FoldFun = 
+        fun(CacheEntry, Cache) ->
+            case CacheEntry of
+                {ID, Header} when is_binary(Header) ->
+                    array:set(ID - 1, binary:copy(Header), Cache);
+                _ ->
+                    Cache
+            end
+        end,
+    BlockIdxC0 = lists:foldl(FoldFun, BIC, Entries),
+    Size = array:size(BlockIdxC0),
+    BestModDates =
+        case IdxModDate of
+            true ->
+                ModDateFold =
+                    fun(_ID, Header, Acc) when is_binary(Header) ->
+                        [element(2, extract_header(Header, IdxModDate))|Acc]
+                    end,
+                array:sparse_foldl(ModDateFold, [], BlockIdxC0);
+            false ->
+                []
+        end,
+    BestModDate =
+        case length(BestModDates) of
+            Size ->
+                lists:max(BestModDates);
+            _ ->
+                undefined
+        end,
+    {BlockIdxC0, BestModDate};
+update_blockindex_cache(_Needed, _Entries, BIC, HighModDate, _IdxModDate) ->
+    {BIC, HighModDate}.
+
+-spec check_modified(non_neg_integer()|undefined,
+                        non_neg_integer(),
+                        boolean())  -> boolean().
+check_modified(HighLastModifiedInSST, LowModDate, true)
+                when is_integer(HighLastModifiedInSST) ->
+    LowModDate =< HighLastModifiedInSST;
+check_modified(_, _, _) ->
+    true.
+
 -spec fetch(tuple(), 
             {integer(), integer()}|integer(), 
             sst_state(), sst_timings()) 
@@ -1093,14 +1186,17 @@ fetch(LedgerKey, Hash, State, Timings0) ->
             SlotBin = read_slot(State#state.handle, Slot),
             {Result, Header} = 
                 binaryslot_get(SlotBin, LedgerKey, Hash, PressMethod, IdxModDate),
-            BlockIndexCache = 
-                array:set(SlotID - 1,
-                            binary:copy(Header),
-                            State#state.blockindex_cache),
+            {BlockIndexCache, HighModDate} =
+                update_blockindex_cache(true,
+                                        [{SlotID, Header}],
+                                        State#state.blockindex_cache,
+                                        State#state.high_modified_date,
+                                        State#state.index_moddate),
             {_SW3, Timings3} = 
                 update_timings(SW2, Timings2, noncached_block, false),
             {Result, 
-                State#state{blockindex_cache = BlockIndexCache}, 
+                State#state{blockindex_cache = BlockIndexCache,
+                            high_modified_date = HighModDate}, 
                 Timings3};
         {BlockLengths, _LMD, PosBin} ->
             PosList = find_pos(PosBin, extract_hash(Hash), [], 0),
@@ -1150,7 +1246,8 @@ fetch(LedgerKey, Hash, State, Timings0) ->
 
 -spec fetch_range(tuple(), tuple(), integer(),
                     leveled_codec:segment_list(), non_neg_integer(), 
-                    sst_state()) -> {list(), list()}.
+                    sst_state()) ->
+                        {boolean(), list(), list()}.
 %% @doc
 %% Fetch the contents of the SST file for a given key range.  This will 
 %% pre-fetch some results, and append pointers for additional results.
@@ -1209,13 +1306,13 @@ fetch_range(StartKey, EndKey, ScanWidth, SegList, LowLastMod, State) ->
                 lists:split(ScanWidth, ExpandedSlots)
         end,
 
-    SlotsToFetchBinList = 
+    {NeededBlockIdx, SlotsToFetchBinList} = 
         read_slots(Handle, 
                     SlotsToFetch, 
                     {SegList, LowLastMod, State#state.blockindex_cache},
                     State#state.compression_method,
                     State#state.index_moddate),
-    {SlotsToFetchBinList, SlotsToPoint}.
+    {NeededBlockIdx, SlotsToFetchBinList, SlotsToPoint}.
 
 -spec compress_level(integer(), press_method()) -> press_method().
 %% @doc
@@ -1258,8 +1355,7 @@ read_file(Filename, State, LoadPageCache) ->
     UpdState0 = imp_fileversion(FileVersion, State),
     {Summary, Bloom, SlotList, TombCount} =
         read_table_summary(SummaryBin, UpdState0#state.tomb_count),
-    BlockIndexCache = array:new([{size, Summary#summary.size},
-                                    {default, none}]),
+    BlockIndexCache = new_blockindex_cache(Summary#summary.size),
     UpdState1 = UpdState0#state{blockindex_cache = BlockIndexCache},
     SlotIndex = from_list(SlotList),
     UpdSummary = Summary#summary{index = SlotIndex},
@@ -1389,8 +1485,7 @@ build_all_slots(SlotList) ->
                             9,
                             1,
                             [],
-                            array:new([{size, SlotCount}, 
-                                        {default, none}]),
+                            [],
                             <<>>,
                             []),
     Bloom = leveled_ebloom:create_bloom(HashLists),
@@ -1410,7 +1505,7 @@ build_all_slots([SlotD|Rest], Pos, SlotID,
                     Pos + Length,
                     SlotID + 1,
                     [{LastKey, SlotIndexV}|SlotIdxAcc],
-                    array:set(SlotID - 1, BlockIdx, BlockIdxAcc),
+                    [{SlotID, BlockIdx}|BlockIdxAcc],
                     <<SlotBinAcc/binary, SlotBin/binary>>,
                     lists:append(HashLists, HashList)).
 
@@ -1842,7 +1937,8 @@ binarysplit_mapfun(MultiSlotBin, StartPos) ->
 
 -spec read_slots(file:io_device(), list(), 
                     {false|list(), non_neg_integer(), binary()},
-                    press_method(), boolean()) -> list(binaryslot_element()).
+                    press_method(), boolean()) -> 
+                        {boolean(), list(binaryslot_element())}.
 %% @doc
 %% The reading of sots will return a list of either 2-tuples containing 
 %% {K, V} pairs - or 3-tuples containing {Binary, SK, EK}.  The 3 tuples 
@@ -1861,15 +1957,15 @@ read_slots(Handle, SlotList, {false, 0, _BlockIndexCache},
                 _PressMethod, _IdxModDate) ->
     % No list of segments passed or useful Low LastModified Date
     % Just read slots in SlotList
-    read_slotlist(SlotList, Handle);
+    {false, read_slotlist(SlotList, Handle)};
 read_slots(Handle, SlotList, {SegList, LowLastMod, BlockIndexCache}, 
                 PressMethod, IdxModDate) ->
     % List of segments passed so only {K, V} pairs matching those segments
     % should be returned.  This required the {K, V} pair to have been added 
     % with the appropriate hash - if the pair were added with no_lookup as 
-    % the hash value this will fial unexpectedly.
+    % the hash value this will fail unexpectedly.
     BinMapFun = 
-        fun(Pointer, Acc) ->
+        fun(Pointer, {NeededBlockIdx, Acc}) ->
             {SP, _L, ID, SK, EK} = pointer_mapfun(Pointer),
             CachedHeader = array:get(ID - 1, BlockIndexCache),
             case extract_header(CachedHeader, IdxModDate) of
@@ -1877,7 +1973,7 @@ read_slots(Handle, SlotList, {SegList, LowLastMod, BlockIndexCache},
                     % If there is an attempt to use the seg list query and the
                     % index block cache isn't cached for any part this may be 
                     % slower as each slot will be read in turn
-                    Acc ++ read_slotlist([Pointer], Handle);
+                    {true, Acc ++ read_slotlist([Pointer], Handle)};
                 {BlockLengths, LMD, BlockIdx} ->
                     % If there is a BlockIndex cached then we can use it to 
                     % check to see if any of the expected segments are 
@@ -1894,12 +1990,14 @@ read_slots(Handle, SlotList, {SegList, LowLastMod, BlockIndexCache},
                             % LowLastMod date passed in the query - therefore
                             % there are no interesting modifications in this
                             % slot - it is all too old
-                            Acc;
+                            {NeededBlockIdx, Acc};
                         false ->
                             case SegList of
                                 false ->
                                     % Need all the slot now
-                                    Acc ++ read_slotlist([Pointer], Handle);
+                                    {NeededBlockIdx,
+                                        Acc ++
+                                            read_slotlist([Pointer], Handle)};
                                 _SL ->
                                     % Need to find just the right keys
                                     PositionList = 
@@ -1920,12 +2018,13 @@ read_slots(Handle, SlotList, {SegList, LowLastMod, BlockIndexCache},
                                     % to be filtered
                                     FilterFun =
                                         fun(KV) -> in_range(KV, SK, EK) end,
-                                    Acc ++ lists:filter(FilterFun, KVL)
+                                    {NeededBlockIdx,
+                                        Acc ++ lists:filter(FilterFun, KVL)}
                             end
                     end
             end 
         end,
-    lists:foldl(BinMapFun, [], SlotList).
+    lists:foldl(BinMapFun, {false, []}, SlotList).
 
 
 -spec in_range(leveled_codec:ledger_kv(),
@@ -2015,7 +2114,7 @@ read_length_list(Handle, LengthList) ->
 
 
 -spec extract_header(binary()|none, boolean()) ->
-                                        {binary(), integer(), binary()}|none.
+                                {binary(), non_neg_integer(), binary()}|none.
 %% @doc
 %% Helper for extracting the binaries from the header ignoring the missing LMD
 %% if LMD is not indexed
@@ -3657,8 +3756,6 @@ key_dominates_test() ->
                     key_dominates([KV7|KL2], [KV2], {true, 1})).
 
 nonsense_coverage_test() ->
-    {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
-    ok = gen_fsm:send_all_state_event(Pid, nonsense),
     ?assertMatch({ok, reader, #state{}}, code_change(nonsense,
                                                         reader,
                                                         #state{},
@@ -3860,6 +3957,39 @@ corrupted_block_fetch_tester(PressMethod) ->
         lists:foldl(CheckFun, {0, 0}, lists:seq(16, length(KVL1))),
     ExpectedMisses = element(2, ?LOOK_BLOCKSIZE),
     ?assertMatch(ExpectedMisses, MissCount).
+
+block_index_cache_test() ->
+    {Mega, Sec, _} = os:timestamp(),
+    Now = Mega * 1000000 + Sec,
+    EntriesTS =
+        lists:map(fun(I) ->
+                        TS = Now - I + 1,
+                        {I, <<0:160/integer, TS:32/integer, 0:32/integer>>}
+                    end,
+                    lists:seq(1, 8)),
+    EntriesNoTS = 
+        lists:map(fun(I) ->
+                        {I, <<0:160/integer, 0:32/integer>>}
+                    end,
+                    lists:seq(1, 8)),
+    HeaderTS = <<0:160/integer, Now:32/integer, 0:32/integer>>,
+    HeaderNoTS = <<0:192>>,
+    BIC = array:new([{size, 8}, {default, none}]),
+    {BIC0, undefined} =
+        update_blockindex_cache(false, EntriesNoTS, BIC, undefined, false),
+    {BIC1, undefined} =
+        update_blockindex_cache(false, EntriesTS, BIC, undefined, true),
+    {BIC2, undefined} =
+        update_blockindex_cache(true, EntriesNoTS, BIC, undefined, false),
+    {BIC3, LMD3} =
+        update_blockindex_cache(true, EntriesTS, BIC, undefined, true),
+    
+    ?assertMatch(none, array:get(0, BIC0)),
+    ?assertMatch(none, array:get(0, BIC1)),
+    ?assertMatch(HeaderNoTS, array:get(0, BIC2)),
+    ?assertMatch(HeaderTS, array:get(0, BIC3)),
+    ?assertMatch(Now, LMD3).
+
 
 
 receive_fun() ->

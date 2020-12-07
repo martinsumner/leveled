@@ -16,7 +16,8 @@
             journal_compaction_bustedjournal/1,
             close_duringcompaction/1,
             allkeydelta_journal_multicompact/1,
-            recompact_keydeltas/1
+            recompact_keydeltas/1,
+            simple_cachescoring/1
             ]).
 
 all() -> [
@@ -33,7 +34,8 @@ all() -> [
             close_duringcompaction,
             allkeydelta_journal_multicompact,
             recompact_keydeltas,
-            stdtag_recalc
+            stdtag_recalc,
+            simple_cachescoring
             ].
 
 
@@ -554,6 +556,79 @@ aae_missingjournal(_Config) ->
     
     ok = leveled_bookie:book_close(Bookie2),
     testutil:reset_filestructure().
+
+simple_cachescoring(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    StartOpts = [{root_path, RootPath},
+                    {max_journalobjectcount, 2000},
+                    {sync_strategy, testutil:sync_strategy()}],
+    {ok, Bookie1} =
+        leveled_bookie:book_start(StartOpts ++
+                                    [{journalcompaction_scoreonein, 8}]),
+    {TestObject, TestSpec} = testutil:generate_testobject(),
+    ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
+    testutil:check_forobject(Bookie1, TestObject),
+    GenList = [2, 32002, 64002, 96002],
+    _CLs = testutil:load_objects(32000, GenList, Bookie1, TestObject,
+                                fun testutil:generate_objects/2),
+    
+    F = fun leveled_bookie:book_islastcompactionpending/1,
+    WaitForCompaction =
+        fun(B) -> 
+            fun(X, Pending) ->
+                case X of 
+                    1 ->
+                        leveled_bookie:book_compactjournal(B, 30000);
+                    _ ->
+                        ok
+                end,
+                case Pending of
+                    false ->
+                        false;
+                    true ->
+                        io:format("Loop ~w waiting for journal "
+                            ++ "compaction to complete~n", [X]),
+                        timer:sleep(100),
+                        F(B)
+                end
+            end
+        end,
+    io:format("Scoring for first time - every file should need scoring~n"),
+    Args1 = [WaitForCompaction(Bookie1), true, lists:seq(1, 300)],
+    {TC0, false} = timer:tc(lists, foldl, Args1),
+    io:format("Score four more times with cached scoring~n"),
+    {TC1, false} = timer:tc(lists, foldl, Args1),
+    {TC2, false} = timer:tc(lists, foldl, Args1),
+    {TC3, false} = timer:tc(lists, foldl, Args1),
+    {TC4, false} = timer:tc(lists, foldl, Args1),
+    
+    ok = leveled_bookie:book_close(Bookie1),
+    {ok, Bookie2} =
+        leveled_bookie:book_start(StartOpts),
+    io:format("Re-opened bookie withour caching - re-compare compaction time~n"),
+    io:format("Scoring for first time - every file should need scoring~n"),
+    Args2 = [WaitForCompaction(Bookie2), true, lists:seq(1, 300)],
+    {TN0, false} = timer:tc(lists, foldl, Args2),
+    io:format("Score four more times with cached scoring~n"),
+    {TN1, false} = timer:tc(lists, foldl, Args2),
+    {TN2, false} = timer:tc(lists, foldl, Args2),
+    {TN3, false} = timer:tc(lists, foldl, Args2),
+    {TN4, false} = timer:tc(lists, foldl, Args2),
+    
+    AvgSecondRunCache = (TC1 + TC2 +TC3 + TC4) div 4000,
+    AvgSecondRunNoCache = (TN1 + TN2 +TN3 + TN4) div 4000,
+
+    io:format("With caching ~w first run ~w average other runs~n",
+                [TC0 div 1000, AvgSecondRunCache]),
+    io:format("Without caching ~w first run ~w average other runs~n",
+                [TN0 div 1000, AvgSecondRunNoCache]),
+    true = (TC0 > AvgSecondRunCache),
+    true = (TC0/AvgSecondRunCache) > (TN0/AvgSecondRunNoCache),
+    ok = leveled_bookie:book_close(Bookie2),
+
+    io:format("Exit having proven simply that caching score is faster~n"),
+    testutil:reset_filestructure().
+
 
 aae_bustedjournal(_Config) ->
     RootPath = testutil:reset_filestructure(),
