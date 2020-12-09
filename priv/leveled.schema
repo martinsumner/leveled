@@ -11,7 +11,7 @@
 %% @doc Strategy for flushing data to disk
 %% Can be set to riak_sync, sync (if OTP > 16) or none.  Use none, and the OS
 %% will flush when most efficient.  Use riak_sync or sync to flush after every
-%% PUT (not recommended wihtout some hardware support e.g. flash drives and/or
+%% PUT (not recommended without some hardware support e.g. flash drives and/or
 %% Flash-backed Write Caches) 
 {mapping, "leveled.sync_strategy", "leveled.sync_strategy", [
   {default, none},
@@ -100,9 +100,11 @@
   {datatype, integer}
 ]}.
 
-%% @doc The number of times per day to score an individual file for compaction
+%% @doc The number of times per day to score an individual file for compaction.
+%% The default value will lead to each file, on average, being scored once
+%% every 8 hours
 {mapping, "leveled.compaction_scores_perday", "leveled.compaction_scores_perday", [
-  {default, 1},
+  {default, 3},
   {datatype, integer}
 ]}.
 
@@ -126,7 +128,9 @@
 
 %% @doc Max Journal Files Per Compaction Run
 %% In a single compaction run, what is the maximum number of consecutive files
-%% which may be compacted.
+%% which may be compacted.  If increasing this value, the average number of
+%% files per run may decrease, unless adjustments are also made to the
+%% maxrunlength and singlefile compactionpercentage settings.
 {mapping, "leveled.max_run_length", "leveled.max_run_length", [
   {default, 4},
   {datatype, integer}
@@ -146,10 +150,10 @@
 %% @doc Target Percentage for Single File
 %% What is the target score for a run of a single file, to qualify for 
 %% compaction.  If less than this percentage would be retained after compaction
-%% then it is a candidate (e.g. in default case if 70% of space would be
+%% then it is a candidate (e.g. in default case if 75% of space would be
 %% recovered)
 {mapping, "leveled.singlefile_compactionpercentage", "leveled.singlefile_compactionpercentage", [
-  {default, 30.0},
+  {default, 25.0},
   {datatype, float},
   hidden
 ]}.
