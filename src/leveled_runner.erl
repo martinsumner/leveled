@@ -614,7 +614,9 @@ foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch,
                 end,
             ListFoldFun = 
                 fun(KeyRange, Acc) ->
+                    SWG = os:timestamp(),
                     Folder = FoldFunGen(KeyRange, Acc),
+                    leveled_log:log_timer("G0002", [pcl_generator], SWG),
                     Folder()
                 end,
             FolderToWrap =

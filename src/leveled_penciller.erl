@@ -795,7 +795,7 @@ handle_call({fetch_keys,
     leveled_log:log_randomtimer("P0037",
                                 [State#state.levelzero_size],
                                 SW,
-                                0.01),
+                                1),
     SetupFoldFun =
         fun(Level, Acc) ->
             Pointers = leveled_pmanifest:range_lookup(State#state.manifest,
@@ -809,11 +809,15 @@ handle_call({fetch_keys,
         end,
     SSTiter = lists:foldl(SetupFoldFun, [], lists:seq(0, ?MAX_LEVELS - 1)),
     Folder = 
-        fun() -> 
-            keyfolder({FilteredL0, SSTiter},
-                        {StartKey, EndKey},
-                        {AccFun, InitAcc, State#state.snapshot_time},
-                        {SegmentList, LastModRange0, MaxKeys})
+        fun() ->
+            SWF = os:timestamp(),
+            KFR = keyfolder({FilteredL0, SSTiter},
+                            {StartKey, EndKey},
+                            {AccFun, InitAcc, State#state.snapshot_time},
+                            {SegmentList, LastModRange0, MaxKeys}),
+            leveled_log:log_timer("G0002", [fold_timer], SWF),
+            leveled_log:log_timer("G0002", [inside_timer], SW),
+            KFR
         end,
     case By of 
         as_pcl ->
