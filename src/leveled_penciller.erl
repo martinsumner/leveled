@@ -233,7 +233,7 @@
 -define(SUPER_MAX_TABLE_SIZE, 40000).
 -define(PROMPT_WAIT_ONL0, 5).
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
--define(COIN_SIDECOUNT, 5).
+-define(COIN_SIDECOUNT, 4).
 -define(SLOW_FETCH, 500000). % Log a very slow fetch - longer than 500ms
 -define(ITERATOR_SCANWIDTH, 4).
 -define(TIMING_SAMPLECOUNTDOWN, 10000).
@@ -1312,8 +1312,11 @@ update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
                                     levelzero_size=NewL0Size,
                                     levelzero_index=UpdL0Index,
                                     ledger_sqn=UpdMaxSQN},
-            CacheTooBig = NewL0Size > State#state.levelzero_maxcachesize,
-            CacheMuchTooBig = NewL0Size > ?SUPER_MAX_TABLE_SIZE,
+            CacheTooBig =
+                NewL0Size > State#state.levelzero_maxcachesize,
+            CacheMuchTooBig = 
+                NewL0Size > min(?SUPER_MAX_TABLE_SIZE,
+                                2 * State#state.levelzero_maxcachesize),
             RandomFactor =
                 case State#state.levelzero_cointoss of
                     true ->
