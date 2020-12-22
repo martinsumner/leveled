@@ -565,7 +565,6 @@ foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, SegmentList) ->
 %% case such a fetch is unecessary.
 foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, 
                                 SegmentList, LastModRange, MaxObjectCount) ->
-    SW = os:timestamp(),
     {FoldFun, InitAcc} =
         case is_tuple(FoldObjFun) of
             true ->
@@ -615,16 +614,13 @@ foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch,
                 end,
             ListFoldFun = 
                 fun(KeyRange, Acc) ->
-                    SWG = os:timestamp(),
                     Folder = FoldFunGen(KeyRange, Acc),
-                    leveled_log:log_timer("G0002", [pcl_generator], SWG),
                     Folder()
                 end,
             FolderToWrap =
                 fun() -> lists:foldl(ListFoldFun, InitAcc0, KeyRanges) end,
             wrap_runner(FolderToWrap, AfterFun)
         end,
-    leveled_log:log_timer("G0002", [return_fold], SW),
     {async, Folder}.
 
 
