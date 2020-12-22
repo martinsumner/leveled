@@ -169,7 +169,7 @@
     {"P0036",
         {info, "Garbage collection on manifest removes key for filename ~s"}},
     {"P0037",
-        {debug, "Merging of penciller L0 tree from size ~w complete"}},
+        {info, "Merging of penciller L0 tree from size ~w complete"}},
     {"P0038",
         {info, "Timeout of snapshot with pid=~w at SQN=~w at TS ~w "
                     ++ "set to timeout=~w"}},
