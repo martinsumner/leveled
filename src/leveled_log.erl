@@ -30,7 +30,7 @@
 -export_type([log_options/0, log_level/0]).
 
 -define(LOG_LEVELS, [debug, info, warn, error, critical]).
--define(DEFAULT_LOG_LEVEL, error).
+-define(DEFAULT_LOG_LEVEL, info).
 
 -define(LOGBASE, [
 
