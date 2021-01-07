@@ -157,6 +157,14 @@
 -type inker_options() :: #inker_options{}.
 -type ink_state() :: #state{}.
 -type registered_snapshot() :: {pid(), os:timestamp(), integer()}.
+-type filterserver() :: pid()|list(tuple()).
+-type filterfun() ::
+    fun((filterserver(), leveled_codec:ledger_key(), leveled_codec:sqn()) ->
+            current|replaced|missing).
+-type filterclosefun() :: fun((filterserver()) -> ok).
+-type filterinitfun() :: fun((pid()) -> {filterserver(), leveled_codec:sqn()}).
+
+-export_type([filterserver/0, filterfun/0, filterclosefun/0, filterinitfun/0]).
 
 %%%============================================================================
 %%% API
@@ -806,6 +814,7 @@ start_from_file(InkOpts) ->
     PressMethod = InkOpts#inker_options.compression_method,
     PressOnReceipt = InkOpts#inker_options.compress_on_receipt,
     SnapTimeout = InkOpts#inker_options.snaptimeout_long,
+    ScoreOneIn = InkOpts#inker_options.score_onein,
 
     IClerkOpts = 
         #iclerk_options{inker = self(),
@@ -815,7 +824,8 @@ start_from_file(InkOpts) ->
                             compression_method = PressMethod,
                             max_run_length = MRL,
                             singlefile_compactionperc = SFL_CompactPerc,
-                            maxrunlength_compactionperc = MRL_CompactPerc},
+                            maxrunlength_compactionperc = MRL_CompactPerc,
+                            score_onein = ScoreOneIn},
     
     {ok, Clerk} = leveled_iclerk:clerk_new(IClerkOpts),
     

@@ -69,6 +69,7 @@
                         max_run_length,
                         singlefile_compactionperc :: float()|undefined,
                         maxrunlength_compactionperc :: float()|undefined,
+                        score_onein = 1 :: pos_integer(),
                         snaptimeout_long :: pos_integer() | undefined}).
 
 -record(penciller_options,
@@ -94,4 +95,5 @@
                          compression_method = native :: lz4|native,
                          singlefile_compactionperc :: float()|undefined,
                          maxrunlength_compactionperc :: float()|undefined,
+                         score_onein = 1 :: pos_integer(),
                          reload_strategy = [] :: list()}).
