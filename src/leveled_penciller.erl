@@ -796,9 +796,15 @@ handle_call({fetch_keys,
                                 [State#state.levelzero_size],
                                 SW,
                                 0.01),
+    
+    %% Rename any reference to loop state that may be used by the function
+    %% to be returned - https://github.com/martinsumner/leveled/issues/326
+    Manifest = State#state.manifest,
+    SnapshotTime = State#state.snapshot_time,
+    
     SetupFoldFun =
         fun(Level, Acc) ->
-            Pointers = leveled_pmanifest:range_lookup(State#state.manifest,
+            Pointers = leveled_pmanifest:range_lookup(Manifest,
                                                         Level,
                                                         StartKey,
                                                         EndKey),
@@ -812,7 +818,7 @@ handle_call({fetch_keys,
         fun() -> 
             keyfolder({FilteredL0, SSTiter},
                         {StartKey, EndKey},
-                        {AccFun, InitAcc, State#state.snapshot_time},
+                        {AccFun, InitAcc, SnapshotTime},
                         {SegmentList, LastModRange0, MaxKeys})
         end,
     case By of 
@@ -1403,9 +1409,9 @@ roll_memory(State, true) ->
     ManSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest) + 1,
     RootPath = sst_rootpath(State#state.root_path),
     FileName = sst_filename(ManSQN, 0, 0),
-    FetchFun = fun(Slot) -> lists:nth(Slot, State#state.levelzero_cache) end,
-    KVList = leveled_pmem:to_list(length(State#state.levelzero_cache),
-                                    FetchFun),
+    LZC = State#state.levelzero_cache,
+    FetchFun = fun(Slot) -> lists:nth(Slot, LZC) end,
+    KVList = leveled_pmem:to_list(length(LZC), FetchFun),
     R = leveled_sst:sst_new(RootPath,
                             FileName,
                             0,
