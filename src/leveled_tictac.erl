@@ -244,8 +244,8 @@ alter_segment(Segment, Hash, Tree) ->
 %% Returns a list of segment IDs which hold differences between the state
 %% represented by the two trees.
 find_dirtyleaves(SrcTree, SnkTree) ->
-    _Size = SrcTree#tictactree.size,
-    _Size = SnkTree#tictactree.size,
+    Size = SrcTree#tictactree.size,
+    Size = SnkTree#tictactree.size,
     
     IdxList = find_dirtysegments(fetch_root(SrcTree), fetch_root(SnkTree)),
     SrcLeaves = fetch_leaves(SrcTree, IdxList),
