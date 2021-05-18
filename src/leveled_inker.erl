@@ -1397,7 +1397,7 @@ compact_journal_testto(WRP, ExpectedFiles) ->
     build_dummy_journal(fun test_ledgerkey/1),
     {ok, Ink1} = ink_start(InkOpts),
     
-    {ok, NewSQN1, _ObjSize} = ink_put(Ink1,
+    {ok, NewSQN1, ObjSize} = ink_put(Ink1,
                                         test_ledgerkey("KeyAA"),
                                         "TestValueAA",
                                         {[], infinity}),
@@ -1417,7 +1417,7 @@ compact_journal_testto(WRP, ExpectedFiles) ->
                             {SQN, test_ledgerkey(PK)}
                             end,
                         FunnyLoop),
-    {ok, NewSQN2, _ObjSize} = ink_put(Ink1,
+    {ok, NewSQN2, ObjSize} = ink_put(Ink1,
                                         test_ledgerkey("KeyBB"),
                                         "TestValueBB",
                                         {[], infinity}),

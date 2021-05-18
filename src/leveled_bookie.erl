@@ -2826,9 +2826,9 @@ foldobjects_vs_hashtree_testto() ->
         fun(B, K, ProxyV, Acc) ->
             {proxy_object,
                 MD,
-                _Size,
+                _Size1,
                 _Fetcher} = binary_to_term(ProxyV),
-            {Hash, _Size, _UserDefinedMD} = MD,
+            {Hash, _Size0, _UserDefinedMD} = MD,
             [{B, K, Hash}|Acc]
         end,
 

@@ -1555,7 +1555,7 @@ read_integerpairs(<<Int1:32, Int2:32, Rest/binary>>, Pairs) ->
 %% false - don't check the CRC before returning key & value
 %% loose_presence - confirm that the hash of the key is present
 search_hash_table(_Handle, 
-                    {_, _, _TotalSlots, _TotalSlots}, 
+                    {_, _, TotalSlots, TotalSlots},
                     _Hash, _Key,
                     _QuickCheck, _BinaryMode, Timings) -> 
     % We have done the full loop - value must not be present
