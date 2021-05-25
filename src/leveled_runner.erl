@@ -804,7 +804,12 @@ wrap_runner(FoldAction, AfterAction) ->
 %%%============================================================================
 
 -ifdef(TEST).
--ifndef(EQC).
+
+%% Note in OTP 22 we see a compile error with the assertException if using the
+%% eqc_cover parse_transform.  This test is excluded in the eqc profle, due to
+%% this error
+
+-ifdef(EQC).
 
 throw_test() ->
     StoppedFolder =
@@ -825,6 +830,7 @@ throw_test() ->
                         wrap_runner(StoppedFolder, AfterAction)).
 
 -endif.
+
 -endif.
 
     
