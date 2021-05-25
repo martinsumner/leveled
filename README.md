@@ -66,11 +66,11 @@ Running in Riak requires Riak 2.9 or beyond, which is available from January 201
 
 There are three main branches:
 
-`develop-3.1` (default): Target for the Riak 3.1 release with support for OTP 22 and OTP 24;
+[`develop-3.1`  - default](https://github.com/martinsumner/leveled/tree/develop-3.1): Target for the Riak 3.1 release with support for OTP 22 and OTP 24;
 
-`develop-3.0`: Used in the Riak 3.0 release with support for OTP 20 and OTP 22;
+[`develop-3.0`](https://github.com/martinsumner/leveled/tree/develop-3.0): Used in the Riak 3.0 release with support for OTP 20 and OTP 22;
 
-`develop-2.9`: Used in the Riak 2.9 release with support for OTP R16 through to OTP 20.
+[`develop-2.9`](https://github.com/martinsumner/leveled/tree/develop-2.9): Used in the Riak 2.9 release with support for OTP R16 through to OTP 20.
 
 ### Contributing
 
