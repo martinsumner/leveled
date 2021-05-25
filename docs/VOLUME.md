@@ -70,7 +70,7 @@ Comparison charts for this test:
 
 Riak + leveled           |  Riak + eleveldb
 :-------------------------:|:-------------------------:
-![](volume/cluster_three/output/summary_leveled_5n_50t_d2_nosync.png "LevelEd")  |  ![](test/volume/cluster_three/output/summary_leveldb_5n_50t_d2_nosync.png "LevelDB")
+![](volume/cluster_three/output/summary_leveled_5n_50t_d2_nosync.png "LevelEd")  |  ![](volume/cluster_three/output/summary_leveldb_5n_50t_d2_nosync.png "LevelDB")
 
 Note that there is a clear inflexion point when throughput starts to drop sharply at about the hour mark into the test.  
 This is the stage when the volume of data has begun to exceed the volume supportable in cache, and so disk activity begins to be required for GET operations with increasing frequency.
@@ -89,7 +89,7 @@ Comparison charts for this test:
 
 Riak + leveled           |  Riak + eleveldb
 :-------------------------:|:-------------------------:
-![](test/volume/cluster_four/output/summary_leveled_5n_100t_i2_4KB_nosync.png "LevelEd")  |  ![](test/volume/cluster_four/output/summary_leveldb_5n_100t_i2_4KB_nosync.png "LevelDB")
+![](volume/cluster_four/output/summary_leveled_5n_100t_i2_4KB_nosync.png "LevelEd")  |  ![](volume/cluster_four/output/summary_leveldb_5n_100t_i2_4KB_nosync.png "LevelDB")
 
 
 ### Double-Size Object, SSDs, No Sync-On-Write
@@ -152,7 +152,7 @@ These tests have been completed using the following static characteristics which
 - 5 x i2.2x nodes,
 - 6 hour duration.
 
-This is [a test used in Phase 1](https://github.com/martinsumner/leveled/blob/master/docs/VOLUME.md#mid-size-object-ssds-no-sync-on-write).  Note that since Phase 1 was completed a number of performance improvements have been made in leveled, so that the starting gap between Riak/leveled and Riak/leveldb has widened.
+This is [a test used in Phase 1](VOLUME.md#mid-size-object-ssds-no-sync-on-write).  Note that since Phase 1 was completed a number of performance improvements have been made in leveled, so that the starting gap between Riak/leveled and Riak/leveldb has widened.
 
 The tests have been run using the new riak_kv_sweeper facility within develop.  This feature is an alternative approach to controlling and scheduling rebuilds, allowing for other work to be scheduled into the same fold.  As the test is focused on hashtree rebuilds, the test was run with:
 
@@ -270,8 +270,6 @@ The secondary index test was built on a test which sent
 
 The query load is relatively light compared to GET/PUT load in-line with Basho recommendations (decline from 350 queries per second to 120 queries per second through the test).  The queries
 return o(1000) results maximum towards the tail of the test and o(1) results at the start of the test.
-
-Further details on the implementation of the secondary indexes for volume tests can be found in the [driver file](https://github.com/martinsumner/basho_bench/blob/mas-nhsload/src/basho_bench_driver_riakc_pb.erl) for the test.
 
 Riak + leveled           |  Riak + leveldb
 :-------------------------:|:-------------------------:
