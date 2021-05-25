@@ -44,41 +44,6 @@ For more details on the store:
 
 - There is also a ["Why"](docs/WHY.md) section looking at lower level design choices and the rationale that supports them.
 
-## Is this interesting?
-
-Making a positive contribution to this space is hard - given the superior brainpower and experience of those that have contributed to the KV store problem space in general, and the Riak backend space in particular.
-
-The target at inception was to do something interesting, to re-think certain key assumptions and trade-offs, and prove through working software the potential for improvements to be realised.
-
-[Initial volume tests](docs/VOLUME.md) indicate that it is at least interesting.  With improvements in throughput for multiple configurations, with this improvement becoming more marked as the test progresses (and the base data volume becomes more realistic).  
-
-The delta in the table below  is the comparison in Riak throughput between the identical test run with a leveled backend in comparison to leveldb.  The realism of the tests increase as the test progresses - so focus is given to the throughput delta in the last hour of the test.
-
-Test Description                  | Hardware     | Duration |Avg TPS    | TPS Delta (Overall)  | TPS Delta (Last Hour)
-:---------------------------------|:-------------|:--------:|----------:|-----------------:|-------------------:
-8KB value, 60 workers, sync       | 5 x i2.2x    | 4 hr     | 12,679.91 | <b>+ 70.81%</b>  | <b>+ 63.99%</b>
-8KB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,100.19 | <b>+ 16.15%</b>  | <b>+ 35.92%</b>
-8KB value, 50 workers, no_sync    | 5 x d2.2x    | 4 hr     | 10,400.29 | <b>+  8.37%</b>  | <b>+ 23.51%</b>
-4KB value, 100 workers, no_sync   | 5 x i2.2x    | 6 hr     | 14,993.95 | - 10.44%  | - 4.48%
-16KB value, 60 workers, no_sync   | 5 x i2.2x    | 6 hr     | 11,167.44 | <b>+ 80.48%</b>  | <b>+ 113.55%</b>
-8KB value, 80 workers, no_sync, 2i queries | 5 x i2.2x | 6 hr | 9,855.96 | <b>+ 4.48%</b> | <b>+ 22.36%</b>
-
-Tests generally show a 5:1 improvement in tail latency for leveled.
-
-All tests have in common:
-
-- Target Key volume - 200M with pareto distribution of load
-- 5 GETs per 1 update
-- RAID 10 (software) drives
-- allow_mult=false, lww=false
-- modified riak optimised for leveled used in leveled tests
-
-The throughput in leveled is generally CPU-bound, whereas in comparative tests for leveledb the throughput was disk bound.  This potentially makes capacity planning simpler, and opens up the possibility of scaling out to equivalent throughput at much lower cost (as CPU is relatively low cost when compared to disk space at high I/O) - [offering better alignment between resource constraints and the cost of resource](docs/INTRO.md).
-
-More information can be found in the [volume testing section](docs/VOLUME.md).
-
-As a general rule though, the most interesting thing is the potential to enable [new features](docs/FUTURE.md).  The tagging of different object types, with an ability to set different rules for both compaction and metadata creation by tag, is a potential enabler for further change.   Further, having a separate key/metadata store which can be scanned without breaking the page cache or working against mitigation for write amplifications, is also potentially an enabler to offer features to both the developer and the operator.
-
 ## Feedback
 
 Please create an issue if you have any suggestions.  You can ping me <b>@masleeds</b> if you wish
