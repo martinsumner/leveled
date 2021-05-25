@@ -108,4 +108,8 @@ ct with 100% coverage.
 
 To have rebar3 execute the full set of tests, run:
 
-    `rebar3 as test do cover --reset, eunit --cover, ct --cover, cover --verbose`
+    `rebar3 as test do xref, dialyzer, cover --reset, eunit --cover, ct --cover, cover --verbose`
+
+For those with a Quickcheck license, property-based tests can also be run using:
+
+    `rebar3 as eqc do eunit --module=leveled_eqc`

@@ -19,6 +19,8 @@
 
 -module(leveled_eqc).
 
+-ifdef(EQC).
+
 -include_lib("eqc/include/eqc.hrl").
 -include_lib("eqc/include/eqc_statem.hrl").
 -include_lib("eunit/include/eunit.hrl").
@@ -427,3 +429,5 @@ vals_equal(Leveled, Model) ->
 
 delete_level_data() ->
     ?_assertCmd("rm -rf " ++ " ./leveled_data").
+
+-endif.

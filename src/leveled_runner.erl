@@ -804,6 +804,7 @@ wrap_runner(FoldAction, AfterAction) ->
 %%%============================================================================
 
 -ifdef(TEST).
+-ifndef(EQC).
 
 throw_test() ->
     StoppedFolder =
@@ -823,7 +824,7 @@ throw_test() ->
     ?assertException(throw, stop_fold, 
                         wrap_runner(StoppedFolder, AfterAction)).
 
-
+-endif.
 -endif.
 
     
