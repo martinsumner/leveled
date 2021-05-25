@@ -85,7 +85,7 @@ Please create an issue if you have any suggestions.  You can ping me <b>@masleed
 
 ## Running Leveled
 
-Unit and current tests in leveled should run with rebar3.  Leveled has been tested in OTP18, but it can be started with OTP16 to support Riak (although tests will not work as expected).  
+Unit and current tests in leveled should run with rebar3.  
 
 A new database can be started by running
 
@@ -99,13 +99,18 @@ The book_start method should respond once startup is complete.  The [leveled_boo
 
 Running in Riak requires Riak 2.9 or beyond, which is available from January 2019.
 
+There are three main branches:
+
+`develop-3.1` (default): Target for the Riak 3.1 release with support for OTP 22 and OTP 24;
+
+`develop-3.0`: Used in the Riak 3.0 release with support for OTP 20 and OTP 22;
+
+`develop-2.9`: Used in the Riak 2.9 release with support for OTP R16 through to OTP 20.
+
 ### Contributing
 
-In order to contribute to leveled, fork the repository, make a branch
-for your changes, and open a pull request. The acceptance criteria for
-updating leveled is that it passes rebar3 dialyzer, xref, eunit, and
-ct with 100% coverage.
+In order to contribute to leveled, fork the repository, make a branch for your changes, and open a pull request. The acceptance criteria for updating leveled is that it passes rebar3 dialyzer, xref, eunit, and ct with 100% coverage.
 
 To have rebar3 execute the full set of tests, run:
 
-    `rebar3 as test do cover --reset, eunit --cover, ct --cover, cover --verbose`
+    `rebar3 as test do xref, dialyzer, cover --reset, eunit --cover, ct --cover, cover --verbose`

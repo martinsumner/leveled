@@ -2,17 +2,17 @@
 
 ## Parallel Node Testing - Non-Riak
 
-Initial volume tests have been [based on standard basho_bench eleveldb test](../test/volume/single_node/examples) to run multiple stores in parallel on the same node and and subjecting them to concurrent pressure. 
+Initial volume tests have been [based on standard basho_bench eleveldb test](volume/single_node/examples) to run multiple stores in parallel on the same node and and subjecting them to concurrent pressure. 
 
 This showed a relative positive performance for leveled for both population and load.
 
 Populate leveled           |  Populate eleveldb
 :-------------------------:|:-------------------------:
-![](../test/volume/single_node/output/leveled_pop.png "LevelEd - Populate")  |  ![](../test/volume/single_node/output/leveldb_pop.png "LevelDB - Populate")
+![](volume/single_node/output/leveled_pop.png "LevelEd - Populate")  |  ![](volume/single_node/output/leveldb_pop.png "LevelDB - Populate")
 
 Load leveled             |  Load eleveldb
 :-------------------------:|:-------------------------:
-![](../test/volume/single_node/output/leveled_load.png "LevelEd - Populate")  |  ![](../test/volume/single_node/output/leveldb_load.png "LevelDB - Populate")
+![](volume/single_node/output/leveled_load.png "LevelEd - Populate")  |  ![](volume/single_node/output/leveldb_load.png "LevelDB - Populate")
 
 This test was a positive comparison for LevelEd, but also showed that although the LevelEd throughput was relatively stable it was still subject to fluctuations related to CPU constraints.  Prior to moving on to full Riak testing, a number of changes where then made to LevelEd to reduce the CPU load in particular during merge events.
 

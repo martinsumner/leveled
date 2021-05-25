@@ -1036,10 +1036,8 @@ sst_getfilteredslots(Pid, SlotList, SegList, LowLastMod) ->
                 non_neg_integer()) -> list(non_neg_integer()).
 %% @doc
 %% Find a list of positions where there is an element with a matching segment
-%% ID to the expected segments (which cna either be a single segment, a list of
+%% ID to the expected segments (which can either be a single segment, a list of
 %% segments or a set of segments depending on size.
-find_pos(<<>>, _Hash, PosList, _Count) ->
-    PosList;
 find_pos(<<1:1/integer, PotentialHit:15/integer, T/binary>>,
                                         Checker, PosList, Count) ->
     case member_check(PotentialHit, Checker) of
@@ -1049,7 +1047,12 @@ find_pos(<<1:1/integer, PotentialHit:15/integer, T/binary>>,
             find_pos(T, Checker, PosList, Count + 1)
     end;
 find_pos(<<0:1/integer, NHC:7/integer, T/binary>>, Checker, PosList, Count) ->
-    find_pos(T, Checker, PosList, Count + NHC + 1).
+    find_pos(T, Checker, PosList, Count + NHC + 1);
+find_pos(_BinRem, _Hash, PosList, _Count) ->
+    %% Expect this to be <<>> - i.e. at end of binary, but if there is
+    %% corruption, could be some other value - so return as well in this
+    %% case
+    PosList.
 
 
 -spec member_check(non_neg_integer(), 
@@ -3171,6 +3174,9 @@ indexed_list_allindexkeys_trimmed_test() ->
     ?assertMatch(2, length(O3)),
     ?assertMatch(R3, O3).
 
+
+findposfrag_test() ->
+    ?assertMatch([], find_pos(<<128:8/integer>>, 1, [], 0)).
 
 indexed_list_mixedkeys_bitflip_test() ->
     KVL0 = lists:ukeysort(1, generate_randomkeys(1, 50, 1, 4)),
