@@ -2,9 +2,15 @@ name: Erlang CI
 
 on:
   push:
-    branches: [ develop-3.0 ]
+    branches:
+    - develop-3.1
+    - develop-3.0
+    - develop-2.9
   pull_request:
-    branches: [ develop-3.0 ]
+    branches:
+    - develop-3.1
+    - develop-3.0
+    - develop-2.9
 
 jobs:
 
