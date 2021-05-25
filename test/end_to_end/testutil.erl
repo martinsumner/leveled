@@ -169,18 +169,7 @@ encode_maybe_binary(Bin) ->
 %% =================================================
 
 sync_strategy() ->
-    case erlang:system_info(otp_release) of
-        "17" ->
-            sync;
-        "18" ->
-            sync;
-        "19" ->
-            sync;
-        _ ->
-            % running the sync strategy with OTP16 on macbook is 
-            % super slow.  So revert to no sync
-            none
-    end.
+    none.
 
 book_riakput(Pid, RiakObject, IndexSpecs) ->
     leveled_bookie:book_put(Pid,

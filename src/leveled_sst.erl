@@ -300,16 +300,16 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST, IndexModDate) ->
             {ok, Pid, {SK, EK}, Bloom}
     end.
 
--spec sst_newmerge(string(), string(), 
-                    list(leveled_codec:ledger_kv()|sst_pointer()), 
+-spec sst_newmerge(string(), string(),
                     list(leveled_codec:ledger_kv()|sst_pointer()),
-                    boolean(), integer(), 
+                    list(leveled_codec:ledger_kv()|sst_pointer()),
+                    boolean(), integer(),
                     integer(), sst_options())
-            -> empty|{ok, pid(), 
-                {{list(leveled_codec:ledger_kv()), 
-                        list(leveled_codec:ledger_kv())}, 
-                    leveled_codec:ledger_key(), 
-                    leveled_codec:ledger_key()}, 
+            -> empty|{ok, pid(),
+                {{list(leveled_codec:ledger_kv()),
+                        list(leveled_codec:ledger_kv())},
+                    leveled_codec:ledger_key(),
+                    leveled_codec:ledger_key()},
                     binary()}.
 %% @doc
 %% Start a new SST file at the assigned level passing in a two lists of
@@ -322,11 +322,11 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST, IndexModDate) ->
 %% be that the merge_lists returns nothing (for example when a basement file is
 %% all tombstones) - and the atom empty is returned in this case so that the
 %% file is not added to the manifest.
-sst_newmerge(RootPath, Filename, 
-        KVL1, KVL2, IsBasement, Level, 
+sst_newmerge(RootPath, Filename,
+        KVL1, KVL2, IsBasement, Level,
         MaxSQN, OptsSST) ->
-    sst_newmerge(RootPath, Filename, 
-        KVL1, KVL2, IsBasement, Level, 
+    sst_newmerge(RootPath, Filename,
+        KVL1, KVL2, IsBasement, Level,
         MaxSQN, OptsSST, ?INDEX_MODDATE, ?TOMB_COUNT).
 
 sst_newmerge(RootPath, Filename, 
@@ -1036,10 +1036,8 @@ sst_getfilteredslots(Pid, SlotList, SegList, LowLastMod) ->
                 non_neg_integer()) -> list(non_neg_integer()).
 %% @doc
 %% Find a list of positions where there is an element with a matching segment
-%% ID to the expected segments (which cna either be a single segment, a list of
+%% ID to the expected segments (which can either be a single segment, a list of
 %% segments or a set of segments depending on size.
-find_pos(<<>>, _Hash, PosList, _Count) ->
-    PosList;
 find_pos(<<1:1/integer, PotentialHit:15/integer, T/binary>>,
                                         Checker, PosList, Count) ->
     case member_check(PotentialHit, Checker) of
@@ -1049,7 +1047,12 @@ find_pos(<<1:1/integer, PotentialHit:15/integer, T/binary>>,
             find_pos(T, Checker, PosList, Count + 1)
     end;
 find_pos(<<0:1/integer, NHC:7/integer, T/binary>>, Checker, PosList, Count) ->
-    find_pos(T, Checker, PosList, Count + NHC + 1).
+    find_pos(T, Checker, PosList, Count + NHC + 1);
+find_pos(_BinRem, _Hash, PosList, _Count) ->
+    %% Expect this to be <<>> - i.e. at end of binary, but if there is
+    %% corruption, could be some other value - so return as well in this
+    %% case
+    PosList.
 
 
 -spec member_check(non_neg_integer(), 
@@ -2858,14 +2861,14 @@ update_timings(SW, Timings, Stage, Continue) ->
 -define(TEST_AREA, "test/test_area/").
 
 testsst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod) ->
-    OptsSST = 
+    OptsSST =
         #sst_options{press_method=PressMethod,
                         log_options=leveled_log:get_opts()},
     sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST, false).
 
-testsst_new(RootPath, Filename, 
+testsst_new(RootPath, Filename,
             KVL1, KVL2, IsBasement, Level, MaxSQN, PressMethod) ->
-    OptsSST = 
+    OptsSST =
         #sst_options{press_method=PressMethod,
                         log_options=leveled_log:get_opts()},
     sst_newmerge(RootPath, Filename, KVL1, KVL2, IsBasement, Level, MaxSQN,
@@ -2949,17 +2952,17 @@ tombcount_test() ->
     OptsSST = 
         #sst_options{press_method=native,
                         log_options=leveled_log:get_opts()},
-    {ok, SST1, _KD, _BB} = sst_newmerge(RP, Filename, 
-                                KVL1, KVL2, false, 2, 
-                                N, OptsSST, false, false),
+    {ok, SST1, KD, BB} = sst_newmerge(RP, Filename,
+                               KVL1, KVL2, false, 2,
+                               N, OptsSST, false, false),
     ?assertMatch(not_counted, sst_gettombcount(SST1)),
     ok = sst_close(SST1),
     ok = file:delete(filename:join(RP, Filename ++ ".sst")),
 
-    {ok, SST2, _KD, _BB} = sst_newmerge(RP, Filename, 
-                                KVL1, KVL2, false, 2, 
-                                N, OptsSST, false, true),
-    
+    {ok, SST2, KD, BB} = sst_newmerge(RP, Filename,
+                               KVL1, KVL2, false, 2,
+                               N, OptsSST, false, true),
+
     ?assertMatch(ExpectedCount, sst_gettombcount(SST2)),
     ok = sst_close(SST2),
     ok = file:delete(filename:join(RP, Filename ++ ".sst")).
@@ -3012,7 +3015,7 @@ indexed_list_test() ->
 
     SW0 = os:timestamp(),
 
-    {{_PosBinIndex1, FullBin, _HL, _LK}, no_timing} = 
+    {{_PosBinIndex1, FullBin, _HL, _LK}, no_timing} =
         generate_binary_slot(lookup, KVL1, native, ?INDEX_MODDATE, no_timing),
     io:format(user,
                 "Indexed list created slot in ~w microseconds of size ~w~n",
@@ -3041,7 +3044,7 @@ indexed_list_mixedkeys_test() ->
     KVL1 = lists:sublist(KVL0, 33),
     Keys = lists:ukeysort(1, generate_indexkeys(60) ++ KVL1),
 
-    {{_PosBinIndex1, FullBin, _HL, _LK}, no_timing} = 
+    {{_PosBinIndex1, FullBin, _HL, _LK}, no_timing} =
         generate_binary_slot(lookup, Keys, native, ?INDEX_MODDATE, no_timing),
 
     {TestK1, TestV1} = lists:nth(4, KVL1),
@@ -3068,7 +3071,7 @@ indexed_list_mixedkeys2_test() ->
     IdxKeys2 = lists:ukeysort(1, generate_indexkeys(30)),
     % this isn't actually ordered correctly
     Keys = IdxKeys1 ++ KVL1 ++ IdxKeys2,
-    {{_Header, FullBin, _HL, _LK}, no_timing} = 
+    {{_Header, FullBin, _HL, _LK}, no_timing} =
         generate_binary_slot(lookup, Keys, native, ?INDEX_MODDATE, no_timing),
     lists:foreach(fun({K, V}) ->
                         MH = leveled_codec:segment_hash(K),
@@ -3079,9 +3082,9 @@ indexed_list_mixedkeys2_test() ->
 indexed_list_allindexkeys_test() ->
     Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(150)), 
                             ?LOOK_SLOTSIZE),
-    {{HeaderT, FullBinT, _HL, _LK}, no_timing} = 
+    {{HeaderT, FullBinT, HL, LK}, no_timing} =
         generate_binary_slot(lookup, Keys, native, true, no_timing),
-    {{HeaderF, FullBinF, _HL, _LK}, no_timing} = 
+    {{HeaderF, FullBinF, HL, LK}, no_timing} =
         generate_binary_slot(lookup, Keys, native, false, no_timing),
     EmptySlotSize = ?LOOK_SLOTSIZE - 1,
     LMD = ?FLIPPER32,
@@ -3171,6 +3174,9 @@ indexed_list_allindexkeys_trimmed_test() ->
     ?assertMatch(2, length(O3)),
     ?assertMatch(R3, O3).
 
+
+findposfrag_test() ->
+    ?assertMatch([], find_pos(<<128:8/integer>>, 1, [], 0)).
 
 indexed_list_mixedkeys_bitflip_test() ->
     KVL0 = lists:ukeysort(1, generate_randomkeys(1, 50, 1, 4)),
@@ -3333,7 +3339,7 @@ simple_persisted_range_tester(SSTNewFun) ->
     KVList1 = lists:ukeysort(1, KVList0),
     [{FirstKey, _FV}|_Rest] = KVList1,
     {LastKey, _LV} = lists:last(KVList1),
-    {ok, Pid, {FirstKey, LastKey}, _Bloom} = 
+    {ok, Pid, {FirstKey, LastKey}, _Bloom} =
         SSTNewFun(RP, Filename, 1, KVList1, length(KVList1), native),
     
     {o, B, K, null} = LastKey,
@@ -3375,7 +3381,7 @@ simple_persisted_rangesegfilter_tester(SSTNewFun) ->
     KVList1 = lists:ukeysort(1, KVList0),
     [{FirstKey, _FV}|_Rest] = KVList1,
     {LastKey, _LV} = lists:last(KVList1),
-    {ok, Pid, {FirstKey, LastKey}, _Bloom} = 
+    {ok, Pid, {FirstKey, LastKey}, _Bloom} =
         SSTNewFun(RP, Filename, 1, KVList1, length(KVList1), native),
     
     SK1 = element(1, lists:nth(124, KVList1)),
@@ -3523,7 +3529,7 @@ simple_persisted_slotsize_tester(SSTNewFun) ->
                             ?LOOK_SLOTSIZE),
     [{FirstKey, _FV}|_Rest] = KVList1,
     {LastKey, _LV} = lists:last(KVList1),
-    {ok, Pid, {FirstKey, LastKey}, _Bloom} = 
+    {ok, Pid, {FirstKey, LastKey}, _Bloom} =
         SSTNewFun(RP, Filename, 1, KVList1, length(KVList1), native),
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({K, V}, sst_get(Pid, K))
@@ -3564,7 +3570,7 @@ simple_persisted_tester(SSTNewFun) ->
     KVList1 = lists:ukeysort(1, KVList0),
     [{FirstKey, _FV}|_Rest] = KVList1,
     {LastKey, _LV} = lists:last(KVList1),
-    {ok, Pid, {FirstKey, LastKey}, _Bloom} = 
+    {ok, Pid, {FirstKey, LastKey}, Bloom} =
         SSTNewFun(RP, Filename, Level, KVList1, length(KVList1), native),
     
     B0 = check_binary_references(Pid),
@@ -3632,7 +3638,7 @@ simple_persisted_tester(SSTNewFun) ->
     ?assertMatch(SubKVList1L, length(FetchedList2)),
     ?assertMatch(SubKVList1, FetchedList2),
     
-    {Eight000Key, _v800} = lists:nth(800, KVList1),
+    {Eight000Key, V800} = lists:nth(800, KVList1),
     SubKVListA1 = lists:sublist(KVList1, 10, 791),
     SubKVListA1L = length(SubKVListA1),
     FetchListA2 = sst_getkvrange(Pid, TenthKey, Eight000Key, 2),
@@ -3664,7 +3670,7 @@ simple_persisted_tester(SSTNewFun) ->
                                     Eight000Key,
                                     4),
     FetchedListB4 = lists:foldl(FoldFun, [], FetchListB4),
-    ?assertMatch([{Eight000Key, _v800}], FetchedListB4),
+    ?assertMatch([{Eight000Key, V800}], FetchedListB4),
     
     B1 = check_binary_references(Pid),
 
@@ -3673,7 +3679,7 @@ simple_persisted_tester(SSTNewFun) ->
     io:format(user, "Reopen SST file~n", []),
     OptsSST = #sst_options{press_method=native,
                             log_options=leveled_log:get_opts()},
-    {ok, OpenP, {FirstKey, LastKey}, _Bloom} =
+    {ok, OpenP, {FirstKey, LastKey}, Bloom} =
         sst_open(RP, Filename ++ ".sst", OptsSST, Level),
 
     B2 = check_binary_references(OpenP),

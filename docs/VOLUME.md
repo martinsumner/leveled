@@ -2,7 +2,7 @@
 
 ## Parallel Node Testing
 
-Initial volume tests have been [based on standard basho_bench eleveldb test](../test/volume/single_node/examples) to run multiple stores in parallel on the same node and and subjecting them to concurrent pressure.
+Initial volume tests have been [based on standard basho_bench eleveldb test](volume/single_node/examples) to run multiple stores in parallel on the same node and and subjecting them to concurrent pressure.
 
 This showed a [relative positive performance for leveled](VOLUME_PRERIAK.md) for both population and load. This also showed that although the leveled throughput was relatively stable, it was still subject to fluctuations related to CPU constraints - especially as compaction of the ledger was a CPU intensive activity.  Prior to moving on to full Riak testing, a number of changes where then made to leveled to reduce the CPU load during these merge events.
 
@@ -38,7 +38,7 @@ Comparison charts for this test:
 
 Riak + leveled             |  Riak + eleveldb
 :-------------------------:|:-------------------------:
-![](../test/volume/cluster_one/output/summary_leveled_5n_60t_i2_sync.png "LevelEd")  |  ![](../test/volume/cluster_one/output/summary_leveldb_5n_60t_i2_sync.png "LevelDB")
+![](volume/cluster_one/output/summary_leveled_5n_60t_i2_sync.png "LevelEd")  |  ![](volume/cluster_one/output/summary_leveldb_5n_60t_i2_sync.png "LevelDB")
 
 ### Mid-Size Object, SSDs, No Sync-On-Write
 
@@ -54,7 +54,7 @@ Comparison charts for this test:
 
 Riak + leveled             |  Riak + eleveldb
 :-------------------------:|:-------------------------:
-![](../test/volume/cluster_two/output/summary_leveled_5n_100t_i2_nosync.png "LevelEd")  |  ![](../test/volume/cluster_two/output/summary_leveldb_5n_100t_i2_nosync.png "LevelDB")
+![](volume/cluster_two/output/summary_leveled_5n_100t_i2_nosync.png "LevelEd")  |  ![](volume/cluster_two/output/summary_leveldb_5n_100t_i2_nosync.png "LevelDB")
 
 ### Mid-Size Object, HDDs, No Sync-On-Write
 
@@ -70,7 +70,7 @@ Comparison charts for this test:
 
 Riak + leveled           |  Riak + eleveldb
 :-------------------------:|:-------------------------:
-![](../test/volume/cluster_three/output/summary_leveled_5n_50t_d2_nosync.png "LevelEd")  |  ![](../test/volume/cluster_three/output/summary_leveldb_5n_50t_d2_nosync.png "LevelDB")
+![](volume/cluster_three/output/summary_leveled_5n_50t_d2_nosync.png "LevelEd")  |  ![](volume/cluster_three/output/summary_leveldb_5n_50t_d2_nosync.png "LevelDB")
 
 Note that there is a clear inflexion point when throughput starts to drop sharply at about the hour mark into the test.  
 This is the stage when the volume of data has begun to exceed the volume supportable in cache, and so disk activity begins to be required for GET operations with increasing frequency.
@@ -89,7 +89,7 @@ Comparison charts for this test:
 
 Riak + leveled           |  Riak + eleveldb
 :-------------------------:|:-------------------------:
-![](../test/volume/cluster_four/output/summary_leveled_5n_100t_i2_4KB_nosync.png "LevelEd")  |  ![](../test/volume/cluster_four/output/summary_leveldb_5n_100t_i2_4KB_nosync.png "LevelDB")
+![](volume/cluster_four/output/summary_leveled_5n_100t_i2_4KB_nosync.png "LevelEd")  |  ![](volume/cluster_four/output/summary_leveldb_5n_100t_i2_4KB_nosync.png "LevelDB")
 
 
 ### Double-Size Object, SSDs, No Sync-On-Write
@@ -106,14 +106,14 @@ Comparison charts for this test:
 
 Riak + leveled           |  Riak + eleveldb
 :-------------------------:|:-------------------------:
-![](../test/volume/cluster_five/output/summary_leveled_5n_60t_i2_16KB_nosync.png "LevelEd")  |  ![](../test/volume/cluster_five/output/summary_leveldb_5n_60t_i2_16KB_nosync.png "LevelDB")
+![](volume/cluster_five/output/summary_leveled_5n_60t_i2_16KB_nosync.png "LevelEd")  |  ![](volume/cluster_five/output/summary_leveldb_5n_60t_i2_16KB_nosync.png "LevelDB")
 
 
 ### Lies, damned lies etc
 
 The first thing to note about the test is the impact of the pareto distribution and the start from an empty store, on what is actually being tested.  At the start of the test there is a 0% chance of a GET request actually finding an object.  Normally, it will be 3 hours into the test before a GET request will have a 50% chance of finding an object.
 
-![](../test/volume/cluster_two/output/NotPresentPerc.png "Percentage of GET requests being found at different leveled levels")
+![](volume/cluster_two/output/NotPresentPerc.png "Percentage of GET requests being found at different leveled levels")
 
 Both leveled and leveldb are optimised for finding non-presence through the use of bloom filters, so the comparison is not unduly influenced by this.  However, the workload at the end of the test is both more realistic (in that objects are found), and harder if the previous throughput had been greater (in that more objects are found).  
 
@@ -152,7 +152,7 @@ These tests have been completed using the following static characteristics which
 - 5 x i2.2x nodes,
 - 6 hour duration.
 
-This is [a test used in Phase 1](https://github.com/martinsumner/leveled/blob/master/docs/VOLUME.md#mid-size-object-ssds-no-sync-on-write).  Note that since Phase 1 was completed a number of performance improvements have been made in leveled, so that the starting gap between Riak/leveled and Riak/leveldb has widened.
+This is [a test used in Phase 1](VOLUME.md#mid-size-object-ssds-no-sync-on-write).  Note that since Phase 1 was completed a number of performance improvements have been made in leveled, so that the starting gap between Riak/leveled and Riak/leveldb has widened.
 
 The tests have been run using the new riak_kv_sweeper facility within develop.  This feature is an alternative approach to controlling and scheduling rebuilds, allowing for other work to be scheduled into the same fold.  As the test is focused on hashtree rebuilds, the test was run with:
 
@@ -173,7 +173,7 @@ The comparison between leveled and leveldb shows a marked difference in throughp
 
 Riak + leveled           |  Riak + leveldb
 :-------------------------:|:-------------------------:
-![](../test/volume/cluster_aae/output/summary_leveled_5n_100t_i2_nosync_inkcheckaae.png "LevelEd")  |  ![](../test/volume/cluster_aae/output/summary_leveldb_5n_100t_i2_nosync_sweeperaae.png "LevelDB")
+![](volume/cluster_aae/output/summary_leveled_5n_100t_i2_nosync_inkcheckaae.png "LevelEd")  |  ![](volume/cluster_aae/output/summary_leveldb_5n_100t_i2_nosync_sweeperaae.png "LevelDB")
 
 The differences between the two tests are:
 
@@ -231,7 +231,7 @@ As before, the Riak + leveled test had substantially lower tail latency, and ach
 
 Riak + leveled           |  Riak + leveldb
 :-------------------------:|:-------------------------:
-![](../test/volume/cluster_journalcompact/output/summary_leveled_5n_80t_i2_nosync_jc.png "LevelEd")  |  ![](../test/volume/cluster_journalcompact/output/summary_leveldb_5n_80t_i2_nosync.png "LevelDB")
+![](volume/cluster_journalcompact/output/summary_leveled_5n_80t_i2_nosync_jc.png "LevelEd")  |  ![](volume/cluster_journalcompact/output/summary_leveldb_5n_80t_i2_nosync.png "LevelDB")
 
 The throughput difference by hour of the test was:
 
@@ -271,11 +271,9 @@ The secondary index test was built on a test which sent
 The query load is relatively light compared to GET/PUT load in-line with Basho recommendations (decline from 350 queries per second to 120 queries per second through the test).  The queries
 return o(1000) results maximum towards the tail of the test and o(1) results at the start of the test.
 
-Further details on the implementation of the secondary indexes for volume tests can be found in the [driver file](https://github.com/martinsumner/basho_bench/blob/mas-nhsload/src/basho_bench_driver_riakc_pb.erl) for the test.
-
 Riak + leveled           |  Riak + leveldb
 :-------------------------:|:-------------------------:
-![](../test/volume/cluster_2i/output/summary_leveled_5n_80t_i2_nosync_2i.png "LevelEd")  |  ![](../test/volume/cluster_2i/output/summary_leveldb_5n_80t_i2_nosync_2i.png "LevelDB")
+![](volume/cluster_2i/output/summary_leveled_5n_80t_i2_nosync_2i.png "LevelEd")  |  ![](volume/cluster_2i/output/summary_leveldb_5n_80t_i2_nosync_2i.png "LevelDB")
 
 The results are similar as to previous tests.  Although the test is on infrastructure with optimised disk throughput (and with no flushing to disk on write from Riak to minimise direct pressure from Riak), when running the tests with leveldb disk busyness rapidly becomes a constraining factor - and the reaction to that is volatility in throughput.  Riak combined with leveldb is capable in short bursts of greater throughput than Riak + leveled, however when throttled within the cluster by a node or nodes with busy disks, the reaction is extreme.
 
@@ -307,7 +305,7 @@ Here is a side-by-side on a standard Phase 1 test on i2, without sync, and with 
 
 Riak + leveled           |  Riak + bitcask
 :-------------------------:|:-------------------------:
-![](../test/volume/cluster_five/output/summary_leveled_5n_60t_i2_16KB_nosync.png "LevelEd")  |  ![](../test/volume/cluster_five/output/summary_bitcask_5n_60t_i2_16KB_nosync.png "LevelDB")
+![](volume/cluster_five/output/summary_leveled_5n_60t_i2_16KB_nosync.png "LevelEd")  |  ![](volume/cluster_five/output/summary_bitcask_5n_60t_i2_16KB_nosync.png "LevelDB")
 
 In the first hour of the test, bitcask throughput is <b>39.13%</b> greater than leveled.  Over the whole test, the bitcask-backed cluster achieves <b>16.48%</b> more throughput than leveled, but in the last hour this advantage is just <b>0.34%</b>.
 
