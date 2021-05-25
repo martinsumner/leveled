@@ -2,7 +2,7 @@
 
 ## Introduction
 
-[![Build Status](https://travis-ci.com/martinsumner/leveled.svg?branch=master)](https://travis-ci.com/martinsumner/leveled)
+[Build Status](https://github.com/martinsumner/leveled/actions/workflows/erlang.yml/badge.svg?branch=develop-3.1)
 
 Leveled is a simple Key-Value store based on the concept of Log-Structured Merge Trees, with the following characteristics:
 
