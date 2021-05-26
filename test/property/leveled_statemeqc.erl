@@ -19,6 +19,8 @@
 
 -module(leveled_statemeqc).
 
+-ifdef(EQC).
+
 -include_lib("eqc/include/eqc.hrl").
 -include_lib("eqc/include/eqc_statem.hrl").
 -include_lib("eunit/include/eunit.hrl").
@@ -1286,3 +1288,5 @@ no_key_dups([]) ->
 no_key_dups([{_Action, Bucket, Key, SubKey, _Value} = E | Es]) ->
     [E | no_key_dups([ {A, B, K, SK, V} || {A, B, K, SK, V} <- Es,
                                            {B, K, SK} =/= {Bucket, Key, SubKey}])].
+
+-endif.
