@@ -17,7 +17,7 @@
 %%
 %% -------------------------------------------------------------------
 
--module(leveled_eqc).
+-module(leveled_simpleeqc).
 
 -ifdef(EQC).
 

@@ -82,4 +82,4 @@ To have rebar3 execute the full set of tests, run:
 
 For those with a Quickcheck license, property-based tests can also be run using:
 
-    `rebar3 as eqc do eunit --module=leveled_eqc`
+    `rebar3 as eqc do eunit --module=leveled_simpleeqc, eunit --module=leveled_statemeqc`
