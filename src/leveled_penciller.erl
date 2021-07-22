@@ -208,8 +208,9 @@
 -define(LEVEL_SCALEFACTOR, 
             [{0, 0}, 
                 {1, 4}, {2, 16}, {3, 64}, % Factor of 4
-                {4, 384}, {5, 2304}, % Factor of 6 
-                {6, 18432}, % Factor of 8 
+                {4, 256}, % Factor of 4 - but sst_files double size
+                {5, 1536}, % Factor of 6 
+                {6, 12288}, % Factor of 8 
                 {7, infinity}]).
             % As an alternative to going up by a factor of 8 at each level, 
             % increase by a factor of 4 at young levels - to make early  
@@ -307,17 +308,20 @@
 -type iterator() :: list(iterator_entry()).
 -type bad_ledgerkey() :: list().
 -type sqn_check() :: current|replaced|missing.
--type pclacc_fun() ::
-        fun((leveled_codec:ledger_key(),
-                leveled_codec:ledger_value(),
-                any()) -> any()).
 -type sst_fetchfun() ::
         fun((pid(),
                 leveled_codec:ledger_key(),
                 leveled_codec:segment_hash(),
-                non_neg_integer()) -> leveled_codec:ledger_kv()|not_present).
+                non_neg_integer()) -> 
+                    leveled_codec:ledger_kv()|not_present).
+-type levelzero_returnfun() :: fun((levelzero_cacheentry()) -> ok).
+-type pclacc_fun() ::
+        fun((leveled_codec:ledger_key(),
+                leveled_codec:ledger_value(),
+                any()) -> any()).
 
--export_type([levelzero_cacheentry/0, sqn_check/0]).
+
+-export_type([levelzero_cacheentry/0, levelzero_returnfun/0, sqn_check/0]).
 
 %%%============================================================================
 %%% API
