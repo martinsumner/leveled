@@ -208,9 +208,8 @@
 -define(LEVEL_SCALEFACTOR, 
             [{0, 0}, 
                 {1, 4}, {2, 16}, {3, 64}, % Factor of 4
-                {4, 256}, % Factor of 4 - but sst_files double size
-                {5, 1536}, % Factor of 6 
-                {6, 12288}, % Factor of 8 
+                {4, 384}, {5, 2304}, % Factor of 6 
+                {6, 18432}, % Factor of 8 
                 {7, infinity}]).
             % As an alternative to going up by a factor of 8 at each level, 
             % increase by a factor of 4 at young levels - to make early  

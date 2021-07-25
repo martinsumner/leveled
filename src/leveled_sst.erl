@@ -91,7 +91,7 @@
 -define(LMD_LENGTH, 4).
 -define(FLIPPER32, 4294967295).
 -define(COMPRESS_AT_LEVEL, 1).
--define(DOUBLESIZE_LEVEL, 4).
+-define(DOUBLESIZE_LEVEL, 3).
 -define(INDEX_MODDATE, true).
 -define(TOMB_COUNT, true).
 -define(USE_SET_FOR_SPEED, 64).
