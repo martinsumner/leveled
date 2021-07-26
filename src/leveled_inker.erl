@@ -103,7 +103,7 @@
         ink_fold/4,
         ink_loadpcl/5,
         ink_registersnapshot/2,
-        ink_confirmdelete/2,
+        ink_confirmdelete/3,
         ink_compactjournal/3,
         ink_clerkcomplete/3,
         ink_compactionpending/1,
@@ -266,12 +266,12 @@ ink_registersnapshot(Pid, Requestor) ->
 ink_releasesnapshot(Pid, Snapshot) ->
     gen_server:cast(Pid, {release_snapshot, Snapshot}).
 
--spec ink_confirmdelete(pid(), integer()) -> boolean().
+-spec ink_confirmdelete(pid(), integer(), pid()) -> ok.
 %% @doc
 %% Confirm if a Journal CDB file can be deleted, as it has been set to delete
 %% and is no longer in use by any snapshots
-ink_confirmdelete(Pid, ManSQN) ->
-    gen_server:call(Pid, {confirm_delete, ManSQN}).
+ink_confirmdelete(Pid, ManSQN, CDBpid) ->
+    gen_server:cast(Pid, {confirm_delete, ManSQN, CDBpid}).
 
 -spec ink_close(pid()) -> ok.
 %% @doc
@@ -542,29 +542,6 @@ handle_call({register_snapshot, Requestor},
                 State#state.active_journaldb,
                 State#state.journal_sqn},
                 State#state{registered_snapshots=Rs}};
-handle_call({confirm_delete, ManSQN}, _From, State) ->
-    % Check there are no snapshots that may be aware of the file process that
-    % is waiting to delete itself.
-    CheckSQNFun = 
-        fun({_R, _TS, SnapSQN}, Bool) ->
-            % If the Snapshot SQN was at the same point the file was set to
-            % delete (or after), then the snapshot would not have been told
-            % of the file, and the snapshot should not hold up its deletion 
-            (SnapSQN >= ManSQN) and Bool
-        end,
-    CheckSnapshotExpiryFun =
-        fun({_R, TS, _SnapSQN}) ->
-            Expiry = leveled_util:integer_time(TS) + State#state.snap_timeout,
-                % If Expiry has passed this will be false, and the snapshot
-                % will be removed from the list of registered snapshots and
-                % so will not longer block deletes
-            leveled_util:integer_now() < Expiry
-        end,
-    RegisteredSnapshots0 =
-        lists:filter(CheckSnapshotExpiryFun, State#state.registered_snapshots),
-    {reply, 
-        lists:foldl(CheckSQNFun, true, RegisteredSnapshots0), 
-        State#state{registered_snapshots = RegisteredSnapshots0}};
 handle_call(get_manifest, _From, State) ->
     {reply, leveled_imanifest:to_list(State#state.manifest), State};
 handle_call(print_manifest, _From, State) ->
@@ -734,6 +711,33 @@ handle_cast({clerk_complete, ManifestSnippet, FilesToDelete}, State) ->
                             manifest_sqn=NewManifestSQN,
                             pending_removals=FilesToDelete,
                             compaction_pending=false}};
+handle_cast({confirm_delete, ManSQN, CDB}, State) ->
+    % Check there are no snapshots that may be aware of the file process that
+    % is waiting to delete itself.
+    CheckSQNFun = 
+        fun({_R, _TS, SnapSQN}, Bool) ->
+            % If the Snapshot SQN was at the same point the file was set to
+            % delete (or after), then the snapshot would not have been told
+            % of the file, and the snapshot should not hold up its deletion 
+            (SnapSQN >= ManSQN) and Bool
+        end,
+    CheckSnapshotExpiryFun =
+        fun({_R, TS, _SnapSQN}) ->
+            Expiry = leveled_util:integer_time(TS) + State#state.snap_timeout,
+                % If Expiry has passed this will be false, and the snapshot
+                % will be removed from the list of registered snapshots and
+                % so will not longer block deletes
+            leveled_util:integer_now() < Expiry
+        end,
+    RegisteredSnapshots0 =
+        lists:filter(CheckSnapshotExpiryFun, State#state.registered_snapshots),
+    case lists:foldl(CheckSQNFun, true, RegisteredSnapshots0) of
+        true ->
+            leveled_cdb:cdb_deleteconfirmed(CDB);
+        false ->
+            ok
+    end,
+    {noreply, State#state{registered_snapshots = RegisteredSnapshots0}};
 handle_cast({release_snapshot, Snapshot}, State) ->
     leveled_log:log("I0003", [Snapshot]),
     case lists:keydelete(Snapshot, 1, State#state.registered_snapshots) of
