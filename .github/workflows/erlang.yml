@@ -1,0 +1,30 @@
+
+name: Erlang CI
+
+on:
+  push:
+    branches:
+    - develop-3.1
+    - develop-3.0
+    - develop-2.9
+  pull_request:
+    branches:
+    - develop-3.1
+    - develop-3.0
+    - develop-2.9
+
+jobs:
+
+  build:
+
+    runs-on: ubuntu-latest
+
+    container:
+      image: erlang:20.3
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Compile
+      run: rebar3 compile
+    - name: Run tests
+      run: rebar3 do xref, dialyzer, eunit --dir="src"
