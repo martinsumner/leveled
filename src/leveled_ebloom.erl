@@ -37,7 +37,9 @@ create_bloom(HashList) ->
         0 ->
             <<>>;
         L when L > 32768 ->
-            {HL0, HL1} = lists:partition(fun partition_hashfun/1, HashList),
+            {HL0, HL1} =
+                lists:partition(fun({_, Hash}) -> Hash band 32 == 0 end,
+                                HashList),
             Bin1 =
                 add_hashlist(HL0,
                                 32,
@@ -94,14 +96,6 @@ check_hash({_SegHash, Hash}, BloomBin) ->
 %%%============================================================================
 %%% Internal Functions
 %%%============================================================================
-
-partition_hashfun({_SegHash, Hash}) ->
-    case Hash band 32 of
-        0 ->
-            true;
-        _ ->
-            false
-    end.
 
 split_hash(Hash, SlotSplit) ->
     Slot = (Hash band 255) rem SlotSplit,
