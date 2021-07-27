@@ -115,7 +115,8 @@
             cdb_isrolling/1,
             cdb_clerkcomplete/1,
             cdb_getcachedscore/2,
-            cdb_putcachedscore/2]).
+            cdb_putcachedscore/2,
+            cdb_deleteconfirmed/1]).
 
 -export([finished_rolling/1,
             hashtable_calc/2]).
@@ -322,6 +323,12 @@ cdb_directfetch(Pid, PositionList, Info) ->
 %% RONSEAL
 cdb_close(Pid) ->
     gen_fsm:sync_send_all_state_event(Pid, cdb_close, infinity).
+
+-spec cdb_deleteconfirmed(pid()) -> ok.
+%% @doc
+%% Delete has been confirmed, so close (state should be delete_pending)
+cdb_deleteconfirmed(Pid) ->
+    gen_fsm:send_event(Pid, delete_confirmed).
 
 -spec cdb_complete(pid()) -> {ok, string()}.
 %% @doc
@@ -762,19 +769,11 @@ delete_pending({key_check, Key}, _From, State) ->
 delete_pending(timeout, State=#state{delete_point=ManSQN}) when ManSQN > 0 ->
     case is_process_alive(State#state.inker) of
         true ->
-            case leveled_inker:ink_confirmdelete(State#state.inker, ManSQN) of
-                true ->
-                    leveled_log:log("CDB04", [State#state.filename, ManSQN]),
-                    close_pendingdelete(State#state.handle, 
-                                        State#state.filename, 
-                                        State#state.waste_path),
-                    {stop, normal, State};
-                false ->
-                    {next_state,
-                        delete_pending,
-                        State,
-                        ?DELETE_TIMEOUT}
-            end;
+            ok = 
+                leveled_inker:ink_confirmdelete(State#state.inker,
+                                                ManSQN,
+                                                self()),
+            {next_state, delete_pending, State, ?DELETE_TIMEOUT};
         false ->
             leveled_log:log("CDB04", [State#state.filename, ManSQN]),
             close_pendingdelete(State#state.handle, 
@@ -782,6 +781,12 @@ delete_pending(timeout, State=#state{delete_point=ManSQN}) when ManSQN > 0 ->
                                 State#state.waste_path),
             {stop, normal, State}
     end;
+delete_pending(delete_confirmed, State=#state{delete_point=ManSQN}) ->
+    leveled_log:log("CDB04", [State#state.filename, ManSQN]),
+    close_pendingdelete(State#state.handle, 
+                        State#state.filename, 
+                        State#state.waste_path),
+    {stop, normal, State};
 delete_pending(destroy, State) ->
     leveled_log:log("CDB05", [State#state.filename, delete_pending, destroy]),
     close_pendingdelete(State#state.handle, 
