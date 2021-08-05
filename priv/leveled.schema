@@ -28,7 +28,7 @@
 
 %% @doc The key size of the Penciller's in-memory cache
 {mapping, "leveled.penciller_cache_size", "leveled.penciller_cache_size", [
-  {default, 28000},
+  {default, 16000},
   {datatype, integer},
   hidden
 ]}.
