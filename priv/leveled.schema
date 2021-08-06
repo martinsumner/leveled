@@ -166,7 +166,7 @@
 ]}.
 
 %% @doc Snapshot timeout (long)
-%% Maximum expected time for any othe rfold.  A fold which is taking longer
+%% Maximum expected time for any other fold.  A fold which is taking longer
 %% than this may fail as it will be released - potentially allowing for some
 %% file processes to delete.  Timeout is in seconds.
 {mapping, "leveled.snapshot_timeout_long", "leveled.snapshot_timeout_long", [
