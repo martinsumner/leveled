@@ -220,7 +220,7 @@
     %% For full description of options see ../docs/STARTUP_OPTIONS.md
     [{root_path, string()|undefined} |
             % Folder to be used as the root path for storing all the database
-            % information.  May be undefined is snapshot_bookie is a pid()
+            % information.  Should be undefined is snapshot_bookie is a pid()
             % TODO: Some sort of split root path to allow for mixed classes of
             % storage (e.g. like eleveldb tiered storage - only with 
             % separation between ledger and non-current journal)
