@@ -51,6 +51,7 @@
         book_plainstart/1,
         book_put/5,
         book_put/6,
+        book_put/8,
         book_tempput/7,
         book_mput/2,
         book_mput/3,
