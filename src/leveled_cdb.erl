@@ -96,6 +96,7 @@
             cdb_reopen_reader/3,
             cdb_get/2,
             cdb_put/3,
+            cdb_put/4,
             cdb_mput/2,
             cdb_getpositions/2,
             cdb_directfetch/3,
@@ -251,7 +252,15 @@ cdb_get(Pid, Key) ->
 %% It is assumed that the response to a "roll" will be to roll the file, which
 %% will close this file for writing after persisting the hashtree.  
 cdb_put(Pid, Key, Value) ->
-    gen_fsm:sync_send_event(Pid, {put_kv, Key, Value}, infinity).
+    cdb_put(Pid, Key, Value, false).
+
+-spec cdb_put(pid(), any(), any(), boolean()) -> ok|roll.
+%% @doc
+%% See cdb_put/3.  Addition of force-sync option, to be used when sync mode is
+%% none to force a sync to disk on this particlar put.
+cdb_put(Pid, Key, Value, Sync) ->
+
+    gen_fsm:sync_send_event(Pid, {put_kv, Key, Value, Sync}, infinity).
 
 -spec cdb_mput(pid(), list()) -> ok|roll.
 %% @doc
@@ -533,7 +542,7 @@ writer({key_check, Key}, _From, State) ->
                     loose_presence),
         writer,
         State};
-writer({put_kv, Key, Value}, _From, State) ->
+writer({put_kv, Key, Value, Sync}, _From, State) ->
     NewCount = State#state.current_count + 1,
     case NewCount >= State#state.max_count of
         true ->
@@ -552,8 +561,10 @@ writer({put_kv, Key, Value}, _From, State) ->
                     {reply, roll, writer, State};
                 {UpdHandle, NewPosition, HashTree} ->
                     ok =
-                        case State#state.sync_strategy of
-                            riak_sync ->
+                        case {State#state.sync_strategy, Sync} of
+                            {riak_sync, _} ->
+                                file:datasync(UpdHandle);
+                            {none, true} ->
                                 file:datasync(UpdHandle);
                             _ ->
                                 ok

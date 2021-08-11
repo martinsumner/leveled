@@ -489,6 +489,10 @@ book_tempput(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL)
 %% Index tags are not fetchable (as they will not be hashed), but are
 %% extractable via range query.
 %%
+%% The extended-arity book_put functions support the addition of an object
+%% TTL and a `sync` boolean to flush this PUT (and any other buffered PUTs to
+%% disk when the sync_stategy is `none`.
+%%
 %% The Bookie takes the request and passes it first to the Inker to add the
 %% request to the journal.
 %%
@@ -529,8 +533,15 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag) ->
                 leveled_codec:tag(), infinity|integer()) -> ok|pause.
 
 book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) when is_atom(Tag) ->
+    book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL, false).
+
+-spec book_put(pid(), leveled_codec:key(), leveled_codec:key(), any(), 
+                leveled_codec:index_specs(), 
+                leveled_codec:tag(), infinity|integer(),
+                boolean()) -> ok|pause.
+book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL, DataSync) ->
     gen_server:call(Pid,
-                    {put, Bucket, Key, Object, IndexSpecs, Tag, TTL},
+                    {put, Bucket, Key, Object, IndexSpecs, Tag, TTL, DataSync},
                     infinity).
 
 
@@ -1254,14 +1265,15 @@ init([Opts]) ->
     end.
 
 
-handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL}, From, State)
-                                        when State#state.head_only == false ->
+handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL, DataSync},
+                From, State) when State#state.head_only == false ->
     LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
     SW0 = os:timestamp(),
     {ok, SQN, ObjSize} = leveled_inker:ink_put(State#state.inker,
                                                LedgerKey,
                                                Object,
-                                               {IndexSpecs, TTL}),
+                                               {IndexSpecs, TTL},
+                                               DataSync),
     {SW1, Timings1} = 
         update_timings(SW0, {put, {inker, ObjSize}}, State#state.put_timings),
     Changes = preparefor_ledgercache(null,

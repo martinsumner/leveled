@@ -95,7 +95,7 @@
         code_change/3,
         ink_start/1,
         ink_snapstart/1,
-        ink_put/4,
+        ink_put/5,
         ink_mput/3,
         ink_get/3,
         ink_fetch/3,
@@ -197,16 +197,20 @@ ink_snapstart(InkerOpts) ->
 -spec ink_put(pid(),
                 leveled_codec:ledger_key(),
                 any(),
-                leveled_codec:journal_keychanges()) ->
-                                   {ok, integer(), integer()}.
+                leveled_codec:journal_keychanges(),
+                boolean()) ->
+                    {ok, integer(), integer()}.
 %% @doc
 %% PUT an object into the journal, returning the sequence number for the PUT
 %% as well as the size of the object (information required by the ledger).
 %%
 %% KeyChanges is a tuple of {KeyChanges, TTL} where the TTL is an
-%% expiry time (or infinity).
-ink_put(Pid, PrimaryKey, Object, KeyChanges) ->
-    gen_server:call(Pid, {put, PrimaryKey, Object, KeyChanges}, infinity).
+%% expiry time (or infinity).  A sync option can be passed, to override a
+%% sync_strategy of none for this particular PUT. 
+ink_put(Pid, PrimaryKey, Object, KeyChanges, DataSync) ->
+    gen_server:call(Pid,
+                    {put, PrimaryKey, Object, KeyChanges, DataSync},
+                    infinity).
 
 
 -spec ink_mput(pid(), any(), {list(), integer()|infinity}) -> {ok, integer()}.
@@ -491,15 +495,15 @@ init([LogOpts, InkerOpts]) ->
     end.
 
 
-handle_call({put, Key, Object, KeyChanges}, _From,
+handle_call({put, Key, Object, KeyChanges, DataSync}, _From,
                 State=#state{is_snapshot=Snap}) when Snap == false ->
-    case put_object(Key, Object, KeyChanges, State) of
+    case put_object(Key, Object, KeyChanges, DataSync, State) of
         {_, UpdState, ObjSize} ->
             {reply, {ok, UpdState#state.journal_sqn, ObjSize}, UpdState}
     end;
 handle_call({mput, Key, ObjChanges}, _From,
                 State=#state{is_snapshot=Snap}) when Snap == false ->
-    case put_object(Key, head_only, ObjChanges, State) of
+    case put_object(Key, head_only, ObjChanges, false, State) of
         {_, UpdState, _ObjSize} ->
             {reply, {ok, UpdState#state.journal_sqn}, UpdState}
     end;
@@ -893,16 +897,17 @@ get_cdbopts(InkOpts)->
 
 -spec put_object(leveled_codec:ledger_key(), 
                     any(), 
-                    leveled_codec:journal_keychanges(), 
+                    leveled_codec:journal_keychanges(),
+                    boolean(),
                     ink_state()) 
-                                    -> {ok|rolling, ink_state(), integer()}.
+                        -> {ok|rolling, ink_state(), integer()}.
 %% @doc
 %% Add the object to the current journal if it fits.  If it doesn't fit, a new 
 %% journal must be started, and the old journal is set to "roll" into a read
 %% only Journal. 
 %% The reply contains the byte_size of the object, using the size calculated
 %% to store the object.
-put_object(LedgerKey, Object, KeyChanges, State) ->
+put_object(LedgerKey, Object, KeyChanges, Sync, State) ->
     NewSQN = State#state.journal_sqn + 1,
     ActiveJournal = State#state.active_journaldb,
     {JournalKey, JournalBin} = 
@@ -914,7 +919,8 @@ put_object(LedgerKey, Object, KeyChanges, State) ->
                                     State#state.compress_on_receipt),
     case leveled_cdb:cdb_put(ActiveJournal,
                                 JournalKey,
-                                JournalBin) of
+                                JournalBin,
+                                Sync) of
         ok ->
             {ok,
                 State#state{journal_sqn=NewSQN},
@@ -1397,7 +1403,7 @@ compact_journal_wastediscarded_test_() ->
 
 compact_journal_testto(WRP, ExpectedFiles) ->
     RootPath = "test/test_area/journal",
-    CDBopts = #cdb_options{max_size=300000},
+    CDBopts = #cdb_options{max_size=300000, sync_strategy=none},
     RStrategy = [{?STD_TAG, recovr}],
     InkOpts = #inker_options{root_path=RootPath,
                                 cdb_options=CDBopts,
@@ -1414,7 +1420,8 @@ compact_journal_testto(WRP, ExpectedFiles) ->
     {ok, NewSQN1, ObjSize} = ink_put(Ink1,
                                         test_ledgerkey("KeyAA"),
                                         "TestValueAA",
-                                        {[], infinity}),
+                                        {[], infinity},
+                                        true),
     ?assertMatch(NewSQN1, 5),
     ok = ink_printmanifest(Ink1),
     R0 = ink_get(Ink1, test_ledgerkey("KeyAA"), 5),
@@ -1427,14 +1434,16 @@ compact_journal_testto(WRP, ExpectedFiles) ->
                             {ok, SQN, _} = ink_put(Ink1,
                                                     test_ledgerkey(PK),
                                                     leveled_rand:rand_bytes(10000),
-                                                    {[], infinity}),
+                                                    {[], infinity},
+                                                    false),
                             {SQN, test_ledgerkey(PK)}
                             end,
                         FunnyLoop),
     {ok, NewSQN2, ObjSize} = ink_put(Ink1,
                                         test_ledgerkey("KeyBB"),
                                         "TestValueBB",
-                                        {[], infinity}),
+                                        {[], infinity},
+                                        true),
     ?assertMatch(NewSQN2, 54),
     ActualManifest = ink_getmanifest(Ink1),
     ok = ink_printmanifest(Ink1),
@@ -1513,7 +1522,7 @@ empty_manifest_test() ->
                                             compress_on_receipt=false}),
     ?assertMatch(not_present, ink_fetch(Ink2, key_converter("Key1"), 1)),
     {ok, SQN, Size} = 
-        ink_put(Ink2, key_converter("Key1"), "Value1", {[], infinity}),
+        ink_put(Ink2, key_converter("Key1"), "Value1", {[], infinity}, false),
     ?assertMatch(1, SQN), % This is the first key - so should have SQN of 1
     ?assertMatch(true, Size > 0),
     {ok, V} = ink_fetch(Ink2, key_converter("Key1"), 1),
