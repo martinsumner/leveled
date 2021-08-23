@@ -307,17 +307,20 @@
 -type iterator() :: list(iterator_entry()).
 -type bad_ledgerkey() :: list().
 -type sqn_check() :: current|replaced|missing.
--type pclacc_fun() ::
-        fun((leveled_codec:ledger_key(),
-                leveled_codec:ledger_value(),
-                any()) -> any()).
 -type sst_fetchfun() ::
         fun((pid(),
                 leveled_codec:ledger_key(),
                 leveled_codec:segment_hash(),
-                non_neg_integer()) -> leveled_codec:ledger_kv()|not_present).
+                non_neg_integer()) -> 
+                    leveled_codec:ledger_kv()|not_present).
+-type levelzero_returnfun() :: fun((levelzero_cacheentry()) -> ok).
+-type pclacc_fun() ::
+        fun((leveled_codec:ledger_key(),
+                leveled_codec:ledger_value(),
+                any()) -> any()).
 
--export_type([levelzero_cacheentry/0, sqn_check/0]).
+
+-export_type([levelzero_cacheentry/0, levelzero_returnfun/0, sqn_check/0]).
 
 %%%============================================================================
 %%% API

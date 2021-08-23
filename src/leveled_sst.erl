@@ -91,6 +91,7 @@
 -define(LMD_LENGTH, 4).
 -define(FLIPPER32, 4294967295).
 -define(COMPRESS_AT_LEVEL, 1).
+-define(DOUBLESIZE_LEVEL, 3).
 -define(INDEX_MODDATE, true).
 -define(TOMB_COUNT, true).
 -define(USE_SET_FOR_SPEED, 64).
@@ -281,7 +282,11 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST) ->
 sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST, IndexModDate) ->
     {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
     PressMethod0 = compress_level(Level, OptsSST#sst_options.press_method),
-    OptsSST0 = OptsSST#sst_options{press_method = PressMethod0},
+    MaxSlots0 = maxslots_level(Level, OptsSST#sst_options.max_sstslots),
+    OptsSST0 =
+        OptsSST#sst_options{press_method = PressMethod0,
+                            max_sstslots = MaxSlots0},
+
     {[], [], SlotList, FK, _CountOfTombs}  =
         merge_lists(KVList, OptsSST0, IndexModDate),
     case gen_fsm:sync_send_event(Pid,
@@ -318,7 +323,7 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST, IndexModDate) ->
 %% deleted.
 %%
 %% The remainder of the lists is returned along with the StartKey and EndKey
-%% so that the remainder cna be  used in the next file in the merge.  It might
+%% so that the remainder can be  used in the next file in the merge.  It might
 %% be that the merge_lists returns nothing (for example when a basement file is
 %% all tombstones) - and the atom empty is returned in this case so that the
 %% file is not added to the manifest.
@@ -333,7 +338,10 @@ sst_newmerge(RootPath, Filename,
         KVL1, KVL2, IsBasement, Level, 
         MaxSQN, OptsSST, IndexModDate, TombCount) ->
     PressMethod0 = compress_level(Level, OptsSST#sst_options.press_method),
-    OptsSST0 = OptsSST#sst_options{press_method = PressMethod0},
+    MaxSlots0 = maxslots_level(Level, OptsSST#sst_options.max_sstslots),
+    OptsSST0 =
+        OptsSST#sst_options{press_method = PressMethod0,
+                            max_sstslots = MaxSlots0},
     {Rem1, Rem2, SlotList, FK, CountOfTombs} = 
         merge_lists(KVL1, KVL2, {IsBasement, Level}, OptsSST0,
                     IndexModDate, TombCount),
@@ -360,7 +368,13 @@ sst_newmerge(RootPath, Filename,
     end.
 
 -spec sst_newlevelzero(string(), string(),
-                            integer(), fun()|list(), pid()|undefined, integer(), 
+                            integer(), 
+                            fun((pos_integer(),
+                                    leveled_penciller:levelzero_returnfun())
+                                -> ok)|
+                                list(), 
+                            pid()|undefined, 
+                            integer(), 
                             sst_options()) ->
                                         {ok, pid(), noreply}.
 %% @doc
@@ -371,7 +385,10 @@ sst_newlevelzero(RootPath, Filename,
                     Slots, Fetcher, Penciller,
                     MaxSQN, OptsSST) ->
     PressMethod0 = compress_level(0, OptsSST#sst_options.press_method),
-    OptsSST0 = OptsSST#sst_options{press_method = PressMethod0},
+    MaxSlots0 = maxslots_level(0, OptsSST#sst_options.max_sstslots),
+    OptsSST0 =
+        OptsSST#sst_options{press_method = PressMethod0,
+                            max_sstslots = MaxSlots0},
     {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
     % Initiate the file into the "starting" state
     ok = gen_fsm:sync_send_event(Pid,
@@ -1321,6 +1338,12 @@ compress_level(Level, _PressMethod) when Level < ?COMPRESS_AT_LEVEL ->
     none;
 compress_level(_Level, PressMethod) ->
     PressMethod.
+
+-spec maxslots_level(non_neg_integer(), pos_integer()) ->  pos_integer().
+maxslots_level(Level, MaxSlotCount) when Level < ?DOUBLESIZE_LEVEL ->
+    MaxSlotCount;
+maxslots_level(_Level, MaxSlotCount) ->
+    2 * MaxSlotCount.
 
 write_file(RootPath, Filename, SummaryBin, SlotsBin,
             PressMethod, IdxModDate, CountOfTombs) ->
@@ -2918,8 +2941,13 @@ generate_indexkey(Term, Count) ->
                                     Count, 
                                     infinity).
 
-
 tombcount_test() ->
+    tombcount_tester(1),
+    tombcount_tester(2),
+    tombcount_tester(3),
+    tombcount_tester(4).
+
+tombcount_tester(Level) ->
     N = 1600,
     KL1 = generate_randomkeys(N div 2 + 1, N, 1, 4),
     KL2 = generate_indexkeys(N div 2),
@@ -2950,20 +2978,19 @@ tombcount_test() ->
         #sst_options{press_method=native,
                         log_options=leveled_log:get_opts()},
     {ok, SST1, _KD, _BB} = sst_newmerge(RP, Filename, 
-                                KVL1, KVL2, false, 2, 
+                                KVL1, KVL2, false, Level, 
                                 N, OptsSST, false, false),
     ?assertMatch(not_counted, sst_gettombcount(SST1)),
     ok = sst_close(SST1),
     ok = file:delete(filename:join(RP, Filename ++ ".sst")),
 
     {ok, SST2, _KD, _BB} = sst_newmerge(RP, Filename, 
-                                KVL1, KVL2, false, 2, 
+                                KVL1, KVL2, false, Level, 
                                 N, OptsSST, false, true),
     
     ?assertMatch(ExpectedCount, sst_gettombcount(SST2)),
     ok = sst_close(SST2),
     ok = file:delete(filename:join(RP, Filename ++ ".sst")).
-
 
 
 form_slot_test() ->
@@ -3269,7 +3296,68 @@ test_binary_slot(FullBin, Key, Hash, ExpectedValue) ->
     % io:format(user, "Fetch success in ~w microseconds ~n",
     %             [timer:now_diff(os:timestamp(), SW)]).
 
-    
+doublesize_test_() ->
+    {timeout, 300, fun doublesize_tester/0}.
+
+doublesize_tester() ->
+    io:format(user, "~nPreparing key lists for test~n", []),
+    Contents = lists:ukeysort(1, generate_randomkeys(1, 65000, 1, 6)),
+    SplitFun =
+        fun({K, V}, {L1, L2}) ->
+            case length(L1) > length(L2) of
+                true ->
+                    {L1, [{K, V}|L2]};
+                _ ->
+                    {[{K, V}|L1], L2}
+            end
+        end,
+    {KVL1, KVL2} = lists:foldr(SplitFun, {[], []}, Contents),
+
+    io:format(user, "Running tests over different sizes:~n", []),
+
+    size_tester(lists:sublist(KVL1, 4000), lists:sublist(KVL2, 4000), 8000),
+    size_tester(lists:sublist(KVL1, 16000), lists:sublist(KVL2, 16000), 32000),
+    size_tester(lists:sublist(KVL1, 24000), lists:sublist(KVL2, 24000), 48000),
+    size_tester(lists:sublist(KVL1, 32000), lists:sublist(KVL2, 32000), 64000).
+
+size_tester(KVL1, KVL2, N) ->
+    io:format(user, "~nStarting ... test with ~w keys ~n", [N]),
+
+    {RP, Filename} = {?TEST_AREA, "doublesize_test"},
+    OptsSST = 
+        #sst_options{press_method=native,
+                        log_options=leveled_log:get_opts()},
+    {ok, SST1, _KD, _BB} = sst_newmerge(RP, Filename, 
+                                KVL1, KVL2, false, ?DOUBLESIZE_LEVEL, 
+                                N, OptsSST, false, false),
+    ok = sst_close(SST1),
+    {ok, SST2, _SKEK, Bloom} =
+        sst_open(RP, Filename ++ ".sst", OptsSST, ?DOUBLESIZE_LEVEL),
+    FetchFun =
+        fun({K, V}) ->
+            {K0, V0} = sst_get(SST2, K),
+            ?assertMatch(K, K0),
+            ?assertMatch(V, V0)
+        end,
+    lists:foreach(FetchFun, KVL1 ++ KVL2),
+
+    CheckBloomFun =
+        fun({K, _V}) ->
+            leveled_ebloom:check_hash(leveled_codec:segment_hash(K), Bloom)
+        end,
+    KBIn = length(lists:filter(CheckBloomFun, KVL1 ++ KVL2)),
+    KBOut =
+        length(lists:filter(CheckBloomFun,
+            generate_randomkeys(1, 1000, 7, 9))),
+
+    ?assertMatch(N, KBIn),
+
+    io:format(user, "~w false positives in 1000~n", [KBOut]),
+
+    ok = sst_close(SST2),
+    ok = file:delete(filename:join(RP, Filename ++ ".sst")).
+
+
 merge_test() ->
     filelib:ensure_dir(?TEST_AREA),
     merge_tester(fun testsst_new/6, fun testsst_new/8).
