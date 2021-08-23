@@ -29,13 +29,32 @@
 %%% API
 %%%============================================================================
 
--spec create_bloom(list(integer())) -> bloom().
+-spec create_bloom(list(leveled_codec:segment_hash())) -> bloom().
 %% @doc
-%% Create a binary bloom filter from alist of hashes
+%% Create a binary bloom filter from a list of hashes
 create_bloom(HashList) ->
     case length(HashList) of
         0 ->
             <<>>;
+        L when L > 32768 ->
+            {HL0, HL1} =
+                lists:partition(fun({_, Hash}) -> Hash band 32 == 0 end,
+                                HashList),
+            Bin1 =
+                add_hashlist(HL0,
+                                32,
+                                0, 0, 0, 0, 0, 0, 0, 0,
+                                0, 0, 0, 0, 0, 0, 0, 0,
+                                0, 0, 0, 0, 0, 0, 0, 0,
+                                0, 0, 0, 0, 0, 0, 0, 0),
+            Bin2 =
+                add_hashlist(HL1,
+                                32,
+                                0, 0, 0, 0, 0, 0, 0, 0,
+                                0, 0, 0, 0, 0, 0, 0, 0,
+                                0, 0, 0, 0, 0, 0, 0, 0,
+                                0, 0, 0, 0, 0, 0, 0, 0),
+            <<Bin1/binary, Bin2/binary>>;
         L when L > 16384 ->
             add_hashlist(HashList,
                             32,
@@ -55,7 +74,7 @@ create_bloom(HashList) ->
     end.
 
 
--spec check_hash(integer(), bloom()) -> boolean().
+-spec check_hash(leveled_codec:segment_hash(), bloom()) -> boolean().
 %% @doc
 %% Check for the presence of a given hash within a bloom
 check_hash(_Hash, <<>>) ->
@@ -548,15 +567,17 @@ empty_bloom_test() ->
                     check_neg_hashes(BloomBin0, [0, 10, 100, 100000], {0, 0})).
 
 bloom_test_() ->
-    {timeout, 60, fun bloom_test_ranges/0}.
+    {timeout, 120, fun bloom_test_ranges/0}.
 
 bloom_test_ranges() ->
-    test_bloom(40000, 2),
-    test_bloom(128 * 256, 10),
-    test_bloom(20000, 2),
-    test_bloom(10000, 2),
-    test_bloom(5000, 2),
-    test_bloom(2000, 2).
+    test_bloom(80000, 4),
+    test_bloom(60000, 4),
+    test_bloom(40000, 4),
+    test_bloom(128 * 256, 4),
+    test_bloom(20000, 4),
+    test_bloom(10000, 4),
+    test_bloom(5000, 4),
+    test_bloom(2000, 4).
 
 test_bloom(N, Runs) ->
     ListOfHashLists = 
