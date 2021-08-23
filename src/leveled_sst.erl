@@ -2980,14 +2980,14 @@ tombcount_tester(Level) ->
     OptsSST = 
         #sst_options{press_method=native,
                         log_options=leveled_log:get_opts()},
-    {ok, SST1, _KD, _BB} = sst_newmerge(RP, Filename, 
+    {ok, SST1, KD, BB} = sst_newmerge(RP, Filename, 
                                 KVL1, KVL2, false, Level, 
                                 N, OptsSST, false, false),
     ?assertMatch(not_counted, sst_gettombcount(SST1)),
     ok = sst_close(SST1),
     ok = file:delete(filename:join(RP, Filename ++ ".sst")),
 
-    {ok, SST2, _KD, _BB} = sst_newmerge(RP, Filename, 
+    {ok, SST2, KD, BB} = sst_newmerge(RP, Filename, 
                                 KVL1, KVL2, false, Level, 
                                 N, OptsSST, false, true),
     
