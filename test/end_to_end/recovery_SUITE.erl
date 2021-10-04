@@ -4,6 +4,7 @@
 -export([all/0]).
 -export([
             recovery_with_samekeyupdates/1,
+            same_key_rotation_withindexes/1,
             hot_backup_simple/1,
             hot_backup_changes/1,
             retain_strategy/1,
@@ -22,6 +23,7 @@
 
 all() -> [
             recovery_with_samekeyupdates,
+            same_key_rotation_withindexes,
             hot_backup_simple,
             hot_backup_changes,
             retain_strategy,
@@ -152,6 +154,80 @@ recovery_with_samekeyupdates(_Config) ->
     testutil:reset_filestructure(BackupPath),
     testutil:reset_filestructure().
 
+same_key_rotation_withindexes(_Config) ->
+    % If we have the same key - but the indexes change.  Do we consistently
+    % recalc the indexes correctly, even when the key exists multiple times
+    % in the loader's mock ledger cache
+    RootPath = testutil:reset_filestructure(),
+    BookOpts = [{root_path, RootPath},
+                    {cache_size, 2000},
+                    {max_journalsize, 20000000},
+                    {reload_strategy, [{?RIAK_TAG, recalc}]},
+                    {sync_strategy, testutil:sync_strategy()}],
+    {ok, Book1} = leveled_bookie:book_start(BookOpts),
+    IndexGenFun =
+        fun(ID) ->
+            fun() ->
+                [{add, list_to_binary("binary_bin"), <<ID:32/integer>>}]
+            end
+        end,
+    
+    Bucket = <<"TestBucket">>,
+
+    ObjectGenFun =
+        fun(KeyID, IndexID) ->
+            Key = list_to_binary("Key" ++ integer_to_list(KeyID)),
+            Value = <<IndexID:32/integer>>,
+            GenRemoveFun = IndexGenFun(IndexID - 1),
+            testutil:set_object(Bucket,
+                                Key,
+                                Value,
+                                IndexGenFun(IndexID),
+                                GenRemoveFun())
+        end,
+    
+    IdxCnt = 8,
+    KeyCnt = 50,
+
+    Sequence =
+        lists:map(fun(K) -> lists:map(fun(I) -> {K, I} end, lists:seq(1, IdxCnt)) end,
+                    lists:seq(1, KeyCnt)),
+    ObjList =
+        lists:map(fun({K, I}) -> ObjectGenFun(K, I) end, lists:flatten(Sequence)),
+
+    lists:foreach(
+            fun({Obj, SpcL}) -> testutil:book_riakput(Book1, Obj, SpcL) end,
+            ObjList),
+
+    FoldKeysFun = fun(_B, K, Acc) -> [K|Acc] end,
+    CheckFun =
+        fun(Bookie) ->
+            {async, R} =
+                leveled_bookie:book_indexfold(Bookie,
+                                                {Bucket, <<>>},
+                                                {FoldKeysFun, []},
+                                                {list_to_binary("binary_bin"),
+                                                    <<0:32/integer>>, 
+                                                    <<255:32/integer>>},
+                                                {true, undefined}),
+            QR = R(),
+            BadAnswers =
+                lists:filter(fun({I, _K}) -> I =/= <<IdxCnt:32/integer>> end, QR),
+            io:format("Results ~w BadAnswers ~w~n",
+                        [length(QR), length(BadAnswers)]),
+            true = length(QR) == KeyCnt,
+            true = [] == BadAnswers
+        end,
+
+    CheckFun(Book1),
+    ok = leveled_bookie:book_close(Book1),
+
+    {ok, Book2} = leveled_bookie:book_start(BookOpts),
+    CheckFun(Book2),
+    ok = leveled_bookie:book_close(Book2),
+
+    testutil:reset_filestructure().
+
 
 hot_backup_simple(_Config) ->
     % The journal may have a hot backup.  This allows for an online Bookie
@@ -234,6 +310,8 @@ hot_backup_changes(_Config) ->
     {ok, BookBackup} = leveled_bookie:book_start(BookOptsBackup),
 
     ok = testutil:check_indexed_objects(BookBackup, B, KSpcL2, V2),
+
+    ok = leveled_bookie:book_close(BookBackup),
 
     testutil:reset_filestructure("backup0"),
     testutil:reset_filestructure().
