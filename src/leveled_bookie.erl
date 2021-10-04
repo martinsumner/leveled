@@ -2281,7 +2281,7 @@ recalcfor_ledgercache(_InkTag,
         case check_in_ledgercache(LK, KeyH, LedgerCache, loader) of
             false ->
                 leveled_penciller:pcl_fetch(Penciller, LK, KeyH, true);
-            {value, KV} ->
+            KV ->
                 KV
         end,
     OldMetadata =
@@ -2341,7 +2341,7 @@ addto_ledgercache({H, SQN, KeyChanges}, Cache, loader) ->
                             leveled_codec:segment_hash(),
                             ledger_cache(),
                             loader) ->
-                                false | {value, leveled_codec:ledger_kv()}.
+                                false | leveled_codec:ledger_kv().
 %% @doc
 %% Check the ledger cache for a Key, when the ledger cache is in loader mode
 %% and so is populating a queue not an ETS table
@@ -2350,18 +2350,9 @@ check_in_ledgercache(PK, Hash, Cache, loader) ->
         [] ->
             false;
         _ ->
-            search(fun({K,_V}) -> K == PK end,
-                            lists:reverse(Cache#ledger_cache.load_queue))
+            lists:keyfind(PK, 1, Cache#ledger_cache.load_queue)
     end.
 
--spec search(fun((any()) -> boolean()), list()) -> {value, any()}|false.
-search(Pred, [Hd|Tail]) ->
-    case Pred(Hd) of
-        true -> {value, Hd};
-        false -> search(Pred, Tail)
-    end;
-search(Pred, []) when is_function(Pred, 1) ->
-    false.
 
 -spec maybepush_ledgercache(integer(), ledger_cache(), pid()) 
                                             -> {ok|returned, ledger_cache()}.
@@ -3301,10 +3292,6 @@ sqnorder_mutatefold_test() ->
     ?assertMatch([{<<"B">>, <<"K1">>, {value, <<"V3">>}}], ObjLPost),
     
     ok = book_destroy(Bookie1).
-
-search_test() ->
-    ?assertMatch({value, 5}, search(fun(X) -> X == 5 end, lists:seq(1, 10))),
-    ?assertMatch(false, search(fun(X) -> X == 55 end, lists:seq(1, 10))).
 
 check_notfound_test() ->
     ProbablyFun = fun() -> probably end,
