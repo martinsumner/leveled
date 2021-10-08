@@ -2,7 +2,8 @@
 
 ## Introduction
 
-![Build Status](https://github.com/martinsumner/leveled/actions/workflows/erlang.yml/badge.svg?branch=develop-3.0)
+
+[![Build Status](https://github.com/martinsumner/leveled/actions/workflows/erlang.yml/badge.svg?branch=develop-3.0)](https://github.com/martinsumner/leveled/actions)
 
 Leveled is a simple Key-Value store based on the concept of Log-Structured Merge Trees, with the following characteristics:
 
