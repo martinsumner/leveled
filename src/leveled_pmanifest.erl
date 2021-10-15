@@ -545,21 +545,24 @@ release_snapshot(Manifest, Pid) ->
 %% A SST file which is in the delete_pending state can check to see if it is
 %% ready to delete against the manifest.
 ready_to_delete(Manifest, Filename) ->
-    {ChangeSQN, _ME} = dict:fetch(Filename, Manifest#manifest.pending_deletes),
-    case Manifest#manifest.min_snapshot_sqn of
-        0 ->
+    PendingDelete = dict:find(Filename, Manifest#manifest.pending_deletes),
+    
+    case {PendingDelete, Manifest#manifest.min_snapshot_sqn} of
+        {{ok, _}, 0} ->
             % no shapshots
             PDs = dict:erase(Filename, Manifest#manifest.pending_deletes),
             {true, Manifest#manifest{pending_deletes = PDs}};
-        N when N >= ChangeSQN ->
+        {{ok, {ChangeSQN, _ME}}, N} when N >= ChangeSQN ->
             % Every snapshot is looking at a version of history after this
             % was removed
             PDs = dict:erase(Filename, Manifest#manifest.pending_deletes),
             {true, Manifest#manifest{pending_deletes = PDs}};
-        _N ->
+        _ ->
             % If failed to delete then we should release a phantom pid
             % in case this is necessary to timeout any snapshots
-            % This wll also trigger a log  
+            % This wll also trigger a log
+            % This may also be because of i355 - a race condition when a second
+            % confirm_delete may be sent prior to the first being processed
             {false, release_snapshot(Manifest, ?PHANTOM_PID)}
     end.
 
