@@ -2108,6 +2108,7 @@ find_firstzero_test() ->
 
 cyclecount_test() ->
     io:format("~n~nStarting cycle count test~n"),
+    ok = filelib:ensure_dir("test/test_area"),
     KVL1 = generate_sequentialkeys(5000, []),
     KVL2 = lists:foldl(fun({K, V}, Acc) ->
                             H = hash(K),
