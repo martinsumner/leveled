@@ -2094,6 +2094,7 @@ find_firstzero_test() ->
 
 
 magickey_test() ->
+    ok = filelib:ensure_dir("test/test_area/"),
     {C, L1, L2} = {247, 10, 100},
         % Magic constants - will lead to first hash slot being empty
         % prompts potential issue when first hash slot is empty but
