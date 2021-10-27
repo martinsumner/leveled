@@ -105,6 +105,7 @@
         handle_info/3,
         terminate/3,
         code_change/4,
+        format_status/2,
         starting/2,
         starting/3,
         reader/2,
@@ -182,8 +183,7 @@
         :: {binary(), binary(), list(integer()), leveled_codec:ledger_key()}.
 -type sst_summary()
         :: #summary{}.
--type blockindex_cache()
-        :: any().  % An array but OTP 16 types
+-type blockindex_cache() :: array:array(). 
 
 %% yield_blockquery is used to determine if the work necessary to process a
 %% range query beyond the fetching the slot should be managed from within
@@ -199,13 +199,15 @@
                     root_path,
                     filename,
                     yield_blockquery = false :: boolean(),
-                    blockindex_cache :: blockindex_cache()|undefined,
+                    blockindex_cache ::
+                        blockindex_cache() | undefined |redacted,
                     compression_method = native :: press_method(),
                     index_moddate = ?INDEX_MODDATE :: boolean(),
                     timings = no_timing :: sst_timings(),
                     timings_countdown = 0 :: integer(),
                     starting_pid :: pid()|undefined,
-                    fetch_cache = array:new([{size, ?CACHE_SIZE}]),
+                    fetch_cache = array:new([{size, ?CACHE_SIZE}]) ::
+                        array:array() | redacted,
                     new_slots :: list()|undefined,
                     deferred_startup_tuple :: tuple()|undefined,
                     level :: non_neg_integer()|undefined,
@@ -885,6 +887,12 @@ terminate(Reason, _StateName, State) ->
 
 code_change(_OldVsn, StateName, State, _Extra) ->
     {ok, StateName, State}.
+
+format_status(normal, [_PDict, State]) ->
+    State;
+format_status(terminate, [_PDict, State]) ->
+    State#state{blockindex_cache = redacted, 
+                    fetch_cache = redacted}.
 
 
 %%%============================================================================
@@ -1962,7 +1970,7 @@ binarysplit_mapfun(MultiSlotBin, StartPos) ->
 
 
 -spec read_slots(file:io_device(), list(), 
-                    {false|list(), non_neg_integer(), binary()},
+                    {false|list(), non_neg_integer(), blockindex_cache()},
                     press_method(), boolean()) -> 
                         {boolean(), list(binaryslot_element())}.
 %% @doc
@@ -3643,6 +3651,24 @@ delete_pending_tester() ->
     leveled_sst:sst_setfordelete(Pid, false),
     timer:sleep(?DELETE_TIMEOUT + 1000),
     ?assertMatch(false, is_process_alive(Pid)).
+
+fetch_status_test() ->
+    {RP, Filename} = {?TEST_AREA, "fetchstatus_test"},
+    KVList0 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 4, 1, 20),
+    KVList1 = lists:ukeysort(1, KVList0),
+    [{FirstKey, _FV}|_Rest] = KVList1,
+    {LastKey, _LV} = lists:last(KVList1),
+    {ok, Pid, {FirstKey, LastKey}, _Bloom} = 
+        testsst_new(RP, Filename, 1, KVList1, length(KVList1), native),
+    {status, Pid, {module, gen_fsm}, SItemL} = sys:get_status(Pid),
+    S = lists:keyfind(state, 1, lists:nth(5, SItemL)),
+    true = is_integer(array:size(S#state.fetch_cache)),
+    true = is_integer(array:size(S#state.blockindex_cache)),
+    ST = format_status(terminate, [dict:new(), S]),
+    ?assertMatch(redacted, ST#state.blockindex_cache),
+    ?assertMatch(redacted, ST#state.fetch_cache),
+    ok = sst_close(Pid),
+    ok = file:delete(filename:join(RP, Filename ++ ".sst")).
 
 
 simple_persisted_test_() ->
