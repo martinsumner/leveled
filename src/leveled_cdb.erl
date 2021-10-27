@@ -1003,9 +1003,9 @@ set_writeops(SyncStrategy) ->
 %% the file handle
 open_active_file(FileName) when is_list(FileName) ->
     {ok, Handle} = file:open(FileName, ?WRITE_OPS),
-    {ok, Position} = file:position(Handle, {bof, 256*?DWORD_SIZE}),
-    {LastPosition, {HashTree, LastKey}} = startup_scan_over_file(Handle,
-                                                                    Position),
+    {ok, Position} = file:position(Handle, {bof, 256 * ?DWORD_SIZE}),
+    {LastPosition, {HashTree, LastKey}} =
+        startup_scan_over_file(Handle, Position),
     case file:position(Handle, eof) of 
         {ok, LastPosition} ->
             ok = file:close(Handle);
@@ -1239,8 +1239,7 @@ load_index(Handle) ->
     LoadIndexFun =
         fun(X) ->
             file:position(Handle, {bof, ?DWORD_SIZE * X}),
-            {HashTablePos, Count} = read_next_2_integers(Handle),
-            {HashTablePos, Count}
+            read_next_2_integers(Handle)
         end,
     list_to_tuple(lists:map(LoadIndexFun, Index)).
 
@@ -1279,8 +1278,8 @@ scan_index_returnpositions(Handle, Position, Count, PosList0) ->
     {ok, _} = file:position(Handle, Position),
     AddPosFun =
         fun({Hash, HPosition}, PosList) ->
-            case Hash of
-                0 ->
+            case {Hash, HPosition} of
+                {0, 0} ->
                     PosList;
                 _ ->
                     [HPosition|PosList]
@@ -1572,13 +1571,11 @@ extract_valueandsize(ValueAsBin) ->
     {ValueAsBin, byte_size(ValueAsBin)}.
 
 
-%% Used for reading lengths
-%% Note that the endian_flip is required to make the file format compatible 
-%% with CDB 
+%% Used for reading lengths with CDB 
 read_next_2_integers(Handle) ->
     case file:read(Handle, ?DWORD_SIZE) of 
-        {ok, <<Int1:32,Int2:32>>} -> 
-            {endian_flip(Int1), endian_flip(Int2)};
+        {ok, <<Int1:32/little-integer, Int2:32/little-integer>>} ->
+            {Int1, Int2};
         ReadError ->
             ReadError
     end.
@@ -1589,10 +1586,9 @@ read_next_n_integerpairs(Handle, NumberOfPairs) ->
 
 read_integerpairs(<<>>, Pairs) ->
     Pairs;
-read_integerpairs(<<Int1:32, Int2:32, Rest/binary>>, Pairs) ->
-    read_integerpairs(<<Rest/binary>>,
-                        Pairs ++ [{endian_flip(Int1),
-                                    endian_flip(Int2)}]).
+read_integerpairs(<<Int1:32/little-integer, Int2:32/little-integer,
+                        Rest/binary>>, Pairs) ->
+    read_integerpairs(<<Rest/binary>>, Pairs ++ [{Int1, Int2}]).
 
 
 
@@ -1626,10 +1622,11 @@ search_hash_table(Handle,
         ((Slot + CycleCount - 1) rem TotalSlots) * ?DWORD_SIZE 
         + FirstHashPosition,
     {ok, _} = file:position(Handle, Offset),
-    {StoredHash, DataLoc} = read_next_2_integers(Handle),
     
-    case StoredHash of
-        Hash ->
+    case read_next_2_integers(Handle) of
+        {0, 0} ->
+            {Timings, missing};
+        {Hash, DataLoc} ->
             KV = 
                 case QuickCheck of
                     loose_presence ->
@@ -1652,8 +1649,6 @@ search_hash_table(Handle,
                     UpdTimings = update_fetchtimings(Timings, CycleCount),
                     {UpdTimings, KV} 
             end;
-        0 ->
-            {Timings, missing};
         _ ->
             search_hash_table(Handle, 
                                 {FirstHashPosition,
@@ -1773,18 +1768,20 @@ perform_write_hash_tables(Handle, HashTreeBin, StartPos) ->
 %% in the hash table
 %% The List passed in should be made up of {Index, Position, Count} tuples
 write_top_index_table(Handle, BasePos, IndexList) ->
-    FnWriteIndex = fun({_Index, Pos, Count}, {AccBin, CurrPos}) ->
-        case Count == 0 of
-            true ->
-                PosLE = endian_flip(CurrPos),
-                NextPos = CurrPos;
-            false ->
-                PosLE = endian_flip(Pos),
-                NextPos = Pos + (Count * ?DWORD_SIZE)
-        end, 
-        CountLE = endian_flip(Count),
-        {<<AccBin/binary, PosLE:32, CountLE:32>>, NextPos}
-    end,
+    FnWriteIndex = 
+        fun({_Index, Pos, Count}, {AccBin, CurrPos}) ->
+            {Position, NextPos} =
+                case Count == 0 of
+                    true ->
+                        {CurrPos, CurrPos};
+                    false ->
+                        {Pos, Pos + (Count * ?DWORD_SIZE)}
+                end, 
+                {<<AccBin/binary,
+                        Position:32/little-integer,
+                        Count:32/little-integer>>,
+                    NextPos}
+            end,
     
     {IndexBin, _Pos} = lists:foldl(FnWriteIndex,
                                     {<<>>, BasePos},
@@ -1794,12 +1791,6 @@ write_top_index_table(Handle, BasePos, IndexList) ->
     ok = file:advise(Handle, 0, ?DWORD_SIZE * 256, will_need),
     ok.
 
-%% To make this compatible with original Bernstein format this endian flip
-%% and also the use of the standard hash function required.
-  
-endian_flip(Int) ->
-    <<X:32/unsigned-little-integer>> = <<Int:32>>,
-    X.
 
 hash(Key) ->
     leveled_util:magic_hash(Key).
@@ -1823,10 +1814,9 @@ key_value_to_record({Key, Value}, BinaryMode) ->
             end,
     KS = byte_size(BK),
     VS = byte_size(BV),
-    KS_FL = endian_flip(KS),
-    VS_FL = endian_flip(VS + 4),
     CRC = calc_crc(BK, BV),
-    <<KS_FL:32, VS_FL:32, BK:KS/binary, CRC:32/integer, BV:VS/binary>>.
+    <<KS:32/little-integer, (VS + 4):32/little-integer, 
+        BK:KS/binary, CRC:32/integer, BV:VS/binary>>.
 
 
 multi_key_value_to_record(KVList, BinaryMode, LastPosition) ->
@@ -1879,9 +1869,7 @@ to_slotmap(HashTree, Index) ->
     IndexLength = length(HPList) * 2,
     ConvertObjFun =
         fun({Hash, Position}) ->
-            HashLE = endian_flip(Hash),
-            PosLE = endian_flip(Position),
-            NewBin = <<HashLE:32, PosLE:32>>,
+            NewBin = <<Hash:32/little-integer, Position:32/little-integer>>,
             {hash_to_slot(Hash, IndexLength), NewBin}
         end,
     lists:map(ConvertObjFun, HPList).
@@ -1982,12 +1970,11 @@ write_hash_tables([Index|Rest], HashTree, CurrPos, BasePos,
 %%%%%%%%%%%%%%%  
 -ifdef(TEST).
 
-%%
-%% dump(FileName) -> List
-%% Given a file name, this function returns a list
-%% of {key,value} tuples from the CDB.
-%%
-
+%% To make this compatible with original Bernstein format this endian flip
+%% and also the use of the standard hash function required.
+endian_flip(Int) ->
+    <<X:32/unsigned-little-integer>> = <<Int:32>>,
+    X.
 
 %% from_dict(FileName,ListOfKeyValueTuples)
 %% Given a filename and a dictionary, create a cdb
@@ -2115,6 +2102,71 @@ find_firstzero_test() ->
     ?assertMatch([<<1:64/integer>>, <<0:64/integer>>,
                 <<89:64/integer>>, <<89:64/integer>>], LHS),
     ?assertMatch([<<71:64/integer>>, <<72:64/integer>>], RHS).
+
+
+magickey_test() ->
+    {C, L1, L2} = {247, 10, 100},
+        % Magic constants - will lead to first hash slot being empty
+        % prompts potential issue when first hash slot is empty but
+        % hash is 0
+
+    MagicKey = 
+        {315781,
+            stnd,
+            {o_rkv,
+                <<100,111,109,97,105,110,68,111,99,117,109,101,110,116>>,
+                <<48,48,48,49,52,54,56,54,51,48,48,48,51,50,49,54,51,51>>,
+                null}},
+    ?assertEqual(0, hash(MagicKey)),
+    NotMagicKVGen =
+        fun(I) ->
+            {{I + C, stnd, {o_rkv, <<"B">>, integer_to_binary(I + C), null}},
+                <<"V">>}
+        end,
+    Set1 = lists:map(NotMagicKVGen, lists:seq(1, L1)),
+    Set2 = lists:map(NotMagicKVGen, lists:seq(L1 + 1, L2)),
+    {ok, P1} =
+        cdb_open_writer("test/test_area/magic_hash.pnd",
+                        #cdb_options{binary_mode=true}),
+    
+    ok = cdb_put(P1, MagicKey, <<"MagicV0">>),
+    lists:foreach(fun({K, V}) -> cdb_put(P1, K, V) end, Set1),
+    ok = cdb_put(P1, MagicKey, <<"MagicV1">>),
+    lists:foreach(fun({K, V}) -> cdb_put(P1, K, V) end, Set2),
+    {ok, F2} = cdb_complete(P1),
+    {ok, P2} = cdb_open_reader(F2, #cdb_options{binary_mode=true}),
+    {GetK, GetV} = cdb_get(P2, MagicKey),
+    ?assertEqual(<<"MagicV1">>, GetV),
+    
+    AllKeys = cdb_directfetch(P2, cdb_getpositions(P2, all), key_only),
+    ?assertMatch(true, lists:member(MagicKey, AllKeys)),
+    ok = cdb_close(P2),
+
+    ok = file:delete("test/test_area/magic_hash.cdb"),
+    
+    {ok, P3} =
+        cdb_open_writer("test/test_area/magic_hash.pnd",
+                        #cdb_options{binary_mode=true}),
+    KVL = Set1 ++ [{MagicKey, <<"MagicV1">>}] ++ Set2,
+    ok = cdb_mput(P3, KVL),
+    {ok, F2} = cdb_complete(P3),
+    {ok, P4} = cdb_open_reader(F2, #cdb_options{binary_mode=true}),
+
+    {GetK, GetV} = cdb_get(P4, MagicKey),
+    ?assertEqual(<<"MagicV1">>, GetV),
+    ok = cdb_close(P4),
+    ok = file:delete("test/test_area/magic_hash.cdb"),
+    
+    {ok, P5} =
+        cdb_open_writer("test/test_area/magic_hash.pnd",
+                        #cdb_options{binary_mode=true}),
+    KVL5 = Set1 ++ Set2,
+    ok = cdb_mput(P5, KVL5),
+    {ok, F2} = cdb_complete(P5),
+    {ok, P6} = cdb_open_reader(F2, #cdb_options{binary_mode=true}),
+    missing = cdb_get(P6, MagicKey),
+    ok = cdb_close(P6),
+    ok = file:delete("test/test_area/magic_hash.cdb").
 
 
 cyclecount_test() ->
