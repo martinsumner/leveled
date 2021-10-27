@@ -167,7 +167,8 @@
         handle_cast/2,
         handle_info/2,
         terminate/2,
-        code_change/3]).
+        code_change/3,
+        format_status/2]).
 
 -export([
         pcl_snapstart/1,
@@ -240,7 +241,8 @@
 -define(TIMING_SAMPLESIZE, 100).
 -define(OPEN_LASTMOD_RANGE, {0, infinity}).
 
--record(state, {manifest, % a manifest record from the leveled_manifest module
+-record(state, {manifest ::
+                    leveled_pmanifest:manifest() | undefined | redacted,
                 persisted_sqn = 0 :: integer(), % The highest SQN persisted
                 
                 ledger_sqn = 0 :: integer(), % The highest SQN added to L0
@@ -250,18 +252,18 @@
                 
                 levelzero_pending = false :: boolean(),
                 levelzero_constructor :: pid() | undefined,
-                levelzero_cache = [] :: levelzero_cache(),
+                levelzero_cache = [] :: levelzero_cache() | redacted,
                 levelzero_size = 0 :: integer(),
                 levelzero_maxcachesize :: integer() | undefined,
                 levelzero_cointoss = false :: boolean(),
-                levelzero_index, % An array
+                levelzero_index :: array:array() | undefined | redacted,
                 
                 is_snapshot = false :: boolean(),
                 snapshot_fully_loaded = false :: boolean(),
                 snapshot_time :: pos_integer() | undefined,
                 source_penciller :: pid() | undefined,
 		        bookie_monref :: reference() | undefined,
-                levelzero_astree :: list() | undefined,
+                levelzero_astree :: list() | undefined | redacted,
                 
                 work_ongoing = false :: boolean(), % i.e. compaction work
                 work_backlog = false :: boolean(), % i.e. compaction work
@@ -336,7 +338,7 @@
 %% When starting a clone a query can also be passed.  This prevents the whole
 %% Level Zero memory space from being copied to the snapshot, instead the
 %% query is run against the level zero space and just the query results are
-%5 copied into the clone.  
+%% copied into the clone.  
 pcl_start(PCLopts) ->
     gen_server:start_link(?MODULE, [leveled_log:get_opts(), PCLopts], []).
 
@@ -1110,6 +1112,14 @@ terminate(Reason, _State=#state{is_snapshot=Snap}) when Snap == true ->
     leveled_log:log("P0007", [Reason]);
 terminate(Reason, _State) ->
     leveled_log:log("P0011", [Reason]).
+
+format_status(normal, [_PDict, State]) ->
+    State;
+format_status(terminate, [_PDict, State]) ->
+    State#state{manifest = redacted, 
+                    levelzero_cache = redacted,
+                    levelzero_index = redacted,
+                    levelzero_astree = redacted}.
 
 
 code_change(_OldVsn, State, _Extra) ->
@@ -2059,6 +2069,23 @@ shutdown_when_compact(Pid) ->
     true = lists:foldl(FoldFun, false, lists:seq(1, 100)),
     io:format("No outstanding compaction work for ~w~n", [Pid]),
     pcl_close(Pid).
+
+format_status_test() ->
+    RootPath = "test/test_area/ledger",
+    clean_testdir(RootPath),
+    {ok, PCL} = 
+        pcl_start(#penciller_options{root_path=RootPath,
+                                        max_inmemory_tablesize=1000,
+                                        sst_options=#sst_options{}}),
+    {status, PCL, {module, gen_server}, SItemL} = sys:get_status(PCL),
+    S = lists:keyfind(state, 1, lists:nth(5, SItemL)),
+    true = is_integer(array:size(element(2, S#state.manifest))),
+    ST = format_status(terminate, [dict:new(), S]),
+    ?assertMatch(redacted, ST#state.manifest),
+    ?assertMatch(redacted, ST#state.levelzero_cache),
+    ?assertMatch(redacted, ST#state.levelzero_index),
+    ?assertMatch(redacted, ST#state.levelzero_astree),
+    clean_testdir(RootPath).
 
 simple_server_test() ->
     RootPath = "test/test_area/ledger",
