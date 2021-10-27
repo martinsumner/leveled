@@ -2135,7 +2135,7 @@ magickey_test() ->
     lists:foreach(fun({K, V}) -> cdb_put(P1, K, V) end, Set2),
     {ok, F2} = cdb_complete(P1),
     {ok, P2} = cdb_open_reader(F2, #cdb_options{binary_mode=true}),
-    {_GetK, GetV} = cdb_get(P2, MagicKey),
+    {GetK, GetV} = cdb_get(P2, MagicKey),
     ?assertEqual(<<"MagicV1">>, GetV),
     
     AllKeys = cdb_directfetch(P2, cdb_getpositions(P2, all), key_only),
@@ -2152,7 +2152,7 @@ magickey_test() ->
     {ok, F2} = cdb_complete(P3),
     {ok, P4} = cdb_open_reader(F2, #cdb_options{binary_mode=true}),
 
-    {_GetK, GetV} = cdb_get(P4, MagicKey),
+    {GetK, GetV} = cdb_get(P4, MagicKey),
     ?assertEqual(<<"MagicV1">>, GetV),
     ok = cdb_close(P4),
     ok = file:delete("test/test_area/magic_hash.cdb"),
