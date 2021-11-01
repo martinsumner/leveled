@@ -21,14 +21,14 @@
 
 %% @doc The key size of the Bookie's in-memory cache 
 {mapping, "leveled.cache_size", "leveled.cache_size", [
-  {default, 2500},
+  {default, 2000},
   {datatype, integer},
   hidden
 ]}.
 
 %% @doc The key size of the Penciller's in-memory cache
 {mapping, "leveled.penciller_cache_size", "leveled.penciller_cache_size", [
-  {default, 28000},
+  {default, 20000},
   {datatype, integer},
   hidden
 ]}.
@@ -102,9 +102,9 @@
 
 %% @doc The number of times per day to score an individual file for compaction.
 %% The default value will lead to each file, on average, being scored once
-%% every 8 hours
+%% every 12 hours
 {mapping, "leveled.compaction_scores_perday", "leveled.compaction_scores_perday", [
-  {default, 3},
+  {default, 2},
   {datatype, integer}
 ]}.
 
@@ -170,7 +170,7 @@
 ]}.
 
 %% @doc Snapshot timeout (long)
-%% Maximum expected time for any othe rfold.  A fold which is taking longer
+%% Maximum expected time for any other fold.  A fold which is taking longer
 %% than this may fail as it will be released - potentially allowing for some
 %% file processes to delete.  Timeout is in seconds.
 {mapping, "leveled.snapshot_timeout_long", "leveled.snapshot_timeout_long", [
