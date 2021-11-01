@@ -23,14 +23,14 @@
 
 %% @doc The key size of the Bookie's in-memory cache 
 {mapping, "multi_backend.$name.leveled.cache_size", "riak_kv.multi_backend", [
-  {default, 4000},
+  {default, 2000},
   {datatype, integer},
   hidden
 ]}.
 
 %% @doc The key size of the Penciller's in-memory cache
 {mapping, "multi_backend.$name.leveled.penciller_cache_size", "riak_kv.multi_backend", [
-  {default, 28000},
+  {default, 20000},
   {datatype, integer},
   hidden
 ]}.
@@ -98,9 +98,9 @@
 
 %% @doc The number of times per day to score an individual file for compaction
 %% The default value will lead to each file, on average, being scored once
-%% every 8 hours
+%% every 12 hours
 {mapping, "multi_backend.$name.leveled.compaction_scores_perday", "riak_kv.multi_backend", [
-  {default, 3},
+  {default, 2},
   {datatype, integer}
 ]}.
 
@@ -169,7 +169,7 @@
 ]}.
 
 %% @doc Snapshot timeout (long)
-%% Maximum expected time for any othe rfold.  A fold which is taking longer
+%% Maximum expected time for any other fold.  A fold which is taking longer
 %% than this may fail as it will be released - potentially allowing for some
 %% file processes to delete.  Timeout is in seconds.
 {mapping, "multi_backend.$name.leveled.snapshot_timeout_long", "riak_kv.multi_backend", [
