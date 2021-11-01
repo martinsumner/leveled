@@ -98,7 +98,7 @@
 
 %% @doc The number of times per day to score an individual file for compaction
 %% The default value will lead to each file, on average, being scored once
-%% every 8 hours
+%% every 12 hours
 {mapping, "multi_backend.$name.leveled.compaction_scores_perday", "riak_kv.multi_backend", [
   {default, 2},
   {datatype, integer}
