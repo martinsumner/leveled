@@ -290,7 +290,12 @@ ink_close(Pid) ->
 ink_doom(Pid) ->
     gen_server:call(Pid, doom, infinity).
 
--spec ink_fold(pid(), integer(), {fun(), fun(), fun()}, any()) -> fun().
+-spec ink_fold(pid(),
+                integer(),
+                {leveled_cdb:filter_fun(),
+                    fun((string(), leveled_codec:sqn()) -> term()), 
+                    fun((term(), term()) -> term())},
+                    term()) -> fun(() -> term()).
 %% @doc
 %% Fold over the journal from a starting sequence number (MinSQN), passing 
 %% in three functions and a snapshot of the penciller.  The Fold functions
@@ -728,9 +733,9 @@ handle_cast({confirm_delete, ManSQN, CDB}, State) ->
     CheckSnapshotExpiryFun =
         fun({_R, TS, _SnapSQN}) ->
             Expiry = leveled_util:integer_time(TS) + State#state.snap_timeout,
-                % If Expiry has passed this will be false, and the snapshot
-                % will be removed from the list of registered snapshots and
-                % so will not longer block deletes
+            % If Expiry has passed this will be false, and the snapshot
+            % will be removed from the list of registered snapshots and
+            % so will not longer block deletes
             leveled_util:integer_now() < Expiry
         end,
     RegisteredSnapshots0 =
@@ -772,6 +777,7 @@ handle_cast({remove_logs, ForcedLogs}, State) ->
     CDBopts = State#state.cdb_options,
     CDBopts0 = CDBopts#cdb_options{log_options = leveled_log:get_opts()},
     {noreply, State#state{cdb_options = CDBopts0}}.
+
 
 %% handle the bookie stopping and stop this snapshot
 handle_info({'DOWN', BookieMonRef, process, _BookiePid, _Info},
