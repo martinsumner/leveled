@@ -638,7 +638,7 @@ book_sqn(Pid, Bucket, Key) ->
 book_sqn(Pid, Bucket, Key, Tag) ->
     gen_server:call(Pid, {head, Bucket, Key, Tag, true}, infinity).
 
--spec book_returnfolder(pid(), tuple()) -> {async, fun()}.
+-spec book_returnfolder(pid(), tuple()) -> {async, fun(() -> term())}.
 
 %% @doc Folds over store - deprecated
 %% The tuple() is a query, and book_returnfolder will return an {async, Folder}
@@ -710,7 +710,7 @@ book_returnfolder(Pid, RunnerType) ->
                      FoldAccT :: {FoldFun, Acc},
                      Range :: {IndexField, Start, End},
                      TermHandling :: {ReturnTerms, TermRegex}) ->
-                            {async, Runner::fun()}
+                            {async, Runner::fun(() -> term())}
                                 when Bucket::term(),
                                      StartKey::term(),
                                      FoldFun::fun((Bucket, Key | {IndexVal, Key}, Acc) -> Acc),
@@ -1120,7 +1120,7 @@ book_destroy(Pid) ->
     gen_server:call(Pid, destroy, infinity).
 
 
--spec book_hotbackup(pid()) -> {async, fun()}.
+-spec book_hotbackup(pid()) -> {async, fun(() -> ok)}.
 %% @doc Backup the Bookie
 %% Return a function that will take a backup of a snapshot of the Journal.
 %% The function will be 1-arity, and can be passed the absolute folder name
@@ -1808,7 +1808,8 @@ set_options(Opts) ->
 
 -spec return_snapfun(book_state(), store|ledger, 
                         tuple()|no_lookup|undefined, 
-                        boolean(), boolean()) -> fun().
+                        boolean(), boolean()) 
+                            -> fun(() -> {ok, pid(), pid()|null}).
 %% @doc
 %% Generates a function from which a snapshot can be created.  The primary
 %% factor here is the SnapPreFold boolean.  If this is true then the snapshot
@@ -1845,7 +1846,7 @@ snaptype_by_presence(true) ->
 snaptype_by_presence(false) -> 
     ledger.
 
--spec get_runner(book_state(), tuple()) -> {async, fun()}.
+-spec get_runner(book_state(), tuple()) -> {async, fun(() -> term())}.
 %% @doc
 %% Get an {async, Runner} for a given fold type.  Fold types have different 
 %% tuple inputs
@@ -1972,7 +1973,8 @@ get_runner(State, DeprecatedQuery) ->
     get_deprecatedrunner(State, DeprecatedQuery).
 
 
--spec get_deprecatedrunner(book_state(), tuple()) -> {async, fun()}.
+-spec get_deprecatedrunner(book_state(), tuple()) ->
+                                                {async, fun(() -> term())}.
 %% @doc
 %% Get an {async, Runner} for a given fold type.  Fold types have different 
 %% tuple inputs.  These folds are currently used in tests, but are deprecated.
