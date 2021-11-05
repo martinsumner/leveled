@@ -1957,7 +1957,13 @@ pointer_mapfun(Pointer) ->
         SK, 
         EK}.
 
--spec binarysplit_mapfun(binary(), integer()) -> fun().
+
+-type slotbin_fun() ::
+    fun(({non_neg_integer(), non_neg_integer(), non_neg_integer(),
+        range_endpoint(), range_endpoint()}) ->
+            {binary(), non_neg_integer(), range_endpoint(), range_endpoint()}).
+
+-spec binarysplit_mapfun(binary(), integer()) -> slotbin_fun().
 %% @doc
 %% Return a function that can pull individual slot binaries from a binary
 %% covering multiple slots

@@ -175,7 +175,7 @@
         fun((any(), binary(), integer(), any(), fun((binary()) -> any())) ->
             {stop|loop, any()}).
 
-
+-export_type([filter_fun/0]).
 
 %%%============================================================================
 %%% API
@@ -1386,8 +1386,8 @@ startup_filter(Key, _ValueAsBin, Position, {Hashtree, _LastKey}, _ExtractFun) ->
     {loop, {put_hashtree(Key, Position, Hashtree), Key}}.
 
 
--spec scan_over_file(file:io_device(), file_location(), fun(), any(), any())
-                                                -> {file_location(), any()}.
+-spec scan_over_file(file:io_device(), file_location(),
+                    filter_fun(), any(), any()) -> {file_location(), any()}.
 %% Scan for key changes - scan over file returning applying FilterFun
 %% The FilterFun should accept as input:
 %% - Key, ValueBin, Position, Accumulator, Fun (to extract values from Binary)
@@ -1500,8 +1500,11 @@ safe_read_next_value(Handle, Length, KeyBin) ->
     ReadFun =  fun(VBin) -> crccheck(VBin, KeyBin) end,
     safe_read_next(Handle, Length, ReadFun).
 
+-type read_output() :: {term(), binary()}|binary()|term()|false.
+-type read_fun() :: fun((binary()) -> read_output()).
 
--spec safe_read_next(file:io_device(), integer(), fun()) -> any().
+-spec safe_read_next(file:io_device(), integer(), read_fun())
+                                                -> read_output().
 %% @doc
 %% Read the next item of length Length
 %% Previously catching error:badarg was sufficient to capture errors of
@@ -1515,7 +1518,7 @@ safe_read_next(Handle, Length, ReadFun) ->
             false
     end.
 
--spec loose_read(file:io_device(), integer(), fun()) -> any().
+-spec loose_read(file:io_device(), integer(), read_fun()) -> read_output().
 %% @doc
 %% Read with minimal error handling (only eof) - to be wrapped in 
 %% safe_read_next/3 to catch exceptions.
