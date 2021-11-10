@@ -339,10 +339,10 @@
             % To which level of the ledger should the ledger contents be
             % pre-loaded into the pagecache (using fadvise on creation and
             % startup)
-        {compression_method, native|lz4} |
+        {compression_method, native|lz4|zstd} |
             % Compression method and point allow Leveled to be switched from
             % using bif based compression (zlib) to using nif based compression
-            % (lz4).
+            % (lz4 or zstd).
             % Defaults to ?COMPRESSION_METHOD
         {compression_point, on_compact|on_receipt} |
             % The =compression point can be changed between on_receipt (all

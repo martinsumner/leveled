@@ -64,7 +64,8 @@
                         source_inker :: pid() | undefined,
                         reload_strategy = [] :: list(),
                         waste_retention_period :: integer() | undefined,
-                        compression_method = native :: lz4|native,
+                        compression_method = native
+                            :: leveled_codec:compression_method(),
                         compress_on_receipt = false :: boolean(),
                         max_run_length,
                         singlefile_compactionperc :: float()|undefined,
@@ -82,7 +83,8 @@
                         bookies_mem :: tuple() | undefined,
                         source_penciller :: pid() | undefined,
                         snapshot_longrunning = true :: boolean(),
-                        compression_method = native :: lz4|native,
+                        compression_method = native 
+                            :: leveled_codec:compression_method(),
                         levelzero_cointoss = false :: boolean(),
                         snaptimeout_short :: pos_integer() | undefined,
                         snaptimeout_long :: pos_integer() | undefined}).
@@ -92,7 +94,8 @@
                          max_run_length :: integer() | undefined,
                          cdb_options = #cdb_options{} :: #cdb_options{},
                          waste_retention_period :: integer() | undefined,
-                         compression_method = native :: lz4|native,
+                         compression_method = native
+                            :: leveled_codec:compression_method(),
                          singlefile_compactionperc :: float()|undefined,
                          maxrunlength_compactionperc :: float()|undefined,
                          score_onein = 1 :: pos_integer(),

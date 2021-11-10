@@ -470,7 +470,7 @@ merge_file_test() ->
                                 2,
                                 KL4_L2,
                                 999999,
-                                #sst_options{press_method = lz4}),
+                                #sst_options{press_method = zstd}),
     E1 = #manifest_entry{owner = PidL1_1,
                             filename = "./KL1_L1.sst",
                             end_key = lists:last(KL1_L1),

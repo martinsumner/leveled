@@ -959,8 +959,16 @@ remove_journal_test(_Config) ->
     ok = leveled_bookie:book_destroy(Bookie3).
 
 
-
 many_put_fetch_switchcompression(_Config) ->
+    {T0, ok} =
+        timer:tc(fun many_put_fetch_switchcompression_tester/1, [native]),
+    {T1, ok} =
+        timer:tc(fun many_put_fetch_switchcompression_tester/1, [lz4]),
+    {T2, ok} =
+        timer:tc(fun many_put_fetch_switchcompression_tester/1, [zstd]),
+    io:format("Test timings native=~w lz4=~w, zstd=~w", [T0, T1, T2]).
+
+many_put_fetch_switchcompression_tester(CompressionMethod) ->
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = [{root_path, RootPath},
                     {max_pencillercachesize, 16000},
@@ -975,7 +983,7 @@ many_put_fetch_switchcompression(_Config) ->
                     {max_journalsize, 500000000},
                     {max_pencillercachesize, 32000},
                     {sync_strategy, testutil:sync_strategy()},
-                    {compression_method, lz4}],
+                    {compression_method, CompressionMethod}],
     
     %% Change compression method
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),

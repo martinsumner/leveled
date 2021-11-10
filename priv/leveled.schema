@@ -34,8 +34,8 @@
 ]}.
 
 %% @doc Compression method
-%% Can be lz4 or native (which will use the Erlang native zlib compression)
-%% within term_to_binary
+%% Can be lz4, zstd or native (which will use the Erlang native zlib
+%% compression) within term_to_binary
 {mapping, "leveled.compression_method", "leveled.compression_method", [
   {default, native},
   {datatype, atom}
