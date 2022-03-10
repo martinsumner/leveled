@@ -747,12 +747,14 @@ handle_call({fetch, Key, Hash, UseL0Index}, _From, State) ->
     {reply, R, State#state{timings=UpdTimings0, timings_countdown=CountDown}};
 handle_call({check_sqn, Key, Hash, SQN}, _From, State) ->
     {reply,
-        compare_to_sqn(plain_fetch_mem(Key,
-                                        Hash,
-                                        State#state.manifest,
-                                        State#state.levelzero_cache,
-                                        State#state.levelzero_index),
-                        SQN),
+        compare_to_sqn(
+            fetch_sqn(
+                Key,
+                Hash,
+                State#state.manifest,
+                State#state.levelzero_cache,
+                State#state.levelzero_index),
+                SQN),
         State};
 handle_call({fetch_keys, 
                     StartKey, EndKey, 
@@ -1437,14 +1439,18 @@ timed_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, Timings) ->
     {R, UpdTimings}.
 
 
--spec plain_fetch_mem(tuple(), {integer(), integer()}, 
-                        leveled_pmanifest:manifest(), list(), 
-                        leveled_pmem:index_array()) -> not_present|tuple().
+-spec fetch_sqn(
+    leveled_codec:ledger_key(),
+    leveled_codec:segment_hash(),
+    leveled_pmanifest:manifest(),
+    list(),
+    leveled_pmem:index_array()) ->
+        not_present|leveled_codec:ledger_kv()|leveled_codec:ledger_sqn().
 %% @doc
 %% Fetch the result from the penciller, starting by looking in the memory, 
 %% and if it is not found looking down level by level through the LSM tree.
-plain_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
-    R = fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, fun sst_get/4),
+fetch_sqn(Key, Hash, Manifest, L0Cache, L0Index) ->
+    R = fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, fun sst_getsqn/4),
     element(1, R).
 
 fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, FetchFun) ->
@@ -1497,8 +1503,8 @@ timed_sst_get(PID, Key, Hash, Level) ->
     T0 = timer:now_diff(os:timestamp(), SW),
     log_slowfetch(T0, R, PID, Level, ?SLOW_FETCH).
 
-sst_get(PID, Key, Hash, Level) ->
-    leveled_sst:sst_get(PID, Key, Hash).
+sst_getsqn(PID, Key, Hash, _Level) ->
+    leveled_sst:sst_getsqn(PID, Key, Hash).
 
 log_slowfetch(T0, R, PID, Level, FetchTolerance) ->
     case {T0, R} of
@@ -1513,29 +1519,26 @@ log_slowfetch(T0, R, PID, Level, FetchTolerance) ->
     end.
 
 
--spec compare_to_sqn(tuple()|not_present, integer()) -> sqn_check().
+-spec compare_to_sqn(
+    leveled_codec:ledger_kv()|leveled_codec:sqn()|not_present,
+    integer()) -> sqn_check().
 %% @doc
 %% Check to see if the SQN in the penciller is after the SQN expected for an 
 %% object (used to allow the journal to check compaction status from a cache
 %% of the ledger - objects with a more recent sequence number can be compacted).
+compare_to_sqn(not_present, _SQN) ->
+    missing;
+compare_to_sqn(ObjSQN, SQN) when is_integer(ObjSQN), ObjSQN > SQN ->
+    replaced;
+compare_to_sqn(ObjSQN, _SQN) when is_integer(ObjSQN) ->
+    % Normally we would expect the SQN to be equal here, but
+    % this also allows for the Journal to have a more advanced
+    % value. We return true here as we wouldn't want to
+    % compact thta more advanced value, but this may cause
+    % confusion in snapshots.
+    current;
 compare_to_sqn(Obj, SQN) ->
-    case Obj of
-        not_present ->
-            missing;
-        Obj ->
-            SQNToCompare = leveled_codec:strip_to_seqonly(Obj),
-            if
-                SQNToCompare > SQN ->
-                    replaced;
-                true ->
-                    % Normally we would expect the SQN to be equal here, but
-                    % this also allows for the Journal to have a more advanced
-                    % value. We return true here as we wouldn't want to
-                    % compact thta more advanced value, but this may cause
-                    % confusion in snapshots.
-                    current
-            end
-    end.
+    compare_to_sqn(leveled_codec:strip_to_seqonly(Obj), SQN).
 
 
 %%%============================================================================
