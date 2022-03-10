@@ -184,6 +184,8 @@
 -type sst_summary()
         :: #summary{}.
 -type blockindex_cache() :: array:array(). 
+-type fetch_cache()
+        :: array:array()|no_cache. % An array but OTP 16 types
 
 %% yield_blockquery is used to determine if the work necessary to process a
 %% range query beyond the fetching the slot should be managed from within
@@ -207,7 +209,7 @@
                     timings_countdown = 0 :: integer(),
                     starting_pid :: pid()|undefined,
                     fetch_cache = array:new([{size, ?CACHE_SIZE}]) ::
-                        array:array() | redacted,
+                        fetch_cache() | redacted,
                     new_slots :: list()|undefined,
                     deferred_startup_tuple :: tuple()|undefined,
                     level :: non_neg_integer()|undefined,
@@ -216,24 +218,24 @@
                     high_modified_date :: non_neg_integer()|undefined}).
 
 -record(sst_timings, 
-                {sample_count = 0 :: integer(),
-                    index_query_time = 0 :: integer(),
-                    lookup_cache_time = 0 :: integer(),
-                    slot_index_time = 0 :: integer(),
-                    fetch_cache_time = 0 :: integer(),
-                    slot_fetch_time = 0 :: integer(),
-                    noncached_block_time = 0 :: integer(),
-                    lookup_cache_count = 0 :: integer(),
-                    slot_index_count = 0 :: integer(),
-                    fetch_cache_count = 0 :: integer(),
-                    slot_fetch_count = 0 :: integer(),
-                    noncached_block_count = 0 :: integer()}).
+        {sample_count = 0 :: integer(),
+            index_query_time = 0 :: integer(),
+            lookup_cache_time = 0 :: integer(),
+            slot_index_time = 0 :: integer(),
+            fetch_cache_time = 0 :: integer(),
+            slot_fetch_time = 0 :: integer(),
+            noncached_block_time = 0 :: integer(),
+            lookup_cache_count = 0 :: integer(),
+            slot_index_count = 0 :: integer(),
+            fetch_cache_count = 0 :: integer(),
+            slot_fetch_count = 0 :: integer(),
+            noncached_block_count = 0 :: integer()}).
 
 -record(build_timings,
-                {slot_hashlist = 0 :: integer(),
-                    slot_serialise = 0 :: integer(),
-                    slot_finish = 0 :: integer(),
-                    fold_toslot = 0 :: integer()}).
+        {slot_hashlist = 0 :: integer(),
+            slot_serialise = 0 :: integer(),
+            slot_finish = 0 :: integer(),
+            fold_toslot = 0 :: integer()}).
 
 -type sst_state() :: #state{}.
 -type sst_timings() :: no_timing|#sst_timings{}.
@@ -1102,6 +1104,24 @@ extract_hash(NotHash) ->
 cache_hash({_SegHash, ExtraHash}) when is_integer(ExtraHash) ->
     ExtraHash band (?CACHE_SIZE - 1).
 
+-spec fetch_from_cache(
+    non_neg_integer(),
+    fetch_cache()) -> undefined|leveled_codec:ledger_kv().
+fetch_from_cache(_CacheHash, no_cache) ->
+    undefined;
+fetch_from_cache(CacheHash, Cache) ->
+    array:get(CacheHash, Cache).
+
+-spec add_to_cache(
+    non_neg_integer(),
+    leveled_codec:ledger_kv()
+    fetch_cache()) -> fetch_cache().
+add_to_cache(_CacheHash, _KV, no_cache) ->
+    no_cache;
+add_to_cache(CacheHash, KV, FetchCache) ->
+    array:set(CacheHash, KV, FetchCache).
+
+
 -spec tune_hash(non_neg_integer()) -> non_neg_integer().
 %% @doc
 %% Only 15 bits of the hash is ever interesting
@@ -1238,7 +1258,7 @@ fetch(LedgerKey, Hash, State, Timings0) ->
                         update_timings(SW2, Timings2, slot_index, true),
                     FetchCache = State#state.fetch_cache,
                     CacheHash = cache_hash(Hash),
-                    case array:get(CacheHash, FetchCache) of 
+                    case fetch_from_cache(CacheHash, FetchCache) of 
                         {LedgerKey, V} ->
                             {_SW4, Timings4} = 
                                 update_timings(SW3, 
@@ -1257,8 +1277,8 @@ fetch(LedgerKey, Hash, State, Timings0) ->
                                                 PressMethod,
                                                 IdxModDate,
                                                 not_present),
-                            FetchCache0 = 
-                                array:set(CacheHash, Result, FetchCache),
+                            FetchCache0 =
+                                add_to_cache(CacheHash, Result, FetchCache),
                             {_SW4, Timings4} = 
                                 update_timings(SW3, 
                                                 Timings3, 
@@ -1382,10 +1402,10 @@ write_file(RootPath, Filename, SummaryBin, SlotsBin,
                                         false),
     FinalName.
 
-read_file(Filename, State, LoadPageCache) ->
+read_file(Filename, State, CacheFile) ->
     {Handle, FileVersion, SummaryBin} = 
         open_reader(filename:join(State#state.root_path, Filename),
-                    LoadPageCache),
+                    CacheFile),
     UpdState0 = imp_fileversion(FileVersion, State),
     {Summary, Bloom, SlotList, TombCount} =
         read_table_summary(SummaryBin, UpdState0#state.tomb_count),
@@ -1396,10 +1416,18 @@ read_file(Filename, State, LoadPageCache) ->
     leveled_log:log("SST03", [Filename,
                                 Summary#summary.size,
                                 Summary#summary.max_sqn]),
+    FetchCache =
+        case CacheFile of
+            true ->
+                State#state.fetch_cache;
+            false ->
+                no_cache
+        end,
     {UpdState1#state{summary = UpdSummary,
                         handle = Handle,
                         filename = Filename,
-                        tomb_count = TombCount},
+                        tomb_count = TombCount,
+                        fetch_cache = FetchCache},
         Bloom}.
 
 gen_fileversion(PressMethod, IdxModDate, CountOfTombs) ->
