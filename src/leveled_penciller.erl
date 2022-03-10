@@ -1450,7 +1450,8 @@ roll_memory(State, true) ->
 %% the result tuple includes the level at which the result was found.
 timed_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, Timings) ->
     SW = os:timestamp(),
-    {R, Level} = fetch_mem(Key, Hash, Manifest, L0Cache, L0Index),
+    {R, Level} =
+        fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, fun timed_sst_get/4),
     UpdTimings = update_timings(SW, Timings, R, Level),
     {R, UpdTimings}.
 
@@ -1462,10 +1463,10 @@ timed_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, Timings) ->
 %% Fetch the result from the penciller, starting by looking in the memory, 
 %% and if it is not found looking down level by level through the LSM tree.
 plain_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
-    R = fetch_mem(Key, Hash, Manifest, L0Cache, L0Index),
+    R = fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, fun sst_get/4),
     element(1, R).
 
-fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
+fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, FetchFun) ->
     PosList = 
         case L0Index of
             none ->
@@ -1476,7 +1477,7 @@ fetch_mem(Key, Hash, Manifest, L0Cache, L0Index) ->
     L0Check = leveled_pmem:check_levelzero(Key, Hash, PosList, L0Cache),
     case L0Check of
         {false, not_found} ->
-            fetch(Key, Hash, Manifest, 0, fun timed_sst_get/4);
+            fetch(Key, Hash, Manifest, 0, FetchFun);
         {true, KV} ->
             {KV, memory}
     end.
@@ -1514,6 +1515,9 @@ timed_sst_get(PID, Key, Hash, Level) ->
     R = leveled_sst:sst_get(PID, Key, Hash),
     T0 = timer:now_diff(os:timestamp(), SW),
     log_slowfetch(T0, R, PID, Level, ?SLOW_FETCH).
+
+sst_get(PID, Key, Hash, Level) ->
+    leveled_sst:sst_get(PID, Key, Hash).
 
 log_slowfetch(T0, R, PID, Level, FetchTolerance) ->
     case {T0, R} of
