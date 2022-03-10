@@ -96,6 +96,7 @@
 -define(TOMB_COUNT, true).
 -define(USE_SET_FOR_SPEED, 64).
 -define(STARTUP_TIMEOUT, 10000).
+-define(HIBERNATE_TIMEOUT, 60000).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -119,6 +120,7 @@
             sst_open/4,
             sst_get/2,
             sst_get/3,
+            sst_getsqn/3,
             sst_expandpointer/5,
             sst_getmaxsequencenumber/1,
             sst_setfordelete/2,
@@ -434,6 +436,15 @@ sst_get(Pid, LedgerKey) ->
 sst_get(Pid, LedgerKey, Hash) ->
     gen_fsm:sync_send_event(Pid, {get_kv, LedgerKey, Hash}, infinity).
 
+-spec sst_getsqn(pid(),
+    leveled_codec:ledger_key(),
+    leveled_codec:segment_hash()) -> leveled_codec:sqn()|not_present.
+%% @doc
+%% Return a SQN for the key or not_present if the key is not in
+%% the store (with the magic hash precalculated).
+sst_getsqn(Pid, LedgerKey, Hash) ->
+    gen_fsm:sync_send_event(Pid, {get_sqn, LedgerKey, Hash}, infinity).
+
 -spec sst_getmaxsequencenumber(pid()) -> integer().
 %% @doc
 %% Get the maximume sequence number for this SST file
@@ -695,6 +706,11 @@ starting({sst_returnslot, FetchedSlot, FetchFun, SlotCount}, State) ->
                 State#state{new_slots = FetchedSlots}}
     end.
 
+reader({get_sqn, LedgerKey, Hash}, _From, State) ->
+    % Get a KV value and potentially take sample timings
+    {Result, UpdState, _UpdTimings} = 
+        fetch(LedgerKey, Hash, State, no_timing),
+    {reply, sqn_only(Result), reader, UpdState, ?HIBERNATE_TIMEOUT};
 reader({get_kv, LedgerKey, Hash}, _From, State) ->
     % Get a KV value and potentially take sample timings
     {Result, UpdState, UpdTimings} = 
@@ -800,6 +816,11 @@ reader({switch_levels, NewLevel}, State) ->
     {next_state, reader, State#state{level = NewLevel}, hibernate}.
 
 
+delete_pending({get_sqn, LedgerKey, Hash}, _From, State) ->
+    % Get a KV value and potentially take sample timings
+    {Result, UpdState, _UpdTimings} = 
+        fetch(LedgerKey, Hash, State, no_timing),
+    {reply, sqn_only(Result), delete_pending, UpdState, ?DELETE_TIMEOUT};
 delete_pending({get_kv, LedgerKey, Hash}, _From, State) ->
     {Result, UpdState, _Ts} = fetch(LedgerKey, Hash, State, no_timing),
     {reply, Result, delete_pending, UpdState, ?DELETE_TIMEOUT};
@@ -1094,6 +1115,12 @@ member_check(Hash, {sets, HashSet}) ->
 member_check(_Miss, _Checker) ->
     false.
 
+-spec sqn_only(leveled_codec:ledger_kv()|not_present)
+        -> leveled_codec:sqn()|not_present.
+sqn_only(not_present) ->
+    not_present;
+sqn_only(KV) ->
+    leveled_codec:strip_to_seqonly(KV).
 
 extract_hash({SegHash, _ExtraHash}) when is_integer(SegHash) ->
     tune_hash(SegHash);
@@ -1113,7 +1140,7 @@ fetch_from_cache(CacheHash, Cache) ->
 
 -spec add_to_cache(
     non_neg_integer(),
-    leveled_codec:ledger_kv()
+    leveled_codec:ledger_kv(),
     fetch_cache()) -> fetch_cache().
 add_to_cache(_CacheHash, _KV, no_cache) ->
     no_cache;
