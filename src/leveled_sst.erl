@@ -96,6 +96,7 @@
 -define(TOMB_COUNT, true).
 -define(USE_SET_FOR_SPEED, 64).
 -define(STARTUP_TIMEOUT, 10000).
+-define(READER_TIMEOUT, 60000).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -118,6 +119,7 @@
             sst_open/4,
             sst_get/2,
             sst_get/3,
+            sst_getsqn/3,
             sst_expandpointer/5,
             sst_getmaxsequencenumber/1,
             sst_setfordelete/2,
@@ -433,6 +435,17 @@ sst_get(Pid, LedgerKey) ->
 sst_get(Pid, LedgerKey, Hash) ->
     gen_fsm:sync_send_event(Pid, {get_kv, LedgerKey, Hash}, infinity).
 
+-spec sst_getsqn(
+    pid(),
+    leveled_codec:ledger_key(),
+    leveled_codec:segment_hash()) -> leveled_codec:sqn()|not_present.
+%% @doc
+%% Return a Key, Value pair matching a Key or not_present if the Key is not in
+%% the store (with the magic hash precalculated).
+sst_getsqn(Pid, LedgerKey, Hash) ->
+    gen_fsm:sync_send_event(Pid, {get_sqn, LedgerKey, Hash}, infinity).
+
+
 -spec sst_getmaxsequencenumber(pid()) -> integer().
 %% @doc
 %% Get the maximume sequence number for this SST file
@@ -694,6 +707,10 @@ starting({sst_returnslot, FetchedSlot, FetchFun, SlotCount}, State) ->
                 State#state{new_slots = FetchedSlots}}
     end.
 
+reader({get_sqn, LedgerKey, Hash}, _From, State) ->
+    {Result, UpdState, _UpdTimings} = 
+        fetch(LedgerKey, Hash, State, no_timing),
+    {reply, sqn_only(Result), reader, UpdState, ?READER_TIMEOUT};
 reader({get_kv, LedgerKey, Hash}, _From, State) ->
     % Get a KV value and potentially take sample timings
     {Result, UpdState, UpdTimings} = 
@@ -795,10 +812,16 @@ reader(close, _From, State) ->
     ok = file:close(State#state.handle),
     {stop, normal, ok, State}.
 
+reader(timeout, State) ->
+    {next_state, reader, State, hibernate};
 reader({switch_levels, NewLevel}, State) ->
     {next_state, reader, State#state{level = NewLevel}, hibernate}.
 
 
+delete_pending({get_sqn, LedgerKey, Hash}, _From, State) ->
+    {Result, UpdState, _UpdTimings} = 
+        fetch(LedgerKey, Hash, State, no_timing),
+    {reply, sqn_only(Result), delete_pending, UpdState};
 delete_pending({get_kv, LedgerKey, Hash}, _From, State) ->
     {Result, UpdState, _Ts} = fetch(LedgerKey, Hash, State, no_timing),
     {reply, Result, delete_pending, UpdState, ?DELETE_TIMEOUT};
@@ -1196,9 +1219,11 @@ check_modified(_, _, _) ->
     true.
 
 -spec fetch(tuple(), 
-            {integer(), integer()}|integer(), 
-            sst_state(), sst_timings()) 
-                        -> {not_present|tuple(), sst_state(), sst_timings()}.
+        {integer(), integer()}|integer(), 
+        sst_state(), sst_timings()) 
+        -> {not_present|leveled_codec:ledger_kv(),
+            sst_state(),
+            sst_timings()}.
 %% @doc
 %%
 %% Fetch a key from the store, potentially taking timings.  Result should be
@@ -1623,7 +1648,6 @@ deserialise_checkedblock(Bin, _Other) ->
     binary_to_term(Bin).
 
 
-
 -spec hmac(binary()|integer()) -> integer().
 %% @doc
 %% Perform a CRC check on an input
@@ -1631,6 +1655,14 @@ hmac(Bin) when is_binary(Bin) ->
     erlang:crc32(Bin);
 hmac(Int) when is_integer(Int) ->
     Int bxor ?FLIPPER32.
+
+
+-spec sqn_only(not_present|leveled_codec:ledger_kv())
+        -> not_present|leveled_codec:sqn().
+sqn_only(not_present) ->
+    not_present;
+sqn_only(KV) ->
+    leveled_codec:strip_to_seqonly(KV).
 
 %%%============================================================================
 %%% SlotIndex Implementation
