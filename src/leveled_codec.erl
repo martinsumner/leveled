@@ -136,6 +136,7 @@
 
 -export_type([tag/0,
                 key/0,
+                sqn/0,
                 object_spec/0,
                 segment_hash/0,
                 ledger_status/0,
