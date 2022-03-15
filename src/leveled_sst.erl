@@ -96,7 +96,12 @@
 -define(TOMB_COUNT, true).
 -define(USE_SET_FOR_SPEED, 64).
 -define(STARTUP_TIMEOUT, 10000).
+
+-ifdef(TEST).
+-define(HIBERNATE_TIMEOUT, 5000).
+-else.
 -define(HIBERNATE_TIMEOUT, 60000).
+-endif.
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -811,6 +816,8 @@ reader(close, _From, State) ->
     ok = file:close(State#state.handle),
     {stop, normal, ok, State}.
 
+reader(timeout, State) ->
+    {next_state, reader, State, hibernate};
 reader({switch_levels, NewLevel}, State) ->
     {next_state, reader, State#state{level = NewLevel}, hibernate}.
 
@@ -3676,6 +3683,25 @@ simple_persisted_slotsize_tester(SSTNewFun) ->
     ok = file:delete(filename:join(RP, Filename ++ ".sst")).
 
 
+reader_hibernate_test_() ->
+    {timeout, 90, fun reader_hibernate_tester/0}.
+
+reader_hibernate_tester() ->
+    {RP, Filename} = {?TEST_AREA, "readerhibernate_test"},
+    KVList0 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 32, 1, 20),
+    KVList1 = lists:ukeysort(1, KVList0),
+    [{FirstKey, FV}|_Rest] = KVList1,
+    {LastKey, _LV} = lists:last(KVList1),
+    {ok, Pid, {FirstKey, LastKey}, _Bloom} = 
+        testsst_new(RP, Filename, 1, KVList1, length(KVList1), native),
+    ?assertMatch({FirstKey, FV}, sst_get(Pid, FirstKey)),
+    SQN = leveled_codec:strip_to_seqonly({FirstKey, FV}),
+    ?assertMatch(
+        SQN,
+        sst_getsqn(Pid, FirstKey, leveled_codec:segment_hash(FirstKey))),
+    timer:sleep(?HIBERNATE_TIMEOUT + 1000),
+    ?assertMatch({FirstKey, FV}, sst_get(Pid, FirstKey)).
+
 delete_pending_test_() ->
     {timeout, 30, fun delete_pending_tester/0}.
 
@@ -3692,7 +3718,7 @@ delete_pending_tester() ->
     leveled_sst:sst_setfordelete(Pid, false),
     timer:sleep(?DELETE_TIMEOUT + 1000),
     ?assertMatch(false, is_process_alive(Pid)).
-
+    
 
 simple_persisted_test_() ->
     {timeout, 60, fun simple_persisted_test_bothformats/0}.
