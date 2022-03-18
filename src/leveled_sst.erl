@@ -3721,7 +3721,7 @@ simple_switchcache_test() ->
     KVList1 = lists:sublist(lists:ukeysort(1, KVList0), ?LOOK_SLOTSIZE),
     [{FirstKey, _FV}|_Rest] = KVList1,
     {LastKey, _LV} = lists:last(KVList1),
-    {ok, Pid, {FirstKey, LastKey}, _Bloom} = 
+    {ok, Pid, {FirstKey, LastKey}, Bloom} = 
         testsst_new(RP, Filename, 4, KVList1, length(KVList1), native),
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({K, V}, sst_get(Pid, K))
@@ -3744,7 +3744,7 @@ simple_switchcache_test() ->
     ok = sst_close(Pid),
     OptsSST = #sst_options{press_method=native,
                             log_options=leveled_log:get_opts()},
-    {ok, OpenP, {FirstKey, LastKey}, _Bloom} =
+    {ok, OpenP, {FirstKey, LastKey}, Bloom} =
         sst_open(RP, Filename ++ ".sst", OptsSST, 5),
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({K, V}, sst_get(OpenP, K))
