@@ -86,7 +86,6 @@
 -define(TREE_SIZE, 4).
 -define(TIMING_SAMPLECOUNTDOWN, 20000).
 -define(TIMING_SAMPLESIZE, 100).
--define(CACHE_SIZE, 32).
 -define(BLOCK_LENGTHS_LENGTH, 20).
 -define(LMD_LENGTH, 4).
 -define(FLIPPER32, 4294967295).
@@ -1159,13 +1158,17 @@ cache_hash({_SegHash, ExtraHash}, Level) when is_integer(ExtraHash) ->
 %% as each level has more files than the previous level.  Load tests with
 %% any sort of pareto distribution show far better cost/benefit ratios for
 %% cache at higher levels.
--spec cache_size(non_neg_integer()) -> no_cache|32|64|128.
+-spec cache_size(non_neg_integer()) -> no_cache|4|32|64.
 cache_size(N) when N < 3 ->
-    128;
-cache_size(3) ->
     64;
+cache_size(3) ->
+    32;
 cache_size(4) ->
     32;
+cache_size(5) ->
+    4;
+cache_size(6) ->
+    4;
 cache_size(_LowerLevel) ->
     no_cache.
 
@@ -3708,45 +3711,65 @@ simple_switchcache_test() ->
     KVList1 = lists:sublist(lists:ukeysort(1, KVList0), ?LOOK_SLOTSIZE),
     [{FirstKey, _FV}|_Rest] = KVList1,
     {LastKey, _LV} = lists:last(KVList1),
-    {ok, Pid, {FirstKey, LastKey}, _Bloom} = 
+    {ok, OpenP4, {FirstKey, LastKey}, _Bloom} = 
         testsst_new(RP, Filename, 4, KVList1, length(KVList1), native),
     lists:foreach(fun({K, V}) ->
-                        ?assertMatch({K, V}, sst_get(Pid, K))
+                        ?assertMatch({K, V}, sst_get(OpenP4, K))
                         end,
                     KVList1),
-    ok = sst_switchlevels(Pid, 5),
+    ok = sst_switchlevels(OpenP4, 5),
     lists:foreach(fun({K, V}) ->
-                        ?assertMatch({K, V}, sst_get(Pid, K))
+                        ?assertMatch({K, V}, sst_get(OpenP4, K))
                         end,
                     KVList1),
     lists:foreach(fun({K, V}) ->
-                        ?assertMatch({K, V}, sst_get(Pid, K))
+                        ?assertMatch({K, V}, sst_get(OpenP4, K))
                         end,
                     KVList1),
-    gen_fsm:send_event(Pid, timeout),
+    gen_fsm:send_event(OpenP4, timeout),
     lists:foreach(fun({K, V}) ->
-                        ?assertMatch({K, V}, sst_get(Pid, K))
+                        ?assertMatch({K, V}, sst_get(OpenP4, K))
                         end,
                     KVList1),
-    ok = sst_close(Pid),
+    ok = sst_close(OpenP4),
     OptsSST = #sst_options{press_method=native,
                             log_options=leveled_log:get_opts()},
-    {ok, OpenP, {FirstKey, LastKey}, _Bloom} =
+    {ok, OpenP5, {FirstKey, LastKey}, _Bloom} =
         sst_open(RP, Filename ++ ".sst", OptsSST, 5),
     lists:foreach(fun({K, V}) ->
-                        ?assertMatch({K, V}, sst_get(OpenP, K))
+                        ?assertMatch({K, V}, sst_get(OpenP5, K))
                         end,
                     KVList1),
     lists:foreach(fun({K, V}) ->
-                        ?assertMatch({K, V}, sst_get(OpenP, K))
+                        ?assertMatch({K, V}, sst_get(OpenP5, K))
                         end,
                     KVList1),
-    gen_fsm:send_event(Pid, timeout),
+    gen_fsm:send_event(OpenP5, timeout),
     lists:foreach(fun({K, V}) ->
-                        ?assertMatch({K, V}, sst_get(OpenP, K))
+                        ?assertMatch({K, V}, sst_get(OpenP5, K))
                         end,
                     KVList1),
-    ok = sst_close(OpenP),
+    ok = sst_switchlevels(OpenP5, 6),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sst_get(OpenP5, K))
+                        end,
+                    KVList1),
+    gen_fsm:send_event(OpenP5, timeout),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sst_get(OpenP5, K))
+                        end,
+                    KVList1),
+    ok = sst_switchlevels(OpenP5, 7),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sst_get(OpenP5, K))
+                        end,
+                    KVList1),
+    gen_fsm:send_event(OpenP5, timeout),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sst_get(OpenP5, K))
+                        end,
+                    KVList1),
+    ok = sst_close(OpenP5),
     ok = file:delete(filename:join(RP, Filename ++ ".sst")).
 
 
