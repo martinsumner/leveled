@@ -191,7 +191,13 @@
         :: #summary{}.
 -type blockindex_cache() :: array:array(). 
 -type fetch_cache()
-        :: array:array()|no_cache. % An array but OTP 16 types
+        :: array:array()|no_cache.
+-type cache_size()
+        :: no_cache|4|32|64.
+-type cache_hash()
+        :: no_cache|non_neg_integer().
+-type level()
+        :: non_neg_integer().
 
 %% yield_blockquery is used to determine if the work necessary to process a
 %% range query beyond the fetching the slot should be managed from within
@@ -217,7 +223,7 @@
                     fetch_cache = no_cache :: fetch_cache() | redacted,
                     new_slots :: list()|undefined,
                     deferred_startup_tuple :: tuple()|undefined,
-                    level :: non_neg_integer()|undefined,
+                    level :: level()|undefined,
                     tomb_count = not_counted
                             :: non_neg_integer()|not_counted,
                     high_modified_date :: non_neg_integer()|undefined}).
@@ -252,7 +258,7 @@
 %%% API
 %%%============================================================================
 
--spec sst_open(string(), string(), sst_options(), non_neg_integer())
+-spec sst_open(string(), string(), sst_options(), level())
             -> {ok, pid(), 
                     {leveled_codec:ledger_key(), leveled_codec:ledger_key()}, 
                     binary()}.
@@ -274,7 +280,7 @@ sst_open(RootPath, Filename, OptsSST, Level) ->
             {ok, Pid, {SK, EK}, Bloom}
     end.
 
--spec sst_new(string(), string(), integer(), 
+-spec sst_new(string(), string(), level(), 
                     list(leveled_codec:ledger_kv()), 
                     integer(), sst_options()) 
             -> {ok, pid(), 
@@ -317,7 +323,7 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST, IndexModDate) ->
 -spec sst_newmerge(string(), string(),
                     list(leveled_codec:ledger_kv()|sst_pointer()),
                     list(leveled_codec:ledger_kv()|sst_pointer()),
-                    boolean(), integer(),
+                    boolean(), level(),
                     integer(), sst_options())
             -> empty|{ok, pid(),
                 {{list(leveled_codec:ledger_kv()),
@@ -338,7 +344,7 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST, IndexModDate) ->
 %% file is not added to the manifest.
 sst_newmerge(RootPath, Filename,
         KVL1, KVL2, IsBasement, Level,
-        MaxSQN, OptsSST) ->
+        MaxSQN, OptsSST) when Level > 0 ->
     sst_newmerge(RootPath, Filename,
         KVL1, KVL2, IsBasement, Level,
         MaxSQN, OptsSST, ?INDEX_MODDATE, ?TOMB_COUNT).
@@ -1146,7 +1152,7 @@ extract_hash(NotHash) ->
     NotHash.
 
 
--spec new_cache(non_neg_integer()) -> fetch_cache().
+-spec new_cache(level()) -> fetch_cache().
 new_cache(Level) ->
     case cache_size(Level) of
         no_cache ->
@@ -1156,7 +1162,7 @@ new_cache(Level) ->
     end.
 
 -spec cache_hash(leveled_codec:segment_hash(), non_neg_integer()) ->
-    non_neg_integer()|no_cache.
+    cache_hash().
 cache_hash({_SegHash, ExtraHash}, Level) when is_integer(ExtraHash) ->
     case cache_size(Level) of
         no_cache -> no_cache;
@@ -1168,7 +1174,7 @@ cache_hash({_SegHash, ExtraHash}, Level) when is_integer(ExtraHash) ->
 %% as each level has more files than the previous level.  Load tests with
 %% any sort of pareto distribution show far better cost/benefit ratios for
 %% cache at higher levels.
--spec cache_size(non_neg_integer()) -> no_cache|4|32|64.
+-spec cache_size(level()) -> cache_size().
 cache_size(N) when N < 3 ->
     64;
 cache_size(3) ->
@@ -1183,7 +1189,7 @@ cache_size(_LowerLevel) ->
     no_cache.
 
 -spec fetch_from_cache(
-    non_neg_integer(),
+    cache_hash(),
     fetch_cache()) -> undefined|leveled_codec:ledger_kv().
 fetch_from_cache(_CacheHash, no_cache) ->
     undefined;
@@ -1448,7 +1454,7 @@ compress_level(Level, _PressMethod) when Level < ?COMPRESS_AT_LEVEL ->
 compress_level(_Level, PressMethod) ->
     PressMethod.
 
--spec maxslots_level(non_neg_integer(), pos_integer()) ->  pos_integer().
+-spec maxslots_level(level(), pos_integer()) ->  pos_integer().
 maxslots_level(Level, MaxSlotCount) when Level < ?DOUBLESIZE_LEVEL ->
     MaxSlotCount;
 maxslots_level(_Level, MaxSlotCount) ->
