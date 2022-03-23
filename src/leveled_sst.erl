@@ -97,6 +97,12 @@
 -define(USE_SET_FOR_SPEED, 64).
 -define(STARTUP_TIMEOUT, 10000).
 
+-ifdef(TEST).
+-define(HIBERNATE_TIMEOUT, 5000).
+-else.
+-define(HIBERNATE_TIMEOUT, 60000).
+-endif.
+
 -include_lib("eunit/include/eunit.hrl").
 
 -export([init/1,
@@ -118,6 +124,7 @@
             sst_open/4,
             sst_get/2,
             sst_get/3,
+            sst_getsqn/3,
             sst_expandpointer/5,
             sst_getmaxsequencenumber/1,
             sst_setfordelete/2,
@@ -184,6 +191,14 @@
         :: #summary{}.
 -type blockindex_cache()
         :: any().  % An array but OTP 16 types
+-type fetch_cache()
+        :: any()|no_cache. % An array but OTP 16 types
+-type cache_size()
+        :: no_cache|1|32|64.
+-type cache_hash()
+        :: no_cache|non_neg_integer().
+-type level()
+        :: non_neg_integer().
 
 %% yield_blockquery is used to determine if the work necessary to process a
 %% range query beyond the fetching the slot should be managed from within
@@ -193,45 +208,45 @@
 %% extra copying.  Files at the top of the tree yield, those lower down don't.
 
 -record(state,      
-                {summary,
-                    handle :: file:fd() | undefined,
-                    penciller :: pid() | undefined | false,
-                    root_path,
-                    filename,
-                    yield_blockquery = false :: boolean(),
-                    blockindex_cache :: blockindex_cache()|undefined,
-                    compression_method = native :: press_method(),
-                    index_moddate = ?INDEX_MODDATE :: boolean(),
-                    timings = no_timing :: sst_timings(),
-                    timings_countdown = 0 :: integer(),
-                    starting_pid :: pid()|undefined,
-                    fetch_cache = array:new([{size, ?CACHE_SIZE}]),
-                    new_slots :: list()|undefined,
-                    deferred_startup_tuple :: tuple()|undefined,
-                    level :: non_neg_integer()|undefined,
-                    tomb_count = not_counted
-                            :: non_neg_integer()|not_counted,
-                    high_modified_date :: non_neg_integer()|undefined}).
+        {summary,
+            handle :: file:fd() | undefined,
+            penciller :: pid() | undefined | false,
+            root_path,
+            filename,
+            yield_blockquery = false :: boolean(),
+            blockindex_cache :: blockindex_cache()|undefined,
+            compression_method = native :: press_method(),
+            index_moddate = ?INDEX_MODDATE :: boolean(),
+            timings = no_timing :: sst_timings(),
+            timings_countdown = 0 :: integer(),
+            starting_pid :: pid()|undefined,
+            fetch_cache = no_cache :: fetch_cache(),
+            new_slots :: list()|undefined,
+            deferred_startup_tuple :: tuple()|undefined,
+            level :: level()|undefined,
+            tomb_count = not_counted
+                    :: non_neg_integer()|not_counted,
+            high_modified_date :: non_neg_integer()|undefined}).
 
 -record(sst_timings, 
-                {sample_count = 0 :: integer(),
-                    index_query_time = 0 :: integer(),
-                    lookup_cache_time = 0 :: integer(),
-                    slot_index_time = 0 :: integer(),
-                    fetch_cache_time = 0 :: integer(),
-                    slot_fetch_time = 0 :: integer(),
-                    noncached_block_time = 0 :: integer(),
-                    lookup_cache_count = 0 :: integer(),
-                    slot_index_count = 0 :: integer(),
-                    fetch_cache_count = 0 :: integer(),
-                    slot_fetch_count = 0 :: integer(),
-                    noncached_block_count = 0 :: integer()}).
+        {sample_count = 0 :: integer(),
+            index_query_time = 0 :: integer(),
+            lookup_cache_time = 0 :: integer(),
+            slot_index_time = 0 :: integer(),
+            fetch_cache_time = 0 :: integer(),
+            slot_fetch_time = 0 :: integer(),
+            noncached_block_time = 0 :: integer(),
+            lookup_cache_count = 0 :: integer(),
+            slot_index_count = 0 :: integer(),
+            fetch_cache_count = 0 :: integer(),
+            slot_fetch_count = 0 :: integer(),
+            noncached_block_count = 0 :: integer()}).
 
 -record(build_timings,
-                {slot_hashlist = 0 :: integer(),
-                    slot_serialise = 0 :: integer(),
-                    slot_finish = 0 :: integer(),
-                    fold_toslot = 0 :: integer()}).
+        {slot_hashlist = 0 :: integer(),
+            slot_serialise = 0 :: integer(),
+            slot_finish = 0 :: integer(),
+            fold_toslot = 0 :: integer()}).
 
 -type sst_state() :: #state{}.
 -type sst_timings() :: no_timing|#sst_timings{}.
@@ -243,7 +258,7 @@
 %%% API
 %%%============================================================================
 
--spec sst_open(string(), string(), sst_options(), non_neg_integer())
+-spec sst_open(string(), string(), sst_options(), level())
             -> {ok, pid(), 
                     {leveled_codec:ledger_key(), leveled_codec:ledger_key()}, 
                     binary()}.
@@ -265,7 +280,7 @@ sst_open(RootPath, Filename, OptsSST, Level) ->
             {ok, Pid, {SK, EK}, Bloom}
     end.
 
--spec sst_new(string(), string(), integer(), 
+-spec sst_new(string(), string(), level(), 
                     list(leveled_codec:ledger_kv()), 
                     integer(), sst_options()) 
             -> {ok, pid(), 
@@ -308,7 +323,7 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST, IndexModDate) ->
 -spec sst_newmerge(string(), string(), 
                     list(leveled_codec:ledger_kv()|sst_pointer()), 
                     list(leveled_codec:ledger_kv()|sst_pointer()),
-                    boolean(), integer(), 
+                    boolean(), level(), 
                     integer(), sst_options())
             -> empty|{ok, pid(), 
                 {{list(leveled_codec:ledger_kv()), 
@@ -329,7 +344,7 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST, IndexModDate) ->
 %% file is not added to the manifest.
 sst_newmerge(RootPath, Filename, 
         KVL1, KVL2, IsBasement, Level, 
-        MaxSQN, OptsSST) ->
+        MaxSQN, OptsSST) when Level > 0 ->
     sst_newmerge(RootPath, Filename, 
         KVL1, KVL2, IsBasement, Level, 
         MaxSQN, OptsSST, ?INDEX_MODDATE, ?TOMB_COUNT).
@@ -430,6 +445,15 @@ sst_get(Pid, LedgerKey) ->
 %% the store (with the magic hash precalculated).
 sst_get(Pid, LedgerKey, Hash) ->
     gen_fsm:sync_send_event(Pid, {get_kv, LedgerKey, Hash}, infinity).
+
+-spec sst_getsqn(pid(),
+    leveled_codec:ledger_key(),
+    leveled_codec:segment_hash()) -> leveled_codec:sqn()|not_present.
+%% @doc
+%% Return a SQN for the key or not_present if the key is not in
+%% the store (with the magic hash precalculated).
+sst_getsqn(Pid, LedgerKey, Hash) ->
+    gen_fsm:sync_send_event(Pid, {get_sqn, LedgerKey, Hash}, infinity).
 
 -spec sst_getmaxsequencenumber(pid()) -> integer().
 %% @doc
@@ -538,7 +562,7 @@ starting({sst_open, RootPath, Filename, OptsSST, Level}, _From, State) ->
     {reply,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}, Bloom},
         reader,
-        UpdState#state{level = Level}};
+        UpdState#state{level = Level, fetch_cache = new_cache(Level)}};
 starting({sst_new, 
             RootPath, Filename, Level, 
             {SlotList, FirstKey}, MaxSQN,
@@ -578,7 +602,8 @@ starting({sst_new,
         UpdState#state{blockindex_cache = BlockIndex,
                         high_modified_date = HighModDate,
                         starting_pid = StartingPID,
-                        level = Level}};
+                        level = Level,
+                        fetch_cache = new_cache(Level)}};
 starting({sst_newlevelzero, RootPath, Filename,
                     Penciller, MaxSQN,
                     OptsSST, IdxModDate}, _From, State) -> 
@@ -586,7 +611,10 @@ starting({sst_newlevelzero, RootPath, Filename,
         {RootPath, Filename, Penciller, MaxSQN, OptsSST,
             IdxModDate},
     {reply, ok, starting,
-        State#state{deferred_startup_tuple = DeferredStartupTuple, level = 0}};
+        State#state{
+            deferred_startup_tuple = DeferredStartupTuple,
+            level = 0,
+            fetch_cache = new_cache(0)}};
 starting(close, _From, State) ->
     % No file should have been created, so nothing to close.
     {stop, normal, ok, State}.
@@ -692,6 +720,11 @@ starting({sst_returnslot, FetchedSlot, FetchFun, SlotCount}, State) ->
                 State#state{new_slots = FetchedSlots}}
     end.
 
+reader({get_sqn, LedgerKey, Hash}, _From, State) ->
+    % Get a KV value and potentially take sample timings
+    {Result, UpdState, _UpdTimings} = 
+        fetch(LedgerKey, Hash, State, no_timing),
+    {reply, sqn_only(Result), reader, UpdState, ?HIBERNATE_TIMEOUT};
 reader({get_kv, LedgerKey, Hash}, _From, State) ->
     % Get a KV value and potentially take sample timings
     {Result, UpdState, UpdTimings} = 
@@ -793,10 +826,25 @@ reader(close, _From, State) ->
     ok = file:close(State#state.handle),
     {stop, normal, ok, State}.
 
+reader(timeout, State) ->
+    FreshCache = new_cache(State#state.level),
+    {next_state,
+        reader,
+        State#state{fetch_cache = FreshCache},
+        hibernate};
 reader({switch_levels, NewLevel}, State) ->
-    {next_state, reader, State#state{level = NewLevel}, hibernate}.
+    FreshCache = new_cache(NewLevel),
+    {next_state,
+        reader,
+        State#state{level = NewLevel, fetch_cache = FreshCache},
+        hibernate}.
 
 
+delete_pending({get_sqn, LedgerKey, Hash}, _From, State) ->
+    % Get a KV value and potentially take sample timings
+    {Result, UpdState, _UpdTimings} = 
+        fetch(LedgerKey, Hash, State, no_timing),
+    {reply, sqn_only(Result), delete_pending, UpdState, ?DELETE_TIMEOUT};
 delete_pending({get_kv, LedgerKey, Hash}, _From, State) ->
     {Result, UpdState, _Ts} = fetch(LedgerKey, Hash, State, no_timing),
     {reply, Result, delete_pending, UpdState, ?DELETE_TIMEOUT};
@@ -1082,14 +1130,72 @@ member_check(Hash, {sets, HashSet}) ->
 member_check(_Miss, _Checker) ->
     false.
 
+-spec sqn_only(leveled_codec:ledger_kv()|not_present)
+        -> leveled_codec:sqn()|not_present.
+sqn_only(not_present) ->
+    not_present;
+sqn_only(KV) ->
+    leveled_codec:strip_to_seqonly(KV).
 
 extract_hash({SegHash, _ExtraHash}) when is_integer(SegHash) ->
     tune_hash(SegHash);
 extract_hash(NotHash) ->
     NotHash.
 
-cache_hash({_SegHash, ExtraHash}) when is_integer(ExtraHash) ->
-    ExtraHash band (?CACHE_SIZE - 1).
+
+-spec new_cache(level()) -> fetch_cache().
+new_cache(Level) ->
+    case cache_size(Level) of
+        no_cache ->
+            no_cache;
+        CacheSize ->
+            array:new([{size, CacheSize}])
+    end.
+
+-spec cache_hash(leveled_codec:segment_hash(), non_neg_integer()) ->
+    cache_hash().
+cache_hash({_SegHash, ExtraHash}, Level) when is_integer(ExtraHash) ->
+    case cache_size(Level) of
+        no_cache -> no_cache;
+        CH -> ExtraHash band (CH - 1)
+    end.
+
+%% @doc
+%% The lower the level, the bigger the memory cost of supporting the cache,
+%% as each level has more files than the previous level.  Load tests with
+%% any sort of pareto distribution show far better cost/benefit ratios for
+%% cache at higher levels.
+-spec cache_size(level()) -> cache_size().
+cache_size(N) when N < 3 ->
+    64;
+cache_size(3) ->
+    32;
+cache_size(4) ->
+    32;
+cache_size(5) ->
+    4;
+cache_size(6) ->
+    4;
+cache_size(_LowerLevel) ->
+    no_cache.
+
+-spec fetch_from_cache(
+    cache_hash(),
+    fetch_cache()) -> undefined|leveled_codec:ledger_kv().
+fetch_from_cache(_CacheHash, no_cache) ->
+    undefined;
+fetch_from_cache(CacheHash, Cache) ->
+    array:get(CacheHash, Cache).
+
+-spec add_to_cache(
+    non_neg_integer(),
+    leveled_codec:ledger_kv(),
+    fetch_cache()) -> fetch_cache().
+add_to_cache(_CacheHash, _KV, no_cache) ->
+    no_cache;
+add_to_cache(CacheHash, KV, FetchCache) ->
+    array:set(CacheHash, KV, FetchCache).
+
 
 -spec tune_hash(non_neg_integer()) -> non_neg_integer().
 %% @doc
@@ -1226,8 +1332,8 @@ fetch(LedgerKey, Hash, State, Timings0) ->
                     {SW3, Timings3} =
                         update_timings(SW2, Timings2, slot_index, true),
                     FetchCache = State#state.fetch_cache,
-                    CacheHash = cache_hash(Hash),
-                    case array:get(CacheHash, FetchCache) of 
+                    CacheHash = cache_hash(Hash, State#state.level),
+                    case fetch_from_cache(CacheHash, FetchCache) of 
                         {LedgerKey, V} ->
                             {_SW4, Timings4} = 
                                 update_timings(SW3, 
@@ -1246,8 +1352,8 @@ fetch(LedgerKey, Hash, State, Timings0) ->
                                                 PressMethod,
                                                 IdxModDate,
                                                 not_present),
-                            FetchCache0 = 
-                                array:set(CacheHash, Result, FetchCache),
+                            FetchCache0 =
+                                add_to_cache(CacheHash, Result, FetchCache),
                             {_SW4, Timings4} = 
                                 update_timings(SW3, 
                                                 Timings3, 
@@ -1339,7 +1445,7 @@ compress_level(Level, _PressMethod) when Level < ?COMPRESS_AT_LEVEL ->
 compress_level(_Level, PressMethod) ->
     PressMethod.
 
--spec maxslots_level(non_neg_integer(), pos_integer()) ->  pos_integer().
+-spec maxslots_level(level(), pos_integer()) ->  pos_integer().
 maxslots_level(Level, MaxSlotCount) when Level < ?DOUBLESIZE_LEVEL ->
     MaxSlotCount;
 maxslots_level(_Level, MaxSlotCount) ->
@@ -1373,8 +1479,9 @@ write_file(RootPath, Filename, SummaryBin, SlotsBin,
 
 read_file(Filename, State, LoadPageCache) ->
     {Handle, FileVersion, SummaryBin} = 
-        open_reader(filename:join(State#state.root_path, Filename),
-                    LoadPageCache),
+        open_reader(
+            filename:join(State#state.root_path, Filename),
+            LoadPageCache),
     UpdState0 = imp_fileversion(FileVersion, State),
     {Summary, Bloom, SlotList, TombCount} =
         read_table_summary(SummaryBin, UpdState0#state.tomb_count),
@@ -3598,11 +3705,77 @@ additional_range_test() ->
     % Test blows up anyway
     % R8 = sst_getkvrange(P1, element(1, PastEKV), element(1, PastEKV), 2),
     % ?assertMatch([], R8).
-    
+
+simple_switchcache_test() ->
+    {RP, Filename} = {?TEST_AREA, "simple_switchcache_test"},
+    KVList0 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 2, 1, 20),
+    KVList1 = lists:sublist(lists:ukeysort(1, KVList0), ?LOOK_SLOTSIZE),
+    [{FirstKey, _FV}|_Rest] = KVList1,
+    {LastKey, _LV} = lists:last(KVList1),
+    {ok, OpenP4, {FirstKey, LastKey}, _Bloom} = 
+        testsst_new(RP, Filename, 4, KVList1, length(KVList1), native),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sst_get(OpenP4, K))
+                        end,
+                    KVList1),
+    ok = sst_switchlevels(OpenP4, 5),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sst_get(OpenP4, K))
+                        end,
+                    KVList1),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sst_get(OpenP4, K))
+                        end,
+                    KVList1),
+    gen_fsm:send_event(OpenP4, timeout),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sst_get(OpenP4, K))
+                        end,
+                    KVList1),
+    ok = sst_close(OpenP4),
+    OptsSST = #sst_options{press_method=native,
+                            log_options=leveled_log:get_opts()},
+    {ok, OpenP5, {FirstKey, LastKey}, _Bloom} =
+        sst_open(RP, Filename ++ ".sst", OptsSST, 5),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sst_get(OpenP5, K))
+                        end,
+                    KVList1),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sst_get(OpenP5, K))
+                        end,
+                    KVList1),
+    gen_fsm:send_event(OpenP5, timeout),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sst_get(OpenP5, K))
+                        end,
+                    KVList1),
+    ok = sst_switchlevels(OpenP5, 6),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sst_get(OpenP5, K))
+                        end,
+                    KVList1),
+    gen_fsm:send_event(OpenP5, timeout),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sst_get(OpenP5, K))
+                        end,
+                    KVList1),
+    ok = sst_switchlevels(OpenP5, 7),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sst_get(OpenP5, K))
+                        end,
+                    KVList1),
+    gen_fsm:send_event(OpenP5, timeout),
+    lists:foreach(fun({K, V}) ->
+                        ?assertMatch({K, V}, sst_get(OpenP5, K))
+                        end,
+                    KVList1),
+    ok = sst_close(OpenP5),
+    ok = file:delete(filename:join(RP, Filename ++ ".sst")).
+
 
 simple_persisted_slotsize_test() ->
     simple_persisted_slotsize_tester(fun testsst_new/6).
-
 
 simple_persisted_slotsize_tester(SSTNewFun) ->
     {RP, Filename} = {?TEST_AREA, "simple_slotsize_test"},
@@ -3621,6 +3794,25 @@ simple_persisted_slotsize_tester(SSTNewFun) ->
     ok = file:delete(filename:join(RP, Filename ++ ".sst")).
 
 
+reader_hibernate_test_() ->
+    {timeout, 90, fun reader_hibernate_tester/0}.
+
+reader_hibernate_tester() ->
+    {RP, Filename} = {?TEST_AREA, "readerhibernate_test"},
+    KVList0 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 32, 1, 20),
+    KVList1 = lists:ukeysort(1, KVList0),
+    [{FirstKey, FV}|_Rest] = KVList1,
+    {LastKey, _LV} = lists:last(KVList1),
+    {ok, Pid, {FirstKey, LastKey}, _Bloom} = 
+        testsst_new(RP, Filename, 1, KVList1, length(KVList1), native),
+    ?assertMatch({FirstKey, FV}, sst_get(Pid, FirstKey)),
+    SQN = leveled_codec:strip_to_seqonly({FirstKey, FV}),
+    ?assertMatch(
+        SQN,
+        sst_getsqn(Pid, FirstKey, leveled_codec:segment_hash(FirstKey))),
+    timer:sleep(?HIBERNATE_TIMEOUT + 1000),
+    ?assertMatch({FirstKey, FV}, sst_get(Pid, FirstKey)).
+
 delete_pending_test_() ->
     {timeout, 30, fun delete_pending_tester/0}.
 
@@ -3637,7 +3829,7 @@ delete_pending_tester() ->
     leveled_sst:sst_setfordelete(Pid, false),
     timer:sleep(?DELETE_TIMEOUT + 1000),
     ?assertMatch(false, is_process_alive(Pid)).
-
+    
 
 simple_persisted_test_() ->
     {timeout, 60, fun simple_persisted_test_bothformats/0}.
