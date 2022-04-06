@@ -146,6 +146,11 @@ handle_cast({remove_logs, ForcedLogs}, State) ->
 
 handle_info(timeout, State) ->
     request_work(State),
+    % When handling work, the clerk can collect a large number of binary
+    % references, so proactively GC this process before receiving any future
+    % work.  In under pressure clusters, clerks with large binary memory
+    % footprints can occur.
+    garbage_collect(),
     {noreply, State, ?MAX_TIMEOUT}.
 
 terminate(Reason, _State) ->
