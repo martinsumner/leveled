@@ -826,16 +826,22 @@ reader(close, _From, State) ->
     {stop, normal, ok, State}.
 
 reader(timeout, State) ->
-    FreshCache = new_cache(State#state.level),
+    FreshFetchCache = new_cache(State#state.level),
+    Summary = State#state.summary,
+    FreshBlockIndexCache = new_blockindex_cache(Summary#summary.size),
     {next_state,
         reader,
-        State#state{fetch_cache = FreshCache},
+        State#state{
+            fetch_cache = FreshFetchCache,
+            blockindex_cache = FreshBlockIndexCache},
         hibernate};
 reader({switch_levels, NewLevel}, State) ->
     FreshCache = new_cache(NewLevel),
     {next_state,
         reader,
-        State#state{level = NewLevel, fetch_cache = FreshCache},
+        State#state{
+            level = NewLevel,
+            fetch_cache = FreshCache},
         hibernate}.
 
 

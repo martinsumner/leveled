@@ -396,7 +396,7 @@ pcl_fetchlevelzero(Pid, Slot, ReturnFun) ->
 %% The Key needs to be hashable (i.e. have a tag which indicates that the key
 %% can be looked up) - index entries are not hashable for example.
 %%
-%% If the hash is already knonw, call pcl_fetch/3 as segment_hash is a
+%% If the hash is already known, call pcl_fetch/3 as segment_hash is a
 %% relatively expensive hash function
 pcl_fetch(Pid, Key) ->
     Hash = leveled_codec:segment_hash(Key),
@@ -1068,8 +1068,19 @@ handle_cast(work_for_clerk, State) ->
                     Backlog = N > ?WORKQUEUE_BACKLOG_TOLERANCE,
                     leveled_log:log("P0024", [N, Backlog]),
                     [TL|_Tail] = WL,
-                    ok = leveled_pclerk:clerk_push(State#state.clerk, 
-                                                    {TL, State#state.manifest}),
+                    ok =
+                        leveled_pclerk:clerk_push(
+                            State#state.clerk, {TL, State#state.manifest}),
+                    case TL of
+                        0 ->
+                            % Just written a L0 so as LoopState now rewritten,
+                            % garbage collect to free as much as possible as
+                            % soon as possible
+                            garbage_collect();
+                        _ ->
+                            ok
+                    end,
+                    
                     {noreply,
                         State#state{work_backlog=Backlog, work_ongoing=true}}
             end;
