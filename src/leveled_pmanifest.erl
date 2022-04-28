@@ -149,8 +149,11 @@ copy_manifest(Manifest) ->
     % about is switched to undefined
     Manifest#manifest{snapshots = undefined, pending_deletes = undefined}.
 
--spec load_manifest(manifest(), fun(), fun()) -> 
-                                        {integer(), manifest(), list()}.
+-spec load_manifest(
+    manifest(),
+    fun((file:name_all(), 1..7) -> {pid(), leveled_ebloom:bloom()}),
+    fun((pid()) -> pos_integer()))
+        -> {integer(), manifest(), list()}.
 %% @doc
 %% Roll over the manifest starting a process to manage each file in the
 %% manifest.  The PidFun should be able to return the Pid of a file process
@@ -182,7 +185,9 @@ load_manifest(Manifest, LoadFun, SQNFun) ->
                 {0, Manifest, []}, 
                 lists:reverse(lists:seq(0, Manifest#manifest.basement))).
 
--spec close_manifest(manifest(), fun()) -> ok.
+-spec close_manifest(
+    manifest(),
+    fun((any()) -> ok)) -> ok.
 %% @doc
 %% Close all the files in the manifest (using CloseEntryFun to call close on
 %% a file).  Firts all the files in the active manifest are called, and then
