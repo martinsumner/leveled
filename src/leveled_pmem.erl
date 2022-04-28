@@ -127,7 +127,8 @@ add_to_cache(L0Size, {LevelMinus1, MinSQN, MaxSQN}, LedgerSQN, TreeList) ->
                 [LevelMinus1|TreeList]}
     end.
 
--spec to_list(integer(), fun()) -> list().
+-spec to_list(
+    integer(), fun((pos_integer()) -> leveled_tree:leveled_tree())) -> list().
 %% @doc
 %% The cache is a list of leveled_trees of length Slots.  This will fetch
 %% each tree in turn by slot ID and then produce a merged/sorted output of

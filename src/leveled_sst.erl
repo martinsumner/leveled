@@ -219,7 +219,7 @@
             filename,
             yield_blockquery = false :: boolean(),
             blockindex_cache ::
-                blockindex_cache() | undefined |redacted,
+                blockindex_cache() | undefined | redacted,
             compression_method = native :: press_method(),
             index_moddate = ?INDEX_MODDATE :: boolean(),
             timings = no_timing :: sst_timings(),
@@ -3989,7 +3989,7 @@ fetch_status_test() ->
     {status, Pid, {module, gen_fsm}, SItemL} = sys:get_status(Pid),
     S = lists:keyfind(state, 1, lists:nth(5, SItemL)),
     true = is_integer(array:size(S#state.fetch_cache)),
-    true = is_integer(array:size(S#state.blockindex_cache)),
+    true = is_integer(array:size(element(2, S#state.blockindex_cache))),
     ST = format_status(terminate, [dict:new(), S]),
     ?assertMatch(redacted, ST#state.blockindex_cache),
     ?assertMatch(redacted, ST#state.fetch_cache),
