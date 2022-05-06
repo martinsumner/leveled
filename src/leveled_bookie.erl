@@ -131,8 +131,6 @@
 -define(SST_PAGECACHELEVEL_NOLOOKUP, 1).
 -define(SST_PAGECACHELEVEL_LOOKUP, 4).
 -define(CACHE_LOGPOINT, 50000).
--define(LC_POLL_MIN, 60).
--define(LC_POLL_MAX, 300).
 -define(OPTION_DEFAULTS,
             [{root_path, undefined},
                 {snapshot_bookie, undefined},
@@ -1267,8 +1265,6 @@ init([Opts]) ->
             NewETS = ets:new(mem, [ordered_set]),
             leveled_log:log("B0001", [Inker, Penciller]),
 
-            poll_ledgercache(),
-
             {ok, State0#state{inker=Inker,
                                 penciller=Penciller,
                                 ledger_cache=#ledger_cache{mem = NewETS}}};
@@ -1511,6 +1507,7 @@ handle_call({compact_journal, Timeout}, _From, State)
             R = leveled_inker:ink_compactjournal(State#state.inker,
                                                     PclSnap,
                                                     Timeout),
+            ok = gen_server:cast(self(), push_ledgercache),
             {reply, R, State}
     end;
 handle_call(confirm_compact, _From, State)
@@ -1571,10 +1568,6 @@ handle_cast({remove_logs, ForcedLogs}, State) ->
     ok = leveled_penciller:pcl_removelogs(PCL, ForcedLogs),
     ok = leveled_inker:ink_removelogs(INK, ForcedLogs),
     ok = leveled_log:remove_forcedlogs(ForcedLogs),
-    {noreply, State};
-handle_cast(poll_ledgercache, State) ->
-    poll_ledgercache(),
-    ok = gen_server:cast(self(), push_ledgercache),
     {noreply, State};
 handle_cast(push_ledgercache, State) ->
     Cache = State#state.ledger_cache,
@@ -2435,13 +2428,6 @@ maybe_withjitter(
     _CacheSize, _MaxCacheSize, _MaxCacheMult, _NoJitter) ->
     false.
 
--spec poll_ledgercache() -> reference().
-poll_ledgercache() ->
-    erlang:send_after(
-        max(?LC_POLL_MIN, leveled_rand:uniform(?LC_POLL_MAX)) * 1000,
-        self(),
-        poll_ledgercache).
-
 -spec get_loadfun(leveled_codec:compaction_strategy(), pid(), book_state())
                     -> initial_loadfun().
 %% @doc
@@ -3116,7 +3102,6 @@ foldkeys_headonly_tester(ObjectCount, BlockSize, BStr) ->
 
     % Confirm this doesn't crash anything
     ok = gen_server:cast(Bookie1, push_ledgercache),
-    ok = gen_server:cast(Bookie1, poll_ledgercache),
 
     GenObjSpecFun =
         fun(I) ->
