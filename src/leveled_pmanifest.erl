@@ -39,6 +39,7 @@
         release_snapshot/2,
         merge_snapshot/2,
         ready_to_delete/2,
+        clear_pending/3,
         check_for_work/2,
         is_basement/2,
         levelzero_present/1,
@@ -545,31 +546,40 @@ release_snapshot(Manifest, Pid) ->
                                 min_snapshot_sqn = MinSnapSQN}
     end.
 
--spec ready_to_delete(manifest(), string()) -> {boolean(), manifest()}.
+
 %% @doc
 %% A SST file which is in the delete_pending state can check to see if it is
 %% ready to delete against the manifest.
+%% This does not up date the manifest, a call is required to clear_pending to
+%% remove the file from the manifest's list of pending_deletes.
+-spec ready_to_delete(manifest(), string()) -> boolean().
 ready_to_delete(Manifest, Filename) ->
     PendingDelete = dict:find(Filename, Manifest#manifest.pending_deletes),
-    
     case {PendingDelete, Manifest#manifest.min_snapshot_sqn} of
         {{ok, _}, 0} ->
             % no shapshots
-            PDs = dict:erase(Filename, Manifest#manifest.pending_deletes),
-            {true, Manifest#manifest{pending_deletes = PDs}};
+            true;
         {{ok, {ChangeSQN, _ME}}, N} when N >= ChangeSQN ->
             % Every snapshot is looking at a version of history after this
             % was removed
-            PDs = dict:erase(Filename, Manifest#manifest.pending_deletes),
-            {true, Manifest#manifest{pending_deletes = PDs}};
+            true;
         _ ->
-            % If failed to delete then we should release a phantom pid
-            % in case this is necessary to timeout any snapshots
-            % This wll also trigger a log
-            % This may also be because of i355 - a race condition when a second
-            % confirm_delete may be sent prior to the first being processed
-            {false, release_snapshot(Manifest, ?PHANTOM_PID)}
+            false
     end.
+
+-spec clear_pending(manifest(), list(string()), boolean()) -> manifest().
+clear_pending(Manifest, [], true) ->
+    % If the penciller got a confirm_delete that resulted in no pending
+    % removals, then maybe we need to timeout a snapshot via release
+    release_snapshot(Manifest, ?PHANTOM_PID);
+clear_pending(Manifest, [], false) ->
+    Manifest;
+clear_pending(Manifest, [FN|RestFN], MaybeRelease) ->
+    PDs = dict:erase(FN, Manifest#manifest.pending_deletes),
+    clear_pending(
+        Manifest#manifest{pending_deletes = PDs},
+        RestFN,
+        MaybeRelease).
 
 -spec check_for_work(manifest(), list()) -> {list(), integer()}.
 %% @doc
@@ -1308,6 +1318,14 @@ levelzero_present_test() ->
     Man1 = insert_manifest_entry(Man0, 1, 0, E0),
     ?assertMatch(true, levelzero_present(Man1)).
 
+ready_to_delete_combined(Manifest, Filename) ->
+    case ready_to_delete(Manifest, Filename) of
+        true ->
+            {true, clear_pending(Manifest, [Filename], false)};
+        false ->
+            {false, clear_pending(Manifest, [], true)}
+    end.
+
 snapshot_release_test() ->
     Man6 = element(7, initial_setup()),
     E1 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
@@ -1334,31 +1352,31 @@ snapshot_release_test() ->
     Man12 = remove_manifest_entry(Man11, 4, 1, E3),
     Man13 = add_snapshot(Man12, pid_a4, 3600),
     
-    ?assertMatch(false, element(1, ready_to_delete(Man8, "Z1"))),
-    ?assertMatch(false, element(1, ready_to_delete(Man10, "Z2"))),
-    ?assertMatch(false, element(1, ready_to_delete(Man12, "Z3"))),
+    ?assertMatch(false, element(1, ready_to_delete_combined(Man8, "Z1"))),
+    ?assertMatch(false, element(1, ready_to_delete_combined(Man10, "Z2"))),
+    ?assertMatch(false, element(1, ready_to_delete_combined(Man12, "Z3"))),
     
     Man14 = release_snapshot(Man13, pid_a1),
-    ?assertMatch(false, element(1, ready_to_delete(Man14, "Z2"))),
-    ?assertMatch(false, element(1, ready_to_delete(Man14, "Z3"))),
-    {Bool14, Man15} = ready_to_delete(Man14, "Z1"),
+    ?assertMatch(false, element(1, ready_to_delete_combined(Man14, "Z2"))),
+    ?assertMatch(false, element(1, ready_to_delete_combined(Man14, "Z3"))),
+    {Bool14, Man15} = ready_to_delete_combined(Man14, "Z1"),
     ?assertMatch(true, Bool14),
     
     %This doesn't change anything - released snaphsot not the min
     Man16 = release_snapshot(Man15, pid_a4),
-    ?assertMatch(false, element(1, ready_to_delete(Man16, "Z2"))),
-    ?assertMatch(false, element(1, ready_to_delete(Man16, "Z3"))),
+    ?assertMatch(false, element(1, ready_to_delete_combined(Man16, "Z2"))),
+    ?assertMatch(false, element(1, ready_to_delete_combined(Man16, "Z3"))),
     
     Man17 = release_snapshot(Man16, pid_a2),
-    ?assertMatch(false, element(1, ready_to_delete(Man17, "Z3"))),
-    {Bool17, Man18} = ready_to_delete(Man17, "Z2"),
+    ?assertMatch(false, element(1, ready_to_delete_combined(Man17, "Z3"))),
+    {Bool17, Man18} = ready_to_delete_combined(Man17, "Z2"),
     ?assertMatch(true, Bool17),
     
     Man19 = release_snapshot(Man18, pid_a3),
     
     io:format("MinSnapSQN ~w~n", [Man19#manifest.min_snapshot_sqn]),
     
-    {Bool19, _Man20} = ready_to_delete(Man19, "Z3"),
+    {Bool19, _Man20} = ready_to_delete_combined(Man19, "Z3"),
     ?assertMatch(true, Bool19).
     
 
