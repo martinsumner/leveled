@@ -1002,7 +1002,7 @@ handle_cast({manifest_change, Manifest}, State) ->
         UpdManifest1 =
             leveled_pmanifest:clear_pending(
                 UpdManifest0,
-                State#state.pending_removals,
+                lists:usort(State#state.pending_removals),
                 State#state.maybe_release),
         {noreply,
             State#state{
@@ -1038,11 +1038,10 @@ handle_cast({confirm_delete, PDFN, FilePid}, State=#state{is_snapshot=Snap})
             ok = leveled_sst:sst_deleteconfirmed(FilePid),
             case State#state.work_ongoing of 
                 true ->
-                    UpdRemovals =
-                        lists:usort([PDFN|State#state.pending_removals]),
                     {noreply,
                         State#state{
-                            pending_removals = UpdRemovals}};
+                            pending_removals =
+                                [PDFN|State#state.pending_removals]}};
                 false ->
                     UpdManifest =
                         leveled_pmanifest:clear_pending(
