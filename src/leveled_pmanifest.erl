@@ -550,7 +550,7 @@ release_snapshot(Manifest, Pid) ->
 %% @doc
 %% A SST file which is in the delete_pending state can check to see if it is
 %% ready to delete against the manifest.
-%% This does not up date the manifest, a call is required to clear_pending to
+%% This does not update the manifest, a call is required to clear_pending to
 %% remove the file from the manifest's list of pending_deletes.
 -spec ready_to_delete(manifest(), string()) -> boolean().
 ready_to_delete(Manifest, Filename) ->
