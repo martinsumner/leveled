@@ -267,6 +267,9 @@
                 
                 work_ongoing = false :: boolean(), % i.e. compaction work
                 work_backlog = false :: boolean(), % i.e. compaction work
+
+                pending_removals = [] :: list(string()),
+                maybe_release = false :: boolean(),
                 
                 timings = no_timing :: pcl_timings(),
                 timings_countdown = 0 :: integer(),
@@ -992,36 +995,76 @@ handle_cast({manifest_change, Manifest}, State) ->
         ok =
             leveled_pclerk:clerk_promptdeletions(State#state.clerk, NewManSQN),
             % This is accepted as the new manifest, files may be deleted
-        UpdManifest =
+        UpdManifest0 =
             leveled_pmanifest:merge_snapshot(State#state.manifest, Manifest),
             % Need to preserve the penciller's view of snapshots stored in
             % the manifest
-        {noreply, State#state{manifest=UpdManifest, work_ongoing=false}}
+        UpdManifest1 =
+            leveled_pmanifest:clear_pending(
+                UpdManifest0,
+                State#state.pending_removals,
+                State#state.maybe_release),
+        {noreply,
+            State#state{
+                manifest=UpdManifest1,
+                pending_removals = [],
+                maybe_release = false,
+                work_ongoing=false}}
     end;
 handle_cast({release_snapshot, Snapshot}, State) ->
     Manifest0 = leveled_pmanifest:release_snapshot(State#state.manifest,
                                                    Snapshot),
     leveled_log:log("P0003", [Snapshot]),
     {noreply, State#state{manifest=Manifest0}};
-handle_cast({confirm_delete, Filename, FilePid}, State=#state{is_snapshot=Snap})
-                                                        when Snap == false ->    
-    case State#state.work_ongoing of 
-        false ->
-            R2D = leveled_pmanifest:ready_to_delete(State#state.manifest, 
-                                                    Filename),
-            case R2D of
-                {true, M0} ->
-                    leveled_log:log("P0005", [Filename]),
-                    ok = leveled_sst:sst_deleteconfirmed(FilePid),
-                    {noreply, State#state{manifest=M0}};
-                {false, _M0} ->
-                    {noreply, State}
-            end;
+handle_cast({confirm_delete, PDFN, FilePid}, State=#state{is_snapshot=Snap})
+                                                        when Snap == false ->
+    % This is a two stage process.  A file that is ready for deletion can be
+    % checked against the manifest to prompt the deletion, however it must also
+    % be removed from the manifest's list of pending deletes.  This is only
+    % possible when the manifest is in control of the penciller not the clerk.
+    % When work is ongoing (i.e. the manifest is under control of the clerk),
+    % any removals from the manifest need to be stored temporarily (in
+    % pending_removals) until such time that the manifest is in control of the
+    % penciller and can be updated.
+    % The maybe_release boolean on state is used if any file is not ready to
+    % delete, and there is work ongoing.  This will then trigger a check to
+    % ensure any timed out snapshots are released, in case this is the factor
+    % blocking the delete confirmation
+    % When an updated manifest is submitted by the clerk, the pending_removals
+    % will be cleared from pending using the maybe_release boolean
+    case leveled_pmanifest:ready_to_delete(State#state.manifest, PDFN) of
         true ->
-            % If there is ongoing work, then we can't safely update the pidmap
-            % as any change will be reverted when the manifest is passed back
-            % from the Clerk
-            {noreply, State}
+            leveled_log:log("P0005", [PDFN]),
+            ok = leveled_sst:sst_deleteconfirmed(FilePid),
+            case State#state.work_ongoing of 
+                true ->
+                    UpdRemovals =
+                        lists:usort([PDFN|State#state.pending_removals]),
+                    {noreply,
+                        State#state{
+                            pending_removals = UpdRemovals}};
+                false ->
+                    UpdManifest =
+                        leveled_pmanifest:clear_pending(
+                            State#state.manifest,
+                            [PDFN],
+                            false),
+                    {noreply,
+                        State#state{manifest = UpdManifest}}
+            end;
+        false ->
+            case State#state.work_ongoing of
+                true ->
+                    {noreply, State#state{maybe_release = true}};
+                false ->
+                    UpdManifest =
+                        leveled_pmanifest:clear_pending(
+                            State#state.manifest,
+                            [],
+                            true),
+                    {noreply,
+                        State#state{manifest = UpdManifest}}
+            end
     end;
 handle_cast({levelzero_complete, FN, StartKey, EndKey, Bloom}, State) ->
     leveled_log:log("P0029", []),

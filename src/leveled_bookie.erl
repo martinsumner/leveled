@@ -3074,8 +3074,10 @@ is_empty_headonly_test() ->
 
 undefined_rootpath_test() ->
     Opts = [{max_journalsize, 1000000}, {cache_size, 500}],
+    error_logger:tty(false),
     R = gen_server:start(?MODULE, [set_defaults(Opts)], []),
-    ?assertMatch({error, no_root_path}, R).
+    ?assertMatch({error, no_root_path}, R),
+    error_logger:tty(true).
         
 
 foldkeys_headonly_test() ->
