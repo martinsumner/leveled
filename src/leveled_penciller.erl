@@ -206,23 +206,6 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(LEVEL_SCALEFACTOR, 
-            [{0, 0}, 
-                {1, 4}, {2, 16}, {3, 64}, % Factor of 4
-                {4, 384}, {5, 2304}, % Factor of 6 
-                {6, 18432}, % Factor of 8 
-                {7, infinity}]).
-            % As an alternative to going up by a factor of 8 at each level, 
-            % increase by a factor of 4 at young levels - to make early  
-            % compaction jobs shorter.
-            %  
-            % There are 32K keys per files => with 4096 files there are 100M
-            % keys supported,
-            
-            % 600M keys is supported before hitting the infinite level.  
-            % At o(10) trillion keys behaviour may become increasingly 
-            % difficult to predict.
--define(MAX_LEVELS, 8).
 -define(MAX_WORK_WAIT, 300).
 -define(MANIFEST_FP, "ledger_manifest").
 -define(FILES_FP, "ledger_files").
@@ -230,7 +213,6 @@
 -define(PENDING_FILEX, "pnd").
 -define(SST_FILEX, ".sst").
 -define(ARCHIVE_FILEX, ".bak").
--define(MEMTABLE, mem).
 -define(SUPER_MAX_TABLE_SIZE, 40000).
 -define(PROMPT_WAIT_ONL0, 5).
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
@@ -243,6 +225,10 @@
 
 -record(state, {manifest ::
                     leveled_pmanifest:manifest() | undefined | redacted,
+                query_manifest :: list() | undefined,
+                    % Slimmed down version of the manifest containing part
+                    % related to  specific query
+
                 persisted_sqn = 0 :: integer(), % The highest SQN persisted
                 
                 ledger_sqn = 0 :: integer(), % The highest SQN added to L0
@@ -809,21 +795,16 @@ handle_call({fetch_keys,
     
     %% Rename any reference to loop state that may be used by the function
     %% to be returned - https://github.com/martinsumner/leveled/issues/326
-    Manifest = State#state.manifest,
+    SSTiter =
+        case State#state.query_manifest of
+            undefined ->
+                leveled_pmanifest:query_manifest(
+                    State#state.manifest, StartKey, EndKey);
+            QueryManifest ->
+                QueryManifest
+        end,    
     SnapshotTime = State#state.snapshot_time,
     
-    SetupFoldFun =
-        fun(Level, Acc) ->
-            Pointers = leveled_pmanifest:range_lookup(Manifest,
-                                                        Level,
-                                                        StartKey,
-                                                        EndKey),
-            case Pointers of
-                [] -> Acc;
-                PL -> Acc ++ [{Level, PL}]
-            end
-        end,
-    SSTiter = lists:foldl(SetupFoldFun, [], lists:seq(0, ?MAX_LEVELS - 1)),
     Folder = 
         fun() -> 
             keyfolder({FilteredL0, SSTiter},
@@ -867,7 +848,7 @@ handle_call({register_snapshot, Snapshot, Query, BookiesMem, LongRunning},
                 BookieIncrTree
         end,
 
-    CloneState = 
+    {CloneState, ManifestClone, QueryManifest} = 
         case Query of
             no_lookup ->
                 {UpdMaxSQN, UpdSize, L0Cache} =
@@ -875,10 +856,12 @@ handle_call({register_snapshot, Snapshot, Query, BookiesMem, LongRunning},
                                                 {LM1Cache, MinSQN, MaxSQN},
                                                 State#state.ledger_sqn,
                                                 State#state.levelzero_cache),
-                #state{levelzero_cache = L0Cache,
+                {#state{levelzero_cache = L0Cache,
                         ledger_sqn = UpdMaxSQN,
                         levelzero_size = UpdSize,
-                        persisted_sqn = State#state.persisted_sqn};
+                        persisted_sqn = State#state.persisted_sqn},
+                    leveled_pmanifest:copy_manifest(State#state.manifest),
+                    undefined};
             {StartKey, EndKey} ->
                 SW = os:timestamp(),
                 L0AsTree =
@@ -889,10 +872,13 @@ handle_call({register_snapshot, Snapshot, Query, BookiesMem, LongRunning},
                 leveled_log:log_randomtimer("P0037",
                                             [State#state.levelzero_size],
                                             SW,
-                                            0.1),
-                #state{levelzero_astree = L0AsTree,
+                                            0.01),
+                {#state{levelzero_astree = L0AsTree,
                         ledger_sqn = MaxSQN,
-                        persisted_sqn = State#state.persisted_sqn};
+                        persisted_sqn = State#state.persisted_sqn},
+                    undefined,
+                    leveled_pmanifest:query_manifest(
+                        State#state.manifest, StartKey, EndKey)};
             undefined ->
                 {UpdMaxSQN, UpdSize, L0Cache} =
                     leveled_pmem:add_to_cache(State#state.levelzero_size,
@@ -908,18 +894,20 @@ handle_call({register_snapshot, Snapshot, Query, BookiesMem, LongRunning},
                                                         State#state.levelzero_index,
                                                         length(L0Cache))
                     end,
-                #state{levelzero_cache = L0Cache,
+                {#state{levelzero_cache = L0Cache,
                         levelzero_index = L0Index,
                         levelzero_size = UpdSize,
                         ledger_sqn = UpdMaxSQN,
-                        persisted_sqn = State#state.persisted_sqn}
+                        persisted_sqn = State#state.persisted_sqn},
+                    leveled_pmanifest:copy_manifest(State#state.manifest),
+                    undefined}
         end,
-    ManifestClone = leveled_pmanifest:copy_manifest(State#state.manifest),
     {reply,
         {ok,
-            CloneState#state{snapshot_fully_loaded=true,
+            CloneState#state{snapshot_fully_loaded = true,
                                 snapshot_time = leveled_util:integer_now(),
-                                manifest=ManifestClone}},
+                                manifest = ManifestClone,
+                                query_manifest = QueryManifest}},
         State#state{manifest = Manifest0}};
 handle_call(close, _From, State=#state{is_snapshot=Snap}) when Snap == true ->
     ok = pcl_releasesnapshot(State#state.source_penciller, self()),
@@ -980,8 +968,7 @@ handle_call({checkbloom_fortest, Key, Hash}, _From, State) ->
         end,
     {reply, lists:foldl(FoldFun, false, lists:seq(0, ?MAX_LEVELS)), State};
 handle_call(check_for_work, _From, State) ->
-    {_WL, WC} = leveled_pmanifest:check_for_work(State#state.manifest,
-                                                    ?LEVEL_SCALEFACTOR),
+    {_WL, WC} = leveled_pmanifest:check_for_work(State#state.manifest),
     {reply, WC > 0, State};
 handle_call(persisted_sqn, _From, State) ->
     {reply, State#state.persisted_sqn, State}.
@@ -1101,8 +1088,7 @@ handle_cast(work_for_clerk, State) ->
             %
             % Perhaps the pclerk should not be restarted because of this, and
             % the failure should ripple up
-            {WL, WC} = leveled_pmanifest:check_for_work(State#state.manifest,
-                                                        ?LEVEL_SCALEFACTOR),
+            {WL, WC} = leveled_pmanifest:check_for_work(State#state.manifest),
             case WC of
                 0 ->
                     {noreply, State#state{work_backlog=false}};
@@ -2216,7 +2202,7 @@ simple_server_test() ->
     ?assertMatch(Key3, pcl_fetch(PCLr, {o,"Bucket0003", "Key0003", null})),
     ?assertMatch(Key4, pcl_fetch(PCLr, {o,"Bucket0004", "Key0004", null})),
     
-    {ok, PclSnap, null} = 
+    {ok, PclSnap, null, _} = 
         leveled_bookie:snapshot_store(leveled_bookie:empty_ledgercache(),
                                         PCLr,
                                         null,
@@ -2271,7 +2257,7 @@ simple_server_test() ->
                                                 1)),
     ok = pcl_close(PclSnap),
      
-    {ok, PclSnap2, null} = 
+    {ok, PclSnap2, null, _} = 
         leveled_bookie:snapshot_store(leveled_bookie:empty_ledgercache(),
                                         PCLr,
                                         null,
@@ -2561,13 +2547,11 @@ handle_down_test() ->
 loop() ->
     receive
         {snap, PCLr, TestPid} ->
-            Res = leveled_bookie:snapshot_store(leveled_bookie:empty_ledgercache(),
-                                          PCLr,
-                                          null,
-                                          ledger,
-                                          undefined,
-                                          false),
-            TestPid ! {self(), Res},
+            {ok, Snap, null, _Timings} =
+                leveled_bookie:snapshot_store(
+                    leveled_bookie:empty_ledgercache(),
+                    PCLr, null, ledger, undefined, false),
+            TestPid ! {self(), {ok, Snap, null}},
             loop();
         stop ->
             ok

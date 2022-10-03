@@ -181,12 +181,12 @@
 
                 put_countdown = 0 :: integer(),
                 get_countdown = 0 :: integer(),
-                fold_countdown = 0 :: integer(),
+                snapshot_countdown = 0 :: integer(),
                 head_countdown = 0 :: integer(),
                 cache_ratio = {0, 0, 0} :: cache_ratio(),
                 get_timings = no_timing :: get_timings(),
                 put_timings = no_timing :: put_timings(),
-                fold_timings = no_timing :: fold_timings(),
+                snapshot_timings = no_timing :: snapshot_timings(),
                 head_timings = no_timing :: head_timings()}).
 
 
@@ -204,8 +204,9 @@
                         ink_time = 0 :: integer(),
                         total_size = 0 :: integer()}).
 
--record(fold_timings, {sample_count = 0 :: integer(),
-                        setup_time = 0 :: integer()}).
+-record(snapshot_timings, {sample_count = 0 :: integer(),
+                            bookie_time = 0 :: integer(),
+                            pcl_time = 0 :: integer()}).
 
 
 -type book_state() :: #state{}.
@@ -213,9 +214,11 @@
 -type ledger_cache() :: #ledger_cache{}.
 -type get_timings() :: no_timing|#get_timings{}.
 -type put_timings() :: no_timing|#put_timings{}.
--type fold_timings() :: no_timing|#fold_timings{}.
+-type snapshot_timings() :: no_timing|#snapshot_timings{}.
 -type head_timings() :: no_timing|#head_timings{}.
--type timing_types() :: head|get|put|fold.
+-type timings() ::
+    put_timings()|get_timings()|snapshot_timings()|head_timings().
+-type timing_types() :: head|get|put|snapshot.
 -type cache_ratio() ::
     {non_neg_integer(), non_neg_integer(), non_neg_integer()}.
 
@@ -1476,26 +1479,27 @@ handle_call({snapshot, SnapType, Query, LongRunning}, _From, State) ->
     % Snapshot the store, specifying if the snapshot should be long running 
     % (i.e. will the snapshot be queued or be required for an extended period 
     % e.g. many minutes)
-    Reply = snapshot_store(State, SnapType, Query, LongRunning),
-    {reply, Reply, State};
+    {ok, PclSnap, InkSnap, Timings} =
+        snapshot_store(State, SnapType, Query, LongRunning),
+    {UpdTimings, CountDown} =
+        update_statetimings(snapshot, Timings, State#state.snapshot_countdown),
+    {reply,
+        {ok, PclSnap, InkSnap},
+        State#state{
+            snapshot_timings = UpdTimings,
+            snapshot_countdown = CountDown}};
 handle_call(log_settings, _From, State) ->
     {reply, leveled_log:return_settings(), State};
 handle_call({return_runner, QueryType}, _From, State) ->
-    SW = os:timestamp(),
     Runner = get_runner(State, QueryType),
-    {_SW, Timings1} = 
-        update_timings(SW, {fold, setup}, State#state.fold_timings),
-    {Timings, CountDown} = 
-        update_statetimings(fold, Timings1, State#state.fold_countdown),
-    {reply, Runner, State#state{fold_timings = Timings, 
-                                fold_countdown = CountDown}};
+    {reply, Runner, State};
 handle_call({compact_journal, Timeout}, _From, State)
                                         when State#state.head_only == false ->
     case leveled_inker:ink_compactionpending(State#state.inker) of
         true ->
             {reply, {busy, undefined}, State};
         false ->
-            {ok, PclSnap, null} =
+            {ok, PclSnap, null, _Timings} =
                 snapshot_store(State, ledger, undefined, true),
             R = leveled_inker:ink_compactjournal(State#state.inker,
                                                     PclSnap,
@@ -1625,9 +1629,13 @@ loadqueue_ledgercache(Cache) ->
     Cache#ledger_cache{load_queue = [], loader = T}.
 
 -spec snapshot_store(ledger_cache(), 
-                        pid(), null|pid(), store|ledger, 
-                        undefined|tuple(), undefined|boolean()) ->
-                                                {ok, pid(), pid()|null}.
+                        pid(),
+                        null|pid(),
+                        snapshot_timings(),
+                        store|ledger, 
+                        undefined|tuple(),
+                        undefined|boolean()) ->
+                            {ok, pid(), pid()|null, snapshot_timings()}.
 %% @doc 
 %% Allow all a snapshot to be created from part of the store, preferably
 %% passing in a query filter so that all of the LoopState does not need to
@@ -1642,37 +1650,48 @@ loadqueue_ledgercache(Cache) ->
 %% setup, assuming the range is a small subset of the overall key space).  If 
 %% lookup is required but the range isn't defined then 'undefined' should be 
 %% passed as the query
-snapshot_store(LedgerCache, Penciller, Inker, SnapType, Query, LongRunning) ->
+snapshot_store(
+        LedgerCache, Penciller, Inker, Timings, SnapType, Query, LongRunning) ->
+    TS0 = os:timestamp(),
     LedgerCacheReady = readycache_forsnapshot(LedgerCache, Query),
     BookiesMem = {LedgerCacheReady#ledger_cache.loader,
                     LedgerCacheReady#ledger_cache.index,
                     LedgerCacheReady#ledger_cache.min_sqn,
                     LedgerCacheReady#ledger_cache.max_sqn},
-    PCLopts = #penciller_options{start_snapshot = true,
-                                    source_penciller = Penciller,
-                                    snapshot_query = Query,
-                                    snapshot_longrunning = LongRunning,
-				    bookies_pid = self(),
-                                    bookies_mem = BookiesMem},
+    PCLopts = 
+        #penciller_options{start_snapshot = true,
+                            source_penciller = Penciller,
+                            snapshot_query = Query,
+                            snapshot_longrunning = LongRunning,
+				            bookies_pid = self(),
+                            bookies_mem = BookiesMem},
+    {TS1, Timings1} = update_timings(TS0, {snapshot, bookie}, Timings), 
     {ok, LedgerSnapshot} = leveled_penciller:pcl_snapstart(PCLopts),
+    {_TS2, Timings2} = update_timings(TS1, {snapshot, pcl}, Timings1),
     case SnapType of
         store ->
             InkerOpts = #inker_options{start_snapshot=true,
                                        bookies_pid = self(),
                                        source_inker=Inker},
             {ok, JournalSnapshot} = leveled_inker:ink_snapstart(InkerOpts),
-            {ok, LedgerSnapshot, JournalSnapshot};
+            {ok, LedgerSnapshot, JournalSnapshot, Timings2};
         ledger ->
-            {ok, LedgerSnapshot, null}
+            {ok, LedgerSnapshot, null, Timings2}
     end.
+
+snapshot_store(LedgerCache, Penciller, Inker, SnapType, Query, LongRunning) ->
+    snapshot_store(
+        LedgerCache, Penciller, Inker, no_timing, SnapType, Query, LongRunning).
 
 snapshot_store(State, SnapType, Query, LongRunning) ->
     snapshot_store(State#state.ledger_cache,
                     State#state.penciller,
                     State#state.inker,
+                    State#state.snapshot_timings,
                     SnapType,
                     Query,
                     LongRunning).
+
 
 -spec fetch_value(pid(), leveled_codec:journal_ref()) -> not_present|any().
 %% @doc
@@ -1838,7 +1857,8 @@ set_options(Opts) ->
 return_snapfun(State, SnapType, Query, LongRunning, SnapPreFold) ->
     case SnapPreFold of
         true ->
-            {ok, LS, JS} = snapshot_store(State, SnapType, Query, LongRunning),
+            {ok, LS, JS, _Timings} =
+                snapshot_store(State, SnapType, Query, LongRunning),
             fun() -> {ok, LS, JS} end;
         false ->
             Self = self(),
@@ -2476,12 +2496,8 @@ delete_path(DirPath) ->
 %%% Timing Functions
 %%%============================================================================
 
--spec update_statetimings(timing_types(), 
-                    put_timings()|get_timings()|fold_timings()|head_timings(), 
-                    integer()) 
-                    -> 
-                    {put_timings()|get_timings()|fold_timings()|head_timings(), 
-                    integer()}.
+-spec update_statetimings(timing_types(), timings(), integer()) -> 
+                    {timings(), integer()}.
 %% @doc
 %%
 %% The timings state is either in countdown to the next set of samples of
@@ -2497,8 +2513,8 @@ update_statetimings(put, no_timing, 0) ->
     {#put_timings{}, 0};
 update_statetimings(get, no_timing, 0) ->
     {#get_timings{}, 0};
-update_statetimings(fold, no_timing, 0) ->
-    {#fold_timings{}, 0};
+update_statetimings(snapshot, no_timing, 0) ->
+    {#snapshot_timings{}, 0};
 update_statetimings(head, Timings, 0) ->
     case Timings#head_timings.sample_count of 
         SC when SC >= ?TIMING_SAMPLESIZE ->
@@ -2523,12 +2539,12 @@ update_statetimings(get, Timings, 0) ->
         _SC ->
             {Timings, 0}
     end;
-update_statetimings(fold, Timings, 0) ->
-    case Timings#fold_timings.sample_count of 
-        SC when SC >= (?TIMING_SAMPLESIZE div 10) ->
-            log_timings(fold, Timings),
+update_statetimings(snapshot, Timings, 0) ->
+    case Timings#snapshot_timings.sample_count of 
+        SC when SC >= ?TIMING_SAMPLESIZE ->
+            log_timings(snapshot, Timings),
             {no_timing, 
-                leveled_rand:uniform(2 * (?TIMING_SAMPLECOUNTDOWN div 10))};
+                leveled_rand:uniform(2 * ?TIMING_SAMPLECOUNTDOWN)};
         _SC ->
             {Timings, 0}
     end;
@@ -2550,15 +2566,17 @@ log_timings(get, Timings) ->
                                 Timings#get_timings.head_time,
                                 Timings#get_timings.body_time,
                                 Timings#get_timings.fetch_count]);
-log_timings(fold, Timings) ->    
-    leveled_log:log("B0017", [Timings#fold_timings.sample_count, 
-                                Timings#fold_timings.setup_time]).
+log_timings(snapshot, Timings) ->    
+    leveled_log:log("B0017", [Timings#snapshot_timings.sample_count, 
+                                Timings#snapshot_timings.bookie_time,
+                                Timings#snapshot_timings.pcl_time]).
 
 
 update_timings(_SW, _Stage, no_timing) ->
     {no_timing, no_timing};
 update_timings(SW, {head, Stage}, Timings) ->
-    Timer = timer:now_diff(os:timestamp(), SW),
+    NextSW = os:timestamp(), 
+    Timer = timer:now_diff(NextSW, SW),
     Timings0 = 
         case Stage of 
             pcl ->
@@ -2569,9 +2587,10 @@ update_timings(SW, {head, Stage}, Timings) ->
                 CNT = Timings#head_timings.sample_count + 1,
                 Timings#head_timings{buildhead_time = BHT, sample_count = CNT}
         end,
-    {os:timestamp(), Timings0};
+    {NextSW, Timings0};
 update_timings(SW, {put, Stage}, Timings) ->
-    Timer = timer:now_diff(os:timestamp(), SW),
+    NextSW = os:timestamp(),
+    Timer = timer:now_diff(NextSW, SW),
     Timings0 = 
         case Stage of 
             {inker, ObjectSize} ->
@@ -2583,24 +2602,32 @@ update_timings(SW, {put, Stage}, Timings) ->
                 CNT = Timings#put_timings.sample_count + 1,
                 Timings#put_timings{mem_time = PCT, sample_count = CNT}
         end,
-    {os:timestamp(), Timings0};
+    {NextSW, Timings0};
 update_timings(SW, {get, head}, Timings) ->
-    Timer = timer:now_diff(os:timestamp(), SW),
+    NextSW = os:timestamp(), 
+    Timer = timer:now_diff(NextSW, SW),
     GHT = Timings#get_timings.head_time + Timer,
     CNT = Timings#get_timings.sample_count + 1,
     Timings0 = Timings#get_timings{head_time = GHT, sample_count = CNT},
-    {os:timestamp(), Timings0};
+    {NextSW, Timings0};
 update_timings(SW, {get, body}, Timings) ->
     Timer = timer:now_diff(os:timestamp(), SW),
     GBT = Timings#get_timings.body_time + Timer,
     FCNT = Timings#get_timings.fetch_count + 1,
     Timings0 = Timings#get_timings{body_time = GBT, fetch_count = FCNT},
     {no_timing, Timings0};
-update_timings(SW, {fold, setup}, Timings) ->
-    Timer = timer:now_diff(os:timestamp(), SW),
-    FST = Timings#fold_timings.setup_time + Timer,
-    CNT = Timings#fold_timings.sample_count + 1,
-    Timings0 = Timings#fold_timings{setup_time = FST, sample_count = CNT},
+update_timings(SW, {snapshot, bookie}, Timings) ->
+    NextSW = os:timestamp(), 
+    Timer = timer:now_diff(NextSW, SW),
+    BST = Timings#snapshot_timings.bookie_time + Timer,
+    CNT = Timings#snapshot_timings.sample_count + 1,
+    Timings0 = Timings#snapshot_timings{bookie_time = BST, sample_count = CNT},
+    {NextSW, Timings0};
+update_timings(SW, {snapshot, pcl}, Timings) ->
+    NextSW = os:timestamp(), 
+    Timer = timer:now_diff(NextSW, SW),
+    PST = Timings#snapshot_timings.pcl_time + Timer,
+    Timings0 = Timings#snapshot_timings{pcl_time = PST},
     {no_timing, Timings0}.
 
 
