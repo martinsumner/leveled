@@ -70,7 +70,7 @@
         {info, "Get timing with sample_count=~w and head_time=~w body_time=~w"
                 ++ " with fetch_count=~w"}},
     {"B0017",
-        {info, "Fold timing with sample_count=~w and bookie_time=~w pcl_time=~w"}},
+        {info, "Snapshot timing with sample_count=~w and bookie_time=~w pcl_time=~w"}},
     {"B0018",
         {info, "Positive HEAD responses timed with sample_count=~w and "
                 ++ " pcl_time=~w rsp_time=~w"}},
