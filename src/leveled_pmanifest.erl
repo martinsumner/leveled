@@ -73,6 +73,11 @@
             % 600M keys is supported before hitting the infinite level.  
             % At o(10) trillion keys behaviour may become increasingly 
             % difficult to predict.
+
+-if(length(?LEVEL_SCALEFACTOR) /= ?MAX_LEVELS).
+-error("length ?LEVEL_SCALEFACTOR differs from ?MAX_LEVELS").
+-endif.
+
 -define(TREE_TYPE, idxt).
 -define(TREE_WIDTH, 8).
 -define(PHANTOM_PID, r2d_fail).

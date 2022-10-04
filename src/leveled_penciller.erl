@@ -225,9 +225,13 @@
 
 -record(state, {manifest ::
                     leveled_pmanifest:manifest() | undefined | redacted,
-                query_manifest :: list() | undefined,
+                query_manifest :: 
+                    {list(),
+                        leveled_codec:ledger_key(),
+                        leveled_codec:ledger_key()} | undefined,
                     % Slimmed down version of the manifest containing part
-                    % related to  specific query
+                    % related to  specific query, and the StartKey/EndKey
+                    % used to extract this part
 
                 persisted_sqn = 0 :: integer(), % The highest SQN persisted
                 
@@ -800,7 +804,8 @@ handle_call({fetch_keys,
             undefined ->
                 leveled_pmanifest:query_manifest(
                     State#state.manifest, StartKey, EndKey);
-            QueryManifest ->
+            {QueryManifest, StartKeyQM, EndKeyQM}
+                    when StartKey >= StartKeyQM, EndKey =< EndKeyQM ->
                 QueryManifest
         end,    
     SnapshotTime = State#state.snapshot_time,
@@ -877,8 +882,10 @@ handle_call({register_snapshot, Snapshot, Query, BookiesMem, LongRunning},
                         ledger_sqn = MaxSQN,
                         persisted_sqn = State#state.persisted_sqn},
                     undefined,
-                    leveled_pmanifest:query_manifest(
-                        State#state.manifest, StartKey, EndKey)};
+                    {leveled_pmanifest:query_manifest(
+                        State#state.manifest, StartKey, EndKey),
+                        StartKey,
+                        EndKey}};
             undefined ->
                 {UpdMaxSQN, UpdSize, L0Cache} =
                     leveled_pmem:add_to_cache(State#state.levelzero_size,
