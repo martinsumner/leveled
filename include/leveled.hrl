@@ -24,6 +24,9 @@
 
 -define(CACHE_TYPE, skpl).
 
+-define(MAX_LEVELS, 8).
+%% Should equal the length of the LEVEL_SCALEFACTOR
+
 
 -record(level,
                         {level :: integer(),
