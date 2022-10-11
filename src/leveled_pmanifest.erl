@@ -26,6 +26,7 @@
         load_manifest/3,
         close_manifest/2,
         save_manifest/2,
+        query_manifest/3,
         get_manifest_sqn/1,
         key_lookup/3,
         range_lookup/4,
@@ -40,7 +41,7 @@
         merge_snapshot/2,
         ready_to_delete/2,
         clear_pending/3,
-        check_for_work/2,
+        check_for_work/1,
         is_basement/2,
         levelzero_present/1,
         check_bloom/3,
@@ -56,7 +57,27 @@
 -define(MANIFEST_FILEX, "man").
 -define(PENDING_FILEX, "pnd").
 -define(MANIFEST_FP, "ledger_manifest").
--define(MAX_LEVELS, 8).
+-define(LEVEL_SCALEFACTOR, 
+            [{0, 0}, 
+                {1, 4}, {2, 16}, {3, 64}, % Factor of 4
+                {4, 384}, {5, 2304}, % Factor of 6 
+                {6, 18432}, % Factor of 8 
+                {7, infinity}]).
+            % As an alternative to going up by a factor of 8 at each level, 
+            % increase by a factor of 4 at young levels - to make early  
+            % compaction jobs shorter.
+            %  
+            % There are 32K keys per files => with 4096 files there are 100M
+            % keys supported,
+            
+            % 600M keys is supported before hitting the infinite level.  
+            % At o(10) trillion keys behaviour may become increasingly 
+            % difficult to predict.
+
+-if(length(?LEVEL_SCALEFACTOR) /= ?MAX_LEVELS).
+-error("length ?LEVEL_SCALEFACTOR differs from ?MAX_LEVELS").
+-endif.
+
 -define(TREE_TYPE, idxt).
 -define(TREE_WIDTH, 8).
 -define(PHANTOM_PID, r2d_fail).
@@ -408,6 +429,22 @@ key_lookup(Manifest, LevelIdx, Key) ->
                                 Key)
     end.
 
+-spec query_manifest(
+    manifest(),
+    leveled_codec:ledger_key(),
+    leveled_codec:ledger_key()) -> list().
+query_manifest(Manifest, StartKey, EndKey) ->
+    SetupFoldFun =
+        fun(Level, Acc) ->
+            Pointers =
+                range_lookup(Manifest, Level, StartKey, EndKey),
+            case Pointers of
+                [] -> Acc;
+                PL -> Acc ++ [{Level, PL}]
+            end
+        end,
+    lists:foldl(SetupFoldFun, [], lists:seq(0, ?MAX_LEVELS - 1)).
+
 -spec range_lookup(manifest(), 
                     integer(), 
                     leveled_codec:ledger_key(), 
@@ -581,7 +618,7 @@ clear_pending(Manifest, [FN|RestFN], MaybeRelease) ->
         RestFN,
         MaybeRelease).
 
--spec check_for_work(manifest(), list()) -> {list(), integer()}.
+-spec check_for_work(manifest()) -> {list(), integer()}.
 %% @doc
 %% Check for compaction work in the manifest - look at levels which contain
 %% more files in the threshold.
@@ -593,7 +630,7 @@ clear_pending(Manifest, [FN|RestFN], MaybeRelease) ->
 %%
 %% Return a list of levels which are over-sized as well as the total items
 %% across the manifest which are beyond the size (the total work outstanding).
-check_for_work(Manifest, Thresholds) ->
+check_for_work(Manifest) ->
     CheckLevelFun =
         fun({LevelIdx, MaxCount}, {AccL, AccC}) ->
             case LevelIdx > Manifest#manifest.basement of
@@ -610,7 +647,7 @@ check_for_work(Manifest, Thresholds) ->
                     end
             end
         end,
-    lists:foldr(CheckLevelFun, {[], 0}, Thresholds).    
+    lists:foldr(CheckLevelFun, {[], 0}, ?LEVEL_SCALEFACTOR).    
 
 -spec is_basement(manifest(), integer()) -> boolean().
 %% @doc
