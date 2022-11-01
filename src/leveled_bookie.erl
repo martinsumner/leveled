@@ -1267,6 +1267,7 @@ init([Opts]) ->
 
             NewETS = ets:new(mem, [ordered_set]),
             leveled_log:log("B0001", [Inker, Penciller]),
+
             {ok, State0#state{inker=Inker,
                                 penciller=Penciller,
                                 ledger_cache=#ledger_cache{mem = NewETS}}};
@@ -1281,7 +1282,7 @@ init([Opts]) ->
 
 
 handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL, DataSync},
-                From, State) when State#state.head_only == false ->
+                _From, State) when State#state.head_only == false ->
     LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
     SW0 = os:timestamp(),
     {ok, SQN, ObjSize} = leveled_inker:ink_put(State#state.inker,
@@ -1297,38 +1298,40 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL, DataSync},
                                         Object,
                                         ObjSize,
                                         {IndexSpecs, TTL}),
-    Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
+    NewCache = addto_ledgercache(Changes, State#state.ledger_cache),
+    Reply =
+        case State#state.slow_offer of
+            true ->
+                % If the previous push to memory was returned then punish this PUT
+                % with a delay.  If the back-pressure in the Penciller continues,
+                % these delays will become more frequent
+                pause;
+            false ->
+                ok
+        end,
+    maybe_longrunning(SW0, overall_put),
+    TimeToPush =
+        maybe_withjitter(
+            ets:info(NewCache#ledger_cache.mem, size),
+            State#state.cache_size,
+            State#state.cache_multiple,
+            false),
+    case TimeToPush of
+        true ->
+            gen_server:cast(self(), push_ledgercache);
+        false ->
+            ok
+    end,
     {_SW2, Timings2} = update_timings(SW1, {put, mem}, Timings1),
-
     {Timings, CountDown} = 
         update_statetimings(put, Timings2, State#state.put_countdown),
-        % If the previous push to memory was returned then punish this PUT with
-        % a delay.  If the back-pressure in the Penciller continues, these 
-        % delays will beocme more frequent
-    case State#state.slow_offer of
-        true ->
-            gen_server:reply(From, pause);
-        false ->
-            gen_server:reply(From, ok)
-    end,
-    maybe_longrunning(SW0, overall_put),
-    case maybepush_ledgercache(
-        State#state.cache_size,
-        State#state.cache_multiple,
-        Cache0,
-        State#state.penciller) of
-        {ok, NewCache} ->
-            {noreply, State#state{ledger_cache = NewCache,
-                                  put_timings = Timings,
-                                  put_countdown = CountDown,
-                                  slow_offer = false}};
-        {returned, NewCache} ->
-            {noreply, State#state{ledger_cache = NewCache,
-                                  put_timings = Timings,
-                                  put_countdown = CountDown,
-                                  slow_offer = true}}
-    end;
-handle_call({mput, ObjectSpecs, TTL}, From, State) 
+    {reply,
+        Reply,
+        State#state{
+            ledger_cache = NewCache,
+            put_timings = Timings,
+            put_countdown = CountDown}};
+handle_call({mput, ObjectSpecs, TTL}, _From, State) 
                                         when State#state.head_only == true ->
     {ok, SQN} = 
         leveled_inker:ink_mput(State#state.inker, dummy, {ObjectSpecs, TTL}),
@@ -1336,25 +1339,29 @@ handle_call({mput, ObjectSpecs, TTL}, From, State)
         preparefor_ledgercache(?INKT_MPUT, ?DUMMY, 
                                 SQN, null, length(ObjectSpecs), 
                                 {ObjectSpecs, TTL}),
-    Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
-    case State#state.slow_offer of
+    NewCache = addto_ledgercache(Changes, State#state.ledger_cache),
+    Reply = 
+        case State#state.slow_offer of
+            true ->
+                pause;
+            false ->
+                ok
+        end,
+    TimeToPush =
+        maybe_withjitter(
+            ets:info(NewCache#ledger_cache.mem, size),
+            State#state.cache_size,
+            State#state.cache_multiple,
+            false),
+    case TimeToPush of
         true ->
-            gen_server:reply(From, pause);
+            gen_server:cast(self(), push_ledgercache);
         false ->
-            gen_server:reply(From, ok)
+            ok
     end,
-    case maybepush_ledgercache(
-        State#state.cache_size,
-        State#state.cache_multiple,
-        Cache0,
-        State#state.penciller) of
-        {ok, NewCache} ->
-            {noreply, State#state{ledger_cache = NewCache,
-                                    slow_offer = false}};
-        {returned, NewCache} ->
-            {noreply, State#state{ledger_cache = NewCache,
-                                    slow_offer = true}}
-    end;
+    {reply,
+        Reply,
+        State#state{ledger_cache = NewCache}};
 handle_call({get, Bucket, Key, Tag}, _From, State) 
                                         when State#state.head_only == false ->
     LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
@@ -1504,6 +1511,7 @@ handle_call({compact_journal, Timeout}, _From, State)
             R = leveled_inker:ink_compactjournal(State#state.inker,
                                                     PclSnap,
                                                     Timeout),
+            ok = gen_server:cast(self(), push_ledgercache),
             {reply, R, State}
     end;
 handle_call(confirm_compact, _From, State)
@@ -1564,7 +1572,26 @@ handle_cast({remove_logs, ForcedLogs}, State) ->
     ok = leveled_penciller:pcl_removelogs(PCL, ForcedLogs),
     ok = leveled_inker:ink_removelogs(INK, ForcedLogs),
     ok = leveled_log:remove_forcedlogs(ForcedLogs),
-    {noreply, State}.
+    {noreply, State};
+handle_cast(push_ledgercache, State) ->
+    Cache = State#state.ledger_cache,
+    TimeToPush =
+        maybe_withjitter(
+            ets:info(Cache#ledger_cache.mem, size),
+            State#state.cache_size,
+            State#state.cache_multiple,
+            true),
+    case TimeToPush of
+        true ->
+            {R, NewCache} =
+                push_ledgercache(Cache, State#state.penciller, table),
+            {noreply,
+                State#state{
+                    ledger_cache = NewCache,
+                    slow_offer = R == returned}};
+        false ->
+            {noreply, State}
+    end.
 
 
 handle_info(_Info, State) ->
@@ -1592,29 +1619,8 @@ empty_ledgercache() ->
 %% The push to penciller must start as a tree to correctly de-duplicate
 %% the list by order before becoming a de-duplicated list for loading  
 push_to_penciller(Penciller, LedgerCache) ->
-    push_to_penciller_loop(Penciller, loadqueue_ledgercache(LedgerCache)).
+    push_ledgercache(loadqueue_ledgercache(LedgerCache), Penciller, loader).
 
-push_to_penciller_loop(Penciller, LedgerCache) ->
-    case push_ledgercache(Penciller, LedgerCache) of
-        returned ->
-            timer:sleep(?LOADING_PAUSE),
-            push_to_penciller_loop(Penciller, LedgerCache);
-        ok ->
-            ok
-    end.
-
--spec push_ledgercache(pid(), ledger_cache()) -> ok|returned.
-%% @doc 
-%% Push the ledgercache to the Penciller - which should respond ok or
-%% returned.  If the response is ok the cache can be flushed, but if the
-%% response is returned the cache should continue to build and it should try
-%% to flush at a later date
-push_ledgercache(Penciller, Cache) ->
-    CacheToLoad = {Cache#ledger_cache.loader,
-                    Cache#ledger_cache.index,
-                    Cache#ledger_cache.min_sqn,
-                    Cache#ledger_cache.max_sqn},
-    leveled_penciller:pcl_pushmem(Penciller, CacheToLoad).
 
 -spec loadqueue_ledgercache(ledger_cache()) -> ledger_cache().
 %% @doc 
@@ -2392,54 +2398,55 @@ check_in_ledgercache(PK, Hash, Cache, loader) ->
     end.
 
 
--spec maybepush_ledgercache(
-    pos_integer(), pos_integer(), ledger_cache(), pid()) 
-    -> {ok|returned, ledger_cache()}.
-%% @doc
-%% Following an update to the ledger cache, check if this now big enough to be 
-%% pushed down to the Penciller.  There is some random jittering here, to 
-%% prevent coordination across leveled instances (e.g. when running in Riak).
-%% 
-%% The penciller may be too busy, as the LSM tree is backed up with merge
-%% activity.  In this case the update is not made and 'returned' not ok is set
-%% in the reply.  Try again later when it isn't busy (and also potentially 
-%% implement a slow_offer state to slow down the pace at which PUTs are being
-%% received)
-maybepush_ledgercache(MaxCacheSize, MaxCacheMult, Cache, Penciller) ->
-    Tab = Cache#ledger_cache.mem,
-    CacheSize = ets:info(Tab, size),
-    TimeToPush = maybe_withjitter(CacheSize, MaxCacheSize, MaxCacheMult),
-    if
-        TimeToPush ->
-            CacheToLoad = {Tab,
-                            Cache#ledger_cache.index,
-                            Cache#ledger_cache.min_sqn,
-                            Cache#ledger_cache.max_sqn},
-            case leveled_penciller:pcl_pushmem(Penciller, CacheToLoad) of
-                ok ->
-                    Cache0 = #ledger_cache{},
-                    true = ets:delete(Tab),
-                    NewTab = ets:new(mem, [ordered_set]),
-                    {ok, Cache0#ledger_cache{mem=NewTab}};
-                returned ->
-                    {returned, Cache}
-            end;
-        true ->
-             {ok, Cache}
+-spec push_ledgercache(
+    ledger_cache(), pid(), loader|table) ->
+        ok|{returned, ledger_cache()}|{ok, ledger_cache()}.
+%% @doc 
+%% Push the ledgercache to the Penciller.
+%% When used as aprt of the loader, this will loop until the cache is
+%% accepted.  when this is a table, there is no loop, instead if the cache
+%% cannot be accepted it will be returned.
+push_ledgercache(Cache, Penciller, loader) ->
+    CacheToLoad = {Cache#ledger_cache.loader,
+                    Cache#ledger_cache.index,
+                    Cache#ledger_cache.min_sqn,
+                    Cache#ledger_cache.max_sqn},
+    case leveled_penciller:pcl_pushmem(Penciller, CacheToLoad) of
+        returned ->
+            timer:sleep(?LOADING_PAUSE),
+            push_ledgercache(Cache, Penciller, loader);
+        ok ->
+            ok
+    end;
+push_ledgercache(Cache, Penciller, table) ->
+    CacheToLoad = {Cache#ledger_cache.mem,
+                    Cache#ledger_cache.index,
+                    Cache#ledger_cache.min_sqn,
+                    Cache#ledger_cache.max_sqn},
+    case leveled_penciller:pcl_pushmem(Penciller, CacheToLoad) of
+        ok ->
+            Cache0 = #ledger_cache{},
+            true = ets:delete(Cache#ledger_cache.mem),
+            NewTab = ets:new(mem, [ordered_set]),
+            {ok, Cache0#ledger_cache{mem=NewTab}};
+        returned ->
+            {returned, Cache}
     end.
 
 -spec maybe_withjitter(
-    non_neg_integer(), pos_integer(), pos_integer()) -> boolean().
+    non_neg_integer(), pos_integer(), pos_integer(), boolean()) -> boolean().
 %% @doc
 %% Push down randomly, but the closer to 4 * the maximum size, the more likely
 %% a push should be
+%% If NoJitter is true, then only care if the Cache size is over Max
 maybe_withjitter(
-    CacheSize, MaxCacheSize, MaxCacheMult) when CacheSize > MaxCacheSize ->
+    CacheSize, MaxCacheSize, MaxCacheMult, NoJitter)
+      when CacheSize > MaxCacheSize ->
     R = leveled_rand:uniform(MaxCacheMult * MaxCacheSize),
-    (CacheSize - MaxCacheSize) > R;
-maybe_withjitter(_CacheSize, _MaxCacheSize, _MaxCacheMult) ->
+    NoJitter or ((CacheSize - MaxCacheSize) > R);
+maybe_withjitter(
+    _CacheSize, _MaxCacheSize, _MaxCacheMult, _NoJitter) ->
     false.
-
 
 -spec get_loadfun(leveled_codec:compaction_strategy(), pid(), book_state())
                     -> initial_loadfun().
@@ -3119,6 +3126,10 @@ foldkeys_headonly_tester(ObjectCount, BlockSize, BStr) ->
                                     {max_journalsize, 1000000},
                                     {cache_size, 500},
                                     {head_only, no_lookup}]),
+
+    % Confirm this doesn't crash anything
+    ok = gen_server:cast(Bookie1, push_ledgercache),
+
     GenObjSpecFun =
         fun(I) ->
             Key = I rem 6,
@@ -3145,7 +3156,7 @@ foldkeys_headonly_tester(ObjectCount, BlockSize, BStr) ->
     ?assertMatch(Key_SKL_Compare, Key_SKL1),
 
     ok = book_close(Bookie1),
-    
+
     {ok, Bookie2} = book_start([{root_path, RootPath},
                                     {max_journalsize, 1000000},
                                     {cache_size, 500},
@@ -3162,6 +3173,8 @@ is_empty_stringkey_test() ->
     {ok, Bookie1} = book_start([{root_path, RootPath},
                                     {max_journalsize, 1000000},
                                     {cache_size, 500}]),
+    % Confirm this doesn't crash anything
+    ok = gen_server:cast(Bookie1, push_ledgercache),
     ?assertMatch(true, book_isempty(Bookie1, ?STD_TAG)),
     Past = leveled_util:integer_now() - 300,
     ?assertMatch(true, leveled_bookie:book_isempty(Bookie1, ?STD_TAG)),
