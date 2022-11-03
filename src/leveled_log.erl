@@ -148,7 +148,9 @@
     {"P0031",
         {info, "Completion of update to levelzero"
                     ++ " with cache_size=~w level0_due=~w"
-                    ++ " and change_pending=~w"}},
+                    ++ " change_pending=~w"
+                    ++ " MinSQN=~w MaxSQN=~w"
+                    ++ " CacheTime_us=~w RollTime_us=~w"}},
     {"P0032",
         {info, "Fetch head timing with sample_count=~w and level timings of"
                     ++ " foundmem_time=~w found0_time=~w found1_time=~w" 

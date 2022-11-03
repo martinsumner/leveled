@@ -162,7 +162,7 @@
                         loader = leveled_tree:empty(?CACHE_TYPE)
                                     :: tuple()|empty_cache,
                         load_queue = [] :: list(),
-                        index = leveled_pmem:new_index(), % array or empty_index
+                        index = leveled_pmem:new_index(),
                         min_sqn = infinity :: integer()|infinity,
                         max_sqn = 0 :: integer()}).
 
@@ -2384,7 +2384,7 @@ addto_ledgercache({H, SQN, KeyChanges}, Cache, loader) ->
 %% Check the ledger cache for a Key, when the ledger cache is in loader mode
 %% and so is populating a queue not an ETS table
 check_in_ledgercache(PK, Hash, Cache, loader) ->
-    case leveled_pmem:check_index(Hash, Cache#ledger_cache.index) of
+    case leveled_pmem:check_index(Hash, [Cache#ledger_cache.index]) of
         [] ->
             false;
         _ ->
