@@ -83,7 +83,7 @@
 -define(DISCARD_EXT, ".discarded").
 -define(DELETE_TIMEOUT, 10000).
 -define(TREE_TYPE, idxt).
--define(TREE_SIZE, 4).
+-define(TREE_SIZE, 16).
 -define(TIMING_SAMPLECOUNTDOWN, 20000).
 -define(TIMING_SAMPLESIZE, 100).
 -define(BLOCK_LENGTHS_LENGTH, 20).
@@ -148,11 +148,14 @@
                             start_position :: integer(),
                             length :: integer()}).
 
--record(summary,    {first_key :: tuple(),
-                        last_key :: tuple(),
-                        index :: tuple() | undefined,
-                        size :: integer(),
-                        max_sqn :: integer()}).
+-record(summary,
+            {first_key :: tuple(),
+            last_key :: tuple(),
+            index :: tuple() | undefined,
+            size :: integer(),
+            max_sqn :: integer(),
+            filter_fun ::
+                fun((leveled_codec:ledger_key()) -> any()) | undefined}).
 
 -type press_method() 
         :: lz4|native|none.
@@ -1300,7 +1303,9 @@ fetch(LedgerKey, Hash, State, Timings0) ->
     Summary = State#state.summary,
     PressMethod = State#state.compression_method,
     IdxModDate = State#state.index_moddate,
-    Slot = lookup_slot(LedgerKey, Summary#summary.index),
+    Slot =
+        lookup_slot(
+            LedgerKey, Summary#summary.index, Summary#summary.filter_fun),
     
     {SW1, Timings1} = update_timings(SW0, Timings0, index_query, true),
     
@@ -1386,7 +1391,12 @@ fetch(LedgerKey, Hash, State, Timings0) ->
 fetch_range(StartKey, EndKey, ScanWidth, SegList, LowLastMod, State) ->
     Summary = State#state.summary,
     Handle = State#state.handle,
-    {Slots, RTrim} = lookup_slots(StartKey, EndKey, Summary#summary.index),
+    {Slots, RTrim} =
+        lookup_slots(
+            StartKey,
+            EndKey,
+            Summary#summary.index,
+            Summary#summary.filter_fun),
     Self = self(),
     SL = length(Slots),
     
@@ -1492,8 +1502,10 @@ read_file(Filename, State, LoadPageCache) ->
         read_table_summary(SummaryBin, UpdState0#state.tomb_count),
     BlockIndexCache = new_blockindex_cache(Summary#summary.size),
     UpdState1 = UpdState0#state{blockindex_cache = BlockIndexCache},
-    SlotIndex = from_list(SlotList),
-    UpdSummary = Summary#summary{index = SlotIndex},
+    {SlotIndex, FilterFun} =
+        from_list(
+            SlotList, Summary#summary.first_key, Summary#summary.last_key),
+    UpdSummary = Summary#summary{index = SlotIndex, filter_fun = FilterFun},
     leveled_log:log("SST03", [Filename,
                                 Summary#summary.size,
                                 Summary#summary.max_sqn]),
@@ -1725,20 +1737,66 @@ hmac(Int) when is_integer(Int) ->
 %%
 %% This implementation of the SlotIndex uses leveled_tree
 
-from_list(SlotList) ->
-    leveled_tree:from_orderedlist(SlotList, ?TREE_TYPE, ?TREE_SIZE).
+from_list(SlotList, FirstKey, LastKey) ->
+    FilterFun = get_filterfun(FirstKey, LastKey),
+    FilteredList =
+        lists:map(fun({K, S}) -> {FilterFun(K), S} end, SlotList),
+    {leveled_tree:from_orderedlist(FilteredList, ?TREE_TYPE, ?TREE_SIZE),
+        FilterFun}.
 
-lookup_slot(Key, Tree) ->
+-spec get_filterfun(
+    leveled_codec:ledger_key(), leveled_codec:ledger_key()) ->
+        fun((leveled_codec:ledger_key()) -> any()).
+get_filterfun(
+        {Tag, Bucket, {Field, FT}, FK}, {Tag, Bucket, {Field, LT}, LK})
+            when is_binary(FT), is_binary(FK), is_binary(LT), is_binary(LK) ->
+    case binary:longest_common_prefix([FT, LT]) of
+        0 ->
+            fun({_Tag, _Bucket, {_Field, Term}, Key}) ->
+                {Term, Key}
+            end;
+        N ->
+            fun({_Tag, _Bucket, {_Field, Term}, Key}) ->
+                case Term of
+                    T when byte_size(T) == N ->
+                        {<<>>, Key};
+                    <<_:N/binary, Suffix/binary>> ->
+                        {Suffix, Key}
+                end
+            end
+    end;
+get_filterfun(
+        {Tag, Bucket, FK, null}, {Tag, Bucket, LK, null})
+            when is_binary(FK), is_binary(LK), FK < LK ->
+    case binary:longest_common_prefix([FK, LK]) of
+        0 ->
+            fun({_Tag, _Bucket, Key, null}) -> Key end;
+        N ->
+            fun({_Tag, _Bucket, Key, null}) ->
+                case Key of
+                    null ->
+                        null;
+                    K when byte_size(K) == N ->
+                        <<>>;
+                    <<_:N/binary, Suffix/binary>> ->
+                        Suffix
+                end
+            end
+    end;
+get_filterfun(_FirstKey, _LastKey) ->
+    fun(K) -> K end.
+
+lookup_slot(Key, Tree, FilterFun) ->
     StartKeyFun =
         fun(_V) ->
             all
         end,
     % The penciller should never ask for presence out of range - so will
-    % always return a slot (As we don't compare to StartKey)
-    {_LK, Slot} = leveled_tree:search(Key, Tree, StartKeyFun),
+    % always return a slot (as we don't compare to StartKey)
+    {_LK, Slot} = leveled_tree:search(FilterFun(Key), Tree, StartKeyFun),
     Slot.
 
-lookup_slots(StartKey, EndKey, Tree) ->
+lookup_slots(StartKey, EndKey, Tree, FilterFun) ->
     StartKeyFun =
         fun(_V) ->
             all
@@ -1747,9 +1805,25 @@ lookup_slots(StartKey, EndKey, Tree) ->
         fun({_LK, Slot}) ->
             Slot
         end,
-    SlotList = leveled_tree:search_range(StartKey, EndKey, Tree, StartKeyFun),
+    FilteredStartKey =
+        case StartKey of
+            all -> all;
+            _ -> FilterFun(StartKey)
+        end,
+    FilteredEndKey =
+        case EndKey of
+            all -> all;
+            _ -> FilterFun(EndKey)
+        end,
+    SlotList =
+        leveled_tree:search_range(
+            FilteredStartKey,
+            FilteredEndKey,
+            Tree,
+            StartKeyFun),
     {EK, _EndSlot} = lists:last(SlotList),
-    {lists:map(MapFun, SlotList), not leveled_codec:endkey_passed(EK, EndKey)}.
+    {lists:map(MapFun, SlotList),
+        leveled_codec:endkey_passed(FilteredEndKey, EK)}.
 
 
 %%%============================================================================
@@ -3651,7 +3725,7 @@ simple_persisted_rangesegfilter_tester(SSTNewFun) ->
 
 additional_range_test() ->
     % Test fetching ranges that fall into odd situations with regards to the
-    % summayr index
+    % summary index
     % - ranges which fall between entries in summary
     % - ranges which go beyond the end of the range of the sst
     % - ranges which match to an end key in the summary index
@@ -3689,6 +3763,7 @@ additional_range_test() ->
     % Testing the gap
     [GapSKV] = generate_indexkey(?NOLOOK_SLOTSIZE + 1, ?NOLOOK_SLOTSIZE + 1),
     [GapEKV] = generate_indexkey(?NOLOOK_SLOTSIZE + 2, ?NOLOOK_SLOTSIZE + 2),
+    io:format("Gap test between ~p and ~p", [GapSKV, GapEKV]),
     R3 = sst_getkvrange(P1, element(1, GapSKV), element(1, GapEKV), 1),
     ?assertMatch([], R3),
     
@@ -4281,7 +4356,135 @@ block_index_cache_test() ->
     ?assertMatch(HeaderTS, array:get(0, BIC3)),
     ?assertMatch(Now, LMD3).
 
+single_key_test() ->
+    FileName = "single_key_test",
+    LK = leveled_codec:to_ledgerkey(<<"Bucket0">>, <<"Key0">>, ?STD_TAG),
+    Chunk = leveled_rand:rand_bytes(16),
+    {_B, _K, MV, _H, _LMs} =
+        leveled_codec:generate_ledgerkv(LK, 1, Chunk, 16, infinity),
+    OptsSST = 
+        #sst_options{press_method=native,
+                        log_options=leveled_log:get_opts()},
+    {ok, P1, {LK, LK}, _Bloom1} = 
+        sst_new(?TEST_AREA, FileName, 1, [{LK, MV}], 6000, OptsSST),
+    ?assertMatch({LK, MV}, sst_get(P1, LK)),
+    ok = sst_close(P1),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")),
 
+    IndexSpecs = [{add, <<"t1_bin">>, <<"20220101">>}],
+    [{IdxK, IdxV}] = 
+        leveled_codec:idx_indexspecs(IndexSpecs, 
+                                    <<"Bucket">>, 
+                                    <<"Key">>, 
+                                    1, 
+                                    infinity),
+    {ok, P2, {IdxK, IdxK}, _Bloom2} = 
+        sst_new(?TEST_AREA, FileName, 1, [{IdxK, IdxV}], 6000, OptsSST),
+    ?assertMatch(
+        [{IdxK, IdxV}],
+        sst_getkvrange(
+            P2,
+            {?IDX_TAG, <<"Bucket">>, {"t1_bin", <<"20220100">>}, null},
+            all,
+            16)),
+    ?assertMatch(
+        [{IdxK, IdxV}],
+        sst_getkvrange(
+            P2,
+            {?IDX_TAG, <<"Bucket">>, {"t1_bin", <<"20220100">>}, null},
+            {?IDX_TAG, <<"Bucket">>, {"t1_bin", <<"20220101">>}, null},
+            16)),
+    ?assertMatch(
+        [{IdxK, IdxV}],
+        sst_getkvrange(
+            P2,
+            {?IDX_TAG, <<"Bucket">>, {"t1_bin", <<"20220101">>}, null},
+            {?IDX_TAG, <<"Bucket">>, {"t1_bin", <<"20220101">>}, null},
+            16)),
+    ok = sst_close(P2),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")).
+
+strange_range_test() ->
+    FileName = "strange_range_test",
+    Chunk = leveled_rand:rand_bytes(16),
+    OptsSST = 
+        #sst_options{press_method=native,
+                        log_options=leveled_log:get_opts()},
+    
+    FK = leveled_codec:to_ledgerkey({<<"T0">>, <<"B0">>}, <<"K0">>, ?STD_TAG),
+    LK = leveled_codec:to_ledgerkey({<<"T0">>, <<"B0">>}, <<"K02">>, ?STD_TAG),
+    EK = leveled_codec:to_ledgerkey({<<"T0">>, <<"B0">>}, <<"K0299">>, ?STD_TAG),
+
+    KL1 =
+        lists:map(
+            fun(I) -> 
+                leveled_codec:to_ledgerkey(
+                    {<<"T0">>, <<"B0">>},
+                    list_to_binary("K00" ++ integer_to_list(I)),
+                    ?STD_TAG)
+            end,
+            lists:seq(1, 300)),
+    KL2 =
+        lists:map(
+            fun(I) -> 
+                leveled_codec:to_ledgerkey(
+                    {<<"T0">>, <<"B0">>},
+                    list_to_binary("K02" ++ integer_to_list(I)),
+                    ?STD_TAG)
+            end,
+            lists:seq(1, 300)),
+    
+    GenerateValue =
+        fun(K) ->
+            element(
+                3, leveled_codec:generate_ledgerkv(K, 1, Chunk, 16, infinity))
+        end,
+
+    KVL = 
+        lists:ukeysort(
+            1,
+            lists:map(
+                fun(K) -> {K, GenerateValue(K)} end,
+                [FK] ++ KL1 ++ [LK] ++ KL2)),
+    
+    {ok, P1, {FK, EK}, _Bloom1} = 
+            sst_new(?TEST_AREA, FileName, 1, KVL, 6000, OptsSST),
+    
+    ?assertMatch(LK, element(1, sst_get(P1, LK))),
+    ?assertMatch(FK, element(1, sst_get(P1, FK))),
+    ok = sst_close(P1),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")),
+
+    IndexSpecs =
+        lists:map(
+            fun(I) -> {add, <<"t1_bin">>, integer_to_binary(I)} end,
+            lists:seq(1, 500)),
+    IdxKVL = 
+        leveled_codec:idx_indexspecs(IndexSpecs, 
+                                    <<"Bucket">>, 
+                                    <<"Key">>, 
+                                    1, 
+                                    infinity),
+    {ok, P2, {_FIdxK, _EIdxK}, _Bloom2} = 
+        sst_new(
+            ?TEST_AREA, FileName, 1, lists:ukeysort(1, IdxKVL), 6000, OptsSST),
+    [{IdxK1, _IdxV1}, {IdxK2, _IdxV2}] =
+        sst_getkvrange(
+            P2,
+            {?IDX_TAG, <<"Bucket">>, {<<"t1_bin">>, <<"1">>}, null},
+            {?IDX_TAG, <<"Bucket">>, {<<"t1_bin">>, <<"10">>}, null},
+            16),
+    ?assertMatch(
+        {?IDX_TAG, <<"Bucket">>, {<<"t1_bin">>, <<"1">>}, <<"Key">>},
+        IdxK1
+    ),
+    ?assertMatch(
+        {?IDX_TAG, <<"Bucket">>, {<<"t1_bin">>, <<"10">>}, <<"Key">>},
+        IdxK2
+    ),
+    ok = sst_close(P2),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")).
+    
 
 receive_fun() ->
     receive

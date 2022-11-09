@@ -80,6 +80,8 @@
         tomb|{active, non_neg_integer()|infinity}.
 -type ledger_key() :: 
         {tag(), any(), any(), any()}|all.
+-type slimmed_key() ::
+        {binary(), binary()|null}|binary()|null|all.
 -type ledger_value() ::
         ledger_value_v1()|ledger_value_v2().
 -type ledger_value_v1() ::
@@ -342,20 +344,46 @@ isvalid_ledgerkey({Tag, _B, _K, _SK}) ->
 isvalid_ledgerkey(_LK) ->
     false.
 
--spec endkey_passed(ledger_key(), ledger_key()) -> boolean().
-%% @oc
+-spec endkey_passed(
+    ledger_key()|slimmed_key(),
+    ledger_key()|slimmed_key()) -> boolean().
+%% @doc
 %% Compare a key against a query key, only comparing elements that are non-null
-%% in the Query key.  This is used for comparing against end keys in queries.
+%% in the Query key.  
+%% 
+%% Query key of `all` matches all keys
+%% Query key element of `null` matches all keys less than or equal in previous
+%% elements
+%% 
+%% This function is required to make sense of this with erlang term order,
+%% where otherwise atom() < binary()
+%% 
+%% endkey_passed means "Query End Key has been passed when scanning this range"
+%% 
+%% If the Query End Key is within the range ending in RangeEndkey then
+%% endkey_passed is true.  This range extends beyond the end of the Query
+%% range, and so no further ranges need to be added to the Query results.
+%% If the Query End Key is beyond the Range End Key, then endkey_passed is
+%% false and further results may be required from further ranges.
 endkey_passed(all, _) ->
     false;
-endkey_passed({EK1, null, null, null}, {CK1, _, _, _}) ->
-    EK1 < CK1;
-endkey_passed({EK1, EK2, null, null}, {CK1, CK2, _, _}) ->
-    {EK1, EK2} < {CK1, CK2};
-endkey_passed({EK1, EK2, EK3, null}, {CK1, CK2, CK3, _}) ->
-    {EK1, EK2, EK3} < {CK1, CK2, CK3};
-endkey_passed(EndKey, CheckingKey) ->
-    EndKey < CheckingKey.
+endkey_passed({K1, null, null, null}, {K1, _, _, _}) ->
+    false;
+endkey_passed({K1, K2, null, null}, {K1, K2, _, _}) ->
+    false;
+endkey_passed({K1, K2, K3, null}, {K1, K2, K3, _}) ->
+    false;
+endkey_passed({K1, null}, {K1, _}) ->
+    % See leveled_sst SlotIndex implementation.  Here keys may be slimmed to
+    % single binaries or two element tuples before forming the index.
+    false;
+endkey_passed(null, _) ->
+    false;
+endkey_passed(QueryEndKey, RangeEndKey) ->
+    % i.e. false = Keep searching not yet beyond query range
+    % true = this range extends byeond the end of the query, no further results
+    % required
+    QueryEndKey < RangeEndKey.
 
 
 %%%============================================================================
