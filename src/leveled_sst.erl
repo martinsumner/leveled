@@ -595,9 +595,6 @@ starting({sst_new,
     leveled_log:log_timer("SST08",
                             [ActualFilename, Level, Summary#summary.max_sqn],
                             SW),
-    erlang:send_after(?STARTUP_TIMEOUT, self(), tidyup_after_startup),
-        % always want to have an opportunity to GC - so force the timeout to
-        % occur whether or not there is an intervening message
     {reply,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}, Bloom},
         reader,
@@ -605,7 +602,8 @@ starting({sst_new,
                         high_modified_date = HighModDate,
                         starting_pid = StartingPID,
                         level = Level,
-                        fetch_cache = new_cache(Level)}};
+                        fetch_cache = new_cache(Level)},
+        hibernate};
 starting({sst_newlevelzero, RootPath, Filename,
                     Penciller, MaxSQN,
                     OptsSST, IdxModDate}, _From, State) -> 
@@ -922,17 +920,8 @@ handle_event({update_blockindex_cache, BIC}, StateName, State) ->
         State#state{blockindex_cache = BlockIndexCache,
                     high_modified_date = HighModDate}}.
 
-handle_info(tidyup_after_startup, delete_pending, State) ->
-    % No need to GC, this file is to be shutdown.  This message may have
-    % interrupted the delete timeout, so timeout straight away
-    {next_state, delete_pending, State, 0};
-handle_info(tidyup_after_startup, StateName, State) ->
-    case is_process_alive(State#state.starting_pid) of
-        true ->
-            {next_state, StateName, State, hibernate};
-        false ->
-            {stop, normal, State}
-    end.
+handle_info(_Msg, StateName, State) ->
+    {next_state, StateName, State}.
 
 terminate(normal, delete_pending, _State) ->
     ok;
@@ -1179,7 +1168,7 @@ cache_size(N) when N < 3 ->
 cache_size(3) ->
     32;
 cache_size(4) ->
-    32;
+    16;
 cache_size(5) ->
     4;
 cache_size(6) ->
@@ -4122,12 +4111,15 @@ key_dominates_test() ->
                     key_dominates([KV7|KL2], [KV2], {true, 1})).
 
 nonsense_coverage_test() ->
-    ?assertMatch({ok, reader, #state{}}, code_change(nonsense,
-                                                        reader,
-                                                        #state{},
-                                                        nonsense)),
-    ?assertMatch({reply, undefined, reader, #state{}},
-                    handle_sync_event("hello", self(), reader, #state{})),
+    ?assertMatch(
+        {ok, reader, #state{}},
+        code_change(nonsense, reader, #state{}, nonsense)),
+    ?assertMatch(
+        {next_state, reader, #state{}},
+        handle_info(nonsense, reader, #state{})),
+    ?assertMatch(
+        {reply, undefined, reader, #state{}},
+        handle_sync_event("hello", self(), reader, #state{})),
                     
     SampleBin = <<0:128/integer>>,
     FlippedBin = flip_byte(SampleBin, 0, 16),
