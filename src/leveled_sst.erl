@@ -192,7 +192,7 @@
 -type sst_summary()
         :: #summary{}.
 -type blockindex_cache()
-        :: any().  % An array but OTP 16 types
+        :: {non_neg_integer(), array:array(), non_neg_integer()}.
 -type fetch_cache()
         :: any()|no_cache. % An array but OTP 16 types
 -type cache_size()
@@ -1224,48 +1224,60 @@ tune_seglist(SegList) ->
 
 -spec new_blockindex_cache(pos_integer()) -> blockindex_cache().
 new_blockindex_cache(Size) ->
-    array:new([{size, Size}, {default, none}]).
+    {0, array:new([{size, Size}, {default, none}]), 0}.
 
--spec update_blockindex_cache(boolean(),
-                                list({integer(), binary()}),
-                                blockindex_cache(),
-                                non_neg_integer()|undefined,
-                                boolean()) ->
-                                    {blockindex_cache(),
-                                        non_neg_integer()|undefined}.
-update_blockindex_cache(Needed, Entries, BIC, HighModDate, IdxModDate)
-                                            when Needed,
-                                                    HighModDate == undefined ->
-    FoldFun = 
-        fun(CacheEntry, Cache) ->
-            case CacheEntry of
-                {ID, Header} when is_binary(Header) ->
-                    array:set(ID - 1, binary:copy(Header), Cache);
-                _ ->
-                    Cache
-            end
-        end,
-    BlockIdxC0 = lists:foldl(FoldFun, BIC, Entries),
-    Size = array:size(BlockIdxC0),
-    BestModDates =
-        case IdxModDate of
-            true ->
-                ModDateFold =
-                    fun(_ID, Header, Acc) when is_binary(Header) ->
-                        [element(2, extract_header(Header, IdxModDate))|Acc]
-                    end,
-                array:sparse_foldl(ModDateFold, [], BlockIdxC0);
-            false ->
-                []
-        end,
-    BestModDate =
-        case length(BestModDates) of
-            Size ->
-                lists:max(BestModDates);
+-spec updatebic_foldfun(boolean()) ->
+        fun(({integer(), binary()}, blockindex_cache()) -> blockindex_cache()).
+updatebic_foldfun(HMDRequired) ->
+    fun(CacheEntry, {AccCount, Cache, AccHMD}) ->
+        case CacheEntry of
+            {ID, Header} when is_binary(Header) ->
+                case array:get(ID - 1, Cache) of
+                    none ->
+                        H0 = binary:copy(Header),
+                        AccHMD0 =
+                            case HMDRequired of
+                                true ->
+                                    max(AccHMD,
+                                        element(2, extract_header(H0, true)));
+                                false ->
+                                    AccHMD
+                                end,
+                        {AccCount + 1, array:set(ID - 1, H0, Cache), AccHMD0};
+                    _ ->
+                        {AccCount, Cache, AccHMD}
+                end;
             _ ->
-                undefined
-        end,
-    {BlockIdxC0, BestModDate};
+                {AccCount, Cache, AccHMD}
+        end
+    end.
+        
+-spec update_blockindex_cache(
+        boolean(), list({integer(), binary()}),
+        blockindex_cache(), non_neg_integer()|undefined,
+        boolean()) -> {blockindex_cache(), non_neg_integer()|undefined}.
+update_blockindex_cache(true, Entries, BIC, HighModDate, IdxModDate) ->
+    case {element(1, BIC), array:size(element(2, BIC))} of
+        {N, N} ->
+            {BIC, HighModDate};
+        {N, S} when N < S ->
+            FoldFun =
+                case {HighModDate, IdxModDate} of
+                    {undefined, true} ->
+                        updatebic_foldfun(true);
+                    _ ->
+                        updatebic_foldfun(false)
+                end,
+            BIC0 = lists:foldl(FoldFun, BIC, Entries),
+            case {element(1, BIC0), IdxModDate} of
+                {N, _} ->
+                    {BIC, HighModDate};
+                {S, true} ->
+                    {BIC0, element(3, BIC0)};
+                _ ->
+                    {BIC0, undefined}
+            end
+    end;
 update_blockindex_cache(_Needed, _Entries, BIC, HighModDate, _IdxModDate) ->
     {BIC, HighModDate}.
 
@@ -1300,7 +1312,7 @@ fetch(LedgerKey, Hash, State, Timings0) ->
     
     SlotID = Slot#slot_index_value.slot_id,
     CachedBlockIdx = 
-        array:get(SlotID - 1, State#state.blockindex_cache),
+        array:get(SlotID - 1, element(2, State#state.blockindex_cache)),
     {SW2, Timings2} = update_timings(SW1, Timings1, lookup_cache, true),
 
     case extract_header(CachedBlockIdx, IdxModDate) of 
@@ -2140,7 +2152,7 @@ binarysplit_mapfun(MultiSlotBin, StartPos) ->
 
 
 -spec read_slots(file:io_device(), list(), 
-                    {false|list(), non_neg_integer(), binary()},
+                    {false|list(), non_neg_integer(), blockindex_cache()},
                     press_method(), boolean()) -> 
                         {boolean(), list(binaryslot_element())}.
 %% @doc
@@ -2171,7 +2183,7 @@ read_slots(Handle, SlotList, {SegList, LowLastMod, BlockIndexCache},
     BinMapFun = 
         fun(Pointer, {NeededBlockIdx, Acc}) ->
             {SP, _L, ID, SK, EK} = pointer_mapfun(Pointer),
-            CachedHeader = array:get(ID - 1, BlockIndexCache),
+            CachedHeader = array:get(ID - 1, element(2, BlockIndexCache)),
             case extract_header(CachedHeader, IdxModDate) of
                 none ->
                     % If there is an attempt to use the seg list query and the
@@ -4332,21 +4344,29 @@ block_index_cache_test() ->
                     lists:seq(1, 8)),
     HeaderTS = <<0:160/integer, Now:32/integer, 0:32/integer>>,
     HeaderNoTS = <<0:192>>,
-    BIC = array:new([{size, 8}, {default, none}]),
+    BIC = new_blockindex_cache(8),
     {BIC0, undefined} =
         update_blockindex_cache(false, EntriesNoTS, BIC, undefined, false),
     {BIC1, undefined} =
         update_blockindex_cache(false, EntriesTS, BIC, undefined, true),
     {BIC2, undefined} =
         update_blockindex_cache(true, EntriesNoTS, BIC, undefined, false),
-    {BIC3, LMD3} =
-        update_blockindex_cache(true, EntriesTS, BIC, undefined, true),
+    {ETSP1, ETSP2} = lists:split(6, EntriesTS),
+    {BIC3, undefined} =
+        update_blockindex_cache(true, ETSP1, BIC, undefined, true),
+    {BIC3, undefined} =
+        update_blockindex_cache(true, ETSP1, BIC3, undefined, true),
+    {BIC4, LMD4} =
+        update_blockindex_cache(true, ETSP2, BIC3, undefined, true),
+    {BIC4, LMD4} =
+        update_blockindex_cache(true, ETSP2, BIC4, LMD4, true),
     
-    ?assertMatch(none, array:get(0, BIC0)),
-    ?assertMatch(none, array:get(0, BIC1)),
-    ?assertMatch(HeaderNoTS, array:get(0, BIC2)),
-    ?assertMatch(HeaderTS, array:get(0, BIC3)),
-    ?assertMatch(Now, LMD3).
+    ?assertMatch(none, array:get(0, element(2, BIC0))),
+    ?assertMatch(none, array:get(0, element(2, BIC1))),
+    ?assertMatch(HeaderNoTS, array:get(0, element(2, BIC2))),
+    ?assertMatch(HeaderTS, array:get(0, element(2, BIC3))),
+    ?assertMatch(HeaderTS, array:get(0, element(2, BIC4))),
+    ?assertMatch(Now, LMD4).
 
 single_key_test() ->
     FileName = "single_key_test",
