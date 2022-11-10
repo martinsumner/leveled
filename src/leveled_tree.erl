@@ -708,7 +708,9 @@ tree_timing_test() ->
 idxt_timing_test() ->
     log_tree_test_by_(16, idxt, 8000),
     log_tree_test_by_(16, idxt, 4000),
-    log_tree_test_by_(4, idxt, 256).
+    log_tree_test_by_(4, idxt, 256),
+    log_tree_test_by_(16, idxt, 256),
+    log_tree_test_by_simplekey_(16, idxt, 256).
 
 skpl_timing_test() ->
     log_tree_test_by_(auto, skpl, 8000),
@@ -751,8 +753,8 @@ tree_test_by_(Width, Type, KL, ComplexKey) ->
                 [timer:now_diff(os:timestamp(), SWaETS),
                     tsize(Tree0)]),
     io:format(user,
-        "Tree has footprint size ~w flat_size ~w~n",
-        [erts_debug:size(Tree0), erts_debug:flat_size(Tree0)]),
+        "Tree has footprint size ~w bytes flat_size ~w bytes~n",
+        [erts_debug:size(Tree0) * 8, erts_debug:flat_size(Tree0) * 8]),
     
     SWaGSL = os:timestamp(),
     Tree1 = from_orderedlist(KL, Type, Width),
@@ -761,8 +763,8 @@ tree_test_by_(Width, Type, KL, ComplexKey) ->
                 [timer:now_diff(os:timestamp(), SWaGSL),
                     tsize(Tree1)]),
     io:format(user,
-        "Tree has footprint size ~w flat_size ~w~n",
-        [erts_debug:size(Tree1), erts_debug:flat_size(Tree1)]),
+        "Tree has footprint size ~w bytes flat_size ~w bytes~n",
+        [erts_debug:size(Tree1) * 8, erts_debug:flat_size(Tree1) * 8]),
 
     SWaLUP = os:timestamp(),
     lists:foreach(match_fun(Tree0), KL),
