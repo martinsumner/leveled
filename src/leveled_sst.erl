@@ -153,9 +153,10 @@
             last_key :: tuple(),
             index :: tuple() | undefined,
             size :: integer(),
-            max_sqn :: integer(),
-            filter_fun ::
-                fun((leveled_codec:ledger_key()) -> any()) | undefined}).
+            max_sqn :: integer()}).
+    %% DO NOT CHANGE
+    %% The summary record is persisted as part of the sile format
+    %% Any chnage to this record will mean the change cannot be rolled back
 
 -type press_method() 
         :: lz4|native|none.
@@ -227,8 +228,10 @@
             deferred_startup_tuple :: tuple()|undefined,
             level :: level()|undefined,
             tomb_count = not_counted
-                    :: non_neg_integer()|not_counted,
-            high_modified_date :: non_neg_integer()|undefined}).
+                :: non_neg_integer()|not_counted,
+            high_modified_date :: non_neg_integer()|undefined,
+            filter_fun
+                :: fun((leveled_codec:ledger_key()) -> any()) | undefined}).
 
 -record(sst_timings, 
         {sample_count = 0 :: integer(),
@@ -1306,7 +1309,7 @@ fetch(LedgerKey, Hash, State, Timings0) ->
     IdxModDate = State#state.index_moddate,
     Slot =
         lookup_slot(
-            LedgerKey, Summary#summary.index, Summary#summary.filter_fun),
+            LedgerKey, Summary#summary.index, State#state.filter_fun),
     
     {SW1, Timings1} = update_timings(SW0, Timings0, index_query, true),
     
@@ -1397,7 +1400,7 @@ fetch_range(StartKey, EndKey, ScanWidth, SegList, LowLastMod, State) ->
             StartKey,
             EndKey,
             Summary#summary.index,
-            Summary#summary.filter_fun),
+            State#state.filter_fun),
     Self = self(),
     SL = length(Slots),
     
@@ -1506,14 +1509,15 @@ read_file(Filename, State, LoadPageCache) ->
     {SlotIndex, FilterFun} =
         from_list(
             SlotList, Summary#summary.first_key, Summary#summary.last_key),
-    UpdSummary = Summary#summary{index = SlotIndex, filter_fun = FilterFun},
+    UpdSummary = Summary#summary{index = SlotIndex},
     leveled_log:log("SST03", [Filename,
                                 Summary#summary.size,
                                 Summary#summary.max_sqn]),
     {UpdState1#state{summary = UpdSummary,
                         handle = Handle,
                         filename = Filename,
-                        tomb_count = TombCount},
+                        tomb_count = TombCount,
+                        filter_fun = FilterFun},
         Bloom}.
 
 gen_fileversion(PressMethod, IdxModDate, CountOfTombs) ->
