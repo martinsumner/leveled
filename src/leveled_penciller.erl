@@ -665,7 +665,7 @@ init([LogOpts, PCLopts]) ->
     
 
 handle_call({push_mem, {LedgerTable, PushedIdx, MinSQN, MaxSQN}},
-                From,
+                _From,
                 State=#state{is_snapshot=Snap}) when Snap == false ->
     % The push_mem process is as follows:
     %
@@ -676,17 +676,10 @@ handle_call({push_mem, {LedgerTable, PushedIdx, MinSQN, MaxSQN}},
     % 
     % 2. If (1) doe snot apply, the bookie's cache will be added to the
     % penciller's cache.
-    % 
-    % 3. If the cache is over the size requirement (in terms of approximate
-    % number of keys), the writing of the cache to L0 will be prompted - unless
-    % there is already compaction work ongoing, or the last L0 file has not yet
-    % been merged to L1.  Unlike (1) the penciller's cache is still updated in
-    % this case - so the bookie can empty its ledger cache.
-    SW0 = os:timestamp(),
+    SW = os:timestamp(),
     L0Pending = State#state.levelzero_pending,
     WorkBacklog = State#state.work_backlog,
-    WorkOngoing = State#state.work_ongoing,
-    CacheAlreadyFull = leveled_pmem:cache_full(State#state.levelzero_cache),
+    ok = leveled_pclerk:clerk_prompt(State#state.clerk),
     case L0Pending or WorkBacklog of
         true ->
             % Cannot update the cache, or roll the memory so reply as such
@@ -696,78 +689,38 @@ handle_call({push_mem, {LedgerTable, PushedIdx, MinSQN, MaxSQN}},
                 [returned, L0Pending, WorkBacklog]),
             {reply, returned, State};
         false ->
-            {UpdState, Response} =
-                case CacheAlreadyFull of
-                    true ->
-                        % Don't update the cache on State if cache has reached
-                        % the maximum number of lines, otherwise we can still
-                        % add to the cache (but it may be over-sized and
-                        % require rolling to file)
-                        leveled_log:log("P0042", [State#state.levelzero_size]),
-                        {State, returned};
-                    false ->
-                        % Return ok as cache has been updated on State and
-                        % the Bookie should clear its cache which is now
-                        % received
-                        {UpdL0Cache, NewL0Size, UpdL0Index, UpdMaxSQN} =
-                            update_levelzero_cache(
-                                State#state.levelzero_size,
-                                {LedgerTable, PushedIdx, MinSQN, MaxSQN},
-                                State#state.ledger_sqn,
-                                State#state.levelzero_cache,
-                                State#state.levelzero_index),
-                        {State#state{
+            CacheAlreadyFull =
+                leveled_pmem:cache_full(State#state.levelzero_cache),
+            case CacheAlreadyFull of
+                true ->
+                    % Don't update the cache on State if cache has reached
+                    % the maximum number of lines, otherwise we can still
+                    % add to the cache (but it may be over-sized and
+                    % require rolling to file)
+                    leveled_log:log("P0042", [State#state.levelzero_size]),
+                    {reply, returned, State};
+                false ->
+                    % Return ok as cache has been updated on State and
+                    % the Bookie should clear its cache which is now
+                    % received
+                    {UpdL0Cache, NewL0Size, UpdL0Index, UpdMaxSQN} =
+                        update_levelzero_cache(
+                            State#state.levelzero_size,
+                            {LedgerTable, PushedIdx, MinSQN, MaxSQN},
+                            State#state.ledger_sqn,
+                            State#state.levelzero_cache,
+                            State#state.levelzero_index),
+                    leveled_log:log_timer(
+                        "P0031", 
+                        [NewL0Size, true, true, MinSQN, MaxSQN],
+                        SW),
+                    {reply,
+                        ok,
+                        State#state{
                             levelzero_cache = UpdL0Cache,
                             levelzero_size = NewL0Size,
                             levelzero_index = UpdL0Index,
-                            ledger_sqn = UpdMaxSQN}, ok}
-                end,
-            SW1 = os:timestamp(),
-            % Reply now as the Bookie need not wait for the roll decision, it
-            % just needs to know if the Cache update is accpeted (ok) or if the
-            % entry has not been added (returned)
-            gen_server:reply(From, Response),
-            Man0 = UpdState#state.manifest,
-            CacheOverSize =
-                maybe_cache_too_big(
-                    UpdState#state.levelzero_size,
-                    UpdState#state.levelzero_maxcachesize,
-                    UpdState#state.levelzero_cointoss),
-            ToRoll =
-                not (leveled_pmanifest:levelzero_present(Man0) or WorkOngoing)
-                    and (CacheAlreadyFull or CacheOverSize),
-            case ToRoll of
-                true ->
-                    % Rolling the memory is to create a new Level Zero file
-                    {Constructor, none} =
-                        roll_memory(
-                            leveled_pmanifest:get_manifest_sqn(Man0) + 1,
-                            UpdState#state.ledger_sqn,
-                            UpdState#state.root_path,
-                            none,
-                            length(UpdState#state.levelzero_cache),
-                            UpdState#state.sst_options,
-                            false),
-                    % Log timings if we've accepted a cache, and are rolling a
-                    % file
-                    case Response of
-                        ok ->
-                            CacheTime = timer:now_diff(SW1, SW0),
-                            RollTime = timer:now_diff(os:timestamp(), SW1),
-                            leveled_log:log_timer(
-                                "P0031", 
-                                [UpdState#state.levelzero_size, true, true,
-                                    MinSQN, MaxSQN, CacheTime, RollTime],
-                                SW0);
-                        returned ->
-                            ok
-                    end,
-                    {noreply,
-                        UpdState#state{
-                            levelzero_pending=true,
-                            levelzero_constructor=Constructor}};
-                false ->
-                    {noreply, UpdState}
+                            ledger_sqn = UpdMaxSQN}}
             end
     end;
 handle_call({fetch, Key, Hash, UseL0Index}, _From, State) ->
@@ -1131,43 +1084,61 @@ handle_cast({levelzero_complete, FN, StartKey, EndKey, Bloom}, State) ->
                             manifest=UpdMan,
                             persisted_sqn=State#state.ledger_sqn}};
 handle_cast(work_for_clerk, State) ->
-    case {State#state.levelzero_pending, State#state.work_ongoing} of
-        {false, false} ->
-            % TODO - as part of supervision tree and retry work:
-            % Need to check for work_ongoing as well as levelzero_pending as
-            % there may be a race that could lead to the clerk doing the same
-            % thing twice.
-            %
-            % This has implications though if we auto-restart the pclerk in the
-            % future, without altering this state - it may never be able to
-            % request work due to ongoing work that crashed the previous clerk
-            %
-            % Perhaps the pclerk should not be restarted because of this, and
-            % the failure should ripple up
-            {WL, WC} = leveled_pmanifest:check_for_work(State#state.manifest),
-            case WC of
-                0 ->
-                    {noreply, State#state{work_backlog=false}};
-                N ->
-                    Backlog = N > ?WORKQUEUE_BACKLOG_TOLERANCE,
-                    leveled_log:log("P0024", [N, Backlog]),
-                    [TL|_Tail] = WL,
-                    ok =
-                        leveled_pclerk:clerk_push(
-                            State#state.clerk, {TL, State#state.manifest}),
-                    case TL of
-                        0 ->
-                            % Just written a L0 so as LoopState now rewritten,
-                            % garbage collect to free as much as possible as
-                            % soon as possible
-                            garbage_collect();
-                        _ ->
-                            ok
-                    end,
-                    
+    case {State#state.levelzero_pending,
+            State#state.work_ongoing,
+            leveled_pmanifest:levelzero_present(State#state.manifest)} of
+        {false, false, false} ->
+            % If the penciller memory needs rolling, prompt this now
+            CacheOverSize =
+                maybe_cache_too_big(
+                    State#state.levelzero_size,
+                    State#state.levelzero_maxcachesize,
+                    State#state.levelzero_cointoss),
+            CacheAlreadyFull =
+                leveled_pmem:cache_full(State#state.levelzero_cache),
+            case (CacheAlreadyFull or CacheOverSize) of
+                true ->
+                    % Rolling the memory to create a new Level Zero file
+                    NextSQN =
+                        leveled_pmanifest:get_manifest_sqn(
+                            State#state.manifest) + 1,
+                    {Constructor, none} =
+                        roll_memory(
+                            NextSQN,
+                            State#state.ledger_sqn,
+                            State#state.root_path,
+                            none,
+                            length(State#state.levelzero_cache),
+                            State#state.sst_options,
+                            false),
                     {noreply,
-                        State#state{work_backlog=Backlog, work_ongoing=true}}
+                        State#state{
+                            levelzero_pending=true,
+                            levelzero_constructor=Constructor}};
+                false ->
+                    {WL, WC} =
+                        leveled_pmanifest:check_for_work(State#state.manifest),
+                    case WC of
+                        0 ->
+                            % Should do some tidy-up work here?
+                            {noreply, State#state{work_backlog=false}};
+                        N ->
+                            Backlog = N > ?WORKQUEUE_BACKLOG_TOLERANCE,
+                            leveled_log:log("P0024", [N, Backlog]),
+                            [TL|_Tail] = WL,
+                            ok =
+                                leveled_pclerk:clerk_push(
+                                    State#state.clerk,
+                                    {TL, State#state.manifest}),
+                            {noreply,
+                                State#state{
+                                    work_backlog=Backlog, work_ongoing=true}}
+                    end
             end;
+        {false, false, true} ->
+            ok = leveled_pclerk:clerk_push(
+                State#state.clerk, {0, State#state.manifest}),
+            {noreply, State#state{work_ongoing=true}};
         _ ->
             {noreply, State}
     end;
