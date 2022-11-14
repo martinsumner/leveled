@@ -1493,7 +1493,7 @@ handle_call(log_settings, _From, State) ->
 handle_call({return_runner, QueryType}, _From, State) ->
     Runner = get_runner(State, QueryType),
     {reply, Runner, State};
-handle_call({compact_journal, Timeout}, _From, State)
+handle_call({compact_journal, Timeout}, From, State)
                                         when State#state.head_only == false ->
     case leveled_inker:ink_compactionpending(State#state.inker) of
         true ->
@@ -1504,7 +1504,14 @@ handle_call({compact_journal, Timeout}, _From, State)
             R = leveled_inker:ink_compactjournal(State#state.inker,
                                                     PclSnap,
                                                     Timeout),
-            {reply, R, State}
+            gen_server:reply(From, R),
+            {_, NewCache} = 
+                maybepush_ledgercache(
+                    State#state.cache_size,
+                    State#state.cache_multiple,
+                    State#state.ledger_cache,
+                    State#state.penciller),
+            {noreply, State#state{ledger_cache = NewCache}}
     end;
 handle_call(confirm_compact, _From, State)
                                         when State#state.head_only == false ->
