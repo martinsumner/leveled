@@ -530,7 +530,8 @@ load_and_count(_Config) ->
     % Use artificially small files, and the load keys, counting they're all
     % present
     load_and_count(50000000, 2500, 28000),
-    load_and_count(200000000, 100, 300000).
+    load_and_count(200000000, 50, 200000),
+    load_and_count(50000000, 1000, 5000).
 
 
 load_and_count(JournalSize, BookiesMemSize, PencillerMemSize) ->
@@ -598,6 +599,9 @@ load_and_count(JournalSize, BookiesMemSize, PencillerMemSize) ->
                         lists:seq(1, 20)),
     testutil:check_forobject(Bookie1, TestObject),
     io:format("Loading more small objects~n"),
+    io:format("Now with unused snapshot so deletions are blocked~n"),
+    {ok, PclClone, null} = 
+        leveled_bookie:book_snapshot(Bookie1, ledger, undefined, true),
     lists:foldl(fun(_X, Acc) ->
                         testutil:load_objects(5000,
                                                 [Acc + 2],
@@ -614,6 +618,8 @@ load_and_count(JournalSize, BookiesMemSize, PencillerMemSize) ->
                         200000,
                         lists:seq(1, 20)),
     testutil:check_forobject(Bookie1, TestObject),
+    ok = leveled_penciller:pcl_close(PclClone),
+    {_S, 300000} = testutil:check_bucket_stats(Bookie1, "Bucket"),
     ok = leveled_bookie:book_close(Bookie1),
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
     {_, 300000} = testutil:check_bucket_stats(Bookie2, "Bucket"),

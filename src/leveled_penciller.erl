@@ -710,10 +710,11 @@ handle_call({push_mem, {LedgerTable, PushedIdx, MinSQN, MaxSQN}},
                             State#state.ledger_sqn,
                             State#state.levelzero_cache,
                             State#state.levelzero_index),
-                    leveled_log:log_timer(
+                    leveled_log:log_randomtimer(
                         "P0031", 
                         [NewL0Size, true, true, MinSQN, MaxSQN],
-                        SW),
+                        SW,
+                        0.1),
                     {reply,
                         ok,
                         State#state{
