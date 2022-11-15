@@ -81,7 +81,7 @@
 -type ledger_key() :: 
         {tag(), any(), any(), any()}|all.
 -type slimmed_key() ::
-        {binary(), binary()|null}|binary()|null|all.
+        {binary()|null, binary()|null}|binary()|null|all.
 -type ledger_value() ::
         ledger_value_v1()|ledger_value_v2().
 -type ledger_value_v1() ::
@@ -376,6 +376,8 @@ endkey_passed({K1, K2, K3, null}, {K1, K2, K3, _}) ->
 endkey_passed({K1, null}, {K1, _}) ->
     % See leveled_sst SlotIndex implementation.  Here keys may be slimmed to
     % single binaries or two element tuples before forming the index.
+    false;
+endkey_passed({null, _QK1}, {_RK1, _RK2}) ->
     false;
 endkey_passed(null, _) ->
     false;

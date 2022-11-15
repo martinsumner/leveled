@@ -1763,8 +1763,8 @@ get_filterfun(
         N ->
             fun({_Tag, _Bucket, {_Field, Term}, Key}) ->
                 case Term of
-                    T when byte_size(T) == N ->
-                        {<<>>, Key};
+                    T when byte_size(T) =< N ->
+                        {null, Key};
                     <<_:N/binary, Suffix/binary>> ->
                         {Suffix, Key}
                 end
@@ -1781,8 +1781,8 @@ get_filterfun(
                 case Key of
                     null ->
                         null;
-                    K when byte_size(K) == N ->
-                        <<>>;
+                    K when byte_size(K) =< N ->
+                        null;
                     <<_:N/binary, Suffix/binary>> ->
                         Suffix
                 end
@@ -4371,6 +4371,186 @@ block_index_cache_test() ->
     ?assertMatch(HeaderTS, array:get(0, element(2, BIC3))),
     ?assertMatch(HeaderTS, array:get(0, element(2, BIC4))),
     ?assertMatch(Now, LMD4).
+
+range_key_lestthanprefix_test() ->
+    FileName = "lessthanprefix_test",
+    IndexKeyFun =
+        fun(I) ->
+            {{?IDX_TAG,
+                {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>,
+                    list_to_binary("19601301|"
+                        ++ io_lib:format("~6..0w", [I]))},
+                list_to_binary(io_lib:format("~6..0w", [I]))},
+            {1, {active, infinity}, no_lookup, null}}
+        end,
+    IndexEntries = lists:map(IndexKeyFun, lists:seq(1, 500)),
+    OptsSST = 
+        #sst_options{press_method=native,
+                        log_options=leveled_log:get_opts()},
+    {ok, P1, {_FK1, _LK1}, _Bloom1} = 
+        sst_new(?TEST_AREA, FileName, 1, IndexEntries, 6000, OptsSST),
+    
+    IdxRange1 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>}, {<<"dob_bin">>, <<"1959">>}, null},
+            all,
+            16),
+    IdxRange2 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG,
+                {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1960">>}, null},
+            {?IDX_TAG,
+                {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1961">>}, null},
+            16),
+    IdxRange3 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1960">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|000250">>}, null},
+            16),
+    IdxRange4 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|000251">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1961">>}, null},
+            16),
+    IdxRange5 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|000250">>}, <<"000251">>},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1961">>}, null},
+            16),
+    IdxRange6 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|000">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19611301|0002">>}, null},
+            16),
+    IdxRange7 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|000">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19611301|0001">>}, null},
+            16),
+    IdxRange8 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|000000">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19611301|000100">>}, null},
+            16),
+    ?assertMatch(500, length(IdxRange1)),
+    ?assertMatch(500, length(IdxRange2)),
+    ?assertMatch(250, length(IdxRange3)),
+    ?assertMatch(250, length(IdxRange4)),
+    ?assertMatch(250, length(IdxRange5)),
+    % No right trim - result count rounds up to slot size
+    ?assertMatch(256, length(IdxRange6)),
+    ?assertMatch(128, length(IdxRange7)),
+    ?assertMatch(128, length(IdxRange8)),
+    ok = sst_close(P1),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")),
+
+    ObjectKeyFun =
+        fun(I) ->
+            {{?RIAK_TAG,
+                {<<"btype">>, <<"bucket">>},
+                list_to_binary("19601301|"
+                    ++ io_lib:format("~6..0w", [I])),
+                null},
+            {1, {active, infinity}, {0, 0}, null}}
+        end,
+    ObjectEntries = lists:map(ObjectKeyFun, lists:seq(1, 500)),
+    OptsSST = 
+        #sst_options{press_method=native,
+                        log_options=leveled_log:get_opts()},
+    {ok, P2, {_FK2, _LK2}, _Bloom2} = 
+        sst_new(?TEST_AREA, FileName, 1, ObjectEntries, 6000, OptsSST),
+    
+    ObjRange1 =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>}, <<"1959">>, null},
+            all,
+            16),
+    ObjRange2 =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG,
+                {<<"btype">>, <<"bucket">>},
+                <<"1960">>, null},
+            {?RIAK_TAG,
+                {<<"btype">>, <<"bucket">>},
+                <<"1961">>, null},
+            16),
+    ObjRange3 =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"1960">>, null},
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000250">>, null},
+            16),
+    ObjRange4 =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000251">>, null},
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"1961">>, null},
+            16),
+    ObjRange6 =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000">>, null},
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19611301|0002">>, null},
+            16),
+    ObjRange7 =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000">>, null},
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19611301|0001">>, null},
+            16),
+    ObjRange8 =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000000">>, null},
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19611301|000100">>, null},
+            16),
+
+    ?assertMatch(500, length(ObjRange1)),
+    ?assertMatch(500, length(ObjRange2)),
+    ?assertMatch(250, length(ObjRange3)),
+    ?assertMatch(250, length(ObjRange4)),
+    % No right trim - result count rounds up to slot size
+    ?assertMatch(256, length(ObjRange6)),
+    ?assertMatch(128, length(ObjRange7)),
+    ?assertMatch(128, length(ObjRange8)),
+    ok = sst_close(P2),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")).
+    
 
 single_key_test() ->
     FileName = "single_key_test",
