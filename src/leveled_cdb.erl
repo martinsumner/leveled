@@ -947,27 +947,10 @@ close_pendingdelete(Handle, Filename, WasteFP) ->
     end.
 
 -spec set_writeops(sync|riak_sync|none) -> {list(), sync|riak_sync|none}.
-%% Assumption is that sync should be used - it is a transaction log.
-%%
-%% However this flag is not supported in OTP 16.  Bitcask appears to pass an
-%% o_sync flag, but this isn't supported either (maybe it works with the
-%% bitcask nif fileops).
-%%
-%% To get round this will try and datasync on each PUT with riak_sync
--ifdef(no_sync).
-
-set_writeops(SyncStrategy) ->
-    case SyncStrategy of
-        sync ->
-            {?WRITE_OPS, riak_sync};
-        riak_sync ->
-            {?WRITE_OPS, riak_sync};
-        none ->
-            {?WRITE_OPS, none}
-    end.
-
--else.
-
+%% @doc
+%% Sync should be used - it is a transaction log - in single node
+%% implementations. `riak_sync` is a legacy of earlier OTP versions when
+%% passing the sync option was not supported
 set_writeops(SyncStrategy) ->
     case SyncStrategy of
         sync ->
@@ -977,8 +960,6 @@ set_writeops(SyncStrategy) ->
         none ->
             {?WRITE_OPS, none}
     end.
-
--endif.
 
 -spec open_active_file(list()) -> {integer(), ets:tid(), any()}.
 %% @doc
