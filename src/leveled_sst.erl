@@ -598,6 +598,7 @@ starting({sst_new,
     leveled_log:log_timer("SST08",
                             [ActualFilename, Level, Summary#summary.max_sqn],
                             SW),
+    erlang:send_after(?STARTUP_TIMEOUT, self(), orphan_status),
     {reply,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}, Bloom},
         reader,
@@ -923,8 +924,24 @@ handle_event({update_blockindex_cache, BIC}, StateName, State) ->
         State#state{blockindex_cache = BlockIndexCache,
                     high_modified_date = HighModDate}}.
 
-handle_info(_Msg, StateName, State) ->
-    {next_state, StateName, State}.
+handle_info(orphan_status, delete_pending, State) ->
+    % This message may have interrupted the delete timeout, so timeout straight
+    % away
+    {next_state, delete_pending, State, 0};
+handle_info(orphan_status, StateName, State) ->
+    % The SST file will be started by a clerk, but the clerk may be shut down
+    % prior to the manifest being updated about the existence of this SST file.
+    % If there is no activity after startup, check the clerk is still alive and
+    % otherwise assume this file is part of a closed store and shut down.
+    % If the clerk has crashed, the penciller will restart at the latest
+    % manifest, and so this file sill be restarted if and only if it is still
+    % part of the store
+    case is_process_alive(State#state.starting_pid) of
+        true ->
+            {next_state, StateName, State};
+        false ->
+            {stop, normal, State}
+    end.
 
 terminate(normal, delete_pending, _State) ->
     ok;
@@ -4130,9 +4147,6 @@ nonsense_coverage_test() ->
     ?assertMatch(
         {ok, reader, #state{}},
         code_change(nonsense, reader, #state{}, nonsense)),
-    ?assertMatch(
-        {next_state, reader, #state{}},
-        handle_info(nonsense, reader, #state{})),
     ?assertMatch(
         {reply, undefined, reader, #state{}},
         handle_sync_event("hello", self(), reader, #state{})),

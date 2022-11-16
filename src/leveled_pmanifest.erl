@@ -74,8 +74,10 @@
             % At o(10) trillion keys behaviour may become increasingly 
             % difficult to predict.
 
+-ifdef(if_check).
 -if(length(?LEVEL_SCALEFACTOR) /= ?MAX_LEVELS).
 -error("length ?LEVEL_SCALEFACTOR differs from ?MAX_LEVELS").
+-endif.
 -endif.
 
 -define(TREE_TYPE, idxt).

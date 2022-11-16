@@ -62,16 +62,6 @@
                 {gen_fsm, reply, 2}]}).
 -endif.
 
--ifdef(slow_test).
--define(SPECIAL_DELFUN, fun(_F) -> ok end).
-    % There are problems with the pendingdelete_test/0 in riak make test
-    % The deletion of the file causes the process to crash and the test to
-    % fail, but thisis not an issue tetsing outside of riak make test.
-    % Workaround this problem by not performing the delete when running unit
-    % tests in R16
--else.
--define(SPECIAL_DELFUN, fun(F) -> file:delete(F) end).
--endif.
 
 -export([init/1,
             handle_sync_event/4,
@@ -2814,7 +2804,7 @@ pendingdelete_test() ->
     {ok, P2} = cdb_open_reader(F2, #cdb_options{binary_mode=false}),
     ?assertMatch({"Key1", "Value1"}, cdb_get(P2, "Key1")),
     ?assertMatch({"Key100", "Value100"}, cdb_get(P2, "Key100")),
-    ?SPECIAL_DELFUN(F2),
+    ok = file:delete(F2),
     ok = cdb_deletepending(P2),
         % No issues destroying even though the file has already been removed
     ok = cdb_destroy(P2).
