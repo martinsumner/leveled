@@ -122,7 +122,7 @@ handle_cast({push_work, Work}, State) ->
     {ManifestSQN, Deletions} = handle_work(Work, State),
     PDs = dict:store(ManifestSQN, Deletions, State#state.pending_deletions),
     leveled_log:log("PC022", [ManifestSQN]),
-    {noreply, State#state{pending_deletions = PDs}, ?MAX_TIMEOUT};
+    {noreply, State#state{pending_deletions = PDs}, ?MIN_TIMEOUT};
 handle_cast({prompt_deletions, ManifestSQN}, State) ->
     {Deletions, UpdD} = return_deletions(ManifestSQN,
                                             State#state.pending_deletions),

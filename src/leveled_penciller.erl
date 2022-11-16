@@ -674,55 +674,60 @@ handle_call({push_mem, {LedgerTable, PushedIdx, MinSQN, MaxSQN}},
     % expectation that PUTs should be slowed.  Also if the cache has reached
     % the maximum number of lines (by default after 31 pushes from the bookie)
     % 
-    % 2. If (1) doe snot apply, the bookie's cache will be added to the
+    % 2. If (1) does not apply, the bookie's cache will be added to the
     % penciller's cache.
     SW = os:timestamp(),
+
     L0Pending = State#state.levelzero_pending,
     WorkBacklog = State#state.work_backlog,
+    CacheAlreadyFull = leveled_pmem:cache_full(State#state.levelzero_cache),
+    L0Size = State#state.levelzero_size,
+
+    % The clerk is prompted into action as there may be a L0 write required
     ok = leveled_pclerk:clerk_prompt(State#state.clerk),
-    case L0Pending or WorkBacklog of
+
+    case L0Pending or WorkBacklog or CacheAlreadyFull of
         true ->
-            % Cannot update the cache, or roll the memory so reply as such
-            % immediately
+            % Cannot update the cache, or roll the memory so reply `returned`
+            % The Bookie must now retain the lesger cache and try to push the
+            % updated cache at a later time
             leveled_log:log(
                 "P0018",
-                [returned, L0Pending, WorkBacklog]),
+                [L0Size, L0Pending, WorkBacklog, CacheAlreadyFull]),
             {reply, returned, State};
         false ->
-            CacheAlreadyFull =
-                leveled_pmem:cache_full(State#state.levelzero_cache),
-            case CacheAlreadyFull of
-                true ->
-                    % Don't update the cache on State if cache has reached
-                    % the maximum number of lines, otherwise we can still
-                    % add to the cache (but it may be over-sized and
-                    % require rolling to file)
-                    leveled_log:log("P0042", [State#state.levelzero_size]),
-                    {reply, returned, State};
-                false ->
-                    % Return ok as cache has been updated on State and
-                    % the Bookie should clear its cache which is now
-                    % received
-                    {UpdL0Cache, NewL0Size, UpdL0Index, UpdMaxSQN} =
-                        update_levelzero_cache(
-                            State#state.levelzero_size,
-                            {LedgerTable, PushedIdx, MinSQN, MaxSQN},
-                            State#state.ledger_sqn,
-                            State#state.levelzero_cache,
-                            State#state.levelzero_index),
-                    leveled_log:log_randomtimer(
-                        "P0031", 
-                        [NewL0Size, true, true, MinSQN, MaxSQN],
-                        SW,
-                        0.1),
-                    {reply,
-                        ok,
-                        State#state{
-                            levelzero_cache = UpdL0Cache,
-                            levelzero_size = NewL0Size,
-                            levelzero_index = UpdL0Index,
-                            ledger_sqn = UpdMaxSQN}}
-            end
+            % Return ok as cache has been updated on State and the Bookie
+            % should clear its ledger cache which is now with the Penciller
+            PushedTree =
+                case is_tuple(LedgerTable) of
+                    true ->
+                        LedgerTable;
+                    false ->
+                        leveled_tree:from_orderedset(LedgerTable, ?CACHE_TYPE)
+                end,
+            {UpdMaxSQN, NewL0Size, UpdL0Cache} =
+                leveled_pmem:add_to_cache(
+                    L0Size,
+                    {PushedTree, MinSQN, MaxSQN},
+                    State#state.ledger_sqn,
+                    State#state.levelzero_cache),
+            UpdL0Index =
+                leveled_pmem:add_to_index(
+                    PushedIdx,
+                    State#state.levelzero_index,
+                    length(State#state.levelzero_cache) + 1),
+            leveled_log:log_randomtimer(
+                "P0031", 
+                [NewL0Size, true, true, MinSQN, MaxSQN],
+                SW,
+                0.1),
+            {reply,
+                ok,
+                State#state{
+                    levelzero_cache = UpdL0Cache,
+                    levelzero_size = NewL0Size,
+                    levelzero_index = UpdL0Index,
+                    ledger_sqn = UpdMaxSQN}}
     end;
 handle_call({fetch, Key, Hash, UseL0Index}, _From, State) ->
     L0Idx = 
@@ -1369,35 +1374,6 @@ archive_files(RootPath, UsedFileList) ->
     FilesToArchive = lists:foldl(FileCheckFun, [], AllFiles),
     lists:foreach(RenameFun, FilesToArchive),
     ok.
-
-
--spec update_levelzero_cache(
-    non_neg_integer(), bookies_memory(), non_neg_integer(),
-    levelzero_cache(), leveled_pmem:index_array()) 
-        ->
-            {levelzero_cache(), pos_integer(),
-                leveled_pmem:index_array(), pos_integer()}.
-%% @doc
-%% Update the in-memory cache of recent changes for the penciller.  This is 
-%% the level zero at the top of the tree.
-update_levelzero_cache(
-        L0Size,
-        {LedgerTable, PushedIdx, MinSQN, MaxSQN},
-        LedgerSQN, L0Cache, L0Index) ->
-    PushedTree =
-        case is_tuple(LedgerTable) of
-            true ->
-                LedgerTable;
-            false ->
-                leveled_tree:from_orderedset(LedgerTable, ?CACHE_TYPE)
-        end,
-    {UpdMaxSQN, NewL0Size, UpdL0Cache} =
-        leveled_pmem:add_to_cache(
-            L0Size, {PushedTree, MinSQN, MaxSQN}, LedgerSQN, L0Cache),
-    UpdL0Index =
-        leveled_pmem:add_to_index(
-            PushedIdx, L0Index, length(L0Cache) + 1),
-    {UpdL0Cache, NewL0Size, UpdL0Index, UpdMaxSQN}.
 
 
 -spec maybe_cache_too_big(
