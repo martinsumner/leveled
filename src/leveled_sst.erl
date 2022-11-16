@@ -1781,7 +1781,7 @@ get_filterfun(
             fun({_Tag, _Bucket, {_Field, Term}, Key}) ->
                 case Term of
                     T when byte_size(T) =< N ->
-                        {null, Key};
+                        null;
                     <<_:N/binary, Suffix/binary>> ->
                         {Suffix, Key}
                 end

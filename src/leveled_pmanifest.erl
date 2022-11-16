@@ -107,10 +107,11 @@
 -type manifest() :: #manifest{}.
 -type manifest_entry() :: #manifest_entry{}.
 -type manifest_owner() :: pid()|list().
+-type lsm_level() :: 0..7.
 -type selector_strategy() ::
         random|{grooming, fun((list(manifest_entry())) -> manifest_entry())}.
 
--export_type([manifest/0, manifest_entry/0, manifest_owner/0]).
+-export_type([manifest/0, manifest_entry/0, manifest_owner/0, lsm_level/0]).
 
 %%%============================================================================
 %%% API
