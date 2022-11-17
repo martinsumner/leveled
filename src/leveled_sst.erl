@@ -1768,57 +1768,79 @@ from_list(SlotList, FirstKey, LastKey) ->
 
 -spec get_filterfun(
     leveled_codec:ledger_key(), leveled_codec:ledger_key()) ->
-        fun((leveled_codec:ledger_key()) -> any()).
+        fun((leveled_codec:ledger_key())
+            -> leveled_codec:ledger_key()|leveled_codec:slimmed_key()).
 get_filterfun(
         {Tag, Bucket, {Field, FT}, FK}, {Tag, Bucket, {Field, LT}, LK})
             when is_binary(FT), is_binary(FK), is_binary(LT), is_binary(LK) ->
-    case binary:longest_common_prefix([FT, LT]) of
-        0 ->
-            fun({_Tag, _Bucket, {_Field, Term}, Key}) ->
-                {Term, Key}
-            end;
-        N ->
+    case {binary:longest_common_prefix([FT, LT]), byte_size(FT)} of
+        {N, M} when N > 0, M > N ->
             <<Prefix:N/binary, _Rest/binary>> = FT,
-            fun({_Tag, _Bucket, {_Field, Term}, Key}) ->
-                case Term of
-                    T when byte_size(T) =< N ->
-                        null;
-                    <<QueryKey:N/binary, Suffix/binary>> ->
-                        case QueryKey of
-                            Prefix ->
-                                {Suffix, Key};
-                            _ ->
-                                null
-                        end
-                end
-            end
+            term_prefix_filter(N, Prefix);
+        _ ->
+            fun term_filter/1
     end;
 get_filterfun(
         {Tag, Bucket, FK, null}, {Tag, Bucket, LK, null})
             when is_binary(FK), is_binary(LK), FK < LK ->
-    case binary:longest_common_prefix([FK, LK]) of
-        0 ->
-            fun({_Tag, _Bucket, Key, null}) -> Key end;
-        N ->
+    case {binary:longest_common_prefix([FK, LK]), byte_size(FK)} of
+        {N, M} when N > 0, M > N ->
             <<Prefix:N/binary, _Rest/binary>> = FK,
-            fun({_Tag, _Bucket, Key, null}) ->
-                case Key of
-                    null ->
-                        null;
-                    K when byte_size(K) =< N ->
-                        null;
-                    <<QueryKey:N/binary, Suffix/binary>> ->
-                        case QueryKey of
-                            Prefix ->
-                                Suffix;
-                            _ ->
-                                null
-                        end
-                end
-            end
+            key_prefix_filter(N, Prefix);
+        _ ->
+            fun key_filter/1
+        
     end;
 get_filterfun(_FirstKey, _LastKey) ->
-    fun(K) -> K end.
+    fun null_filter/1.
+
+-spec null_filter(leveled_codec:ledger_key()) -> leveled_codec:ledger_key().
+null_filter(Key) -> Key.
+
+-spec key_filter(leveled_codec:ledger_key()) -> leveled_codec:slimmed_key().
+key_filter({_Tag, _Bucket, Key, null}) -> Key.
+
+-spec term_filter(leveled_codec:ledger_key()) -> leveled_codec:slimmed_key().
+term_filter({_Tag, _Bucket, {_Field, Term}, Key}) -> {Term, Key}.
+
+-spec key_prefix_filter(
+    pos_integer(), binary()) ->
+        fun((leveled_codec:ledger_key()) -> leveled_codec:slimmed_key()).
+key_prefix_filter(N, Prefix) ->
+    fun({_Tag, _Bucket, Key, null}) ->
+        case Key of
+            null ->
+                null;
+            K when byte_size(K) =< N ->
+                null;
+            <<QueryKey:N/binary, Suffix/binary>> ->
+                case QueryKey of
+                    Prefix ->
+                        Suffix;
+                    _ ->
+                        null
+                end
+        end
+    end.
+
+-spec term_prefix_filter(
+    pos_integer(), binary()) ->
+        fun((leveled_codec:ledger_key()) -> leveled_codec:slimmed_key()).
+term_prefix_filter(N, Prefix) ->
+    fun({_Tag, _Bucket, {_Field, Term}, Key}) ->
+        case Term of
+            T when byte_size(T) =< N ->
+                null;
+            <<QueryKey:N/binary, Suffix/binary>> ->
+                case QueryKey of
+                    Prefix ->
+                        {Suffix, Key};
+                    _ ->
+                        null
+                end
+        end
+    end.
+
 
 lookup_slot(Key, Tree, FilterFun) ->
     StartKeyFun =
@@ -4397,6 +4419,135 @@ block_index_cache_test() ->
     ?assertMatch(HeaderTS, array:get(0, element(2, BIC3))),
     ?assertMatch(HeaderTS, array:get(0, element(2, BIC4))),
     ?assertMatch(Now, LMD4).
+
+key_matchesprefix_test() ->
+    FileName = "keymatchesprefix_test",
+    IndexKeyFun =
+        fun(I) ->
+            {{?IDX_TAG,
+                {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>,
+                    list_to_binary("19601301|"
+                        ++ io_lib:format("~6..0w", [I]))},
+                list_to_binary(io_lib:format("~6..0w", [I]))},
+            {1, {active, infinity}, no_lookup, null}}
+        end,
+    IndexEntries = lists:map(IndexKeyFun, lists:seq(1, 500)),
+    OddIdxKey =
+        {{?IDX_TAG,
+            {<<"btype">>, <<"bucket">>},
+            {<<"dob_bin">>, <<"19601301">>},
+            list_to_binary(io_lib:format("~6..0w", [0]))},
+        {1, {active, infinity}, no_lookup, null}},
+    OptsSST = 
+        #sst_options{press_method=native,
+                        log_options=leveled_log:get_opts()},
+    {ok, P1, {_FK1, _LK1}, _Bloom1} = 
+        sst_new(
+            ?TEST_AREA, FileName, 1, [OddIdxKey|IndexEntries], 6000, OptsSST),
+    IdxRange2 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG,
+                {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1960">>}, null},
+            {?IDX_TAG,
+                {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1961">>}, null},
+            16),
+    IdxRange4 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|000251">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1961">>}, null},
+            16),
+    IdxRangeX =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1961">>}, null},
+            16),
+    IdxRangeY =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1961">>}, null},
+            16),
+    ?assertMatch(501, length(IdxRange2)),
+    ?assertMatch(250, length(IdxRange4)),
+    ?assertMatch(501, length(IdxRangeX)),
+    ?assertMatch(500, length(IdxRangeY)),
+    ok = sst_close(P1),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")),
+
+    ObjectKeyFun =
+        fun(I) ->
+            {{?RIAK_TAG,
+                {<<"btype">>, <<"bucket">>},
+                list_to_binary("19601301|"
+                    ++ io_lib:format("~6..0w", [I])),
+                null},
+            {1, {active, infinity}, {0, 0}, null}}
+        end,
+    ObjectEntries = lists:map(ObjectKeyFun, lists:seq(1, 500)),
+    OddObjKey =
+        {{?RIAK_TAG,
+            {<<"btype">>, <<"bucket">>},
+            <<"19601301">>,
+            null},
+        {1, {active, infinity}, {100, 100}, null}},
+    OptsSST = 
+        #sst_options{press_method=native, log_options=leveled_log:get_opts()},
+    {ok, P2, {_FK2, _LK2}, _Bloom2} = 
+        sst_new(
+            ?TEST_AREA, FileName, 1, [OddObjKey|ObjectEntries], 6000, OptsSST),
+    ObjRange2 =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG,
+                {<<"btype">>, <<"bucket">>},
+                <<"1960">>, null},
+            {?RIAK_TAG,
+                {<<"btype">>, <<"bucket">>},
+                <<"1961">>, null},
+            16),
+    ObjRange4 =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000251">>, null},
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"1961">>, null},
+            16),
+    ObjRangeX =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301">>, null},
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"1961">>, null},
+            16),
+    ObjRangeY =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|">>, null},
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"1961">>, null},
+            16),
+    ?assertMatch(501, length(ObjRange2)),
+    ?assertMatch(250, length(ObjRange4)),
+    ?assertMatch(501, length(ObjRangeX)),
+    ?assertMatch(500, length(ObjRangeY)),
+    ok = sst_close(P2),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")).
+    
 
 range_key_lestthanprefix_test() ->
     FileName = "lessthanprefix_test",
