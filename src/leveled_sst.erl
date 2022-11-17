@@ -4463,7 +4463,7 @@ range_key_lestthanprefix_test() ->
             {?IDX_TAG, {<<"btype">>, <<"bucket">>},
                 {<<"dob_bin">>, <<"19601301|000">>}, null},
             {?IDX_TAG, {<<"btype">>, <<"bucket">>},
-                {<<"dob_bin">>, <<"19611301|0002">>}, null},
+                {<<"dob_bin">>, <<"19601301|0002">>}, null},
             16),
     IdxRange7 =
         sst_getkvrange(
@@ -4471,7 +4471,7 @@ range_key_lestthanprefix_test() ->
             {?IDX_TAG, {<<"btype">>, <<"bucket">>},
                 {<<"dob_bin">>, <<"19601301|000">>}, null},
             {?IDX_TAG, {<<"btype">>, <<"bucket">>},
-                {<<"dob_bin">>, <<"19611301|0001">>}, null},
+                {<<"dob_bin">>, <<"19601301|0001">>}, null},
             16),
     IdxRange8 =
         sst_getkvrange(
@@ -4479,17 +4479,16 @@ range_key_lestthanprefix_test() ->
             {?IDX_TAG, {<<"btype">>, <<"bucket">>},
                 {<<"dob_bin">>, <<"19601301|000000">>}, null},
             {?IDX_TAG, {<<"btype">>, <<"bucket">>},
-                {<<"dob_bin">>, <<"19611301|000100">>}, null},
+                {<<"dob_bin">>, <<"19601301|000100">>}, null},
             16),
     ?assertMatch(500, length(IdxRange1)),
     ?assertMatch(500, length(IdxRange2)),
     ?assertMatch(250, length(IdxRange3)),
     ?assertMatch(250, length(IdxRange4)),
     ?assertMatch(250, length(IdxRange5)),
-    % No right trim - result count rounds up to slot size
-    ?assertMatch(256, length(IdxRange6)),
-    ?assertMatch(128, length(IdxRange7)),
-    ?assertMatch(128, length(IdxRange8)),
+    ?assertMatch(199, length(IdxRange6)),
+    ?assertMatch(99, length(IdxRange7)),
+    ?assertMatch(100, length(IdxRange8)),
     ok = sst_close(P1),
     ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")),
 
@@ -4547,7 +4546,7 @@ range_key_lestthanprefix_test() ->
             {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
                 <<"19601301|000">>, null},
             {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
-                <<"19611301|0002">>, null},
+                <<"19601301|0002">>, null},
             16),
     ObjRange7 =
         sst_getkvrange(
@@ -4555,7 +4554,7 @@ range_key_lestthanprefix_test() ->
             {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
                 <<"19601301|000">>, null},
             {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
-                <<"19611301|0001">>, null},
+                <<"19601301|0001">>, null},
             16),
     ObjRange8 =
         sst_getkvrange(
@@ -4563,17 +4562,16 @@ range_key_lestthanprefix_test() ->
             {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
                 <<"19601301|000000">>, null},
             {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
-                <<"19611301|000100">>, null},
+                <<"19601301|000100">>, null},
             16),
 
     ?assertMatch(500, length(ObjRange1)),
     ?assertMatch(500, length(ObjRange2)),
     ?assertMatch(250, length(ObjRange3)),
     ?assertMatch(250, length(ObjRange4)),
-    % No right trim - result count rounds up to slot size
-    ?assertMatch(256, length(ObjRange6)),
-    ?assertMatch(128, length(ObjRange7)),
-    ?assertMatch(128, length(ObjRange8)),
+    ?assertMatch(199, length(ObjRange6)),
+    ?assertMatch(99, length(ObjRange7)),
+    ?assertMatch(100, length(ObjRange8)),
     ok = sst_close(P2),
     ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")).
     
