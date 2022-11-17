@@ -598,7 +598,7 @@ starting({sst_new,
     leveled_log:log_timer("SST08",
                             [ActualFilename, Level, Summary#summary.max_sqn],
                             SW),
-    erlang:send_after(?STARTUP_TIMEOUT, self(), orphan_status),
+    erlang:send_after(?STARTUP_TIMEOUT, self(), start_complete),
     {reply,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}, Bloom},
         reader,
@@ -606,8 +606,7 @@ starting({sst_new,
                         high_modified_date = HighModDate,
                         starting_pid = StartingPID,
                         level = Level,
-                        fetch_cache = new_cache(Level)},
-        hibernate};
+                        fetch_cache = new_cache(Level)}};
 starting({sst_newlevelzero, RootPath, Filename,
                     Penciller, MaxSQN,
                     OptsSST, IdxModDate}, _From, State) -> 
@@ -924,11 +923,16 @@ handle_event({update_blockindex_cache, BIC}, StateName, State) ->
         State#state{blockindex_cache = BlockIndexCache,
                     high_modified_date = HighModDate}}.
 
-handle_info(orphan_status, delete_pending, State) ->
-    % This message may have interrupted the delete timeout, so timeout straight
-    % away
-    {next_state, delete_pending, State, 0};
-handle_info(orphan_status, StateName, State) ->
+handle_info(_Msg, delete_pending, State) ->
+    % Ignore messages when pending delete. The message may have interrupted
+    % the delete timeout, so timeout straight away
+    {next_state, delete_pending, State, 0};                
+handle_info(bic_complete, StateName, State) ->
+    % The block index cache is complete, so the memory footprint should be
+    % relatively stable from this point.  Hibernate to help minimise
+    % fragmentation
+    {next_state, StateName, State, hibernate};
+handle_info(start_complete, StateName, State) ->
     % The SST file will be started by a clerk, but the clerk may be shut down
     % prior to the manifest being updated about the existence of this SST file.
     % If there is no activity after startup, check the clerk is still alive and
@@ -1293,6 +1297,7 @@ update_blockindex_cache(true, Entries, BIC, HighModDate, IdxModDate) ->
                 {N, _} ->
                     {BIC, HighModDate};
                 {S, true} ->
+                    erlang:send(self(), bic_complete),
                     {BIC0, element(3, BIC0)};
                 _ ->
                     {BIC0, undefined}
