@@ -1778,12 +1778,18 @@ get_filterfun(
                 {Term, Key}
             end;
         N ->
+            <<Prefix:N/binary, _Rest/binary>> = FT,
             fun({_Tag, _Bucket, {_Field, Term}, Key}) ->
                 case Term of
                     T when byte_size(T) =< N ->
                         null;
-                    <<_:N/binary, Suffix/binary>> ->
-                        {Suffix, Key}
+                    <<QueryKey:N/binary, Suffix/binary>> ->
+                        case QueryKey of
+                            Prefix ->
+                                {Suffix, Key};
+                            _ ->
+                                null
+                        end
                 end
             end
     end;
@@ -1794,14 +1800,20 @@ get_filterfun(
         0 ->
             fun({_Tag, _Bucket, Key, null}) -> Key end;
         N ->
+            <<Prefix:N/binary, _Rest/binary>> = FK,
             fun({_Tag, _Bucket, Key, null}) ->
                 case Key of
                     null ->
                         null;
                     K when byte_size(K) =< N ->
                         null;
-                    <<_:N/binary, Suffix/binary>> ->
-                        Suffix
+                    <<QueryKey:N/binary, Suffix/binary>> ->
+                        case QueryKey of
+                            Prefix ->
+                                Suffix;
+                            _ ->
+                                null
+                        end
                 end
             end
     end;
