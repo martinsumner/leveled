@@ -4554,6 +4554,91 @@ key_matchesprefix_test() ->
     ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")).
     
 
+range_key_indextermmatch_test() ->
+    FileName = "indextermmatch_test",
+    IndexKeyFun =
+        fun(I) ->
+            {{?IDX_TAG,
+                {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>,
+                    <<"19601301">>},
+                list_to_binary(io_lib:format("~6..0w", [I]))},
+            {1, {active, infinity}, no_lookup, null}}
+        end,
+    IndexEntries = lists:map(IndexKeyFun, lists:seq(1, 500)),
+    OptsSST = 
+        #sst_options{press_method=native,
+                        log_options=leveled_log:get_opts()},
+    {ok, P1, {_FK1, _LK1}, _Bloom1} = 
+        sst_new(?TEST_AREA, FileName, 1, IndexEntries, 6000, OptsSST),
+    
+    IdxRange1 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>}, {<<"dob_bin">>, <<"1959">>}, null},
+            all,
+            16),
+    IdxRange2 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG,
+                {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1960">>}, null},
+            {?IDX_TAG,
+                {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1961">>}, null},
+            16),
+    IdxRange3 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, <<"000000">>},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, null},
+            16),
+    IdxRange4 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, <<"000100">>},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, null},
+            16),
+    IdxRange5 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, <<"000100">>},
+            16),
+    IdxRange6 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, <<"000300">>},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, null},
+            16),
+    IdxRange7 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, <<"000300">>},
+            16),
+    ?assertMatch(500, length(IdxRange1)),
+    ?assertMatch(500, length(IdxRange2)),
+    ?assertMatch(500, length(IdxRange3)),
+    ?assertMatch(401, length(IdxRange4)),
+    ?assertMatch(100, length(IdxRange5)),
+    ?assertMatch(201, length(IdxRange6)),
+    ?assertMatch(300, length(IdxRange7)),
+    ok = sst_close(P1),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")).
+    
+
 range_key_lestthanprefix_test() ->
     FileName = "lessthanprefix_test",
     IndexKeyFun =
