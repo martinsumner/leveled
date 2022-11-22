@@ -1776,6 +1776,10 @@ from_list(SlotList, FirstKey, LastKey) ->
         fun((leveled_codec:ledger_key())
             -> leveled_codec:ledger_key()|leveled_codec:slimmed_key()).
 get_filterfun(
+    {Tag, Bucket, {Field, Term}, FK}, {Tag, Bucket, {Field, Term}, LK})
+            when is_binary(Term), is_binary(FK), is_binary(LK) ->
+    subkey_filter(Term);
+get_filterfun(
         {Tag, Bucket, {Field, FT}, FK}, {Tag, Bucket, {Field, LT}, LK})
             when is_binary(FT), is_binary(FK), is_binary(LT), is_binary(LK) ->
     case {binary:longest_common_prefix([FT, LT]), byte_size(FT)} of
@@ -1804,6 +1808,22 @@ null_filter(Key) -> Key.
 
 -spec key_filter(leveled_codec:ledger_key()) -> leveled_codec:slimmed_key().
 key_filter({_Tag, _Bucket, Key, null}) -> Key.
+
+-spec subkey_filter(
+    binary()) ->
+        fun((leveled_codec:ledger_key()) -> leveled_codec:slimmed_key()).
+subkey_filter(Term) ->
+    fun({_Tag, _Bucket, {_Field, T}, ObjKey}) ->
+        case T of
+            % If the Term does not match we ignore the Key and treat as null
+            % As we can assume that this is a range start/end key which is
+            % before/after any index key in the file
+            Term ->
+                ObjKey;
+            _ ->
+                null
+        end
+    end.
 
 -spec term_filter(leveled_codec:ledger_key()) -> leveled_codec:slimmed_key().
 term_filter({_Tag, _Bucket, {_Field, Term}, Key}) -> {Term, Key}.
@@ -4484,10 +4504,19 @@ key_matchesprefix_test() ->
             {?IDX_TAG, {<<"btype">>, <<"bucket">>},
                 {<<"dob_bin">>, <<"1961">>}, null},
             16),
+    IdxRangeZ =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|000500">>}, null},
+            16),
     ?assertMatch(501, length(IdxRange2)),
     ?assertMatch(250, length(IdxRange4)),
     ?assertMatch(501, length(IdxRangeX)),
     ?assertMatch(500, length(IdxRangeY)),
+    ?assertMatch(500, length(IdxRangeZ)),
     ok = sst_close(P1),
     ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")),
 
@@ -4628,6 +4657,22 @@ range_key_indextermmatch_test() ->
             {?IDX_TAG, {<<"btype">>, <<"bucket">>},
                 {<<"dob_bin">>, <<"19601301">>}, <<"000300">>},
             16),
+    IdxRange8 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601302">>}, <<"000300">>},
+            16),
+    IdxRange9 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601300">>}, <<"000100">>},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, null},
+            16),
     ?assertMatch(500, length(IdxRange1)),
     ?assertMatch(500, length(IdxRange2)),
     ?assertMatch(500, length(IdxRange3)),
@@ -4635,6 +4680,8 @@ range_key_indextermmatch_test() ->
     ?assertMatch(100, length(IdxRange5)),
     ?assertMatch(201, length(IdxRange6)),
     ?assertMatch(300, length(IdxRange7)),
+    ?assertMatch(500, length(IdxRange8)),
+    ?assertMatch(500, length(IdxRange9)),
     ok = sst_close(P1),
     ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")).
     
