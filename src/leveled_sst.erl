@@ -1776,12 +1776,9 @@ from_list(SlotList, FirstKey, LastKey) ->
         fun((leveled_codec:ledger_key())
             -> leveled_codec:ledger_key()|leveled_codec:slimmed_key()).
 get_filterfun(
-    {Tag, Bucket, {Field, Term}, FK}, {Tag, Bucket, {Field, Term}, LK})
-            when is_binary(Term), is_binary(FK), is_binary(LK) ->
-    subkey_filter(Term);
-get_filterfun(
-        {Tag, Bucket, {Field, FT}, FK}, {Tag, Bucket, {Field, LT}, LK})
-            when is_binary(FT), is_binary(FK), is_binary(LT), is_binary(LK) ->
+        {?IDX_TAG, Bucket, {Field, FT}, FK}, {?IDX_TAG, Bucket, {Field, LT}, LK})
+            when is_binary(Bucket), is_binary(Field),
+            is_binary(FT), is_binary(FK), is_binary(LT), is_binary(LK) ->
     case {binary:longest_common_prefix([FT, LT]), byte_size(FT)} of
         {N, M} when N > 0, M >= N ->
             <<Prefix:N/binary, _Rest/binary>> = FT,
@@ -1791,7 +1788,7 @@ get_filterfun(
     end;
 get_filterfun(
         {Tag, Bucket, FK, null}, {Tag, Bucket, LK, null})
-            when is_binary(FK), is_binary(LK), FK < LK ->
+            when is_binary(Bucket), is_binary(FK), is_binary(LK) ->
     case {binary:longest_common_prefix([FK, LK]), byte_size(FK)} of
         {N, M} when N > 0, M >= N ->
             <<Prefix:N/binary, _Rest/binary>> = FK,
@@ -1808,22 +1805,6 @@ null_filter(Key) -> Key.
 
 -spec key_filter(leveled_codec:ledger_key()) -> leveled_codec:slimmed_key().
 key_filter({_Tag, _Bucket, Key, null}) -> Key.
-
--spec subkey_filter(
-    binary()) ->
-        fun((leveled_codec:ledger_key()) -> leveled_codec:slimmed_key()).
-subkey_filter(Term) ->
-    fun({_Tag, _Bucket, {_Field, T}, ObjKey}) ->
-        case T of
-            % If the Term does not match we ignore the Key and treat as null
-            % As we can assume that this is a range start/end key which is
-            % before/after any index key in the file
-            Term ->
-                ObjKey;
-            _ ->
-                null
-        end
-    end.
 
 -spec term_filter(leveled_codec:ledger_key()) -> leveled_codec:slimmed_key().
 term_filter({_Tag, _Bucket, {_Field, Term}, Key}) -> {Term, Key}.
@@ -4853,6 +4834,7 @@ range_key_lestthanprefix_test() ->
 
 single_key_test() ->
     FileName = "single_key_test",
+    Field = <<"t1_bin">>,
     LK = leveled_codec:to_ledgerkey(<<"Bucket0">>, <<"Key0">>, ?STD_TAG),
     Chunk = leveled_rand:rand_bytes(16),
     {_B, _K, MV, _H, _LMs} =
@@ -4866,7 +4848,7 @@ single_key_test() ->
     ok = sst_close(P1),
     ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")),
 
-    IndexSpecs = [{add, <<"t1_bin">>, <<"20220101">>}],
+    IndexSpecs = [{add, Field, <<"20220101">>}],
     [{IdxK, IdxV}] = 
         leveled_codec:idx_indexspecs(IndexSpecs, 
                                     <<"Bucket">>, 
@@ -4879,36 +4861,38 @@ single_key_test() ->
         [{IdxK, IdxV}],
         sst_getkvrange(
             P2,
-            {?IDX_TAG, <<"Bucket">>, {"t1_bin", <<"20220100">>}, null},
+            {?IDX_TAG, <<"Bucket">>, {Field, <<"20220100">>}, null},
             all,
             16)),
     ?assertMatch(
         [{IdxK, IdxV}],
         sst_getkvrange(
             P2,
-            {?IDX_TAG, <<"Bucket">>, {"t1_bin", <<"20220100">>}, null},
-            {?IDX_TAG, <<"Bucket">>, {"t1_bin", <<"20220101">>}, null},
+            {?IDX_TAG, <<"Bucket">>, {Field, <<"20220100">>}, null},
+            {?IDX_TAG, <<"Bucket">>, {Field, <<"20220101">>}, null},
             16)),
     ?assertMatch(
         [{IdxK, IdxV}],
         sst_getkvrange(
             P2,
-            {?IDX_TAG, <<"Bucket">>, {"t1_bin", <<"20220101">>}, null},
-            {?IDX_TAG, <<"Bucket">>, {"t1_bin", <<"20220101">>}, null},
+            {?IDX_TAG, <<"Bucket">>, {Field, <<"20220101">>}, null},
+            {?IDX_TAG, <<"Bucket">>, {Field, <<"20220101">>}, null},
             16)),
     ok = sst_close(P2),
     ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")).
 
 strange_range_test() ->
     FileName = "strange_range_test",
-    Chunk = leveled_rand:rand_bytes(16),
+    V = leveled_head:riak_metadata_to_binary(
+        term_to_binary([{"actor1", 1}]),
+        <<1:32/integer, 0:32/integer, 0:32/integer>>),
     OptsSST = 
         #sst_options{press_method=native,
                         log_options=leveled_log:get_opts()},
     
-    FK = leveled_codec:to_ledgerkey({<<"T0">>, <<"B0">>}, <<"K0">>, ?STD_TAG),
-    LK = leveled_codec:to_ledgerkey({<<"T0">>, <<"B0">>}, <<"K02">>, ?STD_TAG),
-    EK = leveled_codec:to_ledgerkey({<<"T0">>, <<"B0">>}, <<"K0299">>, ?STD_TAG),
+    FK = leveled_codec:to_ledgerkey({<<"T0">>, <<"B0">>}, <<"K0">>, ?RIAK_TAG),
+    LK = leveled_codec:to_ledgerkey({<<"T0">>, <<"B0">>}, <<"K02">>, ?RIAK_TAG),
+    EK = leveled_codec:to_ledgerkey({<<"T0">>, <<"B0">>}, <<"K0299">>, ?RIAK_TAG),
 
     KL1 =
         lists:map(
@@ -4916,7 +4900,7 @@ strange_range_test() ->
                 leveled_codec:to_ledgerkey(
                     {<<"T0">>, <<"B0">>},
                     list_to_binary("K00" ++ integer_to_list(I)),
-                    ?STD_TAG)
+                    ?RIAK_TAG)
             end,
             lists:seq(1, 300)),
     KL2 =
@@ -4925,14 +4909,14 @@ strange_range_test() ->
                 leveled_codec:to_ledgerkey(
                     {<<"T0">>, <<"B0">>},
                     list_to_binary("K02" ++ integer_to_list(I)),
-                    ?STD_TAG)
+                    ?RIAK_TAG)
             end,
             lists:seq(1, 300)),
     
     GenerateValue =
         fun(K) ->
             element(
-                3, leveled_codec:generate_ledgerkv(K, 1, Chunk, 16, infinity))
+                3, leveled_codec:generate_ledgerkv(K, 1, V, 16, infinity))
         end,
 
     KVL = 
