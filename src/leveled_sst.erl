@@ -1834,17 +1834,10 @@ term_filter({_Tag, _Bucket, {_Field, Term}, Key}) -> {Term, Key}.
 key_prefix_filter(N, Prefix) ->
     fun({_Tag, _Bucket, Key, null}) ->
         case Key of
-            null ->
-                null;
-            K when byte_size(K) =< N ->
-                null;
-            <<QueryKey:N/binary, Suffix/binary>> ->
-                case QueryKey of
-                    Prefix ->
-                        Suffix;
-                    _ ->
-                        null
-                end
+            <<Prefix:N/binary, Suffix/binary>> ->
+                Suffix;
+            _ ->
+                null
         end
     end.
 
@@ -1854,18 +1847,12 @@ key_prefix_filter(N, Prefix) ->
 term_prefix_filter(N, Prefix) ->
     fun({_Tag, _Bucket, {_Field, Term}, Key}) ->
         case Term of
-            T when byte_size(T) =< N ->
-                null;
-            <<QueryKey:N/binary, Suffix/binary>> ->
-                case QueryKey of
-                    Prefix ->
-                        {Suffix, Key};
-                    _ ->
-                        null
-                end
+            <<Prefix:N/binary, Suffix/binary>> ->
+                {Suffix, Key};
+            _ ->
+                null
         end
     end.
-
 
 lookup_slot(Key, Tree, FilterFun) ->
     StartKeyFun =
