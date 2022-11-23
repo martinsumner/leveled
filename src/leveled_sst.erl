@@ -1783,7 +1783,7 @@ get_filterfun(
         {Tag, Bucket, {Field, FT}, FK}, {Tag, Bucket, {Field, LT}, LK})
             when is_binary(FT), is_binary(FK), is_binary(LT), is_binary(LK) ->
     case {binary:longest_common_prefix([FT, LT]), byte_size(FT)} of
-        {N, M} when N > 0, M > N ->
+        {N, M} when N > 0, M >= N ->
             <<Prefix:N/binary, _Rest/binary>> = FT,
             term_prefix_filter(N, Prefix);
         _ ->
@@ -1793,7 +1793,7 @@ get_filterfun(
         {Tag, Bucket, FK, null}, {Tag, Bucket, LK, null})
             when is_binary(FK), is_binary(LK), FK < LK ->
     case {binary:longest_common_prefix([FK, LK]), byte_size(FK)} of
-        {N, M} when N > 0, M > N ->
+        {N, M} when N > 0, M >= N ->
             <<Prefix:N/binary, _Rest/binary>> = FK,
             key_prefix_filter(N, Prefix);
         _ ->
