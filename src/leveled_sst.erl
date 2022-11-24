@@ -4829,7 +4829,87 @@ range_key_lestthanprefix_test() ->
     ?assertMatch(99, length(ObjRange7)),
     ?assertMatch(100, length(ObjRange8)),
     ok = sst_close(P2),
-    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")).
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")),
+
+    HeadKeyFun =
+        fun(I) ->
+            {{?HEAD_TAG,
+                {<<"btype">>, <<"bucket">>},
+                list_to_binary("19601301|"
+                    ++ io_lib:format("~6..0w", [I])),
+                null},
+            {1, {active, infinity}, {0, 0}, null, undefined}}
+        end,
+    HeadEntries = lists:map(HeadKeyFun, lists:seq(1, 500)),
+    {ok, P3, {_FK3, _LK3}, _Bloom3} = 
+        sst_new(?TEST_AREA, FileName, 1, HeadEntries, 6000, OptsSST),
+
+    HeadRange1 =
+        sst_getkvrange(
+            P3,
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>}, <<"1959">>, null},
+            all,
+            16),
+    HeadRange2 =
+        sst_getkvrange(
+            P3,
+            {?HEAD_TAG,
+                {<<"btype">>, <<"abucket">>},
+                <<"1962">>, null},
+            {?HEAD_TAG,
+                {<<"btype">>, <<"zbucket">>},
+                <<"1960">>, null},
+            16),
+    HeadRange3 =
+        sst_getkvrange(
+            P3,
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>},
+                <<"1960">>, null},
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000250">>, null},
+            16),
+    HeadRange4 =
+        sst_getkvrange(
+            P3,
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000251">>, null},
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>},
+                <<"1961">>, null},
+            16),
+    HeadRange6 =
+        sst_getkvrange(
+            P3,
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000">>, null},
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|0002">>, null},
+            16),
+    HeadRange7 =
+        sst_getkvrange(
+            P3,
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000">>, null},
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|0001">>, null},
+            16),
+    HeadRange8 =
+        sst_getkvrange(
+            P3,
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000000">>, null},
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000100">>, null},
+            16),
+
+        ?assertMatch(500, length(HeadRange1)),
+        ?assertMatch(500, length(HeadRange2)),
+        ?assertMatch(250, length(HeadRange3)),
+        ?assertMatch(250, length(HeadRange4)),
+        ?assertMatch(199, length(HeadRange6)),
+        ?assertMatch(99, length(HeadRange7)),
+        ?assertMatch(100, length(HeadRange8)),
+        ok = sst_close(P3),
+        ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")).
     
 
 single_key_test() ->
