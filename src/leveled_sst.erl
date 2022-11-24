@@ -1776,8 +1776,8 @@ from_list(SlotList, FirstKey, LastKey) ->
         fun((leveled_codec:ledger_key())
             -> leveled_codec:ledger_key()|leveled_codec:slimmed_key()).
 get_filterfun(
-        {?IDX_TAG, Bucket, {Field, FT}, FK}, {?IDX_TAG, Bucket, {Field, LT}, LK})
-            when is_binary(Bucket), is_binary(Field),
+        {?IDX_TAG, B, {Field, FT}, FK}, {?IDX_TAG, B, {Field, LT}, LK})
+            when is_binary(Field),
             is_binary(FT), is_binary(FK), is_binary(LT), is_binary(LK) ->
     case {binary:longest_common_prefix([FT, LT]), byte_size(FT)} of
         {N, M} when N > 0, M >= N ->
@@ -1787,8 +1787,8 @@ get_filterfun(
             fun term_filter/1
     end;
 get_filterfun(
-        {Tag, Bucket, FK, null}, {Tag, Bucket, LK, null})
-            when is_binary(Bucket), is_binary(FK), is_binary(LK) ->
+        {Tag, B, FK, null}, {Tag, B, LK, null})
+            when is_binary(FK), is_binary(LK) ->
     case {binary:longest_common_prefix([FK, LK]), byte_size(FK)} of
         {N, M} when N > 0, M >= N ->
             <<Prefix:N/binary, _Rest/binary>> = FK,
@@ -4673,6 +4673,8 @@ range_key_lestthanprefix_test() ->
     {ok, P1, {_FK1, _LK1}, _Bloom1} = 
         sst_new(?TEST_AREA, FileName, 1, IndexEntries, 6000, OptsSST),
     
+    IndexFileStateSize = size_summary(P1),
+    
     IdxRange1 =
         sst_getkvrange(
             P1,
@@ -4764,6 +4766,8 @@ range_key_lestthanprefix_test() ->
     {ok, P2, {_FK2, _LK2}, _Bloom2} = 
         sst_new(?TEST_AREA, FileName, 1, ObjectEntries, 6000, OptsSST),
     
+    ObjectFileStateSize = size_summary(P2),
+
     ObjRange1 =
         sst_getkvrange(
             P2,
@@ -4844,6 +4848,8 @@ range_key_lestthanprefix_test() ->
     {ok, P3, {_FK3, _LK3}, _Bloom3} = 
         sst_new(?TEST_AREA, FileName, 1, HeadEntries, 6000, OptsSST),
 
+    HeadFileStateSize =  size_summary(P3),
+
     HeadRange1 =
         sst_getkvrange(
             P3,
@@ -4901,15 +4907,62 @@ range_key_lestthanprefix_test() ->
                 <<"19601301|000100">>, null},
             16),
 
-        ?assertMatch(500, length(HeadRange1)),
-        ?assertMatch(500, length(HeadRange2)),
-        ?assertMatch(250, length(HeadRange3)),
-        ?assertMatch(250, length(HeadRange4)),
-        ?assertMatch(199, length(HeadRange6)),
-        ?assertMatch(99, length(HeadRange7)),
-        ?assertMatch(100, length(HeadRange8)),
-        ok = sst_close(P3),
-        ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")).
+    ?assertMatch(500, length(HeadRange1)),
+    ?assertMatch(500, length(HeadRange2)),
+    ?assertMatch(250, length(HeadRange3)),
+    ?assertMatch(250, length(HeadRange4)),
+    ?assertMatch(199, length(HeadRange6)),
+    ?assertMatch(99, length(HeadRange7)),
+    ?assertMatch(100, length(HeadRange8)),
+    ok = sst_close(P3),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")),
+    
+    [_HdO|RestObjectEntries] = ObjectEntries,
+    [_HdI|RestIndexEntries] = IndexEntries,
+    [_Hdh|RestHeadEntries] = HeadEntries,
+
+    {ok, P4, {_FK4, _LK4}, _Bloom4} = 
+        sst_new(
+            ?TEST_AREA,
+            FileName, 1,
+            [HeadKeyFun(9999)|RestIndexEntries],
+            6000, OptsSST),
+    print_compare_size("Index", IndexFileStateSize, size_summary(P4)),
+    ok = sst_close(P4),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")),
+
+    {ok, P5, {_FK5, _LK5}, _Bloom5} = 
+    sst_new(
+        ?TEST_AREA,
+        FileName, 1,
+        [HeadKeyFun(9999)|RestObjectEntries],
+        6000, OptsSST),
+    print_compare_size("Object", ObjectFileStateSize, size_summary(P5)),
+    ok = sst_close(P5),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")),
+
+    {ok, P6, {_FK6, _LK6}, _Bloom6} = 
+    sst_new(
+        ?TEST_AREA,
+        FileName, 1,
+        RestHeadEntries ++ [IndexKeyFun(1)],
+        6000, OptsSST),
+    print_compare_size("Head", HeadFileStateSize, size_summary(P6)),
+    ok = sst_close(P6),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")).
+
+size_summary(P) ->
+    Summary = element(2, element(2, sys:get_state(P))),
+    true = is_record(Summary, summary),
+    erts_debug:flat_size(Summary).
+
+print_compare_size(Type, OptimisedSize, UnoptimisedSize) ->
+    io:format(
+        user,
+        "~n~s State optimised to ~w bytes unoptimised ~w bytes~n",
+        [Type, OptimisedSize * 8, UnoptimisedSize * 8]),
+    % Reduced by at least a quarter
+    ?assert(OptimisedSize < (UnoptimisedSize - (UnoptimisedSize div 4))).
     
 
 single_key_test() ->
