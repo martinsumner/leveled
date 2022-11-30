@@ -48,7 +48,8 @@
                         binary_mode = false :: boolean(),
                         sync_strategy = sync,
                         log_options = leveled_log:get_opts() 
-                            :: leveled_log:log_options()}).
+                            :: leveled_log:log_options(),
+                        monitor = {no_monitor, 0} :: leveled_monitor:monitor()}).
 
 -record(sst_options,
                         {press_method = native
@@ -56,7 +57,8 @@
                         log_options = leveled_log:get_opts() 
                             :: leveled_log:log_options(),
                         max_sstslots = 256 :: pos_integer(),
-                        pagecache_level = 1 :: pos_integer()}).
+                        pagecache_level = 1 :: pos_integer(),
+                        monitor = {no_monitor, 0} :: leveled_monitor:monitor()}).
 
 -record(inker_options,
                         {cdb_max_size :: integer() | undefined,
@@ -73,7 +75,8 @@
                         singlefile_compactionperc :: float()|undefined,
                         maxrunlength_compactionperc :: float()|undefined,
                         score_onein = 1 :: pos_integer(),
-                        snaptimeout_long :: pos_integer() | undefined}).
+                        snaptimeout_long :: pos_integer() | undefined,
+                        monitor = {no_monitor, 0} :: leveled_monitor:monitor()}).
 
 -record(penciller_options,
                         {root_path :: string() | undefined,
@@ -88,7 +91,8 @@
                         compression_method = native :: lz4|native,
                         levelzero_cointoss = false :: boolean(),
                         snaptimeout_short :: pos_integer() | undefined,
-                        snaptimeout_long :: pos_integer() | undefined}).
+                        snaptimeout_long :: pos_integer() | undefined,
+                        monitor = {no_monitor, 0} :: leveled_monitor:monitor()}).
 
 -record(iclerk_options,
                         {inker :: pid() | undefined,

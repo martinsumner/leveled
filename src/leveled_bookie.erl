@@ -94,7 +94,7 @@
         ]).
 
 -export([empty_ledgercache/0,
-            snapshot_store/6,
+            snapshot_store/7,
             fetch_value/2,
             journal_notfound/4]).
 
@@ -131,6 +131,7 @@
 -define(SST_PAGECACHELEVEL_NOLOOKUP, 1).
 -define(SST_PAGECACHELEVEL_LOOKUP, 4).
 -define(CACHE_LOGPOINT, 50000).
+-define(DEFAULT_STATS_PERC, 10).
 -define(OPTION_DEFAULTS,
             [{root_path, undefined},
                 {snapshot_bookie, undefined},
@@ -156,7 +157,8 @@
                 {database_id, ?DEFAULT_DBID},
                 {override_functions, []},
                 {snapshot_timeout_short, ?SNAPTIMEOUT_SHORT},
-                {snapshot_timeout_long, ?SNAPTIMEOUT_LONG}]).
+                {snapshot_timeout_long, ?SNAPTIMEOUT_LONG},
+                {stats_frequency, ?DEFAULT_STATS_PERC}]).
 
 -record(ledger_cache, {mem :: ets:tab(),
                         loader = leveled_tree:empty(?CACHE_TYPE)
@@ -169,58 +171,19 @@
 -record(state, {inker :: pid() | undefined,
                 penciller :: pid() | undefined,
                 cache_size :: pos_integer() | undefined,
-                cache_multiple :: pos_integer() |undefined,
+                cache_multiple :: pos_integer() | undefined,
                 ledger_cache = #ledger_cache{} :: ledger_cache(),
                 is_snapshot :: boolean() | undefined,
                 slow_offer = false :: boolean(),
-
                 head_only = false :: boolean(),
                 head_lookup = true :: boolean(),
-
                 ink_checking = ?MAX_KEYCHECK_FREQUENCY :: integer(),
-
-                put_countdown = 0 :: integer(),
-                get_countdown = 0 :: integer(),
-                snapshot_countdown = 0 :: integer(),
-                head_countdown = 0 :: integer(),
-                cache_ratio = {0, 0, 0} :: cache_ratio(),
-                get_timings = no_timing :: get_timings(),
-                put_timings = no_timing :: put_timings(),
-                snapshot_timings = no_timing :: snapshot_timings(),
-                head_timings = no_timing :: head_timings()}).
-
-
--record(get_timings, {sample_count = 0 :: integer(),
-                        head_time = 0 :: integer(),
-                        body_time = 0 :: integer(),
-                        fetch_count = 0 :: integer()}).
-
--record(head_timings, {sample_count = 0 :: integer(),
-                        pcl_time = 0 :: integer(),
-                        buildhead_time = 0 :: integer()}).
-
--record(put_timings, {sample_count = 0 :: integer(),
-                        mem_time = 0 :: integer(),
-                        ink_time = 0 :: integer(),
-                        total_size = 0 :: integer()}).
-
--record(snapshot_timings, {sample_count = 0 :: integer(),
-                            bookie_time = 0 :: integer(),
-                            pcl_time = 0 :: integer()}).
+                monitor = {no_monitor, 0} :: leveled_monitor:monitor()}).
 
 
 -type book_state() :: #state{}.
 -type sync_mode() :: sync|none|riak_sync.
 -type ledger_cache() :: #ledger_cache{}.
--type get_timings() :: no_timing|#get_timings{}.
--type put_timings() :: no_timing|#put_timings{}.
--type snapshot_timings() :: no_timing|#snapshot_timings{}.
--type head_timings() :: no_timing|#head_timings{}.
--type timings() ::
-    put_timings()|get_timings()|snapshot_timings()|head_timings().
--type timing_types() :: head|get|put|snapshot.
--type cache_ratio() ::
-    {non_neg_integer(), non_neg_integer(), non_neg_integer()}.
 
 
 -type open_options() :: 
@@ -391,11 +354,14 @@
             % assumed to have failed, and so requires to be torndown.  The
             % short timeout is applied to queries where long_running is set to
             % false
-        {snapshot_timeout_long, pos_integer()}
+        {snapshot_timeout_long, pos_integer()} |
             % Time in seconds before a snapshot that has not been shutdown is
             % assumed to have failed, and so requires to be torndown.  The
             % short timeout is applied to queries where long_running is set to
             % true
+        {stats_frequency, 0..100}
+            % Probability that stats will be collected for an individual
+            % request
         ].
 
 -type initial_loadfun() ::
@@ -1088,7 +1054,6 @@ book_headfold(Pid, Tag, all, FoldAccT, JournalCheck, SnapPreFold,
 book_snapshot(Pid, SnapType, Query, LongRunning) ->
     gen_server:call(Pid, {snapshot, SnapType, Query, LongRunning}, infinity).
 
-
 -spec book_compactjournal(pid(), integer()) -> ok|busy.
 -spec book_islastcompactionpending(pid()) -> boolean().
 -spec book_trimjournal(pid()) -> ok.
@@ -1203,7 +1168,11 @@ init([Opts]) ->
             DatabaseID = proplists:get_value(database_id, Opts),
             leveled_log:set_databaseid(DatabaseID),
 
-            {InkerOpts, PencillerOpts} = set_options(Opts),
+            {ok, Monitor} = leveled_monitor:monitor_start(),
+            StatLogFrequency = proplists:get_value(stats_frequency, Opts),
+
+            {InkerOpts, PencillerOpts} =
+                set_options(Opts, {Monitor, StatLogFrequency}),
 
             OverrideFunctions = proplists:get_value(override_functions, Opts),
             SetFun =
@@ -1252,45 +1221,45 @@ init([Opts]) ->
             SSTOpts = PencillerOpts#penciller_options.sst_options,
             SSTOpts0 = SSTOpts#sst_options{pagecache_level = SSTPageCacheLevel},
             PencillerOpts0 =
-                PencillerOpts#penciller_options{sst_options = SSTOpts0},
-            
-            State0 = 
-                #state{
-                    cache_size=CacheSize,
-                    cache_multiple = MaxCacheMultiple,
-                    is_snapshot=false,
-                    head_only=HeadOnly,
-                    head_lookup = HeadLookup},
+                PencillerOpts#penciller_options{sst_options = SSTOpts0},            
 
-            {Inker, Penciller} = 
-                startup(InkerOpts, PencillerOpts0, State0),
+            {Inker, Penciller} =  startup(InkerOpts, PencillerOpts0),
 
             NewETS = ets:new(mem, [ordered_set]),
             leveled_log:log("B0001", [Inker, Penciller]),
-            {ok, State0#state{inker=Inker,
-                                penciller=Penciller,
-                                ledger_cache=#ledger_cache{mem = NewETS}}};
+            {ok, 
+                #state{
+                    cache_size = CacheSize,
+                    cache_multiple = MaxCacheMultiple,
+                    is_snapshot = false,
+                    head_only = HeadOnly,
+                    head_lookup = HeadLookup,
+                    inker = Inker,
+                    penciller = Penciller,
+                    ledger_cache = #ledger_cache{mem = NewETS},
+                    monitor = {Monitor, StatLogFrequency}}};
         {Bookie, undefined} ->
             {ok, Penciller, Inker} = 
                 book_snapshot(Bookie, store, undefined, true),
             leveled_log:log("B0002", [Inker, Penciller]),
-            {ok, #state{penciller=Penciller,
-                        inker=Inker,
-                        is_snapshot=true}}
+            {ok,
+                #state{penciller = Penciller,
+                        inker = Inker,
+                        is_snapshot = true}}
     end.
 
 
 handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL, DataSync},
                 From, State) when State#state.head_only == false ->
     LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
-    SW0 = os:timestamp(),
+    SWLR = os:timestamp(),
+    SW0 = leveled_monitor:maybe_time(State#state.monitor),
     {ok, SQN, ObjSize} = leveled_inker:ink_put(State#state.inker,
                                                LedgerKey,
                                                Object,
                                                {IndexSpecs, TTL},
                                                DataSync),
-    {SW1, Timings1} = 
-        update_timings(SW0, {put, {inker, ObjSize}}, State#state.put_timings),
+    {T0, SW1} =  leveled_monitor:step_time(SW0),
     Changes = preparefor_ledgercache(null,
                                         LedgerKey,
                                         SQN,
@@ -1298,35 +1267,25 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL, DataSync},
                                         ObjSize,
                                         {IndexSpecs, TTL}),
     Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
-    {_SW2, Timings2} = update_timings(SW1, {put, mem}, Timings1),
+    {T1, _SW2} = leveled_monitor:step_time(SW1),
 
-    {Timings, CountDown} = 
-        update_statetimings(put, Timings2, State#state.put_countdown),
-        % If the previous push to memory was returned then punish this PUT with
-        % a delay.  If the back-pressure in the Penciller continues, these 
-        % delays will beocme more frequent
     case State#state.slow_offer of
         true ->
             gen_server:reply(From, pause);
         false ->
             gen_server:reply(From, ok)
     end,
-    maybe_longrunning(SW0, overall_put),
+    maybe_longrunning(SWLR, overall_put),
+    maybelog_put_timing(State#state.monitor, T0, T1, ObjSize),
     case maybepush_ledgercache(
-        State#state.cache_size,
-        State#state.cache_multiple,
-        Cache0,
-        State#state.penciller) of
-        {ok, NewCache} ->
-            {noreply, State#state{ledger_cache = NewCache,
-                                  put_timings = Timings,
-                                  put_countdown = CountDown,
-                                  slow_offer = false}};
-        {returned, NewCache} ->
-            {noreply, State#state{ledger_cache = NewCache,
-                                  put_timings = Timings,
-                                  put_countdown = CountDown,
-                                  slow_offer = true}}
+            State#state.cache_size,
+            State#state.cache_multiple,
+            Cache0,
+            State#state.penciller) of
+        {ok, Cache} ->
+            {noreply, State#state{slow_offer = false, ledger_cache = Cache}};
+        {returned, Cache} ->
+            {noreply, State#state{slow_offer = true, ledger_cache = Cache}}
     end;
 handle_call({mput, ObjectSpecs, TTL}, From, State) 
                                         when State#state.head_only == true ->
@@ -1344,26 +1303,24 @@ handle_call({mput, ObjectSpecs, TTL}, From, State)
             gen_server:reply(From, ok)
     end,
     case maybepush_ledgercache(
-        State#state.cache_size,
-        State#state.cache_multiple,
-        Cache0,
-        State#state.penciller) of
-        {ok, NewCache} ->
-            {noreply, State#state{ledger_cache = NewCache,
-                                    slow_offer = false}};
-        {returned, NewCache} ->
-            {noreply, State#state{ledger_cache = NewCache,
-                                    slow_offer = true}}
+            State#state.cache_size,
+            State#state.cache_multiple,
+            Cache0,
+            State#state.penciller) of
+        {ok, Cache} ->
+            {noreply, State#state{ledger_cache = Cache, slow_offer = false}};
+        {returned, Cache} ->
+            {noreply, State#state{ledger_cache = Cache, slow_offer = true}}
     end;
 handle_call({get, Bucket, Key, Tag}, _From, State) 
                                         when State#state.head_only == false ->
     LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
-    SWh = os:timestamp(),
-    {H0, UpdCR} =
+    SW0 = leveled_monitor:maybe_time(State#state.monitor),
+    {H0, CacheHit} =
         fetch_head(LedgerKey,
                     State#state.penciller,
-                    State#state.ledger_cache,
-                    State#state.cache_ratio),
+                    State#state.ledger_cache),
+    {TS0, SW1} = leveled_monitor:step_time(SW0),
     HeadResult = 
         case H0 of
             not_present ->
@@ -1383,72 +1340,64 @@ handle_call({get, Bucket, Key, Tag}, _From, State)
                         end
                 end
         end,
-    {SWb, Timings1} = 
-        update_timings(SWh, {get, head}, State#state.get_timings),
-    {Reply, Timings2} = 
+    {TS1, SW2} = leveled_monitor:step_time(SW1),
+    maybelog_head_timing(
+        State#state.monitor, TS0, TS1, HeadResult == not_found, CacheHit),
+    GetResult = 
         case HeadResult of 
             not_found -> 
-                {not_found, Timings1};
+                not_found;
             {LK, SQN} ->
                 Object = fetch_value(State#state.inker, {LK, SQN}),
-                {_SW, UpdTimingsB} =
-                    update_timings(SWb, {get, body}, Timings1),
                 case Object of 
                     not_present ->
-                        {not_found, UpdTimingsB};
+                        not_found;
                     _ ->
-                        {{ok, Object}, UpdTimingsB} 
+                        {ok, Object}
                 end 
         end,
-    {Timings, CountDown} = 
-        update_statetimings(get, Timings2, State#state.get_countdown),
-    {reply,
-        Reply,
-        State#state{get_timings = Timings, 
-                    get_countdown = CountDown,
-                    cache_ratio =
-                        maybelog_cacheratio(UpdCR, State#state.is_snapshot)}};
+    {TS2, _SW3} = leveled_monitor:step_time(SW2),
+    maybelog_get_timing(
+        State#state.monitor, TS1, TS2, GetResult == not_found),
+    {reply, GetResult, State};
 handle_call({head, Bucket, Key, Tag, SQNOnly}, _From, State) 
                                         when State#state.head_lookup == true ->
-    SWp = os:timestamp(),
+    SW0 = leveled_monitor:maybe_time(State#state.monitor),
     LK = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
-    {Head, UpdCR} =
+    {Head, CacheHit} =
         fetch_head(LK, 
                     State#state.penciller, 
                     State#state.ledger_cache,
-                    State#state.cache_ratio,
                     State#state.head_only),
-    {SWr, UpdTimingsP} = 
-            update_timings(SWp, {head, pcl}, State#state.head_timings),
-    {LedgerMD, SQN, JournalCheckFrequency} =
+    {TS0, SW1} = leveled_monitor:step_time(SW0),
+    JrnalCheckFreq =
+        case State#state.head_only of
+            true ->
+                0;
+            false ->
+                State#state.ink_checking
+        end,
+    {LedgerMD, SQN, UpdJrnalCheckFreq} =
         case Head of
             not_present ->
-                {not_found, null, State#state.ink_checking};
+                {not_found, null, JrnalCheckFreq};
             Head ->
                 case leveled_codec:striphead_to_v1details(Head) of
                     {_SeqN, tomb, _MH, _MD} ->
-                        {not_found, null, State#state.ink_checking};
+                        {not_found, null, JrnalCheckFreq};
                     {SeqN, {active, TS}, _MH, MD} ->
                         case TS >= leveled_util:integer_now() of
                             true ->
-                                CheckFrequency =
-                                    case State#state.head_only of
-                                        true ->
-                                            0;
-                                        false ->
-                                            State#state.ink_checking
-                                    end,
-                                case journal_notfound(CheckFrequency, 
-                                                        State#state.inker,
-                                                        LK,
-                                                        SeqN) of
+                                I = State#state.inker,
+                                case journal_notfound(
+                                        JrnalCheckFreq, I, LK, SeqN) of
                                     {true, UppedFrequency} ->
                                         {not_found, null, UppedFrequency};
                                     {false, ReducedFrequency} ->
                                         {MD, SeqN, ReducedFrequency}
                                 end;
                             false ->
-                                {not_found, null, State#state.ink_checking}
+                                {not_found, null, JrnalCheckFreq}
                         end
                 end
         end,
@@ -1461,33 +1410,29 @@ handle_call({head, Bucket, Key, Tag, SQNOnly}, _From, State)
             {_, true} ->
                 {ok, SQN}
         end,
-    {_SW, UpdTimingsR} = 
-        update_timings(SWr, {head, rsp}, UpdTimingsP),
-    {UpdTimings, CountDown} =
-        update_statetimings(head, 
-                            UpdTimingsR, 
-                            State#state.head_countdown),
-
-    {reply, 
-        Reply, 
-        State#state{head_timings = UpdTimings,
-                    head_countdown = CountDown,
-                    ink_checking = JournalCheckFrequency,
-                    cache_ratio =
-                        maybelog_cacheratio(UpdCR, State#state.is_snapshot)}};
+    {TS1, _SW2} = leveled_monitor:step_time(SW1),
+    maybelog_head_timing(
+        State#state.monitor, TS0, TS1, LedgerMD == not_found, CacheHit),
+    case UpdJrnalCheckFreq of
+        JrnalCheckFreq ->
+            {reply, Reply, State};
+        UpdJrnalCheckFreq ->
+            {reply, Reply, State#state{ink_checking = UpdJrnalCheckFreq}}
+    end;
 handle_call({snapshot, SnapType, Query, LongRunning}, _From, State) ->
     % Snapshot the store, specifying if the snapshot should be long running 
     % (i.e. will the snapshot be queued or be required for an extended period 
     % e.g. many minutes)
-    {ok, PclSnap, InkSnap, Timings} =
-        snapshot_store(State, SnapType, Query, LongRunning),
-    {UpdTimings, CountDown} =
-        update_statetimings(snapshot, Timings, State#state.snapshot_countdown),
-    {reply,
-        {ok, PclSnap, InkSnap},
-        State#state{
-            snapshot_timings = UpdTimings,
-            snapshot_countdown = CountDown}};
+    {ok, PclSnap, InkSnap} =
+        snapshot_store(
+            State#state.ledger_cache,
+            State#state.penciller,
+            State#state.inker,
+            State#state.monitor,
+            SnapType,
+            Query,
+            LongRunning),
+    {reply, {ok, PclSnap, InkSnap},State};
 handle_call(log_settings, _From, State) ->
     {reply, leveled_log:return_settings(), State};
 handle_call({return_runner, QueryType}, _From, State) ->
@@ -1499,19 +1444,27 @@ handle_call({compact_journal, Timeout}, From, State)
         true ->
             {reply, {busy, undefined}, State};
         false ->
-            {ok, PclSnap, null, _Timings} =
-                snapshot_store(State, ledger, undefined, true),
+            {ok, PclSnap, null} =
+            snapshot_store(
+                State#state.ledger_cache,
+                State#state.penciller,
+                State#state.inker,
+                State#state.monitor,
+                ledger,
+                undefined,
+                true),
             R = leveled_inker:ink_compactjournal(State#state.inker,
                                                     PclSnap,
                                                     Timeout),
             gen_server:reply(From, R),
-            {_, NewCache} = 
-                maybepush_ledgercache(
+            case maybepush_ledgercache(
                     State#state.cache_size,
                     State#state.cache_multiple,
                     State#state.ledger_cache,
-                    State#state.penciller),
-            {noreply, State#state{ledger_cache = NewCache}}
+                    State#state.penciller) of
+                {_, NewCache} ->
+                    {noreply, State#state{ledger_cache = NewCache}}
+            end
     end;
 handle_call(confirm_compact, _From, State)
                                         when State#state.head_only == false ->
@@ -1537,11 +1490,13 @@ handle_call(hot_backup, _From, State) when State#state.head_only == false ->
 handle_call(close, _From, State) ->
     leveled_inker:ink_close(State#state.inker),
     leveled_penciller:pcl_close(State#state.penciller),
+    leveled_monitor:monitor_close(element(1, State#state.monitor)),
     {stop, normal, ok, State};
 handle_call(destroy, _From, State=#state{is_snapshot=Snp}) when Snp == false ->
     leveled_log:log("B0011", []),
     {ok, InkPathList} = leveled_inker:ink_doom(State#state.inker),
     {ok, PCLPathList} = leveled_penciller:pcl_doom(State#state.penciller),
+    leveled_monitor:monitor_close(element(1, State#state.monitor)),
     lists:foreach(fun(DirPath) -> delete_path(DirPath) end, InkPathList),
     lists:foreach(fun(DirPath) -> delete_path(DirPath) end, PCLPathList),
     {stop, normal, ok, State};
@@ -1554,22 +1509,28 @@ handle_call(Msg, _From, State) ->
 handle_cast({log_level, LogLevel}, State) ->
     PCL = State#state.penciller,
     INK = State#state.inker,
+    Monitor = element(1, State#state.monitor),
     ok = leveled_penciller:pcl_loglevel(PCL, LogLevel),
     ok = leveled_inker:ink_loglevel(INK, LogLevel),
+    ok = leveled_monitor:log_level(Monitor, LogLevel),
     ok = leveled_log:set_loglevel(LogLevel),
     {noreply, State};
 handle_cast({add_logs, ForcedLogs}, State) ->
     PCL = State#state.penciller,
     INK = State#state.inker,
+    Monitor = element(1, State#state.monitor),
     ok = leveled_penciller:pcl_addlogs(PCL, ForcedLogs),
     ok = leveled_inker:ink_addlogs(INK, ForcedLogs),
+    ok = leveled_monitor:log_add(Monitor, ForcedLogs),
     ok = leveled_log:add_forcedlogs(ForcedLogs),
     {noreply, State};
 handle_cast({remove_logs, ForcedLogs}, State) ->
     PCL = State#state.penciller,
     INK = State#state.inker,
+    Monitor = element(1, State#state.monitor),
     ok = leveled_penciller:pcl_removelogs(PCL, ForcedLogs),
     ok = leveled_inker:ink_removelogs(INK, ForcedLogs),
+    ok = leveled_monitor:log_remove(Monitor, ForcedLogs),
     ok = leveled_log:remove_forcedlogs(ForcedLogs),
     {noreply, State}.
 
@@ -1638,11 +1599,11 @@ loadqueue_ledgercache(Cache) ->
 -spec snapshot_store(ledger_cache(), 
                         pid(),
                         null|pid(),
-                        snapshot_timings(),
+                        leveled_monitor:monitor(),
                         store|ledger, 
                         undefined|tuple(),
                         undefined|boolean()) ->
-                            {ok, pid(), pid()|null, snapshot_timings()}.
+                            {ok, pid(), pid()|null}.
 %% @doc 
 %% Allow all a snapshot to be created from part of the store, preferably
 %% passing in a query filter so that all of the LoopState does not need to
@@ -1658,8 +1619,8 @@ loadqueue_ledgercache(Cache) ->
 %% lookup is required but the range isn't defined then 'undefined' should be 
 %% passed as the query
 snapshot_store(
-        LedgerCache, Penciller, Inker, Timings, SnapType, Query, LongRunning) ->
-    TS0 = os:timestamp(),
+        LedgerCache, Penciller, Inker, Monitor, SnapType, Query, LongRunning) ->
+    SW0 = leveled_monitor:maybe_time(Monitor),
     LedgerCacheReady = readycache_forsnapshot(LedgerCache, Query),
     BookiesMem = {LedgerCacheReady#ledger_cache.loader,
                     LedgerCacheReady#ledger_cache.index,
@@ -1672,32 +1633,20 @@ snapshot_store(
                             snapshot_longrunning = LongRunning,
 				            bookies_pid = self(),
                             bookies_mem = BookiesMem},
-    {TS1, Timings1} = update_timings(TS0, {snapshot, bookie}, Timings), 
+    {TS0, SW1} = leveled_monitor:step_time(SW0),
     {ok, LedgerSnapshot} = leveled_penciller:pcl_snapstart(PCLopts),
-    {_TS2, Timings2} = update_timings(TS1, {snapshot, pcl}, Timings1),
+    {TS1, _SW2} = leveled_monitor:step_time(SW1),
+    ok = maybelog_snap_timing(Monitor, TS0, TS1),
     case SnapType of
         store ->
-            InkerOpts = #inker_options{start_snapshot=true,
+            InkerOpts = #inker_options{start_snapshot = true,
                                        bookies_pid = self(),
-                                       source_inker=Inker},
+                                       source_inker = Inker},
             {ok, JournalSnapshot} = leveled_inker:ink_snapstart(InkerOpts),
-            {ok, LedgerSnapshot, JournalSnapshot, Timings2};
+            {ok, LedgerSnapshot, JournalSnapshot};
         ledger ->
-            {ok, LedgerSnapshot, null, Timings2}
+            {ok, LedgerSnapshot, null}
     end.
-
-snapshot_store(LedgerCache, Penciller, Inker, SnapType, Query, LongRunning) ->
-    snapshot_store(
-        LedgerCache, Penciller, Inker, no_timing, SnapType, Query, LongRunning).
-
-snapshot_store(State, SnapType, Query, LongRunning) ->
-    snapshot_store(State#state.ledger_cache,
-                    State#state.penciller,
-                    State#state.inker,
-                    State#state.snapshot_timings,
-                    SnapType,
-                    Query,
-                    LongRunning).
 
 
 -spec fetch_value(pid(), leveled_codec:journal_ref()) -> not_present|any().
@@ -1718,20 +1667,19 @@ fetch_value(Inker, {Key, SQN}) ->
 %%% Internal functions
 %%%============================================================================
 
--spec startup(#inker_options{}, #penciller_options{}, book_state()) 
-                                                            -> {pid(), pid()}.
+-spec startup(#inker_options{}, #penciller_options{}) -> {pid(), pid()}.
 %% @doc
 %% Startup the Inker and the Penciller, and prompt the loading of the Penciller
 %% from the Inker.  The Penciller may be shutdown without the latest data 
 %% having been persisted: and so the Iker must be able to update the Penciller
 %% on startup with anything that happened but wasn't flushed to disk.
-startup(InkerOpts, PencillerOpts, State) ->
+startup(InkerOpts, PencillerOpts) ->
     {ok, Inker} = leveled_inker:ink_start(InkerOpts),
     {ok, Penciller} = leveled_penciller:pcl_start(PencillerOpts),
     LedgerSQN = leveled_penciller:pcl_getstartupsequencenumber(Penciller),
     leveled_log:log("B0005", [LedgerSQN]),
     ReloadStrategy = InkerOpts#inker_options.reload_strategy,
-    LoadFun = get_loadfun(ReloadStrategy, Penciller, State),
+    LoadFun = get_loadfun(ReloadStrategy, Penciller),
     BatchFun = 
         fun(BatchAcc, _Acc) ->
             push_to_penciller(Penciller, BatchAcc)
@@ -1759,11 +1707,13 @@ set_defaults(Opts) ->
                     lists:ukeysort(1, Opts), 
                     lists:ukeysort(1, ?OPTION_DEFAULTS)).
 
--spec set_options(open_options()) -> {#inker_options{}, #penciller_options{}}.
+-spec set_options(
+    open_options(), leveled_monitor:monitor()) ->
+        {#inker_options{}, #penciller_options{}}.
 %% @doc
 %% Take the passed in property list of operations and extract out any relevant
 %% options to the Inker or the Penciller
-set_options(Opts) ->
+set_options(Opts, Monitor) ->
     MaxJournalSize0 = 
         min(?ABSOLUTEMAX_JOURNALSIZE, 
             proplists:get_value(max_journalsize, Opts)),
@@ -1821,30 +1771,36 @@ set_options(Opts) ->
     ScoreOneIn = proplists:get_value(journalcompaction_scoreonein, Opts),
 
     {#inker_options{root_path = JournalFP,
-                        reload_strategy = ReloadStrategy,
-                        max_run_length = proplists:get_value(max_run_length, Opts),
-                        singlefile_compactionperc = SFL_CompPerc,
-                        maxrunlength_compactionperc = MRL_CompPerc,
-                        waste_retention_period = WRP,
-                        snaptimeout_long = SnapTimeoutLong,
-                        compression_method = CompressionMethod,
-                        compress_on_receipt = CompressOnReceipt,
-                        score_onein = ScoreOneIn,
-                        cdb_options = 
-                            #cdb_options{max_size=MaxJournalSize,
-                                        max_count=MaxJournalCount,
-                                        binary_mode=true,
-                                        sync_strategy=SyncStrat,
-                                        log_options=leveled_log:get_opts()}},
+                    reload_strategy = ReloadStrategy,
+                    max_run_length = proplists:get_value(max_run_length, Opts),
+                    singlefile_compactionperc = SFL_CompPerc,
+                    maxrunlength_compactionperc = MRL_CompPerc,
+                    waste_retention_period = WRP,
+                    snaptimeout_long = SnapTimeoutLong,
+                    compression_method = CompressionMethod,
+                    compress_on_receipt = CompressOnReceipt,
+                    score_onein = ScoreOneIn,
+                    cdb_options = 
+                        #cdb_options{
+                            max_size = MaxJournalSize,
+                            max_count = MaxJournalCount,
+                            binary_mode = true,
+                            sync_strategy = SyncStrat,
+                            log_options = leveled_log:get_opts(),
+                            monitor = Monitor},
+                    monitor = Monitor},
         #penciller_options{root_path = LedgerFP,
                             max_inmemory_tablesize = PCLL0CacheSize,
                             levelzero_cointoss = true,
                             snaptimeout_short = SnapTimeoutShort,
                             snaptimeout_long = SnapTimeoutLong,
                             sst_options =
-                                #sst_options{press_method=CompressionMethod,
-                                            log_options=leveled_log:get_opts(),
-                                            max_sstslots=MaxSSTSlots}}
+                                #sst_options{
+                                    press_method = CompressionMethod,
+                                    log_options = leveled_log:get_opts(),
+                                    max_sstslots = MaxSSTSlots,
+                                    monitor = Monitor},
+                            monitor = Monitor}
         }.
 
 
@@ -1864,8 +1820,15 @@ set_options(Opts) ->
 return_snapfun(State, SnapType, Query, LongRunning, SnapPreFold) ->
     case SnapPreFold of
         true ->
-            {ok, LS, JS, _Timings} =
-                snapshot_store(State, SnapType, Query, LongRunning),
+            {ok, LS, JS} =
+                snapshot_store(
+                    State#state.ledger_cache,
+                    State#state.penciller,
+                    State#state.inker,
+                    State#state.monitor,
+                    SnapType,
+                    Query,
+                    LongRunning),
             fun() -> {ok, LS, JS} end;
         false ->
             Self = self(),
@@ -2190,24 +2153,20 @@ scan_table(Table, StartKey, EndKey, Acc, MinSQN, MaxSQN) ->
     end.
 
 
--spec fetch_head(leveled_codec:ledger_key(), pid(), ledger_cache(),
-                    cache_ratio()) -> 
-                        {not_present|leveled_codec:ledger_value(),
-                            cache_ratio()}.
+-spec fetch_head(leveled_codec:ledger_key(), pid(), ledger_cache())
+                    -> {not_present|leveled_codec:ledger_value(), boolean()}.
 %% @doc
 %% Fetch only the head of the object from the Ledger (or the bookie's recent
 %% ledger cache if it has just been updated).  not_present is returned if the 
 %% Key is not found
-fetch_head(Key, Penciller, LedgerCache, CacheRatio) ->
-    fetch_head(Key, Penciller, LedgerCache, CacheRatio, false).
+fetch_head(Key, Penciller, LedgerCache) ->
+    fetch_head(Key, Penciller, LedgerCache, false).
 
--spec fetch_head(leveled_codec:ledger_key(), pid(), ledger_cache(),
-                    cache_ratio(), boolean())
-                        -> {not_present|leveled_codec:ledger_value(),
-                            cache_ratio()}.
+-spec fetch_head(leveled_codec:ledger_key(), pid(), ledger_cache(), boolean())
+                    -> {not_present|leveled_codec:ledger_value(), boolean()}.
 %% doc
 %% The L0Index needs to be bypassed when running head_only
-fetch_head(Key, Penciller, LedgerCache, {RC, CC, HC}, HeadOnly) ->
+fetch_head(Key, Penciller, LedgerCache, HeadOnly) ->
     SW = os:timestamp(),
     CacheResult =
         case LedgerCache#ledger_cache.mem of
@@ -2218,7 +2177,7 @@ fetch_head(Key, Penciller, LedgerCache, {RC, CC, HC}, HeadOnly) ->
         end,
     case CacheResult of
         [{Key, Head}] ->
-            {Head, {RC + 1, CC + 1, HC + 1}};
+            {Head, true};
         [] ->
             Hash = leveled_codec:segment_hash(Key),
             UseL0Idx = not HeadOnly, 
@@ -2227,10 +2186,10 @@ fetch_head(Key, Penciller, LedgerCache, {RC, CC, HC}, HeadOnly) ->
             case leveled_penciller:pcl_fetch(Penciller, Key, Hash, UseL0Idx) of
                 {Key, Head} ->
                     maybe_longrunning(SW, pcl_head),
-                    {Head, {RC + 1, CC, HC + 1}};
+                    {Head, false};
                 not_present ->
                     maybe_longrunning(SW, pcl_head),
-                    {not_present, {RC + 1, CC, HC}}
+                    {not_present, false}
             end
     end.
 
@@ -2432,7 +2391,7 @@ maybepush_ledgercache(MaxCacheSize, MaxCacheMult, Cache, Penciller) ->
                     {returned, Cache}
             end;
         true ->
-             {ok, Cache}
+            {ok, Cache}
     end.
 
 -spec maybe_withjitter(
@@ -2448,12 +2407,12 @@ maybe_withjitter(_CacheSize, _MaxCacheSize, _MaxCacheMult) ->
     false.
 
 
--spec get_loadfun(leveled_codec:compaction_strategy(), pid(), book_state())
-                    -> initial_loadfun().
+-spec get_loadfun(
+    leveled_codec:compaction_strategy(), pid()) -> initial_loadfun().
 %% @doc
 %% The LoadFun will be used by the Inker when walking across the Journal to 
 %% load the Penciller at startup.  
-get_loadfun(ReloadStrat, Penciller, _State) ->
+get_loadfun(ReloadStrat, Penciller) ->
     fun(KeyInJournal, ValueInJournal, _Pos, Acc0, ExtractFun) ->
         {MinSQN, MaxSQN, LedgerCache} = Acc0,
         {SQN, InkTag, PK} = KeyInJournal,
@@ -2497,153 +2456,54 @@ delete_path(DirPath) ->
     [file:delete(filename:join([DirPath, File])) || File <- Files],
     file:del_dir(DirPath).
 
+-spec maybelog_put_timing(
+        leveled_monitor:monitor(),
+        leveled_monitor:timing(),
+        leveled_monitor:timing(),
+        pos_integer()) -> ok.
+maybelog_put_timing(_Monitor, no_timing, no_timing, _Size) ->
+    ok;
+maybelog_put_timing({Pid, _StatsFreq}, MemTime, InkTime, Size) ->
+    leveled_monitor:add_stat(Pid, {bookie_put_update, MemTime, InkTime, Size}).
+
+-spec maybelog_head_timing(
+        leveled_monitor:monitor(),
+        leveled_monitor:timing(),
+        leveled_monitor:timing(),
+        boolean(),
+        boolean()) -> ok.
+maybelog_head_timing(_Monitor, no_timing, no_timing, _NF, _CH) ->
+    ok;
+maybelog_head_timing({Pid, _StatsFreq}, FetchTime, _, true, _CH) ->
+    leveled_monitor:add_stat(
+        Pid, {bookie_head_update, FetchTime, not_found, 0});
+maybelog_head_timing({Pid, _StatsFreq}, FetchTime, RspTime, _NF, CH) ->
+    CH0 = case CH of true -> 1; false -> 0 end,
+    leveled_monitor:add_stat(
+        Pid, {bookie_head_update, FetchTime, RspTime, CH0}).
+
+-spec maybelog_get_timing(
+    leveled_monitor:monitor(),
+    leveled_monitor:timing(),
+    leveled_monitor:timing(),
+    boolean()) -> ok.
+maybelog_get_timing(_Monitor, no_timing, no_timing, _NF) ->
+    ok;
+maybelog_get_timing({Pid, _StatsFreq}, HeadTime, _BodyTime, true) ->
+    leveled_monitor:add_stat(Pid, {bookie_get_update, HeadTime, not_found});
+maybelog_get_timing({Pid, _StatsFreq}, HeadTime, BodyTime, false) ->
+    leveled_monitor:add_stat(Pid, {bookie_get_update, HeadTime, BodyTime}).
 
 
-%%%============================================================================
-%%% Timing Functions
-%%%============================================================================
+-spec maybelog_snap_timing(
+    leveled_monitor:monitor(),
+    leveled_monitor:timing(),
+    leveled_monitor:timing()) -> ok.
+maybelog_snap_timing(_Monitor, no_timing, no_timing) ->
+    ok;
+maybelog_snap_timing({Pid, _StatsFreq}, BookieTime, PCLTime) ->
+    leveled_monitor:add_stat(Pid, {bookie_snap_update, BookieTime, PCLTime}).
 
--spec update_statetimings(timing_types(), timings(), integer()) -> 
-                    {timings(), integer()}.
-%% @doc
-%%
-%% The timings state is either in countdown to the next set of samples of
-%% we are actively collecting a sample.  Active collection take place 
-%% when the countdown is 0.  Once the sample has reached the expected count
-%% then there is a log of that sample, and the countdown is restarted.
-%%
-%% Outside of sample windows the timings object should be set to the atom
-%% no_timing.  no_timing is a valid state for each timings type.
-update_statetimings(head, no_timing, 0) ->
-    {#head_timings{}, 0};
-update_statetimings(put, no_timing, 0) ->
-    {#put_timings{}, 0};
-update_statetimings(get, no_timing, 0) ->
-    {#get_timings{}, 0};
-update_statetimings(snapshot, no_timing, 0) ->
-    {#snapshot_timings{}, 0};
-update_statetimings(head, Timings, 0) ->
-    case Timings#head_timings.sample_count of 
-        SC when SC >= ?TIMING_SAMPLESIZE ->
-            log_timings(head, Timings),
-            {no_timing, leveled_rand:uniform(10 * ?TIMING_SAMPLECOUNTDOWN)};
-        _SC ->
-            {Timings, 0}
-    end;
-update_statetimings(put, Timings, 0) ->
-    case Timings#put_timings.sample_count of 
-        SC when SC >= ?TIMING_SAMPLESIZE ->
-            log_timings(put, Timings),
-            {no_timing, leveled_rand:uniform(2 * ?TIMING_SAMPLECOUNTDOWN)};
-        _SC ->
-            {Timings, 0}
-    end;
-update_statetimings(get, Timings, 0) ->
-    case Timings#get_timings.sample_count of 
-        SC when SC >= ?TIMING_SAMPLESIZE ->
-            log_timings(get, Timings),
-            {no_timing, leveled_rand:uniform(2 * ?TIMING_SAMPLECOUNTDOWN)};
-        _SC ->
-            {Timings, 0}
-    end;
-update_statetimings(snapshot, Timings, 0) ->
-    case Timings#snapshot_timings.sample_count of 
-        SC when SC >= ?TIMING_SAMPLESIZE ->
-            log_timings(snapshot, Timings),
-            {no_timing, 
-                leveled_rand:uniform(2 * ?TIMING_SAMPLECOUNTDOWN)};
-        _SC ->
-            {Timings, 0}
-    end;
-update_statetimings(_, no_timing, N) ->
-    {no_timing, N - 1}.
-
-log_timings(head, Timings) ->
-    leveled_log:log("B0018", 
-                        [Timings#head_timings.sample_count,
-                            Timings#head_timings.pcl_time,
-                            Timings#head_timings.buildhead_time]);
-log_timings(put, Timings) ->
-    leveled_log:log("B0015", [Timings#put_timings.sample_count, 
-                                Timings#put_timings.mem_time,
-                                Timings#put_timings.ink_time,
-                                Timings#put_timings.total_size]);
-log_timings(get, Timings) ->
-    leveled_log:log("B0016", [Timings#get_timings.sample_count, 
-                                Timings#get_timings.head_time,
-                                Timings#get_timings.body_time,
-                                Timings#get_timings.fetch_count]);
-log_timings(snapshot, Timings) ->    
-    leveled_log:log("B0017", [Timings#snapshot_timings.sample_count, 
-                                Timings#snapshot_timings.bookie_time,
-                                Timings#snapshot_timings.pcl_time]).
-
-
-update_timings(_SW, _Stage, no_timing) ->
-    {no_timing, no_timing};
-update_timings(SW, {head, Stage}, Timings) ->
-    NextSW = os:timestamp(), 
-    Timer = timer:now_diff(NextSW, SW),
-    Timings0 = 
-        case Stage of 
-            pcl ->
-                PCT = Timings#head_timings.pcl_time + Timer,
-                Timings#head_timings{pcl_time = PCT};
-            rsp ->
-                BHT = Timings#head_timings.buildhead_time + Timer,
-                CNT = Timings#head_timings.sample_count + 1,
-                Timings#head_timings{buildhead_time = BHT, sample_count = CNT}
-        end,
-    {NextSW, Timings0};
-update_timings(SW, {put, Stage}, Timings) ->
-    NextSW = os:timestamp(),
-    Timer = timer:now_diff(NextSW, SW),
-    Timings0 = 
-        case Stage of 
-            {inker, ObjectSize} ->
-                INT = Timings#put_timings.ink_time + Timer,
-                TSZ = Timings#put_timings.total_size + ObjectSize,
-                Timings#put_timings{ink_time = INT, total_size = TSZ};
-            mem ->
-                PCT = Timings#put_timings.mem_time + Timer,
-                CNT = Timings#put_timings.sample_count + 1,
-                Timings#put_timings{mem_time = PCT, sample_count = CNT}
-        end,
-    {NextSW, Timings0};
-update_timings(SW, {get, head}, Timings) ->
-    NextSW = os:timestamp(), 
-    Timer = timer:now_diff(NextSW, SW),
-    GHT = Timings#get_timings.head_time + Timer,
-    CNT = Timings#get_timings.sample_count + 1,
-    Timings0 = Timings#get_timings{head_time = GHT, sample_count = CNT},
-    {NextSW, Timings0};
-update_timings(SW, {get, body}, Timings) ->
-    Timer = timer:now_diff(os:timestamp(), SW),
-    GBT = Timings#get_timings.body_time + Timer,
-    FCNT = Timings#get_timings.fetch_count + 1,
-    Timings0 = Timings#get_timings{body_time = GBT, fetch_count = FCNT},
-    {no_timing, Timings0};
-update_timings(SW, {snapshot, bookie}, Timings) ->
-    NextSW = os:timestamp(), 
-    Timer = timer:now_diff(NextSW, SW),
-    BST = Timings#snapshot_timings.bookie_time + Timer,
-    CNT = Timings#snapshot_timings.sample_count + 1,
-    Timings0 = Timings#snapshot_timings{bookie_time = BST, sample_count = CNT},
-    {NextSW, Timings0};
-update_timings(SW, {snapshot, pcl}, Timings) ->
-    NextSW = os:timestamp(), 
-    Timer = timer:now_diff(NextSW, SW),
-    PST = Timings#snapshot_timings.pcl_time + Timer,
-    Timings0 = Timings#snapshot_timings{pcl_time = PST},
-    {no_timing, Timings0}.
-
-
--spec maybelog_cacheratio(cache_ratio(), boolean()) -> cache_ratio().
-maybelog_cacheratio({?CACHE_LOGPOINT, CC, HC}, false) ->
-    leveled_log:log("B0021", [?CACHE_LOGPOINT, CC, HC]),
-    {0, 0, 0};
-maybelog_cacheratio(CR, _IsSnap) ->
-    CR.
 %%%============================================================================
 %%% Test
 %%%============================================================================
@@ -3254,14 +3114,16 @@ erase_journal_test() ->
                                 {cache_size, 100}]),
     ObjL1 = generate_multiple_objects(500, 1),
     % Put in all the objects with a TTL in the future
-    lists:foreach(fun({K, V, S}) -> ok = book_put(Bookie1,
-                                                        "Bucket", K, V, S,
-                                                        ?STD_TAG) end,
-                    ObjL1),
-    lists:foreach(fun({K, V, _S}) ->
-                        {ok, V} = book_get(Bookie1, "Bucket", K, ?STD_TAG)
-                        end,
-                    ObjL1),
+    lists:foreach(
+        fun({K, V, S}) ->
+            ok = book_put(Bookie1, "Bucket", K, V, S, ?STD_TAG)
+        end,
+        ObjL1),
+    lists:foreach(
+        fun({K, V, _S}) ->
+            {ok, V} = book_get(Bookie1, "Bucket", K, ?STD_TAG)
+        end,
+        ObjL1),
     
     CheckHeadFun =
         fun(Book) -> 

@@ -233,12 +233,8 @@
                     % related to  specific query, and the StartKey/EndKey
                     % used to extract this part
 
-                persisted_sqn = 0 :: integer(), % The highest SQN persisted
-                
+                persisted_sqn = 0 :: integer(), % The highest SQN persisted          
                 ledger_sqn = 0 :: integer(), % The highest SQN added to L0
-                root_path = "test" :: string(),
-                
-                clerk :: pid() | undefined,
                 
                 levelzero_pending = false :: boolean(),
                 levelzero_constructor :: pid() | undefined,
@@ -248,13 +244,16 @@
                 levelzero_cointoss = false :: boolean(),
                 levelzero_index ::
                     leveled_pmem:index_array() | undefined | redacted,
+                levelzero_astree :: list() | undefined | redacted,
+
+                root_path = "test" :: string(),
+                clerk :: pid() | undefined,
                 
                 is_snapshot = false :: boolean(),
                 snapshot_fully_loaded = false :: boolean(),
                 snapshot_time :: pos_integer() | undefined,
                 source_penciller :: pid() | undefined,
 		        bookie_monref :: reference() | undefined,
-                levelzero_astree :: list() | undefined | redacted,
                 
                 work_ongoing = false :: boolean(), % i.e. compaction work
                 work_backlog = false :: boolean(), % i.e. compaction work
@@ -262,30 +261,13 @@
                 pending_removals = [] :: list(string()),
                 maybe_release = false :: boolean(),
                 
-                timings = no_timing :: pcl_timings(),
-                timings_countdown = 0 :: integer(),
-
                 snaptimeout_short :: pos_integer()|undefined,
                 snaptimeout_long :: pos_integer()|undefined,
 
+                monitor = {no_monitor, 0} :: leveled_monitor:monitor(),
+
                 sst_options = #sst_options{} :: sst_options()}).
 
--record(pcl_timings, 
-                    {sample_count = 0 :: integer(),
-                        foundmem_time = 0 :: integer(),
-                        found0_time = 0 :: integer(),
-                        found1_time = 0 :: integer(),
-                        found2_time = 0 :: integer(),
-                        found3_time = 0 :: integer(),
-                        foundlower_time = 0 :: integer(),
-                        missed_time = 0 :: integer(),
-                        foundmem_count = 0 :: integer(),
-                        found0_count = 0 :: integer(),
-                        found1_count = 0 :: integer(),
-                        found2_count = 0 :: integer(),
-                        found3_count = 0 :: integer(),
-                        foundlower_count = 0 :: integer(),
-                        missed_count = 0 :: integer()}).
 
 -type penciller_options() :: #penciller_options{}.
 -type bookies_memory() :: {tuple()|empty_cache,
@@ -293,7 +275,6 @@
                             integer()|infinity,
                             integer()}.
 -type pcl_state() :: #state{}.
--type pcl_timings() :: no_timing|#pcl_timings{}.
 -type levelzero_cacheentry() :: {pos_integer(), leveled_tree:leveled_tree()}.
 -type levelzero_cache() :: list(levelzero_cacheentry()).
 -type iterator_entry() 
@@ -656,9 +637,9 @@ init([LogOpts, PCLopts]) ->
                                                 BookiesMem, 
                                                 LongRunning),
             leveled_log:log("P0001", [self()]),
-            {ok, State#state{is_snapshot=true,
+            {ok, State#state{is_snapshot = true,
 			     bookie_monref = BookieMonitor,
-			     source_penciller=SrcPenciller}};
+			     source_penciller = SrcPenciller}};
         {_RootPath, _Snapshot=false, _Q, _BM} ->
             start_from_file(PCLopts)
     end.    
@@ -737,15 +718,12 @@ handle_call({fetch, Key, Hash, UseL0Index}, _From, State) ->
             false ->
                 none
         end,
-    {R, UpdTimings} = timed_fetch_mem(Key,
-                                        Hash,
-                                        State#state.manifest,
-                                        State#state.levelzero_cache,
-                                        L0Idx,
-                                        State#state.timings),
-    {UpdTimings0, CountDown} = 
-        update_statetimings(UpdTimings, State#state.timings_countdown),
-    {reply, R, State#state{timings=UpdTimings0, timings_countdown=CountDown}};
+    R = 
+        timed_fetch_mem(
+            Key, Hash, State#state.manifest,
+            State#state.levelzero_cache, L0Idx,
+            State#state.monitor),
+    {reply, R, State};
 handle_call({check_sqn, Key, Hash, SQN}, _From, State) ->
     {reply,
         compare_to_sqn(
@@ -1226,6 +1204,7 @@ start_from_file(PCLopts) ->
     RootPath = PCLopts#penciller_options.root_path,
     MaxTableSize = PCLopts#penciller_options.max_inmemory_tablesize,
     OptsSST = PCLopts#penciller_options.sst_options,
+    Monitor = PCLopts#penciller_options.monitor,
 
     SnapTimeoutShort = PCLopts#penciller_options.snaptimeout_short,
     SnapTimeoutLong = PCLopts#penciller_options.snaptimeout_long,
@@ -1244,7 +1223,8 @@ start_from_file(PCLopts) ->
                         levelzero_index = [],
                         snaptimeout_short = SnapTimeoutShort,
                         snaptimeout_long = SnapTimeoutLong,
-                        sst_options = OptsSST},
+                        sst_options = OptsSST,
+                        monitor = Monitor},
     
     %% Open manifest
     Manifest0 = leveled_pmanifest:open_manifest(RootPath),
@@ -1440,10 +1420,12 @@ roll_memory(NextManSQN, LedgerSQN, RootPath, L0Cache, CL, SSTOpts, true) ->
     {Constructor, Bloom}.
 
 
--spec timed_fetch_mem(tuple(), {integer(), integer()}, 
-                        leveled_pmanifest:manifest(), list(), 
-                        leveled_pmem:index_array(), pcl_timings()) 
-                                                -> {tuple(), pcl_timings()}.
+-spec timed_fetch_mem(
+    tuple(),
+    {integer(), integer()}, 
+    leveled_pmanifest:manifest(), list(), 
+    leveled_pmem:index_array(),
+    leveled_monitor:monitor()) -> leveled_codec:ledger_kv()|not_found.
 %% @doc
 %% Fetch the result from the penciller, starting by looking in the memory, 
 %% and if it is not found looking down level by level through the LSM tree.
@@ -1453,12 +1435,13 @@ roll_memory(NextManSQN, LedgerSQN, RootPath, L0Cache, CL, SSTOpts, true) ->
 %% the cost of requests dropping levels can be monitored.
 %%
 %% the result tuple includes the level at which the result was found.
-timed_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, Timings) ->
-    SW = os:timestamp(),
+timed_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, Monitor) ->
+    SW0 = leveled_monitor:maybe_time(Monitor),
     {R, Level} =
         fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, fun timed_sst_get/4),
-    UpdTimings = update_timings(SW, Timings, R, Level),
-    {R, UpdTimings}.
+    {TS0, _SW1} = leveled_monitor:step_time(SW0),
+    maybelog_fetch_timing(Monitor, Level, TS0, R == not_present),
+    R.
 
 
 -spec fetch_sqn(
@@ -1886,95 +1869,17 @@ find_nextkey(QueryArray, LCnt,
     end.
 
 
-
-%%%============================================================================
-%%% Timing Functions
-%%%============================================================================
-
--spec update_statetimings(pcl_timings(), integer()) 
-                                            -> {pcl_timings(), integer()}.
-%% @doc
-%%
-%% The timings state is either in countdown to the next set of samples of
-%% we are actively collecting a sample.  Active collection take place 
-%% when the countdown is 0.  Once the sample has reached the expected count
-%% then there is a log of that sample, and the countdown is restarted.
-%%
-%% Outside of sample windows the timings object should be set to the atom
-%% no_timing.  no_timing is a valid state for the pcl_timings type.
-update_statetimings(no_timing, 0) ->
-    {#pcl_timings{}, 0};
-update_statetimings(Timings, 0) ->
-    case Timings#pcl_timings.sample_count of 
-        SC when SC >= ?TIMING_SAMPLESIZE ->
-            log_timings(Timings),
-            {no_timing, leveled_rand:uniform(2 * ?TIMING_SAMPLECOUNTDOWN)};
-        _SC ->
-            {Timings, 0}
-    end;
-update_statetimings(no_timing, N) ->
-    {no_timing, N - 1}.
-
-log_timings(Timings) ->
-    leveled_log:log("P0032", [Timings#pcl_timings.sample_count, 
-                                Timings#pcl_timings.foundmem_time,
-                                Timings#pcl_timings.found0_time,
-                                Timings#pcl_timings.found1_time,
-                                Timings#pcl_timings.found2_time,
-                                Timings#pcl_timings.found3_time,
-                                Timings#pcl_timings.foundlower_time,
-                                Timings#pcl_timings.missed_time,
-                                Timings#pcl_timings.foundmem_count,
-                                Timings#pcl_timings.found0_count,
-                                Timings#pcl_timings.found1_count,
-                                Timings#pcl_timings.found2_count,
-                                Timings#pcl_timings.found3_count,
-                                Timings#pcl_timings.foundlower_count,
-                                Timings#pcl_timings.missed_count]).
-
--spec update_timings(erlang:timestamp(), pcl_timings(), 
-                        not_found|tuple(), integer()|basement) 
-                                                    -> pcl_timings().
-%% @doc
-%%
-%% update the timings record unless the current record object is the atom
-%% no_timing.
-update_timings(_SW, no_timing, _Result, _Stage) ->
-    no_timing;
-update_timings(SW, Timings, Result, Stage) ->
-    Timer = timer:now_diff(os:timestamp(), SW),
-    SC = Timings#pcl_timings.sample_count + 1,
-    Timings0 = Timings#pcl_timings{sample_count = SC},
-    case {Result, Stage} of
-        {not_present, _} ->
-            NFT = Timings#pcl_timings.missed_time + Timer,
-            NFC = Timings#pcl_timings.missed_count + 1,
-            Timings0#pcl_timings{missed_time = NFT, missed_count = NFC};
-        {_, memory} ->
-            PMT = Timings#pcl_timings.foundmem_time + Timer,
-            PMC = Timings#pcl_timings.foundmem_count + 1,
-            Timings0#pcl_timings{foundmem_time = PMT, foundmem_count = PMC};
-        {_, 0} ->
-            L0T = Timings#pcl_timings.found0_time + Timer,
-            L0C = Timings#pcl_timings.found0_count + 1,
-            Timings0#pcl_timings{found0_time = L0T, found0_count = L0C};
-        {_, 1} ->
-            L1T = Timings#pcl_timings.found1_time + Timer,
-            L1C = Timings#pcl_timings.found1_count + 1,
-            Timings0#pcl_timings{found1_time = L1T, found1_count = L1C};
-        {_, 2} ->
-            L2T = Timings#pcl_timings.found2_time + Timer,
-            L2C = Timings#pcl_timings.found2_count + 1,
-            Timings0#pcl_timings{found2_time = L2T, found2_count = L2C};
-        {_, 3} ->
-            L3T = Timings#pcl_timings.found3_time + Timer,
-            L3C = Timings#pcl_timings.found3_count + 1,
-            Timings0#pcl_timings{found3_time = L3T, found3_count = L3C};
-        _ ->
-            LLT = Timings#pcl_timings.foundlower_time + Timer,
-            LLC = Timings#pcl_timings.foundlower_count + 1,
-            Timings0#pcl_timings{foundlower_time = LLT, foundlower_count = LLC}
-    end.
+-spec maybelog_fetch_timing(
+    leveled_monitor:monitor(),
+    memory|leveled_pmanifest:lsm_level(),
+    leveled_monitor:timing(),
+    boolean()) -> ok.
+maybelog_fetch_timing(_Monitor, _Level, no_timing, _NF) ->
+    ok;
+maybelog_fetch_timing({Pid, _StatsFreq}, _Level, FetchTime, true) ->
+    leveled_monitor:add_stat(Pid, {pcl_fetch_update, not_found, FetchTime});
+maybelog_fetch_timing({Pid, _StatsFreq}, Level, FetchTime, _NF) ->
+    leveled_monitor:add_stat(Pid, {pcl_fetch_update, Level, FetchTime}).
 
 
 %%%============================================================================
@@ -2166,13 +2071,15 @@ simple_server_test() ->
     ?assertMatch(Key3, pcl_fetch(PCLr, {o,"Bucket0003", "Key0003", null})),
     ?assertMatch(Key4, pcl_fetch(PCLr, {o,"Bucket0004", "Key0004", null})),
     
-    {ok, PclSnap, null, _} = 
-        leveled_bookie:snapshot_store(leveled_bookie:empty_ledgercache(),
-                                        PCLr,
-                                        null,
-                                        ledger,
-                                        undefined,
-                                        false),           
+    {ok, PclSnap, null} = 
+        leveled_bookie:snapshot_store(
+            leveled_bookie:empty_ledgercache(),
+            PCLr,
+            null,
+            {no_monitor, 0},
+            ledger,
+            undefined,
+            false),           
     
     ?assertMatch(Key1, pcl_fetch(PclSnap, {o,"Bucket0001", "Key0001", null})),
     ?assertMatch(Key2, pcl_fetch(PclSnap, {o,"Bucket0002", "Key0002", null})),
@@ -2221,13 +2128,15 @@ simple_server_test() ->
                                                 1)),
     ok = pcl_close(PclSnap),
      
-    {ok, PclSnap2, null, _} = 
-        leveled_bookie:snapshot_store(leveled_bookie:empty_ledgercache(),
-                                        PCLr,
-                                        null,
-                                        ledger,
-                                        undefined,
-                                        false),
+    {ok, PclSnap2, null} = 
+        leveled_bookie:snapshot_store(
+            leveled_bookie:empty_ledgercache(),
+            PCLr,
+            null,
+            {no_monitor, 0},
+            ledger,
+            undefined,
+            false),
     
     ?assertMatch(replaced, pcl_checksequencenumber(PclSnap2,
                                                 {o,
@@ -2433,19 +2342,6 @@ slow_fetch_test() ->
     ?assertMatch(not_present, log_slowfetch(2, not_present, "fake", 0, 1)),
     ?assertMatch("value", log_slowfetch(2, "value", "fake", 0, 1)).
 
-timings_test() ->
-    SW = os:timestamp(),
-    timer:sleep(1),
-    T0 = update_timings(SW, #pcl_timings{}, {"K", "V"}, 2),
-    timer:sleep(1),
-    T1 = update_timings(SW, T0, {"K", "V"}, 3),
-    T2 = update_timings(SW, T1, {"K", "V"}, basement),
-    ?assertMatch(3, T2#pcl_timings.sample_count),
-    ?assertMatch(true, T2#pcl_timings.foundlower_time > T2#pcl_timings.found2_time),
-    ?assertMatch(1, T2#pcl_timings.found2_count),
-    ?assertMatch(1, T2#pcl_timings.found3_count),
-    ?assertMatch(1, T2#pcl_timings.foundlower_count).    
-
 
 coverage_cheat_test() ->
     {noreply, _State0} = handle_info(timeout, #state{}),
@@ -2511,10 +2407,15 @@ handle_down_test() ->
 loop() ->
     receive
         {snap, PCLr, TestPid} ->
-            {ok, Snap, null, _Timings} =
+            {ok, Snap, null} =
                 leveled_bookie:snapshot_store(
                     leveled_bookie:empty_ledgercache(),
-                    PCLr, null, ledger, undefined, false),
+                    PCLr,
+                    null, 
+                    {no_monitor, 0},
+                    ledger,
+                    undefined,
+                    false),
             TestPid ! {self(), {ok, Snap, null}},
             loop();
         stop ->

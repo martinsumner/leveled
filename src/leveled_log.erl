@@ -73,16 +73,13 @@
         {info, "Snapshot timing with sample_count=~w and bookie_time=~w pcl_time=~w"}},
     {"B0018",
         {info, "Positive HEAD responses timed with sample_count=~w and "
-                ++ " pcl_time=~w rsp_time=~w"}},
+                ++ " fetch_time=~w rsp_time=~w found_count=~w cache_count=~w"}},
     {"B0019",
         {warn, "Use of book_indexfold with constraint of Bucket ~w with "
                     ++ "no StartKey is deprecated"}},
     {"B0020",
         {warn, "Ratio of penciller cache size ~w to bookie's memory "
                     ++ "cache size ~w is larger than expected"}},
-    {"B0021",
-        {info, "Bookie fetch RequestCount=~w and CacheCount=~w and "
-                    ++ "ObjectFoundCount=~w"}},
 
     {"R0001",
         {debug, "Object fold to process batch of ~w objects"}},
@@ -241,17 +238,17 @@
                 ++ "build_summary=~w read_switch=~w"}},
     {"SST12",
         {info, "SST Timings at level=~w for sample_count=~w"
-                ++ " at timing points index_query_time=~w"
-                ++ " lookup_cache_time=~w slot_index_time=~w "
-                ++ " fetch_cache_time=~w slot_fetch_time=~w"
-                ++ " noncached_block_fetch_time=~w"
-                ++ " exiting at points slot_index=~w"
-                ++ " fetch_cache=~w slot_fetch=~w noncached_block_fetch=~w"}},
+                ++ " at timing points notfound_time=~w fetchcache_time=~w"
+                ++ " slotcached_time=~w slotnoncached_time=~w "
+                ++ " exiting at points notfound_count=~w fetchcache_count=~w"
+                ++ " slotcached_count=~w slotnoncached_count=~w"}},
     {"SST13",
         {info, "SST merge list build timings of"
                 ++ " fold_toslot=~w slot_hashlist=~w"
                 ++ " slot_serialise=~w slot_finish=~w"
                 ++ " is_basement=~w level=~w"}},
+    {"SST14",
+        {debug, "File ~s has completed BIC"}},
     
     {"I0001",
         {info, "Unexpected failure to fetch value for Key=~w SQN=~w "
@@ -372,17 +369,12 @@
                 ++ "to_list=~w sort=~w build=~w"}},
     {"CDB15",
         {info, "Collision in search for hash ~w"}},
-    {"CDB16",
-        {info, "CDB scan from start ~w in file with end ~w and last_key ~w"}},
-    {"CDB17",
-        {info, "After ~w PUTs total_write_time=~w total_sync_time=~w "
-                ++ "and max_write_time=~w and max_sync_time=~w"}},
     {"CDB18",
         {info, "Handled return and write of hashtable"}},
     {"CDB19",
         {info, "Sample timings in microseconds for sample_count=~w " 
                     ++ "with totals of cycle_count=~w "
-                    ++ "fetch_time=~w index_time=~w"}},
+                    ++ "index_time=~w read_time=~w"}},
     {"CDB20",
         {warn, "Error ~w caught when safe reading a file to length ~w"}},
     {"CDB21",

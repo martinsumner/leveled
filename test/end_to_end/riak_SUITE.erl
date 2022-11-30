@@ -627,16 +627,15 @@ fetchclocks_modifiedbetween(_Config) ->
     io:format("Comparing queries for Obj1 TS range ~w ~w~n",
                 [ObjL1StartTS, ObjL1EndTS]),
 
-    PlusFilterStart = os:timestamp(),
-    R3A_PlusFilter = lists:foldl(FoldRangesFun(Bookie1A, 
-                                    {ObjL1StartTS, ObjL1EndTS},
-                                    100000,
-                                    100000),
-                        {0, 0}, lists:seq(1, 1)),
-    PlusFilterTime = timer:now_diff(os:timestamp(), PlusFilterStart)/1000,
-    io:format("R3A_PlusFilter ~w~n", [R3A_PlusFilter]),
-    true = {20000, 20000} == R3A_PlusFilter,
-
+    PlusFilterTimes =
+        lists:map(
+            fun(_I) -> 
+                time_filtered_query(
+                    FoldRangesFun, Bookie1A, ObjL1StartTS, ObjL1EndTS)
+            end,
+            lists:seq(1, 4)),
+    PlusFilterTime = lists:sum(PlusFilterTimes) div 4,
+    
     NoFilterStart = os:timestamp(),
     {async, R3A_NoFilterRunner} = 
         leveled_bookie:book_headfold(Bookie1A,
@@ -649,7 +648,7 @@ fetchclocks_modifiedbetween(_Config) ->
                                         true,
                                         false),
     R3A_NoFilter = R3A_NoFilterRunner(),
-    NoFilterTime = timer:now_diff(os:timestamp(), NoFilterStart)/1000,
+    NoFilterTime = timer:now_diff(os:timestamp(), NoFilterStart) div 1000,
     io:format("R3A_NoFilter ~w~n", [R3A_NoFilter]),
     true = {20000, 20000} == R3A_NoFilter,
     io:format("Filtered query ~w ms and unfiltered query ~w ms~n", 
@@ -777,7 +776,18 @@ fetchclocks_modifiedbetween(_Config) ->
 
     ok = leveled_bookie:book_destroy(Bookie1A),
     ok = leveled_bookie:book_destroy(Bookie1BS).
-    
+
+time_filtered_query(FoldRangesFun, Bookie, ObjL1StartTS, ObjL1EndTS) ->
+    PlusFilterStart = os:timestamp(),
+    R3A_PlusFilter = lists:foldl(FoldRangesFun(Bookie, 
+                                    {ObjL1StartTS, ObjL1EndTS},
+                                    100000,
+                                    100000),
+                        {0, 0}, lists:seq(1, 1)),
+    PlusFilterTime = timer:now_diff(os:timestamp(), PlusFilterStart) div 1000,
+    io:format("R3A_PlusFilter ~w in ~w~n", [R3A_PlusFilter, PlusFilterTime]),
+    true = {20000, 20000} == R3A_PlusFilter,
+    PlusFilterTime.
 
 lmdrange_tester(Bookie1BS, SimpleCountFun,
                 ObjL4StartTS, ObjL6StartTS, ObjL6EndTS, TooLate) ->

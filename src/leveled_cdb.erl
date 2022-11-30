@@ -145,20 +145,12 @@
                 deferred_delete = false :: boolean(),
                 waste_path :: string() | undefined,
                 sync_strategy = none,
-                timings = no_timing :: cdb_timings(),
-                timings_countdown = 0 :: integer(),
                 log_options = leveled_log:get_opts()
                     :: leveled_log:log_options(),
-                cached_score :: {float(), erlang:timestamp()}|undefined}).
-
--record(cdb_timings, {sample_count = 0 :: integer(),
-                        sample_cyclecount = 0 :: integer(),
-                        sample_indextime = 0 :: integer(),
-                        sample_fetchtime = 0 :: integer(),
-                        fetchloop_starttime :: undefined|erlang:timestamp()}).
+                cached_score :: {float(), erlang:timestamp()}|undefined,
+                monitor = {no_monitor, 0} :: leveled_monitor:monitor()}).
 
 -type cdb_options() :: #cdb_options{}.
--type cdb_timings() :: no_timing|#cdb_timings{}.
 -type hashtable_index() :: tuple().
 -type file_location() :: integer()|eof.
 -type filter_fun() ::
@@ -479,7 +471,8 @@ init([Opts]) ->
                 binary_mode=Opts#cdb_options.binary_mode,
                 waste_path=Opts#cdb_options.waste_path,
                 sync_strategy=Opts#cdb_options.sync_strategy,
-                log_options=Opts#cdb_options.log_options}}.
+                log_options=Opts#cdb_options.log_options,
+                monitor=Opts#cdb_options.monitor}}.
 
 starting({open_writer, Filename}, _From, State) ->
     leveled_log:save(State#state.log_options),
@@ -660,26 +653,21 @@ rolling({delete_pending, ManSQN, Inker}, State) ->
         State#state{delete_point=ManSQN, inker=Inker, deferred_delete=true}}.
 
 reader({get_kv, Key}, _From, State) ->
-    {UpdTimings, Result} = 
+    Result = 
         get_withcache(State#state.handle, 
                         Key, 
                         State#state.hash_index,
                         State#state.binary_mode,
-                        State#state.timings),
-    {UpdTimings0, CountDown} = 
-        update_statetimings(UpdTimings, State#state.timings_countdown),
-    {reply, 
-        Result, 
-        reader, 
-        State#state{timings = UpdTimings0, timings_countdown = CountDown}};
+                        State#state.monitor),
+    {reply, Result, reader, State};
 reader({key_check, Key}, _From, State) ->
-    {no_timing, Result} = 
+    Result = 
         get_withcache(State#state.handle, 
                         Key, 
                         State#state.hash_index,
                         loose_presence,
                         State#state.binary_mode,
-                        no_timing),
+                        {no_monitor, 0}),
     {reply, Result, reader, State};
 reader({get_positions, SampleSize, Index, Acc}, _From, State) ->
     {Pos, Count} = element(Index + 1, State#state.hash_index),
@@ -744,27 +732,21 @@ reader({delete_pending, ManSQN, Inker}, State) ->
 
 
 delete_pending({get_kv, Key}, _From, State) ->
-    {UpdTimings, Result} = 
+    Result = 
         get_withcache(State#state.handle,
                         Key,
                         State#state.hash_index,
                         State#state.binary_mode,
-                        State#state.timings),
-    {UpdTimings0, CountDown} = 
-        update_statetimings(UpdTimings, State#state.timings_countdown),
-    {reply, 
-        Result, 
-        delete_pending, 
-        State#state{timings = UpdTimings0, timings_countdown = CountDown}, 
-        ?DELETE_TIMEOUT};
+                        State#state.monitor),
+    {reply, Result, delete_pending, State, ?DELETE_TIMEOUT};
 delete_pending({key_check, Key}, _From, State) ->
-    {no_timing, Result} = 
+    Result = 
         get_withcache(State#state.handle,
                         Key,
                         State#state.hash_index,
                         loose_presence,
                         State#state.binary_mode,
-                        no_timing),
+                        {no_monitor, 0}),
     {reply, Result, delete_pending, State, ?DELETE_TIMEOUT}.
 
 delete_pending(timeout, State=#state{delete_point=ManSQN}) when ManSQN > 0 ->
@@ -1058,36 +1040,31 @@ mput(Handle, KVList, {LastPosition, HashTree0}, BinaryMode, MaxSize) ->
     end.
 
 
--spec get_withcache(file:io_device(), 
-                        any(), 
-                        tuple(), 
-                        boolean(), 
-                        cdb_timings()) 
-                                -> {cdb_timings(), missing|probably|tuple()}.
+-spec get_withcache(
+        file:io_device(), any(), tuple(),  boolean(),
+        leveled_monitor:monitor())  -> missing|probably|tuple().
 %% @doc
 %%
 %% Using a cache of the Index array - get a K/V pair from the file using the 
 %% Key.  should return an updated timings object (if timings are being taken) 
 %% along with the result (which may be missing if the no matching entry is 
 %% found, or probably in QuickCheck scenarios)
-get_withcache(Handle, Key, Cache, BinaryMode, Timings) ->
-    get(Handle, Key, Cache, true, BinaryMode, Timings).
+get_withcache(Handle, Key, Cache, BinaryMode, Monitor) ->
+    get(Handle, Key, Cache, true, BinaryMode, Monitor).
 
-get_withcache(Handle, Key, Cache, QuickCheck, BinaryMode, Timings) ->
-    get(Handle, Key, Cache, QuickCheck, BinaryMode, Timings).
+get_withcache(Handle, Key, Cache, QuickCheck, BinaryMode, Monitor) ->
+    get(Handle, Key, Cache, QuickCheck, BinaryMode, Monitor).
 
 get(FileNameOrHandle, Key, BinaryMode) ->
-    {no_timing, R} = 
-        get(FileNameOrHandle, Key, no_cache, true, BinaryMode, no_timing),
-    R.
+    get(FileNameOrHandle, Key, no_cache, true, BinaryMode, {no_monitor, 0}).
 
 
--spec get(list()|file:io_device(), 
-            any(), no_cache|tuple(), 
-            loose_presence|any(), 
-            boolean(),
-            cdb_timings()) 
-                -> {cdb_timings(), tuple()|probably|missing}.
+-spec get(
+    list()|file:io_device(), 
+    any(), no_cache|tuple(), 
+    loose_presence|any(), 
+    boolean(),
+    leveled_monitor:monitor()) -> tuple()|probably|missing.
 %% @doc
 %%
 %% Get a K/V pair from the file using the Key.  QuickCheck can be set to 
@@ -1096,38 +1073,37 @@ get(FileNameOrHandle, Key, BinaryMode) ->
 %% that Key)
 %%
 %% Timings also passed in and can be updated based on results
-get(FileName, Key, Cache, QuickCheck, BinaryMode, Timings) 
+get(FileName, Key, Cache, QuickCheck, BinaryMode, Monitor) 
                                                     when is_list(FileName) ->
     {ok, Handle} = file:open(FileName,[binary, raw, read]),
-    get(Handle, Key, Cache, QuickCheck, BinaryMode, Timings);
-get(Handle, Key, Cache, QuickCheck, BinaryMode, Timings) 
+    get(Handle, Key, Cache, QuickCheck, BinaryMode, Monitor);
+get(Handle, Key, Cache, QuickCheck, BinaryMode, Monitor) 
                                                     when is_tuple(Handle) ->
-    SW = os:timestamp(),
-    
+    SW0 = leveled_monitor:maybe_time(Monitor),
     Hash = hash(Key),
     Index = hash_to_index(Hash),
     {HashTable, Count} = get_index(Handle, Index, Cache),
-
+    {TS0, SW1} = leveled_monitor:step_time(SW0),
     % If the count is 0 for that index - key must be missing
     case Count of
         0 ->
-            {Timings, missing};
+            missing;
         _ ->
             % Get starting slot in hashtable
             {ok, FirstHashPosition} = 
                 file:position(Handle, {bof, HashTable}),
             Slot = hash_to_slot(Hash, Count),
-            UpdTimings = update_indextimings(Timings, SW),
-            search_hash_table(Handle,
-                                {FirstHashPosition,
-                                    Slot,
-                                    1,
-                                    Count},
-                                Hash,
-                                Key,
-                                QuickCheck,
-                                BinaryMode,
-                                UpdTimings)
+            {CycleCount, Result} =
+                search_hash_table(
+                    Handle,
+                    {FirstHashPosition, Slot, 1, Count},
+                    Hash,
+                    Key,
+                    QuickCheck,
+                    BinaryMode),
+            {TS1, _SW2} = leveled_monitor:step_time(SW1),
+            maybelog_get_timing(Monitor, TS0, TS1, CycleCount),
+            Result
     end.
 
 get_index(Handle, Index, no_cache) ->
@@ -1566,10 +1542,10 @@ read_integerpairs(<<Int1:32/little-integer, Int2:32/little-integer,
 
 
 
--spec search_hash_table(file:io_device(), tuple(), integer(), any(), 
-                            loose_presence|boolean(), boolean(),  
-                            cdb_timings()) -> 
-                                {cdb_timings(), missing|probably|tuple()}.
+-spec search_hash_table(
+    file:io_device(), tuple(), integer(), any(), 
+    loose_presence|boolean(), boolean())
+        -> {pos_integer(), missing|probably|tuple()}.
 %% @doc
 %%
 %% Seach the hash table for the matching hash and key.  Be prepared for 
@@ -1580,16 +1556,15 @@ read_integerpairs(<<Int1:32/little-integer, Int2:32/little-integer,
 %% false - don't check the CRC before returning key & value
 %% loose_presence - confirm that the hash of the key is present
 search_hash_table(_Handle, 
-                    {_, _, _TotalSlots, _TotalSlots}, 
+                    {_, _, TotalSlots, TotalSlots}, 
                     _Hash, _Key,
-                    _QuickCheck, _BinaryMode, Timings) -> 
+                    _QuickCheck, _BinaryMode) -> 
     % We have done the full loop - value must not be present
-    {Timings, missing};
+    {TotalSlots, missing};
 search_hash_table(Handle, 
                     {FirstHashPosition, Slot, CycleCount, TotalSlots}, 
                     Hash, Key,
-                    QuickCheck, BinaryMode, Timings) ->
-    
+                    QuickCheck, BinaryMode) ->
     % Read the next 2 integers at current position, see if it matches the hash 
     % we're after
     Offset = 
@@ -1599,7 +1574,7 @@ search_hash_table(Handle,
     
     case read_next_2_integers(Handle) of
         {0, 0} ->
-            {Timings, missing};
+            {CycleCount, missing};
         {Hash, DataLoc} ->
             KV = 
                 case QuickCheck of
@@ -1611,91 +1586,33 @@ search_hash_table(Handle,
             case KV of
                 missing ->
                     leveled_log:log("CDB15", [Hash]),
-                    search_hash_table(Handle,
-                                        {FirstHashPosition,
-                                            Slot,
-                                            CycleCount + 1,
-                                            TotalSlots},
-                                        Hash, Key,
-                                        QuickCheck, BinaryMode,
-                                        Timings);
+                    search_hash_table(
+                        Handle,
+                        {FirstHashPosition, Slot, CycleCount + 1, TotalSlots},
+                        Hash, Key,
+                        QuickCheck, BinaryMode);
                 _ ->
-                    UpdTimings = update_fetchtimings(Timings, CycleCount),
-                    {UpdTimings, KV} 
+                    {CycleCount, KV} 
             end;
         _ ->
-            search_hash_table(Handle, 
-                                {FirstHashPosition,
-                                    Slot,
-                                    CycleCount + 1,
-                                    TotalSlots}, 
-                                Hash, Key,
-                                QuickCheck, BinaryMode,
-                                Timings)
+            search_hash_table(
+                Handle, 
+                {FirstHashPosition, Slot, CycleCount + 1, TotalSlots}, 
+                Hash, Key,
+                QuickCheck, BinaryMode)
     end.
 
 
--spec update_fetchtimings(no_timing|cdb_timings(), integer()) ->
-                                                no_timing|cdb_timings().
-%% @doc
-%%
-%% Update the timings record if sample timings currently being taken 
-%% (otherwise the timngs record will be set to no_timing)
-update_fetchtimings(no_timing, _CycleCount) ->
-    no_timing;
-update_fetchtimings(Timings, CycleCount) ->    
-    FetchTime = 
-        timer:now_diff(os:timestamp(), 
-                        Timings#cdb_timings.fetchloop_starttime),
-    Timings#cdb_timings{sample_fetchtime = 
-                            Timings#cdb_timings.sample_fetchtime + FetchTime,
-                        sample_cyclecount = 
-                            Timings#cdb_timings.sample_cyclecount + CycleCount,
-                        sample_count = 
-                            Timings#cdb_timings.sample_count + 1}.
-
--spec update_indextimings(no_timing|cdb_timings(), erlang:timestamp()) ->
-                                                no_timing|cdb_timings().
-%% @doc
-%%
-%% Update the timings record with the time spent looking up the position
-%% list to check from the index
-update_indextimings(no_timing, _SW) ->
-    no_timing;
-update_indextimings(Timings, SW) ->
-    IdxTime = timer:now_diff(os:timestamp(), SW),
-    Timings#cdb_timings{sample_indextime = 
-                            Timings#cdb_timings.sample_indextime 
-                                + IdxTime,
-                        fetchloop_starttime = 
-                            os:timestamp()}.
-
--spec update_statetimings(cdb_timings(), integer()) 
-                                            -> {cdb_timings(), integer()}.
-%% @doc
-%%
-%% The timings state is either in countdown to the next set of samples of
-%% we are actively collecting a sample.  Active collection take place 
-%% when the countdown is 0.  Once the sample has reached the expected count
-%% then there is a log of that sample, and the countdown is restarted.
-%%
-%% Outside of sample windows the timings object should be set to the atom
-%% no_timing.  no_timing is a valid state for the cdb_timings type.
-update_statetimings(no_timing, 0) ->
-    {#cdb_timings{}, 0};
-update_statetimings(Timings, 0) ->
-    case Timings#cdb_timings.sample_count of 
-        SC when SC >= ?TIMING_SAMPLESIZE ->
-            leveled_log:log("CDB19", [Timings#cdb_timings.sample_count, 
-                                        Timings#cdb_timings.sample_cyclecount,
-                                        Timings#cdb_timings.sample_fetchtime,
-                                        Timings#cdb_timings.sample_indextime]),
-            {no_timing, leveled_rand:uniform(2 * ?TIMING_SAMPLECOUNTDOWN)};
-        _SC ->
-            {Timings, 0}
-    end;
-update_statetimings(no_timing, N) ->
-    {no_timing, N - 1}.
+-spec maybelog_get_timing(
+        leveled_monitor:monitor(),
+        leveled_monitor:timing(),
+        leveled_monitor:timing(),
+        pos_integer()) -> ok.
+maybelog_get_timing(_Monitor, no_timing, no_timing, _CC) ->
+    ok;
+maybelog_get_timing({Pid, _StatsFreq}, IndexTime, ReadTime, CycleCount) ->
+    leveled_monitor:add_stat(
+        Pid, {cdb_get_update, CycleCount, IndexTime, ReadTime}).
 
 
 % Write Key and Value tuples into the CDB.  Each tuple consists of a
@@ -2307,12 +2224,13 @@ search_hash_table_findinslot_test() ->
     io:format("Slot 2 has Hash ~w Position ~w~n", [ReadH4, ReadP4]),
     ?assertMatch(0, ReadH4),
     ?assertMatch({"key1", "value1"}, get(Handle, Key1, false)),
-    ?assertMatch({no_timing, probably}, 
-                    get(Handle, Key1, 
-                        no_cache, loose_presence, false, no_timing)),
-    ?assertMatch({no_timing, missing}, 
-                    get(Handle, "Key99", 
-                        no_cache, loose_presence, false, no_timing)),
+    NoMonitor = {no_monitor, 0},
+    ?assertMatch(
+        probably, 
+        get(Handle, Key1, no_cache, loose_presence, false, NoMonitor)),
+    ?assertMatch(
+        missing, 
+        get(Handle, "Key99", no_cache, loose_presence, false, NoMonitor)),
     {ok, _} = file:position(Handle, FirstHashPosition),
     FlipH3 = endian_flip(ReadH3),
     FlipP3 = endian_flip(ReadP3),

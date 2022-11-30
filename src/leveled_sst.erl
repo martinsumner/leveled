@@ -202,6 +202,8 @@
         :: no_cache|non_neg_integer().
 -type level()
         :: non_neg_integer().
+-type summary_filter()
+        :: fun((leveled_codec:ledger_key()) -> any()).
 
 %% yield_blockquery is used to determine if the work necessary to process a
 %% range query beyond the fetching the slot should be managed from within
@@ -220,8 +222,6 @@
             blockindex_cache :: blockindex_cache()|undefined,
             compression_method = native :: press_method(),
             index_moddate = ?INDEX_MODDATE :: boolean(),
-            timings = no_timing :: sst_timings(),
-            timings_countdown = 0 :: integer(),
             starting_pid :: pid()|undefined,
             fetch_cache = no_cache :: fetch_cache(),
             new_slots :: list()|undefined,
@@ -230,22 +230,8 @@
             tomb_count = not_counted
                 :: non_neg_integer()|not_counted,
             high_modified_date :: non_neg_integer()|undefined,
-            filter_fun
-                :: fun((leveled_codec:ledger_key()) -> any()) | undefined}).
-
--record(sst_timings, 
-        {sample_count = 0 :: integer(),
-            index_query_time = 0 :: integer(),
-            lookup_cache_time = 0 :: integer(),
-            slot_index_time = 0 :: integer(),
-            fetch_cache_time = 0 :: integer(),
-            slot_fetch_time = 0 :: integer(),
-            noncached_block_time = 0 :: integer(),
-            lookup_cache_count = 0 :: integer(),
-            slot_index_count = 0 :: integer(),
-            fetch_cache_count = 0 :: integer(),
-            slot_fetch_count = 0 :: integer(),
-            noncached_block_count = 0 :: integer()}).
+            filter_fun :: summary_filter() | undefined,
+            monitor = {no_monitor, 0} :: leveled_monitor:monitor()}).
 
 -record(build_timings,
         {slot_hashlist = 0 :: integer(),
@@ -254,7 +240,6 @@
             fold_toslot = 0 :: integer()}).
 
 -type sst_state() :: #state{}.
--type sst_timings() :: no_timing|#sst_timings{}.
 -type build_timings() :: no_timing|#build_timings{}.
 
 -export_type([expandable_pointer/0, press_method/0]).
@@ -541,13 +526,6 @@ sst_switchlevels(Pid, NewLevel) ->
 sst_close(Pid) ->
     gen_fsm:sync_send_event(Pid, close).
 
--spec sst_printtimings(pid()) -> ok.
-%% @doc
-%% The state of the FSM keeps track of timings of operations, and this can
-%% forced to be printed.
-%% Used in unit tests to force the printing of timings
-sst_printtimings(Pid) ->
-    gen_fsm:sync_send_event(Pid, print_timings).
 
 
 %%%============================================================================
@@ -559,6 +537,7 @@ init([]) ->
 
 starting({sst_open, RootPath, Filename, OptsSST, Level}, _From, State) ->
     leveled_log:save(OptsSST#sst_options.log_options),
+    Monitor = OptsSST#sst_options.monitor,
     {UpdState, Bloom} = 
         read_file(Filename,
                     State#state{root_path=RootPath},
@@ -567,17 +546,19 @@ starting({sst_open, RootPath, Filename, OptsSST, Level}, _From, State) ->
     {reply,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}, Bloom},
         reader,
-        UpdState#state{level = Level, fetch_cache = new_cache(Level)}};
+        UpdState#state{
+            level = Level, fetch_cache = new_cache(Level), monitor = Monitor}};
 starting({sst_new, 
             RootPath, Filename, Level, 
             {SlotList, FirstKey}, MaxSQN,
             OptsSST, IdxModDate, CountOfTombs, StartingPID}, _From, State) ->
     SW = os:timestamp(),
     leveled_log:save(OptsSST#sst_options.log_options),
+    Monitor = OptsSST#sst_options.monitor,
     PressMethod = OptsSST#sst_options.press_method,
     {Length, SlotIndex, BlockEntries, SlotsBin, Bloom} = 
         build_all_slots(SlotList),
-    {BlockIndex, HighModDate} =
+    {_, BlockIndex, HighModDate} =
         update_blockindex_cache(true,
                                 BlockEntries,
                                 new_blockindex_cache(Length),
@@ -602,11 +583,13 @@ starting({sst_new,
     {reply,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}, Bloom},
         reader,
-        UpdState#state{blockindex_cache = BlockIndex,
-                        high_modified_date = HighModDate,
-                        starting_pid = StartingPID,
-                        level = Level,
-                        fetch_cache = new_cache(Level)}};
+        UpdState#state{
+            blockindex_cache = BlockIndex,
+            high_modified_date = HighModDate,
+            starting_pid = StartingPID,
+            level = Level,
+            fetch_cache = new_cache(Level),
+            monitor = Monitor}};
 starting({sst_newlevelzero, RootPath, Filename,
                     Penciller, MaxSQN,
                     OptsSST, IdxModDate}, _From, State) -> 
@@ -630,6 +613,7 @@ starting(complete_l0startup, State) ->
     SW0 = os:timestamp(),
     FetchedSlots = State#state.new_slots,
     leveled_log:save(OptsSST#sst_options.log_options),
+    Monitor = OptsSST#sst_options.monitor,
     PressMethod = OptsSST#sst_options.press_method,
     FetchFun = fun(Slot) -> lists:nth(Slot, FetchedSlots) end,
     KVList = leveled_pmem:to_list(length(FetchedSlots), FetchFun),
@@ -643,7 +627,7 @@ starting(complete_l0startup, State) ->
     SW2 = os:timestamp(),
     {SlotCount, SlotIndex, BlockEntries, SlotsBin,Bloom} =
         build_all_slots(SlotList),
-    {BlockIndex, HighModDate} =
+    {_, BlockIndex, HighModDate} =
         update_blockindex_cache(true,
                                 BlockEntries,
                                 new_blockindex_cache(SlotCount),
@@ -682,17 +666,20 @@ starting(complete_l0startup, State) ->
         undefined ->
             ok;
         _ ->
-            leveled_penciller:pcl_confirml0complete(Penciller,
-                                                    UpdState#state.filename,
-                                                    Summary#summary.first_key,
-                                                    Summary#summary.last_key,
-                                                    Bloom),
+            leveled_penciller:pcl_confirml0complete(
+                Penciller,
+                UpdState#state.filename,
+                Summary#summary.first_key,
+                Summary#summary.last_key,
+                Bloom),
             ok
     end,
     {next_state,
         reader,
-        UpdState#state{blockindex_cache = BlockIndex,
-                        high_modified_date = HighModDate}};
+        UpdState#state{
+            blockindex_cache = BlockIndex,
+            high_modified_date = HighModDate,
+            monitor = Monitor}};
 starting({sst_returnslot, FetchedSlot, FetchFun, SlotCount}, State) ->
     Self = self(),
     FetchedSlots = 
@@ -725,21 +712,47 @@ starting({sst_returnslot, FetchedSlot, FetchFun, SlotCount}, State) ->
 
 reader({get_sqn, LedgerKey, Hash}, _From, State) ->
     % Get a KV value and potentially take sample timings
-    {Result, UpdState, _UpdTimings} = 
-        fetch(LedgerKey, Hash, State, no_timing),
-    {reply, sqn_only(Result), reader, UpdState, ?HIBERNATE_TIMEOUT};
+    {Result, _BIC, _HMD, _FC} = 
+        fetch(
+            LedgerKey, Hash,
+            State#state.summary,
+            State#state.compression_method,
+            State#state.high_modified_date,
+            State#state.index_moddate,
+            State#state.filter_fun,
+            State#state.blockindex_cache,
+            State#state.fetch_cache,
+            State#state.handle,
+            State#state.level,
+            {no_monitor, 0}),
+    {reply, sqn_only(Result), reader, State, ?HIBERNATE_TIMEOUT};
 reader({get_kv, LedgerKey, Hash}, _From, State) ->
     % Get a KV value and potentially take sample timings
-    {Result, UpdState, UpdTimings} = 
-        fetch(LedgerKey, Hash, State, State#state.timings),
-
-    {UpdTimings0, CountDown} = 
-        update_statetimings(UpdTimings,
-                            State#state.timings_countdown,
-                            State#state.level),
-    
-    {reply, Result, reader, UpdState#state{timings = UpdTimings0,
-                                            timings_countdown = CountDown}};
+    {Result, BIC, HMD, FC} = 
+        fetch(
+            LedgerKey, Hash,
+            State#state.summary,
+            State#state.compression_method,
+            State#state.high_modified_date,
+            State#state.index_moddate,
+            State#state.filter_fun,
+            State#state.blockindex_cache,
+            State#state.fetch_cache,
+            State#state.handle,
+            State#state.level,
+            State#state.monitor),
+    case {BIC, HMD, FC} of
+        {no_update, no_update, no_update} ->
+            {reply, Result, reader, State};
+        {no_update, no_update, FC} ->
+            {reply, Result, reader, State#state{fetch_cache = FC}};
+        {BIC, HMD, no_update} ->
+            {reply,
+                Result,
+                reader,
+                State#state{
+                    blockindex_cache = BIC, high_modified_date = HMD}}
+    end;
 reader({get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
                                                             _From, State) ->
     ReadNeeded =
@@ -774,17 +787,23 @@ reader({get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
                                     PressMethod,
                                     IdxModDate,
                                     SegList),
-            {BlockIdxC0, HighModDate} =
+            {UpdateCache, BlockIdxC0, HighModDate} =
                 update_blockindex_cache(NeedBlockIdx,
                                         FoundBIC,
                                         State#state.blockindex_cache,
                                         State#state.high_modified_date,
                                         State#state.index_moddate),
-            {reply, 
-                L ++ SlotsToPoint, 
-                reader, 
-                State#state{blockindex_cache = BlockIdxC0,
-                            high_modified_date = HighModDate}}
+            case UpdateCache of
+                true ->
+                    {reply, 
+                        L ++ SlotsToPoint, 
+                        reader, 
+                        State#state{
+                            blockindex_cache = BlockIdxC0,
+                            high_modified_date = HighModDate}};
+                false ->
+                    {reply, L ++ SlotsToPoint, reader, State}
+            end
     end;
 reader({get_slots, SlotList, SegList, LowLastMod}, _From, State) ->
     PressMethod = State#state.compression_method,
@@ -804,9 +823,6 @@ reader({get_slots, SlotList, SegList, LowLastMod}, _From, State) ->
 reader(get_maxsequencenumber, _From, State) ->
     Summary = State#state.summary,
     {reply, Summary#summary.max_sqn, reader, State};
-reader(print_timings, _From, State) ->
-    log_timings(State#state.timings, State#state.level),
-    {reply, ok, reader, State};
 reader({set_for_delete, Penciller}, _From, State) ->
     leveled_log:log("SST06", [State#state.filename]),
     {reply,
@@ -851,12 +867,35 @@ reader({switch_levels, NewLevel}, State) ->
 
 delete_pending({get_sqn, LedgerKey, Hash}, _From, State) ->
     % Get a KV value and potentially take sample timings
-    {Result, UpdState, _UpdTimings} = 
-        fetch(LedgerKey, Hash, State, no_timing),
-    {reply, sqn_only(Result), delete_pending, UpdState, ?DELETE_TIMEOUT};
+    {Result, _BIC, _HMD, _FC} = 
+        fetch(
+            LedgerKey, Hash,
+            State#state.summary,
+            State#state.compression_method,
+            State#state.high_modified_date,
+            State#state.index_moddate,
+            State#state.filter_fun,
+            State#state.blockindex_cache,
+            State#state.fetch_cache,
+            State#state.handle,
+            State#state.level,
+            {no_monitor, 0}),
+    {reply, sqn_only(Result), delete_pending, State, ?DELETE_TIMEOUT};
 delete_pending({get_kv, LedgerKey, Hash}, _From, State) ->
-    {Result, UpdState, _Ts} = fetch(LedgerKey, Hash, State, no_timing),
-    {reply, Result, delete_pending, UpdState, ?DELETE_TIMEOUT};
+    {Result, _BIC, _HMD, _FC} = 
+        fetch(
+            LedgerKey, Hash,
+            State#state.summary,
+            State#state.compression_method,
+            State#state.high_modified_date,
+            State#state.index_moddate,
+            State#state.filter_fun,
+            State#state.blockindex_cache,
+            State#state.fetch_cache,
+            State#state.handle,
+            State#state.level,
+            {no_monitor, 0}),
+    {reply, Result, delete_pending, State, ?DELETE_TIMEOUT};
 delete_pending({get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
                                                             _From, State) ->
     {_NeedBlockIdx, SlotsToFetchBinList, SlotsToPoint} =
@@ -912,7 +951,7 @@ handle_sync_event(_Msg, _From, StateName, State) ->
     {reply, undefined, StateName, State}.
 
 handle_event({update_blockindex_cache, BIC}, StateName, State) ->
-    {BlockIndexCache, HighModDate} =
+    {_, BlockIndexCache, HighModDate} =
         update_blockindex_cache(true,
                                 BIC,
                                 State#state.blockindex_cache,
@@ -931,6 +970,7 @@ handle_info(bic_complete, StateName, State) ->
     % The block index cache is complete, so the memory footprint should be
     % relatively stable from this point.  Hibernate to help minimise
     % fragmentation
+    leveled_log:log("SST14", [State#state.filename]),
     {next_state, StateName, State, hibernate};
 handle_info(start_complete, StateName, State) ->
     % The SST file will be started by a clerk, but the clerk may be shut down
@@ -1279,11 +1319,12 @@ updatebic_foldfun(HMDRequired) ->
 -spec update_blockindex_cache(
         boolean(), list({integer(), binary()}),
         blockindex_cache(), non_neg_integer()|undefined,
-        boolean()) -> {blockindex_cache(), non_neg_integer()|undefined}.
+        boolean()) -> 
+            {boolean(), blockindex_cache(), non_neg_integer()|undefined}.
 update_blockindex_cache(true, Entries, BIC, HighModDate, IdxModDate) ->
     case {element(1, BIC), array:size(element(2, BIC))} of
         {N, N} ->
-            {BIC, HighModDate};
+            {false, BIC, HighModDate};
         {N, S} when N < S ->
             FoldFun =
                 case {HighModDate, IdxModDate} of
@@ -1295,16 +1336,16 @@ update_blockindex_cache(true, Entries, BIC, HighModDate, IdxModDate) ->
             BIC0 = lists:foldl(FoldFun, BIC, Entries),
             case {element(1, BIC0), IdxModDate} of
                 {N, _} ->
-                    {BIC, HighModDate};
+                    {false, BIC, HighModDate};
                 {S, true} ->
                     erlang:send(self(), bic_complete),
-                    {BIC0, element(3, BIC0)};
+                    {true, BIC0, element(3, BIC0)};
                 _ ->
-                    {BIC0, undefined}
+                    {true, BIC0, undefined}
             end
     end;
 update_blockindex_cache(_Needed, _Entries, BIC, HighModDate, _IdxModDate) ->
-    {BIC, HighModDate}.
+    {false, BIC, HighModDate}.
 
 -spec check_modified(non_neg_integer()|undefined,
                         non_neg_integer(),
@@ -1315,89 +1356,97 @@ check_modified(HighLastModifiedInSST, LowModDate, true)
 check_modified(_, _, _) ->
     true.
 
--spec fetch(tuple(), 
-            {integer(), integer()}|integer(), 
-            sst_state(), sst_timings()) 
-                        -> {not_present|tuple(), sst_state(), sst_timings()}.
+-spec fetch(
+    leveled_codec:ledger_key(), 
+    leveled_codec:segment_hash(),
+    sst_summary(),
+    press_method(),
+    non_neg_integer()|undefined,
+    boolean(),
+    summary_filter(),
+    blockindex_cache(),
+    fetch_cache(),
+    file:fd(),
+    leveled_pmanifest:lsm_level(),
+    leveled_monitor:monitor()) 
+        -> {not_present|leveled_codec:ledger_kv(),
+            blockindex_cache()|no_update,
+            non_neg_integer()|undefined|no_update,
+            fetch_cache()|no_update}.
 %% @doc
 %%
 %% Fetch a key from the store, potentially taking timings.  Result should be
 %% not_present if the key is not in the store.
-fetch(LedgerKey, Hash, State, Timings0) ->
-    SW0 = os:timestamp(),
-
-    Summary = State#state.summary,
-    PressMethod = State#state.compression_method,
-    IdxModDate = State#state.index_moddate,
+fetch(LedgerKey, Hash,
+        Summary,
+        PressMethod, HighModDate, IndexModDate, FilterFun, BIC, FetchCache,
+        Handle, Level, Monitor) ->
+    SW0 = leveled_monitor:maybe_time(Monitor),
     Slot =
-        lookup_slot(
-            LedgerKey, Summary#summary.index, State#state.filter_fun),
-    
-    {SW1, Timings1} = update_timings(SW0, Timings0, index_query, true),
-    
+        lookup_slot(LedgerKey, Summary#summary.index, FilterFun),
     SlotID = Slot#slot_index_value.slot_id,
-    CachedBlockIdx = 
-        array:get(SlotID - 1, element(2, State#state.blockindex_cache)),
-    {SW2, Timings2} = update_timings(SW1, Timings1, lookup_cache, true),
-
-    case extract_header(CachedBlockIdx, IdxModDate) of 
+    CachedBlockIdx = array:get(SlotID - 1, element(2, BIC)),
+    
+    case extract_header(CachedBlockIdx, IndexModDate) of 
         none ->
-            SlotBin = read_slot(State#state.handle, Slot),
+            SlotBin = read_slot(Handle, Slot),
             {Result, Header} = 
-                binaryslot_get(SlotBin, LedgerKey, Hash, PressMethod, IdxModDate),
-            {BlockIndexCache, HighModDate} =
+                binaryslot_get(
+                    SlotBin, LedgerKey, Hash, PressMethod, IndexModDate),
+            {_UpdateState, BIC0, HMD0} =
                 update_blockindex_cache(true,
                                         [{SlotID, Header}],
-                                        State#state.blockindex_cache,
-                                        State#state.high_modified_date,
-                                        State#state.index_moddate),
-            {_SW3, Timings3} = 
-                update_timings(SW2, Timings2, noncached_block, false),
-            {Result, 
-                State#state{blockindex_cache = BlockIndexCache,
-                            high_modified_date = HighModDate}, 
-                Timings3};
+                                        BIC,
+                                        HighModDate,
+                                        IndexModDate),
+            case Result of
+                not_present ->
+                    maybelog_fetch_timing(
+                        Monitor, Level, not_found, SW0);
+                _ ->
+                    maybelog_fetch_timing(
+                        Monitor, Level, slot_noncachedblock, SW0)
+            end,
+            {Result, BIC0, HMD0, no_update};
         {BlockLengths, _LMD, PosBin} ->
             PosList = find_pos(PosBin, extract_hash(Hash), [], 0),
             case PosList of 
                 [] ->
-                    {_SW3, Timings3} =
-                        update_timings(SW2, Timings2, slot_index, false),
-                    {not_present, State, Timings3};
+                    maybelog_fetch_timing(Monitor, Level, not_found, SW0),
+                    {not_present, no_update, no_update, no_update};
                 _ ->
-                    {SW3, Timings3} =
-                        update_timings(SW2, Timings2, slot_index, true),
-                    FetchCache = State#state.fetch_cache,
-                    CacheHash = cache_hash(Hash, State#state.level),
+                    CacheHash = cache_hash(Hash, Level),
                     case fetch_from_cache(CacheHash, FetchCache) of 
                         {LedgerKey, V} ->
-                            {_SW4, Timings4} = 
-                                update_timings(SW3, 
-                                                Timings3, 
-                                                fetch_cache, 
-                                                false),
-                            {{LedgerKey, V}, State, Timings4};
+                            maybelog_fetch_timing(
+                                Monitor, Level, fetch_cache, SW0),
+                            {{LedgerKey, V}, no_update, no_update, no_update};
                         _ ->
                             StartPos = Slot#slot_index_value.start_position,
                             Result = 
                                 check_blocks(PosList,
-                                                {State#state.handle, StartPos},
+                                                {Handle, StartPos},
                                                 BlockLengths,
                                                 byte_size(PosBin),
                                                 LedgerKey, 
                                                 PressMethod,
-                                                IdxModDate,
+                                                IndexModDate,
                                                 not_present),
-                            FetchCache0 =
-                                add_to_cache(CacheHash, Result, FetchCache),
-                            {_SW4, Timings4} = 
-                                update_timings(SW3, 
-                                                Timings3, 
-                                                slot_fetch, 
-                                                false),
-                            {Result, 
-                                State#state{fetch_cache = FetchCache0}, 
-                                Timings4}
+                            case Result of
+                                not_present ->
+                                    maybelog_fetch_timing(
+                                        Monitor, Level, not_found, SW0),
+                                    {not_present,
+                                        no_update, no_update, no_update};
+                                _ ->
+                                    FetchCache0 =
+                                        add_to_cache(
+                                            CacheHash, Result, FetchCache),
+                                    maybelog_fetch_timing(
+                                        Monitor, Level, slot_cachedblock, SW0),
+                                    {Result,
+                                        no_update, no_update, FetchCache0}  
+                            end
                     end
             end 
     end.
@@ -3019,99 +3068,16 @@ log_buildtimings(Timings, LI) ->
                                 element(1, LI),
                                 element(2, LI)]).
 
-
--spec update_statetimings(sst_timings(), integer(), non_neg_integer()) 
-                                            -> {sst_timings(), integer()}.
-%% @doc
-%%
-%% The timings state is either in countdown to the next set of samples of
-%% we are actively collecting a sample.  Active collection take place 
-%% when the countdown is 0.  Once the sample has reached the expected count
-%% then there is a log of that sample, and the countdown is restarted.
-%%
-%% Outside of sample windows the timings object should be set to the atom
-%% no_timing.  no_timing is a valid state for the cdb_timings type.
-update_statetimings(no_timing, 0, _Level) ->
-    {#sst_timings{}, 0};
-update_statetimings(Timings, 0, Level) ->
-    case Timings#sst_timings.sample_count of 
-        SC when SC >= ?TIMING_SAMPLESIZE ->
-            log_timings(Timings, Level),
-                % If file at lower level wait longer before tsking another
-                % sample
-            {no_timing,
-                leveled_rand:uniform(2 * ?TIMING_SAMPLECOUNTDOWN)};
-        _SC ->
-            {Timings, 0}
-    end;
-update_statetimings(no_timing, N, _Level) ->
-    {no_timing, N - 1}.
-
-log_timings(no_timing, _Level) ->
+-spec maybelog_fetch_timing(
+        leveled_monitor:monitor(),
+        leveled_pmanifest:lsm_level(),
+        leveled_monitor:sst_fetch_type(),
+        erlang:timestamp()|no_timing) -> ok.
+maybelog_fetch_timing(_Monitor, _Level, _Type, no_timing) ->
     ok;
-log_timings(Timings, Level) ->
-    leveled_log:log("SST12", [Level,
-                                Timings#sst_timings.sample_count, 
-                                Timings#sst_timings.index_query_time,
-                                Timings#sst_timings.lookup_cache_time,
-                                Timings#sst_timings.slot_index_time,
-                                Timings#sst_timings.fetch_cache_time,
-                                Timings#sst_timings.slot_fetch_time,
-                                Timings#sst_timings.noncached_block_time,
-                                Timings#sst_timings.slot_index_count,
-                                Timings#sst_timings.fetch_cache_count,
-                                Timings#sst_timings.slot_fetch_count,
-                                Timings#sst_timings.noncached_block_count]).
-
-
-update_timings(_SW, no_timing, _Stage, _Continue) ->
-    {no_timing, no_timing};
-update_timings(SW, Timings, Stage, Continue) ->
-    Timer = timer:now_diff(os:timestamp(), SW),
-    Timings0 = 
-        case Stage of 
-            index_query ->
-                IQT = Timings#sst_timings.index_query_time,
-                Timings#sst_timings{index_query_time = IQT + Timer};
-            lookup_cache ->
-                TBT = Timings#sst_timings.lookup_cache_time,
-                Timings#sst_timings{lookup_cache_time = TBT + Timer};
-            slot_index ->
-                SIT = Timings#sst_timings.slot_index_time,
-                Timings#sst_timings{slot_index_time = SIT + Timer};
-            fetch_cache ->
-                FCT = Timings#sst_timings.fetch_cache_time,
-                Timings#sst_timings{fetch_cache_time = FCT + Timer};
-            slot_fetch ->
-                SFT = Timings#sst_timings.slot_fetch_time,
-                Timings#sst_timings{slot_fetch_time = SFT + Timer};
-            noncached_block ->
-                NCT = Timings#sst_timings.noncached_block_time,
-                Timings#sst_timings{noncached_block_time = NCT + Timer}
-        end,
-    case Continue of 
-        true ->
-            {os:timestamp(), Timings0};
-        false ->
-            Timings1 = 
-                case Stage of 
-                    slot_index ->
-                        SIC = Timings#sst_timings.slot_index_count,
-                        Timings0#sst_timings{slot_index_count = SIC + 1};
-                    fetch_cache ->
-                        FCC = Timings#sst_timings.fetch_cache_count,
-                        Timings0#sst_timings{fetch_cache_count = FCC + 1};
-                    slot_fetch ->
-                        SFC = Timings#sst_timings.slot_fetch_count,
-                        Timings0#sst_timings{slot_fetch_count = SFC + 1};
-                    noncached_block ->
-                        NCC = Timings#sst_timings.noncached_block_count,
-                        Timings0#sst_timings{noncached_block_count = NCC + 1}
-                end,
-            SC = Timings1#sst_timings.sample_count,
-            {no_timing, Timings1#sst_timings{sample_count = SC + 1}}
-    end.
-
+maybelog_fetch_timing({Pid, _SlotFreq}, Level, Type, SW) ->
+    {TS1, _} = leveled_monitor:step_time(SW),
+    leveled_monitor:add_stat(Pid, {sst_fetch_update, Level, Type, TS1}).
 
 %%%============================================================================
 %%% Test
@@ -4003,7 +3969,6 @@ simple_persisted_tester(SSTNewFun) ->
                 "Checking for ~w keys (twice) in file with cache hit took ~w "
                     ++ "microseconds~n",
                 [length(KVList1), timer:now_diff(os:timestamp(), SW1)]),
-    ok = sst_printtimings(Pid),
     KVList2 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 32, 1, 20),
     MapFun =
         fun({K, V}, Acc) ->
@@ -4025,7 +3990,6 @@ simple_persisted_tester(SSTNewFun) ->
     io:format(user,
                 "Checking for ~w missing keys took ~w microseconds~n",
                 [length(KVList3), timer:now_diff(os:timestamp(), SW2)]),
-    ok = sst_printtimings(Pid),
     FetchList1 = sst_getkvrange(Pid, all, all, 2),
     FoldFun = fun(X, Acc) ->
                     case X of
@@ -4223,19 +4187,6 @@ check_segment_match(PosBinIndex1, KVL, TreeSize) ->
         end,
     lists:foreach(CheckFun, KVL).
 
-timings_test() ->
-    SW = os:timestamp(),
-    timer:sleep(1),
-    {no_timing, T1} = update_timings(SW, #sst_timings{}, slot_index, false),
-    {no_timing, T2} = update_timings(SW, T1, slot_fetch, false),
-    {no_timing, T3} = update_timings(SW, T2, noncached_block, false),
-    timer:sleep(1),
-    {_, T4} = update_timings(SW, T3, slot_fetch, true),
-    ?assertMatch(3, T4#sst_timings.sample_count),
-    ?assertMatch(1, T4#sst_timings.slot_fetch_count),
-    ?assertMatch(true, T4#sst_timings.slot_fetch_time > 
-                            T3#sst_timings.slot_fetch_time).
-
 take_max_lastmoddate_test() ->
     % TODO: Remove this test
     % Temporarily added to make dialyzer happy (until we've made use of last
@@ -4390,20 +4341,20 @@ block_index_cache_test() ->
     HeaderTS = <<0:160/integer, Now:32/integer, 0:32/integer>>,
     HeaderNoTS = <<0:192>>,
     BIC = new_blockindex_cache(8),
-    {BIC0, undefined} =
+    {_, BIC0, undefined} =
         update_blockindex_cache(false, EntriesNoTS, BIC, undefined, false),
-    {BIC1, undefined} =
+    {_, BIC1, undefined} =
         update_blockindex_cache(false, EntriesTS, BIC, undefined, true),
-    {BIC2, undefined} =
+    {_, BIC2, undefined} =
         update_blockindex_cache(true, EntriesNoTS, BIC, undefined, false),
     {ETSP1, ETSP2} = lists:split(6, EntriesTS),
-    {BIC3, undefined} =
+    {_, BIC3, undefined} =
         update_blockindex_cache(true, ETSP1, BIC, undefined, true),
-    {BIC3, undefined} =
+    {_, BIC3, undefined} =
         update_blockindex_cache(true, ETSP1, BIC3, undefined, true),
-    {BIC4, LMD4} =
+    {_, BIC4, LMD4} =
         update_blockindex_cache(true, ETSP2, BIC3, undefined, true),
-    {BIC4, LMD4} =
+    {_, BIC4, LMD4} =
         update_blockindex_cache(true, ETSP2, BIC4, LMD4, true),
     
     ?assertMatch(none, array:get(0, element(2, BIC0))),
