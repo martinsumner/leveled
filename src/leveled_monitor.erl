@@ -20,7 +20,6 @@
     code_change/3]).
 
 -export([
-    monitor_start/0,
     monitor_start/2,
     add_stat/2,
     report_stats/2,
@@ -29,12 +28,12 @@
     step_time/1,
     log_level/2,
     log_add/2,
-    log_remove/2]).
+    log_remove/2,
+    get_defaults/0]).
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(
-    LOG_ORDER,
+-define(LOG_LIST,
     [bookie_get, bookie_put, bookie_head, bookie_snap,
         pcl_fetch, sst_fetch, cdb_get]).
 -define(LOG_FREQUENCY_SECONDS, 30).
@@ -107,7 +106,7 @@
     sst_fetch_timings = [] :: list(sst_fetch_timings()),
     cdb_get_timings = #cdb_get_timings{} :: cdb_get_timings(),
     log_frequency = ?LOG_FREQUENCY_SECONDS :: pos_integer(),
-    log_order = [] :: list(log_types())}).      
+    log_order = [] :: list(log_type())}).      
 
 
 -type bookie_get_timings() :: #bookie_get_timings{}.
@@ -118,7 +117,7 @@
 -type cdb_get_timings() :: #cdb_get_timings{}.
 -type sst_fetch_timings() ::
     {leveled_pmanifest:lsm_level(), #sst_fetch_timings{}}.
--type log_types() ::
+-type log_type() ::
     bookie_head|bookie_get|bookie_put|bookie_snap|pcl_fetch|sst_fetch|cdb_get.
 -type pcl_level() :: mem|leveled_pmanifest:lsm_level().
 -type sst_fetch_type() ::
@@ -149,17 +148,13 @@
         bookie_snap_update()|
         pcl_fetch_update()|sst_fetch_update()|cdb_get_update().
 
--export_type([monitor/0, timing/0, sst_fetch_type/0]).
+-export_type([monitor/0, timing/0, sst_fetch_type/0, log_type/0]).
 
 %%%============================================================================
 %%% API
 %%%============================================================================
 
--spec monitor_start() -> {ok, pid()}.
-monitor_start() ->
-    monitor_start(?LOG_FREQUENCY_SECONDS, ?LOG_ORDER).
-
--spec monitor_start(pos_integer(), list(log_types())) -> {ok, pid()}.
+-spec monitor_start(pos_integer(), list(log_type())) -> {ok, pid()}.
 monitor_start(LogFreq, LogOrder) ->
     gen_server:start_link(
         ?MODULE, [leveled_log:get_opts(), LogFreq, LogOrder], []).
@@ -168,7 +163,7 @@ monitor_start(LogFreq, LogOrder) ->
 add_stat(Watcher, Statistic) ->
     gen_server:cast(Watcher, Statistic).
 
--spec report_stats(pid(), log_types()) -> ok.
+-spec report_stats(pid(), log_type()) -> ok.
 report_stats(Watcher, StatsType) ->
     gen_server:cast(Watcher, {report_stats, StatsType}).
 
@@ -208,6 +203,9 @@ step_time(TS) ->
     Now = os:timestamp(),
     {timer:now_diff(Now, TS), Now}.
 
+-spec get_defaults() -> {pos_integer(), list(log_type())}.
+get_defaults() ->
+    {?LOG_FREQUENCY_SECONDS, ?LOG_LIST}.
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -539,6 +537,8 @@ coverage_cheat_test() ->
     {ok, M} = monitor_start(1, []),
     timer:sleep(2000),
     {ok, _State1} = code_change(null, #state{}, null),
+    ok = add_stat(M, {pcl_fetch_update, 4, 100}),
+    ok = report_stats(M, pcl_fetch),
     % Can close, so empty log_order hasn't crashed
     ok = monitor_close(M).
 

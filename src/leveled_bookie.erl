@@ -158,7 +158,11 @@
                 {override_functions, []},
                 {snapshot_timeout_short, ?SNAPTIMEOUT_SHORT},
                 {snapshot_timeout_long, ?SNAPTIMEOUT_LONG},
-                {stats_frequency, ?DEFAULT_STATS_PERC}]).
+                {stats_percentage, ?DEFAULT_STATS_PERC},
+                {monitor_log_frequency,
+                    element(1, leveled_monitor:get_defaults())},
+                {monitor_log_list,
+                    element(2, leveled_monitor:get_defaults())}]).
 
 -record(ledger_cache, {mem :: ets:tab(),
                         loader = leveled_tree:empty(?CACHE_TYPE)
@@ -359,9 +363,15 @@
             % assumed to have failed, and so requires to be torndown.  The
             % short timeout is applied to queries where long_running is set to
             % true
-        {stats_frequency, 0..100}
+        {stats_percentage, 0..100} |
             % Probability that stats will be collected for an individual
-            % request
+            % request.
+        {monitor_log_frequency, pos_integer()} |
+            % Time in seconds before logging the next timing log. This covers
+            % the logs associated with the timing of GET/PUTs in various parts
+            % of the system.  There are 7 such logs - so setting to 30s will
+            % mean that each inidividual log will occur every 210s
+        {monitor_log_list, list(leveled_monitor:log_type())}
         ].
 
 -type initial_loadfun() ::
@@ -1168,8 +1178,12 @@ init([Opts]) ->
             DatabaseID = proplists:get_value(database_id, Opts),
             leveled_log:set_databaseid(DatabaseID),
 
-            {ok, Monitor} = leveled_monitor:monitor_start(),
-            StatLogFrequency = proplists:get_value(stats_frequency, Opts),
+            {ok, Monitor} =
+                leveled_monitor:monitor_start(
+                    proplists:get_value(monitor_log_frequency, Opts),
+                    proplists:get_value(monitor_log_list, Opts)
+                ),
+            StatLogFrequency = proplists:get_value(stats_percentage, Opts),
 
             {InkerOpts, PencillerOpts} =
                 set_options(Opts, {Monitor, StatLogFrequency}),

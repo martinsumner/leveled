@@ -43,7 +43,9 @@ basic_riak_tester(Bucket, KeyCount) ->
                     {max_journalsize, 500000000},
                     {max_pencillercachesize, 24000},
                     {sync_strategy, testutil:sync_strategy()},
-                    {database_id, 32}],
+                    {database_id, 32},
+                    {monitor_log_frequency, 5},
+                    {stats_probability, 80}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
 
     IndexGenFun =
