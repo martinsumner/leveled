@@ -106,8 +106,7 @@
     sst_fetch_timings = [] :: list(sst_fetch_timings()),
     cdb_get_timings = #cdb_get_timings{} :: cdb_get_timings(),
     log_frequency = ?LOG_FREQUENCY_SECONDS :: pos_integer(),
-    log_order = [] :: list(log_type()),
-    closer = false :: false|gen_server:from()}).      
+    log_order = [] :: list(log_type())}).      
 
 
 -type bookie_get_timings() :: #bookie_get_timings{}.
@@ -227,9 +226,8 @@ init([LogOpts, LogFrequency, LogOrder]) ->
     erlang:send_after(InitialJitter, self(), report_next_stats),
     {ok, #state{log_frequency = LogFrequency, log_order = RandomLogOrder}}.
 
-handle_call(close, From, State) ->
-    gen_server:cast(self(), close),
-    {noreply, State#state{closer = From}}.
+handle_call(close, _From, State) ->
+    {stop, normal, ok, State}.
 
 handle_cast({bookie_head_update, FetchTime, RspTime, CacheHit}, State) ->
     Timings = State#state.bookie_head_timings,
@@ -509,12 +507,9 @@ handle_cast({log_add, ForcedLogs}, State) ->
     {noreply, State};
 handle_cast({log_remove, ForcedLogs}, State) ->
     ok = leveled_log:remove_forcedlogs(ForcedLogs),
-    {noreply, State};
-handle_cast(close, State) ->
-    gen_server:reply(State#state.closer, ok),
-    {stop, normal, State}.
+    {noreply, State}.
 
-handle_info(report_next_stats, State=#state{closer = C}) when C == false ->
+handle_info(report_next_stats, State) ->
     erlang:send_after(
         State#state.log_frequency * 1000, self(), report_next_stats),
     case State#state.log_order of
@@ -523,9 +518,7 @@ handle_info(report_next_stats, State=#state{closer = C}) when C == false ->
         [NextStat|TailLogOrder] ->
             ok = report_stats(self(), NextStat),
             {noreply, State#state{log_order = TailLogOrder ++ [NextStat]}}
-    end;
-handle_info(_Msg, State) ->
-    {noreply, State}.
+    end.
 
 terminate(_Reason, _State) ->
     ok.
@@ -546,7 +539,6 @@ coverage_cheat_test() ->
     {ok, _State1} = code_change(null, #state{}, null),
     ok = add_stat(M, {pcl_fetch_update, 4, 100}),
     ok = report_stats(M, pcl_fetch),
-    M ! timeout,
     % Can close, so empty log_order hasn't crashed
     ok = monitor_close(M).
 
