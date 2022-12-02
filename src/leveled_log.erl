@@ -418,6 +418,7 @@ is_active_level([L|_], L, _) -> true;
 is_active_level([L|_], _, L) -> false;
 is_active_level([_|T], C, L) -> is_active_level(T, C, L).
 
+-spec log_timer(atom(), list(), erlang:timestamp()) -> ok.
 log_timer(LogReference, Subs, StartTime) ->
     log_timer(LogReference, Subs, StartTime, ?LOG_LEVELS).
 
@@ -439,6 +440,7 @@ log_timer(LogRef, Subs, StartTime, SupportedLevels) ->
             ok
     end.
 
+-spec log_randomtimer(atom(), list(), erlang:timestamp(), float()) -> ok.
 log_randomtimer(LogReference, Subs, StartTime, RandomProb) ->
     R = leveled_rand:uniform(),
     case R < RandomProb of
@@ -461,11 +463,17 @@ log_prefix({{Y, M, D}, {H, Mi, S, Ms}}, LogLevel, LogRef, DBid, Pid) ->
     " log_level=", atom_to_list(LogLevel), " log_ref=", atom_to_list(LogRef),
     " db_id=", integer_to_list(DBid), " pid=", pid_to_list(Pid), " "].
 
-i2l(I) when I < 10  -> [$0, $0+I];
-i2l(I)              -> integer_to_list(I).
+-spec i2l(non_neg_integer()) -> list().
+i2l(I) when I < 10 ->
+    [$0, $0+I];
+i2l(I) ->
+    integer_to_list(I).
 
-i3l(I) when I < 100 -> [$0 | i2l(I)];
-i3l(I)              -> integer_to_list(I).
+-spec i3l(non_neg_integer()) -> list().
+i3l(I) when I < 100 ->
+    [$0 | i2l(I)];
+i3l(I) ->
+    integer_to_list(I).
 
 -spec duration_text(erlang:timestamp()) -> io_lib:chars().
 duration_text(StartTime) ->
