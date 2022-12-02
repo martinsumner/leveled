@@ -476,10 +476,10 @@ init([Opts]) ->
 
 starting({open_writer, Filename}, _From, State) ->
     leveled_log:save(State#state.log_options),
-    leveled_log:log("CDB01", [Filename]),
+    leveled_log:log(cdb01, [Filename]),
     {LastPosition, HashTree, LastKey} = open_active_file(Filename),
     {WriteOps, UpdStrategy} = set_writeops(State#state.sync_strategy),
-    leveled_log:log("CDB13", [WriteOps]),
+    leveled_log:log(cdb13, [WriteOps]),
     {ok, Handle} = file:open(Filename, WriteOps),
     State0 = State#state{handle=Handle,
                             current_count = size_hashtree(HashTree),
@@ -491,7 +491,7 @@ starting({open_writer, Filename}, _From, State) ->
     {reply, ok, writer, State0, hibernate};
 starting({open_reader, Filename}, _From, State) ->
     leveled_log:save(State#state.log_options),
-    leveled_log:log("CDB02", [Filename]),
+    leveled_log:log(cdb02, [Filename]),
     {Handle, Index, LastKey} = open_for_readonly(Filename, false),
     State0 = State#state{handle=Handle,
                             last_key=LastKey,
@@ -500,7 +500,7 @@ starting({open_reader, Filename}, _From, State) ->
     {reply, ok, reader, State0, hibernate};
 starting({open_reader, Filename, LastKey}, _From, State) ->
     leveled_log:save(State#state.log_options),
-    leveled_log:log("CDB02", [Filename]),
+    leveled_log:log(cdb02, [Filename]),
     {Handle, Index, LastKey} = open_for_readonly(Filename, LastKey),
     State0 = State#state{handle=Handle,
                             last_key=LastKey,
@@ -629,7 +629,7 @@ rolling({return_hashtable, IndexList, HashTreeBin}, _From, State) ->
     ok = write_top_index_table(Handle, BasePos, IndexList),
     file:close(Handle),
     ok = rename_for_read(State#state.filename, NewName),
-    leveled_log:log("CDB03", [NewName]),
+    leveled_log:log(cdb03, [NewName]),
     ets:delete(State#state.hashtree),
     {NewHandle, Index, LastKey} = open_for_readonly(NewName,
                                                     State#state.last_key),
@@ -641,7 +641,7 @@ rolling({return_hashtable, IndexList, HashTreeBin}, _From, State) ->
         true ->
             {reply, ok, delete_pending, State0};
         false ->
-            leveled_log:log_timer("CDB18", [], SW),
+            leveled_log:log_timer(cdb18, [], SW),
             {reply, ok, reader, State0, hibernate}
     end;
 rolling(check_hashtable, _From, State) ->
@@ -713,7 +713,7 @@ reader({direct_fetch, PositionList, Info}, From, State) ->
             {next_state, reader, State}
     end;
 reader(cdb_complete, _From, State) ->
-    leveled_log:log("CDB05", [State#state.filename, reader, cdb_ccomplete]),
+    leveled_log:log(cdb05, [State#state.filename, reader, cdb_ccomplete]),
     ok = file:close(State#state.handle),
     {stop, normal, {ok, State#state.filename}, State#state{handle=undefined}};
 reader(check_hashtable, _From, State) ->
@@ -758,20 +758,20 @@ delete_pending(timeout, State=#state{delete_point=ManSQN}) when ManSQN > 0 ->
                                                 self()),
             {next_state, delete_pending, State, ?DELETE_TIMEOUT};
         false ->
-            leveled_log:log("CDB04", [State#state.filename, ManSQN]),
+            leveled_log:log(cdb04, [State#state.filename, ManSQN]),
             close_pendingdelete(State#state.handle, 
                                 State#state.filename, 
                                 State#state.waste_path),
             {stop, normal, State}
     end;
 delete_pending(delete_confirmed, State=#state{delete_point=ManSQN}) ->
-    leveled_log:log("CDB04", [State#state.filename, ManSQN]),
+    leveled_log:log(cdb04, [State#state.filename, ManSQN]),
     close_pendingdelete(State#state.handle, 
                         State#state.filename, 
                         State#state.waste_path),
     {stop, normal, State};
 delete_pending(destroy, State) ->
-    leveled_log:log("CDB05", [State#state.filename, delete_pending, destroy]),
+    leveled_log:log(cdb05, [State#state.filename, delete_pending, destroy]),
     close_pendingdelete(State#state.handle, 
                         State#state.filename, 
                         State#state.waste_path),
@@ -858,8 +858,7 @@ handle_sync_event({get_cachedscore, {NowMega, NowSecs, _}},
 handle_sync_event({put_cachedscore, Score}, _From, StateName, State) ->
     {reply, ok, StateName, State#state{cached_score = {Score,os:timestamp()}}};
 handle_sync_event(cdb_close, _From, delete_pending, State) ->
-    leveled_log:log("CDB05", 
-                        [State#state.filename, delete_pending, cdb_close]),
+    leveled_log:log(cdb05, [State#state.filename, delete_pending, cdb_close]),
     close_pendingdelete(State#state.handle, 
                         State#state.filename, 
                         State#state.waste_path),
@@ -925,7 +924,7 @@ close_pendingdelete(Handle, Filename, WasteFP) ->
         false ->
             % This may happen when there has been a destroy while files are
             % still pending deletion
-            leveled_log:log("CDB21", [Filename])
+            leveled_log:log(cdb21, [Filename])
     end.
 
 -spec set_writeops(sync|riak_sync|none) -> {list(), sync|riak_sync|none}.
@@ -967,7 +966,7 @@ open_active_file(FileName) when is_list(FileName) ->
                 {?BASE_POSITION, 0} ->
                     ok;
                 _ ->
-                    leveled_log:log("CDB06", [LastPosition, EndPosition])
+                    leveled_log:log(cdb06, [LastPosition, EndPosition])
             end,
             {ok, _LastPosition} = file:position(Handle, LastPosition),
             ok = file:truncate(Handle),
@@ -1142,7 +1141,7 @@ hashtable_calc(HashTree, StartPos) ->
     Seq = lists:seq(0, 255),
     SWC = os:timestamp(),
     {IndexList, HashTreeBin} = write_hash_tables(Seq, HashTree, StartPos),
-    leveled_log:log_timer("CDB07", [], SWC),
+    leveled_log:log_timer(cdb07, [], SWC),
     {IndexList, HashTreeBin}.
 
 %%%%%%%%%%%%%%%%%%%%
@@ -1155,7 +1154,7 @@ determine_new_filename(Filename) ->
     
 rename_for_read(Filename, NewName) ->
     %% Rename file
-    leveled_log:log("CDB08", [Filename, NewName, filelib:is_file(NewName)]),
+    leveled_log:log(cdb08, [Filename, NewName, filelib:is_file(NewName)]),
     file:rename(Filename, NewName).
 
 
@@ -1348,7 +1347,7 @@ scan_over_file(Handle, Position, FilterFun, Output, LastKey) ->
                     % Not interesting that we've nothing to read at base
                     ok;
                 _ ->
-                    leveled_log:log("CDB09", [Position])
+                    leveled_log:log(cdb09, [Position])
             end,
             % Bring file back to that position
             {ok, Position} = file:position(Handle, {bof, Position}),
@@ -1461,7 +1460,7 @@ safe_read_next(Handle, Length, ReadFun) ->
         loose_read(Handle, Length, ReadFun)
     catch
         error:ReadError ->
-            leveled_log:log("CDB20", [ReadError, Length]),
+            leveled_log:log(cdb20, [ReadError, Length]),
             false
     end.
 
@@ -1488,11 +1487,11 @@ crccheck(<<CRC:32/integer, Value/binary>>, KeyBin) when is_binary(KeyBin) ->
         CRC -> 
             Value;
         _ -> 
-            leveled_log:log("CDB10", []),
+            leveled_log:log(cdb10, ["mismatch"]),
             false
         end;
 crccheck(_V, _KB) ->
-    leveled_log:log("CDB11", []),
+    leveled_log:log(cdb10, ["size"]),
     false.
 
 
@@ -1585,7 +1584,7 @@ search_hash_table(Handle,
                 end,
             case KV of
                 missing ->
-                    leveled_log:log("CDB15", [Hash]),
+                    leveled_log:log(cdb15, [Hash]),
                     search_hash_table(
                         Handle,
                         {FirstHashPosition, Slot, CycleCount + 1, TotalSlots},
@@ -1650,7 +1649,7 @@ perform_write_hash_tables(Handle, HashTreeBin, StartPos) ->
     ok = file:write(Handle, HashTreeBin),
     {ok, EndPos} = file:position(Handle, cur),
     ok = file:advise(Handle, StartPos, EndPos - StartPos, will_need),
-    leveled_log:log_timer("CDB12", [], SWW),
+    leveled_log:log_timer(cdb12, [], SWW),
     ok.
 
 
@@ -1820,7 +1819,7 @@ write_hash_tables(Indexes, HashTree, CurrPos) ->
 
 write_hash_tables([], _HashTree, _CurrPos, _BasePos, 
                                         IndexList, HT_BinList, {T1, T2, T3}) ->
-    leveled_log:log("CDB14", [T1, T2, T3]),
+    leveled_log:log(cdb14, [T1, T2, T3]),
     IL = lists:reverse(IndexList),
     {IL, list_to_binary(HT_BinList)};
 write_hash_tables([Index|Rest], HashTree, CurrPos, BasePos,

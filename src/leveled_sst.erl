@@ -576,9 +576,8 @@ starting({sst_new,
                     State#state{root_path=RootPath, yield_blockquery=YBQ},
                     OptsSST#sst_options.pagecache_level >= Level),
     Summary = UpdState#state.summary,
-    leveled_log:log_timer("SST08",
-                            [ActualFilename, Level, Summary#summary.max_sqn],
-                            SW),
+    leveled_log:log_timer(
+        sst08, [ActualFilename, Level, Summary#summary.max_sqn], SW),
     erlang:send_after(?STARTUP_TIMEOUT, self(), start_complete),
     {reply,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}, Bloom},
@@ -657,10 +656,9 @@ starting(complete_l0startup, State) ->
     Summary = UpdState#state.summary,
     Time4 = timer:now_diff(os:timestamp(), SW4),
     
-    leveled_log:log_timer("SST08",
-                            [ActualFilename, 0, Summary#summary.max_sqn],
-                            SW0),
-    leveled_log:log("SST11", [Time0, Time1, Time2, Time3, Time4]),
+    leveled_log:log_timer(
+        sst08, [ActualFilename, 0, Summary#summary.max_sqn], SW0),
+    leveled_log:log(sst11, [Time0, Time1, Time2, Time3, Time4]),
 
     case Penciller of
         undefined ->
@@ -824,7 +822,7 @@ reader(get_maxsequencenumber, _From, State) ->
     Summary = State#state.summary,
     {reply, Summary#summary.max_sqn, reader, State};
 reader({set_for_delete, Penciller}, _From, State) ->
-    leveled_log:log("SST06", [State#state.filename]),
+    leveled_log:log(sst06, [State#state.filename]),
     {reply,
         ok,
         delete_pending,
@@ -923,7 +921,7 @@ delete_pending({get_slots, SlotList, SegList, LowLastMod}, _From, State) ->
         State, 
         ?DELETE_TIMEOUT};
 delete_pending(close, _From, State) ->
-    leveled_log:log("SST07", [State#state.filename]),
+    leveled_log:log(sst07, [State#state.filename]),
     ok = file:close(State#state.handle),
     ok = file:delete(filename:join(State#state.root_path,
                                     State#state.filename)),
@@ -941,7 +939,7 @@ delete_pending(timeout, State) ->
     % back-off
     {next_state, delete_pending, State, leveled_rand:uniform(10) * ?DELETE_TIMEOUT};
 delete_pending(close, State) ->
-    leveled_log:log("SST07", [State#state.filename]),
+    leveled_log:log(sst07, [State#state.filename]),
     ok = file:close(State#state.handle),
     ok = file:delete(filename:join(State#state.root_path,
                                     State#state.filename)),
@@ -970,7 +968,7 @@ handle_info(bic_complete, StateName, State) ->
     % The block index cache is complete, so the memory footprint should be
     % relatively stable from this point.  Hibernate to help minimise
     % fragmentation
-    leveled_log:log("SST14", [State#state.filename]),
+    leveled_log:log(sst14, [State#state.filename]),
     {next_state, StateName, State, hibernate};
 handle_info(start_complete, StateName, State) ->
     % The SST file will be started by a clerk, but the clerk may be shut down
@@ -990,7 +988,7 @@ handle_info(start_complete, StateName, State) ->
 terminate(normal, delete_pending, _State) ->
     ok;
 terminate(Reason, _StateName, State) ->
-    leveled_log:log("SST04", [Reason, State#state.filename]).
+    leveled_log:log(sst04, [Reason, State#state.filename]).
 
 code_change(_OldVsn, StateName, State, _Extra) ->
     {ok, StateName, State}.
@@ -1053,7 +1051,7 @@ expand_list_by_pointer({pointer, SSTPid, Slot, StartKey, EndKey},
 expand_list_by_pointer({next, ManEntry, StartKey, EndKey}, 
                                         Tail, Width, SegList, LowLastMod) ->
     SSTPid = ManEntry#manifest_entry.owner,
-    leveled_log:log("SST10", [SSTPid, is_process_alive(SSTPid)]),
+    leveled_log:log(sst10, [SSTPid, is_process_alive(SSTPid)]),
     ExpPointer = sst_getfilteredrange(SSTPid, 
                                         StartKey,
                                         EndKey, 
@@ -1551,7 +1549,7 @@ write_file(RootPath, Filename, SummaryBin, SlotsBin,
         true ->
             AltName = filename:join(RootPath, filename:basename(FinalName))
                         ++ ?DISCARD_EXT,
-            leveled_log:log("SST05", [FinalName, AltName]),
+            leveled_log:log(sst05, [FinalName, AltName]),
             ok = file:rename(filename:join(RootPath, FinalName), AltName);
         false ->
             ok
@@ -1581,9 +1579,8 @@ read_file(Filename, State, LoadPageCache) ->
         from_list(
             SlotList, Summary#summary.first_key, Summary#summary.last_key),
     UpdSummary = Summary#summary{index = SlotIndex},
-    leveled_log:log("SST03", [Filename,
-                                Summary#summary.size,
-                                Summary#summary.max_sqn]),
+    leveled_log:log(
+        sst03, [Filename, Summary#summary.size, Summary#summary.max_sqn]),
     {UpdState1#state{summary = UpdSummary,
                         handle = Handle,
                         filename = Filename,
@@ -2627,7 +2624,7 @@ crc_check_slot(FullBin) ->
         {CRC32H, CRC32PBL} ->
             {Header, Blocks};
         _ ->
-            leveled_log:log("SST09", []),
+            leveled_log:log(sst09, []),
             crc_wonky
     end.
 
@@ -3061,12 +3058,13 @@ update_buildtimings(SW, Timings, Stage) ->
 %%
 %% Log out the time spent during the merge lists part of the SST build
 log_buildtimings(Timings, LI) ->
-    leveled_log:log("SST13", [Timings#build_timings.fold_toslot,
-                                Timings#build_timings.slot_hashlist,
-                                Timings#build_timings.slot_serialise,
-                                Timings#build_timings.slot_finish,
-                                element(1, LI),
-                                element(2, LI)]).
+    leveled_log:log(
+        sst13, 
+        [Timings#build_timings.fold_toslot,
+            Timings#build_timings.slot_hashlist,
+            Timings#build_timings.slot_serialise,
+            Timings#build_timings.slot_finish,
+            element(1, LI), element(2, LI)]).
 
 -spec maybelog_fetch_timing(
         leveled_monitor:monitor(),

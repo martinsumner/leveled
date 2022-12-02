@@ -40,8 +40,9 @@ simple_put_fetch_head_delete(_Config) ->
     io:format("simple test with error and no forced logs~n"),
     simple_test_withlog(error, []),
     io:format("simple test with error and stats logs~n"),
-    simple_test_withlog(error, ["B0015", "B0016", "B0017", "B0018", 
-                                "P0032", "SST12", "CDB19", "SST13", "I0019"]).
+    simple_test_withlog(
+        error,
+        [b0015, b0016, b0017, b0018, p0032, sst12, cdb19, sst13, i0019]).
 
 
 simple_test_withlog(LogLevel, ForcedLogs) ->

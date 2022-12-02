@@ -47,15 +47,19 @@
 
 -record(bookie_head_timings,
     {sample_count = 0 :: non_neg_integer(),
-    fetch_time = 0 :: non_neg_integer(),
+    cache_count = 0 :: non_neg_integer(),
+    found_count = 0 :: non_neg_integer(),
+    cache_hits = 0 :: non_neg_integer(),
+    fetch_ledger_time = 0 :: non_neg_integer(),
+    fetch_ledgercache_time = 0 :: non_neg_integer(),
     rsp_time = 0 :: non_neg_integer(),
-    fetch_count = 0 :: non_neg_integer(),
-    cache_count = 0 :: non_neg_integer()}).
+    notfound_time = 0 :: non_neg_integer()}).
 
 -record(bookie_put_timings,
     {sample_count = 0 :: non_neg_integer(),
-    mem_time = 0 :: non_neg_integer(),
     ink_time = 0 :: non_neg_integer(),
+    prep_time = 0 :: non_neg_integer(),
+    mem_time = 0 :: non_neg_integer(),
     total_size = 0 :: non_neg_integer()}).
 
 -record(bookie_snap_timings,
@@ -133,7 +137,7 @@
 -type bookie_head_update() ::
     {bookie_head_update, microsecs(), microsecs()|not_found, 0..1}.
 -type bookie_put_update() ::
-    {bookie_put_update, microsecs(), microsecs(), byte_size()}.
+    {bookie_put_update, microsecs(), microsecs(), microsecs(), byte_size()}.
 -type bookie_snap_update() ::
     {bookie_snap_update, microsecs(), microsecs()}.
 -type pcl_fetch_update() ::
@@ -232,25 +236,31 @@ handle_call(close, _From, State) ->
 handle_cast({bookie_head_update, FetchTime, RspTime, CacheHit}, State) ->
     Timings = State#state.bookie_head_timings,
     SC0 = Timings#bookie_head_timings.sample_count + 1,
-    CC0 = Timings#bookie_head_timings.cache_count + CacheHit, 
-    {FC0, PT0, RT0} =
-        case RspTime of
-            not_found ->
-                {Timings#bookie_head_timings.fetch_count,
-                    Timings#bookie_head_timings.fetch_time + FetchTime,
-                    Timings#bookie_head_timings.rsp_time};
-            RspTime ->
-                {Timings#bookie_head_timings.fetch_count + 1,
-                    Timings#bookie_head_timings.fetch_time + FetchTime,
-                    Timings#bookie_head_timings.rsp_time + RspTime}
+    CC0 = Timings#bookie_head_timings.cache_count + CacheHit,
+    FC = Timings#bookie_head_timings.found_count,
+    FLT = Timings#bookie_head_timings.fetch_ledger_time,
+    FCT = Timings#bookie_head_timings.fetch_ledgercache_time,
+    RST = Timings#bookie_head_timings.rsp_time,
+    NFT = Timings#bookie_head_timings.notfound_time,
+
+    {FC0, FLT0, FCT0, RST0, NFT0} =
+        case {RspTime, CacheHit} of
+            {not_found, _} ->
+                {FC, FLT, FCT, RST, NFT + FetchTime};
+            {RspTime, 0} ->
+                {FC + 1, FLT + FetchTime, FCT, RST + RspTime, NFT};
+            {RspTime, 1} ->
+                {FC + 1, FLT, FCT + FetchTime, RST + RspTime, NFT}
         end,
     UpdTimings =
         #bookie_head_timings{
             sample_count = SC0,
-            fetch_time = PT0,
-            rsp_time = RT0,
-            fetch_count = FC0,
-            cache_count = CC0
+            cache_count = CC0,
+            found_count = FC0,
+            fetch_ledger_time = FLT0,
+            fetch_ledgercache_time = FCT0,
+            rsp_time = RST0,
+            notfound_time = NFT0
         },
     {noreply, State#state{bookie_head_timings = UpdTimings}};
 handle_cast({bookie_get_update, HeadTime, BodyTime}, State) ->
@@ -275,17 +285,19 @@ handle_cast({bookie_get_update, HeadTime, BodyTime}, State) ->
             fetch_count = FC0
         },
     {noreply, State#state{bookie_get_timings = UpdTimings}};
-handle_cast({bookie_put_update, MemTime, InkTime, Size}, State) ->
+handle_cast({bookie_put_update, InkTime, PrepTime, MemTime, Size}, State) ->
     Timings = State#state.bookie_put_timings,
     SC0 = Timings#bookie_put_timings.sample_count + 1,
     SZ0 = Timings#bookie_put_timings.total_size + Size,
-    MT0 = Timings#bookie_put_timings.mem_time + MemTime,
     IT0 = Timings#bookie_put_timings.ink_time + InkTime,
+    PT0 = Timings#bookie_put_timings.prep_time + PrepTime,
+    MT0 = Timings#bookie_put_timings.mem_time + MemTime,
     UpdTimings =
         #bookie_put_timings{
             sample_count = SC0,
-            mem_time = MT0,
             ink_time = IT0,
+            prep_time = PT0,
+            mem_time = MT0,
             total_size = SZ0
         },
     {noreply, State#state{bookie_put_timings = UpdTimings}};
@@ -419,7 +431,7 @@ handle_cast({cdb_get_update, CycleCount, IndexTime, ReadTime}, State) ->
 handle_cast({report_stats, bookie_get}, State) ->
     Timings = State#state.bookie_get_timings,
     leveled_log:log(
-        "B0016",
+        b0016,
         [Timings#bookie_get_timings.sample_count,
             Timings#bookie_get_timings.head_time,
             Timings#bookie_get_timings.body_time,
@@ -428,26 +440,29 @@ handle_cast({report_stats, bookie_get}, State) ->
 handle_cast({report_stats, bookie_head}, State) ->
     Timings = State#state.bookie_head_timings,
     leveled_log:log(
-        "B0018",
+        b0018,
         [Timings#bookie_head_timings.sample_count,
-            Timings#bookie_head_timings.fetch_time,
+            Timings#bookie_head_timings.cache_count,
+            Timings#bookie_head_timings.found_count,
+            Timings#bookie_head_timings.fetch_ledger_time,
+            Timings#bookie_head_timings.fetch_ledgercache_time,
             Timings#bookie_head_timings.rsp_time,
-            Timings#bookie_head_timings.fetch_count,
-            Timings#bookie_head_timings.cache_count]),
+            Timings#bookie_head_timings.notfound_time]),
     {noreply, State#state{bookie_head_timings = #bookie_head_timings{}}};
 handle_cast({report_stats, bookie_put}, State) ->
     Timings = State#state.bookie_put_timings,
     leveled_log:log(
-        "B0015",
+        b0015,
         [Timings#bookie_put_timings.sample_count,
-            Timings#bookie_put_timings.mem_time,
             Timings#bookie_put_timings.ink_time,
+            Timings#bookie_put_timings.prep_time,
+            Timings#bookie_put_timings.mem_time,
             Timings#bookie_put_timings.total_size]),
     {noreply, State#state{bookie_put_timings = #bookie_put_timings{}}};
 handle_cast({report_stats, bookie_snap}, State) ->
     Timings = State#state.bookie_snap_timings,
     leveled_log:log(
-        "B0017",
+        b0017,
         [Timings#bookie_snap_timings.sample_count,
             Timings#bookie_snap_timings.bookie_time,
             Timings#bookie_snap_timings.pcl_time]),
@@ -455,7 +470,7 @@ handle_cast({report_stats, bookie_snap}, State) ->
 handle_cast({report_stats, pcl_fetch}, State) ->
     Timings = State#state.pcl_fetch_timings,
     leveled_log:log(
-        "P0032",
+        p0032,
         [Timings#pcl_fetch_timings.sample_count,
             Timings#pcl_fetch_timings.foundmem_time,
             Timings#pcl_fetch_timings.found0_time,
@@ -476,7 +491,7 @@ handle_cast({report_stats, sst_fetch}, State) ->
     LogFun =
         fun({Level, Timings}) ->
             leveled_log:log(
-                "SST12",
+                sst12,
                 [Level,
                     Timings#sst_fetch_timings.sample_count,
                     Timings#sst_fetch_timings.notfound_time,
@@ -493,7 +508,7 @@ handle_cast({report_stats, sst_fetch}, State) ->
 handle_cast({report_stats, cdb_get}, State) ->
     Timings = State#state.cdb_get_timings,
     leveled_log:log(
-        "CDB19",
+        cdb19,
         [Timings#cdb_get_timings.sample_count,
             Timings#cdb_get_timings.cycle_count,
             Timings#cdb_get_timings.index_time,

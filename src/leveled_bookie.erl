@@ -339,13 +339,12 @@
             % moving to higher log levels will at present make the operator
             % blind to sample performance statistics of leveled sub-components
             % etc
-        {forced_logs, list(string())} |
+        {forced_logs, list(atom())} |
             % Forced logs allow for specific info level logs, such as those
             % logging stats to be logged even when the default log level has
             % been set to a higher log level.  Using:
             % {forced_logs, 
-            %   ["B0015", "B0016", "B0017", "B0018",
-            %       "P0032", "SST12", "CDB19", "SST13", "I0019"]}
+            %   [b0015, b0016, b0017, b0018, p0032, sst12]}
             % Will log all timing points even when log_level is not set to
             % support info
         {database_id, non_neg_integer()} |
@@ -719,7 +718,7 @@ book_indexfold(Pid, Bucket, FoldAccT, Range, TermHandling) ->
     % future release this code branch may be removed, and such queries may
     % instead return `error`.  For now null is assumed to be lower than any
     % key
-    leveled_log:log("B0019", [Bucket]),
+    leveled_log:log(b0019, [Bucket]),
     book_indexfold(Pid, {Bucket, null}, FoldAccT, Range, TermHandling).
 
 
@@ -1213,7 +1212,7 @@ init([Opts]) ->
                 % and performance may be unpredictable
             case CacheRatio > 32 of
                 true ->
-                    leveled_log:log("B0020", [PCLMaxSize, ConfiguredCacheSize]);
+                    leveled_log:log(b0020, [PCLMaxSize, ConfiguredCacheSize]);
                 false ->
                     ok
             end,
@@ -1240,7 +1239,7 @@ init([Opts]) ->
             {Inker, Penciller} =  startup(InkerOpts, PencillerOpts0),
 
             NewETS = ets:new(mem, [ordered_set]),
-            leveled_log:log("B0001", [Inker, Penciller]),
+            leveled_log:log(b0001, [Inker, Penciller]),
             {ok, 
                 #state{
                     cache_size = CacheSize,
@@ -1255,7 +1254,7 @@ init([Opts]) ->
         {Bookie, undefined} ->
             {ok, Penciller, Inker} = 
                 book_snapshot(Bookie, store, undefined, true),
-            leveled_log:log("B0002", [Inker, Penciller]),
+            leveled_log:log(b0002, [Inker, Penciller]),
             {ok,
                 #state{penciller = Penciller,
                         inker = Inker,
@@ -1273,16 +1272,13 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL, DataSync},
                                                Object,
                                                {IndexSpecs, TTL},
                                                DataSync),
-    {T0, SW1} =  leveled_monitor:step_time(SW0),
-    Changes = preparefor_ledgercache(null,
-                                        LedgerKey,
-                                        SQN,
-                                        Object,
-                                        ObjSize,
-                                        {IndexSpecs, TTL}),
+    {T0, SW1} = leveled_monitor:step_time(SW0),
+    Changes =
+        preparefor_ledgercache(
+            null, LedgerKey, SQN, Object, ObjSize, {IndexSpecs, TTL}),
+    {T1, SW2} = leveled_monitor:step_time(SW1),
     Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
-    {T1, _SW2} = leveled_monitor:step_time(SW1),
-
+    {T2, _SW3} = leveled_monitor:step_time(SW2),
     case State#state.slow_offer of
         true ->
             gen_server:reply(From, pause);
@@ -1290,7 +1286,7 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL, DataSync},
             gen_server:reply(From, ok)
     end,
     maybe_longrunning(SWLR, overall_put),
-    maybelog_put_timing(State#state.monitor, T0, T1, ObjSize),
+    maybelog_put_timing(State#state.monitor, T0, T1, T2, ObjSize),
     case maybepush_ledgercache(
             State#state.cache_size,
             State#state.cache_multiple,
@@ -1330,11 +1326,10 @@ handle_call({get, Bucket, Key, Tag}, _From, State)
                                         when State#state.head_only == false ->
     LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
     SW0 = leveled_monitor:maybe_time(State#state.monitor),
-    {H0, CacheHit} =
+    {H0, _CacheHit} =
         fetch_head(LedgerKey,
                     State#state.penciller,
                     State#state.ledger_cache),
-    {TS0, SW1} = leveled_monitor:step_time(SW0),
     HeadResult = 
         case H0 of
             not_present ->
@@ -1354,9 +1349,7 @@ handle_call({get, Bucket, Key, Tag}, _From, State)
                         end
                 end
         end,
-    {TS1, SW2} = leveled_monitor:step_time(SW1),
-    maybelog_head_timing(
-        State#state.monitor, TS0, TS1, HeadResult == not_found, CacheHit),
+    {TS0, SW1} = leveled_monitor:step_time(SW0),
     GetResult = 
         case HeadResult of 
             not_found -> 
@@ -1370,9 +1363,9 @@ handle_call({get, Bucket, Key, Tag}, _From, State)
                         {ok, Object}
                 end 
         end,
-    {TS2, _SW3} = leveled_monitor:step_time(SW2),
+    {TS1, _SW2} = leveled_monitor:step_time(SW1),
     maybelog_get_timing(
-        State#state.monitor, TS1, TS2, GetResult == not_found),
+        State#state.monitor, TS0, TS1, GetResult == not_found),
     {reply, GetResult, State};
 handle_call({head, Bucket, Key, Tag, SQNOnly}, _From, State) 
                                         when State#state.head_lookup == true ->
@@ -1507,7 +1500,7 @@ handle_call(close, _From, State) ->
     leveled_monitor:monitor_close(element(1, State#state.monitor)),
     {stop, normal, ok, State};
 handle_call(destroy, _From, State=#state{is_snapshot=Snp}) when Snp == false ->
-    leveled_log:log("B0011", []),
+    leveled_log:log(b0011, []),
     {ok, InkPathList} = leveled_inker:ink_doom(State#state.inker),
     {ok, PCLPathList} = leveled_penciller:pcl_doom(State#state.penciller),
     leveled_monitor:monitor_close(element(1, State#state.monitor)),
@@ -1553,7 +1546,7 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(Reason, _State) ->
-    leveled_log:log("B0003", [Reason]).
+    leveled_log:log(b0003, [Reason]).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -1691,7 +1684,7 @@ startup(InkerOpts, PencillerOpts) ->
     {ok, Inker} = leveled_inker:ink_start(InkerOpts),
     {ok, Penciller} = leveled_penciller:pcl_start(PencillerOpts),
     LedgerSQN = leveled_penciller:pcl_getstartupsequencenumber(Penciller),
-    leveled_log:log("B0005", [LedgerSQN]),
+    leveled_log:log(b0005, [LedgerSQN]),
     ReloadStrategy = InkerOpts#inker_options.reload_strategy,
     LoadFun = get_loadfun(ReloadStrategy, Penciller),
     BatchFun = 
@@ -1700,7 +1693,7 @@ startup(InkerOpts, PencillerOpts) ->
         end,
     InitAccFun =
         fun(FN, CurrentMinSQN) ->
-            leveled_log:log("I0014", [FN, CurrentMinSQN]),
+            leveled_log:log(i0014, [FN, CurrentMinSQN]),
             empty_ledgercache()
         end,
     ok = leveled_inker:ink_loadpcl(Inker,
@@ -2074,7 +2067,7 @@ return_ledger_keyrange(Tag, Bucket, KeyRange) ->
 maybe_longrunning(SW, Aspect) ->
     case timer:now_diff(os:timestamp(), SW) of
         N when N > ?LONG_RUNNING ->
-            leveled_log:log("B0013", [N, Aspect]);
+            leveled_log:log(b0013, [N, Aspect]);
         _ ->
             ok
     end.
@@ -2434,7 +2427,7 @@ get_loadfun(ReloadStrat, Penciller) ->
             SQN when SQN < MinSQN ->
                 {loop, Acc0};
             SQN when SQN > MaxSQN ->
-                leveled_log:log("B0007", [MaxSQN, SQN]),
+                leveled_log:log(b0007, [MaxSQN, SQN]),
                 {stop, Acc0};
             _ ->
                 {VBin, ValSize} = ExtractFun(ValueInJournal),
@@ -2453,7 +2446,7 @@ get_loadfun(ReloadStrat, Penciller) ->
                     end,
                 case SQN of
                     MaxSQN ->
-                        leveled_log:log("B0006", [SQN]),
+                        leveled_log:log(b0006, [SQN]),
                         LC0 = addto_ledgercache(Chngs, LedgerCache, loader),
                         {stop, {MinSQN, MaxSQN, LC0}};
                     _ ->
@@ -2474,11 +2467,13 @@ delete_path(DirPath) ->
         leveled_monitor:monitor(),
         leveled_monitor:timing(),
         leveled_monitor:timing(),
+        leveled_monitor:timing(),
         pos_integer()) -> ok.
-maybelog_put_timing(_Monitor, no_timing, no_timing, _Size) ->
+maybelog_put_timing(_Monitor, no_timing, no_timing, no_timing, _Size) ->
     ok;
-maybelog_put_timing({Pid, _StatsFreq}, MemTime, InkTime, Size) ->
-    leveled_monitor:add_stat(Pid, {bookie_put_update, MemTime, InkTime, Size}).
+maybelog_put_timing({Pid, _StatsFreq}, InkTime, PrepTime, MemTime, Size) ->
+    leveled_monitor:add_stat(
+        Pid, {bookie_put_update, InkTime, PrepTime, MemTime, Size}).
 
 -spec maybelog_head_timing(
         leveled_monitor:monitor(),
