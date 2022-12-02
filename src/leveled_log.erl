@@ -150,7 +150,7 @@
         pc013 =>
             {warn, <<"Merge resulted in empty file ~s">>},
         pc015 =>
-            {info, <<"file created">>},
+            {info, <<"File created">>},
         pc016 =>
             {info, <<"Slow fetch from SFT ~w of ~w us at level ~w with result ~w">>},
         pc017 =>
@@ -389,10 +389,12 @@ log(LogRef, Subs, SupportedLogLevels) ->
     case should_i_log(LogLevel, SupportedLogLevels, LogRef, LogOpts) of
         true ->
             DBid = LogOpts#log_options.database_id,
-            Time = format_time(),
-            Prefix = log_prefix(LogLevel, LogRef, DBid, self()),
-            Suffix = "~n",
-            io:format(iolist_to_binary([Time, Prefix, Log, Suffix]), Subs);
+            Prefix =
+                iolist_to_binary(
+                    log_prefix(
+                        localtime_ms(), LogLevel, LogRef, DBid, self())),
+            Suffix = <<"~n">>,
+            io:format(iolist_to_binary([Prefix, Log, Suffix]), Subs);
         false ->
             ok
     end.
@@ -425,13 +427,15 @@ log_timer(LogRef, Subs, StartTime, SupportedLevels) ->
     LogOpts = get_opts(),
     case should_i_log(LogLevel, SupportedLevels, LogRef, LogOpts) of
         true ->
-            Duration = duration_text(StartTime),
             DBid = LogOpts#log_options.database_id,
-            Time = format_time(),
-            Prefix = log_prefix(LogLevel, LogRef, DBid, self()),
+            Prefix =
+                iolist_to_binary(
+                    log_prefix(
+                        localtime_ms(), LogLevel, LogRef, DBid, self())),
             Suffix = <<"~n">>,
+            Duration = duration_text(StartTime),
             io:format(
-                iolist_to_binary([Time, Prefix, Log, Duration, Suffix]),
+                iolist_to_binary([Prefix, Log, Duration, Suffix]),
                 Subs);
         false ->
             ok
@@ -446,33 +450,33 @@ log_randomtimer(LogReference, Subs, StartTime, RandomProb) ->
             ok
     end.
 
--spec format_time() -> io_lib:chars().
-format_time() ->
-    format_time(localtime_ms()).
-
 localtime_ms() ->
     {_, _, Micro} = Now = os:timestamp(),
     {Date, {Hours, Minutes, Seconds}} = calendar:now_to_local_time(Now),
     {Date, {Hours, Minutes, Seconds, Micro div 1000 rem 1000}}.
 
-format_time({{Y, M, D}, {H, Mi, S, Ms}}) ->
-    io_lib:format("~b-~2..0b-~2..0b", [Y, M, D]) ++ "T" ++
-        io_lib:format("~2..0b:~2..0b:~2..0b.~3..0b", [H, Mi, S, Ms]).
+-spec log_prefix(
+    tuple(), atom(), atom(), non_neg_integer(), pid()) -> io_lib:chars().
+log_prefix({{Y, M, D}, {H, Mi, S, Ms}}, LogLevel, LogRef, DBid, Pid) ->
+    [integer_to_list(Y), $-, i2l(M), $-, i2l(D),
+    $T, i2l(H), $:, i2l(Mi), $:, i2l(S), $., i3l(Ms),
+    " log_level=", atom_to_list(LogLevel), " log_ref=", atom_to_list(LogRef),
+    " db_id=", integer_to_list(DBid), " pid=", pid_to_list(Pid), " "].
 
--spec log_prefix(atom(), atom(), non_neg_integer(), pid()) -> io_lib:chars().
-log_prefix(LogLevel, LogRef, DBid, Pid) ->
-    io_lib:format(
-        " log_level=~w log_ref=~w db_id=~w pid=~w ",
-        [LogLevel, LogRef, DBid, Pid]).
+i2l(I) when I < 10  -> [$0, $0+I];
+i2l(I)              -> integer_to_list(I).
+
+i3l(I) when I < 100 -> [$0 | i2l(I)];
+i3l(I)              -> integer_to_list(I).
 
 -spec duration_text(erlang:timestamp()) -> io_lib:chars().
 duration_text(StartTime) ->
     case timer:now_diff(os:timestamp(), StartTime) of
         US when US > 1000 ->
-            io_lib:format(
-                " with us_duration=~w or ms_duration=~w", [US, US div 1000]);
+            [" with us_duration=", integer_to_list(US),
+            " or ms_duration=", integer_to_list(US div 1000)];
         US ->
-            io_lib:format(" with us_duration=~w", [US])
+            [" with us_duration=", integer_to_list(US)]
     end.
 
 %%%============================================================================
@@ -506,5 +510,37 @@ badloglevel_test() ->
     % Set a bad log level - and everything logs
     ?assertMatch(true, is_active_level(?LOG_LEVELS, debug, unsupported)),
     ?assertMatch(true, is_active_level(?LOG_LEVELS, critical, unsupported)).
+
+timing_test() ->
+    % Timing test
+    % Previous LOGBASE used list with string-based keys and values
+    % The size of the LOGBASE was 19,342 words (>150KB), and logs took
+    % o(100) microseconds.
+    % Changing the LOGBASE ot a map with binary-based keys and values does not
+    % appear to improve the speed of logging, but does reduce the size of the
+    % LOGBASE to just over 2,000 words (so an order of magnitude improvement)
+    timer:sleep(10),
+    io:format(user, "Log timings:~n", []),
+    io:format(user, "Logbase size ~w~n", [erts_debug:flat_size(?LOGBASE)]),
+    io:format(
+        user,
+        "Front log timing ~p~n",
+        [timer:tc(fun() -> log(cdb21, ["test_file"]) end)]
+    ),
+    io:format(
+        user,
+        "Mid log timing ~p~n",
+        [timer:tc(fun() -> log(pc013, ["test_file"]) end)]
+    ),
+    io:format(
+        user,
+        "End log timing ~p~n",
+        [timer:tc(fun() -> log(b0003, ["testing"]) end)]
+    ),
+    io:format(
+        user,
+        "Big log timing ~p~n",
+        [timer:tc(fun() -> log(sst13, [100,100,100,100,true,1]) end)]
+    ).
 
 -endif.
