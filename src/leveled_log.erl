@@ -290,7 +290,7 @@
         cdb10 =>
             {warn, <<"CRC check failed due to error=~s">>},
         cdb12 =>
-            {info, <<"Hashtree index writte">>},
+            {info, <<"Hashtree index written">>},
         cdb13 =>
             {debug, <<"Write options of ~w">>},
         cdb14 =>
@@ -390,9 +390,8 @@ log(LogRef, Subs, SupportedLogLevels) ->
         true ->
             DBid = LogOpts#log_options.database_id,
             Prefix =
-                iolist_to_binary(
-                    log_prefix(
-                        localtime_ms(), LogLevel, LogRef, DBid, self())),
+                log_prefix(
+                    localtime_ms(), LogLevel, LogRef, DBid, self()),
             Suffix = <<"~n">>,
             io:format(iolist_to_binary([Prefix, Log, Suffix]), Subs);
         false ->
@@ -429,9 +428,8 @@ log_timer(LogRef, Subs, StartTime, SupportedLevels) ->
         true ->
             DBid = LogOpts#log_options.database_id,
             Prefix =
-                iolist_to_binary(
-                    log_prefix(
-                        localtime_ms(), LogLevel, LogRef, DBid, self())),
+                log_prefix(
+                        localtime_ms(), LogLevel, LogRef, DBid, self()),
             Suffix = <<"~n">>,
             Duration = duration_text(StartTime),
             io:format(
@@ -541,6 +539,11 @@ timing_test() ->
         user,
         "Big log timing ~p~n",
         [timer:tc(fun() -> log(sst13, [100,100,100,100,true,1]) end)]
+    ),
+    io:format(
+        user,
+        "Timer log timing ~p~n",
+        [timer:tc(fun() -> log_timer(pc015, [], os:timestamp()) end)]
     ).
 
 -endif.
