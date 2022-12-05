@@ -430,7 +430,7 @@ adjust_segmentmatch_list(SegmentList, CompareSize, StoreSize) ->
     StoreSizeI = get_size(StoreSize),
     if CompareSizeI =< StoreSizeI ->
         ExpItems = StoreSizeI div CompareSizeI - 1,
-        ShiftFactor = round(leveled_math:log2(CompareSizeI * ?L2_CHUNKSIZE)),
+        ShiftFactor = round(math:log2(CompareSizeI * ?L2_CHUNKSIZE)),
         ExpList = 
             lists:map(fun(X) -> X bsl ShiftFactor end, lists:seq(1, ExpItems)),
         UpdSegmentList = 

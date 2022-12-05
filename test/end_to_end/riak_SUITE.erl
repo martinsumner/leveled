@@ -9,7 +9,8 @@
         handoff/1,
         dollar_bucket_index/1,
         dollar_key_index/1,
-        bigobject_memorycheck/1
+        bigobject_memorycheck/1,
+        summarisable_sstindex/1
             ]).
 
 all() -> [
@@ -19,7 +20,8 @@ all() -> [
             handoff,
             dollar_bucket_index,
             dollar_key_index,
-            bigobject_memorycheck
+            bigobject_memorycheck,
+            summarisable_sstindex
             ].
 
 -define(MAGIC, 53). % riak_kv -> riak_object
@@ -242,6 +244,195 @@ basic_riak_tester(Bucket, KeyCount) ->
     true = length(KLByXcessSeg) - length(KLByXcessSegRem) == length(BKList),
 
     ok = leveled_bookie:book_destroy(Bookie2).
+
+summarisable_sstindex(_Config) ->
+    RootPathA = testutil:reset_filestructure("SummarisableSSTIndex"),
+    KeyCount = 200000,
+    IndexGen = fun() -> [] end,
+    Bucket = {<<"test_type">>, <<"test_bucket">>},
+    KeyGen = fun(I) -> list_to_binary(io_lib:format("~10..0w", [I])) end,
+    ObjListToSort =
+        lists:map(
+            fun(I) -> 
+                {leveled_rand:uniform(KeyCount * 10),
+                testutil:set_object(
+                    Bucket, KeyGen(I), integer_to_binary(I), IndexGen, [])}
+                end,
+            lists:seq(1, KeyCount)),
+    UnsortedList =
+        lists:map(
+            fun({I, {O, S}}) -> {I, O, S} end,
+            lists:keysort(1, ObjListToSort)),
+    true = KeyCount == length(UnsortedList),
+    StartOpts1 = [{root_path, RootPathA},
+        {max_journalsize, 500000000},
+        {max_pencillercachesize, 8000},
+        {sync_strategy, testutil:sync_strategy()}],
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+    testutil:riakload(Bookie1, UnsortedList),
+    FoldAccT = {fun(_B, K, Acc) -> [K|Acc] end, []},
+    KeyRangeCheckFun =
+        fun(SK, EK) ->
+            {async, FoldFun} =
+                leveled_bookie:book_keylist(
+                    Bookie1,
+                    ?RIAK_TAG,
+                    Bucket,
+                    {SK, EK},
+                    FoldAccT,
+                    undefined),
+            QueryList = FoldFun(),
+            io:format(
+                "QueryCount ~w against total ~w for range ~p ~p~n",
+                [length(QueryList), KeyCount, SK, EK]),
+            QueryList
+        end,
+    
+        true = KeyCount == length(KeyRangeCheckFun(<<"00">>, <<"02">>)),
+    true = KeyCount == length(KeyRangeCheckFun(<<"000">>, <<"002">>)),
+    true = KeyCount == length(KeyRangeCheckFun(<<"0000">>, <<"0002">>)),
+    true =
+        (KeyCount - 1) ==
+            length(KeyRangeCheckFun(<<"00000">>, <<"00002">>)),
+    true =
+        (KeyCount - 1) ==
+            length(KeyRangeCheckFun(<<"00000">>, <<"000020">>)),
+    true =
+        (KeyCount - 1) ==
+            length(KeyRangeCheckFun(<<"00000">>, <<"0000200">>)),
+    true =
+        (KeyCount div 2) ==
+            length(KeyRangeCheckFun(<<"00001">>, <<"00002">>)),
+    true =
+        1 == length(KeyRangeCheckFun(<<"00002">>, <<"000021">>)),
+    true =
+        ((KeyCount div 10) - 1) ==
+            length(KeyRangeCheckFun(<<"000000">>, <<"000002">>)),
+    true =
+        (KeyCount div 20) ==
+            length(KeyRangeCheckFun(<<"000001">>, <<"000002">>)),
+    true =
+        ((KeyCount div 100) - 1) ==
+            length(KeyRangeCheckFun(<<"0000000">>, <<"0000002">>)),
+
+    lists:foreach(
+        fun(I) ->
+            StartKey = KeyGen(I),
+            EndKey = KeyGen(I + 200 - 1),
+            true = 200 == length(KeyRangeCheckFun(StartKey, EndKey))
+        end,
+        lists:map(
+            fun(_I) -> leveled_rand:uniform(KeyCount - 200) end,
+            lists:seq(1, 100))),
+
+    IdxObjKeyCount = 50000,
+    TermGen =
+        fun(I, C) ->
+            list_to_binary(
+                lists:flatten(
+                    io_lib:format("~10..0w", [I]) ++ integer_to_list(C)))
+        end,
+    SequentialIndexGen =
+        fun(I) ->
+            fun() ->
+                lists:map(
+                    fun(C) ->
+                        {add, <<"indexf_bin">>,TermGen(I, C)}
+                    end,
+                    lists:seq(1, 8))
+            end
+        end,
+    IdxObjListToSort =
+        lists:map(
+            fun(I) -> 
+                {leveled_rand:uniform(KeyCount * 10),
+                    testutil:set_object(
+                        Bucket,
+                        KeyGen(I),
+                        integer_to_binary(I - KeyCount),
+                        SequentialIndexGen(I - KeyCount),
+                        [])}
+                end,
+            lists:seq(KeyCount + 1, KeyCount + IdxObjKeyCount)),
+    UnsortedIdxObjList =
+        lists:map(
+            fun({I, {O, S}}) -> {I, O, S} end,
+            lists:keysort(1, IdxObjListToSort)),
+    testutil:riakload(Bookie1, UnsortedIdxObjList),
+    IdxCount = IdxObjKeyCount * 8,
+
+    IdxQueryFun =
+        fun(StartTerm, EndTerm) ->
+            {async, FoldFun} = 
+                leveled_bookie:book_indexfold(
+                    Bookie1, {Bucket, <<>>}, FoldAccT,
+                    {<<"indexf_bin">>, StartTerm, EndTerm},
+                    {true, undefined}),
+            IdxQueryList = FoldFun(),
+            io:format(
+                "IdxQueryCount ~w for range ~p ~p~n",
+                [length(IdxQueryList), StartTerm, EndTerm]),
+            IdxQueryList
+        end,
+    true = IdxCount == length(IdxQueryFun(<<"00">>, <<"05">>)),
+    true = IdxCount == length(IdxQueryFun(<<"000">>, <<"005">>)),
+    true = IdxCount == length(IdxQueryFun(<<"0000">>, <<"0005">>)),
+    true = IdxCount == length(IdxQueryFun(<<"00000">>, <<"00005">>)),
+    true =
+        (IdxCount - 8) ==
+            length(IdxQueryFun(<<"000000">>, <<"000005">>)),
+    true =
+        (IdxCount - 8) ==
+            length(IdxQueryFun(<<"000000">>, <<"0000050">>)),
+    true =
+        (IdxCount - 8) ==
+            length(IdxQueryFun(<<"000000">>, <<"00000500">>)),
+    true = 8 == length(IdxQueryFun(<<"000005">>, <<"0000051">>)),
+
+    lists:foreach(
+        fun(I) ->
+            StartTerm = TermGen(I, 0),
+            EndTerm = TermGen(I + 20, 9),
+            true = 168 == length(IdxQueryFun(StartTerm, EndTerm))
+        end,
+        lists:map(
+            fun(_I) ->
+                leveled_rand:uniform(IdxObjKeyCount - 20)
+            end,
+            lists:seq(1, 100))),
+    lists:foreach(
+        fun(I) ->
+            StartTerm = TermGen(I, 0),
+            EndTerm = TermGen(I + 10, 9),
+            true = 88 == length(IdxQueryFun(StartTerm, EndTerm))
+        end,
+        lists:map(
+            fun(_I) ->
+                leveled_rand:uniform(IdxObjKeyCount - 10)
+            end,
+            lists:seq(1, 100))),
+
+    io:format("Redo object count checks:~n"),
+    NewKeyCount = KeyCount + IdxObjKeyCount,
+    true = NewKeyCount == length(KeyRangeCheckFun(<<"00">>, <<"025">>)),
+    true = NewKeyCount == length(KeyRangeCheckFun(<<"000">>, <<"0025">>)),
+    true = NewKeyCount == length(KeyRangeCheckFun(<<"0000">>, <<"00025">>)),
+    true =
+        (NewKeyCount - 1) ==
+            length(KeyRangeCheckFun(<<"00000">>, <<"000025">>)),
+    true = 1 == length(KeyRangeCheckFun(<<"000025">>, <<"0000251">>)),
+
+    lists:foreach(
+        fun(I) ->
+            StartKey = KeyGen(I),
+            EndKey = KeyGen(I + 200 - 1),
+            true = 200 == length(KeyRangeCheckFun(StartKey, EndKey))
+        end,
+        lists:map(
+            fun(_I) -> leveled_rand:uniform(KeyCount - 200) end,
+            lists:seq(1, 100))),
+    
+    ok = leveled_bookie:book_destroy(Bookie1).
 
 
 fetchclocks_modifiedbetween(_Config) ->

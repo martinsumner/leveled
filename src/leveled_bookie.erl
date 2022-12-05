@@ -162,7 +162,7 @@
                         loader = leveled_tree:empty(?CACHE_TYPE)
                                     :: tuple()|empty_cache,
                         load_queue = [] :: list(),
-                        index = leveled_pmem:new_index(), % array or empty_index
+                        index = leveled_pmem:new_index(),
                         min_sqn = infinity :: integer()|infinity,
                         max_sqn = 0 :: integer()}).
 
@@ -1493,7 +1493,7 @@ handle_call(log_settings, _From, State) ->
 handle_call({return_runner, QueryType}, _From, State) ->
     Runner = get_runner(State, QueryType),
     {reply, Runner, State};
-handle_call({compact_journal, Timeout}, _From, State)
+handle_call({compact_journal, Timeout}, From, State)
                                         when State#state.head_only == false ->
     case leveled_inker:ink_compactionpending(State#state.inker) of
         true ->
@@ -1504,7 +1504,14 @@ handle_call({compact_journal, Timeout}, _From, State)
             R = leveled_inker:ink_compactjournal(State#state.inker,
                                                     PclSnap,
                                                     Timeout),
-            {reply, R, State}
+            gen_server:reply(From, R),
+            {_, NewCache} = 
+                maybepush_ledgercache(
+                    State#state.cache_size,
+                    State#state.cache_multiple,
+                    State#state.ledger_cache,
+                    State#state.penciller),
+            {noreply, State#state{ledger_cache = NewCache}}
     end;
 handle_call(confirm_compact, _From, State)
                                         when State#state.head_only == false ->
@@ -2384,7 +2391,7 @@ addto_ledgercache({H, SQN, KeyChanges}, Cache, loader) ->
 %% Check the ledger cache for a Key, when the ledger cache is in loader mode
 %% and so is populating a queue not an ETS table
 check_in_ledgercache(PK, Hash, Cache, loader) ->
-    case leveled_pmem:check_index(Hash, Cache#ledger_cache.index) of
+    case leveled_pmem:check_index(Hash, [Cache#ledger_cache.index]) of
         [] ->
             false;
         _ ->

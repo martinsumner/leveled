@@ -246,7 +246,8 @@
                 levelzero_size = 0 :: integer(),
                 levelzero_maxcachesize :: integer() | undefined,
                 levelzero_cointoss = false :: boolean(),
-                levelzero_index :: array:array() | undefined | redacted,
+                levelzero_index ::
+                    leveled_pmem:index_array() | undefined | redacted,
                 
                 is_snapshot = false :: boolean(),
                 snapshot_fully_loaded = false :: boolean(),
@@ -267,7 +268,7 @@
                 snaptimeout_short :: pos_integer()|undefined,
                 snaptimeout_long :: pos_integer()|undefined,
 
-                sst_options = #sst_options{} :: #sst_options{}}).
+                sst_options = #sst_options{} :: sst_options()}).
 
 -record(pcl_timings, 
                     {sample_count = 0 :: integer(),
@@ -288,8 +289,7 @@
 
 -type penciller_options() :: #penciller_options{}.
 -type bookies_memory() :: {tuple()|empty_cache,
-                            % array:array()|empty_array,
-                            any()|empty_array, % Issue of type compatability with OTP16
+                            array:array()|empty_array,
                             integer()|infinity,
                             integer()}.
 -type pcl_state() :: #state{}.
@@ -313,7 +313,7 @@
         fun((leveled_codec:ledger_key(),
                 leveled_codec:ledger_value(),
                 any()) -> any()).
-
+-type sst_options() :: #sst_options{}.
 
 -export_type([levelzero_cacheentry/0, levelzero_returnfun/0, sqn_check/0]).
 
@@ -665,63 +665,69 @@ init([LogOpts, PCLopts]) ->
     
 
 handle_call({push_mem, {LedgerTable, PushedIdx, MinSQN, MaxSQN}},
-                From,
+                _From,
                 State=#state{is_snapshot=Snap}) when Snap == false ->
     % The push_mem process is as follows:
     %
-    % 1 - Receive a cache.  The cache has four parts: a tree of keys and
-    % values, an array of 256 binaries listing the hashes present in the
-    % tree, a min SQN and a max SQN
-    %
-    % 2 - Check to see if there is a levelzero file pending.  If so, the
-    % update must be returned.  If not the update can be accepted
-    %
-    % 3 - The Penciller can now reply to the Bookie to show if the push has
-    % been accepted
-    %
-    % 4 - Update the cache:
-    % a) Append the cache to the list
-    % b) Add each of the 256 hash-listing binaries to the master L0 index array
-    %
-    % Check the approximate size of the cache.  If it is over the maximum size,
-    % trigger a background L0 file write and update state of levelzero_pending.
-    CacheUpdateBlockedByPendingWork
-        = State#state.levelzero_pending or State#state.work_backlog,
-    CacheFull = leveled_pmem:cache_full(State#state.levelzero_cache),
-    case {CacheUpdateBlockedByPendingWork, CacheFull} of
-        {true, _} ->
-            leveled_log:log("P0018", [returned,
-                                        State#state.levelzero_pending,
-                                        State#state.work_backlog]),
+    % 1. If either the penciller is still waiting on the last L0 file to be
+    % written, or there is a work backlog - the cache is returned with the
+    % expectation that PUTs should be slowed.  Also if the cache has reached
+    % the maximum number of lines (by default after 31 pushes from the bookie)
+    % 
+    % 2. If (1) does not apply, the bookie's cache will be added to the
+    % penciller's cache.
+    SW = os:timestamp(),
+
+    L0Pending = State#state.levelzero_pending,
+    WorkBacklog = State#state.work_backlog,
+    CacheAlreadyFull = leveled_pmem:cache_full(State#state.levelzero_cache),
+    L0Size = State#state.levelzero_size,
+
+    % The clerk is prompted into action as there may be a L0 write required
+    ok = leveled_pclerk:clerk_prompt(State#state.clerk),
+
+    case L0Pending or WorkBacklog or CacheAlreadyFull of
+        true ->
+            % Cannot update the cache, or roll the memory so reply `returned`
+            % The Bookie must now retain the lesger cache and try to push the
+            % updated cache at a later time
+            leveled_log:log(
+                "P0018",
+                [L0Size, L0Pending, WorkBacklog, CacheAlreadyFull]),
             {reply, returned, State};
-        {false, true} ->
-            leveled_log:log("P0042", [State#state.levelzero_size]),
-            % The cache is full (the maximum line items have been reached), so
-            % can't accept any more.  However, we need to try and roll memory
-            % otherwise cache may be permanently full.
-            gen_server:reply(From, returned),
-            {UpdState, none} = maybe_roll_memory(State, true, false),
-            {noreply, UpdState};
-        {false, false} ->
-            % leveled_log:log("P0018", [ok, false, false]),
+        false ->
+            % Return ok as cache has been updated on State and the Bookie
+            % should clear its ledger cache which is now with the Penciller
             PushedTree =
                 case is_tuple(LedgerTable) of
                     true ->
                         LedgerTable;
                     false ->
-                        leveled_tree:from_orderedset(LedgerTable,
-                                                        ?CACHE_TYPE)
+                        leveled_tree:from_orderedset(LedgerTable, ?CACHE_TYPE)
                 end,
-            % Reply must happen after the table has been converted
-            gen_server:reply(From, ok),
-            % Update LevelZero will add to the cache and maybe roll the
-            % cache from memory to L0 disk if the cache is too big
-            {noreply,
-                update_levelzero(State#state.levelzero_size,
-                                    {PushedTree, PushedIdx, MinSQN, MaxSQN},
-                                    State#state.ledger_sqn,
-                                    State#state.levelzero_cache,
-                                    State)}
+            {UpdMaxSQN, NewL0Size, UpdL0Cache} =
+                leveled_pmem:add_to_cache(
+                    L0Size,
+                    {PushedTree, MinSQN, MaxSQN},
+                    State#state.ledger_sqn,
+                    State#state.levelzero_cache),
+            UpdL0Index =
+                leveled_pmem:add_to_index(
+                    PushedIdx,
+                    State#state.levelzero_index,
+                    length(State#state.levelzero_cache) + 1),
+            leveled_log:log_randomtimer(
+                "P0031", 
+                [NewL0Size, true, true, MinSQN, MaxSQN],
+                SW,
+                0.1),
+            {reply,
+                ok,
+                State#state{
+                    levelzero_cache = UpdL0Cache,
+                    levelzero_size = NewL0Size,
+                    levelzero_index = UpdL0Index,
+                    ledger_sqn = UpdMaxSQN}}
     end;
 handle_call({fetch, Key, Hash, UseL0Index}, _From, State) ->
     L0Idx = 
@@ -892,15 +898,16 @@ handle_call({register_snapshot, Snapshot, Query, BookiesMem, LongRunning},
                                                 {LM1Cache, MinSQN, MaxSQN},
                                                 State#state.ledger_sqn,
                                                 State#state.levelzero_cache),
-                L0Index =
+                LM1Idx =
                     case BookieIdx of
                         empty_index ->
-                            State#state.levelzero_index;
+                            leveled_pmem:new_index();
                         _ ->
-                            leveled_pmem:add_to_index(BookieIdx,
-                                                        State#state.levelzero_index,
-                                                        length(L0Cache))
+                            BookieIdx
                     end,
+                L0Index =
+                    leveled_pmem:add_to_index(
+                        LM1Idx, State#state.levelzero_index, length(L0Cache)),
                 {#state{levelzero_cache = L0Cache,
                         levelzero_index = L0Index,
                         levelzero_size = UpdSize,
@@ -931,18 +938,20 @@ handle_call(close, _From, State) ->
     % on the clerk.
     ok = leveled_pclerk:clerk_close(State#state.clerk),
     leveled_log:log("P0008", [close]),
-    L0Empty = State#state.levelzero_size == 0,
-    case (not State#state.levelzero_pending and not L0Empty) of
+    L0Left = State#state.levelzero_size > 0,
+    case (not State#state.levelzero_pending and L0Left) of
         true ->
-            L0_Left = State#state.levelzero_size > 0,
-            {UpdState, _L0Bloom} = maybe_roll_memory(State, L0_Left, true),
-            L0Pid = UpdState#state.levelzero_constructor,
-            case is_pid(L0Pid) of
-                true ->
-                    ok = leveled_sst:sst_close(L0Pid);
-                false ->
-                    leveled_log:log("P0010", [State#state.levelzero_size])
-            end;
+            Man0 = State#state.manifest,
+            {Constructor, _} =
+                roll_memory(
+                    leveled_pmanifest:get_manifest_sqn(Man0) + 1,
+                    State#state.ledger_sqn,
+                    State#state.root_path,
+                    State#state.levelzero_cache,
+                    length(State#state.levelzero_cache),
+                    State#state.sst_options,
+                    true),
+            ok = leveled_sst:sst_close(Constructor);
         false ->
             leveled_log:log("P0010", [State#state.levelzero_size])
     end,
@@ -1072,53 +1081,70 @@ handle_cast({levelzero_complete, FN, StartKey, EndKey, Bloom}, State) ->
                                                         0,
                                                         ManEntry),
     % Prompt clerk to ask about work - do this for every L0 roll
-    UpdIndex = leveled_pmem:clear_index(State#state.levelzero_index),
     ok = leveled_pclerk:clerk_prompt(State#state.clerk),
     {noreply, State#state{levelzero_cache=[],
-                            levelzero_index=UpdIndex,
+                            levelzero_index=[],
                             levelzero_pending=false,
                             levelzero_constructor=undefined,
                             levelzero_size=0,
                             manifest=UpdMan,
                             persisted_sqn=State#state.ledger_sqn}};
 handle_cast(work_for_clerk, State) ->
-    case {State#state.levelzero_pending, State#state.work_ongoing} of
-        {false, false} ->
-            % TODO - as part of supervision tree and retry work:
-            % Need to check for work_ongoing as well as levelzero_pending as
-            % there may be a race that could lead to the clerk doing the same
-            % thing twice.
-            %
-            % This has implications though if we auto-restart the pclerk in the
-            % future, without altering this state - it may never be able to
-            % request work due to ongoing work that crashed the previous clerk
-            %
-            % Perhaps the pclerk should not be restarted because of this, and
-            % the failure should ripple up
-            {WL, WC} = leveled_pmanifest:check_for_work(State#state.manifest),
-            case WC of
-                0 ->
-                    {noreply, State#state{work_backlog=false}};
-                N ->
-                    Backlog = N > ?WORKQUEUE_BACKLOG_TOLERANCE,
-                    leveled_log:log("P0024", [N, Backlog]),
-                    [TL|_Tail] = WL,
-                    ok =
-                        leveled_pclerk:clerk_push(
-                            State#state.clerk, {TL, State#state.manifest}),
-                    case TL of
-                        0 ->
-                            % Just written a L0 so as LoopState now rewritten,
-                            % garbage collect to free as much as possible as
-                            % soon as possible
-                            garbage_collect();
-                        _ ->
-                            ok
-                    end,
-                    
+    case {State#state.levelzero_pending,
+            State#state.work_ongoing,
+            leveled_pmanifest:levelzero_present(State#state.manifest)} of
+        {false, false, false} ->
+            % If the penciller memory needs rolling, prompt this now
+            CacheOverSize =
+                maybe_cache_too_big(
+                    State#state.levelzero_size,
+                    State#state.levelzero_maxcachesize,
+                    State#state.levelzero_cointoss),
+            CacheAlreadyFull =
+                leveled_pmem:cache_full(State#state.levelzero_cache),
+            case (CacheAlreadyFull or CacheOverSize) of
+                true ->
+                    % Rolling the memory to create a new Level Zero file
+                    NextSQN =
+                        leveled_pmanifest:get_manifest_sqn(
+                            State#state.manifest) + 1,
+                    {Constructor, none} =
+                        roll_memory(
+                            NextSQN,
+                            State#state.ledger_sqn,
+                            State#state.root_path,
+                            none,
+                            length(State#state.levelzero_cache),
+                            State#state.sst_options,
+                            false),
                     {noreply,
-                        State#state{work_backlog=Backlog, work_ongoing=true}}
+                        State#state{
+                            levelzero_pending=true,
+                            levelzero_constructor=Constructor}};
+                false ->
+                    {WL, WC} =
+                        leveled_pmanifest:check_for_work(State#state.manifest),
+                    case WC of
+                        0 ->
+                            % Should do some tidy-up work here?
+                            {noreply, State#state{work_backlog=false}};
+                        N ->
+                            Backlog = N > ?WORKQUEUE_BACKLOG_TOLERANCE,
+                            leveled_log:log("P0024", [N, Backlog]),
+                            [TL|_Tail] = WL,
+                            ok =
+                                leveled_pclerk:clerk_push(
+                                    State#state.clerk,
+                                    {TL, State#state.manifest}),
+                            {noreply,
+                                State#state{
+                                    work_backlog=Backlog, work_ongoing=true}}
+                    end
             end;
+        {false, false, true} ->
+            ok = leveled_pclerk:clerk_push(
+                State#state.clerk, {0, State#state.manifest}),
+            {noreply, State#state{work_ongoing=true}};
         _ ->
             {noreply, State}
     end;
@@ -1215,7 +1241,7 @@ start_from_file(PCLopts) ->
                         root_path = RootPath,
                         levelzero_maxcachesize = MaxTableSize,
                         levelzero_cointoss = CoinToss,
-                        levelzero_index = leveled_pmem:new_index(),
+                        levelzero_index = [],
                         snaptimeout_short = SnapTimeoutShort,
                         snaptimeout_long = SnapTimeoutLong,
                         sst_options = OptsSST},
@@ -1350,136 +1376,67 @@ archive_files(RootPath, UsedFileList) ->
     ok.
 
 
--spec update_levelzero(integer(), tuple(), integer(), list(), pcl_state()) 
-                                                            -> pcl_state().
+-spec maybe_cache_too_big(
+    pos_integer(), pos_integer(), boolean()) -> boolean().
 %% @doc
-%% Update the in-memory cache of recent changes for the penciller.  This is 
-%% the level zero at the top of the tree.
-%% Once the update is made, there needs to be a decision to potentially roll
-%% the level-zero memory to an on-disk level zero sst file.  This can only
-%% happen when the cache has exeeded the size threshold (with some jitter 
-%% to prevent coordination across multiple leveled instances), and when there
-%% is no level zero file already present, and when there is no manifest change
-%% pending. 
-update_levelzero(L0Size, {PushedTree, PushedIdx, MinSQN, MaxSQN},
-                                                LedgerSQN, L0Cache, State) ->
-    SW = os:timestamp(), % Time this for logging purposes
-    Update = leveled_pmem:add_to_cache(L0Size,
-                                        {PushedTree, MinSQN, MaxSQN},
-                                        LedgerSQN,
-                                        L0Cache),
-    UpdL0Index = leveled_pmem:add_to_index(PushedIdx,
-                                            State#state.levelzero_index,
-                                            length(L0Cache) + 1),
-    
-    {UpdMaxSQN, NewL0Size, UpdL0Cache} = Update,
-    if
-        UpdMaxSQN >= LedgerSQN ->
-            UpdState = State#state{levelzero_cache=UpdL0Cache,
-                                    levelzero_size=NewL0Size,
-                                    levelzero_index=UpdL0Index,
-                                    ledger_sqn=UpdMaxSQN},
-            CacheTooBig =
-                NewL0Size > State#state.levelzero_maxcachesize,
-            CacheMuchTooBig = 
-                NewL0Size > min(?SUPER_MAX_TABLE_SIZE,
-                                2 * State#state.levelzero_maxcachesize),
-            RandomFactor =
-                case State#state.levelzero_cointoss of
-                    true ->
-                        case leveled_rand:uniform(?COIN_SIDECOUNT) of
-                            1 ->
-                                true;
-                            _ ->
-                                false
-                        end;
-                    false ->
-                        true
-                end,
-            JitterCheck = RandomFactor or CacheMuchTooBig,
-            Due = CacheTooBig and JitterCheck,
-            {UpdState0, _L0Bloom} = maybe_roll_memory(UpdState, Due, false),
-            LogSubs = [NewL0Size, Due, State#state.work_ongoing],
-            case Due of
-                true ->
-                    leveled_log:log_timer("P0031", LogSubs, SW);
-                _ ->
-                    ok
-            end,
-            UpdState0
-    end.
+%% Is the cache too big - should it be flushed to on-disk Level 0
+%% There exists some jitter to prevent all caches from flushing concurrently
+%% where there are multiple leveled instances on one machine.
+maybe_cache_too_big(NewL0Size, L0MaxSize, CoinToss) ->
+    CacheTooBig = NewL0Size > L0MaxSize,
+    CacheMuchTooBig = 
+        NewL0Size > min(?SUPER_MAX_TABLE_SIZE, 2 * L0MaxSize),
+    RandomFactor =
+        case CoinToss of
+            true ->
+                case leveled_rand:uniform(?COIN_SIDECOUNT) of
+                    1 ->
+                        true;
+                    _ ->
+                        false
+                end;
+            false ->
+                true
+        end,
+    CacheTooBig and (RandomFactor or CacheMuchTooBig).
 
-
--spec maybe_roll_memory(pcl_state(), boolean(), boolean())
-                -> {pcl_state(), leveled_ebloom:bloom()|none}.
-%% @doc
-%% Check that no L0 file is present before rolling memory.  Returns a boolean
-%% to indicate if memory has been rolled, the Pid of the L0 constructor and 
-%% The bloom of the L0 file (or none)
-maybe_roll_memory(State, false, _SyncRoll) ->
-    {State, none};
-maybe_roll_memory(State, true, SyncRoll) ->
-    BlockedByL0 = leveled_pmanifest:levelzero_present(State#state.manifest),
-    PendingManifestChange = State#state.work_ongoing,
-    % It is critical that memory is not rolled if the manifest is due to be
-    % updated by a change by the clerk.  When that manifest change is made it
-    % will override the addition of L0 and data will be lost.
-    case (BlockedByL0 or PendingManifestChange) of
-        true ->
-            {State, none};
-        false ->
-            {L0Constructor, Bloom} = roll_memory(State, SyncRoll),
-            {State#state{levelzero_pending=true,
-                            levelzero_constructor=L0Constructor},
-                Bloom}
-    end.
-
--spec roll_memory(pcl_state(), boolean()) 
-                                    -> {pid(), leveled_ebloom:bloom()|none}.
+-spec roll_memory(
+    pos_integer(), non_neg_integer(), string(),
+    levelzero_cache()|none, pos_integer(),
+    sst_options(), boolean())
+        -> {pid(), leveled_ebloom:bloom()|none}.
 %% @doc
 %% Roll the in-memory cache into a L0 file.  If this is done synchronously, 
 %% will return a bloom representing the contents of the file. 
 %%
-%% Casting a large object (the levelzero cache) to the gen_server did not lead
-%% to an immediate return as expected.  With 32K keys in the TreeList it could
-%% take around 35-40ms.
+%% Casting a large object (the levelzero cache) to the SST file does not lead
+%% to an immediate return.  With 32K keys in the TreeList it could take around
+%% 35-40ms due to the overheads of copying.
 %%
-%% To avoid blocking this gen_server, the SST file can request each item of the
+%% To avoid blocking the penciller, the SST file can request each item of the
 %% cache one at a time.
 %%
 %% The Wait is set to false to use a cast when calling this in normal operation
 %% where as the Wait of true is used at shutdown
-roll_memory(State, false) ->
-    ManSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest) + 1,
-    RootPath = sst_rootpath(State#state.root_path),
-    FileName = sst_filename(ManSQN, 0, 0),
-    leveled_log:log("P0019", [FileName, State#state.ledger_sqn]),
+roll_memory(NextManSQN, LedgerSQN, RootPath, none, CL, SSTOpts, false) ->
+    L0Path = sst_rootpath(RootPath),
+    L0FN = sst_filename(NextManSQN, 0, 0),
+    leveled_log:log("P0019", [L0FN, LedgerSQN]),
     PCL = self(),
     FetchFun =
         fun(Slot, ReturnFun) -> pcl_fetchlevelzero(PCL, Slot, ReturnFun) end,
-    R = leveled_sst:sst_newlevelzero(RootPath,
-                                        FileName,
-                                        length(State#state.levelzero_cache),
-                                        FetchFun,
-                                        PCL,
-                                        State#state.ledger_sqn,
-                                        State#state.sst_options),
-    {ok, Constructor, _} = R,
+    {ok, Constructor, _} =
+        leveled_sst:sst_newlevelzero(
+            L0Path, L0FN, CL, FetchFun, PCL, LedgerSQN, SSTOpts),
     {Constructor, none};
-roll_memory(State, true) ->
-    ManSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest) + 1,
-    RootPath = sst_rootpath(State#state.root_path),
-    FileName = sst_filename(ManSQN, 0, 0),
-    LZC = State#state.levelzero_cache,
-    FetchFun = fun(Slot) -> lists:nth(Slot, LZC) end,
-    KVList = leveled_pmem:to_list(length(LZC), FetchFun),
-    R = leveled_sst:sst_new(RootPath,
-                            FileName,
-                            0,
-                            KVList,
-                            State#state.ledger_sqn,
-                            State#state.sst_options),
-    {ok, Constructor, _, Bloom} = R,
+roll_memory(NextManSQN, LedgerSQN, RootPath, L0Cache, CL, SSTOpts, true) ->
+    L0Path = sst_rootpath(RootPath),
+    L0FN = sst_filename(NextManSQN, 0, 0),
+    FetchFun = fun(Slot) -> lists:nth(Slot, L0Cache) end,
+    KVList = leveled_pmem:to_list(CL, FetchFun),
+    {ok, Constructor, _, Bloom} =
+        leveled_sst:sst_new(
+            L0Path, L0FN, 0, KVList, LedgerSQN, SSTOpts),
     {Constructor, Bloom}.
 
 

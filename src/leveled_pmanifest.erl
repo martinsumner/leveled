@@ -74,8 +74,10 @@
             % At o(10) trillion keys behaviour may become increasingly 
             % difficult to predict.
 
+-ifdef(if_check).
 -if(length(?LEVEL_SCALEFACTOR) /= ?MAX_LEVELS).
 -error("length ?LEVEL_SCALEFACTOR differs from ?MAX_LEVELS").
+-endif.
 -endif.
 
 -define(TREE_TYPE, idxt).
@@ -105,10 +107,11 @@
 -type manifest() :: #manifest{}.
 -type manifest_entry() :: #manifest_entry{}.
 -type manifest_owner() :: pid()|list().
+-type lsm_level() :: 0..7.
 -type selector_strategy() ::
         random|{grooming, fun((list(manifest_entry())) -> manifest_entry())}.
 
--export_type([manifest/0, manifest_entry/0, manifest_owner/0]).
+-export_type([manifest/0, manifest_entry/0, manifest_owner/0, lsm_level/0]).
 
 %%%============================================================================
 %%% API
