@@ -37,7 +37,6 @@
         merge_trees/4,
         add_to_index/3,
         new_index/0,
-        clear_index/1,
         check_index/2,
         cache_full/1
         ]).      
@@ -46,8 +45,7 @@
 
 -define(MAX_CACHE_LINES, 31). % Must be less than 128
 
-% -type index_array() :: array:array().
--type index_array() :: any()|none. % To live with OTP16
+-type index_array() :: list(array:array())|[]|none. 
 
 -export_type([index_array/0]).
 
@@ -61,8 +59,8 @@
 cache_full(L0Cache) ->
     length(L0Cache) == ?MAX_CACHE_LINES.
 
--spec prepare_for_index(index_array(), leveled_codec:segment_hash()) 
-                                                            -> index_array().
+-spec prepare_for_index(
+    array:array(), leveled_codec:segment_hash()) -> array:array().
 %% @doc
 %% Add the hash of a key to the index.  This is 'prepared' in the sense that
 %% this index is not use until it is loaded into the main index.
@@ -77,45 +75,39 @@ prepare_for_index(IndexArray, Hash) ->
     Bin = array:get(Slot, IndexArray),
     array:set(Slot, <<Bin/binary, 1:1/integer, H0:23/integer>>, IndexArray).
 
--spec add_to_index(index_array(), index_array(), integer()) -> index_array().
+-spec add_to_index(array:array(), index_array(), integer()) -> index_array().
 %% @doc
 %% Expand the penciller's current index array with the details from a new
 %% ledger cache tree sent from the Bookie.  The tree will have a cache slot
 %% which is the index of this ledger_cache in the list of the ledger_caches
 add_to_index(LM1Array, L0Index, CacheSlot) when CacheSlot < 128 ->
-    IndexAddFun =
-        fun(Slot, Acc) ->
-            Bin0 = array:get(Slot, Acc),
-            BinLM1 = array:get(Slot, LM1Array),
-            array:set(Slot,
-                        <<Bin0/binary,
-                            0:1/integer, CacheSlot:7/integer,
-                            BinLM1/binary>>,
-                        Acc)
-        end,
-    lists:foldl(IndexAddFun, L0Index, lists:seq(0, 255)).
+    [LM1Array|L0Index].
 
--spec new_index() -> index_array().
+-spec new_index() -> array:array().
 %% @doc
 %% Create a new index array
 new_index() ->
     array:new([{size, 256}, {default, <<>>}]).
 
--spec clear_index(index_array()) -> index_array().
-%% @doc
-%% Create a new index array
-clear_index(_L0Index) ->
-    new_index().
-
--spec check_index({integer(), integer()}, index_array()) -> list(integer()).
+-spec check_index(leveled_codec:segment_hash(), index_array())
+        -> list(non_neg_integer()).
 %% @doc
 %% return a list of positions in the list of cache arrays that may contain the
 %% key associated with the hash being checked
 check_index(Hash, L0Index) ->
     {Slot, H0} = split_hash(Hash),
-    Bin = array:get(Slot, L0Index),
-    find_pos(Bin, H0, [], 0).    
-
+    {_L, Positions} =
+        lists:foldl(
+            fun(A, {SlotC, PosList}) ->
+                B = array:get(Slot, A),
+                case find_pos(B, H0) of
+                    true -> {SlotC + 1, [SlotC|PosList]};
+                    false -> {SlotC + 1, PosList}
+                end
+            end,
+            {1, []},
+            L0Index),
+    lists:reverse(Positions).    
 
 -spec add_to_cache(integer(),
                     {tuple(), integer(), integer()},
@@ -128,16 +120,11 @@ check_index(Hash, L0Index) ->
 %% the Ledger's SQN.
 add_to_cache(L0Size, {LevelMinus1, MinSQN, MaxSQN}, LedgerSQN, TreeList) ->
     LM1Size = leveled_tree:tsize(LevelMinus1),
-    case LM1Size of
-        0 ->
-            {LedgerSQN, L0Size, TreeList};
-        _ ->
-            if
-                MinSQN >= LedgerSQN ->
-                    {MaxSQN,
-                        L0Size + LM1Size,
-                        lists:append(TreeList, [LevelMinus1])}
-            end
+    if
+        MinSQN >= LedgerSQN ->
+            {MaxSQN,
+                L0Size + LM1Size,
+                [LevelMinus1|TreeList]}
     end.
 
 -spec to_list(integer(), fun()) -> list().
@@ -150,7 +137,7 @@ add_to_cache(L0Size, {LevelMinus1, MinSQN, MaxSQN}, LedgerSQN, TreeList) ->
 %% does a large object copy of the whole cache.
 to_list(Slots, FetchFun) ->
     SW = os:timestamp(),
-    SlotList = lists:reverse(lists:seq(1, Slots)),
+    SlotList = lists:seq(1, Slots),
     FullList = lists:foldl(fun(Slot, Acc) ->
                                 Tree = FetchFun(Slot),
                                 L = leveled_tree:to_list(Tree),
@@ -193,32 +180,24 @@ check_levelzero(Key, Hash, PosList, TreeList) ->
 %% currently unmerged bookie's ledger cache) that are between StartKey
 %% and EndKey (inclusive).
 merge_trees(StartKey, EndKey, TreeList, LevelMinus1) ->
-    lists:foldl(fun(Tree, Acc) ->
-                        R = leveled_tree:match_range(StartKey,
-                                                        EndKey,
-                                                        Tree),
-                        lists:ukeymerge(1, Acc, R) end,
-                    [],
-                    [LevelMinus1|lists:reverse(TreeList)]).
+    lists:foldl(
+        fun(Tree, Acc) ->
+            R = leveled_tree:match_range(StartKey, EndKey, Tree),
+            lists:ukeymerge(1, Acc, R) end,
+            [],
+            [LevelMinus1|TreeList]).
 
 %%%============================================================================
 %%% Internal Functions
 %%%============================================================================
 
 
-find_pos(<<>>, _Hash, PosList, _SlotID) ->
-    PosList;
-find_pos(<<1:1/integer, Hash:23/integer, T/binary>>, Hash, PosList, SlotID) ->
-    case lists:member(SlotID, PosList) of
-        true ->
-            find_pos(T, Hash, PosList, SlotID);
-        false ->
-            find_pos(T, Hash, PosList ++ [SlotID], SlotID)
-    end;
-find_pos(<<1:1/integer, _Miss:23/integer, T/binary>>, Hash, PosList, SlotID) ->
-    find_pos(T, Hash, PosList, SlotID);
-find_pos(<<0:1/integer, NxtSlot:7/integer, T/binary>>, Hash, PosList, _SlotID) ->
-    find_pos(T, Hash, PosList, NxtSlot).
+find_pos(<<>>, _Hash) ->
+    false;
+find_pos(<<1:1/integer, Hash:23/integer, _T/binary>>, Hash) ->
+    true;
+find_pos(<<1:1/integer, _Miss:23/integer, T/binary>>, Hash) ->
+    find_pos(T, Hash).
 
 
 split_hash({SegmentID, ExtraHash}) ->
@@ -242,9 +221,7 @@ check_slotlist(Key, _Hash, CheckList, TreeList) ->
                     end
             end
             end,
-    lists:foldl(SlotCheckFun,
-                    {false, not_found},
-                    lists:reverse(CheckList)).
+    lists:foldl(SlotCheckFun, {false, not_found}, CheckList).
 
 %%%============================================================================
 %%% Test
@@ -325,7 +302,7 @@ compare_method_test() ->
             end,
     
     S0 = lists:foldl(fun({Key, _V}, Acc) ->
-                            R0 = lists:foldr(FindKeyFun(Key),
+                            R0 = lists:foldl(FindKeyFun(Key),
                                                 {false, not_found},
                                                 TreeList),
                             [R0|Acc] end,
@@ -394,7 +371,7 @@ with_index_test2() ->
             {R, UpdL0Index, lists:ukeymerge(1, LM1, SrcList)}
         end,
     
-    R0 = lists:foldl(LoadFun, {{0, 0, []}, new_index(), []}, lists:seq(1, 16)),
+    R0 = lists:foldl(LoadFun, {{0, 0, []}, [], []}, lists:seq(1, 16)),
     
     {{SQN, Size, TreeList}, L0Index, SrcKVL} = R0,
     ?assertMatch(32000, SQN),
@@ -411,5 +388,53 @@ with_index_test2() ->
     
     _R1 = lists:foldl(CheckFun, {L0Index, TreeList}, SrcKVL).
             
+
+index_performance_test() ->
+    LM1 = generate_randomkeys_aslist(1, 2000, 1, 500),
+    LM2 = generate_randomkeys_aslist(2001, 2000, 1, 500),
+    HL1 = lists:map(fun({K, _V}) -> leveled_codec:segment_hash(K) end, LM1),
+    HL2 = lists:map(fun({K, _V}) -> leveled_codec:segment_hash(K) end, LM2),
+
+    SWP = os:timestamp(),
+    A1 =
+        lists:foldl(
+            fun(H, A) -> prepare_for_index(A, H) end,
+            new_index(),
+            HL1),
+    io:format(
+        user, 
+        "~nPrepare single index takes ~w microsec~n",
+        [timer:now_diff(os:timestamp(), SWP)]),
+    
+    SWL = os:timestamp(),
+    PMI1 = 
+        lists:foldl(
+            fun(I, Idx) -> add_to_index(A1, Idx, I) end, [], lists:seq(1, 8)),
+    io:format(
+        user, 
+        "Appending to array takes ~w microsec~n",
+        [timer:now_diff(os:timestamp(), SWL)]),
+    
+    SWC1 = os:timestamp(),
+    R0 = lists:seq(1, 8),
+    lists:foreach(fun(H) -> ?assertMatch(R0, check_index(H, PMI1)) end, HL1),
+    io:format(
+        user, 
+        "Checking 2000 matches in array at each level takes ~w microsec~n",
+        [timer:now_diff(os:timestamp(), SWC1)]),
+    
+    SWC2 = os:timestamp(),
+    FPT = 
+        lists:foldl(
+            fun(H, FPC) -> FPC + length(check_index(H, PMI1)) end,
+            0,
+            HL2),
+    io:format(
+        user, 
+        "Checking 2000 misses in array at each level takes ~w microsec " ++
+        "with ~w false positives~n",
+        [timer:now_diff(os:timestamp(), SWC2), FPT]).
+
+
 
 -endif.

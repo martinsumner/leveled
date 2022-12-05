@@ -95,8 +95,6 @@
         {debug, "Remaining ledger snapshots are ~w"}},
     {"P0005",
         {debug, "Delete confirmed as file ~s is removed from Manifest"}},
-    {"P0006",
-        {info, "Orphaned reply after timeout on L0 file write ~s"}},
     {"P0007",
         {debug, "Sent release message for cloned Penciller following close for "
                 ++ "reason ~w"}},
@@ -119,28 +117,14 @@
     {"P0017",
         {info, "No L0 file found"}},
     {"P0018",
-        {info, "Response to push_mem of ~w with "
-                    ++ "L0 pending ~w and merge backlog ~w"}},
+        {info,
+        "Response to push_mem of returned with cache_size=~w "
+        ++ "L0_pending=~w merge_backlog=~w cachelines_full=~w"}},
     {"P0019",
         {info, "Rolling level zero to filename ~s at ledger sqn ~w"}},
-    {"P0021",
-        {info, "Allocation of work blocked as L0 pending"}},
-    {"P0022",
-        {info, "Manifest at Level ~w"}},
-    {"P0023",
-        {info, "Manifest entry of startkey ~s ~s ~s endkey ~s ~s ~s "
-                ++ "filename=~s~n"}},
     {"P0024",
         {info, "Outstanding compaction work items of ~w with backlog status "
                     ++ "of ~w"}},
-    {"P0025",
-        {info, "Merge to sqn ~w from Level ~w completed"}},
-    {"P0026",
-        {info, "Merge has been commmitted at sequence number ~w"}},
-    {"P0027",
-        {info, "Rename of manifest from ~s ~w to ~s ~w"}},
-    {"P0028",
-        {debug, "Adding cleared file ~s to deletion list"}},
     {"P0029",
         {info, "L0 completion confirmed and will transition to not pending"}},
     {"P0030",
@@ -148,7 +132,8 @@
     {"P0031",
         {info, "Completion of update to levelzero"
                     ++ " with cache_size=~w level0_due=~w"
-                    ++ " and change_pending=~w"}},
+                    ++ " change_pending=~w"
+                    ++ " MinSQN=~w MaxSQN=~w"}},
     {"P0032",
         {info, "Fetch head timing with sample_count=~w and level timings of"
                     ++ " foundmem_time=~w found0_time=~w found1_time=~w" 
@@ -161,13 +146,8 @@
     {"P0033",
         {error, "Corrupted manifest file at path ~s to be ignored "
                     ++ "due to error ~w"}},
-    {"P0034",
-        {warn, "Snapshot with pid ~w timed out and so deletion will "
-                    ++ "continue regardless"}},
     {"P0035",
         {info, "Startup with Manifest SQN of ~w"}},
-    {"P0036",
-        {info, "Garbage collection on manifest removes key for filename ~s"}},
     {"P0037",
         {debug, "Merging of penciller L0 tree from size ~w complete"}},
     {"P0038",
@@ -180,8 +160,6 @@
         {info, "Archiving filename ~s as unused at startup"}},
     {"P0041",
         {info, "Penciller manifest switched from SQN ~w to ~w"}},
-    {"P0042",
-        {warn, "Cache full so attempting roll memory with l0_size=~w"}},
         
     {"PC001",
         {info, "Penciller's clerk ~w started with owner ~w"}},

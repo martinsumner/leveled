@@ -62,16 +62,6 @@
                 {gen_fsm, reply, 2}]}).
 -endif.
 
--ifdef(slow_test).
--define(SPECIAL_DELFUN, fun(_F) -> ok end).
-    % There are problems with the pendingdelete_test/0 in riak make test
-    % The deletion of the file causes the process to crash and the test to
-    % fail, but thisis not an issue tetsing outside of riak make test.
-    % Workaround this problem by not performing the delete when running unit
-    % tests in R16
--else.
--define(SPECIAL_DELFUN, fun(F) -> file:delete(F) end).
--endif.
 
 -export([init/1,
             handle_sync_event/4,
@@ -957,27 +947,10 @@ close_pendingdelete(Handle, Filename, WasteFP) ->
     end.
 
 -spec set_writeops(sync|riak_sync|none) -> {list(), sync|riak_sync|none}.
-%% Assumption is that sync should be used - it is a transaction log.
-%%
-%% However this flag is not supported in OTP 16.  Bitcask appears to pass an
-%% o_sync flag, but this isn't supported either (maybe it works with the
-%% bitcask nif fileops).
-%%
-%% To get round this will try and datasync on each PUT with riak_sync
--ifdef(no_sync).
-
-set_writeops(SyncStrategy) ->
-    case SyncStrategy of
-        sync ->
-            {?WRITE_OPS, riak_sync};
-        riak_sync ->
-            {?WRITE_OPS, riak_sync};
-        none ->
-            {?WRITE_OPS, none}
-    end.
-
--else.
-
+%% @doc
+%% Sync should be used - it is a transaction log - in single node
+%% implementations. `riak_sync` is a legacy of earlier OTP versions when
+%% passing the sync option was not supported
 set_writeops(SyncStrategy) ->
     case SyncStrategy of
         sync ->
@@ -987,8 +960,6 @@ set_writeops(SyncStrategy) ->
         none ->
             {?WRITE_OPS, none}
     end.
-
--endif.
 
 -spec open_active_file(list()) -> {integer(), ets:tid(), any()}.
 %% @doc
@@ -2814,7 +2785,7 @@ pendingdelete_test() ->
     {ok, P2} = cdb_open_reader(F2, #cdb_options{binary_mode=false}),
     ?assertMatch({"Key1", "Value1"}, cdb_get(P2, "Key1")),
     ?assertMatch({"Key100", "Value100"}, cdb_get(P2, "Key100")),
-    ?SPECIAL_DELFUN(F2),
+    ok = file:delete(F2),
     ok = cdb_deletepending(P2),
         % No issues destroying even though the file has already been removed
     ok = cdb_destroy(P2).
