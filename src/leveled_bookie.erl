@@ -159,9 +159,9 @@
                 {snapshot_timeout_short, ?SNAPTIMEOUT_SHORT},
                 {snapshot_timeout_long, ?SNAPTIMEOUT_LONG},
                 {stats_percentage, ?DEFAULT_STATS_PERC},
-                {monitor_log_frequency,
+                {stats_logfrequency,
                     element(1, leveled_monitor:get_defaults())},
-                {monitor_log_list,
+                {monitor_loglist,
                     element(2, leveled_monitor:get_defaults())}]).
 
 -record(ledger_cache, {mem :: ets:tab(),
@@ -365,12 +365,12 @@
         {stats_percentage, 0..100} |
             % Probability that stats will be collected for an individual
             % request.
-        {monitor_log_frequency, pos_integer()} |
+        {stats_logfrequency, pos_integer()} |
             % Time in seconds before logging the next timing log. This covers
             % the logs associated with the timing of GET/PUTs in various parts
             % of the system.  There are 7 such logs - so setting to 30s will
             % mean that each inidividual log will occur every 210s
-        {monitor_log_list, list(leveled_monitor:log_type())}
+        {monitor_loglist, list(leveled_monitor:log_type())}
         ].
 
 -type initial_loadfun() ::
@@ -1179,8 +1179,8 @@ init([Opts]) ->
 
             {ok, Monitor} =
                 leveled_monitor:monitor_start(
-                    proplists:get_value(monitor_log_frequency, Opts),
-                    proplists:get_value(monitor_log_list, Opts)
+                    proplists:get_value(stats_logfrequency, Opts),
+                    proplists:get_value(monitor_loglist, Opts)
                 ),
             StatLogFrequency = proplists:get_value(stats_percentage, Opts),
 

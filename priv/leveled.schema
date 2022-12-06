@@ -201,7 +201,7 @@
 %% @doc Statistic log frequency (seconds)
 %% The wait in seconds between logs from each leveled_monitor (there is one
 %% monitor per vnode)
-{mapping, "leveled.stats_percentage", "leveled.stats_percentage", [
+{mapping, "leveled.stats_logfrequency", "leveled.stats_logfrequency", [
   {default, 30},
   {datatype, integer}
 ]}.

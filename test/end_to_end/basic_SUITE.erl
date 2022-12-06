@@ -544,7 +544,7 @@ load_and_count(JournalSize, BookiesMemSize, PencillerMemSize) ->
                     {cache_size, BookiesMemSize},
                     {max_pencillercachesize, PencillerMemSize},
                     {sync_strategy, testutil:sync_strategy()},
-                    {monitor_log_frequency, 5},
+                    {stats_logfrequency, 5},
                     {stats_probability, 80}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
