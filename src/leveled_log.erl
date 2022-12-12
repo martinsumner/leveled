@@ -19,6 +19,9 @@
             save/1,
             return_settings/0]).
 
+-ifdef(TEST).
+-export([format_time/1, log_prefix/5]).
+-endif.
 
 -record(log_options,
     {log_level = info :: log_level(), 
@@ -490,6 +493,23 @@ duration_text(StartTime) ->
 %%%============================================================================
 
 -ifdef(TEST).
+
+format_time({{Y, M, D}, {H, Mi, S, Ms}}) ->
+    io_lib:format("~b-~2..0b-~2..0b", [Y, M, D]) ++ "T" ++
+        io_lib:format("~2..0b:~2..0b:~2..0b.~3..0b", [H, Mi, S, Ms]).
+
+prefix_compare_test() ->
+    Time = localtime_ms(),
+    DBid = 64,
+    LogLevel = info,
+    LogRef = b0001,
+    {TS0, OldTS} =
+        timer:tc(?MODULE, format_time, [Time]),
+    {TS1, NewPrefix} =
+        timer:tc(?MODULE, log_prefix, [Time, LogLevel, LogRef, DBid, self()]),
+    {NewTS, _Rest} = lists:split(23, lists:flatten(NewPrefix)),
+    ?assertMatch(OldTS, NewTS),
+    io:format(user, "~nTimestamp timings old ~w new ~w~n", [TS0, TS1]).
 
 log_test() ->
     log(d0001, []),
