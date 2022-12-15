@@ -65,13 +65,13 @@
         b0013 =>
             {warn, <<"Long running task took ~w microseconds with task_type=~w">>},
         b0015 =>
-            {info, <<"Put timing with sample_count=~w ink_time=~w prep_time=~w mem_time=~w with total_object_size=~w">>},
+            {info, <<"Put timing with sample_count=~w ink_time=~w prep_time=~w mem_time=~w with total_object_size=~w with sample_period=~w seconds">>},
         b0016 =>
-            {info, <<"Get timing with sample_count=~w and head_time=~w body_time=~w with fetch_count=~w">>},
+            {info, <<"Get timing with sample_count=~w and head_time=~w body_time=~w with fetch_count=~w with sample_period=~w seconds">>},
         b0017 =>
-            {info, <<"Snapshot timing with sample_count=~w and bookie_time=~w pcl_time=~w">>},
+            {info, <<"Snapshot timing with sample_count=~w and bookie_time=~w pcl_time=~w with sample_period=~w seconds">>},
         b0018 =>
-            {info, <<"Positive HEAD responses timed with sample_count=~w and cache_count=~w found_count=~w fetch_ledger_time=~w fetch_ledgercache_time=~w rsp_time=~w notfound_time=~w">>},
+            {info, <<"Positive HEAD responses timed with sample_count=~w and cache_count=~w found_count=~w fetch_ledger_time=~w fetch_ledgercache_time=~w rsp_time=~w notfound_time=~w with sample_period=~w seconds">>},
         b0019 =>
             {warn, <<"Use of book_indexfold with constraint of Bucket ~w with no StartKey is deprecated">>},
         b0020 =>
@@ -119,7 +119,7 @@
         p0031 =>
             {info, <<"Completion of update to levelzero with cache_size=~w level0_due=~w change_pending=~w MinSQN=~w MaxSQN=~w">>},
         p0032 =>
-            {info, <<"Fetch head timing with sample_count=~w and level timings of foundmem_time=~w found0_time=~w found1_time=~w found2_time=~w found3_time=~w foundlower_time=~w missed_time=~w with counts of foundmem_count=~w found0_count=~w found1_count=~w found2_count=~w found3_count=~w foundlower_count=~w missed_count=~w">>},
+            {info, <<"Fetch head timing with sample_count=~w and level timings of foundmem_time=~w found0_time=~w found1_time=~w found2_time=~w found3_time=~w foundlower_time=~w missed_time=~w with counts of foundmem_count=~w found0_count=~w found1_count=~w found2_count=~w found3_count=~w foundlower_count=~w missed_count=~w with sample_period=~w seconds">>},
         p0033 =>
             {error, <<"Corrupted manifest file at path ~s to be ignored due to error ~s">>},
         p0035 =>
@@ -191,7 +191,7 @@
         sst11 =>
             {info, <<"Level zero creation timings in microseconds pmem_fetch=~w merge_lists=~w build_slots=~w build_summary=~w read_switch=~w">>},
         sst12 =>
-            {info, <<"SST Timings at level=~w for sample_count=~w at timing points notfound_time=~w fetchcache_time=~w slotcached_time=~w slotnoncached_time=~w exiting at points notfound_count=~w fetchcache_count=~w slotcached_count=~w slotnoncached_count=~w">>},
+            {info, <<"SST Timings at level=~w for sample_count=~w at timing points notfound_time=~w fetchcache_time=~w slotcached_time=~w slotnoncached_time=~w exiting at points notfound_count=~w fetchcache_count=~w slotcached_count=~w slotnoncached_count=~w with sample_period=~w seconds">>},
         sst13 =>
             {info, <<"SST merge list build timings of fold_toslot=~w slot_hashlist=~w slot_serialise=~w slot_finish=~w is_basement=~w level=~w">>},
         sst14 =>
@@ -303,7 +303,7 @@
         cdb18 =>
             {info, <<"Handled return and write of hashtable">>},
         cdb19 =>
-            {info, <<"Sample timings in microseconds for sample_count=~w with totals of cycle_count=~w index_time=~w read_time=~w">>},
+            {info, <<"Sample timings in microseconds for sample_count=~w with totals of cycle_count=~w index_time=~w read_time=~w with sample_period=~w seconds">>},
         cdb20 =>
             {warn, <<"Error ~w caught when safe reading a file to length ~w">>},
         cdb21 =>
