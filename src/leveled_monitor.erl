@@ -1,11 +1,19 @@
 %% -------- MONITOR ---------
 %%
-%% The bookie's monitor is a process dedciated to gathering and reporting
-%% stats related to performance of the store.
+%% The bookie's monitor is a process dedicated to gathering and reporting
+%% stats related to performance of the leveled store.
 %% 
-%% The monitor was introduced as a sedicated process to reduce the number of
-%% LoopState mutations otherwise necessary to track statistics, requiring
-%% State copies even on read events.
+%% Depending on the sample frequency, a process will randomly determine whether
+%% or not to take a timing of a transaction.  If a timing is taken the result
+%% is cast to the moniitor.
+%% 
+%% The monitor gathers stats across the store, and then on a timing loop logs
+%% out the gathered stats for one of the monitored stat types once every
+%% ?LOG_FREQUENCY_SECONDS.  On each timing trigger the monitor should move on
+%% to the next timing stat in its list.
+%% 
+%% The different types of timing stats are defined within the ?LOG_LIST.  Each
+%% type of timing stat has its own record maintained in the monitor loop state.
 
 -module(leveled_monitor).
 
