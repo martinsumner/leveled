@@ -517,7 +517,7 @@ handle_call({fetch, Key, SQN}, _From, State) ->
         {{SQN, Key}, {Value, _IndexSpecs}} ->
             {reply, {ok, Value}, State};
         Other ->
-            leveled_log:log("I0001", [Key, SQN, Other]),
+            leveled_log:log(i0001, [Key, SQN, Other]),
             {reply, not_present, State}
     end;
 handle_call({get, Key, SQN}, _From, State) ->
@@ -546,7 +546,7 @@ handle_call({register_snapshot, Requestor},
     Rs = [{Requestor,
             os:timestamp(),
             State#state.manifest_sqn}|State#state.registered_snapshots],
-    leveled_log:log("I0002", [Requestor, State#state.manifest_sqn]),
+    leveled_log:log(i0002, [Requestor, State#state.manifest_sqn]),
     {reply, {State#state.manifest,
                 State#state.active_journaldb,
                 State#state.journal_sqn},
@@ -592,7 +592,7 @@ handle_call(roll, _From, State=#state{is_snapshot=Snap}) when Snap == false ->
                             State#state.cdb_options,
                             State#state.root_path,
                             State#state.manifest_sqn),
-            leveled_log:log_timer("I0024", [NewSQN], SWroll),
+            leveled_log:log_timer(i0024, [NewSQN], SWroll),
             {reply, ok, State#state{journal_sqn = NewSQN,
                                         manifest = Manifest1,
                                         manifest_sqn = NewManSQN,
@@ -604,7 +604,7 @@ handle_call({backup, BackupPath}, _from, State)
     BackupJFP = filepath(filename:join(BackupPath, ?JOURNAL_FP), journal_dir),
     ok = filelib:ensure_dir(BackupJFP),
     {ok, CurrentFNs} = file:list_dir(BackupJFP),
-    leveled_log:log("I0023", [length(CurrentFNs)]),
+    leveled_log:log(i0023, [length(CurrentFNs)]),
     BackupFun =
         fun({SQN, FN, PidR, LastKey}, {ManAcc, FTRAcc}) ->
             case SQN < State#state.journal_sqn of
@@ -623,7 +623,7 @@ handle_call({backup, BackupPath}, _from, State)
                     {[{SQN, BackupName, PidR, LastKey}|ManAcc],
                         [ExtendedBaseFN|FTRAcc]};
                 false ->
-                    leveled_log:log("I0021", [FN, SQN, State#state.journal_sqn]),
+                    leveled_log:log(i0021, [FN, SQN, State#state.journal_sqn]),
                     {ManAcc, FTRAcc}
             end
         end,
@@ -635,7 +635,7 @@ handle_call({backup, BackupPath}, _from, State)
     FilesToRemove = lists:subtract(CurrentFNs, FilesToRetain),
     RemoveFun = 
         fun(RFN) -> 
-            leveled_log:log("I0022", [RFN]),
+            leveled_log:log(i0022, [RFN]),
             RemoveFile = filename:join(BackupJFP, RFN),
             case filelib:is_file(RemoveFile) 
                     and not filelib:is_dir(RemoveFile) of 
@@ -649,15 +649,15 @@ handle_call({backup, BackupPath}, _from, State)
     leveled_imanifest:writer(leveled_imanifest:from_list(BackupManifest),
                                 State#state.manifest_sqn, 
                                 filename:join(BackupPath, ?JOURNAL_FP)),
-    leveled_log:log_timer("I0020", 
-                            [filename:join(BackupPath, ?JOURNAL_FP), 
-                                length(BackupManifest)], 
-                            SW),
+    leveled_log:log_timer(
+        i0020,
+        [filename:join(BackupPath, ?JOURNAL_FP), length(BackupManifest)], 
+        SW),
     {reply, ok, State};
 handle_call({check_sqn, LedgerSQN}, _From, State) ->
     case State#state.journal_sqn of
         JSQN when JSQN < LedgerSQN ->
-            leveled_log:log("I0025", [JSQN, LedgerSQN]),
+            leveled_log:log(i0025, [JSQN, LedgerSQN]),
             {reply, ok, State#state{journal_sqn = LedgerSQN}};
         _JSQN ->
             {reply, ok, State}
@@ -669,9 +669,9 @@ handle_call(close, _From, State) ->
         true ->
             ok = ink_releasesnapshot(State#state.source_inker, self());
         false ->    
-            leveled_log:log("I0005", [close]),
-            leveled_log:log("I0006", [State#state.journal_sqn,
-                                        State#state.manifest_sqn]),
+            leveled_log:log(i0005, [close]),
+            leveled_log:log(
+                i0006, [State#state.journal_sqn, State#state.manifest_sqn]),
             ok = leveled_iclerk:clerk_stop(State#state.clerk),
             shutdown_snapshots(State#state.registered_snapshots),
             shutdown_manifest(State#state.manifest)
@@ -682,11 +682,11 @@ handle_call(doom, _From, State) ->
             filepath(State#state.root_path, manifest_dir),
             filepath(State#state.root_path, journal_compact_dir),
             filepath(State#state.root_path, journal_waste_dir)],
-    leveled_log:log("I0018", []),
+    leveled_log:log(i0018, []),
 
-    leveled_log:log("I0005", [doom]),
-    leveled_log:log("I0006", [State#state.journal_sqn,
-                                State#state.manifest_sqn]),
+    leveled_log:log(i0005, [doom]),
+    leveled_log:log(
+        i0006, [State#state.journal_sqn, State#state.manifest_sqn]),
     ok = leveled_iclerk:clerk_stop(State#state.clerk),
     shutdown_snapshots(State#state.registered_snapshots),
     shutdown_manifest(State#state.manifest),
@@ -748,12 +748,12 @@ handle_cast({confirm_delete, ManSQN, CDB}, State) ->
     end,
     {noreply, State#state{registered_snapshots = RegisteredSnapshots0}};
 handle_cast({release_snapshot, Snapshot}, State) ->
-    leveled_log:log("I0003", [Snapshot]),
+    leveled_log:log(i0003, [Snapshot]),
     case lists:keydelete(Snapshot, 1, State#state.registered_snapshots) of
         [] ->
             {noreply, State#state{registered_snapshots=[]}};
         Rs ->
-            leveled_log:log("I0004", [length(Rs)]),
+            leveled_log:log(i0004, [length(Rs)]),
             {noreply, State#state{registered_snapshots=Rs}}
     end;
 handle_cast({log_level, LogLevel}, State) ->
@@ -875,7 +875,7 @@ shutdown_snapshots(Snapshots) ->
 %% @doc
 %% Shutdown all files in the manifest
 shutdown_manifest(Manifest) ->
-    leveled_log:log("I0007", []),
+    leveled_log:log(i0007, []),
     leveled_imanifest:printer(Manifest),
     ManAsList = leveled_imanifest:to_list(Manifest),
     close_allmanifest(ManAsList).
@@ -940,7 +940,7 @@ put_object(LedgerKey, Object, KeyChanges, Sync, State) ->
                             State#state.cdb_options,
                             State#state.root_path,
                             State#state.manifest_sqn),
-            leveled_log:log_timer("I0008", [], SWroll),
+            leveled_log:log_timer(i0008, [], SWroll),
             ok = leveled_cdb:cdb_put(NewJournalP,
                                         JournalKey,
                                         JournalBin),
@@ -1051,13 +1051,13 @@ build_manifest(ManifestFilenames,
     UpdManifestSQN =
         if
             length(OpenManifest) > length(Manifest)  ->
-                leveled_log:log("I0009", []),
+                leveled_log:log(i0009, []),
                 leveled_imanifest:printer(OpenManifest),
                 NextSQN = ManifestSQN + 1,
                 leveled_imanifest:writer(OpenManifest, NextSQN, RootPath),
                 NextSQN;
             true ->
-                leveled_log:log("I0010", []),
+                leveled_log:log(i0010, []),
                 leveled_imanifest:printer(OpenManifest),
                 ManifestSQN
         end,
@@ -1082,7 +1082,7 @@ close_allmanifest([H|ManifestT]) ->
 %% Open all the files in the manifets, and updating the manifest with the PIDs
 %% of the opened files
 open_all_manifest([], RootPath, CDBOpts) ->
-    leveled_log:log("I0011", []),
+    leveled_log:log(i0011, []),
     leveled_imanifest:add_entry([],
                                 start_new_activejournal(0, RootPath, CDBOpts),
                                 true);
@@ -1113,7 +1113,7 @@ open_all_manifest(Man0, RootPath, CDBOpts) ->
     PendingHeadFN = HeadFN ++ "." ++ ?PENDING_FILEX,
     case filelib:is_file(CompleteHeadFN) of
         true ->
-            leveled_log:log("I0012", [HeadFN]),
+            leveled_log:log(i0012, [HeadFN]),
             {ok, HeadR} = leveled_cdb:cdb_open_reader(CompleteHeadFN),
             LastKey = leveled_cdb:cdb_lastkey(HeadR),
             LastSQN = element(1, LastKey),

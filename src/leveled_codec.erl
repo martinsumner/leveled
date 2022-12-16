@@ -414,7 +414,7 @@ get_tagstrategy(Tag, Strategy) ->
         {Tag, TagStrat} ->
             TagStrat;
         false ->
-            leveled_log:log("IC012", [Tag, Strategy]),
+            leveled_log:log(ic012, [Tag, Strategy]),
             retain
     end.
 

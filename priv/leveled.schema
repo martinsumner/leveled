@@ -188,7 +188,20 @@
   hidden
 ]}.
 
+%% @doc Statistic monitoring proportion
+%% The proportion of requests to be convered by stats, an integer between
+%% 0 and 100.  There is no flow control, so setting this too high could
+%% possibly overflow the leveled_monitor mailbox.
+{mapping, "leveled.stats_percentage", "leveled.stats_percentage", [
+  {default, 10},
+  {datatype, integer},
+  {validators, ["range:0-100"]}
+]}.
 
-
-
-
+%% @doc Statistic log frequency (seconds)
+%% The wait in seconds between logs from each leveled_monitor (there is one
+%% monitor per vnode)
+{mapping, "leveled.stats_logfrequency", "leveled.stats_logfrequency", [
+  {default, 30},
+  {datatype, integer}
+]}.

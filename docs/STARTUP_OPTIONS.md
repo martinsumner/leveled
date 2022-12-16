@@ -120,3 +120,9 @@ There are two snapshot timeouts that can be configured:
 These set the period in seconds before a snapshot which has not shutdown, is declared to have been released - so that any file deletions which are awaiting the snapshot's completion can go ahead.
 
 This covers only silently failing snapshots.  Snapshots that shutdown neatly will be released from locking deleted files when they shutdown.  The 'short' timeout is used for snapshots which support index queries and bucket listing.  The 'long' timeout is used for all other folds (e.g. key lists, head folds and object folds).
+
+## Statistic gathering
+
+Leveled will gather monitoring statistics on HEAD/GET/PUT requests, with timing points taken throughout the store.  These timings are gathered by the `leveled_monitor`, and there are three configuration options.  The two primary options are: `stats_percentage` is an integer between 0 and 100 which informs the store of the proprtion of the requests which should be timed at each part; and `stats_logfrequency` which controls the frequency (in seconds) with which the leveled_monitor will write a log file (for one of the stats types in its queue).
+
+The specific stats types logged can be found in the ?LOG_LIST within the leveled_monitor.  If a subset only is of interest, than this list can be modified by setting `monitor_loglist`.  This can also be used to repeat the frequency of individual log types by adding them to the list multiple times.

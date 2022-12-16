@@ -75,8 +75,21 @@
     key_to_canonicalbinary | build_head | extract_metadata | diff_indexspecs.
         % Functions for which default behaviour can be over-written for the
         % application's own tags
+-type appdefinable_keyfun() ::
+    fun((tuple()) -> binary()).
+-type appdefinable_headfun() ::
+    fun((object_tag(), object_metadata()) -> head()).
+-type appdefinable_metadatafun() ::
+    fun(({leveled_codec:tag(), non_neg_integer(), any()}) ->
+        {object_metadata(), list(erlang:timestamp())}).
+-type appdefinable_indexspecsfun() ::
+    fun((object_tag(), object_metadata(), object_metadata()|not_present) ->
+        leveled_codec:index_specs()).
+-type appdefinable_function_fun() ::
+    appdefinable_keyfun() | appdefinable_headfun() |
+    appdefinable_metadatafun() | appdefinable_indexspecsfun().
 -type appdefinable_function_tuple() ::
-    {appdefinable_function(), fun()}.
+    {appdefinable_function(), appdefinable_function_fun()}.
 
 -type index_op() :: add | remove.
 -type index_value() :: integer() | binary().
@@ -265,9 +278,9 @@ standard_hash(Obj) ->
 %%% Handling Override Functions
 %%%============================================================================
 
--spec get_appdefined_function(appdefinable_function(),
-                                fun(),
-                                non_neg_integer()) -> fun().
+-spec get_appdefined_function(
+    appdefinable_function(), appdefinable_function_fun(), non_neg_integer()) ->
+        appdefinable_function_fun().
 %% @doc
 %% If a keylist of [{function_name, fun()}] has been set as an environment 
 %% variable for a tag, then this FunctionName can be used instead of the
