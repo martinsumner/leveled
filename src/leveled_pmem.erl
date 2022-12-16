@@ -146,7 +146,7 @@ to_list(Slots, FetchFun) ->
                                 end,
                             [],
                             SlotList),
-    leveled_log:log_timer("PM002", [length(FullList)], SW),
+    leveled_log:log_timer(pm002, [length(FullList)], SW),
     FullList.
 
 -spec check_levelzero(tuple(), list(integer()), list())
