@@ -40,8 +40,9 @@ simple_put_fetch_head_delete(_Config) ->
     io:format("simple test with error and no forced logs~n"),
     simple_test_withlog(error, []),
     io:format("simple test with error and stats logs~n"),
-    simple_test_withlog(error, ["B0015", "B0016", "B0017", "B0018", 
-                                "P0032", "SST12", "CDB19", "SST13", "I0019"]).
+    simple_test_withlog(
+        error,
+        [b0015, b0016, b0017, b0018, p0032, sst12, cdb19, sst13, i0019]).
 
 
 simple_test_withlog(LogLevel, ForcedLogs) ->
@@ -95,10 +96,12 @@ simple_test_withlog(LogLevel, ForcedLogs) ->
 
 many_put_fetch_head(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = [{root_path, RootPath},
-                    {max_pencillercachesize, 16000},
-                    {sync_strategy, riak_sync},
-                    {compression_point, on_compact}],
+    StartOpts1 =
+        [{root_path, RootPath},
+            {max_pencillercachesize, 16000},
+            {sync_strategy, riak_sync},
+            {compression_point, on_compact}
+        ],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
@@ -530,7 +533,8 @@ load_and_count(_Config) ->
     % Use artificially small files, and the load keys, counting they're all
     % present
     load_and_count(50000000, 2500, 28000),
-    load_and_count(200000000, 100, 300000).
+    load_and_count(200000000, 50, 200000),
+    load_and_count(50000000, 1000, 5000).
 
 
 load_and_count(JournalSize, BookiesMemSize, PencillerMemSize) ->
@@ -539,7 +543,9 @@ load_and_count(JournalSize, BookiesMemSize, PencillerMemSize) ->
                     {max_journalsize, JournalSize},
                     {cache_size, BookiesMemSize},
                     {max_pencillercachesize, PencillerMemSize},
-                    {sync_strategy, testutil:sync_strategy()}],
+                    {sync_strategy, testutil:sync_strategy()},
+                    {stats_logfrequency, 5},
+                    {stats_probability, 80}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
@@ -598,6 +604,9 @@ load_and_count(JournalSize, BookiesMemSize, PencillerMemSize) ->
                         lists:seq(1, 20)),
     testutil:check_forobject(Bookie1, TestObject),
     io:format("Loading more small objects~n"),
+    io:format("Now with unused snapshot so deletions are blocked~n"),
+    {ok, PclClone, null} = 
+        leveled_bookie:book_snapshot(Bookie1, ledger, undefined, true),
     lists:foldl(fun(_X, Acc) ->
                         testutil:load_objects(5000,
                                                 [Acc + 2],
@@ -614,6 +623,8 @@ load_and_count(JournalSize, BookiesMemSize, PencillerMemSize) ->
                         200000,
                         lists:seq(1, 20)),
     testutil:check_forobject(Bookie1, TestObject),
+    ok = leveled_penciller:pcl_close(PclClone),
+    {_S, 300000} = testutil:check_bucket_stats(Bookie1, "Bucket"),
     ok = leveled_bookie:book_close(Bookie1),
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
     {_, 300000} = testutil:check_bucket_stats(Bookie2, "Bucket"),

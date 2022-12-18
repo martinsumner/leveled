@@ -74,8 +74,10 @@
             % At o(10) trillion keys behaviour may become increasingly 
             % difficult to predict.
 
+-ifdef(if_check).
 -if(length(?LEVEL_SCALEFACTOR) /= ?MAX_LEVELS).
 -error("length ?LEVEL_SCALEFACTOR differs from ?MAX_LEVELS").
+-endif.
 -endif.
 
 -define(TREE_TYPE, idxt).
@@ -105,10 +107,11 @@
 -type manifest() :: #manifest{}.
 -type manifest_entry() :: #manifest_entry{}.
 -type manifest_owner() :: pid()|list().
+-type lsm_level() :: 0..7.
 -type selector_strategy() ::
         random|{grooming, fun((list(manifest_entry())) -> manifest_entry())}.
 
--export_type([manifest/0, manifest_entry/0, manifest_owner/0]).
+-export_type([manifest/0, manifest_entry/0, manifest_owner/0, lsm_level/0]).
 
 %%%============================================================================
 %%% API
@@ -171,8 +174,11 @@ copy_manifest(Manifest) ->
     % about is switched to undefined
     Manifest#manifest{snapshots = undefined, pending_deletes = undefined}.
 
--spec load_manifest(manifest(), fun(), fun()) -> 
-                                        {integer(), manifest(), list()}.
+-spec load_manifest(
+    manifest(),
+    fun((file:name_all(), 1..7) -> {pid(), leveled_ebloom:bloom()}),
+    fun((pid()) -> pos_integer()))
+        -> {integer(), manifest(), list()}.
 %% @doc
 %% Roll over the manifest starting a process to manage each file in the
 %% manifest.  The PidFun should be able to return the Pid of a file process
@@ -204,7 +210,9 @@ load_manifest(Manifest, LoadFun, SQNFun) ->
                 {0, Manifest, []}, 
                 lists:reverse(lists:seq(0, Manifest#manifest.basement))).
 
--spec close_manifest(manifest(), fun()) -> ok.
+-spec close_manifest(
+    manifest(),
+    fun((any()) -> ok)) -> ok.
 %% @doc
 %% Close all the files in the manifest (using CloseEntryFun to call close on
 %% a file).  Firts all the files in the active manifest are called, and then
@@ -317,7 +325,7 @@ replace_manifest_entry(Manifest, ManSQN, LevelIdx, Removals, Additions) ->
     {UpdBlooms, StrippedAdditions} = 
         update_blooms(Removals, Additions, Manifest#manifest.blooms),
     UpdLevel = replace_entry(LevelIdx, Level, Removals, StrippedAdditions),
-    leveled_log:log("PC019", ["insert", LevelIdx, UpdLevel]),
+    leveled_log:log(pc019, ["insert", LevelIdx, UpdLevel]),
     PendingDeletes = 
         update_pendingdeletes(ManSQN, 
                                 Removals, 
@@ -350,7 +358,7 @@ insert_manifest_entry(Manifest, ManSQN, LevelIdx, Entry) ->
     {UpdBlooms, UpdEntry} = 
         update_blooms([], Entry, Manifest#manifest.blooms),
     UpdLevel = add_entry(LevelIdx, Level, UpdEntry),
-    leveled_log:log("PC019", ["insert", LevelIdx, UpdLevel]),
+    leveled_log:log(pc019, ["insert", LevelIdx, UpdLevel]),
     Basement = max(LevelIdx, Manifest#manifest.basement),
     Manifest#manifest{levels = array:set(LevelIdx, UpdLevel, Levels),
                         basement = Basement,
@@ -367,7 +375,7 @@ remove_manifest_entry(Manifest, ManSQN, LevelIdx, Entry) ->
     {UpdBlooms, []} = 
         update_blooms(Entry, [], Manifest#manifest.blooms),
     UpdLevel = remove_entry(LevelIdx, Level, Entry),
-    leveled_log:log("PC019", ["remove", LevelIdx, UpdLevel]),
+    leveled_log:log(pc019, ["remove", LevelIdx, UpdLevel]),
     PendingDeletes = update_pendingdeletes(ManSQN,
                                             Entry,
                                             Manifest#manifest.pending_deletes),
@@ -552,7 +560,7 @@ release_snapshot(Manifest, Pid) ->
                 _ ->
                     case seconds_now() > (ST + TO) of 
                         true ->
-                            leveled_log:log("P0038", [P, SQN,  ST, TO]),
+                            leveled_log:log(p0038, [P, SQN,  ST, TO]),
                             {Acc, MinSQN, Found};
                         false ->
                             {[{P, SQN, ST, TO}|Acc], min(SQN, MinSQN), Found}
@@ -564,7 +572,7 @@ release_snapshot(Manifest, Pid) ->
                                                 Manifest#manifest.snapshots),
     case Hit of 
         false ->
-            leveled_log:log("P0039", [Pid, length(SnapList0), MinSnapSQN]);
+            leveled_log:log(p0039, [Pid, length(SnapList0), MinSnapSQN]);
         true ->
             ok 
     end,
@@ -573,7 +581,7 @@ release_snapshot(Manifest, Pid) ->
             Manifest#manifest{snapshots = SnapList0,
                                 min_snapshot_sqn = 0};
         _  ->
-            leveled_log:log("P0004", [SnapList0]),
+            leveled_log:log(p0004, [SnapList0]),
             Manifest#manifest{snapshots = SnapList0,
                                 min_snapshot_sqn = MinSnapSQN}
     end.
@@ -987,7 +995,7 @@ filepath(RootPath, NewMSN, pending_manifest) ->
 
 
 open_manifestfile(_RootPath, L) when L == [] orelse L == [0] ->
-    leveled_log:log("P0013", []),
+    leveled_log:log(p0013, []),
     new_manifest();
 open_manifestfile(RootPath, [TopManSQN|Rest]) ->
     CurrManFile = filepath(RootPath, TopManSQN, current_manifest),
@@ -995,10 +1003,10 @@ open_manifestfile(RootPath, [TopManSQN|Rest]) ->
     <<CRC:32/integer, BinaryOfTerm/binary>> = FileBin,
     case erlang:crc32(BinaryOfTerm) of
         CRC ->
-            leveled_log:log("P0012", [TopManSQN]),
+            leveled_log:log(p0012, [TopManSQN]),
             binary_to_term(BinaryOfTerm);
         _ ->
-            leveled_log:log("P0033", [CurrManFile, "crc wonky"]),
+            leveled_log:log(p0033, [CurrManFile, "crc wonky"]),
             open_manifestfile(RootPath, Rest)
     end.
 

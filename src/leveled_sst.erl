@@ -83,7 +83,7 @@
 -define(DISCARD_EXT, ".discarded").
 -define(DELETE_TIMEOUT, 10000).
 -define(TREE_TYPE, idxt).
--define(TREE_SIZE, 4).
+-define(TREE_SIZE, 16).
 -define(TIMING_SAMPLECOUNTDOWN, 20000).
 -define(TIMING_SAMPLESIZE, 100).
 -define(BLOCK_LENGTHS_LENGTH, 20).
@@ -149,11 +149,15 @@
                             start_position :: integer(),
                             length :: integer()}).
 
--record(summary,    {first_key :: tuple(),
-                        last_key :: tuple(),
-                        index :: tuple() | undefined,
-                        size :: integer(),
-                        max_sqn :: integer()}).
+-record(summary,
+            {first_key :: tuple(),
+            last_key :: tuple(),
+            index :: tuple() | undefined,
+            size :: integer(),
+            max_sqn :: integer()}).
+    %% DO NOT CHANGE
+    %% The summary record is persisted as part of the sile format
+    %% Any chnage to this record will mean the change cannot be rolled back
 
 -type press_method() 
         :: lz4|native|none.
@@ -189,7 +193,8 @@
         :: {binary(), binary(), list(integer()), leveled_codec:ledger_key()}.
 -type sst_summary()
         :: #summary{}.
--type blockindex_cache() :: array:array(). 
+-type blockindex_cache()
+        :: {non_neg_integer(), array:array(), non_neg_integer()}.
 -type fetch_cache()
         :: array:array()|no_cache.
 -type cache_size()
@@ -198,6 +203,8 @@
         :: no_cache|non_neg_integer().
 -type level()
         :: non_neg_integer().
+-type summary_filter()
+        :: fun((leveled_codec:ledger_key()) -> any()).
 
 %% yield_blockquery is used to determine if the work necessary to process a
 %% range query beyond the fetching the slot should be managed from within
@@ -207,40 +214,26 @@
 %% extra copying.  Files at the top of the tree yield, those lower down don't.
 
 -record(state,      
-                {summary,
-                    handle :: file:fd() | undefined,
-                    penciller :: pid() | undefined | false,
-                    root_path,
-                    filename,
-                    yield_blockquery = false :: boolean(),
-                    blockindex_cache ::
-                        blockindex_cache() | undefined |redacted,
-                    compression_method = native :: press_method(),
-                    index_moddate = ?INDEX_MODDATE :: boolean(),
-                    timings = no_timing :: sst_timings(),
-                    timings_countdown = 0 :: integer(),
-                    starting_pid :: pid()|undefined,
-                    fetch_cache = no_cache :: fetch_cache() | redacted,
-                    new_slots :: list()|undefined,
-                    deferred_startup_tuple :: tuple()|undefined,
-                    level :: level()|undefined,
-                    tomb_count = not_counted
-                            :: non_neg_integer()|not_counted,
-                    high_modified_date :: non_neg_integer()|undefined}).
-
--record(sst_timings, 
-        {sample_count = 0 :: integer(),
-            index_query_time = 0 :: integer(),
-            lookup_cache_time = 0 :: integer(),
-            slot_index_time = 0 :: integer(),
-            fetch_cache_time = 0 :: integer(),
-            slot_fetch_time = 0 :: integer(),
-            noncached_block_time = 0 :: integer(),
-            lookup_cache_count = 0 :: integer(),
-            slot_index_count = 0 :: integer(),
-            fetch_cache_count = 0 :: integer(),
-            slot_fetch_count = 0 :: integer(),
-            noncached_block_count = 0 :: integer()}).
+        {summary,
+            handle :: file:fd() | undefined,
+            penciller :: pid() | undefined | false,
+            root_path,
+            filename,
+            yield_blockquery = false :: boolean(),
+            blockindex_cache ::
+                blockindex_cache() | undefined | redacted,
+            compression_method = native :: press_method(),
+            index_moddate = ?INDEX_MODDATE :: boolean(),
+            starting_pid :: pid()|undefined,
+            fetch_cache = no_cache :: fetch_cache() | redacted,
+            new_slots :: list()|undefined,
+            deferred_startup_tuple :: tuple()|undefined,
+            level :: level()|undefined,
+            tomb_count = not_counted
+                    :: non_neg_integer()|not_counted,
+            high_modified_date :: non_neg_integer()|undefined,
+            filter_fun :: summary_filter() | undefined,
+            monitor = {no_monitor, 0} :: leveled_monitor:monitor()}).
 
 -record(build_timings,
         {slot_hashlist = 0 :: integer(),
@@ -249,7 +242,6 @@
             fold_toslot = 0 :: integer()}).
 
 -type sst_state() :: #state{}.
--type sst_timings() :: no_timing|#sst_timings{}.
 -type build_timings() :: no_timing|#build_timings{}.
 
 -export_type([expandable_pointer/0, press_method/0]).
@@ -536,13 +528,6 @@ sst_switchlevels(Pid, NewLevel) ->
 sst_close(Pid) ->
     gen_fsm:sync_send_event(Pid, close).
 
--spec sst_printtimings(pid()) -> ok.
-%% @doc
-%% The state of the FSM keeps track of timings of operations, and this can
-%% forced to be printed.
-%% Used in unit tests to force the printing of timings
-sst_printtimings(Pid) ->
-    gen_fsm:sync_send_event(Pid, print_timings).
 
 
 %%%============================================================================
@@ -554,6 +539,7 @@ init([]) ->
 
 starting({sst_open, RootPath, Filename, OptsSST, Level}, _From, State) ->
     leveled_log:save(OptsSST#sst_options.log_options),
+    Monitor = OptsSST#sst_options.monitor,
     {UpdState, Bloom} = 
         read_file(Filename,
                     State#state{root_path=RootPath},
@@ -562,17 +548,19 @@ starting({sst_open, RootPath, Filename, OptsSST, Level}, _From, State) ->
     {reply,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}, Bloom},
         reader,
-        UpdState#state{level = Level, fetch_cache = new_cache(Level)}};
+        UpdState#state{
+            level = Level, fetch_cache = new_cache(Level), monitor = Monitor}};
 starting({sst_new, 
             RootPath, Filename, Level, 
             {SlotList, FirstKey}, MaxSQN,
             OptsSST, IdxModDate, CountOfTombs, StartingPID}, _From, State) ->
     SW = os:timestamp(),
     leveled_log:save(OptsSST#sst_options.log_options),
+    Monitor = OptsSST#sst_options.monitor,
     PressMethod = OptsSST#sst_options.press_method,
     {Length, SlotIndex, BlockEntries, SlotsBin, Bloom} = 
         build_all_slots(SlotList),
-    {BlockIndex, HighModDate} =
+    {_, BlockIndex, HighModDate} =
         update_blockindex_cache(true,
                                 BlockEntries,
                                 new_blockindex_cache(Length),
@@ -590,20 +578,19 @@ starting({sst_new,
                     State#state{root_path=RootPath, yield_blockquery=YBQ},
                     OptsSST#sst_options.pagecache_level >= Level),
     Summary = UpdState#state.summary,
-    leveled_log:log_timer("SST08",
-                            [ActualFilename, Level, Summary#summary.max_sqn],
-                            SW),
-    erlang:send_after(?STARTUP_TIMEOUT, self(), tidyup_after_startup),
-        % always want to have an opportunity to GC - so force the timeout to
-        % occur whether or not there is an intervening message
+    leveled_log:log_timer(
+        sst08, [ActualFilename, Level, Summary#summary.max_sqn], SW),
+    erlang:send_after(?STARTUP_TIMEOUT, self(), start_complete),
     {reply,
         {ok, {Summary#summary.first_key, Summary#summary.last_key}, Bloom},
         reader,
-        UpdState#state{blockindex_cache = BlockIndex,
-                        high_modified_date = HighModDate,
-                        starting_pid = StartingPID,
-                        level = Level,
-                        fetch_cache = new_cache(Level)}};
+        UpdState#state{
+            blockindex_cache = BlockIndex,
+            high_modified_date = HighModDate,
+            starting_pid = StartingPID,
+            level = Level,
+            fetch_cache = new_cache(Level),
+            monitor = Monitor}};
 starting({sst_newlevelzero, RootPath, Filename,
                     Penciller, MaxSQN,
                     OptsSST, IdxModDate}, _From, State) -> 
@@ -627,6 +614,7 @@ starting(complete_l0startup, State) ->
     SW0 = os:timestamp(),
     FetchedSlots = State#state.new_slots,
     leveled_log:save(OptsSST#sst_options.log_options),
+    Monitor = OptsSST#sst_options.monitor,
     PressMethod = OptsSST#sst_options.press_method,
     FetchFun = fun(Slot) -> lists:nth(Slot, FetchedSlots) end,
     KVList = leveled_pmem:to_list(length(FetchedSlots), FetchFun),
@@ -640,7 +628,7 @@ starting(complete_l0startup, State) ->
     SW2 = os:timestamp(),
     {SlotCount, SlotIndex, BlockEntries, SlotsBin,Bloom} =
         build_all_slots(SlotList),
-    {BlockIndex, HighModDate} =
+    {_, BlockIndex, HighModDate} =
         update_blockindex_cache(true,
                                 BlockEntries,
                                 new_blockindex_cache(SlotCount),
@@ -670,26 +658,28 @@ starting(complete_l0startup, State) ->
     Summary = UpdState#state.summary,
     Time4 = timer:now_diff(os:timestamp(), SW4),
     
-    leveled_log:log_timer("SST08",
-                            [ActualFilename, 0, Summary#summary.max_sqn],
-                            SW0),
-    leveled_log:log("SST11", [Time0, Time1, Time2, Time3, Time4]),
+    leveled_log:log_timer(
+        sst08, [ActualFilename, 0, Summary#summary.max_sqn], SW0),
+    leveled_log:log(sst11, [Time0, Time1, Time2, Time3, Time4]),
 
     case Penciller of
         undefined ->
             ok;
         _ ->
-            leveled_penciller:pcl_confirml0complete(Penciller,
-                                                    UpdState#state.filename,
-                                                    Summary#summary.first_key,
-                                                    Summary#summary.last_key,
-                                                    Bloom),
+            leveled_penciller:pcl_confirml0complete(
+                Penciller,
+                UpdState#state.filename,
+                Summary#summary.first_key,
+                Summary#summary.last_key,
+                Bloom),
             ok
     end,
     {next_state,
         reader,
-        UpdState#state{blockindex_cache = BlockIndex,
-                        high_modified_date = HighModDate}};
+        UpdState#state{
+            blockindex_cache = BlockIndex,
+            high_modified_date = HighModDate,
+            monitor = Monitor}};
 starting({sst_returnslot, FetchedSlot, FetchFun, SlotCount}, State) ->
     Self = self(),
     FetchedSlots = 
@@ -722,21 +712,47 @@ starting({sst_returnslot, FetchedSlot, FetchFun, SlotCount}, State) ->
 
 reader({get_sqn, LedgerKey, Hash}, _From, State) ->
     % Get a KV value and potentially take sample timings
-    {Result, UpdState, _UpdTimings} = 
-        fetch(LedgerKey, Hash, State, no_timing),
-    {reply, sqn_only(Result), reader, UpdState, ?HIBERNATE_TIMEOUT};
+    {Result, _BIC, _HMD, _FC} = 
+        fetch(
+            LedgerKey, Hash,
+            State#state.summary,
+            State#state.compression_method,
+            State#state.high_modified_date,
+            State#state.index_moddate,
+            State#state.filter_fun,
+            State#state.blockindex_cache,
+            State#state.fetch_cache,
+            State#state.handle,
+            State#state.level,
+            {no_monitor, 0}),
+    {reply, sqn_only(Result), reader, State, ?HIBERNATE_TIMEOUT};
 reader({get_kv, LedgerKey, Hash}, _From, State) ->
     % Get a KV value and potentially take sample timings
-    {Result, UpdState, UpdTimings} = 
-        fetch(LedgerKey, Hash, State, State#state.timings),
-
-    {UpdTimings0, CountDown} = 
-        update_statetimings(UpdTimings,
-                            State#state.timings_countdown,
-                            State#state.level),
-    
-    {reply, Result, reader, UpdState#state{timings = UpdTimings0,
-                                            timings_countdown = CountDown}};
+    {Result, BIC, HMD, FC} = 
+        fetch(
+            LedgerKey, Hash,
+            State#state.summary,
+            State#state.compression_method,
+            State#state.high_modified_date,
+            State#state.index_moddate,
+            State#state.filter_fun,
+            State#state.blockindex_cache,
+            State#state.fetch_cache,
+            State#state.handle,
+            State#state.level,
+            State#state.monitor),
+    case {BIC, HMD, FC} of
+        {no_update, no_update, no_update} ->
+            {reply, Result, reader, State};
+        {no_update, no_update, FC} ->
+            {reply, Result, reader, State#state{fetch_cache = FC}};
+        {BIC, HMD, no_update} ->
+            {reply,
+                Result,
+                reader,
+                State#state{
+                    blockindex_cache = BIC, high_modified_date = HMD}}
+    end;
 reader({get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
                                                             _From, State) ->
     ReadNeeded =
@@ -771,17 +787,23 @@ reader({get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
                                     PressMethod,
                                     IdxModDate,
                                     SegList),
-            {BlockIdxC0, HighModDate} =
+            {UpdateCache, BlockIdxC0, HighModDate} =
                 update_blockindex_cache(NeedBlockIdx,
                                         FoundBIC,
                                         State#state.blockindex_cache,
                                         State#state.high_modified_date,
                                         State#state.index_moddate),
-            {reply, 
-                L ++ SlotsToPoint, 
-                reader, 
-                State#state{blockindex_cache = BlockIdxC0,
-                            high_modified_date = HighModDate}}
+            case UpdateCache of
+                true ->
+                    {reply, 
+                        L ++ SlotsToPoint, 
+                        reader, 
+                        State#state{
+                            blockindex_cache = BlockIdxC0,
+                            high_modified_date = HighModDate}};
+                false ->
+                    {reply, L ++ SlotsToPoint, reader, State}
+            end
     end;
 reader({get_slots, SlotList, SegList, LowLastMod}, _From, State) ->
     PressMethod = State#state.compression_method,
@@ -801,11 +823,8 @@ reader({get_slots, SlotList, SegList, LowLastMod}, _From, State) ->
 reader(get_maxsequencenumber, _From, State) ->
     Summary = State#state.summary,
     {reply, Summary#summary.max_sqn, reader, State};
-reader(print_timings, _From, State) ->
-    log_timings(State#state.timings, State#state.level),
-    {reply, ok, reader, State};
 reader({set_for_delete, Penciller}, _From, State) ->
-    leveled_log:log("SST06", [State#state.filename]),
+    leveled_log:log(sst06, [State#state.filename]),
     {reply,
         ok,
         delete_pending,
@@ -848,12 +867,35 @@ reader({switch_levels, NewLevel}, State) ->
 
 delete_pending({get_sqn, LedgerKey, Hash}, _From, State) ->
     % Get a KV value and potentially take sample timings
-    {Result, UpdState, _UpdTimings} = 
-        fetch(LedgerKey, Hash, State, no_timing),
-    {reply, sqn_only(Result), delete_pending, UpdState, ?DELETE_TIMEOUT};
+    {Result, _BIC, _HMD, _FC} = 
+        fetch(
+            LedgerKey, Hash,
+            State#state.summary,
+            State#state.compression_method,
+            State#state.high_modified_date,
+            State#state.index_moddate,
+            State#state.filter_fun,
+            State#state.blockindex_cache,
+            State#state.fetch_cache,
+            State#state.handle,
+            State#state.level,
+            {no_monitor, 0}),
+    {reply, sqn_only(Result), delete_pending, State, ?DELETE_TIMEOUT};
 delete_pending({get_kv, LedgerKey, Hash}, _From, State) ->
-    {Result, UpdState, _Ts} = fetch(LedgerKey, Hash, State, no_timing),
-    {reply, Result, delete_pending, UpdState, ?DELETE_TIMEOUT};
+    {Result, _BIC, _HMD, _FC} = 
+        fetch(
+            LedgerKey, Hash,
+            State#state.summary,
+            State#state.compression_method,
+            State#state.high_modified_date,
+            State#state.index_moddate,
+            State#state.filter_fun,
+            State#state.blockindex_cache,
+            State#state.fetch_cache,
+            State#state.handle,
+            State#state.level,
+            {no_monitor, 0}),
+    {reply, Result, delete_pending, State, ?DELETE_TIMEOUT};
 delete_pending({get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
                                                             _From, State) ->
     {_NeedBlockIdx, SlotsToFetchBinList, SlotsToPoint} =
@@ -881,7 +923,7 @@ delete_pending({get_slots, SlotList, SegList, LowLastMod}, _From, State) ->
         State, 
         ?DELETE_TIMEOUT};
 delete_pending(close, _From, State) ->
-    leveled_log:log("SST07", [State#state.filename]),
+    leveled_log:log(sst07, [State#state.filename]),
     ok = file:close(State#state.handle),
     ok = file:delete(filename:join(State#state.root_path,
                                     State#state.filename)),
@@ -899,7 +941,7 @@ delete_pending(timeout, State) ->
     % back-off
     {next_state, delete_pending, State, leveled_rand:uniform(10) * ?DELETE_TIMEOUT};
 delete_pending(close, State) ->
-    leveled_log:log("SST07", [State#state.filename]),
+    leveled_log:log(sst07, [State#state.filename]),
     ok = file:close(State#state.handle),
     ok = file:delete(filename:join(State#state.root_path,
                                     State#state.filename)),
@@ -909,7 +951,7 @@ handle_sync_event(_Msg, _From, StateName, State) ->
     {reply, undefined, StateName, State}.
 
 handle_event({update_blockindex_cache, BIC}, StateName, State) ->
-    {BlockIndexCache, HighModDate} =
+    {_, BlockIndexCache, HighModDate} =
         update_blockindex_cache(true,
                                 BIC,
                                 State#state.blockindex_cache,
@@ -920,14 +962,27 @@ handle_event({update_blockindex_cache, BIC}, StateName, State) ->
         State#state{blockindex_cache = BlockIndexCache,
                     high_modified_date = HighModDate}}.
 
-handle_info(tidyup_after_startup, delete_pending, State) ->
-    % No need to GC, this file is to be shutdown.  This message may have
-    % interrupted the delete timeout, so timeout straight away
-    {next_state, delete_pending, State, 0};
-handle_info(tidyup_after_startup, StateName, State) ->
+handle_info(_Msg, delete_pending, State) ->
+    % Ignore messages when pending delete. The message may have interrupted
+    % the delete timeout, so timeout straight away
+    {next_state, delete_pending, State, 0};                
+handle_info(bic_complete, StateName, State) ->
+    % The block index cache is complete, so the memory footprint should be
+    % relatively stable from this point.  Hibernate to help minimise
+    % fragmentation
+    leveled_log:log(sst14, [State#state.filename]),
+    {next_state, StateName, State, hibernate};
+handle_info(start_complete, StateName, State) ->
+    % The SST file will be started by a clerk, but the clerk may be shut down
+    % prior to the manifest being updated about the existence of this SST file.
+    % If there is no activity after startup, check the clerk is still alive and
+    % otherwise assume this file is part of a closed store and shut down.
+    % If the clerk has crashed, the penciller will restart at the latest
+    % manifest, and so this file sill be restarted if and only if it is still
+    % part of the store
     case is_process_alive(State#state.starting_pid) of
         true ->
-            {next_state, StateName, State, hibernate};
+            {next_state, StateName, State};
         false ->
             {stop, normal, State}
     end.
@@ -935,7 +990,7 @@ handle_info(tidyup_after_startup, StateName, State) ->
 terminate(normal, delete_pending, _State) ->
     ok;
 terminate(Reason, _StateName, State) ->
-    leveled_log:log("SST04", [Reason, State#state.filename]).
+    leveled_log:log(sst04, [Reason, State#state.filename]).
 
 code_change(_OldVsn, StateName, State, _Extra) ->
     {ok, StateName, State}.
@@ -1004,7 +1059,7 @@ expand_list_by_pointer({pointer, SSTPid, Slot, StartKey, EndKey},
 expand_list_by_pointer({next, ManEntry, StartKey, EndKey}, 
                                         Tail, Width, SegList, LowLastMod) ->
     SSTPid = ManEntry#manifest_entry.owner,
-    leveled_log:log("SST10", [SSTPid, is_process_alive(SSTPid)]),
+    leveled_log:log(sst10, [SSTPid, is_process_alive(SSTPid)]),
     ExpPointer = sst_getfilteredrange(SSTPid, 
                                         StartKey,
                                         EndKey, 
@@ -1186,7 +1241,7 @@ cache_size(N) when N < 3 ->
 cache_size(3) ->
     32;
 cache_size(4) ->
-    32;
+    16;
 cache_size(5) ->
     4;
 cache_size(6) ->
@@ -1242,50 +1297,64 @@ tune_seglist(SegList) ->
 
 -spec new_blockindex_cache(pos_integer()) -> blockindex_cache().
 new_blockindex_cache(Size) ->
-    array:new([{size, Size}, {default, none}]).
+    {0, array:new([{size, Size}, {default, none}]), 0}.
 
--spec update_blockindex_cache(boolean(),
-                                list({integer(), binary()}),
-                                blockindex_cache(),
-                                non_neg_integer()|undefined,
-                                boolean()) ->
-                                    {blockindex_cache(),
-                                        non_neg_integer()|undefined}.
-update_blockindex_cache(Needed, Entries, BIC, HighModDate, IdxModDate)
-                                            when Needed,
-                                                    HighModDate == undefined ->
-    FoldFun = 
-        fun(CacheEntry, Cache) ->
-            case CacheEntry of
-                {ID, Header} when is_binary(Header) ->
-                    array:set(ID - 1, binary:copy(Header), Cache);
-                _ ->
-                    Cache
-            end
-        end,
-    BlockIdxC0 = lists:foldl(FoldFun, BIC, Entries),
-    Size = array:size(BlockIdxC0),
-    BestModDates =
-        case IdxModDate of
-            true ->
-                ModDateFold =
-                    fun(_ID, Header, Acc) when is_binary(Header) ->
-                        [element(2, extract_header(Header, IdxModDate))|Acc]
-                    end,
-                array:sparse_foldl(ModDateFold, [], BlockIdxC0);
-            false ->
-                []
-        end,
-    BestModDate =
-        case length(BestModDates) of
-            Size ->
-                lists:max(BestModDates);
+-spec updatebic_foldfun(boolean()) ->
+        fun(({integer(), binary()}, blockindex_cache()) -> blockindex_cache()).
+updatebic_foldfun(HMDRequired) ->
+    fun(CacheEntry, {AccCount, Cache, AccHMD}) ->
+        case CacheEntry of
+            {ID, Header} when is_binary(Header) ->
+                case array:get(ID - 1, Cache) of
+                    none ->
+                        H0 = binary:copy(Header),
+                        AccHMD0 =
+                            case HMDRequired of
+                                true ->
+                                    max(AccHMD,
+                                        element(2, extract_header(H0, true)));
+                                false ->
+                                    AccHMD
+                                end,
+                        {AccCount + 1, array:set(ID - 1, H0, Cache), AccHMD0};
+                    _ ->
+                        {AccCount, Cache, AccHMD}
+                end;
             _ ->
-                undefined
-        end,
-    {BlockIdxC0, BestModDate};
+                {AccCount, Cache, AccHMD}
+        end
+    end.
+        
+-spec update_blockindex_cache(
+        boolean(), list({integer(), binary()}),
+        blockindex_cache(), non_neg_integer()|undefined,
+        boolean()) -> 
+            {boolean(), blockindex_cache(), non_neg_integer()|undefined}.
+update_blockindex_cache(true, Entries, BIC, HighModDate, IdxModDate) ->
+    case {element(1, BIC), array:size(element(2, BIC))} of
+        {N, N} ->
+            {false, BIC, HighModDate};
+        {N, S} when N < S ->
+            FoldFun =
+                case {HighModDate, IdxModDate} of
+                    {undefined, true} ->
+                        updatebic_foldfun(true);
+                    _ ->
+                        updatebic_foldfun(false)
+                end,
+            BIC0 = lists:foldl(FoldFun, BIC, Entries),
+            case {element(1, BIC0), IdxModDate} of
+                {N, _} ->
+                    {false, BIC, HighModDate};
+                {S, true} ->
+                    erlang:send(self(), bic_complete),
+                    {true, BIC0, element(3, BIC0)};
+                _ ->
+                    {true, BIC0, undefined}
+            end
+    end;
 update_blockindex_cache(_Needed, _Entries, BIC, HighModDate, _IdxModDate) ->
-    {BIC, HighModDate}.
+    {false, BIC, HighModDate}.
 
 -spec check_modified(non_neg_integer()|undefined,
                         non_neg_integer(),
@@ -1296,87 +1365,97 @@ check_modified(HighLastModifiedInSST, LowModDate, true)
 check_modified(_, _, _) ->
     true.
 
--spec fetch(tuple(), 
-            {integer(), integer()}|integer(), 
-            sst_state(), sst_timings()) 
-                        -> {not_present|tuple(), sst_state(), sst_timings()}.
+-spec fetch(
+    leveled_codec:ledger_key(), 
+    leveled_codec:segment_hash(),
+    sst_summary(),
+    press_method(),
+    non_neg_integer()|undefined,
+    boolean(),
+    summary_filter(),
+    blockindex_cache(),
+    fetch_cache(),
+    file:fd(),
+    leveled_pmanifest:lsm_level(),
+    leveled_monitor:monitor()) 
+        -> {not_present|leveled_codec:ledger_kv(),
+            blockindex_cache()|no_update,
+            non_neg_integer()|undefined|no_update,
+            fetch_cache()|no_update}.
 %% @doc
 %%
 %% Fetch a key from the store, potentially taking timings.  Result should be
 %% not_present if the key is not in the store.
-fetch(LedgerKey, Hash, State, Timings0) ->
-    SW0 = os:timestamp(),
-
-    Summary = State#state.summary,
-    PressMethod = State#state.compression_method,
-    IdxModDate = State#state.index_moddate,
-    Slot = lookup_slot(LedgerKey, Summary#summary.index),
-    
-    {SW1, Timings1} = update_timings(SW0, Timings0, index_query, true),
-    
+fetch(LedgerKey, Hash,
+        Summary,
+        PressMethod, HighModDate, IndexModDate, FilterFun, BIC, FetchCache,
+        Handle, Level, Monitor) ->
+    SW0 = leveled_monitor:maybe_time(Monitor),
+    Slot =
+        lookup_slot(LedgerKey, Summary#summary.index, FilterFun),
     SlotID = Slot#slot_index_value.slot_id,
-    CachedBlockIdx = 
-        array:get(SlotID - 1, State#state.blockindex_cache),
-    {SW2, Timings2} = update_timings(SW1, Timings1, lookup_cache, true),
-
-    case extract_header(CachedBlockIdx, IdxModDate) of 
+    CachedBlockIdx = array:get(SlotID - 1, element(2, BIC)),
+    
+    case extract_header(CachedBlockIdx, IndexModDate) of 
         none ->
-            SlotBin = read_slot(State#state.handle, Slot),
+            SlotBin = read_slot(Handle, Slot),
             {Result, Header} = 
-                binaryslot_get(SlotBin, LedgerKey, Hash, PressMethod, IdxModDate),
-            {BlockIndexCache, HighModDate} =
+                binaryslot_get(
+                    SlotBin, LedgerKey, Hash, PressMethod, IndexModDate),
+            {_UpdateState, BIC0, HMD0} =
                 update_blockindex_cache(true,
                                         [{SlotID, Header}],
-                                        State#state.blockindex_cache,
-                                        State#state.high_modified_date,
-                                        State#state.index_moddate),
-            {_SW3, Timings3} = 
-                update_timings(SW2, Timings2, noncached_block, false),
-            {Result, 
-                State#state{blockindex_cache = BlockIndexCache,
-                            high_modified_date = HighModDate}, 
-                Timings3};
+                                        BIC,
+                                        HighModDate,
+                                        IndexModDate),
+            case Result of
+                not_present ->
+                    maybelog_fetch_timing(
+                        Monitor, Level, not_found, SW0);
+                _ ->
+                    maybelog_fetch_timing(
+                        Monitor, Level, slot_noncachedblock, SW0)
+            end,
+            {Result, BIC0, HMD0, no_update};
         {BlockLengths, _LMD, PosBin} ->
             PosList = find_pos(PosBin, extract_hash(Hash), [], 0),
             case PosList of 
                 [] ->
-                    {_SW3, Timings3} =
-                        update_timings(SW2, Timings2, slot_index, false),
-                    {not_present, State, Timings3};
+                    maybelog_fetch_timing(Monitor, Level, not_found, SW0),
+                    {not_present, no_update, no_update, no_update};
                 _ ->
-                    {SW3, Timings3} =
-                        update_timings(SW2, Timings2, slot_index, true),
-                    FetchCache = State#state.fetch_cache,
-                    CacheHash = cache_hash(Hash, State#state.level),
+                    CacheHash = cache_hash(Hash, Level),
                     case fetch_from_cache(CacheHash, FetchCache) of 
                         {LedgerKey, V} ->
-                            {_SW4, Timings4} = 
-                                update_timings(SW3, 
-                                                Timings3, 
-                                                fetch_cache, 
-                                                false),
-                            {{LedgerKey, V}, State, Timings4};
+                            maybelog_fetch_timing(
+                                Monitor, Level, fetch_cache, SW0),
+                            {{LedgerKey, V}, no_update, no_update, no_update};
                         _ ->
                             StartPos = Slot#slot_index_value.start_position,
                             Result = 
                                 check_blocks(PosList,
-                                                {State#state.handle, StartPos},
+                                                {Handle, StartPos},
                                                 BlockLengths,
                                                 byte_size(PosBin),
                                                 LedgerKey, 
                                                 PressMethod,
-                                                IdxModDate,
+                                                IndexModDate,
                                                 not_present),
-                            FetchCache0 =
-                                add_to_cache(CacheHash, Result, FetchCache),
-                            {_SW4, Timings4} = 
-                                update_timings(SW3, 
-                                                Timings3, 
-                                                slot_fetch, 
-                                                false),
-                            {Result, 
-                                State#state{fetch_cache = FetchCache0}, 
-                                Timings4}
+                            case Result of
+                                not_present ->
+                                    maybelog_fetch_timing(
+                                        Monitor, Level, not_found, SW0),
+                                    {not_present,
+                                        no_update, no_update, no_update};
+                                _ ->
+                                    FetchCache0 =
+                                        add_to_cache(
+                                            CacheHash, Result, FetchCache),
+                                    maybelog_fetch_timing(
+                                        Monitor, Level, slot_cachedblock, SW0),
+                                    {Result,
+                                        no_update, no_update, FetchCache0}  
+                            end
                     end
             end 
     end.
@@ -1396,7 +1475,12 @@ fetch(LedgerKey, Hash, State, Timings0) ->
 fetch_range(StartKey, EndKey, ScanWidth, SegList, LowLastMod, State) ->
     Summary = State#state.summary,
     Handle = State#state.handle,
-    {Slots, RTrim} = lookup_slots(StartKey, EndKey, Summary#summary.index),
+    {Slots, RTrim} =
+        lookup_slots(
+            StartKey,
+            EndKey,
+            Summary#summary.index,
+            State#state.filter_fun),
     Self = self(),
     SL = length(Slots),
     
@@ -1476,7 +1560,7 @@ write_file(RootPath, Filename, SummaryBin, SlotsBin,
         true ->
             AltName = filename:join(RootPath, filename:basename(FinalName))
                         ++ ?DISCARD_EXT,
-            leveled_log:log("SST05", [FinalName, AltName]),
+            leveled_log:log(sst05, [FinalName, AltName]),
             ok = file:rename(filename:join(RootPath, FinalName), AltName);
         false ->
             ok
@@ -1502,15 +1586,17 @@ read_file(Filename, State, LoadPageCache) ->
         read_table_summary(SummaryBin, UpdState0#state.tomb_count),
     BlockIndexCache = new_blockindex_cache(Summary#summary.size),
     UpdState1 = UpdState0#state{blockindex_cache = BlockIndexCache},
-    SlotIndex = from_list(SlotList),
+    {SlotIndex, FilterFun} =
+        from_list(
+            SlotList, Summary#summary.first_key, Summary#summary.last_key),
     UpdSummary = Summary#summary{index = SlotIndex},
-    leveled_log:log("SST03", [Filename,
-                                Summary#summary.size,
-                                Summary#summary.max_sqn]),
+    leveled_log:log(
+        sst03, [Filename, Summary#summary.size, Summary#summary.max_sqn]),
     {UpdState1#state{summary = UpdSummary,
                         handle = Handle,
                         filename = Filename,
-                        tomb_count = TombCount},
+                        tomb_count = TombCount,
+                        filter_fun = FilterFun},
         Bloom}.
 
 gen_fileversion(PressMethod, IdxModDate, CountOfTombs) ->
@@ -1735,20 +1821,88 @@ hmac(Int) when is_integer(Int) ->
 %%
 %% This implementation of the SlotIndex uses leveled_tree
 
-from_list(SlotList) ->
-    leveled_tree:from_orderedlist(SlotList, ?TREE_TYPE, ?TREE_SIZE).
+from_list(SlotList, FirstKey, LastKey) ->
+    FilterFun = get_filterfun(FirstKey, LastKey),
+    FilteredList =
+        lists:map(fun({K, S}) -> {FilterFun(K), S} end, SlotList),
+    {leveled_tree:from_orderedlist(FilteredList, ?TREE_TYPE, ?TREE_SIZE),
+        FilterFun}.
 
-lookup_slot(Key, Tree) ->
+-spec get_filterfun(
+    leveled_codec:ledger_key(), leveled_codec:ledger_key()) ->
+        fun((leveled_codec:ledger_key())
+            -> leveled_codec:ledger_key()|leveled_codec:slimmed_key()).
+get_filterfun(
+        {?IDX_TAG, B, {Field, FT}, FK}, {?IDX_TAG, B, {Field, LT}, LK})
+            when is_binary(Field),
+            is_binary(FT), is_binary(FK), is_binary(LT), is_binary(LK) ->
+    case {binary:longest_common_prefix([FT, LT]), byte_size(FT)} of
+        {N, M} when N > 0, M >= N ->
+            <<Prefix:N/binary, _Rest/binary>> = FT,
+            term_prefix_filter(N, Prefix);
+        _ ->
+            fun term_filter/1
+    end;
+get_filterfun(
+        {Tag, B, FK, null}, {Tag, B, LK, null})
+            when is_binary(FK), is_binary(LK) ->
+    case {binary:longest_common_prefix([FK, LK]), byte_size(FK)} of
+        {N, M} when N > 0, M >= N ->
+            <<Prefix:N/binary, _Rest/binary>> = FK,
+            key_prefix_filter(N, Prefix);
+        _ ->
+            fun key_filter/1
+        
+    end;
+get_filterfun(_FirstKey, _LastKey) ->
+    fun null_filter/1.
+
+-spec null_filter(leveled_codec:ledger_key()) -> leveled_codec:ledger_key().
+null_filter(Key) -> Key.
+
+-spec key_filter(leveled_codec:ledger_key()) -> leveled_codec:slimmed_key().
+key_filter({_Tag, _Bucket, Key, null}) -> Key.
+
+-spec term_filter(leveled_codec:ledger_key()) -> leveled_codec:slimmed_key().
+term_filter({_Tag, _Bucket, {_Field, Term}, Key}) -> {Term, Key}.
+
+-spec key_prefix_filter(
+    pos_integer(), binary()) ->
+        fun((leveled_codec:ledger_key()) -> leveled_codec:slimmed_key()).
+key_prefix_filter(N, Prefix) ->
+    fun({_Tag, _Bucket, Key, null}) ->
+        case Key of
+            <<Prefix:N/binary, Suffix/binary>> ->
+                Suffix;
+            _ ->
+                null
+        end
+    end.
+
+-spec term_prefix_filter(
+    pos_integer(), binary()) ->
+        fun((leveled_codec:ledger_key()) -> leveled_codec:slimmed_key()).
+term_prefix_filter(N, Prefix) ->
+    fun({_Tag, _Bucket, {_Field, Term}, Key}) ->
+        case Term of
+            <<Prefix:N/binary, Suffix/binary>> ->
+                {Suffix, Key};
+            _ ->
+                null
+        end
+    end.
+
+lookup_slot(Key, Tree, FilterFun) ->
     StartKeyFun =
         fun(_V) ->
             all
         end,
     % The penciller should never ask for presence out of range - so will
-    % always return a slot (As we don't compare to StartKey)
-    {_LK, Slot} = leveled_tree:search(Key, Tree, StartKeyFun),
+    % always return a slot (as we don't compare to StartKey)
+    {_LK, Slot} = leveled_tree:search(FilterFun(Key), Tree, StartKeyFun),
     Slot.
 
-lookup_slots(StartKey, EndKey, Tree) ->
+lookup_slots(StartKey, EndKey, Tree, FilterFun) ->
     StartKeyFun =
         fun(_V) ->
             all
@@ -1757,9 +1911,25 @@ lookup_slots(StartKey, EndKey, Tree) ->
         fun({_LK, Slot}) ->
             Slot
         end,
-    SlotList = leveled_tree:search_range(StartKey, EndKey, Tree, StartKeyFun),
+    FilteredStartKey =
+        case StartKey of
+            all -> all;
+            _ -> FilterFun(StartKey)
+        end,
+    FilteredEndKey =
+        case EndKey of
+            all -> all;
+            _ -> FilterFun(EndKey)
+        end,
+    SlotList =
+        leveled_tree:search_range(
+            FilteredStartKey,
+            FilteredEndKey,
+            Tree,
+            StartKeyFun),
     {EK, _EndSlot} = lists:last(SlotList),
-    {lists:map(MapFun, SlotList), not leveled_codec:endkey_passed(EK, EndKey)}.
+    {lists:map(MapFun, SlotList),
+        leveled_codec:endkey_passed(FilteredEndKey, EK)}.
 
 
 %%%============================================================================
@@ -2118,7 +2288,7 @@ read_slots(Handle, SlotList, {SegList, LowLastMod, BlockIndexCache},
     BinMapFun = 
         fun(Pointer, {NeededBlockIdx, Acc}) ->
             {SP, _L, ID, SK, EK} = pointer_mapfun(Pointer),
-            CachedHeader = array:get(ID - 1, BlockIndexCache),
+            CachedHeader = array:get(ID - 1, element(2, BlockIndexCache)),
             case extract_header(CachedHeader, IdxModDate) of
                 none ->
                     % If there is an attempt to use the seg list query and the
@@ -2465,7 +2635,7 @@ crc_check_slot(FullBin) ->
         {CRC32H, CRC32PBL} ->
             {Header, Blocks};
         _ ->
-            leveled_log:log("SST09", []),
+            leveled_log:log(sst09, []),
             crc_wonky
     end.
 
@@ -2899,106 +3069,24 @@ update_buildtimings(SW, Timings, Stage) ->
 %%
 %% Log out the time spent during the merge lists part of the SST build
 log_buildtimings(Timings, LI) ->
-    leveled_log:log("SST13", [Timings#build_timings.fold_toslot,
-                                Timings#build_timings.slot_hashlist,
-                                Timings#build_timings.slot_serialise,
-                                Timings#build_timings.slot_finish,
-                                element(1, LI),
-                                element(2, LI)]).
+    leveled_log:log(
+        sst13, 
+        [Timings#build_timings.fold_toslot,
+            Timings#build_timings.slot_hashlist,
+            Timings#build_timings.slot_serialise,
+            Timings#build_timings.slot_finish,
+            element(1, LI), element(2, LI)]).
 
-
--spec update_statetimings(sst_timings(), integer(), non_neg_integer()) 
-                                            -> {sst_timings(), integer()}.
-%% @doc
-%%
-%% The timings state is either in countdown to the next set of samples of
-%% we are actively collecting a sample.  Active collection take place 
-%% when the countdown is 0.  Once the sample has reached the expected count
-%% then there is a log of that sample, and the countdown is restarted.
-%%
-%% Outside of sample windows the timings object should be set to the atom
-%% no_timing.  no_timing is a valid state for the cdb_timings type.
-update_statetimings(no_timing, 0, _Level) ->
-    {#sst_timings{}, 0};
-update_statetimings(Timings, 0, Level) ->
-    case Timings#sst_timings.sample_count of 
-        SC when SC >= ?TIMING_SAMPLESIZE ->
-            log_timings(Timings, Level),
-                % If file at lower level wait longer before tsking another
-                % sample
-            {no_timing,
-                leveled_rand:uniform(2 * ?TIMING_SAMPLECOUNTDOWN)};
-        _SC ->
-            {Timings, 0}
-    end;
-update_statetimings(no_timing, N, _Level) ->
-    {no_timing, N - 1}.
-
-log_timings(no_timing, _Level) ->
+-spec maybelog_fetch_timing(
+        leveled_monitor:monitor(),
+        leveled_pmanifest:lsm_level(),
+        leveled_monitor:sst_fetch_type(),
+        erlang:timestamp()|no_timing) -> ok.
+maybelog_fetch_timing(_Monitor, _Level, _Type, no_timing) ->
     ok;
-log_timings(Timings, Level) ->
-    leveled_log:log("SST12", [Level,
-                                Timings#sst_timings.sample_count, 
-                                Timings#sst_timings.index_query_time,
-                                Timings#sst_timings.lookup_cache_time,
-                                Timings#sst_timings.slot_index_time,
-                                Timings#sst_timings.fetch_cache_time,
-                                Timings#sst_timings.slot_fetch_time,
-                                Timings#sst_timings.noncached_block_time,
-                                Timings#sst_timings.slot_index_count,
-                                Timings#sst_timings.fetch_cache_count,
-                                Timings#sst_timings.slot_fetch_count,
-                                Timings#sst_timings.noncached_block_count]).
-
-
-update_timings(_SW, no_timing, _Stage, _Continue) ->
-    {no_timing, no_timing};
-update_timings(SW, Timings, Stage, Continue) ->
-    Timer = timer:now_diff(os:timestamp(), SW),
-    Timings0 = 
-        case Stage of 
-            index_query ->
-                IQT = Timings#sst_timings.index_query_time,
-                Timings#sst_timings{index_query_time = IQT + Timer};
-            lookup_cache ->
-                TBT = Timings#sst_timings.lookup_cache_time,
-                Timings#sst_timings{lookup_cache_time = TBT + Timer};
-            slot_index ->
-                SIT = Timings#sst_timings.slot_index_time,
-                Timings#sst_timings{slot_index_time = SIT + Timer};
-            fetch_cache ->
-                FCT = Timings#sst_timings.fetch_cache_time,
-                Timings#sst_timings{fetch_cache_time = FCT + Timer};
-            slot_fetch ->
-                SFT = Timings#sst_timings.slot_fetch_time,
-                Timings#sst_timings{slot_fetch_time = SFT + Timer};
-            noncached_block ->
-                NCT = Timings#sst_timings.noncached_block_time,
-                Timings#sst_timings{noncached_block_time = NCT + Timer}
-        end,
-    case Continue of 
-        true ->
-            {os:timestamp(), Timings0};
-        false ->
-            Timings1 = 
-                case Stage of 
-                    slot_index ->
-                        SIC = Timings#sst_timings.slot_index_count,
-                        Timings0#sst_timings{slot_index_count = SIC + 1};
-                    fetch_cache ->
-                        FCC = Timings#sst_timings.fetch_cache_count,
-                        Timings0#sst_timings{fetch_cache_count = FCC + 1};
-                    slot_fetch ->
-                        SFC = Timings#sst_timings.slot_fetch_count,
-                        Timings0#sst_timings{slot_fetch_count = SFC + 1};
-                    noncached_block ->
-                        NCC = Timings#sst_timings.noncached_block_count,
-                        Timings0#sst_timings{noncached_block_count = NCC + 1}
-                end,
-            SC = Timings1#sst_timings.sample_count,
-            {no_timing, Timings1#sst_timings{sample_count = SC + 1}}
-    end.
-
+maybelog_fetch_timing({Pid, _SlotFreq}, Level, Type, SW) ->
+    {TS1, _} = leveled_monitor:step_time(SW),
+    leveled_monitor:add_stat(Pid, {sst_fetch_update, Level, Type, TS1}).
 
 %%%============================================================================
 %%% Test
@@ -3664,7 +3752,7 @@ simple_persisted_rangesegfilter_tester(SSTNewFun) ->
 
 additional_range_test() ->
     % Test fetching ranges that fall into odd situations with regards to the
-    % summayr index
+    % summary index
     % - ranges which fall between entries in summary
     % - ranges which go beyond the end of the range of the sst
     % - ranges which match to an end key in the summary index
@@ -3702,6 +3790,7 @@ additional_range_test() ->
     % Testing the gap
     [GapSKV] = generate_indexkey(?NOLOOK_SLOTSIZE + 1, ?NOLOOK_SLOTSIZE + 1),
     [GapEKV] = generate_indexkey(?NOLOOK_SLOTSIZE + 2, ?NOLOOK_SLOTSIZE + 2),
+    io:format("Gap test between ~p and ~p", [GapSKV, GapEKV]),
     R3 = sst_getkvrange(P1, element(1, GapSKV), element(1, GapEKV), 1),
     ?assertMatch([], R3),
     
@@ -3864,7 +3953,7 @@ fetch_status_test() ->
     {status, Pid, {module, gen_fsm}, SItemL} = sys:get_status(Pid),
     S = lists:keyfind(state, 1, lists:nth(5, SItemL)),
     true = is_integer(array:size(S#state.fetch_cache)),
-    true = is_integer(array:size(S#state.blockindex_cache)),
+    true = is_integer(array:size(element(2, S#state.blockindex_cache))),
     ST = format_status(terminate, [dict:new(), S]),
     ?assertMatch(redacted, ST#state.blockindex_cache),
     ?assertMatch(redacted, ST#state.fetch_cache),
@@ -3909,7 +3998,6 @@ simple_persisted_tester(SSTNewFun) ->
                 "Checking for ~w keys (twice) in file with cache hit took ~w "
                     ++ "microseconds~n",
                 [length(KVList1), timer:now_diff(os:timestamp(), SW1)]),
-    ok = sst_printtimings(Pid),
     KVList2 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 32, 1, 20),
     MapFun =
         fun({K, V}, Acc) ->
@@ -3931,7 +4019,6 @@ simple_persisted_tester(SSTNewFun) ->
     io:format(user,
                 "Checking for ~w missing keys took ~w microseconds~n",
                 [length(KVList3), timer:now_diff(os:timestamp(), SW2)]),
-    ok = sst_printtimings(Pid),
     FetchList1 = sst_getkvrange(Pid, all, all, 2),
     FoldFun = fun(X, Acc) ->
                     case X of
@@ -4077,12 +4164,12 @@ key_dominates_test() ->
                     key_dominates([KV7|KL2], [KV2], {true, 1})).
 
 nonsense_coverage_test() ->
-    ?assertMatch({ok, reader, #state{}}, code_change(nonsense,
-                                                        reader,
-                                                        #state{},
-                                                        nonsense)),
-    ?assertMatch({reply, undefined, reader, #state{}},
-                    handle_sync_event("hello", self(), reader, #state{})),
+    ?assertMatch(
+        {ok, reader, #state{}},
+        code_change(nonsense, reader, #state{}, nonsense)),
+    ?assertMatch(
+        {reply, undefined, reader, #state{}},
+        handle_sync_event("hello", self(), reader, #state{})),
                     
     SampleBin = <<0:128/integer>>,
     FlippedBin = flip_byte(SampleBin, 0, 16),
@@ -4128,19 +4215,6 @@ check_segment_match(PosBinIndex1, KVL, TreeSize) ->
             ?assertMatch(true, length(PosList) >= 1)
         end,
     lists:foreach(CheckFun, KVL).
-
-timings_test() ->
-    SW = os:timestamp(),
-    timer:sleep(1),
-    {no_timing, T1} = update_timings(SW, #sst_timings{}, slot_index, false),
-    {no_timing, T2} = update_timings(SW, T1, slot_fetch, false),
-    {no_timing, T3} = update_timings(SW, T2, noncached_block, false),
-    timer:sleep(1),
-    {_, T4} = update_timings(SW, T3, slot_fetch, true),
-    ?assertMatch(3, T4#sst_timings.sample_count),
-    ?assertMatch(1, T4#sst_timings.slot_fetch_count),
-    ?assertMatch(true, T4#sst_timings.slot_fetch_time > 
-                            T3#sst_timings.slot_fetch_time).
 
 take_max_lastmoddate_test() ->
     % TODO: Remove this test
@@ -4295,23 +4369,714 @@ block_index_cache_test() ->
                     lists:seq(1, 8)),
     HeaderTS = <<0:160/integer, Now:32/integer, 0:32/integer>>,
     HeaderNoTS = <<0:192>>,
-    BIC = array:new([{size, 8}, {default, none}]),
-    {BIC0, undefined} =
+    BIC = new_blockindex_cache(8),
+    {_, BIC0, undefined} =
         update_blockindex_cache(false, EntriesNoTS, BIC, undefined, false),
-    {BIC1, undefined} =
+    {_, BIC1, undefined} =
         update_blockindex_cache(false, EntriesTS, BIC, undefined, true),
-    {BIC2, undefined} =
+    {_, BIC2, undefined} =
         update_blockindex_cache(true, EntriesNoTS, BIC, undefined, false),
-    {BIC3, LMD3} =
-        update_blockindex_cache(true, EntriesTS, BIC, undefined, true),
+    {ETSP1, ETSP2} = lists:split(6, EntriesTS),
+    {_, BIC3, undefined} =
+        update_blockindex_cache(true, ETSP1, BIC, undefined, true),
+    {_, BIC3, undefined} =
+        update_blockindex_cache(true, ETSP1, BIC3, undefined, true),
+    {_, BIC4, LMD4} =
+        update_blockindex_cache(true, ETSP2, BIC3, undefined, true),
+    {_, BIC4, LMD4} =
+        update_blockindex_cache(true, ETSP2, BIC4, LMD4, true),
     
-    ?assertMatch(none, array:get(0, BIC0)),
-    ?assertMatch(none, array:get(0, BIC1)),
-    ?assertMatch(HeaderNoTS, array:get(0, BIC2)),
-    ?assertMatch(HeaderTS, array:get(0, BIC3)),
-    ?assertMatch(Now, LMD3).
+    ?assertMatch(none, array:get(0, element(2, BIC0))),
+    ?assertMatch(none, array:get(0, element(2, BIC1))),
+    ?assertMatch(HeaderNoTS, array:get(0, element(2, BIC2))),
+    ?assertMatch(HeaderTS, array:get(0, element(2, BIC3))),
+    ?assertMatch(HeaderTS, array:get(0, element(2, BIC4))),
+    ?assertMatch(Now, LMD4).
 
+key_matchesprefix_test() ->
+    FileName = "keymatchesprefix_test",
+    IndexKeyFun =
+        fun(I) ->
+            {{?IDX_TAG,
+                {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>,
+                    list_to_binary("19601301|"
+                        ++ io_lib:format("~6..0w", [I]))},
+                list_to_binary(io_lib:format("~6..0w", [I]))},
+            {1, {active, infinity}, no_lookup, null}}
+        end,
+    IndexEntries = lists:map(IndexKeyFun, lists:seq(1, 500)),
+    OddIdxKey =
+        {{?IDX_TAG,
+            {<<"btype">>, <<"bucket">>},
+            {<<"dob_bin">>, <<"19601301">>},
+            list_to_binary(io_lib:format("~6..0w", [0]))},
+        {1, {active, infinity}, no_lookup, null}},
+    OptsSST = 
+        #sst_options{press_method=native,
+                        log_options=leveled_log:get_opts()},
+    {ok, P1, {_FK1, _LK1}, _Bloom1} = 
+        sst_new(
+            ?TEST_AREA, FileName, 1, [OddIdxKey|IndexEntries], 6000, OptsSST),
+    IdxRange2 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG,
+                {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1960">>}, null},
+            {?IDX_TAG,
+                {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1961">>}, null},
+            16),
+    IdxRange4 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|000251">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1961">>}, null},
+            16),
+    IdxRangeX =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1961">>}, null},
+            16),
+    IdxRangeY =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1961">>}, null},
+            16),
+    IdxRangeZ =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|000500">>}, null},
+            16),
+    ?assertMatch(501, length(IdxRange2)),
+    ?assertMatch(250, length(IdxRange4)),
+    ?assertMatch(501, length(IdxRangeX)),
+    ?assertMatch(500, length(IdxRangeY)),
+    ?assertMatch(500, length(IdxRangeZ)),
+    ok = sst_close(P1),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")),
 
+    ObjectKeyFun =
+        fun(I) ->
+            {{?RIAK_TAG,
+                {<<"btype">>, <<"bucket">>},
+                list_to_binary("19601301|"
+                    ++ io_lib:format("~6..0w", [I])),
+                null},
+            {1, {active, infinity}, {0, 0}, null}}
+        end,
+    ObjectEntries = lists:map(ObjectKeyFun, lists:seq(1, 500)),
+    OddObjKey =
+        {{?RIAK_TAG,
+            {<<"btype">>, <<"bucket">>},
+            <<"19601301">>,
+            null},
+        {1, {active, infinity}, {100, 100}, null}},
+    OptsSST = 
+        #sst_options{press_method=native, log_options=leveled_log:get_opts()},
+    {ok, P2, {_FK2, _LK2}, _Bloom2} = 
+        sst_new(
+            ?TEST_AREA, FileName, 1, [OddObjKey|ObjectEntries], 6000, OptsSST),
+    ObjRange2 =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG,
+                {<<"btype">>, <<"bucket">>},
+                <<"1960">>, null},
+            {?RIAK_TAG,
+                {<<"btype">>, <<"bucket">>},
+                <<"1961">>, null},
+            16),
+    ObjRange4 =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000251">>, null},
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"1961">>, null},
+            16),
+    ObjRangeX =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301">>, null},
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"1961">>, null},
+            16),
+    ObjRangeY =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|">>, null},
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"1961">>, null},
+            16),
+    ?assertMatch(501, length(ObjRange2)),
+    ?assertMatch(250, length(ObjRange4)),
+    ?assertMatch(501, length(ObjRangeX)),
+    ?assertMatch(500, length(ObjRangeY)),
+    ok = sst_close(P2),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")).
+    
+
+range_key_indextermmatch_test() ->
+    FileName = "indextermmatch_test",
+    IndexKeyFun =
+        fun(I) ->
+            {{?IDX_TAG,
+                {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>,
+                    <<"19601301">>},
+                list_to_binary(io_lib:format("~6..0w", [I]))},
+            {1, {active, infinity}, no_lookup, null}}
+        end,
+    IndexEntries = lists:map(IndexKeyFun, lists:seq(1, 500)),
+    OptsSST = 
+        #sst_options{press_method=native,
+                        log_options=leveled_log:get_opts()},
+    {ok, P1, {_FK1, _LK1}, _Bloom1} = 
+        sst_new(?TEST_AREA, FileName, 1, IndexEntries, 6000, OptsSST),
+    
+    IdxRange1 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>}, {<<"dob_bin">>, <<"1959">>}, null},
+            all,
+            16),
+    IdxRange2 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG,
+                {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1960">>}, null},
+            {?IDX_TAG,
+                {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1961">>}, null},
+            16),
+    IdxRange3 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, <<"000000">>},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, null},
+            16),
+    IdxRange4 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, <<"000100">>},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, null},
+            16),
+    IdxRange5 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, <<"000100">>},
+            16),
+    IdxRange6 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, <<"000300">>},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, null},
+            16),
+    IdxRange7 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, <<"000300">>},
+            16),
+    IdxRange8 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601302">>}, <<"000300">>},
+            16),
+    IdxRange9 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601300">>}, <<"000100">>},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301">>}, null},
+            16),
+    ?assertMatch(500, length(IdxRange1)),
+    ?assertMatch(500, length(IdxRange2)),
+    ?assertMatch(500, length(IdxRange3)),
+    ?assertMatch(401, length(IdxRange4)),
+    ?assertMatch(100, length(IdxRange5)),
+    ?assertMatch(201, length(IdxRange6)),
+    ?assertMatch(300, length(IdxRange7)),
+    ?assertMatch(500, length(IdxRange8)),
+    ?assertMatch(500, length(IdxRange9)),
+    ok = sst_close(P1),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")).
+    
+
+range_key_lestthanprefix_test() ->
+    FileName = "lessthanprefix_test",
+    IndexKeyFun =
+        fun(I) ->
+            {{?IDX_TAG,
+                {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>,
+                    list_to_binary("19601301|"
+                        ++ io_lib:format("~6..0w", [I]))},
+                list_to_binary(io_lib:format("~6..0w", [I]))},
+            {1, {active, infinity}, no_lookup, null}}
+        end,
+    IndexEntries = lists:map(IndexKeyFun, lists:seq(1, 500)),
+    OptsSST = 
+        #sst_options{press_method=native,
+                        log_options=leveled_log:get_opts()},
+    {ok, P1, {_FK1, _LK1}, _Bloom1} = 
+        sst_new(?TEST_AREA, FileName, 1, IndexEntries, 6000, OptsSST),
+    
+    IndexFileStateSize = size_summary(P1),
+    
+    IdxRange1 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>}, {<<"dob_bin">>, <<"1959">>}, null},
+            all,
+            16),
+    IdxRange2 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG,
+                {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1960">>}, null},
+            {?IDX_TAG,
+                {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1961">>}, null},
+            16),
+    IdxRange3 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1960">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|000250">>}, null},
+            16),
+    IdxRange4 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|000251">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1961">>}, null},
+            16),
+    IdxRange5 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|000250">>}, <<"000251">>},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"1961">>}, null},
+            16),
+    IdxRange6 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|000">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|0002">>}, null},
+            16),
+    IdxRange7 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|000">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|0001">>}, null},
+            16),
+    IdxRange8 =
+        sst_getkvrange(
+            P1,
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|000000">>}, null},
+            {?IDX_TAG, {<<"btype">>, <<"bucket">>},
+                {<<"dob_bin">>, <<"19601301|000100">>}, null},
+            16),
+    ?assertMatch(500, length(IdxRange1)),
+    ?assertMatch(500, length(IdxRange2)),
+    ?assertMatch(250, length(IdxRange3)),
+    ?assertMatch(250, length(IdxRange4)),
+    ?assertMatch(250, length(IdxRange5)),
+    ?assertMatch(199, length(IdxRange6)),
+    ?assertMatch(99, length(IdxRange7)),
+    ?assertMatch(100, length(IdxRange8)),
+    ok = sst_close(P1),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")),
+
+    ObjectKeyFun =
+        fun(I) ->
+            {{?RIAK_TAG,
+                {<<"btype">>, <<"bucket">>},
+                list_to_binary("19601301|"
+                    ++ io_lib:format("~6..0w", [I])),
+                null},
+            {1, {active, infinity}, {0, 0}, null}}
+        end,
+    ObjectEntries = lists:map(ObjectKeyFun, lists:seq(1, 500)),
+    OptsSST = 
+        #sst_options{press_method=native,
+                        log_options=leveled_log:get_opts()},
+    {ok, P2, {_FK2, _LK2}, _Bloom2} = 
+        sst_new(?TEST_AREA, FileName, 1, ObjectEntries, 6000, OptsSST),
+    
+    ObjectFileStateSize = size_summary(P2),
+
+    ObjRange1 =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>}, <<"1959">>, null},
+            all,
+            16),
+    ObjRange2 =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG,
+                {<<"btype">>, <<"bucket">>},
+                <<"1960">>, null},
+            {?RIAK_TAG,
+                {<<"btype">>, <<"bucket">>},
+                <<"1961">>, null},
+            16),
+    ObjRange3 =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"1960">>, null},
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000250">>, null},
+            16),
+    ObjRange4 =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000251">>, null},
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"1961">>, null},
+            16),
+    ObjRange6 =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000">>, null},
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|0002">>, null},
+            16),
+    ObjRange7 =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000">>, null},
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|0001">>, null},
+            16),
+    ObjRange8 =
+        sst_getkvrange(
+            P2,
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000000">>, null},
+            {?RIAK_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000100">>, null},
+            16),
+
+    ?assertMatch(500, length(ObjRange1)),
+    ?assertMatch(500, length(ObjRange2)),
+    ?assertMatch(250, length(ObjRange3)),
+    ?assertMatch(250, length(ObjRange4)),
+    ?assertMatch(199, length(ObjRange6)),
+    ?assertMatch(99, length(ObjRange7)),
+    ?assertMatch(100, length(ObjRange8)),
+    ok = sst_close(P2),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")),
+
+    HeadKeyFun =
+        fun(I) ->
+            {{?HEAD_TAG,
+                {<<"btype">>, <<"bucket">>},
+                list_to_binary("19601301|"
+                    ++ io_lib:format("~6..0w", [I])),
+                null},
+            {1, {active, infinity}, {0, 0}, null, undefined}}
+        end,
+    HeadEntries = lists:map(HeadKeyFun, lists:seq(1, 500)),
+    {ok, P3, {_FK3, _LK3}, _Bloom3} = 
+        sst_new(?TEST_AREA, FileName, 1, HeadEntries, 6000, OptsSST),
+
+    HeadFileStateSize =  size_summary(P3),
+
+    HeadRange1 =
+        sst_getkvrange(
+            P3,
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>}, <<"1959">>, null},
+            all,
+            16),
+    HeadRange2 =
+        sst_getkvrange(
+            P3,
+            {?HEAD_TAG,
+                {<<"btype">>, <<"abucket">>},
+                <<"1962">>, null},
+            {?HEAD_TAG,
+                {<<"btype">>, <<"zbucket">>},
+                <<"1960">>, null},
+            16),
+    HeadRange3 =
+        sst_getkvrange(
+            P3,
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>},
+                <<"1960">>, null},
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000250">>, null},
+            16),
+    HeadRange4 =
+        sst_getkvrange(
+            P3,
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000251">>, null},
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>},
+                <<"1961">>, null},
+            16),
+    HeadRange6 =
+        sst_getkvrange(
+            P3,
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000">>, null},
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|0002">>, null},
+            16),
+    HeadRange7 =
+        sst_getkvrange(
+            P3,
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000">>, null},
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|0001">>, null},
+            16),
+    HeadRange8 =
+        sst_getkvrange(
+            P3,
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000000">>, null},
+            {?HEAD_TAG, {<<"btype">>, <<"bucket">>},
+                <<"19601301|000100">>, null},
+            16),
+
+    ?assertMatch(500, length(HeadRange1)),
+    ?assertMatch(500, length(HeadRange2)),
+    ?assertMatch(250, length(HeadRange3)),
+    ?assertMatch(250, length(HeadRange4)),
+    ?assertMatch(199, length(HeadRange6)),
+    ?assertMatch(99, length(HeadRange7)),
+    ?assertMatch(100, length(HeadRange8)),
+    ok = sst_close(P3),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")),
+    
+    [_HdO|RestObjectEntries] = ObjectEntries,
+    [_HdI|RestIndexEntries] = IndexEntries,
+    [_Hdh|RestHeadEntries] = HeadEntries,
+
+    {ok, P4, {_FK4, _LK4}, _Bloom4} = 
+        sst_new(
+            ?TEST_AREA,
+            FileName, 1,
+            [HeadKeyFun(9999)|RestIndexEntries],
+            6000, OptsSST),
+    print_compare_size("Index", IndexFileStateSize, size_summary(P4)),
+    ok = sst_close(P4),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")),
+
+    {ok, P5, {_FK5, _LK5}, _Bloom5} = 
+    sst_new(
+        ?TEST_AREA,
+        FileName, 1,
+        [HeadKeyFun(9999)|RestObjectEntries],
+        6000, OptsSST),
+    print_compare_size("Object", ObjectFileStateSize, size_summary(P5)),
+    ok = sst_close(P5),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")),
+
+    {ok, P6, {_FK6, _LK6}, _Bloom6} = 
+    sst_new(
+        ?TEST_AREA,
+        FileName, 1,
+        RestHeadEntries ++ [IndexKeyFun(1)],
+        6000, OptsSST),
+    print_compare_size("Head", HeadFileStateSize, size_summary(P6)),
+    ok = sst_close(P6),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")).
+
+size_summary(P) ->
+    Summary = element(2, element(2, sys:get_state(P))),
+    true = is_record(Summary, summary),
+    erts_debug:flat_size(Summary).
+
+print_compare_size(Type, OptimisedSize, UnoptimisedSize) ->
+    io:format(
+        user,
+        "~n~s State optimised to ~w bytes unoptimised ~w bytes~n",
+        [Type, OptimisedSize * 8, UnoptimisedSize * 8]),
+    % Reduced by at least a quarter
+    ?assert(OptimisedSize < (UnoptimisedSize - (UnoptimisedSize div 4))).
+    
+
+single_key_test() ->
+    FileName = "single_key_test",
+    Field = <<"t1_bin">>,
+    LK = leveled_codec:to_ledgerkey(<<"Bucket0">>, <<"Key0">>, ?STD_TAG),
+    Chunk = leveled_rand:rand_bytes(16),
+    {_B, _K, MV, _H, _LMs} =
+        leveled_codec:generate_ledgerkv(LK, 1, Chunk, 16, infinity),
+    OptsSST = 
+        #sst_options{press_method=native,
+                        log_options=leveled_log:get_opts()},
+    {ok, P1, {LK, LK}, _Bloom1} = 
+        sst_new(?TEST_AREA, FileName, 1, [{LK, MV}], 6000, OptsSST),
+    ?assertMatch({LK, MV}, sst_get(P1, LK)),
+    ok = sst_close(P1),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")),
+
+    IndexSpecs = [{add, Field, <<"20220101">>}],
+    [{IdxK, IdxV}] = 
+        leveled_codec:idx_indexspecs(IndexSpecs, 
+                                    <<"Bucket">>, 
+                                    <<"Key">>, 
+                                    1, 
+                                    infinity),
+    {ok, P2, {IdxK, IdxK}, _Bloom2} = 
+        sst_new(?TEST_AREA, FileName, 1, [{IdxK, IdxV}], 6000, OptsSST),
+    ?assertMatch(
+        [{IdxK, IdxV}],
+        sst_getkvrange(
+            P2,
+            {?IDX_TAG, <<"Bucket">>, {Field, <<"20220100">>}, null},
+            all,
+            16)),
+    ?assertMatch(
+        [{IdxK, IdxV}],
+        sst_getkvrange(
+            P2,
+            {?IDX_TAG, <<"Bucket">>, {Field, <<"20220100">>}, null},
+            {?IDX_TAG, <<"Bucket">>, {Field, <<"20220101">>}, null},
+            16)),
+    ?assertMatch(
+        [{IdxK, IdxV}],
+        sst_getkvrange(
+            P2,
+            {?IDX_TAG, <<"Bucket">>, {Field, <<"20220101">>}, null},
+            {?IDX_TAG, <<"Bucket">>, {Field, <<"20220101">>}, null},
+            16)),
+    ok = sst_close(P2),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")).
+
+strange_range_test() ->
+    FileName = "strange_range_test",
+    V = leveled_head:riak_metadata_to_binary(
+        term_to_binary([{"actor1", 1}]),
+        <<1:32/integer, 0:32/integer, 0:32/integer>>),
+    OptsSST = 
+        #sst_options{press_method=native,
+                        log_options=leveled_log:get_opts()},
+    
+    FK = leveled_codec:to_ledgerkey({<<"T0">>, <<"B0">>}, <<"K0">>, ?RIAK_TAG),
+    LK = leveled_codec:to_ledgerkey({<<"T0">>, <<"B0">>}, <<"K02">>, ?RIAK_TAG),
+    EK = leveled_codec:to_ledgerkey({<<"T0">>, <<"B0">>}, <<"K0299">>, ?RIAK_TAG),
+
+    KL1 =
+        lists:map(
+            fun(I) -> 
+                leveled_codec:to_ledgerkey(
+                    {<<"T0">>, <<"B0">>},
+                    list_to_binary("K00" ++ integer_to_list(I)),
+                    ?RIAK_TAG)
+            end,
+            lists:seq(1, 300)),
+    KL2 =
+        lists:map(
+            fun(I) -> 
+                leveled_codec:to_ledgerkey(
+                    {<<"T0">>, <<"B0">>},
+                    list_to_binary("K02" ++ integer_to_list(I)),
+                    ?RIAK_TAG)
+            end,
+            lists:seq(1, 300)),
+    
+    GenerateValue =
+        fun(K) ->
+            element(
+                3, leveled_codec:generate_ledgerkv(K, 1, V, 16, infinity))
+        end,
+
+    KVL = 
+        lists:ukeysort(
+            1,
+            lists:map(
+                fun(K) -> {K, GenerateValue(K)} end,
+                [FK] ++ KL1 ++ [LK] ++ KL2)),
+    
+    {ok, P1, {FK, EK}, _Bloom1} = 
+            sst_new(?TEST_AREA, FileName, 1, KVL, 6000, OptsSST),
+    
+    ?assertMatch(LK, element(1, sst_get(P1, LK))),
+    ?assertMatch(FK, element(1, sst_get(P1, FK))),
+    ok = sst_close(P1),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")),
+
+    IndexSpecs =
+        lists:map(
+            fun(I) -> {add, <<"t1_bin">>, integer_to_binary(I)} end,
+            lists:seq(1, 500)),
+    IdxKVL = 
+        leveled_codec:idx_indexspecs(IndexSpecs, 
+                                    <<"Bucket">>, 
+                                    <<"Key">>, 
+                                    1, 
+                                    infinity),
+    {ok, P2, {_FIdxK, _EIdxK}, _Bloom2} = 
+        sst_new(
+            ?TEST_AREA, FileName, 1, lists:ukeysort(1, IdxKVL), 6000, OptsSST),
+    [{IdxK1, _IdxV1}, {IdxK2, _IdxV2}] =
+        sst_getkvrange(
+            P2,
+            {?IDX_TAG, <<"Bucket">>, {<<"t1_bin">>, <<"1">>}, null},
+            {?IDX_TAG, <<"Bucket">>, {<<"t1_bin">>, <<"10">>}, null},
+            16),
+    ?assertMatch(
+        {?IDX_TAG, <<"Bucket">>, {<<"t1_bin">>, <<"1">>}, <<"Key">>},
+        IdxK1
+    ),
+    ?assertMatch(
+        {?IDX_TAG, <<"Bucket">>, {<<"t1_bin">>, <<"10">>}, <<"Key">>},
+        IdxK2
+    ),
+    ok = sst_close(P2),
+    ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")).
+    
 
 receive_fun() ->
     receive

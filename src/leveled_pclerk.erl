@@ -53,32 +53,39 @@
 
 -record(state, {owner :: pid() | undefined,
                 root_path :: string() | undefined,
-                pending_deletions = dict:new(), % OTP 16 does not like type
-                sst_options :: #sst_options{}
+                pending_deletions = dict:new() :: dict:dict(),
+                sst_options :: sst_options()
                 }).
 
--type manifest_entry() :: #manifest_entry{}.
+-type sst_options() :: #sst_options{}.
 
 %%%============================================================================
 %%% API
 %%%============================================================================
 
-clerk_new(Owner, Manifest, OptsSST) ->
+-spec clerk_new(
+    pid(), string(), sst_options()) -> {ok, pid()}.
+clerk_new(Owner, RootPath, OptsSST) ->
     {ok, Pid} = 
         gen_server:start_link(?MODULE, 
                                 [leveled_log:get_opts(),
                                  {sst_options, OptsSST}],
                                 []),
-    ok = gen_server:call(Pid, {load, Owner, Manifest}, infinity),
-    leveled_log:log("PC001", [Pid, Owner]),
+    ok = gen_server:call(Pid, {load, Owner, RootPath}, infinity),
+    leveled_log:log(pc001, [Pid, Owner]),
     {ok, Pid}.
 
+-spec clerk_prompt(pid()) -> ok.
 clerk_prompt(Pid) ->
     gen_server:cast(Pid, prompt).
 
+-spec clerk_promptdeletions(pid(), pos_integer()) -> ok.
 clerk_promptdeletions(Pid, ManifestSQN) ->
     gen_server:cast(Pid, {prompt_deletions, ManifestSQN}).
 
+-spec clerk_push(
+    pid(), {leveled_pmanifest:lsm_level(), leveled_pmanifest:manifest()}) ->
+        ok.
 clerk_push(Pid, Work) ->
     gen_server:cast(Pid, {push_work, Work}).
 
@@ -100,6 +107,7 @@ clerk_addlogs(Pid, ForcedLogs) ->
 clerk_removelogs(Pid, ForcedLogs) ->
     gen_server:cast(Pid, {remove_logs, ForcedLogs}).
 
+-spec clerk_close(pid()) -> ok.
 clerk_close(Pid) ->
     gen_server:call(Pid, close, 20000).
 
@@ -119,10 +127,13 @@ handle_call(close, _From, State) ->
 handle_cast(prompt, State) ->
     handle_info(timeout, State);
 handle_cast({push_work, Work}, State) ->
-    {ManifestSQN, Deletions} = handle_work(Work, State),
+    {ManifestSQN, Deletions} =
+        handle_work(
+            Work,
+            State#state.root_path, State#state.sst_options, State#state.owner),
     PDs = dict:store(ManifestSQN, Deletions, State#state.pending_deletions),
-    leveled_log:log("PC022", [ManifestSQN]),
-    {noreply, State#state{pending_deletions = PDs}, ?MAX_TIMEOUT};
+    leveled_log:log(pc022, [ManifestSQN]),
+    {noreply, State#state{pending_deletions = PDs}, ?MIN_TIMEOUT};
 handle_cast({prompt_deletions, ManifestSQN}, State) ->
     {Deletions, UpdD} = return_deletions(ManifestSQN,
                                             State#state.pending_deletions),
@@ -145,7 +156,7 @@ handle_cast({remove_logs, ForcedLogs}, State) ->
     {noreply, State#state{sst_options = SSTopts0}}.
 
 handle_info(timeout, State) ->
-    request_work(State),
+    ok = leveled_penciller:pcl_workforclerk(State#state.owner),
     % When handling work, the clerk can collect a large number of binary
     % references, so proactively GC this process before receiving any future
     % work.  In under pressure clusters, clerks with large binary memory
@@ -154,7 +165,7 @@ handle_info(timeout, State) ->
     {noreply, State, ?MAX_TIMEOUT}.
 
 terminate(Reason, _State) ->
-    leveled_log:log("PC005", [self(), Reason]).
+    leveled_log:log(pc005, [self(), Reason]).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -164,31 +175,35 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%============================================================================
 
-request_work(State) ->
-    ok = leveled_penciller:pcl_workforclerk(State#state.owner).
-
-handle_work({SrcLevel, Manifest}, State) ->
-    {UpdManifest, EntriesToDelete} = merge(SrcLevel,
-                                            Manifest,
-                                            State#state.root_path,
-                                            State#state.sst_options),
-    leveled_log:log("PC007", []),
+-spec handle_work(
+    {leveled_pmanifest:lsm_level(), leveled_pmanifest:manifest()},
+    string(), sst_options(), pid()) ->
+        {leveled_pmanifest:pos_integer(),
+            list(leveled_pmanifest:manifest_entry())}.
+handle_work(
+        {SrcLevel, Manifest}, RootPath, SSTOpts, Owner) ->
+    {UpdManifest, EntriesToDelete} = 
+        merge(SrcLevel, Manifest, RootPath, SSTOpts),
+    leveled_log:log(pc007, []),
     SWMC = os:timestamp(),
-    ok = leveled_penciller:pcl_manifestchange(State#state.owner,
-                                                    UpdManifest),
-    leveled_log:log_timer("PC017", [], SWMC),
+    ok = leveled_penciller:pcl_manifestchange(Owner, UpdManifest),
+    leveled_log:log_timer(pc017, [], SWMC),
     SWSM = os:timestamp(),
-    ok = leveled_pmanifest:save_manifest(UpdManifest,
-                                            State#state.root_path),
-    leveled_log:log_timer("PC018", [], SWSM),
+    ok = leveled_pmanifest:save_manifest(UpdManifest, RootPath),
+    leveled_log:log_timer(pc018, [], SWSM),
     {leveled_pmanifest:get_manifest_sqn(UpdManifest), EntriesToDelete}.
 
+-spec merge(
+    leveled_pmanifes:lsm_level(), leveled_pmanifest:manifest(),
+    string(), sst_options()) ->
+        {leveled_pmanifest:manifest(),
+            list(leveled_pmanifest:manifest_entry())}.
 merge(SrcLevel, Manifest, RootPath, OptsSST) ->
     case leveled_pmanifest:report_manifest_level(Manifest, SrcLevel + 1) of
         {0, 0, undefined} ->
             ok;
         {FCnt, AvgMem, {MaxFN, MaxP, MaxMem}} ->
-            leveled_log:log("PC023",
+            leveled_log:log(pc023,
                             [SrcLevel + 1, FCnt, AvgMem, MaxFN, MaxP, MaxMem])
     end,
     SelectMethod =
@@ -206,11 +221,11 @@ merge(SrcLevel, Manifest, RootPath, OptsSST) ->
                                                 Src#manifest_entry.start_key,
                                                 Src#manifest_entry.end_key),
     Candidates = length(SinkList),
-    leveled_log:log("PC008", [SrcLevel, Candidates]),
+    leveled_log:log(pc008, [SrcLevel, Candidates]),
     case Candidates of
         0 ->
             NewLevel = SrcLevel + 1,
-            leveled_log:log("PC009", [Src#manifest_entry.filename, NewLevel]),
+            leveled_log:log(pc009, [Src#manifest_entry.filename, NewLevel]),
             leveled_sst:sst_switchlevels(Src#manifest_entry.owner, NewLevel),
             Man0 = leveled_pmanifest:switch_manifest_entry(Manifest,
                                                             NewSQN,
@@ -224,6 +239,7 @@ merge(SrcLevel, Manifest, RootPath, OptsSST) ->
                             SST_RP, NewSQN, OptsSST)
     end.
 
+-spec notify_deletions(list(leveled_pmanifest:manifest_entry()), pid()) -> ok.
 notify_deletions([], _Penciller) ->
     ok;
 notify_deletions([Head|Tail], Penciller) ->
@@ -240,7 +256,7 @@ perform_merge(Manifest,
                 Src, SinkList, SrcLevel, 
                 RootPath, NewSQN, 
                 OptsSST) ->
-    leveled_log:log("PC010", [Src#manifest_entry.filename, NewSQN]),
+    leveled_log:log(pc010, [Src#manifest_entry.filename, NewSQN]),
     SrcList = [{next, Src, all}],
     MaxSQN = leveled_sst:sst_getmaxsequencenumber(Src#manifest_entry.owner),
     SinkLevel = SrcLevel + 1,
@@ -268,19 +284,19 @@ perform_merge(Manifest,
     {Man2, [Src|SinkManifestList]}.
 
 do_merge([], [], SinkLevel, _SinkB, _RP, NewSQN, _MaxSQN, _Opts, Additions) ->
-    leveled_log:log("PC011", [NewSQN, SinkLevel, length(Additions)]),
+    leveled_log:log(pc011, [NewSQN, SinkLevel, length(Additions)]),
     Additions;
 do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, OptsSST, Additions) ->
     FileName = leveled_penciller:sst_filename(NewSQN,
                                                 SinkLevel,
                                                 length(Additions)),
-    leveled_log:log("PC012", [NewSQN, FileName, SinkB]),
+    leveled_log:log(pc012, [NewSQN, FileName, SinkB]),
     TS1 = os:timestamp(),
     case leveled_sst:sst_newmerge(RP, FileName,
                                     KL1, KL2, SinkB, SinkLevel, MaxSQN,
                                     OptsSST) of
         empty ->
-            leveled_log:log("PC013", [FileName]),
+            leveled_log:log(pc013, [FileName]),
             do_merge([], [],
                         SinkLevel, SinkB,
                         RP, NewSQN, MaxSQN,
@@ -293,7 +309,7 @@ do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, OptsSST, Additions) ->
                                             owner=Pid,
                                             filename=FileName,
                                             bloom=Bloom},
-                leveled_log:log_timer("PC015", [], TS1),
+                leveled_log:log_timer(pc015, [], TS1),
                 do_merge(KL1Rem, KL2Rem,
                             SinkLevel, SinkB,
                             RP, NewSQN, MaxSQN,
@@ -301,11 +317,13 @@ do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, OptsSST, Additions) ->
                             Additions ++ [Entry])
     end.
 
--spec grooming_scorer(list(manifest_entry())) -> manifest_entry().
+-spec grooming_scorer(
+    list(leveled_pmanifest:manifest_entry()))
+        -> leveled_pmanifest:manifest_entry().
 grooming_scorer([ME  | MEs]) ->
     InitTombCount = leveled_sst:sst_gettombcount(ME#manifest_entry.owner),
     {HighestTC, BestME} = grooming_scorer(InitTombCount, ME, MEs),
-    leveled_log:log("PC024", [HighestTC]),
+    leveled_log:log(pc024, [HighestTC]),
     BestME.
 
 grooming_scorer(HighestTC, BestME, []) ->
@@ -328,7 +346,7 @@ return_deletions(ManifestSQN, PendingDeletionD) ->
     %
     % So this is now allowed to crash again
     PendingDeletions = dict:fetch(ManifestSQN, PendingDeletionD),
-    leveled_log:log("PC021", [ManifestSQN]),
+    leveled_log:log(pc021, [ManifestSQN]),
     {PendingDeletions, dict:erase(ManifestSQN, PendingDeletionD)}.
 
 %%%============================================================================
