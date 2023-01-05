@@ -18,7 +18,8 @@
             close_duringcompaction/1,
             allkeydelta_journal_multicompact/1,
             recompact_keydeltas/1,
-            simple_cachescoring/1
+            simple_cachescoring/1,
+            replace_everything/1
             ]).
 
 all() -> [
@@ -37,8 +38,112 @@ all() -> [
             allkeydelta_journal_multicompact,
             recompact_keydeltas,
             stdtag_recalc,
-            simple_cachescoring
+            simple_cachescoring,
+            replace_everything
             ].
+
+
+replace_everything(_Config) ->
+    % See https://github.com/martinsumner/leveled/issues/389
+    RootPath = testutil:reset_filestructure(),
+    BackupPath = testutil:reset_filestructure("backupSKU"),
+    BookOpts = 
+        [{root_path, RootPath},
+        {cache_size, 2000},
+        {max_journalobjectcount, 20000},
+        {sync_strategy, testutil:sync_strategy()},
+        {reload_strategy, [{?RIAK_TAG, recalc}]}],
+    {ok, Book1} = leveled_bookie:book_start(BookOpts),
+    BKT = "ReplaceAll",
+    BKT1 = "ReplaceAll1",
+    BKT2 = "ReplaceAll2",
+    {KSpcL1, V1} =
+        testutil:put_indexed_objects(Book1, BKT, 50000),
+    ok = testutil:check_indexed_objects(Book1, BKT, KSpcL1, V1),
+    {KSpcL2, V2} = 
+        testutil:put_altered_indexed_objects(Book1, BKT, KSpcL1),
+    ok = testutil:check_indexed_objects(Book1, BKT, KSpcL2, V2),
+    F = fun leveled_bookie:book_islastcompactionpending/1,
+    WaitForCompaction =
+        fun(B) -> 
+            fun(X, Pending) ->
+                case X of 
+                    1 ->
+                        leveled_bookie:book_compactjournal(B, 30000);
+                    _ ->
+                        ok
+                end,
+                case Pending of
+                    false ->
+                        false;
+                    true ->
+                        io:format(
+                            "Loop ~w waiting for journal "
+                            "compaction to complete~n", [X]),
+                        timer:sleep(100),
+                        F(B)
+                end
+            end
+        end,
+    Args1 = [WaitForCompaction(Book1), true, lists:seq(1, 300)],
+    {TC0, false} = timer:tc(lists, foldl, Args1),
+    io:format("Compaction complete in ~w~n", [TC0]),
+    io:format("Backup - get journal with no ledger~n"),
+    {async, BackupFun} = leveled_bookie:book_hotbackup(Book1),
+    ok = BackupFun(BackupPath),
+
+    io:format("Restarting without key store~n"),
+    ok = leveled_bookie:book_close(Book1),
+
+    BookOptsBackup = [{root_path, BackupPath},
+                        {cache_size, 2000},
+                        {max_journalobjectcount, 20000},
+                        {sync_strategy, testutil:sync_strategy()}],
+    SW1 = os:timestamp(),
+    {ok, Book2} = leveled_bookie:book_start(BookOptsBackup),
+    
+    io:format(
+        "Opened backup with no ledger in ~w ms~n",
+        [timer:now_diff(os:timestamp(), SW1) div 1000]),
+    ok = testutil:check_indexed_objects(Book2, BKT, KSpcL2, V2),
+    ok = leveled_bookie:book_close(Book2),
+    
+    SW2 = os:timestamp(),
+    {ok, Book3} = leveled_bookie:book_start(BookOptsBackup),
+    io:format(
+        "Opened backup with ledger in ~w ms~n",
+        [timer:now_diff(os:timestamp(), SW2) div 1000]),
+    ok = testutil:check_indexed_objects(Book3, BKT, KSpcL2, V2),
+    ok = leveled_bookie:book_destroy(Book3),
+
+    {ok, Book4} = leveled_bookie:book_start(BookOpts),
+    {KSpcL3, V3} = testutil:put_indexed_objects(Book4, BKT1, 1000),
+    {KSpcL4, _V4} = testutil:put_indexed_objects(Book4, BKT2, 50000),
+    {KSpcL5, V5} = 
+        testutil:put_altered_indexed_objects(Book4, BKT2, KSpcL4),
+    Args4 = [WaitForCompaction(Book4), true, lists:seq(1, 300)],
+    {TC4, false} = timer:tc(lists, foldl, Args4),
+    io:format("Compaction complete in ~w~n", [TC4]),
+    io:format("Backup - get journal with no ledger~n"),
+    {async, BackupFun4} = leveled_bookie:book_hotbackup(Book4),
+    ok = BackupFun4(BackupPath),
+
+    io:format("Restarting without key store~n"),
+    ok = leveled_bookie:book_close(Book4),
+
+    SW5 = os:timestamp(),
+    {ok, Book5} = leveled_bookie:book_start(BookOptsBackup),
+    
+    io:format(
+        "Opened backup with no ledger in ~w ms~n",
+        [timer:now_diff(os:timestamp(), SW5) div 1000]),
+    ok = testutil:check_indexed_objects(Book5, BKT, KSpcL2, V2),
+    ok = testutil:check_indexed_objects(Book5, BKT1, KSpcL3, V3),
+    ok = testutil:check_indexed_objects(Book5, BKT2, KSpcL5, V5),
+    ok = leveled_bookie:book_destroy(Book5),
+
+    testutil:reset_filestructure(BackupPath),
+    testutil:reset_filestructure().
 
 
 close_duringcompaction(_Config) ->
