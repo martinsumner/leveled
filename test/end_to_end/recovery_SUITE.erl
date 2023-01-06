@@ -5,7 +5,6 @@
 -export([
             recovery_with_samekeyupdates/1,
             same_key_rotation_withindexes/1,
-            hot_backup_simple/1,
             hot_backup_changes/1,
             retain_strategy/1,
             recalc_strategy/1,
@@ -16,7 +15,6 @@
             aae_bustedjournal/1,
             journal_compaction_bustedjournal/1,
             close_duringcompaction/1,
-            allkeydelta_journal_multicompact/1,
             recompact_keydeltas/1,
             simple_cachescoring/1,
             replace_everything/1
@@ -25,7 +23,6 @@
 all() -> [
             recovery_with_samekeyupdates,
             same_key_rotation_withindexes,
-            hot_backup_simple,
             hot_backup_changes,
             retain_strategy,
             recalc_strategy,
@@ -35,7 +32,6 @@ all() -> [
             aae_bustedjournal,
             journal_compaction_bustedjournal,
             close_duringcompaction,
-            allkeydelta_journal_multicompact,
             recompact_keydeltas,
             stdtag_recalc,
             simple_cachescoring,
@@ -45,15 +41,22 @@ all() -> [
 
 replace_everything(_Config) ->
     % See https://github.com/martinsumner/leveled/issues/389
+    % Also replaces previous test which was checking the comapction process
+    % respects the journal object count passed at startup
     RootPath = testutil:reset_filestructure(),
-    BackupPath = testutil:reset_filestructure("backupSKU"),
+    BackupPath = testutil:reset_filestructure("backupRE"),
+    CompPath = filename:join(RootPath, "journal/journal_files/post_compact"),
+    SmallJournalCount = 7000,
+    StdJournalCount = 20000,
     BookOpts = 
-        [{root_path, RootPath},
-        {cache_size, 2000},
-        {max_journalobjectcount, 20000},
-        {sync_strategy, testutil:sync_strategy()},
-        {reload_strategy, [{?RIAK_TAG, recalc}]}],
-    {ok, Book1} = leveled_bookie:book_start(BookOpts),
+        fun(JournalObjectCount) ->
+            [{root_path, RootPath},
+            {cache_size, 2000},
+            {max_journalobjectcount, JournalObjectCount},
+            {sync_strategy, testutil:sync_strategy()},
+            {reload_strategy, [{?RIAK_TAG, recalc}]}]
+        end,
+    {ok, Book1} = leveled_bookie:book_start(BookOpts(StdJournalCount)),
     BKT = "ReplaceAll",
     BKT1 = "ReplaceAll1",
     BKT2 = "ReplaceAll2",
@@ -64,7 +67,13 @@ replace_everything(_Config) ->
     {KSpcL2, V2} = 
         testutil:put_altered_indexed_objects(Book1, BKT, KSpcL1),
     ok = testutil:check_indexed_objects(Book1, BKT, KSpcL2, V2),
-    compact_and_wait(Book1),
+    compact_and_wait(Book1, 1000),
+    {ok, FileList1} =  file:list_dir(CompPath),
+    io:format("Number of files after compaction ~w~n", [length(FileList1)]),
+    compact_and_wait(Book1, 1000),
+    {ok, FileList2} =  file:list_dir(CompPath),
+    io:format("Number of files after compaction ~w~n", [length(FileList2)]),
+    true = FileList1 == FileList2,
     {async, BackupFun} = leveled_bookie:book_hotbackup(Book1),
     ok = BackupFun(BackupPath),
 
@@ -73,7 +82,6 @@ replace_everything(_Config) ->
 
     BookOptsBackup = [{root_path, BackupPath},
                         {cache_size, 2000},
-                        {max_journalobjectcount, 20000},
                         {sync_strategy, testutil:sync_strategy()}],
     SW1 = os:timestamp(),
     {ok, Book2} = leveled_bookie:book_start(BookOptsBackup),
@@ -92,7 +100,7 @@ replace_everything(_Config) ->
     ok = testutil:check_indexed_objects(Book3, BKT, KSpcL2, V2),
     ok = leveled_bookie:book_destroy(Book3),
 
-    {ok, Book4} = leveled_bookie:book_start(BookOpts),
+    {ok, Book4} = leveled_bookie:book_start(BookOpts(StdJournalCount)),
     {KSpcL3, V3} = testutil:put_indexed_objects(Book4, BKT1, 1000),
     {KSpcL4, _V4} = testutil:put_indexed_objects(Book4, BKT2, 50000),
     {KSpcL5, V5} = 
@@ -114,17 +122,37 @@ replace_everything(_Config) ->
     ok = leveled_bookie:book_destroy(Book5),
 
     io:format("Testing with sparse distribution after update~n"),
-    {ok, Book6} = leveled_bookie:book_start(BookOpts),
+    io:format(
+        "Also use smaller Journal files and confirm value used "
+        "in compaction~n"),
+    {ok, Book6} = leveled_bookie:book_start(BookOpts(SmallJournalCount)),
     {KSpcL6, _V6} = testutil:put_indexed_objects(Book6, BKT3, 60000),
     {OSpcL6, RSpcL6} = lists:split(200, lists:ukeysort(1, KSpcL6)),
     {KSpcL7, V7} = 
         testutil:put_altered_indexed_objects(Book6, BKT3, RSpcL6),
+    {ok, FileList3} =  file:list_dir(CompPath),
     compact_and_wait(Book6),
+    {ok, FileList4} =  file:list_dir(CompPath),
     {OSpcL6A, V7} = 
         testutil:put_altered_indexed_objects(Book6, BKT3, OSpcL6, true, V7),
     {async, BackupFun6} = leveled_bookie:book_hotbackup(Book6),
     ok = BackupFun6(BackupPath),
     ok = leveled_bookie:book_close(Book6),
+
+    io:format("Checking object count in newly compacted journal files~n"),
+    NewlyCompactedFiles = lists:subtract(FileList4, FileList3),
+    true = length(NewlyCompactedFiles) >= 1,
+    CDBFilterFun = fun(_K, _V, _P, Acc, _EF) -> {loop, Acc + 1} end,
+    CheckLengthFun =
+        fun(FN) ->
+            {ok, CF} =
+                leveled_cdb:cdb_open_reader(filename:join(CompPath, FN)),
+            {_LP, TK} =
+                leveled_cdb:cdb_scan(CF, CDBFilterFun, 0, undefined),
+            io:format("File ~s has ~w keys~n", [FN, TK]),
+            true = TK =< SmallJournalCount
+        end,
+    lists:foreach(CheckLengthFun, NewlyCompactedFiles),
 
     io:format("Restarting without key store~n"),
     SW7 = os:timestamp(),
@@ -301,13 +329,14 @@ same_key_rotation_withindexes(_Config) ->
     CheckFun =
         fun(Bookie) ->
             {async, R} =
-                leveled_bookie:book_indexfold(Bookie,
-                                                {Bucket, <<>>},
-                                                {FoldKeysFun, []},
-                                                {list_to_binary("binary_bin"),
-                                                    <<0:32/integer>>, 
-                                                    <<255:32/integer>>},
-                                                {true, undefined}),
+                leveled_bookie:book_indexfold(
+                    Bookie,
+                    {Bucket, <<>>},
+                    {FoldKeysFun, []},
+                    {list_to_binary("binary_bin"),
+                        <<0:32/integer>>,
+                        <<255:32/integer>>},
+                    {true, undefined}),
             QR = R(),
             BadAnswers =
                 lists:filter(fun({I, _K}) -> I =/= <<IdxCnt:32/integer>> end, QR),
@@ -326,36 +355,6 @@ same_key_rotation_withindexes(_Config) ->
 
     testutil:reset_filestructure().
 
-
-hot_backup_simple(_Config) ->
-    % The journal may have a hot backup.  This allows for an online Bookie
-    % to be sent a message to prepare a backup function, which an asynchronous
-    % worker can then call to generate a backup taken at the point in time
-    % the original message was processsed.
-    %
-    % The basic test is to:
-    % 1 - load a Bookie, take a backup, delete the original path, restore from
-    % that path
-    RootPath = testutil:reset_filestructure(),
-    BackupPath = testutil:reset_filestructure("backup0"),
-    BookOpts = [{root_path, RootPath},
-                    {cache_size, 1000},
-                    {max_journalsize, 10000000},
-                    {sync_strategy, testutil:sync_strategy()}],
-    {ok, Spcl1, LastV1} = rotating_object_check(BookOpts, "Bucket1", 3200),
-    {ok, Book1} = leveled_bookie:book_start(BookOpts),
-    {async, BackupFun} = leveled_bookie:book_hotbackup(Book1),
-    ok = BackupFun(BackupPath),
-    ok = leveled_bookie:book_close(Book1),
-    RootPath = testutil:reset_filestructure(),
-    BookOptsBackup = [{root_path, BackupPath},
-                        {cache_size, 2000},
-                        {max_journalsize, 20000000},
-                        {sync_strategy, testutil:sync_strategy()}],
-    {ok, BookBackup} = leveled_bookie:book_start(BookOptsBackup),
-    ok = testutil:check_indexed_objects(BookBackup, "Bucket1", Spcl1, LastV1),
-    ok = leveled_bookie:book_close(BookBackup),
-    BackupPath = testutil:reset_filestructure("backup0").
 
 hot_backup_changes(_Config) ->
     RootPath = testutil:reset_filestructure(),
@@ -1044,82 +1043,6 @@ busted_journal_test(MaxJournalSize, PressMethod, PressPoint, Bust) ->
     ok = leveled_bookie:book_close(Bookie2),
     testutil:reset_filestructure(10000).
 
-
-allkeydelta_journal_multicompact(_Config) ->
-    RootPath = testutil:reset_filestructure(),
-    CompPath = filename:join(RootPath, "journal/journal_files/post_compact"),
-    B = <<"test_bucket">>,
-    StartOptsFun = 
-        fun(JOC) ->
-            [{root_path, RootPath},
-                {max_journalobjectcount, JOC},
-                {max_run_length, 4},
-                {singlefile_compactionpercentage, 70.0},
-                {maxrunlength_compactionpercentage, 85.0},
-                {sync_strategy, testutil:sync_strategy()}]
-        end,
-    {ok, Bookie1} = leveled_bookie:book_start(StartOptsFun(14000)),
-    {KSpcL1, _V1} = testutil:put_indexed_objects(Bookie1, B, 28000),
-    {KSpcL2, V2} =
-        testutil:put_altered_indexed_objects(Bookie1, B, KSpcL1, false),
-    compact_and_wait(Bookie1, 0),
-    {ok, FileList1} =  file:list_dir(CompPath),
-    io:format("Number of files after compaction ~w~n", [length(FileList1)]),
-    compact_and_wait(Bookie1, 0),
-    {ok, FileList2} =  file:list_dir(CompPath),
-    io:format("Number of files after compaction ~w~n", [length(FileList2)]),
-    true = FileList1 == FileList2,
-
-    ok =
-        testutil:check_indexed_objects(Bookie1, B, KSpcL1 ++ KSpcL2, V2),
-
-    ok = leveled_bookie:book_close(Bookie1),
-    leveled_penciller:clean_testdir(RootPath ++ "/ledger"),
-    io:format("Restart without ledger~n"),
-    {ok, Bookie2} = leveled_bookie:book_start(StartOptsFun(13000)),
-
-    ok = testutil:check_indexed_objects(Bookie2, B, KSpcL1 ++ KSpcL2, V2),
-    
-    {KSpcL3, _V3} =
-        testutil:put_altered_indexed_objects(Bookie2, B, KSpcL2, false),
-    compact_and_wait(Bookie2, 0),
-    {ok, FileList3} = file:list_dir(CompPath),
-    io:format("Number of files after compaction ~w~n", [length(FileList3)]),
-
-    ok = leveled_bookie:book_close(Bookie2),
-
-    io:format("Restart with smaller journal object count~n"),
-    {ok, Bookie3} = leveled_bookie:book_start(StartOptsFun(7000)),
-
-    {KSpcL4, V4} =
-        testutil:put_altered_indexed_objects(Bookie3, B, KSpcL3, false),
-    
-    compact_and_wait(Bookie3, 0),
-    
-    ok = 
-        testutil:check_indexed_objects(
-            Bookie3, B, KSpcL1 ++ KSpcL2 ++ KSpcL3 ++ KSpcL4, V4),
-    {ok, FileList4} = file:list_dir(CompPath),
-    io:format("Number of files after compaction ~w~n", [length(FileList4)]),
-
-    ok = leveled_bookie:book_close(Bookie3),
-
-    NewlyCompactedFiles = lists:subtract(FileList4, FileList3),
-    true = length(NewlyCompactedFiles) >= 3,
-    CDBFilterFun = fun(_K, _V, _P, Acc, _EF) -> {loop, Acc + 1} end,
-    CheckLengthFun =
-        fun(FN) ->
-            {ok, CF} =
-                leveled_cdb:cdb_open_reader(filename:join(CompPath, FN)),
-            {_LP, TK} =
-                leveled_cdb:cdb_scan(CF, CDBFilterFun, 0, undefined),
-            io:format("File ~s has ~w keys~n", [FN, TK]),
-            true = TK =< 7000
-        end,
-    lists:foreach(CheckLengthFun, NewlyCompactedFiles),
-
-    testutil:reset_filestructure(10000).
-
 recompact_keydeltas(_Config) ->
     RootPath = testutil:reset_filestructure(),
     B = <<"test_bucket">>,
@@ -1147,8 +1070,6 @@ recompact_keydeltas(_Config) ->
             Bookie2, B, KSpcL1 ++ KSpcL2 ++ KSpcL3, V3),
     ok = leveled_bookie:book_close(Bookie2),
     testutil:reset_filestructure(10000).
-
-
 
 rotating_object_check(BookOpts, B, NumberOfObjects) ->
     {ok, Book1} = leveled_bookie:book_start(BookOpts),
