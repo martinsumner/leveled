@@ -1066,12 +1066,9 @@ allkeydelta_journal_multicompact(_Config) ->
                 {sync_strategy, testutil:sync_strategy()}]
         end,
     {ok, Bookie1} = leveled_bookie:book_start(StartOptsFun(14000)),
-    {KSpcL1, _V1} = testutil:put_indexed_objects(Bookie1, B, 24000),
-    {KSpcL2, V2} = testutil:put_altered_indexed_objects(Bookie1,
-                                                        B,
-                                                        KSpcL1,
-                                                        false),
-    compact_and_wait(Bookie1, 0),
+    {KSpcL1, _V1} = testutil:put_indexed_objects(Bookie1, B, 28000),
+    {KSpcL2, V2} =
+        testutil:put_altered_indexed_objects(Bookie1, B, KSpcL1, false),
     compact_and_wait(Bookie1, 0),
     {ok, FileList1} =  file:list_dir(CompPath),
     io:format("Number of files after compaction ~w~n", [length(FileList1)]),
@@ -1080,25 +1077,18 @@ allkeydelta_journal_multicompact(_Config) ->
     io:format("Number of files after compaction ~w~n", [length(FileList2)]),
     true = FileList1 == FileList2,
 
-    ok = testutil:check_indexed_objects(Bookie1,
-                                        B,
-                                        KSpcL1 ++ KSpcL2,
-                                        V2),
+    ok =
+        testutil:check_indexed_objects(Bookie1, B, KSpcL1 ++ KSpcL2, V2),
 
     ok = leveled_bookie:book_close(Bookie1),
     leveled_penciller:clean_testdir(RootPath ++ "/ledger"),
     io:format("Restart without ledger~n"),
     {ok, Bookie2} = leveled_bookie:book_start(StartOptsFun(13000)),
 
-    ok = testutil:check_indexed_objects(Bookie2,
-                                        B,
-                                        KSpcL1 ++ KSpcL2,
-                                        V2),
+    ok = testutil:check_indexed_objects(Bookie2, B, KSpcL1 ++ KSpcL2, V2),
     
-    {KSpcL3, _V3} = testutil:put_altered_indexed_objects(Bookie2,
-                                                        B,
-                                                        KSpcL2,
-                                                        false),
+    {KSpcL3, _V3} =
+        testutil:put_altered_indexed_objects(Bookie2, B, KSpcL2, false),
     compact_and_wait(Bookie2, 0),
     {ok, FileList3} = file:list_dir(CompPath),
     io:format("Number of files after compaction ~w~n", [length(FileList3)]),
@@ -1108,17 +1098,14 @@ allkeydelta_journal_multicompact(_Config) ->
     io:format("Restart with smaller journal object count~n"),
     {ok, Bookie3} = leveled_bookie:book_start(StartOptsFun(7000)),
 
-    {KSpcL4, V4} = testutil:put_altered_indexed_objects(Bookie3,
-                                                        B,
-                                                        KSpcL3,
-                                                        false),
+    {KSpcL4, V4} =
+        testutil:put_altered_indexed_objects(Bookie3, B, KSpcL3, false),
     
     compact_and_wait(Bookie3, 0),
     
-    ok = testutil:check_indexed_objects(Bookie3,
-                                        B,
-                                        KSpcL1 ++ KSpcL2 ++ KSpcL3 ++ KSpcL4,
-                                        V4),
+    ok = 
+        testutil:check_indexed_objects(
+            Bookie3, B, KSpcL1 ++ KSpcL2 ++ KSpcL3 ++ KSpcL4, V4),
     {ok, FileList4} = file:list_dir(CompPath),
     io:format("Number of files after compaction ~w~n", [length(FileList4)]),
 
@@ -1154,22 +1141,17 @@ recompact_keydeltas(_Config) ->
         end,
     {ok, Bookie1} = leveled_bookie:book_start(StartOptsFun(45000)),
     {KSpcL1, _V1} = testutil:put_indexed_objects(Bookie1, B, 24000),
-    {KSpcL2, _V2} = testutil:put_altered_indexed_objects(Bookie1,
-                                                        B,
-                                                        KSpcL1,
-                                                        false),
+    {KSpcL2, _V2} =
+        testutil:put_altered_indexed_objects(Bookie1, B, KSpcL1, false),
     ok = leveled_bookie:book_close(Bookie1),
     {ok, Bookie2} = leveled_bookie:book_start(StartOptsFun(45000)),                 
     compact_and_wait(Bookie2, 0),
-    {KSpcL3, V3} = testutil:put_altered_indexed_objects(Bookie2,
-                                                        B,
-                                                        KSpcL2,
-                                                        false),
+    {KSpcL3, V3} =
+        testutil:put_altered_indexed_objects(Bookie2, B, KSpcL2, false),
     compact_and_wait(Bookie2, 0),
-    ok = testutil:check_indexed_objects(Bookie2,
-                                        B,
-                                        KSpcL1 ++ KSpcL2 ++ KSpcL3,
-                                        V3),
+    ok =
+        testutil:check_indexed_objects(
+            Bookie2, B, KSpcL1 ++ KSpcL2 ++ KSpcL3, V3),
     ok = leveled_bookie:book_close(Bookie2),
     testutil:reset_filestructure(10000).
 
@@ -1178,49 +1160,35 @@ recompact_keydeltas(_Config) ->
 rotating_object_check(BookOpts, B, NumberOfObjects) ->
     {ok, Book1} = leveled_bookie:book_start(BookOpts),
     {KSpcL1, V1} = testutil:put_indexed_objects(Book1, B, NumberOfObjects),
-    ok = testutil:check_indexed_objects(Book1,
-                                        B,
-                                        KSpcL1,
-                                        V1),
-    {KSpcL2, V2} = testutil:put_altered_indexed_objects(Book1,
-                                                        B,
-                                                        KSpcL1,
-                                                        false),
-    ok = testutil:check_indexed_objects(Book1,
-                                        B,
-                                        KSpcL1 ++ KSpcL2,
-                                        V2),
-    {KSpcL3, V3} = testutil:put_altered_indexed_objects(Book1,
-                                                        B,
-                                                        KSpcL2,
-                                                        false),
-    ok = testutil:check_indexed_objects(Book1,
-                                        B,
-                                        KSpcL1 ++ KSpcL2 ++ KSpcL3,
-                                        V3),
+    ok = testutil:check_indexed_objects(Book1, B, KSpcL1, V1),
+    {KSpcL2, V2} =
+        testutil:put_altered_indexed_objects(Book1, B, KSpcL1, false),
+    ok = 
+        testutil:check_indexed_objects(
+            Book1, B, KSpcL1 ++ KSpcL2, V2),
+    {KSpcL3, V3} =
+        testutil:put_altered_indexed_objects(Book1, B, KSpcL2, false),
+    ok = 
+        testutil:check_indexed_objects(
+            Book1, B, KSpcL1 ++ KSpcL2 ++ KSpcL3, V3),
     ok = leveled_bookie:book_close(Book1),
     {ok, Book2} = leveled_bookie:book_start(BookOpts),
-    ok = testutil:check_indexed_objects(Book2,
-                                        B,
-                                        KSpcL1 ++ KSpcL2 ++ KSpcL3,
-                                        V3),
-    {KSpcL4, V4} = testutil:put_altered_indexed_objects(Book2,
-                                                        B,
-                                                        KSpcL3,
-                                                        false),
+    ok = 
+        testutil:check_indexed_objects(
+            Book2, B, KSpcL1 ++ KSpcL2 ++ KSpcL3, V3),
+    {KSpcL4, V4} =
+        testutil:put_altered_indexed_objects(Book2, B, KSpcL3, false),
     io:format("Bucket complete - checking index before compaction~n"),
-    ok = testutil:check_indexed_objects(Book2,
-                                        B,
-                                        KSpcL1 ++ KSpcL2 ++ KSpcL3 ++ KSpcL4,
-                                        V4),
+    ok = 
+        testutil:check_indexed_objects(
+            Book2, B, KSpcL1 ++ KSpcL2 ++ KSpcL3 ++ KSpcL4, V4),
     
     compact_and_wait(Book2),
     
     io:format("Checking index following compaction~n"),
-    ok = testutil:check_indexed_objects(Book2,
-                                        B,
-                                        KSpcL1 ++ KSpcL2 ++ KSpcL3 ++ KSpcL4,
-                                        V4),
+    ok =
+        testutil:check_indexed_objects(
+            Book2, B, KSpcL1 ++ KSpcL2 ++ KSpcL3 ++ KSpcL4, V4),
     
     ok = leveled_bookie:book_close(Book2),
     {ok, KSpcL1 ++ KSpcL2 ++ KSpcL3 ++ KSpcL4, V4}.
