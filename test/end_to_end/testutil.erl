@@ -46,6 +46,7 @@
             put_indexed_objects/3,
             put_altered_indexed_objects/3,
             put_altered_indexed_objects/4,
+            put_altered_indexed_objects/5,
             check_indexed_objects/4,
             rotating_object_check/3,
             corrupt_journal/5,
@@ -786,8 +787,12 @@ put_altered_indexed_objects(Book, Bucket, KSpecL) ->
     put_altered_indexed_objects(Book, Bucket, KSpecL, true).
 
 put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i) ->
-    IndexGen = get_randomindexes_generator(1),
     V = get_compressiblevalue(),
+    put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i, V).
+
+put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i, V) ->
+    IndexGen = get_randomindexes_generator(1),
+    
     FindAdditionFun = fun(SpcItem) -> element(1, SpcItem) == add end,
     MapFun = 
         fun({K, Spc}) ->

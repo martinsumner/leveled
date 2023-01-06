@@ -54,8 +54,6 @@
             {info, <<"LedgerSQN=~w at startup">>},
         b0006 =>
             {info, <<"Reached end of load batch with SQN ~w">>},
-        b0007 =>
-            {info, <<"Skipping as exceeded MaxSQN ~w with SQN ~w">>},
         b0008 =>
             {info, <<"Bucket list finds no more results">>},
         b0009 =>
