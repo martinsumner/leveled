@@ -373,16 +373,21 @@
         {monitor_loglist, list(leveled_monitor:log_type())}
         ].
 
+-type load_item() ::
+    {leveled_codec:journal_key_tag()|null, 
+        leveled_codec:ledger_key()|?DUMMY,
+        non_neg_integer(), any(), integer(), 
+        leveled_codec:journal_keychanges()}.
+
 -type initial_loadfun() ::
     fun((leveled_codec:journal_key(),
             any(),
             non_neg_integer(),
             {non_neg_integer(), non_neg_integer(), ledger_cache()},
             fun((any()) -> {binary(), non_neg_integer()})) ->
-                {loop|stop,
-                    {non_neg_integer(), non_neg_integer(), ledger_cache()}}).
+                {loop|stop, list(load_item())}).
 
--export_type([initial_loadfun/0]).
+-export_type([initial_loadfun/0, ledger_cache/0]).
 
 %%%============================================================================
 %%% API
@@ -1562,13 +1567,46 @@ empty_ledgercache() ->
     #ledger_cache{mem = ets:new(empty, [ordered_set])}.
 
 
--spec push_to_penciller(pid(), ledger_cache()) -> ok.
+-spec push_to_penciller(
+    pid(),
+    list(load_item()), 
+    ledger_cache(),
+    leveled_codec:compaction_strategy())
+        -> ledger_cache().
 %% @doc
 %% The push to penciller must start as a tree to correctly de-duplicate
 %% the list by order before becoming a de-duplicated list for loading  
-push_to_penciller(Penciller, LedgerCache) ->
-    push_to_penciller_loop(Penciller, loadqueue_ledgercache(LedgerCache)).
+push_to_penciller(Penciller, LoadItemList, LedgerCache, ReloadStrategy) ->
+    UpdLedgerCache =
+        lists:foldl(
+            fun({InkTag, PK, SQN, Obj, IndexSpecs, ValSize}, AccLC) ->
+                Chngs =
+                    case leveled_codec:get_tagstrategy(PK, ReloadStrategy) of
+                        recalc ->
+                            recalcfor_ledgercache(
+                                InkTag, PK, SQN, Obj, ValSize, IndexSpecs,
+                                AccLC, Penciller);
+                        _ ->
+                            preparefor_ledgercache(
+                                InkTag, PK, SQN, Obj, ValSize, IndexSpecs)
+                    end,
+                addto_ledgercache(Chngs, AccLC, loader)
+            end,
+            LedgerCache,
+            lists:reverse(LoadItemList)
+        ),
+    case length(UpdLedgerCache#ledger_cache.load_queue) of
+        N when N > ?LOADING_BATCH ->
+            leveled_log:log(b0006, [UpdLedgerCache#ledger_cache.max_sqn]),
+            ok =
+                push_to_penciller_loop(
+                    Penciller, loadqueue_ledgercache(UpdLedgerCache)),
+            empty_ledgercache();
+        _ ->
+            UpdLedgerCache
+    end.
 
+-spec push_to_penciller_loop(pid(), ledger_cache()) -> ok.
 push_to_penciller_loop(Penciller, LedgerCache) ->
     case push_ledgercache(Penciller, LedgerCache) of
         returned ->
@@ -1686,21 +1724,21 @@ startup(InkerOpts, PencillerOpts) ->
     LedgerSQN = leveled_penciller:pcl_getstartupsequencenumber(Penciller),
     leveled_log:log(b0005, [LedgerSQN]),
     ReloadStrategy = InkerOpts#inker_options.reload_strategy,
-    LoadFun = get_loadfun(ReloadStrategy, Penciller),
+    LoadFun = get_loadfun(),
     BatchFun = 
-        fun(BatchAcc, _Acc) ->
-            push_to_penciller(Penciller, BatchAcc)
+        fun(BatchAcc, Acc) ->
+            push_to_penciller(
+                Penciller, BatchAcc, Acc, ReloadStrategy)
         end,
     InitAccFun =
         fun(FN, CurrentMinSQN) ->
             leveled_log:log(i0014, [FN, CurrentMinSQN]),
-            empty_ledgercache()
+            []
         end,
-    ok = leveled_inker:ink_loadpcl(Inker,
-                                    LedgerSQN + 1,
-                                    LoadFun,
-                                    InitAccFun,
-                                    BatchFun),
+    FinalAcc =
+        leveled_inker:ink_loadpcl(
+            Inker, LedgerSQN + 1, LoadFun, InitAccFun, BatchFun),
+    ok = push_to_penciller_loop(Penciller, loadqueue_ledgercache(FinalAcc)),
     ok = leveled_inker:ink_checksqn(Inker, LedgerSQN),
     {Inker, Penciller}.
 
@@ -2414,44 +2452,36 @@ maybe_withjitter(_CacheSize, _MaxCacheSize, _MaxCacheMult) ->
     false.
 
 
--spec get_loadfun(
-    leveled_codec:compaction_strategy(), pid()) -> initial_loadfun().
+-spec get_loadfun() -> initial_loadfun().
 %% @doc
 %% The LoadFun will be used by the Inker when walking across the Journal to 
 %% load the Penciller at startup.  
-get_loadfun(ReloadStrat, Penciller) ->
+get_loadfun() ->
     fun(KeyInJournal, ValueInJournal, _Pos, Acc0, ExtractFun) ->
-        {MinSQN, MaxSQN, LedgerCache} = Acc0,
+        {MinSQN, MaxSQN, LoadItems} = Acc0,
         {SQN, InkTag, PK} = KeyInJournal,
         case SQN of
             SQN when SQN < MinSQN ->
                 {loop, Acc0};
             SQN when SQN > MaxSQN ->
-                leveled_log:log(b0007, [MaxSQN, SQN]),
                 {stop, Acc0};
             _ ->
                 {VBin, ValSize} = ExtractFun(ValueInJournal),
                 % VBin may already be a term
                 {Obj, IdxSpecs} = leveled_codec:split_inkvalue(VBin),
-                Chngs =
-                    case leveled_codec:get_tagstrategy(PK, ReloadStrat) of
-                        recalc ->
-                            recalcfor_ledgercache(InkTag, PK, SQN,
-                                                    Obj, ValSize, IdxSpecs,
-                                                    LedgerCache, 
-                                                    Penciller);
-                        _ ->
-                            preparefor_ledgercache(InkTag, PK, SQN,
-                                                    Obj, ValSize, IdxSpecs)
-                    end,
                 case SQN of
                     MaxSQN ->
-                        leveled_log:log(b0006, [SQN]),
-                        LC0 = addto_ledgercache(Chngs, LedgerCache, loader),
-                        {stop, {MinSQN, MaxSQN, LC0}};
+                        {stop,
+                            {MinSQN,
+                            MaxSQN,
+                            [{InkTag, PK, SQN, Obj, IdxSpecs, ValSize}
+                                |LoadItems]}};
                     _ ->
-                        LC0 = addto_ledgercache(Chngs, LedgerCache, loader),
-                        {loop, {MinSQN, MaxSQN, LC0}}
+                        {loop,
+                            {MinSQN,
+                            MaxSQN,
+                            [{InkTag, PK, SQN, Obj, IdxSpecs, ValSize}
+                                |LoadItems]}}
                 end
         end
     end.

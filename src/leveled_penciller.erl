@@ -686,26 +686,31 @@ handle_call({push_mem, {LedgerTable, PushedIdx, MinSQN, MaxSQN}},
                     false ->
                         leveled_tree:from_orderedset(LedgerTable, ?CACHE_TYPE)
                 end,
-            {UpdMaxSQN, NewL0Size, UpdL0Cache} =
-                leveled_pmem:add_to_cache(
+            case leveled_pmem:add_to_cache(
                     L0Size,
                     {PushedTree, MinSQN, MaxSQN},
                     State#state.ledger_sqn,
-                    State#state.levelzero_cache),
-            UpdL0Index =
-                leveled_pmem:add_to_index(
-                    PushedIdx,
-                    State#state.levelzero_index,
-                    length(State#state.levelzero_cache) + 1),
-            leveled_log:log_randomtimer(
-                p0031, [NewL0Size, true, true, MinSQN, MaxSQN], SW, 0.1),
-            {reply,
-                ok,
-                State#state{
-                    levelzero_cache = UpdL0Cache,
-                    levelzero_size = NewL0Size,
-                    levelzero_index = UpdL0Index,
-                    ledger_sqn = UpdMaxSQN}}
+                    State#state.levelzero_cache,
+                    true) of
+                empty_push ->
+                    {reply, ok, State};
+                {UpdMaxSQN, NewL0Size, UpdL0Cache} ->
+                    UpdL0Index =
+                        leveled_pmem:add_to_index(
+                            PushedIdx,
+                            State#state.levelzero_index,
+                            length(State#state.levelzero_cache) + 1),
+                    leveled_log:log_randomtimer(
+                        p0031,
+                        [NewL0Size, true, true, MinSQN, MaxSQN], SW, 0.1),
+                    {reply,
+                        ok,
+                        State#state{
+                            levelzero_cache = UpdL0Cache,
+                            levelzero_size = NewL0Size,
+                            levelzero_index = UpdL0Index,
+                            ledger_sqn = UpdMaxSQN}}
+            end
     end;
 handle_call({fetch, Key, Hash, UseL0Index}, _From, State) ->
     L0Idx = 
@@ -836,10 +841,12 @@ handle_call({register_snapshot, Snapshot, Query, BookiesMem, LongRunning},
         case Query of
             no_lookup ->
                 {UpdMaxSQN, UpdSize, L0Cache} =
-                    leveled_pmem:add_to_cache(State#state.levelzero_size,
-                                                {LM1Cache, MinSQN, MaxSQN},
-                                                State#state.ledger_sqn,
-                                                State#state.levelzero_cache),
+                    leveled_pmem:add_to_cache(
+                        State#state.levelzero_size,
+                        {LM1Cache, MinSQN, MaxSQN},
+                        State#state.ledger_sqn,
+                        State#state.levelzero_cache,
+                        false),
                 {#state{levelzero_cache = L0Cache,
                         ledger_sqn = UpdMaxSQN,
                         levelzero_size = UpdSize,
@@ -865,10 +872,12 @@ handle_call({register_snapshot, Snapshot, Query, BookiesMem, LongRunning},
                         EndKey}};
             undefined ->
                 {UpdMaxSQN, UpdSize, L0Cache} =
-                    leveled_pmem:add_to_cache(State#state.levelzero_size,
-                                                {LM1Cache, MinSQN, MaxSQN},
-                                                State#state.ledger_sqn,
-                                                State#state.levelzero_cache),
+                    leveled_pmem:add_to_cache(
+                        State#state.levelzero_size,
+                        {LM1Cache, MinSQN, MaxSQN},
+                        State#state.ledger_sqn,
+                        State#state.levelzero_cache,
+                        false),
                 LM1Idx =
                     case BookieIdx of
                         empty_index ->

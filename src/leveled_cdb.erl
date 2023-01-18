@@ -375,8 +375,9 @@ cdb_deletepending(Pid) ->
 cdb_deletepending(Pid, ManSQN, Inker) ->
     gen_fsm:send_event(Pid, {delete_pending, ManSQN, Inker}).
 
--spec cdb_scan(pid(), filter_fun(), any(), integer()|undefined) ->
-                                                    {integer()|eof, any()}.
+-spec cdb_scan(
+        pid(), filter_fun(), any(), integer()|undefined)
+            -> {integer()|eof, any()}.
 %% @doc
 %% cdb_scan returns {LastPosition, Acc}.  Use LastPosition as StartPosiiton to
 %% continue from that point (calling function has to protect against) double

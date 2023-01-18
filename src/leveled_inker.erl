@@ -133,7 +133,6 @@
 -define(WASTE_FP, "waste").
 -define(JOURNAL_FILEX, "cdb").
 -define(PENDING_FILEX, "pnd").
--define(LOADING_BATCH, 1000).
 -define(TEST_KC, {[], infinity}).
 
 -record(state, {manifest = [] :: list(),
@@ -337,11 +336,14 @@ ink_fold(Pid, MinSQN, FoldFuns, Acc) ->
                     {fold, MinSQN, FoldFuns, Acc, by_runner},
                     infinity).
 
--spec ink_loadpcl(pid(),
-                    integer(),
-                    leveled_bookie:initial_loadfun(),
-                    fun((string(), non_neg_integer()) -> any()),
-                    fun((any(), any()) -> ok)) -> ok.
+-spec ink_loadpcl(
+    pid(),
+    integer(),
+    leveled_bookie:initial_loadfun(),
+    fun((string(), non_neg_integer()) -> any()),
+    fun((any(), leveled_bookie:ledger_cache())
+        -> leveled_bookie:ledger_cache()))
+            -> leveled_bookie:ledger_cache().
 %%
 %% Function to prompt load of the Ledger at startup.  The Penciller should
 %% have determined the lowest SQN not present in the Ledger, and the inker
@@ -355,7 +357,7 @@ ink_loadpcl(Pid, MinSQN, LoadFun, InitAccFun, BatchFun) ->
                     {fold, 
                         MinSQN, 
                         {LoadFun, InitAccFun, BatchFun}, 
-                        ok,
+                        leveled_bookie:empty_ledgercache(),
                         as_ink},
                     infinity).
 
