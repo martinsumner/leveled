@@ -1,6 +1,7 @@
 % File paths
 -define(JOURNAL_FP, "journal").
 -define(LEDGER_FP, "ledger").
+-define(LOADING_BATCH, 1000).
 
 %% Tag to be used on standard Riak KV objects
 -define(RIAK_TAG, o_rkv).

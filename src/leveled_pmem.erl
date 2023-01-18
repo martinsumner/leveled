@@ -30,7 +30,7 @@
 
 -export([
         prepare_for_index/2,
-        add_to_cache/4,
+        add_to_cache/5,
         to_list/2,
         check_levelzero/3,
         check_levelzero/4,
@@ -109,22 +109,30 @@ check_index(Hash, L0Index) ->
             L0Index),
     lists:reverse(Positions).    
 
--spec add_to_cache(integer(),
-                    {tuple(), integer(), integer()},
-                    integer(),
-                    list()) ->
-                        {integer(), integer(), list()}.
+-spec add_to_cache(
+    integer(),
+    {tuple(), integer(), integer()},
+    integer(),
+    list(),
+    boolean()) -> {integer(), integer(), list()}|empty_push.
 %% @doc
 %% The penciller's cache is a list of leveled_trees, this adds a new tree to
 %% that cache, providing an update to the approximate size of the cache and
 %% the Ledger's SQN.
-add_to_cache(L0Size, {LevelMinus1, MinSQN, MaxSQN}, LedgerSQN, TreeList) ->
-    LM1Size = leveled_tree:tsize(LevelMinus1),
-    if
-        MinSQN >= LedgerSQN ->
-            {MaxSQN,
-                L0Size + LM1Size,
-                [LevelMinus1|TreeList]}
+%% Updates to cache must set Writable to true if the update could generate a
+%% Level 0 file - as this must guard against empty entries (which may lead to
+%% an attempt to write an empty L0 file)
+add_to_cache(L0Size, {LM1, MinSQN, MaxSQN}, LedgerSQN, TreeList, Writeable) ->
+    case {Writeable, leveled_tree:tsize(LM1)} of
+        {true, 0} ->
+            empty_push;
+        {_, LM1Size} ->
+            if
+                MinSQN >= LedgerSQN ->
+                    {MaxSQN,
+                        L0Size + LM1Size,
+                        [LM1|TreeList]}
+            end
     end.
 
 -spec to_list(
@@ -268,12 +276,12 @@ compare_method_test() ->
     R = lists:foldl(fun(_X, {LedgerSQN, L0Size, L0TreeList}) ->
                             LM1 = generate_randomkeys(LedgerSQN + 1,
                                                         2000, 1, 500),
-                            add_to_cache(L0Size,
-                                            {LM1,
-                                                LedgerSQN + 1,
-                                                LedgerSQN + 2000},
-                                            LedgerSQN,
-                                            L0TreeList)
+                            add_to_cache(
+                                L0Size,
+                                {LM1, LedgerSQN + 1, LedgerSQN + 2000},
+                                LedgerSQN,
+                                L0TreeList,
+                                true)
                             end,
                         {0, 0, []},
                         lists:seq(1, 16)),
@@ -365,10 +373,12 @@ with_index_test2() ->
             LM1Array = lists:foldl(IndexPrepareFun, new_index(), LM1),
             LM1SL = leveled_tree:from_orderedlist(lists:ukeysort(1, LM1), ?CACHE_TYPE),
             UpdL0Index = add_to_index(LM1Array, L0Idx, length(L0TreeList) + 1),
-            R = add_to_cache(L0Size,
-                                {LM1SL, LedgerSQN + 1, LedgerSQN + 2000},
-                                LedgerSQN,
-                                L0TreeList),
+            R = add_to_cache(
+                L0Size, 
+                {LM1SL, LedgerSQN + 1, LedgerSQN + 2000},
+                LedgerSQN,
+                L0TreeList,
+                true),
             {R, UpdL0Index, lists:ukeymerge(1, LM1, SrcList)}
         end,
     
