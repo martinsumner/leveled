@@ -268,7 +268,7 @@ handle_cast({bookie_head_update, FetchTime, RspTime, CacheHit}, State) ->
                 {FC + 1, FLT, FCT + FetchTime, RST + RspTime, NFT}
         end,
     UpdTimings =
-        #bookie_head_timings{
+        Timings#bookie_head_timings{
             sample_count = SC0,
             cache_count = CC0,
             found_count = FC0,
@@ -293,7 +293,7 @@ handle_cast({bookie_get_update, HeadTime, BodyTime}, State) ->
                     Timings#bookie_get_timings.body_time + BodyTime}
         end,
     UpdTimings =
-        #bookie_get_timings{
+        Timings#bookie_get_timings{
             sample_count = SC0,
             head_time = HT0,
             body_time = BT0,
@@ -308,7 +308,7 @@ handle_cast({bookie_put_update, InkTime, PrepTime, MemTime, Size}, State) ->
     PT0 = Timings#bookie_put_timings.prep_time + PrepTime,
     MT0 = Timings#bookie_put_timings.mem_time + MemTime,
     UpdTimings =
-        #bookie_put_timings{
+        Timings#bookie_put_timings{
             sample_count = SC0,
             ink_time = IT0,
             prep_time = PT0,
@@ -322,7 +322,7 @@ handle_cast({bookie_snap_update, BookieTime, PCLTime}, State) ->
     BT0 = Timings#bookie_snap_timings.bookie_time + BookieTime,
     PT0 = Timings#bookie_snap_timings.pcl_time + PCLTime,
     UpdTimings =
-        #bookie_snap_timings{
+        Timings#bookie_snap_timings{
             sample_count = SC0,
             bookie_time = BT0,
             pcl_time = PT0
@@ -436,7 +436,7 @@ handle_cast({cdb_get_update, CycleCount, IndexTime, ReadTime}, State) ->
     IT0 = Timings#cdb_get_timings.index_time + IndexTime,
     RT0 = Timings#cdb_get_timings.read_time + ReadTime,
     UpdTimings =
-        #cdb_get_timings{
+        Timings#cdb_get_timings{
             sample_count = SC0,
             cycle_count = CC0,
             index_time = IT0,
