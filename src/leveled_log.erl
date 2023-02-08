@@ -109,7 +109,7 @@
         p0019 =>
             {info, <<"Rolling level zero to filename ~s at ledger sqn ~w">>},
         p0024 =>
-            {info, <<"Outstanding compaction work items of ~w with backlog status of ~w">>},
+            {info, <<"Outstanding compaction work items of ~w with backlog status of ~w L0 full ~w">>},
         p0029 =>
             {info, <<"L0 completion confirmed and will transition to not pending">>},
         p0030 =>

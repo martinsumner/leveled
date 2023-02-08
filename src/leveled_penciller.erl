@@ -1070,11 +1070,20 @@ handle_cast({levelzero_complete, FN, StartKey, EndKey, Bloom}, State) ->
                             manifest=UpdMan,
                             persisted_sqn=State#state.ledger_sqn}};
 handle_cast(work_for_clerk, State) ->
-    case {State#state.levelzero_pending,
-            State#state.work_ongoing,
+    case {(State#state.levelzero_pending or State#state.work_ongoing),
             leveled_pmanifest:levelzero_present(State#state.manifest)} of
-        {false, false, false} ->
-            % If the penciller memory needs rolling, prompt this now
+        {true, _L0Present} ->
+            % Work is blocked by ongoing activity
+            {noreply, State};
+        {false, true} ->
+            % If L0 present, and no work ongoing - dropping L0 to L1 is the
+            % priority
+            ok = leveled_pclerk:clerk_push(
+                State#state.clerk, {0, State#state.manifest}),
+            {noreply, State#state{work_ongoing=true}};
+        {false, false} ->
+            % No impediment to work - see what other work may be required
+            % See if the in-memory cache requires rolling now
             CacheOverSize =
                 maybe_cache_too_big(
                     State#state.levelzero_size,
@@ -1082,9 +1091,16 @@ handle_cast(work_for_clerk, State) ->
                     State#state.levelzero_cointoss),
             CacheAlreadyFull =
                 leveled_pmem:cache_full(State#state.levelzero_cache),
-            case (CacheAlreadyFull or CacheOverSize) of
-                true ->
+            % Check for a backlog of work
+            {WL, WC} = leveled_pmanifest:check_for_work(State#state.manifest),
+            case {WC, (CacheAlreadyFull or CacheOverSize)} of
+                {0, false} ->
+                    % No work required
+                    {noreply, State#state{work_backlog = false}};
+                {WC, true} when WC < ?WORKQUEUE_BACKLOG_TOLERANCE ->
                     % Rolling the memory to create a new Level Zero file
+                    % Must not do this if there is a work backlog beyond the 
+                    % tolerance, as then the backlog may never be addressed.
                     NextSQN =
                         leveled_pmanifest:get_manifest_sqn(
                             State#state.manifest) + 1,
@@ -1099,34 +1115,23 @@ handle_cast(work_for_clerk, State) ->
                             false),
                     {noreply,
                         State#state{
-                            levelzero_pending=true,
-                            levelzero_constructor=Constructor}};
-                false ->
-                    {WL, WC} =
-                        leveled_pmanifest:check_for_work(State#state.manifest),
-                    case WC of
-                        0 ->
-                            % Should do some tidy-up work here?
-                            {noreply, State#state{work_backlog=false}};
-                        N ->
-                            Backlog = N > ?WORKQUEUE_BACKLOG_TOLERANCE,
-                            leveled_log:log(p0024, [N, Backlog]),
-                            [TL|_Tail] = WL,
-                            ok =
-                                leveled_pclerk:clerk_push(
-                                    State#state.clerk,
-                                    {TL, State#state.manifest}),
-                            {noreply,
-                                State#state{
-                                    work_backlog=Backlog, work_ongoing=true}}
-                    end
-            end;
-        {false, false, true} ->
-            ok = leveled_pclerk:clerk_push(
-                State#state.clerk, {0, State#state.manifest}),
-            {noreply, State#state{work_ongoing=true}};
-        _ ->
-            {noreply, State}
+                            levelzero_pending = true,
+                            levelzero_constructor = Constructor,
+                            work_backlog = false}}; 
+                {WC, L0Full} ->
+                    % Address the backlog of work, either because there is no
+                    % L0 work to do, or because the backlog has grown beyond
+                    % tolerance
+                    Backlog = WC >= ?WORKQUEUE_BACKLOG_TOLERANCE,
+                    leveled_log:log(p0024, [WC, Backlog, L0Full]),
+                    [TL|_Tail] = WL,
+                    ok =
+                        leveled_pclerk:clerk_push(
+                            State#state.clerk, {TL, State#state.manifest}),
+                    {noreply,
+                        State#state{
+                            work_backlog = Backlog, work_ongoing = true}}
+            end
     end;
 handle_cast({fetch_levelzero, Slot, ReturnFun}, State) ->
     ReturnFun(lists:nth(Slot, State#state.levelzero_cache)),
