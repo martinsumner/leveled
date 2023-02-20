@@ -39,9 +39,7 @@
         new_index/0,
         check_index/2,
         cache_full/1
-        ]).      
-
--include_lib("eunit/include/eunit.hrl").
+        ]).
 
 -define(MAX_CACHE_LINES, 31). % Must be less than 128
 
@@ -237,6 +235,8 @@ check_slotlist(Key, _Hash, CheckList, TreeList) ->
 %%%============================================================================
 
 -ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
 
 generate_randomkeys_aslist(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
     lists:ukeysort(1,

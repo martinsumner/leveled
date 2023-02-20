@@ -102,8 +102,6 @@
 -define(HIBERNATE_TIMEOUT, 60000).
 -endif.
 
--include_lib("eunit/include/eunit.hrl").
-
 -export([init/1,
         handle_sync_event/4,
         handle_event/3,
@@ -135,11 +133,7 @@
             sst_gettombcount/1,
             sst_close/1]).
 
--ifdef(TEST).
-
 -export([sst_newmerge/10]).
-
--endif.
 
 -export([tune_seglist/1, extract_hash/1, member_check/2]).
 
@@ -1069,20 +1063,6 @@ expand_list_by_pointer({next, ManEntry, StartKey, EndKey},
     ExpPointer ++ Tail.
 
 
--spec sst_getkvrange(pid(), 
-                        range_endpoint(), 
-                        range_endpoint(),  
-                        integer()) 
-                            -> list(leveled_codec:ledger_kv()|slot_pointer()).
-%% @doc
-%% Get a range of {Key, Value} pairs as a list between StartKey and EndKey
-%% (inclusive).  The ScanWidth is the maximum size of the range, a pointer
-%% will be placed on the tail of the resulting list if results expand beyond
-%% the Scan Width
-sst_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
-    sst_getfilteredrange(Pid, StartKey, EndKey, ScanWidth, false, 0). 
-
-
 -spec sst_getfilteredrange(pid(), 
                             range_endpoint(), 
                             range_endpoint(),  
@@ -1121,14 +1101,6 @@ sst_getfilteredrange(Pid, StartKey, EndKey, ScanWidth, SegList, LowLastMod) ->
             Reply
     end.
 
--spec sst_getslots(pid(), list(slot_pointer()))
-                                        -> list(leveled_codec:ledger_kv()).
-%% @doc
-%% Get a list of slots by their ID. The slot will be converted from the binary
-%% to term form outside of the FSM loop, this is to stop the copying of the 
-%% converted term to the calling process.
-sst_getslots(Pid, SlotList) ->
-    sst_getfilteredslots(Pid, SlotList, false, 0).
 
 -spec sst_getfilteredslots(pid(), 
                             list(slot_pointer()), 
@@ -2798,10 +2770,9 @@ split_lists(KVList1, SlotLists, N, PressMethod, IdxModDate) ->
 %% Merge lists when merging across more than one file.  KVLists that are 
 %% provided may include pointers to fetch more Keys/Values from the source
 %% file
-merge_lists(KVList1, KVList2, LevelInfo, SSTOpts,
-                                            IndexModDate, SaveTombCount) ->
+merge_lists(KVList1, KVList2, LevelInfo, SSTOpts, IndexModDate, TombCount) ->
     InitTombCount =
-        case SaveTombCount of true -> 0; false -> not_counted end,
+        case TombCount of true -> 0; false -> not_counted end,
     merge_lists(KVList1, KVList2, 
                 LevelInfo, 
                 [], null, 0, 
@@ -3094,7 +3065,31 @@ maybelog_fetch_timing({Pid, _SlotFreq}, Level, Type, SW) ->
 
 -ifdef(TEST).
 
+-include_lib("eunit/include/eunit.hrl").
+
 -define(TEST_AREA, "test/test_area/").
+
+-spec sst_getkvrange(pid(), 
+                        range_endpoint(), 
+                        range_endpoint(),  
+                        integer()) 
+                            -> list(leveled_codec:ledger_kv()|slot_pointer()).
+%% @doc
+%% Get a range of {Key, Value} pairs as a list between StartKey and EndKey
+%% (inclusive).  The ScanWidth is the maximum size of the range, a pointer
+%% will be placed on the tail of the resulting list if results expand beyond
+%% the Scan Width
+sst_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
+    sst_getfilteredrange(Pid, StartKey, EndKey, ScanWidth, false, 0). 
+
+-spec sst_getslots(pid(), list(slot_pointer()))
+                                        -> list(leveled_codec:ledger_kv()).
+%% @doc
+%% Get a list of slots by their ID. The slot will be converted from the binary
+%% to term form outside of the FSM loop, this is to stop the copying of the 
+%% converted term to the calling process.
+sst_getslots(Pid, SlotList) ->
+    sst_getfilteredslots(Pid, SlotList, false, 0).
 
 testsst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod) ->
     OptsSST =

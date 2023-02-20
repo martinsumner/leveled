@@ -120,12 +120,11 @@
         ink_removelogs/2,
         ink_getjournalsqn/1]).
 
--export([build_dummy_journal/0,
-        clean_testdir/1,
-        filepath/2,
-        filepath/3]).
+-export([filepath/2, filepath/3]).
 
--include_lib("eunit/include/eunit.hrl").
+-ifdef(TEST).
+-export([build_dummy_journal/0, clean_testdir/1]).
+-endif.
 
 -define(MANIFEST_FP, "journal_manifest").
 -define(FILES_FP, "journal_files").
@@ -155,7 +154,7 @@
 
 -type inker_options() :: #inker_options{}.
 -type ink_state() :: #state{}.
--type registered_snapshot() :: {pid(), os:timestamp(), integer()}.
+-type registered_snapshot() :: {pid(), erlang:timestamp(), integer()}.
 -type filterserver() :: pid()|list(tuple()).
 -type filterfun() ::
     fun((filterserver(), leveled_codec:ledger_key(), leveled_codec:sqn()) ->
@@ -383,17 +382,6 @@ ink_compactjournal(Pid, Bookie, _Timeout) ->
                             CheckerInitiateFun,
                             CheckerCloseFun,
                             CheckerFilterFun},
-                        infinity).
-
-%% Allows the Checker to be overriden in test, use something other than a
-%% penciller
-ink_compactjournal(Pid, Checker, InitiateFun, CloseFun, FilterFun, _Timeout) ->
-    gen_server:call(Pid,
-                        {compact,
-                            Checker,
-                            InitiateFun,
-                            CloseFun,
-                            FilterFun},
                         infinity).
 
 -spec ink_clerkcomplete(pid(), list(), list()) -> ok.
@@ -1276,6 +1264,14 @@ wrap_checkfilterfun(CheckFilterFun) ->
 %%%============================================================================
 
 -ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
+
+%% Allows the Checker to be overriden in test, use something other than a
+%% penciller
+ink_compactjournal(Pid, Checker, InitiateFun, CloseFun, FilterFun, _Timeout) ->
+    gen_server:call(
+        Pid, {compact, Checker, InitiateFun, CloseFun, FilterFun}, infinity).
 
 create_value_for_journal(Obj, Comp) ->
     leveled_codec:create_value_for_journal(Obj, Comp, native).

@@ -5,8 +5,6 @@
 
 -include("include/leveled.hrl").
 
--include_lib("eunit/include/eunit.hrl").
-
 -export([log/2,
             log_timer/3,
             log_randomtimer/4]).
@@ -399,9 +397,6 @@ log(LogRef, Subs, SupportedLogLevels) ->
             ok
     end.
 
-should_i_log(LogLevel, Levels, LogRef) ->
-    should_i_log(LogLevel, Levels, LogRef, get_opts()).
-
 should_i_log(LogLevel, Levels, LogRef, LogOpts) ->
     #log_options{log_level = CurLevel, forced_logs = ForcedLogs} = LogOpts,
     case lists:member(LogRef, ForcedLogs) of
@@ -491,6 +486,11 @@ duration_text(StartTime) ->
 %%%============================================================================
 
 -ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
+
+should_i_log(LogLevel, Levels, LogRef) ->
+    should_i_log(LogLevel, Levels, LogRef, get_opts()).
 
 format_time({{Y, M, D}, {H, Mi, S, Ms}}) ->
     io_lib:format("~b-~2..0b-~2..0b", [Y, M, D]) ++ "T" ++

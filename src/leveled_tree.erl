@@ -26,8 +26,6 @@
         empty/1
         ]).      
 
--include_lib("eunit/include/eunit.hrl").
-
 -define(SKIP_WIDTH, 16).
 
 -type tree_type() :: tree|idxt|skpl. 
@@ -569,6 +567,8 @@ iterator(nil, As) ->
 %%%============================================================================
 
 -ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
 
 generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
     generate_randomkeys(Seqn,

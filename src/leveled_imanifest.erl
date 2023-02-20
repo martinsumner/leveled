@@ -6,8 +6,6 @@
 
 -include("include/leveled.hrl").
 
--include_lib("eunit/include/eunit.hrl").
-
 -export([
         generate_entry/1,
         add_entry/3,
@@ -250,6 +248,8 @@ find_subentry(SQN, [_TopEntry|Tail]) ->
 %%%============================================================================
 
 -ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
 
 build_testmanifest_aslist() ->
     ManifestMapFun =

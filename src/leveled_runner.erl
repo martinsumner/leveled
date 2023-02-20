@@ -37,9 +37,6 @@
             foldobjects_byindex/3
         ]).
 
-
--include_lib("eunit/include/eunit.hrl").
-
 -define(CHECKJOURNAL_PROB, 0.2).
 
 -type key_range() 
@@ -65,6 +62,8 @@
     :: fun(() -> foldacc()).
 -type acc_fun()
     :: fun((leveled_codec:key(), any(), foldacc()) -> foldacc()).
+-type mp()
+    :: {re_pattern, term(), term(), term(), term()}.
 
 
 %%%============================================================================
@@ -139,7 +138,7 @@ bucket_list(SnapFun, Tag, FoldBucketsFun, InitAcc, MaxBuckets) ->
 -spec index_query(snap_fun(), 
                     {leveled_codec:ledger_key(), 
                         leveled_codec:ledger_key(), 
-                        {boolean(), undefined|re:mp()|iodata()}}, 
+                        {boolean(), undefined|mp()|iodata()}}, 
                     {fold_keys_fun(), foldacc()})
                         -> {async, runner_fun()}.
 %% @doc
@@ -804,6 +803,8 @@ wrap_runner(FoldAction, AfterAction) ->
 %%%============================================================================
 
 -ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
 
 %% Note in OTP 22 we see a compile error with the assertException if using the
 %% eqc_cover parse_transform.  This test is excluded in the eqc profle, due to

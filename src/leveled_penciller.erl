@@ -201,10 +201,10 @@
         sst_rootpath/1,
         sst_filename/3]).
 
+-ifdef(TEST).
 -export([
         clean_testdir/1]).
-
--include_lib("eunit/include/eunit.hrl").
+-endif.
 
 -define(MAX_WORK_WAIT, 300).
 -define(MANIFEST_FP, "ledger_manifest").
@@ -360,24 +360,6 @@ pcl_fetchlevelzero(Pid, Slot, ReturnFun) ->
     % If the timeout gets hit outside of close scenario the Penciller will
     % be stuck in L0 pending
     gen_server:cast(Pid, {fetch_levelzero, Slot, ReturnFun}).
-
--spec pcl_fetch(pid(), leveled_codec:ledger_key()) 
-                                    -> leveled_codec:ledger_kv()|not_present.
-%% @doc
-%% Fetch a key, return the first (highest SQN) occurrence of that Key along
-%% with  the value.
-%%
-%% The Key needs to be hashable (i.e. have a tag which indicates that the key
-%% can be looked up) - index entries are not hashable for example.
-%%
-%% If the hash is already known, call pcl_fetch/3 as segment_hash is a
-%% relatively expensive hash function
-pcl_fetch(Pid, Key) ->
-    Hash = leveled_codec:segment_hash(Key),
-    if
-        Hash /= no_lookup ->
-            gen_server:call(Pid, {fetch, Key, Hash, true}, infinity)
-    end.
 
 -spec pcl_fetch(pid(), 
                 leveled_codec:ledger_key(), 
@@ -1457,7 +1439,7 @@ timed_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, Monitor) ->
     leveled_pmanifest:manifest(),
     list(),
     leveled_pmem:index_array()) ->
-        not_present|leveled_codec:ledger_kv()|leveled_codec:ledger_sqn().
+        not_present|leveled_codec:ledger_kv()|leveled_codec:sqn().
 %% @doc
 %% Fetch the result from the penciller, starting by looking in the memory, 
 %% and if it is not found looking down level by level through the LSM tree.
@@ -1560,8 +1542,12 @@ compare_to_sqn(Obj, SQN) ->
 %%%============================================================================
 
 
--spec keyfolder(list(), list(), tuple(), tuple(),
-                {pclacc_fun(), any(), pos_integer()}) -> any().
+-spec keyfolder(
+    {list(), list()},
+    {leveled_codec:ledger_key(), leveled_codec:ledger_key()},
+    {pclacc_fun(), any(), pos_integer()},
+    {boolean(), {non_neg_integer(), pos_integer()|infinity}, integer()})
+    -> any().
 %% @doc
 %% The keyfolder will compare an iterator across the immutable in-memory cache
 %% of the Penciller (the IMMiter), with an iterator across the persisted part 
@@ -1579,12 +1565,6 @@ compare_to_sqn(Obj, SQN) ->
 %% To advance the SSTiter the find_nextkey/4 function is used, as the SSTiter
 %% is an iterator across multiple levels - and so needs to do its own 
 %% comparisons to pop the next result.
-keyfolder(IMMiter, SSTiter, StartKey, EndKey, {AccFun, Acc, Now}) ->
-    keyfolder({IMMiter, SSTiter}, 
-                {StartKey, EndKey},
-                {AccFun, Acc, Now},
-                {false, {0, infinity}, -1}).
-
 keyfolder(_Iterators,
             _KeyRange,
             {_AccFun, Acc, _Now}, 
@@ -1721,18 +1701,18 @@ maybe_accumulate(LK, LV,
     end.
 
 
--spec find_nextkey(iterator(), 
-                    leveled_codec:ledger_key(), leveled_codec:ledger_key()) ->
-                        no_more_keys|{iterator(), leveled_codec:ledger_kv()}.
+-spec find_nextkey(
+    iterator(), 
+    leveled_codec:ledger_key(),
+    leveled_codec:ledger_key(),
+    list(non_neg_integer())|false,
+    non_neg_integer())
+    -> no_more_keys|{iterator(), leveled_codec:ledger_kv()}.
 %% @doc
 %% Looks to find the best choice for the next key across the levels (other
 %% than in-memory table)
 %% In finding the best choice, the next key in a given level may be a next
 %% block or next file pointer which will need to be expanded
-
-find_nextkey(QueryArray, StartKey, EndKey) ->
-    find_nextkey(QueryArray, StartKey, EndKey, false, 0).
-
 find_nextkey(QueryArray, StartKey, EndKey, SegmentList, LowLastMod) ->
     find_nextkey(QueryArray,
                     -1,
@@ -1895,6 +1875,27 @@ maybelog_fetch_timing({Pid, _StatsFreq}, Level, FetchTime, _NF) ->
 
 -ifdef(TEST).
 
+-include_lib("eunit/include/eunit.hrl").
+
+-spec pcl_fetch(
+    pid(), leveled_codec:ledger_key())
+    -> leveled_codec:ledger_kv()|not_present.
+pcl_fetch(Pid, Key) ->
+    Hash = leveled_codec:segment_hash(Key),
+    if
+        Hash /= no_lookup ->
+            gen_server:call(Pid, {fetch, Key, Hash, true}, infinity)
+    end.
+
+keyfolder(IMMiter, SSTiter, StartKey, EndKey, {AccFun, Acc, Now}) ->
+    keyfolder({IMMiter, SSTiter}, 
+                {StartKey, EndKey},
+                {AccFun, Acc, Now},
+                {false, {0, infinity}, -1}).
+
+find_nextkey(QueryArray, StartKey, EndKey) ->
+    find_nextkey(QueryArray, StartKey, EndKey, false, 0).
+                
 
 generate_randomkeys({Count, StartSQN}) ->
     generate_randomkeys(Count, StartSQN, []).

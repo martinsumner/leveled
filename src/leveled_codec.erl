@@ -10,8 +10,6 @@
 
 -include("include/leveled.hrl").
 
--include_lib("eunit/include/eunit.hrl").
-
 -export([
         inker_reload_strategy/1,
         strip_to_seqonly/1,
@@ -137,29 +135,31 @@
         :: list(integer())|false.
 
 -export_type([tag/0,
-                key/0,
-                sqn/0,
-                object_spec/0,
-                segment_hash/0,
-                ledger_status/0,
-                ledger_key/0,
-                ledger_value/0,
-                ledger_kv/0,
-                compaction_strategy/0,
-                compaction_method/0,
-                journal_key_tag/0,
-                journal_key/0,
-                journal_ref/0,
-                compression_method/0,
-                journal_keychanges/0,
-                index_specs/0,
-                segment_list/0,
-                maybe_lookup/0,
-                last_moddate/0,
-                lastmod_range/0,
-                regular_expression/0,
-                value_fetcher/0,
-                proxy_object/0]).
+            key/0,
+            sqn/0,
+            object_spec/0,
+            segment_hash/0,
+            ledger_status/0,
+            ledger_key/0,
+            ledger_value/0,
+            ledger_kv/0,
+            compaction_strategy/0,
+            compaction_method/0,
+            journal_key_tag/0,
+            journal_key/0,
+            journal_ref/0,
+            compression_method/0,
+            journal_keychanges/0,
+            index_specs/0,
+            segment_list/0,
+            maybe_lookup/0,
+            last_moddate/0,
+            lastmod_range/0,
+            regular_expression/0,
+            value_fetcher/0,
+            proxy_object/0,
+            slimmed_key/0
+        ]).
 
 
 %%%============================================================================
@@ -764,6 +764,8 @@ next_key({Type, Bucket}) when is_binary(Type), is_binary(Bucket) ->
 %%%============================================================================
 
 -ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
 
 valid_ledgerkey_test() ->
     UserDefTag = {user_defined, <<"B">>, <<"K">>, null},

@@ -45,8 +45,6 @@
         clerk_removelogs/2
         ]).      
 
--include_lib("eunit/include/eunit.hrl").
-
 -define(MAX_TIMEOUT, 2000).
 -define(MIN_TIMEOUT, 200).
 -define(GROOMING_PERC, 50).
@@ -178,8 +176,7 @@ code_change(_OldVsn, State, _Extra) ->
 -spec handle_work(
     {leveled_pmanifest:lsm_level(), leveled_pmanifest:manifest()},
     string(), sst_options(), pid()) ->
-        {leveled_pmanifest:pos_integer(),
-            list(leveled_pmanifest:manifest_entry())}.
+        {pos_integer(), list(leveled_pmanifest:manifest_entry())}.
 handle_work(
         {SrcLevel, Manifest}, RootPath, SSTOpts, Owner) ->
     {UpdManifest, EntriesToDelete} = 
@@ -194,7 +191,7 @@ handle_work(
     {leveled_pmanifest:get_manifest_sqn(UpdManifest), EntriesToDelete}.
 
 -spec merge(
-    leveled_pmanifes:lsm_level(), leveled_pmanifest:manifest(),
+    leveled_pmanifest:lsm_level(), leveled_pmanifest:manifest(),
     string(), sst_options()) ->
         {leveled_pmanifest:manifest(),
             list(leveled_pmanifest:manifest_entry())}.
@@ -354,6 +351,8 @@ return_deletions(ManifestSQN, PendingDeletionD) ->
 %%%============================================================================
 
 -ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
 
 generate_randomkeys(Count, BucketRangeLow, BucketRangeHigh) ->
     generate_randomkeys(Count, [], BucketRangeLow, BucketRangeHigh).
