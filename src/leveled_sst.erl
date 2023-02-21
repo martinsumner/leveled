@@ -95,6 +95,7 @@
 -define(TOMB_COUNT, true).
 -define(USE_SET_FOR_SPEED, 64).
 -define(STARTUP_TIMEOUT, 10000).
+-define(YIELD_LEVEL, 3).
 
 -ifdef(TEST).
 -define(HIBERNATE_TIMEOUT, 5000).
@@ -570,7 +571,7 @@ starting({sst_new,
     ActualFilename = 
         write_file(RootPath, Filename, SummaryBin, SlotsBin,
                     PressMethod, IdxModDate, CountOfTombs),
-    YBQ = Level =< 2,
+    YBQ = Level =< ?YIELD_LEVEL,
     {UpdState, Bloom} = 
         read_file(ActualFilename,
                     State#state{root_path=RootPath, yield_blockquery=YBQ},
