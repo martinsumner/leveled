@@ -200,11 +200,15 @@ handle_work(
             list(leveled_pmanifest:manifest_entry())}.
 merge(SrcLevel, Manifest, RootPath, OptsSST) ->
     case leveled_pmanifest:report_manifest_level(Manifest, SrcLevel + 1) of
-        {0, 0, undefined} ->
+        {0, 0, undefined, 0, 0, 0, 0} ->
             ok;
-        {FCnt, AvgMem, {MaxFN, MaxP, MaxMem}} ->
-            leveled_log:log(pc023,
-                            [SrcLevel + 1, FCnt, AvgMem, MaxFN, MaxP, MaxMem])
+        {FCnt, MnMem, {MaxFN, MaxP, MaxMem}, MnHBS, MnHS, MnLHS, MnBVHS} ->
+            leveled_log:log(
+                pc023,
+                [SrcLevel + 1, FCnt, MnMem, MaxFN, MaxP, MaxMem]),
+            leveled_log:log(
+                pc025,
+                [SrcLevel + 1, FCnt, MnHBS, MnHS, MnLHS, MnBVHS])
     end,
     SelectMethod =
         case leveled_rand:uniform(100) of

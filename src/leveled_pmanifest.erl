@@ -266,11 +266,16 @@ remove_manifest(RootPath, GC_SQN) ->
         end.
 
 
--spec report_manifest_level(manifest(), non_neg_integer()) ->
-                            {non_neg_integer(),
-                                non_neg_integer(),
-                                {string(), pid(), non_neg_integer()} |
-                                    undefined}.
+-spec report_manifest_level(
+    manifest(), non_neg_integer()) ->
+        {non_neg_integer(),
+            non_neg_integer(),
+            {string(), pid(), non_neg_integer()} |
+                undefined,
+            non_neg_integer(),
+            non_neg_integer(),
+            non_neg_integer(),
+            non_neg_integer()}.
 %% @doc
 %% Report on a level in the manifest
 %% - How many files in the level
@@ -287,7 +292,7 @@ report_manifest_level(Manifest, LevelIdx) ->
                 {leveled_tree:tsize(Level), leveled_tree:to_list(Level)}
         end,
     AccMemFun = 
-        fun(MaybeME, {MemAcc, Max}) ->
+        fun(MaybeME, {MemAcc, Max, HBSAcc, HSAcc, LHSAcc, BVHSAcc}) ->
             ME = get_manifest_entry(MaybeME),
             P = ME#manifest_entry.owner,
             {memory, PM} = process_info(P, memory),
@@ -298,15 +303,26 @@ report_manifest_level(Manifest, LevelIdx) ->
                     _ ->
                         {ME#manifest_entry.filename, P, PM}
                 end,
-            {MemAcc + PM, UpdMax}
+            {garbage_collection_info, GCI} =
+                process_info(P, garbage_collection_info),
+            HBS = proplists:get_value(heap_block_size, GCI),
+            HS = proplists:get_value(heap_size, GCI),
+            LHS = proplists:get_value(recent_size, GCI),
+            BVHS = proplists:get_value(bin_vheap_size, GCI),
+            {MemAcc + PM, UpdMax,
+                HBSAcc + HBS, HSAcc + HS, LHSAcc + LHS, BVHSAcc + BVHS}
         end,
     case LevelSize of
         0 ->
-            {0, 0, undefined};
+            {0, 0, undefined, 0, 0, 0, 0};
         _ ->
-            {TotalMem, BiggestMem} =
-                lists:foldl(AccMemFun, {0, undefined}, LevelList),
-            {LevelSize, TotalMem div LevelSize, BiggestMem}
+            {TotalMem, BiggestMem, TotalHBS, TotalHS, TotalLHS, TotalBVBS} =
+                lists:foldl(AccMemFun, {0, undefined, 0, 0, 0, 0}, LevelList),
+            {LevelSize, TotalMem div LevelSize, BiggestMem,
+                TotalHBS div LevelSize,
+                TotalHS div LevelSize,
+                TotalLHS div LevelSize,
+                TotalBVBS div LevelSize}
     end.
 
 
