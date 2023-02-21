@@ -800,7 +800,7 @@ reader({get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
                             blockindex_cache = BlockIdxC0,
                             high_modified_date = HighModDate}};
                 false ->
-                    {reply, L ++ SlotsToPoint, reader, State}
+                    {reply, L ++ SlotsToPoint, reader, State, hibernate}
             end
     end;
 reader({get_slots, SlotList, SegList, LowLastMod}, _From, State) ->
