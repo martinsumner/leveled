@@ -140,7 +140,7 @@
 
 -endif.
 
--export([tune_seglist/1, extract_hash/1, member_check/2]).
+-export([tune_seglist/1, extract_hash/1, member_check/2, check_block/4]).
 
 -export([in_range/3]).
 
@@ -2164,8 +2164,11 @@ check_blocks([Pos|Rest], BlockPointer, BlockLengths, PosBinLength,
                     PosBinLength,
                     BlockNumber,
                     additional_offset(IdxModDate)),
-    R = fetchfrom_rawblock(BlockPos, deserialise_block(BlockBin, PressMethod)),
-    case {R, LedgerKeyToCheck} of
+    Pid =
+        spawn(
+            ?MODULE, check_block, [self(), BlockPos, BlockBin, PressMethod]),
+    Result = receive {checked_block, Pid, R} -> R end,
+    case {Result, LedgerKeyToCheck} of
         {{K, V}, K} ->
             {K, V};
         {{K, V}, false} ->
@@ -2179,6 +2182,10 @@ check_blocks([Pos|Rest], BlockPointer, BlockLengths, PosBinLength,
                             LedgerKeyToCheck, PressMethod, IdxModDate,
                             Acc)
     end.
+
+check_block(From, BlockPos, BlockBin, PressMethod) ->
+    R = fetchfrom_rawblock(BlockPos, deserialise_block(BlockBin, PressMethod)),
+    From ! {checked_block, self(), R}.
 
 -spec additional_offset(boolean()) -> pos_integer().
 %% @doc
