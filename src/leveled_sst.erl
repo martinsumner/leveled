@@ -102,6 +102,8 @@
 -define(HIBERNATE_TIMEOUT, 60000).
 -endif.
 
+-define(START_OPTS, [{hibernate_after, ?HIBERNATE_TIMEOUT}]).
+
 -include_lib("eunit/include/eunit.hrl").
 
 -export([init/1,
@@ -261,7 +263,7 @@
 %%
 %% The filename should include the file extension.
 sst_open(RootPath, Filename, OptsSST, Level) ->
-    {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
+    {ok, Pid} = gen_fsm:start_link(?MODULE, [], ?START_OPTS),
     case gen_fsm:sync_send_event(Pid,
                                     {sst_open,
                                         RootPath, Filename, OptsSST, Level},
@@ -285,7 +287,7 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST) ->
             KVList, MaxSQN, OptsSST, ?INDEX_MODDATE).
 
 sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST, IndexModDate) ->
-    {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
+    {ok, Pid} = gen_fsm:start_link(?MODULE, [], ?START_OPTS),
     PressMethod0 = compress_level(Level, OptsSST#sst_options.press_method),
     MaxSlots0 = maxslots_level(Level, OptsSST#sst_options.max_sstslots),
     OptsSST0 =
@@ -354,7 +356,7 @@ sst_newmerge(RootPath, Filename,
         [] ->
             empty;
         _ ->
-            {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
+            {ok, Pid} = gen_fsm:start_link(?MODULE, [], ?START_OPTS),
             case gen_fsm:sync_send_event(Pid,
                                             {sst_new,
                                                 RootPath,
@@ -394,7 +396,7 @@ sst_newlevelzero(RootPath, Filename,
     OptsSST0 =
         OptsSST#sst_options{press_method = PressMethod0,
                             max_sstslots = MaxSlots0},
-    {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
+    {ok, Pid} = gen_fsm:start_link(?MODULE, [], ?START_OPTS),
     % Initiate the file into the "starting" state
     ok = gen_fsm:sync_send_event(Pid,
                                 {sst_newlevelzero,
@@ -723,7 +725,7 @@ reader({get_sqn, LedgerKey, Hash}, _From, State) ->
             State#state.handle,
             State#state.level,
             {no_monitor, 0}),
-    {reply, sqn_only(Result), reader, State, ?HIBERNATE_TIMEOUT};
+    {reply, sqn_only(Result), reader, State};
 reader({get_kv, LedgerKey, Hash}, _From, State) ->
     % Get a KV value and potentially take sample timings
     {Result, BIC, HMD, FC} = 
@@ -843,16 +845,6 @@ reader(close, _From, State) ->
     ok = file:close(State#state.handle),
     {stop, normal, ok, State}.
 
-reader(timeout, State) ->
-    FreshFetchCache = new_cache(State#state.level),
-    Summary = State#state.summary,
-    FreshBlockIndexCache = new_blockindex_cache(Summary#summary.size),
-    {next_state,
-        reader,
-        State#state{
-            fetch_cache = FreshFetchCache,
-            blockindex_cache = FreshBlockIndexCache},
-        hibernate};
 reader({switch_levels, NewLevel}, State) ->
     FreshCache = new_cache(NewLevel),
     {next_state,
@@ -3805,7 +3797,10 @@ additional_range_test() ->
     % R8 = sst_getkvrange(P1, element(1, PastEKV), element(1, PastEKV), 2),
     % ?assertMatch([], R8).
 
-simple_switchcache_test() ->
+simple_switchcache_test_() ->
+    {timeout, 60, fun simple_switchcache_tester/0}.
+
+simple_switchcache_tester() ->
     {RP, Filename} = {?TEST_AREA, "simple_switchcache_test"},
     KVList0 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 2, 1, 20),
     KVList1 = lists:sublist(lists:ukeysort(1, KVList0), ?LOOK_SLOTSIZE),
@@ -3826,7 +3821,7 @@ simple_switchcache_test() ->
                         ?assertMatch({K, V}, sst_get(OpenP4, K))
                         end,
                     KVList1),
-    gen_fsm:send_event(OpenP4, timeout),
+    timer:sleep(?HIBERNATE_TIMEOUT + 10),
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({K, V}, sst_get(OpenP4, K))
                         end,
@@ -3844,17 +3839,7 @@ simple_switchcache_test() ->
                         ?assertMatch({K, V}, sst_get(OpenP5, K))
                         end,
                     KVList1),
-    gen_fsm:send_event(OpenP5, timeout),
-    lists:foreach(fun({K, V}) ->
-                        ?assertMatch({K, V}, sst_get(OpenP5, K))
-                        end,
-                    KVList1),
     ok = sst_switchlevels(OpenP5, 6),
-    lists:foreach(fun({K, V}) ->
-                        ?assertMatch({K, V}, sst_get(OpenP5, K))
-                        end,
-                    KVList1),
-    gen_fsm:send_event(OpenP5, timeout),
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({K, V}, sst_get(OpenP5, K))
                         end,
@@ -3864,7 +3849,7 @@ simple_switchcache_test() ->
                         ?assertMatch({K, V}, sst_get(OpenP5, K))
                         end,
                     KVList1),
-    gen_fsm:send_event(OpenP5, timeout),
+    timer:sleep(?HIBERNATE_TIMEOUT + 10),
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({K, V}, sst_get(OpenP5, K))
                         end,
@@ -4192,7 +4177,7 @@ take_max_lastmoddate_test() ->
     ?assertMatch(1, take_max_lastmoddate(0, 1)).
 
 stopstart_test() ->
-    {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
+    {ok, Pid} = gen_fsm:start_link(?MODULE, [], ?START_OPTS),
     % check we can close in the starting state.  This may happen due to the 
     % fetcher on new level zero files working in a loop
     ok = sst_close(Pid).
