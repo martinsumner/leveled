@@ -434,7 +434,8 @@ sst_get(Pid, LedgerKey) ->
 %% Return a Key, Value pair matching a Key or not_present if the Key is not in
 %% the store (with the magic hash precalculated).
 sst_get(Pid, LedgerKey, Hash) ->
-    gen_fsm:sync_send_event(Pid, {get_kv, LedgerKey, Hash}, infinity).
+    gen_fsm:sync_send_event(
+        Pid, {get_kv, LedgerKey, Hash, undefined}, infinity).
 
 -spec sst_getsqn(pid(),
     leveled_codec:ledger_key(),
@@ -443,7 +444,8 @@ sst_get(Pid, LedgerKey, Hash) ->
 %% Return a SQN for the key or not_present if the key is not in
 %% the store (with the magic hash precalculated).
 sst_getsqn(Pid, LedgerKey, Hash) ->
-    gen_fsm:sync_send_event(Pid, {get_sqn, LedgerKey, Hash}, infinity).
+    gen_fsm:sync_send_event(
+        Pid, {get_kv, LedgerKey, Hash, fun sqn_only/1}, infinity).
 
 -spec sst_getmaxsequencenumber(pid()) -> integer().
 %% @doc
@@ -708,25 +710,10 @@ starting({sst_returnslot, FetchedSlot, FetchFun, SlotCount}, State) ->
                 State#state{new_slots = FetchedSlots}}
     end.
 
-reader({get_sqn, LedgerKey, Hash}, _From, State) ->
+
+reader({get_kv, LedgerKey, Hash, Filter}, _From, State) ->
     % Get a KV value and potentially take sample timings
-    {Result, _BIC, _HMD, _FC} = 
-        fetch(
-            LedgerKey, Hash,
-            State#state.summary,
-            State#state.compression_method,
-            State#state.high_modified_date,
-            State#state.index_moddate,
-            State#state.filter_fun,
-            State#state.blockindex_cache,
-            State#state.fetch_cache,
-            State#state.handle,
-            State#state.level,
-            {no_monitor, 0}),
-    {reply, sqn_only(Result), reader, State, ?HIBERNATE_TIMEOUT};
-reader({get_kv, LedgerKey, Hash}, _From, State) ->
-    % Get a KV value and potentially take sample timings
-    {Result, BIC, HMD, FC} = 
+    {KeyValue, BIC, HMD, FC} = 
         fetch(
             LedgerKey, Hash,
             State#state.summary,
@@ -739,17 +726,27 @@ reader({get_kv, LedgerKey, Hash}, _From, State) ->
             State#state.handle,
             State#state.level,
             State#state.monitor),
+    Result =
+        case Filter of
+            undefined ->
+                KeyValue;
+            F ->
+                F(KeyValue)
+        end,
     case {BIC, HMD, FC} of
         {no_update, no_update, no_update} ->
             {reply, Result, reader, State};
         {no_update, no_update, FC} ->
             {reply, Result, reader, State#state{fetch_cache = FC}};
+        {BIC, undefined, no_update} ->
+            {reply, Result, reader, State#state{blockindex_cache = BIC}};
         {BIC, HMD, no_update} ->
             {reply,
                 Result,
                 reader,
                 State#state{
-                    blockindex_cache = BIC, high_modified_date = HMD}}
+                    blockindex_cache = BIC, high_modified_date = HMD},
+                hibernate}
     end;
 reader({get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
                                                             _From, State) ->
@@ -863,9 +860,8 @@ reader({switch_levels, NewLevel}, State) ->
         hibernate}.
 
 
-delete_pending({get_sqn, LedgerKey, Hash}, _From, State) ->
-    % Get a KV value and potentially take sample timings
-    {Result, _BIC, _HMD, _FC} = 
+delete_pending({get_kv, LedgerKey, Hash, Filter}, _From, State) ->
+    {KeyValue, _BIC, _HMD, _FC} = 
         fetch(
             LedgerKey, Hash,
             State#state.summary,
@@ -878,21 +874,13 @@ delete_pending({get_sqn, LedgerKey, Hash}, _From, State) ->
             State#state.handle,
             State#state.level,
             {no_monitor, 0}),
-    {reply, sqn_only(Result), delete_pending, State, ?DELETE_TIMEOUT};
-delete_pending({get_kv, LedgerKey, Hash}, _From, State) ->
-    {Result, _BIC, _HMD, _FC} = 
-        fetch(
-            LedgerKey, Hash,
-            State#state.summary,
-            State#state.compression_method,
-            State#state.high_modified_date,
-            State#state.index_moddate,
-            State#state.filter_fun,
-            State#state.blockindex_cache,
-            State#state.fetch_cache,
-            State#state.handle,
-            State#state.level,
-            {no_monitor, 0}),
+    Result =
+        case Filter of
+            undefined ->
+                KeyValue;
+            F ->
+                F(KeyValue)
+        end,
     {reply, Result, delete_pending, State, ?DELETE_TIMEOUT};
 delete_pending({get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
                                                             _From, State) ->
@@ -2165,7 +2153,7 @@ check_blocks([Pos|Rest], BlockPointer, BlockLengths, PosBinLength,
                     BlockNumber,
                     additional_offset(IdxModDate)),
     Pid =
-        spawn(
+        spawn_link(
             ?MODULE, check_block, [self(), BlockPos, BlockBin, PressMethod]),
     Result = receive {checked_block, Pid, R} -> R end,
     case {Result, LedgerKeyToCheck} of
