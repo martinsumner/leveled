@@ -2144,10 +2144,7 @@ check_blocks([Pos|Rest], BlockPointer, BlockLengths, PosBinLength,
                     PosBinLength,
                     BlockNumber,
                     additional_offset(IdxModDate)),
-    Pid =
-        spawn_link(
-            ?MODULE, check_block, [self(), BlockPos, BlockBin, PressMethod]),
-    Result = receive {checked_block, Pid, R} -> R end,
+    Result = spawn_check_block(BlockPos, BlockBin, PressMethod),
     case {Result, LedgerKeyToCheck} of
         {{K, V}, K} ->
             {K, V};
@@ -2162,6 +2159,15 @@ check_blocks([Pos|Rest], BlockPointer, BlockLengths, PosBinLength,
                             LedgerKeyToCheck, PressMethod, IdxModDate,
                             Acc)
     end.
+
+-spec spawn_check_block(non_neg_integer(), binary(), press_method())
+        -> not_present|leveled_codec:ledger_kv().
+spawn_check_block(BlockPos, BlockBin, PressMethod) ->
+    Pid =
+        spawn_link(
+            ?MODULE, check_block, [self(), BlockPos, BlockBin, PressMethod]),
+    receive {checked_block, Pid, R} -> R end.
+
 
 check_block(From, BlockPos, BlockBin, PressMethod) ->
     R = fetchfrom_rawblock(BlockPos, deserialise_block(BlockBin, PressMethod)),
@@ -2651,8 +2657,7 @@ fetch_value([Pos|Rest], BlockLengths, Blocks, Key, PressMethod) ->
     {BlockNumber, BlockPos} = revert_position(Pos),
     {Offset, Length} = block_offsetandlength(BlockLengths, BlockNumber),
     <<_Pre:Offset/binary, Block:Length/binary, _Rest/binary>> = Blocks,
-    RawBlock = deserialise_block(Block, PressMethod),
-    case fetchfrom_rawblock(BlockPos, RawBlock) of 
+    case spawn_check_block(BlockPos, Block, PressMethod) of 
         {K, V} when K == Key ->
             {K, V};
         _ -> 
