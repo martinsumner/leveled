@@ -2657,7 +2657,8 @@ fetch_value([Pos|Rest], BlockLengths, Blocks, Key, PressMethod) ->
     {BlockNumber, BlockPos} = revert_position(Pos),
     {Offset, Length} = block_offsetandlength(BlockLengths, BlockNumber),
     <<_Pre:Offset/binary, Block:Length/binary, _Rest/binary>> = Blocks,
-    case spawn_check_block(BlockPos, Block, PressMethod) of 
+    R = fetchfrom_rawblock(BlockPos, deserialise_block(Block, PressMethod)),
+    case R of 
         {K, V} when K == Key ->
             {K, V};
         _ -> 
