@@ -999,11 +999,11 @@ terminate(Reason, _StateName, State) ->
 code_change(_OldVsn, StateName, State, _Extra) ->
     {ok, StateName, State}.
 
-format_status(normal, [_PDict, State]) ->
+format_status(normal, [_PDict, _, State]) ->
     State;
-format_status(terminate, [_PDict, State]) ->
+format_status(terminate, [_PDict, _, State]) ->
     State#state{blockindex_cache = redacted,
-                    fetch_cache = redacted}.
+                fetch_cache = redacted}.
 
 
 %%%============================================================================
@@ -3951,11 +3951,11 @@ fetch_status_test() ->
     {LastKey, _LV} = lists:last(KVList1),
     {ok, Pid, {FirstKey, LastKey}, _Bloom} =
         testsst_new(RP, Filename, 1, KVList1, length(KVList1), native),
-    {status, Pid, {module, gen_fsm}, SItemL} = sys:get_status(Pid),
+    {status, Pid, {module, gen_statem}, SItemL} = sys:get_status(Pid),
     S = lists:keyfind(state, 1, lists:nth(5, SItemL)),
     true = is_integer(array:size(S#state.fetch_cache)),
     true = is_integer(array:size(element(2, S#state.blockindex_cache))),
-    ST = format_status(terminate, [dict:new(), S]),
+    ST = format_status(terminate, [dict:new(), starting, S]),
     ?assertMatch(redacted, ST#state.blockindex_cache),
     ?assertMatch(redacted, ST#state.fetch_cache),
     ok = sst_close(Pid),
@@ -4039,7 +4039,7 @@ simple_persisted_tester(SSTNewFun) ->
     FetchedList2 = lists:foldl(FoldFun, [], FetchList2),
     ?assertMatch(SubKVList1L, length(FetchedList2)),
     ?assertMatch(SubKVList1, FetchedList2),
-    
+
     {Eight000Key, V800} = lists:nth(800, KVList1),
     SubKVListA1 = lists:sublist(KVList1, 10, 791),
     SubKVListA1L = length(SubKVListA1),
@@ -4073,7 +4073,7 @@ simple_persisted_tester(SSTNewFun) ->
                                     4),
     FetchedListB4 = lists:foldl(FoldFun, [], FetchListB4),
     ?assertMatch([{Eight000Key, V800}], FetchedListB4),
-    
+
     B1 = check_binary_references(Pid),
 
     ok = sst_close(Pid),
