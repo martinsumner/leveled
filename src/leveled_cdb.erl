@@ -1,6 +1,6 @@
 %% -------- CDB File Clerk ---------
 %%
-%% This is a modified version of the cdb module provided by Tom Whitcomb.  
+%% This is a modified version of the cdb module provided by Tom Whitcomb.
 %%
 %% - https://github.com/thomaswhitcomb/erlang-cdb
 %%
@@ -9,37 +9,37 @@
 %%
 %% - https://cr.yp.to/cdb.html
 %%
-%% The primary differences are: 
-%% - Support for incrementally writing a CDB file while keeping the hash table 
+%% The primary differences are:
+%% - Support for incrementally writing a CDB file while keeping the hash table
 %% in memory
 %% - The ability to scan a database in blocks of sequence numbers
 %% - The applictaion of a CRC check by default to all values
 %%
-%% Because of the final delta - this is incompatible with standard CDB files 
-%% (in that you won't be able to fetch values if the file was written by 
+%% Because of the final delta - this is incompatible with standard CDB files
+%% (in that you won't be able to fetch values if the file was written by
 %% another CDB writer as the CRC check is missing)
 %%
 %% This module provides functions to create and query a CDB (constant database).
-%% A CDB implements a two-level hashtable which provides fast {key,value} 
+%% A CDB implements a two-level hashtable which provides fast {key,value}
 %% lookups that remain fairly constant in speed regardless of the CDBs size.
 %%
-%% The first level in the CDB occupies the first 255 doublewords in the file.  
-%% Each doubleword slot contains two values.  The first is a file pointer to 
-%% the primary hashtable (at the end of the file) and the second value is the 
-%% number of entries in the hashtable.  The first level table of 255 entries 
+%% The first level in the CDB occupies the first 255 doublewords in the file.
+%% Each doubleword slot contains two values.  The first is a file pointer to
+%% the primary hashtable (at the end of the file) and the second value is the
+%% number of entries in the hashtable.  The first level table of 255 entries
 %% is indexed with the lower eight bits of the hash of the input key.
 %%
-%% Following the 255 doublewords are the {key,value} tuples.  The tuples are 
-%% packed in the file without regard to word boundaries.  Each {key,value} 
+%% Following the 255 doublewords are the {key,value} tuples.  The tuples are
+%% packed in the file without regard to word boundaries.  Each {key,value}
 %% tuple is represented with a four byte key length, a four byte value length,
 %% the actual key value followed by the actual value.
 %%
-%% Following the {key,value} tuples are the primary hash tables.  There are 
-%% at most 255 hash tables.  Each hash table is referenced by one of the 255 
-%% doubleword entries at the top of the file. For efficiency reasons, each 
-%% hash table is allocated twice the number of entries that it will need.  
+%% Following the {key,value} tuples are the primary hash tables.  There are
+%% at most 255 hash tables.  Each hash table is referenced by one of the 255
+%% doubleword entries at the top of the file. For efficiency reasons, each
+%% hash table is allocated twice the number of entries that it will need.
 %% Each entry in the hash table is a doubleword.
-%% The first word is the corresponding hash value and the second word is a 
+%% The first word is the corresponding hash value and the second word is a
 %% file pointer to the actual {key,value} tuple higher in the file.
 %%
 %%
@@ -47,37 +47,20 @@
 
 -module(leveled_cdb).
 
--behaviour(gen_fsm).
+-behaviour(gen_statem).
 -include("include/leveled.hrl").
 
-
--ifdef(fsm_deprecated).
--compile({nowarn_deprecated_function, 
-            [{gen_fsm, start_link, 3},
-                {gen_fsm, sync_send_event, 3},
-                {gen_fsm, sync_send_event, 2},
-                {gen_fsm, send_event, 2},
-                {gen_fsm, sync_send_all_state_event, 3},
-                {gen_fsm, send_all_state_event, 2},
-                {gen_fsm, reply, 2}]}).
--endif.
-
-
 -export([init/1,
-            handle_sync_event/4,
-            handle_event/3,
-            handle_info/3,
+            callback_mode/0,
             terminate/3,
-            code_change/4,
-            starting/3,
+            code_change/4]).
+
+%% states
+-export([starting/3,
             writer/3,
-            writer/2,
-            rolling/2,
             rolling/3,
             reader/3,
-            reader/2,
-            delete_pending/3,
-            delete_pending/2]).
+            delete_pending/3]).
 
 -export([cdb_open_writer/1,
             cdb_open_writer/2,
@@ -125,7 +108,7 @@
 -define(TIMING_SAMPLECOUNTDOWN, 5000).
 -define(TIMING_SAMPLESIZE, 100).
 -define(GETPOS_FACTOR, 8).
--define(MAX_OBJECT_SIZE, 1000000000). 
+-define(MAX_OBJECT_SIZE, 1000000000).
     % 1GB but really should be much smaller than this
 -define(MEGA, 1000000).
 -define(CACHE_LIFE, 86400).
@@ -177,8 +160,8 @@ cdb_open_writer(Filename) ->
 %% hashtree cached in memory (the file will need to be scanned to build the
 %% hashtree)
 cdb_open_writer(Filename, Opts) ->
-    {ok, Pid} = gen_fsm:start_link(?MODULE, [Opts], []),
-    ok = gen_fsm:sync_send_event(Pid, {open_writer, Filename}, infinity),
+    {ok, Pid} = gen_statem:start_link(?MODULE, [Opts], []),
+    ok = gen_statem:call(Pid, {open_writer, Filename}, infinity),
     {ok, Pid}.
 
 -spec cdb_reopen_reader(string(), binary(), cdb_options()) -> {ok, pid()}.
@@ -191,20 +174,20 @@ cdb_open_writer(Filename, Opts) ->
 %% The LastKey is the Key of the last object added to the file - and is used to
 %% determine when scans over a file have completed.
 cdb_reopen_reader(Filename, LastKey, CDBopts) ->
-    {ok, Pid} = 
-        gen_fsm:start_link(?MODULE, 
-                            [CDBopts#cdb_options{binary_mode=true}], 
-                            []),
-    ok = gen_fsm:sync_send_event(Pid,
-                                    {open_reader, Filename, LastKey},
-                                    infinity),
+    {ok, Pid} =
+        gen_statem:start_link(?MODULE,
+                              [CDBopts#cdb_options{binary_mode=true}],
+                              []),
+    ok = gen_statem:call(Pid,
+                         {open_reader, Filename, LastKey},
+                         infinity),
     {ok, Pid}.
 
 -spec cdb_open_reader(string()) -> {ok, pid()}.
 %% @doc
 %% Open an existing file that has already been moved into read-only mode.
 %% Don't use this if the LastKey is known, as this requires an expensive scan
-%% to discover the LastKey. 
+%% to discover the LastKey.
 cdb_open_reader(Filename) ->
     cdb_open_reader(Filename, #cdb_options{binary_mode=true}).
 
@@ -215,15 +198,15 @@ cdb_open_reader(Filename) ->
 %% to discover the LastKey.
 %% Allows non-default cdb_options to be passed
 cdb_open_reader(Filename, Opts) ->
-    {ok, Pid} = gen_fsm:start_link(?MODULE, [Opts], []),
-    ok = gen_fsm:sync_send_event(Pid, {open_reader, Filename}, infinity),
+    {ok, Pid} = gen_statem:start_link(?MODULE, [Opts], []),
+    ok = gen_statem:call(Pid, {open_reader, Filename}, infinity),
     {ok, Pid}.
 
 -spec cdb_get(pid(), any()) -> {any(), any()}|missing.
 %% @doc
-%% Extract a Key and Value from a CDB file by passing in a Key.  
+%% Extract a Key and Value from a CDB file by passing in a Key.
 cdb_get(Pid, Key) ->
-    gen_fsm:sync_send_event(Pid, {get_kv, Key}, infinity).
+    gen_statem:call(Pid, {get_kv, Key}, infinity).
 
 -spec cdb_put(pid(), any(), any()) -> ok|roll.
 %% @doc
@@ -232,7 +215,7 @@ cdb_get(Pid, Key) ->
 %%
 %% Response can be roll - if there is no space to put this value in the file.
 %% It is assumed that the response to a "roll" will be to roll the file, which
-%% will close this file for writing after persisting the hashtree.  
+%% will close this file for writing after persisting the hashtree.
 cdb_put(Pid, Key, Value) ->
     cdb_put(Pid, Key, Value, false).
 
@@ -241,8 +224,7 @@ cdb_put(Pid, Key, Value) ->
 %% See cdb_put/3.  Addition of force-sync option, to be used when sync mode is
 %% none to force a sync to disk on this particlar put.
 cdb_put(Pid, Key, Value, Sync) ->
-
-    gen_fsm:sync_send_event(Pid, {put_kv, Key, Value, Sync}, infinity).
+    gen_statem:call(Pid, {put_kv, Key, Value, Sync}, infinity).
 
 -spec cdb_mput(pid(), list()) -> ok|roll.
 %% @doc
@@ -253,7 +235,7 @@ cdb_put(Pid, Key, Value, Sync) ->
 %% It may be preferable to respond to roll by trying individual PUTs until
 %% roll is returned again
 cdb_mput(Pid, KVList) ->
-    gen_fsm:sync_send_event(Pid, {mput_kv, KVList}, infinity).
+    gen_statem:call(Pid, {mput_kv, KVList}, infinity).
 
 -spec cdb_getpositions(pid(), integer()|all) -> list().
 %% @doc
@@ -269,7 +251,7 @@ cdb_getpositions(Pid, SampleSize) ->
     % interleaved
     case SampleSize of
         all ->
-            FoldFun = 
+            FoldFun =
                 fun(Index, Acc) ->
                     PosList = cdb_getpositions_fromidx(Pid, all, Index, []),
                     lists:merge(Acc, lists:sort(PosList))
@@ -278,7 +260,7 @@ cdb_getpositions(Pid, SampleSize) ->
             lists:foldl(FoldFun, [], IdxList);
         S0 ->
             FC = ?GETPOS_FACTOR * S0,
-            FoldFun = 
+            FoldFun =
                 fun({_R, Index}, Acc) ->
                     case length(Acc) of
                         FC ->
@@ -296,9 +278,8 @@ cdb_getpositions(Pid, SampleSize) ->
     end.
 
 cdb_getpositions_fromidx(Pid, SampleSize, Index, Acc) ->
-    gen_fsm:sync_send_event(Pid,
-                            {get_positions, SampleSize, Index, Acc},
-                            infinity).
+    gen_statem:call(Pid,
+                    {get_positions, SampleSize, Index, Acc}, infinity).
 
 -spec cdb_directfetch(pid(), list(), key_only|key_size|key_value_check) ->
                                                                         list().
@@ -307,26 +288,26 @@ cdb_getpositions_fromidx(Pid, SampleSize, Index, Acc) ->
 %% key_value_check (with the check part indicating if the CRC is correct for
 %% the value)
 cdb_directfetch(Pid, PositionList, Info) ->
-    gen_fsm:sync_send_event(Pid, {direct_fetch, PositionList, Info}, infinity).
+    gen_statem:call(Pid, {direct_fetch, PositionList, Info}, infinity).
 
 -spec cdb_close(pid()) -> ok.
 %% @doc
 %% RONSEAL
 cdb_close(Pid) ->
-    gen_fsm:sync_send_all_state_event(Pid, cdb_close, infinity).
+    gen_statem:call(Pid, cdb_close, infinity).
 
 -spec cdb_deleteconfirmed(pid()) -> ok.
 %% @doc
 %% Delete has been confirmed, so close (state should be delete_pending)
 cdb_deleteconfirmed(Pid) ->
-    gen_fsm:send_event(Pid, delete_confirmed).
+    gen_statem:cast(Pid, delete_confirmed).
 
 -spec cdb_complete(pid()) -> {ok, string()}.
 %% @doc
 %% Persists the hashtable to the end of the file, to close it for further
 %% writing then exit.  Returns the filename that was saved.
 cdb_complete(Pid) ->
-    gen_fsm:sync_send_event(Pid, cdb_complete, infinity).
+    gen_statem:call(Pid, cdb_complete, infinity).
 
 -spec cdb_roll(pid()) -> ok.
 %% @doc
@@ -335,7 +316,7 @@ cdb_complete(Pid) ->
 %% rolling state whilst the hashtable is being written, and will become a
 %% reader (read-only) CDB file process on completion
 cdb_roll(Pid) ->
-    gen_fsm:send_event(Pid, cdb_roll).
+    gen_statem:cast(Pid, cdb_roll).
 
 -spec cdb_returnhashtable(pid(), list(), binary()) -> ok.
 %% @doc
@@ -345,20 +326,20 @@ cdb_roll(Pid) ->
 %% [{Index, CurrPos, IndexLength}] which can be used to locate the slices of
 %% the hashtree within that binary
 cdb_returnhashtable(Pid, IndexList, HashTreeBin) ->
-    gen_fsm:sync_send_event(Pid, {return_hashtable, IndexList, HashTreeBin}, infinity).
+    gen_statem:call(Pid, {return_hashtable, IndexList, HashTreeBin}, infinity).
 
 -spec cdb_checkhashtable(pid()) -> boolean().
 %% @doc
 %% Hash the hashtable been written for this file?
 cdb_checkhashtable(Pid) ->
-    % only used in tests - so OK to be sync_send_event/2
-    gen_fsm:sync_send_event(Pid, check_hashtable).
+    % only used in tests - so OK to be call
+    gen_statem:call(Pid, check_hashtable).
 
 -spec cdb_destroy(pid()) -> ok.
 %% @doc
 %% If the file is in a delete_pending state close (and will destroy)
 cdb_destroy(Pid) ->
-    gen_fsm:send_event(Pid, destroy).
+    gen_statem:cast(Pid, destroy).
 
 cdb_deletepending(Pid) ->
     % Only used in unit tests
@@ -373,7 +354,7 @@ cdb_deletepending(Pid) ->
 %% Passing no_poll means there's no inker to poll, and the process will close
 %% on timeout rather than poll.
 cdb_deletepending(Pid, ManSQN, Inker) ->
-    gen_fsm:send_event(Pid, {delete_pending, ManSQN, Inker}).
+    gen_statem:cast(Pid, {delete_pending, ManSQN, Inker}).
 
 -spec cdb_scan(
         pid(), filter_fun(), any(), integer()|undefined)
@@ -386,63 +367,60 @@ cdb_deletepending(Pid, ManSQN, Inker) ->
 %% LastPosition could be the atom complete when the last key processed was at
 %% the end of the file.  last_key must be defined in LoopState.
 cdb_scan(Pid, FilterFun, InitAcc, StartPosition) ->
-    gen_fsm:sync_send_all_state_event(Pid,
-                                        {cdb_scan,
-                                            FilterFun,
-                                            InitAcc,
-                                            StartPosition},
-                                        infinity).
+    gen_statem:call(Pid,
+                    {cdb_scan, FilterFun, InitAcc, StartPosition},
+                    infinity).
 
 -spec cdb_lastkey(pid()) -> any().
 %% @doc
 %% Get the last key to be added to the file (which will have the highest
 %% sequence number)
 cdb_lastkey(Pid) ->
-    gen_fsm:sync_send_all_state_event(Pid, cdb_lastkey, infinity).
+    gen_statem:call(Pid, cdb_lastkey, infinity).
 
 -spec cdb_firstkey(pid()) -> any().
 cdb_firstkey(Pid) ->
-    gen_fsm:sync_send_all_state_event(Pid, cdb_firstkey, infinity).
+    gen_statem:call(Pid, cdb_firstkey, infinity).
 
 -spec cdb_filename(pid()) -> string().
 %% @doc
 %% Get the filename of the database
 cdb_filename(Pid) ->
-    gen_fsm:sync_send_all_state_event(Pid, cdb_filename, infinity).
+    gen_statem:call(Pid, cdb_filename, infinity).
 
 -spec cdb_keycheck(pid(), any()) -> probably|missing.
 %% @doc
 %% Check to see if the key is probably present, will return either
 %% probably or missing.  Does not do a definitive check
 cdb_keycheck(Pid, Key) ->
-    gen_fsm:sync_send_event(Pid, {key_check, Key}, infinity).
+    gen_statem:call(Pid, {key_check, Key}, infinity).
 
 -spec cdb_isrolling(pid()) -> boolean().
 %% @doc
 %% Check to see if a cdb file is still rolling
 cdb_isrolling(Pid) ->
-    gen_fsm:sync_send_all_state_event(Pid, cdb_isrolling, infinity).
+    gen_statem:call(Pid, cdb_isrolling, infinity).
 
 -spec cdb_clerkcomplete(pid()) -> ok.
 %% @doc
 %% When an Inker's clerk has finished with a CDB process, then it will call
 %% complete.  Currently this will prompt hibernation, as the CDB process may
-%% not be needed for a period.  
+%% not be needed for a period.
 cdb_clerkcomplete(Pid) ->
-    gen_fsm:send_all_state_event(Pid, clerk_complete).
+    gen_statem:cast(Pid, clerk_complete).
 
 -spec cdb_getcachedscore(pid(), erlang:timestamp()) -> undefined|float().
 %% @doc
 %% Return the cached score for a CDB file
 cdb_getcachedscore(Pid, Now) ->
-    gen_fsm:sync_send_all_state_event(Pid, {get_cachedscore, Now}, infinity).
+    gen_statem:call(Pid, {get_cachedscore, Now}, infinity).
 
 
 -spec cdb_putcachedscore(pid(), float()) -> ok.
 %% @doc
 %% Return the cached score for a CDB file
 cdb_putcachedscore(Pid, Score) ->
-    gen_fsm:sync_send_all_state_event(Pid, {put_cachedscore, Score}, infinity).
+    gen_statem:call(Pid, {put_cachedscore, Score}, infinity).
 
 
 
@@ -451,7 +429,7 @@ cdb_putcachedscore(Pid, Score) ->
 %%%============================================================================
 
 init([Opts]) ->
-    MaxSize = 
+    MaxSize =
         case Opts#cdb_options.max_size of
             undefined ->
                 ?MAX_FILE_SIZE;
@@ -475,7 +453,10 @@ init([Opts]) ->
                 log_options=Opts#cdb_options.log_options,
                 monitor=Opts#cdb_options.monitor}}.
 
-starting({open_writer, Filename}, _From, State) ->
+callback_mode() ->
+    state_functions.
+
+starting({call, From}, {open_writer, Filename}, State) ->
     leveled_log:save(State#state.log_options),
     leveled_log:log(cdb01, [Filename]),
     {LastPosition, HashTree, LastKey} = open_active_file(Filename),
@@ -489,8 +470,9 @@ starting({open_writer, Filename}, _From, State) ->
                             last_key=LastKey,
                             filename=Filename,
                             hashtree=HashTree},
-    {reply, ok, writer, State0, hibernate};
-starting({open_reader, Filename}, _From, State) ->
+    {next_state, writer, State0,
+     [{reply, From, ok}, hibernate]};
+starting({call, From}, {open_reader, Filename}, State) ->
     leveled_log:save(State#state.log_options),
     leveled_log:log(cdb02, [Filename]),
     {Handle, Index, LastKey} = open_for_readonly(Filename, false),
@@ -498,8 +480,9 @@ starting({open_reader, Filename}, _From, State) ->
                             last_key=LastKey,
                             filename=Filename,
                             hash_index=Index},
-    {reply, ok, reader, State0, hibernate};
-starting({open_reader, Filename, LastKey}, _From, State) ->
+    {next_state, reader, State0,
+     [{reply, From, ok}, hibernate]};
+starting({call, From}, {open_reader, Filename, LastKey}, State) ->
     leveled_log:save(State#state.log_options),
     leveled_log:log(cdb02, [Filename]),
     {Handle, Index, LastKey} = open_for_readonly(Filename, LastKey),
@@ -507,30 +490,36 @@ starting({open_reader, Filename, LastKey}, _From, State) ->
                             last_key=LastKey,
                             filename=Filename,
                             hash_index=Index},
-    {reply, ok, reader, State0, hibernate}.
+    {next_state, reader, State0,
+     [{reply, From, ok}, hibernate]};
+starting({call, From}, Event, State) ->
+    handle_sync_event(Event, From, State);
+starting(cast, clerk_complete, _State) ->
+    {keep_state_and_data, [hibernate]};
+starting(info, _Msg, _State) ->
+    {keep_state_and_data, []}.
 
-writer({get_kv, Key}, _From, State) ->
-    {reply,
+
+writer({call, From}, {get_kv, Key}, State) ->
+    {keep_state_and_data,
+     [{reply, From,
         get_mem(Key,
                     State#state.handle,
                     State#state.hashtree,
-                    State#state.binary_mode),
-        writer,
-        State};
-writer({key_check, Key}, _From, State) ->
-    {reply,
+                    State#state.binary_mode)}]};
+writer({call, From}, {key_check, Key}, State) ->
+    {keep_state_and_data,
+     [{reply, From,
         get_mem(Key,
                     State#state.handle,
                     State#state.hashtree,
                     State#state.binary_mode,
-                    loose_presence),
-        writer,
-        State};
-writer({put_kv, Key, Value, Sync}, _From, State) ->
+                    loose_presence)}]};
+writer({call, From}, {put_kv, Key, Value, Sync}, State) ->
     NewCount = State#state.current_count + 1,
     case NewCount >= State#state.max_count of
         true ->
-            {reply, roll, writer, State};
+            {keep_state_and_data, [{reply, From, roll}]};
         false ->
             Result = put(State#state.handle,
                             Key,
@@ -542,7 +531,7 @@ writer({put_kv, Key, Value, Sync}, _From, State) ->
             case Result of
                 roll ->
                     %% Key and value could not be written
-                    {reply, roll, writer, State};
+                    {keep_state_and_data, [{reply, From, roll}]};
                 {UpdHandle, NewPosition, HashTree} ->
                     ok =
                         case {State#state.sync_strategy, Sync} of
@@ -553,22 +542,24 @@ writer({put_kv, Key, Value, Sync}, _From, State) ->
                             _ ->
                                 ok
                         end,
-                    {reply, ok, writer, State#state{handle=UpdHandle,
-                                                    current_count=NewCount,
-                                                    last_position=NewPosition,
-                                                    last_key=Key,
-                                                    hashtree=HashTree}}
+                    {keep_state,
+                     State#state{handle=UpdHandle,
+                                 current_count=NewCount,
+                                 last_position=NewPosition,
+                                 last_key=Key,
+                                 hashtree=HashTree},
+                    [{reply, From, ok}]}
             end
     end;
-writer({mput_kv, []}, _From, State) ->
-    {reply, ok, writer, State};
-writer({mput_kv, KVList}, _From, State) ->
+writer({call, From}, {mput_kv, []}, _State) ->
+    {keep_state_and_data, [{reply, From, ok}]};
+writer({call, From}, {mput_kv, KVList}, State) ->
     NewCount = State#state.current_count + length(KVList),
     TooMany = NewCount >= State#state.max_count,
     NotEmpty = State#state.current_count > 0,
     case (TooMany and NotEmpty) of
         true ->
-            {reply, roll, writer, State};
+           {keep_state_and_data, [{reply, From, roll}]};
         false ->
             Result = mput(State#state.handle,
                             KVList,
@@ -578,53 +569,60 @@ writer({mput_kv, KVList}, _From, State) ->
             case Result of
                 roll ->
                     %% Keys and values could not be written
-                    {reply, roll, writer, State};
+                    {keep_state_and_data, [{reply, From, roll}]};
                 {UpdHandle, NewPosition, HashTree, LastKey} ->
-                    {reply, ok, writer, State#state{handle=UpdHandle,
-                                                    current_count=NewCount,
-                                                    last_position=NewPosition,
-                                                    last_key=LastKey,
-                                                    hashtree=HashTree}}
+                    {keep_state,
+                     State#state{handle=UpdHandle,
+                                 current_count=NewCount,
+                                 last_position=NewPosition,
+                                 last_key=LastKey,
+                                 hashtree=HashTree},
+                     [{reply, From, ok}]}
             end
     end;
-writer(cdb_complete, _From, State) ->
+writer({call, From}, cdb_complete, State) ->
     NewName = determine_new_filename(State#state.filename),
     ok = close_file(State#state.handle,
                         State#state.hashtree,
                         State#state.last_position),
     ok = rename_for_read(State#state.filename, NewName),
-    {stop, normal, {ok, NewName}, State}.
-
-writer(cdb_roll, State) ->
+    {stop_and_reply, normal, [{reply, From, {ok, NewName}}]};
+writer({call, From}, Event, State) ->
+    handle_sync_event(Event, From, State);
+writer(cast, cdb_roll, State) ->
     ok = leveled_iclerk:clerk_hashtablecalc(State#state.hashtree,
                                             State#state.last_position,
                                             self()),
-    {next_state, rolling, State}.
+    {next_state, rolling, State};
+writer(cast, clerk_complete, _State) ->
+    {keep_state_and_data, [hibernate]};
+writer(info, _Msg, _State) ->
+    {keep_state_and_data, []}.
 
 
-rolling({get_kv, Key}, _From, State) ->
-    {reply,
+
+rolling({call, From}, {get_kv, Key}, State) ->
+   {keep_state_and_data,
+      [{reply, From,
         get_mem(Key,
                     State#state.handle,
                     State#state.hashtree,
-                    State#state.binary_mode),
-        rolling,
-        State};
-rolling({key_check, Key}, _From, State) ->
-    {reply,
+                    State#state.binary_mode)}]};
+rolling({call, From}, {key_check, Key}, State) ->
+     {keep_state_and_data,
+      [{reply, From,
         get_mem(Key,
                     State#state.handle,
                     State#state.hashtree,
                     State#state.binary_mode,
-                    loose_presence),
-        rolling,
-        State};
-rolling({get_positions, _SampleSize, _Index, SampleAcc}, _From, State) ->
-    {reply, SampleAcc, rolling, State};
-rolling({return_hashtable, IndexList, HashTreeBin}, _From, State) ->
+                    loose_presence)}]};
+rolling({call, From}, {get_positions, _SampleSize, _Index, SampleAcc}, _State) ->
+     {keep_state_and_data,
+      [{reply, From, SampleAcc}]};
+rolling({call, From}, {return_hashtable, IndexList, HashTreeBin}, State) ->
     SW = os:timestamp(),
     Handle = State#state.handle,
-    {ok, BasePos} = file:position(Handle, State#state.last_position), 
+    {ok, BasePos} = file:position(Handle, State#state.last_position),
     NewName = determine_new_filename(State#state.filename),
     ok = perform_write_hash_tables(Handle, HashTreeBin, BasePos),
     ok = write_top_index_table(Handle, BasePos, IndexList),
@@ -640,46 +638,59 @@ rolling({return_hashtable, IndexList, HashTreeBin}, _From, State) ->
                             hash_index=Index},
     case State#state.deferred_delete of
         true ->
-            {reply, ok, delete_pending, State0};
+            {next_state, delete_pending, State0,
+             [{reply, From, ok}]};
         false ->
             leveled_log:log_timer(cdb18, [], SW),
-            {reply, ok, reader, State0, hibernate}
+            {next_state, reader, State0,
+             [{reply, From, ok}, hibernate]}
     end;
-rolling(check_hashtable, _From, State) ->
-    {reply, false, rolling, State}.
+rolling({call, From}, check_hashtable, _State) ->
+    {keep_state_and_data, [{reply, From, false}]};
+rolling({call, From}, cdb_isrolling, _State) ->
+    {keep_state_and_data,
+     [{reply, From, true}]};
+rolling({call, From}, Event, State) ->
+    handle_sync_event(Event, From, State);
+rolling(cast, {delete_pending, ManSQN, Inker}, State) ->
+    {keep_state,
+     State#state{delete_point=ManSQN, inker=Inker, deferred_delete=true}};
+rolling(cast, clerk_complete, _State) ->
+    {keep_state_and_data, [hibernate]};
+rolling(info, _Msg, _State) ->
+    {keep_state_and_data, []}.
 
-rolling({delete_pending, ManSQN, Inker}, State) ->
-    {next_state,
-        rolling,
-        State#state{delete_point=ManSQN, inker=Inker, deferred_delete=true}}.
-
-reader({get_kv, Key}, _From, State) ->
-    Result = 
-        get_withcache(State#state.handle, 
-                        Key, 
+reader({call, From}, {get_kv, Key}, State) ->
+    Result =
+        get_withcache(State#state.handle,
+                        Key,
                         State#state.hash_index,
                         State#state.binary_mode,
                         State#state.monitor),
-    {reply, Result, reader, State};
-reader({key_check, Key}, _From, State) ->
-    Result = 
-        get_withcache(State#state.handle, 
-                        Key, 
+     {keep_state_and_data,
+      [{reply, From, Result}]};
+reader({call, From}, {key_check, Key}, State) ->
+    Result =
+        get_withcache(State#state.handle,
+                        Key,
                         State#state.hash_index,
                         loose_presence,
                         State#state.binary_mode,
                         {no_monitor, 0}),
-    {reply, Result, reader, State};
-reader({get_positions, SampleSize, Index, Acc}, _From, State) ->
+    {keep_state_and_data,
+      [{reply, From, Result}]};
+reader({call, From}, {get_positions, SampleSize, Index, Acc}, State) ->
     {Pos, Count} = element(Index + 1, State#state.hash_index),
     UpdAcc = scan_index_returnpositions(State#state.handle, Pos, Count, Acc),
     case SampleSize of
         all ->
-            {reply, UpdAcc, reader, State};
+            {keep_state_and_data,
+             [{reply, From, UpdAcc}]};
         _ ->
-            {reply, lists:sublist(UpdAcc, SampleSize), reader, State}
+            {keep_state_and_data,
+             [{reply, From, lists:sublist(UpdAcc, SampleSize)}]}
     end;
-reader({direct_fetch, PositionList, Info}, From, State) ->
+reader({call, From}, {direct_fetch, PositionList, Info}, State) ->
     H = State#state.handle,
     FilterFalseKey =
         fun(Tpl) ->
@@ -690,7 +701,7 @@ reader({direct_fetch, PositionList, Info}, From, State) ->
                     {true, Tpl}
             end
         end,
-    
+
     case Info of
         key_only ->
             FM = lists:filtermap(
@@ -698,10 +709,12 @@ reader({direct_fetch, PositionList, Info}, From, State) ->
                             FilterFalseKey(extract_key(H, P)) end,
                         PositionList),
             MapFun = fun(T) -> element(1, T) end,
-            {reply, lists:map(MapFun, FM), reader, State};
+            {keep_state_and_data,
+             [{reply, From, lists:map(MapFun, FM)}]};
         key_size ->
             FilterFun = fun(P) -> FilterFalseKey(extract_key_size(H, P)) end,
-            {reply, lists:filtermap(FilterFun, PositionList), reader, State};
+            {keep_state_and_data,
+             [{reply, From, lists:filtermap(FilterFun, PositionList)}]};
         key_value_check ->
             BM = State#state.binary_mode,
             MapFun = fun(P) -> extract_key_value_check(H, P, BM) end,
@@ -709,82 +722,96 @@ reader({direct_fetch, PositionList, Info}, From, State) ->
             % hibernate the process that is likely to be used again.  However,
             % a significant amount of unused binary references may have
             % accumulated, so push a GC at this point
-            gen_fsm:reply(From, lists:map(MapFun, PositionList)),
+            gen_statem:reply(From, lists:map(MapFun, PositionList)),
             garbage_collect(),
-            {next_state, reader, State}
+            {keep_state_and_data, []}
     end;
-reader(cdb_complete, _From, State) ->
+reader({call, From}, cdb_complete, State) ->
     leveled_log:log(cdb05, [State#state.filename, reader, cdb_ccomplete]),
     ok = file:close(State#state.handle),
-    {stop, normal, {ok, State#state.filename}, State#state{handle=undefined}};
-reader(check_hashtable, _From, State) ->
-    {reply, true, reader, State}.
-
-
-reader({delete_pending, 0, no_poll}, State) ->
-    {next_state,
-        delete_pending,
-        State#state{delete_point=0}};
-reader({delete_pending, ManSQN, Inker}, State) ->
+    {stop_and_reply, normal, [{reply, From, {ok, State#state.filename}}],
+     State#state{handle=undefined}};
+reader({call, From}, check_hashtable, _State) ->
+    {keep_state_and_data,
+     [{reply, From, true}]};
+reader({call, From}, Event, State) ->
+    handle_sync_event(Event, From, State);
+reader(cast, {delete_pending, 0, no_poll}, State) ->
+    {next_state, delete_pending, State#state{delete_point=0}};
+reader(cast, {delete_pending, ManSQN, Inker}, State) ->
     {next_state,
         delete_pending,
         State#state{delete_point=ManSQN, inker=Inker},
-        ?DELETE_TIMEOUT}.
+     ?DELETE_TIMEOUT};
+reader(cast, clerk_complete, _State) ->
+    {keep_state_and_data, [hibernate]};
+reader(info, _Msg, _State) ->
+    {keep_state_and_data, []}.
 
 
-delete_pending({get_kv, Key}, _From, State) ->
-    Result = 
+delete_pending({call, From}, {get_kv, Key}, State) ->
+    Result =
         get_withcache(State#state.handle,
                         Key,
                         State#state.hash_index,
                         State#state.binary_mode,
                         State#state.monitor),
-    {reply, Result, delete_pending, State, ?DELETE_TIMEOUT};
-delete_pending({key_check, Key}, _From, State) ->
-    Result = 
+    {keep_state_and_data,
+     [{reply, From, Result}, ?DELETE_TIMEOUT]};
+delete_pending({call, From}, {key_check, Key}, State) ->
+    Result =
         get_withcache(State#state.handle,
                         Key,
                         State#state.hash_index,
                         loose_presence,
                         State#state.binary_mode,
                         {no_monitor, 0}),
-    {reply, Result, delete_pending, State, ?DELETE_TIMEOUT}.
-
-delete_pending(timeout, State=#state{delete_point=ManSQN}) when ManSQN > 0 ->
+    {keep_state_and_data,
+     [{reply, From, Result}, ?DELETE_TIMEOUT]};
+delete_pending({call, From}, cdb_close, State) ->
+    leveled_log:log(cdb05, [State#state.filename, delete_pending, cdb_close]),
+    close_pendingdelete(State#state.handle,
+                        State#state.filename,
+                        State#state.waste_path),
+    {stop_and_reply, normal, [{reply, From, ok}]};
+delete_pending({call, From}, Event, State) ->
+  handle_sync_event(Event, From, State);
+delete_pending(cast, delete_confirmed, State=#state{delete_point=ManSQN}) ->
+    leveled_log:log(cdb04, [State#state.filename, ManSQN]),
+    close_pendingdelete(State#state.handle,
+                        State#state.filename,
+                        State#state.waste_path),
+    {stop, normal};
+delete_pending(cast, destroy, State) ->
+    leveled_log:log(cdb05, [State#state.filename, delete_pending, destroy]),
+    close_pendingdelete(State#state.handle,
+                        State#state.filename,
+                        State#state.waste_path),
+    {stop, normal};
+delete_pending(cast, clerk_complete, _State) ->
+    {keep_state_and_data, [hibernate]};
+delete_pending(info, _Msg, _State) ->
+  {keep_state_and_data, []};
+delete_pending(timeout, _, State=#state{delete_point=ManSQN}) when ManSQN > 0 ->
     case is_process_alive(State#state.inker) of
         true ->
-            ok = 
+            ok =
                 leveled_inker:ink_confirmdelete(State#state.inker,
                                                 ManSQN,
                                                 self()),
-            {next_state, delete_pending, State, ?DELETE_TIMEOUT};
+            {keep_state_and_data, [?DELETE_TIMEOUT]};
         false ->
             leveled_log:log(cdb04, [State#state.filename, ManSQN]),
-            close_pendingdelete(State#state.handle, 
-                                State#state.filename, 
+            close_pendingdelete(State#state.handle,
+                                State#state.filename,
                                 State#state.waste_path),
-            {stop, normal, State}
-    end;
-delete_pending(delete_confirmed, State=#state{delete_point=ManSQN}) ->
-    leveled_log:log(cdb04, [State#state.filename, ManSQN]),
-    close_pendingdelete(State#state.handle, 
-                        State#state.filename, 
-                        State#state.waste_path),
-    {stop, normal, State};
-delete_pending(destroy, State) ->
-    leveled_log:log(cdb05, [State#state.filename, delete_pending, destroy]),
-    close_pendingdelete(State#state.handle, 
-                        State#state.filename, 
-                        State#state.waste_path),
-    {stop, normal, State}.
+            {stop, normal}
+    end.
 
 
-handle_sync_event({cdb_scan, FilterFun, Acc, StartPos},
-                    From,
-                    StateName,
-                    State) ->
+handle_sync_event({cdb_scan, FilterFun, Acc, StartPos}, From, State) ->
     {ok, EndPos0} = file:position(State#state.handle, eof),
-    {ok, StartPos0} = 
+    {ok, StartPos0} =
         case StartPos of
             undefined ->
                 file:position(State#state.handle, ?BASE_POSITION);
@@ -795,7 +822,7 @@ handle_sync_event({cdb_scan, FilterFun, Acc, StartPos},
     MaybeEnd =
         (check_last_key(State#state.last_key) == empty) or
         (StartPos0 >= (EndPos0 - ?DWORD_SIZE)),
-    {LastPosition, Acc2} = 
+    {LastPosition, Acc2} =
         case MaybeEnd of
             true ->
                 {eof, Acc};
@@ -806,7 +833,7 @@ handle_sync_event({cdb_scan, FilterFun, Acc, StartPos},
                                 Acc,
                                 State#state.last_key)
         end,
-    % The scan may have created a lot of binary references, clear up the 
+    % The scan may have created a lot of binary references, clear up the
     % reference counters for this process here manually.  The cdb process
     % may be inactive for a period after the scan, and so GC may not kick in
     % otherwise
@@ -814,12 +841,13 @@ handle_sync_event({cdb_scan, FilterFun, Acc, StartPos},
     % garbage_collect/0 is used in preference to hibernate, as we're generally
     % scanning in batches at startup - so the process will be needed straight
     % away.
-    gen_fsm:reply(From, {LastPosition, Acc2}),
+    gen_statem:reply(From, {LastPosition, Acc2}),
     garbage_collect(),
-    {next_state, StateName, State};
-handle_sync_event(cdb_lastkey, _From, StateName, State) ->
-    {reply, State#state.last_key, StateName, State};
-handle_sync_event(cdb_firstkey, _From, StateName, State) ->
+    {keep_state_and_data, []};
+handle_sync_event(cdb_lastkey, From, State) ->
+    {keep_state_and_data,
+     [{reply, From, State#state.last_key}]};
+handle_sync_event(cdb_firstkey, From, State) ->
     {ok, EOFPos} = file:position(State#state.handle, eof),
     FilterFun = fun(Key, _V, _P, _O, _Fun) -> {stop, Key} end,
     FirstKey =
@@ -835,13 +863,15 @@ handle_sync_event(cdb_firstkey, _From, StateName, State) ->
                                                         State#state.last_key),
                 FirstScanKey
         end,
-    {reply, FirstKey, StateName, State};
-handle_sync_event(cdb_filename, _From, StateName, State) ->
-    {reply, State#state.filename, StateName, State};
-handle_sync_event(cdb_isrolling, _From, StateName, State) ->
-    {reply, StateName == rolling, StateName, State};
-handle_sync_event({get_cachedscore, {NowMega, NowSecs, _}},
-                                                    _From, StateName, State) ->
+    {keep_state_and_data,
+     [{reply, From, FirstKey}]};
+handle_sync_event(cdb_filename, From, State) ->
+    {keep_state_and_data,
+     [{reply, From, State#state.filename}]};
+handle_sync_event(cdb_isrolling, From, _State) ->
+    {keep_state_and_data,
+     [{reply, From, false}]};
+handle_sync_event({get_cachedscore, {NowMega, NowSecs, _}}, From, State) ->
     ScoreToReturn =
         case State#state.cached_score of
             undefined ->
@@ -855,28 +885,18 @@ handle_sync_event({get_cachedscore, {NowMega, NowSecs, _}},
                         Score
                 end
         end,
-    {reply, ScoreToReturn, StateName, State};
-handle_sync_event({put_cachedscore, Score}, _From, StateName, State) ->
-    {reply, ok, StateName, State#state{cached_score = {Score,os:timestamp()}}};
-handle_sync_event(cdb_close, _From, delete_pending, State) ->
-    leveled_log:log(cdb05, [State#state.filename, delete_pending, cdb_close]),
-    close_pendingdelete(State#state.handle, 
-                        State#state.filename, 
-                        State#state.waste_path),
-    {stop, normal, ok, State};
-handle_sync_event(cdb_close, _From, _StateName, State) ->
+    {keep_state_and_data,
+      [ {reply, From, ScoreToReturn}]};
+handle_sync_event({put_cachedscore, Score}, From, State) ->
+    {keep_state, State#state{cached_score = {Score,os:timestamp()}},
+      [{reply, From, ok}]};
+handle_sync_event(cdb_close, From, State) ->
     file:close(State#state.handle),
-    {stop, normal, ok, State}.
-
-handle_event(clerk_complete, StateName, State) ->
-    {next_state, StateName, State, hibernate}.
-
-handle_info(_Msg, StateName, State) ->
-    {next_state, StateName, State}.
+    {stop_and_reply, normal, [{reply, From, ok}]}.
 
 terminate(_Reason, _StateName, _State) ->
     ok.
-    
+
 
 
 code_change(_OldVsn, StateName, State, _Extra) ->
@@ -889,9 +909,9 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 
 
 finished_rolling(CDB) ->
-    RollerFun = 
+    RollerFun =
         fun(Sleep, FinishedRolling) ->
-            case FinishedRolling of 
+            case FinishedRolling of
                 true ->
                     true;
                 false ->
@@ -908,13 +928,13 @@ finished_rolling(CDB) ->
 
 -spec close_pendingdelete(file:io_device(), list(), list()|undefined) -> ok.
 %% @doc
-%% If delete is pending - then the close behaviour needs to actuallly delete 
+%% If delete is pending - then the close behaviour needs to actuallly delete
 %% the file
 close_pendingdelete(Handle, Filename, WasteFP) ->
     ok = file:close(Handle),
     case filelib:is_file(Filename) of
         true ->
-            case WasteFP of 
+            case WasteFP of
                 undefined ->
                     ok = file:delete(Filename);
                 WasteFP ->
@@ -945,21 +965,21 @@ set_writeops(SyncStrategy) ->
 
 -spec open_active_file(list()) -> {integer(), ets:tid(), any()}.
 %% @doc
-%% Open an active file - one for which it is assumed the hash tables have not 
+%% Open an active file - one for which it is assumed the hash tables have not
 %% yet been written
 %%
-%% Needs to scan over file to incrementally produce the hash list, starting at 
+%% Needs to scan over file to incrementally produce the hash list, starting at
 %% the end of the top index table.
 %%
-%% Should return a dictionary keyed by index containing a list of {Hash, Pos} 
-%% tuples as the write_key_value_pairs function, and the current position, and 
+%% Should return a dictionary keyed by index containing a list of {Hash, Pos}
+%% tuples as the write_key_value_pairs function, and the current position, and
 %% the file handle
 open_active_file(FileName) when is_list(FileName) ->
     {ok, Handle} = file:open(FileName, ?WRITE_OPS),
     {ok, Position} = file:position(Handle, {bof, 256 * ?DWORD_SIZE}),
     {LastPosition, {HashTree, LastKey}} =
         startup_scan_over_file(Handle, Position),
-    case file:position(Handle, eof) of 
+    case file:position(Handle, eof) of
         {ok, LastPosition} ->
             ok = file:close(Handle);
         {ok, EndPosition} ->
@@ -975,13 +995,13 @@ open_active_file(FileName) when is_list(FileName) ->
     end,
     {LastPosition, HashTree, LastKey}.
 
--spec put(list()|file:io_device(), 
-            any(), any(), 
+-spec put(list()|file:io_device(),
+            any(), any(),
             {integer(), ets:tid()}, boolean(), integer(), boolean())
                             -> roll|{file:io_device(), integer(), ets:tid()}.
 %% @doc
 %% put(Handle, Key, Value, {LastPosition, HashDict}) -> {NewPosition, KeyDict}
-%% Append to an active file a new key/value pair returning an updated 
+%% Append to an active file a new key/value pair returning an updated
 %% dictionary of Keys and positions.  Returns an updated Position
 %%
 put(FileName,
@@ -992,9 +1012,9 @@ put(FileName,
         MaxSize,
         IsEmpty) when is_list(FileName) ->
     {ok, Handle} = file:open(FileName, ?WRITE_OPS),
-    put(Handle, Key, Value, {LastPosition, HashTree}, 
+    put(Handle, Key, Value, {LastPosition, HashTree},
         BinaryMode, MaxSize, IsEmpty);
-put(Handle, Key, Value, {LastPosition, HashTree}, 
+put(Handle, Key, Value, {LastPosition, HashTree},
         BinaryMode, MaxSize, IsEmpty) ->
     Bin = key_value_to_record({Key, Value}, BinaryMode),
     ObjectSize = byte_size(Bin),
@@ -1014,13 +1034,13 @@ put(Handle, Key, Value, {LastPosition, HashTree},
     end.
 
 
--spec mput(file:io_device(), 
-            list(tuple()), 
+-spec mput(file:io_device(),
+            list(tuple()),
             {integer(), ets:tid()}, boolean(), integer())
                     -> roll|{file:io_device(), integer(), ets:tid(), any()}.
 %% @doc
 %% Multiple puts - either all will succeed or it will return roll with non
-%% succeeding.  
+%% succeeding.
 mput(Handle, KVList, {LastPosition, HashTree0}, BinaryMode, MaxSize) ->
     {KPList, Bin, LastKey} = multi_key_value_to_record(KVList,
                                                         BinaryMode,
@@ -1045,9 +1065,9 @@ mput(Handle, KVList, {LastPosition, HashTree0}, BinaryMode, MaxSize) ->
         leveled_monitor:monitor())  -> missing|probably|tuple().
 %% @doc
 %%
-%% Using a cache of the Index array - get a K/V pair from the file using the 
-%% Key.  should return an updated timings object (if timings are being taken) 
-%% along with the result (which may be missing if the no matching entry is 
+%% Using a cache of the Index array - get a K/V pair from the file using the
+%% Key.  should return an updated timings object (if timings are being taken)
+%% along with the result (which may be missing if the no matching entry is
 %% found, or probably in QuickCheck scenarios)
 get_withcache(Handle, Key, Cache, BinaryMode, Monitor) ->
     get(Handle, Key, Cache, true, BinaryMode, Monitor).
@@ -1060,24 +1080,24 @@ get(FileNameOrHandle, Key, BinaryMode) ->
 
 
 -spec get(
-    list()|file:io_device(), 
-    any(), no_cache|tuple(), 
-    loose_presence|any(), 
+    list()|file:io_device(),
+    any(), no_cache|tuple(),
+    loose_presence|any(),
     boolean(),
     leveled_monitor:monitor()) -> tuple()|probably|missing.
 %% @doc
 %%
-%% Get a K/V pair from the file using the Key.  QuickCheck can be set to 
-%% loose_presence if all is required is a loose check of presence (that the 
-%% Key is probably present as there is a hash in the hash table which matches 
+%% Get a K/V pair from the file using the Key.  QuickCheck can be set to
+%% loose_presence if all is required is a loose check of presence (that the
+%% Key is probably present as there is a hash in the hash table which matches
 %% that Key)
 %%
 %% Timings also passed in and can be updated based on results
-get(FileName, Key, Cache, QuickCheck, BinaryMode, Monitor) 
+get(FileName, Key, Cache, QuickCheck, BinaryMode, Monitor)
                                                     when is_list(FileName) ->
     {ok, Handle} = file:open(FileName,[binary, raw, read]),
     get(Handle, Key, Cache, QuickCheck, BinaryMode, Monitor);
-get(Handle, Key, Cache, QuickCheck, BinaryMode, Monitor) 
+get(Handle, Key, Cache, QuickCheck, BinaryMode, Monitor)
                                                     when is_tuple(Handle) ->
     SW0 = leveled_monitor:maybe_time(Monitor),
     Hash = hash(Key),
@@ -1090,7 +1110,7 @@ get(Handle, Key, Cache, QuickCheck, BinaryMode, Monitor)
             missing;
         _ ->
             % Get starting slot in hashtable
-            {ok, FirstHashPosition} = 
+            {ok, FirstHashPosition} =
                 file:position(Handle, {bof, HashTable}),
             Slot = hash_to_slot(Hash, Count),
             {CycleCount, Result} =
@@ -1113,7 +1133,7 @@ get_index(Handle, Index, no_cache) ->
 get_index(_Handle, Index, Cache) ->
     element(Index + 1, Cache).
 
--spec get_mem(any(), list()|file:io_device(), ets:tid(), boolean()) -> 
+-spec get_mem(any(), list()|file:io_device(), ets:tid(), boolean()) ->
                                                     tuple()|probably|missing.
 %% @doc
 %% Get a Key/Value pair from an active CDB file (with no hash table written)
@@ -1152,17 +1172,17 @@ hashtable_calc(HashTree, StartPos) ->
 
 determine_new_filename(Filename) ->
     filename:rootname(Filename, ".pnd") ++ ".cdb".
-    
+
 rename_for_read(Filename, NewName) ->
     %% Rename file
     leveled_log:log(cdb08, [Filename, NewName, filelib:is_file(NewName)]),
     file:rename(Filename, NewName).
 
 
--spec open_for_readonly(string(), term()) 
+-spec open_for_readonly(string(), term())
                             -> {file:io_device(), hashtable_index(), term()}.
 %% @doc
-%% Open a CDB file to accept read requests (e.g. key/value lookups) but no 
+%% Open a CDB file to accept read requests (e.g. key/value lookups) but no
 %% additions or changes
 open_for_readonly(Filename, LastKeyKnown) ->
     {ok, Handle} = file:open(Filename, [binary, raw, read]),
@@ -1238,7 +1258,7 @@ scan_index_returnpositions(Handle, Position, Count, PosList0) ->
 
 
 %% Take an active file and write the hash details necessary to close that
-%% file and roll a new active file if requested.  
+%% file and roll a new active file if requested.
 %%
 %% Base Pos should be at the end of the KV pairs written (the position for)
 %% the hash tables
@@ -1255,12 +1275,12 @@ get_hashtree(Key, HashTree) ->
     Index = hash_to_index(Hash),
     lookup_positions(HashTree, Index, Hash).
 
-%% Add to hash tree - this is an array of 256 skiplists that contains the Hash 
+%% Add to hash tree - this is an array of 256 skiplists that contains the Hash
 %% and position of objects which have been added to an open CDB file
 put_hashtree(Key, Position, HashTree) ->
   Hash = hash(Key),
   Index = hash_to_index(Hash),
-  add_position_tohashtree(HashTree, Index, Hash, Position). 
+  add_position_tohashtree(HashTree, Index, Hash, Position).
 
 %% Function to extract a Key-Value pair given a file handle and a position
 %% Will confirm that the key matches and do a CRC check
@@ -1272,7 +1292,7 @@ extract_kvpair(Handle, [Position|Rest], Key, BinaryMode) ->
     case safe_read_next_keybin(Handle, KeyLength) of
         {Key, KeyBin} ->  % If same key as passed in, then found!
             case checkread_next_value(Handle, ValueLength, KeyBin) of
-                {false, _} -> 
+                {false, _} ->
                     crc_wonky;
                 {_, Value} ->
                     case BinaryMode of
@@ -1299,7 +1319,7 @@ extract_key_size(Handle, Position) ->
 
 extract_key_value_check(Handle, Position, BinaryMode) ->
     {ok, _} = file:position(Handle, Position),
-    case {BinaryMode, saferead_keyvalue(Handle)} of 
+    case {BinaryMode, saferead_keyvalue(Handle)} of
         {_, false} ->
             {null, crc_wonky, false};
         {true, {Key, Value, _KeyL, _ValueL}} ->
@@ -1309,10 +1329,10 @@ extract_key_value_check(Handle, Position, BinaryMode) ->
     end.
 
 
--spec startup_scan_over_file(file:io_device(), file_location()) 
+-spec startup_scan_over_file(file:io_device(), file_location())
                                                 -> {file_location(), any()}.
 %% @doc
-%% Scan through the file until there is a failure to crc check an input, and 
+%% Scan through the file until there is a failure to crc check an input, and
 %% at that point return the position and the key dictionary scanned so far
 startup_scan_over_file(Handle, Position) ->
     HashTree = new_hashtree(),
@@ -1391,22 +1411,22 @@ check_last_key(_LK) ->
     ok.
 
 
--spec saferead_keyvalue(file:io_device()) 
+-spec saferead_keyvalue(file:io_device())
                                 -> false|{any(), any(), integer(), integer()}.
 %% @doc
 %% Read the Key/Value at this point, returning {ok, Key, Value}
-%% catch expected exceptions associated with file corruption (or end) and 
+%% catch expected exceptions associated with file corruption (or end) and
 %% return eof
 saferead_keyvalue(Handle) ->
-    case read_next_2_integers(Handle) of 
+    case read_next_2_integers(Handle) of
         eof ->
             false;
         {KeyL, ValueL} when is_integer(KeyL), is_integer(ValueL) ->
-            case safe_read_next_keybin(Handle, KeyL) of 
+            case safe_read_next_keybin(Handle, KeyL) of
                 false ->
                     false;
                 {Key, KeyBin} ->
-                    case safe_read_next_value(Handle, ValueL, KeyBin) of 
+                    case safe_read_next_value(Handle, ValueL, KeyBin) of
                         false ->
                             false;
                         TrueValue ->
@@ -1421,27 +1441,27 @@ saferead_keyvalue(Handle) ->
 
 -spec safe_read_next_key(file:io_device(), integer()) -> false|term().
 %% @doc
-%% Return the next key or have false returned if there is some sort of 
+%% Return the next key or have false returned if there is some sort of
 %% potentially expected error (e.g. due to file truncation).  Note that no
 %% CRC check has been performed
 safe_read_next_key(Handle, Length) ->
     ReadFun = fun(Bin) -> binary_to_term(Bin) end,
     safe_read_next(Handle, Length, ReadFun).
 
--spec safe_read_next_keybin(file:io_device(), integer()) 
+-spec safe_read_next_keybin(file:io_device(), integer())
                                             -> false|{term(), binary()}.
 %% @doc
-%% Return the next key or have false returned if there is some sort of 
+%% Return the next key or have false returned if there is some sort of
 %% potentially expected error (e.g. due to file truncation).  Note that no
 %% CRC check has been performed
 %% Returns both the Key and the Binary version, the binary version being
-%% required for the CRC checking after the value fetch (see 
+%% required for the CRC checking after the value fetch (see
 %% safe_read_next_value/3)
 safe_read_next_keybin(Handle, Length) ->
     ReadFun = fun(Bin) -> {binary_to_term(Bin), Bin} end,
     safe_read_next(Handle, Length, ReadFun).
 
--spec safe_read_next_value(file:io_device(), integer(), binary()) 
+-spec safe_read_next_value(file:io_device(), integer(), binary())
                                                         -> binary()|false.
 safe_read_next_value(Handle, Length, KeyBin) ->
     ReadFun =  fun(VBin) -> crccheck(VBin, KeyBin) end,
@@ -1457,7 +1477,7 @@ safe_read_next_value(Handle, Length, KeyBin) ->
 %% Previously catching error:badarg was sufficient to capture errors of
 %% corruption, but on some OS versions may need to catch error:einval as well
 safe_read_next(Handle, Length, ReadFun) ->
-    try 
+    try
         loose_read(Handle, Length, ReadFun)
     catch
         error:ReadError ->
@@ -1467,7 +1487,7 @@ safe_read_next(Handle, Length, ReadFun) ->
 
 -spec loose_read(file:io_device(), integer(), read_fun()) -> read_output().
 %% @doc
-%% Read with minimal error handling (only eof) - to be wrapped in 
+%% Read with minimal error handling (only eof) - to be wrapped in
 %% safe_read_next/3 to catch exceptions.
 loose_read(Handle, Length, ReadFun) ->
     case file:read(Handle, Length) of
@@ -1484,10 +1504,10 @@ loose_read(Handle, Length, ReadFun) ->
 %% are a CRC check.  If the binary is truncated, it could be a bitstring or
 %% less than 4 bytes - in which case return false to recognise the corruption.
 crccheck(<<CRC:32/integer, Value/binary>>, KeyBin) when is_binary(KeyBin) ->
-    case calc_crc(KeyBin, Value) of 
-        CRC -> 
+    case calc_crc(KeyBin, Value) of
+        CRC ->
             Value;
-        _ -> 
+        _ ->
             leveled_log:log(cdb10, ["mismatch"]),
             false
         end;
@@ -1502,14 +1522,14 @@ crccheck(_V, _KB) ->
 calc_crc(KeyBin, Value) -> erlang:crc32(<<KeyBin/binary, Value/binary>>).
 
 
--spec checkread_next_value(file:io_device(), integer(), binary()) 
+-spec checkread_next_value(file:io_device(), integer(), binary())
                                         -> {boolean(), binary()|crc_wonky}.
 %% @doc
-%% Read next string where the string has a CRC prepended - stripping the crc 
+%% Read next string where the string has a CRC prepended - stripping the crc
 %% and checking if requested
 checkread_next_value(Handle, Length, KeyBin) ->
     {ok, <<CRC:32/integer, Value/binary>>} = file:read(Handle, Length),
-    case calc_crc(KeyBin, Value) of 
+    case calc_crc(KeyBin, Value) of
         CRC ->
             {true, Value};
         _ ->
@@ -1521,9 +1541,9 @@ extract_valueandsize(ValueAsBin) ->
     {ValueAsBin, byte_size(ValueAsBin)}.
 
 
-%% Used for reading lengths with CDB 
+%% Used for reading lengths with CDB
 read_next_2_integers(Handle) ->
-    case file:read(Handle, ?DWORD_SIZE) of 
+    case file:read(Handle, ?DWORD_SIZE) of
         {ok, <<Int1:32/little-integer, Int2:32/little-integer>>} ->
             {Int1, Int2};
         ReadError ->
@@ -1543,40 +1563,40 @@ read_integerpairs(<<Int1:32/little-integer, Int2:32/little-integer,
 
 
 -spec search_hash_table(
-    file:io_device(), tuple(), integer(), any(), 
+    file:io_device(), tuple(), integer(), any(),
     loose_presence|boolean(), boolean())
         -> {pos_integer(), missing|probably|tuple()}.
 %% @doc
 %%
-%% Seach the hash table for the matching hash and key.  Be prepared for 
+%% Seach the hash table for the matching hash and key.  Be prepared for
 %% multiple keys to have the same hash value.
 %%
 %% There are three possible values of CRCCheck:
 %% true - check the CRC before returning key & value
 %% false - don't check the CRC before returning key & value
 %% loose_presence - confirm that the hash of the key is present
-search_hash_table(_Handle, 
-                    {_, _, TotalSlots, TotalSlots}, 
+search_hash_table(_Handle,
+                    {_, _, TotalSlots, TotalSlots},
                     _Hash, _Key,
-                    _QuickCheck, _BinaryMode) -> 
+                    _QuickCheck, _BinaryMode) ->
     % We have done the full loop - value must not be present
     {TotalSlots, missing};
-search_hash_table(Handle, 
-                    {FirstHashPosition, Slot, CycleCount, TotalSlots}, 
+search_hash_table(Handle,
+                    {FirstHashPosition, Slot, CycleCount, TotalSlots},
                     Hash, Key,
                     QuickCheck, BinaryMode) ->
-    % Read the next 2 integers at current position, see if it matches the hash 
+    % Read the next 2 integers at current position, see if it matches the hash
     % we're after
-    Offset = 
-        ((Slot + CycleCount - 1) rem TotalSlots) * ?DWORD_SIZE 
+    Offset =
+        ((Slot + CycleCount - 1) rem TotalSlots) * ?DWORD_SIZE
         + FirstHashPosition,
     {ok, _} = file:position(Handle, Offset),
-    
+
     case read_next_2_integers(Handle) of
         {0, 0} ->
             {CycleCount, missing};
         {Hash, DataLoc} ->
-            KV = 
+            KV =
                 case QuickCheck of
                     loose_presence ->
                         probably;
@@ -1592,12 +1612,12 @@ search_hash_table(Handle,
                         Hash, Key,
                         QuickCheck, BinaryMode);
                 _ ->
-                    {CycleCount, KV} 
+                    {CycleCount, KV}
             end;
         _ ->
             search_hash_table(
-                Handle, 
-                {FirstHashPosition, Slot, CycleCount + 1, TotalSlots}, 
+                Handle,
+                {FirstHashPosition, Slot, CycleCount + 1, TotalSlots},
                 Hash, Key,
                 QuickCheck, BinaryMode)
     end.
@@ -1621,7 +1641,7 @@ maybelog_get_timing({Pid, _StatsFreq}, IndexTime, ReadTime, CycleCount) ->
 %
 % Returns a dictionary that is keyed by
 % the least significant 8 bits of each hash with the
-% values being a list of the hash and the position of the 
+% values being a list of the hash and the position of the
 % key/value binary in the file.
 write_key_value_pairs(Handle, KeyValueList) ->
     {ok, Position} = file:position(Handle, cur),
@@ -1630,14 +1650,14 @@ write_key_value_pairs(Handle, KeyValueList) ->
 
 write_key_value_pairs(_, [], Acc) ->
     Acc;
-write_key_value_pairs(Handle, [HeadPair|TailList], Acc) -> 
+write_key_value_pairs(Handle, [HeadPair|TailList], Acc) ->
     {Key, Value} = HeadPair,
     {Handle, NewPosition, HashTree} = put(Handle, Key, Value, Acc),
     write_key_value_pairs(Handle, TailList, {NewPosition, HashTree}).
 
 %% Write the actual hashtables at the bottom of the file.  Each hash table
-%% entry is a doubleword in length.  The first word is the hash value 
-%% corresponding to a key and the second word is a file pointer to the 
+%% entry is a doubleword in length.  The first word is the hash value
+%% corresponding to a key and the second word is a file pointer to the
 %% corresponding {key,value} tuple.
 write_hash_tables(Handle, HashTree) ->
     {ok, StartPos} = file:position(Handle, cur),
@@ -1654,12 +1674,12 @@ perform_write_hash_tables(Handle, HashTreeBin, StartPos) ->
     ok.
 
 
-%% Write the top most 255 doubleword entries.  First word is the 
-%% file pointer to a hashtable and the second word is the number of entries 
+%% Write the top most 255 doubleword entries.  First word is the
+%% file pointer to a hashtable and the second word is the number of entries
 %% in the hash table
 %% The List passed in should be made up of {Index, Position, Count} tuples
 write_top_index_table(Handle, BasePos, IndexList) ->
-    FnWriteIndex = 
+    FnWriteIndex =
         fun({_Index, Pos, Count}, {AccBin, CurrPos}) ->
             {Position, NextPos} =
                 case Count == 0 of
@@ -1667,13 +1687,13 @@ write_top_index_table(Handle, BasePos, IndexList) ->
                         {CurrPos, CurrPos};
                     false ->
                         {Pos, Pos + (Count * ?DWORD_SIZE)}
-                end, 
+                end,
                 {<<AccBin/binary,
                         Position:32/little-integer,
                         Count:32/little-integer>>,
                     NextPos}
             end,
-    
+
     {IndexBin, _Pos} = lists:foldl(FnWriteIndex,
                                     {<<>>, BasePos},
                                     IndexList),
@@ -1706,7 +1726,7 @@ key_value_to_record({Key, Value}, BinaryMode) ->
     KS = byte_size(BK),
     VS = byte_size(BV),
     CRC = calc_crc(BK, BV),
-    <<KS:32/little-integer, (VS + 4):32/little-integer, 
+    <<KS:32/little-integer, (VS + 4):32/little-integer,
         BK:KS/binary, CRC:32/integer, BV:VS/binary>>.
 
 
@@ -1727,7 +1747,7 @@ lookup_positions(HashTree, Index, Hash) ->
     lookup_positions(HashTree, Index, Hash, -1, []).
 
 lookup_positions(HashTree, Index, Hash, Pos, PosList) ->
-    case ets:next(HashTree, {Index, Hash, Pos}) of 
+    case ets:next(HashTree, {Index, Hash, Pos}) of
         {Index, Hash, NewPos} ->
             lookup_positions(HashTree, Index, Hash, NewPos, [NewPos|PosList]);
         _ ->
@@ -1748,7 +1768,7 @@ to_list(HashTree, Index) ->
     to_list(HashTree, Index, {0, -1}, []).
 
 to_list(HashTree, Index, {LastHash, LastPos}, Acc) ->
-    case ets:next(HashTree, {Index, LastHash, LastPos}) of 
+    case ets:next(HashTree, {Index, LastHash, LastPos}) of
         {Index, Hash, Pos} ->
             to_list(HashTree, Index, {Hash, Pos}, [{Hash, Pos}|Acc]);
         _ ->
@@ -1813,12 +1833,12 @@ find_firstzero(Bin, Pos) ->
         _ ->
             find_firstzero(Bin, Pos - 1)
     end.
-    
+
 
 write_hash_tables(Indexes, HashTree, CurrPos) ->
     write_hash_tables(Indexes, HashTree, CurrPos, CurrPos, [], [], {0, 0, 0}).
 
-write_hash_tables([], _HashTree, _CurrPos, _BasePos, 
+write_hash_tables([], _HashTree, _CurrPos, _BasePos,
                                         IndexList, HT_BinList, {T1, T2, T3}) ->
     leveled_log:log(cdb14, [T1, T2, T3]),
     IL = lists:reverse(IndexList),
@@ -1828,7 +1848,7 @@ write_hash_tables([Index|Rest], HashTree, CurrPos, BasePos,
     SW1 = os:timestamp(),
     SlotMap = to_slotmap(HashTree, Index),
     T1 = timer:now_diff(os:timestamp(), SW1) + element(1, Timers),
-    case SlotMap of 
+    case SlotMap of
         [] ->
             write_hash_tables(Rest,
                                 HashTree,
@@ -1857,8 +1877,8 @@ write_hash_tables([Index|Rest], HashTree, CurrPos, BasePos,
 
 
 %%%%%%%%%%%%%%%%
-% T E S T 
-%%%%%%%%%%%%%%%  
+% T E S T
+%%%%%%%%%%%%%%%
 -ifdef(TEST).
 
 %% To make this compatible with original Bernstein format this endian flip
@@ -1899,10 +1919,10 @@ dump(FileName) ->
     Fn = fun(Index, Acc) ->
         {ok, _} = file:position(Handle, ?DWORD_SIZE * Index),
         {_, Count} = read_next_2_integers(Handle),
-        Acc + Count    
+        Acc + Count
     end,
     NumberOfPairs = lists:foldl(Fn, 0, lists:seq(0,255)) bsr 1,
-    io:format("Count of keys in db is ~w~n", [NumberOfPairs]),  
+    io:format("Count of keys in db is ~w~n", [NumberOfPairs]),
     {ok, _} = file:position(Handle, {bof, ?BASE_POSITION}),
     Fn1 = fun(_I, Acc) ->
         {KL, VL} = read_next_2_integers(Handle),
@@ -2001,7 +2021,7 @@ magickey_test() ->
         % prompts potential issue when first hash slot is empty but
         % hash is 0
 
-    MagicKey = 
+    MagicKey =
         {315781,
             stnd,
             {o_rkv,
@@ -2019,7 +2039,7 @@ magickey_test() ->
     {ok, P1} =
         cdb_open_writer("test/test_area/magic_hash.pnd",
                         #cdb_options{binary_mode=true}),
-    
+
     ok = cdb_put(P1, MagicKey, <<"MagicV0">>),
     lists:foreach(fun({K, V}) -> cdb_put(P1, K, V) end, Set1),
     ok = cdb_put(P1, MagicKey, <<"MagicV1">>),
@@ -2028,13 +2048,13 @@ magickey_test() ->
     {ok, P2} = cdb_open_reader(F2, #cdb_options{binary_mode=true}),
     {GetK, GetV} = cdb_get(P2, MagicKey),
     ?assertEqual(<<"MagicV1">>, GetV),
-    
+
     AllKeys = cdb_directfetch(P2, cdb_getpositions(P2, all), key_only),
     ?assertMatch(true, lists:member(MagicKey, AllKeys)),
     ok = cdb_close(P2),
 
     ok = file:delete("test/test_area/magic_hash.cdb"),
-    
+
     {ok, P3} =
         cdb_open_writer("test/test_area/magic_hash.pnd",
                         #cdb_options{binary_mode=true}),
@@ -2047,7 +2067,7 @@ magickey_test() ->
     ?assertEqual(<<"MagicV1">>, GetV),
     ok = cdb_close(P4),
     ok = file:delete("test/test_area/magic_hash.cdb"),
-    
+
     {ok, P5} =
         cdb_open_writer("test/test_area/magic_hash.pnd",
                         #cdb_options{binary_mode=true}),
@@ -2091,7 +2111,7 @@ cyclecount_test() ->
 
     ok = cdb_close(P2),
     ok = file:delete("test/test_area/cycle_count.cdb").
-    
+
 
 full_1_test() ->
     List1 = lists:sort([{"key1","value1"},{"key2","value2"}]),
@@ -2103,7 +2123,7 @@ full_1_test() ->
 
 full_2_test() ->
     List1 = lists:sort([{lists:flatten(io_lib:format("~s~p",[Prefix,Plug])),
-                lists:flatten(io_lib:format("value~p",[Plug]))} 
+                lists:flatten(io_lib:format("value~p",[Plug]))}
                 ||  Plug <- lists:seq(1,200),
                 Prefix <- ["dsd","so39ds","oe9%#*(","020dkslsldclsldowlslf%$#",
                   "tiep4||","qweq"]]),
@@ -2137,7 +2157,7 @@ to_dict_test() ->
     ok = file:delete("test/test_area/from_dict_test1.cdb").
 
 crccheck_emptyvalue_test() ->
-    ?assertMatch(false, crccheck(<<>>, <<"Key">>)).    
+    ?assertMatch(false, crccheck(<<>>, <<"Key">>)).
 
 crccheck_shortvalue_test() ->
     Value = <<128,128,32>>,
@@ -2176,7 +2196,7 @@ activewrite_singlewrite_test() ->
     io:format("New db file created ~n", []),
     {LastPosition, KeyDict, _} =
         open_active_file("test/test_area/test_mem.cdb"),
-    io:format("File opened as new active file " 
+    io:format("File opened as new active file "
                     "with LastPosition=~w ~n", [LastPosition]),
     {_, _, UpdKeyDict} = put("test/test_area/test_mem.cdb",
                                 Key, Value,
@@ -2203,8 +2223,8 @@ activewrite_singlewrite_test() ->
 
 search_hash_table_findinslot_test() ->
     Key1 = "key1", % this is in slot 3 if count is 8
-    D = dict:from_list([{Key1, "value1"}, {"K2", "V2"}, {"K3", "V3"}, 
-      {"K4", "V4"}, {"K5", "V5"}, {"K6", "V6"}, {"K7", "V7"}, 
+    D = dict:from_list([{Key1, "value1"}, {"K2", "V2"}, {"K3", "V3"},
+      {"K4", "V4"}, {"K5", "V5"}, {"K6", "V6"}, {"K7", "V7"},
       {"K8", "V8"}]),
     ok = from_dict("test/test_area/hashtable1_test.cdb",D),
     {ok, Handle} = file:open("test/test_area/hashtable1_test.cdb",
@@ -2226,10 +2246,10 @@ search_hash_table_findinslot_test() ->
     ?assertMatch({"key1", "value1"}, get(Handle, Key1, false)),
     NoMonitor = {no_monitor, 0},
     ?assertMatch(
-        probably, 
+        probably,
         get(Handle, Key1, no_cache, loose_presence, false, NoMonitor)),
     ?assertMatch(
-        missing, 
+        missing,
         get(Handle, "Key99", no_cache, loose_presence, false, NoMonitor)),
     {ok, _} = file:position(Handle, FirstHashPosition),
     FlipH3 = endian_flip(ReadH3),
@@ -2239,7 +2259,7 @@ search_hash_table_findinslot_test() ->
                 0:32/integer,
                 0:32/integer>>,
     io:format("Replacement binary of ~w~n", [RBin]),
-    {ok, OldBin} = file:pread(Handle, 
+    {ok, OldBin} = file:pread(Handle,
       FirstHashPosition + (Slot -1)  * ?DWORD_SIZE, 16),
     io:format("Bin to be replaced is ~w ~n", [OldBin]),
     ok = file:pwrite(Handle,
@@ -2278,7 +2298,7 @@ empty_roll_test() ->
                                 #cdb_options{binary_mode=true}),
     ok = cdb_roll(P1),
     true = finished_rolling(P1),
-    {ok, P2} = cdb_open_reader("test/test_area/empty_roll.cdb", 
+    {ok, P2} = cdb_open_reader("test/test_area/empty_roll.cdb",
                                 #cdb_options{binary_mode=true}),
     ok = cdb_close(P2),
     ok = file:delete("test/test_area/empty_roll.cdb").
@@ -2361,9 +2381,9 @@ get_keys_byposition_manykeys_test_to() ->
     % Should not return positions when rolling
     % There is an implicit race here - if cdb_roll is too fast, then the test
     % will fail.  It appears to be safe that if KeyCount is set to a high value
-    % (e.g. > 10K) it is implausible that cdb_roll will ever finish before the 
+    % (e.g. > 10K) it is implausible that cdb_roll will ever finish before the
     % call to cdb_getpositions is executed.  So the race is tolerated
-    ?assertMatch([], cdb_getpositions(P1, 10)), 
+    ?assertMatch([], cdb_getpositions(P1, 10)),
     lists:foldl(fun(X, Complete) ->
                         case Complete of
                             true ->
@@ -2381,20 +2401,20 @@ get_keys_byposition_manykeys_test_to() ->
                         lists:seq(1, 30)),
     ?assertMatch(10, length(cdb_getpositions(P1, 10))),
     {ok, F2} = cdb_complete(P1),
-    
+
     {ok, P2} = cdb_open_reader(F2, #cdb_options{binary_mode=false}),
     PositionList = cdb_getpositions(P2, all),
     L1 = length(PositionList),
     io:format("Length of all positions ~w~n", [L1]),
     ?assertMatch(KeyCount, L1),
-    
+
     SampleList1 = cdb_getpositions(P2, 10),
     ?assertMatch(10, length(SampleList1)),
     SampleList2 = cdb_getpositions(P2, KeyCount),
     ?assertMatch(KeyCount, length(SampleList2)),
     SampleList3 = cdb_getpositions(P2, KeyCount + 1),
     ?assertMatch(KeyCount, length(SampleList3)),
-    
+
     ?assertMatch(undefined, cdb_getcachedscore(P2, os:timestamp())),
     ok = cdb_putcachedscore(P2, 80.0),
     ?assertMatch(80.0, cdb_getcachedscore(P2, os:timestamp())),
@@ -2470,38 +2490,38 @@ hashclash_test() ->
     ?assertMatch(22, hash(Key1)),
     ?assertMatch(22, hash(Key99)),
     ?assertMatch(22, hash(KeyNF)),
-    
+
     ok = cdb_mput(P1, [{Key1, 1}, {Key99, 99}]),
-    
+
     ?assertMatch(probably, cdb_keycheck(P1, Key1)),
     ?assertMatch(probably, cdb_keycheck(P1, Key99)),
     ?assertMatch(probably, cdb_keycheck(P1, KeyNF)),
-    
+
     ?assertMatch({Key1, 1}, cdb_get(P1, Key1)),
     ?assertMatch({Key99, 99}, cdb_get(P1, Key99)),
     ?assertMatch(missing, cdb_get(P1, KeyNF)),
-    
+
     {ok, FN} = cdb_complete(P1),
     {ok, P2} = cdb_open_reader(FN, #cdb_options{binary_mode=false}),
-    
+
     ?assertMatch(probably, cdb_keycheck(P2, Key1)),
     ?assertMatch(probably, cdb_keycheck(P2, Key99)),
     ?assertMatch(probably, cdb_keycheck(P2, KeyNF)),
-    
+
     ?assertMatch({Key1, 1}, cdb_get(P2, Key1)),
     ?assertMatch({Key99, 99}, cdb_get(P2, Key99)),
     ?assertMatch(missing, cdb_get(P2, KeyNF)),
-    
+
     ok = cdb_deletepending(P2),
-    
+
     ?assertMatch(probably, cdb_keycheck(P2, Key1)),
     ?assertMatch(probably, cdb_keycheck(P2, Key99)),
     ?assertMatch(probably, cdb_keycheck(P2, KeyNF)),
-    
+
     ?assertMatch({Key1, 1}, cdb_get(P2, Key1)),
     ?assertMatch({Key99, 99}, cdb_get(P2, Key99)),
     ?assertMatch(missing, cdb_get(P2, KeyNF)),
-    
+
     ok = cdb_close(P2).
 
 corruptfile_test() ->
@@ -2559,7 +2579,7 @@ crc_corrupt_writer_test() ->
     ok = cdb_close(P2).
 
 safe_read_test() ->
-    % should return the right thing or false, or the wrong thing if and 
+    % should return the right thing or false, or the wrong thing if and
     % only if we understand why
     Key = term_to_binary(<<"Key">>),
     Value = <<"Value">>,
@@ -2569,28 +2589,28 @@ safe_read_test() ->
     FlippedKeyL = endian_flip(KeyL),
     ValueL= byte_size(ValToWrite),
     FlippedValL = endian_flip(ValueL),
-    
+
     TestFN = "test/test_area/saferead.pnd",
-    BinToWrite = 
-        <<FlippedKeyL:32/integer, 
-            FlippedValL:32/integer, 
-            Key/binary, 
+    BinToWrite =
+        <<FlippedKeyL:32/integer,
+            FlippedValL:32/integer,
+            Key/binary,
             ValToWrite/binary>>,
-    
-    TestCorruptedWriteFun = 
+
+    TestCorruptedWriteFun =
         fun(BitNumber) ->
-            <<PreBin:BitNumber/bitstring, 
-                Bit:1/integer, 
-                PostBin/bitstring>> = BinToWrite, 
+            <<PreBin:BitNumber/bitstring,
+                Bit:1/integer,
+                PostBin/bitstring>> = BinToWrite,
             BadBit = Bit bxor 1,
-            AltBin = <<PreBin:BitNumber/bitstring, 
-                        BadBit:1/integer, 
+            AltBin = <<PreBin:BitNumber/bitstring,
+                        BadBit:1/integer,
                         PostBin/bitstring>>,
             file:delete(TestFN),
             {ok, Handle} = file:open(TestFN, ?WRITE_OPS),
             ok = file:pwrite(Handle, 0, AltBin),
             {ok, _} = file:position(Handle, bof),
-            case saferead_keyvalue(Handle) of 
+            case saferead_keyvalue(Handle) of
                 false ->
                     % Result OK to be false - should get that on error
                     ok;
@@ -2599,16 +2619,16 @@ safe_read_test() ->
                     % for example if Value Length is too big
                     %
                     % This can only happen with a corrupted value length at
-                    % the end of the file - which is just a peculiarity of 
+                    % the end of the file - which is just a peculiarity of
                     % the test
                     ?assertMatch(true, BadValueL > ValueL)
             end,
             ok = file:close(Handle)
         end,
 
-    lists:foreach(TestCorruptedWriteFun, 
+    lists:foreach(TestCorruptedWriteFun,
                     lists:seq(1, -1 + 8 * (KeyL + ValueL + 8))),
-    
+
     {ok, HandleK} = file:open(TestFN, ?WRITE_OPS),
     ok = file:pwrite(HandleK, 0, BinToWrite),
     {ok, _} = file:position(HandleK, 8 + KeyL + ValueL),
@@ -2635,9 +2655,9 @@ safe_read_test() ->
     {ok, HandleHappy} = file:open(TestFN, ?WRITE_OPS),
     ok = file:pwrite(HandleHappy, 0, BinToWrite),
     {ok, _} = file:position(HandleHappy, bof),
-    ?assertMatch({<<"Key">>, Value, KeyL, ValueL}, 
+    ?assertMatch({<<"Key">>, Value, KeyL, ValueL},
                     saferead_keyvalue(HandleHappy)),
-    
+
     file:delete(TestFN).
 
 
@@ -2658,23 +2678,23 @@ get_positions_corruption_test() ->
 
     {ok, Handle} = file:open(F2, ?WRITE_OPS),
     Positions = lists:sublist(PositionList, 200, 10),
-    CorruptFun = 
+    CorruptFun =
         fun(Offset) ->
             ok = file:pwrite(Handle, Offset, <<0:8/integer>>)
         end,
     ok = lists:foreach(CorruptFun, Positions),
     ok = file:close(Handle),
-    
+
     {ok, P3} = cdb_open_reader(F2, #cdb_options{binary_mode=false}),
-    
+
     PositionList = cdb_getpositions(P3, all),
     ?assertMatch(1000, length(PositionList)),
-    
+
     KVCL = cdb_directfetch(P3, PositionList, key_size),
     ?assertMatch(true, length(KVCL) < 1000),
     ok = cdb_close(P3),
     file:delete(F2).
-    
+
 badly_written_test() ->
     F1 = "test/test_area/badfirstwrite_test.pnd",
     file:delete(F1),
@@ -2731,9 +2751,6 @@ getpositions_sample_test() ->
 
 
 nonsense_coverage_test() ->
-    ?assertMatch({next_state, reader, #state{}}, handle_info(nonsense,
-                                                                reader,
-                                                                #state{})),
     ?assertMatch({ok, reader, #state{}}, code_change(nonsense,
                                                         reader,
                                                         #state{},
