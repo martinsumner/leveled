@@ -201,8 +201,7 @@
         sst_rootpath/1,
         sst_filename/3]).
 
--export([
-        clean_testdir/1]).
+-export([pcl_l0pending/2, clean_testdir/1]).    
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -967,7 +966,14 @@ handle_call(check_for_work, _From, State) ->
     {_WL, WC} = leveled_pmanifest:check_for_work(State#state.manifest),
     {reply, WC > 0, State};
 handle_call(persisted_sqn, _From, State) ->
-    {reply, State#state.persisted_sqn, State}.
+    {reply, State#state.persisted_sqn, State};
+handle_call({l0pending, Bool}, _From, State) ->
+    %% To be used in TEST only.  Will artificially set L0 pending to the
+    %% passed boolean.  Can be used in test to effectively lock the Penciller
+    %% to new updates
+    {reply,
+        State#state.levelzero_pending,
+        State#state{levelzero_pending = Bool}}.
 
 handle_cast({manifest_change, Manifest}, State) ->
     NewManSQN = leveled_pmanifest:get_manifest_sqn(Manifest),
@@ -1895,6 +1901,9 @@ maybelog_fetch_timing({Pid, _StatsFreq}, Level, FetchTime, _NF) ->
 
 -ifdef(TEST).
 
+-spec pcl_l0pending(pid(), boolean()) -> boolean().
+pcl_l0pending(Pcl, Bool) ->
+    gen_server:call(Pcl, {l0pending, Bool}).
 
 generate_randomkeys({Count, StartSQN}) ->
     generate_randomkeys(Count, StartSQN, []).

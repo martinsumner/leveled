@@ -7,6 +7,7 @@
             book_riakget/3,
             book_riakhead/3,
             riakload/2,
+            riakload/3,
             stdload/2,
             stdload_expiring/3,
             stdload_object/6,
@@ -202,14 +203,18 @@ book_riakhead(Pid, Bucket, Key) ->
 
 
 riakload(Bookie, ObjectList) ->
-    lists:foreach(fun({_RN, Obj, Spc}) ->
-                            R = book_riakput(Bookie, Obj, Spc),
-                            case R of
-                                ok -> ok;
-                                pause -> timer:sleep(?SLOWOFFER_DELAY)
-                            end
-                            end,
-                    ObjectList).
+    riakload(Bookie, ObjectList, ?SLOWOFFER_DELAY).
+
+riakload(Bookie, ObjectList, SlowOfferDelay) ->
+    lists:foreach(
+        fun({_RN, Obj, Spc}) ->
+            R = book_riakput(Bookie, Obj, Spc),
+            case R of
+                ok -> ok;
+                pause -> timer:sleep(SlowOfferDelay)
+            end
+        end,
+        ObjectList).
 
 stdload(Bookie, Count) -> 
     stdload(Bookie, Count, []).

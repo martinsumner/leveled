@@ -2,10 +2,94 @@
 -include_lib("common_test/include/ct.hrl").
 -include("include/leveled.hrl").
 -export([all/0]).
--export([bigpcl_bucketlist/1
+-export([bigpcl_bucketlist/1, stall/1
             ]).
 
-all() -> [bigpcl_bucketlist].
+all() -> [bigpcl_bucketlist, stall].
+
+
+stall(_Config) ->
+    %% https://github.com/martinsumner/leveled/issues/402
+    %% There may be circumstances whereby an excessively large L0 file
+    %% is created
+    IndexCount = 20,
+
+    RootPath = testutil:reset_filestructure("stallTest"),
+    StartOpts1 = [{root_path, RootPath},
+                    {max_journalsize, 500000000},
+                    {max_pencillercachesize, 24000},
+                    {sync_strategy, testutil:sync_strategy()},
+                    {database_id, 32},
+                    {stats_logfrequency, 5},
+                    {stats_probability, 80}],
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+
+    IndexGenFun =
+        fun() ->
+            RandInt = leveled_rand:uniform(IndexCount),
+            [{add, list_to_binary("integerID1_int"), RandInt},
+            {add, list_to_binary("binaryID1_bin"), <<RandInt:32/integer>>},
+            {add, list_to_binary("binaryID2_bin"), <<RandInt:32/integer>>},
+            {add, list_to_binary("binaryID3_bin"), <<RandInt:32/integer>>},
+            {add, list_to_binary("binaryID4_bin"), <<RandInt:32/integer>>},
+            {add, list_to_binary("binaryID5_bin"), <<RandInt:32/integer>>},
+            {add, list_to_binary("binaryID6_bin"), <<RandInt:32/integer>>},
+            {add, list_to_binary("binaryID7_bin"), <<RandInt:32/integer>>},
+            {add, list_to_binary("binaryID8_bin"), <<RandInt:32/integer>>}
+        ]
+        end,
+
+    io:format("Create then persist a list of objects~n"),
+    ObjList = 
+        testutil:generate_objects(
+            150000,
+            {fixed_binary, 1}, [],
+            leveled_rand:rand_bytes(64),
+            IndexGenFun,
+            <<"StallTest">>),
+    {ObjList1, ObjList2} =
+        lists:partition(
+            fun(_) ->
+                rand:uniform(5) == 1
+            end,
+            ObjList
+        ),
+    io:format("Load 1 in 5 objects at random~n"),
+    ok = testutil:riakload(Bookie1, ObjList1),
+    ok = leveled_bookie:book_close(Bookie1),
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
+    io:format("Block the penciller as if l0 pending~n"),
+    io:format("Puts should now backup in the ledger cache~n"),
+    {ok, _Ink2, Pcl2} = leveled_bookie:book_returnactors(Bookie2),
+    false = 
+        lists:foldl(
+            fun(_, L0P) ->
+                case L0P of
+                    false ->
+                        false;
+                    true ->
+                        timer:sleep(1000),
+                        leveled_penciller:pcl_l0pending(Pcl2, true)
+                end
+            end,
+            true,
+            lists:seq(1, 20)),
+    io:format("Load remaining - 4 in 5 - objects~n"),
+    ok = testutil:riakload(Bookie2, ObjList2, 1),
+    io:format("Unblock the penciller~n"),
+    true = leveled_penciller:pcl_l0pending(Pcl2, false),
+    io:format("Push a few more objects to prompt merge~n"),
+    ObjList3 = 
+        testutil:generate_objects(
+            10,
+            {fixed_binary, 1}, [],
+            leveled_rand:rand_bytes(64),
+            IndexGenFun,
+            <<"OtherBucket">>),
+    ok = testutil:riakload(Bookie2, ObjList3),
+    io:format("Wait and see what happens~n"),
+    timer:sleep(60000),
+    ok = leveled_bookie:book_destroy(Bookie2).
 
     
 bigpcl_bucketlist(_Config) ->
