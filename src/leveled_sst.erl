@@ -142,7 +142,7 @@
 
 -endif.
 
--export([tune_seglist/1, extract_hash/1, member_check/2, check_block/4]).
+-export([tune_seglist/1, extract_hash/1, member_check/2]).
 
 -export([in_range/3]).
 
@@ -715,6 +715,13 @@ starting({sst_returnslot, FetchedSlot, FetchFun, SlotCount}, State) ->
 
 reader({get_kv, LedgerKey, Hash, Filter}, _From, State) ->
     % Get a KV value and potentially take sample timings
+    Monitor =
+        case Filter of
+            undefined ->
+                State#state.monitor;
+            _ ->
+                {no_monitor, 0}
+        end,
     {KeyValue, BIC, HMD, FC} = 
         fetch(
             LedgerKey, Hash,
@@ -727,7 +734,7 @@ reader({get_kv, LedgerKey, Hash, Filter}, _From, State) ->
             State#state.fetch_cache,
             State#state.handle,
             State#state.level,
-            State#state.monitor),
+            Monitor),
     Result =
         case Filter of
             undefined ->
@@ -2163,11 +2170,12 @@ check_blocks([Pos|Rest], BlockPointer, BlockLengths, PosBinLength,
 -spec spawn_check_block(non_neg_integer(), binary(), press_method())
         -> not_present|leveled_codec:ledger_kv().
 spawn_check_block(BlockPos, BlockBin, PressMethod) ->
+    Parent = self(),
     Pid =
         spawn_link(
-            ?MODULE, check_block, [self(), BlockPos, BlockBin, PressMethod]),
+            fun() -> check_block(Parent, BlockPos, BlockBin, PressMethod) end
+        ),
     receive {checked_block, Pid, R} -> R end.
-
 
 check_block(From, BlockPos, BlockBin, PressMethod) ->
     R = fetchfrom_rawblock(BlockPos, deserialise_block(BlockBin, PressMethod)),

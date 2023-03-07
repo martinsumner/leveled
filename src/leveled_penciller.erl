@@ -498,7 +498,7 @@ pcl_workforclerk(Pid) ->
 -spec pcl_manifestchange(pid(), leveled_pmanifest:manifest()) -> ok.
 %% @doc
 %% Provide a manifest record (i.e. the output of the leveled_pmanifest module)
-%% that is required to beocme the new manifest.
+%% that is required to become the new manifest.
 pcl_manifestchange(Pid, Manifest) ->
     gen_server:cast(Pid, {manifest_change, Manifest}).
 
