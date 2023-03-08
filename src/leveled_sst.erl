@@ -102,6 +102,8 @@
 -define(HIBERNATE_TIMEOUT, 60000).
 -endif.
 
+-define(START_OPTS, [{hibernate_after, ?HIBERNATE_TIMEOUT}]).
+
 -include_lib("eunit/include/eunit.hrl").
 
 -export([init/1,
@@ -261,7 +263,7 @@
 %%
 %% The filename should include the file extension.
 sst_open(RootPath, Filename, OptsSST, Level) ->
-    {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
+    {ok, Pid} = gen_fsm:start_link(?MODULE, [], ?START_OPTS),
     case gen_fsm:sync_send_event(Pid,
                                     {sst_open,
                                         RootPath, Filename, OptsSST, Level},
@@ -285,7 +287,7 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST) ->
             KVList, MaxSQN, OptsSST, ?INDEX_MODDATE).
 
 sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST, IndexModDate) ->
-    {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
+    {ok, Pid} = gen_fsm:start_link(?MODULE, [], ?START_OPTS),
     PressMethod0 = compress_level(Level, OptsSST#sst_options.press_method),
     MaxSlots0 = maxslots_level(Level, OptsSST#sst_options.max_sstslots),
     OptsSST0 =
@@ -354,7 +356,7 @@ sst_newmerge(RootPath, Filename,
         [] ->
             empty;
         _ ->
-            {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
+            {ok, Pid} = gen_fsm:start_link(?MODULE, [], ?START_OPTS),
             case gen_fsm:sync_send_event(Pid,
                                             {sst_new,
                                                 RootPath,
@@ -394,7 +396,7 @@ sst_newlevelzero(RootPath, Filename,
     OptsSST0 =
         OptsSST#sst_options{press_method = PressMethod0,
                             max_sstslots = MaxSlots0},
-    {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
+    {ok, Pid} = gen_fsm:start_link(?MODULE, [], ?START_OPTS),
     % Initiate the file into the "starting" state
     ok = gen_fsm:sync_send_event(Pid,
                                 {sst_newlevelzero,
@@ -434,7 +436,8 @@ sst_get(Pid, LedgerKey) ->
 %% Return a Key, Value pair matching a Key or not_present if the Key is not in
 %% the store (with the magic hash precalculated).
 sst_get(Pid, LedgerKey, Hash) ->
-    gen_fsm:sync_send_event(Pid, {get_kv, LedgerKey, Hash}, infinity).
+    gen_fsm:sync_send_event(
+        Pid, {get_kv, LedgerKey, Hash, undefined}, infinity).
 
 -spec sst_getsqn(pid(),
     leveled_codec:ledger_key(),
@@ -443,7 +446,8 @@ sst_get(Pid, LedgerKey, Hash) ->
 %% Return a SQN for the key or not_present if the key is not in
 %% the store (with the magic hash precalculated).
 sst_getsqn(Pid, LedgerKey, Hash) ->
-    gen_fsm:sync_send_event(Pid, {get_sqn, LedgerKey, Hash}, infinity).
+    gen_fsm:sync_send_event(
+        Pid, {get_kv, LedgerKey, Hash, fun sqn_only/1}, infinity).
 
 -spec sst_getmaxsequencenumber(pid()) -> integer().
 %% @doc
@@ -708,9 +712,17 @@ starting({sst_returnslot, FetchedSlot, FetchFun, SlotCount}, State) ->
                 State#state{new_slots = FetchedSlots}}
     end.
 
-reader({get_sqn, LedgerKey, Hash}, _From, State) ->
+
+reader({get_kv, LedgerKey, Hash, Filter}, _From, State) ->
     % Get a KV value and potentially take sample timings
-    {Result, _BIC, _HMD, _FC} = 
+    Monitor =
+        case Filter of
+            undefined ->
+                State#state.monitor;
+            _ ->
+                {no_monitor, 0}
+        end,
+    {KeyValue, BIC, HMD, FC} = 
         fetch(
             LedgerKey, Hash,
             State#state.summary,
@@ -722,34 +734,28 @@ reader({get_sqn, LedgerKey, Hash}, _From, State) ->
             State#state.fetch_cache,
             State#state.handle,
             State#state.level,
-            {no_monitor, 0}),
-    {reply, sqn_only(Result), reader, State, ?HIBERNATE_TIMEOUT};
-reader({get_kv, LedgerKey, Hash}, _From, State) ->
-    % Get a KV value and potentially take sample timings
-    {Result, BIC, HMD, FC} = 
-        fetch(
-            LedgerKey, Hash,
-            State#state.summary,
-            State#state.compression_method,
-            State#state.high_modified_date,
-            State#state.index_moddate,
-            State#state.filter_fun,
-            State#state.blockindex_cache,
-            State#state.fetch_cache,
-            State#state.handle,
-            State#state.level,
-            State#state.monitor),
+            Monitor),
+    Result =
+        case Filter of
+            undefined ->
+                KeyValue;
+            F ->
+                F(KeyValue)
+        end,
     case {BIC, HMD, FC} of
         {no_update, no_update, no_update} ->
             {reply, Result, reader, State};
         {no_update, no_update, FC} ->
             {reply, Result, reader, State#state{fetch_cache = FC}};
+        {BIC, undefined, no_update} ->
+            {reply, Result, reader, State#state{blockindex_cache = BIC}};
         {BIC, HMD, no_update} ->
             {reply,
                 Result,
                 reader,
                 State#state{
-                    blockindex_cache = BIC, high_modified_date = HMD}}
+                    blockindex_cache = BIC, high_modified_date = HMD},
+                hibernate}
     end;
 reader({get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
                                                             _From, State) ->
@@ -800,7 +806,7 @@ reader({get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
                             blockindex_cache = BlockIdxC0,
                             high_modified_date = HighModDate}};
                 false ->
-                    {reply, L ++ SlotsToPoint, reader, State}
+                    {reply, L ++ SlotsToPoint, reader, State, hibernate}
             end
     end;
 reader({get_slots, SlotList, SegList, LowLastMod}, _From, State) ->
@@ -843,16 +849,6 @@ reader(close, _From, State) ->
     ok = file:close(State#state.handle),
     {stop, normal, ok, State}.
 
-reader(timeout, State) ->
-    FreshFetchCache = new_cache(State#state.level),
-    Summary = State#state.summary,
-    FreshBlockIndexCache = new_blockindex_cache(Summary#summary.size),
-    {next_state,
-        reader,
-        State#state{
-            fetch_cache = FreshFetchCache,
-            blockindex_cache = FreshBlockIndexCache},
-        hibernate};
 reader({switch_levels, NewLevel}, State) ->
     FreshCache = new_cache(NewLevel),
     {next_state,
@@ -863,9 +859,8 @@ reader({switch_levels, NewLevel}, State) ->
         hibernate}.
 
 
-delete_pending({get_sqn, LedgerKey, Hash}, _From, State) ->
-    % Get a KV value and potentially take sample timings
-    {Result, _BIC, _HMD, _FC} = 
+delete_pending({get_kv, LedgerKey, Hash, Filter}, _From, State) ->
+    {KeyValue, _BIC, _HMD, _FC} = 
         fetch(
             LedgerKey, Hash,
             State#state.summary,
@@ -878,21 +873,13 @@ delete_pending({get_sqn, LedgerKey, Hash}, _From, State) ->
             State#state.handle,
             State#state.level,
             {no_monitor, 0}),
-    {reply, sqn_only(Result), delete_pending, State, ?DELETE_TIMEOUT};
-delete_pending({get_kv, LedgerKey, Hash}, _From, State) ->
-    {Result, _BIC, _HMD, _FC} = 
-        fetch(
-            LedgerKey, Hash,
-            State#state.summary,
-            State#state.compression_method,
-            State#state.high_modified_date,
-            State#state.index_moddate,
-            State#state.filter_fun,
-            State#state.blockindex_cache,
-            State#state.fetch_cache,
-            State#state.handle,
-            State#state.level,
-            {no_monitor, 0}),
+    Result =
+        case Filter of
+            undefined ->
+                KeyValue;
+            F ->
+                F(KeyValue)
+        end,
     {reply, Result, delete_pending, State, ?DELETE_TIMEOUT};
 delete_pending({get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
                                                             _From, State) ->
@@ -2164,8 +2151,8 @@ check_blocks([Pos|Rest], BlockPointer, BlockLengths, PosBinLength,
                     PosBinLength,
                     BlockNumber,
                     additional_offset(IdxModDate)),
-    R = fetchfrom_rawblock(BlockPos, deserialise_block(BlockBin, PressMethod)),
-    case {R, LedgerKeyToCheck} of
+    Result = spawn_check_block(BlockPos, BlockBin, PressMethod),
+    case {Result, LedgerKeyToCheck} of
         {{K, V}, K} ->
             {K, V};
         {{K, V}, false} ->
@@ -2179,6 +2166,20 @@ check_blocks([Pos|Rest], BlockPointer, BlockLengths, PosBinLength,
                             LedgerKeyToCheck, PressMethod, IdxModDate,
                             Acc)
     end.
+
+-spec spawn_check_block(non_neg_integer(), binary(), press_method())
+        -> not_present|leveled_codec:ledger_kv().
+spawn_check_block(BlockPos, BlockBin, PressMethod) ->
+    Parent = self(),
+    Pid =
+        spawn_link(
+            fun() -> check_block(Parent, BlockPos, BlockBin, PressMethod) end
+        ),
+    receive {checked_block, Pid, R} -> R end.
+
+check_block(From, BlockPos, BlockBin, PressMethod) ->
+    R = fetchfrom_rawblock(BlockPos, deserialise_block(BlockBin, PressMethod)),
+    From ! {checked_block, self(), R}.
 
 -spec additional_offset(boolean()) -> pos_integer().
 %% @doc
@@ -2664,8 +2665,8 @@ fetch_value([Pos|Rest], BlockLengths, Blocks, Key, PressMethod) ->
     {BlockNumber, BlockPos} = revert_position(Pos),
     {Offset, Length} = block_offsetandlength(BlockLengths, BlockNumber),
     <<_Pre:Offset/binary, Block:Length/binary, _Rest/binary>> = Blocks,
-    RawBlock = deserialise_block(Block, PressMethod),
-    case fetchfrom_rawblock(BlockPos, RawBlock) of 
+    R = fetchfrom_rawblock(BlockPos, deserialise_block(Block, PressMethod)),
+    case R of 
         {K, V} when K == Key ->
             {K, V};
         _ -> 
@@ -3805,7 +3806,10 @@ additional_range_test() ->
     % R8 = sst_getkvrange(P1, element(1, PastEKV), element(1, PastEKV), 2),
     % ?assertMatch([], R8).
 
-simple_switchcache_test() ->
+simple_switchcache_test_() ->
+    {timeout, 60, fun simple_switchcache_tester/0}.
+
+simple_switchcache_tester() ->
     {RP, Filename} = {?TEST_AREA, "simple_switchcache_test"},
     KVList0 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 2, 1, 20),
     KVList1 = lists:sublist(lists:ukeysort(1, KVList0), ?LOOK_SLOTSIZE),
@@ -3826,7 +3830,7 @@ simple_switchcache_test() ->
                         ?assertMatch({K, V}, sst_get(OpenP4, K))
                         end,
                     KVList1),
-    gen_fsm:send_event(OpenP4, timeout),
+    timer:sleep(?HIBERNATE_TIMEOUT + 10),
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({K, V}, sst_get(OpenP4, K))
                         end,
@@ -3844,17 +3848,7 @@ simple_switchcache_test() ->
                         ?assertMatch({K, V}, sst_get(OpenP5, K))
                         end,
                     KVList1),
-    gen_fsm:send_event(OpenP5, timeout),
-    lists:foreach(fun({K, V}) ->
-                        ?assertMatch({K, V}, sst_get(OpenP5, K))
-                        end,
-                    KVList1),
     ok = sst_switchlevels(OpenP5, 6),
-    lists:foreach(fun({K, V}) ->
-                        ?assertMatch({K, V}, sst_get(OpenP5, K))
-                        end,
-                    KVList1),
-    gen_fsm:send_event(OpenP5, timeout),
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({K, V}, sst_get(OpenP5, K))
                         end,
@@ -3864,7 +3858,7 @@ simple_switchcache_test() ->
                         ?assertMatch({K, V}, sst_get(OpenP5, K))
                         end,
                     KVList1),
-    gen_fsm:send_event(OpenP5, timeout),
+    timer:sleep(?HIBERNATE_TIMEOUT + 10),
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({K, V}, sst_get(OpenP5, K))
                         end,
@@ -4192,7 +4186,7 @@ take_max_lastmoddate_test() ->
     ?assertMatch(1, take_max_lastmoddate(0, 1)).
 
 stopstart_test() ->
-    {ok, Pid} = gen_fsm:start_link(?MODULE, [], []),
+    {ok, Pid} = gen_fsm:start_link(?MODULE, [], ?START_OPTS),
     % check we can close in the starting state.  This may happen due to the 
     % fetcher on new level zero files working in a loop
     ok = sst_close(Pid).
