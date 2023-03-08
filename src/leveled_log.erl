@@ -168,6 +168,8 @@
             {info, <<"At level=~w file_count=~w avg_mem=~w file with most memory fn=~s p=~w mem=~w">>},
         pc024 =>
             {info, <<"Grooming compaction picked file with tomb_count=~w">>},
+        pc025 =>
+            {info, <<"At level=~w file_count=~w average words for heap_block_size=~w heap_size=~w recent_size=~w bin_vheap_size=~w">>},
         pm002 =>
             {info, <<"Completed dump of L0 cache to list of l0cache_size=~w">>},
         sst03 =>

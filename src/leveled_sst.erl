@@ -93,6 +93,8 @@
 -define(HIBERNATE_TIMEOUT, 60000).
 -endif.
 
+-define(START_OPTS, [{hibernate_after, ?HIBERNATE_TIMEOUT}]).
+
 -include_lib("eunit/include/eunit.hrl").
 
 -export([init/1,
@@ -251,10 +253,9 @@
 %%
 %% The filename should include the file extension.
 sst_open(RootPath, Filename, OptsSST, Level) ->
-    {ok, Pid} = gen_statem:start_link(?MODULE, [], []),
-    case gen_statem:call(Pid, {sst_open,
-                               RootPath, Filename, OptsSST, Level},
-                         infinity) of
+    {ok, Pid} = gen_statem:start_link(?MODULE, [], ?START_OPTS),
+    case gen_statem:call(
+            Pid, {sst_open, RootPath, Filename, OptsSST, Level}, infinity) of
         {ok, {SK, EK}, Bloom} ->
             {ok, Pid, {SK, EK}, Bloom}
     end.
@@ -270,16 +271,16 @@ sst_open(RootPath, Filename, OptsSST, Level) ->
 %% pairs.  This should not be used for basement levels or unexpanded Key/Value
 %% lists as merge_lists will not be called.
 sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST) ->
-    sst_new(RootPath, Filename, Level,
-            KVList, MaxSQN, OptsSST, ?INDEX_MODDATE).
+    sst_new(
+        RootPath, Filename, Level, KVList, MaxSQN, OptsSST, ?INDEX_MODDATE).
 
 sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST, IndexModDate) ->
-    {ok, Pid} = gen_statem:start_link(?MODULE, [], []),
+    {ok, Pid} = gen_statem:start_link(?MODULE, [], ?START_OPTS),
     PressMethod0 = compress_level(Level, OptsSST#sst_options.press_method),
     MaxSlots0 = maxslots_level(Level, OptsSST#sst_options.max_sstslots),
     OptsSST0 =
-        OptsSST#sst_options{press_method = PressMethod0,
-                            max_sstslots = MaxSlots0},
+        OptsSST#sst_options{
+            press_method = PressMethod0, max_sstslots = MaxSlots0},
 
     {[], [], SlotList, FK, _CountOfTombs}  =
         merge_lists(KVList, OptsSST0, IndexModDate),
@@ -342,7 +343,7 @@ sst_newmerge(RootPath, Filename,
         [] ->
             empty;
         _ ->
-            {ok, Pid} = gen_statem:start_link(?MODULE, [], []),
+            {ok, Pid} = gen_statem:start_link(?MODULE, [], ?START_OPTS),
             case gen_statem:call(Pid, {sst_new,
                                        RootPath,
                                        Filename,
@@ -381,9 +382,10 @@ sst_newlevelzero(RootPath, Filename,
     OptsSST0 =
         OptsSST#sst_options{press_method = PressMethod0,
                             max_sstslots = MaxSlots0},
-    {ok, Pid} = gen_statem:start_link(?MODULE, [], []),
-    % Initiate the file into the "starting" state
-  %% TODO check with Martin whether we can do the following case directly from statem,
+    {ok, Pid} = gen_statem:start_link(?MODULE, [], ?START_OPTS),
+    %% Initiate the file into the "starting" state
+    %% TODO check with Martin whether we can do the following case directly
+    %%  from statem,
     ok = gen_statem:call(Pid, {sst_newlevelzero,
                                RootPath,
                                Filename,
@@ -421,7 +423,7 @@ sst_get(Pid, LedgerKey) ->
 %% Return a Key, Value pair matching a Key or not_present if the Key is not in
 %% the store (with the magic hash precalculated).
 sst_get(Pid, LedgerKey, Hash) ->
-    gen_statem:call(Pid, {get_kv, LedgerKey, Hash}, infinity).
+    gen_statem:call(Pid, {get_kv, LedgerKey, Hash, undefined}, infinity).
 
 -spec sst_getsqn(pid(),
     leveled_codec:ledger_key(),
@@ -430,7 +432,7 @@ sst_get(Pid, LedgerKey, Hash) ->
 %% Return a SQN for the key or not_present if the key is not in
 %% the store (with the magic hash precalculated).
 sst_getsqn(Pid, LedgerKey, Hash) ->
-    gen_statem:call(Pid, {get_sqn, LedgerKey, Hash}, infinity).
+    gen_statem:call(Pid, {get_kv, LedgerKey, Hash, fun sqn_only/1}, infinity).
 
 -spec sst_getmaxsequencenumber(pid()) -> integer().
 %% @doc
@@ -525,7 +527,9 @@ callback_mode() ->
 init([]) ->
     {ok, starting, #state{}}.
 
-starting({call, From}, {sst_open, RootPath, Filename, OptsSST, Level}, State) ->
+starting({call, From},
+            {sst_open, RootPath, Filename, OptsSST, Level},
+            State) ->
     leveled_log:save(OptsSST#sst_options.log_options),
     Monitor = OptsSST#sst_options.monitor,
     {UpdState, Bloom} =
@@ -538,10 +542,12 @@ starting({call, From}, {sst_open, RootPath, Filename, OptsSST, Level}, State) ->
        level = Level, fetch_cache = new_cache(Level), monitor = Monitor},
      [{reply, From,
        {ok, {Summary#summary.first_key, Summary#summary.last_key}, Bloom}}]};
-starting({call, From}, {sst_new,
-                        RootPath, Filename, Level,
-                        {SlotList, FirstKey}, MaxSQN,
-                        OptsSST, IdxModDate, CountOfTombs, StartingPID}, State) ->
+starting({call, From},
+            {sst_new,
+                RootPath, Filename, Level,
+                {SlotList, FirstKey}, MaxSQN,
+                OptsSST, IdxModDate, CountOfTombs, StartingPID},
+            State) ->
     SW = os:timestamp(),
     leveled_log:save(OptsSST#sst_options.log_options),
     Monitor = OptsSST#sst_options.monitor,
@@ -569,16 +575,19 @@ starting({call, From}, {sst_new,
     leveled_log:log_timer(
         sst08, [ActualFilename, Level, Summary#summary.max_sqn], SW),
     erlang:send_after(?STARTUP_TIMEOUT, self(), start_complete),
-    {next_state, reader,
-     UpdState#state{
-       blockindex_cache = BlockIndex,
-       high_modified_date = HighModDate,
-       starting_pid = StartingPID,
-       level = Level,
-       fetch_cache = new_cache(Level),
-       monitor = Monitor},
-    [{reply, From,
-        {ok, {Summary#summary.first_key, Summary#summary.last_key}, Bloom}}]};
+    {next_state,
+        reader,
+        UpdState#state{
+            blockindex_cache = BlockIndex,
+            high_modified_date = HighModDate,
+            starting_pid = StartingPID,
+            level = Level,
+            fetch_cache = new_cache(Level),
+            monitor = Monitor},
+        [{reply,
+            From,
+            {ok, {Summary#summary.first_key, Summary#summary.last_key}, Bloom}
+        }]};
 starting({call, From}, {sst_newlevelzero, RootPath, Filename,
                     Penciller, MaxSQN,
                     OptsSST, IdxModDate}, State) ->
@@ -596,7 +605,9 @@ starting({call, From}, close, State) ->
     {stop_and_reply, normal, [{reply, From, ok}], State};
 
 starting(cast, {complete_l0startup, Slots}, State) ->
-    {keep_state, State#state{new_slots = Slots}, [{next_event, cast, complete_l0startup}]};
+    {keep_state,
+        State#state{new_slots = Slots},
+        [{next_event, cast, complete_l0startup}]};
 starting(cast, complete_l0startup, State) ->
     {RootPath, Filename, Penciller, MaxSQN, OptsSST, IdxModDate} =
         State#state.deferred_startup_tuple,
@@ -698,9 +709,16 @@ starting(cast, {sst_returnslot, FetchedSlot, FetchFun, SlotCount}, State) ->
     end.
 
 
-reader({call, From}, {get_sqn, LedgerKey, Hash}, State) ->
+reader({call, From}, {get_kv, LedgerKey, Hash, Filter}, State) ->
     % Get a KV value and potentially take sample timings
-    {Result, _BIC, _HMD, _FC} =
+    Monitor =
+        case Filter of
+            undefined ->
+                State#state.monitor;
+            _ ->
+                {no_monitor, 0}
+        end,
+    {KeyValue, BIC, HMD, FC} = 
         fetch(
             LedgerKey, Hash,
             State#state.summary,
@@ -712,38 +730,33 @@ reader({call, From}, {get_sqn, LedgerKey, Hash}, State) ->
             State#state.fetch_cache,
             State#state.handle,
             State#state.level,
-            {no_monitor, 0}),
-    {keep_state_and_data,
-     [{reply, From, sqn_only(Result)}, ?HIBERNATE_TIMEOUT]};
-reader({call, From}, {get_kv, LedgerKey, Hash}, State) ->
-    % Get a KV value and potentially take sample timings
-    {Result, BIC, HMD, FC} =
-        fetch(
-            LedgerKey, Hash,
-            State#state.summary,
-            State#state.compression_method,
-            State#state.high_modified_date,
-            State#state.index_moddate,
-            State#state.filter_fun,
-            State#state.blockindex_cache,
-            State#state.fetch_cache,
-            State#state.handle,
-            State#state.level,
-            State#state.monitor),
+            Monitor),
+    Result =
+        case Filter of
+            undefined ->
+                KeyValue;
+            F ->
+                F(KeyValue)
+        end,
     case {BIC, HMD, FC} of
         {no_update, no_update, no_update} ->
             {keep_state_and_data, [{reply, From, Result}]};
         {no_update, no_update, FC} ->
-            {keep_state, State#state{fetch_cache = FC},
-             [{reply, From, Result}]};
+            {keep_state,
+                State#state{fetch_cache = FC},
+                [{reply, From, Result}]};
+        {BIC, undefined, no_update} ->
+            {keep_state,
+                State#state{blockindex_cache = BIC},
+                [{reply, From, Result}]};
         {BIC, HMD, no_update} ->
             {keep_state,
-                State#state{
-                    blockindex_cache = BIC, high_modified_date = HMD},
-             [{reply, From, Result}]}
+                State#state{blockindex_cache = BIC, high_modified_date = HMD},
+                [hibernate, {reply, From, Result}]}
     end;
-reader({call, From}, {get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
-       State) ->
+reader({call, From},
+        {get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
+        State) ->
     ReadNeeded =
         check_modified(State#state.high_modified_date,
                         LowLastMod,
@@ -784,13 +797,13 @@ reader({call, From}, {get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLast
             case UpdateCache of
                 true ->
                     {keep_state,
-                     State#state{
+                        State#state{
                             blockindex_cache = BlockIdxC0,
                             high_modified_date = HighModDate},
-                    [{reply, From, L ++ SlotsToPoint}]};
+                        [{reply, From, L ++ SlotsToPoint}]};
                 false ->
                     {keep_state_and_data,
-                     [{reply, From, L ++ SlotsToPoint}]}
+                        [hibernate, {reply, From, L ++ SlotsToPoint}]}
             end
     end;
 reader({call, From}, {get_slots, SlotList, SegList, LowLastMod}, State) ->
@@ -829,13 +842,6 @@ reader({call, From}, close, State) ->
     ok = file:close(State#state.handle),
     {stop_and_reply, normal, [{reply, From, ok}], State};
 
-%% There is a difference between a cast timeout and a timeout event.
-%% We do them both here
-reader(cast, timeout, State) ->
-    handle_timeout(reader, State);
-reader(timeout, _, State) ->
-    handle_timeout(reader, State);
-
 reader(cast, {switch_levels, NewLevel}, State) ->
     FreshCache = new_cache(NewLevel),
     {keep_state,
@@ -843,6 +849,8 @@ reader(cast, {switch_levels, NewLevel}, State) ->
             level = NewLevel,
             fetch_cache = FreshCache},
      [hibernate]};
+reader(timeout, _, State) ->
+    handle_timeout(reader, State);    
 reader(info, {update_blockindex_cache, BIC}, State) ->
     handle_update_blockindex_cache(BIC, State);
 reader(info, bic_complete, State) ->
@@ -867,9 +875,8 @@ reader(info, start_complete, State) ->
     end.
 
 
-delete_pending({call, From}, {get_sqn, LedgerKey, Hash}, State) ->
-    % Get a KV value and potentially take sample timings
-    {Result, _BIC, _HMD, _FC} =
+delete_pending({call, From}, {get_kv, LedgerKey, Hash, Filter}, State) ->
+    {KeyValue, _BIC, _HMD, _FC} = 
         fetch(
             LedgerKey, Hash,
             State#state.summary,
@@ -882,36 +889,35 @@ delete_pending({call, From}, {get_sqn, LedgerKey, Hash}, State) ->
             State#state.handle,
             State#state.level,
             {no_monitor, 0}),
-    {keep_state_and_data,
-     [{reply, From, sqn_only(Result)}, ?DELETE_TIMEOUT]};
-delete_pending({call, From}, {get_kv, LedgerKey, Hash}, State) ->
-    {Result, _BIC, _HMD, _FC} =
-        fetch(
-            LedgerKey, Hash,
-            State#state.summary,
-            State#state.compression_method,
-            State#state.high_modified_date,
-            State#state.index_moddate,
-            State#state.filter_fun,
-            State#state.blockindex_cache,
-            State#state.fetch_cache,
-            State#state.handle,
-            State#state.level,
-            {no_monitor, 0}),
-   {keep_state_and_data,
-    [{reply, From, Result}, ?DELETE_TIMEOUT]};
-delete_pending({call, From}, {get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
-               State) ->
+    Result =
+        case Filter of
+            undefined ->
+                KeyValue;
+            F ->
+                F(KeyValue)
+        end,
+    {keep_state_and_data, [{reply, From, Result}, ?DELETE_TIMEOUT]};
+delete_pending(
+        {call, From},
+        {get_kvrange, StartKey, EndKey, ScanWidth, SegList, LowLastMod},
+        State) ->
     {_NeedBlockIdx, SlotsToFetchBinList, SlotsToPoint} =
         fetch_range(StartKey, EndKey, ScanWidth, SegList, LowLastMod, State),
     % Always yield as about to clear and de-reference
     PressMethod = State#state.compression_method,
     IdxModDate = State#state.index_moddate,
     {keep_state_and_data,
-    [{reply, From,
-        {yield, SlotsToFetchBinList, SlotsToPoint, PressMethod, IdxModDate}},
+        [{reply, From,
+            {yield,
+            SlotsToFetchBinList,
+            SlotsToPoint,
+            PressMethod,
+            IdxModDate}},
      ?DELETE_TIMEOUT]};
-delete_pending({call, From}, {get_slots, SlotList, SegList, LowLastMod}, State) ->
+delete_pending(
+        {call, From},
+        {get_slots, SlotList, SegList, LowLastMod},
+        State) ->
     PressMethod = State#state.compression_method,
     IdxModDate = State#state.index_moddate,
     {_NeedBlockIdx, SlotBins} =
@@ -937,10 +943,6 @@ delete_pending(cast, close, State) ->
                                     State#state.filename)),
     {stop, normal, State};
 
-delete_pending(cast, {update_blockindex_cache, BIC}, State) ->
-    handle_update_blockindex_cache(BIC, State);
-delete_pending(cast, timeout, State) ->
-    handle_timeout(delete_pending, State);
 delete_pending(info, _Event, _State) ->
     % Ignore messages when pending delete. The message may have interrupted
     % the delete timeout, so timeout straight away
@@ -1139,7 +1141,8 @@ sst_getslots(Pid, SlotList) ->
 sst_getfilteredslots(Pid, SlotList, SegList, LowLastMod) ->
     SegL0 = tune_seglist(SegList),
     {NeedBlockIdx, SlotBins, PressMethod, IdxModDate} =
-        gen_statem:call(Pid, {get_slots, SlotList, SegL0, LowLastMod}, infinity),
+        gen_statem:call(
+            Pid, {get_slots, SlotList, SegL0, LowLastMod}, infinity),
     {L, BIC} = binaryslot_reader(SlotBins, PressMethod, IdxModDate, SegL0),
     case NeedBlockIdx of
         true ->
@@ -2165,8 +2168,8 @@ check_blocks([Pos|Rest], BlockPointer, BlockLengths, PosBinLength,
                     PosBinLength,
                     BlockNumber,
                     additional_offset(IdxModDate)),
-    R = fetchfrom_rawblock(BlockPos, deserialise_block(BlockBin, PressMethod)),
-    case {R, LedgerKeyToCheck} of
+    Result = spawn_check_block(BlockPos, BlockBin, PressMethod),
+    case {Result, LedgerKeyToCheck} of
         {{K, V}, K} ->
             {K, V};
         {{K, V}, false} ->
@@ -2180,6 +2183,20 @@ check_blocks([Pos|Rest], BlockPointer, BlockLengths, PosBinLength,
                             LedgerKeyToCheck, PressMethod, IdxModDate,
                             Acc)
     end.
+
+-spec spawn_check_block(non_neg_integer(), binary(), press_method())
+        -> not_present|leveled_codec:ledger_kv().
+spawn_check_block(BlockPos, BlockBin, PressMethod) ->
+    Parent = self(),
+    Pid =
+        spawn_link(
+            fun() -> check_block(Parent, BlockPos, BlockBin, PressMethod) end
+        ),
+    receive {checked_block, Pid, R} -> R end.
+
+check_block(From, BlockPos, BlockBin, PressMethod) ->
+    R = fetchfrom_rawblock(BlockPos, deserialise_block(BlockBin, PressMethod)),
+    From ! {checked_block, self(), R}.
 
 -spec additional_offset(boolean()) -> pos_integer().
 %% @doc
@@ -2665,8 +2682,8 @@ fetch_value([Pos|Rest], BlockLengths, Blocks, Key, PressMethod) ->
     {BlockNumber, BlockPos} = revert_position(Pos),
     {Offset, Length} = block_offsetandlength(BlockLengths, BlockNumber),
     <<_Pre:Offset/binary, Block:Length/binary, _Rest/binary>> = Blocks,
-    RawBlock = deserialise_block(Block, PressMethod),
-    case fetchfrom_rawblock(BlockPos, RawBlock) of
+    R = fetchfrom_rawblock(BlockPos, deserialise_block(Block, PressMethod)),
+    case R of 
         {K, V} when K == Key ->
             {K, V};
         _ ->
@@ -2771,7 +2788,8 @@ split_lists([], SlotLists, 0, _PressMethod, _IdxModDate) ->
     lists:reverse(SlotLists);
 split_lists(LastPuff, SlotLists, 0, PressMethod, IdxModDate) ->
     {SlotD, _} =
-        generate_binary_slot(lookup, LastPuff, PressMethod, IdxModDate, no_timing),
+        generate_binary_slot(
+            lookup, LastPuff, PressMethod, IdxModDate, no_timing),
     lists:reverse([SlotD|SlotLists]);
 split_lists(KVList1, SlotLists, N, PressMethod, IdxModDate) ->
     {Slot, KVListRem} = lists:split(?LOOK_SLOTSIZE, KVList1),
@@ -2780,16 +2798,22 @@ split_lists(KVList1, SlotLists, N, PressMethod, IdxModDate) ->
     split_lists(KVListRem, [SlotD|SlotLists], N - 1, PressMethod, IdxModDate).
 
 
--spec merge_lists(list(), list(), tuple(), sst_options(),
-                                                    boolean(), boolean()) ->
-                    {list(), list(), list(binary_slot()), tuple()|null,
-                        non_neg_integer()}.
+-spec merge_lists(
+    list(expanded_pointer()),
+    list(expanded_pointer()),
+    {boolean(), non_neg_integer()},
+    sst_options(), boolean(), boolean()) ->
+            {list(expanded_pointer()),
+            list(expanded_pointer()),
+                list(binary_slot()),
+                leveled_codec:ledger_key()|null,
+                non_neg_integer()}.
 %% @doc
 %% Merge lists when merging across more than one file.  KVLists that are
 %% provided may include pointers to fetch more Keys/Values from the source
 %% file
-merge_lists(KVList1, KVList2, LevelInfo, SSTOpts,
-                                            IndexModDate, SaveTombCount) ->
+merge_lists(
+        KVList1, KVList2, LevelInfo, SSTOpts, IndexModDate, SaveTombCount) ->
     InitTombCount =
         case SaveTombCount of true -> 0; false -> not_counted end,
     merge_lists(KVList1, KVList2,
@@ -2870,9 +2894,9 @@ merge_lists(KVL1, KVL2, LI, SlotList, FirstKey, SlotCount, MaxSlots,
     end.
 
 
--spec count_tombs(list(leveled_codec:ledger_kv()),
-                    non_neg_integer()|not_counted) ->
-                                                non_neg_integer()|not_counted.
+-spec count_tombs(
+    list(leveled_codec:ledger_kv()), non_neg_integer()|not_counted) ->
+        non_neg_integer()|not_counted.
 %% @doc
 %% Count the tombstones in a list of KVs
 count_tombs(_KVL, not_counted) ->
@@ -3027,8 +3051,8 @@ maybe_expand_pointer(List) ->
 %%% Timing Functions
 %%%============================================================================
 
--spec update_buildtimings(erlang:timestamp(), build_timings(), atom())
-                                                            -> build_timings().
+-spec update_buildtimings(
+    erlang:timestamp(), build_timings(), atom()) -> build_timings().
 %% @doc
 %%
 %% Timings taken from the build of a SST file.
@@ -3809,7 +3833,10 @@ additional_range_test() ->
     % R8 = sst_getkvrange(P1, element(1, PastEKV), element(1, PastEKV), 2),
     % ?assertMatch([], R8).
 
-simple_switchcache_test() ->
+simple_switchcache_test_() ->
+    {timeout, 60, fun simple_switchcache_tester/0}.
+
+simple_switchcache_tester() ->
     {RP, Filename} = {?TEST_AREA, "simple_switchcache_test"},
     KVList0 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 2, 1, 20),
     KVList1 = lists:sublist(lists:ukeysort(1, KVList0), ?LOOK_SLOTSIZE),
@@ -3830,7 +3857,7 @@ simple_switchcache_test() ->
                         ?assertMatch({K, V}, sst_get(OpenP4, K))
                         end,
                     KVList1),
-    gen_statem:cast(OpenP4, timeout),
+    timer:sleep(?HIBERNATE_TIMEOUT + 10),
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({K, V}, sst_get(OpenP4, K))
                         end,
@@ -3848,17 +3875,7 @@ simple_switchcache_test() ->
                         ?assertMatch({K, V}, sst_get(OpenP5, K))
                         end,
                     KVList1),
-    gen_statem:cast(OpenP5, timeout),
-    lists:foreach(fun({K, V}) ->
-                        ?assertMatch({K, V}, sst_get(OpenP5, K))
-                        end,
-                    KVList1),
     ok = sst_switchlevels(OpenP5, 6),
-    lists:foreach(fun({K, V}) ->
-                        ?assertMatch({K, V}, sst_get(OpenP5, K))
-                        end,
-                    KVList1),
-    gen_statem:cast(OpenP5, timeout),
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({K, V}, sst_get(OpenP5, K))
                         end,
@@ -3868,7 +3885,7 @@ simple_switchcache_test() ->
                         ?assertMatch({K, V}, sst_get(OpenP5, K))
                         end,
                     KVList1),
-    gen_statem:cast(OpenP5, timeout),
+    timer:sleep(?HIBERNATE_TIMEOUT + 10),
     lists:foreach(fun({K, V}) ->
                         ?assertMatch({K, V}, sst_get(OpenP5, K))
                         end,
@@ -4208,7 +4225,7 @@ take_max_lastmoddate_test() ->
     ?assertMatch(1, take_max_lastmoddate(0, 1)).
 
 stopstart_test() ->
-    {ok, Pid} = gen_statem:start_link(?MODULE, [], []),
+    {ok, Pid} = gen_statem:start_link(?MODULE, [], ?START_OPTS),
     % check we can close in the starting state.  This may happen due to the
     % fetcher on new level zero files working in a loop
     ok = sst_close(Pid).
