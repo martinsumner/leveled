@@ -695,12 +695,7 @@ starting(cast, {sst_returnslot, FetchedSlot, FetchFun, SlotCount}, State) ->
             FetchFun(length(FetchedSlots) + 1, ReturnFun),
             {keep_state,
                 State#state{new_slots = FetchedSlots}}
-    end;
-starting(cast, {update_blockindex_cache, BIC}, State) ->
-    handle_update_blockindex_cache(BIC, State);
-
-starting(info, Event, State) ->
-    handle_info(Event, starting, State).
+    end.
 
 
 reader({call, From}, {get_sqn, LedgerKey, Hash}, State) ->
@@ -848,10 +843,28 @@ reader(cast, {switch_levels, NewLevel}, State) ->
             level = NewLevel,
             fetch_cache = FreshCache},
      [hibernate]};
-reader(cast, {update_blockindex_cache, BIC}, State) ->
+reader(info, {update_blockindex_cache, BIC}, State) ->
     handle_update_blockindex_cache(BIC, State);
-reader(info, Event, State) ->
-    handle_info(Event, reader, State).
+reader(info, bic_complete, State) ->
+    % The block index cache is complete, so the memory footprint should be
+    % relatively stable from this point.  Hibernate to help minimise
+    % fragmentation
+    leveled_log:log(sst14, [State#state.filename]),
+    {keep_state_and_data, [hibernate]};
+reader(info, start_complete, State) ->
+    % The SST file will be started by a clerk, but the clerk may be shut down
+    % prior to the manifest being updated about the existence of this SST file.
+    % If there is no activity after startup, check the clerk is still alive and
+    % otherwise assume this file is part of a closed store and shut down.
+    % If the clerk has crashed, the penciller will restart at the latest
+    % manifest, and so this file sill be restarted if and only if it is still
+    % part of the store
+    case is_process_alive(State#state.starting_pid) of
+        true ->
+            {keep_state_and_data, []};
+        false ->
+            {stop, normal}
+    end.
 
 
 delete_pending({call, From}, {get_sqn, LedgerKey, Hash}, State) ->
@@ -928,8 +941,10 @@ delete_pending(cast, {update_blockindex_cache, BIC}, State) ->
     handle_update_blockindex_cache(BIC, State);
 delete_pending(cast, timeout, State) ->
     handle_timeout(delete_pending, State);
-delete_pending(info, Event, State) ->
-    handle_info(Event, delete_pending, State);
+delete_pending(info, _Event, _State) ->
+    % Ignore messages when pending delete. The message may have interrupted
+    % the delete timeout, so timeout straight away
+    {keep_state_and_data, [0]};
 delete_pending(timeout, _, State) ->
     handle_timeout(delete_pending, State).
 
@@ -964,32 +979,6 @@ handle_timeout(delete_pending, State) ->
     % If the next thing is another timeout - may be long-running snapshot, so
     % back-off
     {keep_state_and_data, [leveled_rand:uniform(10) * ?DELETE_TIMEOUT]}.
-
-
-handle_info(_Msg, delete_pending, _State) ->
-    % Ignore messages when pending delete. The message may have interrupted
-    % the delete timeout, so timeout straight away
-    {keep_state_and_data, [0]};
-handle_info(bic_complete, _StateName, State) ->
-    % The block index cache is complete, so the memory footprint should be
-    % relatively stable from this point.  Hibernate to help minimise
-    % fragmentation
-    leveled_log:log(sst14, [State#state.filename]),
-    {keep_state_and_data, [hibernate]};
-handle_info(start_complete, _StateName, State) ->
-    % The SST file will be started by a clerk, but the clerk may be shut down
-    % prior to the manifest being updated about the existence of this SST file.
-    % If there is no activity after startup, check the clerk is still alive and
-    % otherwise assume this file is part of a closed store and shut down.
-    % If the clerk has crashed, the penciller will restart at the latest
-    % manifest, and so this file sill be restarted if and only if it is still
-    % part of the store
-    case is_process_alive(State#state.starting_pid) of
-        true ->
-            {keep_state_and_data, []};
-        false ->
-            {stop, normal}
-    end.
 
 terminate(normal, delete_pending, _State) ->
     ok;
@@ -1154,7 +1143,7 @@ sst_getfilteredslots(Pid, SlotList, SegList, LowLastMod) ->
     {L, BIC} = binaryslot_reader(SlotBins, PressMethod, IdxModDate, SegL0),
     case NeedBlockIdx of
         true ->
-            gen_statem:cast(Pid, {update_blockindex_cache, BIC});
+            erlang:send(Pid, {update_blockindex_cache, BIC});
         false ->
             ok
     end,

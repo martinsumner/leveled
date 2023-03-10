@@ -493,11 +493,7 @@ starting({call, From}, {open_reader, Filename, LastKey}, State) ->
     {next_state, reader, State0,
      [{reply, From, ok}, hibernate]};
 starting({call, From}, Event, State) ->
-    handle_sync_event(Event, From, State);
-starting(cast, clerk_complete, _State) ->
-    {keep_state_and_data, [hibernate]};
-starting(info, _Msg, _State) ->
-    {keep_state_and_data, []}.
+    handle_sync_event(Event, From, State).
 
 
 writer({call, From}, {get_kv, Key}, State) ->
@@ -593,12 +589,7 @@ writer(cast, cdb_roll, State) ->
     ok = leveled_iclerk:clerk_hashtablecalc(State#state.hashtree,
                                             State#state.last_position,
                                             self()),
-    {next_state, rolling, State};
-writer(cast, clerk_complete, _State) ->
-    {keep_state_and_data, [hibernate]};
-writer(info, _Msg, _State) ->
-    {keep_state_and_data, []}.
-
+    {next_state, rolling, State}.
 
 
 rolling({call, From}, {get_kv, Key}, State) ->
@@ -654,11 +645,7 @@ rolling({call, From}, Event, State) ->
     handle_sync_event(Event, From, State);
 rolling(cast, {delete_pending, ManSQN, Inker}, State) ->
     {keep_state,
-     State#state{delete_point=ManSQN, inker=Inker, deferred_delete=true}};
-rolling(cast, clerk_complete, _State) ->
-    {keep_state_and_data, [hibernate]};
-rolling(info, _Msg, _State) ->
-    {keep_state_and_data, []}.
+     State#state{delete_point=ManSQN, inker=Inker, deferred_delete=true}}.
 
 reader({call, From}, {get_kv, Key}, State) ->
     Result =
@@ -744,9 +731,7 @@ reader(cast, {delete_pending, ManSQN, Inker}, State) ->
         State#state{delete_point=ManSQN, inker=Inker},
      ?DELETE_TIMEOUT};
 reader(cast, clerk_complete, _State) ->
-    {keep_state_and_data, [hibernate]};
-reader(info, _Msg, _State) ->
-    {keep_state_and_data, []}.
+    {keep_state_and_data, [hibernate]}.
 
 
 delete_pending({call, From}, {get_kv, Key}, State) ->
@@ -788,10 +773,6 @@ delete_pending(cast, destroy, State) ->
                         State#state.filename,
                         State#state.waste_path),
     {stop, normal};
-delete_pending(cast, clerk_complete, _State) ->
-    {keep_state_and_data, [hibernate]};
-delete_pending(info, _Msg, _State) ->
-  {keep_state_and_data, []};
 delete_pending(timeout, _, State=#state{delete_point=ManSQN}) when ManSQN > 0 ->
     case is_process_alive(State#state.inker) of
         true ->
