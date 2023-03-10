@@ -470,8 +470,7 @@ starting({call, From}, {open_writer, Filename}, State) ->
                             last_key=LastKey,
                             filename=Filename,
                             hashtree=HashTree},
-    {next_state, writer, State0,
-     [{reply, From, ok}, hibernate]};
+    {next_state, writer, State0, [{reply, From, ok}, hibernate]};
 starting({call, From}, {open_reader, Filename}, State) ->
     leveled_log:save(State#state.log_options),
     leveled_log:log(cdb02, [Filename]),
@@ -480,8 +479,7 @@ starting({call, From}, {open_reader, Filename}, State) ->
                             last_key=LastKey,
                             filename=Filename,
                             hash_index=Index},
-    {next_state, reader, State0,
-     [{reply, From, ok}, hibernate]};
+    {next_state, reader, State0, [{reply, From, ok}, hibernate]};
 starting({call, From}, {open_reader, Filename, LastKey}, State) ->
     leveled_log:save(State#state.log_options),
     leveled_log:log(cdb02, [Filename]),
@@ -490,27 +488,28 @@ starting({call, From}, {open_reader, Filename, LastKey}, State) ->
                             last_key=LastKey,
                             filename=Filename,
                             hash_index=Index},
-    {next_state, reader, State0,
-     [{reply, From, ok}, hibernate]};
-starting({call, From}, Event, State) ->
-    handle_sync_event(Event, From, State).
+    {next_state, reader, State0, [{reply, From, ok}, hibernate]}.
 
 
 writer({call, From}, {get_kv, Key}, State) ->
     {keep_state_and_data,
-     [{reply, From,
-        get_mem(Key,
-                    State#state.handle,
-                    State#state.hashtree,
-                    State#state.binary_mode)}]};
+        [{reply,
+            From,
+            get_mem(
+                Key,
+                State#state.handle,
+                State#state.hashtree,
+                State#state.binary_mode)}]};
 writer({call, From}, {key_check, Key}, State) ->
     {keep_state_and_data,
-     [{reply, From,
-        get_mem(Key,
-                    State#state.handle,
-                    State#state.hashtree,
-                    State#state.binary_mode,
-                    loose_presence)}]};
+        [{reply,
+            From,
+            get_mem(
+                Key,
+                State#state.handle,
+                State#state.hashtree,
+                State#state.binary_mode,
+                loose_presence)}]};
 writer({call, From}, {put_kv, Key, Value, Sync}, State) ->
     NewCount = State#state.current_count + 1,
     case NewCount >= State#state.max_count of
@@ -539,12 +538,13 @@ writer({call, From}, {put_kv, Key, Value, Sync}, State) ->
                                 ok
                         end,
                     {keep_state,
-                     State#state{handle=UpdHandle,
-                                 current_count=NewCount,
-                                 last_position=NewPosition,
-                                 last_key=Key,
-                                 hashtree=HashTree},
-                    [{reply, From, ok}]}
+                        State#state{
+                            handle=UpdHandle,
+                            current_count=NewCount,
+                            last_position=NewPosition,
+                            last_key=Key,
+                            hashtree=HashTree},
+                        [{reply, From, ok}]}
             end
     end;
 writer({call, From}, {mput_kv, []}, _State) ->
@@ -568,12 +568,13 @@ writer({call, From}, {mput_kv, KVList}, State) ->
                     {keep_state_and_data, [{reply, From, roll}]};
                 {UpdHandle, NewPosition, HashTree, LastKey} ->
                     {keep_state,
-                     State#state{handle=UpdHandle,
-                                 current_count=NewCount,
-                                 last_position=NewPosition,
-                                 last_key=LastKey,
-                                 hashtree=HashTree},
-                     [{reply, From, ok}]}
+                        State#state{
+                            handle=UpdHandle,
+                            current_count=NewCount,
+                            last_position=NewPosition,
+                            last_key=LastKey,
+                            hashtree=HashTree},
+                        [{reply, From, ok}]}
             end
     end;
 writer({call, From}, cdb_complete, State) ->
@@ -586,30 +587,35 @@ writer({call, From}, cdb_complete, State) ->
 writer({call, From}, Event, State) ->
     handle_sync_event(Event, From, State);
 writer(cast, cdb_roll, State) ->
-    ok = leveled_iclerk:clerk_hashtablecalc(State#state.hashtree,
-                                            State#state.last_position,
-                                            self()),
+    ok = 
+        leveled_iclerk:clerk_hashtablecalc(
+            State#state.hashtree, State#state.last_position, self()),
     {next_state, rolling, State}.
 
 
 rolling({call, From}, {get_kv, Key}, State) ->
-   {keep_state_and_data,
-      [{reply, From,
-        get_mem(Key,
-                    State#state.handle,
-                    State#state.hashtree,
-                    State#state.binary_mode)}]};
+    {keep_state_and_data,
+        [{reply,
+            From,
+            get_mem(
+                Key,
+                State#state.handle,
+                State#state.hashtree,
+                State#state.binary_mode)}]};
 rolling({call, From}, {key_check, Key}, State) ->
-     {keep_state_and_data,
-      [{reply, From,
-        get_mem(Key,
-                    State#state.handle,
-                    State#state.hashtree,
-                    State#state.binary_mode,
-                    loose_presence)}]};
-rolling({call, From}, {get_positions, _SampleSize, _Index, SampleAcc}, _State) ->
-     {keep_state_and_data,
-      [{reply, From, SampleAcc}]};
+    {keep_state_and_data,
+        [{reply,
+            From,
+            get_mem(
+                Key,
+                State#state.handle,
+                State#state.hashtree,
+                State#state.binary_mode,
+                loose_presence)}]};
+rolling({call, From},
+        {get_positions, _SampleSize, _Index, SampleAcc},
+        _State) ->
+    {keep_state_and_data, [{reply, From, SampleAcc}]};
 rolling({call, From}, {return_hashtable, IndexList, HashTreeBin}, State) ->
     SW = os:timestamp(),
     Handle = State#state.handle,
@@ -621,31 +627,28 @@ rolling({call, From}, {return_hashtable, IndexList, HashTreeBin}, State) ->
     ok = rename_for_read(State#state.filename, NewName),
     leveled_log:log(cdb03, [NewName]),
     ets:delete(State#state.hashtree),
-    {NewHandle, Index, LastKey} = open_for_readonly(NewName,
-                                                    State#state.last_key),
+    {NewHandle, Index, LastKey} =
+        open_for_readonly(NewName, State#state.last_key),
     State0 = State#state{handle=NewHandle,
                             last_key=LastKey,
                             filename=NewName,
                             hash_index=Index},
     case State#state.deferred_delete of
         true ->
-            {next_state, delete_pending, State0,
-             [{reply, From, ok}]};
+            {next_state, delete_pending, State0, [{reply, From, ok}]};
         false ->
             leveled_log:log_timer(cdb18, [], SW),
-            {next_state, reader, State0,
-             [{reply, From, ok}, hibernate]}
+            {next_state, reader, State0, [{reply, From, ok}, hibernate]}
     end;
 rolling({call, From}, check_hashtable, _State) ->
     {keep_state_and_data, [{reply, From, false}]};
 rolling({call, From}, cdb_isrolling, _State) ->
-    {keep_state_and_data,
-     [{reply, From, true}]};
+    {keep_state_and_data, [{reply, From, true}]};
 rolling({call, From}, Event, State) ->
     handle_sync_event(Event, From, State);
 rolling(cast, {delete_pending, ManSQN, Inker}, State) ->
     {keep_state,
-     State#state{delete_point=ManSQN, inker=Inker, deferred_delete=true}}.
+        State#state{delete_point=ManSQN, inker=Inker, deferred_delete=true}}.
 
 reader({call, From}, {get_kv, Key}, State) ->
     Result =
@@ -654,8 +657,7 @@ reader({call, From}, {get_kv, Key}, State) ->
                         State#state.hash_index,
                         State#state.binary_mode,
                         State#state.monitor),
-     {keep_state_and_data,
-      [{reply, From, Result}]};
+    {keep_state_and_data, [{reply, From, Result}]};
 reader({call, From}, {key_check, Key}, State) ->
     Result =
         get_withcache(State#state.handle,
@@ -664,18 +666,16 @@ reader({call, From}, {key_check, Key}, State) ->
                         loose_presence,
                         State#state.binary_mode,
                         {no_monitor, 0}),
-    {keep_state_and_data,
-      [{reply, From, Result}]};
+    {keep_state_and_data, [{reply, From, Result}]};
 reader({call, From}, {get_positions, SampleSize, Index, Acc}, State) ->
     {Pos, Count} = element(Index + 1, State#state.hash_index),
     UpdAcc = scan_index_returnpositions(State#state.handle, Pos, Count, Acc),
     case SampleSize of
         all ->
-            {keep_state_and_data,
-             [{reply, From, UpdAcc}]};
+            {keep_state_and_data, [{reply, From, UpdAcc}]};
         _ ->
             {keep_state_and_data,
-             [{reply, From, lists:sublist(UpdAcc, SampleSize)}]}
+                [{reply, From, lists:sublist(UpdAcc, SampleSize)}]}
     end;
 reader({call, From}, {direct_fetch, PositionList, Info}, State) ->
     H = State#state.handle,
@@ -697,11 +697,11 @@ reader({call, From}, {direct_fetch, PositionList, Info}, State) ->
                         PositionList),
             MapFun = fun(T) -> element(1, T) end,
             {keep_state_and_data,
-             [{reply, From, lists:map(MapFun, FM)}]};
+                [{reply, From, lists:map(MapFun, FM)}]};
         key_size ->
             FilterFun = fun(P) -> FilterFalseKey(extract_key_size(H, P)) end,
             {keep_state_and_data,
-             [{reply, From, lists:filtermap(FilterFun, PositionList)}]};
+                [{reply, From, lists:filtermap(FilterFun, PositionList)}]};
         key_value_check ->
             BM = State#state.binary_mode,
             MapFun = fun(P) -> extract_key_value_check(H, P, BM) end,
@@ -716,11 +716,12 @@ reader({call, From}, {direct_fetch, PositionList, Info}, State) ->
 reader({call, From}, cdb_complete, State) ->
     leveled_log:log(cdb05, [State#state.filename, reader, cdb_ccomplete]),
     ok = file:close(State#state.handle),
-    {stop_and_reply, normal, [{reply, From, {ok, State#state.filename}}],
-     State#state{handle=undefined}};
+    {stop_and_reply,
+        normal,
+        [{reply, From, {ok, State#state.filename}}],
+        State#state{handle=undefined}};
 reader({call, From}, check_hashtable, _State) ->
-    {keep_state_and_data,
-     [{reply, From, true}]};
+    {keep_state_and_data, [{reply, From, true}]};
 reader({call, From}, Event, State) ->
     handle_sync_event(Event, From, State);
 reader(cast, {delete_pending, 0, no_poll}, State) ->
@@ -729,7 +730,7 @@ reader(cast, {delete_pending, ManSQN, Inker}, State) ->
     {next_state,
         delete_pending,
         State#state{delete_point=ManSQN, inker=Inker},
-     ?DELETE_TIMEOUT};
+        ?DELETE_TIMEOUT};
 reader(cast, clerk_complete, _State) ->
     {keep_state_and_data, [hibernate]}.
 
@@ -741,8 +742,7 @@ delete_pending({call, From}, {get_kv, Key}, State) ->
                         State#state.hash_index,
                         State#state.binary_mode,
                         State#state.monitor),
-    {keep_state_and_data,
-     [{reply, From, Result}, ?DELETE_TIMEOUT]};
+    {keep_state_and_data, [{reply, From, Result}, ?DELETE_TIMEOUT]};
 delete_pending({call, From}, {key_check, Key}, State) ->
     Result =
         get_withcache(State#state.handle,
@@ -751,16 +751,13 @@ delete_pending({call, From}, {key_check, Key}, State) ->
                         loose_presence,
                         State#state.binary_mode,
                         {no_monitor, 0}),
-    {keep_state_and_data,
-     [{reply, From, Result}, ?DELETE_TIMEOUT]};
+    {keep_state_and_data, [{reply, From, Result}, ?DELETE_TIMEOUT]};
 delete_pending({call, From}, cdb_close, State) ->
     leveled_log:log(cdb05, [State#state.filename, delete_pending, cdb_close]),
     close_pendingdelete(State#state.handle,
                         State#state.filename,
                         State#state.waste_path),
     {stop_and_reply, normal, [{reply, From, ok}]};
-delete_pending({call, From}, Event, State) ->
-  handle_sync_event(Event, From, State);
 delete_pending(cast, delete_confirmed, State=#state{delete_point=ManSQN}) ->
     leveled_log:log(cdb04, [State#state.filename, ManSQN]),
     close_pendingdelete(State#state.handle,
@@ -773,7 +770,8 @@ delete_pending(cast, destroy, State) ->
                         State#state.filename,
                         State#state.waste_path),
     {stop, normal};
-delete_pending(timeout, _, State=#state{delete_point=ManSQN}) when ManSQN > 0 ->
+delete_pending(
+        timeout, _, State=#state{delete_point=ManSQN}) when ManSQN > 0 ->
     case is_process_alive(State#state.inker) of
         true ->
             ok =
@@ -826,8 +824,7 @@ handle_sync_event({cdb_scan, FilterFun, Acc, StartPos}, From, State) ->
     garbage_collect(),
     {keep_state_and_data, []};
 handle_sync_event(cdb_lastkey, From, State) ->
-    {keep_state_and_data,
-     [{reply, From, State#state.last_key}]};
+    {keep_state_and_data, [{reply, From, State#state.last_key}]};
 handle_sync_event(cdb_firstkey, From, State) ->
     {ok, EOFPos} = file:position(State#state.handle, eof),
     FilterFun = fun(Key, _V, _P, _O, _Fun) -> {stop, Key} end,
@@ -844,14 +841,11 @@ handle_sync_event(cdb_firstkey, From, State) ->
                                                         State#state.last_key),
                 FirstScanKey
         end,
-    {keep_state_and_data,
-     [{reply, From, FirstKey}]};
+    {keep_state_and_data, [{reply, From, FirstKey}]};
 handle_sync_event(cdb_filename, From, State) ->
-    {keep_state_and_data,
-     [{reply, From, State#state.filename}]};
+    {keep_state_and_data, [{reply, From, State#state.filename}]};
 handle_sync_event(cdb_isrolling, From, _State) ->
-    {keep_state_and_data,
-     [{reply, From, false}]};
+    {keep_state_and_data, [{reply, From, false}]};
 handle_sync_event({get_cachedscore, {NowMega, NowSecs, _}}, From, State) ->
     ScoreToReturn =
         case State#state.cached_score of
@@ -866,18 +860,17 @@ handle_sync_event({get_cachedscore, {NowMega, NowSecs, _}}, From, State) ->
                         Score
                 end
         end,
-    {keep_state_and_data,
-      [ {reply, From, ScoreToReturn}]};
+    {keep_state_and_data, [{reply, From, ScoreToReturn}]};
 handle_sync_event({put_cachedscore, Score}, From, State) ->
-    {keep_state, State#state{cached_score = {Score,os:timestamp()}},
-      [{reply, From, ok}]};
+    {keep_state,
+        State#state{cached_score = {Score,os:timestamp()}},
+        [{reply, From, ok}]};
 handle_sync_event(cdb_close, From, State) ->
     file:close(State#state.handle),
     {stop_and_reply, normal, [{reply, From, ok}]}.
 
 terminate(_Reason, _StateName, _State) ->
     ok.
-
 
 
 code_change(_OldVsn, StateName, State, _Extra) ->

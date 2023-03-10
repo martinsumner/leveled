@@ -537,11 +537,15 @@ starting({call, From},
                     State#state{root_path=RootPath},
                     OptsSST#sst_options.pagecache_level >= Level),
     Summary = UpdState#state.summary,
-    {next_state, reader,
-     UpdState#state{
-       level = Level, fetch_cache = new_cache(Level), monitor = Monitor},
-     [{reply, From,
-       {ok, {Summary#summary.first_key, Summary#summary.last_key}, Bloom}}]};
+    {next_state,
+        reader,
+        UpdState#state{
+            level = Level, fetch_cache = new_cache(Level), monitor = Monitor},
+        [{reply, From,
+            {ok,
+                {Summary#summary.first_key, Summary#summary.last_key},
+                Bloom}
+        }]};
 starting({call, From},
             {sst_new,
                 RootPath, Filename, Level,
@@ -599,7 +603,7 @@ starting({call, From}, {sst_newlevelzero, RootPath, Filename,
             deferred_startup_tuple = DeferredStartupTuple,
             level = 0,
             fetch_cache = new_cache(0)},
-     [{reply, From, ok}]};  %% Can we do without this in a call?
+        [{reply, From, ok}]};  %% Can we do without this in a call?
 starting({call, From}, close, State) ->
     %% No file should have been created, so nothing to close.
     {stop_and_reply, normal, [{reply, From, ok}], State};
@@ -776,18 +780,18 @@ reader({call, From},
     case State#state.yield_blockquery of
         true ->
             {keep_state_and_data,
-             [{reply, From,
-                {yield,
-                    SlotsToFetchBinList,
-                    SlotsToPoint,
-                    PressMethod,
-                    IdxModDate}}]};
+                [{reply,
+                    From,
+                    {yield,
+                        SlotsToFetchBinList,
+                        SlotsToPoint,
+                        PressMethod,
+                        IdxModDate}
+                }]};
         false ->
             {L, FoundBIC} =
-                binaryslot_reader(SlotsToFetchBinList,
-                                    PressMethod,
-                                    IdxModDate,
-                                    SegList),
+                binaryslot_reader(
+                    SlotsToFetchBinList, PressMethod, IdxModDate, SegList),
             {UpdateCache, BlockIdxC0, HighModDate} =
                 update_blockindex_cache(NeedBlockIdx,
                                         FoundBIC,
@@ -818,23 +822,27 @@ reader({call, From}, {get_slots, SlotList, SegList, LowLastMod}, State) ->
                         State#state.compression_method,
                         State#state.index_moddate),
     {keep_state_and_data,
-     [{reply, From, {NeedBlockIdx, SlotBins, PressMethod, IdxModDate}}]};
+        [{reply, From, {NeedBlockIdx, SlotBins, PressMethod, IdxModDate}}]};
 reader({call, From}, get_maxsequencenumber, State) ->
     Summary = State#state.summary,
     {keep_state_and_data,
      [{reply, From, Summary#summary.max_sqn}]};
 reader({call, From}, {set_for_delete, Penciller}, State) ->
     leveled_log:log(sst06, [State#state.filename]),
-    {next_state, delete_pending,
-     State#state{penciller=Penciller},
-     [{reply, From,ok}, ?DELETE_TIMEOUT]};
+    {next_state,
+        delete_pending,
+        State#state{penciller=Penciller},
+        [{reply, From,ok}, ?DELETE_TIMEOUT]};
 reader({call, From}, background_complete, State) ->
     Summary = State#state.summary,
     {keep_state_and_data,
-     [{reply, From,
-       {ok, State#state.filename,
-            Summary#summary.first_key,
-            Summary#summary.last_key}}]};
+        [{reply,
+            From,
+            {ok,
+                State#state.filename,
+                Summary#summary.first_key,
+                Summary#summary.last_key}
+        }]};
 reader({call, From}, get_tomb_count, State) ->
     {keep_state_and_data,
      [{reply, From, State#state.tomb_count}]};
@@ -845,12 +853,8 @@ reader({call, From}, close, State) ->
 reader(cast, {switch_levels, NewLevel}, State) ->
     FreshCache = new_cache(NewLevel),
     {keep_state,
-        State#state{
-            level = NewLevel,
-            fetch_cache = FreshCache},
-     [hibernate]};
-reader(timeout, _, State) ->
-    handle_timeout(reader, State);    
+        State#state{level = NewLevel, fetch_cache = FreshCache},
+        [hibernate]};
 reader(info, {update_blockindex_cache, BIC}, State) ->
     handle_update_blockindex_cache(BIC, State);
 reader(info, bic_complete, State) ->
@@ -913,7 +917,7 @@ delete_pending(
             SlotsToPoint,
             PressMethod,
             IdxModDate}},
-     ?DELETE_TIMEOUT]};
+        ?DELETE_TIMEOUT]};
 delete_pending(
         {call, From},
         {get_slots, SlotList, SegList, LowLastMod},
@@ -927,20 +931,21 @@ delete_pending(
                     PressMethod,
                     IdxModDate),
     {keep_state_and_data,
-    [{reply, From,
-        {false, SlotBins, PressMethod, IdxModDate}},
-      ?DELETE_TIMEOUT]};
+        [{reply, From, {false, SlotBins, PressMethod, IdxModDate}},
+            ?DELETE_TIMEOUT]};
 delete_pending({call, From}, close, State) ->
     leveled_log:log(sst07, [State#state.filename]),
     ok = file:close(State#state.handle),
-    ok = file:delete(filename:join(State#state.root_path,
-                                    State#state.filename)),
+    ok = 
+        file:delete(
+            filename:join(State#state.root_path, State#state.filename)),
     {stop_and_reply, normal, [{reply, From, ok}], State};
 delete_pending(cast, close, State) ->
     leveled_log:log(sst07, [State#state.filename]),
     ok = file:close(State#state.handle),
-    ok = file:delete(filename:join(State#state.root_path,
-                                    State#state.filename)),
+    ok = 
+        file:delete(
+            filename:join(State#state.root_path, State#state.filename)),
     {stop, normal, State};
 
 delete_pending(info, _Event, _State) ->
@@ -948,7 +953,16 @@ delete_pending(info, _Event, _State) ->
     % the delete timeout, so timeout straight away
     {keep_state_and_data, [0]};
 delete_pending(timeout, _, State) ->
-    handle_timeout(delete_pending, State).
+    case State#state.penciller of
+        false ->
+            ok = leveled_sst:sst_deleteconfirmed(self());
+        PCL ->
+            FN = State#state.filename,
+            ok = leveled_penciller:pcl_confirmdelete(PCL, FN, self())
+        end,
+    % If the next thing is another timeout - may be long-running snapshot, so
+    % back-off
+    {keep_state_and_data, [leveled_rand:uniform(10) * ?DELETE_TIMEOUT]}.
 
 handle_update_blockindex_cache(BIC, State) ->
     {_, BlockIndexCache, HighModDate} =
@@ -958,29 +972,10 @@ handle_update_blockindex_cache(BIC, State) ->
                                 State#state.high_modified_date,
                                 State#state.index_moddate),
     {keep_state,
-     State#state{blockindex_cache = BlockIndexCache,
-                 high_modified_date = HighModDate}}.
-
-handle_timeout(reader, State) ->
-    FreshFetchCache = new_cache(State#state.level),
-    Summary = State#state.summary,
-    FreshBlockIndexCache = new_blockindex_cache(Summary#summary.size),
-    {keep_state,
         State#state{
-            fetch_cache = FreshFetchCache,
-            blockindex_cache = FreshBlockIndexCache},
-     [hibernate]};
-handle_timeout(delete_pending, State) ->
-    case State#state.penciller of
-        false ->
-            ok = leveled_sst:sst_deleteconfirmed(self());
-        PCL ->
-            FN = State#state.filename,
-            ok = leveled_penciller:pcl_confirmdelete(PCL, FN, self())
-    end,
-    % If the next thing is another timeout - may be long-running snapshot, so
-    % back-off
-    {keep_state_and_data, [leveled_rand:uniform(10) * ?DELETE_TIMEOUT]}.
+            blockindex_cache = BlockIndexCache,
+            high_modified_date = HighModDate}}.
+    
 
 terminate(normal, delete_pending, _State) ->
     ok;
@@ -993,8 +988,8 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 format_status(normal, [_PDict, _, State]) ->
     State;
 format_status(terminate, [_PDict, _, State]) ->
-    State#state{blockindex_cache = redacted,
-                fetch_cache = redacted}.
+    State#state{
+        blockindex_cache = redacted, fetch_cache = redacted}.
 
 
 %%%============================================================================
