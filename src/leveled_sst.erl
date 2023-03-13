@@ -384,8 +384,6 @@ sst_newlevelzero(RootPath, Filename,
                             max_sstslots = MaxSlots0},
     {ok, Pid} = gen_statem:start_link(?MODULE, [], ?START_OPTS),
     %% Initiate the file into the "starting" state
-    %% TODO check with Martin whether we can do the following case directly
-    %%  from statem,
     ok = gen_statem:call(Pid, {sst_newlevelzero,
                                RootPath,
                                Filename,
@@ -603,7 +601,7 @@ starting({call, From}, {sst_newlevelzero, RootPath, Filename,
             deferred_startup_tuple = DeferredStartupTuple,
             level = 0,
             fetch_cache = new_cache(0)},
-        [{reply, From, ok}]};  %% Can we do without this in a call?
+        [{reply, From, ok}]};
 starting({call, From}, close, State) ->
     %% No file should have been created, so nothing to close.
     {stop_and_reply, normal, [{reply, From, ok}], State};
@@ -4212,12 +4210,6 @@ check_segment_match(PosBinIndex1, KVL, TreeSize) ->
             ?assertMatch(true, length(PosList) >= 1)
         end,
     lists:foreach(CheckFun, KVL).
-
-take_max_lastmoddate_test() ->
-    % TODO: Remove this test
-    % Temporarily added to make dialyzer happy (until we've made use of last
-    % modified dates
-    ?assertMatch(1, take_max_lastmoddate(0, 1)).
 
 stopstart_test() ->
     {ok, Pid} = gen_statem:start_link(?MODULE, [], ?START_OPTS),
