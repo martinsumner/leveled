@@ -700,19 +700,29 @@ tolist_test_by_type(Type) ->
     T_Reverse = to_list(T),
     ?assertMatch(KL, T_Reverse).
     
-tree_timing_test() ->
+
+timing_tests_tree_test_() ->
+    {timeout, 60, fun tree_timing/0}.
+
+timing_tests_idxt_test_() ->
+    {timeout, 60, fun idxt_timing/0}.
+
+timing_tests_skpl_test_() ->
+    {timeout, 60, fun skpl_timing/0}.
+
+tree_timing() ->
     log_tree_test_by_(16, tree, 8000),
     log_tree_test_by_(16, tree, 4000),
     log_tree_test_by_(4, tree, 256).
 
-idxt_timing_test() ->
+idxt_timing() ->
     log_tree_test_by_(16, idxt, 8000),
     log_tree_test_by_(16, idxt, 4000),
     log_tree_test_by_(4, idxt, 256),
     log_tree_test_by_(16, idxt, 256),
     log_tree_test_by_simplekey_(16, idxt, 256).
 
-skpl_timing_test() ->
+skpl_timing() ->
     log_tree_test_by_(auto, skpl, 8000),
     log_tree_test_by_(auto, skpl, 4000),
     log_tree_test_by_simplekey_(auto, skpl, 4000),
