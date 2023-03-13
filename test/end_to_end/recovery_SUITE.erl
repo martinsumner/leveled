@@ -68,6 +68,7 @@ replace_everything(_Config) ->
         testutil:put_altered_indexed_objects(Book1, BKT, KSpcL1),
     ok = testutil:check_indexed_objects(Book1, BKT, KSpcL2, V2),
     compact_and_wait(Book1, 1000),
+    compact_and_wait(Book1, 1000),
     {ok, FileList1} =  file:list_dir(CompPath),
     io:format("Number of files after compaction ~w~n", [length(FileList1)]),
     compact_and_wait(Book1, 1000),
