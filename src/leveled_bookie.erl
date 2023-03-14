@@ -102,8 +102,6 @@
 -export([book_returnactors/1]).
 -endif.
 
--include_lib("eunit/include/eunit.hrl").
-
 -define(LOADING_PAUSE, 1000).
 -define(CACHE_SIZE, 2500).
 -define(MAX_CACHE_MULTTIPLE, 2).
@@ -1152,11 +1150,6 @@ book_addlogs(Pid, ForcedLogs) ->
 %% Remove from the list of forced logs, a list of forced logs
 book_removelogs(Pid, ForcedLogs) ->
     gen_server:cast(Pid, {remove_logs, ForcedLogs}).
-
-%% @doc
-%% Return the Inker and Penciller - {ok, Inker, Penciller}.  Used only in tests
-book_returnactors(Pid) ->
-    gen_server:call(Pid, return_actors).
 
 
 %%%============================================================================
@@ -2548,6 +2541,14 @@ maybelog_snap_timing({Pid, _StatsFreq}, BookieTime, PCLTime) ->
 %%%============================================================================
 
 -ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
+
+%% @doc
+%% Return the Inker and Penciller - {ok, Inker, Penciller}.  Used only in tests
+book_returnactors(Pid) ->
+    gen_server:call(Pid, return_actors).
+
 
 reset_filestructure() ->
     RootPath  = "test/test_area",

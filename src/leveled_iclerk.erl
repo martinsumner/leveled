@@ -93,8 +93,6 @@
 
 -export([schedule_compaction/3]).
 
--include_lib("eunit/include/eunit.hrl").
-
 -define(JOURNAL_FILEX, "cdb").
 -define(PENDING_FILEX, "pnd").
 -define(SAMPLE_SIZE, 192).
@@ -863,7 +861,7 @@ filter_output_fun(FilterFun, FilterServer, MaxSQN, Strategy) ->
 
 -spec to_retain(leveled_codec:journal_key(),
                 leveled_inker:filterfun(),
-                leveled_inker:fillter_server(),
+                leveled_inker:filterserver(),
                 leveled_codec:sqn(),
                 leveled_codec:compaction_strategy()) -> boolean()|convert.
 to_retain(JournalKey, FilterFun, FilterServer, MaxSQN, ReloadStrategy) ->
@@ -958,6 +956,8 @@ clear_waste(State) ->
 
 
 -ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
 
 schedule_test() ->
     schedule_test_bycount(1),

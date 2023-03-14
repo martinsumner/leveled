@@ -39,8 +39,6 @@
     log_remove/2,
     get_defaults/0]).
 
--include_lib("eunit/include/eunit.hrl").
-
 -define(LOG_LIST,
     [bookie_get, bookie_put, bookie_head, bookie_snap,
         pcl_fetch, sst_fetch, cdb_get]).
@@ -204,7 +202,7 @@ log_add(Pid, ForcedLogs) ->
 log_remove(Pid, ForcedLogs) ->
     gen_server:cast(Pid, {log_remove, ForcedLogs}).
 
--spec maybe_time(monitor()) -> os:timestamp()|no_timing.
+-spec maybe_time(monitor()) -> erlang:timestamp()|no_timing.
 maybe_time({_Pid, TimingProbability}) ->
     case leveled_rand:uniform(100) of
         N when N =< TimingProbability ->
@@ -214,8 +212,8 @@ maybe_time({_Pid, TimingProbability}) ->
     end.
 
 -spec step_time(
-    os:timestamp()|no_timing) ->
-        {pos_integer(), os:timestamp()}|{no_timing, no_timing}.
+    erlang:timestamp()|no_timing) ->
+        {pos_integer(), erlang:timestamp()}|{no_timing, no_timing}.
 step_time(no_timing) ->
     {no_timing, no_timing};
 step_time(TS) ->
@@ -604,6 +602,8 @@ code_change(_OldVsn, State, _Extra) ->
 %%%============================================================================
 
 -ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
 
 coverage_cheat_test() ->
     {ok, M} = monitor_start(1, []),

@@ -95,8 +95,6 @@
 -export([finished_rolling/1,
             hashtable_calc/2]).
 
--include_lib("eunit/include/eunit.hrl").
-
 -define(DWORD_SIZE, 8).
 -define(WORD_SIZE, 4).
 -define(MAX_FILE_SIZE, 3221225472).
@@ -969,8 +967,8 @@ open_active_file(FileName) when is_list(FileName) ->
     end,
     {LastPosition, HashTree, LastKey}.
 
--spec put(list()|file:io_device(),
-            any(), any(),
+-spec put(file:io_device(), 
+            any(), any(), 
             {integer(), ets:tid()}, boolean(), integer(), boolean())
                             -> roll|{file:io_device(), integer(), ets:tid()}.
 %% @doc
@@ -978,17 +976,7 @@ open_active_file(FileName) when is_list(FileName) ->
 %% Append to an active file a new key/value pair returning an updated
 %% dictionary of Keys and positions.  Returns an updated Position
 %%
-put(FileName,
-        Key,
-        Value,
-        {LastPosition, HashTree},
-        BinaryMode,
-        MaxSize,
-        IsEmpty) when is_list(FileName) ->
-    {ok, Handle} = file:open(FileName, ?WRITE_OPS),
-    put(Handle, Key, Value, {LastPosition, HashTree},
-        BinaryMode, MaxSize, IsEmpty);
-put(Handle, Key, Value, {LastPosition, HashTree},
+put(Handle, Key, Value, {LastPosition, HashTree}, 
         BinaryMode, MaxSize, IsEmpty) ->
     Bin = key_value_to_record({Key, Value}, BinaryMode),
     ObjectSize = byte_size(Bin),
@@ -1049,14 +1037,12 @@ get_withcache(Handle, Key, Cache, BinaryMode, Monitor) ->
 get_withcache(Handle, Key, Cache, QuickCheck, BinaryMode, Monitor) ->
     get(Handle, Key, Cache, QuickCheck, BinaryMode, Monitor).
 
-get(FileNameOrHandle, Key, BinaryMode) ->
-    get(FileNameOrHandle, Key, no_cache, true, BinaryMode, {no_monitor, 0}).
-
 
 -spec get(
-    list()|file:io_device(),
-    any(), no_cache|tuple(),
-    loose_presence|any(),
+    file:io_device(), 
+    any(), 
+    tuple(), 
+    loose_presence|any(), 
     boolean(),
     leveled_monitor:monitor()) -> tuple()|probably|missing.
 %% @doc
@@ -1067,16 +1053,15 @@ get(FileNameOrHandle, Key, BinaryMode) ->
 %% that Key)
 %%
 %% Timings also passed in and can be updated based on results
-get(FileName, Key, Cache, QuickCheck, BinaryMode, Monitor)
-                                                    when is_list(FileName) ->
-    {ok, Handle} = file:open(FileName,[binary, raw, read]),
-    get(Handle, Key, Cache, QuickCheck, BinaryMode, Monitor);
-get(Handle, Key, Cache, QuickCheck, BinaryMode, Monitor)
+get(Handle, Key, Cache, QuickCheck, BinaryMode, Monitor) 
                                                     when is_tuple(Handle) ->
+    get(Handle, Key, Cache, fun get_index/3, QuickCheck, BinaryMode, Monitor).
+
+get(Handle, Key, Cache, CacheFun, QuickCheck, BinaryMode, Monitor) ->
     SW0 = leveled_monitor:maybe_time(Monitor),
     Hash = hash(Key),
     Index = hash_to_index(Hash),
-    {HashTable, Count} = get_index(Handle, Index, Cache),
+    {HashTable, Count} = CacheFun(Handle, Index, Cache),
     {TS0, SW1} = leveled_monitor:step_time(SW0),
     % If the count is 0 for that index - key must be missing
     case Count of
@@ -1100,10 +1085,6 @@ get(Handle, Key, Cache, QuickCheck, BinaryMode, Monitor)
             Result
     end.
 
-get_index(Handle, Index, no_cache) ->
-    {ok,_} = file:position(Handle, {bof, ?DWORD_SIZE * Index}),
-    % Get location of hashtable and number of entries in the hash
-    read_next_2_integers(Handle);
 get_index(_Handle, Index, Cache) ->
     element(Index + 1, Cache).
 
@@ -1114,9 +1095,6 @@ get_index(_Handle, Index, Cache) ->
 get_mem(Key, FNOrHandle, HashTree, BinaryMode) ->
     get_mem(Key, FNOrHandle, HashTree, BinaryMode, true).
 
-get_mem(Key, Filename, HashTree, BinaryMode, QuickCheck) when is_list(Filename) ->
-    {ok, Handle} = file:open(Filename, [binary, raw, read]),
-    get_mem(Key, Handle, HashTree, BinaryMode, QuickCheck);
 get_mem(Key, Handle, HashTree, BinaryMode, QuickCheck) ->
     ListToCheck = get_hashtree(Key, HashTree),
     case {QuickCheck, ListToCheck} of
@@ -1609,26 +1587,6 @@ maybelog_get_timing({Pid, _StatsFreq}, IndexTime, ReadTime, CycleCount) ->
         Pid, {cdb_get_update, CycleCount, IndexTime, ReadTime}).
 
 
-% Write Key and Value tuples into the CDB.  Each tuple consists of a
-% 4 byte key length, a 4 byte value length, the actual key followed
-% by the value.
-%
-% Returns a dictionary that is keyed by
-% the least significant 8 bits of each hash with the
-% values being a list of the hash and the position of the
-% key/value binary in the file.
-write_key_value_pairs(Handle, KeyValueList) ->
-    {ok, Position} = file:position(Handle, cur),
-    HashTree = new_hashtree(),
-    write_key_value_pairs(Handle, KeyValueList, {Position, HashTree}).
-
-write_key_value_pairs(_, [], Acc) ->
-    Acc;
-write_key_value_pairs(Handle, [HeadPair|TailList], Acc) ->
-    {Key, Value} = HeadPair,
-    {Handle, NewPosition, HashTree} = put(Handle, Key, Value, Acc),
-    write_key_value_pairs(Handle, TailList, {NewPosition, HashTree}).
-
 %% Write the actual hashtables at the bottom of the file.  Each hash table
 %% entry is a doubleword in length.  The first word is the hash value
 %% corresponding to a key and the second word is a file pointer to the
@@ -1855,6 +1813,60 @@ write_hash_tables([Index|Rest], HashTree, CurrPos, BasePos,
 %%%%%%%%%%%%%%%
 -ifdef(TEST).
 
+-include_lib("eunit/include/eunit.hrl").
+
+% Write Key and Value tuples into the CDB.  Each tuple consists of a
+% 4 byte key length, a 4 byte value length, the actual key followed
+% by the value.
+%
+% Returns a dictionary that is keyed by
+% the least significant 8 bits of each hash with the
+% values being a list of the hash and the position of the 
+% key/value binary in the file.
+write_key_value_pairs(Handle, KeyValueList) ->
+    {ok, Position} = file:position(Handle, cur),
+    HashTree = new_hashtree(),
+    write_key_value_pairs(Handle, KeyValueList, {Position, HashTree}).
+
+write_key_value_pairs(_, [], Acc) ->
+    Acc;
+write_key_value_pairs(Handle, [HeadPair|TailList], Acc) -> 
+    {Key, Value} = HeadPair,
+    {Handle, NewPosition, HashTree} = put(Handle, Key, Value, Acc),
+    write_key_value_pairs(Handle, TailList, {NewPosition, HashTree}).
+
+get(FileName, Key, BinaryMode) when is_list(FileName) ->
+    {ok, Handle} = file:open(FileName,[binary, raw, read]),
+    get(Handle, Key, BinaryMode);
+get(Handle, Key, BinaryMode) ->
+    get(
+        Handle, Key, no_cache, fun get_uncached_index/3,
+        true, BinaryMode, {no_monitor, 0}).    
+
+get_uncached_index(Handle, Index, no_cache) ->
+    {ok,_} = file:position(Handle, {bof, ?DWORD_SIZE * Index}),
+    % Get location of hashtable and number of entries in the hash
+    read_next_2_integers(Handle).
+    
+file_put(FileName,
+    Key,
+    Value,
+    {LastPosition, HashTree},
+    BinaryMode,
+    MaxSize,
+    IsEmpty) when is_list(FileName) ->
+{ok, Handle} = file:open(FileName, ?WRITE_OPS),
+put(Handle, Key, Value, {LastPosition, HashTree}, 
+    BinaryMode, MaxSize, IsEmpty).
+
+file_get_mem(Key, Filename, HashTree, BinaryMode) ->
+    file_get_mem(Key, Filename, HashTree, BinaryMode, true).
+
+file_get_mem(Key, Filename, HashTree, BinaryMode, QuickCheck)
+        when is_list(Filename) ->
+    {ok, Handle} = file:open(Filename, [binary, raw, read]),
+    get_mem(Key, Handle, HashTree, BinaryMode, QuickCheck).
+
 %% To make this compatible with original Bernstein format this endian flip
 %% and also the use of the standard hash function required.
 endian_flip(Int) ->
@@ -1883,10 +1895,12 @@ create(FileName,KeyValueList) ->
 
 %% Should not be used for non-test PUTs by the inker - as the Max File Size
 %% should be taken from the startup options not the default
-put(FileName, Key, Value, {LastPosition, HashTree}) ->
-    put(FileName, Key, Value, {LastPosition, HashTree},
-            ?BINARY_MODE, ?MAX_FILE_SIZE, false).
-
+put(FileName, Key, Value, {LastPosition, HashTree}) when is_list(FileName) ->
+    file_put(FileName, Key, Value, {LastPosition, HashTree},
+            ?BINARY_MODE, ?MAX_FILE_SIZE, false);
+put(Handle, Key, Value, {LastPosition, HashTree}) ->
+    put(Handle, Key, Value, {LastPosition, HashTree},
+        ?BINARY_MODE, ?MAX_FILE_SIZE, false).
 
 dump(FileName) ->
     {ok, Handle} = file:open(FileName, [binary, raw, read]),
@@ -2172,27 +2186,25 @@ activewrite_singlewrite_test() ->
         open_active_file("test/test_area/test_mem.cdb"),
     io:format("File opened as new active file "
                     "with LastPosition=~w ~n", [LastPosition]),
-    {_, _, UpdKeyDict} = put("test/test_area/test_mem.cdb",
-                                Key, Value,
-                                {LastPosition, KeyDict}),
+    {_, _, UpdKeyDict} =
+        put(
+            "test/test_area/test_mem.cdb",
+            Key, Value, {LastPosition, KeyDict}),
     io:format("New key and value added to active file ~n", []),
-    ?assertMatch({Key, Value},
-                    get_mem(Key,
-                            "test/test_area/test_mem.cdb",
-                            UpdKeyDict,
-                            false)),
-    ?assertMatch(probably,
-                    get_mem(Key,
-                            "test/test_area/test_mem.cdb",
-                            UpdKeyDict,
-                            false,
-                            loose_presence)),
-    ?assertMatch(missing,
-                    get_mem("not_present",
-                            "test/test_area/test_mem.cdb",
-                            UpdKeyDict,
-                            false,
-                            loose_presence)),
+    ?assertMatch(
+        {Key, Value},
+        file_get_mem(
+            Key, "test/test_area/test_mem.cdb", UpdKeyDict, false)),
+    ?assertMatch(
+        probably,
+        file_get_mem(
+            Key, "test/test_area/test_mem.cdb",
+            UpdKeyDict, false, loose_presence)),
+    ?assertMatch(
+        missing,
+        file_get_mem(
+            "not_present", "test/test_area/test_mem.cdb",
+            UpdKeyDict, false, loose_presence)),
     ok = file:delete("test/test_area/test_mem.cdb").
 
 search_hash_table_findinslot_test() ->
@@ -2220,11 +2232,13 @@ search_hash_table_findinslot_test() ->
     ?assertMatch({"key1", "value1"}, get(Handle, Key1, false)),
     NoMonitor = {no_monitor, 0},
     ?assertMatch(
-        probably,
-        get(Handle, Key1, no_cache, loose_presence, false, NoMonitor)),
+        probably, 
+        get(Handle, Key1, no_cache, fun get_uncached_index/3,
+            loose_presence, false, NoMonitor)),
     ?assertMatch(
-        missing,
-        get(Handle, "Key99", no_cache, loose_presence, false, NoMonitor)),
+        missing, 
+        get(Handle, "Key99", no_cache, fun get_uncached_index/3,
+            loose_presence, false, NoMonitor)),
     {ok, _} = file:position(Handle, FirstHashPosition),
     FlipH3 = endian_flip(ReadH3),
     FlipP3 = endian_flip(ReadP3),

@@ -5,11 +5,7 @@
 
 -module(leveled_util).
 
-
 -include("include/leveled.hrl").
-
--include_lib("eunit/include/eunit.hrl").
-
 
 -export([generate_uuid/0,
             integer_now/0,
@@ -93,6 +89,8 @@ safe_rename(TempFN, RealFN, BinData, ReadCheck) ->
 %%%============================================================================
 
 -ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
 
 -define(TEST_AREA, "test/test_area/util/").
 

@@ -18,8 +18,6 @@
 
 -include("include/leveled.hrl").
 
--include_lib("eunit/include/eunit.hrl").
-
 -export([key_to_canonicalbinary/1,
             build_head/2,
             extract_metadata/3,
@@ -455,6 +453,7 @@ assemble_index_specs(Indexes, IndexOp) ->
 
 -ifdef(TEST).
 
+-include_lib("eunit/include/eunit.hrl").
 
 index_extract_test() ->
     SibMetaBin =

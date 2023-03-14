@@ -9,12 +9,10 @@
 
 -include("include/leveled.hrl").
 
--include_lib("eunit/include/eunit.hrl").
-
 -export([
-            create_bloom/1,
-            check_hash/2
-            ]).
+    create_bloom/1,
+    check_hash/2
+    ]).
 
 -define(BLOOM_SIZE_BYTES, 512). 
 -define(INTEGER_SIZE, 4096). 
@@ -505,6 +503,8 @@ add_hashlist([{_SegHash, TopHash}|T],
 %%%============================================================================
 
 -ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
 
 generate_orderedkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
     generate_orderedkeys(Seqn,

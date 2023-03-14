@@ -80,9 +80,6 @@
             tictac_hash/2 % called by kv_index_tictactree
         ]).
 
-
--include_lib("eunit/include/eunit.hrl").
-
 -define(HASH_SIZE, 4).
 -define(L2_CHUNKSIZE, 256).
 -define(L2_BITSIZE, 8).
@@ -562,6 +559,22 @@ segmentcompare(SrcBin, SnkBin, Acc, Counter) ->
             segmentcompare(SrcTail, SnkTail, [Counter|Acc], Counter + 1)
     end.
 
+merge_binaries(BinA, BinB) ->
+    BitSize = bit_size(BinA),
+    BitSize = bit_size(BinB),
+    <<AInt:BitSize/integer>> = BinA,
+    <<BInt:BitSize/integer>> = BinB,
+    MergedInt = AInt bxor BInt,
+    <<MergedInt:BitSize/integer>>.
+
+%%%============================================================================
+%%% Test
+%%%============================================================================
+
+-ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
+
 checktree(TicTacTree) ->
     checktree(TicTacTree#tictactree.level1, TicTacTree, 0).
 
@@ -580,21 +593,6 @@ segmentsummarise(L2Bin, L1Acc) ->
     BitSize = ?HASH_SIZE * 8,
     <<TopHash:BitSize/integer, Tail/binary>> = L2Bin,
     segmentsummarise(Tail, L1Acc bxor TopHash).
-
-merge_binaries(BinA, BinB) ->
-    BitSize = bit_size(BinA),
-    BitSize = bit_size(BinB),
-    <<AInt:BitSize/integer>> = BinA,
-    <<BInt:BitSize/integer>> = BinB,
-    MergedInt = AInt bxor BInt,
-    <<MergedInt:BitSize/integer>>.
-
-%%%============================================================================
-%%% Test
-%%%============================================================================
-
--ifdef(TEST).
-
 
 simple_bysize_test_() ->
     {timeout, 60, fun simple_bysize_test_allsizes/0}.

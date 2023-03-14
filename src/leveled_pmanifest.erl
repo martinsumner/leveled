@@ -52,8 +52,6 @@
         filepath/2
         ]).
 
--include_lib("eunit/include/eunit.hrl").
-
 -define(MANIFEST_FILEX, "man").
 -define(PENDING_FILEX, "pnd").
 -define(MANIFEST_FP, "ledger_manifest").
@@ -1036,6 +1034,8 @@ seconds_now() ->
 %%%============================================================================
 
 -ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
 
 initial_setup() -> 
     initial_setup(single_change).
