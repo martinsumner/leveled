@@ -427,7 +427,7 @@ ink_roll(Pid) ->
 %% @doc
 %% Backup the journal to the specified path
 ink_backup(Pid, BackupPath) ->
-    gen_server:call(Pid, {backup, BackupPath}).
+    gen_server:call(Pid, {backup, BackupPath}, infinity).
 
 -spec ink_getmanifest(pid()) -> list().
 %% @doc
@@ -446,7 +446,7 @@ ink_printmanifest(Pid) ->
 %% @doc
 %% Check that the Inker doesn't have a SQN behind that of the Ledger
 ink_checksqn(Pid, LedgerSQN) ->
-    gen_server:call(Pid, {check_sqn, LedgerSQN}).
+    gen_server:call(Pid, {check_sqn, LedgerSQN}, infinity).
 
 -spec ink_loglevel(pid(), leveled_log:log_level()) -> ok.
 %% @doc
@@ -471,7 +471,7 @@ ink_removelogs(Pid, ForcedLogs) ->
 %% Return the current Journal SQN, which may be in the actual past if the Inker
 %% is in fact a snapshot
 ink_getjournalsqn(Pid) ->
-    gen_server:call(Pid, get_journalsqn).
+    gen_server:call(Pid, get_journalsqn, infinity).
 
 %%%============================================================================
 %%% gen_server callbacks
