@@ -11,6 +11,7 @@
             integer_now/0,
             integer_time/1,
             magic_hash/1,
+            t2b/1,
             safe_rename/4]).
 
 -define(WRITE_OPS, [binary, raw, read, write]).
@@ -53,7 +54,7 @@ magic_hash({binary, BinaryKey}) ->
     H = 5381,
     hash1(H, BinaryKey) band 16#FFFFFFFF;
 magic_hash(AnyKey) ->
-    BK = term_to_binary(AnyKey),
+    BK = t2b(AnyKey),
     magic_hash({binary, BK}).
 
 hash1(H, <<>>) -> 
@@ -62,6 +63,17 @@ hash1(H, <<B:8/integer, Rest/bytes>>) ->
     H1 = H * 33,
     H2 = H1 bxor B,
     hash1(H2, Rest).
+
+
+-spec t2b(term()) -> binary().
+%% @doc
+%% term_to_binary with options necessary to ensure backwards compatability
+%% in the handling of atoms (within OTP 26).
+%% See https://github.com/martinsumner/leveled/issues/407
+%% If the binary() which is outputted is to be hashed for comparison, then
+%% this must be used.
+t2b(Term) ->
+    term_to_binary(Term, [{minor_version, 1}]).
 
 
 -spec safe_rename(string(), string(), binary(), boolean()) -> ok.

@@ -271,7 +271,7 @@ tictactree(SnapFun, {Tag, Bucket, Query}, JournalCheck, TreeSize, Filter) ->
                         true ->
                             {K, T};
                         false ->
-                            {term_to_binary(K), T}
+                            {leveled_util:t2b(K), T}
                     end 
                 end,
             {StartKey, EndKey, ExtractFun} =
