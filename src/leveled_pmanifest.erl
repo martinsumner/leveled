@@ -45,7 +45,8 @@
         is_basement/2,
         levelzero_present/1,
         check_bloom/3,
-        report_manifest_level/2
+        report_manifest_level/2,
+        snapshot_pids/1
         ]).      
 
 -export([
@@ -88,22 +89,23 @@
 
 -record(manifest, {levels,
                         % an array of lists or trees representing the manifest
-                    manifest_sqn = 0 :: integer(),
+                    manifest_sqn = 0 :: non_neg_integer(),
                         % The current manifest SQN
-                    snapshots :: list() | undefined,
+                    snapshots  = []
+                        :: list(snapshot()),
                         % A list of snaphots (i.e. clones)
                     min_snapshot_sqn = 0 :: integer(),
                         % The smallest snapshot manifest SQN in the snapshot
                         % list
-                    pending_deletes, % OTP16 does not like defining type
-                        % a dictionary mapping keys (filenames) to SQN when the
-                        % deletion was made, and the original Manifest Entry
-                    basement :: integer(),
+                    pending_deletes = dict:new() :: dict:dict(), 
+                    basement :: non_neg_integer(),
                         % Currently the lowest level (the largest number)
-                    blooms :: any() % actually a dict but OTP 16 compatability
-                        % A dictionary mapping PIDs to bloom filters
+                    blooms :: dict:dict()
                     }).      
 
+-type fake_pid() :: pid_a1|pid_a2|pid_a3|pid_a4.
+-type snapshot() ::
+    {pid()|fake_pid(), non_neg_integer(), pos_integer(), pos_integer()}.
 -type manifest() :: #manifest{}.
 -type manifest_entry() :: #manifest_entry{}.
 -type manifest_owner() :: pid()|list().
@@ -171,8 +173,8 @@ open_manifest(RootPath) ->
 %% by a snapshot
 copy_manifest(Manifest) ->
     % Copy the manifest ensuring anything only the master process should care
-    % about is switched to undefined
-    Manifest#manifest{snapshots = undefined, pending_deletes = undefined}.
+    % about is switched to be empty
+    Manifest#manifest{snapshots = [], pending_deletes = dict:new()}.
 
 -spec load_manifest(
     manifest(),
@@ -538,10 +540,9 @@ mergefile_selector(Manifest, LevelIdx, {grooming, ScoringFun}) ->
 %% be received in parallel to the manifest ebing updated, so the updated
 %% manifest must not trample over any accrued state in the manifest.
 merge_snapshot(PencillerManifest, ClerkManifest) ->
-    ClerkManifest#manifest{snapshots =
-                                PencillerManifest#manifest.snapshots,
-                            min_snapshot_sqn =
-                                PencillerManifest#manifest.min_snapshot_sqn}.
+    ClerkManifest#manifest{
+        snapshots = PencillerManifest#manifest.snapshots,
+        min_snapshot_sqn = PencillerManifest#manifest.min_snapshot_sqn}.
 
 -spec add_snapshot(manifest(), pid()|atom(), integer()) -> manifest().
 %% @doc
@@ -695,6 +696,11 @@ check_bloom(Manifest, FP, Hash) ->
             true
     end.
 
+-spec snapshot_pids(manifest()) -> list(pid()).
+%% @doc
+%% Return a list of snapshot_pids - to be shutdown on shutdown
+snapshot_pids(Manifest) ->
+    lists:map(fun(S) -> element(1, S) end, Manifest#manifest.snapshots).
 
 %%%============================================================================
 %%% Internal Functions
@@ -1442,7 +1448,7 @@ snapshot_timeout_test() ->
     ?assertMatch(1, length(Man7#manifest.snapshots)),
     Man8 = release_snapshot(Man7, pid_a1),
     ?assertMatch(0, length(Man8#manifest.snapshots)),
-    Man9 = add_snapshot(Man8, pid_a1, 0),
+    Man9 = add_snapshot(Man8, pid_a1, 1),
     timer:sleep(2001),
     ?assertMatch(1, length(Man9#manifest.snapshots)),
     Man10 = release_snapshot(Man9, ?PHANTOM_PID),
@@ -1474,12 +1480,7 @@ potential_issue_test() ->
                   {idxt,0,{{},{0,nil}}},
                   {idxt,0,{{},{0,nil}}},
                   []}},
-          19,[],0,
-          {dict,0,16,16,8,80,48,
-                {[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[]},
-                {{[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[]}}},
-          2,
-          dict:new()},
+          19, [], 0, dict:new(), 2, dict:new()},
     Range1 = range_lookup(Manifest, 
                             1, 
                             {o_rkv, "Bucket", null, null}, 

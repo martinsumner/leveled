@@ -134,6 +134,11 @@
 -define(JOURNAL_FILEX, "cdb").
 -define(PENDING_FILEX, "pnd").
 -define(TEST_KC, {[], infinity}).
+-define(SHUTDOWN_PAUSE, 10000).
+    % How long to wait for snapshots to be released on shutdown
+    % before forcing closure of snapshots
+    % 10s may not be long enough for all snapshots, but avoids crashes of
+    % short-lived queries racing with the shutdown
 
 -record(state, {manifest = [] :: list(),
 				manifest_sqn = 0 :: integer(),
@@ -666,33 +671,23 @@ handle_call({check_sqn, LedgerSQN}, _From, State) ->
     end;
 handle_call(get_journalsqn, _From, State) ->
     {reply, {ok, State#state.journal_sqn}, State};
-handle_call(close, _From, State) ->
-    case State#state.is_snapshot of
-        true ->
-            ok = ink_releasesnapshot(State#state.source_inker, self());
-        false ->    
-            leveled_log:log(i0005, [close]),
-            leveled_log:log(
-                i0006, [State#state.journal_sqn, State#state.manifest_sqn]),
-            ok = leveled_iclerk:clerk_stop(State#state.clerk),
-            shutdown_snapshots(State#state.registered_snapshots),
-            shutdown_manifest(State#state.manifest)
-    end,
+handle_call(close, _From, State=#state{is_snapshot=Snap}) when Snap == true ->
+    ok = ink_releasesnapshot(State#state.source_inker, self()),
     {stop, normal, ok, State};
-handle_call(doom, _From, State) ->
-    FPs = [filepath(State#state.root_path, journal_dir),
-            filepath(State#state.root_path, manifest_dir),
-            filepath(State#state.root_path, journal_compact_dir),
-            filepath(State#state.root_path, journal_waste_dir)],
-    leveled_log:log(i0018, []),
-
-    leveled_log:log(i0005, [doom]),
+handle_call(ShutdownType, From, State)
+        when ShutdownType == close; ShutdownType == doom ->  
+    case ShutdownType of
+        doom ->
+            leveled_log:log(i0018, []);
+        _ ->
+            ok
+    end,
+    leveled_log:log(i0005, [ShutdownType]),
     leveled_log:log(
         i0006, [State#state.journal_sqn, State#state.manifest_sqn]),
     ok = leveled_iclerk:clerk_stop(State#state.clerk),
-    shutdown_snapshots(State#state.registered_snapshots),
-    shutdown_manifest(State#state.manifest),
-    {stop, normal, {ok, FPs}, State}.
+    gen_server:cast(self(), {maybe_defer_shutdown, ShutdownType, From}),
+    {noreply, State}.
 
 
 handle_cast({clerk_complete, ManifestSnippet, FilesToDelete}, State) ->
@@ -778,8 +773,41 @@ handle_cast({remove_logs, ForcedLogs}, State) ->
     ok = leveled_log:remove_forcedlogs(ForcedLogs),
     CDBopts = State#state.cdb_options,
     CDBopts0 = CDBopts#cdb_options{log_options = leveled_log:get_opts()},
-    {noreply, State#state{cdb_options = CDBopts0}}.
-
+    {noreply, State#state{cdb_options = CDBopts0}};
+handle_cast({maybe_defer_shutdown, ShutdownType, From}, State) ->
+    case length(State#state.registered_snapshots) of
+        0 ->
+            ok;
+        N ->
+            % Whilst this process sleeps, then any remaining snapshots may
+            % release and have their release messages queued before the
+            % complete_shutdown cast is sent
+            leveled_log:log(i0026, [N]),
+            timer:sleep(?SHUTDOWN_PAUSE)
+    end,
+    gen_server:cast(self(), {complete_shutdown, ShutdownType, From}),
+    {noreply, State};
+handle_cast({complete_shutdown, ShutdownType, From}, State) ->
+    lists:foreach(
+        fun(SnapPid) -> ok = ink_close(SnapPid) end,
+        lists:filter(
+            fun is_process_alive/1,
+            lists:map(
+                fun(Snapshot) -> element(1, Snapshot) end,
+                State#state.registered_snapshots))),
+    shutdown_manifest(State#state.manifest),
+    case ShutdownType of
+        doom ->
+            FPs =
+                [filepath(State#state.root_path, journal_dir),
+                    filepath(State#state.root_path, manifest_dir),
+                    filepath(State#state.root_path, journal_compact_dir),
+                    filepath(State#state.root_path, journal_waste_dir)],
+            gen_server:reply(From, {ok, FPs});
+        close ->
+            gen_server:reply(From, ok)
+    end,
+    {stop, normal, State}.
 
 %% handle the bookie stopping and stop this snapshot
 handle_info({'DOWN', BookieMonRef, process, _BookiePid, _Info},
@@ -800,6 +828,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%%============================================================================
 %%% Internal functions
 %%%============================================================================
+
 
 -spec start_from_file(inker_options()) -> {ok, ink_state()}.
 %% @doc
@@ -865,13 +894,6 @@ start_from_file(InkOpts) ->
                     snap_timeout = SnapTimeout,
                     clerk = Clerk}}.
 
-
--spec shutdown_snapshots(list(registered_snapshot())) -> ok.
-%% @doc
-%% Shutdown any snapshots before closing the store
-shutdown_snapshots(Snapshots) ->
-    lists:foreach(fun({Snap, _TS, _SQN}) -> ok = ink_close(Snap) end,
-                    Snapshots).
 
 -spec shutdown_manifest(leveled_imanifest:manifest()) -> ok.
 %% @doc
