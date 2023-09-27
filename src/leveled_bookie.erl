@@ -701,7 +701,7 @@ book_returnfolder(Pid, RunnerType) ->
                             {async, Runner::fun(() -> term())}
                                 when Bucket::term(),
                                      StartKey::term(),
-                                     FoldFun::fun((Bucket, Key | {IndexVal, Key}, Acc) -> Acc),
+                                     FoldFun::fun((Bucket, StartKey | {IndexVal, StartKey}, Acc) -> Acc),
                                      Acc::term(),
                                      IndexField::term(),
                                      IndexVal::term(),
