@@ -452,7 +452,7 @@ fetchput_snapshot(_Config) ->
 
     % Now loads lots of new objects
 
-    GenList = [20002, 40002, 60002, 80002, 100002],
+    GenList = [20002, 40002, 60002, 80002, 100002, 120002, 140002, 160002],
     CLs2 = testutil:load_objects(20000, GenList, Bookie2, TestObject,
                                     fun testutil:generate_smallobjects/2),
     io:format("Loaded significant numbers of new objects~n"),
@@ -508,7 +508,6 @@ fetchput_snapshot(_Config) ->
     testutil:check_forlist(Bookie2, lists:nth(length(CLs3), CLs3)),
     testutil:check_forlist(Bookie2, lists:nth(1, CLs3)),
 
-
     {ok, FNsC} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
     io:format("FNsA ~w FNsB ~w FNsC ~w~n", 
                 [length(FNsA), length(FNsB), length(FNsC)]),
@@ -523,9 +522,35 @@ fetchput_snapshot(_Config) ->
     {B1Size, B1Count} = testutil:check_bucket_stats(Bookie2, "Bucket1"),
     {BSize, BCount} = testutil:check_bucket_stats(Bookie2, "Bucket"),
     true = BSize > 0,
-    true = BCount == 120000,
+    true = BCount == 180000,
+
+    io:format("Shutdown with overhanging snapshot~n"),
     
-    ok = leveled_bookie:book_close(Bookie2),
+    {ok, SnpPCL1, SnpJrnl1} =
+        leveled_bookie:book_snapshot(Bookie2, store, undefined, true),
+    {ok, SnpPCL2, SnpJrnl2} =
+        leveled_bookie:book_snapshot(Bookie2, store, undefined, true),
+
+    TestPid = self(),
+    spawn(
+        fun() ->
+            ok = leveled_bookie:book_close(Bookie2),
+            TestPid ! ok
+        end),
+
+    timer:sleep(5000),
+    ok = leveled_penciller:pcl_close(SnpPCL1),
+    ok = leveled_inker:ink_close(SnpJrnl1),
+    true = is_process_alive(SnpPCL2),
+    true = is_process_alive(SnpJrnl2),
+
+    io:format("Time for close to complete is 2 * 10s~n"),
+    io:format("Both Inker and Penciller will have snapshot delay~n"),
+
+    receive ok -> ok end,
+
+    false = is_process_alive(SnpPCL2),
+    false = is_process_alive(SnpJrnl2),
     testutil:reset_filestructure().
 
 
@@ -628,7 +653,9 @@ load_and_count(JournalSize, BookiesMemSize, PencillerMemSize) ->
     ok = leveled_bookie:book_close(Bookie1),
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
     {_, 300000} = testutil:check_bucket_stats(Bookie2, "Bucket"),
+    
     ok = leveled_bookie:book_close(Bookie2),
+
     ManifestFP =
         leveled_pmanifest:filepath(filename:join(RootPath, ?LEDGER_FP),
                                     manifest),
@@ -691,11 +718,13 @@ load_and_count_withdelete(_Config) ->
                         lists:seq(1, 20)),
     not_found = testutil:book_riakget(Bookie1, BucketD, KeyD),
     ok = leveled_bookie:book_close(Bookie1),
+    
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
     testutil:check_formissingobject(Bookie2, BucketD, KeyD),
     testutil:check_formissingobject(Bookie2, "Bookie1", "MissingKey0123"),
     {_BSize, 0} = testutil:check_bucket_stats(Bookie2, BucketD),
     ok = leveled_bookie:book_close(Bookie2),
+
     testutil:reset_filestructure().
 
 

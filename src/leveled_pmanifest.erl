@@ -45,7 +45,8 @@
         is_basement/2,
         levelzero_present/1,
         check_bloom/3,
-        report_manifest_level/2
+        report_manifest_level/2,
+        snapshot_pids/1
         ]).      
 
 -export([
@@ -86,22 +87,22 @@
 
 -record(manifest, {levels,
                         % an array of lists or trees representing the manifest
-                    manifest_sqn = 0 :: integer(),
+                    manifest_sqn = 0 :: non_neg_integer(),
                         % The current manifest SQN
-                    snapshots :: list() | undefined,
+                    snapshots  = []
+                        :: list(snapshot()),
                         % A list of snaphots (i.e. clones)
                     min_snapshot_sqn = 0 :: integer(),
                         % The smallest snapshot manifest SQN in the snapshot
                         % list
-                    pending_deletes, % OTP16 does not like defining type
-                        % a dictionary mapping keys (filenames) to SQN when the
-                        % deletion was made, and the original Manifest Entry
-                    basement :: integer(),
+                    pending_deletes = dict:new() :: dict:dict(), 
+                    basement :: non_neg_integer(),
                         % Currently the lowest level (the largest number)
-                    blooms :: any() % actually a dict but OTP 16 compatability
-                        % A dictionary mapping PIDs to bloom filters
+                    blooms :: dict:dict()
                     }).      
 
+-type snapshot() ::
+    {pid(), non_neg_integer(), pos_integer(), pos_integer()}.
 -type manifest() :: #manifest{}.
 -type manifest_entry() :: #manifest_entry{}.
 -type manifest_owner() :: pid()|list().
@@ -169,8 +170,8 @@ open_manifest(RootPath) ->
 %% by a snapshot
 copy_manifest(Manifest) ->
     % Copy the manifest ensuring anything only the master process should care
-    % about is switched to undefined
-    Manifest#manifest{snapshots = undefined, pending_deletes = undefined}.
+    % about is switched to be empty
+    Manifest#manifest{snapshots = [], pending_deletes = dict:new()}.
 
 -spec load_manifest(
     manifest(),
@@ -533,13 +534,12 @@ mergefile_selector(Manifest, LevelIdx, {grooming, ScoringFun}) ->
 %% @doc
 %% When the clerk returns an updated manifest to the penciller, the penciller
 %% should restore its view of the snapshots to that manifest.  Snapshots can
-%% be received in parallel to the manifest ebing updated, so the updated
+%% be received in parallel to the manifest being updated, so the updated
 %% manifest must not trample over any accrued state in the manifest.
 merge_snapshot(PencillerManifest, ClerkManifest) ->
-    ClerkManifest#manifest{snapshots =
-                                PencillerManifest#manifest.snapshots,
-                            min_snapshot_sqn =
-                                PencillerManifest#manifest.min_snapshot_sqn}.
+    ClerkManifest#manifest{
+        snapshots = PencillerManifest#manifest.snapshots,
+        min_snapshot_sqn = PencillerManifest#manifest.min_snapshot_sqn}.
 
 -spec add_snapshot(manifest(), pid()|atom(), integer()) -> manifest().
 %% @doc
@@ -693,6 +693,11 @@ check_bloom(Manifest, FP, Hash) ->
             true
     end.
 
+-spec snapshot_pids(manifest()) -> list(pid()).
+%% @doc
+%% Return a list of snapshot_pids - to be shutdown on shutdown
+snapshot_pids(Manifest) ->
+    lists:map(fun(S) -> element(1, S) end, Manifest#manifest.snapshots).
 
 %%%============================================================================
 %%% Internal Functions
@@ -1383,6 +1388,10 @@ ready_to_delete_combined(Manifest, Filename) ->
     end.
 
 snapshot_release_test() ->
+    PidA1 = spawn(fun() -> ok end),
+    PidA2 = spawn(fun() -> ok end),
+    PidA3 = spawn(fun() -> ok end),
+    PidA4 = spawn(fun() -> ok end),
     Man6 = element(7, initial_setup()),
     E1 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
                             end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K93"},
@@ -1400,35 +1409,35 @@ snapshot_release_test() ->
                             owner="pid_z3",
                             bloom=none},
     
-    Man7 = add_snapshot(Man6, pid_a1, 3600),
+    Man7 = add_snapshot(Man6, PidA1, 3600),
     Man8 = remove_manifest_entry(Man7, 2, 1, E1),
-    Man9 = add_snapshot(Man8, pid_a2, 3600),
+    Man9 = add_snapshot(Man8, PidA2, 3600),
     Man10 = remove_manifest_entry(Man9, 3, 1, E2),
-    Man11 = add_snapshot(Man10, pid_a3, 3600),
+    Man11 = add_snapshot(Man10, PidA3, 3600),
     Man12 = remove_manifest_entry(Man11, 4, 1, E3),
-    Man13 = add_snapshot(Man12, pid_a4, 3600),
+    Man13 = add_snapshot(Man12, PidA4, 3600),
     
     ?assertMatch(false, element(1, ready_to_delete_combined(Man8, "Z1"))),
     ?assertMatch(false, element(1, ready_to_delete_combined(Man10, "Z2"))),
     ?assertMatch(false, element(1, ready_to_delete_combined(Man12, "Z3"))),
     
-    Man14 = release_snapshot(Man13, pid_a1),
+    Man14 = release_snapshot(Man13, PidA1),
     ?assertMatch(false, element(1, ready_to_delete_combined(Man14, "Z2"))),
     ?assertMatch(false, element(1, ready_to_delete_combined(Man14, "Z3"))),
     {Bool14, Man15} = ready_to_delete_combined(Man14, "Z1"),
     ?assertMatch(true, Bool14),
     
     %This doesn't change anything - released snaphsot not the min
-    Man16 = release_snapshot(Man15, pid_a4),
+    Man16 = release_snapshot(Man15, PidA4),
     ?assertMatch(false, element(1, ready_to_delete_combined(Man16, "Z2"))),
     ?assertMatch(false, element(1, ready_to_delete_combined(Man16, "Z3"))),
     
-    Man17 = release_snapshot(Man16, pid_a2),
+    Man17 = release_snapshot(Man16, PidA2),
     ?assertMatch(false, element(1, ready_to_delete_combined(Man17, "Z3"))),
     {Bool17, Man18} = ready_to_delete_combined(Man17, "Z2"),
     ?assertMatch(true, Bool17),
     
-    Man19 = release_snapshot(Man18, pid_a3),
+    Man19 = release_snapshot(Man18, PidA3),
     
     io:format("MinSnapSQN ~w~n", [Man19#manifest.min_snapshot_sqn]),
     
@@ -1437,12 +1446,13 @@ snapshot_release_test() ->
     
 
 snapshot_timeout_test() ->
+    PidA1 = spawn(fun() -> ok end),
     Man6 = element(7, initial_setup()),
-    Man7 = add_snapshot(Man6, pid_a1, 3600),
+    Man7 = add_snapshot(Man6, PidA1, 3600),
     ?assertMatch(1, length(Man7#manifest.snapshots)),
-    Man8 = release_snapshot(Man7, pid_a1),
+    Man8 = release_snapshot(Man7, PidA1),
     ?assertMatch(0, length(Man8#manifest.snapshots)),
-    Man9 = add_snapshot(Man8, pid_a1, 0),
+    Man9 = add_snapshot(Man8, PidA1, 1),
     timer:sleep(2001),
     ?assertMatch(1, length(Man9#manifest.snapshots)),
     Man10 = release_snapshot(Man9, ?PHANTOM_PID),
@@ -1474,12 +1484,7 @@ potential_issue_test() ->
                   {idxt,0,{{},{0,nil}}},
                   {idxt,0,{{},{0,nil}}},
                   []}},
-          19,[],0,
-          {dict,0,16,16,8,80,48,
-                {[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[]},
-                {{[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[]}}},
-          2,
-          dict:new()},
+          19, [], 0, dict:new(), 2, dict:new()},
     Range1 = range_lookup(Manifest, 
                             1, 
                             {o_rkv, "Bucket", null, null}, 
