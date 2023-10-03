@@ -991,7 +991,7 @@ simple_score_test() ->
     ?assertMatch(-4.0, score_run(Run1, {4, 70.0, 40.0})),
     Run2 = [#candidate{compaction_perc = 75.0}],
     ?assertMatch(-35.0, score_run(Run2, {4, 70.0, 40.0})),
-    ?assertMatch(0.0, score_run([], {4, 40.0, 70.0})),
+    ?assertEqual(0.0, score_run([], {4, 40.0, 70.0})),
     Run3 = [#candidate{compaction_perc = 100.0}],
     ?assertMatch(-60.0, score_run(Run3, {4, 70.0, 40.0})).
 
@@ -1050,7 +1050,9 @@ find_bestrun_test() ->
     ?assertMatch(["b", "c", "d", "e"],check_bestrun(CList3, Params)).
 
 handle_emptycandidatelist_test() ->
-    ?assertMatch({[], 0.0}, assess_candidates([], {4, 60.0, 40.0})).
+    {A, B} = assess_candidates([], {4, 60.0, 40.0}),
+    ?assertEqual([], A),
+    ?assert(B =:= +0.0).
 
 test_ledgerkey(Key) ->
     {o, "Bucket", Key, null}.
@@ -1230,7 +1232,7 @@ compact_empty_file_test() ->
                     {3, {o, "Bucket", "Key3", null}}],
     LedgerFun1 = fun(_Srv, _Key, _ObjSQN) -> replaced end,
     Score1 = check_single_file(CDB2, LedgerFun1, LedgerSrv1, 9, 8, 4, RS),
-    ?assertMatch(0.0, Score1),
+    ?assert((+0.0 =:= Score1) orelse (-0.0 =:= Score1)),
     ok = leveled_cdb:cdb_deletepending(CDB2),
     ok = leveled_cdb:cdb_destroy(CDB2).
 
