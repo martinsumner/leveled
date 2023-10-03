@@ -41,7 +41,8 @@
                 start_opts = []
                }).
 
--define(NUMTESTS, 1000).
+-define(NUMTESTS, 10000).
+-define(TIME_BUDGET, 300).
 -define(QC_OUT(P),
         eqc:on_output(fun(Str, Args) ->
                               io:format(user, Str, Args) end, P)).
@@ -49,7 +50,12 @@
 -type state() :: #state{}.
 
 eqc_test_() ->
-    {timeout, 60, ?_assertEqual(true, eqc:quickcheck(eqc:testing_time(50, ?QC_OUT(prop_db()))))}.
+    {timeout,
+        ?TIME_BUDGET + 10,
+        ?_assertEqual(
+            true,
+            eqc:quickcheck(
+                eqc:testing_time(?TIME_BUDGET, ?QC_OUT(prop_db()))))}.
 
 run() ->
     run(?NUMTESTS).

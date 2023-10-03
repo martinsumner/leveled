@@ -132,6 +132,8 @@
             {info, <<"Archiving filename ~s as unused at startup">>},
         p0041 =>
             {info, <<"Penciller manifest switched from SQN ~w to ~w">>},
+        p0042 =>
+            {info, <<"Deferring shutdown due to snapshot_count=~w">>},
         pc001 =>
             {info, <<"Penciller's clerk ~w started with owner ~w">>},
         pc005 =>
@@ -244,6 +246,8 @@
             {info, <<"Prompted roll at NewSQN=~w">>},
         i0025 =>
             {warn, <<"Journal SQN of ~w is below Ledger SQN of ~w anti-entropy will be required">>},
+        i0026 =>
+            {info, <<"Deferring shutdown due to snapshot_count=~w">>},
         ic001 =>
             {info, <<"Closed for reason ~w so maybe leaving garbage">>},
         ic002 =>
