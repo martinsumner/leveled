@@ -287,6 +287,18 @@ ink_confirmdelete(Pid, ManSQN, CDBpid) ->
 ink_close(Pid) ->
     gen_server:call(Pid, close, infinity).
 
+-spec ink_snapclose(pid()) -> ok.
+%% @doc
+%% Specifically to be used when closing snpashots on shutdown, will handle a
+%% scenario where a snapshot has already exited
+ink_snapclose(Pid) ->
+    try
+        ink_close(Pid)
+    catch
+        exit:{noproc, _CallDetails} ->
+            ok
+    end.
+
 -spec ink_doom(pid()) -> {ok, [{string(), string(), string(), string()}]}.
 %% @doc
 %% Test function used to close a file, and return all file paths (potentially
@@ -789,12 +801,10 @@ handle_cast({maybe_defer_shutdown, ShutdownType, From}, State) ->
     {noreply, State};
 handle_cast({complete_shutdown, ShutdownType, From}, State) ->
     lists:foreach(
-        fun(SnapPid) -> ok = ink_close(SnapPid) end,
-        lists:filter(
-            fun is_process_alive/1,
-            lists:map(
+        fun(SnapPid) -> ok = ink_snapclose(SnapPid) end,
+        lists:map(
                 fun(Snapshot) -> element(1, Snapshot) end,
-                State#state.registered_snapshots))),
+                State#state.registered_snapshots)),
     shutdown_manifest(State#state.manifest),
     case ShutdownType of
         doom ->
@@ -1628,5 +1638,29 @@ loop() ->
         stop ->
             ok
     end.
+
+close_no_crash_test_() ->
+    {timeout, 60, fun close_no_crash_tester/0}.
+
+close_no_crash_tester() ->
+    RootPath = "test/test_area/journal",
+    build_dummy_journal(),
+    CDBopts = #cdb_options{max_size=300000, binary_mode=true},
+    {ok, Inker} =
+        ink_start(
+            #inker_options{
+                root_path=RootPath,
+                cdb_options=CDBopts,
+                compression_method=native,
+                compress_on_receipt=true}),
+
+    SnapOpts =
+        #inker_options{
+            start_snapshot=true, bookies_pid = self(), source_inker=Inker},
+    {ok, InkSnap} = ink_snapstart(SnapOpts),
+
+    exit(InkSnap, kill),
+    ok = ink_close(Inker),
+    clean_testdir(RootPath).
 
 -endif.

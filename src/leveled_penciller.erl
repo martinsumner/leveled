@@ -573,6 +573,18 @@ pcl_persistedsqn(Pid) ->
 pcl_close(Pid) ->
     gen_server:call(Pid, close, infinity).
 
+-spec pcl_snapclose(pid()) -> ok.
+%% @doc
+%% Specifically to be used when closing snpashots on shutdown, will handle a
+%% scenario where a snapshot has already exited
+pcl_snapclose(Pid) ->
+    try
+        pcl_close(Pid)
+    catch
+        exit:{noproc, _CallDetails} ->
+            ok
+    end.
+
 -spec pcl_doom(pid()) -> {ok, list()}.
 %% @doc
 %% Close the penciller neatly, trying to persist to disk anything in the memory
@@ -1173,10 +1185,8 @@ handle_cast({maybe_defer_shutdown, ShutdownType, From}, State) ->
     {noreply, State};
 handle_cast({complete_shutdown, ShutdownType, From}, State) ->
     lists:foreach(
-        fun(Snap) -> ok = pcl_close(Snap) end,
-        lists:filter(
-            fun is_process_alive/1,
-            leveled_pmanifest:snapshot_pids(State#state.manifest))),
+        fun(Snap) -> ok = pcl_snapclose(Snap) end,
+        leveled_pmanifest:snapshot_pids(State#state.manifest)),
     shutdown_manifest(State#state.manifest, State#state.levelzero_constructor),
     case ShutdownType of
         doom ->
@@ -2038,6 +2048,34 @@ format_status_test() ->
     ?assertMatch(redacted, ST#state.levelzero_index),
     ?assertMatch(redacted, ST#state.levelzero_astree),
     clean_testdir(RootPath).
+
+close_no_crash_test_() ->
+    {timeout, 60, fun close_no_crash_tester/0}.
+
+close_no_crash_tester() ->
+    RootPath = "test/test_area/ledger_close",
+    clean_testdir(RootPath),
+    {ok, PCL} = 
+        pcl_start(
+            #penciller_options{
+                root_path=RootPath,
+                max_inmemory_tablesize=1000,
+                sst_options=#sst_options{}}),
+    {ok, PclSnap} =
+        pcl_snapstart(
+            #penciller_options{
+                start_snapshot = true,
+                snapshot_query = undefined,
+                bookies_mem = {empty_cache, empty_index, 1, 1},
+                source_penciller = PCL,
+                snapshot_longrunning = true,
+                bookies_pid = self()
+            }
+        ),
+    exit(PclSnap, kill),
+    ok = pcl_close(PCL),
+    clean_testdir(RootPath).
+
 
 simple_server_test() ->
     RootPath = "test/test_area/ledger",
