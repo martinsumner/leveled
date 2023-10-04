@@ -700,6 +700,7 @@ book_returnfolder(Pid, RunnerType) ->
                      TermHandling :: {ReturnTerms, TermRegex}) ->
                             {async, Runner::fun(() -> term())}
                                 when Bucket::term(),
+                                     Key :: term(),
                                      StartKey::term(),
                                      FoldFun::fun((Bucket, Key | {IndexVal, Key}, Acc) -> Acc),
                                      Key::term(),
