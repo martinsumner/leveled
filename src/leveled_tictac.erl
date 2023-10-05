@@ -359,7 +359,7 @@ keyto_segment32({segment_hash, SegmentID, ExtraHash, _AltHash})
 keyto_segment32(BinKey) when is_binary(BinKey) ->
     keyto_segment32(keyto_segment48(BinKey));
 keyto_segment32(Key) ->
-    keyto_segment32(term_to_binary(Key)).
+    keyto_segment32(leveled_util:t2b(Key)).
 
 -spec keyto_segment48(binary()) -> segment48().
 %% @doc
@@ -607,7 +607,7 @@ simple_bysize_test_allsizes() ->
 
 simple_test_withsize(Size) ->
     ?assertMatch(true, valid_size(Size)),
-    BinFun = fun(K, V) -> {term_to_binary(K), term_to_binary(V)} end,
+    BinFun = fun(K, V) -> {leveled_util:t2b(K), leveled_util:t2b(V)} end,
     
     K1 = {o, "B1", "K1", null},
     K2 = {o, "B1", "K2", null},
@@ -650,7 +650,7 @@ simple_test_withsize(Size) ->
 
     GetSegFun = 
         fun(TK) ->
-            get_segment(keyto_segment32(term_to_binary(TK)), SC)
+            get_segment(keyto_segment32(leveled_util:t2b(TK)), SC)
         end,
     
     DL0 = find_dirtyleaves(Tree1, Tree0),
@@ -681,7 +681,7 @@ merge_bysize_xlarge_test2() ->
     merge_test_withsize(xlarge).
 
 merge_test_withsize(Size) ->
-    BinFun = fun(K, V) -> {term_to_binary(K), term_to_binary(V)} end,
+    BinFun = fun(K, V) -> {leveled_util:t2b(K), leveled_util:t2b(V)} end,
     
     TreeX0 = new_tree(0, Size),
     TreeX1 = add_kv(TreeX0, {o, "B1", "X1", null}, {caine, 1}, BinFun),
@@ -719,7 +719,7 @@ merge_emptytree_test() ->
     ?assertMatch([], find_dirtyleaves(TreeA, TreeC)).
 
 alter_segment_test() ->
-    BinFun = fun(K, V) -> {term_to_binary(K), term_to_binary(V)} end,
+    BinFun = fun(K, V) -> {leveled_util:t2b(K), leveled_util:t2b(V)} end,
     
     TreeX0 = new_tree(0, small),
     TreeX1 = add_kv(TreeX0, {o, "B1", "X1", null}, {caine, 1}, BinFun),
@@ -738,7 +738,7 @@ alter_segment_test() ->
     ?assertMatch([], CompareResult).
 
 return_segment_test() ->
-    BinFun = fun(K, V) -> {term_to_binary(K), term_to_binary(V)} end,
+    BinFun = fun(K, V) -> {leveled_util:t2b(K), leveled_util:t2b(V)} end,
     
     TreeX0 = new_tree(0, small),
     {TreeX1, SegID} 

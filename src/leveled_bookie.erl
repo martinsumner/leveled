@@ -703,6 +703,7 @@ book_returnfolder(Pid, RunnerType) ->
                                      Key :: term(),
                                      StartKey::term(),
                                      FoldFun::fun((Bucket, Key | {IndexVal, Key}, Acc) -> Acc),
+                                     Key::term(),
                                      Acc::term(),
                                      IndexField::term(),
                                      IndexVal::term(),

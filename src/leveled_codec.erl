@@ -202,7 +202,7 @@ headkey_to_canonicalbinary({?HEAD_TAG, {BucketType, Bucket}, Key, SubKey})
 headkey_to_canonicalbinary(Key) when element(1, Key) == ?HEAD_TAG ->
     % In unit tests head specs can have non-binary keys, so handle
     % this through hashing the whole key
-    term_to_binary(Key).
+    leveled_util:t2b(Key).
 
 
 -spec to_lookup(ledger_key()) -> maybe_lookup().

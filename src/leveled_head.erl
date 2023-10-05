@@ -132,7 +132,7 @@ key_to_canonicalbinary(Key) ->
     OverrideFun(Key).
     
 default_key_to_canonicalbinary(Key) ->
-    term_to_binary(Key).
+    leveled_util:t2b(Key).
 
 
 -spec build_head(object_tag()|headonly_tag(), object_metadata()) -> head().

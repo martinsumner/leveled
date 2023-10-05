@@ -74,9 +74,10 @@ simple_test_withlog(LogLevel, ForcedLogs) ->
     ok = leveled_bookie:book_put(Bookie2, "Bucket1", "Key2", "Value2",
                                     [{add, "Index1", "Term1"}]),
     {ok, "Value2"} = leveled_bookie:book_get(Bookie2, "Bucket1", "Key2"),
-    {ok, {62888926, 60, undefined}} = leveled_bookie:book_head(Bookie2,
-                                                                "Bucket1",
-                                                                "Key2"),
+    {ok, {62888926, S, undefined}} =
+        leveled_bookie:book_head(Bookie2, "Bucket1", "Key2"),
+    true = (S == 58) or (S == 60),
+        % After OTP 26 the object is 58 bytes not 60
     testutil:check_formissingobject(Bookie2, "Bucket1", "Key2"),
     ok = leveled_bookie:book_put(Bookie2, "Bucket1", "Key2", <<"Value2">>,
                                     [{remove, "Index1", "Term1"},
@@ -199,15 +200,17 @@ bigsst_littlesst(_Config) ->
                     {compression_point, on_compact}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     ObjL1 = 
-        testutil:generate_objects(80000, 1, [], 
+        lists:keysort(
+            1,
+            testutil:generate_objects(80000, 1, [], 
                                     leveled_rand:rand_bytes(100), 
-                                    fun() -> [] end, <<"B">>),
+                                    fun() -> [] end, <<"B">>)
+        ),
     testutil:riakload(Bookie1, ObjL1),
     testutil:check_forlist(Bookie1, ObjL1),
     JFP = RootPath ++ "/ledger/ledger_files/",
     {ok, FNS1} = file:list_dir(JFP),
     ok = leveled_bookie:book_destroy(Bookie1),
-
 
     StartOpts2 = lists:ukeysort(1, [{max_sstslots, 24}|StartOpts1]),
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
