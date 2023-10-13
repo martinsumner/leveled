@@ -1254,10 +1254,12 @@ init([Opts]) ->
         {Bookie, undefined} ->
             {ok, Penciller, Inker} = 
                 book_snapshot(Bookie, store, undefined, true),
+            NewETS = ets:new(mem, [ordered_set]),
             leveled_log:log(b0002, [Inker, Penciller]),
             {ok,
                 #state{penciller = Penciller,
                         inker = Inker,
+                        ledger_cache = #ledger_cache{mem = NewETS},
                         is_snapshot = true}}
     end.
 
@@ -1844,10 +1846,11 @@ set_options(Opts, Monitor) ->
         }.
 
 
--spec return_snapfun(book_state(), store|ledger, 
-                        tuple()|no_lookup|undefined, 
-                        boolean(), boolean()) 
-                            -> fun(() -> {ok, pid(), pid()|null}).
+-spec return_snapfun(
+    book_state(), store|ledger,
+    tuple()|no_lookup|undefined,
+    boolean(), boolean()) 
+        -> fun(() -> {ok, pid(), pid()|null, fun(() -> ok)}).
 %% @doc
 %% Generates a function from which a snapshot can be created.  The primary
 %% factor here is the SnapPreFold boolean.  If this is true then the snapshot
@@ -1855,11 +1858,31 @@ set_options(Opts, Monitor) ->
 %% false then the snapshot will be taken when the Fold function is called.
 %%
 %% SnapPrefold is to be used when the intention is to queue the fold, and so
-%% claling of the fold may be delayed, but it is still desired that the fold
+%% calling of the fold may be delayed, but it is still desired that the fold
 %% represent the point in time that the query was requested.
+%% 
+%% Also returns a function which will close any snapshots to be used in the
+%% runners post-query cleanup action
+%% 
+%% When the bookie is a snapshot, a fresh snapshot should not be taken, the
+%% previous snapshot should be used instead.  Also the snapshot should not be
+%% closed as part of the post-query activity as the snapshot may be reused, and
+%% should be manually closed.
 return_snapfun(State, SnapType, Query, LongRunning, SnapPreFold) ->
-    case SnapPreFold of
-        true ->
+    CloseFun =
+        fun(LS0, JS0) ->
+            fun() ->
+                ok = leveled_penciller:pcl_close(LS0),
+                case JS0 of
+                    JS0 when is_pid(JS0) ->
+                        leveled_inker:ink_close(JS0);
+                    _ ->
+                        ok
+                end
+            end
+        end,
+    case {SnapPreFold, State#state.is_snapshot} of
+        {true, false} ->
             {ok, LS, JS} =
                 snapshot_store(
                     State#state.ledger_cache,
@@ -1869,15 +1892,23 @@ return_snapfun(State, SnapType, Query, LongRunning, SnapPreFold) ->
                     SnapType,
                     Query,
                     LongRunning),
-            fun() -> {ok, LS, JS} end;
-        false ->
+            fun() -> {ok, LS, JS, CloseFun(LS, JS)} end;
+        {false, false} ->
             Self = self(),
             % Timeout will be ignored, as will Requestor
             %
             % This uses the external snapshot - as the snapshot will need
             % to have consistent state between Bookie and Penciller when
             % it is made.
-            fun() -> book_snapshot(Self, SnapType, Query, LongRunning) end
+            fun() -> 
+                {ok, LS, JS} = 
+                    book_snapshot(Self, SnapType, Query, LongRunning),
+                {ok, LS, JS, CloseFun(LS, JS)}
+            end;
+        {_ , true} ->
+            LS = State#state.penciller,
+            JS = State#state.inker,
+            fun() -> {ok, LS, JS, fun() -> ok end} end
     end.
 
 -spec snaptype_by_presence(boolean()) -> store|ledger.
@@ -2208,14 +2239,7 @@ fetch_head(Key, Penciller, LedgerCache) ->
 %% The L0Index needs to be bypassed when running head_only
 fetch_head(Key, Penciller, LedgerCache, HeadOnly) ->
     SW = os:timestamp(),
-    CacheResult =
-        case LedgerCache#ledger_cache.mem of
-            undefined ->
-                [];
-            Tab ->
-                ets:lookup(Tab, Key)
-        end,
-    case CacheResult of
+    case ets:lookup(LedgerCache#ledger_cache.mem, Key) of
         [{Key, Head}] ->
             {Head, true};
         [] ->
