@@ -95,7 +95,7 @@
         p0012 =>
             {info, <<"Store to be started based on manifest sequence number of ~w">>},
         p0013 =>
-            {warn, <<"Seqence number of 0 indicates no valid manifest">>},
+            {info, <<"Seqence number of 0 indicates no valid manifest">>},
         p0014 =>
             {info, <<"Maximum sequence number of ~w found in nonzero levels">>},
         p0015 =>

@@ -409,6 +409,8 @@ inker_reload_strategy(AltList) ->
 %% Work out the compaction strategy for the key
 get_tagstrategy({Tag, _, _, _}, Strategy) ->
     get_tagstrategy(Tag, Strategy);
+get_tagstrategy(dummy, _Strategy) ->
+    retain;
 get_tagstrategy(Tag, Strategy) ->
     case lists:keyfind(Tag, 1, Strategy) of
         {Tag, TagStrat} ->
