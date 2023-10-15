@@ -74,7 +74,9 @@
         book_logsettings/1,
         book_loglevel/2,
         book_addlogs/2,
-        book_removelogs/2]).
+        book_removelogs/2,
+        book_headstatus/1
+    ]).
 
 %% folding API
 -export([
@@ -1153,6 +1155,12 @@ book_addlogs(Pid, ForcedLogs) ->
 book_removelogs(Pid, ForcedLogs) ->
     gen_server:cast(Pid, {remove_logs, ForcedLogs}).
 
+-spec book_headstatus(pid()) -> {boolean(), boolean()}.
+%% @doc
+%% Return booleans to state the bookie is in head_only mode, and supporting
+%% lookups
+book_headstatus(Pid) ->
+    gen_server:call(Pid, head_status, infinity).
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -1255,11 +1263,14 @@ init([Opts]) ->
             {ok, Penciller, Inker} = 
                 book_snapshot(Bookie, store, undefined, true),
             NewETS = ets:new(mem, [ordered_set]),
+            {HeadOnly, Lookup} = leveled_bookie:book_headstatus(Bookie),
             leveled_log:log(b0002, [Inker, Penciller]),
             {ok,
                 #state{penciller = Penciller,
                         inker = Inker,
                         ledger_cache = #ledger_cache{mem = NewETS},
+                        head_only = HeadOnly,
+                        head_lookup = Lookup,
                         is_snapshot = true}}
     end.
 
@@ -1511,6 +1522,8 @@ handle_call(destroy, _From, State=#state{is_snapshot=Snp}) when Snp == false ->
     {stop, normal, ok, State};
 handle_call(return_actors, _From, State) ->
     {reply, {ok, State#state.inker, State#state.penciller}, State};
+handle_call(head_status, _From, State) ->
+    {reply, {State#state.head_only, State#state.head_lookup}, State};
 handle_call(Msg, _From, State) ->
     {reply, {unsupported_message, element(1, Msg)}, State}.
 
