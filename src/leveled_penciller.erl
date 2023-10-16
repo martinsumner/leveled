@@ -654,9 +654,12 @@ init([LogOpts, PCLopts]) ->
                                                 BookiesMem, 
                                                 LongRunning),
             leveled_log:log(p0001, [self()]),
-            {ok, State#state{is_snapshot = true,
-			     bookie_monref = BookieMonitor,
-			     source_penciller = SrcPenciller}};
+            {ok,
+                State#state{
+                    is_snapshot = true,
+                    clerk = undefined,
+			        bookie_monref = BookieMonitor,
+			        source_penciller = SrcPenciller}};
         {_RootPath, _Snapshot=false, _Q, _BM} ->
             start_from_file(PCLopts)
     end.    
@@ -1150,22 +1153,33 @@ handle_cast({fetch_levelzero, Slot, ReturnFun}, State) ->
     ReturnFun(lists:nth(Slot, State#state.levelzero_cache)),
     {noreply, State};
 handle_cast({log_level, LogLevel}, State) ->
-    PC = State#state.clerk,
-    ok = leveled_pclerk:clerk_loglevel(PC, LogLevel),
-    ok = leveled_log:set_loglevel(LogLevel),
+    case State#state.clerk of
+        undefined ->
+            ok;
+        PC when is_pid(PC) ->
+            leveled_pclerk:clerk_loglevel(PC, LogLevel)
+        end,
     SSTopts = State#state.sst_options,
     SSTopts0 = SSTopts#sst_options{log_options = leveled_log:get_opts()},
     {noreply, State#state{sst_options = SSTopts0}};
 handle_cast({add_logs, ForcedLogs}, State) ->
-    PC = State#state.clerk,
-    ok = leveled_pclerk:clerk_addlogs(PC, ForcedLogs),
+    case State#state.clerk of
+        undefined ->
+            ok;
+        PC when is_pid(PC) ->
+            leveled_pclerk:clerk_addlogs(PC, ForcedLogs)
+    end,
     ok = leveled_log:add_forcedlogs(ForcedLogs),
     SSTopts = State#state.sst_options,
     SSTopts0 = SSTopts#sst_options{log_options = leveled_log:get_opts()},
     {noreply, State#state{sst_options = SSTopts0}};
 handle_cast({remove_logs, ForcedLogs}, State) ->
-    PC = State#state.clerk,
-    ok = leveled_pclerk:clerk_removelogs(PC, ForcedLogs),
+    case State#state.clerk of
+        undefined ->
+            ok;
+        PC when is_pid(PC) ->
+            leveled_pclerk:clerk_removelogs(PC, ForcedLogs)
+        end,
     ok = leveled_log:remove_forcedlogs(ForcedLogs),
     SSTopts = State#state.sst_options,
     SSTopts0 = SSTopts#sst_options{log_options = leveled_log:get_opts()},
