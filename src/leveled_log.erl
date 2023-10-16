@@ -83,13 +83,13 @@
         p0005 =>
             {debug, <<"Delete confirmed as file ~s is removed from Manifest">>},
         p0007 =>
-            {debug, <<"Sent release message for cloned Penciller following close for reason ~w">>},
+            {debug, <<"Shutdown complete for cloned Penciller for reason ~w">>},
         p0008 =>
             {info, <<"Penciller closing for reason ~w">>},
         p0010 =>
             {info, <<"level zero discarded_count=~w on close of Penciller">>},
         p0011 =>
-            {info, <<"Shutdown complete for Penciller for reason ~w">>},
+            {debug, <<"Shutdown complete for Penciller for reason ~w">>},
         p0012 =>
             {info, <<"Store to be started based on manifest sequence number of ~w">>},
         p0013 =>
@@ -246,6 +246,10 @@
             {warn, <<"Journal SQN of ~w is below Ledger SQN of ~w anti-entropy will be required">>},
         i0026 =>
             {info, <<"Deferring shutdown due to snapshot_count=~w">>},
+        i0027 =>
+            {debug, <<"Shutdown complete for cloned Inker for reason ~w">>},
+        i0028 =>
+            {debug, <<"Shutdown complete for Inker for reason ~w">>},
         ic001 =>
             {info, <<"Closed for reason ~w so maybe leaving garbage">>},
         ic002 =>

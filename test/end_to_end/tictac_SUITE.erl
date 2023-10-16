@@ -747,7 +747,21 @@ basic_headonly_test(ObjectCount, RemoveCount, HeadOnly) ->
             lists:foreach(CheckHeadFun(Bookie1), ObjectSpecL),
             {ok, Snapshot} =
                 leveled_bookie:book_start([{snapshot_bookie, Bookie1}]),
-            lists:foreach(CheckHeadFun(Snapshot), ObjectSpecL);
+            ok = leveled_bookie:book_loglevel(Snapshot, warn),
+            ok =
+                leveled_bookie:book_addlogs(
+                    Snapshot, [b0001, b0002, b0003, i0027, p0007]
+                ),
+            ok =
+                leveled_bookie:book_removelogs(
+                    Snapshot, [b0019]
+                ),
+            io:format(
+                "Checking for ~w objects against Snapshot ~w~n",
+                [length(ObjectSpecL), Snapshot]),
+            lists:foreach(CheckHeadFun(Snapshot), ObjectSpecL),
+            io:format("Closing snapshot ~w~n", [Snapshot]),
+            ok = leveled_bookie:book_close(Snapshot);
         no_lookup ->
             {unsupported_message, head} = 
                 leveled_bookie:book_head(Bookie1, 
@@ -761,7 +775,7 @@ basic_headonly_test(ObjectCount, RemoveCount, HeadOnly) ->
                                                 Key0)
     end,
 
-
+    io:format("Closing actual store ~w~n", [Bookie1]),
     ok = leveled_bookie:book_close(Bookie1),
     {ok, FinalJournals} = file:list_dir(JFP),
     io:format("Trim has reduced journal count from " ++ 

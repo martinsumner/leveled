@@ -1531,28 +1531,40 @@ handle_call(Msg, _From, State) ->
 handle_cast({log_level, LogLevel}, State) ->
     PCL = State#state.penciller,
     INK = State#state.inker,
-    Monitor = element(1, State#state.monitor),
     ok = leveled_penciller:pcl_loglevel(PCL, LogLevel),
     ok = leveled_inker:ink_loglevel(INK, LogLevel),
-    ok = leveled_monitor:log_level(Monitor, LogLevel),
+    case element(1, State#state.monitor) of
+        no_monitor ->
+            ok;
+        Monitor ->
+            leveled_monitor:log_level(Monitor, LogLevel)
+    end,
     ok = leveled_log:set_loglevel(LogLevel),
     {noreply, State};
 handle_cast({add_logs, ForcedLogs}, State) ->
     PCL = State#state.penciller,
     INK = State#state.inker,
-    Monitor = element(1, State#state.monitor),
     ok = leveled_penciller:pcl_addlogs(PCL, ForcedLogs),
     ok = leveled_inker:ink_addlogs(INK, ForcedLogs),
-    ok = leveled_monitor:log_add(Monitor, ForcedLogs),
+    case element(1, State#state.monitor) of
+        no_monitor ->
+            ok;
+        Monitor ->
+            leveled_monitor:log_add(Monitor, ForcedLogs)
+    end,
     ok = leveled_log:add_forcedlogs(ForcedLogs),
     {noreply, State};
 handle_cast({remove_logs, ForcedLogs}, State) ->
     PCL = State#state.penciller,
     INK = State#state.inker,
-    Monitor = element(1, State#state.monitor),
     ok = leveled_penciller:pcl_removelogs(PCL, ForcedLogs),
     ok = leveled_inker:ink_removelogs(INK, ForcedLogs),
-    ok = leveled_monitor:log_remove(Monitor, ForcedLogs),
+    case element(1, State#state.monitor) of
+        no_monitor ->
+            ok;
+        Monitor ->
+            leveled_monitor:log_remove(Monitor, ForcedLogs)
+    end,
     ok = leveled_log:remove_forcedlogs(ForcedLogs),
     {noreply, State}.
 
