@@ -50,6 +50,8 @@
             {info, <<"Snapshot starting with Ink ~w Pcl ~w">>},
         b0003 =>
             {info, <<"Bookie closing for reason ~w">>},
+        b0004 =>
+            {warn, <<"Bookie snapshot exiting as master store ~w is down for reason ~p">>},
         b0005 =>
             {info, <<"LedgerSQN=~w at startup">>},
         b0006 =>

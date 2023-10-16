@@ -184,6 +184,7 @@
                 head_only = false :: boolean(),
                 head_lookup = true :: boolean(),
                 ink_checking = ?MAX_KEYCHECK_FREQUENCY :: integer(),
+                bookie_monref :: reference() | undefined,
                 monitor = {no_monitor, 0} :: leveled_monitor:monitor()}).
 
 
@@ -1268,6 +1269,7 @@ init([Opts]) ->
         {Bookie, undefined} ->
             {ok, Penciller, Inker} = 
                 book_snapshot(Bookie, store, undefined, true),
+            BookieMonitor = erlang:monitor(process, Bookie),
             NewETS = ets:new(mem, [ordered_set]),
             {HeadOnly, Lookup} = leveled_bookie:book_headstatus(Bookie),
             leveled_log:log(b0002, [Inker, Penciller]),
@@ -1277,6 +1279,7 @@ init([Opts]) ->
                         ledger_cache = #ledger_cache{mem = NewETS},
                         head_only = HeadOnly,
                         head_lookup = Lookup,
+                        bookie_monref = BookieMonitor,
                         is_snapshot = true}}
     end.
 
@@ -1575,8 +1578,14 @@ handle_cast({remove_logs, ForcedLogs}, State) ->
     {noreply, State}.
 
 
+%% handle the bookie stopping and stop this snapshot
+handle_info({'DOWN', BookieMonRef, process, BookiePid, Info},
+	    State=#state{bookie_monref = BookieMonRef, is_snapshot = true}) ->
+    leveled_log:log(b0004, [BookiePid, Info]),
+    {stop, normal, State};
 handle_info(_Info, State) ->
     {noreply, State}.
+
 
 terminate(Reason, _State) ->
     leveled_log:log(b0003, [Reason]).
