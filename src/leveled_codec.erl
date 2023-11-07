@@ -403,18 +403,20 @@ inker_reload_strategy(AltList) ->
                     lists:ukeysort(1, DefaultList)).
 
 
--spec get_tagstrategy(ledger_key()|tag()|dummy, compaction_strategy()) 
-                                                    -> compaction_method().
+-spec get_tagstrategy(
+    ledger_key()|tag()|dummy, compaction_strategy()) -> compaction_method().
 %% @doc
 %% Work out the compaction strategy for the key
 get_tagstrategy({Tag, _, _, _}, Strategy) ->
     get_tagstrategy(Tag, Strategy);
-get_tagstrategy(dummy, _Strategy) ->
-    retain;
 get_tagstrategy(Tag, Strategy) ->
     case lists:keyfind(Tag, 1, Strategy) of
         {Tag, TagStrat} ->
             TagStrat;
+        false when Tag == dummy ->
+            %% dummy is not a strategy, but this is expected to see this when
+            %% running in head_only mode - so don't warn
+            retain;
         false ->
             leveled_log:log(ic012, [Tag, Strategy]),
             retain
