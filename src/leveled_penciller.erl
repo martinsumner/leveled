@@ -221,7 +221,6 @@
 -define(ITERATOR_SCANWIDTH, 4).
 -define(TIMING_SAMPLECOUNTDOWN, 10000).
 -define(TIMING_SAMPLESIZE, 100).
--define(OPEN_LASTMOD_RANGE, {0, infinity}).
 -define(SHUTDOWN_PAUSE, 10000).
     % How long to wait for snapshots to be released on shutdown
     % before forcing closure of snapshots

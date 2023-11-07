@@ -151,7 +151,7 @@
                 compaction_pending = false :: boolean(),
                 bookie_monref :: reference() | undefined,
                 is_snapshot = false :: boolean(),
-                compression_method = native :: lz4|native,
+                compression_method = native :: lz4|native|none,
                 compress_on_receipt = false :: boolean(),
                 snap_timeout :: pos_integer() | undefined, % in seconds
                 source_inker :: pid() | undefined}).

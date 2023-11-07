@@ -102,34 +102,8 @@
 -export([book_returnactors/1]).
 -endif.
 
--define(LOADING_PAUSE, 1000).
--define(CACHE_SIZE, 2500).
--define(MAX_CACHE_MULTTIPLE, 2).
--define(MIN_CACHE_SIZE, 100).
--define(MIN_PCL_CACHE_SIZE, 400).
--define(MAX_PCL_CACHE_SIZE, 28000). 
-    % This is less than actual max - but COIN_SIDECOUNT
--define(CACHE_SIZE_JITTER, 25).
--define(JOURNAL_SIZE_JITTER, 20).
--define(ABSOLUTEMAX_JOURNALSIZE, 4000000000).
--define(LONG_RUNNING, 1000000).
-    % An individual task taking > 1s gets a specific log
--define(COMPRESSION_METHOD, lz4).
--define(COMPRESSION_POINT, on_receipt).
--define(LOG_LEVEL, info).
--define(TIMING_SAMPLESIZE, 100).
--define(DEFAULT_DBID, 65536).
--define(TIMING_SAMPLECOUNTDOWN, 50000).
 -define(DUMMY, dummy). % Dummy key used for mput operations
--define(MAX_KEYCHECK_FREQUENCY, 100).
--define(MIN_KEYCHECK_FREQUENCY, 1).
--define(OPEN_LASTMOD_RANGE, {0, infinity}).
--define(SNAPTIMEOUT_SHORT, 900). % 15 minutes
--define(SNAPTIMEOUT_LONG, 43200). % 12 hours
--define(SST_PAGECACHELEVEL_NOLOOKUP, 1).
--define(SST_PAGECACHELEVEL_LOOKUP, 4).
--define(CACHE_LOGPOINT, 50000).
--define(DEFAULT_STATS_PERC, 10).
+
 -define(OPTION_DEFAULTS,
             [{root_path, undefined},
                 {snapshot_bookie, undefined},
@@ -138,7 +112,7 @@
                 {max_journalsize, 1000000000},
                 {max_journalobjectcount, 200000},
                 {max_sstslots, 256},
-                {sync_strategy, none},
+                {sync_strategy, ?DEFAULT_SYNC_STRATEGY},
                 {head_only, false},
                 {waste_retention_period, undefined},
                 {max_run_length, undefined},
@@ -150,6 +124,7 @@
                 {ledger_preloadpagecache_level, ?SST_PAGECACHELEVEL_LOOKUP},
                 {compression_method, ?COMPRESSION_METHOD},
                 {compression_point, ?COMPRESSION_POINT},
+                {compression_level, ?COMPRESSION_LEVEL},
                 {log_level, ?LOG_LEVEL},
                 {forced_logs, []},
                 {database_id, ?DEFAULT_DBID},
@@ -314,10 +289,12 @@
             % To which level of the ledger should the ledger contents be
             % pre-loaded into the pagecache (using fadvise on creation and
             % startup)
-        {compression_method, native|lz4} |
+        {compression_method, native|lz4|none} |
             % Compression method and point allow Leveled to be switched from
             % using bif based compression (zlib) to using nif based compression
-            % (lz4).
+            % (lz4).  To disable compression use none.  This will disable in
+            % the ledger as well as the journla (both on_receipt and
+            % on_compact).
             % Defaults to ?COMPRESSION_METHOD
         {compression_point, on_compact|on_receipt} |
             % The =compression point can be changed between on_receipt (all
@@ -325,6 +302,10 @@
             % values are originally stored uncompressed (speeding PUT times),
             % and are only compressed when they are first subject to compaction
             % Defaults to ?COMPRESSION_POINT
+        {compression_level, 0..7} |
+            % At what level of the LSM tree in the ledger should compression be
+            % enabled.
+            % Defaults to ?COMPRESSION_LEVEL
         {log_level, debug|info|warn|error|critical} |
             % Set the log level.  The default log_level of info is noisy - the
             % current implementation was targetted at environments that have
@@ -1805,6 +1786,7 @@ set_options(Opts, Monitor) ->
                 % If using lz4 this is not recommended
                 false 
         end,
+    CompressionLevel = proplists:get_value(compression_level, Opts),
     
     MaxSSTSlots = proplists:get_value(max_sstslots, Opts),
 
@@ -1837,6 +1819,7 @@ set_options(Opts, Monitor) ->
                             sst_options =
                                 #sst_options{
                                     press_method = CompressionMethod,
+                                    press_level = CompressionLevel,
                                     log_options = leveled_log:get_opts(),
                                     max_sstslots = MaxSSTSlots,
                                     monitor = Monitor},
