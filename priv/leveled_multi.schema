@@ -39,8 +39,8 @@
 %% Can be lz4 or native (which will use the Erlang native zlib compression)
 %% within term_to_binary
 {mapping, "multi_backend.$name.leveled.compression_method", "riak_kv.multi_backend", [
-  {default, lz4},
-  {datatype, atom},
+  {datatype, {enum, [native, lz4, none]}},
+  {default, native}
   hidden
 ]}.
 
@@ -52,6 +52,16 @@
 {mapping, "multi_backend.$name.leveled.compression_point", "riak_kv.multi_backend", [
   {default, on_receipt},
   {datatype, atom},
+  hidden
+]}.
+
+%% @doc Compresstion Level (Ledger LSM)
+%% Specify the level in the LSM tree from which compression should occur.
+%% Defaults to L1, so only L0 writes are uncompressed.
+{mapping, "multi_backend.$name.leveled.compression_level", "riak_kv.multi_backend", [
+  {default, 1},
+  {datatype, integer},
+  {validators, ["range:0-7"]},
   hidden
 ]}.
 

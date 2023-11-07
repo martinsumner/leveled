@@ -115,7 +115,7 @@
                 reload_strategy = ?DEFAULT_RELOAD_STRATEGY :: list(),
                 singlefile_compactionperc  = ?SINGLEFILE_COMPACTION_TARGET :: float(),
                 maxrunlength_compactionperc = ?MAXRUNLENGTH_COMPACTION_TARGET ::float(),
-                compression_method = native :: lz4|native,
+                compression_method = native :: lz4|native|none,
                 scored_files = [] :: list(candidate()),
                 scoring_state :: scoring_state()|undefined,
                 score_onein = 1 :: pos_integer()}).
