@@ -102,8 +102,6 @@
 -export([book_returnactors/1]).
 -endif.
 
--include_lib("eunit/include/eunit.hrl").
-
 -define(DUMMY, dummy). % Dummy key used for mput operations
 
 -define(OPTION_DEFAULTS,
