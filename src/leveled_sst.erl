@@ -80,7 +80,7 @@
 -define(COMPRESSION_FACTOR, 1).
     % When using native compression - how hard should the compression code
     % try to reduce the size of the compressed output. 1 Is to imply minimal
-    % effort, 6 is default:
+    % effort, 6 is default in OTP:
     % https://www.erlang.org/doc/man/erlang.html#term_to_binary-2
 -define(BINARY_SETTINGS, [{compressed, ?COMPRESSION_FACTOR}]).
 -define(MERGE_SCANWIDTH, 16).
