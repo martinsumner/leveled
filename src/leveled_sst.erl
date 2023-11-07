@@ -77,12 +77,12 @@
 -define(LOOK_BLOCKSIZE, {24, 32}). % 4x + y = ?LOOK_SLOTSIZE
 -define(NOLOOK_SLOTSIZE, 256).
 -define(NOLOOK_BLOCKSIZE, {56, 32}). % 4x + y = ?NOLOOK_SLOTSIZE
--define(COMPRESSION_LEVEL, 1).
+-define(COMPRESSION_FACTOR, 1).
     % When using native compression - how hard should the compression code
     % try to reduce the size of the compressed output. 1 Is to imply minimal
     % effort, 6 is default:
     % https://www.erlang.org/doc/man/erlang.html#term_to_binary-2
--define(BINARY_SETTINGS, [{compressed, ?COMPRESSION_LEVEL}]).
+-define(BINARY_SETTINGS, [{compressed, ?COMPRESSION_FACTOR}]).
 -define(MERGE_SCANWIDTH, 16).
 -define(DISCARD_EXT, ".discarded").
 -define(DELETE_TIMEOUT, 10000).
