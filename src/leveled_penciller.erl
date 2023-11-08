@@ -221,7 +221,11 @@
 -define(ITERATOR_SCANWIDTH, 4).
 -define(TIMING_SAMPLECOUNTDOWN, 10000).
 -define(TIMING_SAMPLESIZE, 100).
--define(OPEN_LASTMOD_RANGE, {0, infinity}).
+-define(SHUTDOWN_PAUSE, 10000).
+    % How long to wait for snapshots to be released on shutdown
+    % before forcing closure of snapshots
+    % 10s may not be long enough for all snapshots, but avoids crashes of
+    % short-lived queries racing with the shutdown
 
 -record(state, {manifest ::
                     leveled_pmanifest:manifest() | undefined | redacted,
@@ -566,7 +570,19 @@ pcl_persistedsqn(Pid) ->
 %% @doc
 %% Close the penciller neatly, trying to persist to disk anything in the memory
 pcl_close(Pid) ->
-    gen_server:call(Pid, close, 60000).
+    gen_server:call(Pid, close, infinity).
+
+-spec pcl_snapclose(pid()) -> ok.
+%% @doc
+%% Specifically to be used when closing snpashots on shutdown, will handle a
+%% scenario where a snapshot has already exited
+pcl_snapclose(Pid) ->
+    try
+        pcl_close(Pid)
+    catch
+        exit:{noproc, _CallDetails} ->
+            ok
+    end.
 
 -spec pcl_doom(pid()) -> {ok, list()}.
 %% @doc
@@ -574,7 +590,7 @@ pcl_close(Pid) ->
 %% Return a list of filepaths from where files exist for this penciller (should
 %% the calling process which to erase the store).
 pcl_doom(Pid) ->
-    gen_server:call(Pid, doom, 60000).
+    gen_server:call(Pid, doom, infinity).
 
 -spec pcl_checkbloomtest(pid(), tuple()) -> boolean().
 %% @doc
@@ -630,16 +646,16 @@ init([LogOpts, PCLopts]) ->
             %% exits
 	        BookieMonitor = 
                 erlang:monitor(process, PCLopts#penciller_options.bookies_pid),
-
-            {ok, State} = pcl_registersnapshot(SrcPenciller, 
-                                                self(), 
-                                                Query, 
-                                                BookiesMem, 
-                                                LongRunning),
+            {ok, State} =
+                pcl_registersnapshot(
+                    SrcPenciller, self(), Query, BookiesMem, LongRunning),
             leveled_log:log(p0001, [self()]),
-            {ok, State#state{is_snapshot = true,
-			     bookie_monref = BookieMonitor,
-			     source_penciller = SrcPenciller}};
+            {ok,
+                State#state{
+                    is_snapshot = true,
+                    clerk = undefined,
+                    bookie_monref = BookieMonitor,
+                    source_penciller = SrcPenciller}};
         {_RootPath, _Snapshot=false, _Q, _BM} ->
             start_from_file(PCLopts)
     end.    
@@ -906,7 +922,7 @@ handle_call({register_snapshot, Snapshot, Query, BookiesMem, LongRunning},
 handle_call(close, _From, State=#state{is_snapshot=Snap}) when Snap == true ->
     ok = pcl_releasesnapshot(State#state.source_penciller, self()),
     {stop, normal, ok, State};
-handle_call(close, _From, State) ->
+handle_call(close, From, State) ->
     % Level 0 files lie outside of the manifest, and so if there is no L0
     % file present it is safe to write the current contents of memory.  If
     % there is a L0 file present - then the memory can be dropped (it is
@@ -935,17 +951,13 @@ handle_call(close, _From, State) ->
         false ->
             leveled_log:log(p0010, [State#state.levelzero_size])
     end,
-    shutdown_manifest(State#state.manifest, State#state.levelzero_constructor),
-    {stop, normal, ok, State};
-handle_call(doom, _From, State) ->
+    gen_server:cast(self(), {maybe_defer_shutdown, close, From}),
+    {noreply, State};
+handle_call(doom, From, State) ->
     leveled_log:log(p0030, []),
     ok = leveled_pclerk:clerk_close(State#state.clerk),
-    
-    shutdown_manifest(State#state.manifest,  State#state.levelzero_constructor),
-    
-    ManifestFP = State#state.root_path ++ "/" ++ ?MANIFEST_FP ++ "/",
-    FilesFP = State#state.root_path ++ "/" ++ ?FILES_FP ++ "/",
-    {stop, normal, {ok, [ManifestFP, FilesFP]}, State};
+    gen_server:cast(self(), {maybe_defer_shutdown, doom, From}),
+    {noreply, State};
 handle_call({checkbloom_fortest, Key, Hash}, _From, State) ->
     Manifest = State#state.manifest,
     FoldFun = 
@@ -995,8 +1007,8 @@ handle_cast({manifest_change, Manifest}, State) ->
                 work_ongoing=false}}
     end;
 handle_cast({release_snapshot, Snapshot}, State) ->
-    Manifest0 = leveled_pmanifest:release_snapshot(State#state.manifest,
-                                                   Snapshot),
+    Manifest0 =
+        leveled_pmanifest:release_snapshot(State#state.manifest, Snapshot),
     leveled_log:log(p0003, [Snapshot]),
     {noreply, State#state{manifest=Manifest0}};
 handle_cast({confirm_delete, PDFN, FilePid}, State=#state{is_snapshot=Snap})
@@ -1137,26 +1149,52 @@ handle_cast({fetch_levelzero, Slot, ReturnFun}, State) ->
     ReturnFun(lists:nth(Slot, State#state.levelzero_cache)),
     {noreply, State};
 handle_cast({log_level, LogLevel}, State) ->
-    PC = State#state.clerk,
-    ok = leveled_pclerk:clerk_loglevel(PC, LogLevel),
-    ok = leveled_log:set_loglevel(LogLevel),
+    update_clerk(
+        State#state.clerk, fun leveled_pclerk:clerk_loglevel/2, LogLevel),
     SSTopts = State#state.sst_options,
     SSTopts0 = SSTopts#sst_options{log_options = leveled_log:get_opts()},
     {noreply, State#state{sst_options = SSTopts0}};
 handle_cast({add_logs, ForcedLogs}, State) ->
-    PC = State#state.clerk,
-    ok = leveled_pclerk:clerk_addlogs(PC, ForcedLogs),
+    update_clerk(
+        State#state.clerk, fun leveled_pclerk:clerk_addlogs/2, ForcedLogs),
     ok = leveled_log:add_forcedlogs(ForcedLogs),
     SSTopts = State#state.sst_options,
     SSTopts0 = SSTopts#sst_options{log_options = leveled_log:get_opts()},
     {noreply, State#state{sst_options = SSTopts0}};
 handle_cast({remove_logs, ForcedLogs}, State) ->
-    PC = State#state.clerk,
-    ok = leveled_pclerk:clerk_removelogs(PC, ForcedLogs),
+    update_clerk(
+        State#state.clerk, fun leveled_pclerk:clerk_removelogs/2, ForcedLogs),
     ok = leveled_log:remove_forcedlogs(ForcedLogs),
     SSTopts = State#state.sst_options,
     SSTopts0 = SSTopts#sst_options{log_options = leveled_log:get_opts()},
-    {noreply, State#state{sst_options = SSTopts0}}.
+    {noreply, State#state{sst_options = SSTopts0}};
+handle_cast({maybe_defer_shutdown, ShutdownType, From}, State) ->
+    case length(leveled_pmanifest:snapshot_pids(State#state.manifest)) of
+        0 ->
+            ok;
+        N ->
+            % Whilst this process sleeps, then any remaining snapshots may
+            % release and have their release messages queued before the
+            % complete_shutdown cast is sent
+            leveled_log:log(p0042, [N]),
+            timer:sleep(?SHUTDOWN_PAUSE)
+    end,
+    gen_server:cast(self(), {complete_shutdown, ShutdownType, From}),
+    {noreply, State};
+handle_cast({complete_shutdown, ShutdownType, From}, State) ->
+    lists:foreach(
+        fun(Snap) -> ok = pcl_snapclose(Snap) end,
+        leveled_pmanifest:snapshot_pids(State#state.manifest)),
+    shutdown_manifest(State#state.manifest, State#state.levelzero_constructor),
+    case ShutdownType of
+        doom ->
+            ManifestFP = State#state.root_path ++ "/" ++ ?MANIFEST_FP ++ "/",
+            FilesFP = State#state.root_path ++ "/" ++ ?FILES_FP ++ "/",
+            gen_server:reply(From, {ok, [ManifestFP, FilesFP]});
+        close ->
+            gen_server:reply(From, ok)
+    end,
+    {stop, normal, State}.
 
 
 %% handle the bookie stopping and stop this snapshot
@@ -1195,13 +1233,19 @@ sst_rootpath(RootPath) ->
     FP.
 
 sst_filename(ManSQN, Level, Count) ->
-    lists:flatten(io_lib:format("./~w_~w_~w" ++ ?SST_FILEX, 
-                                    [ManSQN, Level, Count])).
+    lists:flatten(
+        io_lib:format("./~w_~w_~w" ++ ?SST_FILEX, [ManSQN, Level, Count])).
     
 
 %%%============================================================================
 %%% Internal functions
 %%%============================================================================
+
+-spec update_clerk(pid()|undefined, fun((pid(), term()) -> ok), term()) -> ok.
+update_clerk(undefined, _F, _T) ->
+    ok;
+update_clerk(Clerk, F, T) when is_pid(Clerk) ->
+    F(Clerk, T).
 
 -spec start_from_file(penciller_options()) -> {ok, pcl_state()}.
 %% @doc
@@ -2008,6 +2052,34 @@ format_status_test() ->
     ?assertMatch(redacted, ST#state.levelzero_index),
     ?assertMatch(redacted, ST#state.levelzero_astree),
     clean_testdir(RootPath).
+
+close_no_crash_test_() ->
+    {timeout, 60, fun close_no_crash_tester/0}.
+
+close_no_crash_tester() ->
+    RootPath = "test/test_area/ledger_close",
+    clean_testdir(RootPath),
+    {ok, PCL} = 
+        pcl_start(
+            #penciller_options{
+                root_path=RootPath,
+                max_inmemory_tablesize=1000,
+                sst_options=#sst_options{}}),
+    {ok, PclSnap} =
+        pcl_snapstart(
+            #penciller_options{
+                start_snapshot = true,
+                snapshot_query = undefined,
+                bookies_mem = {empty_cache, empty_index, 1, 1},
+                source_penciller = PCL,
+                snapshot_longrunning = true,
+                bookies_pid = self()
+            }
+        ),
+    exit(PclSnap, kill),
+    ok = pcl_close(PCL),
+    clean_testdir(RootPath).
+
 
 simple_server_test() ->
     RootPath = "test/test_area/ledger",

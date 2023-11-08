@@ -28,19 +28,21 @@ all() -> [
 
 
 expiring_indexes(_Config) ->
-    % Add objects to ths tore with index entries, where the objects (and hence
+    % Add objects to the store with index entries, where the objects (and hence
     % the indexes have an expiry time.  Confirm that the indexes and the
     % objects are no longer present after the expiry time (and are present
     % before).  Confirm that replacing an object has the expected outcome, if
     % the IndexSpecs are updated as part of the request.
     KeyCount = 50000,
-    Future = 120,
-        % 2 minutes - if running tests on a slow machine, may need to increase
+    Future = 60,
+        % 1 minute - if running tests on a slow machine, may need to increase
         % this value
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = [{root_path, RootPath},
-                    {max_journalsize, 100000000},
-                    {sync_strategy, testutil:sync_strategy()}],
+    StartOpts1 = 
+        [{root_path, RootPath},
+            {max_pencillercachesize, 16000},
+            {max_journalobjectcount, 30000},
+            {sync_strategy, testutil:sync_strategy()}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     
     SW1 = os:timestamp(),
@@ -48,12 +50,11 @@ expiring_indexes(_Config) ->
     LoadTime = timer:now_diff(os:timestamp(), SW1)/1000000,
     io:format("Load of ~w std objects in ~w seconds~n",  [KeyCount, LoadTime]),
 
-
     FilterFun = fun({I, _B, _K}) -> lists:member(I, [5, 6, 7, 8]) end,
     LoadedEntriesInRange = lists:sort(lists:filter(FilterFun, IBKL1)),
 
-    true = LoadTime < (Future - 30), 
-        % need 30 seconds spare to run query
+    true = LoadTime < (Future - 20), 
+        % need 20 seconds spare to run query
         % and add replacements
 
     {I0, B0, K0} = hd(IBKL1),
@@ -62,12 +63,12 @@ expiring_indexes(_Config) ->
 
     CountI0Fold =
         fun() ->
-            leveled_bookie:book_indexfold(Bookie1,
-                                            B0,
-                                            {fun(_BF, _KT, Acc) -> Acc + 1 end,
-                                                0},
-                                            {<<"temp_int">>, I0, I0},
-                                            {true, undefined})
+            leveled_bookie:book_indexfold(
+                Bookie1,
+                B0,
+                {fun(_BF, _KT, Acc) -> Acc + 1 end, 0},
+                {<<"temp_int">>, I0, I0},
+                {true, undefined})
         end,
     {async, I0Counter1} = CountI0Fold(),
     I0Count1 = I0Counter1(),
@@ -76,29 +77,30 @@ expiring_indexes(_Config) ->
     InitAcc = [],
     IndexFold = 
         fun() ->
-            leveled_bookie:book_indexfold(Bookie1,
-                                            B0,
-                                            {FoldFun, InitAcc},
-                                            {<<"temp_int">>, 5, 8},
-                                            {true, undefined})
+            leveled_bookie:book_indexfold(
+                Bookie1,
+                B0,
+                {FoldFun, InitAcc},
+                {<<"temp_int">>, 5, 8},
+                {true, undefined})
         end,
 
     {async, Folder1} = IndexFold(),
     QR1 = Folder1(),
     true = lists:sort(QR1) == LoadedEntriesInRange,
     % Replace object with one with an index value of 6
-    testutil:stdload_object(Bookie1, B0, K0, 6, <<"value">>,
-                            leveled_util:integer_now() + 600),
+    testutil:stdload_object(
+        Bookie1, B0, K0, 6, <<"value">>, leveled_util:integer_now() + 600),
     % Confirm that this has reduced the index entries in I0 by 1
     {async, I0Counter2} = CountI0Fold(),
     I0Count2 = I0Counter2(),
     io:format("Count with index value ~w changed from ~w to ~w~n",
                 [I0, I0Count1, I0Count2]),
     true = I0Count2 == (I0Count1 - 1),
-    % Now replace again, shortening the timeout to 15s,
+    % Now replace again, shortening the timeout to 10s,
     % this time index value of 6
-    testutil:stdload_object(Bookie1, B0, K0, 5, <<"value">>,
-                            leveled_util:integer_now() + 15),
+    testutil:stdload_object(
+        Bookie1, B0, K0, 5, <<"value">>, leveled_util:integer_now() + 10),
     {async, Folder2} = IndexFold(),
         leveled_bookie:book_indexfold(Bookie1,
                                         B0,
@@ -108,8 +110,8 @@ expiring_indexes(_Config) ->
     QR2 = Folder2(),
     io:format("Query with additional entry length ~w~n", [length(QR2)]),
     true = lists:sort(QR2) == lists:sort([{5, B0, K0}|LoadedEntriesInRange]),
-    % Wait for a 15s timeout + lus a second to be sure
-    timer:sleep(15000 + 1000),
+    % Wait for a 10s timeout plus a second to be sure
+    timer:sleep(10000 + 1000),
     {async, Folder3} = IndexFold(),
     QR3 = Folder3(),
     % Now the entry should be missing (and the 600s TTL entry should not have
@@ -118,16 +120,23 @@ expiring_indexes(_Config) ->
     true = lists:sort(QR3) == LoadedEntriesInRange,
 
     FoldTime = timer:now_diff(os:timestamp(), SW1)/1000000 - LoadTime,
-    io:format("Query returned ~w entries in ~w seconds - 3 queries + 15s wait~n",
+    io:format("Query returned ~w entries in ~w seconds - 3 queries + 10s wait~n",
                 [length(QR1), FoldTime]),
     true = (LoadTime + FoldTime) < Future,
-    SleepTime = round((Future - (LoadTime + FoldTime)) * 1000 + 1000), % add a second
+    SleepTime = round((Future - (LoadTime + FoldTime)) * 1000), 
     io:format("Sleeping ~w s for all to expire~n", [SleepTime/1000]),
-    timer:sleep(SleepTime),
+    timer:sleep(SleepTime + 1000), % add a second
 
     % Index entries should now have expired
     {async, Folder4} = IndexFold(),
     QR4 = Folder4(),
+    io:format("Unexpired indexes of length ~w~n", [length(QR4)]),
+    lists:foreach(
+        fun(I) ->
+            io:format("Unexpired index ~p~n", [I])
+        end,
+        QR4
+    ),
     true = QR4 == [],
 
     ok = leveled_bookie:book_close(Bookie1),

@@ -108,7 +108,7 @@
 -type object_spec() ::
         object_spec_v0()|object_spec_v1().
 -type compression_method() ::
-        lz4|native.
+        lz4|native|none.
 -type index_specs() ::
         list({add|remove, any(), any()}).
 -type journal_keychanges() :: 
@@ -403,8 +403,8 @@ inker_reload_strategy(AltList) ->
                     lists:ukeysort(1, DefaultList)).
 
 
--spec get_tagstrategy(ledger_key()|tag()|dummy, compaction_strategy()) 
-                                                    -> compaction_method().
+-spec get_tagstrategy(
+    ledger_key()|tag()|dummy, compaction_strategy()) -> compaction_method().
 %% @doc
 %% Work out the compaction strategy for the key
 get_tagstrategy({Tag, _, _, _}, Strategy) ->
@@ -413,6 +413,10 @@ get_tagstrategy(Tag, Strategy) ->
     case lists:keyfind(Tag, 1, Strategy) of
         {Tag, TagStrat} ->
             TagStrat;
+        false when Tag == dummy ->
+            %% dummy is not a strategy, but this is expected to see this when
+            %% running in head_only mode - so don't warn
+            retain;
         false ->
             leveled_log:log(ic012, [Tag, Strategy]),
             retain
@@ -508,7 +512,9 @@ serialise_object(Object, true, Method) when is_binary(Object) ->
             {ok, Bin} = lz4:pack(Object),
             Bin;
         native ->
-            zlib:compress(Object)
+            zlib:compress(Object);
+        none ->
+            Object
     end;
 serialise_object(Object, false, _Method) ->
     term_to_binary(Object);
@@ -554,7 +560,8 @@ encode_valuetype(IsBinary, IsCompressed, Method) ->
     Bit3 = 
         case Method of 
             lz4 -> 4;
-            native -> 0
+            native -> 0;
+            none -> 0
         end,
     Bit2 =
         case IsBinary of            
@@ -562,7 +569,7 @@ encode_valuetype(IsBinary, IsCompressed, Method) ->
             false -> 0
         end,
     Bit1 =
-        case IsCompressed of
+        case IsCompressed and (Method =/= none) of
             true -> 1;
             false -> 0
         end,

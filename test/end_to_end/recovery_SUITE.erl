@@ -73,7 +73,21 @@ replace_everything(_Config) ->
     compact_and_wait(Book1, 1000),
     {ok, FileList2} =  file:list_dir(CompPath),
     io:format("Number of files after compaction ~w~n", [length(FileList2)]),
-    true = FileList1 == FileList2,
+    true = FileList1 =< FileList2,
+        %% There will normally be 5 journal files after 50K write then alter
+        %% That may be two files with entirely altered objects - which will be
+        %% compacted, and will be compacted to nothing.
+        %% The "middle" file - which will be 50% compactable may be scored to
+        %% be part of the first run, or may end up in the second run.  If in
+        %% the first run, the second run will not compact and FL1 == FL2.
+        %% Otherwise FL1 could be 0 and FL2 1.  Hard to control this as there
+        %% is randomisation in both the scoring and the journal size (due to
+        %% jittering of parameters).
+    compact_and_wait(Book1, 1000),
+    {ok, FileList3} =  file:list_dir(CompPath),
+    io:format("Number of files after compaction ~w~n", [length(FileList3)]),
+        %% By the third compaction there should be no further changes
+    true = FileList2 == FileList3,
     {async, BackupFun} = leveled_bookie:book_hotbackup(Book1),
     ok = BackupFun(BackupPath),
 
@@ -130,9 +144,9 @@ replace_everything(_Config) ->
     {OSpcL6, RSpcL6} = lists:split(200, lists:ukeysort(1, KSpcL6)),
     {KSpcL7, V7} = 
         testutil:put_altered_indexed_objects(Book6, BKT3, RSpcL6),
-    {ok, FileList3} =  file:list_dir(CompPath),
-    compact_and_wait(Book6),
     {ok, FileList4} =  file:list_dir(CompPath),
+    compact_and_wait(Book6),
+    {ok, FileList5} =  file:list_dir(CompPath),
     {OSpcL6A, V7} = 
         testutil:put_altered_indexed_objects(Book6, BKT3, OSpcL6, true, V7),
     {async, BackupFun6} = leveled_bookie:book_hotbackup(Book6),
@@ -140,7 +154,7 @@ replace_everything(_Config) ->
     ok = leveled_bookie:book_close(Book6),
 
     io:format("Checking object count in newly compacted journal files~n"),
-    NewlyCompactedFiles = lists:subtract(FileList4, FileList3),
+    NewlyCompactedFiles = lists:subtract(FileList5, FileList4),
     true = length(NewlyCompactedFiles) >= 1,
     CDBFilterFun = fun(_K, _V, _P, Acc, _EF) -> {loop, Acc + 1} end,
     CheckLengthFun =

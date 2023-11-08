@@ -199,11 +199,12 @@ bigsst_littlesst(_Config) ->
                     {compression_point, on_compact}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     ObjL1 = 
-        testutil:generate_objects(80000, 1, [], 
+        testutil:generate_objects(100000, 1, [], 
                                     leveled_rand:rand_bytes(100), 
                                     fun() -> [] end, <<"B">>),
     testutil:riakload(Bookie1, ObjL1),
     testutil:check_forlist(Bookie1, ObjL1),
+    timer:sleep(10000), % Wait for delete timeout
     JFP = RootPath ++ "/ledger/ledger_files/",
     {ok, FNS1} = file:list_dir(JFP),
     ok = leveled_bookie:book_destroy(Bookie1),
@@ -213,6 +214,7 @@ bigsst_littlesst(_Config) ->
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
     testutil:riakload(Bookie2, ObjL1),
     testutil:check_forlist(Bookie2, ObjL1),
+    timer:sleep(10000), % Wait for delete timeout
     {ok, FNS2} = file:list_dir(JFP),
     ok = leveled_bookie:book_destroy(Bookie2),
     io:format("Big SST ~w files Little SST ~w files~n",
@@ -395,6 +397,8 @@ fetchput_snapshot(_Config) ->
     testutil:check_forlist(Bookie1, ChkList1),
     testutil:check_forlist(SnapBookie1, ChkList1),
 
+    compare_foldwithsnap(Bookie1, SnapBookie1, ChkList1),
+
     % Close the snapshot, check the original store still has the objects
 
     ok = leveled_bookie:book_close(SnapBookie1),
@@ -452,7 +456,7 @@ fetchput_snapshot(_Config) ->
 
     % Now loads lots of new objects
 
-    GenList = [20002, 40002, 60002, 80002, 100002],
+    GenList = [20002, 40002, 60002, 80002, 100002, 120002, 140002, 160002],
     CLs2 = testutil:load_objects(20000, GenList, Bookie2, TestObject,
                                     fun testutil:generate_smallobjects/2),
     io:format("Loaded significant numbers of new objects~n"),
@@ -471,6 +475,8 @@ fetchput_snapshot(_Config) ->
     testutil:check_forlist(SnapBookie3, ChkList2),
     testutil:check_forlist(SnapBookie2, ChkList1),
     io:format("Started new snapshot and check for new objects~n"),
+
+    compare_foldwithsnap(Bookie2, SnapBookie3, ChkList3),
     
     % Load yet more objects, these are replacement objects for the last load
 
@@ -508,7 +514,6 @@ fetchput_snapshot(_Config) ->
     testutil:check_forlist(Bookie2, lists:nth(length(CLs3), CLs3)),
     testutil:check_forlist(Bookie2, lists:nth(1, CLs3)),
 
-
     {ok, FNsC} = file:list_dir(RootPath ++ "/ledger/ledger_files"),
     io:format("FNsA ~w FNsB ~w FNsC ~w~n", 
                 [length(FNsA), length(FNsB), length(FNsC)]),
@@ -523,10 +528,58 @@ fetchput_snapshot(_Config) ->
     {B1Size, B1Count} = testutil:check_bucket_stats(Bookie2, "Bucket1"),
     {BSize, BCount} = testutil:check_bucket_stats(Bookie2, "Bucket"),
     true = BSize > 0,
-    true = BCount == 120000,
+    true = BCount == 180000,
+
+    io:format("Shutdown with overhanging snapshot~n"),
     
-    ok = leveled_bookie:book_close(Bookie2),
+    {ok, SnpPCL1, SnpJrnl1} =
+        leveled_bookie:book_snapshot(Bookie2, store, undefined, true),
+    {ok, SnpPCL2, SnpJrnl2} =
+        leveled_bookie:book_snapshot(Bookie2, store, undefined, true),
+
+    TestPid = self(),
+    spawn(
+        fun() ->
+            ok = leveled_bookie:book_close(Bookie2),
+            TestPid ! ok
+        end),
+
+    timer:sleep(5000),
+    ok = leveled_penciller:pcl_close(SnpPCL1),
+    ok = leveled_inker:ink_close(SnpJrnl1),
+    true = is_process_alive(SnpPCL2),
+    true = is_process_alive(SnpJrnl2),
+
+    io:format("Time for close to complete is 2 * 10s~n"),
+    io:format("Both Inker and Penciller will have snapshot delay~n"),
+
+    receive ok -> ok end,
+
+    false = is_process_alive(SnpPCL2),
+    false = is_process_alive(SnpJrnl2),
     testutil:reset_filestructure().
+
+
+compare_foldwithsnap(Bookie, SnapBookie, ChkList) ->
+    HeadFoldFun = fun(B, K, _Hd, Acc) -> [{B, K}|Acc] end,
+    KeyFoldFun = fun(B, K, Acc) -> [{B, K}|Acc] end,
+    {async, HeadFoldDB} =
+        leveled_bookie:book_headfold(
+            Bookie, ?RIAK_TAG, {HeadFoldFun, []}, true, false, false
+        ),
+    {async, HeadFoldSnap} =
+        leveled_bookie:book_headfold(
+            SnapBookie, ?RIAK_TAG, {HeadFoldFun, []}, true, false, false
+        ),
+    true = HeadFoldDB() == HeadFoldSnap(),
+
+    testutil:check_forlist(SnapBookie, ChkList),
+
+    {async, KeyFoldSnap} =
+        leveled_bookie:book_keylist(
+            SnapBookie, ?RIAK_TAG, {KeyFoldFun, []}
+        ),
+    true = HeadFoldSnap() == KeyFoldSnap().
 
 
 load_and_count(_Config) ->
@@ -628,7 +681,9 @@ load_and_count(JournalSize, BookiesMemSize, PencillerMemSize) ->
     ok = leveled_bookie:book_close(Bookie1),
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
     {_, 300000} = testutil:check_bucket_stats(Bookie2, "Bucket"),
+    
     ok = leveled_bookie:book_close(Bookie2),
+
     ManifestFP =
         leveled_pmanifest:filepath(filename:join(RootPath, ?LEDGER_FP),
                                     manifest),
@@ -691,11 +746,13 @@ load_and_count_withdelete(_Config) ->
                         lists:seq(1, 20)),
     not_found = testutil:book_riakget(Bookie1, BucketD, KeyD),
     ok = leveled_bookie:book_close(Bookie1),
+    
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
     testutil:check_formissingobject(Bookie2, BucketD, KeyD),
     testutil:check_formissingobject(Bookie2, "Bookie1", "MissingKey0123"),
     {_BSize, 0} = testutil:check_bucket_stats(Bookie2, BucketD),
     ok = leveled_bookie:book_close(Bookie2),
+
     testutil:reset_filestructure().
 
 
@@ -975,46 +1032,137 @@ many_put_fetch_switchcompression(_Config) ->
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = [{root_path, RootPath},
                     {max_pencillercachesize, 16000},
-                    {sync_strategy, riak_sync},
+                    {max_journalobjectcount, 30000},
+                    {compression_level, 3},
+                    {sync_strategy, testutil:sync_strategy()},
                     {compression_method, native}],
+    StartOpts2 = [{root_path, RootPath},
+                    {max_pencillercachesize, 24000},
+                    {max_journalobjectcount, 30000},
+                    {sync_strategy, testutil:sync_strategy()},
+                    {compression_method, lz4}],
+    StartOpts3 = [{root_path, RootPath},
+                    {max_pencillercachesize, 16000},
+                    {max_journalobjectcount, 30000},
+                    {sync_strategy, testutil:sync_strategy()},
+                    {compression_method, none}],
+    
+    
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
     testutil:check_forobject(Bookie1, TestObject),
-    ok = leveled_bookie:book_close(Bookie1),
-    StartOpts2 = [{root_path, RootPath},
-                    {max_journalsize, 500000000},
-                    {max_pencillercachesize, 32000},
-                    {sync_strategy, testutil:sync_strategy()},
-                    {compression_method, lz4}],
+    CL1s =
+        testutil:load_objects(
+            40000,
+            [2, 40002],
+            Bookie1,
+            TestObject,
+            fun testutil:generate_smallobjects/2),
     
-    %% Change compression method
+    lists:foreach(
+        fun(CL) -> ok = testutil:check_forlist(Bookie1, CL) end, CL1s),
+    ok = leveled_bookie:book_close(Bookie1),
+    
+    %% Change compression method -> lz4
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
     testutil:check_forobject(Bookie2, TestObject),
-    GenList = [2, 40002, 80002, 120002],
-    CLs = testutil:load_objects(40000, GenList, Bookie2, TestObject,
-                                fun testutil:generate_smallobjects/2),
-    CL1A = lists:nth(1, CLs),
-    ChkListFixed = lists:nth(length(CLs), CLs),
-    testutil:check_forlist(Bookie2, CL1A),
-    ObjList2A = testutil:generate_objects(5000, 2),
-    testutil:riakload(Bookie2, ObjList2A),
-    ChkList2A = lists:sublist(lists:sort(ObjList2A), 1000),
-    testutil:check_forlist(Bookie2, ChkList2A),
-    testutil:check_forlist(Bookie2, ChkListFixed),
-    testutil:check_forobject(Bookie2, TestObject),
-    testutil:check_forlist(Bookie2, ChkList2A),
-    testutil:check_forlist(Bookie2, ChkListFixed),
-    testutil:check_forobject(Bookie2, TestObject),
+    lists:foreach(
+        fun(CL) -> ok = testutil:check_forlist(Bookie2, CL) end, CL1s),
+
+    CL2s =
+        testutil:load_objects(
+            40000,
+            [80002, 120002],
+            Bookie2,
+            TestObject,
+            fun testutil:generate_smallobjects/2),
+    lists:foreach(
+        fun(CL) -> ok = testutil:check_forlist(Bookie2, CL) end, CL2s),
+    lists:foreach(
+        fun(CL) -> ok = testutil:check_forlist(Bookie2, CL) end, CL1s),
     ok = leveled_bookie:book_close(Bookie2),
 
     %% Change method back again
     {ok, Bookie3} = leveled_bookie:book_start(StartOpts1),
-    testutil:check_forlist(Bookie3, ChkList2A),
-    testutil:check_forlist(Bookie3, ChkListFixed),
-    testutil:check_forobject(Bookie3, TestObject),
     testutil:check_formissingobject(Bookie3, "Bookie1", "MissingKey0123"),
-    ok = leveled_bookie:book_destroy(Bookie3).
+    lists:foreach(
+        fun(CL) -> ok = testutil:check_forlist(Bookie3, CL) end, CL2s),
+    lists:foreach(
+        fun(CL) -> ok = testutil:check_forlist(Bookie3, CL) end, CL1s),
+    
+    CL3s =
+        testutil:load_objects(
+            40000,
+            [160002, 200002],
+            Bookie3,
+            TestObject,
+            fun testutil:generate_smallobjects/2,
+            30000
+        ),
+    lists:foreach(
+        fun(CL) -> ok = testutil:check_forlist(Bookie3, CL) end, CL3s),
+    ok = leveled_bookie:book_close(Bookie3),
+
+    % Change method to no compression
+    {ok, Bookie4} = leveled_bookie:book_start(StartOpts3),
+    lists:foreach(
+        fun(CL) -> ok = testutil:check_forlist(Bookie4, CL) end, CL2s),
+    lists:foreach(
+        fun(CL) -> ok = testutil:check_forlist(Bookie4, CL) end, CL1s),
+    lists:foreach(
+        fun(CL) -> ok = testutil:check_forlist(Bookie4, CL) end, CL3s),
+    
+    CL4s =
+        testutil:load_objects(
+            40000,
+            [240002, 280002],
+            Bookie4,
+            TestObject,
+            fun testutil:generate_smallobjects/2
+        ),
+    lists:foreach(
+        fun(CL) -> ok = testutil:check_forlist(Bookie4, CL) end, CL3s),
+    lists:foreach(
+        fun(CL) -> ok = testutil:check_forlist(Bookie4, CL) end, CL4s),
+    testutil:delete_some_objects(Bookie4, lists:flatten(CL3s), 60000),
+    CL5s =
+        testutil:load_objects(
+            40000,
+            [320002, 360002],
+            Bookie4,
+            TestObject,
+            fun testutil:generate_smallobjects/2
+        ),
+    ok = leveled_bookie:book_compactjournal(Bookie4, 30000),
+    testutil:wait_for_compaction(Bookie4),
+    lists:foreach(
+        fun(CL) -> ok = testutil:check_forlist(Bookie4, CL) end, CL4s),
+    lists:foreach(
+        fun(CL) -> ok = testutil:check_forlist(Bookie4, CL) end, CL5s),
+    
+    ok = leveled_bookie:book_close(Bookie4),
+
+    %% Change compression method -> lz4
+    {ok, Bookie5} = leveled_bookie:book_start(StartOpts2),
+    lists:foreach(
+        fun(CL) -> ok = testutil:check_forlist(Bookie5, CL) end, CL1s),
+    lists:foreach(
+        fun(CL) -> ok = testutil:check_forlist(Bookie5, CL) end, CL4s),
+    lists:foreach(
+        fun(CL) -> ok = testutil:check_forlist(Bookie5, CL) end, CL5s),
+    ok = leveled_bookie:book_close(Bookie5),
+
+    %% Change compression method -> native
+    {ok, Bookie6} = leveled_bookie:book_start(StartOpts1),
+    lists:foreach(
+        fun(CL) -> ok = testutil:check_forlist(Bookie6, CL) end, CL1s),
+    lists:foreach(
+        fun(CL) -> ok = testutil:check_forlist(Bookie6, CL) end, CL4s),
+    lists:foreach(
+        fun(CL) -> ok = testutil:check_forlist(Bookie6, CL) end, CL5s),
+
+    ok = leveled_bookie:book_destroy(Bookie6).
 
 
 safereaderror_startup(_Config) ->

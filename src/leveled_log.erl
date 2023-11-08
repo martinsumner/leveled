@@ -50,6 +50,8 @@
             {info, <<"Snapshot starting with Ink ~w Pcl ~w">>},
         b0003 =>
             {info, <<"Bookie closing for reason ~w">>},
+        b0004 =>
+            {warn, <<"Bookie snapshot exiting as master store ~w is down for reason ~p">>},
         b0005 =>
             {info, <<"LedgerSQN=~w at startup">>},
         b0006 =>
@@ -85,17 +87,17 @@
         p0005 =>
             {debug, <<"Delete confirmed as file ~s is removed from Manifest">>},
         p0007 =>
-            {debug, <<"Sent release message for cloned Penciller following close for reason ~w">>},
+            {debug, <<"Shutdown complete for cloned Penciller for reason ~w">>},
         p0008 =>
             {info, <<"Penciller closing for reason ~w">>},
         p0010 =>
             {info, <<"level zero discarded_count=~w on close of Penciller">>},
         p0011 =>
-            {info, <<"Shutdown complete for Penciller for reason ~w">>},
+            {debug, <<"Shutdown complete for Penciller for reason ~w">>},
         p0012 =>
             {info, <<"Store to be started based on manifest sequence number of ~w">>},
         p0013 =>
-            {warn, <<"Seqence number of 0 indicates no valid manifest">>},
+            {info, <<"Seqence number of 0 indicates no valid manifest">>},
         p0014 =>
             {info, <<"Maximum sequence number of ~w found in nonzero levels">>},
         p0015 =>
@@ -132,6 +134,8 @@
             {info, <<"Archiving filename ~s as unused at startup">>},
         p0041 =>
             {info, <<"Penciller manifest switched from SQN ~w to ~w">>},
+        p0042 =>
+            {info, <<"Deferring shutdown due to snapshot_count=~w">>},
         pc001 =>
             {info, <<"Penciller's clerk ~w started with owner ~w">>},
         pc005 =>
@@ -244,6 +248,12 @@
             {info, <<"Prompted roll at NewSQN=~w">>},
         i0025 =>
             {warn, <<"Journal SQN of ~w is below Ledger SQN of ~w anti-entropy will be required">>},
+        i0026 =>
+            {info, <<"Deferring shutdown due to snapshot_count=~w">>},
+        i0027 =>
+            {debug, <<"Shutdown complete for cloned Inker for reason ~w">>},
+        i0028 =>
+            {debug, <<"Shutdown complete for Inker for reason ~w">>},
         ic001 =>
             {info, <<"Closed for reason ~w so maybe leaving garbage">>},
         ic002 =>

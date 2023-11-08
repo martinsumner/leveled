@@ -77,8 +77,12 @@
 -define(LOOK_BLOCKSIZE, {24, 32}). % 4x + y = ?LOOK_SLOTSIZE
 -define(NOLOOK_SLOTSIZE, 256).
 -define(NOLOOK_BLOCKSIZE, {56, 32}). % 4x + y = ?NOLOOK_SLOTSIZE
--define(COMPRESSION_LEVEL, 1).
--define(BINARY_SETTINGS, [{compressed, ?COMPRESSION_LEVEL}]).
+-define(COMPRESSION_FACTOR, 1).
+    % When using native compression - how hard should the compression code
+    % try to reduce the size of the compressed output. 1 Is to imply minimal
+    % effort, 6 is default in OTP:
+    % https://www.erlang.org/doc/man/erlang.html#term_to_binary-2
+-define(BINARY_SETTINGS, [{compressed, ?COMPRESSION_FACTOR}]).
 -define(MERGE_SCANWIDTH, 16).
 -define(DISCARD_EXT, ".discarded").
 -define(DELETE_TIMEOUT, 10000).
@@ -89,7 +93,6 @@
 -define(BLOCK_LENGTHS_LENGTH, 20).
 -define(LMD_LENGTH, 4).
 -define(FLIPPER32, 4294967295).
--define(COMPRESS_AT_LEVEL, 1).
 -define(DOUBLESIZE_LEVEL, 3).
 -define(INDEX_MODDATE, true).
 -define(TOMB_COUNT, true).
@@ -288,12 +291,7 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST) ->
 
 sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST, IndexModDate) ->
     {ok, Pid} = gen_fsm:start_link(?MODULE, [], ?START_OPTS),
-    PressMethod0 = compress_level(Level, OptsSST#sst_options.press_method),
-    MaxSlots0 = maxslots_level(Level, OptsSST#sst_options.max_sstslots),
-    OptsSST0 =
-        OptsSST#sst_options{press_method = PressMethod0,
-                            max_sstslots = MaxSlots0},
-
+    OptsSST0 = update_options(OptsSST, Level),
     {[], [], SlotList, FK, _CountOfTombs}  =
         merge_lists(KVList, OptsSST0, IndexModDate),
     case gen_fsm:sync_send_event(Pid,
@@ -344,11 +342,7 @@ sst_newmerge(RootPath, Filename,
 sst_newmerge(RootPath, Filename, 
         KVL1, KVL2, IsBasement, Level, 
         MaxSQN, OptsSST, IndexModDate, TombCount) ->
-    PressMethod0 = compress_level(Level, OptsSST#sst_options.press_method),
-    MaxSlots0 = maxslots_level(Level, OptsSST#sst_options.max_sstslots),
-    OptsSST0 =
-        OptsSST#sst_options{press_method = PressMethod0,
-                            max_sstslots = MaxSlots0},
+    OptsSST0 = update_options(OptsSST, Level),
     {Rem1, Rem2, SlotList, FK, CountOfTombs} = 
         merge_lists(KVL1, KVL2, {IsBasement, Level}, OptsSST0,
                     IndexModDate, TombCount),
@@ -391,11 +385,7 @@ sst_newmerge(RootPath, Filename,
 sst_newlevelzero(RootPath, Filename, 
                     Slots, Fetcher, Penciller,
                     MaxSQN, OptsSST) ->
-    PressMethod0 = compress_level(0, OptsSST#sst_options.press_method),
-    MaxSlots0 = maxslots_level(0, OptsSST#sst_options.max_sstslots),
-    OptsSST0 =
-        OptsSST#sst_options{press_method = PressMethod0,
-                            max_sstslots = MaxSlots0},
+    OptsSST0 = update_options(OptsSST, 0),
     {ok, Pid} = gen_fsm:start_link(?MODULE, [], ?START_OPTS),
     % Initiate the file into the "starting" state
     ok = gen_fsm:sync_send_event(Pid,
@@ -1271,6 +1261,16 @@ tune_seglist(SegList) ->
 %%% Internal Functions
 %%%============================================================================
 
+
+-spec update_options(sst_options(), non_neg_integer()) -> sst_options().
+update_options(OptsSST, Level) ->
+    CompressLevel = OptsSST#sst_options.press_level,
+    PressMethod0 =
+        compress_level(Level, CompressLevel, OptsSST#sst_options.press_method),
+    MaxSlots0 =
+        maxslots_level(Level, OptsSST#sst_options.max_sstslots),
+    OptsSST#sst_options{press_method = PressMethod0, max_sstslots = MaxSlots0}.
+
 -spec new_blockindex_cache(pos_integer()) -> blockindex_cache().
 new_blockindex_cache(Size) ->
     {0, array:new([{size, Size}, {default, none}]), 0}.
@@ -1512,12 +1512,14 @@ fetch_range(StartKey, EndKey, ScanWidth, SegList, LowLastMod, State) ->
                     State#state.index_moddate),
     {NeededBlockIdx, SlotsToFetchBinList, SlotsToPoint}.
 
--spec compress_level(integer(), press_method()) -> press_method().
+-spec compress_level(
+    non_neg_integer(), non_neg_integer(), press_method()) -> press_method().
 %% @doc
 %% disable compression at higher levels for improved performance
-compress_level(Level, _PressMethod) when Level < ?COMPRESS_AT_LEVEL ->
+compress_level(
+        Level, LevelToCompress, _PressMethod) when Level < LevelToCompress ->
     none;
-compress_level(_Level, PressMethod) ->
+compress_level(_Level, _LevelToCompress, PressMethod) ->
     PressMethod.
 
 -spec maxslots_level(level(), pos_integer()) ->  pos_integer().

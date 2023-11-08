@@ -46,10 +46,9 @@
 %% Can be lz4 or native (which will use the Erlang native zlib compression)
 %% within term_to_binary
 {mapping, "leveled.compression_method", "leveled.compression_method", [
-  {default, native},
-  {datatype, atom}
+  {datatype, {enum, [native, lz4, none]}},
+  {default, native}
 ]}.
-
 
 %% @doc Compression point
 %% The point at which compression is applied to the Journal (the Ledger is 
@@ -59,6 +58,16 @@
 {mapping, "leveled.compression_point", "leveled.compression_point", [
   {default, on_receipt},
   {datatype, atom}
+]}.
+
+%% @doc Compresstion Level (Ledger LSM)
+%% Specify the level in the LSM tree from which compression should occur.
+%% Defaults to L1, so only L0 writes are uncompressed.
+{mapping, "leveled.compression_level", "leveled.compression_level", [
+  {default, 1},
+  {datatype, integer},
+  {validators, ["range:0-7"]},
+  hidden
 ]}.
 
 %% @doc Log level
