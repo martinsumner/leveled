@@ -766,25 +766,34 @@ handle_cast({release_snapshot, Snapshot}, State) ->
             {noreply, State#state{registered_snapshots=Rs}}
     end;
 handle_cast({log_level, LogLevel}, State) ->
-    INC = State#state.clerk,
-    ok = leveled_iclerk:clerk_loglevel(INC, LogLevel),
+    case State#state.clerk of
+        undefined ->
+            ok;
+        INC ->
+            leveled_iclerk:clerk_loglevel(INC, LogLevel)
+        end,
     ok = leveled_log:set_loglevel(LogLevel),
-    CDBopts = State#state.cdb_options,
-    CDBopts0 = CDBopts#cdb_options{log_options = leveled_log:get_opts()},
+    CDBopts0 = update_cdb_logoptions(State#state.cdb_options),
     {noreply, State#state{cdb_options = CDBopts0}};
 handle_cast({add_logs, ForcedLogs}, State) ->
-    INC = State#state.clerk,
-    ok = leveled_iclerk:clerk_addlogs(INC, ForcedLogs),
+    case State#state.clerk of
+        undefined ->
+            ok;
+        INC ->
+            leveled_iclerk:clerk_addlogs(INC, ForcedLogs)
+    end,
     ok = leveled_log:add_forcedlogs(ForcedLogs),
-    CDBopts = State#state.cdb_options,
-    CDBopts0 = CDBopts#cdb_options{log_options = leveled_log:get_opts()},
+    CDBopts0 = update_cdb_logoptions(State#state.cdb_options),
     {noreply, State#state{cdb_options = CDBopts0}};
 handle_cast({remove_logs, ForcedLogs}, State) ->
-    INC = State#state.clerk,
-    ok = leveled_iclerk:clerk_removelogs(INC, ForcedLogs),
+    case State#state.clerk of
+        undefined ->
+            ok;
+        INC ->
+            leveled_iclerk:clerk_removelogs(INC, ForcedLogs)
+        end,
     ok = leveled_log:remove_forcedlogs(ForcedLogs),
-    CDBopts = State#state.cdb_options,
-    CDBopts0 = CDBopts#cdb_options{log_options = leveled_log:get_opts()},
+    CDBopts0 = update_cdb_logoptions(State#state.cdb_options),
     {noreply, State#state{cdb_options = CDBopts0}};
 handle_cast({maybe_defer_shutdown, ShutdownType, From}, State) ->
     case length(State#state.registered_snapshots) of
@@ -828,8 +837,10 @@ handle_info({'DOWN', BookieMonRef, process, _BookiePid, _Info},
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(_Reason, _State) ->
-    ok.
+terminate(Reason, _State=#state{is_snapshot=Snap}) when Snap == true ->
+    leveled_log:log(i0027, [Reason]);
+terminate(Reason, _State) ->
+    leveled_log:log(i0028, [Reason]).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -1302,6 +1313,14 @@ wrap_checkfilterfun(CheckFilterFun) ->
                 false
         end
     end.
+
+
+-spec update_cdb_logoptions(
+    #cdb_options{}|undefined) -> #cdb_options{}|undefined.
+update_cdb_logoptions(undefined) ->
+    undefined;
+update_cdb_logoptions(CDBopts) ->
+    CDBopts#cdb_options{log_options = leveled_log:get_opts()}.
 
 %%%============================================================================
 %%% Test

@@ -74,7 +74,9 @@
         book_logsettings/1,
         book_loglevel/2,
         book_addlogs/2,
-        book_removelogs/2]).
+        book_removelogs/2,
+        book_headstatus/1
+    ]).
 
 %% folding API
 -export([
@@ -157,6 +159,7 @@
                 head_only = false :: boolean(),
                 head_lookup = true :: boolean(),
                 ink_checking = ?MAX_KEYCHECK_FREQUENCY :: integer(),
+                bookie_monref :: reference() | undefined,
                 monitor = {no_monitor, 0} :: leveled_monitor:monitor()}).
 
 
@@ -1134,11 +1137,18 @@ book_addlogs(Pid, ForcedLogs) ->
 book_removelogs(Pid, ForcedLogs) ->
     gen_server:cast(Pid, {remove_logs, ForcedLogs}).
 
+-spec book_returnactors(pid()) -> {ok, pid(), pid()}.
 %% @doc
 %% Return the Inker and Penciller - {ok, Inker, Penciller}.  Used only in tests
 book_returnactors(Pid) ->
-    gen_server:call(Pid, return_actors).
+    gen_server:call(Pid, return_actors, infinity).
 
+-spec book_headstatus(pid()) -> {boolean(), boolean()}.
+%% @doc
+%% Return booleans to state the bookie is in head_only mode, and supporting
+%% lookups
+book_headstatus(Pid) ->
+    gen_server:call(Pid, head_status, infinity).
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -1240,10 +1250,17 @@ init([Opts]) ->
         {Bookie, undefined} ->
             {ok, Penciller, Inker} = 
                 book_snapshot(Bookie, store, undefined, true),
+            BookieMonitor = erlang:monitor(process, Bookie),
+            NewETS = ets:new(mem, [ordered_set]),
+            {HeadOnly, Lookup} = leveled_bookie:book_headstatus(Bookie),
             leveled_log:log(b0002, [Inker, Penciller]),
             {ok,
                 #state{penciller = Penciller,
                         inker = Inker,
+                        ledger_cache = #ledger_cache{mem = NewETS},
+                        head_only = HeadOnly,
+                        head_lookup = Lookup,
+                        bookie_monref = BookieMonitor,
                         is_snapshot = true}}
     end.
 
@@ -1495,6 +1512,8 @@ handle_call(destroy, _From, State=#state{is_snapshot=Snp}) when Snp == false ->
     {stop, normal, ok, State};
 handle_call(return_actors, _From, State) ->
     {reply, {ok, State#state.inker, State#state.penciller}, State};
+handle_call(head_status, _From, State) ->
+    {reply, {State#state.head_only, State#state.head_lookup}, State};
 handle_call(Msg, _From, State) ->
     {reply, {unsupported_message, element(1, Msg)}, State}.
 
@@ -1502,34 +1521,52 @@ handle_call(Msg, _From, State) ->
 handle_cast({log_level, LogLevel}, State) ->
     PCL = State#state.penciller,
     INK = State#state.inker,
-    Monitor = element(1, State#state.monitor),
     ok = leveled_penciller:pcl_loglevel(PCL, LogLevel),
     ok = leveled_inker:ink_loglevel(INK, LogLevel),
-    ok = leveled_monitor:log_level(Monitor, LogLevel),
+    case element(1, State#state.monitor) of
+        no_monitor ->
+            ok;
+        Monitor ->
+            leveled_monitor:log_level(Monitor, LogLevel)
+    end,
     ok = leveled_log:set_loglevel(LogLevel),
     {noreply, State};
 handle_cast({add_logs, ForcedLogs}, State) ->
     PCL = State#state.penciller,
     INK = State#state.inker,
-    Monitor = element(1, State#state.monitor),
     ok = leveled_penciller:pcl_addlogs(PCL, ForcedLogs),
     ok = leveled_inker:ink_addlogs(INK, ForcedLogs),
-    ok = leveled_monitor:log_add(Monitor, ForcedLogs),
+    case element(1, State#state.monitor) of
+        no_monitor ->
+            ok;
+        Monitor ->
+            leveled_monitor:log_add(Monitor, ForcedLogs)
+    end,
     ok = leveled_log:add_forcedlogs(ForcedLogs),
     {noreply, State};
 handle_cast({remove_logs, ForcedLogs}, State) ->
     PCL = State#state.penciller,
     INK = State#state.inker,
-    Monitor = element(1, State#state.monitor),
     ok = leveled_penciller:pcl_removelogs(PCL, ForcedLogs),
     ok = leveled_inker:ink_removelogs(INK, ForcedLogs),
-    ok = leveled_monitor:log_remove(Monitor, ForcedLogs),
+    case element(1, State#state.monitor) of
+        no_monitor ->
+            ok;
+        Monitor ->
+            leveled_monitor:log_remove(Monitor, ForcedLogs)
+    end,
     ok = leveled_log:remove_forcedlogs(ForcedLogs),
     {noreply, State}.
 
 
+%% handle the bookie stopping and stop this snapshot
+handle_info({'DOWN', BookieMonRef, process, BookiePid, Info},
+	    State=#state{bookie_monref = BookieMonRef, is_snapshot = true}) ->
+    leveled_log:log(b0004, [BookiePid, Info]),
+    {stop, normal, State};
 handle_info(_Info, State) ->
     {noreply, State}.
+
 
 terminate(Reason, _State) ->
     leveled_log:log(b0003, [Reason]).
@@ -1832,10 +1869,11 @@ set_options(Opts, Monitor) ->
         }.
 
 
--spec return_snapfun(book_state(), store|ledger, 
-                        tuple()|no_lookup|undefined, 
-                        boolean(), boolean()) 
-                            -> fun(() -> {ok, pid(), pid()|null}).
+-spec return_snapfun(
+    book_state(), store|ledger,
+    tuple()|no_lookup|undefined,
+    boolean(), boolean()) 
+        -> fun(() -> {ok, pid(), pid()|null, fun(() -> ok)}).
 %% @doc
 %% Generates a function from which a snapshot can be created.  The primary
 %% factor here is the SnapPreFold boolean.  If this is true then the snapshot
@@ -1843,11 +1881,31 @@ set_options(Opts, Monitor) ->
 %% false then the snapshot will be taken when the Fold function is called.
 %%
 %% SnapPrefold is to be used when the intention is to queue the fold, and so
-%% claling of the fold may be delayed, but it is still desired that the fold
+%% calling of the fold may be delayed, but it is still desired that the fold
 %% represent the point in time that the query was requested.
+%% 
+%% Also returns a function which will close any snapshots to be used in the
+%% runners post-query cleanup action
+%% 
+%% When the bookie is a snapshot, a fresh snapshot should not be taken, the
+%% previous snapshot should be used instead.  Also the snapshot should not be
+%% closed as part of the post-query activity as the snapshot may be reused, and
+%% should be manually closed.
 return_snapfun(State, SnapType, Query, LongRunning, SnapPreFold) ->
-    case SnapPreFold of
-        true ->
+    CloseFun =
+        fun(LS0, JS0) ->
+            fun() ->
+                ok = leveled_penciller:pcl_close(LS0),
+                case JS0 of
+                    JS0 when is_pid(JS0) ->
+                        leveled_inker:ink_close(JS0);
+                    _ ->
+                        ok
+                end
+            end
+        end,
+    case {SnapPreFold, State#state.is_snapshot} of
+        {true, false} ->
             {ok, LS, JS} =
                 snapshot_store(
                     State#state.ledger_cache,
@@ -1857,15 +1915,23 @@ return_snapfun(State, SnapType, Query, LongRunning, SnapPreFold) ->
                     SnapType,
                     Query,
                     LongRunning),
-            fun() -> {ok, LS, JS} end;
-        false ->
+            fun() -> {ok, LS, JS, CloseFun(LS, JS)} end;
+        {false, false} ->
             Self = self(),
             % Timeout will be ignored, as will Requestor
             %
             % This uses the external snapshot - as the snapshot will need
             % to have consistent state between Bookie and Penciller when
             % it is made.
-            fun() -> book_snapshot(Self, SnapType, Query, LongRunning) end
+            fun() -> 
+                {ok, LS, JS} = 
+                    book_snapshot(Self, SnapType, Query, LongRunning),
+                {ok, LS, JS, CloseFun(LS, JS)}
+            end;
+        {_ , true} ->
+            LS = State#state.penciller,
+            JS = State#state.inker,
+            fun() -> {ok, LS, JS, fun() -> ok end} end
     end.
 
 -spec snaptype_by_presence(boolean()) -> store|ledger.
@@ -2196,14 +2262,7 @@ fetch_head(Key, Penciller, LedgerCache) ->
 %% The L0Index needs to be bypassed when running head_only
 fetch_head(Key, Penciller, LedgerCache, HeadOnly) ->
     SW = os:timestamp(),
-    CacheResult =
-        case LedgerCache#ledger_cache.mem of
-            undefined ->
-                [];
-            Tab ->
-                ets:lookup(Tab, Key)
-        end,
-    case CacheResult of
+    case ets:lookup(LedgerCache#ledger_cache.mem, Key) of
         [{Key, Head}] ->
             {Head, true};
         [] ->
