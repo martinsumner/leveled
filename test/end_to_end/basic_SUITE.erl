@@ -404,6 +404,8 @@ fetchput_snapshot(_Config) ->
     testutil:check_forlist(Bookie1, ChkList1),
     testutil:check_forlist(SnapBookie1, ChkList1),
 
+    compare_foldwithsnap(Bookie1, SnapBookie1, ChkList1),
+
     % Close the snapshot, check the original store still has the objects
 
     ok = leveled_bookie:book_close(SnapBookie1),
@@ -480,6 +482,8 @@ fetchput_snapshot(_Config) ->
     testutil:check_forlist(SnapBookie3, ChkList2),
     testutil:check_forlist(SnapBookie2, ChkList1),
     io:format("Started new snapshot and check for new objects~n"),
+
+    compare_foldwithsnap(Bookie2, SnapBookie3, ChkList3),
     
     % Load yet more objects, these are replacement objects for the last load
 
@@ -561,6 +565,28 @@ fetchput_snapshot(_Config) ->
     false = is_process_alive(SnpPCL2),
     false = is_process_alive(SnpJrnl2),
     testutil:reset_filestructure().
+
+
+compare_foldwithsnap(Bookie, SnapBookie, ChkList) ->
+    HeadFoldFun = fun(B, K, _Hd, Acc) -> [{B, K}|Acc] end,
+    KeyFoldFun = fun(B, K, Acc) -> [{B, K}|Acc] end,
+    {async, HeadFoldDB} =
+        leveled_bookie:book_headfold(
+            Bookie, ?RIAK_TAG, {HeadFoldFun, []}, true, false, false
+        ),
+    {async, HeadFoldSnap} =
+        leveled_bookie:book_headfold(
+            SnapBookie, ?RIAK_TAG, {HeadFoldFun, []}, true, false, false
+        ),
+    true = HeadFoldDB() == HeadFoldSnap(),
+
+    testutil:check_forlist(SnapBookie, ChkList),
+
+    {async, KeyFoldSnap} =
+        leveled_bookie:book_keylist(
+            SnapBookie, ?RIAK_TAG, {KeyFoldFun, []}
+        ),
+    true = HeadFoldSnap() == KeyFoldSnap().
 
 
 load_and_count(_Config) ->
