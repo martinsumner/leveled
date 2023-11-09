@@ -134,6 +134,7 @@
 -define(JOURNAL_FILEX, "cdb").
 -define(PENDING_FILEX, "pnd").
 -define(TEST_KC, {[], infinity}).
+-define(SHUTDOWN_LOOPS, 10).
 -define(SHUTDOWN_PAUSE, 10000).
     % How long to wait for snapshots to be released on shutdown
     % before forcing closure of snapshots
@@ -155,7 +156,8 @@
                 compression_method = native :: lz4|native|none,
                 compress_on_receipt = false :: boolean(),
                 snap_timeout :: pos_integer() | undefined, % in seconds
-                source_inker :: pid() | undefined}).
+                source_inker :: pid() | undefined,
+                shutdown_loops = ?SHUTDOWN_LOOPS :: non_neg_integer()}).
 
 
 -type inker_options() :: #inker_options{}.
@@ -798,16 +800,25 @@ handle_cast({remove_logs, ForcedLogs}, State) ->
 handle_cast({maybe_defer_shutdown, ShutdownType, From}, State) ->
     case length(State#state.registered_snapshots) of
         0 ->
-            ok;
+            gen_server:cast(self(), {complete_shutdown, ShutdownType, From}),
+            {noreply, State};
         N ->
             % Whilst this process sleeps, then any remaining snapshots may
             % release and have their release messages queued before the
             % complete_shutdown cast is sent
-            leveled_log:log(i0026, [N]),
-            timer:sleep(?SHUTDOWN_PAUSE)
-    end,
-    gen_server:cast(self(), {complete_shutdown, ShutdownType, From}),
-    {noreply, State};
+            case State#state.shutdown_loops of
+                LoopCount when LoopCount > 0 ->
+                    leveled_log:log(i0026, [N]),
+                    timer:sleep(?SHUTDOWN_PAUSE div ?SHUTDOWN_LOOPS),
+                    gen_server:cast(
+                        self(), {maybe_defer_shutdown, ShutdownType, From}),
+                    {noreply, State#state{shutdown_loops = LoopCount - 1}};
+                0 ->
+                    gen_server:cast(
+                        self(), {complete_shutdown, ShutdownType, From}),
+                    {noreply, State}
+            end
+        end;
 handle_cast({complete_shutdown, ShutdownType, From}, State) ->
     lists:foreach(
         fun(SnapPid) -> ok = ink_snapclose(SnapPid) end,
