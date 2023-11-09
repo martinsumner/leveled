@@ -104,6 +104,7 @@ expiring_indexes(_Config) ->
     % this time index value of 6
     testutil:stdload_object(
         Bookie1, B0, K0, 5, <<"value">>, leveled_util:integer_now() + 10),
+    timer:sleep(1000),
     {async, Folder2} = IndexFold(),
         leveled_bookie:book_indexfold(Bookie1,
                                         B0,
