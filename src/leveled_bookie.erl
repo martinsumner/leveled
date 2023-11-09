@@ -2612,6 +2612,37 @@ generate_multiple_objects(Count, KeyNumber, ObjL) ->
                                 ObjL ++ [{Key, Value, IndexSpec}]).
 
 
+shutdown_test_() ->
+    {timeout, 10, fun shutdown_tester/0}.
+
+shutdown_tester() ->
+    RootPath = reset_filestructure(),
+    {ok, Bookie1} = book_start([{root_path, RootPath}]),
+    lists:foreach(
+        fun({K, V, S}) ->
+            ok = book_put(Bookie1, <<"Bucket">>, K, V, S, ?STD_TAG)
+        end,
+        generate_multiple_objects(5000, 1)),
+    {ok, SnpPCL1, SnpJrnl1} =
+        leveled_bookie:book_snapshot(Bookie1, store, undefined, true),
+    
+    TestPid = self(),
+    spawn(
+        fun() ->
+            ok = leveled_bookie:book_close(Bookie1),
+            TestPid ! ok
+        end),
+
+    timer:sleep(2000),
+    ok = leveled_penciller:pcl_close(SnpPCL1),
+    ok = leveled_inker:ink_close(SnpJrnl1),
+    SW = os:timestamp(),
+    receive ok -> ok end,
+    WaitForShutDown = timer:now_diff(SW, os:timestamp()) div 1000,
+    ?assert(WaitForShutDown =< (1000 + 1)),
+    _ = reset_filestructure().
+
+
 ttl_test() ->
     RootPath = reset_filestructure(),
     {ok, Bookie1} = book_start([{root_path, RootPath}]),

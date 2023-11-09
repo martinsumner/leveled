@@ -221,6 +221,7 @@
 -define(ITERATOR_SCANWIDTH, 4).
 -define(TIMING_SAMPLECOUNTDOWN, 10000).
 -define(TIMING_SAMPLESIZE, 100).
+-define(SHUTDOWN_LOOPS, 10).
 -define(SHUTDOWN_PAUSE, 10000).
     % How long to wait for snapshots to be released on shutdown
     % before forcing closure of snapshots
@@ -270,7 +271,10 @@
 
                 monitor = {no_monitor, 0} :: leveled_monitor:monitor(),
 
-                sst_options = #sst_options{} :: sst_options()}).
+                sst_options = #sst_options{} :: sst_options(),
+            
+                shutdown_loops = ?SHUTDOWN_LOOPS :: non_neg_integer()
+            }).
 
 
 -type penciller_options() :: #penciller_options{}.
@@ -1171,16 +1175,25 @@ handle_cast({remove_logs, ForcedLogs}, State) ->
 handle_cast({maybe_defer_shutdown, ShutdownType, From}, State) ->
     case length(leveled_pmanifest:snapshot_pids(State#state.manifest)) of
         0 ->
-            ok;
+            gen_server:cast(self(), {complete_shutdown, ShutdownType, From}),
+            {noreply, State};
         N ->
             % Whilst this process sleeps, then any remaining snapshots may
             % release and have their release messages queued before the
             % complete_shutdown cast is sent
-            leveled_log:log(p0042, [N]),
-            timer:sleep(?SHUTDOWN_PAUSE)
-    end,
-    gen_server:cast(self(), {complete_shutdown, ShutdownType, From}),
-    {noreply, State};
+            case State#state.shutdown_loops of
+                LoopCount when LoopCount > 0 ->
+                    leveled_log:log(p0042, [N]),
+                    timer:sleep(?SHUTDOWN_PAUSE div ?SHUTDOWN_LOOPS),
+                    gen_server:cast(
+                        self(), {maybe_defer_shutdown, ShutdownType, From}),
+                    {noreply, State#state{shutdown_loops = LoopCount - 1}};
+                0 ->
+                    gen_server:cast(
+                        self(), {complete_shutdown, ShutdownType, From}),
+                    {noreply, State}
+            end
+    end;
 handle_cast({complete_shutdown, ShutdownType, From}, State) ->
     lists:foreach(
         fun(Snap) -> ok = pcl_snapclose(Snap) end,
