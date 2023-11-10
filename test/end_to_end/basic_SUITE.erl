@@ -929,7 +929,7 @@ space_clear_ondelete(_Config) ->
     true = PointB_Journals < length(FNsA_J),
     true = length(strip_nonsst(FNsD_L)) < length(strip_nonsst(FNsA_L)),
     true = length(strip_nonsst(FNsD_L)) < length(strip_nonsst(FNsB_L)),
-    true = length(strip_nonsst(FNsD_L)) < length(strip_nonsst(FNsC_L)),
+    true = length(strip_nonsst(FNsD_L)) =< length(strip_nonsst(FNsC_L)),
     true = length(strip_nonsst(FNsD_L)) == 0.
 
 

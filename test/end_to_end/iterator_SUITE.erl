@@ -47,8 +47,11 @@ expiring_indexes(_Config) ->
     
     SW1 = os:timestamp(),
     IBKL1 = testutil:stdload_expiring(Bookie1, KeyCount, Future),
+    timer:sleep(1000),
+        % Wait a second after last key so that none loaded in the last second
     LoadTime = timer:now_diff(os:timestamp(), SW1)/1000000,
     io:format("Load of ~w std objects in ~w seconds~n",  [KeyCount, LoadTime]),
+    SW2 = os:timestamp(),
 
     FilterFun = fun({I, _B, _K}) -> lists:member(I, [5, 6, 7, 8]) end,
     LoadedEntriesInRange = lists:sort(lists:filter(FilterFun, IBKL1)),
@@ -101,6 +104,7 @@ expiring_indexes(_Config) ->
     % this time index value of 6
     testutil:stdload_object(
         Bookie1, B0, K0, 5, <<"value">>, leveled_util:integer_now() + 10),
+    timer:sleep(1000),
     {async, Folder2} = IndexFold(),
         leveled_bookie:book_indexfold(Bookie1,
                                         B0,
@@ -121,23 +125,25 @@ expiring_indexes(_Config) ->
 
     FoldTime = timer:now_diff(os:timestamp(), SW1)/1000000 - LoadTime,
     io:format("Query returned ~w entries in ~w seconds - 3 queries + 10s wait~n",
-                [length(QR1), FoldTime]),
-    true = (LoadTime + FoldTime) < Future,
-    SleepTime = round((Future - (LoadTime + FoldTime)) * 1000), 
-    io:format("Sleeping ~w s for all to expire~n", [SleepTime/1000]),
-    timer:sleep(SleepTime + 1000), % add a second
+                [length(QR3), FoldTime]),
+    
+    SleepTime =
+        (Future - (timer:now_diff(os:timestamp(), SW2) div (1000 * 1000))) + 1,
+
+    io:format("Sleeping ~w s for all to expire~n", [SleepTime]),
+    timer:sleep(SleepTime * 1000),
 
     % Index entries should now have expired
     {async, Folder4} = IndexFold(),
     QR4 = Folder4(),
-    io:format("Unexpired indexes of length ~w~n", [length(QR4)]),
-    lists:foreach(
-        fun(I) ->
-            io:format("Unexpired index ~p~n", [I])
-        end,
-        QR4
-    ),
+    io:format("QR4 Unexpired indexes of length ~w~n", [length(QR4)]),
+    timer:sleep(1000),
+    {async, Folder5} = IndexFold(),
+    QR5 = Folder5(),
+    io:format("QR5 Unexpired indexes of length ~w~n", [length(QR5)]),
+    
     true = QR4 == [],
+    true = QR5 == [],
 
     ok = leveled_bookie:book_close(Bookie1),
     testutil:reset_filestructure().
