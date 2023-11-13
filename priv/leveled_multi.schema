@@ -40,7 +40,7 @@
 %% within term_to_binary
 {mapping, "multi_backend.$name.leveled.compression_method", "riak_kv.multi_backend", [
   {datatype, {enum, [native, lz4, none]}},
-  {default, native}
+  {default, native},
   hidden
 ]}.
 
