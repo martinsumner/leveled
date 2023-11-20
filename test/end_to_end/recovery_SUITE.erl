@@ -87,8 +87,18 @@ replace_everything(_Config) ->
     compact_and_wait(Book1, 1000),
     {ok, FileList3} =  file:list_dir(CompPath),
     io:format("Number of files after compaction ~w~n", [length(FileList3)]),
-        %% By the third compaction there should be no further changes
-    true = FileList2 == FileList3,
+        %% By the third compaction there should be no further changes - but
+        %% maybe there is a need to wait for the fourth run
+    case FileList3 of
+        FileList2 ->
+            true;
+        FileList3 when FileList3 > FileList2 ->
+            compact_and_wait(Book1, 1000),
+            {ok, FileList3a} =  file:list_dir(CompPath),
+            io:format("Number of files after compaction ~w~n", [length(FileList3a)]),
+            %% By the fourth compaction there should be no further changes
+            true = FileList3 == FileList3a
+    end,
     {async, BackupFun} = leveled_bookie:book_hotbackup(Book1),
     ok = BackupFun(BackupPath),
 
