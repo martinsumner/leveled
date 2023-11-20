@@ -28,11 +28,11 @@ all() -> [
 
 
 basic_riak(_Config) ->
-    basic_riak_tester(<<"B0">>, 640000),
-    basic_riak_tester({<<"Type0">>, <<"B0">>}, 80000).
+    basic_riak_tester(<<"B0">>, 960000, 64),
+    basic_riak_tester({<<"Type0">>, <<"B0">>}, 80000, 512).
 
 
-basic_riak_tester(Bucket, KeyCount) ->
+basic_riak_tester(Bucket, KeyCount, ObjSize) ->
     % Key Count should be > 10K and divisible by 5
     io:format("Basic riak test with Bucket ~w KeyCount ~w~n",
                 [Bucket, KeyCount]),
@@ -64,53 +64,72 @@ basic_riak_tester(Bucket, KeyCount) ->
 
     CountPerList = KeyCount div 5,
 
-    ObjList1 = 
-        testutil:generate_objects(CountPerList, 
-                                    {fixed_binary, 1}, [],
-                                    leveled_rand:rand_bytes(512),
-                                    IndexGenFun(1),
-                                    Bucket),
-    ObjList2 =
-        testutil:generate_objects(CountPerList, 
-                                    {fixed_binary, CountPerList + 1}, [],
-                                    leveled_rand:rand_bytes(512),
-                                    IndexGenFun(2),
-                                    Bucket),
-    
-    ObjList3 =
-        testutil:generate_objects(CountPerList, 
-                                    {fixed_binary, 2 * CountPerList + 1}, [],
-                                    leveled_rand:rand_bytes(512),
-                                    IndexGenFun(3),
-                                    Bucket),
-    
+    io:format("Generating and loading ObjList 4~n"),
     ObjList4 =
-        testutil:generate_objects(CountPerList, 
-                                    {fixed_binary, 3 * CountPerList + 1}, [],
-                                    leveled_rand:rand_bytes(512),
-                                    IndexGenFun(4),
-                                    Bucket),
-    
-    ObjList5 =
-        testutil:generate_objects(CountPerList, 
-                                    {fixed_binary, 4 * CountPerList + 1}, [],
-                                    leveled_rand:rand_bytes(512),
-                                    IndexGenFun(5),
-                                    Bucket),
-    
-    % Mix with the ordering on the load, just in case ordering hides issues
+        testutil:generate_objects(
+            CountPerList, 
+            {fixed_binary, 3 * CountPerList + 1}, [],
+            leveled_rand:rand_bytes(ObjSize),
+            IndexGenFun(4),
+            Bucket),
+    [{_I4, Obj4, _Spc4}|_Rest4] = ObjList4,
     testutil:riakload(Bookie1, ObjList4),
+    garbage_collect(),
+    io:format("Generating and loading ObjList 1~n"),
+    ObjList1 = 
+        testutil:generate_objects(
+            CountPerList, 
+            {fixed_binary, 1}, [],
+            leveled_rand:rand_bytes(ObjSize),
+            IndexGenFun(1),
+            Bucket),
+    [{_I1, Obj1, _Spc1}|_Rest1] = ObjList1,
+    SubList1 = lists:sublist(lists:ukeysort(1, ObjList1), 1000),
     testutil:riakload(Bookie1, ObjList1),
+    garbage_collect(),
+ 
+    size_estimate_tester(Bookie1),
+
+    io:format("Generating and loading ObjList 3~n"),
+    ObjList3 =
+        testutil:generate_objects(
+            CountPerList, 
+            {fixed_binary, 2 * CountPerList + 1}, [],
+            leveled_rand:rand_bytes(ObjSize),
+            IndexGenFun(3),
+            Bucket),
+    [{_I3, Obj3, _Spc3}|_Rest3] = ObjList3,
     testutil:riakload(Bookie1, ObjList3),
+    garbage_collect(),
+    io:format("Generating and loading ObjList 5~n"),
+    ObjList5 =
+        testutil:generate_objects(
+            CountPerList, 
+            {fixed_binary, 4 * CountPerList + 1}, [],
+            leveled_rand:rand_bytes(ObjSize),
+            IndexGenFun(5),
+            Bucket),
+    [{_I5, Obj5, _Spc5}|_Rest5] = ObjList5,
+    SubList5 = lists:sublist(lists:ukeysort(1, ObjList5), 1000),
     testutil:riakload(Bookie1, ObjList5),
-    testutil:riakload(Bookie1, ObjList2), 
+    garbage_collect(),
+    io:format("Generating and loading ObjList 2~n"),
+    ObjList2 =
+        testutil:generate_objects(
+            CountPerList, 
+            {fixed_binary, CountPerList + 1}, [],
+            leveled_rand:rand_bytes(ObjSize),
+            IndexGenFun(2),
+            Bucket),
+    [{_I2, Obj2, _Spc2}|_Rest2] = ObjList2,
+    {_I2L, Obj2L, _Spc2L} = lists:last(ObjList2),
+    testutil:riakload(Bookie1, ObjList2),
+    garbage_collect(),
         % This needs to stay last,
         % as the last key of this needs to be the last key added
         % so that headfold check, checks something in memory
 
-    % Take a subset, and do some HEAD/GET requests
-    SubList1 = lists:sublist(lists:ukeysort(1, ObjList1), 1000),
-    SubList5 = lists:sublist(lists:ukeysort(1, ObjList5), 1000),
+    size_estimate_tester(Bookie1),
 
     ok = testutil:check_forlist(Bookie1, SubList1),
     ok = testutil:check_forlist(Bookie1, SubList5),
@@ -198,12 +217,7 @@ basic_riak_tester(Bucket, KeyCount) ->
     true = TotalIndexEntries3B == length(ObjList3),
 
     HeadFoldFun = fun(B, K, _Hd, Acc) -> [{B, K}|Acc] end,
-    [{_I1, Obj1, _Spc1}|_Rest1] = ObjList1,
-    [{_I2, Obj2, _Spc2}|_Rest2] = ObjList2,
-    [{_I3, Obj3, _Spc3}|_Rest3] = ObjList3,
-    [{_I4, Obj4, _Spc4}|_Rest4] = ObjList4,
-    [{_I5, Obj5, _Spc5}|_Rest5] = ObjList5,
-    {_I2L, Obj2L, _Spc2L} = lists:last(ObjList2),
+    
 
     SegList =
         lists:map(fun(Obj) -> testutil:get_aae_segment(Obj) end, 
@@ -754,6 +768,8 @@ fetchclocks_modifiedbetween(_Config) ->
     io:format("R8A_MultiBucket ~w ~n", [R8A_MultiBucket]),
     true = R8A_MultiBucket == {0, 5000},
 
+    size_estimate_tester(Bookie1B),
+
     ok = leveled_bookie:book_close(Bookie1B),
 
     io:format("Double query to generate index cache and use~n"),
@@ -900,6 +916,61 @@ lmdrange_tester(Bookie1BS, SimpleCountFun,
     R5B_MultiBucket5 = R5B_MultiBucketRunner5(),
     io:format("R5B_MultiBucket5 ~w ~n", [R5B_MultiBucket5]),
     true = R5B_MultiBucket5 == 7000.
+
+size_estimate_tester(Bookie) ->
+    %% Data size test - calculate data size, then estimate data size
+    io:format("Estimating data size~n"),
+    {async, DataSizeCounter} =
+        leveled_bookie:book_headfold(
+            Bookie,
+            ?RIAK_TAG,
+            {fun(_B, _K, _V, AccC) ->  AccC + 1 end, 0},
+            false,
+            true,
+            false
+        ),
+    TictacTreeSize = 1024 * 1024,
+    RandomSegment = rand:uniform(TictacTreeSize - 128) - 1,
+    {async, DataSizeEstimater} =
+        leveled_bookie:book_headfold(
+            Bookie,
+            ?RIAK_TAG,
+            {fun(_B, _K, _V, AccC) ->  AccC + 256 end, 0},
+            false,
+            true,
+            lists:seq(RandomSegment, RandomSegment + 128)
+        ),
+    {async, DataSizeGuesser} =
+        leveled_bookie:book_headfold(
+            Bookie,
+            ?RIAK_TAG,
+            {fun(_B, _K, _V, AccC) ->  AccC + 1024 end, 0},
+            false,
+            true,
+            lists:seq(RandomSegment, RandomSegment + 32)
+        ),
+    {CountTS, Count} = timer:tc(DataSizeCounter),
+    {CountTSEstimate, CountEstimate} = timer:tc(DataSizeEstimater),
+    {CountTSGuess, CountGuess} = timer:tc(DataSizeGuesser),
+    io:format(
+        "Estimate ~w of size ~w with estimate taking ~w ms vs ~w ms~n",
+        [CountEstimate, Count, CountTSEstimate div 1000, CountTS div 1000]
+    ),
+    io:format(
+        "Guess ~w of size ~w with guess taking ~w ms vs ~w ms~n",
+        [CountGuess, Count, CountTSGuess div 1000, CountTS div 1000]
+    ),
+    true =
+        case Count of
+            C when C >  1000000 ->
+                HowClose = CountGuess / Count,
+                (HowClose > 0.9) and (HowClose < 1.1);
+            C when C > 256000 ->
+                HowClose = CountEstimate / Count,
+                (HowClose > 0.9) and (HowClose < 1.1);
+            _ ->
+                true
+        end.
 
 
 crossbucket_aae(_Config) ->
