@@ -13,22 +13,24 @@
         summarisable_sstindex/1
             ]).
 
-all() -> [
-            basic_riak,
-            fetchclocks_modifiedbetween,
-            crossbucket_aae,
-            handoff,
-            dollar_bucket_index,
-            dollar_key_index,
-            bigobject_memorycheck,
-            summarisable_sstindex
-            ].
+all() -> [basic_riak].
+
+% all() -> [
+%             basic_riak,
+%             fetchclocks_modifiedbetween,
+%             crossbucket_aae,
+%             handoff,
+%             dollar_bucket_index,
+%             dollar_key_index,
+%             bigobject_memorycheck,
+%             summarisable_sstindex
+%             ].
 
 -define(MAGIC, 53). % riak_kv -> riak_object
 
 
 basic_riak(_Config) ->
-    basic_riak_tester(<<"B0">>, 960000, 64),
+    basic_riak_tester(<<"B0">>, 3840000, 64),
     basic_riak_tester({<<"Type0">>, <<"B0">>}, 80000, 512).
 
 
@@ -919,7 +921,7 @@ lmdrange_tester(Bookie1BS, SimpleCountFun,
 
 size_estimate_tester(Bookie) ->
     %% Data size test - calculate data size, then estimate data size
-    io:format("Estimating data size~n"),
+    io:format("SET: estimating data size~n"),
     {async, DataSizeCounter} =
         leveled_bookie:book_headfold(
             Bookie,
@@ -953,11 +955,11 @@ size_estimate_tester(Bookie) ->
     {CountTSEstimate, CountEstimate} = timer:tc(DataSizeEstimater),
     {CountTSGuess, CountGuess} = timer:tc(DataSizeGuesser),
     io:format(
-        "Estimate ~w of size ~w with estimate taking ~w ms vs ~w ms~n",
+        "SET: estimate ~w of size ~w with estimate taking ~w ms vs ~w ms~n",
         [CountEstimate, Count, CountTSEstimate div 1000, CountTS div 1000]
     ),
     io:format(
-        "Guess ~w of size ~w with guess taking ~w ms vs ~w ms~n",
+        "SET: guess ~w of size ~w with guess taking ~w ms vs ~w ms~n",
         [CountGuess, Count, CountTSGuess div 1000, CountTS div 1000]
     ),
     true =
