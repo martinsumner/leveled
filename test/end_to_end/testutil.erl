@@ -65,7 +65,7 @@
             compact_and_wait/1]).
 
 -define(RETURN_TERMS, {true, undefined}).
--define(SLOWOFFER_DELAY, 10).
+-define(SLOWOFFER_DELAY, 40).
 -define(V1_VERS, 1).
 -define(MAGIC, 53). % riak_kv -> riak_object
 -define(MD_VTAG,     <<"X-Riak-VTag">>).

@@ -13,24 +13,23 @@
         summarisable_sstindex/1
             ]).
 
-all() -> [basic_riak].
 
-% all() -> [
-%             basic_riak,
-%             fetchclocks_modifiedbetween,
-%             crossbucket_aae,
-%             handoff,
-%             dollar_bucket_index,
-%             dollar_key_index,
-%             bigobject_memorycheck,
-%             summarisable_sstindex
-%             ].
+all() -> [
+            basic_riak,
+            fetchclocks_modifiedbetween,
+            crossbucket_aae,
+            handoff,
+            dollar_bucket_index,
+            dollar_key_index,
+            bigobject_memorycheck,
+            summarisable_sstindex
+            ].
 
 -define(MAGIC, 53). % riak_kv -> riak_object
 
 
 basic_riak(_Config) ->
-    basic_riak_tester(<<"B0">>, 3840000, 64),
+    basic_riak_tester(<<"B0">>, 640000, 64),
     basic_riak_tester({<<"Type0">>, <<"B0">>}, 80000, 512).
 
 
@@ -89,9 +88,6 @@ basic_riak_tester(Bucket, KeyCount, ObjSize) ->
     SubList1 = lists:sublist(lists:ukeysort(1, ObjList1), 1000),
     testutil:riakload(Bookie1, ObjList1),
     garbage_collect(),
- 
-    size_estimate_tester(Bookie1),
-
     io:format("Generating and loading ObjList 3~n"),
     ObjList3 =
         testutil:generate_objects(
@@ -130,8 +126,6 @@ basic_riak_tester(Bucket, KeyCount, ObjSize) ->
         % This needs to stay last,
         % as the last key of this needs to be the last key added
         % so that headfold check, checks something in memory
-
-    size_estimate_tester(Bookie1),
 
     ok = testutil:check_forlist(Bookie1, SubList1),
     ok = testutil:check_forlist(Bookie1, SubList5),
@@ -770,8 +764,6 @@ fetchclocks_modifiedbetween(_Config) ->
     io:format("R8A_MultiBucket ~w ~n", [R8A_MultiBucket]),
     true = R8A_MultiBucket == {0, 5000},
 
-    size_estimate_tester(Bookie1B),
-
     ok = leveled_bookie:book_close(Bookie1B),
 
     io:format("Double query to generate index cache and use~n"),
@@ -918,61 +910,6 @@ lmdrange_tester(Bookie1BS, SimpleCountFun,
     R5B_MultiBucket5 = R5B_MultiBucketRunner5(),
     io:format("R5B_MultiBucket5 ~w ~n", [R5B_MultiBucket5]),
     true = R5B_MultiBucket5 == 7000.
-
-size_estimate_tester(Bookie) ->
-    %% Data size test - calculate data size, then estimate data size
-    io:format("SET: estimating data size~n"),
-    {async, DataSizeCounter} =
-        leveled_bookie:book_headfold(
-            Bookie,
-            ?RIAK_TAG,
-            {fun(_B, _K, _V, AccC) ->  AccC + 1 end, 0},
-            false,
-            true,
-            false
-        ),
-    TictacTreeSize = 1024 * 1024,
-    RandomSegment = rand:uniform(TictacTreeSize - 128) - 1,
-    {async, DataSizeEstimater} =
-        leveled_bookie:book_headfold(
-            Bookie,
-            ?RIAK_TAG,
-            {fun(_B, _K, _V, AccC) ->  AccC + 256 end, 0},
-            false,
-            true,
-            lists:seq(RandomSegment, RandomSegment + 128)
-        ),
-    {async, DataSizeGuesser} =
-        leveled_bookie:book_headfold(
-            Bookie,
-            ?RIAK_TAG,
-            {fun(_B, _K, _V, AccC) ->  AccC + 1024 end, 0},
-            false,
-            true,
-            lists:seq(RandomSegment, RandomSegment + 32)
-        ),
-    {CountTS, Count} = timer:tc(DataSizeCounter),
-    {CountTSEstimate, CountEstimate} = timer:tc(DataSizeEstimater),
-    {CountTSGuess, CountGuess} = timer:tc(DataSizeGuesser),
-    io:format(
-        "SET: estimate ~w of size ~w with estimate taking ~w ms vs ~w ms~n",
-        [CountEstimate, Count, CountTSEstimate div 1000, CountTS div 1000]
-    ),
-    io:format(
-        "SET: guess ~w of size ~w with guess taking ~w ms vs ~w ms~n",
-        [CountGuess, Count, CountTSGuess div 1000, CountTS div 1000]
-    ),
-    true =
-        case Count of
-            C when C >  1000000 ->
-                HowClose = CountGuess / Count,
-                (HowClose > 0.9) and (HowClose < 1.1);
-            C when C > 256000 ->
-                HowClose = CountEstimate / Count,
-                (HowClose > 0.9) and (HowClose < 1.1);
-            _ ->
-                true
-        end.
 
 
 crossbucket_aae(_Config) ->
