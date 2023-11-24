@@ -2,7 +2,11 @@
 -include_lib("common_test/include/ct.hrl").
 -include("include/leveled.hrl").
 -export([all/0, suite/0]).
--export([bigpcl_bucketlist/1, riak_load/1]).
+-export([
+    bigpcl_bucketlist/1,
+    riak_load/1
+    % riak_load2M/1, riak_load4M/1, riak_load6M/1, riak_load8M/1
+]).
 
 
 all() -> [bigpcl_bucketlist, riak_load].
@@ -83,21 +87,35 @@ bigpcl_bucketlist(_Config) ->
 
     ok = leveled_bookie:book_destroy(Bookie2).
 
-riak_load(_Config) ->
-    riak_load_tester(<<"B0">>, 800000, 64).
+% riak_load2M(_Config) ->
+%     riak_load_tester(<<"B0">>, 2000000, 64, false).
 
-riak_load_tester(Bucket, KeyCount, ObjSize) ->
+% riak_load4M(_Config) ->
+%     riak_load_tester(<<"B0">>, 4000000, 64, false).
+
+% riak_load6M(_Config) ->
+%     riak_load_tester(<<"B0">>, 6000000, 64, false).
+
+% riak_load8M(_Config) ->
+%     riak_load_tester(<<"B0">>, 8000000, 64, false).
+            
+riak_load(_Config) ->
+    riak_load_tester(<<"B0">>, 800000, 64, guess).
+
+riak_load_tester(Bucket, KeyCount, ObjSize, Profile) ->
     io:format("Basic riak test with KeyCount ~w~n", [KeyCount]),
     IndexCount = 1000,
 
     RootPath = testutil:reset_filestructure("riakLoad"),
-    StartOpts1 = [{root_path, RootPath},
-        {max_journalsize, 500000000},
-        {max_pencillercachesize, 24000},
-        {sync_strategy, testutil:sync_strategy()},
-        {log_level, warn},
-        {forced_logs, [b0015, b0016, b0017, b0018, p0032, sst12]}
-    ],
+    StartOpts1 =
+        [{root_path, RootPath},
+            {max_journalsize, 500000000},
+            {max_pencillercachesize, 24000},
+            {sync_strategy, testutil:sync_strategy()},
+            {log_level, warn},
+            {forced_logs, [b0015, b0016, b0017, b0018, p0032, sst12]}
+        ],
+
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
 
     IndexGenFun =
@@ -127,8 +145,9 @@ riak_load_tester(Bucket, KeyCount, ObjSize) ->
     TC10 = load_chunk(Bookie1, CountPerList, ObjSize, IndexGenFun, Bucket, 10),
     
     size_estimate_summary(Bookie1),
+
     io:format(
-        "Load time per group ~w ~w ~w ~w ~w ~w ~w ~w ~w ~wms~n",
+        "Load time per group ~w ~w ~w ~w ~w ~w ~w ~w ~w ~w ms~n",
         lists:map(
             fun(T) -> T div 1000 end,
             [TC4, TC1, TC9, TC8, TC5, TC2, TC6, TC3, TC7, TC10])
@@ -138,7 +157,35 @@ riak_load_tester(Bucket, KeyCount, ObjSize) ->
         [(TC1 + TC2 + TC3 + TC4 + TC5 + TC6 + TC7 + TC8 + TC9 + TC10) div 1000]
     ),
 
+    maybe_profile(Bookie1, Profile),
+
     leveled_bookie:book_destroy(Bookie1).
+
+
+maybe_profile(Bookie, false) ->
+    {ok, _Inker, Pcl} = leveled_bookie:book_returnactors(Bookie),
+    _SSTPids = leveled_penciller:pcl_getsstpids(Pcl),
+    % For the sake of coverage
+    ok;
+maybe_profile(Bookie, CounterFold) ->
+
+    {ok, _Inker, Pcl} = leveled_bookie:book_returnactors(Bookie),
+    SSTPids = leveled_penciller:pcl_getsstpids(Pcl),
+
+    eprof:start(),
+    eprof:start_profiling(SSTPids),
+
+    lists:foreach(
+        fun(_I) ->
+            _ = counter(Bookie, CounterFold)
+        end,
+        lists:seq(1, 10)
+    ),
+
+    io:format("Profile for counter ~w function ~n", [CounterFold]),
+    eprof:stop_profiling(),
+    eprof:analyze(total),
+    eprof:stop().
 
 size_estimate_summary(Bookie) ->
     Loops = 10,
@@ -182,38 +229,9 @@ load_chunk(Bookie, CountPerList, ObjSize, IndexGenFun, Bucket, Chunk) ->
 size_estimate_tester(Bookie) ->
     %% Data size test - calculate data size, then estimate data size
     io:format("SET: estimating data size~n"),
-    {async, DataSizeCounter} =
-        leveled_bookie:book_headfold(
-            Bookie,
-            ?RIAK_TAG,
-            {fun(_B, _K, _V, AccC) ->  AccC + 1 end, 0},
-            false,
-            true,
-            false
-        ),
-    TictacTreeSize = 1024 * 1024,
-    RandomSegment = rand:uniform(TictacTreeSize - 128) - 1,
-    {async, DataSizeEstimater} =
-        leveled_bookie:book_headfold(
-            Bookie,
-            ?RIAK_TAG,
-            {fun(_B, _K, _V, AccC) ->  AccC + 256 end, 0},
-            false,
-            true,
-            lists:seq(RandomSegment, RandomSegment + 127)
-        ),
-    {async, DataSizeGuesser} =
-        leveled_bookie:book_headfold(
-            Bookie,
-            ?RIAK_TAG,
-            {fun(_B, _K, _V, AccC) ->  AccC + 1024 end, 0},
-            false,
-            true,
-            lists:seq(RandomSegment, RandomSegment + 31)
-        ),
-    {CountTS, Count} = timer:tc(DataSizeCounter),
-    {CountTSEstimate, CountEstimate} = timer:tc(DataSizeEstimater),
-    {CountTSGuess, CountGuess} = timer:tc(DataSizeGuesser),
+    {CountTS, Count} = counter(Bookie, full),
+    {CountTSEstimate, CountEstimate} = counter(Bookie, estimate),
+    {CountTSGuess, CountGuess} = counter(Bookie, guess),
     io:format(
         "SET: estimate ~w of size ~w with estimate taking ~w ms vs ~w ms~n",
         [CountEstimate, Count, CountTSEstimate div 1000, CountTS div 1000]
@@ -228,3 +246,42 @@ size_estimate_tester(Bookie) ->
         ((CountEstimate / Count) > 0.92) and ((CountEstimate / Count) < 1.08),
     {{CountTSGuess, CountTSEstimate, CountTS},
         {abs(CountEstimate - Count), abs(CountGuess - Count)}}.
+
+counter(Bookie, full) ->
+    {async, DataSizeCounter} =
+        leveled_bookie:book_headfold(
+            Bookie,
+            ?RIAK_TAG,
+            {fun(_B, _K, _V, AccC) ->  AccC + 1 end, 0},
+            false,
+            true,
+            false
+        ),
+    timer:tc(DataSizeCounter);
+counter(Bookie, guess) ->
+    TictacTreeSize = 1024 * 1024,
+    RandomSegment = rand:uniform(TictacTreeSize - 32) - 1,
+    {async, DataSizeGuesser} =
+        leveled_bookie:book_headfold(
+            Bookie,
+            ?RIAK_TAG,
+            {fun(_B, _K, _V, AccC) ->  AccC + 1024 end, 0},
+            false,
+            true,
+            lists:seq(RandomSegment, RandomSegment + 31)
+        ),
+    timer:tc(DataSizeGuesser);
+counter(Bookie, estimate) ->
+    TictacTreeSize = 1024 * 1024,
+    RandomSegment = rand:uniform(TictacTreeSize - 128) - 1,
+    {async, DataSizeEstimater} =
+        leveled_bookie:book_headfold(
+            Bookie,
+            ?RIAK_TAG,
+            {fun(_B, _K, _V, AccC) ->  AccC + 256 end, 0},
+            false,
+            true,
+            lists:seq(RandomSegment, RandomSegment + 127)
+        ),
+    timer:tc(DataSizeEstimater).
+    

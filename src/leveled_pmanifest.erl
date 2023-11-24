@@ -50,7 +50,8 @@
         ]).      
 
 -export([
-        filepath/2
+        filepath/2,
+        sst_pids/1
         ]).
 
 -define(MANIFEST_FILEX, "man").
@@ -698,6 +699,32 @@ check_bloom(Manifest, FP, Hash) ->
 %% Return a list of snapshot_pids - to be shutdown on shutdown
 snapshot_pids(Manifest) ->
     lists:map(fun(S) -> element(1, S) end, Manifest#manifest.snapshots).
+
+-spec sst_pids(manifest()) -> list(pid()).
+%% @doc
+%% Return a list of all SST PIDs in the current manifest
+sst_pids(Manifest) ->
+    FoldFun =
+        fun(I, Acc) ->
+            Level = array:get(I, Manifest#manifest.levels),
+            LevelAsList =
+                case I of
+                    I when I > 1 ->
+                        leveled_tree:to_list(Level);
+                    _ ->
+                        Level
+                end,
+            Pids =
+                lists:map(
+                    fun(MaybeME) ->
+                        ME = get_manifest_entry(MaybeME),
+                        ME#manifest_entry.owner
+                    end,
+                    LevelAsList),
+            Acc ++ Pids
+        end,
+    lists:foldl(FoldFun, [], lists:seq(0, Manifest#manifest.basement)).
+
 
 %%%============================================================================
 %%% Internal Functions

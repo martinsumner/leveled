@@ -202,8 +202,7 @@
         sst_filename/3]).
 
 -ifdef(TEST).
--export([
-        clean_testdir/1]).
+-export([pcl_getsstpids/1, clean_testdir/1]).
 -endif.
 
 -define(MAX_WORK_WAIT, 300).
@@ -614,6 +613,7 @@ pcl_addlogs(Pid, ForcedLogs) ->
 pcl_removelogs(Pid, ForcedLogs) ->
     gen_server:cast(Pid, {remove_logs, ForcedLogs}).
 
+
 %%%============================================================================
 %%% gen_server callbacks
 %%%============================================================================
@@ -769,13 +769,15 @@ handle_call({fetch_keys,
             false ->
                 L0AsList;
             _ ->
-                TunedList = leveled_sst:tune_seglist(SegmentList),
+                SegChecker = 
+                    leveled_sst:segment_checker(
+                        leveled_sst:tune_seglist(SegmentList)),
                 FilterFun =
                     fun(LKV) ->
                         CheckSeg = 
                             leveled_sst:extract_hash(
                                 leveled_codec:strip_to_segmentonly(LKV)),
-                        leveled_sst:member_check(CheckSeg, TunedList)
+                        SegChecker(CheckSeg)
                     end,
                 lists:filter(FilterFun, L0AsList)
         end,
@@ -965,7 +967,9 @@ handle_call(check_for_work, _From, State) ->
     {_WL, WC} = leveled_pmanifest:check_for_work(State#state.manifest),
     {reply, WC > 0, State};
 handle_call(persisted_sqn, _From, State) ->
-    {reply, State#state.persisted_sqn, State}.
+    {reply, State#state.persisted_sqn, State};
+handle_call(get_sstpids, _From, State) ->
+    {reply, leveled_pmanifest:sst_pids(State#state.manifest), State}.
 
 handle_cast({manifest_change, Manifest}, State) ->
     NewManSQN = leveled_pmanifest:get_manifest_sqn(Manifest),
@@ -1823,11 +1827,9 @@ find_nextkey(QueryArray, LCnt,
             % The first key at this level is pointer to a file - need to query
             % the file to expand this level out before proceeding
             Pointer = {next, Owner, StartKey, EndKey},
-            UpdList = leveled_sst:sst_expandpointer(Pointer,
-                                                        RestOfKeys,
-                                                        Width,
-                                                        SegList,
-                                                        LowLastMod),
+            UpdList =
+                leveled_sst:sst_expandpointer(
+                    Pointer, RestOfKeys, Width, SegList, LowLastMod),
             NewEntry = {LCnt, UpdList},
             % Need to loop around at this level (LCnt) as we have not yet
             % examined a real key at this level
@@ -1840,11 +1842,9 @@ find_nextkey(QueryArray, LCnt,
             % The first key at this level is pointer within a file  - need to
             % query the file to expand this level out before proceeding
             Pointer = {pointer, SSTPid, Slot, PSK, PEK},
-            UpdList = leveled_sst:sst_expandpointer(Pointer,
-                                                        RestOfKeys,
-                                                        Width,
-                                                        SegList,
-                                                        LowLastMod),
+            UpdList =
+                leveled_sst:sst_expandpointer(
+                    Pointer, RestOfKeys, Width, SegList, LowLastMod),
             NewEntry = {LCnt, UpdList},
             % Need to loop around at this level (LCnt) as we have not yet
             % examined a real key at this level
@@ -1933,6 +1933,13 @@ maybelog_fetch_timing({Pid, _StatsFreq}, Level, FetchTime, _NF) ->
 -ifdef(TEST).
 
 -include_lib("eunit/include/eunit.hrl").
+
+-spec pcl_getsstpids(pid()) -> list(pid()).
+%% @doc
+%% Used for profiling in tests - get a list of SST PIDs to profile
+pcl_getsstpids(Pid) ->
+    gen_server:call(Pid, get_sstpids).
+
 
 -spec pcl_fetch(
     pid(), leveled_codec:ledger_key())
