@@ -5,7 +5,6 @@
 -export([
     bigpcl_bucketlist/1,
     riak_load/1
-    % riak_load2M/1, riak_load4M/1, riak_load6M/1, riak_load8M/1
 ]).
 
 
@@ -87,18 +86,7 @@ bigpcl_bucketlist(_Config) ->
 
     ok = leveled_bookie:book_destroy(Bookie2).
 
-% riak_load2M(_Config) ->
-%     riak_load_tester(<<"B0">>, 2000000, 64, false).
 
-% riak_load4M(_Config) ->
-%     riak_load_tester(<<"B0">>, 4000000, 64, false).
-
-% riak_load6M(_Config) ->
-%     riak_load_tester(<<"B0">>, 6000000, 64, false).
-
-% riak_load8M(_Config) ->
-%     riak_load_tester(<<"B0">>, 8000000, 64, false).
-            
 riak_load(_Config) ->
     riak_load_tester(<<"B0">>, 800000, 64, guess).
 

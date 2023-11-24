@@ -133,9 +133,10 @@
 
 -export([in_range/3]).
 
--record(slot_index_value, {slot_id :: integer(),
-                            start_position :: integer(),
-                            length :: integer()}).
+-record(slot_index_value,
+        {slot_id :: integer(),
+        start_position :: integer(),
+        length :: integer()}).
 
 -record(summary,
             {first_key :: tuple(),
@@ -147,56 +148,59 @@
     %% The summary record is persisted as part of the file format
     %% Any change to this record will mean the change cannot be rolled back
 
+-type slot_index_value()
+    :: #slot_index_value{}.
 -type press_method()
-        :: lz4|native|none.
+    :: lz4|native|none.
 -type range_endpoint()
-        :: all|leveled_codec:ledger_key().
+    :: all|leveled_codec:ledger_key().
 -type slot_pointer()
-        :: {pointer, pid(), integer(), range_endpoint(), range_endpoint()}.
+    :: {pointer,
+        pid(), slot_index_value(), range_endpoint(), range_endpoint()}.
 -type sst_pointer()
-            % Used in sst_new
-        :: {next,
-            leveled_pmanifest:manifest_entry(),
-            range_endpoint()}.
+    % Used in sst_new
+    :: {next,
+        leveled_pmanifest:manifest_entry(),
+        range_endpoint()}.
 -type sst_closed_pointer()
-            % used in expand_list_by_pointer
-            % (close point is added by maybe_expand_pointer
-        :: {next,
-            leveled_pmanifest:manifest_entry(),
-            range_endpoint(),
-            range_endpoint()}.
+        % used in expand_list_by_pointer
+        % (close point is added by maybe_expand_pointer
+    :: {next,
+        leveled_pmanifest:manifest_entry(),
+        range_endpoint(),
+        range_endpoint()}.
 -type expandable_pointer()
-        :: slot_pointer()|sst_pointer()|sst_closed_pointer().
+    :: slot_pointer()|sst_pointer()|sst_closed_pointer().
 -type expanded_pointer()
-        :: leveled_codec:ledger_kv()|expandable_pointer().
+    :: leveled_codec:ledger_kv()|expandable_pointer().
 -type binaryslot_element()
-        :: {tuple(), tuple()}|{binary(), integer(), tuple(), tuple()}.
+    :: {tuple(), tuple()}|{binary(), integer(), tuple(), tuple()}.
 -type tuned_seglist()
-        :: false|
-            {sets, sets:set(non_neg_integer())}|
-            {list, list(non_neg_integer())}.
+    :: false|
+        {sets, sets:set(non_neg_integer())}|
+        {list, list(non_neg_integer())}.
 -type sst_options()
-        :: #sst_options{}.
+    :: #sst_options{}.
 -type binary_slot()
-        :: {binary(), binary(), list(integer()), leveled_codec:ledger_key()}.
+    :: {binary(), binary(), list(integer()), leveled_codec:ledger_key()}.
 -type sst_summary()
-        :: #summary{}.
+    :: #summary{}.
 -type blockindex_cache()
-        :: {non_neg_integer(), array:array(), non_neg_integer()}.
+    :: {non_neg_integer(), array:array(), non_neg_integer()}.
 -type fetch_cache()
-        :: array:array()|no_cache.
+    :: array:array()|no_cache.
 -type cache_size()
-        :: no_cache|4|32|64.
+    :: no_cache|4|32|64.
 -type cache_hash()
-        :: no_cache|non_neg_integer().
+    :: no_cache|non_neg_integer().
 -type level()
-        :: non_neg_integer().
+    :: non_neg_integer().
 -type summary_filter()
-        :: fun((leveled_codec:ledger_key()) -> any()).
+    :: fun((leveled_codec:ledger_key()) -> any()).
 -type segment_check_fun()
-        :: fun((non_neg_integer()) -> boolean())| false.
+    :: fun((non_neg_integer()) -> boolean())| false.
 -type fetch_levelzero_fun()
-        :: fun((pos_integer(), leveled_penciller:levelzero_returnfun()) -> ok).
+    :: fun((pos_integer(), leveled_penciller:levelzero_returnfun()) -> ok).
 
 %% yield_blockquery is used to determine if the work necessary to process a
 %% range query beyond the fetching the slot should be managed from within
@@ -2223,14 +2227,16 @@ read_slot(Handle, Slot) ->
                                 Slot#slot_index_value.length),
     SlotBin.
 
-
+-spec pointer_mapfun(
+        slot_pointer()) ->
+            {non_neg_integer(), non_neg_integer(), non_neg_integer(),
+                range_endpoint(), range_endpoint()}.
 pointer_mapfun({pointer, _Pid, Slot, SK, EK}) ->
     {Slot#slot_index_value.start_position,
         Slot#slot_index_value.length,
         Slot#slot_index_value.slot_id,
         SK,
         EK}.
-
 
 -type slotbin_fun() ::
     fun(({non_neg_integer(), non_neg_integer(), non_neg_integer(),
