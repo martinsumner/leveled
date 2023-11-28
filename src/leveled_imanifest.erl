@@ -19,7 +19,8 @@
         reader/2,
         writer/3,
         printer/1,
-        complete_filex/0
+        complete_filex/0,
+        get_cdbpids/1
         ]).         
 
 -define(MANIFEST_FILEX, "man").
@@ -218,6 +219,10 @@ from_list(Manifest) ->
     % reads are more common than stale reads
     lists:foldr(fun prepend_entry/2, [], Manifest).
 
+-spec get_cdbpids(manifest()) -> list(pid()).
+%% @doc return a list of PIDs within the manifest
+get_cdbpids(Manifest) ->
+    lists:map(fun(ME) -> element(3, ME) end, to_list(Manifest)).
 
 %%%============================================================================
 %%% Internal Functions
