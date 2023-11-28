@@ -15,10 +15,8 @@ suite() -> [{timetrap, {hours, 8}}].
 riak_fullperf(_Config) ->
     R5 = riak_load_tester(<<"B0">>, 5000000, 2048, false, native),
     output_result(R5),
-    R8 = riak_load_tester(<<"B0">>, 8000000, 2048, false, native),
-    output_result(R8),
-    R12 = riak_load_tester(<<"B0">>, 12000000, 2048, false, native),
-    output_result(R12),
+    R10 = riak_load_tester(<<"B0">>, 10000000, 2048, false, native),
+    output_result(R10),
     R20 = riak_load_tester(<<"B0">>, 20000000, 2048, false, native),
     output_result(R20).
 
@@ -75,8 +73,9 @@ riak_load_tester(Bucket, KeyCount, ObjSize, Profile, PressMethod) ->
     TC3 = load_chunk(Bookie1, CountPerList, ObjSize, IndexGenFun, Bucket, 3),
     TC7 = load_chunk(Bookie1, CountPerList, ObjSize, IndexGenFun, Bucket, 7),
     TC10 = load_chunk(Bookie1, CountPerList, ObjSize, IndexGenFun, Bucket, 10),
-    
-    WeightedFoldTime = size_estimate_summary(Bookie1),
+
+    ok = leveled_bookie:book_close(Bookie1),
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
 
     ct:log(
         ?INFO,
@@ -88,51 +87,85 @@ riak_load_tester(Bucket, KeyCount, ObjSize, Profile, PressMethod) ->
     TotalLoadTime =
         (TC1 + TC2 + TC3 + TC4 + TC5 + TC6 + TC7 + TC8 + TC9 + TC10) div 1000,
     ct:log(?INFO, "Total load time ~w ms", [TotalLoadTime]),
-
+    
     TotalHeadTime = 
-        random_fetches(head, Bookie1, Bucket, KeyCount, HeadFetches),
+        random_fetches(head, Bookie2, Bucket, KeyCount, HeadFetches),
     TotalGetTime = 
-        random_fetches(get, Bookie1, Bucket, KeyCount, GetFetches),
+        random_fetches(get, Bookie2, Bucket, KeyCount, GetFetches),
     TotalQueryTime =
-        random_queries(Bookie1, Bucket, 10, IndexCount, IndexesReturned),
+        random_queries(Bookie2, Bucket, 10, IndexCount, IndexesReturned),
+    WeightedFoldTime = size_estimate_summary(Bookie2),
 
     DiskSpace = lists:nth(1, string:tokens(os:cmd("du -sh riakLoad"), "\t")),
     ct:log(?INFO, "Disk space taken by test~s", [DiskSpace]),
+
+    MemoryUsage = erlang:memory(),
+    ct:log(?INFO, "Memory used in test ~p", [MemoryUsage]),
 
     ProfiledFun =
         case Profile of
             false ->
                 fun() -> ok end;
+            query ->
+                % As penciller snapshot is started not spawned - profiling
+                % only covers SST/Bookie
+                fun() ->
+                    random_queries(
+                        Bookie2, Bucket, 10, IndexCount, IndexesReturned)
+                end;
+            head ->
+                fun() ->
+                    random_fetches(
+                        head, Bookie2, Bucket, KeyCount, HeadFetches)
+                end;
+            get ->
+                fun() ->
+                    random_fetches(
+                        get, Bookie2, Bucket, KeyCount, GetFetches)
+                end;
+            load ->
+                ObjList11 =
+                    generate_chunk(
+                        CountPerList, ObjSize, IndexGenFun, Bucket, 11),
+                fun() ->
+                    testutil:riakload(Bookie2, ObjList11)
+                end;
             CounterFold ->
                 fun() ->
                     lists:foreach(
                         fun(_I) ->
-                            _ = counter(Bookie1, CounterFold)
+                            _ = counter(Bookie2, CounterFold)
                         end,
                         lists:seq(1, 10)
                     )
                 end
             end,
 
-    {ok, Inker, Pcl} = leveled_bookie:book_returnactors(Bookie1),
+    {ok, Inker, Pcl} = leveled_bookie:book_returnactors(Bookie2),
     SSTPids = leveled_penciller:pcl_getsstpids(Pcl),
-    %% TODO - get CDB Pids + clerk etc
-    %% Only really good for profiling penciller right now
-    profile_app([Bookie1, Inker, Pcl] ++ SSTPids, ProfiledFun),
+    PClerk = leveled_penciller:pcl_getclerkpid(Pcl),
+    CDBPids = leveled_inker:ink_getcdbpids(Inker),
+    IClerk = leveled_inker:ink_getclerkpid(Inker),
+    TestPid = self(),
+    profile_app(
+        [TestPid, Bookie2, Inker, IClerk, Pcl, PClerk] ++ SSTPids ++ CDBPids,
+        ProfiledFun),
 
-    leveled_bookie:book_destroy(Bookie1),
+    leveled_bookie:book_destroy(Bookie2),
     
     {KeyCount, ObjSize, PressMethod,
         TotalLoadTime,
         WeightedFoldTime, TotalHeadTime, TotalGetTime, TotalQueryTime,
-        DiskSpace, SSTPids}.
+        DiskSpace, MemoryUsage,
+        SSTPids, CDBPids}.
 
 
 output_result(
     {KeyCount, ObjSize, PressMethod,
     TotalLoadTime,
     WeightedFoldTime, TotalHeadTime, TotalGetTime, TotalQueryTime,
-    DiskSpace, SSTPids}
+    DiskSpace, MemoryUsage,
+    SSTPids, CDBPids}
 ) ->
     %% TODO ct:pal not working?  even with rebar3 ct --verbose?
     io:format(
@@ -145,11 +178,18 @@ output_result(
         "TotalGetTime - ~w ms~n"
         "TotalQueryTime - ~w ms~n"
         "Disk space required for test - ~s~n"
-        "Closing count of SST Files - ~w~n",
+        "Memory usage for test - ~p ~p ~p ~p~n"
+        "Closing count of SST Files - ~w~n"
+        "Closing count of CDB Files - ~w~n",
         [KeyCount, ObjSize, PressMethod,
             TotalLoadTime, 
             WeightedFoldTime, TotalHeadTime, TotalGetTime, TotalQueryTime,
-            DiskSpace, length(SSTPids)]
+            DiskSpace,
+            lists:keyfind(total, 1, MemoryUsage),
+            lists:keyfind(processes, 1, MemoryUsage),
+            lists:keyfind(processes_used, 1, MemoryUsage),
+            lists:keyfind(binary, 1, MemoryUsage),
+            length(SSTPids), length(CDBPids)]
     ).
 
 profile_app(Pids, ProfiledFun) ->
@@ -200,16 +240,19 @@ size_estimate_summary(Bookie) ->
 load_chunk(Bookie, CountPerList, ObjSize, IndexGenFun, Bucket, Chunk) ->
     ct:log(?INFO, "Generating and loading ObjList ~w", [Chunk]),
     ObjList =
-        testutil:generate_objects(
-            CountPerList, 
-            {fixed_binary, (Chunk - 1) * CountPerList + 1}, [],
-            base64:encode(leveled_rand:rand_bytes(ObjSize)),
-            IndexGenFun(Chunk),
-            Bucket
-        ),
+        generate_chunk(CountPerList, ObjSize, IndexGenFun, Bucket, Chunk),
     {TC, ok} = timer:tc(fun() -> testutil:riakload(Bookie, ObjList) end),
     garbage_collect(),
     TC.
+
+generate_chunk(CountPerList, ObjSize, IndexGenFun, Bucket, Chunk) ->
+    testutil:generate_objects(
+        CountPerList, 
+        {fixed_binary, (Chunk - 1) * CountPerList + 1}, [],
+        base64:encode(leveled_rand:rand_bytes(ObjSize)),
+        IndexGenFun(Chunk),
+        Bucket
+    ).
 
 size_estimate_tester(Bookie) ->
     %% Data size test - calculate data size, then estimate data size

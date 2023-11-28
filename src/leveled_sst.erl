@@ -87,7 +87,7 @@
 -define(DOUBLESIZE_LEVEL, 3).
 -define(INDEX_MODDATE, true).
 -define(TOMB_COUNT, true).
--define(USE_SET_FOR_SPEED, 64).
+-define(USE_SET_FOR_SPEED, 32).
 -define(STARTUP_TIMEOUT, 10000).
 -define(YIELD_MAXLEVEL, 2).
 
@@ -176,9 +176,7 @@
 -type binaryslot_element()
     :: {tuple(), tuple()}|{binary(), integer(), tuple(), tuple()}.
 -type tuned_seglist()
-    :: false|
-        {sets, sets:set(non_neg_integer())}|
-        {list, list(non_neg_integer())}.
+    :: false | list(non_neg_integer()).
 -type sst_options()
     :: #sst_options{}.
 -type binary_slot()
@@ -198,7 +196,10 @@
 -type summary_filter()
     :: fun((leveled_codec:ledger_key()) -> any()).
 -type segment_check_fun()
-    :: fun((non_neg_integer()) -> boolean())| false.
+    :: non_neg_integer()
+    | {non_neg_integer(), non_neg_integer(),
+        fun((non_neg_integer()) -> boolean())}
+    | false.
 -type fetch_levelzero_fun()
     :: fun((pos_integer(), leveled_penciller:levelzero_returnfun()) -> ok).
 
@@ -240,7 +241,7 @@
 -type sst_state() :: #state{}.
 -type build_timings() :: no_timing|#build_timings{}.
 
--export_type([expandable_pointer/0, press_method/0]).
+-export_type([expandable_pointer/0, press_method/0, segment_check_fun/0]).
 
 %%%============================================================================
 %%% API
@@ -436,7 +437,7 @@ sst_getmaxsequencenumber(Pid) ->
     expandable_pointer(),
     list(expandable_pointer()),
     pos_integer(),
-    leveled_codec:segment_list(),
+    segment_check_fun(),
     non_neg_integer()) -> list(expanded_pointer()).
 %% @doc
 %% Expand out a list of pointer to return a list of Keys and Values with a
@@ -444,11 +445,9 @@ sst_getmaxsequencenumber(Pid) ->
 %% Folding over keys in a store uses this function, although this function
 %% does not directly call the gen_server - it does so by sst_getfilteredslots
 %% or sst_getfilteredrange depending on the nature of the pointer.
-sst_expandpointer(Pointer, MorePointers, ScanWidth, SegmentList, LowLastMod) ->
-    SegChecker = segment_checker(tune_seglist(SegmentList)),
+sst_expandpointer(Pointer, MorePointers, ScanWidth, SegChecker, LowLastMod) ->
     expand_list_by_pointer(
         Pointer, MorePointers, ScanWidth, SegChecker, LowLastMod).
-
 
 -spec sst_setfordelete(pid(), pid()|false) -> ok.
 %% @doc
@@ -483,9 +482,8 @@ sst_clear(Pid) ->
 sst_deleteconfirmed(Pid) ->
     gen_statem:cast(Pid, close).
 
--spec sst_checkready(pid()) -> {ok, string(),
-                                leveled_codec:ledger_key(),
-                                leveled_codec:ledger_key()}.
+-spec sst_checkready(pid()) -> 
+    {ok, string(), leveled_codec:ledger_key(), leveled_codec:ledger_key()}.
 %% @doc
 %% If a file has been set to be built, check that it has been built.  Returns
 %% the filename and the {startKey, EndKey} for the manifest.
@@ -507,8 +505,6 @@ sst_switchlevels(Pid, NewLevel) ->
 %% Close the file
 sst_close(Pid) ->
     gen_statem:call(Pid, close).
-
-
 
 %%%============================================================================
 %%% gen_statem callbacks
@@ -1136,17 +1132,28 @@ sst_getfilteredslots(Pid, SlotList, SegChecker, LowLastMod) ->
 %% @doc
 %% Find a list of positions where there is an element with a matching segment
 %% ID to the expected segments (which can either be a single segment, a list of
-%% segments or a set of segments depending on size.
-find_pos(<<1:1/integer, H:15/integer, T/binary>>, SegCheck, PosList, Count) ->
-    case SegCheck(H) of
+%% segments or a set of segments depending on size).   The SegCheck fun will
+%% do the matching
+find_pos(<<1:1/integer, H:15/integer, T/binary>>, H, PosList, Count) ->
+    find_pos(T, H, [Count|PosList], Count + 1);
+find_pos(<<1:1/integer, _Miss:15/integer, T/binary>>, H, PosList, Count)
+        when is_integer(H) ->
+    find_pos(T, H, PosList, Count + 1);
+find_pos(
+        <<1:1/integer, H:15/integer, T/binary>>, 
+        {Min, Max, CheckFun}=SegCheck,
+        PosList, Count) when H >= Min, H =< Max ->
+    case CheckFun(H) of
         true ->
             find_pos(T, SegCheck, [Count|PosList], Count + 1);
         false ->
             find_pos(T, SegCheck, PosList, Count + 1)
     end;
+find_pos(<<1:1/integer, _M:15/integer, T/binary>>, SegCheck, PosList, Count) ->
+    find_pos(T, SegCheck, PosList, Count + 1);
 find_pos(<<0:1/integer, NHC:7/integer, T/binary>>, SegCheck, PosList, Count) ->
     find_pos(T, SegCheck, PosList, Count + NHC + 1);
-find_pos(_BinRem, _Hash, PosList, _Count) ->
+find_pos(_BinRem, _SegCheck, PosList, _Count) ->
     %% Expect this to be <<>> - i.e. at end of binary, but if there is
     %% corruption, could be some other value - so return as well in this
     %% case
@@ -1154,12 +1161,11 @@ find_pos(_BinRem, _Hash, PosList, _Count) ->
 
 
 -spec segment_checker(
-    non_neg_integer()|
-    {list, list(non_neg_integer())}|
-    {sets, sets:set(non_neg_integer())}) -> segment_check_fun().
+        non_neg_integer()| list(non_neg_integer())| false)
+            -> segment_check_fun().
 segment_checker(Hash) when is_integer(Hash) ->
-    fun(H) -> H == Hash end;
-segment_checker({list, HashList}) when is_list(HashList) ->
+    Hash;
+segment_checker(HashList) when is_list(HashList) ->
     %% Note that commonly segments will be close together numerically. The
     %% guess/estimate process for chekcing vnode size selects a contiguous
     %% range.  Also the kv_index_tictactree segment selector tries to group
@@ -1167,16 +1173,13 @@ segment_checker({list, HashList}) when is_list(HashList) ->
     %% generally much faster than a straight membership test.
     Min = lists:min(HashList),
     Max = lists:max(HashList),
-    fun(H) ->
-        case H of
-            H when H >= Min, H =< Max ->
-                lists:member(H, HashList);
-            _ ->
-                false
-        end
+    case length(HashList) > ?USE_SET_FOR_SPEED of
+        true ->
+            HashSet = sets:from_list(HashList),
+            {Min, Max, fun(H) -> sets:is_element(H, HashSet) end};
+        false ->
+            {Min, Max, fun(H) -> lists:member(H, HashList) end}
     end;
-segment_checker({sets, HashSet}) ->
-    fun(H) -> sets:is_element(H, HashSet) end;
 segment_checker(false) ->
     false.
 
@@ -1259,13 +1262,7 @@ tune_hash(SegHash) ->
 tune_seglist(SegList) ->
     case is_list(SegList) of
         true ->
-            SL0 = lists:usort(lists:map(fun tune_hash/1, SegList)),
-            case length(SL0) > ?USE_SET_FOR_SPEED of
-                true ->
-                    {sets, sets:from_list(SL0)};
-                false ->
-                    {list, SL0}
-            end;
+            lists:usort(lists:map(fun tune_hash/1, SegList));
         false ->
             false
     end.
@@ -1653,17 +1650,18 @@ open_reader(Filename, LoadPageCache) ->
     {ok, SummaryBin} = file:pread(Handle, SlotsLength + 9, SummaryLength),
     {Handle, FileVersion, SummaryBin}.
 
-build_table_summary(SlotIndex, _Level, FirstKey,
-                        SlotCount, MaxSQN, Bloom, CountOfTombs) ->
+build_table_summary(
+        SlotIndex, _Level, FirstKey, SlotCount, MaxSQN, Bloom, CountOfTombs) ->
     [{LastKey, _LastV}|_Rest] = SlotIndex,
-    Summary = #summary{first_key = FirstKey,
-                        last_key = LastKey,
-                        size = SlotCount,
-                        max_sqn = MaxSQN},
+    Summary =
+        #summary{
+            first_key = FirstKey,
+            last_key = LastKey,
+            size = SlotCount,
+            max_sqn = MaxSQN},
     SummBin0 =
-        term_to_binary({Summary, Bloom, lists:reverse(SlotIndex)},
-                        ?BINARY_SETTINGS),
-
+        term_to_binary(
+            {Summary, Bloom, lists:reverse(SlotIndex)}, ?BINARY_SETTINGS),
     SummBin =
         case CountOfTombs of
             not_counted ->
@@ -1671,7 +1669,6 @@ build_table_summary(SlotIndex, _Level, FirstKey,
             I ->
                 <<I:32/integer, SummBin0/binary>>
         end,
-
     SummCRC = hmac(SummBin),
     <<SummCRC:32/integer, SummBin/binary>>.
 
@@ -1691,8 +1688,8 @@ read_table_summary(BinWithCheck, TombCount) ->
             % If not might it might be possible to rebuild from all the slots
             case TombCount of
                 not_counted ->
-                    erlang:append_element(binary_to_term(SummBin),
-                                            not_counted);
+                    erlang:append_element(
+                        binary_to_term(SummBin), not_counted);
                 _ ->
                     <<I:32/integer, SummBin0/binary>> = SummBin,
                     erlang:append_element(binary_to_term(SummBin0), I)
@@ -1703,33 +1700,32 @@ read_table_summary(BinWithCheck, TombCount) ->
 build_all_slots(SlotList) ->
     SlotCount = length(SlotList),
     {SlotIndex, BlockIndex, SlotsBin, HashLists} =
-        build_all_slots(SlotList,
-                            9,
-                            1,
-                            [],
-                            [],
-                            <<>>,
-                            []),
+        build_all_slots(
+            SlotList, 9, 1, [], [], <<>>, []),
     Bloom = leveled_ebloom:create_bloom(HashLists),
     {SlotCount, SlotIndex, BlockIndex, SlotsBin, Bloom}.
 
-build_all_slots([], _Pos, _SlotID,
-                    SlotIdxAcc, BlockIdxAcc, SlotBinAcc, HashLists) ->
+build_all_slots(
+        [],
+        _Pos, _SlotID, SlotIdxAcc, BlockIdxAcc, SlotBinAcc, HashLists) ->
     {SlotIdxAcc, BlockIdxAcc, SlotBinAcc, HashLists};
-build_all_slots([SlotD|Rest], Pos, SlotID,
-                    SlotIdxAcc, BlockIdxAcc, SlotBinAcc, HashLists) ->
+build_all_slots(
+        [SlotD|Rest],
+        Pos, SlotID, SlotIdxAcc, BlockIdxAcc, SlotBinAcc, HashLists) ->
     {BlockIdx, SlotBin, HashList, LastKey} = SlotD,
     Length = byte_size(SlotBin),
-    SlotIndexV = #slot_index_value{slot_id = SlotID,
-                                    start_position = Pos,
-                                    length = Length},
-    build_all_slots(Rest,
-                    Pos + Length,
-                    SlotID + 1,
-                    [{LastKey, SlotIndexV}|SlotIdxAcc],
-                    [{SlotID, BlockIdx}|BlockIdxAcc],
-                    <<SlotBinAcc/binary, SlotBin/binary>>,
-                    lists:append(HashLists, HashList)).
+    SlotIndexV =
+        #slot_index_value{
+            slot_id = SlotID, start_position = Pos, length = Length},
+    build_all_slots(
+        Rest,
+        Pos + Length,
+        SlotID + 1,
+        [{LastKey, SlotIndexV}|SlotIdxAcc],
+        [{SlotID, BlockIdx}|BlockIdxAcc],
+        <<SlotBinAcc/binary, SlotBin/binary>>,
+        lists:append(HashLists, HashList)
+    ).
 
 
 generate_filenames(RootFilename) ->
@@ -5101,134 +5097,5 @@ start_sst_fun(ProcessToInform) ->
         sst_new(?TEST_AREA, "level1_src", 1, KVL1, 6000, OptsSST),
     ProcessToInform ! {sst_pid, P1}.
 
-find_pos_performance_test_() ->
-    {timeout, 60, fun find_pos_performance_test_repeater/0}.
-
-find_pos_performance_test_repeater() ->
-    find_pos_performance_loop(8, uniform),
-    find_pos_performance_loop(16, uniform),
-    find_pos_performance_loop(32, uniform),
-    find_pos_performance_loop(64, uniform),
-    find_pos_performance_loop(96, uniform),
-    find_pos_performance_loop(128, uniform),
-    find_pos_performance_loop(8, random),
-    find_pos_performance_loop(16, random),
-    find_pos_performance_loop(32, random),
-    find_pos_performance_loop(64, random),
-    find_pos_performance_loop(96, random),
-    find_pos_performance_loop(128, random).
-
-find_pos_performance_loop(Segments, SegSelection) ->
-    LoopCount = 4,
-    FoldFun = 
-        fun(_I, {AccMember, AccRange, AccOr, AccCombo, AccSet}) ->
-            {TCMember, TCRange, TCOr, TCCombo, TCSet} =
-                find_pos_performance_tester(Segments, SegSelection),
-            {AccMember + TCMember,
-                AccRange + TCRange,
-                AccOr +TCOr,
-                AccCombo + TCCombo,
-                AccSet + TCSet
-            }
-        end,
-    {TimeMember, TimeRange, TimeOr, TimeCombo, TimeSet} =
-        lists:foldl(FoldFun, {0, 0, 0, 0, 0}, lists:seq(1, LoopCount)),
-    io:format(
-        user,
-        "Average time for ~w checks with ~w loops of ~w segments "
-        "MemberCheck ~w RangeCheck ~w OrCheck ~w ComboCheck ~w SetCheck ~w~n",
-        [SegSelection, LoopCount, Segments] ++
-            lists:map(
-                fun(T) -> T div (LoopCount * 1000) end,
-                [TimeMember, TimeRange, TimeOr, TimeCombo, TimeSet]
-            )
-    ).
-
-find_pos_performance_tester(Segments, SegSelection) ->
-    CheckBins = 8192,
-    CheckList =
-        case SegSelection of
-            uniform -> 
-                RandSeg = leveled_rand:uniform((128 * 256) - Segments),
-                lists:seq(RandSeg, RandSeg + Segments - 1);
-            random ->
-                lists:usort(
-                    lists:map(
-                        fun(_I) -> leveled_rand:uniform((128 * 256) - 1) end,
-                        lists:seq(1, Segments)
-                    )
-                )
-        end,
-    MaxSeg = lists:last(CheckList),
-    [MinSeg|_Rest] = CheckList,
-    ORChecker = lists:foldl(fun(I, Acc) -> I bor Acc end, 0, CheckList),
-    HashSet = sets:from_list(CheckList),
-    CheckFunMember =
-        fun(H) -> lists:member(H, CheckList) end,
-    CheckFunRange =
-        fun(H) ->
-            case H of
-                H when H =< MaxSeg, H >= MinSeg ->
-                    lists:member(H, CheckList);
-                _ ->
-                    false
-            end
-        end,
-    CheckFunOR =
-        fun(H) ->
-            case H bor ORChecker of
-                ORChecker ->
-                    lists:member(H, CheckList);
-                _ ->
-                    false
-            end
-        end,
-    CheckFunCombo =
-        fun(H) ->
-            case H bor ORChecker of
-                ORChecker when H =< MaxSeg, H >= MinSeg ->
-                    lists:member(H, CheckList);
-                _ ->
-                    false
-            end
-        end,
-    CheckFunSet =
-        fun(H) -> sets:is_element(H, HashSet) end,
-
-    PosBins =
-        lists:map(fun(_I) -> generate_posbin() end, lists:seq(1, CheckBins)),
-    TimeChecker =
-        fun(CheckFun) ->
-            timer:tc(
-                fun() ->
-                    lists:foldl(
-                        fun(PBin, Acc) ->
-                            find_pos(PBin, CheckFun, Acc, 0)
-                        end,
-                        [],
-                        PosBins
-                    )
-                end
-            )
-        end,
-    {TCMember, Matches} = TimeChecker(CheckFunMember),
-    {TCRange, Matches} = TimeChecker(CheckFunRange),
-    {TCOr, Matches} = TimeChecker(CheckFunOR),
-    {TCCombo, Matches} = TimeChecker(CheckFunCombo),
-    {TCSet, Matches} = TimeChecker(CheckFunSet),
-    ?assert(length(Matches) > 0),
-    {TCMember, TCRange, TCOr, TCCombo, TCSet}.
-    
-generate_posbin() ->
-    Segments =
-        lists:map(
-            fun(_I) -> leveled_rand:uniform(128 * 256) - 1 end,
-            lists:seq(1, 128)),
-    extend_posbin(Segments, <<>>).
-    
-extend_posbin([], PosBin) ->
-    PosBin;
-extend_posbin([S|T], PosBin) ->
-    extend_posbin(T, <<PosBin/binary, 1:1/integer, S:15/integer>>).
 
 -endif.

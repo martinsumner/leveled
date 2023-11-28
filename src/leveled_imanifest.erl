@@ -19,7 +19,8 @@
         reader/2,
         writer/3,
         printer/1,
-        complete_filex/0
+        complete_filex/0,
+        get_cdbpids/1
         ]).         
 
 -define(MANIFEST_FILEX, "man").
@@ -27,7 +28,7 @@
 -define(SKIP_WIDTH, 16).
 -define(MANIFESTS_TO_RETAIN, 5).
 
--type manifest() :: list({integer(), list()}).
+-type manifest() :: list({integer(), list(manifest_entry())}).
 %% The manifest is divided into blocks by sequence number, with each block
 %% being a list of manifest entries for that SQN range.
 -type manifest_entry() :: {integer(), string(), pid()|string(), any()}.
@@ -136,7 +137,7 @@ head_entry(Manifest) ->
     [HeadEntry|_SQNL_Tail] = SQNL,
     HeadEntry.
     
--spec to_list(manifest()) -> list().
+-spec to_list(manifest()) -> list(manifest_entry()).
 %% @doc
 %% Convert the manifest to a flat list
 to_list(Manifest) ->
@@ -218,6 +219,10 @@ from_list(Manifest) ->
     % reads are more common than stale reads
     lists:foldr(fun prepend_entry/2, [], Manifest).
 
+-spec get_cdbpids(manifest()) -> list(pid()).
+%% @doc return a list of PIDs within the manifest
+get_cdbpids(Manifest) ->
+    lists:map(fun(ME) -> element(3, ME) end, to_list(Manifest)).
 
 %%%============================================================================
 %%% Internal Functions
