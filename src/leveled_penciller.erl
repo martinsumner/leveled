@@ -204,8 +204,7 @@
 -export([pcl_getsstpids/1, pcl_getclerkpid/1]).
 
 -ifdef(TEST).
--export([
-        clean_testdir/1]).
+-export([clean_testdir/1]).
 -endif.
 
 -define(MAX_WORK_WAIT, 300).
@@ -421,7 +420,7 @@ pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc, By) ->
 %% all keys in the range - so must only be run against snapshots of the
 %% penciller to avoid blocking behaviour.  
 %%
-%% This version allows an additional input of a SegmentList.  This is a list 
+%% This version allows an additional input of a SegChecker.  This is a list 
 %% of 16-bit integers representing the segment IDs  band ((2 ^ 16) -1) that
 %% are interesting to the fetch
 %%
@@ -778,18 +777,24 @@ handle_call({fetch_keys,
             List ->
                 List
         end,
+    SegChecker = 
+        leveled_sst:segment_checker(leveled_sst:tune_seglist(SegmentList)),
     FilteredL0 = 
-        case SegmentList of
+        case SegChecker of
             false ->
                 L0AsList;
-            _ ->
-                TunedList = leveled_sst:tune_seglist(SegmentList),
+            {Min, Max, CheckFun} ->
                 FilterFun =
                     fun(LKV) ->
                         CheckSeg = 
                             leveled_sst:extract_hash(
                                 leveled_codec:strip_to_segmentonly(LKV)),
-                        leveled_sst:member_check(CheckSeg, TunedList)
+                        case CheckSeg of
+                            CheckSeg when CheckSeg >= Min, CheckSeg =< Max ->
+                                CheckFun(CheckSeg);
+                            _ ->
+                                false
+                        end
                     end,
                 lists:filter(FilterFun, L0AsList)
         end,
@@ -809,13 +814,12 @@ handle_call({fetch_keys,
                 QueryManifest
         end,    
     SnapshotTime = State#state.snapshot_time,
-    
     Folder = 
         fun() -> 
             keyfolder({FilteredL0, SSTiter},
                         {StartKey, EndKey},
                         {AccFun, InitAcc, SnapshotTime},
-                        {SegmentList, LastModRange0, MaxKeys})
+                        {SegChecker, LastModRange0, MaxKeys})
         end,
     case By of 
         as_pcl ->
@@ -1621,8 +1625,9 @@ compare_to_sqn(Obj, SQN) ->
     {list(), list()},
     {leveled_codec:ledger_key(), leveled_codec:ledger_key()},
     {pclacc_fun(), any(), pos_integer()},
-    {boolean(), {non_neg_integer(), pos_integer()|infinity}, integer()})
-    -> any().
+    {leveled_sst:segment_check_fun(),
+        {non_neg_integer(), pos_integer()|infinity},
+        integer()}) -> any().
 %% @doc
 %% The keyfolder will compare an iterator across the immutable in-memory cache
 %% of the Penciller (the IMMiter), with an iterator across the persisted part 
@@ -1643,13 +1648,13 @@ compare_to_sqn(Obj, SQN) ->
 keyfolder(_Iterators,
             _KeyRange,
             {_AccFun, Acc, _Now}, 
-            {_SegmentList, _LastModRange, MaxKeys}) when MaxKeys == 0 ->
+            {_SegmChecker, _LastModRange, MaxKeys}) when MaxKeys == 0 ->
     {0, Acc};
 keyfolder({[], SSTiter}, KeyRange, {AccFun, Acc, Now}, 
-                    {SegmentList, LastModRange, MaxKeys}) ->
+                    {SegChecker, LastModRange, MaxKeys}) ->
     {StartKey, EndKey} = KeyRange,
-    case find_nextkey(SSTiter, StartKey, EndKey, 
-                        SegmentList, element(1, LastModRange)) of
+    case find_nextkey(
+            SSTiter, StartKey, EndKey, SegChecker, element(1, LastModRange)) of
         no_more_keys ->
             case MaxKeys > 0 of
                 true ->
@@ -1669,12 +1674,12 @@ keyfolder({[], SSTiter}, KeyRange, {AccFun, Acc, Now},
             keyfolder({[], NxSSTiter}, 
                         KeyRange, 
                         {AccFun, Acc1, Now}, 
-                        {SegmentList, LastModRange, MK1})
+                        {SegChecker, LastModRange, MK1})
     end;
 keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SSTiterator}, 
             KeyRange, 
             {AccFun, Acc, Now}, 
-            {SegmentList, LastModRange, MaxKeys}) ->
+            {SegChecker, LastModRange, MaxKeys}) ->
     {StartKey, EndKey} = KeyRange,
     case {IMMKey < StartKey, leveled_codec:endkey_passed(EndKey, IMMKey)} of
         {false, true} ->
@@ -1684,10 +1689,10 @@ keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SSTiterator},
             keyfolder({[], SSTiterator},
                         KeyRange,
                         {AccFun, Acc, Now},
-                        {SegmentList, LastModRange, MaxKeys});
+                        {SegChecker, LastModRange, MaxKeys});
         {false, false} ->
             case find_nextkey(SSTiterator, StartKey, EndKey,
-                                SegmentList, element(1, LastModRange)) of
+                                SegChecker, element(1, LastModRange)) of
                 no_more_keys ->
                     % No more keys in range in the persisted store, so use the
                     % in-memory KV as the next
@@ -1699,7 +1704,7 @@ keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SSTiterator},
                                     []},
                                 KeyRange,
                                 {AccFun, Acc1, Now},
-                                {SegmentList, LastModRange, MK1});
+                                {SegChecker, LastModRange, MK1});
                 {NxSSTiterator, {SSTKey, SSTVal}} ->
                     % There is a next key, so need to know which is the
                     % next key between the two (and handle two keys
@@ -1723,7 +1728,7 @@ keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SSTiterator},
                                                             NewEntry)},
                                         KeyRange,
                                         {AccFun, Acc1, Now},
-                                        {SegmentList, LastModRange, MK1});
+                                        {SegChecker, LastModRange, MK1});
                         right_hand_first ->
                             {Acc1, MK1} = 
                                 maybe_accumulate(SSTKey, SSTVal,
@@ -1733,7 +1738,7 @@ keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SSTiterator},
                                             NxSSTiterator},
                                         KeyRange,
                                         {AccFun, Acc1, Now},
-                                        {SegmentList, LastModRange, MK1});
+                                        {SegChecker, LastModRange, MK1});
                         left_hand_dominant ->
                             {Acc1, MK1} = 
                                 maybe_accumulate(IMMKey, IMMVal,
@@ -1747,7 +1752,7 @@ keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SSTiterator},
                                             NxSSTiterator},
                                         KeyRange,
                                         {AccFun, Acc1, Now},
-                                        {SegmentList, LastModRange, MK1})
+                                        {SegChecker, LastModRange, MK1})
                     end
             end
     end.    
@@ -1788,12 +1793,12 @@ maybe_accumulate(LK, LV,
 %% than in-memory table)
 %% In finding the best choice, the next key in a given level may be a next
 %% block or next file pointer which will need to be expanded
-find_nextkey(QueryArray, StartKey, EndKey, SegmentList, LowLastMod) ->
+find_nextkey(QueryArray, StartKey, EndKey, SegChecker, LowLastMod) ->
     find_nextkey(QueryArray,
                     -1,
                     {null, null},
                     StartKey, EndKey,
-                    SegmentList,
+                    SegChecker,
                     LowLastMod,
                     ?ITERATOR_SCANWIDTH).
 
@@ -1801,7 +1806,7 @@ find_nextkey(_QueryArray, LCnt,
                 {null, null}, 
                 _StartKey, _EndKey, 
                 _SegList, _LowLastMod, _Width) when LCnt > ?MAX_LEVELS ->
-    % The array has been scanned wihtout finding a best key - must be
+    % The array has been scanned without finding a best key - must be
     % exhausted - respond to indicate no more keys to be found by the
     % iterator
     no_more_keys;
@@ -1841,11 +1846,9 @@ find_nextkey(QueryArray, LCnt,
             % The first key at this level is pointer to a file - need to query
             % the file to expand this level out before proceeding
             Pointer = {next, Owner, StartKey, EndKey},
-            UpdList = leveled_sst:sst_expandpointer(Pointer,
-                                                        RestOfKeys,
-                                                        Width,
-                                                        SegList,
-                                                        LowLastMod),
+            UpdList =
+                leveled_sst:sst_expandpointer(
+                    Pointer, RestOfKeys, Width, SegList, LowLastMod),
             NewEntry = {LCnt, UpdList},
             % Need to loop around at this level (LCnt) as we have not yet
             % examined a real key at this level
@@ -1858,11 +1861,9 @@ find_nextkey(QueryArray, LCnt,
             % The first key at this level is pointer within a file  - need to
             % query the file to expand this level out before proceeding
             Pointer = {pointer, SSTPid, Slot, PSK, PEK},
-            UpdList = leveled_sst:sst_expandpointer(Pointer,
-                                                        RestOfKeys,
-                                                        Width,
-                                                        SegList,
-                                                        LowLastMod),
+            UpdList =
+                leveled_sst:sst_expandpointer(
+                    Pointer, RestOfKeys, Width, SegList, LowLastMod),
             NewEntry = {LCnt, UpdList},
             % Need to loop around at this level (LCnt) as we have not yet
             % examined a real key at this level
