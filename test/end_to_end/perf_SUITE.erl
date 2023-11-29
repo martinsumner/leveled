@@ -13,12 +13,12 @@ suite() -> [{timetrap, {hours, 8}}].
 
 % For full performance test
 riak_fullperf(_Config) ->
-    R4 = riak_load_tester(<<"B0">>, 4000000, 2048, false, native),
-    output_result(R4),
     R8A = riak_load_tester(<<"B0">>, 8000000, 2048, false, native),
     output_result(R8A),
     R8B = riak_load_tester(<<"B0">>, 8000000, 2048, false, native),
     output_result(R8B),
+    R8C = riak_load_tester(<<"B0">>, 8000000, 2048, false, native),
+    output_result(R8C),
     R16 = riak_load_tester(<<"B0">>, 16000000, 2048, false, native),
     output_result(R16).
 
