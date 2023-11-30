@@ -286,8 +286,9 @@
 -type pcl_state() :: #state{}.
 -type levelzero_cacheentry() :: {pos_integer(), leveled_tree:leveled_tree()}.
 -type levelzero_cache() :: list(levelzero_cacheentry()).
+-type iterator_level() :: 1..7.
 -type iterator_entry() 
-    :: {pos_integer(), 
+    :: {iterator_level(), 
         list(leveled_codec:ledger_kv()|leveled_sst:expandable_pointer())}.
 -type iterator() :: list(iterator_entry()).
 -type bad_ledgerkey() :: list().
