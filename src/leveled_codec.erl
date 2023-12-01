@@ -18,7 +18,6 @@
         strip_to_keyseqonly/1,
         strip_to_indexdetails/1,
         striphead_to_v1details/1,
-        is_active/3,
         endkey_passed/2,
         key_dominates/2,
         maybe_reap_expiredkey/2,
@@ -48,7 +47,8 @@
         to_lookup/1,
         next_key/1,
         return_proxy/4,
-        get_metadata/1]).         
+        get_metadata/1,
+        maybe_accumulate/5]).         
 
 -define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
 -define(NRT_IDX, "$aae.").
@@ -251,6 +251,52 @@ striphead_to_v1details(V) ->
 get_metadata(LV) ->
     element(4, LV).
 
+-spec maybe_accumulate(
+        leveled_codec:ledger_key(),
+        leveled_codec:ledger_value(),
+        {term(), leveled_penciller:pclacc_fun(), pos_integer()},
+        integer(),
+        {non_neg_integer(), non_neg_integer()|infinity})
+            -> {term(), non_neg_integer()}.
+%% @doc
+%% Make an accumulation decision based one the date range
+maybe_accumulate(
+        LK, {_SQN, {active, infinity}, _SH, _MD, undefined}=LV,
+        {Acc, AccFun, _Now},
+        MaxKeys,
+        _ModifiedRange) ->
+    {AccFun(LK, LV, Acc), MaxKeys -1};
+maybe_accumulate(
+        LK, {_SQN, {active, infinity}, _SH, _MD, LMD}=LV,
+        {Acc, AccFun, _Now},
+        MaxKeys,
+        {LowDate, HighDate}) when LMD >= LowDate, LMD =< HighDate ->
+    {AccFun(LK, LV, Acc), MaxKeys -1};
+maybe_accumulate(
+        _LK, {_SQN, tomb, _SH, _MD, _LMD},
+        {Acc, _AccFun, _Now},
+        MaxKeys,
+        _ModifiedRange) ->
+    {Acc, MaxKeys};
+maybe_accumulate(
+        LK, {_SQN, {active, TS}, _SH, _MD, undefined}=LV,
+        {Acc, AccFun, Now},
+        MaxKeys,
+        _ModifiedRange) when TS >= Now ->
+    {AccFun(LK, LV, Acc), MaxKeys -1};
+maybe_accumulate(
+        LK, {_SQN, {active, TS}, _SH, _MD, LMD}=LV,
+        {Acc, AccFun, Now},
+        MaxKeys,
+        {LowDate, HighDate}) when TS >= Now, LMD >= LowDate, LMD =< HighDate ->
+    {AccFun(LK, LV, Acc), MaxKeys -1};
+maybe_accumulate(LK, {SQN, Status, SH, MD}, AccDetails, MaxKeys, LModRange) ->
+    maybe_accumulate(
+        LK, {SQN, Status, SH, MD, undefined}, AccDetails, MaxKeys, LModRange);
+maybe_accumulate(_LK, _LV, {Acc, _AccFun, _Now}, MaxKeys, _LastModRange) ->
+    {Acc, MaxKeys}.
+
+
 -spec key_dominates(ledger_kv(), ledger_kv()) -> 
     left_hand_first|right_hand_first|left_hand_dominant|right_hand_dominant.
 %% @doc
@@ -286,20 +332,6 @@ maybe_reap(tomb, {true, _CurrTS}) ->
 maybe_reap(_, _) ->
     false.
 
--spec is_active(ledger_key(), ledger_value(), non_neg_integer()) -> boolean().
-%% @doc
-%% Is this an active KV pair or has the timestamp expired
-is_active(Key, Value, Now) ->
-    case strip_to_statusonly({Key, Value}) of
-        {active, infinity} ->
-            true;
-        tomb ->
-            false;
-        {active, TS} when TS >= Now ->
-            true;
-        {active, _TS} ->
-            false
-    end.
 
 -spec from_ledgerkey(atom(), tuple()) -> false|tuple().
 %% @doc

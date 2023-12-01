@@ -458,9 +458,12 @@ key_lookup(Manifest, LevelIdx, Key) ->
 query_manifest(Manifest, StartKey, EndKey) ->
     SetupFoldFun =
         fun(Level, Acc) ->
-            Pointers =
-                range_lookup(Manifest, Level, StartKey, EndKey),
-            [{Level, Pointers}|Acc]
+            case range_lookup(Manifest, Level, StartKey, EndKey) of
+                [] ->
+                    Acc;
+                Pointers ->
+                    [{Level, Pointers}|Acc]
+            end
         end,
     lists:foldl(SetupFoldFun, [], lists:seq(0, ?MAX_LEVELS - 1)).
 
