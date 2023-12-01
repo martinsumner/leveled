@@ -1078,10 +1078,9 @@ handle_cast({levelzero_complete, FN, StartKey, EndKey, Bloom}, State) ->
                                 filename=FN,
                                 bloom=Bloom},
     ManifestSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest) + 1,
-    UpdMan = leveled_pmanifest:insert_manifest_entry(State#state.manifest,
-                                                        ManifestSQN,
-                                                        0,
-                                                        ManEntry),
+    UpdMan =
+        leveled_pmanifest:insert_manifest_entry(
+            State#state.manifest, ManifestSQN, 0, ManEntry),
     % Prompt clerk to ask about work - do this for every L0 roll
     ok = leveled_pclerk:clerk_prompt(State#state.clerk),
     {noreply, State#state{levelzero_cache=[],
@@ -1286,15 +1285,17 @@ start_from_file(PCLopts) ->
     % vnode syncronisation issues (e.g. stop them all by default merging to
     % level zero concurrently)
     
-    InitState = #state{clerk = MergeClerk,
-                        root_path = RootPath,
-                        levelzero_maxcachesize = MaxTableSize,
-                        levelzero_cointoss = CoinToss,
-                        levelzero_index = [],
-                        snaptimeout_short = SnapTimeoutShort,
-                        snaptimeout_long = SnapTimeoutLong,
-                        sst_options = OptsSST,
-                        monitor = Monitor},
+    InitState =
+        #state{
+            clerk = MergeClerk,
+            root_path = RootPath,
+            levelzero_maxcachesize = MaxTableSize,
+            levelzero_cointoss = CoinToss,
+            levelzero_index = [],
+            snaptimeout_short = SnapTimeoutShort,
+            snaptimeout_long = SnapTimeoutLong,
+            sst_options = OptsSST,
+            monitor = Monitor},
     
     %% Open manifest
     Manifest0 = leveled_pmanifest:open_manifest(RootPath),
@@ -1317,33 +1318,34 @@ start_from_file(PCLopts) ->
         case filelib:is_file(filename:join(sst_rootpath(RootPath), L0FN)) of
             true ->
                 leveled_log:log(p0015, [L0FN]),
-                L0Open = leveled_sst:sst_open(sst_rootpath(RootPath),
-                                                L0FN,
-                                                OptsSST,
-                                                0),
+                L0Open =
+                    leveled_sst:sst_open(
+                        sst_rootpath(RootPath), L0FN, OptsSST, 0),
                 {ok, L0Pid, {L0StartKey, L0EndKey}, Bloom} = L0Open,
                 L0SQN = leveled_sst:sst_getmaxsequencenumber(L0Pid),
-                L0Entry = #manifest_entry{start_key = L0StartKey,
-                                            end_key = L0EndKey,
-                                            filename = L0FN,
-                                            owner = L0Pid,
-                                            bloom = Bloom},
+                L0Entry =
+                    #manifest_entry{
+                        start_key = L0StartKey,
+                        end_key = L0EndKey,
+                        filename = L0FN,
+                        owner = L0Pid,
+                        bloom = Bloom},
                 Manifest2 = 
-                    leveled_pmanifest:insert_manifest_entry(Manifest1,
-                                                            ManSQN + 1,
-                                                            0,
-                                                            L0Entry),
+                    leveled_pmanifest:insert_manifest_entry(
+                        Manifest1, ManSQN + 1, 0, L0Entry),
                 leveled_log:log(p0016, [L0SQN]),
                 LedgerSQN = max(MaxSQN, L0SQN),
-                {InitState#state{manifest = Manifest2,
-                                    ledger_sqn = LedgerSQN,
-                                    persisted_sqn = LedgerSQN},
+                {InitState#state{
+                        manifest = Manifest2,
+                        ledger_sqn = LedgerSQN,
+                        persisted_sqn = LedgerSQN},
                     [L0FN|FileList]};
             false ->
                 leveled_log:log(p0017, []),
-                {InitState#state{manifest = Manifest1,
-                                    ledger_sqn = MaxSQN,
-                                    persisted_sqn = MaxSQN},
+                {InitState#state{
+                        manifest = Manifest1,
+                        ledger_sqn = MaxSQN,
+                        persisted_sqn = MaxSQN},
                     FileList}
         end,
     ok = archive_files(RootPath, FileList0),
@@ -1379,7 +1381,6 @@ shutdown_manifest(Manifest, L0Constructor) ->
     leveled_pmanifest:close_manifest(Manifest, EntryCloseFun),
     EntryCloseFun(L0Constructor).
 
-
 -spec check_alive(pid()|undefined) -> boolean().
 %% @doc
 %% Double-check a processis active before attempting to terminate
@@ -1387,7 +1388,6 @@ check_alive(Owner) when is_pid(Owner) ->
     is_process_alive(Owner);
 check_alive(_Owner) ->
     false.
-
 
 -spec archive_files(list(), list()) -> ok.
 %% @doc
@@ -1489,7 +1489,6 @@ roll_memory(NextManSQN, LedgerSQN, RootPath, L0Cache, CL, SSTOpts, true) ->
             L0Path, L0FN, 0, KVList, LedgerSQN, SSTOpts),
     {Constructor, Bloom}.
 
-
 -spec timed_fetch_mem(
     tuple(),
     {integer(), integer()}, 
@@ -1512,7 +1511,6 @@ timed_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, Monitor) ->
     {TS0, _SW1} = leveled_monitor:step_time(SW0),
     maybelog_fetch_timing(Monitor, Level, TS0, R == not_present),
     R.
-
 
 -spec fetch_sqn(
     leveled_codec:ledger_key(),
@@ -1593,7 +1591,6 @@ log_slowfetch(T0, R, PID, Level, FetchTolerance) ->
             R
     end.
 
-
 -spec compare_to_sqn(
     leveled_codec:ledger_kv()|leveled_codec:sqn()|not_present,
     integer()) -> sqn_check().
@@ -1615,11 +1612,20 @@ compare_to_sqn(ObjSQN, _SQN) when is_integer(ObjSQN) ->
 compare_to_sqn(Obj, SQN) ->
     compare_to_sqn(leveled_codec:strip_to_seqonly(Obj), SQN).
 
+-spec maybelog_fetch_timing(
+    leveled_monitor:monitor(),
+    memory|leveled_pmanifest:lsm_level(),
+    leveled_monitor:timing(),
+    boolean()) -> ok.
+maybelog_fetch_timing(_Monitor, _Level, no_timing, _NF) ->
+    ok;
+maybelog_fetch_timing({Pid, _StatsFreq}, _Level, FetchTime, true) ->
+    leveled_monitor:add_stat(Pid, {pcl_fetch_update, not_found, FetchTime});
+maybelog_fetch_timing({Pid, _StatsFreq}, Level, FetchTime, _NF) ->
+    leveled_monitor:add_stat(Pid, {pcl_fetch_update, Level, FetchTime}).
 
 %%%============================================================================
 %%% Iterator functions 
-%%% 
-%%% TODO - move to dedicated module with extended unit testing
 %%%============================================================================
 
 -type sst_iterator()
@@ -1641,9 +1647,10 @@ compare_to_sqn(Obj, SQN) ->
 keyfolder(Iterator, {StartKey, EndKey}, AccDetails, Constraints) ->
     StripIMMFun =
         fun(MemIter) ->
-            lists:takewhile(
-                fun({K, _V}) -> not leveled_codec:endkey_passed(EndKey, K) end,
-                MemIter)
+            lists:reverse(
+                lists:dropwhile(
+                    fun({K, _V}) -> leveled_codec:endkey_passed(EndKey, K) end,
+                    lists:reverse(MemIter)))
         end,
     keyfolder(
         maps:update_with(-1, StripIMMFun, Iterator),
@@ -1661,22 +1668,16 @@ keyfolder(Iterator, {StartKey, EndKey}, AccDetails, Constraints) ->
         {non_neg_integer(), pos_integer()|infinity},
         integer()}) -> {non_neg_integer(), term()}|term().
 %% @doc
-%% The keyfolder will compare an iterator across the immutable in-memory cache
-%% of the Penciller (the IMMiter), with an iterator across the persisted part 
-%% (the SSTiter).
+%% The keyfolder takes an iterator - a map with an entry for each level, from
+%% level -1 (the in-memory cache of keys) through to level 7 (the theoretical)
+%% maximum level. 
 %%
 %% A Segment List and a MaxKeys may be passed.  Every time something is added 
 %% to the accumulator MaxKeys is reduced - so set MaxKeys to -1 if it is 
 %% intended to be infinite.
 %%
-%% The basic principle is to take the next key in the IMMiter and compare it
-%% to the next key in the SSTiter, and decide which one should be added to the
-%% accumulator.  The iterators are advanced if they either win (i.e. are the 
-%% next key), or are dominated. This goes on until the iterators are empty.
-%%
-%% To advance the SSTiter the find_nextkey/4 function is used, as the SSTiter
-%% is an iterator across multiple levels - and so needs to do its own 
-%% comparisons to pop the next result.
+%% The find_nextkey function is used to scan the next key at each level, and
+%% determine what the actual next key should be. 
 keyfolder(
         _Iterator,
         _Levels,
@@ -1698,8 +1699,6 @@ keyfolder(
         no_more_keys ->
             case MaxKeys > 0 of
                 true ->
-                    % This query had a max count, so we must respond with the
-                    % remainder on the count
                     {MaxKeys, Acc};
                 false ->
                     % This query started with a MaxKeys set to -1.  Query is 
@@ -1731,8 +1730,7 @@ keyfolder(
     pos_integer())
         -> no_more_keys|{sst_iterator(), leveled_codec:ledger_kv()}.
 %% @doc
-%% Looks to find the best choice for the next key across the levels (other
-%% than in-memory table)
+%% Looks to find the best choice for the next key across the levels 
 %% In finding the best choice, the next key in a given level may be a next
 %% block or next file pointer which will need to be expanded
 find_nextkey(
@@ -1820,6 +1818,9 @@ find_nextkey(
             end
     end.
 
+-spec compare_nextkey(
+    leveled_codec:ledger_kv(), null|leveled_codec:ledger_kv())
+        -> best|inferior|dominant|dominated.
 compare_nextkey({_Key, _Value}, null) ->
     best;
 compare_nextkey({Key, _Value}, {BestKey, _BestValue}) when Key < BestKey ->
@@ -1835,19 +1836,6 @@ compare_nextkey({Key, Value}, {Key, BestValue}) ->
     end;
 compare_nextkey(_NextKV, _BestKV) ->
     inferior.
-
--spec maybelog_fetch_timing(
-    leveled_monitor:monitor(),
-    memory|leveled_pmanifest:lsm_level(),
-    leveled_monitor:timing(),
-    boolean()) -> ok.
-maybelog_fetch_timing(_Monitor, _Level, no_timing, _NF) ->
-    ok;
-maybelog_fetch_timing({Pid, _StatsFreq}, _Level, FetchTime, true) ->
-    leveled_monitor:add_stat(Pid, {pcl_fetch_update, not_found, FetchTime});
-maybelog_fetch_timing({Pid, _StatsFreq}, Level, FetchTime, _NF) ->
-    leveled_monitor:add_stat(Pid, {pcl_fetch_update, Level, FetchTime}).
-
 
 %%%============================================================================
 %%% Test
@@ -2109,30 +2097,22 @@ simple_server_test() ->
     ?assertMatch(Key2, pcl_fetch(PclSnap, {o,"Bucket0002", "Key0002", null})),
     ?assertMatch(Key3, pcl_fetch(PclSnap, {o,"Bucket0003", "Key0003", null})),
     ?assertMatch(Key4, pcl_fetch(PclSnap, {o,"Bucket0004", "Key0004", null})),
-    ?assertMatch(current, pcl_checksequencenumber(PclSnap,
-                                                {o,
-                                                    "Bucket0001",
-                                                    "Key0001",
-                                                    null},
-                                                1)),
-    ?assertMatch(current, pcl_checksequencenumber(PclSnap,
-                                                {o,
-                                                    "Bucket0002",
-                                                    "Key0002",
-                                                    null},
-                                                1002)),
-    ?assertMatch(current, pcl_checksequencenumber(PclSnap,
-                                                {o,
-                                                    "Bucket0003",
-                                                    "Key0003",
-                                                    null},
-                                                2003)),
-    ?assertMatch(current, pcl_checksequencenumber(PclSnap,
-                                                {o,
-                                                    "Bucket0004",
-                                                    "Key0004",
-                                                    null},
-                                                3004)),
+    ?assertMatch(
+        current, 
+        pcl_checksequencenumber(
+            PclSnap, {o, "Bucket0001", "Key0001", null}, 1)),
+    ?assertMatch(
+        current,
+        pcl_checksequencenumber(
+            PclSnap, {o, "Bucket0002", "Key0002", null}, 1002)),
+    ?assertMatch(
+        current,
+        pcl_checksequencenumber(
+            PclSnap, {o, "Bucket0003", "Key0003", null}, 2003)),
+    ?assertMatch(
+        current,
+        pcl_checksequencenumber(
+            PclSnap, {o, "Bucket0004", "Key0004", null}, 3004)),
 
     % Add some more keys and confirm that check sequence number still
     % sees the old version in the previous snapshot, but will see the new 
@@ -2144,12 +2124,10 @@ simple_server_test() ->
     KL1A = generate_randomkeys({2000, 4006}),
     ok = maybe_pause_push(PCLr, [Key1A]),
     ok = maybe_pause_push(PCLr, KL1A),
-    ?assertMatch(current, pcl_checksequencenumber(PclSnap,
-                                                {o,
-                                                    "Bucket0001",
-                                                    "Key0001",
-                                                    null},
-                                                1)),
+    ?assertMatch(
+        current,
+        pcl_checksequencenumber(
+            PclSnap, {o, "Bucket0001", "Key0001", null}, 1)),
     ok = pcl_close(PclSnap),
      
     {ok, PclSnap2, null} = 
@@ -2162,24 +2140,18 @@ simple_server_test() ->
             undefined,
             false),
     
-    ?assertMatch(replaced, pcl_checksequencenumber(PclSnap2,
-                                                {o,
-                                                    "Bucket0001",
-                                                    "Key0001",
-                                                    null},
-                                                1)),
-    ?assertMatch(current, pcl_checksequencenumber(PclSnap2,
-                                                {o,
-                                                    "Bucket0001",
-                                                    "Key0001",
-                                                    null},
-                                                4005)),
-    ?assertMatch(current, pcl_checksequencenumber(PclSnap2,
-                                                {o,
-                                                    "Bucket0002",
-                                                    "Key0002",
-                                                    null},
-                                                1002)),
+    ?assertMatch(
+        replaced,
+        pcl_checksequencenumber(
+            PclSnap2, {o, "Bucket0001", "Key0001", null}, 1)),
+    ?assertMatch(
+        current,
+        pcl_checksequencenumber(
+            PclSnap2, {o, "Bucket0001", "Key0001", null}, 4005)),
+    ?assertMatch(
+        current,
+        pcl_checksequencenumber(
+            PclSnap2, {o, "Bucket0002", "Key0002", null}, 1002)),
     ok = pcl_close(PclSnap2),
     ok = pcl_close(PCLr),
     clean_testdir(RootPath).

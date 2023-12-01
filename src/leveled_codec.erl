@@ -265,13 +265,13 @@ maybe_accumulate(
         {Acc, AccFun, _Now},
         MaxKeys,
         _ModifiedRange) ->
-    {AccFun(LK, LV, Acc), MaxKeys -1};
+    {AccFun(LK, LV, Acc), MaxKeys - 1};
 maybe_accumulate(
         LK, {_SQN, {active, infinity}, _SH, _MD, LMD}=LV,
         {Acc, AccFun, _Now},
         MaxKeys,
         {LowDate, HighDate}) when LMD >= LowDate, LMD =< HighDate ->
-    {AccFun(LK, LV, Acc), MaxKeys -1};
+    {AccFun(LK, LV, Acc), MaxKeys - 1};
 maybe_accumulate(
         _LK, {_SQN, tomb, _SH, _MD, _LMD},
         {Acc, _AccFun, _Now},
@@ -283,13 +283,13 @@ maybe_accumulate(
         {Acc, AccFun, Now},
         MaxKeys,
         _ModifiedRange) when TS >= Now ->
-    {AccFun(LK, LV, Acc), MaxKeys -1};
+    {AccFun(LK, LV, Acc), MaxKeys - 1};
 maybe_accumulate(
         LK, {_SQN, {active, TS}, _SH, _MD, LMD}=LV,
         {Acc, AccFun, Now},
         MaxKeys,
         {LowDate, HighDate}) when TS >= Now, LMD >= LowDate, LMD =< HighDate ->
-    {AccFun(LK, LV, Acc), MaxKeys -1};
+    {AccFun(LK, LV, Acc), MaxKeys - 1};
 maybe_accumulate(LK, {SQN, Status, SH, MD}, AccDetails, MaxKeys, LModRange) ->
     maybe_accumulate(
         LK, {SQN, Status, SH, MD, undefined}, AccDetails, MaxKeys, LModRange);
