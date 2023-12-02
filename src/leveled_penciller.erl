@@ -1865,9 +1865,6 @@ keyfolder_test(IMMiter, SSTiter, StartKey, EndKey, {AccFun, Acc, Now}) ->
 convert_qmanifest_tomap(SSTiter) ->
     maps:from_list(SSTiter).
 
-find_nextkey({QueryArray, Ls}, StartKey, EndKey) ->
-    find_nextkey(
-        QueryArray, Ls, ?NULL_KEY, StartKey, EndKey, false, 0, 4);
 find_nextkey(QueryArray, StartKey, EndKey) ->
     find_nextkey(
         QueryArray, maps:keys(QueryArray),

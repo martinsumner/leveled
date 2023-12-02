@@ -45,13 +45,15 @@ expiring_indexes(_Config) ->
             {sync_strategy, testutil:sync_strategy()}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
 
+    SW1 = os:timestamp(),
+    timer:sleep(1000),
+
     V9 = testutil:get_compressiblevalue(),
     Indexes9 = testutil:get_randomindexes_generator(2),
     TempRiakObjects =
         testutil:generate_objects(
             KeyCount, binary_uuid, [], V9, Indexes9, "riakBucket"),
     
-    SW1 = os:timestamp(),
     IBKL1 = testutil:stdload_expiring(Bookie1, KeyCount, Future),
     lists:foreach(
         fun({_RN, Obj, Spc}) ->
@@ -64,6 +66,7 @@ expiring_indexes(_Config) ->
         % Wait a second after last key so that none loaded in the last second
     LoadTime = timer:now_diff(os:timestamp(), SW1)/1000000,
     io:format("Load of ~w std objects in ~w seconds~n",  [KeyCount, LoadTime]),
+    
     timer:sleep(1000),
     SW2 = os:timestamp(),
 
