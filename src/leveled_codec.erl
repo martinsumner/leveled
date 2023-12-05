@@ -48,7 +48,7 @@
         next_key/1,
         return_proxy/4,
         get_metadata/1,
-        maybe_accumulate/5]).         
+        maybe_accumulate/3]).         
 
 -define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
 -define(NRT_IDX, "$aae.").
@@ -252,50 +252,31 @@ get_metadata(LV) ->
     element(4, LV).
 
 -spec maybe_accumulate(
-        leveled_codec:ledger_key(),
         leveled_codec:ledger_value(),
-        {term(), leveled_penciller:pclacc_fun(), pos_integer()},
-        integer(),
+        pos_integer(),
         {non_neg_integer(), non_neg_integer()|infinity})
-            -> {term(), non_neg_integer()}.
+            -> boolean().
 %% @doc
-%% Make an accumulation decision based one the date range
+%% Make an accumulation decision based on the date range and also the expiry
+%% status of the ledger key and value  Needs to handle v1 and v2 values.  When
+%% folding over heads -> v2 values, index-keys -> v1 values.
 maybe_accumulate(
-        LK, {_SQN, {active, infinity}, _SH, _MD, undefined}=LV,
-        {Acc, AccFun, _Now},
-        MaxKeys,
-        _ModifiedRange) ->
-    {AccFun(LK, LV, Acc), MaxKeys - 1};
+        {_SQN, {active, TS}, _SH, _MD, undefined}, Now, _ModRange)
+            when TS >= Now ->
+    true;
 maybe_accumulate(
-        LK, {_SQN, {active, infinity}, _SH, _MD, LMD}=LV,
-        {Acc, AccFun, _Now},
-        MaxKeys,
-        {LowDate, HighDate}) when LMD >= LowDate, LMD =< HighDate ->
-    {AccFun(LK, LV, Acc), MaxKeys - 1};
+        {_SQN, {active, TS}, _SH, _MD}, Now, _ModRange) when TS >= Now ->
+    true;
+maybe_accumulate({_SQN, tomb, _SH, _MD, _LMD}, _Now, _ModRange) ->
+    false;
+maybe_accumulate({_SQN, tomb, _SH, _MD}, _Now, _ModRange) ->
+    false;
 maybe_accumulate(
-        _LK, {_SQN, tomb, _SH, _MD, _LMD},
-        {Acc, _AccFun, _Now},
-        MaxKeys,
-        _ModifiedRange) ->
-    {Acc, MaxKeys};
-maybe_accumulate(
-        LK, {_SQN, {active, TS}, _SH, _MD, undefined}=LV,
-        {Acc, AccFun, Now},
-        MaxKeys,
-        _ModifiedRange) when TS >= Now ->
-    {AccFun(LK, LV, Acc), MaxKeys - 1};
-maybe_accumulate(
-        LK, {_SQN, {active, TS}, _SH, _MD, LMD}=LV,
-        {Acc, AccFun, Now},
-        MaxKeys,
-        {LowDate, HighDate}) when TS >= Now, LMD >= LowDate, LMD =< HighDate ->
-    {AccFun(LK, LV, Acc), MaxKeys - 1};
-maybe_accumulate(LK, {SQN, Status, SH, MD}, AccDetails, MaxKeys, LModRange) ->
-    maybe_accumulate(
-        LK, {SQN, Status, SH, MD, undefined}, AccDetails, MaxKeys, LModRange);
-maybe_accumulate(_LK, _LV, {Acc, _AccFun, _Now}, MaxKeys, _LastModRange) ->
-    {Acc, MaxKeys}.
-
+        {_SQN, {active, TS}, _SH, _MD, LMD}, Now, {LowDate, HighDate})
+            when TS >= Now, LMD >= LowDate, LMD =< HighDate ->
+    true;
+maybe_accumulate(_LV, _Now, _LastModRange) ->
+    false.
 
 -spec key_dominates(ledger_kv(), ledger_kv()) -> 
     left_hand_first|right_hand_first|left_hand_dominant|right_hand_dominant.
