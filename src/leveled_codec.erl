@@ -48,7 +48,8 @@
         next_key/1,
         return_proxy/4,
         get_metadata/1,
-        maybe_accumulate/3]).         
+        maybe_accumulate/3,
+        accumulate_index/2]).         
 
 -define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
 -define(NRT_IDX, "$aae.").
@@ -277,6 +278,32 @@ maybe_accumulate(
     true;
 maybe_accumulate(_LV, _Now, _LastModRange) ->
     false.
+
+-spec accumulate_index(
+        {boolean(), undefined|leveled_runner:mp()}, leveled_runner:acc_fun())
+            -> any().
+accumulate_index({false, undefined}, FoldKeysFun) ->
+    fun({?IDX_TAG, Bucket, _IndexInfo, ObjKey}, _Value, Acc) ->
+        FoldKeysFun(Bucket, ObjKey, Acc)
+    end;
+accumulate_index({true, undefined}, FoldKeysFun) ->
+    fun({?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc) ->
+        FoldKeysFun(Bucket, {IdxValue, ObjKey}, Acc)
+    end;
+accumulate_index({AddTerm, TermRegex}, FoldKeysFun) ->
+    fun({?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc) ->
+        case re:run(IdxValue, TermRegex) of
+            nomatch ->
+                Acc;
+            _ ->
+                case AddTerm of
+                    true ->
+                        FoldKeysFun(Bucket, {IdxValue, ObjKey}, Acc);
+                    false ->
+                        FoldKeysFun(Bucket, ObjKey, Acc)
+                end
+        end
+    end.
 
 -spec key_dominates(ledger_kv(), ledger_kv()) -> 
     left_hand_first|right_hand_first|left_hand_dominant|right_hand_dominant.
