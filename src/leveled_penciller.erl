@@ -1771,7 +1771,7 @@ find_nextkeys(
         Ls, BatchInfo, SearchInfo);
 find_nextkeys(
         Iter,
-        {[LCnt|OtherLevels]=LoopLs, {BKL, BKV}},
+        {[LCnt|OtherLevels]=LoopLs, {BKL, BKV}=PrevBest},
         FoundKVs,
         Ls,
         {_W, ScanWidth}=BI,
@@ -1780,7 +1780,7 @@ find_nextkeys(
         [] ->
             find_nextkeys(
                 Iter,
-                {OtherLevels, {BKL, BKV}},
+                {OtherLevels, PrevBest},
                 FoundKVs,
                 Ls -- [LCnt], BI, SI);
         [{next, Owner, _SK}|RestOfKeys] ->
@@ -1793,7 +1793,7 @@ find_nextkeys(
             % examined a real key at this level
             find_nextkeys(
                 maps:update(LCnt, UpdList, Iter),
-                {LoopLs, {BKL, BKV}},
+                {LoopLs, PrevBest},
                 FoundKVs,
                 Ls, BI, SI);
         [{pointer, SSTPid, Slot, PSK, PEK}|RestOfKeys] ->
@@ -1806,56 +1806,44 @@ find_nextkeys(
             % examined a real key at this level
             find_nextkeys(
                 maps:update(LCnt, UpdList, Iter),
-                {LoopLs, {BKL, BKV}},
+                {LoopLs, PrevBest},
+                FoundKVs,
+                Ls, BI, SI);
+        [{Key, Val}|_RestOfKeys] when BKV == null ->
+            find_nextkeys(
+                Iter,
+                {OtherLevels, {LCnt, {Key, Val}}},
+                FoundKVs,
+                Ls, BI, SI);
+        [{Key, Val}|_RestOfKeys] when Key < element(1, BKV) ->
+            find_nextkeys(
+                Iter,
+                {OtherLevels, {LCnt, {Key, Val}}},
+                FoundKVs,
+                Ls, BI, SI);
+        [{Key, _Val}|_RestOfKeys] when Key > element(1, BKV) ->
+            find_nextkeys(
+                Iter,
+                {OtherLevels, PrevBest},
                 FoundKVs,
                 Ls, BI, SI);
         [{Key, Val}|_RestOfKeys] ->
-            case compare_nextkey({Key, Val}, BKV) of
-                best ->
+            case leveled_codec:key_dominates({Key, Val}, BKV) of
+                true ->
                     find_nextkeys(
-                        Iter,
+                        maps:update_with(BKL, fun tl/1, Iter),
                         {OtherLevels, {LCnt, {Key, Val}}},
                         FoundKVs,
                         Ls, BI, SI);
-                inferior ->
-                    find_nextkeys(
-                        Iter,
-                        {OtherLevels, {BKL, BKV}},
-                        FoundKVs,
-                        Ls, BI, SI);
-                dominated ->
+                false ->
                     find_nextkeys(
                         maps:update_with(LCnt, fun tl/1, Iter),
-                        {OtherLevels, {BKL, BKV}},
-                        FoundKVs,
-                        Ls, BI, SI);
-                dominant ->
-                    find_nextkeys(
-                        maps:update_with(BKL, fun tl/1, Iter),
-                        {OtherLevels,{LCnt, {Key, Val}}},
+                        {OtherLevels, PrevBest},
                         FoundKVs,
                         Ls, BI, SI)
             end
     end.
 
--spec compare_nextkey(
-    leveled_codec:ledger_kv(), null|leveled_codec:ledger_kv())
-        -> best|inferior|dominant|dominated.
-compare_nextkey({_Key, _Value}, null) ->
-    best;
-compare_nextkey({Key, _Value}, {BestKey, _BestValue}) when Key < BestKey ->
-    best;
-compare_nextkey({Key, Value}, {Key, BestValue}) ->
-    SQN = leveled_codec:strip_to_seqonly({Key, Value}),
-    BestSQN = leveled_codec:strip_to_seqonly({Key, BestValue}),
-    case SQN of
-        SQN when SQN =< BestSQN ->
-            dominated;
-        _ ->
-            dominant
-    end;
-compare_nextkey(_NextKV, _BestKV) ->
-    inferior.
 
 %%%============================================================================
 %%% Test

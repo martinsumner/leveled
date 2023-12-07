@@ -49,7 +49,8 @@
         return_proxy/4,
         get_metadata/1,
         maybe_accumulate/5,
-        accumulate_index/2]).         
+        accumulate_index/2,
+        count_tombs/2]).         
 
 -define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
 -define(NRT_IDX, "$aae.").
@@ -319,22 +320,12 @@ accumulate_index({AddTerm, TermRegex}, FoldKeysFun) ->
         end
     end.
 
--spec key_dominates(ledger_kv(), ledger_kv()) -> 
-    left_hand_first|right_hand_first|left_hand_dominant|right_hand_dominant.
+-spec key_dominates(ledger_kv(), ledger_kv()) -> boolean().
 %% @doc
 %% When comparing two keys in the ledger need to find if one key comes before 
 %% the other, or if the match, which key is "better" and should be the winner
-key_dominates({LK, _LVAL}, {RK, _RVAL}) when LK < RK ->
-    left_hand_first;
-key_dominates({LK, _LVAL}, {RK, _RVAL}) when RK < LK ->
-    right_hand_first;
 key_dominates(LObj, RObj) ->
-    case strip_to_seqonly(LObj) >= strip_to_seqonly(RObj) of
-        true ->
-            left_hand_dominant;
-        false ->
-            right_hand_dominant
-    end.
+    strip_to_seqonly(LObj) >= strip_to_seqonly(RObj).
 
 -spec maybe_reap_expiredkey(ledger_kv(), {boolean(), integer()}) -> boolean().
 %% @doc
@@ -353,6 +344,18 @@ maybe_reap(tomb, {true, _CurrTS}) ->
     true; % always expire in basement
 maybe_reap(_, _) ->
     false.
+
+-spec count_tombs(
+        list(ledger_kv()), non_neg_integer()|not_counted) ->
+            non_neg_integer()|not_counted.
+count_tombs(_List, not_counted) ->
+    not_counted;
+count_tombs([], Count) ->
+    Count;
+count_tombs([{_K, V}|T], Count) when element(2, V) == tomb ->
+    count_tombs(T, Count + 1);
+count_tombs([_KV|T], Count) ->
+    count_tombs(T, Count).
 
 
 -spec from_ledgerkey(atom(), tuple()) -> false|tuple().

@@ -191,8 +191,6 @@
     :: no_cache|4|32|64.
 -type cache_hash()
     :: no_cache|non_neg_integer().
--type level()
-    :: non_neg_integer().
 -type summary_filter()
     :: fun((leveled_codec:ledger_key()) -> any()).
 -type segment_check_fun()
@@ -225,7 +223,7 @@
             fetch_cache = no_cache :: fetch_cache() | redacted,
             new_slots :: list()|undefined,
             deferred_startup_tuple :: tuple()|undefined,
-            level :: level()|undefined,
+            level :: leveled_pmanifest:lsm_level()|undefined,
             tomb_count = not_counted
                     :: non_neg_integer()|not_counted,
             high_modified_date :: non_neg_integer()|undefined,
@@ -247,7 +245,8 @@
 %%% API
 %%%============================================================================
 
--spec sst_open(string(), string(), sst_options(), level())
+-spec sst_open(
+        string(), string(), sst_options(), leveled_pmanifest:lsm_level())
             -> {ok, pid(),
                     {leveled_codec:ledger_key(), leveled_codec:ledger_key()},
                     binary()}.
@@ -267,7 +266,7 @@ sst_open(RootPath, Filename, OptsSST, Level) ->
             {ok, Pid, {SK, EK}, Bloom}
     end.
 
--spec sst_new(string(), string(), level(),
+-spec sst_new(string(), string(), leveled_pmanifest:lsm_level(),
                     list(leveled_codec:ledger_kv()),
                     integer(), sst_options())
             -> {ok, pid(),
@@ -304,7 +303,7 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST, IndexModDate) ->
 -spec sst_newmerge(string(), string(),
                     list(leveled_codec:ledger_kv()|sst_pointer()),
                     list(leveled_codec:ledger_kv()|sst_pointer()),
-                    boolean(), level(),
+                    boolean(), leveled_pmanifest:lsm_level(),
                     integer(), sst_options())
             -> empty|{ok, pid(),
                 {{list(leveled_codec:ledger_kv()),
@@ -1192,13 +1191,15 @@ sqn_only(not_present) ->
 sqn_only(KV) ->
     leveled_codec:strip_to_seqonly(KV).
 
+-spec extract_hash(
+        leveled_codec:segment_hash()) -> non_neg_integer()|no_lookup.
 extract_hash({SegHash, _ExtraHash}) when is_integer(SegHash) ->
     tune_hash(SegHash);
 extract_hash(NotHash) ->
     NotHash.
 
 
--spec new_cache(level()) -> fetch_cache().
+-spec new_cache(leveled_pmanifest:lsm_level()) -> fetch_cache().
 new_cache(Level) ->
     case cache_size(Level) of
         no_cache ->
@@ -1220,7 +1221,7 @@ cache_hash({_SegHash, ExtraHash}, Level) when is_integer(ExtraHash) ->
 %% as each level has more files than the previous level.  Load tests with
 %% any sort of pareto distribution show far better cost/benefit ratios for
 %% cache at higher levels.
--spec cache_size(level()) -> cache_size().
+-spec cache_size(leveled_pmanifest:lsm_level()) -> cache_size().
 cache_size(N) when N < 3 ->
     64;
 cache_size(3) ->
@@ -1534,7 +1535,8 @@ compress_level(
 compress_level(_Level, _LevelToCompress, PressMethod) ->
     PressMethod.
 
--spec maxslots_level(level(), pos_integer()) ->  pos_integer().
+-spec maxslots_level(
+        leveled_pmanifest:lsm_level(), pos_integer()) ->  pos_integer().
 maxslots_level(Level, MaxSlotCount) when Level < ?DOUBLESIZE_LEVEL ->
     MaxSlotCount;
 maxslots_level(_Level, MaxSlotCount) ->
@@ -1946,45 +1948,51 @@ lookup_slots(StartKey, EndKey, Tree, FilterFun) ->
 %% based on a 17-bit hash (so 0.0039 fpr).
 
 
--spec accumulate_positions(leveled_codec:ledger_kv(),
-                            {binary(),
-                                non_neg_integer(),
-                                list(non_neg_integer()),
-                                leveled_codec:last_moddate()}) ->
-                                    {binary(),
-                                        non_neg_integer(),
-                                        list(non_neg_integer()),
-                                        leveled_codec:last_moddate()}.
+-spec accumulate_positions(
+        list(leveled_codec:ledger_kv()),
+        {binary(),
+            non_neg_integer(),
+            list(leveled_codec:segment_hash()),
+            leveled_codec:last_moddate()}) ->
+                {binary(),
+                    non_neg_integer(),
+                    list(leveled_codec:segment_hash()),
+                    leveled_codec:last_moddate()}.
 %% @doc
 %% Fold function use to accumulate the position information needed to
 %% populate the summary of the slot
-accumulate_positions({K, V}, {PosBinAcc, NoHashCount, HashAcc, LMDAcc}) ->
+accumulate_positions([], Acc) ->
+    Acc;
+accumulate_positions([{K, V}|T], {PosBin, NoHashCount, HashAcc, LMDAcc}) ->
     {_SQN, H1, LMD} = leveled_codec:strip_to_indexdetails({K, V}),
     LMDAcc0 = take_max_lastmoddate(LMD, LMDAcc),
-    PosH1 = extract_hash(H1),
-    case is_integer(PosH1) of
-        true ->
+    case extract_hash(H1) of
+        PosH1 when is_integer(PosH1) ->
             case NoHashCount of
                 0 ->
-                    {<<1:1/integer, PosH1:15/integer,PosBinAcc/binary>>,
-                        0,
-                        [H1|HashAcc],
-                        LMDAcc0};
+                    accumulate_positions(
+                        T,
+                        {<<(32768 + PosH1):16/integer, PosBin/binary>>,
+                            0,
+                            [H1|HashAcc],
+                            LMDAcc0}
+                    );
                 N ->
                     % The No Hash Count is an integer between 0 and 127
                     % and so at read time should count NHC + 1
                     NHC = N - 1,
-                    {<<1:1/integer,
-                            PosH1:15/integer,
-                            0:1/integer,
-                            NHC:7/integer,
-                            PosBinAcc/binary>>,
-                        0,
-                        [H1|HashAcc],
-                        LMDAcc0}
+                    accumulate_positions(
+                        T,
+                        {<<(32768 + PosH1):16/integer,
+                                NHC:8/integer,
+                                PosBin/binary>>,
+                            0,
+                            [H1|HashAcc],
+                            LMDAcc0})                    
             end;
-        false ->
-            {PosBinAcc, NoHashCount + 1, HashAcc, LMDAcc0}
+        _ ->
+            accumulate_positions(
+                T, {PosBin, NoHashCount + 1, HashAcc, LMDAcc0})
     end.
 
 
@@ -2016,9 +2024,9 @@ generate_binary_slot(Lookup, KVL, PressMethod, IndexModDate, BuildTimings0) ->
     {HashL, PosBinIndex, LMD} =
         case Lookup of
             lookup ->
-                InitAcc = {<<>>, 0, [], 0},
                 {PosBinIndex0, NHC, HashL0, LMD0} =
-                    lists:foldr(fun accumulate_positions/2, InitAcc, KVL),
+                    accumulate_positions(
+                        lists:reverse(KVL), {<<>>, 0, [], 0}),
                 PosBinIndex1 =
                     case NHC of
                         0 ->
@@ -2488,7 +2496,6 @@ binaryslot_tolist(FullBin, PressMethod, IdxModDate) ->
         end,
     Out.
 
-
 binaryslot_trimmedlist(FullBin, all, all,
                             PressMethod, IdxModDate, false) ->
     {binaryslot_tolist(FullBin, PressMethod, IdxModDate), none};
@@ -2768,7 +2775,6 @@ merge_lists(KVList1, SSTOpts, IdxModDate) ->
         element(1, lists:nth(1, KVList1)),
         not_counted}.
 
-
 split_lists([], SlotLists, 0, _PressMethod, _IdxModDate) ->
     lists:reverse(SlotLists);
 split_lists(LastPuff, SlotLists, 0, PressMethod, IdxModDate) ->
@@ -2781,7 +2787,6 @@ split_lists(KVList1, SlotLists, N, PressMethod, IdxModDate) ->
     {SlotD, _} =
         generate_binary_slot(lookup, Slot, PressMethod, IdxModDate, no_timing),
     split_lists(KVListRem, [SlotD|SlotLists], N - 1, PressMethod, IdxModDate).
-
 
 -spec merge_lists(
     list(expanded_pointer()),
@@ -2874,29 +2879,9 @@ merge_lists(KVL1, KVL2, LI, SlotList, FirstKey, SlotCount, MaxSlots,
                         MaxSlots,
                         PressMethod,
                         IdxModDate,
-                        count_tombs(KVL, CountOfTombs),
+                        leveled_codec:count_tombs(KVL, CountOfTombs),
                         T2)
     end.
-
-
--spec count_tombs(
-    list(leveled_codec:ledger_kv()), non_neg_integer()|not_counted) ->
-        non_neg_integer()|not_counted.
-%% @doc
-%% Count the tombstones in a list of KVs
-count_tombs(_KVL, not_counted) ->
-    not_counted;
-count_tombs(KVL, InitCount) ->
-    FoldFun =
-        fun(KV, Count) ->
-            case leveled_codec:strip_to_statusonly(KV) of
-                tomb ->
-                    Count + 1;
-                _ ->
-                    Count
-            end
-        end,
-    lists:foldl(FoldFun, InitCount, KVL).
 
 -spec form_slot(list(expanded_pointer()),
                     list(expanded_pointer()),
@@ -2916,38 +2901,28 @@ form_slot(KVList1, KVList2, _LI, lookup, ?LOOK_SLOTSIZE, Slot, FK) ->
     {KVList1, KVList2, {lookup, lists:reverse(Slot)}, FK};
 form_slot(KVList1, KVList2, _LI, no_lookup, ?NOLOOK_SLOTSIZE, Slot, FK) ->
     {KVList1, KVList2, {no_lookup, lists:reverse(Slot)}, FK};
-form_slot(KVList1, KVList2, {IsBasement, TS}, lookup, Size, Slot, FK) ->
-    case {key_dominates(KVList1, KVList2, {IsBasement, TS}), FK} of
-        {{{next_key, TopKV}, Rem1, Rem2}, _} ->
-            form_slot(Rem1,
-                        Rem2,
-                        {IsBasement, TS},
-                        lookup,
-                        Size + 1,
-                        [TopKV|Slot],
-                        FK);
-        {{skipped_key, Rem1, Rem2}, _} ->
-            form_slot(Rem1, Rem2, {IsBasement, TS}, lookup, Size, Slot, FK)
+form_slot(KVList1, KVList2, LevelInfo, lookup, Size, Slot, FK) ->
+    case key_dominates(KVList1, KVList2, LevelInfo) of
+        {{next_key, TopKV}, Rem1, Rem2} ->
+            form_slot(
+                Rem1, Rem2, LevelInfo, lookup, Size + 1, [TopKV|Slot], FK);
+        {skipped_key, Rem1, Rem2} ->
+            form_slot(Rem1, Rem2, LevelInfo, lookup, Size, Slot, FK)
     end;
-form_slot(KVList1, KVList2, {IsBasement, TS}, no_lookup, Size, Slot, FK) ->
-    case key_dominates(KVList1, KVList2, {IsBasement, TS}) of
+form_slot(KVList1, KVList2, LevelInfo, no_lookup, Size, Slot, FK) ->
+    case key_dominates(KVList1, KVList2, LevelInfo) of
         {{next_key, {TopK, TopV}}, Rem1, Rem2} ->
-            FK0 =
-                case FK of
-                    null ->
-                        TopK;
-                    _ ->
-                        FK
-                end,
+            FK0 = case FK of null -> TopK; _ -> FK end,
             case leveled_codec:to_lookup(TopK) of
                 no_lookup ->
-                    form_slot(Rem1,
-                                Rem2,
-                                {IsBasement, TS},
-                                no_lookup,
-                                Size + 1,
-                                [{TopK, TopV}|Slot],
-                                FK0);
+                    form_slot(
+                        Rem1,
+                        Rem2,
+                        LevelInfo,
+                        no_lookup,
+                        Size + 1,
+                        [{TopK, TopV}|Slot],
+                        FK0);
                 lookup ->
                     case Size >= ?LOOK_SLOTSIZE of
                         true ->
@@ -2958,7 +2933,7 @@ form_slot(KVList1, KVList2, {IsBasement, TS}, no_lookup, Size, Slot, FK) ->
                         false ->
                             form_slot(Rem1,
                                         Rem2,
-                                        {IsBasement, TS},
+                                        LevelInfo,
                                         lookup,
                                         Size + 1,
                                         [{TopK, TopV}|Slot],
@@ -2966,67 +2941,76 @@ form_slot(KVList1, KVList2, {IsBasement, TS}, no_lookup, Size, Slot, FK) ->
                     end
             end;
         {skipped_key, Rem1, Rem2} ->
-            form_slot(Rem1, Rem2, {IsBasement, TS}, no_lookup, Size, Slot, FK)
+            form_slot(Rem1, Rem2, LevelInfo, no_lookup, Size, Slot, FK)
     end.
 
-key_dominates(KL1, KL2, Level) ->
-    key_dominates_expanded(maybe_expand_pointer(KL1),
-                            maybe_expand_pointer(KL2),
-                            Level).
+-spec key_dominates(
+        list(expanded_pointer()),
+        list(expanded_pointer()),
+        {boolean()|undefined, leveled_pmanifest:lsm_level()})
+        -> 
+            {{next_key, leveled_codec:ledger_kv()}|skipped_key,
+                list(expanded_pointer()),
+                list(expanded_pointer())}.
+key_dominates([{pointer, SSTPid, Slot, StartKey, all}|T1], KL2, Level) ->
+    key_dominates(
+        expand_list_by_pointer(
+            {pointer, SSTPid, Slot, StartKey, all}, T1, ?MERGE_SCANWIDTH),
+        KL2,
+        Level);
+key_dominates([{next, ManEntry, StartKey}|T1], KL2, Level) ->
+    key_dominates(
+        expand_list_by_pointer(
+            {next, ManEntry, StartKey, all}, T1, ?MERGE_SCANWIDTH),
+        KL2,
+        Level);
+key_dominates(KL1, [{pointer, SSTPid, Slot, StartKey, all}|T2], Level) ->
+    key_dominates(
+        KL1,
+        expand_list_by_pointer(
+            {pointer, SSTPid, Slot, StartKey, all}, T2, ?MERGE_SCANWIDTH),
+        Level);
+key_dominates(KL1, [{next, ManEntry, StartKey}|T2], Level) ->
+    key_dominates(
+        KL1,
+        expand_list_by_pointer(
+            {next, ManEntry, StartKey, all}, T2, ?MERGE_SCANWIDTH),
+        Level);
+key_dominates(KL1, KL2, {true, TS}) ->
+    case key_dominates_expanded(KL1, KL2) of
+        {{next_key, NKV}, Rest1, Rest2} ->
+            case leveled_codec:maybe_reap_expiredkey(NKV, {true, TS}) of
+                true ->
+                    {skipped_key, Rest1, Rest2};
+                false ->
+                    {{next_key, NKV}, Rest1, Rest2}
+            end;
+        {skipped_key, Rest1, Rest2} ->
+            {skipped_key, Rest1, Rest2}
+    end;
+key_dominates(KL1, KL2, _Level) ->
+    key_dominates_expanded(KL1, KL2).
 
-key_dominates_expanded([H1|T1], [], Level) ->
-    case leveled_codec:maybe_reap_expiredkey(H1, Level) of
-        true ->
-            {skipped_key, T1, []};
-        false ->
-            {{next_key, H1}, T1, []}
-    end;
-key_dominates_expanded([], [H2|T2], Level) ->
-    case leveled_codec:maybe_reap_expiredkey(H2, Level) of
-        true ->
-            {skipped_key, [], T2};
-        false ->
-            {{next_key, H2}, [], T2}
-    end;
-key_dominates_expanded([H1|T1], [H2|T2], Level) ->
+-spec key_dominates_expanded(
+        list(expanded_pointer()), list(expanded_pointer()))
+            -> {{next_key, leveled_codec:ledger_kv()}|skipped_key,
+                    list(expanded_pointer()),
+                    list(expanded_pointer())}.
+key_dominates_expanded([H1|T1], []) ->
+    {{next_key, H1}, T1, []};
+key_dominates_expanded([], [H2|T2]) ->
+    {{next_key, H2}, [], T2};
+key_dominates_expanded([{K1, V1}|T1], [{K2, _V2}|_T2]=RHL) when K1 < K2 ->
+    {{next_key, {K1, V1}}, T1, RHL};
+key_dominates_expanded([{K1, _V1}|_T1]=LHL, [{K2, V2}|T2]) when K2 < K1 ->
+    {{next_key, {K2, V2}}, LHL, T2};
+key_dominates_expanded([H1|T1], [H2|T2]) ->
     case leveled_codec:key_dominates(H1, H2) of
-        left_hand_first ->
-            case leveled_codec:maybe_reap_expiredkey(H1, Level) of
-                true ->
-                    {skipped_key, T1, [H2|T2]};
-                false ->
-                    {{next_key, H1}, T1, [H2|T2]}
-            end;
-        right_hand_first ->
-            case leveled_codec:maybe_reap_expiredkey(H2, Level) of
-                true ->
-                    {skipped_key, [H1|T1], T2};
-                false ->
-                    {{next_key, H2}, [H1|T1], T2}
-            end;
-        left_hand_dominant ->
+        true ->
             {skipped_key, [H1|T1], T2};
-        right_hand_dominant ->
+        false ->
             {skipped_key, T1, [H2|T2]}
     end.
-
-
-%% When a list is provided it may include a pointer to gain another batch of
-%% entries from the same file, or a new batch of entries from another file
-%%
-%% This resultant list should include the Tail of any pointers added at the
-%% end of the list
-
-maybe_expand_pointer([]) ->
-    [];
-maybe_expand_pointer([{pointer, SSTPid, Slot, StartKey, all}|Tail]) ->
-    expand_list_by_pointer(
-        {pointer, SSTPid, Slot, StartKey, all}, Tail, ?MERGE_SCANWIDTH);
-maybe_expand_pointer([{next, ManEntry, StartKey}|Tail]) ->
-    expand_list_by_pointer(
-        {next, ManEntry, StartKey, all}, Tail, ?MERGE_SCANWIDTH);
-maybe_expand_pointer(List) ->
-    List.
 
 
 
