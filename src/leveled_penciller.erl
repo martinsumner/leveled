@@ -219,7 +219,9 @@
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
 -define(COIN_SIDECOUNT, 4).
 -define(SLOW_FETCH, 500000). % Log a very slow fetch - longer than 500ms
+-define(FOLD_SCANWIDTH, 32).
 -define(ITERATOR_SCANWIDTH, 4).
+-define(ITERATOR_MINSCANWIDTH, 1).
 -define(TIMING_SAMPLECOUNTDOWN, 10000).
 -define(TIMING_SAMPLESIZE, 100).
 -define(SHUTDOWN_LOOPS, 10).
@@ -770,10 +772,11 @@ handle_call({fetch_keys,
     L0AsList =
         case State#state.levelzero_astree of
             undefined ->
-                leveled_pmem:merge_trees(StartKey,
-                                            EndKey,
-                                            State#state.levelzero_cache,
-                                            leveled_tree:empty(?CACHE_TYPE));
+                leveled_pmem:merge_trees(
+                    StartKey,
+                    EndKey,
+                    State#state.levelzero_cache,
+                    leveled_tree:empty(?CACHE_TYPE));
             List ->
                 List
         end,
@@ -1214,7 +1217,6 @@ handle_cast({complete_shutdown, ShutdownType, From}, State) ->
     end,
     {stop, normal, State}.
 
-
 %% handle the bookie stopping and stop this snapshot
 handle_info({'DOWN', BookieMonRef, process, _BookiePid, _Info},
 	    State=#state{bookie_monref = BookieMonRef}) ->
@@ -1231,10 +1233,11 @@ terminate(Reason, _State) ->
 format_status(normal, [_PDict, State]) ->
     State;
 format_status(terminate, [_PDict, State]) ->
-    State#state{manifest = redacted, 
-                    levelzero_cache = redacted,
-                    levelzero_index = redacted,
-                    levelzero_astree = redacted}.
+    State#state{
+        manifest = redacted, 
+        levelzero_cache = redacted,
+        levelzero_index = redacted,
+        levelzero_astree = redacted}.
 
 
 code_change(_OldVsn, State, _Extra) ->
@@ -1625,15 +1628,21 @@ maybelog_fetch_timing({Pid, _StatsFreq}, Level, FetchTime, _NF) ->
     leveled_monitor:add_stat(Pid, {pcl_fetch_update, Level, FetchTime}).
 
 %%%============================================================================
-%%% Iterator functions 
+%%% Key folder
 %%%============================================================================
 
 -type sst_iterator()
     :: #{
         leveled_pmanifest:lsm_level() =>
             list(leveled_sst:expandable_pointer()|leveled_codec:ledger_kv()),
-        cache|-1 =>
+        -1 =>
             list(leveled_codec:ledger_kv())}.
+-type max_keys() :: unlimited|non_neg_integer().
+-type iterator_level() :: -1|leveled_pmanifest:lsm_level().
+-type search_info() ::
+    {{leveled_codec:ledger_key(), leveled_codec:ledger_key()},
+        {non_neg_integer(), pos_integer()|infinity},
+        leveled_sst:segment_check_fun()}.
 
 -define(NULL_KEY, {null, null}).
 
@@ -1643,12 +1652,14 @@ maybelog_fetch_timing({Pid, _StatsFreq}, Level, FetchTime, _NF) ->
     {pclacc_fun(), any(), pos_integer()},
     {leveled_sst:segment_check_fun(),
         {non_neg_integer(), pos_integer()|infinity},
-        integer()}) -> {non_neg_integer(), term()}|term().
+        -1|non_neg_integer()}) -> {non_neg_integer(), term()}|term().
 keyfolder(
         Iterator,
         {StartKey, EndKey},
         {AccFun, InitAcc, Now},
-        {SegCheckFun, LastModRange, MaxKeys}) ->
+        {SegCheckFun, LastModRange, KeyLimit}) ->
+    % The in-memory dump of keys in this range, may go beyond the end key - so
+    % strip these back before starting the fold 
     StripIMMFun =
         fun(MemIter) ->
             lists:reverse(
@@ -1656,153 +1667,174 @@ keyfolder(
                     fun({K, _V}) -> leveled_codec:endkey_passed(EndKey, K) end,
                     lists:reverse(MemIter)))
         end,
+    MaxKeys = 
+        case KeyLimit of
+            -1 -> unlimited;
+            KeyLimit when is_integer(KeyLimit), KeyLimit >= 0 -> KeyLimit
+        end,
     keyfolder(
         maps:update_with(-1, StripIMMFun, Iterator),
         InitAcc,
         MaxKeys,
-        lists:sort(maps:keys(Iterator)),
-        {?ITERATOR_SCANWIDTH, {StartKey, EndKey}, LastModRange, SegCheckFun},
+        {?FOLD_SCANWIDTH, lists:sort(maps:keys(Iterator))},
+        {{StartKey, EndKey}, LastModRange, SegCheckFun},
         {AccFun, Now}).
 
 -spec keyfolder(
-    sst_iterator(),
+    sst_iterator()|no_more_keys,
     term(),
-    non_neg_integer(),
-    list(-1..7),
-    {pos_integer(), 
-        {leveled_codec:ledger_key(), leveled_codec:ledger_key()},
-        {non_neg_integer(), pos_integer()|infinity},
-        leveled_sst:segment_check_fun()},
+    max_keys(),
+    {pos_integer(), list(iterator_level())},
+    search_info(),
     {pclacc_fun(), integer()}) -> {non_neg_integer(), term()}|term().
 %% @doc
 %% The keyfolder takes an iterator - a map with an entry for each level, from
 %% level -1 (the in-memory cache of keys) through to level 7 (the theoretical)
 %% maximum level. 
 %%
-%% A Segment List and a MaxKeys may be passed.  Every time something is added 
-%% to the accumulator MaxKeys is reduced - so set MaxKeys to -1 if it is 
-%% intended to be infinite.
-%%
-%% The find_nextkey function is used to scan the next key at each level, and
-%% determine what the actual next key should be. 
-keyfolder(_Iterator, Acc, MaxKeys, _Levels, _SearchCriteria, _Accumulator)
-        when MaxKeys == 0 ->
+%% The find_nextkeys function is used to scan the iterators to find the next
+%% set of W keys. These can then be accumulated.  If there is a MaxKeys set
+%% (i.e. a maximum number of KV pairs to be accumulated), then this must be
+%% tracked so the keyfolder never asks for more than the remainder from
+%% find_nextkeys 
+keyfolder(no_more_keys, Acc, MaxKeys, _LevelInfo, _SearchInfo, _AccDetails) ->
+    case MaxKeys of
+        unlimited -> Acc;
+        MaxKeys -> {MaxKeys, Acc}
+    end;
+keyfolder(_Iter, Acc, 0, _LevelInfo, _SearchInfo, _AccDetails) ->
     {0, Acc};
 keyfolder(
-        Iterator,
+        Iter,
         Acc,
         MaxKeys,
-        Levels,
-        {_W, _KR, LastModRange, _SCF}=SearchCriteria,
-        {AccFun, Now}) ->
-    case find_nextkey(Iterator, Levels, ?NULL_KEY, SearchCriteria) of
-        no_more_keys ->
-            case MaxKeys > 0 of
-                true ->
-                    {MaxKeys, Acc};
-                false ->
-                    % This query started with a MaxKeys set to -1.  Query is 
-                    % not interested in having MaxKeys in Response
-                    Acc
-            end;
-        {NxtIterator, {Key, Val}} ->
-            case leveled_codec:maybe_accumulate(Val, Now, LastModRange) of
-                true ->
-                    keyfolder(
-                        NxtIterator,
-                        AccFun(Key, Val, Acc),
-                        MaxKeys - 1,
-                        Levels,
-                        SearchCriteria,
-                        {AccFun, Now});
-                false ->
-                    keyfolder(
-                        NxtIterator,
-                        Acc,
-                        MaxKeys,
-                        Levels,
-                        SearchCriteria,
-                        {AccFun, Now})
-            end
-    end.
+        {W, Ls}=LevelInfo,
+        {_KR, LastModRange, _SCF}=SearchInfo,
+        {AccFun, Now}=AccDetails) ->
+    {IterUpd, FoundKVs} =
+        find_nextkeys(
+            Iter,
+            {Ls, ?NULL_KEY},
+            [],
+            Ls,
+            {fetch_size(MaxKeys, W), scan_size(MaxKeys)},
+            SearchInfo),
+    {UpdAcc, KeyCount} =
+        leveled_codec:maybe_accumulate(
+            lists:reverse(FoundKVs), Acc, 0, {Now, LastModRange}, AccFun),
+    MaxKeysLeft =
+        case MaxKeys of
+            unlimited -> unlimited;
+            MaxKeys -> MaxKeys - KeyCount
+        end,
+    keyfolder(IterUpd, UpdAcc, MaxKeysLeft, LevelInfo, SearchInfo, AccDetails).
 
--spec find_nextkey(
+-spec fetch_size(max_keys(), pos_integer()) -> pos_integer().
+fetch_size(unlimited, W) -> W;
+fetch_size(MaxKeys, W) -> min(MaxKeys, W).
+
+-spec scan_size(max_keys()) -> pos_integer().
+scan_size(unlimited) -> ?ITERATOR_SCANWIDTH;
+scan_size(MaxKeys) when MaxKeys < 256 -> ?ITERATOR_MINSCANWIDTH;
+scan_size(_MaxKeys) -> ?ITERATOR_SCANWIDTH.
+
+-spec find_nextkeys(
     sst_iterator(),
-    list(-1|leveled_pmanifest:lsm_level()),
-    {null|-1|leveled_pmanifest:lsm_level(), null|leveled_codec:ledger_kv()},
-    {pos_integer(),
-        {leveled_codec:ledger_key(), leveled_codec:ledger_key()},
-        {non_neg_integer(), pos_integer()|infinity},
-        leveled_sst:segment_check_fun()})
-        -> no_more_keys|{sst_iterator(), leveled_codec:ledger_kv()}.
+    {list(iterator_level()),
+        {null|iterator_level(), null|leveled_codec:ledger_kv()}},
+    list(leveled_codec:ledger_kv()),
+    list(iterator_level()),
+    {pos_integer(), pos_integer()},
+    search_info()) ->
+            {no_more_keys, list(leveled_codec:ledger_kv())}|
+                {sst_iterator(), list(leveled_codec:ledger_kv())}.
 %% @doc
-%% Looks to find the best choice for the next key across the levels 
-%% In finding the best choice, the next key in a given level may be a next
-%% block or next file pointer which will need to be expanded
-find_nextkey(_Iterator, [], ?NULL_KEY, _SearchCriteria) ->
-    % The array has been scanned without finding a best key - must be
-    % exhausted - respond to indicate no more keys to be found by the
-    % iterator
-    no_more_keys;
-find_nextkey(Iterator, [],  {BKL, BestKV}, _SearchCriteria) ->
-    % All levels have been scanned, so need to remove the best result from
-    % the array, and return that array along with the best key/sqn/status
-    % combination
-    {maps:update_with(BKL, fun tl/1, Iterator), BestKV};
-find_nextkey(
-        Iterator,
-        [LCnt|OtherLevels], 
-        {BKL, BKV},
-        {Width, {StartKey, EndKey}, {LowLastMod, _High}, SegChecker}=SC) ->
-    case maps:get(LCnt, Iterator) of
+%% Looks to find up to W keys, where for each key every level is checked,
+%% comparing keys to find the best key for that loop
+find_nextkeys(
+        _Iter, {[], ?NULL_KEY}, FoundKVs, _Ls, _BatchInfo, _SearchInfo) ->
+    % Each level checked and best key still NULL => no_more_keys
+    {no_more_keys, FoundKVs};
+find_nextkeys(
+        Iter, {[], {BKL, BestKV}}, FoundKVs, _Ls, {W, _SW}, _SearchInfo)
+            when length(FoundKVs) == W - 1 ->
+    % All levels scanned, and there are now W keys (W - 1 previously found plus
+    % the latest best key)
+    {maps:update_with(BKL, fun tl/1, Iter), [BestKV|FoundKVs]};
+find_nextkeys(
+        Iter, {[], {BKL, BestKV}}, FoundKVs, Ls, BatchInfo, SearchInfo) ->
+    % All levels scanned so this is the best key ... now loop to find more
+    find_nextkeys(
+        maps:update_with(BKL, fun tl/1, Iter),
+        {Ls, ?NULL_KEY},
+        [BestKV|FoundKVs],
+        Ls, BatchInfo, SearchInfo);
+find_nextkeys(
+        Iter,
+        {[LCnt|OtherLevels]=LoopLs, {BKL, BKV}},
+        FoundKVs,
+        Ls,
+        {_W, ScanWidth}=BI,
+        {{StartKey, EndKey}, {LowLastMod, _High}, SegChecker}=SI) ->
+    case maps:get(LCnt, Iter) of
         [] ->
-            find_nextkey(Iterator, OtherLevels, {BKL, BKV}, SC);
+            find_nextkeys(
+                Iter,
+                {OtherLevels, {BKL, BKV}},
+                FoundKVs,
+                Ls -- [LCnt], BI, SI);
         [{next, Owner, _SK}|RestOfKeys] ->
+            % Expansion required
             Pointer = {next, Owner, StartKey, EndKey},
             UpdList =
                 leveled_sst:sst_expandpointer(
-                    Pointer, RestOfKeys, Width, SegChecker, LowLastMod),
+                    Pointer, RestOfKeys, ScanWidth, SegChecker, LowLastMod),
             % Need to loop around at this level (LCnt) as we have not yet
             % examined a real key at this level
-            find_nextkey(
-                maps:update(LCnt, UpdList, Iterator),
-                [LCnt|OtherLevels],
-                {BKL, BKV},
-                SC);
+            find_nextkeys(
+                maps:update(LCnt, UpdList, Iter),
+                {LoopLs, {BKL, BKV}},
+                FoundKVs,
+                Ls, BI, SI);
         [{pointer, SSTPid, Slot, PSK, PEK}|RestOfKeys] ->
-            % The first key at this level is pointer within a file  - need to
-            % query the file to expand this level out before proceeding
+            % Expansion required
             Pointer = {pointer, SSTPid, Slot, PSK, PEK},
             UpdList =
                 leveled_sst:sst_expandpointer(
-                    Pointer, RestOfKeys, Width, SegChecker, LowLastMod),
+                    Pointer, RestOfKeys, ScanWidth, SegChecker, LowLastMod),
             % Need to loop around at this level (LCnt) as we have not yet
             % examined a real key at this level
-            find_nextkey(
-                maps:update(LCnt, UpdList, Iterator),
-                [LCnt|OtherLevels],
-                {BKL, BKV},
-                SC);
+            find_nextkeys(
+                maps:update(LCnt, UpdList, Iter),
+                {LoopLs, {BKL, BKV}},
+                FoundKVs,
+                Ls, BI, SI);
         [{Key, Val}|_RestOfKeys] ->
             case compare_nextkey({Key, Val}, BKV) of
                 best ->
-                    find_nextkey(
-                        Iterator, OtherLevels, {LCnt, {Key, Val}}, SC);
+                    find_nextkeys(
+                        Iter,
+                        {OtherLevels, {LCnt, {Key, Val}}},
+                        FoundKVs,
+                        Ls, BI, SI);
                 inferior ->
-                    find_nextkey(
-                        Iterator, OtherLevels, {BKL, BKV}, SC);
+                    find_nextkeys(
+                        Iter,
+                        {OtherLevels, {BKL, BKV}},
+                        FoundKVs,
+                        Ls, BI, SI);
                 dominated ->
-                    find_nextkey(
-                        maps:update_with(LCnt, fun tl/1, Iterator),
-                        OtherLevels,
-                        {BKL, BKV},
-                        SC);
+                    find_nextkeys(
+                        maps:update_with(LCnt, fun tl/1, Iter),
+                        {OtherLevels, {BKL, BKV}},
+                        FoundKVs,
+                        Ls, BI, SI);
                 dominant ->
-                    find_nextkey(
-                        maps:update_with(BKL, fun tl/1, Iterator),
-                        OtherLevels,
-                        {LCnt, {Key, Val}},
-                        SC)
+                    find_nextkeys(
+                        maps:update_with(BKL, fun tl/1, Iter),
+                        {OtherLevels,{LCnt, {Key, Val}}},
+                        FoundKVs,
+                        Ls, BI, SI)
             end
     end.
 
@@ -1854,11 +1886,21 @@ convert_qmanifest_tomap(SSTiter) ->
     maps:from_list(SSTiter).
 
 find_nextkey(QueryArray, StartKey, EndKey) ->
-    find_nextkey(
-        QueryArray,
-        maps:keys(QueryArray),
-        ?NULL_KEY,
-        {4, {StartKey, EndKey}, {0, infinity}, false}).
+    {UpdArray, NextKeys} =
+        find_nextkeys(
+            QueryArray,
+            {maps:keys(QueryArray), ?NULL_KEY},
+            [],
+            maps:keys(QueryArray),
+            {1, 1},
+            {{StartKey, EndKey}, {0, infinity}, false}),
+    case UpdArray of
+        no_more_keys ->
+            no_more_keys;
+        UpdArray ->
+            [NextKey] = NextKeys,
+            {UpdArray, NextKey}
+    end.
 
 generate_randomkeys({Count, StartSQN}) ->
     generate_randomkeys(Count, StartSQN, []).
@@ -1876,7 +1918,6 @@ generate_randomkeys(Count, SQN, Acc) ->
                 leveled_codec:segment_hash(K),
                 null}},
     generate_randomkeys(Count - 1, SQN + 1, [RandKey|Acc]).
-    
 
 clean_testdir(RootPath) ->
     clean_subdir(sst_rootpath(RootPath)),
@@ -1895,7 +1936,6 @@ clean_subdir(DirPath) ->
         false ->
             ok
     end.
-
 
 maybe_pause_push(PCL, KL) ->
     T0 = [],
@@ -2328,7 +2368,6 @@ create_file_test() ->
 slow_fetch_test() ->
     ?assertMatch(not_present, log_slowfetch(2, not_present, "fake", 0, 1)),
     ?assertMatch("value", log_slowfetch(2, "value", "fake", 0, 1)).
-
 
 coverage_cheat_test() ->
     {noreply, _State0} = handle_info(timeout, #state{}),

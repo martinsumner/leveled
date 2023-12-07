@@ -48,7 +48,7 @@
         next_key/1,
         return_proxy/4,
         get_metadata/1,
-        maybe_accumulate/3,
+        maybe_accumulate/5,
         accumulate_index/2]).         
 
 -define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
@@ -253,31 +253,45 @@ get_metadata(LV) ->
     element(4, LV).
 
 -spec maybe_accumulate(
-        leveled_codec:ledger_value(),
-        pos_integer(),
-        {non_neg_integer(), non_neg_integer()|infinity})
-            -> boolean().
+        list(leveled_codec:ledger_kv()),
+        term(),
+        non_neg_integer(),
+        {pos_integer(), {non_neg_integer(), non_neg_integer()|infinity}},
+        leveled_penciller:pclacc_fun())
+            -> {term(), non_neg_integer()}.
 %% @doc
 %% Make an accumulation decision based on the date range and also the expiry
 %% status of the ledger key and value  Needs to handle v1 and v2 values.  When
 %% folding over heads -> v2 values, index-keys -> v1 values.
+maybe_accumulate([], Acc, Count, _Filter, _Fun) ->
+    {Acc, Count};
 maybe_accumulate(
-        {_SQN, {active, TS}, _SH, _MD, undefined}, Now, _ModRange)
-            when TS >= Now ->
-    true;
+        [{K, {_SQN, {active, TS}, _SH, _MD, undefined}=V}|T],
+        Acc, Count, {Now, _ModRange}=Filter, AccFun)
+        when TS >= Now ->
+    maybe_accumulate(T, AccFun(K, V, Acc), Count + 1, Filter, AccFun);
 maybe_accumulate(
-        {_SQN, {active, TS}, _SH, _MD}, Now, _ModRange) when TS >= Now ->
-    true;
-maybe_accumulate({_SQN, tomb, _SH, _MD, _LMD}, _Now, _ModRange) ->
-    false;
-maybe_accumulate({_SQN, tomb, _SH, _MD}, _Now, _ModRange) ->
-    false;
+        [{K, {_SQN, {active, TS}, _SH, _MD}=V}|T],
+        Acc, Count, {Now, _ModRange}=Filter, AccFun)
+        when TS >= Now ->
+    maybe_accumulate(T, AccFun(K, V, Acc), Count + 1, Filter, AccFun);
 maybe_accumulate(
-        {_SQN, {active, TS}, _SH, _MD, LMD}, Now, {LowDate, HighDate})
-            when TS >= Now, LMD >= LowDate, LMD =< HighDate ->
-    true;
-maybe_accumulate(_LV, _Now, _LastModRange) ->
-    false.
+        [{_K, {_SQN, tomb, _SH, _MD, _LMD}}|T],
+        Acc, Count, Filter, AccFun) ->
+    maybe_accumulate(T, Acc, Count, Filter, AccFun);
+maybe_accumulate(
+        [{_K, {_SQN, tomb, _SH, _MD}}|T],
+        Acc, Count, Filter, AccFun) ->
+    maybe_accumulate(T, Acc, Count, Filter, AccFun);
+maybe_accumulate(
+        [{K, {_SQN, {active, TS}, _SH, _MD, LMD}=V}|T],
+        Acc, Count, {Now, {LowDate, HighDate}}=Filter, AccFun)
+        when TS >= Now, LMD >= LowDate, LMD =< HighDate ->
+    maybe_accumulate(T, AccFun(K, V, Acc), Count + 1, Filter, AccFun);
+maybe_accumulate(
+        [_LV|T],
+        Acc, Count, Filter, AccFun) ->
+    maybe_accumulate(T, Acc, Count, Filter, AccFun).
 
 -spec accumulate_index(
         {boolean(), undefined|leveled_runner:mp()}, leveled_runner:acc_fun())
