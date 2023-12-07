@@ -4,7 +4,7 @@
 -define(INFO, info).
 -export([all/0, suite/0]).
 -export([
-    riak_ctperf/1, riak_fullperf/1
+    riak_ctperf/1, riak_fullperf/1, riak_profileperf/1
 ]).
 
 all() -> [riak_ctperf].
@@ -13,14 +13,27 @@ suite() -> [{timetrap, {hours, 8}}].
 
 % For full performance test
 riak_fullperf(_Config) ->
-    R8A = riak_load_tester(<<"B0">>, 8000000, 2048, false, native),
-    output_result(R8A),
-    R8B = riak_load_tester(<<"B0">>, 8000000, 2048, false, native),
-    output_result(R8B),
-    R8C = riak_load_tester(<<"B0">>, 8000000, 2048, false, native),
-    output_result(R8C),
-    R16 = riak_load_tester(<<"B0">>, 16000000, 2048, false, native),
-    output_result(R16).
+    R2A = riak_load_tester(<<"B0">>, 2000000, 2048, false, native),
+    output_result(R2A),
+    R2B = riak_load_tester(<<"B0">>, 2000000, 2048, false, native),
+    output_result(R2B),
+    R2C = riak_load_tester(<<"B0">>, 2000000, 2048, false, native),
+    output_result(R2C),
+    R5A = riak_load_tester(<<"B0">>, 5000000, 2048, false, native),
+    output_result(R5A),
+    R5B = riak_load_tester(<<"B0">>, 5000000, 2048, false, native),
+    output_result(R5B),
+    R10 = riak_load_tester(<<"B0">>, 10000000, 2048, false, native),
+    output_result(R10).
+
+riak_profileperf(_Config) ->
+    riak_load_tester(<<"B0">>, 2000000, 1024, load, native),
+    riak_load_tester(<<"B0">>, 2000000, 1024, head, native),
+    riak_load_tester(<<"B0">>, 2000000, 1024, get, native),
+    riak_load_tester(<<"B0">>, 2000000, 1024, query, native),
+    riak_load_tester(<<"B0">>, 2000000, 1024, guess, native),
+    riak_load_tester(<<"B0">>, 2000000, 1024, estimate, native),
+    riak_load_tester(<<"B0">>, 2000000, 1024, full, native).
 
 % For standard ct test runs
 riak_ctperf(_Config) ->
@@ -86,7 +99,7 @@ riak_load_tester(Bucket, KeyCount, ObjSize, Profile, PressMethod) ->
     TotalLoadTime =
         (TC1 + TC2 + TC3 + TC4 + TC5 + TC6 + TC7 + TC8 + TC9 + TC10) div 1000,
     ct:log(?INFO, "Total load time ~w ms", [TotalLoadTime]),
-    
+
     TotalHeadTime = 
         random_fetches(head, Bookie1, Bucket, KeyCount, HeadFetches),
     TotalGetTime = 
@@ -96,11 +109,12 @@ riak_load_tester(Bucket, KeyCount, ObjSize, Profile, PressMethod) ->
     WeightedFoldTime = size_estimate_summary(Bookie1),
 
     DiskSpace = lists:nth(1, string:tokens(os:cmd("du -sh riakLoad"), "\t")),
-    ct:log(?INFO, "Disk space taken by test~s", [DiskSpace]),
+    ct:log(?INFO, "Disk space taken by test ~s", [DiskSpace]),
 
     MemoryUsage = erlang:memory(),
     ct:log(?INFO, "Memory used in test ~p", [MemoryUsage]),
 
+    ct:log(?INFO, "Profile of ~w", [Profile]),
     ProfiledFun =
         case Profile of
             false ->
@@ -177,7 +191,7 @@ output_result(
         "TotalGetTime - ~w ms~n"
         "TotalQueryTime - ~w ms~n"
         "Disk space required for test - ~s~n"
-        "Memory usage for test - ~p ~p ~p ~p~n"
+        "Memory usage for test - ~p ~p ~p~n"
         "Closing count of SST Files - ~w~n"
         "Closing count of CDB Files - ~w~n",
         [KeyCount, ObjSize, PressMethod,
@@ -186,7 +200,6 @@ output_result(
             DiskSpace,
             lists:keyfind(total, 1, MemoryUsage),
             lists:keyfind(processes, 1, MemoryUsage),
-            lists:keyfind(processes_used, 1, MemoryUsage),
             lists:keyfind(binary, 1, MemoryUsage),
             length(SSTPids), length(CDBPids)]
     ).
