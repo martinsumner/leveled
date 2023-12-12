@@ -785,7 +785,8 @@ reader({call, From},
                 binaryslot_reader(
                     SlotsToFetchBinList,
                     PressMethod, IdxModDate,
-                    SegChecker),
+                    SegChecker,
+                    SlotsToPoint),
             {UpdateCache, BlockIdxC0, HighModDate} =
                 update_blockindex_cache(
                     NeedBlockIdx,
@@ -799,10 +800,10 @@ reader({call, From},
                         State#state{
                             blockindex_cache = BlockIdxC0,
                             high_modified_date = HighModDate},
-                        [{reply, From, L ++ SlotsToPoint}]};
+                        [{reply, From, L}]};
                 false ->
                     {keep_state_and_data,
-                        [hibernate, {reply, From, L ++ SlotsToPoint}]}
+                        [hibernate, {reply, From, L}]}
             end
     end;
 reader({call, From}, {get_slots, SlotList, SegChecker, LowLastMod}, State) ->
@@ -1090,8 +1091,12 @@ sst_getfilteredrange(
         {yield, SlotsToFetchBinList, SlotsToPoint, PressMethod, IdxModDate} ->
             {L, _BIC} =
                 binaryslot_reader(
-                    SlotsToFetchBinList, PressMethod, IdxModDate, SegChecker),
-            L ++ SlotsToPoint;
+                    SlotsToFetchBinList,
+                    PressMethod,
+                    IdxModDate,
+                    SegChecker,
+                    SlotsToPoint),
+            L;
         Reply ->
             Reply
     end.
@@ -1116,7 +1121,7 @@ sst_getfilteredslots(Pid, SlotList, SegChecker, LowLastMod) ->
         gen_statem:call(
             Pid, {get_slots, SlotList, SegChecker, LowLastMod}, infinity),
     {L, BIC} =
-        binaryslot_reader(SlotBins, PressMethod, IdxModDate, SegChecker),
+        binaryslot_reader(SlotBins, PressMethod, IdxModDate, SegChecker, []),
     case NeedBlockIdx of
         true ->
             erlang:send(Pid, {update_blockindex_cache, BIC});
@@ -2268,12 +2273,7 @@ binarysplit_mapfun(MultiSlotBin, StartPos) ->
     press_method(),
     boolean()) -> {boolean(), list(binaryslot_element())}.
 %% @doc
-%% The reading of sots will return a list of either 2-tuples containing
-%% {K, V} pairs - or 3-tuples containing {Binary, SK, EK}.  The 3 tuples
-%% can be exploded into lists of {K, V} pairs using the binaryslot_reader/4
-%% function
-%%
-%% Reading slots is generally unfiltered, but in the sepcial case when
+%% Reading slots is generally unfiltered, but in the special case when
 %% querting across slots when only matching segment IDs are required the
 %% BlockIndexCache can be used
 %%
@@ -2341,7 +2341,7 @@ read_slots(Handle, SlotList, {SegChecker, LowLastMod, BlockIndexCache},
                                                         IdxModDate,
                                                         []),
                                     % There is no range passed through to the
-                                    % binaryslot_reader, so these results need
+                                    % check_blocks, so these results need
                                     % to be filtered
                                     FilterFun =
                                         fun(KV) -> in_range(KV, SK, EK) end,
@@ -2373,12 +2373,13 @@ read_slotlist(SlotList, Handle) ->
     lists:map(binarysplit_mapfun(MultiSlotBin, StartPos), LengthList).
 
 
--spec binaryslot_reader(list(binaryslot_element()),
-                            press_method(),
-                            boolean(),
-                            segment_check_fun())
-                                -> {list({tuple(), tuple()}),
-                                    list({integer(), binary()})}.
+-spec binaryslot_reader(
+    list(binaryslot_element()),
+    press_method(),
+    boolean(),
+    segment_check_fun(),
+    list(expandable_pointer()))
+        -> {list({tuple(), tuple()}), list({integer(), binary()})}.
 %% @doc
 %% Read the binary slots converting them to {K, V} pairs if they were not
 %% already {K, V} pairs.  If they are already {K, V} pairs it is assumed
@@ -2390,7 +2391,8 @@ read_slotlist(SlotList, Handle) ->
 %% should open the slot block by block, filtering individual keys where the
 %% endpoints of the block are outside of the range, and leaving blocks already
 %% proven to be outside of the range unopened.
-binaryslot_reader(SlotBinsToFetch, PressMethod, IdxModDate, SegChecker) ->
+binaryslot_reader(
+        SlotBinsToFetch, PressMethod, IdxModDate, SegChecker, SlotsToPoint) ->
     % Two accumulators are added.
     % One to collect the list of keys and values found in the binary slots
     % (subject to range filtering if the slot is still deserialised at this
@@ -2400,11 +2402,13 @@ binaryslot_reader(SlotBinsToFetch, PressMethod, IdxModDate, SegChecker) ->
     % of get_kvreader calls.  This means that slots which are only used in
     % range queries can still populate their block_index caches (on the FSM
     % loop state), and those caches can be used for future queries.
-    binaryslot_reader(
-        SlotBinsToFetch, PressMethod, IdxModDate, SegChecker, [], []).
+    {Acc, BIAcc} =
+        binaryslot_reader(
+            SlotBinsToFetch, PressMethod, IdxModDate, SegChecker, [], []),
+    {lists:reverse(lists:reverse(SlotsToPoint) ++ Acc), BIAcc}.
 
 binaryslot_reader([], _PressMethod, _IdxModDate, _SegChecker, Acc, BIAcc) ->
-    {lists:reverse(Acc), BIAcc};
+    {Acc, BIAcc};
 binaryslot_reader(
     [{SlotBin, ID, SK, EK}|Tail],
         PressMethod, IdxModDate, SegChecker, Acc, BIAcc) ->
@@ -4311,17 +4315,7 @@ corrupted_block_rangetester(PressMethod, TestCount) ->
                 blocks_required(
                     {SK, EK}, CB1, CB2, CBMid, CB4, CB5, PressMethod),
             ?assertMatch(true, length(BR) =< 100),
-            BlockListFun =
-                fun(B) ->
-                    case is_binary(B) of
-                        true ->
-                            deserialise_block(B, PressMethod);
-                        false ->
-                            B
-                    end
-                end,
-            BRL = lists:flatten(lists:map(BlockListFun, BR)),
-            lists:foreach(fun({_K, _V}) -> ok end, BRL)
+            lists:foreach(fun({_K, _V}) -> ok end, BR)
     end,
     lists:foreach(CheckFun, RandomRanges).
 
