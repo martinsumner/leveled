@@ -49,6 +49,7 @@
             put_altered_indexed_objects/5,
             check_indexed_objects/4,
             rotating_object_check/3,
+            rotation_withnocheck/3,
             corrupt_journal/5,
             restore_file/2,
             restore_topending/2,
@@ -837,6 +838,12 @@ rotating_object_check(RootPath, B, NumberOfObjects) ->
     ok = leveled_bookie:book_close(Book2),
     ok.
     
+rotation_withnocheck(Book1, B, NumberOfObjects) ->
+    {KSpcL1, _V1} = put_indexed_objects(Book1, B, NumberOfObjects),
+    {KSpcL2, _V2} = put_altered_indexed_objects(Book1, B, KSpcL1),
+    {_KSpcL3, _V3} = put_altered_indexed_objects(Book1, B, KSpcL2),
+    ok.
+
 corrupt_journal(RootPath, FileName, Corruptions, BasePosition, GapSize) ->
     OriginalPath = RootPath ++ "/journal/journal_files/" ++ FileName,
     BackupPath = RootPath ++ "/journal/journal_files/" ++

@@ -33,7 +33,8 @@ riak_profileperf(_Config) ->
     riak_load_tester(<<"B0">>, 2000000, 1024, query, native),
     riak_load_tester(<<"B0">>, 2000000, 1024, guess, native),
     riak_load_tester(<<"B0">>, 2000000, 1024, estimate, native),
-    riak_load_tester(<<"B0">>, 2000000, 1024, full, native).
+    riak_load_tester(<<"B0">>, 2000000, 1024, full, native),
+    riak_load_tester(<<"B0">>, 2000000, 1024, update, native).
 
 % For standard ct test runs
 riak_ctperf(_Config) ->
@@ -49,7 +50,7 @@ riak_load_tester(Bucket, KeyCount, ObjSize, Profile, PressMethod) ->
 
     GetFetches = KeyCount div 4,
     HeadFetches = KeyCount div 2,
-    IndexesReturned = KeyCount * 20,
+    IndexesReturned = KeyCount * 10,
 
     RootPath = testutil:reset_filestructure("riakLoad"),
     StartOpts1 =
@@ -100,19 +101,36 @@ riak_load_tester(Bucket, KeyCount, ObjSize, Profile, PressMethod) ->
         (TC1 + TC2 + TC3 + TC4 + TC5 + TC6 + TC7 + TC8 + TC9 + TC10) div 1000,
     ct:log(?INFO, "Total load time ~w ms", [TotalLoadTime]),
 
+    {MT0, MP0, MB0} = memory_usage(),
+
     TotalHeadTime = 
         random_fetches(head, Bookie1, Bucket, KeyCount, HeadFetches),
+    
+    {MT1, MP1, MB1} = memory_usage(),
+
     TotalGetTime = 
         random_fetches(get, Bookie1, Bucket, KeyCount, GetFetches),
+
+    {MT2, MP2, MB2} = memory_usage(),
+
     TotalQueryTime =
         random_queries(Bookie1, Bucket, 10, IndexCount, IndexesReturned),
-    WeightedFoldTime = size_estimate_summary(Bookie1),
+
+    {MT3, MP3, MB3} = memory_usage(),
+
+    {FullFoldTime, SegFoldTime} = size_estimate_summary(Bookie1),
+
+    {MT4, MP4, MB4} = memory_usage(),
+
+    TotalUpdateTime = rotate_chunk(Bookie1, <<"UpdBucket">>, KeyCount div 50),
+
+    {MT5, MP5, MB5} = memory_usage(),
 
     DiskSpace = lists:nth(1, string:tokens(os:cmd("du -sh riakLoad"), "\t")),
     ct:log(?INFO, "Disk space taken by test ~s", [DiskSpace]),
 
     MemoryUsage = erlang:memory(),
-    ct:log(?INFO, "Memory used in test ~p", [MemoryUsage]),
+    ct:log(?INFO, "Memory in use at end of test ~p", [MemoryUsage]),
 
     ct:log(?INFO, "Profile of ~w", [Profile]),
     ProfiledFun =
@@ -143,6 +161,10 @@ riak_load_tester(Bucket, KeyCount, ObjSize, Profile, PressMethod) ->
                 fun() ->
                     testutil:riakload(Bookie1, ObjList11)
                 end;
+            update ->
+                fun() ->
+                    rotate_chunk(Bookie1, <<"ProfileB">>, KeyCount div 50)
+                end;
             CounterFold ->
                 fun() ->
                     lists:foreach(
@@ -168,17 +190,25 @@ riak_load_tester(Bucket, KeyCount, ObjSize, Profile, PressMethod) ->
     
     {KeyCount, ObjSize, PressMethod,
         TotalLoadTime,
-        WeightedFoldTime, TotalHeadTime, TotalGetTime, TotalQueryTime,
-        DiskSpace, MemoryUsage,
+        TotalHeadTime, TotalGetTime,
+        TotalQueryTime, FullFoldTime, SegFoldTime,
+        TotalUpdateTime,
+        DiskSpace,
+        {(MT0 + MT1 + MT2 + MT3 + MT4 + MT5) div 6000000,
+            (MP0 + MP1 + MP2 + MP3 + MP4 + MP5) div 6000000,
+            (MB0 + MB1 + MB2 + MB3 + MB4 + MB5) div 6000000},
         SSTPids, CDBPids}.
 
 
 output_result(
     {KeyCount, ObjSize, PressMethod,
-    TotalLoadTime,
-    WeightedFoldTime, TotalHeadTime, TotalGetTime, TotalQueryTime,
-    DiskSpace, MemoryUsage,
-    SSTPids, CDBPids}
+        TotalLoadTime,
+        TotalHeadTime, TotalGetTime,
+        TotalQueryTime, TotalFullFoldTime, TotalSegFoldTime,
+        TotalUpdateTime,
+        DiskSpace,
+        {TotalMemoryMB, ProcessMemoryMB, BinaryMemoryMB},
+        SSTPids, CDBPids}
 ) ->
     %% TODO ct:pal not working?  even with rebar3 ct --verbose?
     io:format(
@@ -186,23 +216,31 @@ output_result(
         "~n"
         "Outputs from profiling with KeyCount ~w ObjSize ~w Compression ~w:~n"
         "TotalLoadTime - ~w ms~n"
-        "TotalFoldTime - ~w ms~n"
         "TotalHeadTime - ~w ms~n"
         "TotalGetTime - ~w ms~n"
         "TotalQueryTime - ~w ms~n"
+        "TotalFullFoldTime - ~w ms~n"
+        "TotalSegFoldTime - ~w ms~n"
+        "TotalUpdateTime - ~w ms~n"
         "Disk space required for test - ~s~n"
-        "Memory usage for test - ~p ~p ~p~n"
+        "Average Memory usage for test - Total ~p Proc ~p Bin ~p MB~n"
         "Closing count of SST Files - ~w~n"
         "Closing count of CDB Files - ~w~n",
         [KeyCount, ObjSize, PressMethod,
-            TotalLoadTime, 
-            WeightedFoldTime, TotalHeadTime, TotalGetTime, TotalQueryTime,
+            TotalLoadTime, TotalHeadTime, TotalGetTime,
+            TotalQueryTime, TotalFullFoldTime, TotalSegFoldTime,
+            TotalUpdateTime,
             DiskSpace,
-            lists:keyfind(total, 1, MemoryUsage),
-            lists:keyfind(processes, 1, MemoryUsage),
-            lists:keyfind(binary, 1, MemoryUsage),
+            TotalMemoryMB, ProcessMemoryMB, BinaryMemoryMB,
             length(SSTPids), length(CDBPids)]
     ).
+
+memory_usage() ->
+    garbage_collect(), % GC the test process
+    MemoryUsage = erlang:memory(),
+    {element(2, lists:keyfind(total, 1, MemoryUsage)),
+        element(2, lists:keyfind(processes, 1, MemoryUsage)),
+        element(2, lists:keyfind(binary, 1, MemoryUsage))}.
 
 profile_app(Pids, ProfiledFun) ->
 
@@ -226,7 +264,6 @@ size_estimate_summary(Bookie) ->
             {TotalEstimateVariance, TotalGuessVariance}} =
         lists:foldl(
             fun(_I, {{GT, ET, CT}, {AET, AGT}}) ->
-                timer:sleep(1000),
                 {{GT0, ET0, CT0}, {AE0, AG0}} = size_estimate_tester(Bookie),
                 {{GT + GT0, ET + ET0, CT + CT0}, {AET + AE0, AGT + AG0}}
             end,
@@ -246,8 +283,21 @@ size_estimate_summary(Bookie) ->
         [TotalEstimateVariance div Loops, TotalGuessVariance div Loops]
     ),
     %% Assume that segment-list folds are 10 * as common as all folds
-    ((TotalCountTime div 10) + (TotalGuessTime + TotalEstimateTime)) div 1000.
+    {TotalCountTime div 1000, (TotalGuessTime + TotalEstimateTime) div 1000}.
 
+
+rotate_chunk(Bookie, Bucket, KeyCount) ->
+    ct:log(
+        ?INFO,
+        "Rotating an ObjList ~w - "
+        "time includes object generation",
+        [KeyCount]),
+    {TC, ok} = 
+        timer:tc(
+            fun() ->
+                testutil:rotation_withnocheck(Bookie, Bucket, KeyCount)
+            end),
+    TC div 1000.
 
 load_chunk(Bookie, CountPerList, ObjSize, IndexGenFun, Bucket, Chunk) ->
     ct:log(?INFO, "Generating and loading ObjList ~w", [Chunk]),
@@ -378,21 +428,16 @@ random_queries(Bookie, Bucket, IDs, IdxCnt, IndexesReturned) ->
             BinIndex =
                 list_to_binary("binary" ++ integer_to_list(ID) ++ "_bin"),
             Twenty = IdxCnt div 5,
+            MaxRange = max(5, IdxCnt div 100),
+            RI = leveled_rand:uniform(MaxRange),
             [Start, End] =
-                case leveled_rand:uniform(5) of
-                    1 ->
-                        lists:sort(
-                            [
-                                leveled_rand:uniform(IdxCnt - Twenty) + Twenty,
-                                leveled_rand:uniform(IdxCnt - Twenty) + Twenty
-                            ]);
+                case RI of
+                    RI when RI < (MaxRange div 5) ->
+                        R0 = leveled_rand:uniform(IdxCnt - (Twenty + RI)),
+                        [R0 + Twenty, R0 + Twenty + RI];
                     _ ->
-                        lists:sort(
-                            [
-                                leveled_rand:uniform(Twenty),
-                                leveled_rand:uniform(Twenty)
-                            ]
-                        )
+                        R0 = leveled_rand:uniform(Twenty - RI),
+                        [R0, R0 + RI]
                 end,
             FoldKeysFun =  fun(_B, _K, Cnt) -> Cnt + 1 end,
             {async, R} =
