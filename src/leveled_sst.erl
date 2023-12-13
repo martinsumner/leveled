@@ -89,7 +89,6 @@
 -define(TOMB_COUNT, true).
 -define(USE_SET_FOR_SPEED, 32).
 -define(STARTUP_TIMEOUT, 10000).
--define(YIELD_MAXLEVEL, 2).
 
 -ifdef(TEST).
 -define(HIBERNATE_TIMEOUT, 5000).
@@ -201,20 +200,12 @@
 -type fetch_levelzero_fun()
     :: fun((pos_integer(), leveled_penciller:levelzero_returnfun()) -> ok).
 
-%% yield_blockquery is used to determine if the work necessary to process a
-%% range query beyond the fetching the slot should be managed from within
-%% this process, or should be handled by the calling process.
-%% Handling within the calling process may lead to extra binary heap garbage
-%% see Issue 52.  Handling within the SST process may lead to contention and
-%% extra copying.  Files at the top of the tree yield, those lower down don't.
-
 -record(state,
         {summary,
             handle :: file:fd() | undefined,
             penciller :: pid() | undefined | false,
             root_path,
             filename,
-            yield_blockquery = false :: boolean(),
             blockindex_cache ::
                 blockindex_cache() | undefined | redacted,
             compression_method = native :: press_method(),
@@ -236,7 +227,6 @@
             slot_finish = 0 :: integer(),
             fold_toslot = 0 :: integer()}).
 
--type sst_state() :: #state{}.
 -type build_timings() :: no_timing|#build_timings{}.
 
 -export_type([expandable_pointer/0, press_method/0, segment_check_fun/0]).
@@ -548,7 +538,6 @@ starting({call, From},
         build_all_slots(SlotList),
     {_, BlockIndex, HighModDate} =
         update_blockindex_cache(
-            true,
             BlockEntries,
             new_blockindex_cache(Length),
             undefined,
@@ -563,9 +552,7 @@ starting({call, From},
     {UpdState, Bloom} =
         read_file(
             ActualFilename,
-            State#state{
-                root_path=RootPath,
-                yield_blockquery = Level =< ?YIELD_MAXLEVEL},
+            State#state{root_path=RootPath},
             OptsSST#sst_options.pagecache_level >= Level),
     Summary = UpdState#state.summary,
     leveled_log:log_timer(
@@ -626,7 +613,6 @@ starting(cast, complete_l0startup, State) ->
         build_all_slots(SlotList),
     {_, BlockIndex, HighModDate} =
         update_blockindex_cache(
-            true,
             BlockEntries,
             new_blockindex_cache(SlotCount),
             undefined,
@@ -647,8 +633,7 @@ starting(cast, complete_l0startup, State) ->
         read_file(
             ActualFilename,
             State#state{
-                root_path=RootPath,
-                yield_blockquery=true,                
+                root_path=RootPath,              
                 new_slots=undefined, % Important to empty this from state
                 deferred_startup_tuple=undefined},
             true),
@@ -750,62 +735,20 @@ reader({call, From}, {get_kv, LedgerKey, Hash, Filter}, State) ->
                 [hibernate, {reply, From, Result}]}
     end;
 reader({call, From},
-        {get_kvrange, StartKey, EndKey, ScanWidth, SegChecker, LowLastMod},
+        {fetch_range, StartKey, EndKey, LowLastMod},
         State) ->
-    ReadNeeded =
-        check_modified(
-            State#state.high_modified_date,
-            LowLastMod,
-            State#state.index_moddate),
-    {NeedBlockIdx, SlotsToFetchBinList, SlotsToPoint} =
-        case ReadNeeded of
-            true ->
-                fetch_range(
-                    StartKey, EndKey,
-                    ScanWidth, SegChecker, LowLastMod, State);
-            false ->
-                {false, [], []}
-        end,
-    PressMethod = State#state.compression_method,
-    IdxModDate = State#state.index_moddate,
-
-    case State#state.yield_blockquery of
-        true ->
-            {keep_state_and_data,
-                [{reply,
-                    From,
-                    {yield,
-                        SlotsToFetchBinList,
-                        SlotsToPoint,
-                        PressMethod,
-                        IdxModDate}
-                }]};
-        false ->
-            {L, FoundBIC} =
-                binaryslot_reader(
-                    SlotsToFetchBinList,
-                    PressMethod, IdxModDate,
-                    SegChecker,
-                    SlotsToPoint),
-            {UpdateCache, BlockIdxC0, HighModDate} =
-                update_blockindex_cache(
-                    NeedBlockIdx,
-                    FoundBIC,
-                    State#state.blockindex_cache,
-                    State#state.high_modified_date,
-                    State#state.index_moddate),
-            case UpdateCache of
-                true ->
-                    {keep_state,
-                        State#state{
-                            blockindex_cache = BlockIdxC0,
-                            high_modified_date = HighModDate},
-                        [{reply, From, L}]};
-                false ->
-                    {keep_state_and_data,
-                        [hibernate, {reply, From, L}]}
-            end
-    end;
+    SlotsToPoint =
+        fetch_range(
+            StartKey,
+            EndKey,
+            State#state.summary,
+            State#state.filter_fun,
+            check_modified(
+                State#state.high_modified_date,
+                LowLastMod,
+                State#state.index_moddate)
+            ),
+    {keep_state_and_data, [{reply, From, SlotsToPoint}]};
 reader({call, From}, {get_slots, SlotList, SegChecker, LowLastMod}, State) ->
     PressMethod = State#state.compression_method,
     IdxModDate = State#state.index_moddate,
@@ -849,8 +792,8 @@ reader(cast, {switch_levels, NewLevel}, State) ->
     {keep_state,
         State#state{
             level = NewLevel,
-            fetch_cache = new_cache(NewLevel),
-            yield_blockquery = NewLevel =< ?YIELD_MAXLEVEL},
+            fetch_cache = new_cache(NewLevel)
+        },
         [hibernate]};
 reader(info, {update_blockindex_cache, BIC}, State) ->
     handle_update_blockindex_cache(BIC, State);
@@ -900,22 +843,20 @@ delete_pending({call, From}, {get_kv, LedgerKey, Hash, Filter}, State) ->
     {keep_state_and_data, [{reply, From, Result}, ?DELETE_TIMEOUT]};
 delete_pending(
         {call, From},
-        {get_kvrange, StartKey, EndKey, ScanWidth, SegChecker, LowLastMod},
+        {fetch_range, StartKey, EndKey, LowLastMod},
         State) ->
-    {_NeedBlockIdx, SlotsToFetchBinList, SlotsToPoint} =
+    SlotsToPoint =
         fetch_range(
-            StartKey, EndKey, ScanWidth, SegChecker, LowLastMod, State),
-    % Always yield as about to clear and de-reference
-    PressMethod = State#state.compression_method,
-    IdxModDate = State#state.index_moddate,
-    {keep_state_and_data,
-        [{reply, From,
-            {yield,
-            SlotsToFetchBinList,
-            SlotsToPoint,
-            PressMethod,
-            IdxModDate}},
-        ?DELETE_TIMEOUT]};
+            StartKey,
+            EndKey,
+            State#state.summary,
+            State#state.filter_fun,
+            check_modified(
+                State#state.high_modified_date,
+                LowLastMod,
+                State#state.index_moddate)
+            ),
+    {keep_state_and_data, [{reply, From, SlotsToPoint}, ?DELETE_TIMEOUT]};
 delete_pending(
         {call, From},
         {get_slots, SlotList, SegChecker, LowLastMod},
@@ -964,17 +905,21 @@ delete_pending(timeout, _, State) ->
     {keep_state_and_data, [leveled_rand:uniform(10) * ?DELETE_TIMEOUT]}.
 
 handle_update_blockindex_cache(BIC, State) ->
-    {_, BlockIndexCache, HighModDate} =
-        update_blockindex_cache(true,
-                                BIC,
-                                State#state.blockindex_cache,
-                                State#state.high_modified_date,
-                                State#state.index_moddate),
-    {keep_state,
-        State#state{
-            blockindex_cache = BlockIndexCache,
-            high_modified_date = HighModDate}}.
-    
+    {NeedBlockIdx, BlockIndexCache, HighModDate} =
+        update_blockindex_cache(
+            BIC,
+            State#state.blockindex_cache,
+            State#state.high_modified_date,
+            State#state.index_moddate),
+    case NeedBlockIdx of
+        true ->
+            {keep_state,
+                State#state{
+                    blockindex_cache = BlockIndexCache,
+                    high_modified_date = HighModDate}};
+        false ->
+            keep_state_and_data
+    end.
 
 terminate(normal, delete_pending, _State) ->
     ok;
@@ -1040,21 +985,20 @@ expand_list_by_pointer(
             end,
             PotentialPointers
         ),
-    ExpPointers =
-        sst_getfilteredslots(
-            SSTPid,
-            [{pointer, SSTPid, Slot, StartKey, EndKey}|LocalPointers],
-            SegChecker,
-            LowLastMod),
-    ExpPointers ++ OtherPointers ++ Remainder;
+    sst_getfilteredslots(
+        SSTPid,
+        [{pointer, SSTPid, Slot, StartKey, EndKey}|LocalPointers],
+        SegChecker,
+        LowLastMod,
+        OtherPointers ++ Remainder
+    );
 expand_list_by_pointer(
         {next, ManEntry, StartKey, EndKey},
-        Tail, Width, SegChecker, LowLastMod) ->
+        Tail, _Width, _SegChecker, LowLastMod) ->
     SSTPid = ManEntry#manifest_entry.owner,
     leveled_log:log(sst10, [SSTPid, is_process_alive(SSTPid)]),
     ExpPointer =
-        sst_getfilteredrange(
-            SSTPid, StartKey, EndKey, Width, SegChecker, LowLastMod),
+        sst_getfilteredrange(SSTPid, StartKey, EndKey, LowLastMod),
     ExpPointer ++ Tail.
 
 
@@ -1062,9 +1006,7 @@ expand_list_by_pointer(
     pid(),
     range_endpoint(),
     range_endpoint(),
-    integer(),
-    segment_check_fun(),
-    non_neg_integer()) -> list(leveled_codec:ledger_kv()|slot_pointer()).
+    non_neg_integer()) -> list(slot_pointer()).
 %% @doc
 %% Get a range of {Key, Value} pairs as a list between StartKey and EndKey
 %% (inclusive).  The ScanWidth is the maximum size of the range, a pointer
@@ -1076,37 +1018,17 @@ expand_list_by_pointer(
 %%
 %% A segment list can also be passed, which inidcates a subset of segment
 %% hashes of interest in the query.
-%%
-%% TODO: Optimise this so that passing a list of segments that tune to the
-%% same hash is faster - perhaps provide an exportable function in
-%% leveled_tictac
-sst_getfilteredrange(
-        Pid, StartKey, EndKey, ScanWidth, SegChecker, LowLastMod) ->
-    YieldOrReply =
-        gen_statem:call(
-            Pid,
-            {get_kvrange, StartKey, EndKey, ScanWidth, SegChecker, LowLastMod},
-            infinity),
-    case YieldOrReply of
-        {yield, SlotsToFetchBinList, SlotsToPoint, PressMethod, IdxModDate} ->
-            {L, _BIC} =
-                binaryslot_reader(
-                    SlotsToFetchBinList,
-                    PressMethod,
-                    IdxModDate,
-                    SegChecker,
-                    SlotsToPoint),
-            L;
-        Reply ->
-            Reply
-    end.
+sst_getfilteredrange(Pid, StartKey, EndKey, LowLastMod) ->
+    gen_statem:call(
+        Pid, {fetch_range, StartKey, EndKey, LowLastMod}, infinity).
 
 
 -spec sst_getfilteredslots(
     pid(),
     list(slot_pointer()),
     segment_check_fun(),
-    non_neg_integer()) -> list(leveled_codec:ledger_kv()).
+    non_neg_integer(),
+    list(expandable_pointer())) -> list(leveled_codec:ledger_kv()).
 %% @doc
 %% Get a list of slots by their ID. The slot will be converted from the binary
 %% to term form outside of the FSM loop
@@ -1116,12 +1038,13 @@ sst_getfilteredrange(
 %% false as a SegList to not filter.
 %% An integer can be provided which gives a floor for the LastModified Date
 %% of the object, if the object is to be covered by the query
-sst_getfilteredslots(Pid, SlotList, SegChecker, LowLastMod) ->
+sst_getfilteredslots(Pid, SlotList, SegChecker, LowLastMod, Pointers) ->
     {NeedBlockIdx, SlotBins, PressMethod, IdxModDate} =
         gen_statem:call(
             Pid, {get_slots, SlotList, SegChecker, LowLastMod}, infinity),
     {L, BIC} =
-        binaryslot_reader(SlotBins, PressMethod, IdxModDate, SegChecker, []),
+        binaryslot_reader(
+            SlotBins, PressMethod, IdxModDate, SegChecker, Pointers),
     case NeedBlockIdx of
         true ->
             erlang:send(Pid, {update_blockindex_cache, BIC});
@@ -1321,11 +1244,12 @@ updatebic_foldfun(HMDRequired) ->
     end.
 
 -spec update_blockindex_cache(
-        boolean(), list({integer(), binary()}),
-        blockindex_cache(), non_neg_integer()|undefined,
+        list({integer(), binary()}),
+        blockindex_cache(),
+        non_neg_integer()|undefined,
         boolean()) ->
             {boolean(), blockindex_cache(), non_neg_integer()|undefined}.
-update_blockindex_cache(true, Entries, BIC, HighModDate, IdxModDate) ->
+update_blockindex_cache(Entries, BIC, HighModDate, IdxModDate) ->
     case {element(1, BIC), array:size(element(2, BIC))} of
         {N, N} ->
             {false, BIC, HighModDate};
@@ -1347,9 +1271,7 @@ update_blockindex_cache(true, Entries, BIC, HighModDate, IdxModDate) ->
                 _ ->
                     {true, BIC0, undefined}
             end
-    end;
-update_blockindex_cache(_Needed, _Entries, BIC, HighModDate, _IdxModDate) ->
-    {false, BIC, HighModDate}.
+    end.
 
 -spec check_modified(non_neg_integer()|undefined,
                         non_neg_integer(),
@@ -1399,7 +1321,7 @@ fetch(LedgerKey, Hash,
                     SlotBin, LedgerKey, Hash, PressMethod, IndexModDate),
             {_UpdateState, BIC0, HMD0} =
                 update_blockindex_cache(
-                    true, [{SlotID, Header}], BIC, HighModDate, IndexModDate),
+                    [{SlotID, Header}], BIC, HighModDate, IndexModDate),
             case Result of
                 not_present ->
                     maybelog_fetch_timing(
@@ -1455,10 +1377,12 @@ fetch(LedgerKey, Hash,
     end.
 
 
--spec fetch_range(tuple(), tuple(), integer(),
-                    segment_check_fun(), non_neg_integer(),
-                    sst_state()) ->
-                        {boolean(), list(), list()}.
+-spec fetch_range(
+    range_endpoint(),
+    range_endpoint(),
+    sst_summary(),
+    summary_filter(),
+    boolean()) -> list(slot_pointer()).
 %% @doc
 %% Fetch the contents of the SST file for a given key range.  This will
 %% pre-fetch some results, and append pointers for additional results.
@@ -1466,69 +1390,52 @@ fetch(LedgerKey, Hash,
 %% A filter can be provided based on the Segment ID (usable for hashable
 %% objects not no_lookup entries) to accelerate the query if the 5-arity
 %% version is used
-fetch_range(StartKey, EndKey, ScanWidth, SegChecker, LowLastMod, State) ->
-    Summary = State#state.summary,
-    Handle = State#state.handle,
+fetch_range(StartKey, EndKey, Summary, FilterFun, true) ->
     {Slots, RTrim} =
         lookup_slots(
             StartKey,
             EndKey,
             Summary#summary.index,
-            State#state.filter_fun),
+            FilterFun),
     Self = self(),
     SL = length(Slots),
-
-    ExpandedSlots =
-        case SL of
-            1 ->
-                [Slot] = Slots,
-                case RTrim of
-                    true ->
-                        [{pointer, Self, Slot, StartKey, EndKey}];
-                    false ->
-                        [{pointer, Self, Slot, StartKey, all}]
-                end;
-            N ->
-                {LSlot, MidSlots, RSlot} =
-                    case N of
-                        2 ->
-                            [Slot1, Slot2] = Slots,
-                            {Slot1, [], Slot2};
-                        N ->
-                            [Slot1|_Rest] = Slots,
-                            SlotN = lists:last(Slots),
-                            {Slot1, lists:sublist(Slots, 2, N - 2), SlotN}
-                    end,
-                MidSlotPointers = lists:map(fun(S) ->
-                                                {pointer, Self, S, all, all}
-                                                end,
-                                            MidSlots),
-                case RTrim of
-                    true ->
-                        [{pointer, Self, LSlot, StartKey, all}] ++
-                            MidSlotPointers ++
-                            [{pointer, Self, RSlot, all, EndKey}];
-                    false ->
-                        [{pointer, Self, LSlot, StartKey, all}] ++
-                            MidSlotPointers ++
-                            [{pointer, Self, RSlot, all, all}]
-                end
-        end,
-    {SlotsToFetch, SlotsToPoint} =
-        case ScanWidth of
-            SW when SW >= SL ->
-                {ExpandedSlots, []};
-            _ ->
-                lists:split(ScanWidth, ExpandedSlots)
-        end,
-
-    {NeededBlockIdx, SlotsToFetchBinList} =
-        read_slots(Handle,
-                    SlotsToFetch,
-                    {SegChecker, LowLastMod, State#state.blockindex_cache},
-                    State#state.compression_method,
-                    State#state.index_moddate),
-    {NeededBlockIdx, SlotsToFetchBinList, SlotsToPoint}.
+    case SL of
+        1 ->
+            [Slot] = Slots,
+            case RTrim of
+                true ->
+                    [{pointer, Self, Slot, StartKey, EndKey}];
+                false ->
+                    [{pointer, Self, Slot, StartKey, all}]
+            end;
+        N ->
+            {LSlot, MidSlots, RSlot} =
+                case N of
+                    2 ->
+                        [Slot1, Slot2] = Slots,
+                        {Slot1, [], Slot2};
+                    N ->
+                        [Slot1|_Rest] = Slots,
+                        SlotN = lists:last(Slots),
+                        {Slot1, lists:sublist(Slots, 2, N - 2), SlotN}
+                end,
+            MidSlotPointers =
+                lists:map(
+                    fun(S) -> {pointer, Self, S, all, all} end,
+                    MidSlots),
+            case RTrim of
+                true ->
+                    [{pointer, Self, LSlot, StartKey, all}] ++
+                        MidSlotPointers ++
+                        [{pointer, Self, RSlot, all, EndKey}];
+                false ->
+                    [{pointer, Self, LSlot, StartKey, all}] ++
+                        MidSlotPointers ++
+                        [{pointer, Self, RSlot, all, all}]
+            end
+    end;
+fetch_range(_StartKey, _EndKey, _Summary, _FilterFun, false) ->
+    [].
 
 -spec compress_level(
     non_neg_integer(), non_neg_integer(), press_method()) -> press_method().
@@ -3111,27 +3018,36 @@ maybelog_fetch_timing({Pid, _SlotFreq}, Level, Type, SW) ->
 
 -define(TEST_AREA, "test/test_area/").
 
--spec sst_getkvrange(pid(), 
-                        range_endpoint(), 
-                        range_endpoint(),  
-                        integer()) 
-                            -> list(leveled_codec:ledger_kv()|slot_pointer()).
+
+sst_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
+    sst_getkvrange(Pid, StartKey, EndKey, ScanWidth, false, 0).
+
+-spec sst_getkvrange(
+        pid(), 
+        range_endpoint(), 
+        range_endpoint(),  
+        integer(),
+        segment_check_fun(),
+        non_neg_integer()) -> list(leveled_codec:ledger_kv()|slot_pointer()).
 %% @doc
 %% Get a range of {Key, Value} pairs as a list between StartKey and EndKey
 %% (inclusive).  The ScanWidth is the maximum size of the range, a pointer
 %% will be placed on the tail of the resulting list if results expand beyond
 %% the Scan Width
-sst_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
-    sst_getfilteredrange(Pid, StartKey, EndKey, ScanWidth, false, 0). 
+sst_getkvrange(Pid, StartKey, EndKey, ScanWidth, SegChecker, LowLastMod) ->
+    [Pointer|MorePointers] =
+        sst_getfilteredrange(Pid, StartKey, EndKey, LowLastMod),
+    sst_expandpointer(
+        Pointer, MorePointers, ScanWidth, SegChecker, LowLastMod).
 
--spec sst_getslots(pid(), list(slot_pointer()))
-                                        -> list(leveled_codec:ledger_kv()).
+-spec sst_getslots(
+        pid(), list(slot_pointer())) -> list(leveled_codec:ledger_kv()).
 %% @doc
 %% Get a list of slots by their ID. The slot will be converted from the binary
 %% to term form outside of the FSM loop, this is to stop the copying of the 
 %% converted term to the calling process.
 sst_getslots(Pid, SlotList) ->
-    sst_getfilteredslots(Pid, SlotList, false, 0).
+    sst_getfilteredslots(Pid, SlotList, false, 0, []).
 
 testsst_new(RootPath, Filename, Level, KVList, MaxSQN, PressMethod) ->
     OptsSST =
@@ -3758,7 +3674,7 @@ simple_persisted_rangesegfilter_tester(SSTNewFun) ->
     TestFun =
         fun(StartKey, EndKey, OutList) ->
             RangeKVL =
-                sst_getfilteredrange(Pid, StartKey, EndKey, 4, SegChecker, 0),
+                sst_getkvrange(Pid, StartKey, EndKey, 4, SegChecker, 0),
             RangeKL = lists:map(fun({LK0, _LV0}) -> LK0 end, RangeKVL),
             ?assertMatch(true, lists:member(StartKey, RangeKL)),
             ?assertMatch(true, lists:member(EndKey, RangeKL)),
@@ -4392,24 +4308,17 @@ block_index_cache_test() ->
     HeaderTS = <<0:160/integer, Now:32/integer, 0:32/integer>>,
     HeaderNoTS = <<0:192>>,
     BIC = new_blockindex_cache(8),
-    {_, BIC0, undefined} =
-        update_blockindex_cache(false, EntriesNoTS, BIC, undefined, false),
-    {_, BIC1, undefined} =
-        update_blockindex_cache(false, EntriesTS, BIC, undefined, true),
     {_, BIC2, undefined} =
-        update_blockindex_cache(true, EntriesNoTS, BIC, undefined, false),
+        update_blockindex_cache(EntriesNoTS, BIC, undefined, false),
     {ETSP1, ETSP2} = lists:split(6, EntriesTS),
     {_, BIC3, undefined} =
-        update_blockindex_cache(true, ETSP1, BIC, undefined, true),
+        update_blockindex_cache(ETSP1, BIC, undefined, true),
     {_, BIC3, undefined} =
-        update_blockindex_cache(true, ETSP1, BIC3, undefined, true),
+        update_blockindex_cache(ETSP1, BIC3, undefined, true),
     {_, BIC4, LMD4} =
-        update_blockindex_cache(true, ETSP2, BIC3, undefined, true),
+        update_blockindex_cache(ETSP2, BIC3, undefined, true),
     {_, BIC4, LMD4} =
-        update_blockindex_cache(true, ETSP2, BIC4, LMD4, true),
-
-    ?assertMatch(none, array:get(0, element(2, BIC0))),
-    ?assertMatch(none, array:get(0, element(2, BIC1))),
+        update_blockindex_cache(ETSP2, BIC4, LMD4, true),
     ?assertMatch(HeaderNoTS, array:get(0, element(2, BIC2))),
     ?assertMatch(HeaderTS, array:get(0, element(2, BIC3))),
     ?assertMatch(HeaderTS, array:get(0, element(2, BIC4))),
