@@ -220,7 +220,7 @@ output_result(
         "TotalGetTime - ~w ms~n"
         "TotalQueryTime - ~w ms~n"
         "TotalFullFoldTime - ~w ms~n"
-        "TotalSegFoldTime - ~w ms~n"
+        "TotalAAEFoldTime - ~w ms~n"
         "TotalUpdateTime - ~w ms~n"
         "Disk space required for test - ~s~n"
         "Average Memory usage for test - Total ~p Proc ~p Bin ~p MB~n"
