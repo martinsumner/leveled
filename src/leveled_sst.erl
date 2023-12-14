@@ -378,14 +378,10 @@ sst_newlevelzero(
                          infinity),
     ok =
         case Fetcher of
-            FetchSlots when is_list(Fetcher) ->
-               gen_statem:cast(Pid, {complete_l0startup, FetchSlots});
-            _ ->
-                % Fetcher is a function
-                gen_statem:cast(Pid, {sst_returnslot, none, Fetcher, Slots})
-                % Start the fetch loop (async).  Having the fetch loop running
-                % on async message passing means that the SST file can now be
-                % closed while the fetch loop is still completing
+            SlotList when is_list(SlotList) ->
+                gen_statem:cast(Pid, {complete_l0startup, SlotList});
+            FetchFun when is_function(FetchFun, 2) ->
+                gen_statem:cast(Pid, {sst_returnslot, none, FetchFun, Slots})
         end,
     {ok, Pid, noreply}.
 
@@ -450,7 +446,7 @@ sst_setfordelete(Pid, Penciller) ->
 
 -spec sst_gettombcount(pid()) -> non_neg_integer()|not_counted.
 %% @doc
-%% Get the count of tomb stones in this SST file, returning not_counted if this
+%% Get the count of tombstones in this SST file, returning not_counted if this
 %% file was created with a version which did not support tombstone counting, or
 %% could also be because the file is L0 (which aren't counted as being chosen
 %% for merge is inevitable)
@@ -484,8 +480,7 @@ sst_checkready(Pid) ->
 %% @doc
 %% Notify the SST file that it is now working at a new level
 %% This simply prompts a GC on the PID now (as this may now be a long-lived
-%% file, so don't want all the startup state to be held on memory - want to
-%% proactively drop it
+%% file, so don't want all the startup state to be held on memory)
 sst_switchlevels(Pid, NewLevel) ->
     gen_statem:cast(Pid, {switch_levels, NewLevel}).
 
@@ -953,12 +948,7 @@ format_status(terminate, [_PDict, _, State]) ->
 %% skip those slots not containing any information over the low last modified
 %% date
 expand_list_by_pointer(Pointer, Tail, Width) ->
-    expand_list_by_pointer(Pointer, Tail, Width, false).
-
-%% TODO until leveled_penciller updated
-expand_list_by_pointer(Pointer, Tail, Width, SegList) ->
-    SegChecker = segment_checker(tune_seglist(SegList)),
-    expand_list_by_pointer(Pointer, Tail, Width, SegChecker, 0).
+    expand_list_by_pointer(Pointer, Tail, Width, false, 0).
 
 -spec expand_list_by_pointer(
     expandable_pointer(),
@@ -995,10 +985,14 @@ expand_list_by_pointer(
 expand_list_by_pointer(
         {next, ManEntry, StartKey, EndKey},
         Tail, _Width, _SegChecker, LowLastMod) ->
+    % The first pointer is a pointer to a file - expand_list_by_pointer will
+    % in this case convert this into list of pointers within that SST file
+    % i.e. of the form {pointer, SSTPid, Slot, StartKey, EndKey}
+    % This can then be further expanded by calling again to
+    % expand_list_by_pointer
     SSTPid = ManEntry#manifest_entry.owner,
     leveled_log:log(sst10, [SSTPid, is_process_alive(SSTPid)]),
-    ExpPointer =
-        sst_getfilteredrange(SSTPid, StartKey, EndKey, LowLastMod),
+    ExpPointer = sst_getfilteredrange(SSTPid, StartKey, EndKey, LowLastMod),
     ExpPointer ++ Tail.
 
 
@@ -1008,16 +1002,13 @@ expand_list_by_pointer(
     range_endpoint(),
     non_neg_integer()) -> list(slot_pointer()).
 %% @doc
-%% Get a range of {Key, Value} pairs as a list between StartKey and EndKey
-%% (inclusive).  The ScanWidth is the maximum size of the range, a pointer
-%% will be placed on the tail of the resulting list if results expand beyond
-%% the Scan Width
-%%
-%% To make the range open-ended (either to start, end or both) the all atom
-%% can be used in place of the Key tuple.
-%%
-%% A segment list can also be passed, which inidcates a subset of segment
-%% hashes of interest in the query.
+%% Get a list of slot_pointers that contain the information to look into those
+%% slots to find the actual {K, V} pairs between the range endpoints.
+%% Expanding these slot_pointers can be done using sst_getfilteredslots/5
+%% 
+%% Use segment_checker/1 to produce a segment_check_fun if the hashes of the
+%% keys to be found are known.  The LowLastMod integer will skip any blocks
+%% where all keys were modified before thta date.
 sst_getfilteredrange(Pid, StartKey, EndKey, LowLastMod) ->
     gen_statem:call(
         Pid, {fetch_range, StartKey, EndKey, LowLastMod}, infinity).
@@ -1031,13 +1022,15 @@ sst_getfilteredrange(Pid, StartKey, EndKey, LowLastMod) ->
     list(expandable_pointer())) -> list(leveled_codec:ledger_kv()).
 %% @doc
 %% Get a list of slots by their ID. The slot will be converted from the binary
-%% to term form outside of the FSM loop
+%% to term form outside of the FSM loop, unless a segment_check_fun is passed,
+%% and this process has cached the index to be used by the segment_check_fun,
+%% and in this case the list of Slotbins will include the actual {K, V} pairs. 
 %%
-%% A list of 16-bit integer Segment IDs can be passed to filter the keys
-%% returned (not precisely - with false results returned in addition).  Use
-%% false as a SegList to not filter.
-%% An integer can be provided which gives a floor for the LastModified Date
-%% of the object, if the object is to be covered by the query
+%% Use segment_checker/1 to produce a segment_check_fun if the hashes of the
+%% keys to be found are known.  The LowLastMod integer will skip any blocks
+%% where all keys were modified before thta date, but the results may still
+%% contain older values (the calling function should still filter by modified
+%% date as required).
 sst_getfilteredslots(Pid, SlotList, SegChecker, LowLastMod, Pointers) ->
     {NeedBlockIdx, SlotBins, PressMethod, IdxModDate} =
         gen_statem:call(
@@ -1061,8 +1054,8 @@ sst_getfilteredslots(Pid, SlotList, SegChecker, LowLastMod, Pointers) ->
 %% @doc
 %% Find a list of positions where there is an element with a matching segment
 %% ID to the expected segments (which can either be a single segment, a list of
-%% segments or a set of segments depending on size).   The SegCheck fun will
-%% do the matching
+%% segments or a set of segments depending on size).   The segment_check_fun
+%% will do the matching.  Segments are 15-bits of the hash of the key.
 find_pos(<<1:1/integer, H:15/integer, T/binary>>, H, PosList, Count) ->
     find_pos(T, H, [Count|PosList], Count + 1);
 find_pos(<<1:1/integer, _Miss:15/integer, T/binary>>, H, PosList, Count)
@@ -1096,7 +1089,7 @@ segment_checker(Hash) when is_integer(Hash) ->
     Hash;
 segment_checker(HashList) when is_list(HashList) ->
     %% Note that commonly segments will be close together numerically. The
-    %% guess/estimate process for chekcing vnode size selects a contiguous
+    %% guess/estimate process for checking vnode size selects a contiguous
     %% range.  Also the kv_index_tictactree segment selector tries to group
     %% segment IDs close together.  Hence checking the bounds first is
     %% generally much faster than a straight membership test.
@@ -1299,8 +1292,8 @@ check_modified(_, _, _) ->
             blockindex_cache()|no_update,
             non_neg_integer()|undefined|no_update,
             fetch_cache()|no_update}.
+
 %% @doc
-%%
 %% Fetch a key from the store, potentially taking timings.  Result should be
 %% not_present if the key is not in the store.
 fetch(LedgerKey, Hash,
@@ -1384,12 +1377,7 @@ fetch(LedgerKey, Hash,
     summary_filter(),
     boolean()) -> list(slot_pointer()).
 %% @doc
-%% Fetch the contents of the SST file for a given key range.  This will
-%% pre-fetch some results, and append pointers for additional results.
-%%
-%% A filter can be provided based on the Segment ID (usable for hashable
-%% objects not no_lookup entries) to accelerate the query if the 5-arity
-%% version is used
+%% Fetch pointers to the slots the SST file covered by a given key range.
 fetch_range(StartKey, EndKey, Summary, FilterFun, true) ->
     {Slots, RTrim} =
         lookup_slots(
@@ -1440,7 +1428,7 @@ fetch_range(_StartKey, _EndKey, _Summary, _FilterFun, false) ->
 -spec compress_level(
     non_neg_integer(), non_neg_integer(), press_method()) -> press_method().
 %% @doc
-%% disable compression at higher levels for improved performance
+%% Disable compression at higher levels for improved performance
 compress_level(
         Level, LevelToCompress, _PressMethod) when Level < LevelToCompress ->
     none;
@@ -1705,8 +1693,6 @@ deserialise_checkedblock(Bin, _Other) ->
     % native or none can be treated the same
     binary_to_term(Bin).
 
-
-
 -spec hmac(binary()|integer()) -> integer().
 %% @doc
 %% Perform a CRC check on an input
@@ -1849,7 +1835,7 @@ lookup_slots(StartKey, EndKey, Tree, FilterFun) ->
 %% binary_to_term is an often repeated task, and this is better with smaller
 %% slots.
 %%
-%% The outcome has been to divide the slot into four small blocks to minimise
+%% The outcome has been to divide the slot into five small blocks to minimise
 %% the binary_to_term time.  A binary index is provided for the slot for all
 %% Keys that are directly fetchable (i.e. standard keys not index keys).
 %%
@@ -1857,7 +1843,7 @@ lookup_slots(StartKey, EndKey, Tree, FilterFun) ->
 %% compared to using a 128-member gb:tree.
 %%
 %% The binary index is cacheable and doubles as a not_present filter, as it is
-%% based on a 17-bit hash (so 0.0039 fpr).
+%% based on a 15-bit hash.
 
 
 -spec accumulate_positions(
@@ -2172,7 +2158,6 @@ binarysplit_mapfun(MultiSlotBin, StartPos) ->
         {SlotBin, ID, SK, EK}
     end.
 
-
 -spec read_slots(
         file:io_device(),
         list(),
@@ -2196,10 +2181,11 @@ read_slots(Handle, SlotList, {false, 0, _BlockIndexCache},
     {false, read_slotlist(SlotList, Handle)};
 read_slots(Handle, SlotList, {SegChecker, LowLastMod, BlockIndexCache},
                 PressMethod, IdxModDate) ->
-    % List of segments passed so only {K, V} pairs matching those segments
-    % should be returned.  This required the {K, V} pair to have been added
-    % with the appropriate hash - if the pair were added with no_lookup as
-    % the hash value this will fail unexpectedly.
+    % Potentially need to check the low last modified date, and also the
+    % segment_check_fun against the index.  If the index is cached, return the
+    % KV pairs at this point, otherwise return the slot pointer so that the
+    % term_to_binary work can be conducted by the fold process and not impact
+    % the heap of this SST process
     BinMapFun =
         fun(Pointer, {NeededBlockIdx, Acc}) ->
             {SP, _L, ID, SK, EK} = pointer_mapfun(Pointer),
@@ -2215,11 +2201,7 @@ read_slots(Handle, SlotList, {SegChecker, LowLastMod, BlockIndexCache},
                     % check to see if any of the expected segments are
                     % present without lifting the slot off disk. Also the
                     % fact that we know position can be used to filter out
-                    % other keys
-                    %
-                    % Note that LMD will be 0 if the indexing of last mod
-                    % date was not enable at creation time.  So in this
-                    % case the filter should always map
+                    % blocks.
                     case LowLastMod > LMD of
                         true ->
                             % The highest LMD on the slot was before the
@@ -2230,7 +2212,7 @@ read_slots(Handle, SlotList, {SegChecker, LowLastMod, BlockIndexCache},
                         false ->
                             case SegChecker of
                                 false ->
-                                    % Need all the slot now
+                                    % No SegChecker - need all the slot now
                                     {NeededBlockIdx,
                                         read_slotlist([Pointer], Handle) ++ Acc
                                         };
@@ -2641,8 +2623,9 @@ fetch_value([Pos|Rest], BlockLengths, Blocks, Key, PressMethod) ->
             fetch_value(Rest, BlockLengths, Blocks, Key, PressMethod)
     end.
 
--spec fetchfrom_rawblock(pos_integer(), list(leveled_codec:ledger_kv())) ->
-                                        not_present|leveled_codec:ledger_kv().
+-spec fetchfrom_rawblock(
+        pos_integer(), list(leveled_codec:ledger_kv()))
+            -> not_present|leveled_codec:ledger_kv().
 %% @doc
 %% Fetch from a deserialised block, but accounting for potential corruption
 %% in that block which may lead to it returning as an empty list if that
@@ -2655,9 +2638,10 @@ fetchfrom_rawblock(BlockPos, RawBlock) when BlockPos > length(RawBlock) ->
 fetchfrom_rawblock(BlockPos, RawBlock) ->
     lists:nth(BlockPos, RawBlock).
 
--spec fetchends_rawblock(list(leveled_codec:ledger_kv())) ->
-                    {not_present, not_present}|
-                    {leveled_codec:ledger_key(), leveled_codec:ledger_key()}.
+-spec fetchends_rawblock(
+    list(leveled_codec:ledger_kv()))
+        -> {not_present, not_present}|
+            {leveled_codec:ledger_key(), leveled_codec:ledger_key()}.
 %% @doc
 %% Fetch the first and last key from a block, and not_present if the block
 %% is empty (rather than crashing)
@@ -2666,7 +2650,6 @@ fetchends_rawblock([]) ->
 fetchends_rawblock(RawBlock) ->
     {element(1, hd(RawBlock)),
         element(1, lists:last(RawBlock))}.
-
 
 revert_position(Pos) ->
     {SideBlockSize, MidBlockSize} = ?LOOK_BLOCKSIZE,
@@ -2683,8 +2666,6 @@ revert_position(Pos) ->
                         (TailPos rem SideBlockSize) + 1}
             end
     end.
-
-
 
 %%%============================================================================
 %%% Merge Functions
