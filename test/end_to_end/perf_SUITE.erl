@@ -7,7 +7,7 @@
     riak_ctperf/1, riak_fullperf/1, riak_profileperf/1
 ]).
 
-all() -> [riak_fullperf].
+all() -> [riak_ctperf].
 suite() -> [{timetrap, {hours, 8}}].
     
 
