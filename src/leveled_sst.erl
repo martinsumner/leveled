@@ -79,8 +79,6 @@
 -define(DELETE_TIMEOUT, 10000).
 -define(TREE_TYPE, idxt).
 -define(TREE_SIZE, 16).
--define(TIMING_SAMPLECOUNTDOWN, 20000).
--define(TIMING_SAMPLESIZE, 100).
 -define(BLOCK_LENGTHS_LENGTH, 20).
 -define(LMD_LENGTH, 4).
 -define(FLIPPER32, 4294967295).
