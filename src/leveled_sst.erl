@@ -1396,15 +1396,7 @@ fetch_range(StartKey, EndKey, Summary, FilterFun, true) ->
             end;
         N ->
             {LSlot, MidSlots, RSlot} =
-                case N of
-                    2 ->
-                        [Slot1, Slot2] = Slots,
-                        {Slot1, [], Slot2};
-                    N ->
-                        [Slot1|_Rest] = Slots,
-                        SlotN = lists:last(Slots),
-                        {Slot1, lists:sublist(Slots, 2, N - 2), SlotN}
-                end,
+                {hd(Slots), lists:sublist(Slots, 2, N - 2), lists:last(Slots)},
             MidSlotPointers =
                 lists:map(
                     fun(S) -> {pointer, Self, S, all, all} end,
