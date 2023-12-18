@@ -565,7 +565,8 @@ encode_valuetype(IsBinary, IsCompressed, Method) ->
         case Method of 
             lz4 -> {4, 0};
             zstd -> {4, 8};
-            native -> {0, 0}
+            native -> {0, 0};
+            none -> {0, 0}
         end,
     Bit2 =
         case IsBinary of            

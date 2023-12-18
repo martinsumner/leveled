@@ -1,5 +1,4 @@
 -module(perf_SUITE).
--include_lib("common_test/include/ct.hrl").
 -include("include/leveled.hrl").
 -export([all/0]).
 -export([bigpcl_bucketlist/1
