@@ -26,6 +26,15 @@
   hidden
 ]}.
 
+%% @doc The maximum size of the bookie's cache before each new PUT results in
+%% a slow-offer pause.  Prior to Riak 3.0.10 this defaulted to 4
+{mapping, "leveled.cache_multiple", "leveled.cache_multiple", [
+  {default, 2},
+  {datatype, integer},
+  hidden
+]}.
+
+
 %% @doc The key size of the Penciller's in-memory cache
 {mapping, "leveled.penciller_cache_size", "leveled.penciller_cache_size", [
   {default, 20000},
@@ -37,10 +46,9 @@
 %% Can be lz4, zstd or native (which will use the Erlang native zlib
 %% compression) within term_to_binary
 {mapping, "leveled.compression_method", "leveled.compression_method", [
-  {default, native},
-  {datatype, atom}
+  {datatype, {enum, [native, lz4, none]}},
+  {default, native}
 ]}.
-
 
 %% @doc Compression point
 %% The point at which compression is applied to the Journal (the Ledger is 
@@ -50,6 +58,16 @@
 {mapping, "leveled.compression_point", "leveled.compression_point", [
   {default, on_receipt},
   {datatype, atom}
+]}.
+
+%% @doc Compresstion Level (Ledger LSM)
+%% Specify the level in the LSM tree from which compression should occur.
+%% Defaults to L1, so only L0 writes are uncompressed.
+{mapping, "leveled.compression_level", "leveled.compression_level", [
+  {default, 1},
+  {datatype, integer},
+  {validators, ["range:0-7"]},
+  hidden
 ]}.
 
 %% @doc Log level
@@ -179,7 +197,20 @@
   hidden
 ]}.
 
+%% @doc Statistic monitoring proportion
+%% The proportion of requests to be convered by stats, an integer between
+%% 0 and 100.  There is no flow control, so setting this too high could
+%% possibly overflow the leveled_monitor mailbox.
+{mapping, "leveled.stats_percentage", "leveled.stats_percentage", [
+  {default, 10},
+  {datatype, integer},
+  {validators, ["range:0-100"]}
+]}.
 
-
-
-
+%% @doc Statistic log frequency (seconds)
+%% The wait in seconds between logs from each leveled_monitor (there is one
+%% monitor per vnode)
+{mapping, "leveled.stats_logfrequency", "leveled.stats_logfrequency", [
+  {default, 30},
+  {datatype, integer}
+]}.

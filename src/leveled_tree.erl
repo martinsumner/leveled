@@ -587,13 +587,29 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
     KNumber =
         lists:flatten(
             io_lib:format("K~8..0B", [leveled_rand:uniform(1000)])),
-    {K, V} = {{o, "Bucket" ++ BNumber, "Key" ++ KNumber, null},
-                {Seqn, {active, infinity}, null}},
+    {K, V} =
+        {{o_kv,
+            {<<"btype">>, list_to_binary("Bucket" ++ BNumber)},
+            list_to_binary("Key" ++ KNumber),
+            null},
+            Seqn},
     generate_randomkeys(Seqn + 1,
                         Count - 1,
                         [{K, V}|Acc],
                         BucketLow,
                         BRange).
+
+generate_simplekeys(Seqn, Count) ->
+    generate_simplekeys(Seqn, Count, []).
+
+generate_simplekeys(_Seqn, 0, Acc) ->
+    Acc;
+generate_simplekeys(Seqn, Count, Acc) ->
+    KNumber =
+        list_to_binary(
+            lists:flatten(
+                io_lib:format("K~8..0B", [leveled_rand:uniform(100000)]))),
+    generate_simplekeys(Seqn + 1, Count - 1, [{KNumber, Seqn}|Acc]).
 
 
 tree_search_test() ->
@@ -685,34 +701,49 @@ tolist_test_by_type(Type) ->
     ?assertMatch(KL, T_Reverse).
     
 tree_timing_test() ->
+    log_tree_test_by_(16, tree, 8000),
     log_tree_test_by_(16, tree, 4000),
-    tree_test_by_(8, tree, 1000),
-    tree_test_by_(4, tree, 256).
+    log_tree_test_by_(4, tree, 256).
 
 idxt_timing_test() ->
+    log_tree_test_by_(16, idxt, 8000),
     log_tree_test_by_(16, idxt, 4000),
-    tree_test_by_(8, idxt, 1000),
-    tree_test_by_(4, idxt, 256).
+    log_tree_test_by_(4, idxt, 256),
+    log_tree_test_by_(16, idxt, 256),
+    log_tree_test_by_simplekey_(16, idxt, 256).
 
 skpl_timing_test() ->
-    tree_test_by_(auto, skpl, 6000),
+    log_tree_test_by_(auto, skpl, 8000),
     log_tree_test_by_(auto, skpl, 4000),
-    tree_test_by_(auto, skpl, 1000),
-    tree_test_by_(auto, skpl, 256).
+    log_tree_test_by_simplekey_(auto, skpl, 4000),
+    log_tree_test_by_(auto, skpl, 512),
+    log_tree_test_by_simplekey_(auto, skpl, 512),
+    log_tree_test_by_(auto, skpl, 256),
+    log_tree_test_by_simplekey_(auto, skpl, 256).
 
 log_tree_test_by_(Width, Type, N) ->
-    erlang:statistics(runtime),
-    G0 = erlang:statistics(garbage_collection),
-    tree_test_by_(Width, Type, N),
-    {_, T1} = erlang:statistics(runtime),
-    G1 = erlang:statistics(garbage_collection),
-    io:format(user, "Test took ~w ms and GC transitioned from ~w to ~w~n",
-                [T1, G0, G1]).
-
-tree_test_by_(Width, Type, N) ->
-    io:format(user, "~nTree test for type and width: ~w ~w~n", [Type, Width]),
     KL = lists:ukeysort(1, generate_randomkeys(1, N, 1, N div 5)),
-    
+    SW = os:timestamp(),
+    tree_test_by_(Width, Type, KL),
+    io:format(user, "Test took ~w ms",
+                [timer:now_diff(os:timestamp(), SW) div 1000]).
+
+log_tree_test_by_simplekey_(Width, Type, N) ->
+    KL = lists:ukeysort(1, generate_simplekeys(1, N)),
+    SW = os:timestamp(),
+    tree_test_by_(Width, Type, KL, false),
+    io:format(user, "Test with simple key took ~w ms",
+                [timer:now_diff(os:timestamp(), SW) div 1000]).
+
+tree_test_by_(Width, Type, KL) ->
+    tree_test_by_(Width, Type, KL, true).
+
+tree_test_by_(Width, Type, KL, ComplexKey) ->
+    io:format(
+        user,
+        "~n~nTree test with complexkey=~w for type and width: ~w ~w~n",
+        [ComplexKey, Type, Width]),
+
     OS = ets:new(test, [ordered_set, private]),
     ets:insert(OS, KL),
     SWaETS = os:timestamp(),
@@ -721,6 +752,9 @@ tree_test_by_(Width, Type, N) ->
                         " of size ~w~n",
                 [timer:now_diff(os:timestamp(), SWaETS),
                     tsize(Tree0)]),
+    io:format(user,
+        "Tree has footprint size ~w bytes flat_size ~w bytes~n",
+        [erts_debug:size(Tree0) * 8, erts_debug:flat_size(Tree0) * 8]),
     
     SWaGSL = os:timestamp(),
     Tree1 = from_orderedlist(KL, Type, Width),
@@ -728,6 +762,10 @@ tree_test_by_(Width, Type, N) ->
                         " of size ~w~n",
                 [timer:now_diff(os:timestamp(), SWaGSL),
                     tsize(Tree1)]),
+    io:format(user,
+        "Tree has footprint size ~w bytes flat_size ~w bytes~n",
+        [erts_debug:size(Tree1) * 8, erts_debug:flat_size(Tree1) * 8]),
+
     SWaLUP = os:timestamp(),
     lists:foreach(match_fun(Tree0), KL),
     lists:foreach(match_fun(Tree1), KL),
@@ -743,11 +781,25 @@ tree_test_by_(Width, Type, N) ->
                 [timer:now_diff(os:timestamp(), SWaSRCH1)]),
     
     BitBiggerKeyFun =
-        fun(Idx) ->
-            {K, _V} = lists:nth(Idx, KL),
-            {o, B, FullKey, null} = K,
-            {{o, B, FullKey ++ "0", null}, lists:nth(Idx + 1, KL)}
-        end,
+        case ComplexKey of
+            true ->
+                fun(Idx) ->
+                    {K, _V} = lists:nth(Idx, KL),
+                    {o_kv, B, FullKey, null} = K,
+                    {{o_kv,
+                        B,
+                        list_to_binary(binary_to_list(FullKey) ++ "0"),
+                        null},
+                        lists:nth(Idx + 1, KL)}
+                end;
+            false ->
+                fun(Idx) ->
+                    {K, _V} = lists:nth(Idx, KL),
+                    {list_to_binary(binary_to_list(K) ++ "0"),
+                        lists:nth(Idx + 1, KL)}
+                end
+        end,            
+    
     SrchKL = lists:map(BitBiggerKeyFun, lists:seq(1, length(KL) - 1)),
     
     SWaSRCH2 = os:timestamp(),
@@ -778,10 +830,14 @@ matchrange_test_by_type(Type) ->
     FirstKey = element(1, lists:nth(1, KL)),
     FinalKey = element(1, lists:last(KL)),
     PenultimateKey = element(1, lists:nth(length(KL) - 1, KL)),
-    AfterFirstKey = setelement(3, FirstKey, element(3, FirstKey) ++ "0"),
-    AfterPenultimateKey = setelement(3,
-                                    PenultimateKey,
-                                    element(3, PenultimateKey) ++ "0"),
+    AfterFirstKey =
+        setelement(3,
+        FirstKey,
+        list_to_binary(binary_to_list(element(3, FirstKey)) ++ "0")),
+    AfterPenultimateKey =
+        setelement(3,
+        PenultimateKey,
+        list_to_binary(binary_to_list(element(3, PenultimateKey)) ++ "0")),
     
     LengthR =
         fun(SK, EK, T) ->
@@ -812,10 +868,12 @@ extra_matchrange_test_by_type(Type) ->
         fun(RangeL) ->
             SKeyV = lists:nth(1, RangeL),
             EKeyV = lists:nth(50, RangeL),
-            {{o, SB, SK, null}, _SV} = SKeyV,
-            {{o, EB, EK, null}, _EV} = EKeyV,
-            SRangeK = {o, SB, SK ++ "0", null},
-            ERangeK = {o, EB, EK ++ "0", null},
+            {{o_kv, SB, SK, null}, _SV} = SKeyV,
+            {{o_kv, EB, EK, null}, _EV} = EKeyV,
+            SRangeK =
+                {o_kv, SB, list_to_binary(binary_to_list(SK) ++ "0"), null},
+            ERangeK =
+                {o_kv, EB, list_to_binary(binary_to_list(EK) ++ "0"), null},
             ?assertMatch(49, length(match_range(SRangeK, ERangeK, Tree0)))
         end,
     lists:foreach(TestRangeLFun, RangeLists).
@@ -840,10 +898,12 @@ extra_searchrange_test_by_type(Type) ->
             % start key
             SKeyV = lists:nth(1, RangeL),
             EKeyV = lists:nth(50, RangeL),
-            {{o, SB, SK, null}, _SV} = SKeyV,
-            {{o, EB, EK, null}, _EV} = EKeyV,
-            FRangeK = {o, SB, SK ++ "0", null},
-            BRangeK = {o, EB, EK ++ "0", null},
+            {{o_kv, SB, SK, null}, _SV} = SKeyV,
+            {{o_kv, EB, EK, null}, _EV} = EKeyV,
+            FRangeK =
+                {o_kv, SB, list_to_binary(binary_to_list(SK) ++ "0"), null},
+            BRangeK =
+                {o_kv, EB, list_to_binary(binary_to_list(EK) ++ "0"), null},
             ?assertMatch(25, length(search_range(FRangeK, BRangeK, Tree0, SKFun)))
         end,
     lists:foreach(TestRangeLFun, lists:seq(1, 50)).

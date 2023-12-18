@@ -305,7 +305,7 @@ handle_call(stop, _From, State) ->
 
 handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Manifest0},
                 State) ->
-    leveled_log:log("IC014", [State#state.reload_strategy,
+    leveled_log:log(ic014, [State#state.reload_strategy,
                                 State#state.max_run_length]),
     % Empty the waste folder
     clear_waste(State),
@@ -387,7 +387,7 @@ handle_cast(scoring_complete, State) ->
             State#state.maxrunlength_compactionperc, 
             State#state.singlefile_compactionperc},
     {BestRun0, Score} = assess_candidates(Candidates, ScoreParams),
-    leveled_log:log_timer("IC003", [Score, length(BestRun0)], SW),
+    leveled_log:log_timer(ic003, [Score, length(BestRun0)], SW),
     case Score > 0.0 of
         true ->
             BestRun1 = sort_run(BestRun0),
@@ -406,7 +406,7 @@ handle_cast(scoring_complete, State) ->
                                                 undefined}
                                             end,
                                         BestRun1),
-            leveled_log:log("IC002", [length(FilesToDelete)]),
+            leveled_log:log(ic002, [length(FilesToDelete)]),
             ok = CloseFun(FilterServer),
             ok = leveled_inker:ink_clerkcomplete(State#state.inker,
                                                     ManifestSlice,
@@ -419,7 +419,7 @@ handle_cast(scoring_complete, State) ->
 handle_cast({trim, PersistedSQN, ManifestAsList}, State) ->
     FilesToDelete = 
         leveled_imanifest:find_persistedentries(PersistedSQN, ManifestAsList),
-    leveled_log:log("IC007", []),
+    leveled_log:log(ic007, []),
     ok = leveled_inker:ink_clerkcomplete(State#state.inker, [], FilesToDelete),
     {noreply, State};
 handle_cast({prompt_deletions, ManifestSQN, FilesToDelete}, State) ->
@@ -456,7 +456,7 @@ handle_info(_Info, State) ->
 terminate(normal, _State) ->
     ok;
 terminate(Reason, _State) ->
-    leveled_log:log("IC001", [Reason]).
+    leveled_log:log(ic001, [Reason]).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -577,12 +577,12 @@ check_single_file(CDB, FilterFun, FilterServer, MaxSQN,
     Score.
 
 safely_log_filescore([], FN, Score, SW) ->
-    leveled_log:log_timer("IC004", [Score, empty, FN], SW);
+    leveled_log:log_timer(ic004, [Score, empty, FN], SW);
 safely_log_filescore(PositionList, FN, Score, SW) ->
     AvgJump =
         (lists:last(PositionList) - lists:nth(1, PositionList))
             div length(PositionList),
-    leveled_log:log_timer("IC004", [Score, AvgJump, FN], SW).
+    leveled_log:log_timer(ic004, [Score, AvgJump, FN], SW).
 
 -spec size_comparison_score(list(key_size() | corrupted_test_key_size()),
                                     leveled_inker:filterfun(),
@@ -733,12 +733,13 @@ score_run(Run, {MaxRunLength, MR_CT, SF_CT}) ->
 
 
 print_compaction_run(BestRun, ScoreParams) ->
-    leveled_log:log("IC005", [length(BestRun),
-                                score_run(BestRun, ScoreParams)]),
-    lists:foreach(fun(File) ->
-                        leveled_log:log("IC006", [File#candidate.filename])
-                        end,
-                    BestRun).
+    leveled_log:log(
+        ic005, [length(BestRun), score_run(BestRun, ScoreParams)]),
+    lists:foreach(
+        fun(File) ->
+            leveled_log:log(ic006, [File#candidate.filename])
+        end,
+        BestRun).
 
 sort_run(RunOfFiles) ->
     CompareFun = fun(Cand1, Cand2) ->
@@ -796,7 +797,7 @@ get_all_positions([], PositionBatches) ->
 get_all_positions([HeadRef|RestOfBest], PositionBatches) ->
     SrcJournal = HeadRef#candidate.journal,
     Positions = leveled_cdb:cdb_getpositions(SrcJournal, all),
-    leveled_log:log("IC008", [HeadRef#candidate.filename, length(Positions)]),
+    leveled_log:log(ic008, [HeadRef#candidate.filename, length(Positions)]),
     Batches = split_positions_into_batches(lists:sort(Positions),
                                             SrcJournal,
                                             []),
@@ -914,7 +915,7 @@ write_values(KVCList, CDBopts, Journal0, ManSlice0, PressMethod) ->
                 {SQN, _LK} = leveled_codec:from_journalkey(TK),
                 FP = CDBopts#cdb_options.file_path,
                 FN = leveled_inker:filepath(FP, SQN, compact_journal),
-                leveled_log:log("IC009", [FN]),
+                leveled_log:log(ic009, [FN]),
                 leveled_cdb:cdb_open_writer(FN, CDBopts);
             _ ->
                 {ok, Journal0}
@@ -942,9 +943,9 @@ clear_waste(State) ->
                     case N - calendar:datetime_to_gregorian_seconds(LMD) of
                         LMD_Delta when LMD_Delta >= WRP ->
                             ok = file:delete(WP ++ DelJ),
-                            leveled_log:log("IC010", [WP ++ DelJ]);
+                            leveled_log:log(ic010, [WP ++ DelJ]);
                         LMD_Delta ->
-                            leveled_log:log("IC011", [WP ++ DelJ, LMD_Delta]),
+                            leveled_log:log(ic011, [WP ++ DelJ, LMD_Delta]),
                             ok
                     end
                 end,

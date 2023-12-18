@@ -46,6 +46,7 @@
             put_indexed_objects/3,
             put_altered_indexed_objects/3,
             put_altered_indexed_objects/4,
+            put_altered_indexed_objects/5,
             check_indexed_objects/4,
             rotating_object_check/3,
             corrupt_journal/5,
@@ -64,7 +65,7 @@
             compact_and_wait/1]).
 
 -define(RETURN_TERMS, {true, undefined}).
--define(SLOWOFFER_DELAY, 5).
+-define(SLOWOFFER_DELAY, 10).
 -define(V1_VERS, 1).
 -define(MAGIC, 53). % riak_kv -> riak_object
 -define(MD_VTAG,     <<"X-Riak-VTag">>).
@@ -719,60 +720,55 @@ foldkeysfun_returnbucket(Bucket, Key, Acc) ->
 check_indexed_objects(Book, B, KSpecL, V) ->
     % Check all objects match, return what should be the results of an all
     % index query
-    IdxR = lists:map(fun({K, Spc}) ->
-                            {ok, O} = book_riakget(Book, B, K),
-                            V = testutil:get_value(O),
-                            {add,
-                                "idx1_bin",
-                                IdxVal} = lists:keyfind(add, 1, Spc),
-                            {IdxVal, K} end,
-                        KSpecL),
+    IdxR =
+        lists:map(
+            fun({K, Spc}) ->
+                {ok, O} = book_riakget(Book, B, K),
+                V = testutil:get_value(O),
+                {add, "idx1_bin", IdxVal} = lists:keyfind(add, 1, Spc),
+                {IdxVal, K}
+            end,
+            KSpecL),
     % Check the all index query matches expectations
-    R = leveled_bookie:book_returnfolder(Book,
-                                            {index_query,
-                                                B,
-                                                {fun foldkeysfun/3, []},
-                                                {"idx1_bin",
-                                                    "0",
-                                                    "|"},
-                                                ?RETURN_TERMS}),
+    R = 
+        leveled_bookie:book_returnfolder(
+            Book,
+            {index_query,
+                B,
+                {fun foldkeysfun/3, []},
+                {"idx1_bin", "0", "|"},
+                ?RETURN_TERMS}),
     SW = os:timestamp(),
     {async, Fldr} = R,
     QR0 = Fldr(),
-    io:format("Query match found of length ~w in ~w microseconds " ++
-                    "expected ~w ~n",
-                [length(QR0),
-                    timer:now_diff(os:timestamp(), SW),
-                    length(IdxR)]),
+    io:format(
+        "Query match found of length ~w in ~w microseconds "
+        "expected ~w ~n",
+        [length(QR0), timer:now_diff(os:timestamp(), SW), length(IdxR)]),
     QR = lists:sort(QR0),
     ER = lists:sort(IdxR),
     
-    ok = if
-                ER == QR ->
-                    ok
-            end,
+    ok = if ER == QR -> ok end,
     ok.
 
 
 put_indexed_objects(Book, Bucket, Count) ->
-    V = testutil:get_compressiblevalue(),
-    IndexGen = testutil:get_randomindexes_generator(1),
+    V = get_compressiblevalue(),
+    IndexGen = get_randomindexes_generator(1),
     SW = os:timestamp(),
-    ObjL1 = testutil:generate_objects(Count,
-                                        uuid,
-                                        [],
-                                        V,
-                                        IndexGen,
-                                        Bucket),
-    KSpecL = lists:map(fun({_RN, Obj, Spc}) ->
-                            book_riakput(Book, Obj, Spc),
-                            {testutil:get_key(Obj), Spc}
-                            end,
-                        ObjL1),
-    io:format("Put of ~w objects with ~w index entries "
-                    ++
-                    "each completed in ~w microseconds~n",
-                [Count, 1, timer:now_diff(os:timestamp(), SW)]),
+    ObjL1 = 
+        generate_objects(Count, uuid, [], V, IndexGen, Bucket),
+    KSpecL =
+        lists:map(
+            fun({_RN, Obj, Spc}) ->
+                book_riakput(Book, Obj, Spc),
+                {testutil:get_key(Obj), Spc}
+            end,
+            ObjL1),
+    io:format(
+        "Put of ~w objects with ~w index entries "
+        "each completed in ~w microseconds~n",
+        [Count, 1, timer:now_diff(os:timestamp(), SW)]),
     {KSpecL, V}.
 
 
@@ -780,8 +776,12 @@ put_altered_indexed_objects(Book, Bucket, KSpecL) ->
     put_altered_indexed_objects(Book, Bucket, KSpecL, true).
 
 put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i) ->
-    IndexGen = get_randomindexes_generator(1),
     V = get_compressiblevalue(),
+    put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i, V).
+
+put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i, V) ->
+    IndexGen = get_randomindexes_generator(1),
+    
     FindAdditionFun = fun(SpcItem) -> element(1, SpcItem) == add end,
     MapFun = 
         fun({K, Spc}) ->

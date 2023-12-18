@@ -133,8 +133,13 @@
 -define(WASTE_FP, "waste").
 -define(JOURNAL_FILEX, "cdb").
 -define(PENDING_FILEX, "pnd").
--define(LOADING_BATCH, 1000).
 -define(TEST_KC, {[], infinity}).
+-define(SHUTDOWN_LOOPS, 10).
+-define(SHUTDOWN_PAUSE, 10000).
+    % How long to wait for snapshots to be released on shutdown
+    % before forcing closure of snapshots
+    % 10s may not be long enough for all snapshots, but avoids crashes of
+    % short-lived queries racing with the shutdown
 
 -record(state, {manifest = [] :: list(),
 				manifest_sqn = 0 :: integer(),
@@ -152,7 +157,8 @@
                     :: leveled_codec:compression_method(),
                 compress_on_receipt = false :: boolean(),
                 snap_timeout :: pos_integer() | undefined, % in seconds
-                source_inker :: pid() | undefined}).
+                source_inker :: pid() | undefined,
+                shutdown_loops = ?SHUTDOWN_LOOPS :: non_neg_integer()}).
 
 
 -type inker_options() :: #inker_options{}.
@@ -284,6 +290,18 @@ ink_confirmdelete(Pid, ManSQN, CDBpid) ->
 ink_close(Pid) ->
     gen_server:call(Pid, close, infinity).
 
+-spec ink_snapclose(pid()) -> ok.
+%% @doc
+%% Specifically to be used when closing snpashots on shutdown, will handle a
+%% scenario where a snapshot has already exited
+ink_snapclose(Pid) ->
+    try
+        ink_close(Pid)
+    catch
+        exit:{noproc, _CallDetails} ->
+            ok
+    end.
+
 -spec ink_doom(pid()) -> {ok, [{string(), string(), string(), string()}]}.
 %% @doc
 %% Test function used to close a file, and return all file paths (potentially
@@ -338,11 +356,14 @@ ink_fold(Pid, MinSQN, FoldFuns, Acc) ->
                     {fold, MinSQN, FoldFuns, Acc, by_runner},
                     infinity).
 
--spec ink_loadpcl(pid(),
-                    integer(),
-                    leveled_bookie:initial_loadfun(),
-                    fun((string(), non_neg_integer()) -> any()),
-                    fun((any(), any()) -> ok)) -> ok.
+-spec ink_loadpcl(
+    pid(),
+    integer(),
+    leveled_bookie:initial_loadfun(),
+    fun((string(), non_neg_integer()) -> any()),
+    fun((any(), leveled_bookie:ledger_cache())
+        -> leveled_bookie:ledger_cache()))
+            -> leveled_bookie:ledger_cache().
 %%
 %% Function to prompt load of the Ledger at startup.  The Penciller should
 %% have determined the lowest SQN not present in the Ledger, and the inker
@@ -356,7 +377,7 @@ ink_loadpcl(Pid, MinSQN, LoadFun, InitAccFun, BatchFun) ->
                     {fold, 
                         MinSQN, 
                         {LoadFun, InitAccFun, BatchFun}, 
-                        ok,
+                        leveled_bookie:empty_ledgercache(),
                         as_ink},
                     infinity).
 
@@ -426,7 +447,7 @@ ink_roll(Pid) ->
 %% @doc
 %% Backup the journal to the specified path
 ink_backup(Pid, BackupPath) ->
-    gen_server:call(Pid, {backup, BackupPath}).
+    gen_server:call(Pid, {backup, BackupPath}, infinity).
 
 -spec ink_getmanifest(pid()) -> list().
 %% @doc
@@ -445,7 +466,7 @@ ink_printmanifest(Pid) ->
 %% @doc
 %% Check that the Inker doesn't have a SQN behind that of the Ledger
 ink_checksqn(Pid, LedgerSQN) ->
-    gen_server:call(Pid, {check_sqn, LedgerSQN}).
+    gen_server:call(Pid, {check_sqn, LedgerSQN}, infinity).
 
 -spec ink_loglevel(pid(), leveled_log:log_level()) -> ok.
 %% @doc
@@ -470,7 +491,7 @@ ink_removelogs(Pid, ForcedLogs) ->
 %% Return the current Journal SQN, which may be in the actual past if the Inker
 %% is in fact a snapshot
 ink_getjournalsqn(Pid) ->
-    gen_server:call(Pid, get_journalsqn).
+    gen_server:call(Pid, get_journalsqn, infinity).
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -518,7 +539,7 @@ handle_call({fetch, Key, SQN}, _From, State) ->
         {{SQN, Key}, {Value, _IndexSpecs}} ->
             {reply, {ok, Value}, State};
         Other ->
-            leveled_log:log("I0001", [Key, SQN, Other]),
+            leveled_log:log(i0001, [Key, SQN, Other]),
             {reply, not_present, State}
     end;
 handle_call({get, Key, SQN}, _From, State) ->
@@ -547,7 +568,7 @@ handle_call({register_snapshot, Requestor},
     Rs = [{Requestor,
             os:timestamp(),
             State#state.manifest_sqn}|State#state.registered_snapshots],
-    leveled_log:log("I0002", [Requestor, State#state.manifest_sqn]),
+    leveled_log:log(i0002, [Requestor, State#state.manifest_sqn]),
     {reply, {State#state.manifest,
                 State#state.active_journaldb,
                 State#state.journal_sqn},
@@ -593,7 +614,7 @@ handle_call(roll, _From, State=#state{is_snapshot=Snap}) when Snap == false ->
                             State#state.cdb_options,
                             State#state.root_path,
                             State#state.manifest_sqn),
-            leveled_log:log_timer("I0024", [NewSQN], SWroll),
+            leveled_log:log_timer(i0024, [NewSQN], SWroll),
             {reply, ok, State#state{journal_sqn = NewSQN,
                                         manifest = Manifest1,
                                         manifest_sqn = NewManSQN,
@@ -605,7 +626,7 @@ handle_call({backup, BackupPath}, _from, State)
     BackupJFP = filepath(filename:join(BackupPath, ?JOURNAL_FP), journal_dir),
     ok = filelib:ensure_dir(BackupJFP),
     {ok, CurrentFNs} = file:list_dir(BackupJFP),
-    leveled_log:log("I0023", [length(CurrentFNs)]),
+    leveled_log:log(i0023, [length(CurrentFNs)]),
     BackupFun =
         fun({SQN, FN, PidR, LastKey}, {ManAcc, FTRAcc}) ->
             case SQN < State#state.journal_sqn of
@@ -624,7 +645,7 @@ handle_call({backup, BackupPath}, _from, State)
                     {[{SQN, BackupName, PidR, LastKey}|ManAcc],
                         [ExtendedBaseFN|FTRAcc]};
                 false ->
-                    leveled_log:log("I0021", [FN, SQN, State#state.journal_sqn]),
+                    leveled_log:log(i0021, [FN, SQN, State#state.journal_sqn]),
                     {ManAcc, FTRAcc}
             end
         end,
@@ -636,7 +657,7 @@ handle_call({backup, BackupPath}, _from, State)
     FilesToRemove = lists:subtract(CurrentFNs, FilesToRetain),
     RemoveFun = 
         fun(RFN) -> 
-            leveled_log:log("I0022", [RFN]),
+            leveled_log:log(i0022, [RFN]),
             RemoveFile = filename:join(BackupJFP, RFN),
             case filelib:is_file(RemoveFile) 
                     and not filelib:is_dir(RemoveFile) of 
@@ -650,48 +671,38 @@ handle_call({backup, BackupPath}, _from, State)
     leveled_imanifest:writer(leveled_imanifest:from_list(BackupManifest),
                                 State#state.manifest_sqn, 
                                 filename:join(BackupPath, ?JOURNAL_FP)),
-    leveled_log:log_timer("I0020", 
-                            [filename:join(BackupPath, ?JOURNAL_FP), 
-                                length(BackupManifest)], 
-                            SW),
+    leveled_log:log_timer(
+        i0020,
+        [filename:join(BackupPath, ?JOURNAL_FP), length(BackupManifest)], 
+        SW),
     {reply, ok, State};
 handle_call({check_sqn, LedgerSQN}, _From, State) ->
     case State#state.journal_sqn of
         JSQN when JSQN < LedgerSQN ->
-            leveled_log:log("I0025", [JSQN, LedgerSQN]),
+            leveled_log:log(i0025, [JSQN, LedgerSQN]),
             {reply, ok, State#state{journal_sqn = LedgerSQN}};
         _JSQN ->
             {reply, ok, State}
     end;
 handle_call(get_journalsqn, _From, State) ->
     {reply, {ok, State#state.journal_sqn}, State};
-handle_call(close, _From, State) ->
-    case State#state.is_snapshot of
-        true ->
-            ok = ink_releasesnapshot(State#state.source_inker, self());
-        false ->    
-            leveled_log:log("I0005", [close]),
-            leveled_log:log("I0006", [State#state.journal_sqn,
-                                        State#state.manifest_sqn]),
-            ok = leveled_iclerk:clerk_stop(State#state.clerk),
-            shutdown_snapshots(State#state.registered_snapshots),
-            shutdown_manifest(State#state.manifest)
-    end,
+handle_call(close, _From, State=#state{is_snapshot=Snap}) when Snap == true ->
+    ok = ink_releasesnapshot(State#state.source_inker, self()),
     {stop, normal, ok, State};
-handle_call(doom, _From, State) ->
-    FPs = [filepath(State#state.root_path, journal_dir),
-            filepath(State#state.root_path, manifest_dir),
-            filepath(State#state.root_path, journal_compact_dir),
-            filepath(State#state.root_path, journal_waste_dir)],
-    leveled_log:log("I0018", []),
-
-    leveled_log:log("I0005", [doom]),
-    leveled_log:log("I0006", [State#state.journal_sqn,
-                                State#state.manifest_sqn]),
+handle_call(ShutdownType, From, State)
+        when ShutdownType == close; ShutdownType == doom ->  
+    case ShutdownType of
+        doom ->
+            leveled_log:log(i0018, []);
+        _ ->
+            ok
+    end,
+    leveled_log:log(i0005, [ShutdownType]),
+    leveled_log:log(
+        i0006, [State#state.journal_sqn, State#state.manifest_sqn]),
     ok = leveled_iclerk:clerk_stop(State#state.clerk),
-    shutdown_snapshots(State#state.registered_snapshots),
-    shutdown_manifest(State#state.manifest),
-    {stop, normal, {ok, FPs}, State}.
+    gen_server:cast(self(), {maybe_defer_shutdown, ShutdownType, From}),
+    {noreply, State}.
 
 
 handle_cast({clerk_complete, ManifestSnippet, FilesToDelete}, State) ->
@@ -749,35 +760,85 @@ handle_cast({confirm_delete, ManSQN, CDB}, State) ->
     end,
     {noreply, State#state{registered_snapshots = RegisteredSnapshots0}};
 handle_cast({release_snapshot, Snapshot}, State) ->
-    leveled_log:log("I0003", [Snapshot]),
+    leveled_log:log(i0003, [Snapshot]),
     case lists:keydelete(Snapshot, 1, State#state.registered_snapshots) of
         [] ->
             {noreply, State#state{registered_snapshots=[]}};
         Rs ->
-            leveled_log:log("I0004", [length(Rs)]),
+            leveled_log:log(i0004, [length(Rs)]),
             {noreply, State#state{registered_snapshots=Rs}}
     end;
 handle_cast({log_level, LogLevel}, State) ->
-    INC = State#state.clerk,
-    ok = leveled_iclerk:clerk_loglevel(INC, LogLevel),
+    case State#state.clerk of
+        undefined ->
+            ok;
+        INC ->
+            leveled_iclerk:clerk_loglevel(INC, LogLevel)
+        end,
     ok = leveled_log:set_loglevel(LogLevel),
-    CDBopts = State#state.cdb_options,
-    CDBopts0 = CDBopts#cdb_options{log_options = leveled_log:get_opts()},
+    CDBopts0 = update_cdb_logoptions(State#state.cdb_options),
     {noreply, State#state{cdb_options = CDBopts0}};
 handle_cast({add_logs, ForcedLogs}, State) ->
-    INC = State#state.clerk,
-    ok = leveled_iclerk:clerk_addlogs(INC, ForcedLogs),
+    case State#state.clerk of
+        undefined ->
+            ok;
+        INC ->
+            leveled_iclerk:clerk_addlogs(INC, ForcedLogs)
+    end,
     ok = leveled_log:add_forcedlogs(ForcedLogs),
-    CDBopts = State#state.cdb_options,
-    CDBopts0 = CDBopts#cdb_options{log_options = leveled_log:get_opts()},
+    CDBopts0 = update_cdb_logoptions(State#state.cdb_options),
     {noreply, State#state{cdb_options = CDBopts0}};
 handle_cast({remove_logs, ForcedLogs}, State) ->
-    INC = State#state.clerk,
-    ok = leveled_iclerk:clerk_removelogs(INC, ForcedLogs),
+    case State#state.clerk of
+        undefined ->
+            ok;
+        INC ->
+            leveled_iclerk:clerk_removelogs(INC, ForcedLogs)
+        end,
     ok = leveled_log:remove_forcedlogs(ForcedLogs),
-    CDBopts = State#state.cdb_options,
-    CDBopts0 = CDBopts#cdb_options{log_options = leveled_log:get_opts()},
-    {noreply, State#state{cdb_options = CDBopts0}}.
+    CDBopts0 = update_cdb_logoptions(State#state.cdb_options),
+    {noreply, State#state{cdb_options = CDBopts0}};
+handle_cast({maybe_defer_shutdown, ShutdownType, From}, State) ->
+    case length(State#state.registered_snapshots) of
+        0 ->
+            gen_server:cast(self(), {complete_shutdown, ShutdownType, From}),
+            {noreply, State};
+        N ->
+            % Whilst this process sleeps, then any remaining snapshots may
+            % release and have their release messages queued before the
+            % complete_shutdown cast is sent
+            case State#state.shutdown_loops of
+                LoopCount when LoopCount > 0 ->
+                    leveled_log:log(i0026, [N]),
+                    timer:sleep(?SHUTDOWN_PAUSE div ?SHUTDOWN_LOOPS),
+                    gen_server:cast(
+                        self(), {maybe_defer_shutdown, ShutdownType, From}),
+                    {noreply, State#state{shutdown_loops = LoopCount - 1}};
+                0 ->
+                    gen_server:cast(
+                        self(), {complete_shutdown, ShutdownType, From}),
+                    {noreply, State}
+            end
+        end;
+handle_cast({complete_shutdown, ShutdownType, From}, State) ->
+    lists:foreach(
+        fun(SnapPid) -> ok = ink_snapclose(SnapPid) end,
+        lists:map(
+                fun(Snapshot) -> element(1, Snapshot) end,
+                State#state.registered_snapshots)),
+    shutdown_manifest(State#state.manifest),
+    case ShutdownType of
+        doom ->
+            FPs =
+                [filepath(State#state.root_path, journal_dir),
+                    filepath(State#state.root_path, manifest_dir),
+                    filepath(State#state.root_path, journal_compact_dir),
+                    filepath(State#state.root_path, journal_waste_dir)],
+            gen_server:reply(From, {ok, FPs});
+        close ->
+            gen_server:reply(From, ok)
+    end,
+    {stop, normal, State}.
 
 
 %% handle the bookie stopping and stop this snapshot
@@ -789,8 +850,10 @@ handle_info({'DOWN', BookieMonRef, process, _BookiePid, _Info},
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(_Reason, _State) ->
-    ok.
+terminate(Reason, _State=#state{is_snapshot=Snap}) when Snap == true ->
+    leveled_log:log(i0027, [Reason]);
+terminate(Reason, _State) ->
+    leveled_log:log(i0028, [Reason]).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -799,6 +862,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%%============================================================================
 %%% Internal functions
 %%%============================================================================
+
 
 -spec start_from_file(inker_options()) -> {ok, ink_state()}.
 %% @doc
@@ -865,18 +929,11 @@ start_from_file(InkOpts) ->
                     clerk = Clerk}}.
 
 
--spec shutdown_snapshots(list(registered_snapshot())) -> ok.
-%% @doc
-%% Shutdown any snapshots before closing the store
-shutdown_snapshots(Snapshots) ->
-    lists:foreach(fun({Snap, _TS, _SQN}) -> ok = ink_close(Snap) end,
-                    Snapshots).
-
 -spec shutdown_manifest(leveled_imanifest:manifest()) -> ok.
 %% @doc
 %% Shutdown all files in the manifest
 shutdown_manifest(Manifest) ->
-    leveled_log:log("I0007", []),
+    leveled_log:log(i0007, []),
     leveled_imanifest:printer(Manifest),
     ManAsList = leveled_imanifest:to_list(Manifest),
     close_allmanifest(ManAsList).
@@ -941,7 +998,7 @@ put_object(LedgerKey, Object, KeyChanges, Sync, State) ->
                             State#state.cdb_options,
                             State#state.root_path,
                             State#state.manifest_sqn),
-            leveled_log:log_timer("I0008", [], SWroll),
+            leveled_log:log_timer(i0008, [], SWroll),
             ok = leveled_cdb:cdb_put(NewJournalP,
                                         JournalKey,
                                         JournalBin),
@@ -1052,13 +1109,13 @@ build_manifest(ManifestFilenames,
     UpdManifestSQN =
         if
             length(OpenManifest) > length(Manifest)  ->
-                leveled_log:log("I0009", []),
+                leveled_log:log(i0009, []),
                 leveled_imanifest:printer(OpenManifest),
                 NextSQN = ManifestSQN + 1,
                 leveled_imanifest:writer(OpenManifest, NextSQN, RootPath),
                 NextSQN;
             true ->
-                leveled_log:log("I0010", []),
+                leveled_log:log(i0010, []),
                 leveled_imanifest:printer(OpenManifest),
                 ManifestSQN
         end,
@@ -1083,7 +1140,7 @@ close_allmanifest([H|ManifestT]) ->
 %% Open all the files in the manifets, and updating the manifest with the PIDs
 %% of the opened files
 open_all_manifest([], RootPath, CDBOpts) ->
-    leveled_log:log("I0011", []),
+    leveled_log:log(i0011, []),
     leveled_imanifest:add_entry([],
                                 start_new_activejournal(0, RootPath, CDBOpts),
                                 true);
@@ -1114,7 +1171,7 @@ open_all_manifest(Man0, RootPath, CDBOpts) ->
     PendingHeadFN = HeadFN ++ "." ++ ?PENDING_FILEX,
     case filelib:is_file(CompleteHeadFN) of
         true ->
-            leveled_log:log("I0012", [HeadFN]),
+            leveled_log:log(i0012, [HeadFN]),
             {ok, HeadR} = leveled_cdb:cdb_open_reader(CompleteHeadFN),
             LastKey = leveled_cdb:cdb_lastkey(HeadR),
             LastSQN = element(1, LastKey),
@@ -1269,6 +1326,14 @@ wrap_checkfilterfun(CheckFilterFun) ->
                 false
         end
     end.
+
+
+-spec update_cdb_logoptions(
+    #cdb_options{}|undefined) -> #cdb_options{}|undefined.
+update_cdb_logoptions(undefined) ->
+    undefined;
+update_cdb_logoptions(CDBopts) ->
+    CDBopts#cdb_options{log_options = leveled_log:get_opts()}.
 
 %%%============================================================================
 %%% Test
@@ -1605,5 +1670,29 @@ loop() ->
         stop ->
             ok
     end.
+
+close_no_crash_test_() ->
+    {timeout, 60, fun close_no_crash_tester/0}.
+
+close_no_crash_tester() ->
+    RootPath = "test/test_area/journal",
+    build_dummy_journal(),
+    CDBopts = #cdb_options{max_size=300000, binary_mode=true},
+    {ok, Inker} =
+        ink_start(
+            #inker_options{
+                root_path=RootPath,
+                cdb_options=CDBopts,
+                compression_method=native,
+                compress_on_receipt=true}),
+
+    SnapOpts =
+        #inker_options{
+            start_snapshot=true, bookies_pid = self(), source_inker=Inker},
+    {ok, InkSnap} = ink_snapstart(SnapOpts),
+
+    exit(InkSnap, kill),
+    ok = ink_close(Inker),
+    clean_testdir(RootPath).
 
 -endif.

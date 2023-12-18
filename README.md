@@ -2,7 +2,8 @@
 
 ## Introduction
 
-[![Build Status](https://github.com/martinsumner/leveled/actions/workflows/erlang.yml/badge.svg?branch=develop-3.1)](https://github.com/martinsumner/leveled/actions)
+
+[![Build Status](https://github.com/martinsumner/leveled/actions/workflows/erlang.yml/badge.svg?branch=develop-3.0)](https://github.com/martinsumner/leveled/actions)
 
 Leveled is a simple Key-Value store based on the concept of Log-Structured Merge Trees, with the following characteristics:
 
@@ -78,8 +79,8 @@ In order to contribute to leveled, fork the repository, make a branch for your c
 
 To have rebar3 execute the full set of tests, run:
 
-```rebar3 as test do xref, dialyzer, cover --reset, eunit --cover, ct --cover, cover --verbose```
+    `rebar3 as test do xref, dialyzer, cover --reset, eunit --cover, ct --cover, cover --verbose`
 
 For those with a Quickcheck license, property-based tests can also be run using:
 
-```rebar3 as eqc do eunit --module=leveled_simpleeqc, eunit --module=leveled_statemeqc```
+    `rebar3 as eqc do eunit --module=leveled_eqc`

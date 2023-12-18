@@ -26,6 +26,7 @@
         load_manifest/3,
         close_manifest/2,
         save_manifest/2,
+        query_manifest/3,
         get_manifest_sqn/1,
         key_lookup/3,
         range_lookup/4,
@@ -39,11 +40,13 @@
         release_snapshot/2,
         merge_snapshot/2,
         ready_to_delete/2,
-        check_for_work/2,
+        clear_pending/3,
+        check_for_work/1,
         is_basement/2,
         levelzero_present/1,
         check_bloom/3,
-        report_manifest_level/2
+        report_manifest_level/2,
+        snapshot_pids/1
         ]).      
 
 -export([
@@ -55,7 +58,29 @@
 -define(MANIFEST_FILEX, "man").
 -define(PENDING_FILEX, "pnd").
 -define(MANIFEST_FP, "ledger_manifest").
--define(MAX_LEVELS, 8).
+-define(LEVEL_SCALEFACTOR, 
+            [{0, 0}, 
+                {1, 4}, {2, 16}, {3, 64}, % Factor of 4
+                {4, 384}, {5, 2304}, % Factor of 6 
+                {6, 18432}, % Factor of 8 
+                {7, infinity}]).
+            % As an alternative to going up by a factor of 8 at each level, 
+            % increase by a factor of 4 at young levels - to make early  
+            % compaction jobs shorter.
+            %  
+            % There are 32K keys per files => with 4096 files there are 100M
+            % keys supported,
+            
+            % 600M keys is supported before hitting the infinite level.  
+            % At o(10) trillion keys behaviour may become increasingly 
+            % difficult to predict.
+
+-ifdef(if_check).
+-if(length(?LEVEL_SCALEFACTOR) /= ?MAX_LEVELS).
+-error("length ?LEVEL_SCALEFACTOR differs from ?MAX_LEVELS").
+-endif.
+-endif.
+
 -define(TREE_TYPE, idxt).
 -define(TREE_WIDTH, 8).
 -define(PHANTOM_PID, r2d_fail).
@@ -64,29 +89,30 @@
 
 -record(manifest, {levels,
                         % an array of lists or trees representing the manifest
-                    manifest_sqn = 0 :: integer(),
+                    manifest_sqn = 0 :: non_neg_integer(),
                         % The current manifest SQN
-                    snapshots :: list() | undefined,
+                    snapshots  = []
+                        :: list(snapshot()),
                         % A list of snaphots (i.e. clones)
                     min_snapshot_sqn = 0 :: integer(),
                         % The smallest snapshot manifest SQN in the snapshot
                         % list
-                    pending_deletes, % OTP16 does not like defining type
-                        % a dictionary mapping keys (filenames) to SQN when the
-                        % deletion was made, and the original Manifest Entry
-                    basement :: integer(),
+                    pending_deletes = dict:new() :: dict:dict(), 
+                    basement :: non_neg_integer(),
                         % Currently the lowest level (the largest number)
-                    blooms :: any() % actually a dict but OTP 16 compatability
-                        % A dictionary mapping PIDs to bloom filters
+                    blooms :: dict:dict()
                     }).      
 
+-type snapshot() ::
+    {pid(), non_neg_integer(), pos_integer(), pos_integer()}.
 -type manifest() :: #manifest{}.
 -type manifest_entry() :: #manifest_entry{}.
 -type manifest_owner() :: pid()|list().
+-type lsm_level() :: 0..7.
 -type selector_strategy() ::
         random|{grooming, fun((list(manifest_entry())) -> manifest_entry())}.
 
--export_type([manifest/0, manifest_entry/0, manifest_owner/0]).
+-export_type([manifest/0, manifest_entry/0, manifest_owner/0, lsm_level/0]).
 
 %%%============================================================================
 %%% API
@@ -146,11 +172,14 @@ open_manifest(RootPath) ->
 %% by a snapshot
 copy_manifest(Manifest) ->
     % Copy the manifest ensuring anything only the master process should care
-    % about is switched to undefined
-    Manifest#manifest{snapshots = undefined, pending_deletes = undefined}.
+    % about is switched to be empty
+    Manifest#manifest{snapshots = [], pending_deletes = dict:new()}.
 
--spec load_manifest(manifest(), fun(), fun()) -> 
-                                        {integer(), manifest(), list()}.
+-spec load_manifest(
+    manifest(),
+    fun((file:name_all(), 1..7) -> {pid(), leveled_ebloom:bloom()}),
+    fun((pid()) -> pos_integer()))
+        -> {integer(), manifest(), list()}.
 %% @doc
 %% Roll over the manifest starting a process to manage each file in the
 %% manifest.  The PidFun should be able to return the Pid of a file process
@@ -182,7 +211,9 @@ load_manifest(Manifest, LoadFun, SQNFun) ->
                 {0, Manifest, []}, 
                 lists:reverse(lists:seq(0, Manifest#manifest.basement))).
 
--spec close_manifest(manifest(), fun()) -> ok.
+-spec close_manifest(
+    manifest(),
+    fun((any()) -> ok)) -> ok.
 %% @doc
 %% Close all the files in the manifest (using CloseEntryFun to call close on
 %% a file).  Firts all the files in the active manifest are called, and then
@@ -236,11 +267,16 @@ remove_manifest(RootPath, GC_SQN) ->
         end.
 
 
--spec report_manifest_level(manifest(), non_neg_integer()) ->
-                            {non_neg_integer(),
-                                non_neg_integer(),
-                                {string(), pid(), non_neg_integer()} |
-                                    undefined}.
+-spec report_manifest_level(
+    manifest(), non_neg_integer()) ->
+        {non_neg_integer(),
+            non_neg_integer(),
+            {string(), pid(), non_neg_integer()} |
+                undefined,
+            non_neg_integer(),
+            non_neg_integer(),
+            non_neg_integer(),
+            non_neg_integer()}.
 %% @doc
 %% Report on a level in the manifest
 %% - How many files in the level
@@ -257,7 +293,7 @@ report_manifest_level(Manifest, LevelIdx) ->
                 {leveled_tree:tsize(Level), leveled_tree:to_list(Level)}
         end,
     AccMemFun = 
-        fun(MaybeME, {MemAcc, Max}) ->
+        fun(MaybeME, {MemAcc, Max, HBSAcc, HSAcc, LHSAcc, BVHSAcc}) ->
             ME = get_manifest_entry(MaybeME),
             P = ME#manifest_entry.owner,
             {memory, PM} = process_info(P, memory),
@@ -268,15 +304,26 @@ report_manifest_level(Manifest, LevelIdx) ->
                     _ ->
                         {ME#manifest_entry.filename, P, PM}
                 end,
-            {MemAcc + PM, UpdMax}
+            {garbage_collection_info, GCI} =
+                process_info(P, garbage_collection_info),
+            HBS = proplists:get_value(heap_block_size, GCI),
+            HS = proplists:get_value(heap_size, GCI),
+            LHS = proplists:get_value(recent_size, GCI),
+            BVHS = proplists:get_value(bin_vheap_size, GCI),
+            {MemAcc + PM, UpdMax,
+                HBSAcc + HBS, HSAcc + HS, LHSAcc + LHS, BVHSAcc + BVHS}
         end,
     case LevelSize of
         0 ->
-            {0, 0, undefined};
+            {0, 0, undefined, 0, 0, 0, 0};
         _ ->
-            {TotalMem, BiggestMem} =
-                lists:foldl(AccMemFun, {0, undefined}, LevelList),
-            {LevelSize, TotalMem div LevelSize, BiggestMem}
+            {TotalMem, BiggestMem, TotalHBS, TotalHS, TotalLHS, TotalBVBS} =
+                lists:foldl(AccMemFun, {0, undefined, 0, 0, 0, 0}, LevelList),
+            {LevelSize, TotalMem div LevelSize, BiggestMem,
+                TotalHBS div LevelSize,
+                TotalHS div LevelSize,
+                TotalLHS div LevelSize,
+                TotalBVBS div LevelSize}
     end.
 
 
@@ -295,7 +342,7 @@ replace_manifest_entry(Manifest, ManSQN, LevelIdx, Removals, Additions) ->
     {UpdBlooms, StrippedAdditions} = 
         update_blooms(Removals, Additions, Manifest#manifest.blooms),
     UpdLevel = replace_entry(LevelIdx, Level, Removals, StrippedAdditions),
-    leveled_log:log("PC019", ["insert", LevelIdx, UpdLevel]),
+    leveled_log:log(pc019, ["insert", LevelIdx, UpdLevel]),
     PendingDeletes = 
         update_pendingdeletes(ManSQN, 
                                 Removals, 
@@ -328,7 +375,7 @@ insert_manifest_entry(Manifest, ManSQN, LevelIdx, Entry) ->
     {UpdBlooms, UpdEntry} = 
         update_blooms([], Entry, Manifest#manifest.blooms),
     UpdLevel = add_entry(LevelIdx, Level, UpdEntry),
-    leveled_log:log("PC019", ["insert", LevelIdx, UpdLevel]),
+    leveled_log:log(pc019, ["insert", LevelIdx, UpdLevel]),
     Basement = max(LevelIdx, Manifest#manifest.basement),
     Manifest#manifest{levels = array:set(LevelIdx, UpdLevel, Levels),
                         basement = Basement,
@@ -345,7 +392,7 @@ remove_manifest_entry(Manifest, ManSQN, LevelIdx, Entry) ->
     {UpdBlooms, []} = 
         update_blooms(Entry, [], Manifest#manifest.blooms),
     UpdLevel = remove_entry(LevelIdx, Level, Entry),
-    leveled_log:log("PC019", ["remove", LevelIdx, UpdLevel]),
+    leveled_log:log(pc019, ["remove", LevelIdx, UpdLevel]),
     PendingDeletes = update_pendingdeletes(ManSQN,
                                             Entry,
                                             Manifest#manifest.pending_deletes),
@@ -401,6 +448,22 @@ key_lookup(Manifest, LevelIdx, Key) ->
                                 array:get(LevelIdx, Manifest#manifest.levels),
                                 Key)
     end.
+
+-spec query_manifest(
+    manifest(),
+    leveled_codec:ledger_key(),
+    leveled_codec:ledger_key()) -> list().
+query_manifest(Manifest, StartKey, EndKey) ->
+    SetupFoldFun =
+        fun(Level, Acc) ->
+            Pointers =
+                range_lookup(Manifest, Level, StartKey, EndKey),
+            case Pointers of
+                [] -> Acc;
+                PL -> Acc ++ [{Level, PL}]
+            end
+        end,
+    lists:foldl(SetupFoldFun, [], lists:seq(0, ?MAX_LEVELS - 1)).
 
 -spec range_lookup(manifest(), 
                     integer(), 
@@ -473,13 +536,12 @@ mergefile_selector(Manifest, LevelIdx, {grooming, ScoringFun}) ->
 %% @doc
 %% When the clerk returns an updated manifest to the penciller, the penciller
 %% should restore its view of the snapshots to that manifest.  Snapshots can
-%% be received in parallel to the manifest ebing updated, so the updated
+%% be received in parallel to the manifest being updated, so the updated
 %% manifest must not trample over any accrued state in the manifest.
 merge_snapshot(PencillerManifest, ClerkManifest) ->
-    ClerkManifest#manifest{snapshots =
-                                PencillerManifest#manifest.snapshots,
-                            min_snapshot_sqn =
-                                PencillerManifest#manifest.min_snapshot_sqn}.
+    ClerkManifest#manifest{
+        snapshots = PencillerManifest#manifest.snapshots,
+        min_snapshot_sqn = PencillerManifest#manifest.min_snapshot_sqn}.
 
 -spec add_snapshot(manifest(), pid()|atom(), integer()) -> manifest().
 %% @doc
@@ -514,7 +576,7 @@ release_snapshot(Manifest, Pid) ->
                 _ ->
                     case seconds_now() > (ST + TO) of 
                         true ->
-                            leveled_log:log("P0038", [P, SQN,  ST, TO]),
+                            leveled_log:log(p0038, [P, SQN,  ST, TO]),
                             {Acc, MinSQN, Found};
                         false ->
                             {[{P, SQN, ST, TO}|Acc], min(SQN, MinSQN), Found}
@@ -526,7 +588,7 @@ release_snapshot(Manifest, Pid) ->
                                                 Manifest#manifest.snapshots),
     case Hit of 
         false ->
-            leveled_log:log("P0039", [Pid, length(SnapList0), MinSnapSQN]);
+            leveled_log:log(p0039, [Pid, length(SnapList0), MinSnapSQN]);
         true ->
             ok 
     end,
@@ -535,38 +597,47 @@ release_snapshot(Manifest, Pid) ->
             Manifest#manifest{snapshots = SnapList0,
                                 min_snapshot_sqn = 0};
         _  ->
-            leveled_log:log("P0004", [SnapList0]),
+            leveled_log:log(p0004, [SnapList0]),
             Manifest#manifest{snapshots = SnapList0,
                                 min_snapshot_sqn = MinSnapSQN}
     end.
 
--spec ready_to_delete(manifest(), string()) -> {boolean(), manifest()}.
+
 %% @doc
 %% A SST file which is in the delete_pending state can check to see if it is
 %% ready to delete against the manifest.
+%% This does not update the manifest, a call is required to clear_pending to
+%% remove the file from the manifest's list of pending_deletes.
+-spec ready_to_delete(manifest(), string()) -> boolean().
 ready_to_delete(Manifest, Filename) ->
     PendingDelete = dict:find(Filename, Manifest#manifest.pending_deletes),
-    
     case {PendingDelete, Manifest#manifest.min_snapshot_sqn} of
         {{ok, _}, 0} ->
             % no shapshots
-            PDs = dict:erase(Filename, Manifest#manifest.pending_deletes),
-            {true, Manifest#manifest{pending_deletes = PDs}};
+            true;
         {{ok, {ChangeSQN, _ME}}, N} when N >= ChangeSQN ->
             % Every snapshot is looking at a version of history after this
             % was removed
-            PDs = dict:erase(Filename, Manifest#manifest.pending_deletes),
-            {true, Manifest#manifest{pending_deletes = PDs}};
+            true;
         _ ->
-            % If failed to delete then we should release a phantom pid
-            % in case this is necessary to timeout any snapshots
-            % This wll also trigger a log
-            % This may also be because of i355 - a race condition when a second
-            % confirm_delete may be sent prior to the first being processed
-            {false, release_snapshot(Manifest, ?PHANTOM_PID)}
+            false
     end.
 
--spec check_for_work(manifest(), list()) -> {list(), integer()}.
+-spec clear_pending(manifest(), list(string()), boolean()) -> manifest().
+clear_pending(Manifest, [], true) ->
+    % If the penciller got a confirm_delete that resulted in no pending
+    % removals, then maybe we need to timeout a snapshot via release
+    release_snapshot(Manifest, ?PHANTOM_PID);
+clear_pending(Manifest, [], false) ->
+    Manifest;
+clear_pending(Manifest, [FN|RestFN], MaybeRelease) ->
+    PDs = dict:erase(FN, Manifest#manifest.pending_deletes),
+    clear_pending(
+        Manifest#manifest{pending_deletes = PDs},
+        RestFN,
+        MaybeRelease).
+
+-spec check_for_work(manifest()) -> {list(), integer()}.
 %% @doc
 %% Check for compaction work in the manifest - look at levels which contain
 %% more files in the threshold.
@@ -578,7 +649,7 @@ ready_to_delete(Manifest, Filename) ->
 %%
 %% Return a list of levels which are over-sized as well as the total items
 %% across the manifest which are beyond the size (the total work outstanding).
-check_for_work(Manifest, Thresholds) ->
+check_for_work(Manifest) ->
     CheckLevelFun =
         fun({LevelIdx, MaxCount}, {AccL, AccC}) ->
             case LevelIdx > Manifest#manifest.basement of
@@ -595,7 +666,7 @@ check_for_work(Manifest, Thresholds) ->
                     end
             end
         end,
-    lists:foldr(CheckLevelFun, {[], 0}, Thresholds).    
+    lists:foldr(CheckLevelFun, {[], 0}, ?LEVEL_SCALEFACTOR).    
 
 -spec is_basement(manifest(), integer()) -> boolean().
 %% @doc
@@ -624,6 +695,11 @@ check_bloom(Manifest, FP, Hash) ->
             true
     end.
 
+-spec snapshot_pids(manifest()) -> list(pid()).
+%% @doc
+%% Return a list of snapshot_pids - to be shutdown on shutdown
+snapshot_pids(Manifest) ->
+    lists:map(fun(S) -> element(1, S) end, Manifest#manifest.snapshots).
 
 %%%============================================================================
 %%% Internal Functions
@@ -940,7 +1016,7 @@ filepath(RootPath, NewMSN, pending_manifest) ->
 
 
 open_manifestfile(_RootPath, L) when L == [] orelse L == [0] ->
-    leveled_log:log("P0013", []),
+    leveled_log:log(p0013, []),
     new_manifest();
 open_manifestfile(RootPath, [TopManSQN|Rest]) ->
     CurrManFile = filepath(RootPath, TopManSQN, current_manifest),
@@ -948,10 +1024,10 @@ open_manifestfile(RootPath, [TopManSQN|Rest]) ->
     <<CRC:32/integer, BinaryOfTerm/binary>> = FileBin,
     case erlang:crc32(BinaryOfTerm) of
         CRC ->
-            leveled_log:log("P0012", [TopManSQN]),
+            leveled_log:log(p0012, [TopManSQN]),
             binary_to_term(BinaryOfTerm);
         _ ->
-            leveled_log:log("P0033", [CurrManFile, "crc wonky"]),
+            leveled_log:log(p0033, [CurrManFile, "crc wonky"]),
             open_manifestfile(RootPath, Rest)
     end.
 
@@ -1303,7 +1379,19 @@ levelzero_present_test() ->
     Man1 = insert_manifest_entry(Man0, 1, 0, E0),
     ?assertMatch(true, levelzero_present(Man1)).
 
+ready_to_delete_combined(Manifest, Filename) ->
+    case ready_to_delete(Manifest, Filename) of
+        true ->
+            {true, clear_pending(Manifest, [Filename], false)};
+        false ->
+            {false, clear_pending(Manifest, [], true)}
+    end.
+
 snapshot_release_test() ->
+    PidA1 = spawn(fun() -> ok end),
+    PidA2 = spawn(fun() -> ok end),
+    PidA3 = spawn(fun() -> ok end),
+    PidA4 = spawn(fun() -> ok end),
     Man6 = element(7, initial_setup()),
     E1 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
                             end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K93"},
@@ -1321,49 +1409,50 @@ snapshot_release_test() ->
                             owner="pid_z3",
                             bloom=none},
     
-    Man7 = add_snapshot(Man6, pid_a1, 3600),
+    Man7 = add_snapshot(Man6, PidA1, 3600),
     Man8 = remove_manifest_entry(Man7, 2, 1, E1),
-    Man9 = add_snapshot(Man8, pid_a2, 3600),
+    Man9 = add_snapshot(Man8, PidA2, 3600),
     Man10 = remove_manifest_entry(Man9, 3, 1, E2),
-    Man11 = add_snapshot(Man10, pid_a3, 3600),
+    Man11 = add_snapshot(Man10, PidA3, 3600),
     Man12 = remove_manifest_entry(Man11, 4, 1, E3),
-    Man13 = add_snapshot(Man12, pid_a4, 3600),
+    Man13 = add_snapshot(Man12, PidA4, 3600),
     
-    ?assertMatch(false, element(1, ready_to_delete(Man8, "Z1"))),
-    ?assertMatch(false, element(1, ready_to_delete(Man10, "Z2"))),
-    ?assertMatch(false, element(1, ready_to_delete(Man12, "Z3"))),
+    ?assertMatch(false, element(1, ready_to_delete_combined(Man8, "Z1"))),
+    ?assertMatch(false, element(1, ready_to_delete_combined(Man10, "Z2"))),
+    ?assertMatch(false, element(1, ready_to_delete_combined(Man12, "Z3"))),
     
-    Man14 = release_snapshot(Man13, pid_a1),
-    ?assertMatch(false, element(1, ready_to_delete(Man14, "Z2"))),
-    ?assertMatch(false, element(1, ready_to_delete(Man14, "Z3"))),
-    {Bool14, Man15} = ready_to_delete(Man14, "Z1"),
+    Man14 = release_snapshot(Man13, PidA1),
+    ?assertMatch(false, element(1, ready_to_delete_combined(Man14, "Z2"))),
+    ?assertMatch(false, element(1, ready_to_delete_combined(Man14, "Z3"))),
+    {Bool14, Man15} = ready_to_delete_combined(Man14, "Z1"),
     ?assertMatch(true, Bool14),
     
     %This doesn't change anything - released snaphsot not the min
-    Man16 = release_snapshot(Man15, pid_a4),
-    ?assertMatch(false, element(1, ready_to_delete(Man16, "Z2"))),
-    ?assertMatch(false, element(1, ready_to_delete(Man16, "Z3"))),
+    Man16 = release_snapshot(Man15, PidA4),
+    ?assertMatch(false, element(1, ready_to_delete_combined(Man16, "Z2"))),
+    ?assertMatch(false, element(1, ready_to_delete_combined(Man16, "Z3"))),
     
-    Man17 = release_snapshot(Man16, pid_a2),
-    ?assertMatch(false, element(1, ready_to_delete(Man17, "Z3"))),
-    {Bool17, Man18} = ready_to_delete(Man17, "Z2"),
+    Man17 = release_snapshot(Man16, PidA2),
+    ?assertMatch(false, element(1, ready_to_delete_combined(Man17, "Z3"))),
+    {Bool17, Man18} = ready_to_delete_combined(Man17, "Z2"),
     ?assertMatch(true, Bool17),
     
-    Man19 = release_snapshot(Man18, pid_a3),
+    Man19 = release_snapshot(Man18, PidA3),
     
     io:format("MinSnapSQN ~w~n", [Man19#manifest.min_snapshot_sqn]),
     
-    {Bool19, _Man20} = ready_to_delete(Man19, "Z3"),
+    {Bool19, _Man20} = ready_to_delete_combined(Man19, "Z3"),
     ?assertMatch(true, Bool19).
     
 
 snapshot_timeout_test() ->
+    PidA1 = spawn(fun() -> ok end),
     Man6 = element(7, initial_setup()),
-    Man7 = add_snapshot(Man6, pid_a1, 3600),
+    Man7 = add_snapshot(Man6, PidA1, 3600),
     ?assertMatch(1, length(Man7#manifest.snapshots)),
-    Man8 = release_snapshot(Man7, pid_a1),
+    Man8 = release_snapshot(Man7, PidA1),
     ?assertMatch(0, length(Man8#manifest.snapshots)),
-    Man9 = add_snapshot(Man8, pid_a1, 0),
+    Man9 = add_snapshot(Man8, PidA1, 1),
     timer:sleep(2001),
     ?assertMatch(1, length(Man9#manifest.snapshots)),
     Man10 = release_snapshot(Man9, ?PHANTOM_PID),
@@ -1395,12 +1484,7 @@ potential_issue_test() ->
                   {idxt,0,{{},{0,nil}}},
                   {idxt,0,{{},{0,nil}}},
                   []}},
-          19,[],0,
-          {dict,0,16,16,8,80,48,
-                {[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[]},
-                {{[],[],[],[],[],[],[],[],[],[],[],[],[],[],[],[]}}},
-          2,
-          dict:new()},
+          19, [], 0, dict:new(), 2, dict:new()},
     Range1 = range_lookup(Manifest, 
                             1, 
                             {o_rkv, "Bucket", null, null}, 
