@@ -147,7 +147,7 @@
     %% Any chnage to this record will mean the change cannot be rolled back
 
 -type press_method()
-        :: lz4|native|none.
+        :: lz4|native|zstd|none.
 -type range_endpoint()
         :: all|leveled_codec:ledger_key().
 -type slot_pointer()
@@ -1565,14 +1565,15 @@ read_file(Filename, State, LoadPageCache) ->
         Bloom}.
 
 gen_fileversion(PressMethod, IdxModDate, CountOfTombs) ->
-    % Native or none can be treated the same once written, as reader
-    % does not need to know as compression info will be in header of the
+    % Native or none can be treated the same once written, as reader 
+    % does not need to know as compression info will be in header of the 
     % block
-    Bit1 =
-        case PressMethod of
+    Bit1 = 
+        case PressMethod of 
             lz4 -> 1;
             native -> 0;
-            none -> 0
+            none -> 0;
+            zstd -> 0
         end,
     Bit2 =
         case IdxModDate of
@@ -1581,18 +1582,25 @@ gen_fileversion(PressMethod, IdxModDate, CountOfTombs) ->
             false ->
                 0
         end,
-    Bit3 =
+    Bit3 = 
         case CountOfTombs of
             not_counted ->
                 0;
             _ ->
                 4
         end,
-    Bit1 + Bit2 + Bit3.
+    Bit4 =
+        case PressMethod of
+            zstd ->
+                8;
+            _ ->
+                0
+            end,
+    Bit1 + Bit2 + Bit3 + Bit4.
 
 imp_fileversion(VersionInt, State) ->
-    UpdState0 =
-        case VersionInt band 1 of
+    UpdState0 = 
+        case VersionInt band 1 of 
             0 ->
                 State#state{compression_method = native};
             1 ->
@@ -1605,11 +1613,18 @@ imp_fileversion(VersionInt, State) ->
             2 ->
                 UpdState0#state{index_moddate = true}
         end,
-    case VersionInt band 4 of
-        0 ->
-            UpdState1;
-        4 ->
-            UpdState1#state{tomb_count = 0}
+    UpdState2 =
+        case VersionInt band 4 of
+            0 ->
+                UpdState1;
+            4 ->
+                UpdState1#state{tomb_count = 0}
+        end,
+    case VersionInt band 8 of
+            0 ->
+                UpdState2;
+            8 ->
+                UpdState2#state{compression_method = zstd}
     end.
 
 open_reader(Filename, LoadPageCache) ->
@@ -1735,11 +1750,14 @@ serialise_block(Term, native) ->
     Bin = term_to_binary(Term, ?BINARY_SETTINGS),
     CRC32 = hmac(Bin),
     <<Bin/binary, CRC32:32/integer>>;
+serialise_block(Term, zstd) ->
+    Bin = ezstd:compress(term_to_binary(Term)),
+    CRC32 = hmac(Bin),
+    <<Bin/binary, CRC32:32/integer>>;
 serialise_block(Term, none) ->
     Bin = term_to_binary(Term),
     CRC32 = hmac(Bin),
     <<Bin/binary, CRC32:32/integer>>.
-
 
 -spec deserialise_block(binary(), press_method()) -> any().
 %% @doc
@@ -1763,10 +1781,11 @@ deserialise_block(_Bin, _PM) ->
 deserialise_checkedblock(Bin, lz4) ->
     {ok, Bin0} = lz4:unpack(Bin),
     binary_to_term(Bin0);
+deserialise_checkedblock(Bin, zstd) ->
+    binary_to_term(ezstd:decompress(Bin));
 deserialise_checkedblock(Bin, _Other) ->
     % native or none can be treated the same
     binary_to_term(Bin).
-
 
 
 -spec hmac(binary()|integer()) -> integer().
@@ -4240,6 +4259,7 @@ stop_whenstarter_stopped_testto() ->
 corrupted_block_range_test() ->
     corrupted_block_rangetester(native, 100),
     corrupted_block_rangetester(lz4, 100),
+    corrupted_block_rangetester(zstd, 100),
     corrupted_block_rangetester(none, 100).
 
 corrupted_block_rangetester(PressMethod, TestCount) ->
@@ -4292,6 +4312,7 @@ corrupted_block_rangetester(PressMethod, TestCount) ->
 corrupted_block_fetch_test() ->
     corrupted_block_fetch_tester(native),
     corrupted_block_fetch_tester(lz4),
+    corrupted_block_fetch_tester(zstd),
     corrupted_block_fetch_tester(none).
 
 corrupted_block_fetch_tester(PressMethod) ->
