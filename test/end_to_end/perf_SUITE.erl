@@ -6,7 +6,7 @@
     riak_ctperf/1, riak_fullperf/1, riak_profileperf/1
 ]).
 
-all() -> [riak_fullperf].
+all() -> [riak_ctperf].
 suite() -> [{timetrap, {hours, 16}}].
     
 
@@ -15,16 +15,16 @@ riak_fullperf(_Config) ->
     riak_fullperf(2048, native, lz4).
 
 riak_fullperf(ObjSize, PM, LC) ->
-    % R2A = riak_load_tester(<<"B0">>, 2000000, ObjSize, [], PM, LC),
-    % output_result(R2A),
-    % R2B = riak_load_tester(<<"B0">>, 2000000, ObjSize, [], PM, LC),
-    % output_result(R2B),
-    % R2C = riak_load_tester(<<"B0">>, 2000000, ObjSize, [], PM, LC),
-    % output_result(R2C),
-    % R5A = riak_load_tester(<<"B0">>, 5000000, ObjSize, [], PM, LC),
-    % output_result(R5A),
-    % R5B = riak_load_tester(<<"B0">>, 5000000, ObjSize, [], PM, LC),
-    % output_result(R5B),
+    R2A = riak_load_tester(<<"B0">>, 2000000, ObjSize, [], PM, LC),
+    output_result(R2A),
+    R2B = riak_load_tester(<<"B0">>, 2000000, ObjSize, [], PM, LC),
+    output_result(R2B),
+    R2C = riak_load_tester(<<"B0">>, 2000000, ObjSize, [], PM, LC),
+    output_result(R2C),
+    R5A = riak_load_tester(<<"B0">>, 5000000, ObjSize, [], PM, LC),
+    output_result(R5A),
+    R5B = riak_load_tester(<<"B0">>, 5000000, ObjSize, [], PM, LC),
+    output_result(R5B),
     R10 = riak_load_tester(<<"B0">>, 10000000, ObjSize, [], PM, LC),
     output_result(R10)
     .
