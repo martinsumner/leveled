@@ -125,6 +125,7 @@
                 {max_pencillercachesize, ?MAX_PCL_CACHE_SIZE},
                 {ledger_preloadpagecache_level, ?SST_PAGECACHELEVEL_LOOKUP},
                 {compression_method, ?COMPRESSION_METHOD},
+                {ledger_compression, as_store},
                 {compression_point, ?COMPRESSION_POINT},
                 {compression_level, ?COMPRESSION_LEVEL},
                 {log_level, ?LOG_LEVEL},
@@ -292,13 +293,15 @@
             % To which level of the ledger should the ledger contents be
             % pre-loaded into the pagecache (using fadvise on creation and
             % startup)
-        {compression_method, native|lz4|none} |
+            {compression_method, native|lz4|zstd|none} |
             % Compression method and point allow Leveled to be switched from
             % using bif based compression (zlib) to using nif based compression
-            % (lz4).  To disable compression use none.  This will disable in
-            % the ledger as well as the journla (both on_receipt and
-            % on_compact).
+            % (lz4 or zstd).
             % Defaults to ?COMPRESSION_METHOD
+        {ledger_compression, as_store|native|lz4|zstd|none} |
+            % Define an alternative to the compression method to be used by the
+            % ledger only.  Default is as_store - use the method defined as
+            % compression_method for the whole store
         {compression_point, on_compact|on_receipt} |
             % The =compression point can be changed between on_receipt (all
             % values are compressed as they are received), to on_compact where
@@ -1812,6 +1815,14 @@ set_options(Opts, Monitor) ->
     true = SFL_CompPerc >= 0.0,
 
     CompressionMethod = proplists:get_value(compression_method, Opts),
+    JournalCompression = CompressionMethod,
+    LedgerCompression =
+        case proplists:get_value(ledger_compression, Opts) of
+            as_store ->
+                CompressionMethod;
+            AltMethod ->
+                AltMethod
+        end,
     CompressOnReceipt = 
         case proplists:get_value(compression_point, Opts) of 
             on_receipt ->
@@ -1835,7 +1846,7 @@ set_options(Opts, Monitor) ->
                     maxrunlength_compactionperc = MRL_CompPerc,
                     waste_retention_period = WRP,
                     snaptimeout_long = SnapTimeoutLong,
-                    compression_method = CompressionMethod,
+                    compression_method = JournalCompression,
                     compress_on_receipt = CompressOnReceipt,
                     score_onein = ScoreOneIn,
                     cdb_options = 
@@ -1854,7 +1865,7 @@ set_options(Opts, Monitor) ->
                             snaptimeout_long = SnapTimeoutLong,
                             sst_options =
                                 #sst_options{
-                                    press_method = CompressionMethod,
+                                    press_method = LedgerCompression,
                                     press_level = CompressionLevel,
                                     log_options = leveled_log:get_opts(),
                                     max_sstslots = MaxSSTSlots,

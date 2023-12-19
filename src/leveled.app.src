@@ -5,6 +5,7 @@
   {registered, []},
   {applications, [
                   lz4,
+                  ezstd,
                   kernel,
                   stdlib
                  ]},
