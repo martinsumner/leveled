@@ -107,7 +107,7 @@ clerk_removelogs(Pid, ForcedLogs) ->
 
 -spec clerk_close(pid()) -> ok.
 clerk_close(Pid) ->
-    gen_server:call(Pid, close, 20000).
+    gen_server:call(Pid, close, 60000).
 
 %%%============================================================================
 %%% gen_server callbacks

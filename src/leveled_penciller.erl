@@ -1734,9 +1734,10 @@ fetch_size(unlimited, W) -> W;
 fetch_size(MaxKeys, W) -> min(MaxKeys, W).
 
 -spec scan_size(max_keys()) -> pos_integer().
-scan_size(unlimited) -> ?ITERATOR_SCANWIDTH;
-scan_size(MaxKeys) when MaxKeys < 256 -> ?ITERATOR_MINSCANWIDTH;
-scan_size(_MaxKeys) -> ?ITERATOR_SCANWIDTH.
+scan_size(unlimited) ->
+    ?ITERATOR_SCANWIDTH;
+scan_size(MaxKeys) ->
+    min(?ITERATOR_SCANWIDTH, max(?ITERATOR_MINSCANWIDTH, MaxKeys div 256)).
 
 -spec find_nextkeys(
     sst_iterator(),
