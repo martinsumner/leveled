@@ -118,13 +118,19 @@
         ink_loglevel/2,
         ink_addlogs/2,
         ink_removelogs/2,
-        ink_getjournalsqn/1]).
+        ink_getjournalsqn/1,
+        ink_getcdbpids/1,
+        ink_getclerkpid/1
+    ]).
 
 -export([filepath/2, filepath/3]).
 
 -ifdef(TEST).
--export([build_dummy_journal/0, clean_testdir/1]).
+-export(
+    [build_dummy_journal/0, clean_testdir/1]
+).
 -endif.
+
 
 -define(MANIFEST_FP, "journal_manifest").
 -define(FILES_FP, "journal_files").
@@ -480,6 +486,19 @@ ink_removelogs(Pid, ForcedLogs) ->
 ink_getjournalsqn(Pid) ->
     gen_server:call(Pid, get_journalsqn, infinity).
 
+-spec ink_getcdbpids(pid()) -> list(pid()).
+%% @doc
+%% Used for profiling in tests - get a list of SST PIDs to profile
+ink_getcdbpids(Pid) ->
+    gen_server:call(Pid, get_cdbpids).
+
+-spec ink_getclerkpid(pid()) -> pid().
+%% @doc
+%% Used for profiling in tests - get the clerk PID to profile
+ink_getclerkpid(Pid) ->
+    gen_server:call(Pid, get_clerkpid).
+
+
 %%%============================================================================
 %%% gen_server callbacks
 %%%============================================================================
@@ -673,6 +692,11 @@ handle_call({check_sqn, LedgerSQN}, _From, State) ->
     end;
 handle_call(get_journalsqn, _From, State) ->
     {reply, {ok, State#state.journal_sqn}, State};
+handle_call(get_cdbpids, _From, State) ->
+    CDBPids = leveled_imanifest:get_cdbpids(State#state.manifest),
+    {reply, [State#state.active_journaldb|CDBPids], State};
+handle_call(get_clerkpid, _From, State) ->
+    {reply, State#state.clerk, State};
 handle_call(close, _From, State=#state{is_snapshot=Snap}) when Snap == true ->
     ok = ink_releasesnapshot(State#state.source_inker, self()),
     {stop, normal, ok, State};

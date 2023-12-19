@@ -201,6 +201,8 @@
         sst_rootpath/1,
         sst_filename/3]).
 
+-export([pcl_getsstpids/1, pcl_getclerkpid/1]).
+
 -ifdef(TEST).
 -export([
         clean_testdir/1]).
@@ -614,6 +616,18 @@ pcl_addlogs(Pid, ForcedLogs) ->
 pcl_removelogs(Pid, ForcedLogs) ->
     gen_server:cast(Pid, {remove_logs, ForcedLogs}).
 
+-spec pcl_getsstpids(pid()) -> list(pid()).
+%% @doc
+%% Used for profiling in tests - get a list of SST PIDs to profile
+pcl_getsstpids(Pid) ->
+    gen_server:call(Pid, get_sstpids).
+
+-spec pcl_getclerkpid(pid()) -> pid().
+%% @doc
+%% Used for profiling in tests - get the clerk PID to profile
+pcl_getclerkpid(Pid) ->
+    gen_server:call(Pid, get_clerkpid).
+
 %%%============================================================================
 %%% gen_server callbacks
 %%%============================================================================
@@ -965,7 +979,11 @@ handle_call(check_for_work, _From, State) ->
     {_WL, WC} = leveled_pmanifest:check_for_work(State#state.manifest),
     {reply, WC > 0, State};
 handle_call(persisted_sqn, _From, State) ->
-    {reply, State#state.persisted_sqn, State}.
+    {reply, State#state.persisted_sqn, State};
+handle_call(get_sstpids, _From, State) ->
+    {reply, leveled_pmanifest:get_sstpids(State#state.manifest), State};
+handle_call(get_clerkpid, _From, State) ->
+    {reply, State#state.clerk, State}.
 
 handle_cast({manifest_change, Manifest}, State) ->
     NewManSQN = leveled_pmanifest:get_manifest_sqn(Manifest),
