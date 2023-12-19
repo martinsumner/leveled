@@ -44,6 +44,16 @@
   hidden
 ]}.
 
+%% @doc Ledger compression
+%% If an alternative compression method is preferred specifically for the
+%% ledger, it can be specified here.  Default is as_store - use whatever method
+%% has been defined in leveled.compression.method.  Alternatives are native,
+%% lz4, ztsd and none
+{mapping, "multi_backend.$name.ledger_compression", "riak_kv.multi_backend", [
+  {datatype, {enum, [as_store, native, lz4, zstd, none]}},
+  {default, as_store}
+]}.
+
 %% @doc Compression point
 %% The point at which compression is applied to the Journal (the Ledger is 
 %% always compressed).  Use on_receipt or on_compact.  on_compact is suitable

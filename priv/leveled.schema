@@ -46,7 +46,7 @@
 %% Can be lz4, zstd or native (which will use the Erlang native zlib
 %% compression) within term_to_binary
 {mapping, "leveled.compression_method", "leveled.compression_method", [
-  {datatype, {enum, [native, lz4, ztsd, none]}},
+  {datatype, {enum, [native, lz4, zstd, none]}},
   {default, native}
 ]}.
 
@@ -56,7 +56,7 @@
 %% has been defined in leveled.compression.method.  Alternatives are native,
 %% lz4, ztsd and none
 {mapping, "leveled.ledger_compression", "leveled.ledger_compression", [
-  {datatype, {enum, [as_store, native, lz4, ztsd, none]}},
+  {datatype, {enum, [as_store, native, lz4, zstd, none]}},
   {default, as_store}
 ]}.
 
