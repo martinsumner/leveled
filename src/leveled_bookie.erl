@@ -104,8 +104,6 @@
 -export([book_returnactors/1]).
 -endif.
 
--include_lib("eunit/include/eunit.hrl").
-
 -define(DUMMY, dummy). % Dummy key used for mput operations
 
 -define(OPTION_DEFAULTS,
@@ -1136,12 +1134,6 @@ book_addlogs(Pid, ForcedLogs) ->
 %% Remove from the list of forced logs, a list of forced logs
 book_removelogs(Pid, ForcedLogs) ->
     gen_server:cast(Pid, {remove_logs, ForcedLogs}).
-
--spec book_returnactors(pid()) -> {ok, pid(), pid()}.
-%% @doc
-%% Return the Inker and Penciller - {ok, Inker, Penciller}.  Used only in tests
-book_returnactors(Pid) ->
-    gen_server:call(Pid, return_actors, infinity).
 
 -spec book_headstatus(pid()) -> {boolean(), boolean()}.
 %% @doc
@@ -2591,12 +2583,19 @@ maybelog_snap_timing({Pid, _StatsFreq}, BookieTime, PCLTime) ->
 
 -ifdef(TEST).
 
+-include_lib("eunit/include/eunit.hrl").
+
+-spec book_returnactors(pid()) -> {ok, pid(), pid()}.
+%% @doc
+%% Return the Inker and Penciller - {ok, Inker, Penciller}.  Used only in tests
+book_returnactors(Pid) ->
+    gen_server:call(Pid, return_actors, infinity).
+
 reset_filestructure() ->
     RootPath  = "test/test_area",
     leveled_inker:clean_testdir(RootPath ++ "/" ++ ?JOURNAL_FP),
     leveled_penciller:clean_testdir(RootPath ++ "/" ++ ?LEDGER_FP),
     RootPath.
-
 
 generate_multiple_objects(Count, KeyNumber) ->
     generate_multiple_objects(Count, KeyNumber, []).

@@ -201,10 +201,12 @@
         sst_rootpath/1,
         sst_filename/3]).
 
--export([
-        clean_testdir/1]).
+-export([pcl_getsstpids/1, pcl_getclerkpid/1]).
 
+-ifdef(TEST).
+-export([clean_testdir/1]).
 -include_lib("eunit/include/eunit.hrl").
+-endif.
 
 -define(MAX_WORK_WAIT, 300).
 -define(MANIFEST_FP, "ledger_manifest").
@@ -285,10 +287,6 @@
 -type pcl_state() :: #state{}.
 -type levelzero_cacheentry() :: {pos_integer(), leveled_tree:leveled_tree()}.
 -type levelzero_cache() :: list(levelzero_cacheentry()).
--type iterator_entry() 
-    :: {pos_integer(), 
-        list(leveled_codec:ledger_kv()|leveled_sst:expandable_pointer())}.
--type iterator() :: list(iterator_entry()).
 -type bad_ledgerkey() :: list().
 -type sqn_check() :: current|replaced|missing.
 -type sst_fetchfun() ::
@@ -368,24 +366,6 @@ pcl_fetchlevelzero(Pid, Slot, ReturnFun) ->
     % If the timeout gets hit outside of close scenario the Penciller will
     % be stuck in L0 pending
     gen_server:cast(Pid, {fetch_levelzero, Slot, ReturnFun}).
-
--spec pcl_fetch(pid(), leveled_codec:ledger_key()) 
-                                    -> leveled_codec:ledger_kv()|not_present.
-%% @doc
-%% Fetch a key, return the first (highest SQN) occurrence of that Key along
-%% with  the value.
-%%
-%% The Key needs to be hashable (i.e. have a tag which indicates that the key
-%% can be looked up) - index entries are not hashable for example.
-%%
-%% If the hash is already known, call pcl_fetch/3 as segment_hash is a
-%% relatively expensive hash function
-pcl_fetch(Pid, Key) ->
-    Hash = leveled_codec:segment_hash(Key),
-    if
-        Hash /= no_lookup ->
-            gen_server:call(Pid, {fetch, Key, Hash, true}, infinity)
-    end.
 
 -spec pcl_fetch(pid(), 
                 leveled_codec:ledger_key(), 
@@ -631,6 +611,18 @@ pcl_addlogs(Pid, ForcedLogs) ->
 %% Remove from the list of forced logs, a list of forced logs
 pcl_removelogs(Pid, ForcedLogs) ->
     gen_server:cast(Pid, {remove_logs, ForcedLogs}).
+
+-spec pcl_getsstpids(pid()) -> list(pid()).
+%% @doc
+%% Used for profiling in tests - get a list of SST PIDs to profile
+pcl_getsstpids(Pid) ->
+    gen_server:call(Pid, get_sstpids).
+
+-spec pcl_getclerkpid(pid()) -> pid().
+%% @doc
+%% Used for profiling in tests - get the clerk PID to profile
+pcl_getclerkpid(Pid) ->
+    gen_server:call(Pid, get_clerkpid).
 
 %%%============================================================================
 %%% gen_server callbacks
@@ -983,7 +975,11 @@ handle_call(check_for_work, _From, State) ->
     {_WL, WC} = leveled_pmanifest:check_for_work(State#state.manifest),
     {reply, WC > 0, State};
 handle_call(persisted_sqn, _From, State) ->
-    {reply, State#state.persisted_sqn, State}.
+    {reply, State#state.persisted_sqn, State};
+handle_call(get_sstpids, _From, State) ->
+    {reply, leveled_pmanifest:get_sstpids(State#state.manifest), State};
+handle_call(get_clerkpid, _From, State) ->
+    {reply, State#state.clerk, State}.
 
 handle_cast({manifest_change, Manifest}, State) ->
     NewManSQN = leveled_pmanifest:get_manifest_sqn(Manifest),
@@ -1617,31 +1613,6 @@ compare_to_sqn(Obj, SQN) ->
 %%%============================================================================
 
 
--spec keyfolder(list(), list(), tuple(), tuple(),
-                {pclacc_fun(), any(), pos_integer()}) -> any().
-%% @doc
-%% The keyfolder will compare an iterator across the immutable in-memory cache
-%% of the Penciller (the IMMiter), with an iterator across the persisted part 
-%% (the SSTiter).
-%%
-%% A Segment List and a MaxKeys may be passed.  Every time something is added 
-%% to the accumulator MaxKeys is reduced - so set MaxKeys to -1 if it is 
-%% intended to be infinite.
-%%
-%% The basic principle is to take the next key in the IMMiter and compare it
-%% to the next key in the SSTiter, and decide which one should be added to the
-%% accumulator.  The iterators are advanced if they either win (i.e. are the 
-%% next key), or are dominated. This goes on until the iterators are empty.
-%%
-%% To advance the SSTiter the find_nextkey/4 function is used, as the SSTiter
-%% is an iterator across multiple levels - and so needs to do its own 
-%% comparisons to pop the next result.
-keyfolder(IMMiter, SSTiter, StartKey, EndKey, {AccFun, Acc, Now}) ->
-    keyfolder({IMMiter, SSTiter}, 
-                {StartKey, EndKey},
-                {AccFun, Acc, Now},
-                {false, {0, infinity}, -1}).
-
 keyfolder(_Iterators,
             _KeyRange,
             {_AccFun, Acc, _Now}, 
@@ -1776,19 +1747,6 @@ maybe_accumulate(LK, LV,
         false ->
             {Acc, MaxKeys}
     end.
-
-
--spec find_nextkey(iterator(), 
-                    leveled_codec:ledger_key(), leveled_codec:ledger_key()) ->
-                        no_more_keys|{iterator(), leveled_codec:ledger_kv()}.
-%% @doc
-%% Looks to find the best choice for the next key across the levels (other
-%% than in-memory table)
-%% In finding the best choice, the next key in a given level may be a next
-%% block or next file pointer which will need to be expanded
-
-find_nextkey(QueryArray, StartKey, EndKey) ->
-    find_nextkey(QueryArray, StartKey, EndKey, false, 0).
 
 find_nextkey(QueryArray, StartKey, EndKey, SegmentList, LowLastMod) ->
     find_nextkey(QueryArray,
@@ -1952,6 +1910,65 @@ maybelog_fetch_timing({Pid, _StatsFreq}, Level, FetchTime, _NF) ->
 
 -ifdef(TEST).
 
+-type iterator_entry() 
+    :: {pos_integer(), 
+        list(leveled_codec:ledger_kv()|leveled_sst:expandable_pointer())}.
+-type iterator() :: list(iterator_entry()).
+
+-spec find_nextkey(iterator(), 
+                    leveled_codec:ledger_key(), leveled_codec:ledger_key()) ->
+                        no_more_keys|{iterator(), leveled_codec:ledger_kv()}.
+%% @doc
+%% Looks to find the best choice for the next key across the levels (other
+%% than in-memory table)
+%% In finding the best choice, the next key in a given level may be a next
+%% block or next file pointer which will need to be expanded
+find_nextkey(QueryArray, StartKey, EndKey) ->
+    find_nextkey(QueryArray, StartKey, EndKey, false, 0).
+
+-spec keyfolder(list(), list(), tuple(), tuple(),
+                {pclacc_fun(), any(), pos_integer()}) -> any().
+%% @doc
+%% The keyfolder will compare an iterator across the immutable in-memory cache
+%% of the Penciller (the IMMiter), with an iterator across the persisted part 
+%% (the SSTiter).
+%%
+%% A Segment List and a MaxKeys may be passed.  Every time something is added 
+%% to the accumulator MaxKeys is reduced - so set MaxKeys to -1 if it is 
+%% intended to be infinite.
+%%
+%% The basic principle is to take the next key in the IMMiter and compare it
+%% to the next key in the SSTiter, and decide which one should be added to the
+%% accumulator.  The iterators are advanced if they either win (i.e. are the 
+%% next key), or are dominated. This goes on until the iterators are empty.
+%%
+%% To advance the SSTiter the find_nextkey/4 function is used, as the SSTiter
+%% is an iterator across multiple levels - and so needs to do its own 
+%% comparisons to pop the next result.
+keyfolder(IMMiter, SSTiter, StartKey, EndKey, {AccFun, Acc, Now}) ->
+    keyfolder({IMMiter, SSTiter}, 
+                {StartKey, EndKey},
+                {AccFun, Acc, Now},
+                {false, {0, infinity}, -1}).
+
+-spec pcl_fetch(
+    pid(), leveled_codec:ledger_key())
+        -> leveled_codec:ledger_kv()|not_present.
+%% @doc
+%% Fetch a key, return the first (highest SQN) occurrence of that Key along
+%% with  the value.
+%%
+%% The Key needs to be hashable (i.e. have a tag which indicates that the key
+%% can be looked up) - index entries are not hashable for example.
+%%
+%% If the hash is already known, call pcl_fetch/3 as segment_hash is a
+%% relatively expensive hash function
+pcl_fetch(Pid, Key) ->
+    Hash = leveled_codec:segment_hash(Key),
+    if
+        Hash /= no_lookup ->
+            gen_server:call(Pid, {fetch, Key, Hash, true}, infinity)
+    end.
 
 generate_randomkeys({Count, StartSQN}) ->
     generate_randomkeys(Count, StartSQN, []).

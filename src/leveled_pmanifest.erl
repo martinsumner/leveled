@@ -46,14 +46,13 @@
         levelzero_present/1,
         check_bloom/3,
         report_manifest_level/2,
-        snapshot_pids/1
+        snapshot_pids/1,
+        get_sstpids/1
         ]).      
 
 -export([
         filepath/2
         ]).
-
--include_lib("eunit/include/eunit.hrl").
 
 -define(MANIFEST_FILEX, "man").
 -define(PENDING_FILEX, "pnd").
@@ -701,6 +700,31 @@ check_bloom(Manifest, FP, Hash) ->
 snapshot_pids(Manifest) ->
     lists:map(fun(S) -> element(1, S) end, Manifest#manifest.snapshots).
 
+-spec get_sstpids(manifest()) -> list(pid()).
+%% @doc
+%% Return a list of all SST PIDs in the current manifest
+get_sstpids(Manifest) ->
+    FoldFun =
+        fun(I, Acc) ->
+            Level = array:get(I, Manifest#manifest.levels),
+            LevelAsList =
+                case I of
+                    I when I > 1 ->
+                        leveled_tree:to_list(Level);
+                    _ ->
+                        Level
+                end,
+            Pids =
+                lists:map(
+                    fun(MaybeME) ->
+                        ME = get_manifest_entry(MaybeME),
+                        ME#manifest_entry.owner
+                    end,
+                    LevelAsList),
+            Acc ++ Pids
+        end,
+    lists:foldl(FoldFun, [], lists:seq(0, Manifest#manifest.basement)).
+
 %%%============================================================================
 %%% Internal Functions
 %%%============================================================================
@@ -1041,6 +1065,8 @@ seconds_now() ->
 %%%============================================================================
 
 -ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
 
 initial_setup() -> 
     initial_setup(single_change).
