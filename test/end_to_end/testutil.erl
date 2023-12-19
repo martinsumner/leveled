@@ -47,6 +47,7 @@
             put_altered_indexed_objects/3,
             put_altered_indexed_objects/4,
             put_altered_indexed_objects/5,
+            rotation_withnocheck/6,
             check_indexed_objects/4,
             rotating_object_check/3,
             corrupt_journal/5,
@@ -754,6 +755,9 @@ check_indexed_objects(Book, B, KSpecL, V) ->
 
 put_indexed_objects(Book, Bucket, Count) ->
     V = get_compressiblevalue(),
+    put_indexed_objects(Book, Bucket, Count, V).
+
+put_indexed_objects(Book, Bucket, Count, V) ->
     IndexGen = get_randomindexes_generator(1),
     SW = os:timestamp(),
     ObjL1 = 
@@ -836,7 +840,13 @@ rotating_object_check(RootPath, B, NumberOfObjects) ->
     true = NumberOfObjects == length(BList()),
     ok = leveled_bookie:book_close(Book2),
     ok.
-    
+
+rotation_withnocheck(Book1, B, NumberOfObjects, V1, V2, V3) ->
+    {KSpcL1, _V1} = put_indexed_objects(Book1, B, NumberOfObjects, V1),
+    {KSpcL2, _V2} = put_altered_indexed_objects(Book1, B, KSpcL1, true, V2),
+    {_KSpcL3, _V3} = put_altered_indexed_objects(Book1, B, KSpcL2, true, V3),
+    ok.
+
 corrupt_journal(RootPath, FileName, Corruptions, BasePosition, GapSize) ->
     OriginalPath = RootPath ++ "/journal/journal_files/" ++ FileName,
     BackupPath = RootPath ++ "/journal/journal_files/" ++
