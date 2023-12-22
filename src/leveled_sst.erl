@@ -87,6 +87,8 @@
 -define(TOMB_COUNT, true).
 -define(USE_SET_FOR_SPEED, 32).
 -define(STARTUP_TIMEOUT, 10000).
+-define(MIN_HASH, 32768).
+-define(MAX_HASH, 65535).
 
 -ifdef(TEST).
 -define(HIBERNATE_TIMEOUT, 5000).
@@ -1045,38 +1047,42 @@ sst_getfilteredslots(Pid, SlotList, SegChecker, LowLastMod, Pointers) ->
     L.
 
 -spec find_pos(
-    binary(),
-    segment_check_fun(),
-    list(non_neg_integer()),
-    non_neg_integer()) -> list(non_neg_integer()).
+    binary(), segment_check_fun()) -> list(non_neg_integer()).
 %% @doc
 %% Find a list of positions where there is an element with a matching segment
 %% ID to the expected segments (which can either be a single segment, a list of
 %% segments or a set of segments depending on size).   The segment_check_fun
 %% will do the matching.  Segments are 15-bits of the hash of the key.
-find_pos(<<1:1/integer, H:15/integer, T/binary>>, H, PosList, Count) ->
-    find_pos(T, H, [Count|PosList], Count + 1);
-find_pos(<<1:1/integer, _Miss:15/integer, T/binary>>, H, PosList, Count)
-        when is_integer(H) ->
-    find_pos(T, H, PosList, Count + 1);
-find_pos(
-        <<1:1/integer, H:15/integer, T/binary>>, 
-        {Min, Max, CheckFun}=SegCheck,
-        PosList, Count) when H >= Min, H =< Max ->
+find_pos(Bin, H) when is_integer(H) ->
+    find_posint(Bin, H, [], 0);
+find_pos(Bin, {Min, Max, CheckFun}) ->
+    find_posmlt(Bin, Min, Max, CheckFun, [], 0).
+
+find_posint(<<H:16/integer, T/binary>>, H, PosList, Count) ->
+    find_posint(T, H, [Count|PosList], Count + 1);
+find_posint(<<Miss:16/integer, T/binary>>, H, PosList, Count)
+        when Miss >= ?MIN_HASH ->
+    find_posint(T, H, PosList, Count + 1);
+find_posint(<<NHC:8/integer, T/binary>>, H, PosList, Count) when NHC < 128 ->
+    find_posint(T, H, PosList, Count + NHC + 1);
+find_posint(_BinRem, _H, PosList, _Count) ->
+    lists:reverse(PosList).
+
+find_posmlt(<<H:16/integer, T/binary>>, Min, Max, CheckFun, PosList, Count)
+        when H >= Min, H =< Max ->
     case CheckFun(H) of
         true ->
-            find_pos(T, SegCheck, [Count|PosList], Count + 1);
+            find_posmlt(T, Min, Max, CheckFun, [Count|PosList], Count + 1);
         false ->
-            find_pos(T, SegCheck, PosList, Count + 1)
+            find_posmlt(T, Min, Max, CheckFun, PosList, Count + 1)
     end;
-find_pos(<<1:1/integer, _M:15/integer, T/binary>>, SegCheck, PosList, Count) ->
-    find_pos(T, SegCheck, PosList, Count + 1);
-find_pos(<<0:1/integer, NHC:7/integer, T/binary>>, SegCheck, PosList, Count) ->
-    find_pos(T, SegCheck, PosList, Count + NHC + 1);
-find_pos(_BinRem, _SegCheck, PosList, _Count) ->
-    %% Expect this to be <<>> - i.e. at end of binary, but if there is
-    %% corruption, could be some other value - so return as well in this
-    %% case
+find_posmlt(<<Miss:16/integer, T/binary>>, Min, Max, CheckFun, PosList, Count)
+        when Miss >= ?MIN_HASH ->
+    find_posmlt(T, Min, Max, CheckFun, PosList, Count + 1);
+find_posmlt(<<NHC:8/integer, T/binary>>, Min, Max, CheckFun, PosList, Count)
+        when NHC < 128 ->
+    find_posmlt(T, Min, Max, CheckFun, PosList, Count + NHC + 1);
+find_posmlt(_BinRem, _Min, _Max, _CheckFun, PosList, _Count) ->
     lists:reverse(PosList).
 
 
@@ -1172,15 +1178,14 @@ add_to_cache(CacheHash, KV, FetchCache) ->
     array:set(CacheHash, KV, FetchCache).
 
 
--spec tune_hash(non_neg_integer()) -> non_neg_integer().
+-spec tune_hash(non_neg_integer()) -> ?MIN_HASH..?MAX_HASH.
 %% @doc
-%% Only 15 bits of the hash is ever interesting
+%% Only 15 bits of the hash is ever interesting, and this is converted
+%% into a 16-bit hash for matching by adding 2 ^ 15 (i.e. a leading 1)
 tune_hash(SegHash) ->
-    SegHash band 32767.
+    ?MIN_HASH + (SegHash band (?MIN_HASH - 1)).
 
 -spec tune_seglist(leveled_codec:segment_list()) -> tuned_seglist().
-%% @doc
-%% Only 15 bits of the hash is ever interesting
 tune_seglist(SegList) ->
     case is_list(SegList) of
         true ->
@@ -1324,7 +1329,7 @@ fetch(LedgerKey, Hash,
             {Result, BIC0, HMD0, no_update};
         {BlockLengths, _LMD, PosBin} ->
             PosList =
-                find_pos(PosBin, segment_checker(extract_hash(Hash)), [], 0),
+                find_pos(PosBin, segment_checker(extract_hash(Hash))),
             case PosList of
                 [] ->
                     maybelog_fetch_timing(Monitor, Level, not_found, SW0),
@@ -1860,20 +1865,18 @@ accumulate_positions([{K, V}|T], {PosBin, NoHashCount, HashAcc, LMDAcc}) ->
                 0 ->
                     accumulate_positions(
                         T,
-                        {<<(32768 + PosH1):16/integer, PosBin/binary>>,
+                        {<<PosH1:16/integer, PosBin/binary>>,
                             0,
                             [H1|HashAcc],
                             LMDAcc0}
                     );
-                N ->
+                N when N =< 128 ->
                     % The No Hash Count is an integer between 0 and 127
                     % and so at read time should count NHC + 1
                     NHC = N - 1,
                     accumulate_positions(
                         T,
-                        {<<(32768 + PosH1):16/integer,
-                                NHC:8/integer,
-                                PosBin/binary>>,
+                        {<<PosH1:16/integer, NHC:8/integer, PosBin/binary>>,
                             0,
                             [H1|HashAcc],
                             LMDAcc0})                    
@@ -2236,7 +2239,7 @@ read_slots(Handle, SlotList, {SegChecker, LowLastMod, BlockIndexCache},
 checkblocks_segandrange(
         BlockIdx, SlotOrHandle, BlockLengths,
         PressMethod, IdxModDate, SegChecker, {StartKey, EndKey}) ->
-    PositionList = find_pos(BlockIdx, SegChecker, [], 0),
+    PositionList = find_pos(BlockIdx, SegChecker),
     KVL =
         check_blocks(
             PositionList, SlotOrHandle, BlockLengths, byte_size(BlockIdx),
@@ -2339,8 +2342,7 @@ binaryslot_get(FullBin, Key, Hash, PressMethod, IdxModDate) ->
             {BlockLengths, _LMD, PosBinIndex} =
                 extract_header(Header, IdxModDate),
             PosList =
-                find_pos(
-                    PosBinIndex, segment_checker(extract_hash(Hash)), [], 0),
+                find_pos(PosBinIndex, segment_checker(extract_hash(Hash))),
             {fetch_value(PosList, BlockLengths, Blocks, Key, PressMethod),
                 Header};
         crc_wonky ->
@@ -3357,7 +3359,7 @@ indexed_list_allindexkeys_trimmed_test() ->
 
 
 findposfrag_test() ->
-    ?assertMatch([], find_pos(<<128:8/integer>>, segment_checker(1), [], 0)).
+    ?assertMatch([], find_pos(<<128:8/integer>>, segment_checker(1))).
 
 indexed_list_mixedkeys_bitflip_test() ->
     KVL0 = lists:ukeysort(1, generate_randomkeys(1, 50, 1, 4)),
@@ -3387,8 +3389,8 @@ indexed_list_mixedkeys_bitflip_test() ->
         binaryslot_tolist(SlotBin, native, ?INDEX_MODDATE),
     ?assertMatch(Keys, ToList),
 
-    [Pos1] = find_pos(PosBin, segment_checker(extract_hash(MH1)), [], 0),
-    [Pos2] = find_pos(PosBin, segment_checker(extract_hash(MH2)), [], 0),
+    [Pos1] = find_pos(PosBin, segment_checker(extract_hash(MH1))),
+    [Pos2] = find_pos(PosBin, segment_checker(extract_hash(MH2))),
     {BN1, _BP1} = revert_position(Pos1),
     {BN2, _BP2} = revert_position(Pos2),
     {Offset1, Length1} = block_offsetandlength(Header, BN1),
@@ -4146,7 +4148,7 @@ check_segment_match(PosBinIndex1, KVL, TreeSize) ->
                         leveled_tictac:keyto_segment32(<<B/binary, K/binary>>),
                         TreeSize),
             SegChecker = segment_checker(tune_seglist([Seg])),
-            PosList = find_pos(PosBinIndex1, SegChecker, [], 0),
+            PosList = find_pos(PosBinIndex1, SegChecker),
             ?assertMatch(true, length(PosList) >= 1)
         end,
     lists:foreach(CheckFun, KVL).
