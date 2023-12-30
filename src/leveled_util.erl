@@ -5,8 +5,6 @@
 
 -module(leveled_util).
 
--include("include/leveled.hrl").
-
 -export([generate_uuid/0,
             integer_now/0,
             integer_time/1,
@@ -42,7 +40,7 @@ integer_time(TS) ->
     calendar:datetime_to_gregorian_seconds(DT).
 
 
--spec magic_hash(any()) -> integer().
+-spec magic_hash(any()) -> 0..16#FFFFFFFF.
 %% @doc 
 %% Use DJ Bernstein magic hash function. Note, this is more expensive than
 %% phash2 but provides a much more balanced result.
@@ -52,7 +50,7 @@ integer_time(TS) ->
 %% http://stackoverflow.com/questions/10696223/reason-for-5381-number-in-djb-hash-function
 magic_hash({binary, BinaryKey}) ->
     H = 5381,
-    hash1(H, BinaryKey) band 16#FFFFFFFF;
+    hash1(H, BinaryKey);
 magic_hash(AnyKey) ->
     BK = t2b(AnyKey),
     magic_hash({binary, BK}).
@@ -60,7 +58,7 @@ magic_hash(AnyKey) ->
 hash1(H, <<>>) -> 
     H;
 hash1(H, <<B:8/integer, Rest/bytes>>) ->
-    H1 = H * 33,
+    H1 = (H * 33) band 16#FFFFFFFF,
     H2 = H1 bxor B,
     hash1(H2, Rest).
 
