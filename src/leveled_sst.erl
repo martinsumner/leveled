@@ -89,6 +89,7 @@
 -define(STARTUP_TIMEOUT, 10000).
 -define(MIN_HASH, 32768).
 -define(MAX_HASH, 65535).
+-define(LOG_BUILDTIMINGS_LEVELS, [3]).
 
 -ifdef(TEST).
 -define(HIBERNATE_TIMEOUT, 5000).
@@ -225,7 +226,8 @@
         {slot_hashlist = 0 :: integer(),
             slot_serialise = 0 :: integer(),
             slot_finish = 0 :: integer(),
-            fold_toslot = 0 :: integer()}).
+            fold_toslot = 0 :: integer(),
+            last_timestamp = os:timestamp() :: erlang:timestamp()}).
 
 -type build_timings() :: no_timing|#build_timings{}.
 
@@ -1900,23 +1902,31 @@ take_max_lastmoddate(LMD, LMDAcc) ->
 
 -spec generate_binary_slot(
     leveled_codec:maybe_lookup(),
-    list(leveled_codec:ledger_kv()),
+    {forward|reverse, list(leveled_codec:ledger_kv())},
     press_method(),
     boolean(),
     build_timings()) -> {binary_slot(), build_timings()}.
 %% @doc
 %% Generate the serialised slot to be used when storing this sublist of keys
 %% and values
-generate_binary_slot(Lookup, KVL, PressMethod, IndexModDate, BuildTimings0) ->
-
-    SW0 = os:timestamp(),
+generate_binary_slot(
+        Lookup, {DR, KVL0}, PressMethod, IndexModDate, BuildTimings0) ->
+    % The slot should be received reversed - get last key before flipping
+    % accumulate_positions/2 should use the reversed KVL for efficiency
+    {KVL, KVLr} =
+        case DR of
+            forward ->
+                {KVL0, lists:reverse(KVL0)};
+            reverse ->
+                {lists:reverse(KVL0), KVL0}
+        end,
+    LastKey = element(1, hd(KVLr)),
 
     {HashL, PosBinIndex, LMD} =
         case Lookup of
             lookup ->
                 {PosBinIndex0, NHC, HashL0, LMD0} =
-                    accumulate_positions(
-                        lists:reverse(KVL), {<<>>, 0, [], 0}),
+                    accumulate_positions(KVLr, {<<>>, 0, [], 0}),
                 PosBinIndex1 =
                     case NHC of
                         0 ->
@@ -1930,8 +1940,7 @@ generate_binary_slot(Lookup, KVL, PressMethod, IndexModDate, BuildTimings0) ->
                 {[], <<0:1/integer, 127:7/integer>>, 0}
         end,
 
-    BuildTimings1 = update_buildtimings(SW0, BuildTimings0, slot_hashlist),
-    SW1 = os:timestamp(),
+    BuildTimings1 = update_buildtimings(BuildTimings0, slot_hashlist),
 
     {SideBlockSize, MidBlockSize} =
         case Lookup of
@@ -1985,8 +1994,7 @@ generate_binary_slot(Lookup, KVL, PressMethod, IndexModDate, BuildTimings0) ->
                     serialise_block(KVLE, PressMethod)}
         end,
 
-    BuildTimings2 = update_buildtimings(SW1, BuildTimings1, slot_serialise),
-    SW2 = os:timestamp(),
+    BuildTimings2 = update_buildtimings(BuildTimings1, slot_serialise),
 
     B1P =
         case IndexModDate of
@@ -2024,9 +2032,7 @@ generate_binary_slot(Lookup, KVL, PressMethod, IndexModDate, BuildTimings0) ->
                     CheckH:32/integer, Header/binary,
                     B1/binary, B2/binary, B3/binary, B4/binary, B5/binary>>,
 
-    {LastKey, _LV} = lists:last(KVL),
-
-    BuildTimings3 = update_buildtimings(SW2, BuildTimings2, slot_finish),
+    BuildTimings3 = update_buildtimings(BuildTimings2, slot_finish),
 
     {{Header, SlotBin, HashL, LastKey}, BuildTimings3}.
 
@@ -2712,12 +2718,13 @@ split_lists([], SlotLists, 0, _PressMethod, _IdxModDate) ->
 split_lists(LastPuff, SlotLists, 0, PressMethod, IdxModDate) ->
     {SlotD, _} =
         generate_binary_slot(
-            lookup, LastPuff, PressMethod, IdxModDate, no_timing),
+            lookup, {forward, LastPuff}, PressMethod, IdxModDate, no_timing),
     lists:reverse([SlotD|SlotLists]);
 split_lists(KVList1, SlotLists, N, PressMethod, IdxModDate) ->
     {Slot, KVListRem} = lists:split(?LOOK_SLOTSIZE, KVList1),
     {SlotD, _} =
-        generate_binary_slot(lookup, Slot, PressMethod, IdxModDate, no_timing),
+        generate_binary_slot(
+            lookup, {forward, Slot}, PressMethod, IdxModDate, no_timing),
     split_lists(KVListRem, [SlotD|SlotLists], N - 1, PressMethod, IdxModDate).
 
 -spec merge_lists(
@@ -2735,17 +2742,22 @@ split_lists(KVList1, SlotLists, N, PressMethod, IdxModDate) ->
 %% provided may include pointers to fetch more Keys/Values from the source
 %% file
 merge_lists(
-        KVList1, KVList2, LevelInfo, SSTOpts, IndexModDate, SaveTombCount) ->
+        KVList1, KVList2, {IsBase, L}, SSTOpts, IndexModDate, SaveTombCount) ->
     InitTombCount =
         case SaveTombCount of true -> 0; false -> not_counted end,
-    merge_lists(KVList1, KVList2,
-                LevelInfo,
-                [], null, 0,
-                SSTOpts#sst_options.max_sstslots,
-                SSTOpts#sst_options.press_method,
-                IndexModDate,
-                InitTombCount,
-                #build_timings{}).
+    BuildTimings = 
+        case IsBase or lists:member(L, ?LOG_BUILDTIMINGS_LEVELS) of
+            true ->
+                #build_timings{};
+            false ->
+                no_timing
+        end,
+    merge_lists(
+        KVList1, KVList2,
+        {IsBase, L}, [], null, 0,
+        SSTOpts#sst_options.max_sstslots, SSTOpts#sst_options.press_method,
+        IndexModDate, InitTombCount,
+        BuildTimings).
 
 
 -spec merge_lists(
@@ -2779,10 +2791,9 @@ merge_lists(KVL1, KVL2, LI, SlotList, FirstKey, SlotCount, MaxSlots,
                                 PressMethod, IdxModDate, CountOfTombs, T0) ->
     % Form a slot by merging the two lists until the next 128 K/V pairs have
     % been determined
-    SW = os:timestamp(),
     {KVRem1, KVRem2, Slot, FK0} =
         form_slot(KVL1, KVL2, LI, no_lookup, 0, [], FirstKey),
-    T1 = update_buildtimings(SW, T0, fold_toslot),
+    T1 = update_buildtimings(T0, fold_toslot),
     case Slot of
         {_, []} ->
             % There were no actual keys in the slot (maybe some expired)
@@ -2801,7 +2812,8 @@ merge_lists(KVL1, KVL2, LI, SlotList, FirstKey, SlotCount, MaxSlots,
             % Convert the list of KVs for the slot into a binary, and related
             % metadata
             {SlotD, T2} =
-                generate_binary_slot(Lookup, KVL, PressMethod, IdxModDate, T1),
+                generate_binary_slot(
+                    Lookup, {reverse, KVL}, PressMethod, IdxModDate, T1),
             merge_lists(KVRem1,
                         KVRem2,
                         LI,
@@ -2826,13 +2838,13 @@ merge_lists(KVL1, KVL2, LI, SlotList, FirstKey, SlotCount, MaxSlots,
                     {lookup|no_lookup, list(leveled_codec:ledger_kv())},
                     leveled_codec:ledger_key()}.
 %% @doc
-%% Merge together Key Value lists to provide an ordered slot of KVs
+%% Merge together Key Value lists to provide a reverse-ordered slot of KVs
 form_slot([], [], _LI, Type, _Size, Slot, FK) ->
-    {[], [], {Type, lists:reverse(Slot)}, FK};
+    {[], [], {Type, Slot}, FK};
 form_slot(KVList1, KVList2, _LI, lookup, ?LOOK_SLOTSIZE, Slot, FK) ->
-    {KVList1, KVList2, {lookup, lists:reverse(Slot)}, FK};
+    {KVList1, KVList2, {lookup, Slot}, FK};
 form_slot(KVList1, KVList2, _LI, no_lookup, ?NOLOOK_SLOTSIZE, Slot, FK) ->
-    {KVList1, KVList2, {no_lookup, lists:reverse(Slot)}, FK};
+    {KVList1, KVList2, {no_lookup, Slot}, FK};
 form_slot(KVList1, KVList2, LevelInfo, lookup, Size, Slot, FK) ->
     case key_dominates(KVList1, KVList2, LevelInfo) of
         {{next_key, TopKV}, Rem1, Rem2} ->
@@ -2858,18 +2870,16 @@ form_slot(KVList1, KVList2, LevelInfo, no_lookup, Size, Slot, FK) ->
                 lookup ->
                     case Size >= ?LOOK_SLOTSIZE of
                         true ->
-                            {KVList1,
-                                KVList2,
-                                {no_lookup, lists:reverse(Slot)},
-                                FK};
+                            {KVList1, KVList2, {no_lookup, Slot}, FK};
                         false ->
-                            form_slot(Rem1,
-                                        Rem2,
-                                        LevelInfo,
-                                        lookup,
-                                        Size + 1,
-                                        [{TopK, TopV}|Slot],
-                                        FK0)
+                            form_slot(
+                                Rem1,
+                                Rem2,
+                                LevelInfo,
+                                lookup,
+                                Size + 1,
+                                [{TopK, TopV}|Slot],
+                                FK0)
                     end
             end;
         {skipped_key, Rem1, Rem2} ->
@@ -2950,37 +2960,44 @@ key_dominates_expanded([H1|T1], [H2|T2]) ->
 %%% Timing Functions
 %%%============================================================================
 
--spec update_buildtimings(
-    erlang:timestamp(), build_timings(), atom()) -> build_timings().
+-spec update_buildtimings(build_timings(), atom()) -> build_timings().
 %% @doc
 %%
 %% Timings taken from the build of a SST file.
 %%
 %% There is no sample window, but the no_timing status is still used for
 %% level zero files where we're not breaking down the build time in this way.
-update_buildtimings(_SW, no_timing, _Stage) ->
+update_buildtimings(no_timing, _Stage) ->
     no_timing;
-update_buildtimings(SW, Timings, Stage) ->
-    Timer = timer:now_diff(os:timestamp(), SW),
+update_buildtimings(Timings, Stage) ->
+    LastTS = Timings#build_timings.last_timestamp,
+    ThisTS = os:timestamp(),
+    Timer = timer:now_diff(ThisTS, LastTS),
     case Stage of
         slot_hashlist ->
             HLT = Timings#build_timings.slot_hashlist + Timer,
-            Timings#build_timings{slot_hashlist = HLT};
+            Timings#build_timings{
+                slot_hashlist = HLT, last_timestamp = ThisTS};
         slot_serialise ->
             SST = Timings#build_timings.slot_serialise + Timer,
-            Timings#build_timings{slot_serialise = SST};
+            Timings#build_timings{
+                slot_serialise = SST, last_timestamp = ThisTS};
         slot_finish ->
             SFT = Timings#build_timings.slot_finish + Timer,
-            Timings#build_timings{slot_finish = SFT};
+            Timings#build_timings{
+                slot_finish = SFT, last_timestamp = ThisTS};
         fold_toslot ->
             FST = Timings#build_timings.fold_toslot + Timer,
-            Timings#build_timings{fold_toslot = FST}
+            Timings#build_timings{
+                fold_toslot = FST, last_timestamp = ThisTS}
     end.
 
 -spec log_buildtimings(build_timings(), tuple()) -> ok.
 %% @doc
 %%
 %% Log out the time spent during the merge lists part of the SST build
+log_buildtimings(no_timing, _LI) ->
+    ok;
 log_buildtimings(Timings, LI) ->
     leveled_log:log(
         sst13,
@@ -3202,7 +3219,8 @@ indexed_list_test() ->
     SW0 = os:timestamp(),
 
     {{_PosBinIndex1, FullBin, _HL, _LK}, no_timing} =
-        generate_binary_slot(lookup, KVL1, native, ?INDEX_MODDATE, no_timing),
+        generate_binary_slot(
+            lookup, {forward, KVL1}, native, ?INDEX_MODDATE, no_timing),
     io:format(user,
                 "Indexed list created slot in ~w microseconds of size ~w~n",
                 [timer:now_diff(os:timestamp(), SW0), byte_size(FullBin)]),
@@ -3231,7 +3249,8 @@ indexed_list_mixedkeys_test() ->
     Keys = lists:ukeysort(1, generate_indexkeys(60) ++ KVL1),
 
     {{_PosBinIndex1, FullBin, _HL, _LK}, no_timing} =
-        generate_binary_slot(lookup, Keys, native, ?INDEX_MODDATE, no_timing),
+        generate_binary_slot(
+            lookup, {forward, Keys}, native, ?INDEX_MODDATE, no_timing),
 
     {TestK1, TestV1} = lists:nth(4, KVL1),
     MH1 = leveled_codec:segment_hash(TestK1),
@@ -3258,7 +3277,8 @@ indexed_list_mixedkeys2_test() ->
     % this isn't actually ordered correctly
     Keys = IdxKeys1 ++ KVL1 ++ IdxKeys2,
     {{_Header, FullBin, _HL, _LK}, no_timing} =
-        generate_binary_slot(lookup, Keys, native, ?INDEX_MODDATE, no_timing),
+        generate_binary_slot(
+            lookup, {forward, Keys}, native, ?INDEX_MODDATE, no_timing),
     lists:foreach(fun({K, V}) ->
                         MH = leveled_codec:segment_hash(K),
                         test_binary_slot(FullBin, K, MH, {K, V})
@@ -3269,9 +3289,11 @@ indexed_list_allindexkeys_test() ->
     Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(150)),
                             ?LOOK_SLOTSIZE),
     {{HeaderT, FullBinT, HL, LK}, no_timing} =
-        generate_binary_slot(lookup, Keys, native, true, no_timing),
+        generate_binary_slot(
+            lookup, {forward, Keys}, native, true, no_timing),
     {{HeaderF, FullBinF, HL, LK}, no_timing} =
-        generate_binary_slot(lookup, Keys, native, false, no_timing),
+        generate_binary_slot(
+            lookup, {forward, Keys}, native, false, no_timing),
     EmptySlotSize = ?LOOK_SLOTSIZE - 1,
     LMD = ?FLIPPER32,
     ?assertMatch(<<_BL:20/binary, LMD:32/integer, EmptySlotSize:8/integer>>,
@@ -3300,7 +3322,8 @@ indexed_list_allindexkeys_nolookup_test() ->
     Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(1000)),
                             ?NOLOOK_SLOTSIZE),
     {{Header, FullBin, _HL, _LK}, no_timing} =
-        generate_binary_slot(no_lookup, Keys, native, ?INDEX_MODDATE,no_timing),
+        generate_binary_slot(
+            no_lookup, {forward, Keys}, native, ?INDEX_MODDATE,no_timing),
     ?assertMatch(<<_BL:20/binary, _LMD:32/integer, 127:8/integer>>, Header),
     % SW = os:timestamp(),
     BinToList =
@@ -3317,7 +3340,8 @@ indexed_list_allindexkeys_trimmed_test() ->
     Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(150)),
                             ?LOOK_SLOTSIZE),
     {{Header, FullBin, _HL, _LK}, no_timing} =
-        generate_binary_slot(lookup, Keys, native, ?INDEX_MODDATE, no_timing),
+        generate_binary_slot(
+            lookup, {forward, Keys}, native, ?INDEX_MODDATE, no_timing),
     EmptySlotSize = ?LOOK_SLOTSIZE - 1,
     ?assertMatch(
         <<_BL:20/binary, _LMD:32/integer, EmptySlotSize:8/integer>>,
@@ -3366,7 +3390,8 @@ indexed_list_mixedkeys_bitflip_test() ->
     KVL1 = lists:sublist(KVL0, 33),
     Keys = lists:ukeysort(1, generate_indexkeys(60) ++ KVL1),
     {{Header, SlotBin, _HL, LK}, no_timing} =
-        generate_binary_slot(lookup, Keys, native, ?INDEX_MODDATE, no_timing),
+        generate_binary_slot(
+            lookup, {forward, Keys}, native, ?INDEX_MODDATE, no_timing),
 
     ?assertMatch(LK, element(1, lists:last(Keys))),
 
@@ -4135,7 +4160,8 @@ hashmatching_bytreesize_test() ->
         end,
     KVL = lists:map(GenKeyFun, lists:seq(1, 128)),
     {{PosBinIndex1, _FullBin, _HL, _LK}, no_timing} =
-        generate_binary_slot(lookup, KVL, native, ?INDEX_MODDATE, no_timing),
+        generate_binary_slot(
+            lookup, {forward, KVL}, native, ?INDEX_MODDATE, no_timing),
     check_segment_match(PosBinIndex1, KVL, small),
     check_segment_match(PosBinIndex1, KVL, medium).
 
@@ -4230,7 +4256,8 @@ corrupted_block_fetch_tester(PressMethod) ->
     KVL1 = lists:ukeysort(1, generate_randomkeys(1, KC, 1, 2)),
 
     {{Header, SlotBin, _HashL, _LastKey}, _BT} =
-        generate_binary_slot(lookup, KVL1, PressMethod, false, no_timing),
+        generate_binary_slot(
+            lookup, {forward, KVL1}, PressMethod, false, no_timing),
     <<B1L:32/integer,
         B2L:32/integer,
         B3L:32/integer,
