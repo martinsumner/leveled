@@ -2918,10 +2918,16 @@ key_dominates(KL1, [{next, ManEntry, StartKey}|T2], Level) ->
         expand_list_by_pointer(
             {next, ManEntry, StartKey, all}, T2, ?MERGE_SCANWIDTH),
         Level);
-key_dominates(KL1, KL2, {true, TS}) ->
+key_dominates(
+        [{K1, _V1}|_T1]=Rest1, [{K2, V2}|Rest2], {false, _TS}) when K2 < K1 ->
+    {{next_key, {K2, V2}}, Rest1, Rest2};
+key_dominates(
+        [{K1, V1}|Rest1], [{K2, _V2}|_T2]=Rest2, {false, _TS}) when K1 < K2 ->
+    {{next_key, {K1, V1}}, Rest1, Rest2};
+key_dominates(KL1, KL2, Level) ->
     case key_dominates_expanded(KL1, KL2) of
         {{next_key, NKV}, Rest1, Rest2} ->
-            case leveled_codec:maybe_reap_expiredkey(NKV, {true, TS}) of
+            case leveled_codec:maybe_reap_expiredkey(NKV, Level) of
                 true ->
                     {skipped_key, Rest1, Rest2};
                 false ->
@@ -2929,9 +2935,7 @@ key_dominates(KL1, KL2, {true, TS}) ->
             end;
         {skipped_key, Rest1, Rest2} ->
             {skipped_key, Rest1, Rest2}
-    end;
-key_dominates(KL1, KL2, _Level) ->
-    key_dominates_expanded(KL1, KL2).
+    end.
 
 -spec key_dominates_expanded(
         list(expanded_pointer()), list(expanded_pointer()))
@@ -2942,10 +2946,10 @@ key_dominates_expanded([H1|T1], []) ->
     {{next_key, H1}, T1, []};
 key_dominates_expanded([], [H2|T2]) ->
     {{next_key, H2}, [], T2};
-key_dominates_expanded([{K1, V1}|T1], [{K2, _V2}|_T2]=RHL) when K1 < K2 ->
-    {{next_key, {K1, V1}}, T1, RHL};
 key_dominates_expanded([{K1, _V1}|_T1]=LHL, [{K2, V2}|T2]) when K2 < K1 ->
     {{next_key, {K2, V2}}, LHL, T2};
+key_dominates_expanded([{K1, V1}|T1], [{K2, _V2}|_T2]=RHL) when K1 < K2 ->
+    {{next_key, {K1, V1}}, T1, RHL};
 key_dominates_expanded([H1|T1], [H2|T2]) ->
     case leveled_codec:key_dominates(H1, H2) of
         true ->
