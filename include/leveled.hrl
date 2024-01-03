@@ -84,7 +84,7 @@
                         end_key :: tuple() | undefined,
                         owner :: pid()|list(),
                         filename :: string() | undefined,
-                        bloom :: binary() | none | undefined}).
+                        bloom = none :: leveled_ebloom:bloom() | none}).
 
 -record(cdb_options,
                         {max_size :: pos_integer() | undefined,
