@@ -287,7 +287,7 @@ test_bloom(N, Runs) ->
         user,
         "Test with size ~w has microsecond timings: - "
             "build in ~w then ~.3f per pos-check, ~.3f per neg-check, "
-            "fpr ~.3f with bits-per-key ~.3f~n",
+            "fpr ~.3f with bytes-per-key ~.3f~n",
         [N, round(TSa), TSb / PosChecks, TSc / (Pos + Neg), FPR, BytesPerKey]).
 
 -endif.
