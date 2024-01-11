@@ -564,7 +564,7 @@ serialise_object(Object, true, Method) when is_binary(Object) ->
             {ok, Bin} = lz4:pack(Object),
             Bin;
         zstd ->
-            ezstd:compress(Object);
+            zstd:compress(Object);
         native ->
             zlib:compress(Object);
         none ->
@@ -604,7 +604,7 @@ deserialise_object(Binary, true, true, lz4) ->
     {ok, Deflated} = lz4:unpack(Binary),
     Deflated;
 deserialise_object(Binary, true, true, zstd) ->
-    ezstd:decompress(Binary);
+    zstd:decompress(Binary);
 deserialise_object(Binary, true, true, native) ->
     zlib:uncompress(Binary);
 deserialise_object(Binary, true, false, _) ->
@@ -929,7 +929,7 @@ compression_test() ->
                 (generate_randomkeys(128, 1, 4))}),
     RB0ZLIB = zlib:compress(RB0),
     {ok, RB0LZ4} = lz4:pack(RB0),
-    RB0ZSTD = ezstd:compress(RB0),
+    RB0ZSTD = zstd:compress(RB0),
 
     {TLZ4C, _} =
         timer:tc(
@@ -951,7 +951,7 @@ compression_test() ->
         timer:tc(
             fun() ->
                 lists:foreach(
-                    fun(_I) -> ezstd:compress(RB0) end,
+                    fun(_I) -> zstd:compress(RB0) end,
                     lists:seq(1, 10))
             end
         ),
@@ -975,7 +975,7 @@ compression_test() ->
         timer:tc(
             fun() ->
                 lists:foreach(
-                    fun(_I) -> ezstd:decompress(RB0ZSTD) end,
+                    fun(_I) -> zstd:decompress(RB0ZSTD) end,
                     lists:seq(1, 10))
             end
         ),
