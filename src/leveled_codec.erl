@@ -840,6 +840,27 @@ next_key({Type, Bucket}) when is_binary(Type), is_binary(Bucket) ->
 
 -include_lib("eunit/include/eunit.hrl").
 
+
+generate_randomkeys(Count, BucketRangeLow, BucketRangeHigh) ->
+    generate_randomkeys(Count, [], BucketRangeLow, BucketRangeHigh).
+
+generate_randomkeys(0, Acc, _BucketLow, _BucketHigh) ->
+    Acc;
+generate_randomkeys(Count, Acc, BucketLow, BRange) ->
+    BNumber =
+        lists:flatten(
+            io_lib:format("~4..0B",
+                            [BucketLow + leveled_rand:uniform(BRange)])),
+    KNumber =
+        lists:flatten(
+            io_lib:format("~4..0B", [leveled_rand:uniform(1000)])),
+    K = {o, "Bucket" ++ BNumber, "Key" ++ KNumber, null},
+    RandKey = {K, {Count + 1,
+                    {active, infinity},
+                    leveled_codec:segment_hash(K),
+                    null}},
+    generate_randomkeys(Count - 1, [RandKey|Acc], BucketLow, BRange).
+
 valid_ledgerkey_test() ->
     UserDefTag = {user_defined, <<"B">>, <<"K">>, null},
     ?assertMatch(true, isvalid_ledgerkey(UserDefTag)),
@@ -900,5 +921,70 @@ headspec_v0v1_test() ->
     TTL = infinity,
     ?assertMatch(true, gen_headspec(V0, 1, TTL) == gen_headspec(V1, 1, TTL)).
 
+
+compression_test() ->
+    RB0 =
+        term_to_binary(
+            {base64:encode(crypto:strong_rand_bytes(2048)),
+                (generate_randomkeys(128, 1, 4))}),
+    RB0ZLIB = zlib:compress(RB0),
+    {ok, RB0LZ4} = lz4:pack(RB0),
+    RB0ZSTD = ezstd:compress(RB0),
+
+    {TLZ4C, _} =
+        timer:tc(
+            fun() ->
+                lists:foreach(
+                    fun(_I) -> lz4:pack(RB0) end,
+                    lists:seq(1, 10))
+            end
+        ),
+    {TZLIBC, _} =
+        timer:tc(
+            fun() ->
+                lists:foreach(
+                    fun(_I) -> zlib:compress(RB0) end,
+                    lists:seq(1, 10))
+            end
+        ),
+    {TZSTDC, _} =
+        timer:tc(
+            fun() ->
+                lists:foreach(
+                    fun(_I) -> ezstd:compress(RB0) end,
+                    lists:seq(1, 10))
+            end
+        ),
+    {TLZ4U, _} =
+        timer:tc(
+            fun() ->
+                lists:foreach(
+                    fun(_I) -> lz4:unpack(RB0LZ4) end,
+                    lists:seq(1, 10))
+            end
+        ),
+    {TZLIBU, _} =
+        timer:tc(
+            fun() ->
+                lists:foreach(
+                    fun(_I) -> zlib:uncompress(RB0ZLIB) end,
+                    lists:seq(1, 10))
+            end
+        ),
+    {TZSTDU, _} =
+        timer:tc(
+            fun() ->
+                lists:foreach(
+                    fun(_I) -> ezstd:decompress(RB0ZSTD) end,
+                    lists:seq(1, 10))
+            end
+        ),
+    io:format(
+        user,
+        "~nCompression time ZLIB ~w LZ4 ~w ZSTD ~w "
+        "Decompression time ZLIB ~w LZ4 ~w ZSTD ~w~n",
+        [TZLIBC, TLZ4C, TZSTDC, TZLIBU, TLZ4U, TZSTDU]
+    ).
+    
 
 -endif.
