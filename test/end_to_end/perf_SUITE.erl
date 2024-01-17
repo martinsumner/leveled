@@ -10,30 +10,31 @@ all() -> [riak_ctperf].
 suite() -> [{timetrap, {hours, 16}}].
 
 riak_fullperf(_Config) ->
-    riak_fullperf(2048, native, lz4).
+    riak_fullperf(2048, zstd, as_store).
 
 riak_fullperf(ObjSize, PM, LC) ->
-    R2A = riak_load_tester(<<"B0">>, 2000000, ObjSize, [], PM, LC),
+    Bucket = {<<"SensibleBucketTypeName">>, <<"SensibleBucketName0">>},
+    R2A = riak_load_tester(Bucket, 2000000, ObjSize, [], PM, LC),
     output_result(R2A),
-    R2B = riak_load_tester(<<"B0">>, 2000000, ObjSize, [], PM, LC),
+    R2B = riak_load_tester(Bucket, 2000000, ObjSize, [], PM, LC),
     output_result(R2B),
-    R2C = riak_load_tester(<<"B0">>, 2000000, ObjSize, [], PM, LC),
+    R2C = riak_load_tester(Bucket, 2000000, ObjSize, [], PM, LC),
     output_result(R2C),
-    R5A = riak_load_tester(<<"B0">>, 5000000, ObjSize, [], PM, LC),
+    R5A = riak_load_tester(Bucket, 5000000, ObjSize, [], PM, LC),
     output_result(R5A),
-    R5B = riak_load_tester(<<"B0">>, 5000000, ObjSize, [], PM, LC),
+    R5B = riak_load_tester(Bucket, 5000000, ObjSize, [], PM, LC),
     output_result(R5B),
-    R10 = riak_load_tester(<<"B0">>, 10000000, ObjSize, [], PM, LC),
+    R10 = riak_load_tester(Bucket, 10000000, ObjSize, [], PM, LC),
     output_result(R10)
     .
 
 riak_profileperf(_Config) ->
     riak_load_tester(
-        <<"B0">>,
+        {<<"SensibleBucketTypeName">>, <<"SensibleBucketName0">>},
         2000000,
         2048,
         [load, head, get, query, mini_query, full, guess, estimate, update],
-        native,
+        zstd,
         as_store
     ).
 
