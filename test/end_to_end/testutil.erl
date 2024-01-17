@@ -3,6 +3,7 @@
 -include("../include/leveled.hrl").
 
 -export([book_riakput/3,
+            book_tempriakput/4,
             book_riakdelete/4,
             book_riakget/3,
             book_riakhead/3,
@@ -44,11 +45,13 @@
             update_some_objects/3,
             delete_some_objects/3,
             put_indexed_objects/3,
+            put_indexed_objects/4,
             put_altered_indexed_objects/3,
             put_altered_indexed_objects/4,
             put_altered_indexed_objects/5,
             check_indexed_objects/4,
             rotating_object_check/3,
+            rotation_withnocheck/6,
             corrupt_journal/5,
             restore_file/2,
             restore_topending/2,
@@ -179,6 +182,16 @@ book_riakput(Pid, RiakObject, IndexSpecs) ->
                             to_binary(v1, RiakObject),
                             IndexSpecs,
                             ?RIAK_TAG).
+
+book_tempriakput(Pid, RiakObject, IndexSpecs, TTL) ->
+    leveled_bookie:book_tempput(
+        Pid,
+        RiakObject#r_object.bucket,
+        RiakObject#r_object.key,
+        to_binary(v1, RiakObject),
+        IndexSpecs,
+        ?RIAK_TAG,
+        TTL).
 
 book_riakdelete(Pid, Bucket, Key, IndexSpecs) ->
     leveled_bookie:book_put(Pid, Bucket, Key, delete, IndexSpecs, ?RIAK_TAG).
@@ -754,6 +767,9 @@ check_indexed_objects(Book, B, KSpecL, V) ->
 
 put_indexed_objects(Book, Bucket, Count) ->
     V = get_compressiblevalue(),
+    put_indexed_objects(Book, Bucket, Count, V).
+
+put_indexed_objects(Book, Bucket, Count, V) ->
     IndexGen = get_randomindexes_generator(1),
     SW = os:timestamp(),
     ObjL1 = 
@@ -837,6 +853,12 @@ rotating_object_check(RootPath, B, NumberOfObjects) ->
     ok = leveled_bookie:book_close(Book2),
     ok.
     
+rotation_withnocheck(Book1, B, NumberOfObjects, V1, V2, V3) ->
+    {KSpcL1, _V1} = put_indexed_objects(Book1, B, NumberOfObjects, V1),
+    {KSpcL2, _V2} = put_altered_indexed_objects(Book1, B, KSpcL1, true, V2),
+    {_KSpcL3, _V3} = put_altered_indexed_objects(Book1, B, KSpcL2, true, V3),
+    ok.
+
 corrupt_journal(RootPath, FileName, Corruptions, BasePosition, GapSize) ->
     OriginalPath = RootPath ++ "/journal/journal_files/" ++ FileName,
     BackupPath = RootPath ++ "/journal/journal_files/" ++
