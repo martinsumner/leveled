@@ -1036,25 +1036,36 @@ remove_journal_test(_Config) ->
     ok = leveled_bookie:book_destroy(Bookie3).
 
 
-
 many_put_fetch_switchcompression(_Config) ->
+    {T0, ok} =
+        timer:tc(fun many_put_fetch_switchcompression_tester/1, [native]),
+    {T1, ok} =
+        timer:tc(fun many_put_fetch_switchcompression_tester/1, [lz4]),
+    {T2, ok} =
+        timer:tc(fun many_put_fetch_switchcompression_tester/1, [zstd]),
+    io:format("Test timings native=~w lz4=~w, zstd=~w", [T0, T1, T2]).
+
+many_put_fetch_switchcompression_tester(CompressionMethod) ->
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = [{root_path, RootPath},
                     {max_pencillercachesize, 16000},
                     {max_journalobjectcount, 30000},
                     {compression_level, 3},
                     {sync_strategy, testutil:sync_strategy()},
-                    {compression_method, native}],
+                    {compression_method, native},
+                    {ledger_compression, none}],
     StartOpts2 = [{root_path, RootPath},
                     {max_pencillercachesize, 24000},
                     {max_journalobjectcount, 30000},
                     {sync_strategy, testutil:sync_strategy()},
-                    {compression_method, lz4}],
+                    {compression_method, CompressionMethod},
+                    {ledger_compression, as_store}],
     StartOpts3 = [{root_path, RootPath},
                     {max_pencillercachesize, 16000},
                     {max_journalobjectcount, 30000},
                     {sync_strategy, testutil:sync_strategy()},
-                    {compression_method, none}],
+                    {compression_method, none},
+                    {ledger_compression, as_store}],
     
     
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
@@ -1172,7 +1183,6 @@ many_put_fetch_switchcompression(_Config) ->
         fun(CL) -> ok = testutil:check_forlist(Bookie6, CL) end, CL5s),
 
     ok = leveled_bookie:book_destroy(Bookie6).
-
 
 safereaderror_startup(_Config) ->
     RootPath = testutil:reset_filestructure(),
