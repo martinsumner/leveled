@@ -1751,7 +1751,7 @@ serialise_block(Term, native) ->
     CRC32 = hmac(Bin),
     <<Bin/binary, CRC32:32/integer>>;
 serialise_block(Term, zstd) ->
-    Bin = ezstd:compress(term_to_binary(Term)),
+    Bin = zstd:compress(term_to_binary(Term)),
     CRC32 = hmac(Bin),
     <<Bin/binary, CRC32:32/integer>>;
 serialise_block(Term, none) ->
@@ -1782,7 +1782,7 @@ deserialise_checkedblock(Bin, lz4) ->
     {ok, Bin0} = lz4:unpack(Bin),
     binary_to_term(Bin0);
 deserialise_checkedblock(Bin, zstd) ->
-    binary_to_term(ezstd:decompress(Bin));
+    binary_to_term(zstd:decompress(Bin));
 deserialise_checkedblock(Bin, _Other) ->
     % native or none can be treated the same
     binary_to_term(Bin).
