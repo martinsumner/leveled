@@ -30,7 +30,7 @@
 -define(MASK_BAND, 63).
     % i.e. integer slize size - 1
 -define(SPLIT_BAND, 4095).
-    % i.e. (?BLOOM_SLOTSIZE_BYTES div 8) - 1
+    % i.e. (?BLOOM_SLOTSIZE_BYTES * 8) - 1
 
 -type bloom() :: binary().
 
@@ -57,8 +57,7 @@ create_bloom(HashList) ->
     SlotHashes =
         map_hashes(
             HashList,
-            list_to_tuple(
-                lists:map(fun(_) -> [] end, lists:seq(1, SlotCount))),
+            list_to_tuple(lists:duplicate(SlotCount, [])),
             SlotCount
         ),
     build_bloom(SlotHashes, SlotCount).

@@ -2746,7 +2746,7 @@ merge_lists(
     InitTombCount =
         case SaveTombCount of true -> 0; false -> not_counted end,
     BuildTimings = 
-        case IsBase or lists:member(L, ?LOG_BUILDTIMINGS_LEVELS) of
+        case IsBase orelse lists:member(L, ?LOG_BUILDTIMINGS_LEVELS) of
             true ->
                 #build_timings{};
             false ->
@@ -2977,24 +2977,22 @@ update_buildtimings(Timings, Stage) ->
     LastTS = Timings#build_timings.last_timestamp,
     ThisTS = os:timestamp(),
     Timer = timer:now_diff(ThisTS, LastTS),
-    case Stage of
-        slot_hashlist ->
-            HLT = Timings#build_timings.slot_hashlist + Timer,
-            Timings#build_timings{
-                slot_hashlist = HLT, last_timestamp = ThisTS};
-        slot_serialise ->
-            SST = Timings#build_timings.slot_serialise + Timer,
-            Timings#build_timings{
-                slot_serialise = SST, last_timestamp = ThisTS};
-        slot_finish ->
-            SFT = Timings#build_timings.slot_finish + Timer,
-            Timings#build_timings{
-                slot_finish = SFT, last_timestamp = ThisTS};
-        fold_toslot ->
-            FST = Timings#build_timings.fold_toslot + Timer,
-            Timings#build_timings{
-                fold_toslot = FST, last_timestamp = ThisTS}
-    end.
+    NewTimings =
+        case Stage of
+            slot_hashlist ->
+                HLT = Timings#build_timings.slot_hashlist + Timer,
+                Timings#build_timings{slot_hashlist = HLT};
+            slot_serialise ->
+                SST = Timings#build_timings.slot_serialise + Timer,
+                Timings#build_timings{slot_serialise = SST};
+            slot_finish ->
+                SFT = Timings#build_timings.slot_finish + Timer,
+                Timings#build_timings{slot_finish = SFT};
+            fold_toslot ->
+                FST = Timings#build_timings.fold_toslot + Timer,
+                Timings#build_timings{fold_toslot = FST}
+        end,
+    NewTimings#build_timings{last_timestamp = ThisTS}.
 
 -spec log_buildtimings(build_timings(), tuple()) -> ok.
 %% @doc
