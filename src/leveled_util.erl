@@ -57,11 +57,14 @@ magic_hash(AnyKey) ->
 
 hash1(H, <<>>) -> 
     H;
-hash1(H, <<B:8/integer, Rest/bytes>>) ->
-    H1 = (H * 33) band 16#FFFFFFFF,
-    H2 = H1 bxor B,
-    hash1(H2, Rest).
-
+hash1(H0, <<I:32/integer, Rest/bytes>>) ->
+    H1 = ((H0 bsl 5) + H0) bxor ((I band 16#FF000000) bsr 24),
+    H2 = ((H1 bsl 5) + H1) bxor ((I band 16#00FF0000) bsr 16),
+    H3 = ((H2 bsl 5) + H2) bxor ((I band 16#0000FF00) bsr 8),
+    H4 = (((H3 bsl 5) + H3) bxor (I band 16#000000FF)) band 16#FFFFFFFF,
+    hash1(H4, Rest);
+hash1(H, <<I:8/integer, Rest/bytes>>) ->
+    hash1((((H bsl 5) + H) band 16#FFFFFFFF) bxor I, Rest).
 
 -spec t2b(term()) -> binary().
 %% @doc
@@ -105,18 +108,31 @@ safe_rename(TempFN, RealFN, BinData, ReadCheck) ->
 -define(TEST_AREA, "test/test_area/util/").
 
 magichashperf_test() ->
+    N = 100000,
+    Bucket =
+        {<<"LongerBucketType">>,
+            <<"LongerBucketName">>,
+            <<"FurtherBucketInfo">>},
+    KeyPrefix = "LongerkeyPrefix",
     KeyFun =
         fun(X) ->
-            K = {o, "Bucket", "Key" ++ integer_to_list(X), null},
+            K =
+                {o_rkv,
+                    Bucket,
+                    list_to_binary(KeyPrefix ++ integer_to_list(X)),
+                    null},
             {K, X}
         end,
-    KL = lists:map(KeyFun, lists:seq(1, 1000)),
+    KL = lists:map(KeyFun, lists:seq(1, N)),
     {TimeMH, HL1} = timer:tc(lists, map, [fun(K) -> magic_hash(K) end, KL]),
-    io:format(user, "1000 keys magic hashed in ~w microseconds~n", [TimeMH]),
+    io:format(
+        user, "~w keys magic hashed in ~w microseconds~n", [N, TimeMH]),
     {TimePH, _Hl2} = timer:tc(lists, map, [fun(K) -> erlang:phash2(K) end, KL]),
-    io:format(user, "1000 keys phash2 hashed in ~w microseconds~n", [TimePH]),
+    io:format(
+        user, "~w keys phash2 hashed in ~w microseconds~n", [N, TimePH]),
     {TimeMH2, HL1} = timer:tc(lists, map, [fun(K) -> magic_hash(K) end, KL]),
-    io:format(user, "1000 keys magic hashed in ~w microseconds~n", [TimeMH2]).
+    io:format(
+        user, "~w keys magic hashed in ~w microseconds~n", [N, TimeMH2]).
 
 
 safe_rename_test() ->
