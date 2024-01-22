@@ -65,6 +65,7 @@
 -type mp()
     :: {re_pattern, term(), term(), term(), term()}.
 
+-export_type([acc_fun/0, mp/0]).
 
 %%%============================================================================
 %%% External functions
@@ -146,15 +147,7 @@ bucket_list(SnapFun, Tag, FoldBucketsFun, InitAcc, MaxBuckets) ->
 %% for a timeout
 index_query(SnapFun, {StartKey, EndKey, TermHandling}, FoldAccT) ->
     {FoldKeysFun, InitAcc} = FoldAccT,
-    {ReturnTerms, TermRegex} = TermHandling,
-    AddFun = 
-        case ReturnTerms of
-            true ->
-                fun add_terms/2;
-            _ ->
-                fun add_keys/2
-        end,
-
+    
     Runner = 
         fun() ->
             {ok, LedgerSnapshot, _JournalSnapshot, AfterFun} = SnapFun(),
@@ -163,7 +156,7 @@ index_query(SnapFun, {StartKey, EndKey, TermHandling}, FoldAccT) ->
                     LedgerSnapshot,
                     StartKey,
                     EndKey,
-                    accumulate_index(TermRegex, AddFun, FoldKeysFun),
+                    leveled_codec:accumulate_index(TermHandling, FoldKeysFun),
                     InitAcc,
                     by_runner),
             wrap_runner(Folder, AfterFun)
@@ -680,47 +673,20 @@ check_presence(Key, Value, InkerClone) ->
             false
     end.
 
+accumulate_keys(FoldKeysFun, undefined) ->
+    fun(Key, _Value, Acc) ->
+        {B, K} = leveled_codec:from_ledgerkey(Key),
+        FoldKeysFun(B, K, Acc)
+    end;
 accumulate_keys(FoldKeysFun, TermRegex) ->
-    AccFun = 
-        fun(Key, _Value, Acc) ->
-            {B, K} = leveled_codec:from_ledgerkey(Key),
-            case TermRegex of
-                undefined ->
-                    FoldKeysFun(B, K, Acc);
-                Re ->
-                    case re:run(K, Re) of
-                        nomatch ->
-                            Acc;
-                        _ ->
-                            FoldKeysFun(B, K, Acc)
-                    end
-            end
-        end,
-    AccFun.
-
-add_keys(ObjKey, _IdxValue) ->
-    ObjKey.
-
-add_terms(ObjKey, IdxValue) ->
-    {IdxValue, ObjKey}.
-
-accumulate_index(TermRe, AddFun, FoldKeysFun) ->
-    case TermRe of
-        undefined ->
-            fun(Key, _Value, Acc) ->
-                {Bucket, ObjKey, IdxValue} = leveled_codec:from_ledgerkey(Key),
-                FoldKeysFun(Bucket, AddFun(ObjKey, IdxValue), Acc)
-            end;
-        TermRe ->
-            fun(Key, _Value, Acc) ->
-                {Bucket, ObjKey, IdxValue} = leveled_codec:from_ledgerkey(Key),
-                case re:run(IdxValue, TermRe) of
-                    nomatch ->
-                        Acc;
-                    _ ->
-                        FoldKeysFun(Bucket, AddFun(ObjKey, IdxValue), Acc)
-                end
-            end
+    fun(Key, _Value, Acc) ->
+        {B, K} = leveled_codec:from_ledgerkey(Key),
+        case re:run(K, TermRegex) of
+            nomatch ->
+                Acc;
+            _ ->
+                FoldKeysFun(B, K, Acc)
+        end
     end.
 
 -spec wrap_runner(fun(), fun()) -> any().

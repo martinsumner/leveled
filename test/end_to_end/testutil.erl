@@ -3,6 +3,7 @@
 -include("../include/leveled.hrl").
 
 -export([book_riakput/3,
+            book_tempriakput/4,
             book_riakdelete/4,
             book_riakget/3,
             book_riakhead/3,
@@ -181,6 +182,16 @@ book_riakput(Pid, RiakObject, IndexSpecs) ->
                             to_binary(v1, RiakObject),
                             IndexSpecs,
                             ?RIAK_TAG).
+
+book_tempriakput(Pid, RiakObject, IndexSpecs, TTL) ->
+    leveled_bookie:book_tempput(
+        Pid,
+        RiakObject#r_object.bucket,
+        RiakObject#r_object.key,
+        to_binary(v1, RiakObject),
+        IndexSpecs,
+        ?RIAK_TAG,
+        TTL).
 
 book_riakdelete(Pid, Bucket, Key, IndexSpecs) ->
     leveled_bookie:book_put(Pid, Bucket, Key, delete, IndexSpecs, ?RIAK_TAG).

@@ -34,8 +34,8 @@ expiring_indexes(_Config) ->
     % before).  Confirm that replacing an object has the expected outcome, if
     % the IndexSpecs are updated as part of the request.
     KeyCount = 50000,
-    Future = 60,
-        % 1 minute - if running tests on a slow machine, may need to increase
+    Future = 120,
+        % 2 minutes - if running tests on a slow machine, may need to increase
         % this value
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = 
@@ -44,13 +44,30 @@ expiring_indexes(_Config) ->
             {max_journalobjectcount, 30000},
             {sync_strategy, testutil:sync_strategy()}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
-    
+
     SW1 = os:timestamp(),
+    timer:sleep(1000),
+
+    V9 = testutil:get_compressiblevalue(),
+    Indexes9 = testutil:get_randomindexes_generator(2),
+    TempRiakObjects =
+        testutil:generate_objects(
+            KeyCount, binary_uuid, [], V9, Indexes9, "riakBucket"),
+    
     IBKL1 = testutil:stdload_expiring(Bookie1, KeyCount, Future),
+    lists:foreach(
+        fun({_RN, Obj, Spc}) ->
+            testutil:book_tempriakput(
+                Bookie1, Obj, Spc, leveled_util:integer_now() + Future)
+        end,
+        TempRiakObjects
+    ),
     timer:sleep(1000),
         % Wait a second after last key so that none loaded in the last second
     LoadTime = timer:now_diff(os:timestamp(), SW1)/1000000,
     io:format("Load of ~w std objects in ~w seconds~n",  [KeyCount, LoadTime]),
+    
+    timer:sleep(1000),
     SW2 = os:timestamp(),
 
     FilterFun = fun({I, _B, _K}) -> lists:member(I, [5, 6, 7, 8]) end,
@@ -75,6 +92,25 @@ expiring_indexes(_Config) ->
         end,
     {async, I0Counter1} = CountI0Fold(),
     I0Count1 = I0Counter1(),
+
+    HeadFold =
+        fun(LowTS, HighTS) ->
+            leveled_bookie:book_headfold(
+                Bookie1,
+                ?RIAK_TAG,
+                {range, <<"riakBucket">>, all},
+                {fun(_B, _K, _V, Acc) ->  Acc + 1 end, 0},
+                false, true, false,
+                {testutil:convert_to_seconds(LowTS),
+                    testutil:convert_to_seconds(HighTS)},
+                false
+            )
+        end,
+    {async, HeadCount0Fun} = HeadFold(SW1, SW2),
+    {async, HeadCount1Fun} = HeadFold(SW2, os:timestamp()),
+    HeadCounts = {HeadCount0Fun(), HeadCount1Fun()},
+    io:format("HeadCounts ~w before expiry~n", [HeadCounts]),
+    {KeyCount, 0} = HeadCounts,
 
     FoldFun = fun(BF, {IdxV, KeyF}, Acc) -> [{IdxV, BF, KeyF}|Acc] end,
     InitAcc = [],
@@ -144,6 +180,12 @@ expiring_indexes(_Config) ->
     
     true = QR4 == [],
     true = QR5 == [],
+
+    {async, HeadCount0ExpFun} = HeadFold(SW1, SW2),
+    {async, HeadCount1ExpFun} = HeadFold(SW2, os:timestamp()),
+    HeadCountsExp = {HeadCount0ExpFun(), HeadCount1ExpFun()},
+    io:format("HeadCounts ~w after expiry~n", [HeadCountsExp]),
+    {0, 0} = HeadCountsExp,
 
     ok = leveled_bookie:book_close(Bookie1),
     testutil:reset_filestructure().
@@ -379,12 +421,14 @@ single_object_with2i(_Config) ->
 
     %% @TODO replace all index queries with new Top-Level API if tests
     %% pass
-    {async, IdxFolder1} = leveled_bookie:book_indexfold(Bookie1,
-                                                        "Bucket1",
-                                                        {fun testutil:foldkeysfun/3, []},
-                                                        {list_to_binary("binary_bin"),
-                                                         <<99:32/integer>>, <<101:32/integer>>},
-                                                        {true, undefined}),
+    {async, IdxFolder1} =
+        leveled_bookie:book_indexfold(
+            Bookie1,
+            "Bucket1",
+            {fun testutil:foldkeysfun/3, []},
+            {list_to_binary("binary_bin"),
+                <<99:32/integer>>, <<101:32/integer>>},
+            {true, undefined}),
     R1 = IdxFolder1(),
     io:format("R1 of ~w~n", [R1]),
     true = [{<<100:32/integer>>,"Key1"}] == R1,
