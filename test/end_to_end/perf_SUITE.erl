@@ -6,7 +6,7 @@
     riak_ctperf/1, riak_fullperf/1, riak_profileperf/1
 ]).
 
-all() -> [riak_fullperf].
+all() -> [riak_ctperf].
 suite() -> [{timetrap, {hours, 16}}].
 
 riak_fullperf(_Config) ->
@@ -33,7 +33,7 @@ riak_profileperf(_Config) ->
         {<<"SensibleBucketTypeName">>, <<"SensibleBucketName0">>},
         2000000,
         2048,
-        [load, head, get, query, mini_query, full, guess, estimate, update],
+        [load, head, get, mini_query, full, guess, estimate],
         zstd,
         as_store
     ).

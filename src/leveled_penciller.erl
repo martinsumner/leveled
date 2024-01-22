@@ -786,18 +786,13 @@ handle_call({fetch_keys,
         case SegChecker of
             false ->
                 L0AsList;
-            {Min, Max, CheckFun} ->
+            {Bin, Max} ->
                 FilterFun =
                     fun(LKV) ->
                         CheckSeg = 
                             leveled_sst:extract_hash(
                                 leveled_codec:strip_to_segmentonly(LKV)),
-                        case CheckSeg of
-                            CheckSeg when CheckSeg >= Min, CheckSeg =< Max ->
-                                CheckFun(CheckSeg);
-                            _ ->
-                                false
-                        end
+                        leveled_util:int_checker(Bin, CheckSeg, Max)
                     end,
                 lists:filter(FilterFun, L0AsList)
         end,
@@ -1642,7 +1637,7 @@ maybelog_fetch_timing({Pid, _StatsFreq}, Level, FetchTime, _NF) ->
 -type search_info() ::
     {{leveled_codec:ledger_key(), leveled_codec:ledger_key()},
         {non_neg_integer(), pos_integer()|infinity},
-        leveled_sst:segment_check_fun()}.
+        leveled_sst:segment_checker()}.
 
 -define(NULL_KEY, {null, null}).
 
@@ -1650,7 +1645,7 @@ maybelog_fetch_timing({Pid, _StatsFreq}, Level, FetchTime, _NF) ->
     sst_iterator(),
     {leveled_codec:ledger_key(), leveled_codec:ledger_key()},
     {pclacc_fun(), any(), pos_integer()},
-    {leveled_sst:segment_check_fun(),
+    {leveled_sst:segment_checker(),
         {non_neg_integer(), pos_integer()|infinity},
         -1|non_neg_integer()}) -> {non_neg_integer(), term()}|term().
 keyfolder(

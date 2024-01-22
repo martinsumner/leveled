@@ -9,3 +9,7 @@ cover
 cover_*
 .eqc-info
 leveled_data/*
+c_src/*.o
+c_src/*.d
+priv/*.so
+.vscode/*

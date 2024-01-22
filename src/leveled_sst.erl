@@ -85,7 +85,6 @@
 -define(DOUBLESIZE_LEVEL, 3).
 -define(INDEX_MODDATE, true).
 -define(TOMB_COUNT, true).
--define(USE_SET_FOR_SPEED, 32).
 -define(STARTUP_TIMEOUT, 10000).
 -define(MIN_HASH, 32768).
 -define(MAX_HASH, 65535).
@@ -193,10 +192,8 @@
     :: no_cache|non_neg_integer().
 -type summary_filter()
     :: fun((leveled_codec:ledger_key()) -> any()).
--type segment_check_fun()
-    :: non_neg_integer()
-    | {non_neg_integer(), non_neg_integer(),
-        fun((non_neg_integer()) -> boolean())}
+-type segment_checker()
+    :: {binary(), 32768..16#FFFF}
     | false.
 -type fetch_levelzero_fun()
     :: fun((pos_integer(), leveled_penciller:levelzero_returnfun()) -> ok).
@@ -231,7 +228,7 @@
 
 -type build_timings() :: no_timing|#build_timings{}.
 
--export_type([expandable_pointer/0, press_method/0, segment_check_fun/0]).
+-export_type([expandable_pointer/0, press_method/0, segment_checker/0]).
 
 %%%============================================================================
 %%% API
@@ -424,7 +421,7 @@ sst_getmaxsequencenumber(Pid) ->
     expandable_pointer(),
     list(expandable_pointer()),
     pos_integer(),
-    segment_check_fun(),
+    segment_checker(),
     non_neg_integer()) -> list(expanded_pointer()).
 %% @doc
 %% Expand out a list of pointer to return a list of Keys and Values with a
@@ -956,7 +953,7 @@ expand_list_by_pointer(Pointer, Tail, Width) ->
     expandable_pointer(),
     list(expandable_pointer()),
     pos_integer(),
-    segment_check_fun(),
+    segment_checker(),
     non_neg_integer()) -> list(expanded_pointer()).
 %% @doc
 %% With filters (as described in expand_list_by_pointer/3
@@ -1008,7 +1005,7 @@ expand_list_by_pointer(
 %% slots to find the actual {K, V} pairs between the range endpoints.
 %% Expanding these slot_pointers can be done using sst_getfilteredslots/5
 %% 
-%% Use segment_checker/1 to produce a segment_check_fun if the hashes of the
+%% Use segment_checker/1 to produce a segment_checker if the hashes of the
 %% keys to be found are known.  The LowLastMod integer will skip any blocks
 %% where all keys were modified before thta date.
 sst_getfilteredrange(Pid, StartKey, EndKey, LowLastMod) ->
@@ -1019,16 +1016,16 @@ sst_getfilteredrange(Pid, StartKey, EndKey, LowLastMod) ->
 -spec sst_getfilteredslots(
     pid(),
     list(slot_pointer()),
-    segment_check_fun(),
+    segment_checker(),
     non_neg_integer(),
     list(expandable_pointer())) -> list(leveled_codec:ledger_kv()).
 %% @doc
 %% Get a list of slots by their ID. The slot will be converted from the binary
-%% to term form outside of the FSM loop, unless a segment_check_fun is passed,
-%% and this process has cached the index to be used by the segment_check_fun,
+%% to term form outside of the FSM loop, unless a segment_checker is passed,
+%% and this process has cached the index to be used by the segment_checker,
 %% and in this case the list of Slotbins will include the actual {K, V} pairs. 
 %%
-%% Use segment_checker/1 to produce a segment_check_fun if the hashes of the
+%% Use segment_checker/1 to produce a segment_checker if the hashes of the
 %% keys to be found are known.  The LowLastMod integer will skip any blocks
 %% where all keys were modified before thta date, but the results may still
 %% contain older values (the calling function should still filter by modified
@@ -1049,65 +1046,28 @@ sst_getfilteredslots(Pid, SlotList, SegChecker, LowLastMod, Pointers) ->
     L.
 
 -spec find_pos(
-    binary(), segment_check_fun()) -> list(non_neg_integer()).
+    binary(), segment_checker()) -> list(non_neg_integer()).
 %% @doc
 %% Find a list of positions where there is an element with a matching segment
 %% ID to the expected segments (which can either be a single segment, a list of
-%% segments or a set of segments depending on size).   The segment_check_fun
+%% segments or a set of segments depending on size).   The segment_checker
 %% will do the matching.  Segments are 15-bits of the hash of the key.
-find_pos(Bin, H) when is_integer(H) ->
-    find_posint(Bin, H, [], 0);
-find_pos(Bin, {Min, Max, CheckFun}) ->
-    find_posmlt(Bin, Min, Max, CheckFun, [], 0).
-
-find_posint(<<H:16/integer, T/binary>>, H, PosList, Count) ->
-    find_posint(T, H, [Count|PosList], Count + 1);
-find_posint(<<Miss:16/integer, T/binary>>, H, PosList, Count)
-        when Miss >= ?MIN_HASH ->
-    find_posint(T, H, PosList, Count + 1);
-find_posint(<<NHC:8/integer, T/binary>>, H, PosList, Count) when NHC < 128 ->
-    find_posint(T, H, PosList, Count + NHC + 1);
-find_posint(_BinRem, _H, PosList, _Count) ->
-    lists:reverse(PosList).
-
-find_posmlt(<<H:16/integer, T/binary>>, Min, Max, CheckFun, PosList, Count)
-        when H >= Min, H =< Max ->
-    case CheckFun(H) of
-        true ->
-            find_posmlt(T, Min, Max, CheckFun, [Count|PosList], Count + 1);
-        false ->
-            find_posmlt(T, Min, Max, CheckFun, PosList, Count + 1)
-    end;
-find_posmlt(<<Miss:16/integer, T/binary>>, Min, Max, CheckFun, PosList, Count)
-        when Miss >= ?MIN_HASH ->
-    find_posmlt(T, Min, Max, CheckFun, PosList, Count + 1);
-find_posmlt(<<NHC:8/integer, T/binary>>, Min, Max, CheckFun, PosList, Count)
-        when NHC < 128 ->
-    find_posmlt(T, Min, Max, CheckFun, PosList, Count + NHC + 1);
-find_posmlt(_BinRem, _Min, _Max, _CheckFun, PosList, _Count) ->
-    lists:reverse(PosList).
+find_pos(PosBin, {CheckBin, Max}) when is_binary(CheckBin), is_integer(Max) ->
+    leveled_util:find_pos(PosBin, CheckBin, Max).
 
 
 -spec segment_checker(
         non_neg_integer()| list(non_neg_integer())| false)
-            -> segment_check_fun().
+            -> segment_checker().
 segment_checker(Hash) when is_integer(Hash) ->
-    Hash;
+    leveled_util:setup_checker([Hash]);
 segment_checker(HashList) when is_list(HashList) ->
     %% Note that commonly segments will be close together numerically. The
     %% guess/estimate process for checking vnode size selects a contiguous
     %% range.  Also the kv_index_tictactree segment selector tries to group
     %% segment IDs close together.  Hence checking the bounds first is
     %% generally much faster than a straight membership test.
-    Min = lists:min(HashList),
-    Max = lists:max(HashList),
-    case length(HashList) > ?USE_SET_FOR_SPEED of
-        true ->
-            HashSet = sets:from_list(HashList),
-            {Min, Max, fun(H) -> sets:is_element(H, HashSet) end};
-        false ->
-            {Min, Max, fun(H) -> lists:member(H, HashList) end}
-    end;
+    leveled_util:setup_checker(HashList);
 segment_checker(false) ->
     false.
 
@@ -2180,7 +2140,7 @@ binarysplit_mapfun(MultiSlotBin, StartPos) ->
 -spec read_slots(
         file:io_device(),
         list(),
-        {segment_check_fun(), non_neg_integer(), blockindex_cache()},
+        {segment_checker(), non_neg_integer(), blockindex_cache()},
         press_method(),
         boolean())
             -> {boolean(), list(expanded_slot()|leveled_codec:ledger_kv())}.
@@ -2201,7 +2161,7 @@ read_slots(Handle, SlotList, {false, 0, _BlockIndexCache},
 read_slots(Handle, SlotList, {SegChecker, LowLastMod, BlockIndexCache},
                 PressMethod, IdxModDate) ->
     % Potentially need to check the low last modified date, and also the
-    % segment_check_fun against the index.  If the index is cached, return the
+    % segment_checker against the index.  If the index is cached, return the
     % KV pairs at this point, otherwise return the slot pointer so that the
     % term_to_binary work can be conducted by the fold process and not impact
     % the heap of this SST process
@@ -2259,7 +2219,7 @@ read_slots(Handle, SlotList, {SegChecker, LowLastMod, BlockIndexCache},
         binary(),
         press_method(),
         boolean(),
-        segment_check_fun(),
+        segment_checker(),
         {range_endpoint(), range_endpoint()})
             -> list(leveled_codec:ledger_kv()).
 checkblocks_segandrange(
@@ -2283,7 +2243,7 @@ read_slotlist(SlotList, Handle) ->
     list(expanded_slot()),
     press_method(),
     boolean(),
-    segment_check_fun(),
+    segment_checker(),
     list(expandable_pointer()))
         -> {list({tuple(), tuple()}), list({integer(), binary()})}.
 %% @doc
@@ -2419,7 +2379,7 @@ binaryslot_tolist(FullBin, PressMethod, IdxModDate) ->
         range_endpoint(),
         press_method(),
         boolean(),
-        segment_check_fun()) ->
+        segment_checker()) ->
             {list(leveled_codec:ledger_kv()),
                 list({integer(), binary()})|none}.
 %% @doc
@@ -3059,7 +3019,7 @@ sst_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
         range_endpoint(), 
         range_endpoint(),  
         integer(),
-        segment_check_fun(),
+        segment_checker(),
         non_neg_integer()) -> list(leveled_codec:ledger_kv()|slot_pointer()).
 %% @doc
 %% Get a range of {Key, Value} pairs as a list between StartKey and EndKey
@@ -5166,5 +5126,50 @@ blocks_required_test() ->
     ?assertMatch(52, length(KVL5))
     .
     
+find_pos_perf_test() ->
+    TestRuns = 100,
+    TestHash = ?MIN_HASH + 8196, % some hash in range
+    TestPosSet =
+        lists:map(
+            fun(_I) -> leveled_rand:uniform(?MIN_HASH) + ?MIN_HASH end,
+            lists:seq(1, 127)
+        ) ++ [TestHash],
+    TestPosBin =
+        lists:foldl(
+            fun(H, AccBin) -> <<H:16/integer, AccBin/binary>> end,
+            <<>>,
+            TestPosSet),
+    TestHashGroup =
+        lists:map(
+            fun(I) -> I*16 + TestHash end,
+            lists:seq(0, 40)
+        ),
+    
+    SingleChecker = segment_checker(TestHash),
+    MultiChecker = segment_checker(TestHashGroup),
+
+    {FPS, ok} =
+        timer:tc(
+            fun() ->
+                lists:foreach(
+                    fun(_I) -> find_pos(TestPosBin, SingleChecker) end,
+                    lists:seq(1, TestRuns))
+            end),
+    {FPM, ok} =
+        timer:tc(
+            fun() ->
+                lists:foreach(
+                    fun(_I) -> find_pos(TestPosBin, MultiChecker) end,
+                    lists:seq(1, TestRuns))
+            end),
+    
+    io:format(
+        user,
+        "100 single checks using find_pos in ~w microseconds~n"
+        "100 multi checks using find_pos in ~w microseconds~n",
+        [FPS, FPM]
+    ).
+    
+
 
 -endif.

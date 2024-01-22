@@ -9,11 +9,13 @@
             integer_now/0,
             integer_time/1,
             magic_hash/1,
+            magic_erlhash/1,
             t2b/1,
             safe_rename/4]).
 
--define(WRITE_OPS, [binary, raw, read, write]).
+-export([setup_checker/1, int_checker/3, find_pos/3]).
 
+-define(WRITE_OPS, [binary, raw, read, write]).
 
 -spec generate_uuid() -> list().
 %% @doc
@@ -39,8 +41,13 @@ integer_time(TS) ->
     DT = calendar:now_to_universal_time(TS),
     calendar:datetime_to_gregorian_seconds(DT).
 
+-spec magic_hash(term()) -> 0..16#FFFFFFFF.
+magic_hash(Key) when is_binary(Key) ->
+    magic_nifhash(Key);
+magic_hash(Key) ->
+    magic_hash(t2b(Key)).
 
--spec magic_hash(any()) -> 0..16#FFFFFFFF.
+-spec magic_erlhash(binary()) -> 0..16#FFFFFFFF.
 %% @doc 
 %% Use DJ Bernstein magic hash function. Note, this is more expensive than
 %% phash2 but provides a much more balanced result.
@@ -48,23 +55,20 @@ integer_time(TS) ->
 %% Hash function contains mysterious constants, some explanation here as to
 %% what they are -
 %% http://stackoverflow.com/questions/10696223/reason-for-5381-number-in-djb-hash-function
-magic_hash({binary, BinaryKey}) ->
+magic_erlhash(BinaryKey) when is_binary(BinaryKey) ->
     H = 5381,
-    hash1(H, BinaryKey);
-magic_hash(AnyKey) ->
-    BK = t2b(AnyKey),
-    magic_hash({binary, BK}).
+    hash1(H, BinaryKey).
 
 hash1(H, <<>>) -> 
     H;
-hash1(H0, <<I:32/integer, Rest/bytes>>) ->
-    H1 = ((H0 bsl 5) + H0) bxor ((I band 16#FF000000) bsr 24),
-    H2 = ((H1 bsl 5) + H1) bxor ((I band 16#00FF0000) bsr 16),
-    H3 = ((H2 bsl 5) + H2) bxor ((I band 16#0000FF00) bsr 8),
-    H4 = (((H3 bsl 5) + H3) bxor (I band 16#000000FF)) band 16#FFFFFFFF,
-    hash1(H4, Rest);
-hash1(H, <<I:8/integer, Rest/bytes>>) ->
-    hash1((((H bsl 5) + H) band 16#FFFFFFFF) bxor I, Rest).
+hash1(H, <<B:8/integer, Rest/bytes>>) ->
+    H1 = ((H bsl 5) + H) band 16#FFFFFFFF,
+    hash1(H1 bxor B, Rest).
+
+-spec magic_nifhash(binary()) -> 0..16#FFFFFFFF.
+magic_nifhash(BinaryKey) when is_binary(BinaryKey) ->
+    leveled_nif:magic_chash(BinaryKey) band 16#FFFFFFFF.
+
 
 -spec t2b(term()) -> binary().
 %% @doc
@@ -76,6 +80,26 @@ hash1(H, <<I:8/integer, Rest/bytes>>) ->
 t2b(Term) ->
     term_to_binary(Term, [{minor_version, 1}]).
 
+-spec setup_checker(list(32768..16#FFFF)) -> {binary(), 32768..16#FFFF}.
+setup_checker(IntList) ->
+    SortedList = lists:reverse(lists:usort(IntList)),
+    {
+        lists:foldl(
+            fun(I, B) -> <<I:16/integer, B/binary>> end,
+            <<>>,
+            SortedList),
+        hd(SortedList)
+    }.
+
+-spec int_checker(binary(), 32768..16#FFFF, 32768..16#FFFF) -> boolean().
+int_checker(CheckBin, Hash, Max) ->
+    leveled_nif:int_checker(CheckBin, Hash, Max).
+
+-spec find_pos(binary(), binary(), 32768..16#FFFF) -> list(0..127).
+find_pos(PosBin, CheckBin, MaxHash) ->
+    lists:map(
+        fun(I) ->  I - 1 end,
+        leveled_nif:pos_finder(PosBin, CheckBin, MaxHash)).
 
 -spec safe_rename(string(), string(), binary(), boolean()) -> ok.
 %% @doc
@@ -107,7 +131,42 @@ safe_rename(TempFN, RealFN, BinData, ReadCheck) ->
 
 -define(TEST_AREA, "test/test_area/util/").
 
-magichashperf_test() ->
+
+checker_test() ->
+    {Bin, Max} = setup_checker(lists:seq(64, 96) ++ lists:seq(512, 544)),
+    ?assertMatch(false, int_checker(Bin, 0, Max)),
+    ?assertMatch(true, int_checker(Bin, 64, Max)),
+    ?assertMatch(true, int_checker(Bin, 70, Max)),
+    ?assertMatch(true, int_checker(Bin, 96, Max)),
+    ?assertMatch(false, int_checker(Bin, 97, Max)),
+    ?assertMatch(false, int_checker(Bin, 101, Max)),
+    ?assertMatch(true, int_checker(Bin, 512, Max)),
+    ?assertMatch(true, int_checker(Bin, 540, Max)),
+    ?assertMatch(false, int_checker(Bin, 600, Max)),
+    ?assertMatch(false, int_checker(Bin, 65535, Max)),
+    ?assertException(error, badarg, int_checker(Bin, 65536, Max)).
+
+
+find_pos_test() ->
+    PosBin =
+        lists:foldl(
+            fun(I, AccBin) -> <<(I + 32768):16/integer, AccBin/binary>> end,
+            <<>>,
+            lists:reverse(lists:seq(1, 128))
+        ),
+    {CheckBin1, Max1} = setup_checker([32768 + 1]),
+    {CheckBin2, Max2} = setup_checker([32768 + 2]),
+    {CheckBinMiss, MaxMiss} = setup_checker([32768 + 200]),
+    ?assertMatch([1], leveled_nif:pos_finder(PosBin, CheckBin1, Max1)),
+    ?assertMatch([2], leveled_nif:pos_finder(PosBin, CheckBin2, Max2)),
+    ?assertMatch([], leveled_nif:pos_finder(PosBin, CheckBinMiss, MaxMiss)),
+    {CheckBin3, Max3} = setup_checker([32768 + 3, 32768 + 4, 32768 + 100]),
+    ?assertMatch([3, 4, 100], leveled_nif:pos_finder(PosBin, CheckBin3, Max3)).
+
+magichashperf_test_() ->
+    {timeout, 10, fun magichashperf_tester/0}.
+
+magichashperf_tester() ->
     N = 100000,
     Bucket =
         {<<"LongerBucketType">>,
@@ -124,15 +183,13 @@ magichashperf_test() ->
             {K, X}
         end,
     KL = lists:map(KeyFun, lists:seq(1, N)),
-    {TimeMH, HL1} = timer:tc(lists, map, [fun(K) -> magic_hash(K) end, KL]),
-    io:format(
-        user, "~w keys magic hashed in ~w microseconds~n", [N, TimeMH]),
-    {TimePH, _Hl2} = timer:tc(lists, map, [fun(K) -> erlang:phash2(K) end, KL]),
-    io:format(
-        user, "~w keys phash2 hashed in ~w microseconds~n", [N, TimePH]),
-    {TimeMH2, HL1} = timer:tc(lists, map, [fun(K) -> magic_hash(K) end, KL]),
-    io:format(
-        user, "~w keys magic hashed in ~w microseconds~n", [N, TimeMH2]).
+    {TimePH1, _Hl1} = timer:tc(lists, map, [fun(K) -> erlang:phash2(t2b(K)) end, KL]),
+    io:format(user, "~w keys phash2 hashed in ~w microseconds~n", [N, TimePH1]),
+    {TimeMH1, HL1ERL} = timer:tc(lists, map, [fun(K) -> magic_erlhash(t2b(K)) end, KL]),
+    io:format(user, "~w keys magic hashed in ~w microseconds~n", [N, TimeMH1]),
+    {TimeMH2, HL1NIF} = timer:tc(lists, map, [fun(K) -> magic_nifhash(t2b(K)) end, KL]),
+    io:format(user, "~w keys magic chashed in ~w microseconds~n", [N, TimeMH2]),
+    ?assert(HL1ERL == HL1NIF).
 
 
 safe_rename_test() ->
