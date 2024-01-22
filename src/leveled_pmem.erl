@@ -43,7 +43,7 @@
 
 -define(MAX_CACHE_LINES, 31). % Must be less than 128
 
--type index_array() :: list(array:array())|[]|none. 
+-type index_array() :: list(array:array())|[]|none.
 
 -export_type([index_array/0]).
 
@@ -71,7 +71,7 @@ prepare_for_index(IndexArray, no_lookup) ->
 prepare_for_index(IndexArray, Hash) ->
     {Slot, H0} = split_hash(Hash),
     Bin = array:get(Slot, IndexArray),
-    array:set(Slot, <<Bin/binary, 1:1/integer, H0:23/integer>>, IndexArray).
+    array:set(Slot, <<Bin/binary, H0:24/integer>>, IndexArray).
 
 -spec add_to_index(array:array(), index_array(), integer()) -> index_array().
 %% @doc
@@ -201,16 +201,16 @@ merge_trees(StartKey, EndKey, TreeList, LevelMinus1) ->
 
 find_pos(<<>>, _Hash) ->
     false;
-find_pos(<<1:1/integer, Hash:23/integer, _T/binary>>, Hash) ->
+find_pos(<<Hash:24/integer, _T/binary>>, Hash) ->
     true;
-find_pos(<<1:1/integer, _Miss:23/integer, T/binary>>, Hash) ->
+find_pos(<<_Miss:24/integer, T/binary>>, Hash) ->
     find_pos(T, Hash).
 
 
 split_hash({SegmentID, ExtraHash}) ->
     Slot = SegmentID band 255,
     H0 = (SegmentID bsr 8) bor (ExtraHash bsl 8),
-    {Slot, H0 band 8388607}.
+    {Slot, H0 band 16#FFFFFF}.
 
 check_slotlist(Key, _Hash, CheckList, TreeList) ->
     SlotCheckFun =

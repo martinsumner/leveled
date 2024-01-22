@@ -204,8 +204,7 @@
 -export([pcl_getsstpids/1, pcl_getclerkpid/1]).
 
 -ifdef(TEST).
--export([
-        clean_testdir/1]).
+-export([clean_testdir/1]).
 -endif.
 
 -define(MAX_WORK_WAIT, 300).
@@ -220,7 +219,9 @@
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
 -define(COIN_SIDECOUNT, 4).
 -define(SLOW_FETCH, 500000). % Log a very slow fetch - longer than 500ms
+-define(FOLD_SCANWIDTH, 32).
 -define(ITERATOR_SCANWIDTH, 4).
+-define(ITERATOR_MINSCANWIDTH, 1).
 -define(TIMING_SAMPLECOUNTDOWN, 10000).
 -define(TIMING_SAMPLESIZE, 100).
 -define(SHUTDOWN_LOOPS, 10).
@@ -287,10 +288,6 @@
 -type pcl_state() :: #state{}.
 -type levelzero_cacheentry() :: {pos_integer(), leveled_tree:leveled_tree()}.
 -type levelzero_cache() :: list(levelzero_cacheentry()).
--type iterator_entry() 
-    :: {pos_integer(), 
-        list(leveled_codec:ledger_kv()|leveled_sst:expandable_pointer())}.
--type iterator() :: list(iterator_entry()).
 -type bad_ledgerkey() :: list().
 -type sqn_check() :: current|replaced|missing.
 -type sst_fetchfun() ::
@@ -303,10 +300,14 @@
 -type pclacc_fun() ::
         fun((leveled_codec:ledger_key(),
                 leveled_codec:ledger_value(),
-                any()) -> any()).
+                term()) -> term()).
 -type sst_options() :: #sst_options{}.
 
--export_type([levelzero_cacheentry/0, levelzero_returnfun/0, sqn_check/0]).
+-export_type(
+    [levelzero_cacheentry/0,
+        levelzero_returnfun/0,
+        sqn_check/0,
+        pclacc_fun/0]).
 
 %%%============================================================================
 %%% API
@@ -421,7 +422,7 @@ pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc, By) ->
 %% all keys in the range - so must only be run against snapshots of the
 %% penciller to avoid blocking behaviour.  
 %%
-%% This version allows an additional input of a SegmentList.  This is a list 
+%% This version allows an additional input of a SegChecker.  This is a list 
 %% of 16-bit integers representing the segment IDs  band ((2 ^ 16) -1) that
 %% are interesting to the fetch
 %%
@@ -771,25 +772,32 @@ handle_call({fetch_keys,
     L0AsList =
         case State#state.levelzero_astree of
             undefined ->
-                leveled_pmem:merge_trees(StartKey,
-                                            EndKey,
-                                            State#state.levelzero_cache,
-                                            leveled_tree:empty(?CACHE_TYPE));
+                leveled_pmem:merge_trees(
+                    StartKey,
+                    EndKey,
+                    State#state.levelzero_cache,
+                    leveled_tree:empty(?CACHE_TYPE));
             List ->
                 List
         end,
+    SegChecker = 
+        leveled_sst:segment_checker(leveled_sst:tune_seglist(SegmentList)),
     FilteredL0 = 
-        case SegmentList of
+        case SegChecker of
             false ->
                 L0AsList;
-            _ ->
-                TunedList = leveled_sst:tune_seglist(SegmentList),
+            {Min, Max, CheckFun} ->
                 FilterFun =
                     fun(LKV) ->
                         CheckSeg = 
                             leveled_sst:extract_hash(
                                 leveled_codec:strip_to_segmentonly(LKV)),
-                        leveled_sst:member_check(CheckSeg, TunedList)
+                        case CheckSeg of
+                            CheckSeg when CheckSeg >= Min, CheckSeg =< Max ->
+                                CheckFun(CheckSeg);
+                            _ ->
+                                false
+                        end
                     end,
                 lists:filter(FilterFun, L0AsList)
         end,
@@ -809,13 +817,14 @@ handle_call({fetch_keys,
                 QueryManifest
         end,    
     SnapshotTime = State#state.snapshot_time,
-    
+    PersistedIterator = maps:from_list(SSTiter),
     Folder = 
         fun() -> 
-            keyfolder({FilteredL0, SSTiter},
-                        {StartKey, EndKey},
-                        {AccFun, InitAcc, SnapshotTime},
-                        {SegmentList, LastModRange0, MaxKeys})
+            keyfolder(
+                maps:put(-1, FilteredL0, PersistedIterator),
+                {StartKey, EndKey},
+                {AccFun, InitAcc, SnapshotTime},
+                {SegChecker, LastModRange0, MaxKeys})
         end,
     case By of 
         as_pcl ->
@@ -1072,10 +1081,9 @@ handle_cast({levelzero_complete, FN, StartKey, EndKey, Bloom}, State) ->
                                 filename=FN,
                                 bloom=Bloom},
     ManifestSQN = leveled_pmanifest:get_manifest_sqn(State#state.manifest) + 1,
-    UpdMan = leveled_pmanifest:insert_manifest_entry(State#state.manifest,
-                                                        ManifestSQN,
-                                                        0,
-                                                        ManEntry),
+    UpdMan =
+        leveled_pmanifest:insert_manifest_entry(
+            State#state.manifest, ManifestSQN, 0, ManEntry),
     % Prompt clerk to ask about work - do this for every L0 roll
     ok = leveled_pclerk:clerk_prompt(State#state.clerk),
     {noreply, State#state{levelzero_cache=[],
@@ -1209,7 +1217,6 @@ handle_cast({complete_shutdown, ShutdownType, From}, State) ->
     end,
     {stop, normal, State}.
 
-
 %% handle the bookie stopping and stop this snapshot
 handle_info({'DOWN', BookieMonRef, process, _BookiePid, _Info},
 	    State=#state{bookie_monref = BookieMonRef}) ->
@@ -1226,10 +1233,11 @@ terminate(Reason, _State) ->
 format_status(normal, [_PDict, State]) ->
     State;
 format_status(terminate, [_PDict, State]) ->
-    State#state{manifest = redacted, 
-                    levelzero_cache = redacted,
-                    levelzero_index = redacted,
-                    levelzero_astree = redacted}.
+    State#state{
+        manifest = redacted, 
+        levelzero_cache = redacted,
+        levelzero_index = redacted,
+        levelzero_astree = redacted}.
 
 
 code_change(_OldVsn, State, _Extra) ->
@@ -1280,15 +1288,17 @@ start_from_file(PCLopts) ->
     % vnode syncronisation issues (e.g. stop them all by default merging to
     % level zero concurrently)
     
-    InitState = #state{clerk = MergeClerk,
-                        root_path = RootPath,
-                        levelzero_maxcachesize = MaxTableSize,
-                        levelzero_cointoss = CoinToss,
-                        levelzero_index = [],
-                        snaptimeout_short = SnapTimeoutShort,
-                        snaptimeout_long = SnapTimeoutLong,
-                        sst_options = OptsSST,
-                        monitor = Monitor},
+    InitState =
+        #state{
+            clerk = MergeClerk,
+            root_path = RootPath,
+            levelzero_maxcachesize = MaxTableSize,
+            levelzero_cointoss = CoinToss,
+            levelzero_index = [],
+            snaptimeout_short = SnapTimeoutShort,
+            snaptimeout_long = SnapTimeoutLong,
+            sst_options = OptsSST,
+            monitor = Monitor},
     
     %% Open manifest
     Manifest0 = leveled_pmanifest:open_manifest(RootPath),
@@ -1311,33 +1321,34 @@ start_from_file(PCLopts) ->
         case filelib:is_file(filename:join(sst_rootpath(RootPath), L0FN)) of
             true ->
                 leveled_log:log(p0015, [L0FN]),
-                L0Open = leveled_sst:sst_open(sst_rootpath(RootPath),
-                                                L0FN,
-                                                OptsSST,
-                                                0),
+                L0Open =
+                    leveled_sst:sst_open(
+                        sst_rootpath(RootPath), L0FN, OptsSST, 0),
                 {ok, L0Pid, {L0StartKey, L0EndKey}, Bloom} = L0Open,
                 L0SQN = leveled_sst:sst_getmaxsequencenumber(L0Pid),
-                L0Entry = #manifest_entry{start_key = L0StartKey,
-                                            end_key = L0EndKey,
-                                            filename = L0FN,
-                                            owner = L0Pid,
-                                            bloom = Bloom},
+                L0Entry =
+                    #manifest_entry{
+                        start_key = L0StartKey,
+                        end_key = L0EndKey,
+                        filename = L0FN,
+                        owner = L0Pid,
+                        bloom = Bloom},
                 Manifest2 = 
-                    leveled_pmanifest:insert_manifest_entry(Manifest1,
-                                                            ManSQN + 1,
-                                                            0,
-                                                            L0Entry),
+                    leveled_pmanifest:insert_manifest_entry(
+                        Manifest1, ManSQN + 1, 0, L0Entry),
                 leveled_log:log(p0016, [L0SQN]),
                 LedgerSQN = max(MaxSQN, L0SQN),
-                {InitState#state{manifest = Manifest2,
-                                    ledger_sqn = LedgerSQN,
-                                    persisted_sqn = LedgerSQN},
+                {InitState#state{
+                        manifest = Manifest2,
+                        ledger_sqn = LedgerSQN,
+                        persisted_sqn = LedgerSQN},
                     [L0FN|FileList]};
             false ->
                 leveled_log:log(p0017, []),
-                {InitState#state{manifest = Manifest1,
-                                    ledger_sqn = MaxSQN,
-                                    persisted_sqn = MaxSQN},
+                {InitState#state{
+                        manifest = Manifest1,
+                        ledger_sqn = MaxSQN,
+                        persisted_sqn = MaxSQN},
                     FileList}
         end,
     ok = archive_files(RootPath, FileList0),
@@ -1373,7 +1384,6 @@ shutdown_manifest(Manifest, L0Constructor) ->
     leveled_pmanifest:close_manifest(Manifest, EntryCloseFun),
     EntryCloseFun(L0Constructor).
 
-
 -spec check_alive(pid()|undefined) -> boolean().
 %% @doc
 %% Double-check a processis active before attempting to terminate
@@ -1381,7 +1391,6 @@ check_alive(Owner) when is_pid(Owner) ->
     is_process_alive(Owner);
 check_alive(_Owner) ->
     false.
-
 
 -spec archive_files(list(), list()) -> ok.
 %% @doc
@@ -1483,7 +1492,6 @@ roll_memory(NextManSQN, LedgerSQN, RootPath, L0Cache, CL, SSTOpts, true) ->
             L0Path, L0FN, 0, KVList, LedgerSQN, SSTOpts),
     {Constructor, Bloom}.
 
-
 -spec timed_fetch_mem(
     tuple(),
     {integer(), integer()}, 
@@ -1506,7 +1514,6 @@ timed_fetch_mem(Key, Hash, Manifest, L0Cache, L0Index, Monitor) ->
     {TS0, _SW1} = leveled_monitor:step_time(SW0),
     maybelog_fetch_timing(Monitor, Level, TS0, R == not_present),
     R.
-
 
 -spec fetch_sqn(
     leveled_codec:ledger_key(),
@@ -1587,7 +1594,6 @@ log_slowfetch(T0, R, PID, Level, FetchTolerance) ->
             R
     end.
 
-
 -spec compare_to_sqn(
     leveled_codec:ledger_kv()|leveled_codec:sqn()|not_present,
     integer()) -> sqn_check().
@@ -1609,328 +1615,6 @@ compare_to_sqn(ObjSQN, _SQN) when is_integer(ObjSQN) ->
 compare_to_sqn(Obj, SQN) ->
     compare_to_sqn(leveled_codec:strip_to_seqonly(Obj), SQN).
 
-
-%%%============================================================================
-%%% Iterator functions 
-%%% 
-%%% TODO - move to dedicated module with extended unit testing
-%%%============================================================================
-
-
--spec keyfolder(
-    {list(), list()},
-    {leveled_codec:ledger_key(), leveled_codec:ledger_key()},
-    {pclacc_fun(), any(), pos_integer()},
-    {boolean(), {non_neg_integer(), pos_integer()|infinity}, integer()})
-    -> any().
-%% @doc
-%% The keyfolder will compare an iterator across the immutable in-memory cache
-%% of the Penciller (the IMMiter), with an iterator across the persisted part 
-%% (the SSTiter).
-%%
-%% A Segment List and a MaxKeys may be passed.  Every time something is added 
-%% to the accumulator MaxKeys is reduced - so set MaxKeys to -1 if it is 
-%% intended to be infinite.
-%%
-%% The basic principle is to take the next key in the IMMiter and compare it
-%% to the next key in the SSTiter, and decide which one should be added to the
-%% accumulator.  The iterators are advanced if they either win (i.e. are the 
-%% next key), or are dominated. This goes on until the iterators are empty.
-%%
-%% To advance the SSTiter the find_nextkey/4 function is used, as the SSTiter
-%% is an iterator across multiple levels - and so needs to do its own 
-%% comparisons to pop the next result.
-keyfolder(_Iterators,
-            _KeyRange,
-            {_AccFun, Acc, _Now}, 
-            {_SegmentList, _LastModRange, MaxKeys}) when MaxKeys == 0 ->
-    {0, Acc};
-keyfolder({[], SSTiter}, KeyRange, {AccFun, Acc, Now}, 
-                    {SegmentList, LastModRange, MaxKeys}) ->
-    {StartKey, EndKey} = KeyRange,
-    case find_nextkey(SSTiter, StartKey, EndKey, 
-                        SegmentList, element(1, LastModRange)) of
-        no_more_keys ->
-            case MaxKeys > 0 of
-                true ->
-                    % This query had a max count, so we must respond with the
-                    % remainder on the count
-                    {MaxKeys, Acc};
-                false ->
-                    % This query started with a MaxKeys set to -1.  Query is 
-                    % not interested in having MaxKeys in Response
-                    Acc
-            end;
-        {NxSSTiter, {SSTKey, SSTVal}} ->
-            {Acc1, MK1} = 
-                maybe_accumulate(SSTKey, SSTVal,
-                                    {Acc, AccFun, Now},
-                                    MaxKeys, LastModRange),
-            keyfolder({[], NxSSTiter}, 
-                        KeyRange, 
-                        {AccFun, Acc1, Now}, 
-                        {SegmentList, LastModRange, MK1})
-    end;
-keyfolder({[{IMMKey, IMMVal}|NxIMMiterator], SSTiterator}, 
-            KeyRange, 
-            {AccFun, Acc, Now}, 
-            {SegmentList, LastModRange, MaxKeys}) ->
-    {StartKey, EndKey} = KeyRange,
-    case {IMMKey < StartKey, leveled_codec:endkey_passed(EndKey, IMMKey)} of
-        {false, true} ->
-            % There are no more keys in-range in the in-memory
-            % iterator, so take action as if this iterator is empty
-            % (see above)
-            keyfolder({[], SSTiterator},
-                        KeyRange,
-                        {AccFun, Acc, Now},
-                        {SegmentList, LastModRange, MaxKeys});
-        {false, false} ->
-            case find_nextkey(SSTiterator, StartKey, EndKey,
-                                SegmentList, element(1, LastModRange)) of
-                no_more_keys ->
-                    % No more keys in range in the persisted store, so use the
-                    % in-memory KV as the next
-                    {Acc1, MK1} = 
-                        maybe_accumulate(IMMKey, IMMVal,
-                                            {Acc, AccFun, Now},
-                                            MaxKeys, LastModRange),
-                    keyfolder({NxIMMiterator, 
-                                    []},
-                                KeyRange,
-                                {AccFun, Acc1, Now},
-                                {SegmentList, LastModRange, MK1});
-                {NxSSTiterator, {SSTKey, SSTVal}} ->
-                    % There is a next key, so need to know which is the
-                    % next key between the two (and handle two keys
-                    % with different sequence numbers).  
-                    case leveled_codec:key_dominates({IMMKey,
-                                                            IMMVal},
-                                                        {SSTKey,
-                                                            SSTVal}) of
-                        left_hand_first ->
-                            {Acc1, MK1} = 
-                                maybe_accumulate(IMMKey, IMMVal,
-                                                    {Acc, AccFun, Now},
-                                                    MaxKeys, LastModRange),
-                            % Stow the previous best result away at Level -1 
-                            % so that there is no need to iterate to it again
-                            NewEntry = {-1, [{SSTKey, SSTVal}]},
-                            keyfolder({NxIMMiterator, 
-                                            lists:keystore(-1, 
-                                                            1, 
-                                                            NxSSTiterator, 
-                                                            NewEntry)},
-                                        KeyRange,
-                                        {AccFun, Acc1, Now},
-                                        {SegmentList, LastModRange, MK1});
-                        right_hand_first ->
-                            {Acc1, MK1} = 
-                                maybe_accumulate(SSTKey, SSTVal,
-                                                    {Acc, AccFun, Now},
-                                                    MaxKeys, LastModRange),
-                            keyfolder({[{IMMKey, IMMVal}|NxIMMiterator],
-                                            NxSSTiterator},
-                                        KeyRange,
-                                        {AccFun, Acc1, Now},
-                                        {SegmentList, LastModRange, MK1});
-                        left_hand_dominant ->
-                            {Acc1, MK1} = 
-                                maybe_accumulate(IMMKey, IMMVal,
-                                                    {Acc, AccFun, Now},
-                                                    MaxKeys, LastModRange),
-                            % We can add to the accumulator here.  As the SST
-                            % key was the most dominant across all SST levels,
-                            % so there is no need to hold off until the IMMKey
-                            % is left hand first.
-                            keyfolder({NxIMMiterator, 
-                                            NxSSTiterator},
-                                        KeyRange,
-                                        {AccFun, Acc1, Now},
-                                        {SegmentList, LastModRange, MK1})
-                    end
-            end
-    end.    
-
--spec maybe_accumulate(leveled_codec:ledger_key(),
-                        leveled_codec:ledger_value(),
-                        {any(), pclacc_fun(), pos_integer()},
-                        integer(),
-                        {non_neg_integer(), non_neg_integer()|infinity})
-                    -> any().
-%% @doc
-%% Make an accumulation decision based one the date range
-maybe_accumulate(LK, LV,
-                    {Acc, AccFun, QueryStartTime},
-                    MaxKeys,
-                    {LowLastMod, HighLastMod}) ->
-    {_SQN, _SH, LMD} = leveled_codec:strip_to_indexdetails({LK, LV}),
-    RunAcc = 
-        (LMD == undefined) or 
-            ((LMD >= LowLastMod) and (LMD =< HighLastMod)),
-    case RunAcc and leveled_codec:is_active(LK, LV, QueryStartTime) of
-        true ->
-            {AccFun(LK, LV, Acc), MaxKeys - 1};
-        false ->
-            {Acc, MaxKeys}
-    end.
-
-
--spec find_nextkey(
-    iterator(), 
-    leveled_codec:ledger_key(),
-    leveled_codec:ledger_key(),
-    list(non_neg_integer())|false,
-    non_neg_integer())
-    -> no_more_keys|{iterator(), leveled_codec:ledger_kv()}.
-%% @doc
-%% Looks to find the best choice for the next key across the levels (other
-%% than in-memory table)
-%% In finding the best choice, the next key in a given level may be a next
-%% block or next file pointer which will need to be expanded
-find_nextkey(QueryArray, StartKey, EndKey, SegmentList, LowLastMod) ->
-    find_nextkey(QueryArray,
-                    -1,
-                    {null, null},
-                    StartKey, EndKey,
-                    SegmentList,
-                    LowLastMod,
-                    ?ITERATOR_SCANWIDTH).
-
-find_nextkey(_QueryArray, LCnt, 
-                {null, null}, 
-                _StartKey, _EndKey, 
-                _SegList, _LowLastMod, _Width) when LCnt > ?MAX_LEVELS ->
-    % The array has been scanned wihtout finding a best key - must be
-    % exhausted - respond to indicate no more keys to be found by the
-    % iterator
-    no_more_keys;
-find_nextkey(QueryArray, LCnt, 
-                {BKL, BestKV}, 
-                _StartKey, _EndKey, 
-                _SegList, _LowLastMod, _Width) when LCnt > ?MAX_LEVELS ->
-    % All levels have been scanned, so need to remove the best result from
-    % the array, and return that array along with the best key/sqn/status
-    % combination
-    {BKL, [BestKV|Tail]} = lists:keyfind(BKL, 1, QueryArray),
-    {lists:keyreplace(BKL, 1, QueryArray, {BKL, Tail}), BestKV};
-find_nextkey(QueryArray, LCnt, 
-                {BestKeyLevel, BestKV}, 
-                StartKey, EndKey, 
-                SegList, LowLastMod, Width) ->
-    % Get the next key at this level
-    {NextKey, RestOfKeys} = 
-        case lists:keyfind(LCnt, 1, QueryArray) of
-            false ->
-                {null, null};
-            {LCnt, []} ->
-                {null, null};
-            {LCnt, [NK|ROfKs]} ->
-                {NK, ROfKs}
-        end,
-    % Compare the next key at this level with the best key
-    case {NextKey, BestKeyLevel, BestKV} of
-        {null, BKL, BKV} ->
-            % There is no key at this level - go to the next level
-            find_nextkey(QueryArray,
-                            LCnt + 1,
-                            {BKL, BKV},
-                            StartKey, EndKey, 
-                            SegList, LowLastMod, Width);
-        {{next, Owner, _SK}, BKL, BKV} ->
-            % The first key at this level is pointer to a file - need to query
-            % the file to expand this level out before proceeding
-            Pointer = {next, Owner, StartKey, EndKey},
-            UpdList = leveled_sst:sst_expandpointer(Pointer,
-                                                        RestOfKeys,
-                                                        Width,
-                                                        SegList,
-                                                        LowLastMod),
-            NewEntry = {LCnt, UpdList},
-            % Need to loop around at this level (LCnt) as we have not yet
-            % examined a real key at this level
-            find_nextkey(lists:keyreplace(LCnt, 1, QueryArray, NewEntry),
-                            LCnt,
-                            {BKL, BKV},
-                            StartKey, EndKey, 
-                            SegList, LowLastMod, Width);
-        {{pointer, SSTPid, Slot, PSK, PEK}, BKL, BKV} ->
-            % The first key at this level is pointer within a file  - need to
-            % query the file to expand this level out before proceeding
-            Pointer = {pointer, SSTPid, Slot, PSK, PEK},
-            UpdList = leveled_sst:sst_expandpointer(Pointer,
-                                                        RestOfKeys,
-                                                        Width,
-                                                        SegList,
-                                                        LowLastMod),
-            NewEntry = {LCnt, UpdList},
-            % Need to loop around at this level (LCnt) as we have not yet
-            % examined a real key at this level
-            find_nextkey(lists:keyreplace(LCnt, 1, QueryArray, NewEntry),
-                            LCnt,
-                            {BKL, BKV},
-                            StartKey, EndKey, 
-                            SegList, LowLastMod, Width);
-        {{Key, Val}, null, null} ->
-            % No best key set - so can assume that this key is the best key,
-            % and check the lower levels
-            find_nextkey(QueryArray,
-                            LCnt + 1,
-                            {LCnt, {Key, Val}},
-                            StartKey, EndKey, 
-                            SegList, LowLastMod, Width);
-        {{Key, Val}, _BKL, {BestKey, _BestVal}} when Key < BestKey ->
-            % There is a real key and a best key to compare, and the real key
-            % at this level is before the best key, and so is now the new best
-            % key
-            % The QueryArray is not modified until we have checked all levels
-            find_nextkey(QueryArray,
-                            LCnt + 1,
-                            {LCnt, {Key, Val}},
-                            StartKey, EndKey, 
-                            SegList, LowLastMod, Width);
-        {{Key, Val}, BKL, {BestKey, BestVal}} when Key == BestKey ->
-            SQN = leveled_codec:strip_to_seqonly({Key, Val}),
-            BestSQN = leveled_codec:strip_to_seqonly({BestKey, BestVal}),
-            if
-                SQN =< BestSQN ->
-                    % This is a dominated key, so we need to skip over it
-                    NewQArray = lists:keyreplace(LCnt, 
-                                                    1, 
-                                                    QueryArray, 
-                                                    {LCnt, RestOfKeys}),
-                    find_nextkey(NewQArray,
-                                    LCnt + 1,
-                                    {BKL, {BestKey, BestVal}},
-                                    StartKey, EndKey, 
-                                    SegList, LowLastMod, Width);
-                SQN > BestSQN ->
-                    % There is a real key at the front of this level and it has
-                    % a higher SQN than the best key, so we should use this as
-                    % the best key
-                    % But we also need to remove the dominated key from the
-                    % lower level in the query array
-                    OldBestEntry = lists:keyfind(BKL, 1, QueryArray),
-                    {BKL, [{BestKey, BestVal}|BestTail]} = OldBestEntry,
-                    find_nextkey(lists:keyreplace(BKL,
-                                                    1,
-                                                    QueryArray,
-                                                    {BKL, BestTail}),
-                                    LCnt + 1,
-                                    {LCnt, {Key, Val}},
-                                    StartKey, EndKey, 
-                                    SegList, LowLastMod, Width)
-            end;
-        {_, BKL, BKV} ->
-            % This is not the best key
-            find_nextkey(QueryArray,
-                            LCnt + 1,
-                            {BKL, BKV},
-                            StartKey, EndKey, 
-                            SegList, LowLastMod, Width)
-    end.
-
-
 -spec maybelog_fetch_timing(
     leveled_monitor:monitor(),
     memory|leveled_pmanifest:lsm_level(),
@@ -1942,6 +1626,224 @@ maybelog_fetch_timing({Pid, _StatsFreq}, _Level, FetchTime, true) ->
     leveled_monitor:add_stat(Pid, {pcl_fetch_update, not_found, FetchTime});
 maybelog_fetch_timing({Pid, _StatsFreq}, Level, FetchTime, _NF) ->
     leveled_monitor:add_stat(Pid, {pcl_fetch_update, Level, FetchTime}).
+
+%%%============================================================================
+%%% Key folder
+%%%============================================================================
+
+-type sst_iterator()
+    :: #{
+        leveled_pmanifest:lsm_level() =>
+            list(leveled_sst:expandable_pointer()|leveled_codec:ledger_kv()),
+        -1 =>
+            list(leveled_codec:ledger_kv())}.
+-type max_keys() :: unlimited|non_neg_integer().
+-type iterator_level() :: -1|leveled_pmanifest:lsm_level().
+-type search_info() ::
+    {{leveled_codec:ledger_key(), leveled_codec:ledger_key()},
+        {non_neg_integer(), pos_integer()|infinity},
+        leveled_sst:segment_check_fun()}.
+
+-define(NULL_KEY, {null, null}).
+
+-spec keyfolder(
+    sst_iterator(),
+    {leveled_codec:ledger_key(), leveled_codec:ledger_key()},
+    {pclacc_fun(), any(), pos_integer()},
+    {leveled_sst:segment_check_fun(),
+        {non_neg_integer(), pos_integer()|infinity},
+        -1|non_neg_integer()}) -> {non_neg_integer(), term()}|term().
+keyfolder(
+        Iterator,
+        {StartKey, EndKey},
+        {AccFun, InitAcc, Now},
+        {SegCheckFun, LastModRange, KeyLimit}) ->
+    % The in-memory dump of keys in this range, may go beyond the end key - so
+    % strip these back before starting the fold 
+    StripIMMFun =
+        fun(MemIter) ->
+            lists:reverse(
+                lists:dropwhile(
+                    fun({K, _V}) -> leveled_codec:endkey_passed(EndKey, K) end,
+                    lists:reverse(MemIter)))
+        end,
+    MaxKeys = 
+        case KeyLimit of
+            -1 -> unlimited;
+            KeyLimit when is_integer(KeyLimit), KeyLimit >= 0 -> KeyLimit
+        end,
+    keyfolder(
+        maps:update_with(-1, StripIMMFun, Iterator),
+        InitAcc,
+        MaxKeys,
+        {?FOLD_SCANWIDTH, lists:sort(maps:keys(Iterator))},
+        {{StartKey, EndKey}, LastModRange, SegCheckFun},
+        {AccFun, Now}).
+
+-spec keyfolder(
+    sst_iterator()|no_more_keys,
+    term(),
+    max_keys(),
+    {pos_integer(), list(iterator_level())},
+    search_info(),
+    {pclacc_fun(), integer()}) -> {non_neg_integer(), term()}|term().
+%% @doc
+%% The keyfolder takes an iterator - a map with an entry for each level, from
+%% level -1 (the in-memory cache of keys) through to level 7 (the theoretical)
+%% maximum level. 
+%%
+%% The find_nextkeys function is used to scan the iterators to find the next
+%% set of W keys. These can then be accumulated.  If there is a MaxKeys set
+%% (i.e. a maximum number of KV pairs to be accumulated), then this must be
+%% tracked so the keyfolder never asks for more than the remainder from
+%% find_nextkeys 
+keyfolder(no_more_keys, Acc, MaxKeys, _LevelInfo, _SearchInfo, _AccDetails) ->
+    case MaxKeys of
+        unlimited -> Acc;
+        MaxKeys -> {MaxKeys, Acc}
+    end;
+keyfolder(_Iter, Acc, 0, _LevelInfo, _SearchInfo, _AccDetails) ->
+    {0, Acc};
+keyfolder(
+        Iter,
+        Acc,
+        MaxKeys,
+        {W, Ls}=LevelInfo,
+        {_KR, LastModRange, _SCF}=SearchInfo,
+        {AccFun, Now}=AccDetails) ->
+    {IterUpd, FoundKVs} =
+        find_nextkeys(
+            Iter,
+            {Ls, ?NULL_KEY},
+            [],
+            Ls,
+            {fetch_size(MaxKeys, W), scan_size(MaxKeys)},
+            SearchInfo),
+    {UpdAcc, KeyCount} =
+        leveled_codec:maybe_accumulate(
+            lists:reverse(FoundKVs), Acc, 0, {Now, LastModRange}, AccFun),
+    MaxKeysLeft =
+        case MaxKeys of
+            unlimited -> unlimited;
+            MaxKeys -> MaxKeys - KeyCount
+        end,
+    keyfolder(IterUpd, UpdAcc, MaxKeysLeft, LevelInfo, SearchInfo, AccDetails).
+
+-spec fetch_size(max_keys(), pos_integer()) -> pos_integer().
+fetch_size(unlimited, W) -> W;
+fetch_size(MaxKeys, W) -> min(MaxKeys, W).
+
+-spec scan_size(max_keys()) -> pos_integer().
+scan_size(unlimited) ->
+    ?ITERATOR_SCANWIDTH;
+scan_size(MaxKeys) ->
+    min(?ITERATOR_SCANWIDTH, max(?ITERATOR_MINSCANWIDTH, MaxKeys div 256)).
+
+-spec find_nextkeys(
+    sst_iterator(),
+    {list(iterator_level()),
+        {null|iterator_level(), null|leveled_codec:ledger_kv()}},
+    list(leveled_codec:ledger_kv()),
+    list(iterator_level()),
+    {pos_integer(), pos_integer()},
+    search_info()) ->
+            {no_more_keys, list(leveled_codec:ledger_kv())}|
+                {sst_iterator(), list(leveled_codec:ledger_kv())}.
+%% @doc
+%% Looks to find up to W keys, where for each key every level is checked,
+%% comparing keys to find the best key for that loop
+find_nextkeys(
+        _Iter, {[], ?NULL_KEY}, FoundKVs, _Ls, _BatchInfo, _SearchInfo) ->
+    % Each level checked and best key still NULL => no_more_keys
+    {no_more_keys, FoundKVs};
+find_nextkeys(
+        Iter, {[], {BKL, BestKV}}, FoundKVs, _Ls, {W, _SW}, _SearchInfo)
+            when length(FoundKVs) == W - 1 ->
+    % All levels scanned, and there are now W keys (W - 1 previously found plus
+    % the latest best key)
+    {maps:update_with(BKL, fun tl/1, Iter), [BestKV|FoundKVs]};
+find_nextkeys(
+        Iter, {[], {BKL, BestKV}}, FoundKVs, Ls, BatchInfo, SearchInfo) ->
+    % All levels scanned so this is the best key ... now loop to find more
+    find_nextkeys(
+        maps:update_with(BKL, fun tl/1, Iter),
+        {Ls, ?NULL_KEY},
+        [BestKV|FoundKVs],
+        Ls, BatchInfo, SearchInfo);
+find_nextkeys(
+        Iter,
+        {[LCnt|OtherLevels]=LoopLs, {BKL, BKV}=PrevBest},
+        FoundKVs,
+        Ls,
+        {_W, ScanWidth}=BI,
+        {{StartKey, EndKey}, {LowLastMod, _High}, SegChecker}=SI) ->
+    case maps:get(LCnt, Iter) of
+        [] ->
+            find_nextkeys(
+                Iter,
+                {OtherLevels, PrevBest},
+                FoundKVs,
+                Ls -- [LCnt], BI, SI);
+        [{next, Owner, _SK}|RestOfKeys] ->
+            % Expansion required
+            Pointer = {next, Owner, StartKey, EndKey},
+            UpdList =
+                leveled_sst:sst_expandpointer(
+                    Pointer, RestOfKeys, ScanWidth, SegChecker, LowLastMod),
+            % Need to loop around at this level (LCnt) as we have not yet
+            % examined a real key at this level
+            find_nextkeys(
+                maps:update(LCnt, UpdList, Iter),
+                {LoopLs, PrevBest},
+                FoundKVs,
+                Ls, BI, SI);
+        [{pointer, SSTPid, Slot, PSK, PEK}|RestOfKeys] ->
+            % Expansion required
+            Pointer = {pointer, SSTPid, Slot, PSK, PEK},
+            UpdList =
+                leveled_sst:sst_expandpointer(
+                    Pointer, RestOfKeys, ScanWidth, SegChecker, LowLastMod),
+            % Need to loop around at this level (LCnt) as we have not yet
+            % examined a real key at this level
+            find_nextkeys(
+                maps:update(LCnt, UpdList, Iter),
+                {LoopLs, PrevBest},
+                FoundKVs,
+                Ls, BI, SI);
+        [{Key, Val}|_RestOfKeys] when BKV == null ->
+            find_nextkeys(
+                Iter,
+                {OtherLevels, {LCnt, {Key, Val}}},
+                FoundKVs,
+                Ls, BI, SI);
+        [{Key, Val}|_RestOfKeys] when Key < element(1, BKV) ->
+            find_nextkeys(
+                Iter,
+                {OtherLevels, {LCnt, {Key, Val}}},
+                FoundKVs,
+                Ls, BI, SI);
+        [{Key, _Val}|_RestOfKeys] when Key > element(1, BKV) ->
+            find_nextkeys(
+                Iter,
+                {OtherLevels, PrevBest},
+                FoundKVs,
+                Ls, BI, SI);
+        [{Key, Val}|_RestOfKeys] ->
+            case leveled_codec:key_dominates({Key, Val}, BKV) of
+                true ->
+                    find_nextkeys(
+                        maps:update_with(BKL, fun tl/1, Iter),
+                        {OtherLevels, {LCnt, {Key, Val}}},
+                        FoundKVs,
+                        Ls, BI, SI);
+                false ->
+                    find_nextkeys(
+                        maps:update_with(LCnt, fun tl/1, Iter),
+                        {OtherLevels, PrevBest},
+                        FoundKVs,
+                        Ls, BI, SI)
+            end
+    end.
 
 
 %%%============================================================================
@@ -1962,15 +1864,32 @@ pcl_fetch(Pid, Key) ->
             gen_server:call(Pid, {fetch, Key, Hash, true}, infinity)
     end.
 
-keyfolder(IMMiter, SSTiter, StartKey, EndKey, {AccFun, Acc, Now}) ->
-    keyfolder({IMMiter, SSTiter}, 
-                {StartKey, EndKey},
-                {AccFun, Acc, Now},
-                {false, {0, infinity}, -1}).
+keyfolder_test(IMMiter, SSTiter, StartKey, EndKey, {AccFun, Acc, Now}) ->
+    keyfolder(
+        maps:put(-1, IMMiter, SSTiter),
+        {StartKey, EndKey},
+        {AccFun, Acc, Now},
+        {false, {0, infinity}, -1}).
+
+convert_qmanifest_tomap(SSTiter) ->
+    maps:from_list(SSTiter).
 
 find_nextkey(QueryArray, StartKey, EndKey) ->
-    find_nextkey(QueryArray, StartKey, EndKey, false, 0).
-                
+    {UpdArray, NextKeys} =
+        find_nextkeys(
+            QueryArray,
+            {maps:keys(QueryArray), ?NULL_KEY},
+            [],
+            maps:keys(QueryArray),
+            {1, 1},
+            {{StartKey, EndKey}, {0, infinity}, false}),
+    case UpdArray of
+        no_more_keys ->
+            no_more_keys;
+        UpdArray ->
+            [NextKey] = NextKeys,
+            {UpdArray, NextKey}
+    end.
 
 generate_randomkeys({Count, StartSQN}) ->
     generate_randomkeys(Count, StartSQN, []).
@@ -1988,7 +1907,6 @@ generate_randomkeys(Count, SQN, Acc) ->
                 leveled_codec:segment_hash(K),
                 null}},
     generate_randomkeys(Count - 1, SQN + 1, [RandKey|Acc]).
-    
 
 clean_testdir(RootPath) ->
     clean_subdir(sst_rootpath(RootPath)),
@@ -2007,7 +1925,6 @@ clean_subdir(DirPath) ->
         false ->
             ok
     end.
-
 
 maybe_pause_push(PCL, KL) ->
     T0 = [],
@@ -2196,30 +2113,22 @@ simple_server_test() ->
     ?assertMatch(Key2, pcl_fetch(PclSnap, {o,"Bucket0002", "Key0002", null})),
     ?assertMatch(Key3, pcl_fetch(PclSnap, {o,"Bucket0003", "Key0003", null})),
     ?assertMatch(Key4, pcl_fetch(PclSnap, {o,"Bucket0004", "Key0004", null})),
-    ?assertMatch(current, pcl_checksequencenumber(PclSnap,
-                                                {o,
-                                                    "Bucket0001",
-                                                    "Key0001",
-                                                    null},
-                                                1)),
-    ?assertMatch(current, pcl_checksequencenumber(PclSnap,
-                                                {o,
-                                                    "Bucket0002",
-                                                    "Key0002",
-                                                    null},
-                                                1002)),
-    ?assertMatch(current, pcl_checksequencenumber(PclSnap,
-                                                {o,
-                                                    "Bucket0003",
-                                                    "Key0003",
-                                                    null},
-                                                2003)),
-    ?assertMatch(current, pcl_checksequencenumber(PclSnap,
-                                                {o,
-                                                    "Bucket0004",
-                                                    "Key0004",
-                                                    null},
-                                                3004)),
+    ?assertMatch(
+        current, 
+        pcl_checksequencenumber(
+            PclSnap, {o, "Bucket0001", "Key0001", null}, 1)),
+    ?assertMatch(
+        current,
+        pcl_checksequencenumber(
+            PclSnap, {o, "Bucket0002", "Key0002", null}, 1002)),
+    ?assertMatch(
+        current,
+        pcl_checksequencenumber(
+            PclSnap, {o, "Bucket0003", "Key0003", null}, 2003)),
+    ?assertMatch(
+        current,
+        pcl_checksequencenumber(
+            PclSnap, {o, "Bucket0004", "Key0004", null}, 3004)),
 
     % Add some more keys and confirm that check sequence number still
     % sees the old version in the previous snapshot, but will see the new 
@@ -2231,12 +2140,10 @@ simple_server_test() ->
     KL1A = generate_randomkeys({2000, 4006}),
     ok = maybe_pause_push(PCLr, [Key1A]),
     ok = maybe_pause_push(PCLr, KL1A),
-    ?assertMatch(current, pcl_checksequencenumber(PclSnap,
-                                                {o,
-                                                    "Bucket0001",
-                                                    "Key0001",
-                                                    null},
-                                                1)),
+    ?assertMatch(
+        current,
+        pcl_checksequencenumber(
+            PclSnap, {o, "Bucket0001", "Key0001", null}, 1)),
     ok = pcl_close(PclSnap),
      
     {ok, PclSnap2, null} = 
@@ -2249,36 +2156,31 @@ simple_server_test() ->
             undefined,
             false),
     
-    ?assertMatch(replaced, pcl_checksequencenumber(PclSnap2,
-                                                {o,
-                                                    "Bucket0001",
-                                                    "Key0001",
-                                                    null},
-                                                1)),
-    ?assertMatch(current, pcl_checksequencenumber(PclSnap2,
-                                                {o,
-                                                    "Bucket0001",
-                                                    "Key0001",
-                                                    null},
-                                                4005)),
-    ?assertMatch(current, pcl_checksequencenumber(PclSnap2,
-                                                {o,
-                                                    "Bucket0002",
-                                                    "Key0002",
-                                                    null},
-                                                1002)),
+    ?assertMatch(
+        replaced,
+        pcl_checksequencenumber(
+            PclSnap2, {o, "Bucket0001", "Key0001", null}, 1)),
+    ?assertMatch(
+        current,
+        pcl_checksequencenumber(
+            PclSnap2, {o, "Bucket0001", "Key0001", null}, 4005)),
+    ?assertMatch(
+        current,
+        pcl_checksequencenumber(
+            PclSnap2, {o, "Bucket0002", "Key0002", null}, 1002)),
     ok = pcl_close(PclSnap2),
     ok = pcl_close(PCLr),
     clean_testdir(RootPath).
 
 
 simple_findnextkey_test() ->
-    QueryArray = [
+    QueryArrayAsList = [
     {2, [{{o, "Bucket1", "Key1", null}, {5, {active, infinity}, {0, 0}, null}},
         {{o, "Bucket1", "Key5", null}, {4, {active, infinity}, {0, 0}, null}}]},
     {3, [{{o, "Bucket1", "Key3", null}, {3, {active, infinity}, {0, 0}, null}}]},
     {5, [{{o, "Bucket1", "Key2", null}, {2, {active, infinity}, {0, 0}, null}}]}
     ],
+    QueryArray = convert_qmanifest_tomap(QueryArrayAsList),
     {Array2, KV1} = find_nextkey(QueryArray,
                                     {o, "Bucket1", "Key0", null},
                                     {o, "Bucket1", "Key5", null}),
@@ -2309,12 +2211,13 @@ simple_findnextkey_test() ->
     ?assertMatch(no_more_keys, ER).
 
 sqnoverlap_findnextkey_test() ->
-    QueryArray = [
+    QueryArrayAsList = [
     {2, [{{o, "Bucket1", "Key1", null}, {5, {active, infinity}, {0, 0}, null}},
         {{o, "Bucket1", "Key5", null}, {4, {active, infinity}, {0, 0}, null}}]},
     {3, [{{o, "Bucket1", "Key3", null}, {3, {active, infinity}, {0, 0}, null}}]},
     {5, [{{o, "Bucket1", "Key5", null}, {2, {active, infinity}, {0, 0}, null}}]}
     ],
+    QueryArray = convert_qmanifest_tomap(QueryArrayAsList),
     {Array2, KV1} = find_nextkey(QueryArray,
                                     {o, "Bucket1", "Key0", null},
                                     {o, "Bucket1", "Key5", null}),
@@ -2339,12 +2242,13 @@ sqnoverlap_findnextkey_test() ->
     ?assertMatch(no_more_keys, ER).
 
 sqnoverlap_otherway_findnextkey_test() ->
-    QueryArray = [
+    QueryArrayAsList = [
     {2, [{{o, "Bucket1", "Key1", null}, {5, {active, infinity}, {0, 0}, null}},
         {{o, "Bucket1", "Key5", null}, {1, {active, infinity}, {0, 0}, null}}]},
     {3, [{{o, "Bucket1", "Key3", null}, {3, {active, infinity}, {0, 0}, null}}]},
     {5, [{{o, "Bucket1", "Key5", null}, {2, {active, infinity}, {0, 0}, null}}]}
     ],
+    QueryArray = convert_qmanifest_tomap(QueryArrayAsList),
     {Array2, KV1} = find_nextkey(QueryArray,
                                     {o, "Bucket1", "Key0", null},
                                     {o, "Bucket1", "Key5", null}),
@@ -2370,7 +2274,7 @@ sqnoverlap_otherway_findnextkey_test() ->
 
 foldwithimm_simple_test() ->
     Now = leveled_util:integer_now(),
-    QueryArray = [
+    QueryArrayAsList = [
         {2, [{{o, "Bucket1", "Key1", null},
                     {5, {active, infinity}, 0, null}},
                 {{o, "Bucket1", "Key5", null},
@@ -2380,6 +2284,7 @@ foldwithimm_simple_test() ->
         {5, [{{o, "Bucket1", "Key5", null},
                 {2, {active, infinity}, 0, null}}]}
     ],
+    QueryArray = convert_qmanifest_tomap(QueryArrayAsList),
     KL1A = [{{o, "Bucket1", "Key6", null}, {7, {active, infinity}, 0, null}},
             {{o, "Bucket1", "Key1", null}, {8, {active, infinity}, 0, null}},
             {{o, "Bucket1", "Key8", null}, {9, {active, infinity}, 0, null}}],
@@ -2389,7 +2294,7 @@ foldwithimm_simple_test() ->
                                         IMM2),
     AccFun = fun(K, V, Acc) -> SQN = leveled_codec:strip_to_seqonly({K, V}),
                                 Acc ++ [{K, SQN}] end,
-    Acc = keyfolder(IMMiter,
+    Acc = keyfolder_test(IMMiter,
                     QueryArray,
                     {o, "Bucket1", "Key1", null}, {o, "Bucket1", "Key6", null},
                     {AccFun, [], Now}),
@@ -2400,7 +2305,7 @@ foldwithimm_simple_test() ->
     
     IMMiterA = [{{o, "Bucket1", "Key1", null},
                     {8, {active, infinity}, 0, null}}],
-    AccA = keyfolder(IMMiterA,
+    AccA = keyfolder_test(IMMiterA,
                         QueryArray,
                         {o, "Bucket1", "Key1", null}, 
                         {o, "Bucket1", "Key6", null},
@@ -2416,7 +2321,7 @@ foldwithimm_simple_test() ->
                                         {o, null, null, null},
                                         IMM3),
     io:format("Compare IMM3 with QueryArrary~n"),
-    AccB = keyfolder(IMMiterB,
+    AccB = keyfolder_test(IMMiterB,
                     QueryArray,
                     {o, "Bucket1", "Key1", null}, {o, "Bucket1", "Key6", null},
                     {AccFun, [], Now}),
@@ -2452,7 +2357,6 @@ create_file_test() ->
 slow_fetch_test() ->
     ?assertMatch(not_present, log_slowfetch(2, not_present, "fake", 0, 1)),
     ?assertMatch("value", log_slowfetch(2, "value", "fake", 0, 1)).
-
 
 coverage_cheat_test() ->
     {noreply, _State0} = handle_info(timeout, #state{}),
