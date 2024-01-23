@@ -78,8 +78,8 @@ In order to contribute to leveled, fork the repository, make a branch for your c
 
 To have rebar3 execute the full set of tests, run:
 
-```rebar3 as test do xref, dialyzer, cover --reset, eunit --cover, ct --cover, cover --verbose```
+```./rebar3 do xref, dialyzer, cover --reset, eunit --cover, ct --cover, cover --verbose```
 
 For those with a Quickcheck license, property-based tests can also be run using:
 
-```rebar3 as eqc do eunit --module=leveled_simpleeqc, eunit --module=leveled_statemeqc```
+```./rebar3 as eqc do eunit --module=leveled_simpleeqc, eunit --module=leveled_statemeqc```

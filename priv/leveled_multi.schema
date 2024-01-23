@@ -39,9 +39,19 @@
 %% Can be lz4 or native (which will use the Erlang native zlib compression)
 %% within term_to_binary
 {mapping, "multi_backend.$name.leveled.compression_method", "riak_kv.multi_backend", [
-  {datatype, {enum, [native, lz4, none]}},
+  {datatype, {enum, [native, lz4, zstd, none]}},
   {default, native},
   hidden
+]}.
+
+%% @doc Ledger compression
+%% If an alternative compression method is preferred specifically for the
+%% ledger, it can be specified here.  Default is as_store - use whatever method
+%% has been defined in leveled.compression.method.  Alternatives are native,
+%% lz4, ztsd and none
+{mapping, "multi_backend.$name.ledger_compression", "riak_kv.multi_backend", [
+  {datatype, {enum, [as_store, native, lz4, zstd, none]}},
+  {default, as_store}
 ]}.
 
 %% @doc Compression point

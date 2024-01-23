@@ -8,41 +8,45 @@
 
 all() -> [riak_ctperf].
 suite() -> [{timetrap, {hours, 16}}].
-    
 
-% For full performance test
 riak_fullperf(_Config) ->
-    R2A = riak_load_tester(<<"B0">>, 2000000, 2048, [], native),
+    riak_fullperf(2048, zstd, as_store).
+
+riak_fullperf(ObjSize, PM, LC) ->
+    Bucket = {<<"SensibleBucketTypeName">>, <<"SensibleBucketName0">>},
+    R2A = riak_load_tester(Bucket, 2000000, ObjSize, [], PM, LC),
     output_result(R2A),
-    R2B = riak_load_tester(<<"B0">>, 2000000, 2048, [], native),
+    R2B = riak_load_tester(Bucket, 2000000, ObjSize, [], PM, LC),
     output_result(R2B),
-    R2C = riak_load_tester(<<"B0">>, 2000000, 2048, [], native),
+    R2C = riak_load_tester(Bucket, 2000000, ObjSize, [], PM, LC),
     output_result(R2C),
-    R5A = riak_load_tester(<<"B0">>, 5000000, 2048, [], native),
+    R5A = riak_load_tester(Bucket, 5000000, ObjSize, [], PM, LC),
     output_result(R5A),
-    R5B = riak_load_tester(<<"B0">>, 5000000, 2048, [], native),
+    R5B = riak_load_tester(Bucket, 5000000, ObjSize, [], PM, LC),
     output_result(R5B),
-    R10 = riak_load_tester(<<"B0">>, 10000000, 2048, [], native),
+    R10 = riak_load_tester(Bucket, 10000000, ObjSize, [], PM, LC),
     output_result(R10)
     .
 
 riak_profileperf(_Config) ->
     riak_load_tester(
-        <<"B0">>,
+        {<<"SensibleBucketTypeName">>, <<"SensibleBucketName0">>},
         2000000,
         2048,
         [load, head, get, query, mini_query, full, guess, estimate, update],
-        native).
+        zstd,
+        as_store
+    ).
 
 % For standard ct test runs
 riak_ctperf(_Config) ->
-    riak_load_tester(<<"B0">>, 400000, 1024, [], native).
+    riak_load_tester(<<"B0">>, 400000, 1024, [], native, as_store).
 
-riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PressMethod) ->
+riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
     ct:log(
         ?INFO,
-        "Basic riak test with KeyCount ~w ObjSize ~w",
-        [KeyCount, ObjSize]
+        "Basic riak test with KeyCount ~w ObjSize ~w PressMethod ~w Ledger ~w",
+        [KeyCount, ObjSize, PM, LC]
     ),
     IndexCount = 100000,
 
@@ -55,7 +59,8 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PressMethod) ->
         [{root_path, RootPath},
             {sync_strategy, testutil:sync_strategy()},
             {log_level, warn},
-            {compression_method, PressMethod},
+            {compression_method, PM},
+            {ledger_compression, LC},
             {forced_logs,
                 [b0015, b0016, b0017, b0018, p0032, sst12]}
         ],
@@ -175,7 +180,7 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PressMethod) ->
     {_Inker, _Pcl, SSTPids, _PClerk, CDBPids, _IClerk} = get_pids(Bookie1),
     leveled_bookie:book_destroy(Bookie1),
     
-    {KeyCount, ObjSize, PressMethod,
+    {KeyCount, ObjSize, {PM, LC},
         TotalLoadTime,
         TotalHeadTime, TotalGetTime,
         TotalQueryTime, TotalMiniQueryTime, FullFoldTime, SegFoldTime,
