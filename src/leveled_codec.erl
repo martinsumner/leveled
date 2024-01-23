@@ -612,6 +612,10 @@ deserialise_object(Binary, true, false, _) ->
 deserialise_object(Binary, false, _, _) ->
     binary_to_term(Binary).
 
+-spec encode_valuetype(boolean(), boolean(), native|lz4|zstd|none) -> 0..15.
+%% @doc Note that IsCompressed will be based on the compression_point
+%% configuration option when the object is first stored (i.e. only `true` if
+%% this is set to `on_receipt`).  On compaction this will be set to true.
 encode_valuetype(IsBinary, IsCompressed, Method) ->
     {Bit3, Bit4} = 
         case Method of 
