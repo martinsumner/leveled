@@ -4,13 +4,14 @@
   {vsn, git},
   {registered, []},
   {applications, [
-                  lz4,
-                  zstd,
+                  leveled_lz4,
+                  leveled_zstd,
                   kernel,
                   stdlib
                  ]},
   {maintainers, ["Martin Sumner"]},
-  {licenses, ["Apache"]},
+  {licenses, ["Apache-2.0"]},
+  {pkg_name, leveled},
   {links, [{"Github", "https://github.com/martinsumner/leveled"}]},
   {env, [{root_path, "test"}]}
  ]}.
