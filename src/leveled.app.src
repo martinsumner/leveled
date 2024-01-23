@@ -9,7 +9,6 @@
                   kernel,
                   stdlib
                  ]},
-  {maintainers, ["Martin Sumner"]},
   {licenses, ["Apache-2.0"]},
   {pkg_name, leveled},
   {links, [{"Github", "https://github.com/martinsumner/leveled"}]},
