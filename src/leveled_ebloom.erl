@@ -4,13 +4,13 @@
 %% (a leveled codec type) are, used for building and checking - the filter
 %% splits a single hash into a 1 byte slot identifier, and 2 x 12 bit hashes
 %% (so k=2, although only a single hash is used).
-%% 
+%%
 %% The filter is designed to support a maximum of 64K keys, larger numbers of
 %% keys will see higher fprs - with a 40% fpr at 250K keys.
-%% 
+%%
 %% The filter uses the second "Extra Hash" part of the segment-hash to ensure
 %% no overlap of fpr with the leveled_sst find_pos function.
-%% 
+%%
 %% The completed bloom is a binary - to minimise the cost of copying between
 %% processes and holding in memory.
 
@@ -19,18 +19,18 @@
 -export([
     create_bloom/1,
     check_hash/2
-    ]).
+]).
 
 -define(BLOOM_SLOTSIZE_BYTES, 512).
 -define(INTEGER_SLICE_SIZE, 64).
 -define(INTEGER_SLICES, 64).
-    % i.e. ?INTEGER_SLICES * ?INTEGER_SLICE_SIZE = ?BLOOM_SLOTSIZE_BYTES div 8
+% i.e. ?INTEGER_SLICES * ?INTEGER_SLICE_SIZE = ?BLOOM_SLOTSIZE_BYTES div 8
 -define(MASK_BSR, 6).
-    % i.e. 2 ^ (12 - 6) = ?INTEGER_SLICES
+% i.e. 2 ^ (12 - 6) = ?INTEGER_SLICES
 -define(MASK_BAND, 63).
-    % i.e. integer slize size - 1
+% i.e. integer slize size - 1
 -define(SPLIT_BAND, 4095).
-    % i.e. (?BLOOM_SLOTSIZE_BYTES * 8) - 1
+% i.e. (?BLOOM_SLOTSIZE_BYTES * 8) - 1
 
 -type bloom() :: binary().
 
@@ -68,7 +68,7 @@ create_bloom(HashList) ->
 %% element of the leveled_codec:segment_hash/0 type is used - a 32-bit hash.
 check_hash(_Hash, <<>>) ->
     false;
-check_hash({_SegHash, Hash}, BloomBin) when is_binary(BloomBin)->
+check_hash({_SegHash, Hash}, BloomBin) when is_binary(BloomBin) ->
     SlotSplit = byte_size(BloomBin) div ?BLOOM_SLOTSIZE_BYTES,
     {Slot, [H0, H1]} = split_hash(Hash, SlotSplit),
     Pos = ((Slot + 1) * ?BLOOM_SLOTSIZE_BYTES) - 1,
@@ -78,29 +78,31 @@ check_hash({_SegHash, Hash}, BloomBin) when is_binary(BloomBin)->
         _ ->
             false
     end.
-    
+
 %%%============================================================================
 %%% Internal Functions
 %%%============================================================================
 
--type slot_count() :: 0|2..128.
+-type slot_count() :: 0 | 2..128.
 -type bloom_hash() :: 0..16#FFF.
 -type external_hash() :: 0..16#FFFFFFFF.
 
 -spec map_hashes(
-        list(leveled_codec:segment_hash()), tuple(), slot_count()) -> tuple().
-map_hashes([], HashListTuple,  _SlotCount) ->
+    list(leveled_codec:segment_hash()), tuple(), slot_count()
+) -> tuple().
+map_hashes([], HashListTuple, _SlotCount) ->
     HashListTuple;
-map_hashes([Hash|Rest], HashListTuple, SlotCount) ->
+map_hashes([Hash | Rest], HashListTuple, SlotCount) ->
     {Slot, Hashes} = split_hash(element(2, Hash), SlotCount),
     SlotHL = element(Slot + 1, HashListTuple),
     map_hashes(
         Rest,
         setelement(Slot + 1, HashListTuple, Hashes ++ SlotHL),
-        SlotCount).
+        SlotCount
+    ).
 
--spec split_hash(external_hash(), slot_count())
-        -> {non_neg_integer(), [bloom_hash()]}.
+-spec split_hash(external_hash(), slot_count()) ->
+    {non_neg_integer(), [bloom_hash()]}.
 split_hash(Hash, SlotSplit) ->
     Slot = (Hash band 255) rem SlotSplit,
     H0 = (Hash bsr 8) band ?SPLIT_BAND,
@@ -121,7 +123,8 @@ build_bloom(SlotHashes, SlotCount) when SlotCount > 0 ->
             HashList = element(I, SlotHashes),
             SlotBin =
                 add_hashlist(
-                    lists:usort(HashList), 0, 1, ?INTEGER_SLICES, <<>>),
+                    lists:usort(HashList), 0, 1, ?INTEGER_SLICES, <<>>
+                ),
             <<SlotBin/binary, AccBin/binary>>
         end,
         <<>>,
@@ -129,11 +132,12 @@ build_bloom(SlotHashes, SlotCount) when SlotCount > 0 ->
     ).
 
 -spec add_hashlist(
-        list(bloom_hash()),
-        non_neg_integer(),
-        non_neg_integer(),
-        0..?INTEGER_SLICES,
-        binary()) -> bloom().
+    list(bloom_hash()),
+    non_neg_integer(),
+    non_neg_integer(),
+    0..?INTEGER_SLICES,
+    binary()
+) -> bloom().
 add_hashlist([], ThisSlice, SliceCount, SliceCount, AccBin) ->
     <<ThisSlice:?INTEGER_SLICE_SIZE/integer, AccBin/binary>>;
 add_hashlist([], ThisSlice, SliceNumber, SliceCount, AccBin) ->
@@ -142,19 +146,23 @@ add_hashlist([], ThisSlice, SliceNumber, SliceCount, AccBin) ->
         0,
         SliceNumber + 1,
         SliceCount,
-        <<ThisSlice:?INTEGER_SLICE_SIZE/integer, AccBin/binary>>);
-add_hashlist([H0|Rest], ThisSlice, SliceNumber, SliceCount, AccBin)
-        when ((H0 bsr ?MASK_BSR) + 1) == SliceNumber ->
+        <<ThisSlice:?INTEGER_SLICE_SIZE/integer, AccBin/binary>>
+    );
+add_hashlist([H0 | Rest], ThisSlice, SliceNumber, SliceCount, AccBin) when
+    ((H0 bsr ?MASK_BSR) + 1) == SliceNumber
+->
     Mask0 = 1 bsl (H0 band (?MASK_BAND)),
     add_hashlist(
-        Rest, ThisSlice bor Mask0, SliceNumber, SliceCount, AccBin);
+        Rest, ThisSlice bor Mask0, SliceNumber, SliceCount, AccBin
+    );
 add_hashlist(Rest, ThisSlice, SliceNumber, SliceCount, AccBin) ->
     add_hashlist(
         Rest,
         0,
         SliceNumber + 1,
         SliceCount,
-        <<ThisSlice:?INTEGER_SLICE_SIZE/integer, AccBin/binary>>).
+        <<ThisSlice:?INTEGER_SLICE_SIZE/integer, AccBin/binary>>
+    ).
 
 %%%============================================================================
 %%% Test
@@ -180,7 +188,8 @@ generate_orderedkeys(Seqn, Count, Acc, BucketLow, BucketHigh) ->
     {_B, _K, MV, _H, _LMs} =
         leveled_codec:generate_ledgerkv(LK, Seqn, Chunk, 64, infinity),
     generate_orderedkeys(
-        Seqn + 1, Count - 1, [{LK, MV}|Acc], BucketLow, BucketHigh).
+        Seqn + 1, Count - 1, [{LK, MV} | Acc], BucketLow, BucketHigh
+    ).
 
 get_hashlist(N) ->
     KVL = generate_orderedkeys(1, N, 1, 20),
@@ -196,7 +205,7 @@ check_all_hashes(BloomBin, HashList) ->
             ?assertMatch(true, check_hash(Hash, BloomBin))
         end,
     lists:foreach(CheckFun, HashList).
-        
+
 check_neg_hashes(BloomBin, HashList, Counters) ->
     CheckFun =
         fun(Hash, {AccT, AccF}) ->
@@ -212,7 +221,8 @@ check_neg_hashes(BloomBin, HashList, Counters) ->
 empty_bloom_test() ->
     BloomBin0 = create_bloom([]),
     ?assertMatch(
-        {0, 4}, check_neg_hashes(BloomBin0, [0, 10, 100, 100000], {0, 0})).
+        {0, 4}, check_neg_hashes(BloomBin0, [0, 10, 100, 100000], {0, 0})
+    ).
 
 bloom_test_() ->
     {timeout, 120, fun bloom_test_ranges/0}.
@@ -230,18 +240,18 @@ bloom_test_ranges() ->
     test_bloom(1000, 4).
 
 test_bloom(N, Runs) ->
-    ListOfHashLists = 
+    ListOfHashLists =
         lists:map(fun(_X) -> get_hashlist(N * 2) end, lists:seq(1, Runs)),
     SpliListFun =
-        fun(HashList) -> 
-            HitOrMissFun = 
-                fun (Entry, {HitL, MissL}) ->
+        fun(HashList) ->
+            HitOrMissFun =
+                fun(Entry, {HitL, MissL}) ->
                     case leveled_rand:uniform() < 0.5 of
-                        true -> 
-                            {[Entry|HitL], MissL};
+                        true ->
+                            {[Entry | HitL], MissL};
                         false ->
-                            {HitL, [Entry|MissL]}
-                    end 
+                            {HitL, [Entry | MissL]}
+                    end
                 end,
             lists:foldl(HitOrMissFun, {[], []}, HashList)
         end,
@@ -250,9 +260,10 @@ test_bloom(N, Runs) ->
     SWa = os:timestamp(),
     ListOfBlooms =
         lists:map(
-            fun({HL, _ML}) -> create_bloom(HL) end, SplitListOfHashLists),
-    TSa = timer:now_diff(os:timestamp(), SWa)/Runs,
-    
+            fun({HL, _ML}) -> create_bloom(HL) end, SplitListOfHashLists
+        ),
+    TSa = timer:now_diff(os:timestamp(), SWa) / Runs,
+
     SWb = os:timestamp(),
     PosChecks =
         lists:foldl(
@@ -263,11 +274,12 @@ test_bloom(N, Runs) ->
                 ChecksMade + length(HL)
             end,
             0,
-            lists:seq(1, Runs)),
+            lists:seq(1, Runs)
+        ),
     TSb = timer:now_diff(os:timestamp(), SWb),
 
     SWc = os:timestamp(),
-    {Pos, Neg} = 
+    {Pos, Neg} =
         lists:foldl(
             fun(Nth, Acc) ->
                 {_HL, ML} = lists:nth(Nth, SplitListOfHashLists),
@@ -275,7 +287,8 @@ test_bloom(N, Runs) ->
                 check_neg_hashes(BB, ML, Acc)
             end,
             {0, 0},
-            lists:seq(1, Runs)),
+            lists:seq(1, Runs)
+        ),
     FPR = Pos / (Pos + Neg),
     TSc = timer:now_diff(os:timestamp(), SWc),
 
@@ -285,8 +298,9 @@ test_bloom(N, Runs) ->
     io:format(
         user,
         "Test with size ~w has microsecond timings: - "
-            "build in ~w then ~.3f per pos-check, ~.3f per neg-check, "
-            "fpr ~.3f with bytes-per-key ~.3f~n",
-        [N, round(TSa), TSb / PosChecks, TSc / (Pos + Neg), FPR, BytesPerKey]).
+        "build in ~w then ~.3f per pos-check, ~.3f per neg-check, "
+        "fpr ~.3f with bytes-per-key ~.3f~n",
+        [N, round(TSa), TSb / PosChecks, TSc / (Pos + Neg), FPR, BytesPerKey]
+    ).
 
 -endif.

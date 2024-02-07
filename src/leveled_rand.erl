@@ -5,11 +5,11 @@
 
 %% API
 -export([
-         uniform/0,
-         uniform/1,
-         seed/0,
-         rand_bytes/1
-        ]).
+    uniform/0,
+    uniform/1,
+    seed/0,
+    rand_bytes/1
+]).
 
 %%%===================================================================
 %%% New (r19+) rand style functions
@@ -25,4 +25,3 @@ seed() ->
 
 rand_bytes(Size) ->
     crypto:strong_rand_bytes(Size).
-

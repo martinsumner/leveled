@@ -5,15 +5,16 @@
 
 -module(leveled_util).
 
--export([generate_uuid/0,
-            integer_now/0,
-            integer_time/1,
-            magic_hash/1,
-            t2b/1,
-            safe_rename/4]).
+-export([
+    generate_uuid/0,
+    integer_now/0,
+    integer_time/1,
+    magic_hash/1,
+    t2b/1,
+    safe_rename/4
+]).
 
 -define(WRITE_OPS, [binary, raw, read, write]).
-
 
 -spec generate_uuid() -> list().
 %% @doc
@@ -22,8 +23,10 @@
 %% https://github.com/afiskon/erlang-uuid-v4/blob/master/src/uuid.erl
 generate_uuid() ->
     <<A:32, B:16, C:16, D:16, E:48>> = leveled_rand:rand_bytes(16),
-    L = io_lib:format("~8.16.0b-~4.16.0b-4~3.16.0b-~4.16.0b-~12.16.0b", 
-                        [A, B, C band 16#0fff, D band 16#3fff bor 16#8000, E]),
+    L = io_lib:format(
+        "~8.16.0b-~4.16.0b-4~3.16.0b-~4.16.0b-~12.16.0b",
+        [A, B, C band 16#0fff, D band 16#3fff bor 16#8000, E]
+    ),
     binary_to_list(list_to_binary(L)).
 
 -spec integer_now() -> non_neg_integer().
@@ -32,22 +35,20 @@ generate_uuid() ->
 integer_now() ->
     integer_time(os:timestamp()).
 
--spec integer_time (erlang:timestamp()) -> non_neg_integer().
+-spec integer_time(erlang:timestamp()) -> non_neg_integer().
 %% @doc
 %% Return a given time in gergorian seconds
 integer_time(TS) ->
     DT = calendar:now_to_universal_time(TS),
     calendar:datetime_to_gregorian_seconds(DT).
 
-
 -spec magic_hash(any()) -> 0..16#FFFFFFFF.
-%% @doc 
+%% @doc
 %% Use DJ Bernstein magic hash function. Note, this is more expensive than
 %% phash2 but provides a much more balanced result.
 %%
 %% Hash function contains mysterious constants, some explanation here as to
-%% what they are -
-%% http://stackoverflow.com/questions/10696223/reason-for-5381-number-in-djb-hash-function
+%% what they are - https://gist.github.com/hmic/1676398
 magic_hash({binary, BinaryKey}) ->
     H = 5381,
     hash1(H, BinaryKey);
@@ -55,13 +56,12 @@ magic_hash(AnyKey) ->
     BK = t2b(AnyKey),
     magic_hash({binary, BK}).
 
-hash1(H, <<>>) -> 
+hash1(H, <<>>) ->
     H;
 hash1(H, <<B:8/integer, Rest/bytes>>) ->
     H1 = (H * 33) band 16#FFFFFFFF,
     H2 = H1 bxor B,
     hash1(H2, Rest).
-
 
 -spec t2b(term()) -> binary().
 %% @doc
@@ -72,7 +72,6 @@ hash1(H, <<B:8/integer, Rest/bytes>>) ->
 %% this must be used.
 t2b(Term) ->
     term_to_binary(Term, [{minor_version, 1}]).
-
 
 -spec safe_rename(string(), string(), binary(), boolean()) -> ok.
 %% @doc
@@ -118,7 +117,6 @@ magichashperf_test() ->
     {TimeMH2, HL1} = timer:tc(lists, map, [fun(K) -> magic_hash(K) end, KL]),
     io:format(user, "1000 keys magic hashed in ~w microseconds~n", [TimeMH2]).
 
-
 safe_rename_test() ->
     ok = filelib:ensure_dir(?TEST_AREA),
     TempFN = filename:join(?TEST_AREA, "test_manifest0.pnd"),
@@ -129,6 +127,5 @@ safe_rename_test() ->
     RealFN1 = filename:join(?TEST_AREA, "test_manifest1.man"),
     ok = safe_rename(TempFN1, RealFN1, <<2:128/integer>>, true),
     ?assertMatch({ok, <<2:128/integer>>}, file:read_file(RealFN1)).
-
 
 -endif.

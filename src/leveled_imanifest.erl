@@ -1,27 +1,26 @@
 %% -------- Inker Manifest ---------
-%% 
-
+%%
 
 -module(leveled_imanifest).
 
 -include("include/leveled.hrl").
 
 -export([
-        generate_entry/1,
-        add_entry/3,
-        append_lastkey/3,
-        remove_entry/2,
-        find_entry/2,
-        find_persistedentries/2,
-        head_entry/1,
-        to_list/1,
-        from_list/1,
-        reader/2,
-        writer/3,
-        printer/1,
-        complete_filex/0,
-        get_cdbpids/1
-        ]).         
+    generate_entry/1,
+    add_entry/3,
+    append_lastkey/3,
+    remove_entry/2,
+    find_entry/2,
+    find_persistedentries/2,
+    head_entry/1,
+    to_list/1,
+    from_list/1,
+    reader/2,
+    writer/3,
+    printer/1,
+    complete_filex/0,
+    get_cdbpids/1
+]).
 
 -define(MANIFEST_FILEX, "man").
 -define(PENDING_FILEX, "pnd").
@@ -31,7 +30,7 @@
 -type manifest() :: list({integer(), list()}).
 %% The manifest is divided into blocks by sequence number, with each block
 %% being a list of manifest entries for that SQN range.
--type manifest_entry() :: {integer(), string(), pid()|string(), any()}.
+-type manifest_entry() :: {integer(), string(), pid() | string(), any()}.
 %% The Entry should have a pid() as the third element, but a string() may be
 %% used in unit tests
 
@@ -73,23 +72,23 @@ add_entry(Manifest, Entry, ToEnd) ->
         true ->
             prepend_entry({SQN, StrippedName, PidR, LastKey}, Manifest);
         false ->
-            Man0 = [{SQN, StrippedName, PidR, LastKey}|to_list(Manifest)],
+            Man0 = [{SQN, StrippedName, PidR, LastKey} | to_list(Manifest)],
             Man1 = lists:reverse(lists:sort(Man0)),
             from_list(Man1)
     end.
 
--spec append_lastkey(manifest(), pid(), leveled_codec:journal_key()) 
-                                                            -> manifest().
+-spec append_lastkey(manifest(), pid(), leveled_codec:journal_key()) ->
+    manifest().
 %% @doc
 %% On discovery of the last key in the last journal entry, the manifest can
 %% be updated through this function to have the last key
 append_lastkey(Manifest, Pid, LastKey) ->
-    [{SQNMarker, SQNL}|ManifestTail] = Manifest,
-    [{E_SQN, E_FN, E_P, E_LK}|SQNL_Tail] = SQNL,
-    case {E_P, E_LK} of 
+    [{SQNMarker, SQNL} | ManifestTail] = Manifest,
+    [{E_SQN, E_FN, E_P, E_LK} | SQNL_Tail] = SQNL,
+    case {E_P, E_LK} of
         {Pid, empty} ->
             UpdEntry = {E_SQN, E_FN, E_P, LastKey},
-            [{SQNMarker, [UpdEntry|SQNL_Tail]}|ManifestTail];
+            [{SQNMarker, [UpdEntry | SQNL_Tail]} | ManifestTail];
         _ ->
             Manifest
     end.
@@ -103,13 +102,13 @@ remove_entry(Manifest, Entry) ->
     Man0 = lists:keydelete(SQN, 1, to_list(Manifest)),
     from_list(Man0).
 
--spec find_entry(integer(), manifest()) -> pid()|string().
+-spec find_entry(integer(), manifest()) -> pid() | string().
 %% @doc
 %% Given a SQN find the relevant manifest_entry, returning just the pid() of
 %% the journal file (which may be a string() in unit tests)
-find_entry(SQN, [{SQNMarker, SubL}|_Tail]) when SQN >= SQNMarker ->
+find_entry(SQN, [{SQNMarker, SubL} | _Tail]) when SQN >= SQNMarker ->
     find_subentry(SQN, SubL);
-find_entry(SQN, [_TopEntry|Tail]) ->
+find_entry(SQN, [_TopEntry | Tail]) ->
     find_entry(SQN, Tail).
 
 -spec find_persistedentries(integer(), list()) -> list(manifest_entry()).
@@ -117,13 +116,13 @@ find_entry(SQN, [_TopEntry|Tail]) ->
 %% Find the entries in the manifest where all items are < than the persisted
 %% SQN in the ledger
 find_persistedentries(SQN, ManifestAsList) ->
-    DropFun = 
+    DropFun =
         fun({ME_SQN, _FN, _ME_P, _LK}) ->
             ME_SQN > SQN
         end,
     Entries = lists:dropwhile(DropFun, ManifestAsList),
-    case Entries of 
-        [_Head|Tail] ->
+    case Entries of
+        [_Head | Tail] ->
             Tail;
         [] ->
             []
@@ -133,10 +132,10 @@ find_persistedentries(SQN, ManifestAsList) ->
 %% @doc
 %% Return the head manifest entry (the most recent journal)
 head_entry(Manifest) ->
-    [{_SQNMarker, SQNL}|_Tail] = Manifest,
-    [HeadEntry|_SQNL_Tail] = SQNL,
+    [{_SQNMarker, SQNL} | _Tail] = Manifest,
+    [HeadEntry | _SQNL_Tail] = SQNL,
     HeadEntry.
-    
+
 -spec to_list(manifest()) -> list().
 %% @doc
 %% Convert the manifest to a flat list
@@ -157,23 +156,31 @@ to_list(Manifest) ->
 reader(SQN, RootPath) ->
     ManifestPath = leveled_inker:filepath(RootPath, manifest_dir),
     leveled_log:log(i0015, [ManifestPath, SQN]),
-    {ok, MBin} = file:read_file(filename:join(ManifestPath,
-                                                integer_to_list(SQN)
-                                                ++ ".man")),
+    {ok, MBin} = file:read_file(
+        filename:join(
+            ManifestPath,
+            integer_to_list(SQN) ++
+                ".man"
+        )
+    ),
     from_list(lists:reverse(lists:sort(binary_to_term(MBin)))).
-    
+
 -spec writer(manifest(), integer(), string()) -> ok.
 %% @doc
 %% Given a manifest and a manifest SQN and a file path, save the manifest to
 %% disk
 writer(Manifest, ManSQN, RootPath) ->
     ManPath = leveled_inker:filepath(RootPath, manifest_dir),
-    ok = filelib:ensure_dir(ManPath), 
-        % When writing during backups, may not have been generated
-    NewFN = filename:join(ManPath,
-                            integer_to_list(ManSQN) ++ "." ++ ?MANIFEST_FILEX),
-    TmpFN = filename:join(ManPath,
-                            integer_to_list(ManSQN) ++ "." ++ ?PENDING_FILEX),
+    ok = filelib:ensure_dir(ManPath),
+    % When writing during backups, may not have been generated
+    NewFN = filename:join(
+        ManPath,
+        integer_to_list(ManSQN) ++ "." ++ ?MANIFEST_FILEX
+    ),
+    TmpFN = filename:join(
+        ManPath,
+        integer_to_list(ManSQN) ++ "." ++ ?PENDING_FILEX
+    ),
     %% TODO: This should support a CRC check, but issues with making the CRC
     %% check backwards compatible (so that the reader can read manifests both
     %% with and without a CRC check)
@@ -181,9 +188,11 @@ writer(Manifest, ManSQN, RootPath) ->
     leveled_log:log(i0016, [ManSQN]),
     ok = leveled_util:safe_rename(TmpFN, NewFN, MBin, true),
     GC_SQN = ManSQN - ?MANIFESTS_TO_RETAIN,
-    GC_Man = filename:join(ManPath,
-                            integer_to_list(GC_SQN) ++ "." ++ ?MANIFEST_FILEX),
-    ok = 
+    GC_Man = filename:join(
+        ManPath,
+        integer_to_list(GC_SQN) ++ "." ++ ?MANIFEST_FILEX
+    ),
+    ok =
         case filelib:is_file(GC_Man) of
             true ->
                 file:delete(GC_Man);
@@ -199,7 +208,8 @@ printer(Manifest) ->
         fun({SQN, FN, _PID, _LK}) ->
             leveled_log:log(i0017, [SQN, FN])
         end,
-        to_list(Manifest)).
+        to_list(Manifest)
+    ).
 
 -spec complete_filex() -> string().
 %% @doc
@@ -207,10 +217,9 @@ printer(Manifest) ->
 complete_filex() ->
     ?MANIFEST_FILEX.
 
-
 -spec from_list(list()) -> manifest().
 %% @doc
-%% Convert from a flat list into a manifest with lookup jumps.  
+%% Convert from a flat list into a manifest with lookup jumps.
 %% The opposite of to_list/1
 from_list(Manifest) ->
     % Manifest should already be sorted with the highest SQN at the head
@@ -233,21 +242,20 @@ prepend_entry(Entry, AccL) ->
     case AccL of
         [] ->
             [{SQN, [Entry]}];
-        [{SQNMarker, SubL}|Tail] ->
+        [{SQNMarker, SubL} | Tail] ->
             case length(SubL) < ?SKIP_WIDTH of
                 true ->
-                    [{SQNMarker, [Entry|SubL]}|Tail];
+                    [{SQNMarker, [Entry | SubL]} | Tail];
                 false ->
-                    [{SQN, [Entry]}|AccL]
+                    [{SQN, [Entry]} | AccL]
             end
     end.
 
-find_subentry(SQN, [{ME_SQN, _FN, ME_P, _LK}|_Tail]) when SQN >= ME_SQN ->
+find_subentry(SQN, [{ME_SQN, _FN, ME_P, _LK} | _Tail]) when SQN >= ME_SQN ->
     ME_P;
-find_subentry(SQN, [_TopEntry|Tail]) ->
+find_subentry(SQN, [_TopEntry | Tail]) ->
     find_subentry(SQN, Tail).
-    
-    
+
 %%%============================================================================
 %%% Test
 %%%============================================================================
@@ -307,30 +315,32 @@ buildrandomfashion_test() ->
     RandMapFun =
         fun(X) ->
             {leveled_rand:uniform(), X}
-        end,    
+        end,
     ManL1 = lists:map(RandMapFun, ManL0),
     ManL2 = lists:sort(ManL1),
-    
+
     FoldFun =
         fun({_R, E}, Man) ->
             add_entry(Man, E, false)
         end,
     Man0 = lists:foldl(FoldFun, [], ManL2),
-    
+
     test_testmanifest(Man0),
     ?assertMatch(ManL0, to_list(Man0)),
-    
+
     RandomEntry = lists:nth(leveled_rand:uniform(50), ManL0),
     Man1 = remove_entry(Man0, RandomEntry),
     Man2 = add_entry(Man1, RandomEntry, false),
-    
+
     test_testmanifest(Man2),
     ?assertMatch(ManL0, to_list(Man2)).
 
 empty_active_journal_test() ->
     Path = "test/test_area/journal/journal_files/",
     ok = filelib:ensure_dir(Path),
-    {ok, ActJ} = leveled_cdb:cdb_open_writer(Path ++ "test_emptyactive_file.pnd"),
+    {ok, ActJ} = leveled_cdb:cdb_open_writer(
+        Path ++ "test_emptyactive_file.pnd"
+    ),
     ?assertMatch([], generate_entry(ActJ)),
     ?assertMatch(ok, file:delete(Path ++ "test_emptyactive_file.cdb")).
 
