@@ -289,4 +289,45 @@ test_bloom(N, Runs) ->
             "fpr ~.3f with bytes-per-key ~.3f~n",
         [N, round(TSa), TSb / PosChecks, TSc / (Pos + Neg), FPR, BytesPerKey]).
 
+
+split_builder_speed_test_() ->
+    {timeout, 60, fun split_builder_speed_tester/0}.
+
+split_builder_speed_tester() ->
+    N = 40000,
+    Runs = 50,
+    ListOfHashLists = 
+        lists:map(fun(_X) -> get_hashlist(N * 2) end, lists:seq(1, Runs)),
+
+    Timings =
+        lists:map(
+            fun(HashList) ->
+                SlotCount =
+                    case length(HashList) of
+                        0 ->
+                            0;
+                        L ->
+                            min(128, max(2, (L - 1) div 512))
+                    end,
+                InitTuple = list_to_tuple(lists:duplicate(SlotCount, [])),
+                {MTC, SlotHashes} =
+                    timer:tc(
+                        fun map_hashes/3, [HashList, InitTuple, SlotCount]
+                    ),
+                {BTC, _Bloom} =
+                    timer:tc(
+                        fun build_bloom/2, [SlotHashes, SlotCount]
+                    ),
+                {MTC, BTC}
+            end,
+            ListOfHashLists
+        ),
+    {MTs, BTs} = lists:unzip(Timings),
+    io:format(
+        user,
+        "Total time in microseconds for map_hashlist ~w build_bloom ~w~n",
+        [lists:sum(MTs), lists:sum(BTs)]
+    ).
+    
+
 -endif.
