@@ -168,7 +168,7 @@
         handle_info/2,
         terminate/2,
         code_change/3,
-        format_status/2]).
+        format_status/1]).
 
 -export([
         pcl_snapstart/1,
@@ -1230,15 +1230,22 @@ terminate(Reason, _State=#state{is_snapshot=Snap}) when Snap == true ->
 terminate(Reason, _State) ->
     leveled_log:log(p0011, [Reason]).
 
-format_status(normal, [_PDict, State]) ->
-    State;
-format_status(terminate, [_PDict, State]) ->
-    State#state{
-        manifest = redacted, 
-        levelzero_cache = redacted,
-        levelzero_index = redacted,
-        levelzero_astree = redacted}.
-
+format_status(Status) ->
+    case maps:get(reason, Status, normal) of
+        terminate ->
+            State = maps:get(state, Status),
+            maps:update(
+                state,
+                State#state{
+                    manifest = redacted, 
+                    levelzero_cache = redacted,
+                    levelzero_index = redacted,
+                    levelzero_astree = redacted},
+                Status
+            );
+        _ ->
+            Status
+    end.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -1993,9 +2000,10 @@ format_status_test() ->
                                         max_inmemory_tablesize=1000,
                                         sst_options=#sst_options{}}),
     {status, PCL, {module, gen_server}, SItemL} = sys:get_status(PCL),
-    S = lists:keyfind(state, 1, lists:nth(5, SItemL)),
+    {data,[{"State", S}]} = lists:nth(3, lists:nth(5, SItemL)),
     true = is_integer(array:size(element(2, S#state.manifest))),
-    ST = format_status(terminate, [dict:new(), S]),
+    Status = format_status(#{reason => terminate, state => S}),
+    ST = maps:get(state, Status),
     ?assertMatch(redacted, ST#state.manifest),
     ?assertMatch(redacted, ST#state.levelzero_cache),
     ?assertMatch(redacted, ST#state.levelzero_index),
