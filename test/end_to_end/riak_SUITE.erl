@@ -1419,8 +1419,8 @@ dollar_key_index(_Config) ->
     io:format("Length of Result of folder ~w~n", [ResLen]),
     true = 657 == ResLen,
 
-    {ok, REMatch} = re:compile("K.y"),
-    {ok, REMiss} = re:compile("key"),
+    {ok, REMatch} = leveled_util:regex_compile("K.y"),
+    {ok, REMiss} = leveled_util:regex_compile("key"),
     
     {async, FolderREMatch} = 
         leveled_bookie:book_keylist(Bookie1,
@@ -1527,9 +1527,9 @@ dollar_bucket_index(_Config) ->
     
     {<<"Bucket2">>, SampleKey} = lists:nth(100, Results),
     UUID = "[a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{12}",
-    {ok, RESingleMatch} = re:compile(SampleKey),
-    {ok, REAllMatch} = re:compile(UUID),
-    {ok, REMiss} = re:compile("no_key"),
+    {ok, RESingleMatch} = leveled_util:regex_compile(SampleKey),
+    {ok, REAllMatch} = leveled_util:regex_compile(UUID),
+    {ok, REMiss} = leveled_util:regex_compile("no_key"),
 
     {async, FolderREMiss} = 
         leveled_bookie:book_keylist(Bookie1,

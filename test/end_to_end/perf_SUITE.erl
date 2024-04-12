@@ -522,7 +522,7 @@ random_people_queries(Bookie, Bucket, IndexesReturned) ->
             },
             %% born in the 70s with Willow as a given name
             {ok, TermRegex} =
-                re:compile(
+                leveled_util:regex_compile(
                     "[^\\|]*\\|197[0-9]{5}\\|[^\\|]*\\|[^\\|]*#Willow[^\\|]*\\|[^\\|]*#LS[^\\|]*"
                 ),
             FoldKeysFun =  fun(_B, _K, Cnt) -> Cnt + 1 end,

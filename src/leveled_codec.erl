@@ -304,7 +304,7 @@ accumulate_index({true, undefined}, FoldKeysFun) ->
     end;
 accumulate_index({AddTerm, TermRegex}, FoldKeysFun) ->
     fun({?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc) ->
-        case re:run(IdxValue, TermRegex) of
+        case leveled_util:regex_run(IdxValue, TermRegex) of
             nomatch ->
                 Acc;
             _ ->

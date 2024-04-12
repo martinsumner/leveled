@@ -2707,7 +2707,7 @@ ttl_test() ->
     KeyList = IndexFolder(),
     ?assertMatch(20, length(KeyList)),
 
-    {ok, Regex} = re:compile("f8"),
+    {ok, Regex} = leveled_util:regex_compile("f8"),
     {async,
         IndexFolderTR} = book_returnfolder(Bookie1,
                                             {index_query,

@@ -10,7 +10,10 @@
             integer_time/1,
             magic_hash/1,
             t2b/1,
-            safe_rename/4]).
+            safe_rename/4,
+            regex_run/2,
+            regex_compile/1
+        ]).
 
 -define(WRITE_OPS, [binary, raw, read, write]).
 
@@ -39,6 +42,15 @@ integer_time(TS) ->
     DT = calendar:now_to_universal_time(TS),
     calendar:datetime_to_gregorian_seconds(DT).
 
+-spec regex_run(
+    iodata(), any()) ->
+        match | nomatch | {match, list()} | {error, atom()}.
+regex_run(Subject, CompiledRegex) ->
+    re2:run(Subject, CompiledRegex).
+
+-spec regex_compile(iodata()) -> any().
+regex_compile(PlainRegex) ->
+    re2:compile(PlainRegex).
 
 -spec magic_hash(any()) -> 0..16#FFFFFFFF.
 %% @doc 

@@ -585,36 +585,32 @@ small_load_with2i(_Config) ->
 
 query_count(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    {ok, Book1} = leveled_bookie:book_start(RootPath,
-                                            2000,
-                                            50000000,
-                                            testutil:sync_strategy()),
+    {ok, Book1} =
+        leveled_bookie:book_start(
+            RootPath, 2000, 50000000, testutil:sync_strategy()),
     BucketBin = list_to_binary("Bucket"),
-    {TestObject, TestSpec} = testutil:generate_testobject(BucketBin,
-                                                            term_to_binary("Key1"),
-                                                            "Value1",
-                                                            [],
-                                                            [{"MDK1", "MDV1"}]),
+    {TestObject, TestSpec} =
+        testutil:generate_testobject(
+            BucketBin, term_to_binary("Key1"), "Value1", [], [{"MDK1", "MDV1"}]),
     ok = testutil:book_riakput(Book1, TestObject, TestSpec),
     testutil:check_forobject(Book1, TestObject),
     testutil:check_formissingobject(Book1, "Bucket1", "Key2"),
     testutil:check_forobject(Book1, TestObject),
-    lists:foreach(fun(_X) ->
-                        V = testutil:get_compressiblevalue(),
-                        Indexes = testutil:get_randomindexes_generator(8),
-                        SW = os:timestamp(),
-                        ObjL1 = testutil:generate_objects(10000,
-                                                            binary_uuid,
-                                                            [],
-                                                            V,
-                                                            Indexes),
-                        testutil:riakload(Book1, ObjL1),
-                        io:format("Put of 10000 objects with 8 index entries "
-                                        ++
-                                        "each completed in ~w microseconds~n",
-                                    [timer:now_diff(os:timestamp(), SW)])
-                        end,
-                        lists:seq(1, 8)),
+    lists:foreach(
+        fun(_X) ->
+            V = testutil:get_compressiblevalue(),
+            Indexes = testutil:get_randomindexes_generator(8),
+            SW = os:timestamp(),
+            ObjL1 =
+                testutil:generate_objects(
+                    10000, binary_uuid, [], V, Indexes),
+            testutil:riakload(Book1, ObjL1),
+            io:format(
+                "Put of 10000 objects with 8 index entries "
+                "each completed in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SW)])
+        end,
+        lists:seq(1, 8)),
     testutil:check_forobject(Book1, TestObject),
     Total = lists:foldl(fun(X, Acc) ->
                                 IdxF = "idx" ++ integer_to_list(X) ++ "_bin",
@@ -628,49 +624,39 @@ query_count(_Config) ->
                                 end,
                             0,
                             lists:seq(1, 8)),
-    ok = case Total of
-                640000 ->
-                    ok
-            end,
-    Index1Count = count_termsonindex(BucketBin,
-                                        "idx1_bin",
-                                        Book1,
-                                        ?KEY_ONLY),
+    ok = case Total of 640000 -> ok end,
+    Index1Count =
+        count_termsonindex(
+            BucketBin, "idx1_bin", Book1, ?KEY_ONLY),
     ok = leveled_bookie:book_close(Book1),
-    {ok, Book2} = leveled_bookie:book_start(RootPath,
-                                            1000,
-                                            50000000,
-                                            testutil:sync_strategy()),
-    Index1Count = count_termsonindex(BucketBin,
-                                        "idx1_bin",
-                                        Book2,
-                                        ?KEY_ONLY),
+    {ok, Book2} =
+        leveled_bookie:book_start(
+            RootPath, 1000, 50000000, testutil:sync_strategy()),
+    Index1Count =
+        count_termsonindex(
+            BucketBin, "idx1_bin", Book2, ?KEY_ONLY),
     NameList = testutil:name_list(),
-    TotalNameByName = lists:foldl(fun({_X, Name}, Acc) ->
-                                        {ok, Regex} = re:compile("[0-9]+" ++
-                                                                    Name),
-                                        SW = os:timestamp(),
-                                        T = count_termsonindex(BucketBin,
-                                                                "idx1_bin",
-                                                                Book2,
-                                                                {false,
-                                                                    Regex}),
-                                        TD = timer:now_diff(os:timestamp(),
-                                                                SW),
-                                        io:format("~w terms found on " ++
-                                                    "index idx1 with a " ++
-                                                    "regex in ~w " ++
-                                                    "microseconds~n",
-                                                    [T, TD]),
-                                        Acc + T
-                                        end,
-                                    0,
-                                    NameList),
+    TotalNameByName =
+        lists:foldl(
+            fun({_X, Name}, Acc) ->
+                {ok, Regex} = leveled_util:regex_compile("[0-9]+" ++ Name),
+                SW = os:timestamp(),
+                T =
+                    count_termsonindex(
+                        BucketBin, "idx1_bin", Book2, {false, Regex}),
+                TD = timer:now_diff(os:timestamp(), SW),
+                io:format("~w terms found on index idx1 with a "
+                            "regex in ~w microseconds~n", 
+                            [T, TD]),
+                Acc + T
+            end,
+            0,
+            NameList),
     ok = case TotalNameByName of
                 Index1Count ->
                     ok
             end,
-    {ok, RegMia} = re:compile("[0-9]+Mia"),
+    {ok, RegMia} = leveled_util:regex_compile("[0-9]+Mia"),
     Query1 = {index_query,
                 BucketBin,
                 {fun testutil:foldkeysfun/3, []},
@@ -686,22 +672,25 @@ query_count(_Config) ->
                 {true, undefined}},
     {async,
         Mia2KFolder2} = leveled_bookie:book_returnfolder(Book2, Query2),
-    Mia2000Count2 = lists:foldl(fun({Term, _Key}, Acc) ->
-                                    case re:run(Term, RegMia) of
-                                        nomatch ->
-                                            Acc;
-                                        _ ->
-                                            Acc + 1
-                                    end end,
-                                0,
-                                Mia2KFolder2()),
+    Mia2000Count2 =
+        lists:foldl(
+            fun({Term, _Key}, Acc) ->
+                case leveled_util:regex_run(Term, RegMia) of
+                    nomatch ->
+                        Acc;
+                    _ ->
+                        Acc + 1
+                end
+            end,
+            0,
+            Mia2KFolder2()),
     ok = case Mia2000Count2 of
                 Mia2000Count1 when Mia2000Count1 > 0 ->
                     io:format("Mia2000 counts match at ~w~n",
                                 [Mia2000Count1]),
                     ok
             end,
-    {ok, RxMia2K} = re:compile("^2000[0-9]+Mia"),
+    {ok, RxMia2K} = leveled_util:regex_compile("^2000[0-9]+Mia"),
     Query3 = {index_query,
                 BucketBin,
                 {fun testutil:foldkeysfun/3, []},

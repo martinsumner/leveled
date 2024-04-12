@@ -63,7 +63,7 @@
 -type acc_fun()
     :: fun((leveled_codec:key(), any(), foldacc()) -> foldacc()).
 -type mp()
-    :: {re_pattern, term(), term(), term(), term()}.
+    :: any().
 
 -export_type([acc_fun/0, mp/0]).
 
@@ -681,7 +681,7 @@ accumulate_keys(FoldKeysFun, undefined) ->
 accumulate_keys(FoldKeysFun, TermRegex) ->
     fun(Key, _Value, Acc) ->
         {B, K} = leveled_codec:from_ledgerkey(Key),
-        case re:run(K, TermRegex) of
+        case leveled_util:regex_run(K, TermRegex) of
             nomatch ->
                 Acc;
             _ ->

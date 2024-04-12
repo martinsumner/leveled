@@ -6,6 +6,7 @@
   {applications, [
                   lz4,
                   zstd,
+                  re2,
                   kernel,
                   stdlib
                  ]},
