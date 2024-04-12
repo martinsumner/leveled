@@ -3,10 +3,26 @@
 -define(INFO, info).
 -export([all/0, suite/0]).
 -export([
-    riak_ctperf/1, riak_fullperf/1, riak_profileperf/1
+    riak_ctperf/1, riak_fullperf/1, riak_profileperf/1, riak_miniperf/1
 ]).
 
-all() -> [riak_ctperf].
+-define(PEOPLE_INDEX, <<"people_bin">>).
+-define(MINI_QUERY_DIVISOR, 8).
+-define(RGEX_QUERY_DIVISOR, 32).
+
+-ifdef(perf_full).
+    all() -> [riak_fullperf].
+-else.
+    -ifdef(perf_mini).
+        all() -> [riak_miniperf].
+    -else.
+        -ifdef(perf_prof).
+            all() -> [riak_profileperf].
+        -else.
+            all() -> [riak_ctperf].
+        -endif.
+    -endif.
+-endif.
 suite() -> [{timetrap, {hours, 16}}].
 
 riak_fullperf(_Config) ->
@@ -20,20 +36,20 @@ riak_fullperf(ObjSize, PM, LC) ->
     output_result(R2B),
     R2C = riak_load_tester(Bucket, 2000000, ObjSize, [], PM, LC),
     output_result(R2C),
-    R5A = riak_load_tester(Bucket, 5000000, ObjSize, [], PM, LC),
+    R5A = riak_load_tester(Bucket, 4000000, ObjSize, [], PM, LC),
     output_result(R5A),
-    R5B = riak_load_tester(Bucket, 5000000, ObjSize, [], PM, LC),
+    R5B = riak_load_tester(Bucket, 4000000, ObjSize, [], PM, LC),
     output_result(R5B),
-    R10 = riak_load_tester(Bucket, 10000000, ObjSize, [], PM, LC),
+    R10 = riak_load_tester(Bucket, 6000000, ObjSize, [], PM, LC),
     output_result(R10)
     .
 
 riak_profileperf(_Config) ->
     riak_load_tester(
         {<<"SensibleBucketTypeName">>, <<"SensibleBucketName0">>},
-        2000000,
+        1200000,
         2048,
-        [load, head, get, query, mini_query, full, guess, estimate, update],
+        [load, head, get, query, mini_query, regex_query, full, guess, estimate, update],
         zstd,
         as_store
     ).
@@ -42,12 +58,18 @@ riak_profileperf(_Config) ->
 riak_ctperf(_Config) ->
     riak_load_tester(<<"B0">>, 400000, 1024, [], native, as_store).
 
+riak_miniperf(_Config) ->
+    Bucket = {<<"SensibleBucketTypeName">>, <<"SensibleBucketName0">>},
+    R2A = riak_load_tester(Bucket, 2000000, 2048, [], zstd, as_store),
+    output_result(R2A).
+
 riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
     ct:log(
         ?INFO,
         "Basic riak test with KeyCount ~w ObjSize ~w PressMethod ~w Ledger ~w",
         [KeyCount, ObjSize, PM, LC]
     ),
+
     IndexCount = 100000,
 
     GetFetches = KeyCount div 4,
@@ -74,6 +96,7 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
                 IntIndex = "integer" ++ integer_to_list(ListID) ++ "_int",
                 BinIndex = "binary" ++ integer_to_list(ListID) ++ "_bin",
                 [{add, list_to_binary(IntIndex), RandInt},
+                {add, ?PEOPLE_INDEX, list_to_binary(random_people_index())},
                 {add, list_to_binary(IntIndex), RandInt + 1},
                 {add, list_to_binary(BinIndex), <<RandInt:32/integer>>},
                 {add, list_to_binary(BinIndex), <<(RandInt + 1):32/integer>>}]
@@ -133,18 +156,26 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
             10,
             IndexCount,
             MiniQuerySize,
-            IndexesReturned div 8),
+            IndexesReturned div ?MINI_QUERY_DIVISOR),
 
     {MT3, MP3, MB3} = memory_usage(),
 
+    RegexQueryTime =
+        random_people_queries(
+            Bookie1,
+            Bucket,
+            IndexesReturned div ?RGEX_QUERY_DIVISOR),
+    
+    {MT4, MP4, MB4} = memory_usage(),
+
     {FullFoldTime, SegFoldTime} = size_estimate_summary(Bookie1),
 
-    {MT4, MP4, MB4} = memory_usage(),
+    {MT5, MP5, MB5} = memory_usage(),
 
     TotalUpdateTime =
         rotate_chunk(Bookie1, <<"UpdBucket">>, KeyCount div 50, ObjSize),
 
-    {MT5, MP5, MB5} = memory_usage(),
+    {MT6, MP6, MB6} = memory_usage(),
 
     DiskSpace = lists:nth(1, string:tokens(os:cmd("du -sh riakLoad"), "\t")),
     ct:log(?INFO, "Disk space taken by test ~s", [DiskSpace]),
@@ -172,8 +203,9 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
                     P ->
                         P
                 end,
+            io:format(user, "~nProfile ~p:~n", [P]),
             ProFun = profile_fun(P0, ProfileData),
-            profile_test(Bookie1, ProFun)
+            profile_test(Bookie1, ProFun, P)
         end,
         ProfileList),
 
@@ -183,21 +215,23 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
     {KeyCount, ObjSize, {PM, LC},
         TotalLoadTime,
         TotalHeadTime, TotalGetTime,
-        TotalQueryTime, TotalMiniQueryTime, FullFoldTime, SegFoldTime,
+        TotalQueryTime, TotalMiniQueryTime, RegexQueryTime,
+        FullFoldTime, SegFoldTime,
         TotalUpdateTime,
         DiskSpace,
-        {(MT0 + MT1 + MT2 + MT3 + MT4 + MT5) div 6000000,
-            (MP0 + MP1 + MP2 + MP3 + MP4 + MP5) div 6000000,
-            (MB0 + MB1 + MB2 + MB3 + MB4 + MB5) div 6000000},
+        {(MT0 + MT1 + MT2 + MT3 + MT4 + MT5 + MT6) div 6000000,
+            (MP0 + MP1 + MP2 + MP3 + MP4 + MP5 + MP6) div 6000000,
+            (MB0 + MB1 + MB2 + MB3 + MB4 + MB5 + MB6) div 6000000},
         SSTPids, CDBPids}.
 
-
-profile_test(Bookie, ProfileFun) ->
+profile_test(Bookie, ProfileFun, P) ->
     {Inker, Pcl, SSTPids, PClerk, CDBPids, IClerk} = get_pids(Bookie),
     TestPid = self(),
     profile_app(
         [TestPid, Bookie, Inker, IClerk, Pcl, PClerk] ++ SSTPids ++ CDBPids,
-        ProfileFun).
+        ProfileFun,
+        P
+    ).
 
 get_pids(Bookie) ->
     {ok, Inker, Pcl} = leveled_bookie:book_returnactors(Bookie),
@@ -211,7 +245,8 @@ output_result(
     {KeyCount, ObjSize, PressMethod,
         TotalLoadTime,
         TotalHeadTime, TotalGetTime,
-        TotalQueryTime, TotalMiniQueryTime, TotalFullFoldTime, TotalSegFoldTime,
+        TotalQueryTime, TotalMiniQueryTime, RegexQueryTime,
+        TotalFullFoldTime, TotalSegFoldTime,
         TotalUpdateTime,
         DiskSpace,
         {TotalMemoryMB, ProcessMemoryMB, BinaryMemoryMB},
@@ -227,6 +262,7 @@ output_result(
         "TotalGetTime - ~w ms~n"
         "TotalQueryTime - ~w ms~n"
         "TotalMiniQueryTime - ~w ms~n"
+        "TotalRegexQueryTime - ~w ms~n"
         "TotalFullFoldTime - ~w ms~n"
         "TotalAAEFoldTime - ~w ms~n"
         "TotalUpdateTime - ~w ms~n"
@@ -236,7 +272,8 @@ output_result(
         "Closing count of CDB Files - ~w~n",
         [KeyCount, ObjSize, PressMethod,
             TotalLoadTime, TotalHeadTime, TotalGetTime,
-            TotalQueryTime, TotalMiniQueryTime, TotalFullFoldTime, TotalSegFoldTime,
+            TotalQueryTime, TotalMiniQueryTime, RegexQueryTime,
+            TotalFullFoldTime, TotalSegFoldTime,
             TotalUpdateTime,
             DiskSpace,
             TotalMemoryMB, ProcessMemoryMB, BinaryMemoryMB,
@@ -250,7 +287,7 @@ memory_usage() ->
         element(2, lists:keyfind(processes, 1, MemoryUsage)),
         element(2, lists:keyfind(binary, 1, MemoryUsage))}.
 
-profile_app(Pids, ProfiledFun) ->
+profile_app(Pids, ProfiledFun, P) ->
 
     eprof:start(),
     eprof:start_profiling(Pids),
@@ -258,8 +295,12 @@ profile_app(Pids, ProfiledFun) ->
     ProfiledFun(),
 
     eprof:stop_profiling(),
-    eprof:analyze(total),
-    eprof:stop().
+    eprof:log(atom_to_list(P) ++ ".log"),
+    eprof:analyze(total, [{filter, [{time, 150000}]}]),
+    eprof:stop(),
+    {ok, Analysis} = file:read_file(atom_to_list(P) ++ ".log"),
+    io:format(user, "~n~s~n", [Analysis])
+    .
 
 size_estimate_summary(Bookie) ->
     Loops = 10,
@@ -470,6 +511,40 @@ random_queries(Bookie, Bucket, IDs, IdxCnt, MaxRange, IndexesReturned) ->
     ),
     TC div 1000.
 
+random_people_queries(Bookie, Bucket, IndexesReturned) ->
+    QueryFun =
+        fun() ->
+            Surname = get_random_surname(),
+            Range =
+                {?PEOPLE_INDEX,
+                    Surname,
+                    <<Surname/binary, 126:8/integer>>
+            },
+            %% born in the 70s with Willow as a given name
+            {ok, TermRegex} =
+                re:compile(
+                    "[^\\|]*\\|197[0-9]{5}\\|[^\\|]*\\|[^\\|]*#Willow[^\\|]*\\|[^\\|]*#LS[^\\|]*"
+                ),
+            FoldKeysFun =  fun(_B, _K, Cnt) -> Cnt + 1 end,
+            {async, R} =
+                leveled_bookie:book_indexfold(
+                    Bookie,
+                    {Bucket, <<>>}, 
+                    {FoldKeysFun, 0},
+                    Range,
+                    {true, TermRegex}),
+            R()
+        end,
+    
+    {TC, {QC, EF}} =
+        timer:tc(fun() -> run_queries(QueryFun, 0, 0, IndexesReturned) end),
+    ct:log(
+        ?INFO,
+        "Fetch of ~w index entries by regex in ~w queries took ~w ms",
+        [EF, QC, TC div 1000]
+    ),
+    TC div 1000.
+
 
 run_queries(_QueryFun, QueryCount, EntriesFound, TargetEntries)
         when EntriesFound >= TargetEntries ->
@@ -486,7 +561,8 @@ profile_fun(
         {Bookie, Bucket, _KeyCount, _ObjSize, IndexCount, IndexesReturned}) ->
     fun() ->
         random_queries(
-            Bookie, Bucket, 10, IndexCount, QuerySize, IndexesReturned div 8)
+            Bookie, Bucket, 10, IndexCount, QuerySize,
+            IndexesReturned div ?MINI_QUERY_DIVISOR)
     end;
 profile_fun(
         {query, QuerySize},
@@ -494,6 +570,13 @@ profile_fun(
     fun() ->
         random_queries(
             Bookie, Bucket, 10, IndexCount, QuerySize, IndexesReturned)
+    end;
+profile_fun(
+        regex_query,
+        {Bookie, Bucket, _KeyCount, _ObjSize, _IndexCount, IndexesReturned}) ->
+    fun() ->
+        random_people_queries(
+            Bookie, Bucket, IndexesReturned div ?RGEX_QUERY_DIVISOR)
     end;
 profile_fun(
         {head, HeadFetches},
@@ -524,11 +607,82 @@ profile_fun(
 profile_fun(
         CounterFold,
         {Bookie, _Bucket, _KeyCount, _ObjSize, _IndexCount, _IndexesReturned}) ->
+    Runs =
+        case CounterFold of
+            full ->
+                20;
+            estimate ->
+                40;
+            guess ->
+                100
+        end,
     fun() ->
         lists:foreach(
             fun(_I) ->
                 _ = counter(Bookie, CounterFold)
             end,
-            lists:seq(1, 10)
+            lists:seq(1, Runs)
         )
     end.
+
+random_people_index() ->
+    io_lib:format(
+        "~s|~s|~s|#~s#~s#~s|#~s#~s#~s",
+        [get_random_surname(),
+            get_random_dob(),
+            get_random_dod(),
+            get_random_givenname(), get_random_givenname(), get_random_givenname(),
+            get_random_postcode(), get_random_postcode(), get_random_postcode()
+        ]
+    ).
+
+get_random_surname() ->
+    lists:nth(
+        rand:uniform(100),
+        [<<"Smith">>, <<"Jones">>, <<"Taylor">>, <<"Brown">>, <<"Williams">>,
+            <<"Wilson">>, <<"Johnson">>, <<"Davies">>, <<"Patel">>, <<"Robinson">>,
+            <<"Wright">>, <<"Thompson">>, <<"Evans">>, <<"Walker">>, <<"White">>,
+            <<"Roberts">>, <<"Green">>, <<"Hall">>, <<"Thomas">>, <<"Clarke">>,
+            <<"Jackson">>, <<"Wood">>, <<"Harris">>, <<"Edwards">>, <<"Turner">>,
+            <<"Martin">>, <<"Cooper">>, <<"Hill">>, <<"Ward">>, <<"Hughes">>,
+            <<"Moore">>, <<"Clark">>, <<"King">>, <<"Harrison">>, <<"Lewis">>,
+            <<"Baker">>, <<"Lee">>, <<"Allen">>, <<"Morris">>, <<"Khan">>,
+            <<"Scott">>, <<"Watson">>, <<"Davis">>, <<"Parker">>, <<"James">>,
+            <<"Bennett">>, <<"Young">>, <<"Phillips">>, <<"Richardson">>, <<"Mitchell">>,
+            <<"Bailey">>, <<"Carter">>, <<"Cook">>, <<"Singh">>, <<"Shaw">>,
+            <<"Bell">>, <<"Collins">>, <<"Morgan">>, <<"Kelly">>, <<"Begum">>,
+            <<"Miller">>, <<"Cox">>, <<"Hussain">>, <<"Marshall">>, <<"Simpson">>,
+            <<"Price">>, <<"Anderson">>, <<"Adams">>, <<"Wilkinson">>, <<"Ali">>,
+            <<"Ahmed">>, <<"Foster">>, <<"Ellis">>, <<"Murphy">>, <<"Chapman">>,
+            <<"Mason">>, <<"Gray">>, <<"Richards">>, <<"Webb">>, <<"Griffiths">>,
+            <<"Hunt">>, <<"Palmer">>, <<"Campbell">>, <<"Holmes">>, <<"Mills">>,
+            <<"Rogers">>, <<"Barnes">>, <<"Knight">>, <<"Matthews">>, <<"Barker">>,
+            <<"Powell">>, <<"Stevens">>, <<"Kaur">>, <<"Fisher">>, <<"Butler">>,
+            <<"Dixon">>, <<"Russell">>, <<"Harvey">>, <<"Pearson">>, <<"Graham">>]
+    ).
+
+get_random_givenname() ->
+    lists:nth(
+        rand:uniform(20),
+        [<<"Noah">>, <<"Oliver">>, <<"George">>, <<"Arthur">>, <<"Muhammad">>,
+            <<"Leo">>, <<"Harry">>, <<"Oscar">> , <<"Archie">>, <<"Henry">>,
+            <<"Olivia">>, <<"Amelia">>, <<"Isla">>, <<"Ava">>, <<"Ivy">>,
+            <<"Freya">>, <<"Lily">>, <<"Florence">>, <<"Mia">>, <<"Willow">>
+    ]).
+
+get_random_dob() ->
+    io_lib:format(
+        "~4..0B~2..0B~2..0B",
+        [1900 + rand:uniform(99), rand:uniform(12), rand:uniform(28)]
+    ).
+
+get_random_dod() ->
+    io_lib:format(
+        "~4..0B~2..0B~2..0B",
+        [2000 + rand:uniform(20), rand:uniform(12), rand:uniform(28)]
+    ).
+
+get_random_postcode() ->
+    io_lib:format(
+        "LS~w ~wXX", [rand:uniform(26), rand:uniform(9)]
+    ).
