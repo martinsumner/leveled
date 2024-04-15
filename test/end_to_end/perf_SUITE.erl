@@ -368,14 +368,23 @@ load_chunk(Bookie, CountPerList, ObjSize, IndexGenFun, Bucket, Chunk) ->
         {Bucket, base64:encode(leveled_rand:rand_bytes(ObjSize)), IndexGenFun(Chunk)},
         (Chunk - 1) * CountPerList + 1,
         Chunk * CountPerList,
+        0,
         0
     ).
 
-time_load_chunk(_Bookie, _ObjDetails, KeyNumber, TopKey, TotalTime) when KeyNumber > TopKey ->
+time_load_chunk(
+        _Bookie, _ObjDetails, KeyNumber, TopKey, TotalTime, PC)
+        when KeyNumber > TopKey ->
     garbage_collect(),
     timer:sleep(2000),
+    ct:log(
+        ?INFO,
+        "Count of ~w pauses during chunk load",
+        [PC]
+    ),
     TotalTime;
-time_load_chunk(Bookie, {Bucket, Value, IndexGen}, KeyNumber, TopKey, TotalTime) ->
+time_load_chunk(
+        Bookie, {Bucket, Value, IndexGen}, KeyNumber, TopKey, TotalTime, PC) ->
     ThisProcess = self(),
     spawn(
         fun() ->
@@ -387,20 +396,24 @@ time_load_chunk(Bookie, {Bucket, Value, IndexGen}, KeyNumber, TopKey, TotalTime)
                     testutil, book_riakput, [Bookie, RiakObj, IndexSpecs]
                 ),
             case R of
-                ok -> ok;
-                pause -> timer:sleep(40)
-            end,
-            ThisProcess ! TC
+                ok ->
+                    ThisProcess! {TC, 0};
+                pause ->
+                    timer:sleep(40),
+                    ThisProcess ! {TC + 40000, 1}
+            end
         end
     ),
     receive
-        PutTime ->
+        {PutTime, Pause} ->
             time_load_chunk(
                 Bookie, 
                 {Bucket, Value, IndexGen},
                 KeyNumber + 1,
                 TopKey,
-                TotalTime + PutTime)
+                TotalTime + PutTime,
+                PC + Pause
+            )
     end.
             
 
