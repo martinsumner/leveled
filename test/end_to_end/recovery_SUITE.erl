@@ -483,12 +483,14 @@ rotate_wipe_compact(Strategy1, Strategy2) ->
     {ok, Book3} = leveled_bookie:book_start(BookOptsAlt),
 
     {KSpcL2, _V2} = testutil:put_indexed_objects(Book3, "AltBucket6", 3000),
-    Q2 = fun(RT) -> {index_query,
-                        "AltBucket6",
-                        {fun testutil:foldkeysfun/3, []},
-                        {"idx1_bin", "#", "|"},
-                        {RT, undefined}}
-                    end,
+    Q2 =
+        fun(RT) -> 
+            {index_query,
+                "AltBucket6",
+                {fun testutil:foldkeysfun/3, []},
+                {<<"idx1_bin">>, <<"#">>, <<"|">>},
+                {RT, undefined}}
+        end,
     {async, KFolder2A} = leveled_bookie:book_returnfolder(Book3, Q2(false)),
     KeyList2A = lists:usort(KFolder2A()),
     true = length(KeyList2A) == 3000,
@@ -629,12 +631,14 @@ recovr_strategy(_Config) ->
                         true = VCH == VCG
                         end,
                     lists:nthtail(6400, AllSpcL)),
-    Q = fun(RT) -> {index_query,
-                        "Bucket6",
-                        {fun testutil:foldkeysfun/3, []},
-                        {"idx1_bin", "#", "|"},
-                        {RT, undefined}}
-                    end,
+    Q =
+        fun(RT) ->
+            {index_query,
+                "Bucket6",
+                {fun testutil:foldkeysfun/3, []},
+                {<<"idx1_bin">>, <<"#">>, <<"|">>},
+                {RT, undefined}}
+        end,
     {async, TFolder} = leveled_bookie:book_returnfolder(Book1, Q(true)),
     KeyTermList = TFolder(),
     {async, KFolder} = leveled_bookie:book_returnfolder(Book1, Q(false)),
@@ -660,12 +664,14 @@ recovr_strategy(_Config) ->
     KeyList2 = lists:usort(KFolder2()),
     true = length(KeyList2) == 6400,
 
-    Q2 = fun(RT) -> {index_query,
-                        "AltBucket6",
-                        {fun testutil:foldkeysfun/3, []},
-                        {"idx1_bin", "#", "|"},
-                        {RT, undefined}}
-                    end,
+    Q2 =
+        fun(RT) ->
+            {index_query,
+                "AltBucket6",
+                {fun testutil:foldkeysfun/3, []},
+                {<<"idx1_bin">>, <<"#">>, <<"|">>},
+                {RT, undefined}}
+        end,
     {async, KFolder2A} = leveled_bookie:book_returnfolder(Book2, Q2(false)),
     KeyList2A = lists:usort(KFolder2A()),
     true = length(KeyList2A) == 3000,

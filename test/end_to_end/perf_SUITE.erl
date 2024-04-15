@@ -36,11 +36,11 @@ riak_fullperf(ObjSize, PM, LC) ->
     output_result(R2B),
     R2C = riak_load_tester(Bucket, 2000000, ObjSize, [], PM, LC),
     output_result(R2C),
-    R5A = riak_load_tester(Bucket, 4000000, ObjSize, [], PM, LC),
+    R5A = riak_load_tester(Bucket, 5000000, ObjSize, [], PM, LC),
     output_result(R5A),
-    R5B = riak_load_tester(Bucket, 4000000, ObjSize, [], PM, LC),
+    R5B = riak_load_tester(Bucket, 5000000, ObjSize, [], PM, LC),
     output_result(R5B),
-    R10 = riak_load_tester(Bucket, 6000000, ObjSize, [], PM, LC),
+    R10 = riak_load_tester(Bucket, 8000000, ObjSize, [], PM, LC),
     output_result(R10)
     .
 
@@ -352,15 +352,6 @@ rotate_chunk(Bookie, Bucket, KeyCount, ObjSize) ->
             end),
     TC div 1000.
 
-load_chunk(Bookie, CountPerList, ObjSize, IndexGenFun, Bucket, Chunk) ->
-    ct:log(?INFO, "Generating and loading ObjList ~w", [Chunk]),
-    ObjList =
-        generate_chunk(CountPerList, ObjSize, IndexGenFun, Bucket, Chunk),
-    {TC, ok} = timer:tc(fun() -> testutil:riakload(Bookie, ObjList) end),
-    garbage_collect(),
-    timer:sleep(2000),
-    TC.
-
 generate_chunk(CountPerList, ObjSize, IndexGenFun, Bucket, Chunk) ->
     testutil:generate_objects(
         CountPerList, 
@@ -369,6 +360,49 @@ generate_chunk(CountPerList, ObjSize, IndexGenFun, Bucket, Chunk) ->
         IndexGenFun(Chunk),
         Bucket
     ).
+
+load_chunk(Bookie, CountPerList, ObjSize, IndexGenFun, Bucket, Chunk) ->
+    ct:log(?INFO, "Generating and loading ObjList ~w", [Chunk]),
+    time_load_chunk(
+        Bookie,
+        {Bucket, base64:encode(leveled_rand:rand_bytes(ObjSize)), IndexGenFun(Chunk)},
+        (Chunk - 1) * CountPerList + 1,
+        Chunk * CountPerList,
+        0
+    ).
+
+time_load_chunk(_Bookie, _ObjDetails, KeyNumber, TopKey, TotalTime) when KeyNumber > TopKey ->
+    garbage_collect(),
+    timer:sleep(2000),
+    TotalTime;
+time_load_chunk(Bookie, {Bucket, Value, IndexGen}, KeyNumber, TopKey, TotalTime) ->
+    ThisProcess = self(),
+    spawn(
+        fun() ->
+            {RiakObj, IndexSpecs} =
+                testutil:set_object(
+                    Bucket, testutil:fixed_bin_key(KeyNumber), Value, IndexGen, []),
+            {TC, R} =
+                timer:tc(
+                    testutil, book_riakput, [Bookie, RiakObj, IndexSpecs]
+                ),
+            case R of
+                ok -> ok;
+                pause -> timer:sleep(40)
+            end,
+            ThisProcess ! TC
+        end
+    ),
+    receive
+        PutTime ->
+            time_load_chunk(
+                Bookie, 
+                {Bucket, Value, IndexGen},
+                KeyNumber + 1,
+                TopKey,
+                TotalTime + PutTime)
+    end.
+            
 
 size_estimate_tester(Bookie) ->
     %% Data size test - calculate data size, then estimate data size
