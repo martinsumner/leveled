@@ -698,9 +698,18 @@ query_count(_Config) ->
                 {fun testutil:foldkeysfun/3, []},
                 {<<"idx2_bin">>, <<"1980">>, <<"2100">>},
                 {false, RxMia2K}},
-    {async,
-        Mia2KFolder3} = leveled_bookie:book_returnfolder(Book2, Query3),
+    {async,  Mia2KFolder3} = leveled_bookie:book_returnfolder(Book2, Query3),
     Mia2000Count1 = length(Mia2KFolder3()),
+    {ok, RxMia2KPCRE} = re:compile("^2000[0-9]+Mia"),
+    Query3PCRE =
+        {index_query,
+            BucketBin,
+            {fun testutil:foldkeysfun/3, []},
+            {<<"idx2_bin">>, <<"1980">>, <<"2100">>},
+            {false, RxMia2KPCRE}},
+    {async, Mia2KFolder3PCRE} =
+        leveled_bookie:book_returnfolder(Book2, Query3PCRE),
+    Mia2000Count1 = length(Mia2KFolder3PCRE()),
     
     V9 = testutil:get_compressiblevalue(),
     Indexes9 = testutil:get_randomindexes_generator(8),

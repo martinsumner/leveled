@@ -45,10 +45,12 @@ integer_time(TS) ->
 -spec regex_run(
     iodata(), any()) ->
         match | nomatch | {match, list()} | {error, atom()}.
-regex_run(Subject, CompiledRegex) ->
-    re2:run(Subject, CompiledRegex).
+regex_run(Subject, CompiledRE2) when is_reference(CompiledRE2) ->
+    re2:run(Subject, CompiledRE2);
+regex_run(Subject, CompiledPCRE) ->
+    re:run(Subject, CompiledPCRE).
 
--spec regex_compile(iodata()) -> any().
+-spec regex_compile(iodata()) -> reference().
 regex_compile(PlainRegex) ->
     re2:compile(PlainRegex).
 
