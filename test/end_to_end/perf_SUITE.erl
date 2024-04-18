@@ -23,6 +23,18 @@
         -endif.
     -endif.
 -endif.
+
+-ifdef(perf_prof).
+    -if(?OTP_RELEASE >= 24).
+        -define(ACCOUNTING, true).
+    -else.
+        % Requires map functions from OTP 24
+        -define(ACCOUNTING, false).
+    -endif.
+-else.
+    -define(ACCOUNTING, false).
+-endif.
+
 suite() -> [{timetrap, {hours, 16}}].
 
 riak_fullperf(_Config) ->
@@ -105,6 +117,7 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
 
     CountPerList = KeyCount div 10,
 
+    LoadAccountant = accounting(load, 10000, ProfileList),
     TC4 = load_chunk(Bookie1, CountPerList, ObjSize, IndexGenFun, Bucket, 4),
     TC1 = load_chunk(Bookie1, CountPerList, ObjSize, IndexGenFun, Bucket, 1),
     TC9 = load_chunk(Bookie1, CountPerList, ObjSize, IndexGenFun, Bucket, 9),
@@ -115,6 +128,7 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
     TC3 = load_chunk(Bookie1, CountPerList, ObjSize, IndexGenFun, Bucket, 3),
     TC7 = load_chunk(Bookie1, CountPerList, ObjSize, IndexGenFun, Bucket, 7),
     TC10 = load_chunk(Bookie1, CountPerList, ObjSize, IndexGenFun, Bucket, 10),
+    ok = stop_accounting(LoadAccountant),
 
     ct:log(
         ?INFO,
@@ -129,18 +143,22 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
 
     {MT0, MP0, MB0} = memory_usage(),
 
+    HeadAccountant = accounting(head, 2000, ProfileList),
     TotalHeadTime = 
         random_fetches(head, Bookie1, Bucket, KeyCount, HeadFetches),
+    ok = stop_accounting(HeadAccountant),
     
     {MT1, MP1, MB1} = memory_usage(),
 
+    GetAccountant = accounting(get, 3000, ProfileList),
     TotalGetTime = 
         random_fetches(get, Bookie1, Bucket, KeyCount, GetFetches),
+    ok = stop_accounting(GetAccountant),
 
     {MT2, MP2, MB2} = memory_usage(),
 
+    QueryAccountant = accounting(query, 1000, ProfileList),
     QuerySize = max(10, IndexCount div 1000),
-    MiniQuerySize = max(1, IndexCount div 50000),
     TotalQueryTime =
         random_queries(
             Bookie1,
@@ -149,6 +167,10 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
             IndexCount,
             QuerySize,
             IndexesReturned),
+    ok = stop_accounting(QueryAccountant),
+
+    MiniQueryAccountant = accounting(mini_query, 1000, ProfileList),
+    MiniQuerySize = max(1, IndexCount div 50000),
     TotalMiniQueryTime =
         random_queries(
             Bookie1,
@@ -157,23 +179,70 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
             IndexCount,
             MiniQuerySize,
             IndexesReturned div ?MINI_QUERY_DIVISOR),
+    ok = stop_accounting(MiniQueryAccountant),
 
     {MT3, MP3, MB3} = memory_usage(),
 
+    RegexQueryAccountant = accounting(regex_query, 2000, ProfileList),
     RegexQueryTime =
         random_people_queries(
             Bookie1,
             Bucket,
             IndexesReturned div ?RGEX_QUERY_DIVISOR),
+    ok = stop_accounting(RegexQueryAccountant),
     
     {MT4, MP4, MB4} = memory_usage(),
 
-    {FullFoldTime, SegFoldTime} = size_estimate_summary(Bookie1),
+    GuessAccountant = accounting(guess, 1000, ProfileList),
+    {GuessTime, GuessCount} =
+        lists:foldl(
+            fun(_I, {TSAcc, CountAcc}) ->
+                {TS, Count} = counter(Bookie1, guess),
+                {TSAcc + TS, CountAcc + Count}
+            end,
+            {0, 0},
+            lists:seq(1, 60)
+        ),
+    ok = stop_accounting(GuessAccountant),
+
+    EstimateAccountant = accounting(estimate, 1000, ProfileList),
+    {EstimateTime, EstimateCount} =
+        lists:foldl(
+            fun(_I, {TSAcc, CountAcc}) ->
+                {TS, Count} = counter(Bookie1, estimate),
+                {TSAcc + TS, CountAcc + Count}
+            end,
+            {0, 0},
+            lists:seq(1, 40)
+        ),
+    ok = stop_accounting(EstimateAccountant),
+
+    SegFoldTime = (GuessTime + EstimateTime) div 1000,
+    
+    FullFoldAccountant = accounting(full, 2000, ProfileList),
+    {FullFoldTime, FullFoldCount} =
+        lists:foldl(
+            fun(_I, {TSAcc, CountAcc}) ->
+                {TS, Count} = counter(Bookie1, full),
+                {TSAcc + TS, CountAcc + Count}
+            end,
+            {0, 0},
+            lists:seq(1, 5)
+        ),
+    ok = stop_accounting(FullFoldAccountant),
+
+    ct:log(
+        info,
+        "Guess size ~w Estimate size ~w Actual size ~w",
+        [GuessCount div 60, EstimateCount div 40, FullFoldCount div 10]
+    ),
 
     {MT5, MP5, MB5} = memory_usage(),
 
+    UpdateAccountant = accounting(update, 1000, ProfileList),
     TotalUpdateTime =
         rotate_chunk(Bookie1, <<"UpdBucket">>, KeyCount div 50, ObjSize),
+    ok = stop_accounting(UpdateAccountant),
 
     {MT6, MP6, MB6} = memory_usage(),
 
@@ -216,7 +285,7 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
         TotalLoadTime,
         TotalHeadTime, TotalGetTime,
         TotalQueryTime, TotalMiniQueryTime, RegexQueryTime,
-        FullFoldTime, SegFoldTime,
+        FullFoldTime div 1000, SegFoldTime,
         TotalUpdateTime,
         DiskSpace,
         {(MT0 + MT1 + MT2 + MT3 + MT4 + MT5 + MT6) div 6000000,
@@ -302,38 +371,6 @@ profile_app(Pids, ProfiledFun, P) ->
     io:format(user, "~n~s~n", [Analysis])
     .
 
-size_estimate_summary(Bookie) ->
-    Loops = 10,
-    ct:log(
-        ?INFO,
-        "Size Estimate Tester (SET) started with Loops ~w",
-        [Loops]
-    ),
-    {{TotalGuessTime, TotalEstimateTime, TotalCountTime}, 
-            {TotalEstimateVariance, TotalGuessVariance}} =
-        lists:foldl(
-            fun(_I, {{GT, ET, CT}, {AET, AGT}}) ->
-                {{GT0, ET0, CT0}, {AE0, AG0}} = size_estimate_tester(Bookie),
-                {{GT + GT0, ET + ET0, CT + CT0}, {AET + AE0, AGT + AG0}}
-            end,
-            {{0, 0, 0}, {0, 0}},
-            lists:seq(1, Loops)
-        ),
-    ct:log(
-        ?INFO,
-        "SET: MeanGuess ~w ms MeanEstimate ~w ms MeanCount ~w ms",
-        [TotalGuessTime div 10000,
-            TotalEstimateTime div 10000,
-            TotalCountTime div 10000]
-    ),
-    ct:log(
-        ?INFO,
-        "Mean variance in Estimate ~w Guess ~w",
-        [TotalEstimateVariance div Loops, TotalGuessVariance div Loops]
-    ),
-    %% Assume that segment-list folds are 10 * as common as all folds
-    {TotalCountTime div 1000, (TotalGuessTime + TotalEstimateTime) div 1000}.
-
 
 rotate_chunk(Bookie, Bucket, KeyCount, ObjSize) ->
     ct:log(
@@ -415,33 +452,6 @@ time_load_chunk(
                 PC + Pause
             )
     end.
-            
-
-size_estimate_tester(Bookie) ->
-    %% Data size test - calculate data size, then estimate data size
-    {CountTS, Count} = counter(Bookie, full),
-    {CountTSEstimate, CountEstimate} = counter(Bookie, estimate),
-    {CountTSGuess, CountGuess} = counter(Bookie, guess),
-    {GuessTolerance, EstimateTolerance} =
-        case Count of
-            C when C < 500000 ->
-                {0.20, 0.15};
-            C when C < 1000000 ->
-                {0.12, 0.1};
-            C when C < 2000000 ->
-                {0.1, 0.08};
-            _C ->
-                {0.08, 0.05}
-        end,
-
-    true =
-        ((CountGuess / Count) > (1.0 - GuessTolerance))
-            and ((CountGuess / Count) < (1.0 + GuessTolerance)),
-    true =
-        ((CountEstimate / Count) > (1.0 - EstimateTolerance))
-            and ((CountEstimate / Count) < (1.0 + EstimateTolerance)),
-    {{CountTSGuess, CountTSEstimate, CountTS},
-        {abs(CountEstimate - Count), abs(CountGuess - Count)}}.
 
 counter(Bookie, full) ->
     {async, DataSizeCounter} =
@@ -558,7 +568,12 @@ random_queries(Bookie, Bucket, IDs, IdxCnt, MaxRange, IndexesReturned) ->
     ),
     TC div 1000.
 
+
 random_people_queries(Bookie, Bucket, IndexesReturned) ->
+    SeventiesWillowRegex =
+        "[^\\|]*\\|197[0-9]{5}\\|[^\\|]*\\|"
+        "[^\\|]*#Willow[^\\|]*\\|[^\\|]*#LS[^\\|]*",
+        %% born in the 70s with Willow as a given name
     QueryFun =
         fun() ->
             Surname = get_random_surname(),
@@ -567,11 +582,8 @@ random_people_queries(Bookie, Bucket, IndexesReturned) ->
                     Surname,
                     <<Surname/binary, 126:8/integer>>
             },
-            %% born in the 70s with Willow as a given name
             {ok, TermRegex} =
-                re:compile(
-                    "[^\\|]*\\|197[0-9]{5}\\|[^\\|]*\\|[^\\|]*#Willow[^\\|]*\\|[^\\|]*#LS[^\\|]*"
-                ),
+                re:compile(SeventiesWillowRegex),
             FoldKeysFun =  fun(_B, _K, Cnt) -> Cnt + 1 end,
             {async, R} =
                 leveled_bookie:book_indexfold(
@@ -733,3 +745,109 @@ get_random_postcode() ->
     io_lib:format(
         "LS~w ~wXX", [rand:uniform(26), rand:uniform(9)]
     ).
+
+dummy_accountant() ->
+    spawn(fun() -> receive {stop, Caller} -> Caller ! ok end end).
+    
+stop_accounting(Accountant) ->
+    Accountant ! {stop, self()},
+    receive ok -> ok end. 
+
+-if(?ACCOUNTING).
+
+-define(ACCT_TYPES, [scheduler, dirty_io_scheduler, dirty_cpu_scheduler, aux]).
+
+accounting(Phase, Timeout, ProfileList) ->
+    case lists:member(Phase, ProfileList) of
+        true ->
+            ZeroCounters =
+                #{
+                    emulator => 0,
+                    aux => 0,
+                    check_io => 0,
+                    gc => 0,
+                    other => 0
+                },
+            InitCounters =
+                lists:map(fun(T) -> {T, ZeroCounters} end, ?ACCT_TYPES),
+            spawn(
+                fun() ->
+                    accounting(Phase, Timeout, maps:from_list(InitCounters), 0)
+                end
+            );
+        false ->
+            dummy_accountant()
+    end.
+
+accounting(Phase, Timeout, Counters, Loops) ->
+    receive
+        {stop, Caller} ->
+            io:format(
+                user,
+                "~n~nStats for Phase ~p after loops ~p:~n",
+                [Phase, Loops]
+            ),
+            lists:foreach(
+                fun(S) ->
+                    scheduler_output(S, maps:get(S, Counters))
+                end,
+                ?ACCT_TYPES
+            ),
+            Caller ! ok
+    after Timeout ->
+        msacc:start(Timeout div 5),
+        UpdCounters =
+            lists:foldl(
+                fun(StatMap, CountersAcc) ->
+                    Type = maps:get(type, StatMap),
+                    case lists:member(Type, ?ACCT_TYPES) of
+                        true ->
+                            TypeAcc =
+                                maps:intersect_with(
+                                    fun(_K, V1, V2) -> V1 + V2 end,
+                                    maps:get(counters, StatMap),
+                                    maps:get(Type, CountersAcc)
+                                ),
+                            maps:update(Type, TypeAcc, CountersAcc);
+                        false ->
+                            CountersAcc
+                    end
+                end,
+                Counters,
+                msacc:stats()
+            ),
+        accounting(Phase, Timeout, UpdCounters, Loops + 1)
+    end.
+
+scheduler_output(Scheduler, CounterMap) ->
+    Total =
+        maps:get(emulator, CounterMap) +
+        maps:get(aux, CounterMap) +
+        maps:get(check_io, CounterMap) +
+        maps:get(gc, CounterMap) +
+        maps:get(other, CounterMap),
+    GC = maps:get(gc, CounterMap),
+    GCperc = case Total > 0 of true -> GC/Total; false -> 0.0 end,
+    io:format(
+        user,
+        "~nFor ~w:~n"
+        "emulator=~w, aux=~w, check_io=~w, gc=~w, other=~w~n"
+        "total ~w~n"
+        "percentage_gc ~.2f %~n",
+        [Scheduler,
+            maps:get(emulator, CounterMap),
+            maps:get(aux, CounterMap),
+            maps:get(check_io, CounterMap),
+            GC,
+            maps:get(other, CounterMap),
+            Total,
+            GCperc
+        ]
+    ).
+
+-else.
+
+accounting(_Phase, _Timeout, _ProfileList) ->
+    dummy_accountant().
+
+-endif.
