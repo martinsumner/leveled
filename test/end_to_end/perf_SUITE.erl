@@ -10,29 +10,17 @@
 -define(MINI_QUERY_DIVISOR, 8).
 -define(RGEX_QUERY_DIVISOR, 32).
 
--ifdef(perf_full).
-    all() -> [riak_fullperf].
+-ifdef(performance).
+    all() -> [?performance].
 -else.
-    -ifdef(perf_mini).
-        all() -> [riak_miniperf].
-    -else.
-        -ifdef(perf_prof).
-            all() -> [riak_profileperf].
-        -else.
-            all() -> [riak_ctperf].
-        -endif.
-    -endif.
+    all() -> [riak_ctperf].
 -endif.
 
--ifdef(perf_prof).
-    -if(?OTP_RELEASE >= 24).
-        -define(ACCOUNTING, true).
-    -else.
-        % Requires map functions from OTP 24
-        -define(ACCOUNTING, false).
-    -endif.
+-if(?performance == riak_profileperf andalso ?OTP_RELEASE >= 24).
+   % Requires map functions from OTP 24
+   -define(ACCOUNTING, true).
 -else.
-    -define(ACCOUNTING, false).
+   -define(ACCOUNTING, false).
 -endif.
 
 suite() -> [{timetrap, {hours, 16}}].
@@ -145,14 +133,14 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
 
     HeadMemoryTracker = memory_tracking(head, 1000),
     HeadAccountant = accounting(head, 2000, ProfileList),
-    TotalHeadTime = 
+    TotalHeadTime =
         random_fetches(head, Bookie1, Bucket, KeyCount, HeadFetches),
     ok = stop_accounting(HeadAccountant),
     {MT1, MP1, MB1} = stop_tracker(HeadMemoryTracker),
 
     GetMemoryTracker = memory_tracking(get, 1000),
     GetAccountant = accounting(get, 3000, ProfileList),
-    TotalGetTime = 
+    TotalGetTime =
         random_fetches(get, Bookie1, Bucket, KeyCount, GetFetches),
     ok = stop_accounting(GetAccountant),
     {MT2, MP2, MB2} = stop_tracker(GetMemoryTracker),
@@ -224,7 +212,7 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
     {MT4b, MP4b, MB4b} = stop_tracker(EstimateMemoryTracker),
 
     SegFoldTime = (GuessTime + EstimateTime) div 1000,
-    
+
     FullFoldMemoryTracker = memory_tracking(full, 1000),
     FullFoldAccountant = accounting(full, 2000, ProfileList),
     {FullFoldTime, FullFoldCount} =
@@ -286,7 +274,7 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
 
     {_Inker, _Pcl, SSTPids, _PClerk, CDBPids, _IClerk} = get_pids(Bookie1),
     leveled_bookie:book_destroy(Bookie1),
-    
+
     {KeyCount, ObjSize, {PM, LC},
         TotalLoadTime,
         TotalHeadTime, TotalGetTime,
@@ -389,7 +377,7 @@ rotate_chunk(Bookie, Bucket, KeyCount, ObjSize) ->
     V1 = base64:encode(leveled_rand:rand_bytes(ObjSize)),
     V2 = base64:encode(leveled_rand:rand_bytes(ObjSize)),
     V3 = base64:encode(leveled_rand:rand_bytes(ObjSize)),
-    {TC, ok} = 
+    {TC, ok} =
         timer:tc(
             fun() ->
                 testutil:rotation_withnocheck(
@@ -399,7 +387,7 @@ rotate_chunk(Bookie, Bucket, KeyCount, ObjSize) ->
 
 generate_chunk(CountPerList, ObjSize, IndexGenFun, Bucket, Chunk) ->
     testutil:generate_objects(
-        CountPerList, 
+        CountPerList,
         {fixed_binary, (Chunk - 1) * CountPerList + 1}, [],
         base64:encode(leveled_rand:rand_bytes(ObjSize)),
         IndexGenFun(Chunk),
@@ -452,7 +440,7 @@ time_load_chunk(
     receive
         {PutTime, Pause} ->
             time_load_chunk(
-                Bookie, 
+                Bookie,
                 {Bucket, Value, IndexGen},
                 KeyNumber + 1,
                 TopKey,
@@ -498,7 +486,7 @@ counter(Bookie, estimate) ->
             lists:seq(RandomSegment, RandomSegment + 127)
         ),
     timer:tc(DataSizeEstimater).
-    
+
 
 random_fetches(FetchType, Bookie, Bucket, ObjCount, Fetches) ->
     KeysToFetch =
@@ -538,11 +526,11 @@ random_fetches(FetchType, Bookie, Bucket, ObjCount, Fetches) ->
         [FetchType, Fetches, TC div 1000]
     ),
     TC div 1000.
-    
+
 random_queries(Bookie, Bucket, IDs, IdxCnt, MaxRange, IndexesReturned) ->
     QueryFun =
         fun() ->
-            ID = leveled_rand:uniform(IDs), 
+            ID = leveled_rand:uniform(IDs),
             BinIndex =
                 list_to_binary("binary" ++ integer_to_list(ID) ++ "_bin"),
             Twenty = IdxCnt div 5,
@@ -560,13 +548,13 @@ random_queries(Bookie, Bucket, IDs, IdxCnt, MaxRange, IndexesReturned) ->
             {async, R} =
                 leveled_bookie:book_indexfold(
                     Bookie,
-                    {Bucket, <<>>}, 
+                    {Bucket, <<>>},
                     {FoldKeysFun, 0},
                     {BinIndex, <<Start:32/integer>>, <<End:32/integer>>},
                     {true, undefined}),
             R()
         end,
-    
+
     {TC, {QC, EF}} =
         timer:tc(fun() -> run_queries(QueryFun, 0, 0, IndexesReturned) end),
     ct:log(
@@ -596,13 +584,13 @@ random_people_queries(Bookie, Bucket, IndexesReturned) ->
             {async, R} =
                 leveled_bookie:book_indexfold(
                     Bookie,
-                    {Bucket, <<>>}, 
+                    {Bucket, <<>>},
                     {FoldKeysFun, 0},
                     Range,
                     {true, TermRegex}),
             R()
         end,
-    
+
     {TC, {QC, EF}} =
         timer:tc(fun() -> run_queries(QueryFun, 0, 0, IndexesReturned) end),
     ct:log(
@@ -784,7 +772,7 @@ memory_tracking(Phase, Timeout, {TAcc, PAcc, BAcc}, Loops) ->
 
 dummy_accountant() ->
     spawn(fun() -> receive {stop, Caller} -> Caller ! ok end end).
-    
+
 stop_accounting(Accountant) ->
     Accountant ! {stop, self()},
     receive ok -> ok end.
