@@ -10,29 +10,16 @@
 -define(MINI_QUERY_DIVISOR, 8).
 -define(RGEX_QUERY_DIVISOR, 32).
 
--ifdef(perf_full).
-    all() -> [riak_fullperf].
--else.
-    -ifdef(perf_mini).
-        all() -> [riak_miniperf].
-    -else.
-        -ifdef(perf_prof).
-            all() -> [riak_profileperf].
-        -else.
-            all() -> [riak_ctperf].
-        -endif.
-    -endif.
+-ifndef(performance).
+  -define(performance, riak_ctperf).
 -endif.
+all() -> [?performance].
 
--ifdef(perf_prof).
-    -if(?OTP_RELEASE >= 24).
-        -define(ACCOUNTING, true).
-    -else.
-        % Requires map functions from OTP 24
-        -define(ACCOUNTING, false).
-    -endif.
+-if(?performance == riak_profileperf andalso ?OTP_RELEASE >= 24).
+   % Requires map functions from OTP 24
+   -define(ACCOUNTING, true).
 -else.
-    -define(ACCOUNTING, false).
+   -define(ACCOUNTING, false).
 -endif.
 
 suite() -> [{timetrap, {hours, 16}}].
