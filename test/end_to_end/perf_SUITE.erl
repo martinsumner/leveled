@@ -756,11 +756,7 @@ memory_tracking(Phase, Timeout, {TAcc, PAcc, BAcc}, Loops) ->
             TAvg = (T + TAcc) div ((Loops + 1) * 1000000),
             PAvg = (P + PAcc) div ((Loops + 1) * 1000000),
             BAvg = (B + BAcc) div ((Loops + 1) * 1000000),
-            io:format(
-                user,
-                "~nFor ~w memory stats: total ~wMB process ~wMB binary ~wMB~n",
-                [Phase, TAvg, PAvg, BAvg]
-            ),
+            print_memory_stats(Phase, TAvg, PAvg, BAvg),
             Caller ! {TAvg, PAvg, BAvg}
     after Timeout ->
         {T, P, B} = memory_usage(),
@@ -768,6 +764,18 @@ memory_tracking(Phase, Timeout, {TAcc, PAcc, BAcc}, Loops) ->
             Phase, Timeout, {TAcc + T, PAcc + P, BAcc + B}, Loops + 1)
     end.
 
+
+-if(?performance == riak_ctperf).
+print_memory_stats(_Phase, _TAvg, _PAvg, _BAvg) ->
+    ok.
+-else.
+print_memory_stats(Phase, TAvg, PAvg, BAvg) ->
+    io:format(
+        user,
+        "~nFor ~w memory stats: total ~wMB process ~wMB binary ~wMB~n",
+        [Phase, TAvg, PAvg, BAvg]
+    ).
+-endif.
 
 dummy_accountant() ->
     spawn(fun() -> receive {stop, Caller} -> Caller ! ok end end).
