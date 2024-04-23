@@ -10,29 +10,16 @@
 -define(MINI_QUERY_DIVISOR, 8).
 -define(RGEX_QUERY_DIVISOR, 32).
 
--ifdef(perf_full).
-    all() -> [riak_fullperf].
--else.
-    -ifdef(perf_mini).
-        all() -> [riak_miniperf].
-    -else.
-        -ifdef(perf_prof).
-            all() -> [riak_profileperf].
-        -else.
-            all() -> [riak_ctperf].
-        -endif.
-    -endif.
+-ifndef(performance).
+  -define(performance, riak_ctperf).
 -endif.
+all() -> [?performance].
 
--ifdef(perf_prof).
-    -if(?OTP_RELEASE >= 24).
-        -define(ACCOUNTING, true).
-    -else.
-        % Requires map functions from OTP 24
-        -define(ACCOUNTING, false).
-    -endif.
+-if(?performance == riak_profileperf andalso ?OTP_RELEASE >= 24).
+   % Requires map functions from OTP 24
+   -define(ACCOUNTING, true).
 -else.
-    -define(ACCOUNTING, false).
+   -define(ACCOUNTING, false).
 -endif.
 
 suite() -> [{timetrap, {hours, 16}}].
@@ -769,11 +756,7 @@ memory_tracking(Phase, Timeout, {TAcc, PAcc, BAcc}, Loops) ->
             TAvg = (T + TAcc) div ((Loops + 1) * 1000000),
             PAvg = (P + PAcc) div ((Loops + 1) * 1000000),
             BAvg = (B + BAcc) div ((Loops + 1) * 1000000),
-            io:format(
-                user,
-                "~nFor ~w memory stats: total ~wMB process ~wMB binary ~wMB~n",
-                [Phase, TAvg, PAvg, BAvg]
-            ),
+            print_memory_stats(Phase, TAvg, PAvg, BAvg),
             Caller ! {TAvg, PAvg, BAvg}
     after Timeout ->
         {T, P, B} = memory_usage(),
@@ -781,6 +764,18 @@ memory_tracking(Phase, Timeout, {TAcc, PAcc, BAcc}, Loops) ->
             Phase, Timeout, {TAcc + T, PAcc + P, BAcc + B}, Loops + 1)
     end.
 
+
+-if(?performance == riak_ctperf).
+print_memory_stats(_Phase, _TAvg, _PAvg, _BAvg) ->
+    ok.
+-else.
+print_memory_stats(Phase, TAvg, PAvg, BAvg) ->
+    io:format(
+        user,
+        "~nFor ~w memory stats: total ~wMB process ~wMB binary ~wMB~n",
+        [Phase, TAvg, PAvg, BAvg]
+    ).
+-endif.
 
 dummy_accountant() ->
     spawn(fun() -> receive {stop, Caller} -> Caller ! ok end end).
