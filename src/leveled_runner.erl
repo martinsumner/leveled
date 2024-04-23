@@ -130,12 +130,11 @@ bucket_list(SnapFun, Tag, FoldBucketsFun, InitAcc, MaxBuckets) ->
         end,
     {async, Runner}.
 
--spec index_query(snap_fun(), 
-                    {leveled_codec:ledger_key(), 
-                        leveled_codec:ledger_key(), 
-                        {boolean(), undefined|mp()|iodata()}}, 
-                    {fold_keys_fun(), foldacc()})
-                        -> {async, runner_fun()}.
+-spec index_query(
+    snap_fun(),
+    {leveled_codec:ledger_key(), leveled_codec:ledger_key(), 
+    {boolean()|binary(), leveled_codec:regular_expression()}}, 
+    {fold_keys_fun(), foldacc()}) -> {async, runner_fun()}.
 %% @doc
 %% Secondary index query
 %% This has the special capability that it will expect a message to be thrown
@@ -681,7 +680,7 @@ accumulate_keys(FoldKeysFun, undefined) ->
 accumulate_keys(FoldKeysFun, TermRegex) ->
     fun(Key, _Value, Acc) ->
         {B, K} = leveled_codec:from_ledgerkey(Key),
-        case leveled_util:regex_run(K, TermRegex) of
+        case leveled_util:regex_run(K, TermRegex, []) of
             nomatch ->
                 Acc;
             _ ->

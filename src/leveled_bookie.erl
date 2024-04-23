@@ -696,7 +696,7 @@ book_returnfolder(Pid, RunnerType) ->
                                      IndexVal::term(),
                                      Start::IndexVal,
                                      End::IndexVal,
-                                     ReturnTerms::boolean(),
+                                     ReturnTerms::boolean()|binary(),
                                      TermRegex :: leveled_codec:regular_expression().
 
 book_indexfold(Pid, Constraint, FoldAccT, Range, TermHandling)

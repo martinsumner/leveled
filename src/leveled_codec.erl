@@ -112,10 +112,13 @@
         {index_specs(), infinity|integer()}. % {KeyChanges, TTL}
 -type maybe_lookup() ::
         lookup|no_lookup.
+-type actual_regex() ::
+        reference()|{re_pattern, term(), term(), term(), term()}.
+-type capture_filter_fun() :: fun((list({binary(), binary()})) -> boolean()).
+-type capture_reference() :: 
+        {capture, actual_regex(), list(binary()), capture_filter_fun()}.
 -type regular_expression() ::
-        {re_pattern, term(), term(), term(), term()}|undefined. 
-    % first element must be re_pattern, but tuple may change legnth with
-    % versions
+        actual_regex()|undefined|capture_reference().
 
 -type value_fetcher() ::
     {fun((pid(), leveled_codec:journal_key()) -> any()),
@@ -155,6 +158,7 @@
             last_moddate/0,
             lastmod_range/0,
             regular_expression/0,
+            actual_regex/0,
             value_fetcher/0,
             proxy_object/0,
             slimmed_key/0
@@ -292,8 +296,9 @@ maybe_accumulate(
     maybe_accumulate(T, Acc, Count, Filter, AccFun).
 
 -spec accumulate_index(
-        {boolean(), undefined|leveled_runner:mp()}, leveled_runner:acc_fun())
-            -> any().
+        {boolean()|binary(),
+        regular_expression()},
+        leveled_runner:acc_fun()) -> any().
 accumulate_index({false, undefined}, FoldKeysFun) ->
     fun({?IDX_TAG, Bucket, _IndexInfo, ObjKey}, _Value, Acc) ->
         FoldKeysFun(Bucket, ObjKey, Acc)
@@ -302,9 +307,36 @@ accumulate_index({true, undefined}, FoldKeysFun) ->
     fun({?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc) ->
         FoldKeysFun(Bucket, {IdxValue, ObjKey}, Acc)
     end;
+accumulate_index(
+        {AddTerm, {capture, TermRegex, CptKeys, FilterFun}}, FoldKeysFun) ->
+    ExpectedKeys = length(CptKeys),
+    Opts = [{capture, all_but_first, binary}],
+    fun({?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc) ->
+        case leveled_util:regex_run(IdxValue, TermRegex, Opts) of
+            {match, CptTerms} when length(CptTerms) == ExpectedKeys ->
+                CptPairs = lists:zip(CptKeys, CptTerms),
+                case FilterFun(CptPairs) of
+                    true ->
+                        case AddTerm of
+                            true ->
+                                FoldKeysFun(Bucket, {IdxValue, ObjKey}, Acc);
+                            false ->
+                                FoldKeysFun(Bucket, ObjKey, Acc);
+                            CptKey when is_binary(CptKey) ->
+                                {CptKey, CptValue} =
+                                    lists:keyfind(CptKey, 1, CptPairs),
+                                FoldKeysFun(Bucket, {CptValue, ObjKey}, Acc)
+                        end;
+                    false ->
+                        Acc
+                end;
+            _ ->
+                Acc
+        end
+    end;
 accumulate_index({AddTerm, TermRegex}, FoldKeysFun) ->
     fun({?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc) ->
-        case leveled_util:regex_run(IdxValue, TermRegex) of
+        case leveled_util:regex_run(IdxValue, TermRegex, []) of
             nomatch ->
                 Acc;
             _ ->
@@ -316,6 +348,7 @@ accumulate_index({AddTerm, TermRegex}, FoldKeysFun) ->
                 end
         end
     end.
+
 
 -spec key_dominates(ledger_kv(), ledger_kv()) -> boolean().
 %% @doc

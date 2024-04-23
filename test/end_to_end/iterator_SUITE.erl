@@ -13,7 +13,9 @@
             query_count/1,
             multibucket_fold/1,
             foldobjects_bybucket_range/1,
-            rotating_objects/1]).
+            rotating_objects/1,
+            capture_and_filter_terms/1
+        ]).
 
 all() -> [
             expiring_indexes,
@@ -23,7 +25,8 @@ all() -> [
             query_count,
             multibucket_fold,
             rotating_objects,
-            foldobjects_bybucket_range
+            foldobjects_bybucket_range,
+            capture_and_filter_terms
             ].
 
 
@@ -677,7 +680,7 @@ query_count(_Config) ->
     Mia2000Count2 =
         lists:foldl(
             fun({Term, _Key}, Acc) ->
-                case leveled_util:regex_run(Term, RegMia) of
+                case leveled_util:regex_run(Term, RegMia, []) of
                     nomatch ->
                         Acc;
                     _ ->
@@ -836,6 +839,203 @@ query_count(_Config) ->
     true = sets:size(BucketSet3) == 4,
     
     ok = leveled_bookie:book_close(Book5),
+    
+    testutil:reset_filestructure().
+
+
+capture_and_filter_terms(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    Bucket = {<<"Type1">>, <<"Bucket1">>},
+    IdxName = <<"people_bin">>,
+    {ok, Book1} =
+        leveled_bookie:book_start(
+            RootPath, 2000, 50000000, testutil:sync_strategy()),
+    ObjectGen = testutil:get_compressiblevalue_andinteger(),
+    IndexGen =
+        fun() ->
+            [{add, IdxName, list_to_binary(perf_SUITE:random_people_index())}]
+        end,
+    ObjL1 =
+        testutil:generate_objects(
+            80000, uuid, [], ObjectGen, IndexGen, Bucket),
+    testutil:riakload(Book1, ObjL1),
+
+    StartDoB = <<"19740301">>,
+    EndDoB = <<"19761031">>,
+
+    WillowLeedsFinder =
+        "[^\\|]*\\|[0-9]{8}\\|[0-9]{0,8}\\|[^\\|]*#Willow[^\\|]*\\|"
+        "[^\\|]*#LS[^\\|]*",
+
+    SW0 = os:timestamp(),
+    {ok, WillowLeedsPCRE} = re:compile(WillowLeedsFinder),
+    QueryPCRE0 =
+        {index_query,
+            {Bucket, null},
+            {fun testutil:foldkeysfun/3, []},
+            {IdxName, <<"M">>, <<"Z">>},
+            {true, WillowLeedsPCRE}},
+    {async, Runner0} = leveled_bookie:book_returnfolder(Book1, QueryPCRE0),
+    Results0 = Runner0(),
+    BornMid70s0 =
+        lists:filtermap(
+            fun({IdxValue, Key}) ->
+                DoB =
+                    list_to_binary(
+                        lists:nth(
+                            2,
+                            string:tokens(binary_to_list(IdxValue), "|")
+                        )),
+                case (DoB >= StartDoB) andalso (DoB =< EndDoB) of
+                    true ->
+                        {true, Key};
+                    false ->
+                        false
+                end
+            end,
+            Results0
+        ),
+
+    SW1 = os:timestamp(),
+    
+    WillowLeedsExtractor = 
+        "[^\\|]*\\|(?P<dob>[0-9]{8})\\|[0-9]{0,8}\\|[^\\|]*#Willow[^\\|]*\\|"
+        "[^\\|]*#LS[^\\|]*",
+    FilterFun1 =
+        fun([{<<"dob">>, DoB}]) ->
+            (DoB >= StartDoB) andalso (DoB =< EndDoB)
+        end,
+    {ok, WillowLeedsExtractorPCRE} = re:compile(WillowLeedsExtractor),
+    QueryPCRE1 =
+        {index_query,
+            {Bucket, null},
+            {fun testutil:foldkeysfun/3, []},
+            {IdxName, <<"M">>, <<"Z">>},
+            {false,
+                {capture, WillowLeedsExtractorPCRE, [<<"dob">>], FilterFun1}}
+    },
+    {async, RunnerPCRE1} = leveled_bookie:book_returnfolder(Book1, QueryPCRE1),
+    BornMid70sPCRE1 = RunnerPCRE1(),
+
+    SW2 = os:timestamp(),
+
+    {ok, WillowLeedsExtractorRE2} = re2:compile(WillowLeedsExtractor),
+    QueryRE2_2 =
+        {index_query,
+            {Bucket, null},
+            {fun testutil:foldkeysfun/3, []},
+            {IdxName, <<"M">>, <<"Z">>},
+            {false,
+                {capture, WillowLeedsExtractorRE2, [<<"dob">>], FilterFun1}}
+    },
+    {async, RunnerRE2_2} = leveled_bookie:book_returnfolder(Book1, QueryRE2_2),
+    BornMid70sRE2_2 = RunnerRE2_2(),
+
+    SW3 = os:timestamp(),
+
+    QueryRE2_3 =
+        {index_query,
+            {Bucket, null},
+            {fun testutil:foldkeysfun/3, []},
+            {IdxName, <<"M">>, <<"Z">>},
+            {<<"dob">>,
+                {capture, WillowLeedsExtractorRE2, [<<"dob">>], fun(_) -> true end}}
+    },
+    {async, RunnerRE2_3} = leveled_bookie:book_returnfolder(Book1, QueryRE2_3),
+    Results3 = RunnerRE2_3(),
+    BornMid70sRE2_3 =
+        lists:filtermap(
+            fun({DoB, Key}) ->
+                case (DoB >= StartDoB) andalso (DoB =< EndDoB) of
+                    true ->
+                        {true, Key};
+                    false ->
+                        false
+                end
+            end,
+            Results3
+        ),
+
+    SW4 = os:timestamp(),
+
+    WillowLeedsDoubleExtractor = 
+        "[^\\|]*\\|(?P<dob>[0-9]{8})\\|(?P<dod>[0-9]{0,8})\\|"
+        "[^\\|]*#Willow[^\\|]*\\|[^\\|]*#LS[^\\|]*",
+    
+    FilterFun2 =
+        fun(Captures) ->
+            {<<"dob">>, DoB} = hd(Captures),
+            (DoB >= StartDoB) andalso (DoB =< EndDoB)
+        end,
+    QueryRE2_4 =
+        {index_query,
+            {Bucket, null},
+            {fun testutil:foldkeysfun/3, []},
+            {IdxName, <<"M">>, <<"Z">>},
+            {false,
+                {capture,
+                    element(2, re2:compile(WillowLeedsDoubleExtractor)),
+                    [<<"dob">>, <<"dod">>],
+                    FilterFun2}}
+    },
+    {async, RunnerRE2_4} = leveled_bookie:book_returnfolder(Book1, QueryRE2_4),
+    BornMid70sRE2_4 = RunnerRE2_4(),
+    
+    SW5 = os:timestamp(),
+
+    QueryRE2_5 =
+        {index_query,
+            {Bucket, null},
+            {fun testutil:foldkeysfun/3, []},
+            {IdxName, <<"M">>, <<"Z">>},
+            {true,
+                {capture, WillowLeedsExtractorRE2, [<<"dob">>], FilterFun1}}
+    },
+    {async, RunnerRE2_5} = leveled_bookie:book_returnfolder(Book1, QueryRE2_5),
+    BornMid70sRE2_5 =
+        lists:filtermap(
+            fun({T, K}) ->
+                {match, _} =
+                    leveled_util:regex_run(T, WillowLeedsExtractorRE2, []),
+                {true, K}
+            end,
+            RunnerRE2_5()),
+
+    true = length(BornMid70s0) > 0,
+    true = length(BornMid70sPCRE1) > 0,
+    true = length(BornMid70sRE2_2) > 0,
+    true = length(BornMid70sRE2_3) > 0,
+    true = length(BornMid70sRE2_4) > 0,
+    true = length(BornMid70sRE2_5) > 0,
+
+    true = lists:sort(BornMid70s0) == lists:sort(BornMid70sPCRE1),
+    true = lists:sort(BornMid70s0) == lists:sort(BornMid70sRE2_2),
+    true = lists:sort(BornMid70s0) == lists:sort(BornMid70sRE2_3),
+    true = lists:sort(BornMid70s0) == lists:sort(BornMid70sRE2_4),
+    true = lists:sort(BornMid70s0) == lists:sort(BornMid70sRE2_5),
+
+    io:format(
+        % user,
+        "~nFilter outside took ~w ms~n",
+        [timer:now_diff(SW1, SW0) div 1000]),
+    io:format(
+        % user,
+        "~nPCRE Capture filter inside took ~w ms~n",
+        [timer:now_diff(SW2, SW1) div 1000]),
+    io:format(
+        % user,
+        "~nRE2 Capture filter inside took ~w ms~n",
+        [timer:now_diff(SW3, SW2) div 1000]),
+    io:format(
+        % user,
+        "~nRE2 Capture filter outside took ~w ms~n",
+        [timer:now_diff(SW4, SW3) div 1000]),
+    io:format(
+        % user,
+        "~nRE2 double-capture filter outside took ~w ms~n",
+        [timer:now_diff(SW5, SW4) div 1000]),
+
+    ok = leveled_bookie:book_close(Book1),
     
     testutil:reset_filestructure().
 

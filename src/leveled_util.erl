@@ -11,7 +11,7 @@
             magic_hash/1,
             t2b/1,
             safe_rename/4,
-            regex_run/2,
+            regex_run/3,
             regex_compile/1
         ]).
 
@@ -42,15 +42,31 @@ integer_time(TS) ->
     DT = calendar:now_to_universal_time(TS),
     calendar:datetime_to_gregorian_seconds(DT).
 
--spec regex_run(
-    iodata(), any()) ->
-        match | nomatch | {match, list()} | {error, atom()}.
-regex_run(Subject, CompiledRE2) when is_reference(CompiledRE2) ->
-    re2:run(Subject, CompiledRE2);
-regex_run(Subject, CompiledPCRE) ->
-    re:run(Subject, CompiledPCRE).
 
--spec regex_compile(iodata()) -> reference().
+-type match_option() ::
+    'caseless' |
+    {'offset', non_neg_integer()} |
+    {'capture', value_spec()} |
+    {'capture', value_spec(), value_spec_type()}.
+-type value_spec() ::
+    'all' | 'all_but_first' | 'first' | 'none' | [value_id()].
+-type value_spec_type() :: 'binary'.
+-type value_id() :: binary().
+-type match_index() :: {non_neg_integer(), non_neg_integer()}.
+
+-spec regex_run(
+    iodata(), leveled_codec:actual_regex(), list(match_option())) ->
+        match |
+        nomatch |
+        {match, list(match_index())} |
+        {match, list(binary())} |
+        {error, atom()}.
+regex_run(Subject, CompiledRE2, Opts) when is_reference(CompiledRE2) ->
+    re2:run(Subject, CompiledRE2, Opts);
+regex_run(Subject, CompiledPCRE, Opts) ->
+    re:run(Subject, CompiledPCRE, Opts).
+
+-spec regex_compile(iodata()) -> {ok, reference()}.
 regex_compile(PlainRegex) ->
     re2:compile(PlainRegex).
 
