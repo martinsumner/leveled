@@ -114,9 +114,9 @@
         lookup|no_lookup.
 -type actual_regex() ::
         reference()|{re_pattern, term(), term(), term(), term()}.
--type capture_filter_fun() :: fun((list({binary(), binary()})) -> boolean()).
+-type capture_filter_fun() :: fun((#{atom() => string()}) -> boolean()).
 -type capture_reference() :: 
-        {capture, actual_regex(), list(binary()), capture_filter_fun()}.
+        {capture, actual_regex(), list(atom()), capture_filter_fun()}.
 -type regular_expression() ::
         actual_regex()|undefined|capture_reference().
 
@@ -314,17 +314,16 @@ accumulate_index(
     fun({?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc) ->
         case leveled_util:regex_run(IdxValue, TermRegex, Opts) of
             {match, CptTerms} when length(CptTerms) == ExpectedKeys ->
-                CptPairs = lists:zip(CptKeys, CptTerms),
-                case FilterFun(CptPairs) of
+                CptMap = maps:from_list(lists:zip(CptKeys, CptTerms)),
+                case FilterFun(CptMap) of
                     true ->
                         case AddTerm of
                             true ->
                                 FoldKeysFun(Bucket, {IdxValue, ObjKey}, Acc);
                             false ->
                                 FoldKeysFun(Bucket, ObjKey, Acc);
-                            CptKey when is_binary(CptKey) ->
-                                {CptKey, CptValue} =
-                                    lists:keyfind(CptKey, 1, CptPairs),
+                            CptKey when is_atom(CptKey) ->
+                                CptValue = maps:get(CptKey, CptMap),
                                 FoldKeysFun(Bucket, {CptValue, ObjKey}, Acc)
                         end;
                     false ->

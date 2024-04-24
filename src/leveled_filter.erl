@@ -11,9 +11,10 @@
 %%% External API
 %%%============================================================================
 
-%% @doc validate a comaprison expression
+%% @doc validate a comparison expression
 %% A comparison expression allows for string comparisons to be made using
-%% >, <, >=, =< with andalso, or as well as () to group different expressions
+%% >, <, >=, =< with andalso, orelse as well as () to group different
+%% expressions.
 %% The output is a function which will be passed a Map where the Map may be the
 %% result of reading some projected attributes on an index string.
 %% To compare a string with a key in the map, the name of the key must begin
@@ -32,9 +33,8 @@ validate_comparison_expression(
                 {ok, UpdTokens} ->
                     case erl_parse:parse_exprs(UpdTokens) of
                         {ok, [Form]} ->
-                            io:format("Form ~p~n", [Form]),
                             fun(LookupMap) ->
-                                erl_eval:expr(Form, LookupMap)
+                                element(2, erl_eval:expr(Form, LookupMap))
                             end;
                         {error, ErrorInfo} ->
                             {error, ErrorInfo, undefined}
@@ -69,9 +69,10 @@ vert_compexpr_tokens([{string, LN, String}|Rest], Args, ParsedTokens) ->
                 false ->
                     {error, io_lib:format("Unavailable Arg ~s", [Arg]), LN}
             end;
-        _ -> % Not a key, treat as a string
+        _ -> % Not a key, treat as a binary
+            BinString = [{'>>', LN}, {string, LN, String}, {'<<', LN}],
             vert_compexpr_tokens(
-                Rest, Args, [{string, LN, String}|ParsedTokens])
+                Rest, Args, BinString ++ ParsedTokens)
     end;
 vert_compexpr_tokens([{'(',LN}|Rest], Args, ParsedTokens) ->
     vert_compexpr_tokens(Rest, Args, [{'(',LN}|ParsedTokens]);
@@ -79,8 +80,8 @@ vert_compexpr_tokens([{')',LN}|Rest], Args, ParsedTokens) ->
     vert_compexpr_tokens(Rest, Args, [{')',LN}|ParsedTokens]);
 vert_compexpr_tokens([{'andalso', LN}|Rest], Args, ParsedTokens) ->
     vert_compexpr_tokens(Rest, Args, [{'andalso', LN}|ParsedTokens]);
-vert_compexpr_tokens([{'or', LN}|Rest], Args, ParsedTokens) ->
-    vert_compexpr_tokens(Rest, Args, [{'or', LN}|ParsedTokens]);
+vert_compexpr_tokens([{'orelse', LN}|Rest], Args, ParsedTokens) ->
+    vert_compexpr_tokens(Rest, Args, [{'orelse', LN}|ParsedTokens]);
 vert_compexpr_tokens([{'>', LN}|Rest], Args, ParsedTokens) ->
     vert_compexpr_tokens(Rest, Args, [{'>', LN}|ParsedTokens]);
 vert_compexpr_tokens([{'<', LN}|Rest], Args, ParsedTokens) ->
@@ -104,38 +105,38 @@ vert_compexpr_tokens([InvalidToken|_Rest], _Args, _ParsedTokens) ->
 good_querystring_test() ->
     QueryString =
         "(\"$dob\" >= \"19740301\" andalso \"$dob\" =< \"19761030\")"
-        " or (\"$dod\" > \"20200101\" andalso \"$dod\" < \"20230101\").",
+        " orelse (\"$dod\" > \"20200101\" andalso \"$dod\" < \"20230101\").",
     AvailableArgs = ["dob", "dod"],
     F = validate_comparison_expression(QueryString, AvailableArgs),
-    M1 = maps:from_list([{dob, "19750202"}, {dod, "20221216"}]),
-    M2 = maps:from_list([{dob, "19750202"}, {dod, "20191216"}]),
-    M3 = maps:from_list([{dob, "19790202"}, {dod, "20221216"}]),
-    M4 = maps:from_list([{dob, "19790202"}, {dod, "20191216"}]),
-    M5 = maps:from_list([{dob, "19790202"}, {dod, "20241216"}]),
-    ?assertMatch(true, element(2, F(M1))),
-    ?assertMatch(true, element(2, F(M2))),
-    ?assertMatch(true, element(2, F(M3))),
-    ?assertMatch(false, element(2, F(M4))),
-    ?assertMatch(false, element(2, F(M5))).
+    M1 = maps:from_list([{dob, <<"19750202">>}, {dod, <<"20221216">>}]),
+    M2 = maps:from_list([{dob, <<"19750202">>}, {dod, <<"20191216">>}]),
+    M3 = maps:from_list([{dob, <<"19790202">>}, {dod, <<"20221216">>}]),
+    M4 = maps:from_list([{dob, <<"19790202">>}, {dod, <<"20191216">>}]),
+    M5 = maps:from_list([{dob, <<"19790202">>}, {dod, <<"20241216">>}]),
+    ?assertMatch(true, F(M1)),
+    ?assertMatch(true, F(M2)),
+    ?assertMatch(true, F(M3)),
+    ?assertMatch(false, F(M4)),
+    ?assertMatch(false, F(M5)).
 
 bad_querystring_test() ->
     QueryString =
         "(\"$dob\" >= \"19740301\" andalso \"$dob\" =< \"19761030\")"
-        " or (\"$dod\" > \"20200101\").",
+        " orelse (\"$dod\" > \"20200101\").",
     BadString1 =
         "(\"$dob\" >= \"19740301\" andalso \"$dob\" =< \"19761030\")"
-        " or (\"$dod\" > \"20200101\")",
+        " orelse (\"$dod\" > \"20200101\")",
     BadString2 =
         "(\"$dob\" >= \"19740301\" andalso \"$dob\" =< \"19761030\")"
-        " or (\"$dod\" > \"20200101\")).",
+        " orelse (\"$dod\" > \"20200101\")).",
     BadString3 =
         "(\"$dob\" >= \"19740301\" and \"$dob\" =< \"19761030\")"
-        " or (\"$dod\" > \"20200101\").",
+        " orelse (\"$dod\" > \"20200101\").",
     BadString4 = "os:cmd(foo)",
     BadString5 =
         [42,63,52,10,240,159,140,190] ++
-        "(\"$dob\" >= \"19740301\" andalso \"$dob\" =< \"19761030\")"
-        " or (\"$dod\" > \"20200101\").",
+        "(\"$dob\" >= \"19740301\" andalso \"$dob\" =< <<\"19761030\")"
+        " orelse (\"$dod\" > \"20200101\").",
     BadString6 = [(16#110000 + 1)|QueryString],
     BadString7 = <<42:32/integer>>,
     ?assertMatch(
