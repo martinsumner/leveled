@@ -17,17 +17,16 @@
         ]).
 
 all() -> [
-            % expiring_indexes,
-            % breaking_folds,
-            % single_object_with2i,
-            % small_load_with2i,
-            % query_count,
-            % multibucket_fold,
-            % rotating_objects,
-            % foldobjects_bybucket_range,
+            expiring_indexes,
+            breaking_folds,
+            single_object_with2i,
+            small_load_with2i,
+            query_count,
+            multibucket_fold,
+            rotating_objects,
+            foldobjects_bybucket_range,
             capture_and_filter_terms
             ].
-
 
 expiring_indexes(_Config) ->
     % Add objects to the store with index entries, where the objects (and hence
@@ -50,11 +49,11 @@ expiring_indexes(_Config) ->
     SW1 = os:timestamp(),
     timer:sleep(1000),
 
-    V9 = testutil:get_compressiblevalue(),
+    V1 = <<"V1">>,
     Indexes9 = testutil:get_randomindexes_generator(2),
     TempRiakObjects =
         testutil:generate_objects(
-            KeyCount, binary_uuid, [], V9, Indexes9, "riakBucket"),
+            KeyCount, binary_uuid, [], V1, Indexes9, "riakBucket"),
     
     IBKL1 = testutil:stdload_expiring(Bookie1, KeyCount, Future),
     lists:foreach(
@@ -144,11 +143,6 @@ expiring_indexes(_Config) ->
         Bookie1, B0, K0, 5, <<"value">>, leveled_util:integer_now() + 10),
     timer:sleep(1000),
     {async, Folder2} = IndexFold(),
-        leveled_bookie:book_indexfold(Bookie1,
-                                        B0,
-                                        {FoldFun, InitAcc},
-                                        {<<"temp_int">>, 5, 8},
-                                        {true, undefined}),
     QR2 = Folder2(),
     io:format("Query with additional entry length ~w~n", [length(QR2)]),
     true = lists:sort(QR2) == lists:sort([{5, B0, K0}|LoadedEntriesInRange]),
@@ -203,13 +197,11 @@ breaking_folds(_Config) ->
                     {max_journalsize, 10000000},
                     {sync_strategy, testutil:sync_strategy()}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
-    ObjectGen = testutil:get_compressiblevalue_andinteger(),
+    V1 = testutil:get_compressiblevalue_andinteger(),
     IndexGen = testutil:get_randomindexes_generator(8),
-    ObjL1 = testutil:generate_objects(KeyCount,
-                                        binary_uuid,
-                                        [],
-                                        ObjectGen,
-                                        IndexGen),
+    ObjL1 =
+        testutil:generate_objects(
+            KeyCount, binary_uuid, [], V1, IndexGen),
     testutil:riakload(Bookie1, ObjL1),
 
     % Find all keys index, and then same again but stop at a midpoint using a
@@ -284,10 +276,11 @@ breaking_folds(_Config) ->
             end
         end,
     {async, HeadFolderToMidK} = 
-        leveled_bookie:book_headfold(Bookie1,
-                                        ?RIAK_TAG, 
-                                        {FoldThrowFun(HeadFoldFun), []}, 
-                                        true, true, false),
+        leveled_bookie:book_headfold(
+            Bookie1,
+            ?RIAK_TAG, 
+            {FoldThrowFun(HeadFoldFun), []}, 
+            true, true, false),
     KeySizeList2 = lists:reverse(CatchingFold(HeadFolderToMidK)),
     io:format("Head fold with result size ~w~n", [length(KeySizeList2)]),
     true = KeyCount div 2 == length(KeySizeList2),    
@@ -297,21 +290,19 @@ breaking_folds(_Config) ->
             [{K,byte_size(V)}|Acc]
         end,
     {async, ObjectFolderKO} = 
-        leveled_bookie:book_objectfold(Bookie1,
-                                        ?RIAK_TAG,
-                                        {ObjFoldFun, []},
-                                        false,
-                                        key_order),
+        leveled_bookie:book_objectfold(
+            Bookie1, ?RIAK_TAG, {ObjFoldFun, []}, false, key_order),
     ObjSizeList1 = lists:reverse(ObjectFolderKO()),
     io:format("Obj fold with result size ~w~n", [length(ObjSizeList1)]),
     true = KeyCount == length(ObjSizeList1),
 
     {async, ObjFolderToMidK} = 
-        leveled_bookie:book_objectfold(Bookie1,
-                                        ?RIAK_TAG, 
-                                        {FoldThrowFun(ObjFoldFun), []}, 
-                                        false,
-                                        key_order),
+        leveled_bookie:book_objectfold(
+            Bookie1,
+            ?RIAK_TAG, 
+            {FoldThrowFun(ObjFoldFun), []},
+            false,
+            key_order),
     ObjSizeList2 = lists:reverse(CatchingFold(ObjFolderToMidK)),
     io:format("Object fold with result size ~w~n", [length(ObjSizeList2)]),
     true = KeyCount div 2 == length(ObjSizeList2),  
@@ -321,11 +312,8 @@ breaking_folds(_Config) ->
     % that was terminated by reaching a point in the key range .. as results
     % will not be passed to the fold function in key order
     {async, ObjectFolderSO} = 
-        leveled_bookie:book_objectfold(Bookie1,
-                                        ?RIAK_TAG,
-                                        {ObjFoldFun, []},
-                                        false,
-                                        sqn_order),
+        leveled_bookie:book_objectfold(
+            Bookie1, ?RIAK_TAG, {ObjFoldFun, []}, false, sqn_order),
     ObjSizeList1_SO = lists:reverse(ObjectFolderSO()),
     io:format("Obj fold with result size ~w~n", [length(ObjSizeList1_SO)]),
     true = KeyCount == length(ObjSizeList1_SO),
@@ -343,33 +331,26 @@ breaking_folds(_Config) ->
             end
         end,
     {async, ObjFolderTo1K} = 
-        leveled_bookie:book_objectfold(Bookie1,
-                                        ?RIAK_TAG, 
-                                        {FoldThrowThousandFun(ObjFoldFun), []}, 
-                                        false,
-                                        sqn_order),
+        leveled_bookie:book_objectfold(
+            Bookie1,
+            ?RIAK_TAG, 
+            {FoldThrowThousandFun(ObjFoldFun), []}, 
+            false,
+            sqn_order),
     ObjSizeList2_SO = lists:reverse(CatchingFold(ObjFolderTo1K)),
     io:format("Object fold with result size ~w~n", [length(ObjSizeList2_SO)]),
     true = 1000 == length(ObjSizeList2_SO),
 
-    ObjL2 = testutil:generate_objects(10,
-                                        binary_uuid,
-                                        [],
-                                        ObjectGen,
-                                        IndexGen,
-                                        "B2"),
-    ObjL3 = testutil:generate_objects(10,
-                                        binary_uuid,
-                                        [],
-                                        ObjectGen,
-                                        IndexGen,
-                                        "B3"),
-    ObjL4 = testutil:generate_objects(10,
-                                        binary_uuid,
-                                        [],
-                                        ObjectGen,
-                                        IndexGen,
-                                        "B4"),
+    ObjectGen = testutil:get_compressiblevalue_andinteger(),
+    ObjL2 =
+        testutil:generate_objects(
+            10, binary_uuid, [], ObjectGen, IndexGen, "B2"),
+    ObjL3 =
+        testutil:generate_objects(
+            10, binary_uuid, [], ObjectGen, IndexGen, "B3"),
+    ObjL4 =
+        testutil:generate_objects(
+            10, binary_uuid, [], ObjectGen, IndexGen, "B4"),
     testutil:riakload(Bookie1, ObjL2),
     testutil:riakload(Bookie1, ObjL3),
     testutil:riakload(Bookie1, ObjL4),
@@ -393,14 +374,11 @@ breaking_folds(_Config) ->
         end,
     
     {async, StopAt3BucketFolder} = 
-        leveled_bookie:book_bucketlist(Bookie1,
-                                        ?RIAK_TAG,
-                                        {StopAt3Fun, []},
-                                        all),
+        leveled_bookie:book_bucketlist(
+            Bookie1, ?RIAK_TAG, {StopAt3Fun, []}, all),
     BucketListSA3 = lists:reverse(CatchingFold(StopAt3BucketFolder)),
     io:format("bucket list with result ~w~n", [BucketListSA3]),
     true = [<<"B2">>, <<"B3">>] == BucketListSA3,
-
 
     ok = leveled_bookie:book_close(Bookie1),
     testutil:reset_filestructure().
@@ -503,32 +481,29 @@ small_load_with2i(_Config) ->
     true = 1 == length(KeyList2),
     
     %% Delete the objects from the ChkList removing the indexes
-    lists:foreach(fun({_RN, Obj, Spc}) ->
-                        DSpc = lists:map(fun({add, F, T}) -> 
-                                                {remove, F, T}
-                                            end,
-                                            Spc),
-                        {B, K} =
-                            {testutil:get_bucket(Obj), testutil:get_key(Obj)},
-                        testutil:book_riakdelete(Bookie1, B, K, DSpc)
-                        end,
-                    ChkList1),
+    lists:foreach(
+        fun({_RN, Obj, Spc}) ->
+            DSpc = lists:map(fun({add, F, T}) -> 
+                                    {remove, F, T}
+                                end,
+                                Spc),
+            {B, K} =
+                {testutil:get_bucket(Obj), testutil:get_key(Obj)},
+            testutil:book_riakdelete(Bookie1, B, K, DSpc)
+        end,
+        ChkList1),
     %% Get the Buckets Keys and Hashes for the whole bucket
-    FoldObjectsFun = fun(B, K, V, Acc) -> [{B, K, erlang:phash2(V)}|Acc]
-                                            end,
+    FoldObjectsFun =
+        fun(B, K, V, Acc) -> [{B, K, erlang:phash2(V)}|Acc] end,
 
-    {async, HTreeF1} = leveled_bookie:book_objectfold(Bookie1,
-                                                      ?RIAK_TAG,
-                                                      {FoldObjectsFun, []},
-                                                      false),
+    {async, HTreeF1} =
+        leveled_bookie:book_objectfold(
+            Bookie1, ?RIAK_TAG, {FoldObjectsFun, []}, false),
 
     KeyHashList1 = HTreeF1(),
-    {async, HTreeF2} = leveled_bookie:book_objectfold(Bookie1,
-                                                      ?RIAK_TAG,
-                                                      "Bucket",
-                                                      all,
-                                                      {FoldObjectsFun, []},
-                                                      false),
+    {async, HTreeF2} =
+        leveled_bookie:book_objectfold(
+            Bookie1, ?RIAK_TAG, "Bucket", all, {FoldObjectsFun, []}, false),
     KeyHashList2 = HTreeF2(),
     {async, HTreeF3} =
         leveled_bookie:book_objectfold(
@@ -543,10 +518,11 @@ small_load_with2i(_Config) ->
     true = 9900 == length(KeyHashList2),
     true = 9900 == length(KeyHashList3),
     
-    SumIntFun = fun(_B, _K, Obj, Acc) ->
-                        {I, _Bin} = testutil:get_value(Obj),
-                        Acc + I
-                        end,
+    SumIntFun =
+        fun(_B, _K, Obj, Acc) ->
+            {I, _Bin} = testutil:get_value(Obj),
+            Acc + I
+        end,
     BucketObjQ = 
         {foldobjects_bybucket, ?RIAK_TAG, "Bucket", all, {SumIntFun, 0}, true},
     {async, Sum1} = leveled_bookie:book_returnfolder(Bookie1, BucketObjQ),
@@ -561,8 +537,9 @@ small_load_with2i(_Config) ->
         lists:foldl(SumFromObjLFun, 0, ObjL1),
     ChkList1Total = 
         lists:foldl(SumFromObjLFun, 0, ChkList1),
-    io:format("Total in original object list ~w and from removed list ~w~n", 
-                [ObjL1Total, ChkList1Total]),
+    io:format(
+        "Total in original object list ~w and from removed list ~w~n", 
+        [ObjL1Total, ChkList1Total]),
 
     Total1 = ObjL1Total - ChkList1Total, 
     
@@ -600,7 +577,7 @@ query_count(_Config) ->
     testutil:check_forobject(Book1, TestObject),
     lists:foreach(
         fun(_X) ->
-            V = testutil:get_compressiblevalue(),
+            V = <<"TestValue">>,
             Indexes = testutil:get_randomindexes_generator(8),
             SW = os:timestamp(),
             ObjL1 =
@@ -826,10 +803,9 @@ query_count(_Config) ->
     
     ok = leveled_bookie:book_close(Book4),
     
-    {ok, Book5} = leveled_bookie:book_start(RootPath,
-                                            2000,
-                                            50000000,
-                                            testutil:sync_strategy()),
+    {ok, Book5} =
+        leveled_bookie:book_start(
+            RootPath, 2000, 50000000, testutil:sync_strategy()),
     {async, BLF3} = leveled_bookie:book_returnfolder(Book5, BucketListQuery),
     SW_QC = os:timestamp(),
     BucketSet3 = BLF3(),
@@ -849,14 +825,14 @@ capture_and_filter_terms(_Config) ->
     {ok, Book1} =
         leveled_bookie:book_start(
             RootPath, 2000, 50000000, testutil:sync_strategy()),
-    ObjectGen = testutil:get_compressiblevalue_andinteger(),
+    V1 = <<"V1">>,
     IndexGen =
         fun() ->
             [{add, IdxName, list_to_binary(perf_SUITE:random_people_index())}]
         end,
     ObjL1 =
         testutil:generate_objects(
-            80000, uuid, [], ObjectGen, IndexGen, Bucket),
+            100000, uuid, [], V1, IndexGen, Bucket),
     testutil:riakload(Book1, ObjL1),
 
     StartDoB = <<"19740301">>,
@@ -1002,56 +978,17 @@ capture_and_filter_terms(_Config) ->
             end,
             RunnerRE2_5()),
 
-    SW6 = os:timestamp(),
-
-    ComparatorExpression3 =
-        "(\"$dob\" >= \"19740301\" andalso \"$dob\" =< \"19761030\") andalso (\"$dod\" > \"19000101\" orelse \"$dod\" < \"20501231\").",
-        
-    FilterFun3 =
-        leveled_filter:validate_comparison_expression(
-            ComparatorExpression3, ["dob", "dod"]),
-    QueryRE2_6 =
-        {index_query,
-            {Bucket, null},
-            {fun testutil:foldkeysfun/3, []},
-            {IdxName, <<"M">>, <<"Z">>},
-            {false,
-                {capture,
-                    element(2, re2:compile(WillowLeedsDoubleExtractor)),
-                    [dob, dod],
-                    FilterFun3}}
-    },
-    {async, RunnerRE2_6} = leveled_bookie:book_returnfolder(Book1, QueryRE2_6),
-    BornMid70sRE2_6 = RunnerRE2_6(),
-
-    SW7 = os:timestamp(),
-    
-    ComparatorExpression4 =
-        "\"$dob\" >= \"19740301\" andalso \"$dob\" =< \"19761030\".",
-        
-    FilterFun4 =
-        leveled_filter:validate_comparison_expression(
-            ComparatorExpression4, ["dob"]),
-    QueryRE2_7 =
-        {index_query,
-            {Bucket, null},
-            {fun testutil:foldkeysfun/3, []},
-            {IdxName, <<"M">>, <<"Z">>},
-            {false,
-                {capture,
-                    element(2, re2:compile(WillowLeedsExtractor)),
-                    [dob],
-                    FilterFun4}}
-    },
-    {async, RunnerRE2_7} = leveled_bookie:book_returnfolder(Book1, QueryRE2_7),
-    BornMid70sRE2_7 = RunnerRE2_7(),
-
     SW8 = os:timestamp(),
-
-    PreFilterRE =
-        "[^\\|]*\\|(?P<dob>197[4-6]{1}[0-9]{4})\\|"
-        "[0-9]{0,8}\\|[^\\|]*#Willow[^\\|]*\\|"
-        "[^\\|]*#LS[^\\|]*",
+    
+    FilterExpression1 = "($dob BETWEEN \"19740301\" AND \"19761030\")",
+    {ok, FilterExpressionParsed1} =
+        leveled_filter:generate_filter_expression(
+            FilterExpression1, maps:new()),
+    FilterFun5 =
+        fun(AttrMap) ->
+            leveled_filter:apply_filter(FilterExpressionParsed1, AttrMap)
+        end,
+        
     QueryRE2_8 =
         {index_query,
             {Bucket, null},
@@ -1059,14 +996,65 @@ capture_and_filter_terms(_Config) ->
             {IdxName, <<"M">>, <<"Z">>},
             {false,
                 {capture,
-                    element(2, re2:compile(PreFilterRE)),
-                    [dob],
-                    FilterFun4}}
+                    element(2, re2:compile(WillowLeedsExtractor)),
+                    [<<"dob">>],
+                    FilterFun5}}
     },
     {async, RunnerRE2_8} = leveled_bookie:book_returnfolder(Book1, QueryRE2_8),
     BornMid70sRE2_8 = RunnerRE2_8(),
 
     SW9 = os:timestamp(),
+
+    PreFilterRE =
+        "[^\\|]*\\|(?P<dob>197[4-6]{1}[0-9]{4})\\|"
+        "[0-9]{0,8}\\|[^\\|]*#Willow[^\\|]*\\|"
+        "[^\\|]*#LS[^\\|]*",
+    QueryRE2_9 =
+        {index_query,
+            {Bucket, null},
+            {fun testutil:foldkeysfun/3, []},
+            {IdxName, <<"M">>, <<"Z">>},
+            {false,
+                {capture,
+                    element(2, re2:compile(PreFilterRE)),
+                    [<<"dob">>],
+                    FilterFun5}}
+    },
+    {async, RunnerRE2_9} = leveled_bookie:book_returnfolder(Book1, QueryRE2_9),
+    BornMid70sRE2_9 = RunnerRE2_9(),
+
+    SW10 = os:timestamp(),
+
+    WillowLeedsExtractor = 
+        "[^\\|]*\\|(?P<dob>[0-9]{8})\\|[0-9]{0,8}\\|[^\\|]*#Willow[^\\|]*\\|"
+        "[^\\|]*#LS[^\\|]*",
+
+    FilterExpression2 =
+        "($dob BETWEEN \"19740301\" AND \"19761030\")"
+        "AND (contains($gns, \"#Willow\") AND contains($pcs, \"#LS\"))",
+    {ok, FilterExpressionParsed2} =
+        leveled_filter:generate_filter_expression(
+            FilterExpression2, maps:new()),
+    FilterFun6 =
+        fun(AttrMap) ->
+            leveled_filter:apply_filter(FilterExpressionParsed2, AttrMap)
+        end,
+        
+    QueryRE2_10 =
+        {index_query,
+            {Bucket, null},
+            {fun testutil:foldkeysfun/3, []},
+            {IdxName, <<"M">>, <<"Z">>},
+            {false,
+                {delimited,
+                    "|",
+                    [<<"surname">>, <<"dob">>, <<"dod">>, <<"gns">>, <<"pcs">>],
+                    FilterFun6}}
+    },
+    {async, RunnerRE2_10} = leveled_bookie:book_returnfolder(Book1, QueryRE2_10),
+    BornMid70sRE2_10 = RunnerRE2_10(),
+
+    SW11 = os:timestamp(),
 
     true = length(BornMid70s0) > 0,
 
@@ -1075,46 +1063,45 @@ capture_and_filter_terms(_Config) ->
     true = lists:sort(BornMid70s0) == lists:sort(BornMid70sRE2_3),
     true = lists:sort(BornMid70s0) == lists:sort(BornMid70sRE2_4),
     true = lists:sort(BornMid70s0) == lists:sort(BornMid70sRE2_5),
-    true = lists:sort(BornMid70s0) == lists:sort(BornMid70sRE2_6),
-    true = lists:sort(BornMid70s0) == lists:sort(BornMid70sRE2_7),
     true = lists:sort(BornMid70s0) == lists:sort(BornMid70sRE2_8),
+    true = lists:sort(BornMid70s0) == lists:sort(BornMid70sRE2_9),
+    true = lists:sort(BornMid70s0) == lists:sort(BornMid70sRE2_10),
 
-    io:format(
-        % user,
+    maybe_log_toscreen(
         "~nFilter outside took ~w ms~n",
         [timer:now_diff(SW1, SW0) div 1000]),
-    io:format(
-        % user,
+    maybe_log_toscreen(
         "~nPCRE Capture filter inside took ~w ms~n",
         [timer:now_diff(SW2, SW1) div 1000]),
-    io:format(
-        % user,
+    maybe_log_toscreen(
         "~nRE2 Capture filter inside took ~w ms~n",
         [timer:now_diff(SW3, SW2) div 1000]),
-    io:format(
-        % user,
+    maybe_log_toscreen(
         "~nRE2 Capture filter outside took ~w ms~n",
         [timer:now_diff(SW4, SW3) div 1000]),
-    io:format(
-        % user,
+    maybe_log_toscreen(
         "~nRE2 double-capture filter outside took ~w ms~n",
         [timer:now_diff(SW5, SW4) div 1000]),
-    io:format(
-        % user,
-        "~nRE2 double-capture filter with parsed query string took ~w ms~n",
-        [timer:now_diff(SW7, SW6) div 1000]),
-    io:format(
-        % user,
-        "~nRE2 single-capture filter with parsed query string took ~w ms~n",
-        [timer:now_diff(SW8, SW7) div 1000]),
-    io:format(
-        % user,
-        "~nRE2 single-capture pre-filter with parsed query string took ~w ms~n",
+    maybe_log_toscreen(
+        "~nRE2 single-capture filter with parsed filter expression took ~w ms~n",
         [timer:now_diff(SW9, SW8) div 1000]),
+    maybe_log_toscreen(
+        "~nRE2 single-capture pre-filter with parsed query string took ~w ms~n",
+        [timer:now_diff(SW10, SW9) div 1000]),
+    maybe_log_toscreen(
+        "~nDelimited index with parsed filter expression took ~w ms~n",
+        [timer:now_diff(SW11, SW10) div 1000]),
 
     ok = leveled_bookie:book_close(Book1),
     
     testutil:reset_filestructure().
+
+maybe_log_toscreen(Log, Subs) ->
+    io:format(
+        % user,
+        Log,
+        Subs
+    ).
 
 
 count_termsonindex(Bucket, IdxField, Book, QType) ->
@@ -1142,39 +1129,30 @@ count_termsonindex(Bucket, IdxField, Book, QType) ->
 
 multibucket_fold(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    {ok, Bookie1} = leveled_bookie:book_start(RootPath,
-                                            2000,
-                                            50000000,
-                                            testutil:sync_strategy()),
-    ObjectGen = testutil:get_compressiblevalue_andinteger(),
+    {ok, Bookie1} =
+        leveled_bookie:book_start(
+            RootPath, 2000, 50000000, testutil:sync_strategy()),
+    ObjectGen = <<"V1">>,
     IndexGen = fun() -> [] end,
-    ObjL1 = testutil:generate_objects(13000,
-                                        uuid,
-                                        [],
-                                        ObjectGen,
-                                        IndexGen,
-                                        {<<"Type1">>, <<"Bucket1">>}),
+    B1 = {<<"Type1">>, <<"Bucket1">>},
+    B2 = <<"Bucket2">>,
+    B3 = <<"Bucket3">>,
+    B4 = {<<"Type2">>, <<"Bucket4">>},
+    ObjL1 =
+        testutil:generate_objects(
+            13000, uuid, [], ObjectGen, IndexGen, B1),
     testutil:riakload(Bookie1, ObjL1),
-    ObjL2 = testutil:generate_objects(17000,
-                                        uuid,
-                                        [],
-                                        ObjectGen,
-                                        IndexGen,
-                                        <<"Bucket2">>),
+    ObjL2 =
+        testutil:generate_objects(
+            17000, uuid, [], ObjectGen, IndexGen, B2),
     testutil:riakload(Bookie1, ObjL2),
-    ObjL3 = testutil:generate_objects(7000,
-                                        uuid,
-                                        [],
-                                        ObjectGen,
-                                        IndexGen,
-                                        <<"Bucket3">>),
+    ObjL3 =
+        testutil:generate_objects(
+            7000, uuid, [], ObjectGen, IndexGen, B3),
     testutil:riakload(Bookie1, ObjL3),
-    ObjL4 = testutil:generate_objects(23000,
-                                        uuid,
-                                        [],
-                                        ObjectGen,
-                                        IndexGen,
-                                        {<<"Type2">>, <<"Bucket4">>}),
+    ObjL4 =
+        testutil:generate_objects(
+            23000, uuid, [], ObjectGen, IndexGen, B4),
     testutil:riakload(Bookie1, ObjL4),
 
     FF = fun(B, K, _PO, Acc) ->
@@ -1241,44 +1219,37 @@ rotating_objects(_Config) ->
 
 foldobjects_bybucket_range(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    {ok, Bookie1} = leveled_bookie:book_start(RootPath,
-                                              2000,
-                                              50000000,
-                                              testutil:sync_strategy()),
+    {ok, Bookie1} =
+        leveled_bookie:book_start(
+            RootPath, 2000, 50000000, testutil:sync_strategy()),
     ObjectGen = testutil:get_compressiblevalue_andinteger(),
     IndexGen = fun() -> [] end,
-    ObjL1 = testutil:generate_objects(1300,
-                                      {fixed_binary, 1},
-                                      [],
-                                      ObjectGen,
-                                      IndexGen,
-                                      <<"Bucket1">>),
+    ObjL1 =
+        testutil:generate_objects(
+            1300, {fixed_binary, 1}, [], ObjectGen, IndexGen, <<"Bucket1">>),
     testutil:riakload(Bookie1, ObjL1),
 
-    FoldKeysFun = fun(_B, K,_V, Acc) ->
-                          [ K |Acc]
-                  end,
+    FoldKeysFun =
+        fun(_B, K,_V, Acc) -> [ K |Acc] end,
 
     StartKey = testutil:fixed_bin_key(123),
     EndKey = testutil:fixed_bin_key(779),
 
-    {async, Folder} = leveled_bookie:book_objectfold(Bookie1,
-                                                     ?RIAK_TAG,
-                                                     <<"Bucket1">>,
-                                                     {StartKey, EndKey}, {FoldKeysFun, []},
-                                                     true
-                                                    ),
+    {async, Folder} =
+        leveled_bookie:book_objectfold(
+            Bookie1,
+            ?RIAK_TAG,
+            <<"Bucket1">>,
+            {StartKey, EndKey}, {FoldKeysFun, []},
+            true
+        ),
     ResLen = length(Folder()),
     io:format("Length of Result of folder ~w~n", [ResLen]),
     true = 657 == ResLen,
 
-    {async, AllFolder} = leveled_bookie:book_objectfold(Bookie1,
-                                                        ?RIAK_TAG,
-                                                        <<"Bucket1">>,
-                                                        all,
-                                                        {FoldKeysFun, []},
-                                                        true
-                                                       ),
+    {async, AllFolder} =
+        leveled_bookie:book_objectfold(
+            Bookie1, ?RIAK_TAG, <<"Bucket1">>, all, {FoldKeysFun, []}, true),
 
     AllResLen = length(AllFolder()),
     io:format("Length of Result of all keys folder ~w~n", [AllResLen]),

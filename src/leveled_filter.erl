@@ -5,93 +5,135 @@
 
 -module(leveled_filter).
 
--export([validate_comparison_expression/2]).
+-export(
+    [
+        generate_filter_expression/2,
+        apply_filter/2
+    ]).
 
 %%%============================================================================
 %%% External API
 %%%============================================================================
 
-%% @doc validate a comparison expression
-%% A comparison expression allows for string comparisons to be made using
-%% >, <, >=, =< with andalso, orelse as well as () to group different
-%% expressions.
-%% The output is a function which will be passed a Map where the Map may be the
-%% result of reading some projected attributes on an index string.
-%% To compare a string with a key in the map, the name of the key must begin
-%% with a "$".
-%% In creating the function, the potential keys must be known and passed as a
-%% string in the list (without the leading $). 
--spec validate_comparison_expression(
-    string(), list(string())) ->
-        fun((map()) -> {value, boolean(), map()}) |
-        {error, string(), erl_anno:location()}.
-validate_comparison_expression(
-        Expression, AvailableArgs) when is_list(Expression) ->
-    case erl_scan:string(Expression) of
-        {ok, Tokens, _EndLoc} ->
-            case vert_compexpr_tokens(Tokens, AvailableArgs, []) of
-                {ok, UpdTokens} ->
-                    case erl_parse:parse_exprs(UpdTokens) of
-                        {ok, [Form]} ->
-                            fun(LookupMap) ->
-                                element(2, erl_eval:expr(Form, LookupMap))
-                            end;
-                        {error, ErrorInfo} ->
-                            {error, ErrorInfo, undefined}
-                    end;
-                {error, Error, ErrorLocation} ->
-                    {error, lists:flatten(Error), ErrorLocation}
-            end;
-        {error, Error, ErrorLocation} ->
-            {error, Error, ErrorLocation}
+
+apply_filter({condition, Condition}, AttrMap) ->
+    apply_filter(Condition, AttrMap);
+apply_filter({'OR', P1, P2}, AttrMap) ->
+    apply_filter(P1, AttrMap) orelse apply_filter(P2, AttrMap);
+apply_filter({'AND', P1, P2}, AttrMap) ->
+    apply_filter(P1, AttrMap) andalso apply_filter(P2, AttrMap);
+apply_filter({'NOT', P1}, AttrMap) ->
+    not apply_filter(P1, AttrMap);
+apply_filter({'BETWEEN', {identifier, _, ID}, CompA, CompB}, AttrMap) ->
+    case maps:get(ID, AttrMap, notfound) of
+        notfound ->
+            false;
+        V ->
+            case {element(3, CompA), element(3, CompB)} of
+                {Low, High} when Low =< High ->
+                    V >= Low andalso V =< High;
+                {High, Low} ->
+                    V >= Low andalso V =< High
+            end
     end;
-validate_comparison_expression(_Expression, _AvailableArgs) ->
-    {error, "Expression not a valid string", undefined}.
+apply_filter({'IN', {identifier, _, ID}, CheckList}, AttrMap) ->
+    case maps:get(ID, AttrMap, notfound) of
+        notfound ->
+            false;
+        V ->
+            lists:member(V, lists:map(fun(C) -> element(3, C) end, CheckList))
+    end;
+apply_filter({{comparator, Cmp, _}, {identifier, _ , ID}, CmpA}, AttrMap) ->
+    case maps:get(ID, AttrMap, notfound) of
+        notfound ->
+            false;
+        V ->
+            case {element(1, CmpA), V} of
+                {string, V} when is_binary(V) ->
+                    compare(Cmp, V, element(3, CmpA));
+                {integer, V} when is_integer(V) ->
+                    compare(Cmp, V, element(3, CmpA));
+                _ ->
+                    false
+            end
+    end;
+apply_filter({contains, {identifier, _, ID}, {string, _ , SubStr}}, AttrMap) ->
+    case maps:get(ID, AttrMap, notfound) of
+        V when is_binary(V) ->
+            case string:find(V, SubStr) of
+                nomatch ->
+                    false;
+                _ ->
+                    true
+            end;
+        _ ->
+            false
+    end;
+apply_filter({begins_with, {identifier, _, ID}, {string, _ , SubStr}}, AttrMap) ->
+    case maps:get(ID, AttrMap, notfound) of
+        V when is_binary(V) ->
+            case string:prefix(V, SubStr) of
+                nomatch ->
+                    false;
+                _ ->
+                    true
+            end;
+        _ ->
+            false
+    end;
+apply_filter({attribute_exists, {identifier, _, ID}}, AttrMap) ->
+    maps:is_key(ID, AttrMap);
+apply_filter({attribute_not_exists, {identifier, _, ID}}, AttrMap) ->
+    not maps:is_key(ID, AttrMap);
+apply_filter({attribute_empty, {identifier, _, ID}}, AttrMap) ->
+    case maps:get(ID, AttrMap, notfound) of
+        <<>> ->
+            true;
+        _ ->
+            false
+    end
+.
+
+generate_filter_expression(FilterString, Substitutions) ->
+    {ok, Tokens, _EndLine} = leveled_filterlexer:string(FilterString),
+    case substitute_items(Tokens, Substitutions, []) of
+        {error, Error} ->
+            {error, Error};
+        UpdTokens ->
+            leveled_filterparser:parse(UpdTokens)
+    end.
 
 %%%============================================================================
 %%% Internal functions
 %%%============================================================================
 
-vert_compexpr_tokens([], _Args, ParsedTokens) ->
-    {ok, lists:reverse(ParsedTokens)};
-vert_compexpr_tokens([{dot, LN}], Args, ParsedTokens) ->
-    vert_compexpr_tokens([], Args, [{dot, LN}|ParsedTokens]);
-vert_compexpr_tokens(L, _Args, _ParsedTokens) when length(L) == 1 ->
-    {error, "Query does not end with `.`", undefined};
-vert_compexpr_tokens([{string, LN, String}|Rest], Args, ParsedTokens) ->
-    case hd(String) of
-        36 -> % 36 == $
-            Arg = tl(String),
-            case lists:member(Arg, Args) of
-                true ->
-                    VarToken = {var, LN, list_to_atom(Arg)},
-                    vert_compexpr_tokens(Rest, Args, [VarToken|ParsedTokens]);
-                false ->
-                    {error, io_lib:format("Unavailable Arg ~s", [Arg]), LN}
-            end;
-        _ -> % Not a key, treat as a binary
-            BinString = [{'>>', LN}, {string, LN, String}, {'<<', LN}],
-            vert_compexpr_tokens(
-                Rest, Args, BinString ++ ParsedTokens)
+compare('>', V, CmpA) -> V > CmpA;
+compare('>=', V, CmpA) -> V >= CmpA;
+compare('<', V, CmpA) -> V < CmpA;
+compare('<=', V, CmpA) -> V =< CmpA;
+compare('=', V, CmpA) -> V == CmpA;
+compare('<>', V, CmpA) -> V =/= CmpA.
+
+substitute_items([], _Subs, UpdTokens) ->
+    lists:reverse(UpdTokens);
+substitute_items([{substitution, LN, ID}|Rest], Subs, UpdTokens) ->
+    case maps:get(ID, Subs, notfound) of
+        notfound ->
+            {error,
+                lists:flatten(
+                    io_lib:format("Substitution ~p not found", [ID]))};
+        Value when is_binary(Value) ->
+            substitute_items(
+                Rest, Subs, [{string, LN, binary_to_list(Value)}|UpdTokens]);
+        Value when is_integer(Value) ->
+            substitute_items(Rest, Subs, [{integer, LN, Value}|UpdTokens]);
+        _UnexpectedValue ->
+            {error,
+                lists:flatten(
+                    io_lib:format("Substitution ~p unexpected type", [ID]))}
     end;
-vert_compexpr_tokens([{'(',LN}|Rest], Args, ParsedTokens) ->
-    vert_compexpr_tokens(Rest, Args, [{'(',LN}|ParsedTokens]);
-vert_compexpr_tokens([{')',LN}|Rest], Args, ParsedTokens) ->
-    vert_compexpr_tokens(Rest, Args, [{')',LN}|ParsedTokens]);
-vert_compexpr_tokens([{'andalso', LN}|Rest], Args, ParsedTokens) ->
-    vert_compexpr_tokens(Rest, Args, [{'andalso', LN}|ParsedTokens]);
-vert_compexpr_tokens([{'orelse', LN}|Rest], Args, ParsedTokens) ->
-    vert_compexpr_tokens(Rest, Args, [{'orelse', LN}|ParsedTokens]);
-vert_compexpr_tokens([{'>', LN}|Rest], Args, ParsedTokens) ->
-    vert_compexpr_tokens(Rest, Args, [{'>', LN}|ParsedTokens]);
-vert_compexpr_tokens([{'<', LN}|Rest], Args, ParsedTokens) ->
-    vert_compexpr_tokens(Rest, Args, [{'<', LN}|ParsedTokens]);
-vert_compexpr_tokens([{'>=', LN}|Rest], Args, ParsedTokens) ->
-    vert_compexpr_tokens(Rest, Args, [{'>=', LN}|ParsedTokens]);
-vert_compexpr_tokens([{'=<', LN}|Rest], Args, ParsedTokens) ->
-    vert_compexpr_tokens(Rest, Args, [{'=<', LN}|ParsedTokens]);
-vert_compexpr_tokens([InvalidToken|_Rest], _Args, _ParsedTokens) ->
-    {error, io_lib:format("Invalid token ~w", [InvalidToken]), undefined}.
+substitute_items([Token|Rest], Subs, UpdTokens) ->
+    substitute_items(Rest, Subs, [Token|UpdTokens]).
 
 
 %%%============================================================================
@@ -102,74 +144,198 @@ vert_compexpr_tokens([InvalidToken|_Rest], _Args, _ParsedTokens) ->
 
 -include_lib("eunit/include/eunit.hrl").
 
-good_querystring_test() ->
-    QueryString =
-        "(\"$dob\" >= \"19740301\" andalso \"$dob\" =< \"19761030\")"
-        " orelse (\"$dod\" > \"20200101\" andalso \"$dod\" < \"20230101\").",
-    AvailableArgs = ["dob", "dod"],
-    F = validate_comparison_expression(QueryString, AvailableArgs),
-    M1 = maps:from_list([{dob, <<"19750202">>}, {dod, <<"20221216">>}]),
-    M2 = maps:from_list([{dob, <<"19750202">>}, {dod, <<"20191216">>}]),
-    M3 = maps:from_list([{dob, <<"19790202">>}, {dod, <<"20221216">>}]),
-    M4 = maps:from_list([{dob, <<"19790202">>}, {dod, <<"20191216">>}]),
-    M5 = maps:from_list([{dob, <<"19790202">>}, {dod, <<"20241216">>}]),
-    ?assertMatch(true, F(M1)),
-    ?assertMatch(true, F(M2)),
-    ?assertMatch(true, F(M3)),
-    ?assertMatch(false, F(M4)),
-    ?assertMatch(false, F(M5)).
-
-bad_querystring_test() ->
-    QueryString =
-        "(\"$dob\" >= \"19740301\" andalso \"$dob\" =< \"19761030\")"
-        " orelse (\"$dod\" > \"20200101\").",
-    BadString1 =
-        "(\"$dob\" >= \"19740301\" andalso \"$dob\" =< \"19761030\")"
-        " orelse (\"$dod\" > \"20200101\")",
-    BadString2 =
-        "(\"$dob\" >= \"19740301\" andalso \"$dob\" =< \"19761030\")"
-        " orelse (\"$dod\" > \"20200101\")).",
-    BadString3 =
-        "(\"$dob\" >= \"19740301\" and \"$dob\" =< \"19761030\")"
-        " orelse (\"$dod\" > \"20200101\").",
-    BadString4 = "os:cmd(foo)",
-    BadString5 =
-        [42,63,52,10,240,159,140,190] ++
-        "(\"$dob\" >= \"19740301\" andalso \"$dob\" =< <<\"19761030\")"
-        " orelse (\"$dod\" > \"20200101\").",
-    BadString6 = [(16#110000 + 1)|QueryString],
-    BadString7 = <<42:32/integer>>,
+invalid_filterexpression_test() ->
+    FE1 = "($a BETWEEN \"A\" AND \"A12\") OR (($b >= \"30\") AND contains($c, :d))",
+    SubsMissing = maps:from_list([{<<"a">>, <<"MA">>}]),
     ?assertMatch(
-        {error, "Unavailable Arg dod", 1},
-        validate_comparison_expression(QueryString, ["dob", "pv"])
+        {error, "Substitution <<\"d\">> not found"},
+        generate_filter_expression(FE1, SubsMissing)
     ),
+    SubsWrongType = maps:from_list([{<<"d">>, "42"}]),
     ?assertMatch(
-        {error, "Query does not end with `.`", undefined},
-        validate_comparison_expression(BadString1, ["dob", "dod"])
+        {error, "Substitution <<\"d\">> unexpected type"},
+        generate_filter_expression(FE1, SubsWrongType)
     ),
+    SubsPresent = maps:from_list([{<<"d">>, <<"MA">>}]),
+    FE2 = "($a BETWEEN \"A\" AND 12) OR (($b >= \"30\") AND contains($c, :d))",
     ?assertMatch(
-        {error, {1 ,erl_parse, ["syntax error before: ","')'"]}, undefined},
-        validate_comparison_expression(BadString2, ["dob", "dod"])
+        {error, {1, leveled_filterparser,["syntax error before: ","12"]}},
+        generate_filter_expression(FE2, SubsPresent)
     ),
+    SubsWrongTypeForContains = maps:from_list([{<<"d">>, 42}]),
+    FE4 = "($a BETWEEN 12 AND 12) OR (($b >= \"30\") AND contains($c, :d))",
     ?assertMatch(
-        {error, "Invalid token {'and',1}", undefined},
-        validate_comparison_expression(BadString3, ["dob", "dod"])
-    ),
-    ?assertMatch(
-        {error, "Invalid token {atom,1,os}", undefined},
-        validate_comparison_expression(BadString4, ["dob", "dod"])
-    ),
-    ?assertMatch(
-        {error, "Invalid token {'*',1}", undefined},
-        validate_comparison_expression(BadString5, ["dob", "dod"])
-    ),
-    ?assertMatch(
-        {error, {1, erl_scan, {illegal,character}}, 1},
-        validate_comparison_expression(BadString6, ["dob", "dod"])
-    ),
-    ?assertMatch(
-        {error, "Expression not a valid string", undefined},
-        validate_comparison_expression(BadString7, ["dob", "dod"])
+        {error, {1, leveled_filterparser, ["syntax error before: ","42"]}},
+        generate_filter_expression(FE4, SubsWrongTypeForContains)
     ).
+
+filterexpression_test() ->
+    FE1 = "($a BETWEEN \"A\" AND \"A12\") AND (($b >= 30) AND contains($c, :d))",
+    SubsPresent = maps:from_list([{<<"d">>, <<"MA">>}]),
+    {ok, Filter1} = generate_filter_expression(FE1, SubsPresent),
+    M1 = #{<<"a">> => <<"A11">>, <<"b">> => 100, <<"c">> => <<"CARTMAN">>},
+    ?assert(apply_filter(Filter1, M1)),
+        % ok
+    
+    M2 = #{<<"a">> => <<"A11">>, <<"b">> => 10, <<"c">> => <<"CARTMAN">>},
+    ?assertNot(apply_filter(Filter1, M2)),
+        % $b < 30
+    
+    FE2 = "($a BETWEEN \"A\" AND \"A12\") AND (($b >= 30) OR contains($c, :d))",
+    {ok, Filter2} = generate_filter_expression(FE2, SubsPresent),
+    ?assert(apply_filter(Filter2, M2)),
+        % OR used so ($b >= 30) = false is ok
+    
+    FE3 = "($a BETWEEN \"A12\" AND \"A\") AND (($b >= 30) OR contains($c, :d))",
+    {ok, Filter3} = generate_filter_expression(FE3, SubsPresent),
+    ?assert(apply_filter(Filter3, M2)),
+        % swapping the low/high - still ok
+    
+    M3 = #{<<"a">> => <<"A11">>, <<"b">> => <<"100">>, <<"c">> => <<"CARTMAN">>},
+    ?assertNot(apply_filter(Filter1, M3)),
+        % substitution b is not an integer
+    
+    FE4 =
+        "($dob BETWEEN \"19700101\" AND \"19791231\") "
+        "AND (contains($gns, \"#Willow\") AND contains($pcs, \"#LS\"))",
+    {ok, Filter4} = generate_filter_expression(FE4, maps:new()),
+    M4 =
+        #{
+            <<"dob">> => <<"19751124">>,
+            <<"gns">> => <<"#Mia#Willow#Chloe">>,
+            <<"pcs">> => <<"#BD1 1DU#LS1 4BT">>
+        },
+    ?assert(apply_filter(Filter4, M4)),
+
+    FE5 =
+        "($dob >= \"19740301\" AND $dob <= \"19761030\")"
+        " OR ($dod > \"20200101\" AND $dod < \"20230101\")",
+    
+    {ok, Filter5} = generate_filter_expression(FE5, maps:new()),
+    F = fun(M) -> apply_filter(Filter5, M) end,
+
+    M5 = maps:from_list([{<<"dob">>, <<"19750202">>}, {<<"dod">>, <<"20221216">>}]),
+    M6 = maps:from_list([{<<"dob">>, <<"19750202">>}, {<<"dod">>, <<"20191216">>}]),
+    M7 = maps:from_list([{<<"dob">>, <<"19790202">>}, {<<"dod">>, <<"20221216">>}]),
+    M8 = maps:from_list([{<<"dob">>, <<"19790202">>}, {<<"dod">>, <<"20191216">>}]),
+    M9 = maps:from_list([{<<"dob">>, <<"19790202">>}, {<<"dod">>, <<"20241216">>}]),
+    M10 = maps:new(),
+    ?assertMatch(true, F(M5)),
+    ?assertMatch(true, F(M6)),
+    ?assertMatch(true, F(M7)),
+    ?assertMatch(false, F(M8)),
+    ?assertMatch(false, F(M9)),
+    ?assertMatch(false, F(M10)),
+
+    FE5A =
+        "($dob >= \"19740301\" AND $dob <= \"19761030\")"
+        " AND ($dod = \"20221216\")",
+    {ok, Filter5A} = generate_filter_expression(FE5A, maps:new()),
+    ?assert(apply_filter(Filter5A, M5)),
+    ?assertNot(apply_filter(Filter5A, M6)),
+
+    FE6 =
+        "(contains($gn, \"MA\") OR $fn BETWEEN \"SM\" AND \"SN\")"
+        " OR $dob <> \"19993112\"",
+    {ok, Filter6} = generate_filter_expression(FE6, maps:new()),
+    M11 = maps:from_list([{<<"dob">>, <<"19993112">>}]),
+    ?assertMatch(false, apply_filter(Filter6, M11)),
+
+    FE7 =
+        "(contains($gn, \"MA\") OR $fn BETWEEN \"SM\" AND \"SN\")"
+        " OR $dob = \"19993112\"",
+    {ok, Filter7} = generate_filter_expression(FE7, maps:new()),
+    ?assert(apply_filter(Filter7, M11)),
+
+    FE8 = "(contains($gn, \"MA\") OR $fn BETWEEN \"SM\" AND \"SN\")"
+        " OR $dob IN (\"19910301\", \"19910103\")",
+    {ok, Filter8} = generate_filter_expression(FE8, maps:new()),
+    ?assert(apply_filter(Filter8, #{<<"dob">> => <<"19910301">>})),
+    ?assert(apply_filter(Filter8, #{<<"dob">> => <<"19910103">>})),
+    ?assertNot(apply_filter(Filter8, #{<<"dob">> => <<"19910102">>})),
+    ?assertNot(apply_filter(Filter8, #{<<"gn">> => <<"Nikki">>})),
+
+    FE9 = "(contains($gn, \"MA\") OR $fn BETWEEN \"SM\" AND \"SN\")"
+        " OR $dob IN (\"19910301\", 19910103)",
+        % Only match with a type match
+    {ok, Filter9} = generate_filter_expression(FE9, maps:new()),
+    ?assert(apply_filter(Filter9, #{<<"dob">> => <<"19910301">>})),
+    ?assert(apply_filter(Filter9, #{<<"dob">> => 19910103})),
+    ?assertNot(apply_filter(Filter9, #{<<"dob">> => 19910301})),
+    ?assertNot(apply_filter(Filter9, #{<<"dob">> => <<"19910103">>})),
+
+    FE10 = "NOT contains($gn, \"MA\") AND "
+            "(NOT $dob IN (\"19910301\", \"19910103\"))",
+    {ok, Filter10} = generate_filter_expression(FE10, maps:new()),
+    ?assert(
+        apply_filter(
+            Filter10,
+            #{<<"gn">> => <<"JAMES">>, <<"dob">> => <<"19910201">>})),
+    ?assertNot(
+        apply_filter(
+            Filter10,
+            #{<<"gn">> => <<"EMMA">>, <<"dob">> => <<"19910201">>})),
+    ?assertNot(
+        apply_filter(
+            Filter10,
+            #{<<"gn">> => <<"JAMES">>, <<"dob">> => <<"19910301">>})),
+    
+    FE11 = "NOT contains($gn, \"MA\") AND "
+        "NOT $dob IN (\"19910301\", \"19910103\")",
+    {ok, Filter11} = generate_filter_expression(FE11, maps:new()),
+    ?assert(
+        apply_filter(
+            Filter11,
+            #{<<"gn">> => <<"JAMES">>, <<"dob">> => <<"19910201">>})),
+    ?assertNot(
+        apply_filter(
+            Filter11,
+            #{<<"gn">> => <<"EMMA">>, <<"dob">> => <<"19910201">>})),
+    ?assertNot(
+        apply_filter(
+            Filter11,
+            #{<<"gn">> => <<"JAMES">>, <<"dob">> => <<"19910301">>})),
+    
+    FE12 = "begins_with($gn, \"MA\") AND begins_with($fn, :fn)",
+    {ok, Filter12} = generate_filter_expression(FE12, #{<<"fn">> => <<"SU">>}),
+    ?assert(
+        apply_filter(
+            Filter12,
+            #{<<"gn">> => <<"MATTY">>, <<"fn">> => <<"SUMMER">>})),
+    ?assertNot(
+        apply_filter(
+            Filter12,
+            #{<<"gn">> => <<"MITTY">>, <<"fn">> => <<"SUMMER">>})),
+    ?assertNot(
+        apply_filter(
+            Filter12,
+            #{<<"gn">> => <<"MATTY">>, <<"fn">> => <<"SIMMS">>})),
+    ?assertNot(
+        apply_filter(
+            Filter12,
+            #{<<"gn">> => 42, <<"fn">> => <<"SUMMER">>})),
+
+    FE13 = "attribute_exists($dob) AND attribute_not_exists($consent) "
+            "AND attribute_empty($dod)",
+    {ok, Filter13} = generate_filter_expression(FE13, maps:new()),
+    ?assert(
+        apply_filter(
+            Filter13,
+            #{<<"dob">> => <<"19440812">>, <<"dod">> => <<>>})),
+    ?assertNot(
+        apply_filter(
+            Filter13,
+            #{<<"dod">> => <<>>})),
+    ?assertNot(
+        apply_filter(
+            Filter13,
+            #{<<"dob">> => <<"19440812">>,
+                <<"consent">> => <<>>,
+                <<"dod">> => <<>>})),
+    ?assertNot(
+        apply_filter(
+            Filter13,
+            #{<<"dob">> => <<"19440812">>, <<"dod">> => <<"20240213">>}))
+    .
 
 -endif.

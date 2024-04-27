@@ -11,6 +11,12 @@
 -define(MINI_QUERY_DIVISOR, 8).
 -define(RGEX_QUERY_DIVISOR, 32).
 
+-ifdef(test_filter_expression).
+    -define(TEST_FE, true).
+-else.
+    -define(TEST_FE, false).
+-endif.
+
 -ifndef(performance).
   -define(performance, riak_ctperf).
 -endif.
@@ -564,8 +570,53 @@ random_queries(Bookie, Bucket, IDs, IdxCnt, MaxRange, IndexesReturned) ->
     ),
     TC div 1000.
 
-
 random_people_queries(Bookie, Bucket, IndexesReturned) ->
+    random_people_queries(?TEST_FE, Bookie, Bucket, IndexesReturned).
+
+random_people_queries(true, Bookie, Bucket, IndexesReturned) ->
+    FilterExpression =
+        "($dob BETWEEN \"19700101\" AND \"19791231\") "
+        "AND (contains($gns, \"#Willow\") AND contains($pcs, \"#LS\"))",
+    {ok, ParsedFilter} =
+        leveled_filter:generate_filter_expression(
+            FilterExpression, maps:new()),
+    FilterFun =
+        fun(AttrMap) -> leveled_filter:apply_filter(ParsedFilter, AttrMap) end,
+    QueryFun =
+        fun() ->
+            Surname = get_random_surname(),
+            Range =
+                {?PEOPLE_INDEX,
+                    Surname,
+                    <<Surname/binary, 126:8/integer>>
+            },
+            FoldKeysFun =  fun(_B, _K, Cnt) -> Cnt + 1 end,
+            {async, R} =
+                leveled_bookie:book_indexfold(
+                    Bookie,
+                    {Bucket, <<>>}, 
+                    {FoldKeysFun, 0},
+                    Range,
+                    {true,
+                        {delimited,
+                            "|",
+                            [<<"surname">>, <<"dob">>, <<"dod">>, <<"gns">>, <<"pcs">>],
+                            FilterFun
+                        }
+                    }),
+            R()
+        end,
+    
+    {TC, {QC, EF}} =
+        timer:tc(fun() -> run_queries(QueryFun, 0, 0, IndexesReturned) end),
+    ct:log(
+        ?INFO,
+        "Fetch of ~w index entries by regex in ~w queries took ~w ms"
+        " with filter_expression=~w",
+        [EF, QC, TC div 1000, true]
+    ),
+    TC div 1000;
+random_people_queries(false, Bookie, Bucket, IndexesReturned) ->
     SeventiesWillowRegex =
         "[^\\|]*\\|197[0-9]{5}\\|[^\\|]*\\|"
         "[^\\|]*#Willow[^\\|]*\\|[^\\|]*#LS[^\\|]*",
@@ -578,8 +629,7 @@ random_people_queries(Bookie, Bucket, IndexesReturned) ->
                     Surname,
                     <<Surname/binary, 126:8/integer>>
             },
-            {ok, TermRegex} =
-                leveled_util:regex_compile(SeventiesWillowRegex),
+            {ok, TermRegex} = leveled_util:regex_compile(SeventiesWillowRegex),
             FoldKeysFun =  fun(_B, _K, Cnt) -> Cnt + 1 end,
             {async, R} =
                 leveled_bookie:book_indexfold(
@@ -595,8 +645,9 @@ random_people_queries(Bookie, Bucket, IndexesReturned) ->
         timer:tc(fun() -> run_queries(QueryFun, 0, 0, IndexesReturned) end),
     ct:log(
         ?INFO,
-        "Fetch of ~w index entries by regex in ~w queries took ~w ms",
-        [EF, QC, TC div 1000]
+        "Fetch of ~w index entries by regex in ~w queries took ~w ms"
+        " with filter_expression=~w",
+        [EF, QC, TC div 1000, false]
     ),
     TC div 1000.
 

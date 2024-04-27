@@ -116,7 +116,8 @@
         reference()|{re_pattern, term(), term(), term(), term()}.
 -type capture_filter_fun() :: fun((#{atom() => string()}) -> boolean()).
 -type capture_reference() :: 
-        {capture, actual_regex(), list(atom()), capture_filter_fun()}.
+        {capture, actual_regex(), list(atom()|binary()), capture_filter_fun()}|
+        {delimited, string(), list(binary()), capture_filter_fun()}.
 -type regular_expression() ::
         actual_regex()|undefined|capture_reference().
 
@@ -313,25 +314,38 @@ accumulate_index(
     Opts = [{capture, all_but_first, binary}],
     fun({?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc) ->
         case leveled_util:regex_run(IdxValue, TermRegex, Opts) of
-            {match, CptTerms} when length(CptTerms) == ExpectedKeys ->
-                CptMap = maps:from_list(lists:zip(CptKeys, CptTerms)),
-                case FilterFun(CptMap) of
-                    true ->
-                        case AddTerm of
-                            true ->
-                                FoldKeysFun(Bucket, {IdxValue, ObjKey}, Acc);
-                            false ->
-                                FoldKeysFun(Bucket, ObjKey, Acc);
-                            CptKey when is_atom(CptKey) ->
-                                CptValue = maps:get(CptKey, CptMap),
-                                FoldKeysFun(Bucket, {CptValue, ObjKey}, Acc)
-                        end;
-                    false ->
-                        Acc
-                end;
+            {match, CptTerms} ->
+                L = min(length(CptTerms), ExpectedKeys),
+                check_captured_terms(
+                    lists:sublist(CptTerms, L),
+                    lists:sublist(CptKeys, L),
+                    FilterFun,
+                    AddTerm,
+                    FoldKeysFun,
+                    Bucket,
+                    IdxValue,
+                    ObjKey,
+                    Acc);
             _ ->
                 Acc
         end
+    end;
+accumulate_index(
+        {AddTerm, {delimited, Delim, CptKeys, FilterFun}}, FoldKeysFun) ->
+    ExpectedKeys = length(CptKeys),
+    fun({?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc) ->
+        CptTerms = string:split(IdxValue, Delim, all),
+        L = min(length(CptTerms), ExpectedKeys),
+        check_captured_terms(
+            lists:sublist(CptTerms, L),
+            lists:sublist(CptKeys, L),
+            FilterFun,
+            AddTerm,
+            FoldKeysFun,
+            Bucket,
+            IdxValue,
+            ObjKey,
+            Acc)
     end;
 accumulate_index({AddTerm, TermRegex}, FoldKeysFun) ->
     fun({?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc) ->
@@ -347,6 +361,25 @@ accumulate_index({AddTerm, TermRegex}, FoldKeysFun) ->
                 end
         end
     end.
+
+check_captured_terms(
+        CptTerms, CptKeys, FilterFun, AddTerm, FoldKeysFun, B, IdxValue, ObjKey, Acc) ->
+    CptMap = maps:from_list(lists:zip(CptKeys, CptTerms)),
+    case FilterFun(CptMap) of
+        true ->
+            case AddTerm of
+                true ->
+                    FoldKeysFun(B, {IdxValue, ObjKey}, Acc);
+                false ->
+                    FoldKeysFun(B, ObjKey, Acc);
+                CptKey when is_atom(CptKey) ->
+                    CptValue = maps:get(CptKey, CptMap),
+                    FoldKeysFun(B, {CptValue, ObjKey}, Acc)
+            end;
+        false ->
+            Acc
+    end.
+
 
 
 -spec key_dominates(ledger_kv(), ledger_kv()) -> boolean().
