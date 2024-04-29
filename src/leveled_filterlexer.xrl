@@ -24,11 +24,11 @@ IN      : {token, {'IN', TokenLine}}.
 <=      : {token, {comparator, '<=', TokenLine}}.
 >=      : {token, {comparator, '>=', TokenLine}}.
 
-contains             : {token, {'contains', TokenLine}}.
-begins_with          : {token, {'begins_with', TokenLine}}.
-attribute_exists     : {token, {'attribute_exists', TokenLine}}.
-attribute_not_exists : {token, {'attribute_not_exists', TokenLine}}.
-attribute_empty      : {token, {'attribute_empty', TokenLine}}.
+contains             : {token, {contains, TokenLine}}.
+begins_with          : {token, {begins_with, TokenLine}}.
+attribute_exists     : {token, {attribute_exists, TokenLine}}.
+attribute_not_exists : {token, {attribute_not_exists, TokenLine}}.
+attribute_empty      : {token, {attribute_empty, TokenLine}}.
 
 \$[a-zA-Z_][a-zA-Z_0-9]* : {token, {identifier, TokenLine, strip_identifier(TokenChars)}}.
 \:[a-zA-Z_][a-zA-Z_0-9]* : {token, {substitution, TokenLine, strip_substitution(TokenChars)}}.

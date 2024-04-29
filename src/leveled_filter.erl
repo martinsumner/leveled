@@ -36,7 +36,14 @@ apply_filter({'BETWEEN', {identifier, _, ID}, CompA, CompB}, AttrMap) ->
                     V >= Low andalso V =< High
             end
     end;
-apply_filter({'IN', {identifier, _, ID}, CheckList}, AttrMap) ->
+apply_filter({'IN', {string, _, TestString}, {identifier, _, ID}}, AttrMap) ->
+    case maps:get(ID, AttrMap, notfound) of
+        CheckList when is_list(CheckList) ->
+            lists:member(TestString, CheckList);
+        _ ->
+            false
+    end;
+apply_filter({'IN', {identifier, _, ID}, CheckList}, AttrMap) when is_list(CheckList) ->
     case maps:get(ID, AttrMap, notfound) of
         notfound ->
             false;
@@ -233,6 +240,12 @@ filterexpression_test() ->
     {ok, Filter5A} = generate_filter_expression(FE5A, maps:new()),
     ?assert(apply_filter(Filter5A, M5)),
     ?assertNot(apply_filter(Filter5A, M6)),
+    FE5B =
+        "$dob >= \"19740301\" AND $dob <= \"19761030\""
+        " AND $dod = \"20221216\"",
+    {ok, Filter5B} = generate_filter_expression(FE5B, maps:new()),
+    ?assert(apply_filter(Filter5B, M5)),
+    ?assertNot(apply_filter(Filter5B, M6)),
 
     FE6 =
         "(contains($gn, \"MA\") OR $fn BETWEEN \"SM\" AND \"SN\")"
@@ -335,7 +348,22 @@ filterexpression_test() ->
     ?assertNot(
         apply_filter(
             Filter13,
-            #{<<"dob">> => <<"19440812">>, <<"dod">> => <<"20240213">>}))
+            #{<<"dob">> => <<"19440812">>, <<"dod">> => <<"20240213">>})),
+
+    FE14 = "\"M1\" IN $gns",
+    {ok, Filter14} = generate_filter_expression(FE14, maps:new()),
+    ?assert(
+        apply_filter(
+            Filter14,
+            #{<<"gns">> => [<<"MA">>, <<"M1">>, <<"A0">>]})),
+    ?assertNot(
+        apply_filter(
+            Filter14,
+            #{<<"gns">> => [<<"MA">>, <<"M2">>, <<"A0">>]})),
+    ?assertNot(
+        apply_filter(
+            Filter14,
+            #{<<"gns">> => <<"M1">>}))
     .
 
 -endif.

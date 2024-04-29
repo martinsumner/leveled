@@ -9,8 +9,8 @@ Terminals
 '(' ')' comparator identifier string integer
 ','
 'NOT' 'AND' 'OR' 'IN' 'BETWEEN'
-'contains' 'begins_with'
-'attribute_exists' 'attribute_not_exists' 'attribute_empty'.
+contains begins_with
+attribute_exists attribute_not_exists attribute_empty.
 
 
 Rootsymbol top_level.
@@ -18,17 +18,18 @@ Rootsymbol top_level.
 top_level -> condition: {condition, '$1'}.
 
 condition -> operand comparator operand    : {'$2', '$1', '$3'}.
-condition -> operand 'BETWEEN' string 'AND' string   : {'BETWEEN', '$1', '$3', '$5'}.
+condition -> operand 'BETWEEN' string 'AND' string     : {'BETWEEN', '$1', '$3', '$5'}.
 condition -> operand 'BETWEEN' integer 'AND' integer   : {'BETWEEN', '$1', '$3', '$5'}.
 condition -> operand 'IN' operand_list     : {'IN', '$1', '$3'}.
+condition -> operand 'IN' identifier       : {'IN', '$1', '$3'}.  
 condition -> condition 'AND' condition     : {'AND', '$1', '$3'}.
 condition -> condition 'OR' condition      : {'OR', '$1', '$3'}.
 condition -> 'NOT' condition               : {'NOT', '$2'}.
-condition -> 'contains' '(' identifier ',' string ')'       : {'contains', '$3', '$5'}.
-condition -> 'begins_with' '(' identifier ',' string ')'    : {'begins_with', '$3', '$5'}.
-condition -> 'attribute_exists' '(' identifier ')'          : {'attribute_exists', '$3'}.
-condition -> 'attribute_not_exists' '(' identifier ')'      : {'attribute_not_exists', '$3'}.
-condition -> 'attribute_empty' '(' identifier ')'           : {'attribute_empty', '$3'}.
+condition -> contains '(' identifier ',' string ')'       : {contains, '$3', '$5'}.
+condition -> begins_with '(' identifier ',' string ')'    : {begins_with, '$3', '$5'}.
+condition -> attribute_exists '(' identifier ')'          : {attribute_exists, '$3'}.
+condition -> attribute_not_exists '(' identifier ')'      : {attribute_not_exists, '$3'}.
+condition -> attribute_empty '(' identifier ')'           : {attribute_empty, '$3'}.
 condition -> '(' condition ')'             : '$2'.
 
 operand -> identifier   : '$1'.
