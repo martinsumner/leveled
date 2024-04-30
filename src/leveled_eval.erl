@@ -479,5 +479,22 @@ basic_test() ->
     .
 
 
+generate_test() ->
+    EvalString13 =
+        "kvsplit($term, \"|\", \":\") |"
+        " map($cup_year, =, "
+            "((\"1965\", \"bad\"), (\"1970\", \"bad\"), "
+            "(:clarke, \"good\"), (\"1974\", \"bad\")), "
+            "\"indifferent\", $cup_happy) ",
+    {ok, ParsedExp13} =
+        generate_eval_expression(EvalString13, #{<<"clarke">> => <<"1972">>}),
+    io:format("ParsedExp ~p~n", [ParsedExp13]),
+    EvalOut13A =
+        apply_eval(ParsedExp13, <<"cup_year:1972">>, <<"ABC1">>, maps:new()),
+    ?assertMatch(<<"good">>, maps:get(<<"cup_happy">>, EvalOut13A)),
+    ?assertMatch(
+        {error, "Substitution <<\"clarke\">> not found"},
+        generate_eval_expression(EvalString13, maps:new())
+    ).
 
 -endif.

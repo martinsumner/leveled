@@ -121,7 +121,7 @@ substitute_items([{substitution, LN, ID}|Rest], Subs, UpdTokens) ->
                     io_lib:format("Substitution ~p not found", [ID]))};
         Value when is_binary(Value) ->
             substitute_items(
-                Rest, Subs, [{string, LN, binary_to_list(Value)}|UpdTokens]);
+                Rest, Subs, [{string, LN, Value}|UpdTokens]);
         Value when is_integer(Value) ->
             substitute_items(Rest, Subs, [{integer, LN, Value}|UpdTokens]);
         _UnexpectedValue ->

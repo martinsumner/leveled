@@ -1100,6 +1100,18 @@ capture_and_filter_terms(_Config) ->
         "~nEval processed index with parsed filter expression took ~w ms~n",
         [timer:now_diff(SW11, SW10) div 1000]),
 
+    QueryRE2_3_WrongCapture =
+        {index_query,
+            {Bucket, null},
+            {fun testutil:foldkeysfun/3, []},
+            {IdxName, <<"M">>, <<"Z">>},
+            {<<"gns">>,
+                {capture, WillowLeedsExtractorRE2, [<<"dob">>], AllFun}}
+        },
+    {async, RunnerRE2_3_WC} =
+        leveled_bookie:book_returnfolder(Book1, QueryRE2_3_WrongCapture),
+    true = [] == RunnerRE2_3_WC(),
+
     ok = leveled_bookie:book_close(Book1),
     
     testutil:reset_filestructure().
