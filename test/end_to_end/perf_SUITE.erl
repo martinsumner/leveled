@@ -582,6 +582,14 @@ random_people_queries(true, Bookie, Bucket, IndexesReturned) ->
             FilterExpression, maps:new()),
     FilterFun =
         fun(AttrMap) -> leveled_filter:apply_filter(ParsedFilter, AttrMap) end,
+    EvalExpression = "delim($term, \"|\", ($surname, $dob, $dod, $gns, $pcs))",
+    {ok, ParsedEval} =
+        leveled_eval:generate_eval_expression(EvalExpression, maps:new()),
+    EvalFun =
+        fun(Term, Key) ->
+            leveled_eval:apply_eval(ParsedEval, Term, Key, maps:new())
+        end,
+        
     QueryFun =
         fun() ->
             Surname = get_random_surname(),
@@ -597,12 +605,7 @@ random_people_queries(true, Bookie, Bucket, IndexesReturned) ->
                     {Bucket, <<>>}, 
                     {FoldKeysFun, 0},
                     Range,
-                    {true,
-                        {delimited,
-                            "|",
-                            [<<"surname">>, <<"dob">>, <<"dod">>, <<"gns">>, <<"pcs">>],
-                            FilterFun
-                        }
+                    {true, {eval, EvalFun, FilterFun}
                     }),
             R()
         end,

@@ -879,7 +879,7 @@ capture_and_filter_terms(_Config) ->
         "[^\\|]*#LS[^\\|]*",
     FilterFun1 =
         fun(Captures) ->
-            DoB = maps:get(dob, Captures),
+            DoB = maps:get(<<"dob">>, Captures),
             (DoB >= StartDoB) andalso (DoB =< EndDoB)
         end,
     {ok, WillowLeedsExtractorPCRE} = re:compile(WillowLeedsExtractor),
@@ -889,7 +889,7 @@ capture_and_filter_terms(_Config) ->
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
             {false,
-                {capture, WillowLeedsExtractorPCRE, [dob], FilterFun1}}
+                {capture, WillowLeedsExtractorPCRE, [<<"dob">>], FilterFun1}}
     },
     {async, RunnerPCRE1} = leveled_bookie:book_returnfolder(Book1, QueryPCRE1),
     BornMid70sPCRE1 = RunnerPCRE1(),
@@ -903,20 +903,21 @@ capture_and_filter_terms(_Config) ->
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
             {false,
-                {capture, WillowLeedsExtractorRE2, [dob], FilterFun1}}
+                {capture, WillowLeedsExtractorRE2, [<<"dob">>], FilterFun1}}
     },
     {async, RunnerRE2_2} = leveled_bookie:book_returnfolder(Book1, QueryRE2_2),
     BornMid70sRE2_2 = RunnerRE2_2(),
 
     SW3 = os:timestamp(),
 
+    AllFun = fun(_) -> true end,
     QueryRE2_3 =
         {index_query,
             {Bucket, null},
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
-            {dob,
-                {capture, WillowLeedsExtractorRE2, [dob], fun(_) -> true end}}
+            {<<"dob">>,
+                {capture, WillowLeedsExtractorRE2, [<<"dob">>], AllFun}}
     },
     {async, RunnerRE2_3} = leveled_bookie:book_returnfolder(Book1, QueryRE2_3),
     Results3 = RunnerRE2_3(),
@@ -941,7 +942,7 @@ capture_and_filter_terms(_Config) ->
     
     FilterFun2 =
         fun(Captures) ->
-            DoB = maps:get(dob, Captures),
+            DoB = maps:get(<<"dob">>, Captures),
             (DoB >= StartDoB) andalso (DoB =< EndDoB)
         end,
     QueryRE2_4 =
@@ -952,7 +953,7 @@ capture_and_filter_terms(_Config) ->
             {false,
                 {capture,
                     element(2, re2:compile(WillowLeedsDoubleExtractor)),
-                    [dob, dod],
+                    [<<"dob">>, <<"dod">>],
                     FilterFun2}}
     },
     {async, RunnerRE2_4} = leveled_bookie:book_returnfolder(Book1, QueryRE2_4),
@@ -966,7 +967,7 @@ capture_and_filter_terms(_Config) ->
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
             {true,
-                {capture, WillowLeedsExtractorRE2, [dob], FilterFun1}}
+                {capture, WillowLeedsExtractorRE2, [<<"dob">>], FilterFun1}}
     },
     {async, RunnerRE2_5} = leveled_bookie:book_returnfolder(Book1, QueryRE2_5),
     BornMid70sRE2_5 =
@@ -1039,16 +1040,23 @@ capture_and_filter_terms(_Config) ->
         fun(AttrMap) ->
             leveled_filter:apply_filter(FilterExpressionParsed2, AttrMap)
         end,
-        
+    {ok, EvalExpression2} =
+        leveled_eval:generate_eval_expression(
+            "delim($term, \"|\", ($surname, $dob, $dod, $gns, $pcs))",
+            maps:new()
+        ),
+    EvalFun2 =
+        fun(Term, Key) ->
+            leveled_eval:apply_eval(EvalExpression2, Term, Key, maps:new())
+        end,
     QueryRE2_10 =
         {index_query,
             {Bucket, null},
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
             {false,
-                {delimited,
-                    "|",
-                    [<<"surname">>, <<"dob">>, <<"dod">>, <<"gns">>, <<"pcs">>],
+                {eval,
+                    EvalFun2,
                     FilterFun6}}
     },
     {async, RunnerRE2_10} = leveled_bookie:book_returnfolder(Book1, QueryRE2_10),
@@ -1089,7 +1097,7 @@ capture_and_filter_terms(_Config) ->
         "~nRE2 single-capture pre-filter with parsed query string took ~w ms~n",
         [timer:now_diff(SW10, SW9) div 1000]),
     maybe_log_toscreen(
-        "~nDelimited index with parsed filter expression took ~w ms~n",
+        "~nEval processed index with parsed filter expression took ~w ms~n",
         [timer:now_diff(SW11, SW10) div 1000]),
 
     ok = leveled_bookie:book_close(Book1),

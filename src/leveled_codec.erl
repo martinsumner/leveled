@@ -114,10 +114,14 @@
         lookup|no_lookup.
 -type actual_regex() ::
         reference()|{re_pattern, term(), term(), term(), term()}.
--type capture_filter_fun() :: fun((#{atom() => string()}) -> boolean()).
+-type capture_value() :: binary()|integer().
+-type capture_filter_fun() ::
+        fun((#{binary() => capture_value()}) -> boolean()).
+-type capture_eval_fun() ::
+        fun((binary(), binary()) -> #{binary() => capture_value()}).
 -type capture_reference() :: 
-        {capture, actual_regex(), list(atom()|binary()), capture_filter_fun()}|
-        {delimited, string(), list(binary()), capture_filter_fun()}.
+        {capture, actual_regex(), list(binary()), capture_filter_fun()}|
+        {eval, capture_eval_fun(), capture_filter_fun()}.
 -type regular_expression() ::
         actual_regex()|undefined|capture_reference().
 
@@ -316,35 +320,28 @@ accumulate_index(
         case leveled_util:regex_run(IdxValue, TermRegex, Opts) of
             {match, CptTerms} ->
                 L = min(length(CptTerms), ExpectedKeys),
+                CptMap =
+                    maps:from_list(
+                        lists:zip(
+                            lists:sublist(CptKeys, L),
+                            lists:sublist(CptTerms, L))),
                 check_captured_terms(
-                    lists:sublist(CptTerms, L),
-                    lists:sublist(CptKeys, L),
-                    FilterFun,
-                    AddTerm,
-                    FoldKeysFun,
-                    Bucket,
-                    IdxValue,
-                    ObjKey,
+                    CptMap,
+                    FilterFun, AddTerm, FoldKeysFun,
+                    Bucket, IdxValue, ObjKey,
                     Acc);
             _ ->
                 Acc
         end
     end;
 accumulate_index(
-        {AddTerm, {delimited, Delim, CptKeys, FilterFun}}, FoldKeysFun) ->
-    ExpectedKeys = length(CptKeys),
+        {AddTerm, {eval, EvalFun, FilterFun}}, FoldKeysFun) ->
     fun({?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc) ->
-        CptTerms = string:split(IdxValue, Delim, all),
-        L = min(length(CptTerms), ExpectedKeys),
+        CptMap = EvalFun(IdxValue, ObjKey),
         check_captured_terms(
-            lists:sublist(CptTerms, L),
-            lists:sublist(CptKeys, L),
-            FilterFun,
-            AddTerm,
-            FoldKeysFun,
-            Bucket,
-            IdxValue,
-            ObjKey,
+            CptMap,
+            FilterFun, AddTerm, FoldKeysFun,
+            Bucket, IdxValue, ObjKey,
             Acc)
     end;
 accumulate_index({AddTerm, TermRegex}, FoldKeysFun) ->
@@ -363,8 +360,7 @@ accumulate_index({AddTerm, TermRegex}, FoldKeysFun) ->
     end.
 
 check_captured_terms(
-        CptTerms, CptKeys, FilterFun, AddTerm, FoldKeysFun, B, IdxValue, ObjKey, Acc) ->
-    CptMap = maps:from_list(lists:zip(CptKeys, CptTerms)),
+        CptMap, FilterFun, AddTerm, FoldKeysFun, B, IdxValue, ObjKey, Acc) ->
     case FilterFun(CptMap) of
         true ->
             case AddTerm of
@@ -372,9 +368,13 @@ check_captured_terms(
                     FoldKeysFun(B, {IdxValue, ObjKey}, Acc);
                 false ->
                     FoldKeysFun(B, ObjKey, Acc);
-                CptKey when is_atom(CptKey) ->
-                    CptValue = maps:get(CptKey, CptMap),
-                    FoldKeysFun(B, {CptValue, ObjKey}, Acc)
+                CptKey when is_binary(CptKey) ->
+                    case maps:get(CptKey, CptMap, undefined) of
+                        undefined ->
+                            Acc;
+                        CptValue ->  
+                            FoldKeysFun(B, {CptValue, ObjKey}, Acc)
+                    end
             end;
         false ->
             Acc

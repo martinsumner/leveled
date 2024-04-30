@@ -7,19 +7,32 @@ Rules.
 
 {WhiteSpace} : skip_token.
 
-\( : {token, {'(', TokenLine}}.
-\) : {token, {')', TokenLine}}.
-,  : {token, {',', TokenLine}}.
-\| : {token, {'PIPE', TokenLine}}.
+\(      : {token, {'(', TokenLine}}.
+\)      : {token, {')', TokenLine}}.
+,       : {token, {',', TokenLine}}.
+\|      : {token, {'PIPE', TokenLine}}.
 
-delim       : {token, {delim, TokenLine}}.
-join        : {token, {join, TokenLine}}.
-split       : {token, {split, TokenLine}}.
-slice       : {token, {slice, TokenLine}}.
-index       : {token, {index, TokenLine}}.
-to_integer  : {token, {to_integer, TokenLine}}.
+delim        : {token, {delim, TokenLine}}.
+join         : {token, {join, TokenLine}}.
+split        : {token, {split, TokenLine}}.
+slice        : {token, {slice, TokenLine}}.
+index        : {token, {index, TokenLine}}.
+kvsplit      : {token, {kvsplit, TokenLine}}.
+to_integer   : {token, {to_integer, TokenLine}}.
+to_string    : {token, {to_string, TokenLine}}.
+add          : {token, {add, TokenLine}}.
+subtract     : {token, {subtract, TokenLine}}.
+map          : {token, {map, TokenLine}}.
+
+=       : {token, {comparator, '=', TokenLine}}.
+<       : {token, {comparator, '<', TokenLine}}.
+>       : {token, {comparator, '>', TokenLine}}.
+<>      : {token, {comparator, '<>', TokenLine}}.
+<=      : {token, {comparator, '<=', TokenLine}}.
+>=      : {token, {comparator, '>=', TokenLine}}.
 
 \$[a-zA-Z_][a-zA-Z_0-9]* : {token, {identifier, TokenLine, strip_identifier(TokenChars)}}.
+\:[a-zA-Z_][a-zA-Z_0-9]* : {token, {substitution, TokenLine, strip_substitution(TokenChars)}}.
 \"[^"]*\"                : {token, {string, TokenLine, strip_string(TokenChars)}}. %"
 [0-9]+                   : {token, {integer, TokenLine, list_to_integer(TokenChars)}}.
 
@@ -30,4 +43,8 @@ strip_string(TokenChars) ->
 
 strip_identifier(TokenChars) ->
     [36|StrippedChars] = TokenChars,
+    list_to_binary(StrippedChars).
+
+strip_substitution(TokenChars) ->
+    [58|StrippedChars] = TokenChars,
     list_to_binary(StrippedChars).

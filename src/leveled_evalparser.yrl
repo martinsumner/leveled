@@ -1,27 +1,50 @@
 %% Grammar for eval expressions
 
 Nonterminals
-top_level eval identifiers identifier_list.
+top_level eval
+operand math_operand
+mapping mappings mappings_list
+identifiers identifier_list.
 
 Terminals
 '(' ')' ','
-identifier string integer
+identifier string integer comparator
 'PIPE'
-delim join split slice index to_integer.
+delim join split slice index kvsplit map
+add subtract
+to_integer to_string.
 
 Rootsymbol top_level.
 
 top_level -> eval: {eval, '$1'}.
 
-eval -> eval 'PIPE' eval                                                     : {'PIPE', '$1', 'INTO', '$3'}.
-eval -> delim '(' identifier ',' string ',' identifier_list ')'              : {delim, '$3', '$5', '$7'}.
-eval -> join '(' identifier_list ',' string ',' identifier ')'               : {join, '$3', '$5', '$7'}.
-eval -> split '(' identifier ',' string ',' identifier ')'                   : {split, '$3', '$5', '$7'}.
-eval -> slice '(' identifier ',' integer ',' identifier ')'                  : {slice, '$3', '$5', '$7'}.
-eval -> index '(' identifier ',' integer ',' integer ',' 'identifier' ')'    : {index, '$3', '$5', '$7', '$9'}.
-eval -> to_integer '(' identifier ',' 'identifier' ')'                       : {to_integer, '$3', '$5'}.
+eval -> eval 'PIPE' eval                                                                           : {'PIPE', '$1', 'INTO', '$3'}.
+eval -> delim '(' identifier ',' string ',' identifier_list ')'                                    : {delim, '$3', '$5', '$7'}.
+eval -> join '(' identifier_list ',' string ',' identifier ')'                                     : {join, '$3', '$5', '$7'}.
+eval -> split '(' identifier ',' string ',' identifier ')'                                         : {split, '$3', '$5', '$7'}.
+eval -> slice '(' identifier ',' integer ',' identifier ')'                                        : {slice, '$3', '$5', '$7'}.
+eval -> index '(' identifier ',' integer ',' integer ',' 'identifier' ')'                          : {index, '$3', '$5', '$7', '$9'}.
+eval -> kvsplit '(' identifier ',' string ',' string ')'                                           : {kvsplit, '$3', '$5', '$7'}.
+eval -> map '(' identifier ',' comparator ',' mappings_list ',' operand ',' identifier ')'         : {map, '$3', '$5', '$7', '$9', '$11'}.
+eval -> to_integer '(' identifier ',' identifier ')'                                               : {to_integer, '$3', '$5'}.
+eval -> to_string '(' identifier ',' identifier ')'                                                : {to_string, '$3', '$5'}.
+eval -> subtract '(' math_operand ',' math_operand ',' identifier ')'                              : {subtract, '$3', '$5', '$7'}.
+eval -> add '(' math_operand ',' math_operand ',' identifier ')'                                   : {add, '$3', '$5', '$7'}.
 
-identifier_list -> '(' identifiers ')' : strip_ids('$2').
+mappings_list -> '(' mappings ')'         : '$2'.
+
+mappings -> mapping ',' mappings          : ['$1' | '$3'].
+mappings -> mapping                       : ['$1'].
+
+mapping -> '(' operand ',' operand ')' : {mapping, '$2', '$4'}.
+
+operand -> string          : '$1'.
+operand -> integer         : '$1'.
+
+math_operand -> integer    : '$1'.
+math_operand -> identifier : '$1'.
+
+identifier_list -> '(' identifiers ')'    : strip_ids('$2').
 
 identifiers -> identifier ',' identifiers : ['$1' | '$3'].
 identifiers -> identifier                 : ['$1'].

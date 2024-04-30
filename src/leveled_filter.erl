@@ -8,7 +8,8 @@
 -export(
     [
         generate_filter_expression/2,
-        apply_filter/2
+        apply_filter/2,
+        substitute_items/3
     ]).
 
 %%%============================================================================
@@ -110,17 +111,6 @@ generate_filter_expression(FilterString, Substitutions) ->
             leveled_filterparser:parse(UpdTokens)
     end.
 
-%%%============================================================================
-%%% Internal functions
-%%%============================================================================
-
-compare('>', V, CmpA) -> V > CmpA;
-compare('>=', V, CmpA) -> V >= CmpA;
-compare('<', V, CmpA) -> V < CmpA;
-compare('<=', V, CmpA) -> V =< CmpA;
-compare('=', V, CmpA) -> V == CmpA;
-compare('<>', V, CmpA) -> V =/= CmpA.
-
 substitute_items([], _Subs, UpdTokens) ->
     lists:reverse(UpdTokens);
 substitute_items([{substitution, LN, ID}|Rest], Subs, UpdTokens) ->
@@ -141,6 +131,17 @@ substitute_items([{substitution, LN, ID}|Rest], Subs, UpdTokens) ->
     end;
 substitute_items([Token|Rest], Subs, UpdTokens) ->
     substitute_items(Rest, Subs, [Token|UpdTokens]).
+
+%%%============================================================================
+%%% Internal functions
+%%%============================================================================
+
+compare('>', V, CmpA) -> V > CmpA;
+compare('>=', V, CmpA) -> V >= CmpA;
+compare('<', V, CmpA) -> V < CmpA;
+compare('<=', V, CmpA) -> V =< CmpA;
+compare('=', V, CmpA) -> V == CmpA;
+compare('<>', V, CmpA) -> V =/= CmpA.
 
 
 %%%============================================================================
