@@ -12,7 +12,8 @@
             t2b/1,
             safe_rename/4,
             regex_run/3,
-            regex_compile/1
+            regex_compile/1,
+            regex_compile/2
         ]).
 
 -define(WRITE_OPS, [binary, raw, read, write]).
@@ -68,7 +69,12 @@ regex_run(Subject, CompiledPCRE, Opts) ->
 
 -spec regex_compile(iodata()) -> {ok, reference()}.
 regex_compile(PlainRegex) ->
-    re2:compile(PlainRegex).
+    regex_compile(PlainRegex, re2).
+
+regex_compile(PlainRegex, re2) ->
+    re2:compile(PlainRegex);
+regex_compile(PlainRegex, pcre) ->
+    re:compile(PlainRegex).
 
 -spec magic_hash(any()) -> 0..16#FFFFFFFF.
 %% @doc 

@@ -18,11 +18,14 @@ split        : {token, {split, TokenLine}}.
 slice        : {token, {slice, TokenLine}}.
 index        : {token, {index, TokenLine}}.
 kvsplit      : {token, {kvsplit, TokenLine}}.
+regex        : {token, {regex, TokenLine}}.
 to_integer   : {token, {to_integer, TokenLine}}.
 to_string    : {token, {to_string, TokenLine}}.
 add          : {token, {add, TokenLine}}.
 subtract     : {token, {subtract, TokenLine}}.
 map          : {token, {map, TokenLine}}.
+pcre         : {token, {pcre, TokenLine}}.
+re2          : {token, {re2, TokenLine}}.
 
 =       : {token, {comparator, '=', TokenLine}}.
 <       : {token, {comparator, '<', TokenLine}}.

@@ -5,11 +5,26 @@
 
 -module(leveled_eval).
 
--export([apply_eval/4, generate_eval_expression/2]).
+-export([apply_eval/4, generate_eval_expression/2, generate_eval_function/2]).
 
 %%%============================================================================
 %%% External API
 %%%============================================================================
+
+generate_eval_function(EvalString, Substitutions) ->
+    {ok, ParsedEval} = generate_eval_expression(EvalString, Substitutions),
+    fun(Term, Key) ->
+        apply_eval(ParsedEval, Term, Key, maps:new())
+    end.
+
+generate_eval_expression(EvalString, Substitutions) ->
+    {ok, Tokens, _EndLine} = leveled_evallexer:string(EvalString),
+    case leveled_filter:substitute_items(Tokens, Substitutions, []) of
+        {error, Error} ->
+            {error, Error};
+        UpdTokens ->
+            leveled_evalparser:parse(UpdTokens)
+    end.
 
 
 apply_eval({eval, Eval}, Term, Key, AttrMap) ->
@@ -136,17 +151,26 @@ apply_eval(
             maps:put(OutKey, X - Y, AttrMap);
         _ ->
             AttrMap
-    end.
-
-generate_eval_expression(EvalString, Substitutions) ->
-    {ok, Tokens, _EndLine} = leveled_evallexer:string(EvalString),
-    case leveled_filter:substitute_items(Tokens, Substitutions, []) of
-        {error, Error} ->
-            {error, Error};
-        UpdTokens ->
-            leveled_evalparser:parse(UpdTokens)
-    end.
-
+    end;
+apply_eval(
+        {regex, {identifier, _, InKey}, CompiledRE, ExpKeys},
+        Term, Key, AttrMap) ->
+    TermToCapture = term_to_process(InKey, Term, Key, AttrMap),
+    ExpectedKeyLength = length(ExpKeys),
+    Opts = [{capture, all_but_first, binary}],
+    case leveled_util:regex_run(TermToCapture, CompiledRE, Opts) of
+        {match, CptTerms} ->
+            L = min(length(CptTerms), ExpectedKeyLength),
+            CptMap =
+                maps:from_list(
+                    lists:zip(
+                        lists:sublist(ExpKeys, L),
+                        lists:sublist(CptTerms, L))),
+            maps:merge(AttrMap, CptMap);
+        _ ->
+            AttrMap
+    end
+    .
 
 %%%============================================================================
 %%% Internal functions
@@ -475,8 +499,45 @@ basic_test() ->
     ?assertMatch(<<"bad">>, maps:get(<<"cup_happy">>, EvalOut13B)),
     EvalOut13C =
         apply_eval(ParsedExp13, <<"cup_year:2024">>, <<"ABC1">>, maps:new()),
-    ?assertMatch(<<"indifferent">>, maps:get(<<"cup_happy">>, EvalOut13C))
+    ?assertMatch(<<"indifferent">>, maps:get(<<"cup_happy">>, EvalOut13C)),
+
+    ExtractRegex =
+        "(?P<fn>[^\\|]*)\\|(?P<dob>[0-9]{8})\\|(?P<dod>[0-9]{0,8})\\|"
+        "(?P<gns>[^\\|]*)\\|(?P<pcs>[^\\|]*)|.",
+    ok =
+        check_regex_eval(
+            "regex($term, :regex, re2, ($fn, $dob, $dod, $gns, $pcs))",
+            ExtractRegex
+        ),
+    ok =
+        check_regex_eval(
+            "regex($term, :regex, pcre, ($fn, $dob, $dod, $gns, $pcs))",
+            ExtractRegex
+        ),
+    ok =
+        check_regex_eval(
+            "regex($term, :regex, ($fn, $dob, $dod, $gns, $pcs))",
+            ExtractRegex
+        )        
+    
     .
+
+
+check_regex_eval(EvalString14, ExtractRegex) ->
+    {ok, ParsedExp14} =
+        generate_eval_expression(
+            EvalString14,
+            #{<<"regex">> => list_to_binary(ExtractRegex)}  
+        ),
+    EvalOut14 =
+        apply_eval(
+            ParsedExp14,
+            <<"SMITH|19861216||Willow#Mia#Vera|LS1 4BT#LS8 1ZZ">>,
+            <<"9000000001">>,
+            maps:new()
+        ),
+    ?assertMatch(<<"SMITH">>, maps:get(<<"fn">>, EvalOut14)),
+    ok.
 
 
 generate_test() ->
@@ -488,7 +549,6 @@ generate_test() ->
             "\"indifferent\", $cup_happy) ",
     {ok, ParsedExp13} =
         generate_eval_expression(EvalString13, #{<<"clarke">> => <<"1972">>}),
-    io:format("ParsedExp ~p~n", [ParsedExp13]),
     EvalOut13A =
         apply_eval(ParsedExp13, <<"cup_year:1972">>, <<"ABC1">>, maps:new()),
     ?assertMatch(<<"good">>, maps:get(<<"cup_happy">>, EvalOut13A)),

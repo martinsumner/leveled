@@ -120,7 +120,6 @@
 -type capture_eval_fun() ::
         fun((binary(), binary()) -> #{binary() => capture_value()}).
 -type capture_reference() :: 
-        {capture, actual_regex(), list(binary()), capture_filter_fun()}|
         {eval, capture_eval_fun(), capture_filter_fun()}.
 -type regular_expression() ::
         actual_regex()|undefined|capture_reference().
@@ -311,28 +310,6 @@ accumulate_index({false, undefined}, FoldKeysFun) ->
 accumulate_index({true, undefined}, FoldKeysFun) ->
     fun({?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc) ->
         FoldKeysFun(Bucket, {IdxValue, ObjKey}, Acc)
-    end;
-accumulate_index(
-        {AddTerm, {capture, TermRegex, CptKeys, FilterFun}}, FoldKeysFun) ->
-    ExpectedKeys = length(CptKeys),
-    Opts = [{capture, all_but_first, binary}],
-    fun({?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc) ->
-        case leveled_util:regex_run(IdxValue, TermRegex, Opts) of
-            {match, CptTerms} ->
-                L = min(length(CptTerms), ExpectedKeys),
-                CptMap =
-                    maps:from_list(
-                        lists:zip(
-                            lists:sublist(CptKeys, L),
-                            lists:sublist(CptTerms, L))),
-                check_captured_terms(
-                    CptMap,
-                    FilterFun, AddTerm, FoldKeysFun,
-                    Bucket, IdxValue, ObjKey,
-                    Acc);
-            _ ->
-                Acc
-        end
     end;
 accumulate_index(
         {AddTerm, {eval, EvalFun, FilterFun}}, FoldKeysFun) ->

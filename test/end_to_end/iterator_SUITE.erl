@@ -844,6 +844,7 @@ capture_and_filter_terms(_Config) ->
 
     SW0 = os:timestamp(),
     {ok, WillowLeedsPCRE} = re:compile(WillowLeedsFinder),
+        
     QueryPCRE0 =
         {index_query,
             {Bucket, null},
@@ -879,31 +880,38 @@ capture_and_filter_terms(_Config) ->
         "[^\\|]*#LS[^\\|]*",
     FilterFun1 =
         fun(Captures) ->
-            DoB = maps:get(<<"dob">>, Captures),
+            DoB = maps:get(<<"dob">>, Captures, notfound),
             (DoB >= StartDoB) andalso (DoB =< EndDoB)
         end,
-    {ok, WillowLeedsExtractorPCRE} = re:compile(WillowLeedsExtractor),
+    EvalFunPCRE =
+        leveled_eval:generate_eval_function(
+            "regex($term, :regex, pcre, ($dob))",
+            #{<<"regex">> => list_to_binary(WillowLeedsExtractor)}
+        ),
+    
     QueryPCRE1 =
         {index_query,
             {Bucket, null},
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
-            {false,
-                {capture, WillowLeedsExtractorPCRE, [<<"dob">>], FilterFun1}}
+            {false, {eval, EvalFunPCRE, FilterFun1}}
     },
     {async, RunnerPCRE1} = leveled_bookie:book_returnfolder(Book1, QueryPCRE1),
     BornMid70sPCRE1 = RunnerPCRE1(),
 
     SW2 = os:timestamp(),
 
-    {ok, WillowLeedsExtractorRE2} = re2:compile(WillowLeedsExtractor),
+    EvalFunRE2 =
+        leveled_eval:generate_eval_function(
+            "regex($term, :regex, re2, ($dob))",
+            #{<<"regex">> => list_to_binary(WillowLeedsExtractor)}
+        ),
     QueryRE2_2 =
         {index_query,
             {Bucket, null},
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
-            {false,
-                {capture, WillowLeedsExtractorRE2, [<<"dob">>], FilterFun1}}
+            {false, {eval, EvalFunRE2, FilterFun1}}
     },
     {async, RunnerRE2_2} = leveled_bookie:book_returnfolder(Book1, QueryRE2_2),
     BornMid70sRE2_2 = RunnerRE2_2(),
@@ -916,8 +924,7 @@ capture_and_filter_terms(_Config) ->
             {Bucket, null},
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
-            {<<"dob">>,
-                {capture, WillowLeedsExtractorRE2, [<<"dob">>], AllFun}}
+            {<<"dob">>, {eval, EvalFunRE2, AllFun}}
     },
     {async, RunnerRE2_3} = leveled_bookie:book_returnfolder(Book1, QueryRE2_3),
     Results3 = RunnerRE2_3(),
@@ -939,10 +946,15 @@ capture_and_filter_terms(_Config) ->
     WillowLeedsDoubleExtractor = 
         "[^\\|]*\\|(?P<dob>[0-9]{8})\\|(?P<dod>[0-9]{0,8})\\|"
         "[^\\|]*#Willow[^\\|]*\\|[^\\|]*#LS[^\\|]*",
-    
+    EvalFunRE2_2 =
+        leveled_eval:generate_eval_function(
+            "regex($term, :regex, re2, ($dob, $dod))",
+            #{<<"regex">> => list_to_binary(WillowLeedsDoubleExtractor)}
+        ),
+        
     FilterFun2 =
         fun(Captures) ->
-            DoB = maps:get(<<"dob">>, Captures),
+            DoB = maps:get(<<"dob">>, Captures, notfound),
             (DoB >= StartDoB) andalso (DoB =< EndDoB)
         end,
     QueryRE2_4 =
@@ -950,11 +962,7 @@ capture_and_filter_terms(_Config) ->
             {Bucket, null},
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
-            {false,
-                {capture,
-                    element(2, re2:compile(WillowLeedsDoubleExtractor)),
-                    [<<"dob">>, <<"dod">>],
-                    FilterFun2}}
+            {false, {eval, EvalFunRE2_2, FilterFun2}}
     },
     {async, RunnerRE2_4} = leveled_bookie:book_returnfolder(Book1, QueryRE2_4),
     BornMid70sRE2_4 = RunnerRE2_4(),
@@ -966,10 +974,10 @@ capture_and_filter_terms(_Config) ->
             {Bucket, null},
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
-            {true,
-                {capture, WillowLeedsExtractorRE2, [<<"dob">>], FilterFun1}}
+            {true, {eval, EvalFunRE2, FilterFun1}}
     },
     {async, RunnerRE2_5} = leveled_bookie:book_returnfolder(Book1, QueryRE2_5),
+    {ok, WillowLeedsExtractorRE2} = re2:compile(WillowLeedsExtractor),
     BornMid70sRE2_5 =
         lists:filtermap(
             fun({T, K}) ->
@@ -995,11 +1003,7 @@ capture_and_filter_terms(_Config) ->
             {Bucket, null},
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
-            {false,
-                {capture,
-                    element(2, re2:compile(WillowLeedsExtractor)),
-                    [<<"dob">>],
-                    FilterFun5}}
+            {false, {eval, EvalFunRE2, FilterFun5}}
     },
     {async, RunnerRE2_8} = leveled_bookie:book_returnfolder(Book1, QueryRE2_8),
     BornMid70sRE2_8 = RunnerRE2_8(),
@@ -1010,16 +1014,18 @@ capture_and_filter_terms(_Config) ->
         "[^\\|]*\\|(?P<dob>197[4-6]{1}[0-9]{4})\\|"
         "[0-9]{0,8}\\|[^\\|]*#Willow[^\\|]*\\|"
         "[^\\|]*#LS[^\\|]*",
+    PreFilterEvalFun =
+        leveled_eval:generate_eval_function(
+            "regex($term, :regex, re2, ($dob))",
+            #{<<"regex">> => list_to_binary(PreFilterRE)}
+        ),
+    
     QueryRE2_9 =
         {index_query,
             {Bucket, null},
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
-            {false,
-                {capture,
-                    element(2, re2:compile(PreFilterRE)),
-                    [<<"dob">>],
-                    FilterFun5}}
+            {false, {eval, PreFilterEvalFun, FilterFun5}}
     },
     {async, RunnerRE2_9} = leveled_bookie:book_returnfolder(Book1, QueryRE2_9),
     BornMid70sRE2_9 = RunnerRE2_9(),
@@ -1054,10 +1060,7 @@ capture_and_filter_terms(_Config) ->
             {Bucket, null},
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
-            {false,
-                {eval,
-                    EvalFun2,
-                    FilterFun6}}
+            {false, {eval, EvalFun2, FilterFun6}}
     },
     {async, RunnerRE2_10} = leveled_bookie:book_returnfolder(Book1, QueryRE2_10),
     BornMid70sRE2_10 = RunnerRE2_10(),
@@ -1100,13 +1103,13 @@ capture_and_filter_terms(_Config) ->
         "~nEval processed index with parsed filter expression took ~w ms~n",
         [timer:now_diff(SW11, SW10) div 1000]),
 
+
     QueryRE2_3_WrongCapture =
         {index_query,
             {Bucket, null},
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
-            {<<"gns">>,
-                {capture, WillowLeedsExtractorRE2, [<<"dob">>], AllFun}}
+            {<<"gns">>, {eval, EvalFunRE2, FilterFun6}}
         },
     {async, RunnerRE2_3_WC} =
         leveled_bookie:book_returnfolder(Book1, QueryRE2_3_WrongCapture),
