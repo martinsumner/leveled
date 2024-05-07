@@ -5,17 +5,24 @@
 
 -module(leveled_eval).
 
--export([apply_eval/4, generate_eval_expression/2, generate_eval_function/2]).
+-export([generate_eval_function/2]).
 
 %%%============================================================================
 %%% External API
 %%%============================================================================
 
+-spec generate_eval_function(
+        string(), map()) -> fun((binary(), binary()) -> map()).
 generate_eval_function(EvalString, Substitutions) ->
     {ok, ParsedEval} = generate_eval_expression(EvalString, Substitutions),
     fun(Term, Key) ->
         apply_eval(ParsedEval, Term, Key, maps:new())
     end.
+
+%%%============================================================================
+%%% Internal functions
+%%%============================================================================
+
 
 generate_eval_expression(EvalString, Substitutions) ->
     CodePointList = unicode:characters_to_list(EvalString),
@@ -219,12 +226,7 @@ apply_eval(
             end;
         _ ->
             AttrMap
-    end
-    .
-
-%%%============================================================================
-%%% Internal functions
-%%%============================================================================
+    end.
 
 maybe_fetch_operand({identifier, _, ID}, AttrMap) ->
     maps:get(ID, AttrMap, 0);

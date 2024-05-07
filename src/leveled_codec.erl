@@ -115,14 +115,14 @@
 -type actual_regex() ::
         {re_pattern, term(), term(), term(), term()}.
 -type capture_value() :: binary()|integer().
--type capture_filter_fun() ::
+-type query_filter_fun() ::
         fun((#{binary() => capture_value()}) -> boolean()).
--type capture_eval_fun() ::
+-type query_eval_fun() ::
         fun((binary(), binary()) -> #{binary() => capture_value()}).
--type capture_reference() :: 
-        {eval, capture_eval_fun(), capture_filter_fun()}.
--type regular_expression() ::
-        actual_regex()|undefined|capture_reference().
+-type query_expression() :: 
+        {query, query_eval_fun(), query_filter_fun()}.
+-type term_expression() ::
+        actual_regex()|undefined|query_expression().
 
 -type value_fetcher() ::
     {fun((pid(), leveled_codec:journal_key()) -> any()),
@@ -161,7 +161,7 @@
             maybe_lookup/0,
             last_moddate/0,
             lastmod_range/0,
-            regular_expression/0,
+            term_expression/0,
             actual_regex/0,
             value_fetcher/0,
             proxy_object/0,
@@ -301,7 +301,7 @@ maybe_accumulate(
 
 -spec accumulate_index(
         {boolean()|binary(),
-        regular_expression()},
+        term_expression()},
         leveled_runner:acc_fun()) -> any().
 accumulate_index({false, undefined}, FoldKeysFun) ->
     fun({?IDX_TAG, Bucket, _IndexInfo, ObjKey}, _Value, Acc) ->
@@ -312,7 +312,7 @@ accumulate_index({true, undefined}, FoldKeysFun) ->
         FoldKeysFun(Bucket, {IdxValue, ObjKey}, Acc)
     end;
 accumulate_index(
-        {AddTerm, {eval, EvalFun, FilterFun}}, FoldKeysFun) ->
+        {AddTerm, {query, EvalFun, FilterFun}}, FoldKeysFun) ->
     fun({?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc) ->
         CptMap = EvalFun(IdxValue, ObjKey),
         check_captured_terms(
