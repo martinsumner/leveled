@@ -5,7 +5,15 @@
 -export([
     riak_ctperf/1, riak_fullperf/1, riak_profileperf/1, riak_miniperf/1
 ]).
--export([random_people_index/0]).
+-export(
+    [
+        random_people_index/0,
+        get_random_dob/0,
+        get_random_dod/0,
+        get_random_givenname/0,
+        get_random_surname/0,
+        get_random_postcode/0
+    ]).
 
 -define(PEOPLE_INDEX, <<"people_bin">>).
 -define(MINI_QUERY_DIVISOR, 8).

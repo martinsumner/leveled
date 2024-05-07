@@ -133,7 +133,7 @@ bucket_list(SnapFun, Tag, FoldBucketsFun, InitAcc, MaxBuckets) ->
 -spec index_query(
     snap_fun(),
     {leveled_codec:ledger_key(), leveled_codec:ledger_key(), 
-    {boolean()|binary(), leveled_codec:regular_expression()}}, 
+    {boolean()|binary(), leveled_codec:term_expression()}}, 
     {fold_keys_fun(), foldacc()}) -> {async, runner_fun()}.
 %% @doc
 %% Secondary index query
@@ -167,7 +167,7 @@ index_query(SnapFun, {StartKey, EndKey, TermHandling}, FoldAccT) ->
                         leveled_codec:key()|null, 
                         key_range(),
                         {fold_keys_fun(), foldacc()},
-                        leveled_codec:regular_expression())
+                        leveled_codec:term_expression())
                         -> {async, runner_fun()}.
 %% @doc
 %% Fold over all keys in `KeyRange' under tag (restricted to a given bucket)

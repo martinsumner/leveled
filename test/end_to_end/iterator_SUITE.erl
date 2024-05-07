@@ -13,7 +13,8 @@
             multibucket_fold/1,
             foldobjects_bybucket_range/1,
             rotating_objects/1,
-            capture_and_filter_terms/1
+            capture_and_filter_terms/1,
+            complex_queries/1
         ]).
 
 all() -> [
@@ -25,7 +26,8 @@ all() -> [
             multibucket_fold,
             rotating_objects,
             foldobjects_bybucket_range,
-            capture_and_filter_terms
+            capture_and_filter_terms,
+            complex_queries
             ].
 
 expiring_indexes(_Config) ->
@@ -894,7 +896,7 @@ capture_and_filter_terms(_Config) ->
             {Bucket, null},
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
-            {false, {eval, EvalFunPCRE, FilterFun1}}
+            {false, {query, EvalFunPCRE, FilterFun1}}
     },
     {async, RunnerPCRE1} = leveled_bookie:book_returnfolder(Book1, QueryPCRE1),
     BornMid70sPCRE1 = RunnerPCRE1(),
@@ -911,7 +913,7 @@ capture_and_filter_terms(_Config) ->
             {Bucket, null},
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
-            {false, {eval, EvalFunRE2, FilterFun1}}
+            {false, {query, EvalFunRE2, FilterFun1}}
     },
     {async, RunnerRE2_2} = leveled_bookie:book_returnfolder(Book1, QueryRE2_2),
     BornMid70sRE2_2 = RunnerRE2_2(),
@@ -924,7 +926,7 @@ capture_and_filter_terms(_Config) ->
             {Bucket, null},
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
-            {<<"dob">>, {eval, EvalFunRE2, AllFun}}
+            {<<"dob">>, {query, EvalFunRE2, AllFun}}
     },
     {async, RunnerRE2_3} = leveled_bookie:book_returnfolder(Book1, QueryRE2_3),
     Results3 = RunnerRE2_3(),
@@ -962,7 +964,7 @@ capture_and_filter_terms(_Config) ->
             {Bucket, null},
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
-            {false, {eval, EvalFunRE2_2, FilterFun2}}
+            {false, {query, EvalFunRE2_2, FilterFun2}}
     },
     {async, RunnerRE2_4} = leveled_bookie:book_returnfolder(Book1, QueryRE2_4),
     BornMid70sRE2_4 = RunnerRE2_4(),
@@ -974,7 +976,7 @@ capture_and_filter_terms(_Config) ->
             {Bucket, null},
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
-            {true, {eval, EvalFunRE2, FilterFun1}}
+            {true, {query, EvalFunRE2, FilterFun1}}
     },
     {async, RunnerRE2_5} = leveled_bookie:book_returnfolder(Book1, QueryRE2_5),
     {ok, WillowLeedsExtractorRE2} = re2:compile(WillowLeedsExtractor),
@@ -990,20 +992,15 @@ capture_and_filter_terms(_Config) ->
     SW8 = os:timestamp(),
     
     FilterExpression1 = "($dob BETWEEN \"19740301\" AND \"19761030\")",
-    {ok, FilterExpressionParsed1} =
-        leveled_filter:generate_filter_expression(
-            FilterExpression1, maps:new()),
     FilterFun5 =
-        fun(AttrMap) ->
-            leveled_filter:apply_filter(FilterExpressionParsed1, AttrMap)
-        end,
+        leveled_filter:generate_filter_function(FilterExpression1, maps:new()),
         
     QueryRE2_8 =
         {index_query,
             {Bucket, null},
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
-            {false, {eval, EvalFunRE2, FilterFun5}}
+            {false, {query, EvalFunRE2, FilterFun5}}
     },
     {async, RunnerRE2_8} = leveled_bookie:book_returnfolder(Book1, QueryRE2_8),
     BornMid70sRE2_8 = RunnerRE2_8(),
@@ -1025,7 +1022,7 @@ capture_and_filter_terms(_Config) ->
             {Bucket, null},
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
-            {false, {eval, PreFilterEvalFun, FilterFun5}}
+            {false, {query, PreFilterEvalFun, FilterFun5}}
     },
     {async, RunnerRE2_9} = leveled_bookie:book_returnfolder(Book1, QueryRE2_9),
     BornMid70sRE2_9 = RunnerRE2_9(),
@@ -1039,28 +1036,19 @@ capture_and_filter_terms(_Config) ->
     FilterExpression2 =
         "($dob BETWEEN \"19740301\" AND \"19761030\")"
         "AND (contains($gns, \"#Willow\") AND contains($pcs, \"#LS\"))",
-    {ok, FilterExpressionParsed2} =
-        leveled_filter:generate_filter_expression(
-            FilterExpression2, maps:new()),
     FilterFun6 =
-        fun(AttrMap) ->
-            leveled_filter:apply_filter(FilterExpressionParsed2, AttrMap)
-        end,
-    {ok, EvalExpression2} =
-        leveled_eval:generate_eval_expression(
+        leveled_filter:generate_filter_function(FilterExpression2, maps:new()),
+    EvalFun2 =
+        leveled_eval:generate_eval_function(
             "delim($term, \"|\", ($surname, $dob, $dod, $gns, $pcs))",
             maps:new()
         ),
-    EvalFun2 =
-        fun(Term, Key) ->
-            leveled_eval:apply_eval(EvalExpression2, Term, Key, maps:new())
-        end,
     QueryRE2_10 =
         {index_query,
             {Bucket, null},
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
-            {false, {eval, EvalFun2, FilterFun6}}
+            {false, {query, EvalFun2, FilterFun6}}
     },
     {async, RunnerRE2_10} = leveled_bookie:book_returnfolder(Book1, QueryRE2_10),
     BornMid70sRE2_10 = RunnerRE2_10(),
@@ -1109,7 +1097,7 @@ capture_and_filter_terms(_Config) ->
             {Bucket, null},
             {fun testutil:foldkeysfun/3, []},
             {IdxName, <<"M">>, <<"Z">>},
-            {<<"gns">>, {eval, EvalFunRE2, FilterFun6}}
+            {<<"gns">>, {query, EvalFunRE2, FilterFun6}}
         },
     {async, RunnerRE2_3_WC} =
         leveled_bookie:book_returnfolder(Book1, QueryRE2_3_WrongCapture),
@@ -1126,6 +1114,151 @@ maybe_log_toscreen(Log, Subs) ->
         Subs
     ).
 
+complex_queries(_Config) ->
+    KeyCount = 200000,
+    RootPath = testutil:reset_filestructure(),
+    Bucket = {<<"Type1">>, <<"Bucket1">>},
+    IdxGivenName = <<"given_bin">>,
+    IdxFamilyName = <<"family_bin">>,
+    IdxPostCode = <<"postcode_bin">>,
+    IdxFullData = <<"fulldata_bin">>,
+    {ok, Book1} =
+        leveled_bookie:book_start(
+            RootPath, 2000, 50000000, testutil:sync_strategy()),
+    V1 = <<"V1">>,
+    IndexGen =
+        fun() ->
+            DoB = perf_SUITE:get_random_dob(),
+            DoD = perf_SUITE:get_random_dod(),
+            FN = perf_SUITE:get_random_surname(),
+            GN1 = perf_SUITE:get_random_givenname(),
+            GN2 = perf_SUITE:get_random_givenname(),
+            GN3 = perf_SUITE:get_random_givenname(),
+            PC1 = perf_SUITE:get_random_postcode(),
+            PC2 = perf_SUITE:get_random_postcode(),
+            PC3 = perf_SUITE:get_random_postcode(),
+            FNIdx1 = set_index_term(FN, DoB, DoD),
+            GNIdx1 = set_index_term(GN1, DoB, DoD),
+            GNIdx2 = set_index_term(GN2, DoB, DoD),
+            GNIdx3 = set_index_term(GN3, DoB, DoD),
+            PCIdx1 = set_index_term(PC1, DoB, DoD),
+            PCIdx2 = set_index_term(PC2, DoB, DoD),
+            PCIdx3 = set_index_term(PC3, DoB, DoD),
+            FullIdx =
+                set_full_index_term(
+                    FN, DoB, DoD, GN1, GN2, GN3, PC1, PC2, PC3),
+            [
+                {add, IdxFamilyName, FNIdx1},
+                {add, IdxGivenName, GNIdx1},
+                {add, IdxGivenName, GNIdx2},
+                {add, IdxGivenName, GNIdx3},
+                {add, IdxPostCode, PCIdx1},
+                {add, IdxPostCode, PCIdx2},
+                {add, IdxPostCode, PCIdx3},
+                {add, IdxFullData, FullIdx}
+            ]
+        end,
+    ObjL1 =
+        testutil:generate_objects(
+            KeyCount, uuid, [], V1, IndexGen, Bucket),
+    testutil:riakload(Book1, ObjL1),
+
+    DoBLow = <<"19730930">>,
+    DobHigh = <<"19770301">>,
+    GivenName = <<"#Willow">>,
+    PostCode = <<"#LS8 ">>,
+
+    %% Search for SM*, Leeds Postcode, bo3n in mid70s
+    FullIndexEvalFun =
+        leveled_eval:generate_eval_function(
+            "delim($term, \"|\", ($fn, $dob, $dod, $gns, $pcs))",
+            maps:new()),
+    FilterString =
+        "($dob BETWEEN :doblow AND :dobhigh) AND (contains($gcs, :givenname) "
+        "OR contains($pcs, :postcode))",
+    FullIndexFilterFun =
+        leveled_filter:generate_filter_function(
+            FilterString,
+            #{<<"doblow">> => DoBLow,
+                <<"dobhigh">> => DobHigh,
+                <<"givenname">> => GivenName,
+                <<"postcode">> => PostCode
+            }),
+    {async, FullR0} =
+        leveled_bookie:book_indexfold(
+            Book1,
+            {Bucket, null},
+            {fun testutil:foldkeysfun/3, []},
+            {IdxFullData, <<"Sm">>, <<"Sm~">>},
+            {false, {query, FullIndexEvalFun, FullIndexFilterFun}}
+        ),
+    STFull0 = os:system_time(millisecond),
+    FullKL0 = lists:sort(FullR0()),
+    print_query_results(STFull0, single_index, FullKL0),
+
+    SplitIndexEvalFun =
+        leveled_eval:generate_eval_function(
+            "delim($term, \"|\", ($sk, $dob, $dod))",
+            maps:new()),
+    SplitIndexFilterFun =
+        leveled_filter:generate_filter_function(
+            "$dob BETWEEN :doblow AND :dobhigh",
+            #{<<"doblow">> => DoBLow, <<"dobhigh">> => DobHigh}),
+    Q1 =
+        {IdxFamilyName,
+            <<"Sm">>, <<"Sm~">>,
+            {query, SplitIndexEvalFun, SplitIndexFilterFun}},
+    Q2 =
+        {IdxGivenName,
+            <<"Willow">>, <<"Willow#">>,
+            {query, SplitIndexEvalFun, SplitIndexFilterFun}},
+    Q3 =
+        {IdxPostCode,
+            <<"LS8 ">>, <<"LS8#">>,
+            {query, SplitIndexEvalFun, SplitIndexFilterFun}},
+    
+    ComboFun =
+        leveled_setop:generate_setop_function("$1 AND ($2 OR $3)"),
+
+    {async, SplitR0} =
+        leveled_bookie:book_multiindexfold(
+            Book1,
+            Bucket,
+            {fun testutil:foldkeysfun/3, []},
+            [Q1, Q2, Q3],
+            ComboFun),
+    STSplit0 = os:system_time(millisecond),
+    SplitKL0 = lists:sort(SplitR0()),
+    print_query_results(STSplit0, multi_index, SplitKL0),
+
+    true = FullKL0 == SplitKL0,
+
+    ok = leveled_bookie:book_close(Book1),
+    
+    testutil:reset_filestructure().
+
+print_query_results(ST, QT, Results) ->
+    io:format(
+        % user,
+        "Query type ~w took ~w ms with ~w results~n",
+        [QT, os:system_time(millisecond) - ST, length(Results)]
+    ).
+
+set_index_term(SortKey, DoB, DoD) ->
+    list_to_binary(
+        lists:flatten(
+            io_lib:format(
+                "~s|~s|~s",
+                [SortKey, DoB, DoD])
+        )).
+
+set_full_index_term(FN, DoB, DoD, GN1, GN2, GN3, PC1, PC2, PC3) ->
+    list_to_binary(
+        lists:flatten(
+            io_lib:format(
+                "~s|~s|~s|#~s#~s#~s|#~s#~s#~s",
+                [FN, DoB, DoD, GN1, GN2, GN3, PC1, PC2, PC3])
+        )).
 
 count_termsonindex(Bucket, IdxField, Book, QType) ->
     lists:foldl(
