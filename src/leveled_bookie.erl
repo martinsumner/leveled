@@ -82,6 +82,7 @@
 -export([
          book_returnfolder/2,
          book_indexfold/5,
+         book_multiindexfold/5,
          book_bucketlist/4,
          book_keylist/3,
          book_keylist/4,
@@ -684,7 +685,7 @@ book_returnfolder(Pid, RunnerType) ->
                      Constraint:: {Bucket, StartKey},
                      FoldAccT :: {FoldFun, Acc},
                      Range :: {IndexField, Start, End},
-                     TermHandling :: {ReturnTerms, TermRegex}) ->
+                     TermHandling :: {ReturnTerms, TermExpression}) ->
                             {async, Runner::fun(() -> term())}
                                 when Bucket::term(),
                                      Key :: term(),
@@ -697,7 +698,7 @@ book_returnfolder(Pid, RunnerType) ->
                                      Start::IndexVal,
                                      End::IndexVal,
                                      ReturnTerms::boolean()|binary(),
-                                     TermRegex :: leveled_codec:regular_expression().
+                                     TermExpression :: leveled_codec:term_expression().
 
 book_indexfold(Pid, Constraint, FoldAccT, Range, TermHandling)
                                                 when is_tuple(Constraint) ->
@@ -713,6 +714,23 @@ book_indexfold(Pid, Bucket, FoldAccT, Range, TermHandling) ->
     leveled_log:log(b0019, [Bucket]),
     book_indexfold(Pid, {Bucket, null}, FoldAccT, Range, TermHandling).
 
+-type query()
+    :: {binary(), binary(), binary(), leveled_codec:term_expression()}.
+-type combo_fun()
+    :: fun((list(sets:set(leveled_codec:key())))
+            -> sets:set(leveled_codec:key())).
+
+-spec book_multiindexfold(
+        pid(),
+        leveled_codec:key(),
+        fun((leveled_codec:key(), leveled_codec:key(), term()) -> term()),
+        list(query()),
+        combo_fun())
+            -> {async, fun(() -> term())}.
+book_multiindexfold(Pid, Bucket, FoldAccT, Queries, ComboFun) ->
+    RunnerType =
+        {multi_index_query, Bucket, FoldAccT, Queries, ComboFun},
+    book_returnfolder(Pid, RunnerType).
 
 %% @doc list buckets. Folds over the ledger only. Given a `Tag' folds
 %% over the keyspace calling `FoldFun' from `FoldAccT' for each
@@ -815,7 +833,7 @@ book_keylist(Pid, Tag, Bucket, KeyRange, FoldAccT) ->
       StartKey :: Key,
       EndKey :: Key,
       Key :: term(),
-      TermRegex :: leveled_codec:regular_expression(),
+      TermRegex :: leveled_codec:term_expression(),
       Runner :: fun(() -> Acc).
 book_keylist(Pid, Tag, Bucket, KeyRange, FoldAccT, TermRegex) ->
     RunnerType = {keylist, Tag, Bucket, KeyRange, FoldAccT, TermRegex},
@@ -1956,22 +1974,44 @@ snaptype_by_presence(false) ->
 %% Get an {async, Runner} for a given fold type.  Fold types have different 
 %% tuple inputs
 get_runner(State, {index_query, Constraint, FoldAccT, Range, TermHandling}) ->
-    {IdxFld, StartT, EndT} = Range,
-    {Bucket, ObjKey0} =
-        case Constraint of
-            {B, SK} ->
-                {B, SK};
-            B ->
-                {B, null}
-        end,
-    StartKey = 
-        leveled_codec:to_ledgerkey(Bucket, ObjKey0, ?IDX_TAG, IdxFld, StartT),
-    EndKey = 
-        leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG, IdxFld, EndT),
+    {StartKey, EndKey} = index_range(Constraint, Range),
     SnapFun = return_snapfun(State, ledger, {StartKey, EndKey}, false, false),
-    leveled_runner:index_query(SnapFun, 
-                                {StartKey, EndKey, TermHandling}, 
-                                FoldAccT);
+    leveled_runner:index_query(
+        SnapFun, {StartKey, EndKey, TermHandling}, FoldAccT);
+get_runner(
+        State,
+        {multi_index_query, Bucket, FoldAccT, Queries, ComboFun}) ->
+    {FoldFun, InitAcc} = FoldAccT,
+    KeyFolder = fun(_B, K, Acc) -> [K|Acc] end,
+    QueryRunners =
+        lists:map(
+            fun({IdxFld, StartTerm, EndTerm, Expr}) ->
+                {SK, EK} =
+                    index_range(
+                        {Bucket, null}, {IdxFld, StartTerm, EndTerm}),
+                SnapFun =
+                    return_snapfun(State, ledger, {SK, EK}, false, true),
+                {async, Runner} =
+                    leveled_runner:index_query(
+                        SnapFun, {SK, EK, {false, Expr}}, {KeyFolder, []}
+                    ),
+                Runner
+            end,
+            Queries
+        ),
+    OverallRunner =
+        fun() ->
+            FinalSet =
+                ComboFun(
+                    lists:map(fun(R) -> sets:from_list(R()) end, QueryRunners)
+                ),
+            lists:foldl(
+                fun(K, Acc) -> FoldFun(Bucket, K, Acc) end,
+                InitAcc,
+                sets:to_list(FinalSet)
+            )
+        end,
+    {async, OverallRunner};
 get_runner(State, {keylist, Tag, FoldAccT}) ->
     SnapFun = return_snapfun(State, ledger, no_lookup, true, true),
     leveled_runner:bucketkey_query(SnapFun, Tag, null, FoldAccT);
@@ -1980,40 +2020,49 @@ get_runner(State, {keylist, Tag, Bucket, FoldAccT}) ->
     leveled_runner:bucketkey_query(SnapFun, Tag, Bucket, FoldAccT);
 get_runner(State, {keylist, Tag, Bucket, KeyRange, FoldAccT, TermRegex}) ->
     SnapFun = return_snapfun(State, ledger, no_lookup, true, true),
-    leveled_runner:bucketkey_query(SnapFun, 
-                                    Tag, Bucket, KeyRange, 
-                                    FoldAccT, TermRegex);
+    leveled_runner:bucketkey_query(
+        SnapFun, Tag, Bucket, KeyRange, FoldAccT, TermRegex);
 %% Set of runners for object or metadata folds
-get_runner(State, 
-            {foldheads_allkeys, 
-                Tag, FoldFun, 
-                JournalCheck, SnapPreFold, SegmentList,
-                LastModRange, MaxObjectCount}) ->
+get_runner(
+        State, 
+        {foldheads_allkeys, 
+            Tag, FoldFun, 
+            JournalCheck, SnapPreFold, SegmentList,
+            LastModRange, MaxObjectCount}) ->
     SnapType = snaptype_by_presence(JournalCheck),
     SnapFun = return_snapfun(State, SnapType, no_lookup, true, SnapPreFold),
-    leveled_runner:foldheads_allkeys(SnapFun, 
-                                        Tag, FoldFun, 
-                                        JournalCheck, SegmentList,
-                                        LastModRange, MaxObjectCount);
-get_runner(State,
-            {foldobjects_allkeys, Tag, FoldFun, SnapPreFold}) ->
-    get_runner(State, 
-                {foldobjects_allkeys, Tag, FoldFun, SnapPreFold, key_order});
-get_runner(State, 
-            {foldobjects_allkeys, Tag, FoldFun, SnapPreFold, key_order}) ->
-    SnapFun = return_snapfun(State, store, no_lookup, true, SnapPreFold),
-    leveled_runner:foldobjects_allkeys(SnapFun, Tag, FoldFun, key_order);
-get_runner(State,
-            {foldobjects_allkeys, Tag, FoldFun, SnapPreFold, sqn_order}) ->
-    SnapFun = return_snapfun(State, store, undefined, true, SnapPreFold),
-    leveled_runner:foldobjects_allkeys(SnapFun, Tag, FoldFun, sqn_order);
-get_runner(State,
-            {foldheads_bybucket,
-                Tag, 
-                BucketList, bucket_list,
-                FoldFun,
-                JournalCheck, SnapPreFold,
-                SegmentList, LastModRange, MaxObjectCount}) ->
+    leveled_runner:foldheads_allkeys(
+        SnapFun,
+        Tag,
+        FoldFun,
+        JournalCheck,
+        SegmentList,
+        LastModRange,
+        MaxObjectCount);
+get_runner(State, {foldobjects_allkeys, Tag, FoldFun, SnapPreFold}) ->
+    get_runner(
+        State, {foldobjects_allkeys, Tag, FoldFun, SnapPreFold, key_order});
+get_runner(State, {foldobjects_allkeys, Tag, FoldFun, SnapPreFold, Order}) ->
+    case Order of
+        key_order ->
+            SnapFun =
+                return_snapfun(State, store, no_lookup, true, SnapPreFold),
+            leveled_runner:foldobjects_allkeys(
+                SnapFun, Tag, FoldFun, key_order);
+        sqn_order ->
+            SnapFun =
+                return_snapfun(State, store, undefined, true, SnapPreFold),
+            leveled_runner:foldobjects_allkeys(
+                SnapFun, Tag, FoldFun, sqn_order)
+    end;
+get_runner(
+        State,
+        {foldheads_bybucket,
+            Tag, 
+            BucketList, bucket_list,
+            FoldFun,
+            JournalCheck, SnapPreFold,
+            SegmentList, LastModRange, MaxObjectCount}) ->
     KeyRangeFun = 
         fun(Bucket) ->
             {StartKey, EndKey, _} = return_ledger_keyrange(Tag, Bucket, all),
@@ -2021,50 +2070,52 @@ get_runner(State,
         end,
     SnapType = snaptype_by_presence(JournalCheck),
     SnapFun = return_snapfun(State, SnapType, no_lookup, true, SnapPreFold),
-    leveled_runner:foldheads_bybucket(SnapFun,
-                                        Tag,
-                                        lists:map(KeyRangeFun, BucketList),
-                                        FoldFun,
-                                        JournalCheck,
-                                        SegmentList,
-                                        LastModRange, MaxObjectCount);
-get_runner(State,
-            {foldheads_bybucket, 
-                Tag, 
-                Bucket, KeyRange, 
-                FoldFun, 
-                JournalCheck, SnapPreFold,
-                SegmentList, LastModRange, MaxObjectCount}) ->
+    leveled_runner:foldheads_bybucket(
+        SnapFun,
+        Tag,
+        lists:map(KeyRangeFun, BucketList),
+        FoldFun,
+        JournalCheck,
+        SegmentList,
+        LastModRange, MaxObjectCount);
+get_runner(
+        State,
+        {foldheads_bybucket, 
+            Tag, 
+            Bucket, KeyRange, 
+            FoldFun, 
+            JournalCheck, SnapPreFold,
+            SegmentList, LastModRange, MaxObjectCount}) ->
     {StartKey, EndKey, SnapQ} = return_ledger_keyrange(Tag, Bucket, KeyRange),
     SnapType = snaptype_by_presence(JournalCheck),
     SnapFun = return_snapfun(State, SnapType, SnapQ, true, SnapPreFold),
-    leveled_runner:foldheads_bybucket(SnapFun, 
-                                        Tag, 
-                                        [{StartKey, EndKey}], 
-                                        FoldFun, 
-                                        JournalCheck,
-                                        SegmentList,
-                                        LastModRange, MaxObjectCount);
-get_runner(State,
-            {foldobjects_bybucket, 
-                Tag, Bucket, KeyRange, 
-                FoldFun, 
-                SnapPreFold}) ->
+    leveled_runner:foldheads_bybucket(
+        SnapFun,
+        Tag, 
+        [{StartKey, EndKey}], 
+        FoldFun, 
+        JournalCheck,
+        SegmentList,
+        LastModRange, MaxObjectCount);
+get_runner(
+        State,
+        {foldobjects_bybucket, 
+            Tag, Bucket, KeyRange, 
+            FoldFun, 
+            SnapPreFold}) ->
     {StartKey, EndKey, SnapQ} = return_ledger_keyrange(Tag, Bucket, KeyRange),
     SnapFun = return_snapfun(State, store, SnapQ, true, SnapPreFold),
-    leveled_runner:foldobjects_bybucket(SnapFun, 
-                                        Tag, 
-                                        [{StartKey, EndKey}], 
-                                        FoldFun);
-get_runner(State, 
-            {foldobjects_byindex,
-                Tag, Bucket, {Field, FromTerm, ToTerm},
-                FoldObjectsFun,
-                SnapPreFold}) ->
+    leveled_runner:foldobjects_bybucket(
+        SnapFun, Tag, [{StartKey, EndKey}], FoldFun);
+get_runner(
+        State, 
+        {foldobjects_byindex,
+            Tag, Bucket, {Field, FromTerm, ToTerm},
+            FoldObjectsFun,
+            SnapPreFold}) ->
     SnapFun = return_snapfun(State, store, no_lookup, true, SnapPreFold),
-    leveled_runner:foldobjects_byindex(SnapFun, 
-                                        {Tag, Bucket, Field, FromTerm, ToTerm},
-                                        FoldObjectsFun);
+    leveled_runner:foldobjects_byindex(
+        SnapFun, {Tag, Bucket, Field, FromTerm, ToTerm}, FoldObjectsFun);
 get_runner(State, {bucket_list, Tag, FoldAccT}) ->
     {FoldBucketsFun, Acc} = FoldAccT,
     SnapFun = return_snapfun(State, ledger, no_lookup, false, false),
@@ -2077,6 +2128,21 @@ get_runner(State, {first_bucket, Tag, FoldAccT}) ->
 get_runner(State, DeprecatedQuery) ->
     get_deprecatedrunner(State, DeprecatedQuery).
 
+
+index_range(Constraint, Range) ->
+    {IdxFld, StartT, EndT} = Range,
+    {Bucket, ObjKey0} =
+        case Constraint of
+            {B, SK} ->
+                {B, SK};
+            B ->
+                {B, null}
+        end,
+    StartKey = 
+        leveled_codec:to_ledgerkey(Bucket, ObjKey0, ?IDX_TAG, IdxFld, StartT),
+    EndKey = 
+        leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG, IdxFld, EndT),
+    {StartKey, EndKey}.
 
 -spec get_deprecatedrunner(book_state(), tuple()) ->
                                                 {async, fun(() -> term())}.

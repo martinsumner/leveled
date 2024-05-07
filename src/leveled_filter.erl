@@ -7,6 +7,7 @@
 
 -export(
     [
+        generate_filter_function/2,
         generate_filter_expression/2,
         apply_filter/2,
         substitute_items/3
@@ -16,6 +17,18 @@
 %%% External API
 %%%============================================================================
 
+-spec generate_filter_function(string(), map()) -> fun((map()) -> boolean()).
+generate_filter_function(FilterString, Substitutions) ->
+    {ok, ParsedFilter} =
+        generate_filter_expression(FilterString, Substitutions),
+    fun(AttrMap) ->
+        apply_filter(ParsedFilter, AttrMap)
+    end.
+
+
+%%%============================================================================
+%%% Internal functions
+%%%============================================================================
 
 apply_filter({condition, Condition}, AttrMap) ->
     apply_filter(Condition, AttrMap);
@@ -131,10 +144,6 @@ substitute_items([{substitution, LN, ID}|Rest], Subs, UpdTokens) ->
     end;
 substitute_items([Token|Rest], Subs, UpdTokens) ->
     substitute_items(Rest, Subs, [Token|UpdTokens]).
-
-%%%============================================================================
-%%% Internal functions
-%%%============================================================================
 
 compare('>', V, CmpA) -> V > CmpA;
 compare('>=', V, CmpA) -> V >= CmpA;
