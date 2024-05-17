@@ -25,7 +25,6 @@ add          : {token, {add, TokenLine}}.
 subtract     : {token, {subtract, TokenLine}}.
 map          : {token, {map, TokenLine}}.
 pcre         : {token, {pcre, TokenLine}}.
-re2          : {token, {re2, TokenLine}}.
 
 =       : {token, {comparator, '=', TokenLine}}.
 <       : {token, {comparator, '<', TokenLine}}.

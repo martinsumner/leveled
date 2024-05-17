@@ -113,7 +113,7 @@
 -type maybe_lookup() ::
         lookup|no_lookup.
 -type actual_regex() ::
-        reference()|{re_pattern, term(), term(), term(), term()}.
+        {re_pattern, term(), term(), term(), term()}.
 -type capture_value() :: binary()|integer().
 -type capture_filter_fun() ::
         fun((#{binary() => capture_value()}) -> boolean()).

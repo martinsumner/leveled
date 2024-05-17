@@ -62,17 +62,13 @@ integer_time(TS) ->
         {match, list(match_index())} |
         {match, list(binary())} |
         {error, atom()}.
-regex_run(Subject, CompiledRE2, Opts) when is_reference(CompiledRE2) ->
-    re2:run(Subject, CompiledRE2, Opts);
 regex_run(Subject, CompiledPCRE, Opts) ->
     re:run(Subject, CompiledPCRE, Opts).
 
--spec regex_compile(iodata()) -> {ok, reference()}.
+-spec regex_compile(iodata()) -> {ok, leveled_codec:actual_regex()}.
 regex_compile(PlainRegex) ->
-    regex_compile(PlainRegex, re2).
+    regex_compile(PlainRegex, pcre).
 
-regex_compile(PlainRegex, re2) ->
-    re2:compile(PlainRegex);
 regex_compile(PlainRegex, pcre) ->
     re:compile(PlainRegex).
 

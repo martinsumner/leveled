@@ -13,7 +13,7 @@ identifier string integer comparator
 delim join split slice index kvsplit regex map
 add subtract
 to_integer to_string
-pcre re2.
+pcre.
 
 Rootsymbol top_level.
 
@@ -47,8 +47,7 @@ operand -> integer         : '$1'.
 math_operand -> integer    : '$1'.
 math_operand -> identifier : '$1'.
 
-regex_method -> pcre       : '$1'.    
-regex_method -> re2        : '$1'.
+regex_method -> pcre       : '$1'.
 
 identifier_list -> '(' identifiers ')'    : strip_ids('$2').
 
@@ -68,7 +67,7 @@ strip_ids(IDL) ->
     ).
 
 re_compile(RegexStr) ->
-    re_compile(RegexStr, {re2, element(2, RegexStr)}).
+    re_compile(RegexStr, {pcre, element(2, RegexStr)}).
 
 re_compile({string, _LN, Regex}, Method) ->
     {ok, CRE} = leveled_util:regex_compile(Regex, element(1, Method)),

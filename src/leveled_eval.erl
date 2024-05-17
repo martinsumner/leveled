@@ -506,11 +506,6 @@ basic_test() ->
         "(?P<gns>[^\\|]*)\\|(?P<pcs>[^\\|]*)|.",
     ok =
         check_regex_eval(
-            "regex($term, :regex, re2, ($fn, $dob, $dod, $gns, $pcs))",
-            ExtractRegex
-        ),
-    ok =
-        check_regex_eval(
             "regex($term, :regex, pcre, ($fn, $dob, $dod, $gns, $pcs))",
             ExtractRegex
         ),

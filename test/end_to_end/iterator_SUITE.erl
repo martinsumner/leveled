@@ -903,7 +903,7 @@ capture_and_filter_terms(_Config) ->
 
     EvalFunRE2 =
         leveled_eval:generate_eval_function(
-            "regex($term, :regex, re2, ($dob))",
+            "regex($term, :regex, pcre, ($dob))",
             #{<<"regex">> => list_to_binary(WillowLeedsExtractor)}
         ),
     QueryRE2_2 =
@@ -948,7 +948,7 @@ capture_and_filter_terms(_Config) ->
         "[^\\|]*#Willow[^\\|]*\\|[^\\|]*#LS[^\\|]*",
     EvalFunRE2_2 =
         leveled_eval:generate_eval_function(
-            "regex($term, :regex, re2, ($dob, $dod))",
+            "regex($term, :regex, pcre, ($dob, $dod))",
             #{<<"regex">> => list_to_binary(WillowLeedsDoubleExtractor)}
         ),
         
@@ -977,12 +977,12 @@ capture_and_filter_terms(_Config) ->
             {true, {eval, EvalFunRE2, FilterFun1}}
     },
     {async, RunnerRE2_5} = leveled_bookie:book_returnfolder(Book1, QueryRE2_5),
-    {ok, WillowLeedsExtractorRE2} = re2:compile(WillowLeedsExtractor),
+    {ok, WillowLeedsExtractorRE} = re:compile(WillowLeedsExtractor),
     BornMid70sRE2_5 =
         lists:filtermap(
             fun({T, K}) ->
                 {match, _} =
-                    leveled_util:regex_run(T, WillowLeedsExtractorRE2, []),
+                    leveled_util:regex_run(T, WillowLeedsExtractorRE, []),
                 {true, K}
             end,
             RunnerRE2_5()),
@@ -1016,7 +1016,7 @@ capture_and_filter_terms(_Config) ->
         "[^\\|]*#LS[^\\|]*",
     PreFilterEvalFun =
         leveled_eval:generate_eval_function(
-            "regex($term, :regex, re2, ($dob))",
+            "regex($term, :regex, pcre, ($dob))",
             #{<<"regex">> => list_to_binary(PreFilterRE)}
         ),
     
