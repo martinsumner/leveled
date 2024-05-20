@@ -25,18 +25,73 @@ apply_filter({'AND', P1, P2}, AttrMap) ->
     apply_filter(P1, AttrMap) andalso apply_filter(P2, AttrMap);
 apply_filter({'NOT', P1}, AttrMap) ->
     not apply_filter(P1, AttrMap);
-apply_filter({'BETWEEN', {identifier, _, ID}, CompA, CompB}, AttrMap) ->
+apply_filter({'BETWEEN', {identifier, _, ID}, CmpA, CmpB}, AttrMap) ->
     case maps:get(ID, AttrMap, notfound) of
-        notfound ->
-            false;
-        V ->
-            case {element(3, CompA), element(3, CompB)} of
-                {Low, High} when Low =< High ->
-                    V >= Low andalso V =< High;
-                {High, Low} ->
-                    V >= Low andalso V =< High
-            end
+        V when is_integer(V) ->
+            apply_filter({'BETWEEN', {integer, 0, V}, CmpA, CmpB}, AttrMap);
+        V when is_binary(V) ->
+            apply_filter({'BETWEEN', {string, 0, V}, CmpA, CmpB}, AttrMap);
+        _ ->
+            false
     end;
+apply_filter(
+        {'BETWEEN', {Type, _, V0}, {Type, _, VL}, {Type, _, VH}}, _)
+        when VL =< VH ->
+    V0 >= VL andalso V0 =< VH;
+apply_filter(
+        {'BETWEEN', {integer, TL0, I0}, {identifier, _, ID}, CmpB}, AttrMap) ->
+    case maps:get(ID, AttrMap, notfound) of
+        V when is_integer(V) ->
+            apply_filter(
+                {'BETWEEN', {integer, TL0, I0}, {integer, 0, V}, CmpB},
+                AttrMap
+            );
+        _ ->
+            false
+    end;
+apply_filter(
+        {'BETWEEN',
+            {integer, TL0, I0}, {integer, TLL, IL}, {identifier, _, ID}
+        },
+        AttrMap) ->
+    case maps:get(ID, AttrMap, notfound) of
+        V when is_integer(V) ->
+            apply_filter(
+                {'BETWEEN',
+                    {integer, TL0, I0}, {integer, TLL, IL}, {integer, 0, V}
+                },
+                AttrMap
+            );
+        _ ->
+            false
+    end;
+apply_filter(
+        {'BETWEEN', {string, TL0, S0}, {identifier, _, ID}, CmpB}, AttrMap) ->
+    case maps:get(ID, AttrMap, notfound) of
+        V when is_binary(V) ->
+            apply_filter(
+                {'BETWEEN', {string, TL0, S0}, {string, 0, V}, CmpB}, AttrMap);
+        _ ->
+            false
+    end;
+apply_filter(
+        {'BETWEEN',
+            {string, TL0, S0}, {string, TLL, SL}, {identifier, _, ID}
+        },
+        AttrMap) ->
+    case maps:get(ID, AttrMap, notfound) of
+        V when is_binary(V) ->
+            apply_filter(
+                {'BETWEEN',
+                    {string, TL0, S0}, {string, TLL, SL}, {string, 0, V}
+                },
+                AttrMap
+            );
+        _ ->
+            false
+    end;
+apply_filter({'BETWEEN', _, _, _}, _) ->
+    false;
 apply_filter({'IN', {string, _, TestString}, {identifier, _, ID}}, AttrMap) ->
     case maps:get(ID, AttrMap, notfound) of
         CheckList when is_list(CheckList) ->
@@ -44,27 +99,45 @@ apply_filter({'IN', {string, _, TestString}, {identifier, _, ID}}, AttrMap) ->
         _ ->
             false
     end;
-apply_filter({'IN', {identifier, _, ID}, CheckList}, AttrMap) when is_list(CheckList) ->
+apply_filter(
+        {'IN', {identifier, _, ID}, CheckList}, AttrMap)
+        when is_list(CheckList) ->
     case maps:get(ID, AttrMap, notfound) of
         notfound ->
             false;
         V ->
             lists:member(V, lists:map(fun(C) -> element(3, C) end, CheckList))
     end;
-apply_filter({{comparator, Cmp, _}, {identifier, _ , ID}, CmpA}, AttrMap) ->
+apply_filter({{comparator, Cmp, TLC}, {identifier, _ , ID}, CmpB}, AttrMap) ->
     case maps:get(ID, AttrMap, notfound) of
         notfound ->
             false;
-        V ->
-            case {element(1, CmpA), V} of
-                {string, V} when is_binary(V) ->
-                    compare(Cmp, V, element(3, CmpA));
-                {integer, V} when is_integer(V) ->
-                    compare(Cmp, V, element(3, CmpA));
-                _ ->
-                    false
-            end
+        V when is_integer(V) ->
+            apply_filter(
+                {{comparator, Cmp, TLC}, {integer, 0, V}, CmpB}, AttrMap
+            );
+        V when is_binary(V) ->
+            apply_filter(
+                {{comparator, Cmp, TLC}, {string, 0, V}, CmpB}, AttrMap
+            )
     end;
+apply_filter({{comparator, Cmp, TLC}, CmpA, {identifier, _, ID}}, AttrMap) ->
+    case maps:get(ID, AttrMap, notfound) of
+        notfound ->
+            false;
+        V when is_integer(V) ->
+            apply_filter(
+                {{comparator, Cmp, TLC}, CmpA, {integer, 0, V}}, AttrMap
+            );
+        V when is_binary(V) ->
+            apply_filter(
+                {{comparator, Cmp, TLC}, CmpA, {string, 0, V}}, AttrMap
+            )
+    end;
+apply_filter({{comparator, Cmp, _}, {Type, _, TL}, {Type, _, TR}}, _AttrMap) ->
+    compare(Cmp, TL, TR);
+apply_filter({{comparator, _, _}, _, _}, _AttrMap) ->
+    false;
 apply_filter({contains, {identifier, _, ID}, {string, _ , SubStr}}, AttrMap) ->
     case maps:get(ID, AttrMap, notfound) of
         V when is_binary(V) ->
@@ -77,7 +150,8 @@ apply_filter({contains, {identifier, _, ID}, {string, _ , SubStr}}, AttrMap) ->
         _ ->
             false
     end;
-apply_filter({begins_with, {identifier, _, ID}, {string, _ , SubStr}}, AttrMap) ->
+apply_filter(
+        {begins_with, {identifier, _, ID}, {string, _ , SubStr}}, AttrMap) ->
     case maps:get(ID, AttrMap, notfound) of
         V when is_binary(V) ->
             case string:prefix(V, SubStr) of
@@ -165,7 +239,7 @@ invalid_filterexpression_test() ->
         generate_filter_expression(FE1, SubsWrongType)
     ),
     SubsPresent = maps:from_list([{<<"d">>, <<"MA">>}]),
-    FE2 = "($a BETWEEN \"A\" AND 12) OR (($b >= \"30\") AND contains($c, :d))",
+    FE2 = "($a IN (\"A\", 12)) OR (($b >= \"30\") AND contains($c, :d))",
     ?assertMatch(
         {error, {1, leveled_filterparser,["syntax error before: ","12"]}},
         generate_filter_expression(FE2, SubsPresent)
@@ -196,12 +270,15 @@ filterexpression_test() ->
     
     FE3 = "($a BETWEEN \"A12\" AND \"A\") AND (($b >= 30) OR contains($c, :d))",
     {ok, Filter3} = generate_filter_expression(FE3, SubsPresent),
-    ?assert(apply_filter(Filter3, M2)),
-        % swapping the low/high - still ok
+    ?assertNot(apply_filter(Filter3, M2)),
+        % swapping the low/high - not ok - between explicitly requires low/high
     
     M3 = #{<<"a">> => <<"A11">>, <<"b">> => <<"100">>, <<"c">> => <<"CARTMAN">>},
     ?assertNot(apply_filter(Filter1, M3)),
         % substitution b is not an integer
+    M3A = #{<<"a">> => 11, <<"b">> => 100, <<"c">> => <<"CARTMAN">>},
+    ?assertNot(apply_filter(Filter1, M3A)),
+        % substitution a is an integer
     
     FE4 =
         "($dob BETWEEN \"19700101\" AND \"19791231\") "
@@ -270,13 +347,13 @@ filterexpression_test() ->
     ?assertNot(apply_filter(Filter8, #{<<"gn">> => <<"Nikki">>})),
 
     FE9 = "(contains($gn, \"MA\") OR $fn BETWEEN \"SM\" AND \"SN\")"
-        " OR $dob IN (\"19910301\", 19910103)",
+        " OR $dob IN (\"19910301\", \"19910103\")",
         % Only match with a type match
     {ok, Filter9} = generate_filter_expression(FE9, maps:new()),
     ?assert(apply_filter(Filter9, #{<<"dob">> => <<"19910301">>})),
-    ?assert(apply_filter(Filter9, #{<<"dob">> => 19910103})),
-    ?assertNot(apply_filter(Filter9, #{<<"dob">> => 19910301})),
-    ?assertNot(apply_filter(Filter9, #{<<"dob">> => <<"19910103">>})),
+    ?assert(apply_filter(Filter9, #{<<"dob">> => <<"19910103">>})),
+    ?assertNot(apply_filter(Filter9, #{<<"dob">> => <<"19910401">>})),
+    ?assertNot(apply_filter(Filter9, #{<<"dob">> => <<"19910104">>})),
 
     FE10 = "NOT contains($gn, \"MA\") AND "
             "(NOT $dob IN (\"19910301\", \"19910103\"))",
@@ -364,7 +441,169 @@ filterexpression_test() ->
     ?assertNot(
         apply_filter(
             Filter14,
-            #{<<"gns">> => <<"M1">>}))
+            #{<<"gns">> => <<"M1">>})),
+
+    FE15 =
+        "(attribute_empty($dod) AND $dob < :date)"
+        "OR :date BETWEEN $dob AND $dod",
+    {ok, Filter15} =
+        generate_filter_expression(FE15, #{<<"date">> => <<"20200101">>}),
+    ?assert(
+        apply_filter(
+            Filter15,
+            #{<<"dob">> => <<"199900303">>, <<"dod">> => <<>>}
+        )
+    ),
+    ?assert(
+        apply_filter(
+            Filter15,
+            #{<<"dob">> => <<"199900303">>, <<"dod">> => <<"20210105">>}
+        )
+    ),
+    ?assertNot(
+        apply_filter(
+            Filter15,
+            #{<<"dob">> => <<"20210303">>, <<"dod">> => <<"20230105">>}
+        )
+    ),
+    ?assertNot(
+        apply_filter(
+            Filter15,
+            #{<<"dob">> => <<"196900303">>, <<"dod">> => <<"19890105">>}
+        )
+    ),
+    ?assertNot(
+        apply_filter(
+            Filter15,
+            #{<<"dob">> => 199900303, <<"dod">> => <<>>}
+        )
+    ),
+
+    FE15A =
+        "(attribute_empty($dod) AND :date > $dob)"
+        "OR :date BETWEEN $dob AND $dod",
+    {ok, Filter15A} =
+        generate_filter_expression(FE15A, #{<<"date">> => <<"20200101">>}),
+    ?assert(
+        apply_filter(
+            Filter15A,
+            #{<<"dob">> => <<"199900303">>, <<"dod">> => <<>>}
+        )
+    ),
+    ?assertNot(
+        apply_filter(
+            Filter15A,
+            #{<<"dob">> => <<"202300303">>, <<"dod">> => <<>>}
+        )
+    ),
+    ?assertNot(
+        apply_filter(
+            Filter15A,
+            #{<<"dob">> => <<"202300303">>}
+        )
+    ),
+    ?assert(
+        apply_filter(
+            Filter15A,
+            #{<<"dob">> => <<"199900303">>, <<"dod">> => <<"20210105">>}
+        )
+    ),
+
+    FE16 = ":response_time BETWEEN $low_point AND $high_point",
+    {ok, Filter16} =
+        generate_filter_expression(
+            FE16,
+            #{<<"response_time">> => 346}
+        ),
+    ?assert(
+        apply_filter(
+            Filter16,
+            #{<<"low_point">> => 200, <<"high_point">> => 420}
+        )
+    ),
+    ?assertNot(
+        apply_filter(
+            Filter16,
+            #{<<"low_point">> => 360, <<"high_point">> => 420}
+        )
+    ),
+    ?assertNot(
+        apply_filter(
+            Filter16,
+            #{<<"low_point">> => 210, <<"high_point">> => 320}
+        )
+    ),
+    ?assertNot(
+        apply_filter(
+            Filter16,
+            #{<<"low_point">> => <<"200">>, <<"high_point">> => 420}
+        )
+    ),
+    ?assertNot(
+        apply_filter(
+            Filter16,
+            #{<<"low_point">> => 200, <<"high_point">> => <<"420">>}
+        )
+    ),
+    ?assertNot(
+        apply_filter(
+            Filter16,
+            #{<<"high_point">> => 420}
+        )
+    ),
+    ?assertNot(
+        apply_filter(
+            Filter16,
+            #{<<"low_point">> => 200}
+        )
+    ),
+
+    FE17 = ":response_time > $high_point",
+    {ok, Filter17} =
+        generate_filter_expression(
+            FE17,
+            #{<<"response_time">> => 350}
+        ),
+    ?assert(
+        apply_filter(
+            Filter17,
+            #{<<"high_point">> => 310}
+        )
+    ),
+    ?assertNot(
+        apply_filter(
+            Filter17,
+            #{<<"high_point">> => <<"310">>}
+        )
+    ),
+    ?assertNot(
+        apply_filter(
+            Filter17,
+            #{}
+        )
+    ),
+
+    FE18 = "$dod BETWEEN $dob AND :today",
+    {ok, Filter18} =
+        generate_filter_expression(FE18, #{<<"today">> => <<"20240520">>}),
+    ?assert(
+        apply_filter(
+            Filter18,
+            #{<<"dob">> => <<"19900505">>, <<"dod">> => <<"20231015">>}
+        )
+    ),
+    ?assertNot(
+        apply_filter(
+            Filter18,
+            #{<<"dob">> => <<"19900505">>, <<"dod">> => <<"20261015">>}
+        )
+    ),
+    ?assertNot(
+        apply_filter(
+            Filter18,
+            #{<<"dob">> => <<"19900505">>}
+        )
+    )
     .
 
 -endif.
