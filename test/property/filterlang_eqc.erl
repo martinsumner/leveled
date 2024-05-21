@@ -18,8 +18,8 @@ identifier() ->
   OtherChars = FirstChars++lists:seq($0,$9),
   ?LET({X, Xs}, {oneof(FirstChars), list(elements(OtherChars))}, iolist_to_binary([X|Xs])).
 
-identifier(Vars) ->
-  ?LET(V, oneof([identifier() | Vars]), [ws(), "$", V, ws()]).
+ppidentifier(Vars) ->
+  ?LET(V, oneof([identifier() | Vars]), [ws(), "$", V, " ",ws()]).
 
 %% No nested escaped quotes in strings
 string() ->
@@ -40,9 +40,14 @@ ppint() ->
 ppstring() ->
   [ws(), "\"", string(), "\"", ws()].
 
+pplist(Gen) ->
+  ?LET(List, non_empty(list(Gen)),
+       [ws(), "("] ++ lists:join(",", List) ++ [")", ws()]).
+
 operand(Vars) ->
-    oneof([ [ws(), "$", oneof(Vars), ws()] || Vars /= []] ++
-          [ [ws(), ":", oneof(Vars), ws()] || Vars /= []] ++ %% will fail
+    oneof([ ppidentifier(Vars) ] ++
+          [ [ws(), ":", oneof(Vars), " ", ws()]  || Vars /= []] ++
+             %% fails with error if substitution vars not in context
           [ ppint(), ppstring() ]).
 
 operand_list(Vars) ->
@@ -50,12 +55,18 @@ operand_list(Vars) ->
        [ws(), "("] ++ lists:join(",", OpList) ++ [")", ws()]).
 
 condition(0, Vars) ->
-  oneof([ [ identifier(Vars), " IN", operand_list(Vars) ]
-        , [ operand(Vars), " IN", identifier(Vars) ]
-        , [ operand(Vars), comparator(), operand(Vars) ]
-        , [ operand(Vars), "BETWEEN", ppint(), "AND", ppint() ]
+  oneof([ [ operand(Vars), comparator(), operand(Vars) ]
+        , [ operand(Vars), "BETWEEN", operand(Vars), "AND", operand(Vars) ]
+        , [ ppstring(), " IN", ppidentifier(Vars) ]
+        , [ ppidentifier(Vars), " IN", pplist(ppstring()) ]
+        , [ "contains(", ppidentifier(Vars), ", ", ppstring(), ")" ]
+        , [ "begins_with(", ppidentifier(Vars), ", ", ppstring(), ")" ]
+        , [ "attribute_exists(", ppidentifier(Vars), ")" ]
+        , [ "attribute_not_exists(", ppidentifier(Vars), ")" ]
+        , [ "attribute_empty(", ppidentifier(Vars), ")" ]
         ]);
 condition(N, Vars) ->
+  ?LAZY(
   oneof([ condition(0, Vars)
         , ?LETSHRINK([C], [condition(N - 1, Vars)],
                      oneof([ ["NOT", C]
@@ -65,7 +76,7 @@ condition(N, Vars) ->
                      oneof([ [C1, "AND", C2]
                            , [C1, "OR", C2]
                            ]))
-        ]).
+        ])).
 
 %% A generator for syntactic and semantic correct expressions
 filterlang(Vars) ->
@@ -74,17 +85,19 @@ filterlang(Vars) ->
 
 filterlang(N, Vars) ->
   condition(N, Vars).
-  %%?LETSHRINK([C1, C2], filterlang(N div 2, Vars), {condition, C1, C2}).
 
 %% The property.
-prop_gen_fun() ->
+%% The Context variables are used to replace ":x" substitution vars in the provided
+%% tokens to parse.
+prop_lang() ->
   eqc:dont_print_counterexample(
   ?FORALL(Context, context(),
   ?FORALL(String, filterlang([V || {V, _} <- Context]),
           ?WHENFAIL(eqc:format("Failing for\n~s\nwith context ~p\n", [String, Context]),
           try Map = maps:from_list(Context),
-              F = leveled_filter:generate_filter_function(binary_to_list(String), Map),
-              is_boolean(F(Map))
+              {ok, Expr} = leveled_filter:generate_filter_expression(binary_to_list(String), Map),
+              % io:format("DEBUG EQC e: ~p\n", [Expr]),
+              is_boolean(leveled_filter:apply_filter(Expr, Map))
           catch Error:Reason:St ->
                   eqc:format("~n~p Failed with ~p ~p~n~p~n", [String, Error, Reason, St]),
                   equals(Error, true)
