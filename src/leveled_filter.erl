@@ -173,8 +173,7 @@ apply_filter({attribute_empty, {identifier, _, ID}}, AttrMap) ->
             true;
         _ ->
             false
-    end
-.
+    end.
 
 generate_filter_expression(FilterString, Substitutions) ->
     {ok, Tokens, _EndLine} = leveled_filterlexer:string(FilterString),

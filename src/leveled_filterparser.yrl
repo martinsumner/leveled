@@ -31,7 +31,7 @@ condition -> attribute_empty '(' identifier ')'           : {attribute_empty, '$
 condition -> condition 'AND' condition                    : {'AND', '$1', '$3'}.
 condition -> condition 'OR' condition                     : {'OR', '$1', '$3'}.
 condition -> 'NOT' condition                              : {'NOT', '$2'}.
-condition -> '(' condition ')'             : '$2'.
+condition -> '(' condition ')'                            : '$2'.
 
 operand -> identifier       : '$1'.
 operand -> integer          : '$1'.
