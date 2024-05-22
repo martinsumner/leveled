@@ -35,18 +35,20 @@ pcre         : {token, {pcre, TokenLine}}.
 
 \$[a-zA-Z_][a-zA-Z_0-9]* : {token, {identifier, TokenLine, strip_identifier(TokenChars)}}.
 \:[a-zA-Z_][a-zA-Z_0-9]* : {token, {substitution, TokenLine, strip_substitution(TokenChars)}}.
-\"[^"]*\"                : {token, {string, TokenLine, strip_string(TokenChars)}}. %"
+\-[0-9]+                 : {token, {integer, TokenLine, list_to_integer(TokenChars)}}.
 [0-9]+                   : {token, {integer, TokenLine, list_to_integer(TokenChars)}}.
+\"[^"]*\"                : {token, {string, TokenLine, strip_string(TokenChars)}}. %"
 
 Erlang code.
 
 strip_string(TokenChars) ->
-    list_to_binary(lists:sublist(TokenChars, 2, length(TokenChars) -2)).
+    unicode:characters_to_binary(lists:droplast(tl(TokenChars))).
 
 strip_identifier(TokenChars) ->
     [36|StrippedChars] = TokenChars,
-    list_to_binary(StrippedChars).
+    unicode:characters_to_binary(StrippedChars).
 
 strip_substitution(TokenChars) ->
     [58|StrippedChars] = TokenChars,
-    list_to_binary(StrippedChars).
+    unicode:characters_to_binary(StrippedChars).
+
