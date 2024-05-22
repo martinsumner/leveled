@@ -35,8 +35,9 @@ pcre         : {token, {pcre, TokenLine}}.
 
 \$[a-zA-Z_][a-zA-Z_0-9]* : {token, {identifier, TokenLine, strip_identifier(TokenChars)}}.
 \:[a-zA-Z_][a-zA-Z_0-9]* : {token, {substitution, TokenLine, strip_substitution(TokenChars)}}.
-\-[0-9]+                 : {token, {integer, TokenLine, list_to_integer(TokenChars)}}.
-[0-9]+                   : {token, {integer, TokenLine, list_to_integer(TokenChars)}}.
+[1-9][0-9]*              : {token, {pos_integer, TokenLine, list_to_integer(TokenChars)}}.
+0                        : {token, {zero, TokenLine, list_to_integer(TokenChars)}}.
+\-[0-9]+                 : {token, {neg_integer, TokenLine, list_to_integer(TokenChars)}}.
 \"[^"]*\"                : {token, {string, TokenLine, strip_string(TokenChars)}}. %"
 
 Erlang code.

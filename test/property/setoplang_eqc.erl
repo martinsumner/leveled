@@ -9,6 +9,8 @@
 %%
 -module(setoplang_eqc).
 
+-ifdef(EQC).
+
 -compile([export_all, nowarn_export_all]).
 
 -include_lib("eqc/include/eqc.hrl").
@@ -77,3 +79,5 @@ prop_detect_faults() ->
 equal_sets(S1, S2) ->
   ?WHENFAIL(eqc:format("~p /= ~p", [sets:to_list(S1), sets:to_list(S2)]),
             sets:is_subset(S1, S2) andalso sets:is_subset(S2, S1)).
+
+-endif.

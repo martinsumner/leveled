@@ -2,13 +2,17 @@
 
 Nonterminals
 top_level eval
-operand math_operand regex_method
+operand math_operand
+integer non_neg_integer
+regex_method
 mapping mappings mappings_list
 identifiers identifier_list.
 
 Terminals
 '(' ')' ','
-identifier string integer comparator
+identifier string 
+pos_integer neg_integer zero
+comparator
 'PIPE'
 delim join split slice index kvsplit regex map
 add subtract
@@ -23,8 +27,8 @@ eval -> eval 'PIPE' eval                                                        
 eval -> delim '(' identifier ',' string ',' identifier_list ')'                              : {delim, '$3', '$5', '$7'}.
 eval -> join '(' identifier_list ',' string ',' identifier ')'                               : {join, '$3', '$5', '$7'}.
 eval -> split '(' identifier ',' string ',' identifier ')'                                   : {split, '$3', '$5', '$7'}.
-eval -> slice '(' identifier ',' integer ',' identifier ')'                                  : {slice, '$3', '$5', '$7'}.
-eval -> index '(' identifier ',' integer ',' integer ',' 'identifier' ')'                    : {index, '$3', '$5', '$7', '$9'}.
+eval -> slice '(' identifier ',' pos_integer ',' identifier ')'                              : {slice, '$3', '$5', '$7'}.
+eval -> index '(' identifier ',' non_neg_integer ',' pos_integer ',' 'identifier' ')'        : {index, '$3', '$5', '$7', '$9'}.
 eval -> kvsplit '(' identifier ',' string ',' string ')'                                     : {kvsplit, '$3', '$5', '$7'}.
 eval -> regex '(' identifier ',' string ',' regex_method ',' identifier_list ')'             : {regex, '$3', re_compile('$5', '$7'), '$9'}.
 eval -> regex '(' identifier ',' string ',' identifier_list ')'                              : {regex, '$3', re_compile('$5'), '$7'}.
@@ -41,11 +45,17 @@ mappings -> mapping                       : ['$1'].
 
 mapping -> '(' operand ',' operand ')' : {mapping, '$2', '$4'}.
 
-operand -> string          : '$1'.
-operand -> integer         : '$1'.
+non_neg_integer -> pos_integer  : '$1'.
+non_neg_integer -> zero         : '$1'.    
 
-math_operand -> integer    : '$1'.
-math_operand -> identifier : '$1'.
+integer -> non_neg_integer      : '$1'.
+integer -> neg_integer          : '$1'.
+
+operand -> string               : '$1'.
+operand -> integer              : '$1'.
+
+math_operand -> integer         : '$1'.
+math_operand -> identifier      : '$1'.
 
 regex_method -> pcre       : '$1'.
 

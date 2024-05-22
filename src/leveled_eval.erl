@@ -64,7 +64,7 @@ apply_eval({
 apply_eval(
         {slice, {identifier, _, InKey}, WidthAttr, {identifier, _, OutKey}},
         Term, Key, AttrMap) ->
-    {integer, _, Width} = WidthAttr,
+    Width = element(3, WidthAttr),
     TermToSlice = term_to_process(InKey, Term, Key, AttrMap),
     TermCount = string:length(TermToSlice) div Width,
     TermList =
@@ -73,10 +73,13 @@ apply_eval(
             lists:map(fun(I) -> Width * I end, lists:seq(0, TermCount - 1))),
     maps:put(OutKey, TermList, AttrMap);
 apply_eval(
-        {index, {identifier, _, InKey},
-            {integer, _, Start}, {integer, _, Length},
+        {index,
+            {identifier, _, InKey},
+            StartAtr, LengthAttr,
             {identifier, _, OutKey}},
         Term, Key, AttrMap) ->
+    Start = element(3, StartAtr),
+    Length = element(3, LengthAttr),
     TermToIndex = term_to_process(InKey, Term, Key, AttrMap),
     case string:length(TermToIndex) of
         L when L >= (Start + Length) ->

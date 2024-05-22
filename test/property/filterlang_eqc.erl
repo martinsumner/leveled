@@ -1,9 +1,26 @@
 -module(filterlang_eqc).
 
+-ifdef(EQC).
+
 -compile([export_all, nowarn_export_all]).
 
 -include_lib("eqc/include/eqc.hrl").
+-include_lib("eunit/include/eunit.hrl").
+
 -define(lazy_oneof(Gens), ?LAZY(oneof(Gens))).
+
+-define(TIME_BUDGET, 300).
+-define(QC_OUT(P),
+        eqc:on_output(fun(Str, Args) ->
+                              io:format(user, Str, Args) end, P)).
+
+eqc_test_() ->
+  {timeout,
+      ?TIME_BUDGET + 10,
+      ?_assertEqual(
+          true,
+          eqc:quickcheck(
+              eqc:testing_time(?TIME_BUDGET, ?QC_OUT(prop_lang()))))}.
 
 identifier() ->
   FirstChars = lists:seq($a,$z)++lists:seq($A,$Z)++["_"],
@@ -91,3 +108,4 @@ prop_lang() ->
                   equals(Error, true)
           end)))).
 
+-endif.
