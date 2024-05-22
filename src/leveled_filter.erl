@@ -602,7 +602,30 @@ filterexpression_test() ->
             Filter18,
             #{<<"dob">> => <<"19900505">>}
         )
+    ),
+
+    FE19 = "begins_with($fn, :prefix)",
+    {ok, Filter19} =
+        generate_filter_expression(FE19, #{<<"prefix">> => <<"Åb"/utf8>>}),
+    ?assert(
+        apply_filter(
+            Filter19,
+            #{<<"fn">> => <<"Åberg"/utf8>>}
+        )
+    ),
+    ?assertNot(
+        apply_filter(
+            Filter19,
+            #{<<"fn">> => <<"Aberg">>}
+        )
+    ),
+    ?assertNot(
+        apply_filter(
+            Filter19,
+            #{<<"fn">> => <<"Aberg"/utf8>>}
+        )
     )
+
     .
 
 -endif.

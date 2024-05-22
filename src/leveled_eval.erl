@@ -516,8 +516,32 @@ basic_test() ->
         check_regex_eval(
             "regex($term, :regex, ($fn, $dob, $dod, $gns, $pcs))",
             ExtractRegex
-        )        
+        ),
     
+    EvalOutUnicode0 =
+        apply_eval(
+            ParsedExp3,
+            <<"ÅßERG|19861216||Willow#Mia|LS1 4BT#LS8 1ZZ"/utf8>>,
+                % Note index terms will have to be unicode_binary() type
+                % for this to work a binary of
+                % <<"ÅßERG|19861216||Willow#Mia|LS1 4BT#LS8 1ZZ">> will fail to
+                % match
+            <<"9000000001">>,
+            maps:new()
+            ),
+    ?assertMatch(<<"ÅßERG"/utf8>>, maps:get(<<"fn">>, EvalOutUnicode0)),
+    FE19 = "begins_with($fn, :prefix)",
+    {ok, Filter19} =
+        leveled_filter:generate_filter_expression(
+            FE19,
+            #{<<"prefix">> => <<"ÅßE"/utf8>>}
+        ),
+    ?assert(
+        leveled_filter:apply_filter(
+            Filter19,
+            EvalOutUnicode0
+        )
+    )
     .
 
 
