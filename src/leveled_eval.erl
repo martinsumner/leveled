@@ -516,16 +516,26 @@ basic_test() ->
         check_regex_eval(
             "regex($term, :regex, ($fn, $dob, $dod, $gns, $pcs))",
             ExtractRegex
-        ),
+        )
+    .
+
+unicode_test() ->
+    EvalString1 = "delim($term, \"|\", ($fn, $dob, $dod, $gns, $pcs))",
+    EvalString2 = "delim($gns, \"#\", ($gn1, $gn2, $gn3))",
     
+    EvalString3 = EvalString1 ++ " | " ++ EvalString2,
+    {ok, Tokens3, _EndLine3} = leveled_evallexer:string(EvalString3),
+    {ok, ParsedExp3} = leveled_evalparser:parse(Tokens3),
+
     EvalOutUnicode0 =
         apply_eval(
             ParsedExp3,
             <<"ÅßERG|19861216||Willow#Mia|LS1 4BT#LS8 1ZZ"/utf8>>,
                 % Note index terms will have to be unicode_binary() type
-                % for this to work a binary of
+                % for this to work a latin-1 binary of
                 % <<"ÅßERG|19861216||Willow#Mia|LS1 4BT#LS8 1ZZ">> will fail to
-                % match
+                % match - use unicode:characters_to_binary(B, latin1, utf8) to
+                % convert
             <<"9000000001">>,
             maps:new()
             ),
@@ -540,6 +550,62 @@ basic_test() ->
         leveled_filter:apply_filter(
             Filter19,
             EvalOutUnicode0
+        )
+    ),
+    
+    EvalString4 = EvalString1 ++ "| slice($gns, 2, $gns)",
+    {ok, Tokens4, _EndLine4} = leveled_evallexer:string(EvalString4),
+    {ok, ParsedExp4} = leveled_evalparser:parse(Tokens4),
+    EvalOutUnicode1 =
+        apply_eval(
+            ParsedExp4,
+            <<"ÅßERG|19861216||Åbß0Ca|LS1 4BT#LS8 1ZZ"/utf8>>,
+            <<"9000000001">>,
+            maps:new()
+            ),
+    FE20 = ":gsc_check IN $gns",
+    {ok, Filter20} =
+        leveled_filter:generate_filter_expression(
+            FE20,
+            #{<<"gsc_check">> => <<"Åb"/utf8>>}
+        ),
+    ?assert(
+        leveled_filter:apply_filter(
+            Filter20,
+            EvalOutUnicode1
+        )
+    ),
+    {ok, Filter21} =
+        leveled_filter:generate_filter_expression(
+            FE20,
+            #{<<"gsc_check">> => <<"ß0"/utf8>>}
+        ),
+    ?assert(
+        leveled_filter:apply_filter(
+            Filter21,
+            EvalOutUnicode1
+        )
+    ),
+    {ok, Filter22} =
+        leveled_filter:generate_filter_expression(
+            FE20,
+            #{<<"gsc_check">> => <<"Ca">>}
+        ),
+    ?assert(
+        leveled_filter:apply_filter(
+            Filter22,
+            EvalOutUnicode1
+        )
+    ),
+    {ok, Filter23} =
+        leveled_filter:generate_filter_expression(
+            FE20,
+            #{<<"gsc_check">> => <<"Ca"/utf8>>}
+        ),
+    ?assert(
+        leveled_filter:apply_filter(
+            Filter23,
+            EvalOutUnicode1
         )
     )
     .
