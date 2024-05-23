@@ -29,7 +29,6 @@ pcre         : {token, {pcre, TokenLine}}.
 =       : {token, {comparator, '=', TokenLine}}.
 <       : {token, {comparator, '<', TokenLine}}.
 >       : {token, {comparator, '>', TokenLine}}.
-<>      : {token, {comparator, '<>', TokenLine}}.
 <=      : {token, {comparator, '<=', TokenLine}}.
 >=      : {token, {comparator, '>=', TokenLine}}.
 
