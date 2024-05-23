@@ -40,7 +40,7 @@ context() ->
   list({identifier(), oneof([int(), string()])}).
 
 ws() ->
-  list(fault("x", elements(" \t\f\v\r\n\s"))).
+  ?SHRINK(list(elements(" \t\f\v\r\n\s")), [" "]).
 
 comparator() ->
   oneof([">", "<", "=", "<>", "<=", ">="]).
@@ -69,8 +69,8 @@ operand_list(Vars) ->
 condition(0, Vars) ->
   oneof([ [ operand(Vars), comparator(), operand(Vars) ]
         , [ operand(Vars), "BETWEEN", operand(Vars), "AND", operand(Vars) ]
-        , [ ppstring(), " IN", ppidentifier(Vars) ]
         , [ ppidentifier(Vars), " IN", pplist(ppstring()) ]
+        , [ ppstring(), " IN", ppidentifier(Vars) ]
         , [ "contains(", ppidentifier(Vars), ", ", ppstring(), ")" ]
         , [ "begins_with(", ppidentifier(Vars), ", ", ppstring(), ")" ]
         , [ "attribute_exists(", ppidentifier(Vars), ")" ]
