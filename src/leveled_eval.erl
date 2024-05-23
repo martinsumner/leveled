@@ -35,7 +35,7 @@ apply_eval({'PIPE', Eval1, 'INTO', Eval2}, Term, Key, AttrMap) ->
 apply_eval({
         delim, {identifier, _, InKey}, {string, _, Delim}, ExpKeys},
         Term, Key, AttrMap) ->
-    TermToSplit = term_to_process(InKey, Term, Key, AttrMap),
+    TermToSplit = term_to_process(InKey, Term, Key, AttrMap, string),
     CptTerms = string:split(TermToSplit, Delim, all),
     L = min(length(CptTerms), length(ExpKeys)),
     maps:merge(
@@ -59,14 +59,14 @@ apply_eval(
 apply_eval({
         split, {identifier, _, InKey}, DelimAttr, {identifier, _, OutKey}},
         Term, Key, AttrMap) ->
-    TermToSplit = term_to_process(InKey, Term, Key, AttrMap),
+    TermToSplit = term_to_process(InKey, Term, Key, AttrMap, string),
     TermList = string:split(TermToSplit, element(3, DelimAttr), all),
     maps:put(OutKey, TermList, AttrMap);
 apply_eval(
         {slice, {identifier, _, InKey}, WidthAttr, {identifier, _, OutKey}},
         Term, Key, AttrMap) ->
     Width = element(3, WidthAttr),
-    TermToSlice = term_to_process(InKey, Term, Key, AttrMap),
+    TermToSlice = term_to_process(InKey, Term, Key, AttrMap, string),
     TermCount = string:length(TermToSlice) div Width,
     TermList =
         lists:map(
@@ -81,7 +81,7 @@ apply_eval(
         Term, Key, AttrMap) ->
     Start = element(3, StartAtr),
     Length = element(3, LengthAttr),
-    TermToIndex = term_to_process(InKey, Term, Key, AttrMap),
+    TermToIndex = term_to_process(InKey, Term, Key, AttrMap, string),
     case string:length(TermToIndex) of
         L when L >= (Start + Length) ->
             maps:put(
@@ -94,7 +94,7 @@ apply_eval(
             {identifier, _, InKey},
             {string, _, DelimPair}, {string, _, DelimKV}},
         Term, Key, AttrMap) ->
-    TermToSplit = term_to_process(InKey, Term, Key, AttrMap),
+    TermToSplit = term_to_process(InKey, Term, Key, AttrMap, string),
     lists:foldl(
         fun(S, AccMap) ->
             case string:split(S, DelimKV, all) of
@@ -110,7 +110,7 @@ apply_eval(
 apply_eval(
         {to_integer, {identifier, _, InKey}, {identifier, _, OutKey}},
         Term, Key, AttrMap) ->
-    TermToConvert = term_to_process(InKey, Term, Key, AttrMap),
+    TermToConvert = term_to_process(InKey, Term, Key, AttrMap, string),
     case string:to_integer(TermToConvert) of
         {I, _Rest} when is_integer(I) ->
             maps:put(OutKey, I, AttrMap);
@@ -120,7 +120,7 @@ apply_eval(
 apply_eval(
         {to_string, {identifier, _, InKey}, {identifier, _, OutKey}},
         Term, Key, AttrMap) ->
-    case term_to_process(InKey, Term, Key, AttrMap) of
+    case term_to_process(InKey, Term, Key, AttrMap, int) of
         TermToConvert when is_integer(TermToConvert) ->
             maps:put(
                 OutKey,
@@ -134,7 +134,11 @@ apply_eval(
         Term, Key, AttrMap) ->
     {identifier, _, InKey} = InID,
     {identifier, _, OutKey} = OutID,
-    TermToCompare = term_to_process(InKey, Term, Key, AttrMap),
+    DefaultType = case is_integer(element(3, Default)) of
+                    true -> int;
+                    false -> string
+                  end,
+    TermToCompare = term_to_process(InKey, Term, Key, AttrMap, DefaultType),
     F = reverse_compare_mapping(element(2, Comparator), TermToCompare),
     case lists:dropwhile(F, MapList) of
         [] ->
@@ -159,7 +163,7 @@ apply_eval(
 apply_eval(
         {regex, {identifier, _, InKey}, CompiledRE, ExpKeys},
         Term, Key, AttrMap) ->
-    TermToCapture = term_to_process(InKey, Term, Key, AttrMap),
+    TermToCapture = term_to_process(InKey, Term, Key, AttrMap, string),
     ExpectedKeyLength = length(ExpKeys),
     Opts = [{capture, all_but_first, binary}],
     case leveled_util:regex_run(TermToCapture, CompiledRE, Opts) of
@@ -185,12 +189,21 @@ maybe_fetch_operand({identifier, _, ID}, AttrMap) ->
 maybe_fetch_operand(Op, _AttrMap) ->
     element(3, Op).
 
-term_to_process(<<"term">>, Term, _Key, _AttrMap) ->
-    Term;
-term_to_process(<<"key">>, _Term, Key, _AttrMap) ->
-    Key;
-term_to_process(AttrKey, _Term, _Key, AttrMap) ->
-    maps:get(AttrKey, AttrMap, <<"">>).
+term_to_process(<<"term">>, Term, _Key, _AttrMap, ExpectedType) ->
+    type_check(Term, ExpectedType);
+term_to_process(<<"key">>, _Term, Key, _AttrMap, ExpectedType) ->
+    type_check(Key, ExpectedType);
+term_to_process(AttrKey, _Term, _Key, AttrMap, int) ->
+    type_check(maps:get(AttrKey, AttrMap, 0), int);
+term_to_process(AttrKey, _Term, _Key, AttrMap, string) ->
+    type_check(maps:get(AttrKey, AttrMap, <<"">>), string).
+
+type_check(T, int) when is_integer(T) ->
+  T;
+type_check(T, string) when not is_integer(T) ->
+  T;
+type_check(T, Expected) ->
+  throw({type_error, T, expected, Expected}).
 
 reverse_compare_mapping('<', Term) ->
     fun({mapping, T, _A}) -> Term >= element(3, T) end;
