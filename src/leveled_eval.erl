@@ -18,7 +18,8 @@ generate_eval_function(EvalString, Substitutions) ->
     end.
 
 generate_eval_expression(EvalString, Substitutions) ->
-    {ok, Tokens, _EndLine} = leveled_evallexer:string(EvalString),
+    CodePointList = unicode:characters_to_list(EvalString),
+    {ok, Tokens, _EndLine} = leveled_evallexer:string(CodePointList),
     case leveled_filter:substitute_items(Tokens, Substitutions, []) of
         {error, Error} ->
             {error, Error};
