@@ -1218,7 +1218,7 @@ complex_queries(_Config) ->
             {query, SplitIndexEvalFun, SplitIndexFilterFun}},
     
     ComboFun =
-        leveled_setop:generate_setop_function("$1 AND ($2 OR $3)"),
+        leveled_setop:generate_setop_function("$1 INTERSECT ($2 UNION $3)"),
 
     {async, SplitR0} =
         leveled_bookie:book_multiindexfold(

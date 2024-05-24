@@ -74,13 +74,6 @@ parser_formal_test() ->
     Q4 = "($1 INTERSECT $2 INTERSECT $5) UNION ($3 SUBTRACT $4)",
     parser_tester(Q1, Q2, Q3, Q4).
 
-parser_alt_test() ->
-    Q1 = "($1 AND $2) OR $3",
-    Q2 = "($1 AND $2) OR ($3 AND $4)",
-    Q3 = "($1 AND $2 AND $5) OR ($3 AND $4)",
-    Q4 = "($1 AND $2 AND $5) OR ($3 NOT $4)",
-    parser_tester(Q1, Q2, Q3, Q4).
-
 parser_tester(Q1, Q2, Q3, Q4) ->
     S1 = sets:from_list([<<"K1">>, <<"K2">>, <<"K3">>, <<"K4">>, <<"K5">>]),
     S2 = sets:from_list([<<"K3">>, <<"K4">>, <<"K5">>, <<"K6">>, <<"K7">>]),
