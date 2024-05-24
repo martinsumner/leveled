@@ -26,6 +26,7 @@ IN      : {token, {'IN', TokenLine}}.
 
 contains             : {token, {contains, TokenLine}}.
 begins_with          : {token, {begins_with, TokenLine}}.
+ends_with            : {token, {ends_with, TokenLine}}.
 attribute_exists     : {token, {attribute_exists, TokenLine}}.
 attribute_not_exists : {token, {attribute_not_exists, TokenLine}}.
 attribute_empty      : {token, {attribute_empty, TokenLine}}.
@@ -34,7 +35,7 @@ attribute_empty      : {token, {attribute_empty, TokenLine}}.
 \:[a-zA-Z_][a-zA-Z_0-9]* : {token, {substitution, TokenLine, strip_substitution(TokenChars)}}.
 \-[0-9]+                 : {token, {integer, TokenLine, list_to_integer(TokenChars)}}.
 [0-9]+                   : {token, {integer, TokenLine, list_to_integer(TokenChars)}}.
-\"[^"]*\"                : {token, {string, TokenLine, strip_string(TokenChars)}}. %"
+\"[^"]+\"                : {token, {string, TokenLine, strip_string(TokenChars)}}. %"
 
 Erlang code.
 

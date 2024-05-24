@@ -1,9 +1,24 @@
 -module(evallang_eqc).
 
+-ifdef(EQC).
+
 -compile([export_all, nowarn_export_all]).
 
 -include_lib("eqc/include/eqc.hrl").
--define(lazy_oneof(Gens), ?LAZY(oneof(Gens))).
+-include_lib("eunit/include/eunit.hrl").
+
+-define(TIME_BUDGET, 300).
+-define(QC_OUT(P),
+        eqc:on_output(fun(Str, Args) ->
+                              io:format(user, Str, Args) end, P)).
+
+eqc_test_() ->
+  {timeout,
+      ?TIME_BUDGET + 10,
+      ?_assertEqual(
+          true,
+          eqc:quickcheck(
+              eqc:testing_time(?TIME_BUDGET, ?QC_OUT(prop_lang()))))}.
 
 identifier() ->
   FirstChars = lists:seq($a,$z)++lists:seq($A,$Z)++["_"],
@@ -22,7 +37,7 @@ vars(Context, Type) ->
 %% Filter the quote with `re` instead of string:find to
 %% be compatible with lexer
 string() ->
-  ?SUCHTHAT(String, utf8(), re:run(String, "\"") == nomatch).
+  ?SUCHTHAT(String, non_empty(utf8()), re:run(String, "\"") == nomatch).
 
 typed_context() ->
   ?SUCHTHAT(KVs, list({identifier(), oneof([{int, int()}, {string, string()}])}),
@@ -134,3 +149,5 @@ prop_lang() ->
 
 prop_negative() ->
   fails(fault_rate(1, 10, prop_lang())).
+
+-endif.

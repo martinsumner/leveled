@@ -34,7 +34,7 @@ ppidentifier(Vars) ->
 %% Filter the quote with `re` instead of string:find to
 %% be compatible with lexer
 string() ->
-  ?SUCHTHAT(String, utf8(), re:run(String, "\"") == nomatch).
+  ?SUCHTHAT(String, non_empty(utf8()), re:run(String, "\"") == nomatch).
 
 context() ->
   list({identifier(), oneof([int(), string()])}).

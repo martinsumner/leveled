@@ -35,14 +35,22 @@ apply_eval({'PIPE', Eval1, 'INTO', Eval2}, Term, Key, AttrMap) ->
 apply_eval({
         delim, {identifier, _, InKey}, {string, _, Delim}, ExpKeys},
         Term, Key, AttrMap) ->
-    TermToSplit = term_to_process(InKey, Term, Key, AttrMap),
-    CptTerms = string:split(TermToSplit, Delim, all),
-    L = min(length(CptTerms), length(ExpKeys)),
-    maps:merge(
-        AttrMap,
-        maps:from_list(
-            lists:zip(lists:sublist(ExpKeys, L), lists:sublist(CptTerms, L)))
-    );
+    case term_to_process(InKey, Term, Key, AttrMap) of
+        TermToSplit when is_binary(TermToSplit) ->
+            CptTerms = string:split(TermToSplit, Delim, all),
+            L = min(length(CptTerms), length(ExpKeys)),
+            maps:merge(
+                AttrMap,
+                maps:from_list(
+                    lists:zip(
+                        lists:sublist(ExpKeys, L),
+                        lists:sublist(CptTerms, L)
+                    )
+                )
+            );
+        _ ->
+            AttrMap
+    end;
 apply_eval(
         {join, InKeys, {string, _, Delim}, {identifier, _, OutKey}},
         _Term, _Key, AttrMap) ->
@@ -50,29 +58,43 @@ apply_eval(
         unicode:characters_to_binary(
             lists:join(
                 Delim,
-                lists:map(
-                    fun(InKey) -> maps:get(InKey, AttrMap, <<"">>) end,
-                    InKeys)
+                lists:filter(
+                    fun(V) -> is_binary(V) end,
+                    lists:map(
+                        fun(InKey) -> maps:get(InKey, AttrMap, <<"">>) end,
+                        InKeys
+                    )
+                )
             )
         ),
     maps:put(OutKey, NewTerm, AttrMap);
 apply_eval({
         split, {identifier, _, InKey}, DelimAttr, {identifier, _, OutKey}},
         Term, Key, AttrMap) ->
-    TermToSplit = term_to_process(InKey, Term, Key, AttrMap),
-    TermList = string:split(TermToSplit, element(3, DelimAttr), all),
-    maps:put(OutKey, TermList, AttrMap);
+    case term_to_process(InKey, Term, Key, AttrMap) of
+        TermToSplit when is_binary(TermToSplit) ->
+            TermList = string:split(TermToSplit, element(3, DelimAttr), all),
+            maps:put(OutKey, TermList, AttrMap);
+        _ ->
+            AttrMap
+    end;
 apply_eval(
         {slice, {identifier, _, InKey}, WidthAttr, {identifier, _, OutKey}},
         Term, Key, AttrMap) ->
     Width = element(3, WidthAttr),
-    TermToSlice = term_to_process(InKey, Term, Key, AttrMap),
-    TermCount = string:length(TermToSlice) div Width,
-    TermList =
-        lists:map(
-            fun(S) -> string:slice(TermToSlice, S, Width) end,
-            lists:map(fun(I) -> Width * I end, lists:seq(0, TermCount - 1))),
-    maps:put(OutKey, TermList, AttrMap);
+    case term_to_process(InKey, Term, Key, AttrMap) of
+        TermToSlice when is_binary(TermToSlice) ->
+            TermCount = string:length(TermToSlice) div Width,
+            TermList =
+                lists:map(
+                    fun(S) -> string:slice(TermToSlice, S, Width) end,
+                    lists:map(
+                        fun(I) -> Width * I end,
+                        lists:seq(0, TermCount - 1))),
+            maps:put(OutKey, TermList, AttrMap);
+        _ ->
+            AttrMap
+    end;
 apply_eval(
         {index,
             {identifier, _, InKey},
@@ -81,11 +103,18 @@ apply_eval(
         Term, Key, AttrMap) ->
     Start = element(3, StartAtr),
     Length = element(3, LengthAttr),
-    TermToIndex = term_to_process(InKey, Term, Key, AttrMap),
-    case string:length(TermToIndex) of
-        L when L >= (Start + Length) ->
-            maps:put(
-                OutKey, string:slice(TermToIndex, Start, Length), AttrMap);
+    case term_to_process(InKey, Term, Key, AttrMap) of
+        TermToIndex when is_binary(TermToIndex) ->
+            case string:length(TermToIndex) of
+                L when L >= (Start + Length) ->
+                    maps:put(
+                        OutKey,
+                        string:slice(TermToIndex, Start, Length),
+                        AttrMap
+                    );
+                _ ->
+                    AttrMap
+            end;
         _ ->
             AttrMap
     end;
@@ -94,26 +123,36 @@ apply_eval(
             {identifier, _, InKey},
             {string, _, DelimPair}, {string, _, DelimKV}},
         Term, Key, AttrMap) ->
-    TermToSplit = term_to_process(InKey, Term, Key, AttrMap),
-    lists:foldl(
-        fun(S, AccMap) ->
-            case string:split(S, DelimKV, all) of
-                [K, V] ->
-                    maps:put(K, V, AccMap);
-                _ ->
-                    AccMap
-            end
-        end,
-        AttrMap,
-        string:split(TermToSplit, DelimPair, all)
-    );
+    case term_to_process(InKey, Term, Key, AttrMap) of
+        TermToSplit when is_binary(TermToSplit) ->
+            lists:foldl(
+                fun(S, AccMap) ->
+                    case string:split(S, DelimKV, all) of
+                        [K, V] ->
+                            maps:put(K, V, AccMap);
+                        _ ->
+                            AccMap
+                    end
+                end,
+                AttrMap,
+                string:split(TermToSplit, DelimPair, all)
+            );
+        _ ->
+            AttrMap
+    end;
 apply_eval(
         {to_integer, {identifier, _, InKey}, {identifier, _, OutKey}},
         Term, Key, AttrMap) ->
-    TermToConvert = term_to_process(InKey, Term, Key, AttrMap),
-    case string:to_integer(TermToConvert) of
-        {I, _Rest} when is_integer(I) ->
-            maps:put(OutKey, I, AttrMap);
+    case term_to_process(InKey, Term, Key, AttrMap) of
+        TermToConvert when is_binary(TermToConvert) ->
+            case string:to_integer(TermToConvert) of
+                {I, _Rest} when is_integer(I) ->
+                    maps:put(OutKey, I, AttrMap);
+                _ ->
+                    AttrMap
+            end;
+        AlreadyInteger when is_integer(AlreadyInteger) ->
+            maps:put(OutKey, AlreadyInteger, AttrMap);
         _ ->
             AttrMap
     end;
@@ -125,7 +164,10 @@ apply_eval(
             maps:put(
                 OutKey,
                 list_to_binary(integer_to_list(TermToConvert)),
-                AttrMap);
+                AttrMap
+            );
+        AlreadyString when is_binary(AlreadyString) ->
+            maps:put(OutKey, AlreadyString, AttrMap);
         _ ->
             AttrMap
     end;
@@ -159,18 +201,22 @@ apply_eval(
 apply_eval(
         {regex, {identifier, _, InKey}, CompiledRE, ExpKeys},
         Term, Key, AttrMap) ->
-    TermToCapture = term_to_process(InKey, Term, Key, AttrMap),
     ExpectedKeyLength = length(ExpKeys),
     Opts = [{capture, all_but_first, binary}],
-    case leveled_util:regex_run(TermToCapture, CompiledRE, Opts) of
-        {match, CptTerms} ->
-            L = min(length(CptTerms), ExpectedKeyLength),
-            CptMap =
-                maps:from_list(
-                    lists:zip(
-                        lists:sublist(ExpKeys, L),
-                        lists:sublist(CptTerms, L))),
-            maps:merge(AttrMap, CptMap);
+    case term_to_process(InKey, Term, Key, AttrMap) of
+        TermToCapture when is_binary(TermToCapture)->
+            case leveled_util:regex_run(TermToCapture, CompiledRE, Opts) of
+                {match, CptTerms} ->
+                    L = min(length(CptTerms), ExpectedKeyLength),
+                    CptMap =
+                        maps:from_list(
+                            lists:zip(
+                                lists:sublist(ExpKeys, L),
+                                lists:sublist(CptTerms, L))),
+                    maps:merge(AttrMap, CptMap);
+                _ ->
+                    AttrMap
+            end;
         _ ->
             AttrMap
     end
@@ -190,7 +236,7 @@ term_to_process(<<"term">>, Term, _Key, _AttrMap) ->
 term_to_process(<<"key">>, _Term, Key, _AttrMap) ->
     Key;
 term_to_process(AttrKey, _Term, _Key, AttrMap) ->
-    maps:get(AttrKey, AttrMap, <<"">>).
+    maps:get(AttrKey, AttrMap, not_found).
 
 reverse_compare_mapping('<', Term) ->
     fun({mapping, T, _A}) -> Term >= element(3, T) end;
@@ -628,6 +674,164 @@ check_regex_eval(EvalString14, ExtractRegex) ->
     ?assertMatch(<<"SMITH">>, maps:get(<<"fn">>, EvalOut14)),
     ok.
 
+bad_type_test() ->
+    EvalString9 =
+        "delim($term, \"|\", ($name, $height, $weight, $pick)) |"
+        " to_integer($height, $height) |"
+        " to_integer($weight, $weight) |"
+        " to_integer($pick, $pick) |"
+        " delim($key, \"|\", ($team, $number)) |"
+        " index($team, 0, 9, $doh)",
+    {ok, Tokens9, _EndLine9} = leveled_evallexer:string(EvalString9),
+    {ok, ParsedExp9} = leveled_evalparser:parse(Tokens9),
+    EvalOut9 =
+        apply_eval(
+            ParsedExp9,
+            <<"WEMBANYAMA|224cm|95kg|#1">>,
+            <<"SPURS|00001">>,
+            maps:new()
+        ),
+    ?assertMatch(<<"WEMBANYAMA">>, maps:get(<<"name">>, EvalOut9)),
+    ?assertMatch(224, maps:get(<<"height">>, EvalOut9)),
+    ?assertMatch(95, maps:get(<<"weight">>, EvalOut9)),
+    ?assertMatch(<<"#1">>, maps:get(<<"pick">>, EvalOut9)),
+        % Not changes as not starting with integer
+    ?assertMatch(<<"SPURS">>, maps:get(<<"team">>, EvalOut9)),
+    ?assertMatch(<<"00001">>, maps:get(<<"number">>, EvalOut9)),
+    ?assertNot(maps:is_key(<<"doh">>, EvalOut9)),
+    
+    EvalStringF1 = EvalString9 ++ " | delim($height, \"|\", ($foo, $bar))",
+    {ok, TokensF1, _EndLineF1} = leveled_evallexer:string(EvalStringF1),
+    {ok, ParsedExpF1} = leveled_evalparser:parse(TokensF1),
+    EvalOutF1 =
+        apply_eval(
+            ParsedExpF1,
+            <<"WEMBANYAMA|224cm|95kg|#1">>,
+            <<"SPURS|00001">>,
+            maps:new()
+        ),
+    ?assertNot(maps:is_key(<<"foo">>, EvalOutF1)),
+    ?assertNot(maps:is_key(<<"bar">>, EvalOutF1)),
+    ?assertMatch(224, maps:get(<<"height">>, EvalOutF1)),
+    
+    EvalStringF2 = EvalString9 ++ " | split($height, \"|\", $foo)",
+    {ok, TokensF2, _EndLineF2} = leveled_evallexer:string(EvalStringF2),
+    {ok, ParsedExpF2} = leveled_evalparser:parse(TokensF2),
+    EvalOutF2 =
+        apply_eval(
+            ParsedExpF2,
+            <<"WEMBANYAMA|224cm|95kg|#1">>,
+            <<"SPURS|00001">>,
+            maps:new()
+        ),
+    ?assertNot(maps:is_key(<<"foo">>, EvalOutF2)),
+    ?assertMatch(224, maps:get(<<"height">>, EvalOutF2)),
+
+    EvalStringF3 = EvalString9 ++ " | slice($height, 1, $foo)",
+    {ok, TokensF3, _EndLineF3} = leveled_evallexer:string(EvalStringF3),
+    {ok, ParsedExpF3} = leveled_evalparser:parse(TokensF3),
+    EvalOutF3 =
+        apply_eval(
+            ParsedExpF3,
+            <<"WEMBANYAMA|224cm|95kg|#1">>,
+            <<"SPURS|00001">>,
+            maps:new()
+        ),
+    ?assertNot(maps:is_key(<<"foo">>, EvalOutF3)),
+    ?assertMatch(224, maps:get(<<"height">>, EvalOutF3)),
+
+    EvalStringF4 = EvalString9 ++ " | index($height, 1, 1, $foo)",
+    {ok, TokensF4, _EndLineF4} = leveled_evallexer:string(EvalStringF4),
+    {ok, ParsedExpF4} = leveled_evalparser:parse(TokensF4),
+    EvalOutF4 =
+        apply_eval(
+            ParsedExpF4,
+            <<"WEMBANYAMA|224cm|95kg|#1">>,
+            <<"SPURS|00001">>,
+            maps:new()
+        ),
+    ?assertNot(maps:is_key(<<"foo">>, EvalOutF4)),
+    ?assertMatch(224, maps:get(<<"height">>, EvalOutF4)),
+
+    EvalStringF5 = EvalString9 ++ " | kvsplit($height, \"|\", \"#\")",
+    {ok, TokensF5, _EndLineF5} = leveled_evallexer:string(EvalStringF5),
+    {ok, ParsedExpF5} = leveled_evalparser:parse(TokensF5),
+    EvalOutF5 =
+        apply_eval(
+            ParsedExpF5,
+            <<"WEMBANYAMA|224cm|95kg|#1">>,
+            <<"SPURS|00001">>,
+            maps:new()
+        ),
+    ?assertNot(maps:is_key(<<"foo">>, EvalOutF5)),
+    ?assertMatch(224, maps:get(<<"height">>, EvalOutF5)),
+
+    EvalStringF6 = EvalString9 ++ " | to_integer($height, $height_int)",
+    {ok, TokensF6, _EndLineF6} = leveled_evallexer:string(EvalStringF6),
+    {ok, ParsedExpF6} = leveled_evalparser:parse(TokensF6),
+    EvalOutF6 =
+        apply_eval(
+            ParsedExpF6,
+            <<"WEMBANYAMA|224cm|95kg|#1">>,
+            <<"SPURS|00001">>,
+            maps:new()
+        ),
+    ?assertMatch(224, maps:get(<<"height">>, EvalOutF6)),
+    ?assertMatch(224, maps:get(<<"height_int">>, EvalOutF6)),
+
+    EvalStringF7 = EvalString9 ++ " | to_string($name, $name_str)",
+    {ok, TokensF7, _EndLineF7} = leveled_evallexer:string(EvalStringF7),
+    {ok, ParsedExpF7} = leveled_evalparser:parse(TokensF7),
+    EvalOutF7 =
+        apply_eval(
+            ParsedExpF7,
+            <<"WEMBANYAMA|224cm|95kg|#1">>,
+            <<"SPURS|00001">>,
+            maps:new()
+        ),
+    ?assertMatch(<<"WEMBANYAMA">>, maps:get(<<"name">>, EvalOutF7)),
+    ?assertMatch(<<"WEMBANYAMA">>, maps:get(<<"name_str">>, EvalOutF7)),
+
+    EvalStringF8 =
+        EvalString9 ++
+        " | regex($height, :regex, ($height_int)) |"
+        " to_integer($height_int, $height_int)",
+    
+    {ok, ParsedExpF8} =
+        generate_eval_expression(
+            EvalStringF8,
+            #{<<"regex">> => list_to_binary("(?P<height_int>[0-9]+)")}
+        ),
+    EvalOutF8 =
+        apply_eval(
+            ParsedExpF8,
+            <<"WEMBANYAMA|224cm|95kg|#1">>,
+            <<"SPURS|00001">>,
+            maps:new()
+        ),
+    ?assertNot(maps:is_key(<<"height_int">>, EvalOutF8)),
+
+    EvalStringF9 =
+        EvalString9 ++
+        " | to_string($height, $height)"
+        " | regex($height, :regex, ($height_int)) |"
+        " to_integer($height_int, $height_int)",
+    
+    {ok, ParsedExpF9} =
+        generate_eval_expression(
+            EvalStringF9,
+            #{<<"regex">> => list_to_binary("(?P<height_int>[0-9]+)")}
+        ),
+    EvalOutF9 =
+        apply_eval(
+            ParsedExpF9,
+            <<"WEMBANYAMA|224cm|95kg|#1">>,
+            <<"SPURS|00001">>,
+            maps:new()
+        ),
+        ?assertMatch(224, maps:get(<<"height_int">>, EvalOutF9))
+    .
+    
 
 generate_test() ->
     EvalString13 =

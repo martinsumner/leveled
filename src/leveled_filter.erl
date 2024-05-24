@@ -163,6 +163,19 @@ apply_filter(
         _ ->
             false
     end;
+apply_filter(
+    {ends_with, {identifier, _, ID}, {string, _ , SubStr}}, AttrMap) ->
+case maps:get(ID, AttrMap, notfound) of
+    V when is_binary(V) ->
+        case string:prefix(string:reverse(V), string:reverse(SubStr)) of
+            nomatch ->
+                false;
+            _ ->
+                true
+        end;
+    _ ->
+        false
+end;
 apply_filter({attribute_exists, {identifier, _, ID}}, AttrMap) ->
     maps:is_key(ID, AttrMap);
 apply_filter({attribute_not_exists, {identifier, _, ID}}, AttrMap) ->
@@ -403,6 +416,25 @@ filterexpression_test() ->
     ?assertNot(
         apply_filter(
             Filter12,
+            #{<<"gn">> => 42, <<"fn">> => <<"SUMMER">>})),
+    
+    FE12E = "ends_with($gn, \"TY\") AND begins_with($fn, :fn)",
+    {ok, Filter12E} = generate_filter_expression(FE12E, #{<<"fn">> => <<"SU">>}),
+    ?assert(
+        apply_filter(
+            Filter12E,
+            #{<<"gn">> => <<"MATTY">>, <<"fn">> => <<"SUMMER">>})),
+    ?assertNot(
+        apply_filter(
+            Filter12E,
+            #{<<"gn">> => <<"MATTI">>, <<"fn">> => <<"SUMMER">>})),
+    ?assertNot(
+        apply_filter(
+            Filter12E,
+            #{<<"gn">> => <<"MATTY">>, <<"fn">> => <<"SIMMS">>})),
+    ?assertNot(
+        apply_filter(
+            Filter12E,
             #{<<"gn">> => 42, <<"fn">> => <<"SUMMER">>})),
 
     FE13 = "attribute_exists($dob) AND attribute_not_exists($consent) "

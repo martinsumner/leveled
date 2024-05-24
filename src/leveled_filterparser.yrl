@@ -9,7 +9,7 @@ Terminals
 '(' ')' comparator identifier string integer
 ','
 'NOT' 'AND' 'OR' 'IN' 'BETWEEN'
-contains begins_with
+contains begins_with ends_with
 attribute_exists attribute_not_exists attribute_empty.
 
 
@@ -24,6 +24,7 @@ condition -> string 'IN' identifier                       : {'IN', '$1', '$3'}.
 
 condition -> contains '(' identifier ',' string ')'       : {contains, '$3', '$5'}.
 condition -> begins_with '(' identifier ',' string ')'    : {begins_with, '$3', '$5'}.
+condition -> ends_with '(' identifier ',' string ')'      : {ends_with, '$3', '$5'}.
 condition -> attribute_exists '(' identifier ')'          : {attribute_exists, '$3'}.
 condition -> attribute_not_exists '(' identifier ')'      : {attribute_not_exists, '$3'}.
 condition -> attribute_empty '(' identifier ')'           : {attribute_empty, '$3'}.
