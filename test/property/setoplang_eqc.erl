@@ -17,31 +17,36 @@
 
 
 set_id() ->
-  non_empty(list(fault(oneof("09"), oneof("12345678")))).
+  ?LET(N, choose(1,20), integer_to_list(N)).
 
 value() ->
   ?LET(Set, list(int()), sets:from_list(Set)).
 
+%% This context is always enumartion.
+%% Consider implementing a context in which keys are not consecutive
 context() ->
-  list({set_id(), value()}).
+  ?LET(Sets, list(value()), lists:enumerate(Sets)).
+%context() ->
+%  ?LET(Map, map(set_id(), value()),
+%       lists:sort(maps:to_list(Map))).
 
 ws() ->
-  ?SHRINK(list(fault("x", elements(" \t\f\v\r\n\s"))), " ").
+  ?SHRINK(list(elements(" \t\f\v\r\n\s")), " ").
 
 setoplang(Context) ->
-  ?LET(Str, ?SIZED(Size, setoplang(Size, Context)),
-       binary_to_list(iolist_to_binary(Str))).
+  ?SIZED(Size, setoplang(Size, Context)).
 
 setoplang(0, Vars) ->
   ["$", oneof(Vars), ws()];
 setoplang(Size, Vars) ->
+  ?LAZY(
   oneof([setoplang(0, Vars),
          ?LETSHRINK([Cond], [setoplang(Size - 1, Vars)],
                     ["(", ws(), Cond, ws(), " )"]),
          ?LETSHRINK([Cond1, Cond2],
                        [setoplang(Size div 2, Vars),
                         setoplang(Size div 2, Vars)],
-                    [Cond1, ws(), oneof(["AND", "OR", "NOT", "SUBTRACT", "UNION", "INTERSECT"]), ws(), Cond2])]).
+                    [Cond1, ws(), oneof(["SUBTRACT", "UNION", "INTERSECT"]), ws(), Cond2])])).
 
 
 
@@ -50,21 +55,20 @@ setoplang(Size, Vars) ->
 %% The property.
 prop_gen_fun() ->
   ?FORALL(Context, non_empty(context()),
-  %?FORALL(Context, non_empty([{[N], value()} || N <- "12345678"]),
-  ?FORALL(String, setoplang([V || {V, _} <- Context]),
+  ?FORALL(String, setoplang([integer_to_list(V) || {V, _} <- Context]),
           try F = leveled_setop:generate_setop_function(String),
               sets:is_set(F([Set || {_, Set} <- Context]))
-          catch Error:Reason:St ->
-                  eqc:format("~n~p Failed with ~p ~p~n~p~n", [String, Error, Reason, St]),
+          catch Error:Reason ->
+                  eqc:format("~n~ts Failed with ~p ~p~n", [String, Error, Reason]),
                   equals(Error, true)
           end)).
 
 prop_check_eval() ->
-  ?FORALL(Context, [{"1", value()}, {"2", value()}, {"3", value()}],    %%non_empty(context()),
+  ?FORALL(Context, non_empty(context()),
           begin
-            Vars = [ "$"++Id || {Id,_} <- Context],
+            Vars = [ "$"++integer_to_list(Id) || {Id,_} <- Context],
             String = "(" ++ lists:flatten(lists:join(" UNION ", Vars) ++ ") SUBTRACT " ++ hd(Vars)),
-            ?WHENFAIL(eqc:format("setop ~p~n", [String]),
+            ?WHENFAIL(eqc:format("setop ~ts~n", [String]),
                       begin
                          F = leveled_setop:generate_setop_function(String),
                          equal_sets(F([Set || {_, Set} <- Context]),
@@ -72,9 +76,6 @@ prop_check_eval() ->
                                                  element(2, hd(Context))))
                       end)
           end).
-
-prop_detect_faults() ->
-  fails(fault_rate(1, 10, prop_gen_fun())).
 
 equal_sets(S1, S2) ->
   ?WHENFAIL(eqc:format("~p /= ~p", [sets:to_list(S1), sets:to_list(S2)]),
