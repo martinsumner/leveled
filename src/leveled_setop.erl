@@ -25,26 +25,29 @@ generate_setop_function(EvalString) ->
 %%%============================================================================
 
 generate_setop_expression(EvalString) ->
-    {ok, Tokens, _EndLine} = leveled_setoplexer:string(EvalString),
+    String = unicode:characters_to_list(EvalString),
+    {ok, Tokens, _EndLine} = leveled_setoplexer:string(String),
     leveled_setopparser:parse(Tokens).
 
 apply_setop({setop, SetOp}, SetList) ->
     apply_setop(SetOp, SetList);
+apply_setop({set_id, _, SetID}, SetList) ->
+    get_set(SetID, SetList);
 apply_setop(
         {SetFunctionName, {set_id, _, SetIDa}, {set_id, _, SetIDb}},
         SetList) ->
     SetFunction = set_function(SetFunctionName),
-    SetFunction(lists:nth(SetIDa, SetList), lists:nth(SetIDb, SetList));
+    SetFunction(get_set(SetIDa, SetList), get_set(SetIDb, SetList));
 apply_setop(
         {SetFunctionName, {set_id, _, SetIDa}, Condition},
         SetList) ->
     SetFunction = set_function(SetFunctionName),
-    SetFunction(lists:nth(SetIDa, SetList), apply_setop(Condition, SetList));
+    SetFunction(get_set(SetIDa, SetList), apply_setop(Condition, SetList));
 apply_setop(
         {SetFunctionName, Condition, {set_id, _, SetIDb}},
         SetList) ->
     SetFunction = set_function(SetFunctionName),
-    SetFunction(apply_setop(Condition, SetList), lists:nth(SetIDb, SetList));
+    SetFunction(apply_setop(Condition, SetList), get_set(SetIDb, SetList));
 apply_setop({SetFunctionName, ConditionA, ConditionB}, SetList) ->
     SetFunction = set_function(SetFunctionName),
     SetFunction(
@@ -57,6 +60,14 @@ set_function('INTERSECT') ->
     fun(A, B) -> sets:intersection(A, B) end;
 set_function('SUBTRACT') ->
     fun(A, B) -> sets:subtract(A, B) end.
+
+%% Return empty set if index not present in given set
+%% (That is, do not throw an error)
+get_set(SetID, SetList) ->
+    case SetID =< length(SetList) of
+        true -> lists:nth(SetID, SetList);
+        false -> sets:new()
+    end.
 
 
 %%%============================================================================
