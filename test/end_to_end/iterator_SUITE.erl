@@ -1225,7 +1225,7 @@ complex_queries(_Config) ->
             Book1,
             Bucket,
             {fun testutil:foldkeysfun/3, []},
-            [Q1, Q2, Q3],
+            [{1, Q1}, {2, Q2}, {3, Q3}],
             ComboFun),
     STSplit0 = os:system_time(millisecond),
     SplitKL0 = lists:sort(SplitR0()),

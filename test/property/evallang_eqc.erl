@@ -6,19 +6,27 @@
 
 -include_lib("eqc/include/eqc.hrl").
 -include_lib("eunit/include/eunit.hrl").
+-include("../include/leveled.hrl").
 
--define(TIME_BUDGET, 300).
 -define(QC_OUT(P),
         eqc:on_output(fun(Str, Args) ->
                               io:format(user, Str, Args) end, P)).
 
-eqc_test_() ->
+eqc_prop1_test_() ->
   {timeout,
-      ?TIME_BUDGET + 10,
+      ?EQC_TIME_BUDGET + 10,
       ?_assertEqual(
           true,
           eqc:quickcheck(
-              eqc:testing_time(?TIME_BUDGET, ?QC_OUT(prop_lang()))))}.
+              eqc:testing_time(?EQC_TIME_BUDGET, ?QC_OUT(prop_lang()))))}.
+
+eqc_prop2_test_() ->
+  {timeout,
+      ?EQC_TIME_BUDGET + 10,
+      ?_assertEqual(
+          true,
+          eqc:quickcheck(
+              eqc:testing_time(?EQC_TIME_BUDGET, ?QC_OUT(prop_negative()))))}.
 
 identifier() ->
   FirstChars = lists:seq($a,$z)++lists:seq($A,$Z)++["_"],

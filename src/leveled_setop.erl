@@ -13,11 +13,14 @@
 %%%============================================================================
 
 -spec generate_setop_function(
-        string()) -> fun((list(sets:set(binary()))) -> sets:set(binary())).
+        string()) ->
+            fun((#{non_neg_integer() => sets:set(binary())})
+                -> sets:set(binary())
+            ).
 generate_setop_function(EvalString) ->
     {ok, ParsedEval} = generate_setop_expression(EvalString),
-    fun(ListOfSets) ->
-        apply_setop(ParsedEval, ListOfSets)
+    fun(MapOfSets) ->
+        apply_setop(ParsedEval, MapOfSets)
     end.
 
 %%%============================================================================
@@ -63,11 +66,8 @@ set_function('SUBTRACT') ->
 
 %% Return empty set if index not present in given set
 %% (That is, do not throw an error)
-get_set(SetID, SetList) ->
-    case SetID =< length(SetList) of
-        true -> lists:nth(SetID, SetList);
-        false -> sets:new()
-    end.
+get_set(SetID, SetMap) ->
+    maps:get(SetID, SetMap, sets:new()).
 
 
 %%%============================================================================
@@ -97,10 +97,26 @@ parser_tester(Q1, Q2, Q3, Q4) ->
     F3 = generate_setop_function(Q3),
     F4 = generate_setop_function(Q4),
 
-    R1 = lists:sort(sets:to_list(F1([S1, S2, S3]))),
-    R2 = lists:sort(sets:to_list(F2([S1, S2, S3, S4]))),
-    R3 = lists:sort(sets:to_list(F3([S1, S2, S3, S4, S5]))),
-    R4 = lists:sort(sets:to_list(F4([S1, S2, S3, S4, S5]))),
+    R1 =
+        lists:sort(
+            sets:to_list(F1(#{1 => S1, 2 => S2, 3 => S3})
+        )
+    ),
+    R2 =
+        lists:sort(
+            sets:to_list(F2(#{1 => S1, 2 => S2, 3 => S3, 4 => S4})
+        )
+    ),
+    R3 =
+        lists:sort(
+            sets:to_list(F3(#{1 => S1, 2 => S2, 3 => S3, 4 => S4, 5 => S5})
+        )
+    ),
+        R4 =
+        lists:sort(
+            sets:to_list(F4(#{1 => S1, 2 => S2, 3 => S3, 4 => S4, 5 => S5})
+        )
+    ),
 
     ?assertMatch(
         [<<"K3">>, <<"K4">>, <<"K5">>, <<"K7">>, <<"K8">>, <<"K9">>], R1),
@@ -110,5 +126,20 @@ parser_tester(Q1, Q2, Q3, Q4) ->
         [<<"K3">>, <<"K7">>, <<"K9">>], R3),
     ?assertMatch(
         [<<"K3">>, <<"K8">>], R4).
+
+minimal_test() ->
+    S1 = sets:from_list([<<"K1">>, <<"K2">>, <<"K3">>, <<"K4">>, <<"K5">>]),
+    F1 = generate_setop_function("$1"),
+    R1 = lists:sort(sets:to_list(F1(#{1 => S1}))),
+    ?assertMatch([<<"K1">>, <<"K2">>, <<"K3">>, <<"K4">>, <<"K5">>], R1),
+    S2 = sets:from_list([<<"K3">>, <<"K4">>, <<"K5">>, <<"K6">>, <<"K7">>]),
+    S3 = sets:from_list([<<"K1">>, <<"K2">>]),
+    F2 = generate_setop_function("$1 INTERSECT ($2 UNION $3)"),
+    R2  = lists:sort(sets:to_list(F2(#{1 => S1, 2 => S2, 3 => S3}))),
+    ?assertMatch([<<"K1">>, <<"K2">>, <<"K3">>, <<"K4">>, <<"K5">>], R2),
+    F3 = generate_setop_function("$1 INTERSECT ($2 UNION $2)"),
+    R3  = lists:sort(sets:to_list(F3(#{1 => S1, 2 => S2}))),
+    ?assertMatch([<<"K3">>, <<"K4">>, <<"K5">>], R3).
+
 
 -endif.

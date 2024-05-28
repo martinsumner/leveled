@@ -724,7 +724,7 @@ book_indexfold(Pid, Bucket, FoldAccT, Range, TermHandling) ->
         pid(),
         leveled_codec:key(),
         fun((leveled_codec:key(), leveled_codec:key(), term()) -> term()),
-        list(query()),
+        list({non_neg_integer(), query()}),
         combo_fun())
             -> {async, fun(() -> term())}.
 book_multiindexfold(Pid, Bucket, FoldAccT, Queries, ComboFun) ->
@@ -1985,7 +1985,7 @@ get_runner(
     KeyFolder = fun(_B, K, Acc) -> [K|Acc] end,
     QueryRunners =
         lists:map(
-            fun({IdxFld, StartTerm, EndTerm, Expr}) ->
+            fun({SetId, {IdxFld, StartTerm, EndTerm, Expr}}) ->
                 {SK, EK} =
                     index_range(
                         {Bucket, null}, {IdxFld, StartTerm, EndTerm}),
@@ -1995,7 +1995,7 @@ get_runner(
                     leveled_runner:index_query(
                         SnapFun, {SK, EK, {false, Expr}}, {KeyFolder, []}
                     ),
-                Runner
+                {SetId, Runner}
             end,
             Queries
         ),
@@ -2003,7 +2003,13 @@ get_runner(
         fun() ->
             FinalSet =
                 ComboFun(
-                    lists:map(fun(R) -> sets:from_list(R()) end, QueryRunners)
+                    maps:from_list(
+                        lists:map(
+                            fun({SetId, R}) ->
+                                {SetId, sets:from_list(R())}
+                            end,
+                            QueryRunners)
+                    )
                 ),
             lists:foldl(
                 fun(K, Acc) -> FoldFun(Bucket, K, Acc) end,

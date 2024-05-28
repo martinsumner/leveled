@@ -14,7 +14,28 @@
 -compile([export_all, nowarn_export_all]).
 
 -include_lib("eqc/include/eqc.hrl").
+-include_lib("eunit/include/eunit.hrl").
+-include("../include/leveled.hrl").
 
+-define(
+  QC_OUT(P),
+  eqc:on_output(fun(Str, Args) -> io:format(user, Str, Args) end, P)).
+
+eqc_prop1_test_() ->
+  {timeout,
+    ?EQC_TIME_BUDGET + 10,
+    ?_assertEqual(
+      true,
+      eqc:quickcheck(
+        eqc:testing_time(?EQC_TIME_BUDGET, ?QC_OUT(prop_gen_fun()))))}.
+
+eqc_prop2_test_() ->
+  {timeout,
+    ?EQC_TIME_BUDGET + 10,
+    ?_assertEqual(
+      true,
+      eqc:quickcheck(
+        eqc:testing_time(?EQC_TIME_BUDGET, ?QC_OUT(prop_check_eval()))))}.
 
 set_id() ->
   ?LET(N, choose(1,20), integer_to_list(N)).
@@ -57,7 +78,7 @@ prop_gen_fun() ->
   ?FORALL(Context, non_empty(context()),
   ?FORALL(String, setoplang([integer_to_list(V) || {V, _} <- Context]),
           try F = leveled_setop:generate_setop_function(String),
-              sets:is_set(F([Set || {_, Set} <- Context]))
+              sets:is_set(F(maps:from_list(Context)))
           catch Error:Reason ->
                   eqc:format("~n~ts Failed with ~p ~p~n", [String, Error, Reason]),
                   equals(Error, true)
@@ -71,7 +92,7 @@ prop_check_eval() ->
             ?WHENFAIL(eqc:format("setop ~ts~n", [String]),
                       begin
                          F = leveled_setop:generate_setop_function(String),
-                         equal_sets(F([Set || {_, Set} <- Context]),
+                         equal_sets(F(maps:from_list(Context)),
                                     sets:subtract(sets:union([Set || {_, Set} <- Context]),
                                                  element(2, hd(Context))))
                       end)
