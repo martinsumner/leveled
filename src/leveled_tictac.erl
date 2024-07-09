@@ -101,7 +101,7 @@
                         width :: integer(),
                         segment_count :: integer(),
                         level1 :: level1_map(),
-                        level2 :: any() % an array - but OTP compatibility
+                        level2 :: array:array()
                         }).
 
 -type level1_map() :: #{non_neg_integer() => binary()}.
