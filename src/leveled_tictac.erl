@@ -196,12 +196,14 @@ import_tree(ExportedTree) ->
         end,
     Lv2 = lists:foldl(FoldFun, Lv2Init, L2List),
     garbage_collect(),
-    #tictactree{treeID = import,
-                    size = Size,
-                    width = Width,
-                    segment_count = Width * ?L2_CHUNKSIZE,
-                    level1 = to_level1_map(L1Bin),
-                    level2 = Lv2}.
+    #tictactree{
+        treeID = import,
+        size = Size,
+        width = Width,
+        segment_count = Width * ?L2_CHUNKSIZE,
+        level1 = to_level1_map(L1Bin),
+        level2 = Lv2
+    }.
 
 
 -spec add_kv(tictactree(), term(), term(), bin_extract_fun()) -> tictactree().
@@ -229,14 +231,15 @@ add_kv(TicTacTree, Key, Value, BinExtractFun, ReturnSegment) ->
     SegLeaf2Upd = SegLeaf2 bxor SegChangeHash,
     SegLeaf1Upd = SegLeaf1 bxor SegChangeHash,
 
+    UpdatedTree =
+        replace_segment(
+            SegLeaf1Upd, SegLeaf2Upd, L1Extract, L2Extract, TicTacTree
+        ),
     case ReturnSegment of
         true -> 
-            {replace_segment(SegLeaf1Upd, SegLeaf2Upd, 
-                            L1Extract, L2Extract, TicTacTree),
-                Segment};
+            {UpdatedTree, Segment};
         false ->
-            replace_segment(SegLeaf1Upd, SegLeaf2Upd, 
-                            L1Extract, L2Extract, TicTacTree)
+            UpdatedTree
     end.
 
 -spec alter_segment(integer(), integer(), tictactree()) -> tictactree().
