@@ -159,7 +159,7 @@
 
 -behaviour(gen_server).
 
--include("include/leveled.hrl").
+-include("leveled.hrl").
 
 -export([
         init/1,
@@ -207,23 +207,17 @@
 -export([clean_testdir/1]).
 -endif.
 
--define(MAX_WORK_WAIT, 300).
 -define(MANIFEST_FP, "ledger_manifest").
 -define(FILES_FP, "ledger_files").
--define(CURRENT_FILEX, "crr").
--define(PENDING_FILEX, "pnd").
 -define(SST_FILEX, ".sst").
 -define(ARCHIVE_FILEX, ".bak").
 -define(SUPER_MAX_TABLE_SIZE, 40000).
--define(PROMPT_WAIT_ONL0, 5).
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
 -define(COIN_SIDECOUNT, 4).
 -define(SLOW_FETCH, 500000). % Log a very slow fetch - longer than 500ms
 -define(FOLD_SCANWIDTH, 32).
 -define(ITERATOR_SCANWIDTH, 4).
 -define(ITERATOR_MINSCANWIDTH, 1).
--define(TIMING_SAMPLECOUNTDOWN, 10000).
--define(TIMING_SAMPLESIZE, 100).
 -define(SHUTDOWN_LOOPS, 10).
 -define(SHUTDOWN_PAUSE, 10000).
     % How long to wait for snapshots to be released on shutdown
