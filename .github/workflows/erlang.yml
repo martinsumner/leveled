@@ -24,9 +24,9 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Install Erlang/OTP
-        uses: erlef/setup-beam@v1
-        with:
-          otp-version: ${{ matrix.otp }}
+      uses: erlef/setup-beam@v1
+      with:
+        otp-version: ${{ matrix.otp }}
     - name: Compile
       run: ./rebar3 compile
     - name: Run tests
