@@ -49,10 +49,7 @@
 %% version of the segment-leaf hash from the previous level 1 hash).
 %%
 
-
 -module(leveled_tictac).
-
--include("include/leveled.hrl").
 
 -export([
             new_tree/1,

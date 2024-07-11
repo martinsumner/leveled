@@ -16,7 +16,7 @@
 
 -module(leveled_head).
 
--include("include/leveled.hrl").
+-include("leveled.hrl").
 
 -export([key_to_canonicalbinary/1,
             build_head/2,

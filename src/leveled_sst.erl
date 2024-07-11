@@ -57,12 +57,11 @@
 %% the transaction log replay; or by using a higher level for of anti-entropy
 %% (i.e. make Riak responsible).
 
-
 -module(leveled_sst).
 
 -behaviour(gen_statem).
 
--include("include/leveled.hrl").
+-include("leveled.hrl").
 
 -define(LOOK_SLOTSIZE, 128). % Maximum of 128
 -define(LOOK_BLOCKSIZE, {24, 32}). % 4x + y = ?LOOK_SLOTSIZE

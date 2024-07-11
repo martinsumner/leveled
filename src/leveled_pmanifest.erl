@@ -14,10 +14,9 @@
 %% access the cache)
 %% - Use a skiplist like enhanced list at lower levels.
 
-
 -module(leveled_pmanifest).
 
--include("include/leveled.hrl").
+-include("leveled.hrl").
 
 -export([
         new_manifest/0,

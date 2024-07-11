@@ -10,7 +10,7 @@
 
 -module(leveled_tree).
 
--include("include/leveled.hrl").
+-include("leveled.hrl").
 
 -export([
         from_orderedlist/2,

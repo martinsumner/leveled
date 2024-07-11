@@ -1,7 +1,6 @@
 -module(tictac_SUITE).
--include_lib("common_test/include/ct.hrl").
--include("include/leveled.hrl").
--export([all/0]).
+-include("leveled.hrl").
+-export([all/0, init_per_suite/1, end_per_suite/1]).
 -export([
             many_put_compare/1,
             index_compare/1,
@@ -16,11 +15,19 @@ all() -> [
             tuplebuckets_headonly
             ].
 
--define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
 -define(V1_VERS, 1).
 -define(MAGIC, 53). % riak_kv -> riak_object
 
+init_per_suite(Config) ->
+    testutil:init_per_suite([{suite, "tictac"}|Config]),
+    Config.
+
+end_per_suite(Config) ->
+    testutil:end_per_suite(Config).
+
 many_put_compare(_Config) ->
+    
+    
     TreeSize = small,
     SegmentCount = 256 * 256,
     % Test requires multiple different databases, so want to mount them all

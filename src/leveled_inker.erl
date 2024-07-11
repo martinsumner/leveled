@@ -80,12 +80,11 @@
 %% TODO: how to instruct the files to close is tbd
 %%
 
-
 -module(leveled_inker).
 
 -behaviour(gen_server).
 
--include("include/leveled.hrl").
+-include("leveled.hrl").
 
 -export([init/1,
         handle_call/3,

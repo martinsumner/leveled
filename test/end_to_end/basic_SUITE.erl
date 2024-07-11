@@ -1,7 +1,6 @@
 -module(basic_SUITE).
--include_lib("common_test/include/ct.hrl").
--include("include/leveled.hrl").
--export([all/0]).
+-include("leveled.hrl").
+-export([all/0, init_per_suite/1, end_per_suite/1]).
 -export([simple_put_fetch_head_delete/1,
             many_put_fetch_head/1,
             journal_compaction/1,
@@ -35,6 +34,13 @@ all() -> [
             bigpcl_bucketlist
             ].
 
+
+init_per_suite(Config) ->
+    testutil:init_per_suite([{suite, "basic"}|Config]),
+    Config.
+
+end_per_suite(Config) ->
+    testutil:end_per_suite(Config).
 
 simple_put_fetch_head_delete(_Config) ->
     io:format("simple test with info and no forced logs~n"),

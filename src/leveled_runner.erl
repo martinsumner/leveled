@@ -16,10 +16,9 @@
 %% check that the item is available in the Journal via the Inker as part of 
 %% the fold.  This may be useful for anti-entropy folds 
 
-
 -module(leveled_runner).
 
--include("include/leveled.hrl").
+-include("leveled.hrl").
 
 -export([
             bucket_sizestats/3,

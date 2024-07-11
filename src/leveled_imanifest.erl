@@ -1,10 +1,7 @@
 %% -------- Inker Manifest ---------
 %% 
 
-
 -module(leveled_imanifest).
-
--include("include/leveled.hrl").
 
 -export([
         generate_entry/1,

@@ -8,7 +8,7 @@
 
 -module(leveled_codec).
 
--include("include/leveled.hrl").
+-include("leveled.hrl").
 
 -export([
         inker_reload_strategy/1,
