@@ -30,6 +30,8 @@
 -define(LOG_LEVELS, [debug, info, warning, error, critical]).
 -define(DEFAULT_LOG_LEVEL, error).
 
+-define(UTF8_BOM, unicode:encoding_to_bom(utf8)).
+
 -define(LOGBASE,
     #{
         g0001 => 
@@ -401,7 +403,10 @@ log(LogRef, Subs, SupportedLogLevels) ->
             Prefix =
                 log_prefix(LogRef, DBid, self()),
             Suffix = <<"~n">>,
-            ?LOG(LogLevel, iolist_to_binary([Prefix, Log, Suffix]), Subs);
+            ?LOG(
+                LogLevel,
+                unicode:characters_to_list([Prefix, Log, Suffix]),
+                Subs);
         false ->
             ok
     end.
@@ -439,7 +444,7 @@ log_timer(LogRef, Subs, StartTime, SupportedLevels) ->
             Duration = duration_text(StartTime),
             ?LOG(
                 LogLevel,
-                iolist_to_binary([Prefix, Log, Duration, Suffix]),
+                unicode:characters_to_list([Prefix, Log, Duration, Suffix]),
                 Subs);
         false ->
             ok
