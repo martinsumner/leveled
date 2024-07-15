@@ -30,8 +30,6 @@
 -define(LOG_LEVELS, [debug, info, warning, error, critical]).
 -define(DEFAULT_LOG_LEVEL, error).
 
--define(UTF8_BOM, unicode:encoding_to_bom(utf8)).
-
 -define(LOGBASE,
     #{
         g0001 => 
@@ -406,7 +404,9 @@ log(LogRef, Subs, SupportedLogLevels) ->
             ?LOG(
                 LogLevel,
                 unicode:characters_to_list([Prefix, Log, Suffix]),
-                Subs);
+                Subs,
+                #{log_type => backend}
+            );
         false ->
             ok
     end.
@@ -445,7 +445,9 @@ log_timer(LogRef, Subs, StartTime, SupportedLevels) ->
             ?LOG(
                 LogLevel,
                 unicode:characters_to_list([Prefix, Log, Duration, Suffix]),
-                Subs);
+                Subs,
+                #{log_type => backend}
+            );
         false ->
             ok
     end.
