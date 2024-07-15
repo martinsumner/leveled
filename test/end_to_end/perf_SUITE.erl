@@ -3,14 +3,32 @@
 -define(INFO, info).
 -export([all/0, suite/0]).
 -export([
-    riak_ctperf/1, riak_fullperf/1, riak_profileperf/1
+    riak_ctperf/1, riak_fullperf/1, riak_profileperf/1, riak_miniperf/1
 ]).
 
-all() -> [riak_ctperf].
+-ifdef(perf_full).
+    all() -> [riak_fullperf].
+-else.
+    -ifdef(perf_mini).
+        all() -> [riak_miniperf].
+    -else.
+        -ifdef(perf_prof).
+            all() -> [riak_profileperf].
+        -else.
+            all() -> [riak_ctperf].
+        -endif.
+    -endif.
+-endif.
+
 suite() -> [{timetrap, {hours, 16}}].
 
 riak_fullperf(_Config) ->
     riak_fullperf(2048, zstd, as_store).
+
+riak_miniperf(_Config) ->
+    Bucket = {<<"SensibleBucketTypeName">>, <<"SensibleBucketName0">>},
+    R2A = riak_load_tester(Bucket, 2000000, 2048, [], zstd, as_store),
+    output_result(R2A).
 
 riak_fullperf(ObjSize, PM, LC) ->
     Bucket = {<<"SensibleBucketTypeName">>, <<"SensibleBucketName0">>},
@@ -33,7 +51,7 @@ riak_profileperf(_Config) ->
         {<<"SensibleBucketTypeName">>, <<"SensibleBucketName0">>},
         2000000,
         2048,
-        [load, head, get, query, mini_query, full, guess, estimate, update],
+        [load, full],
         zstd,
         as_store
     ).
@@ -172,8 +190,9 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
                     P ->
                         P
                 end,
+            io:format(user, "~nProfile ~p:~n", [P]),
             ProFun = profile_fun(P0, ProfileData),
-            profile_test(Bookie1, ProFun)
+            profile_test(Bookie1, ProFun, P)
         end,
         ProfileList),
 
@@ -192,12 +211,14 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
         SSTPids, CDBPids}.
 
 
-profile_test(Bookie, ProfileFun) ->
+profile_test(Bookie, ProfileFun, P) ->
     {Inker, Pcl, SSTPids, PClerk, CDBPids, IClerk} = get_pids(Bookie),
     TestPid = self(),
     profile_app(
         [TestPid, Bookie, Inker, IClerk, Pcl, PClerk] ++ SSTPids ++ CDBPids,
-        ProfileFun).
+        ProfileFun,
+        P
+    ).
 
 get_pids(Bookie) ->
     {ok, Inker, Pcl} = leveled_bookie:book_returnactors(Bookie),
@@ -250,7 +271,7 @@ memory_usage() ->
         element(2, lists:keyfind(processes, 1, MemoryUsage)),
         element(2, lists:keyfind(binary, 1, MemoryUsage))}.
 
-profile_app(Pids, ProfiledFun) ->
+profile_app(Pids, ProfiledFun, P) ->
 
     eprof:start(),
     eprof:start_profiling(Pids),
@@ -258,8 +279,12 @@ profile_app(Pids, ProfiledFun) ->
     ProfiledFun(),
 
     eprof:stop_profiling(),
-    eprof:analyze(total),
-    eprof:stop().
+    eprof:log(atom_to_list(P) ++ ".log"),
+    eprof:analyze(total, [{filter, [{calls, 100}, {time, 200000}]}]),
+    eprof:stop(),
+    {ok, Analysis} = file:read_file(atom_to_list(P) ++ ".log"),
+    io:format(user, "~n~s~n", [Analysis])
+    .
 
 size_estimate_summary(Bookie) ->
     Loops = 10,
