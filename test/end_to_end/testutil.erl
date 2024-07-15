@@ -68,7 +68,7 @@
             compact_and_wait/1]).
 
 -define(RETURN_TERMS, {true, undefined}).
--define(SLOWOFFER_DELAY, 10).
+-define(SLOWOFFER_DELAY, 40).
 -define(V1_VERS, 1).
 -define(MAGIC, 53). % riak_kv -> riak_object
 -define(MD_VTAG,     <<"X-Riak-VTag">>).
@@ -691,21 +691,24 @@ load_objects(ChunkSize, GenList, Bookie, TestObject, Generator, SubListL) ->
 
 
 get_randomindexes_generator(Count) ->
-    Generator = fun() ->
-            lists:map(fun(X) ->
-                                {add,
-                                    "idx" ++ integer_to_list(X) ++ "_bin",
-                                    get_randomdate() ++ get_randomname()} end,
-                        lists:seq(1, Count))
+    Generator =
+        fun() ->
+            lists:map(
+                fun(X) ->
+                    {add,
+                        list_to_binary("idx" ++ integer_to_list(X) ++ "_bin"),
+                        list_to_binary(get_randomdate() ++ get_randomname())}
+                end,
+                lists:seq(1, Count))
         end,
     Generator.
 
 name_list() ->
     [{1, "Sophia"}, {2, "Emma"}, {3, "Olivia"}, {4, "Ava"},
-            {5, "Isabella"}, {6, "Mia"}, {7, "Zoe"}, {8, "Lily"},
-            {9, "Emily"}, {10, "Madelyn"}, {11, "Madison"}, {12, "Chloe"},
-            {13, "Charlotte"}, {14, "Aubrey"}, {15, "Avery"},
-            {16, "Abigail"}].
+        {5, "Isabella"}, {6, "Mia"}, {7, "Zoe"}, {8, "Lily"},
+        {9, "Emily"}, {10, "Madelyn"}, {11, "Madison"}, {12, "Chloe"},
+        {13, "Charlotte"}, {14, "Aubrey"}, {15, "Avery"},
+        {16, "Abigail"}].
 
 get_randomname() ->
     NameList = name_list(),
@@ -738,7 +741,7 @@ check_indexed_objects(Book, B, KSpecL, V) ->
             fun({K, Spc}) ->
                 {ok, O} = book_riakget(Book, B, K),
                 V = testutil:get_value(O),
-                {add, "idx1_bin", IdxVal} = lists:keyfind(add, 1, Spc),
+                {add, <<"idx1_bin">>, IdxVal} = lists:keyfind(add, 1, Spc),
                 {IdxVal, K}
             end,
             KSpecL),
@@ -749,7 +752,7 @@ check_indexed_objects(Book, B, KSpecL, V) ->
             {index_query,
                 B,
                 {fun foldkeysfun/3, []},
-                {"idx1_bin", "0", "|"},
+                {<<"idx1_bin">>, <<"0">>, <<"|">>},
                 ?RETURN_TERMS}),
     SW = os:timestamp(),
     {async, Fldr} = R,
@@ -796,11 +799,12 @@ put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i) ->
     put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i, V).
 
 put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i, V) ->
+    SW = os:timestamp(),
     IndexGen = get_randomindexes_generator(1),
-    
+    ThisProcess = self(),
     FindAdditionFun = fun(SpcItem) -> element(1, SpcItem) == add end,
     MapFun = 
-        fun({K, Spc}) ->
+        fun({K, Spc}, Acc) ->
             OldSpecs = lists:filter(FindAdditionFun, Spc),
             {RemoveSpc, AddSpc} =
                 case RemoveOld2i of
@@ -809,26 +813,45 @@ put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i, V) ->
                     false ->
                         {[], OldSpecs}
                 end,
-            {O, DeltaSpecs} =
-                set_object(Bucket, K, V,
-                            IndexGen, RemoveSpc, AddSpc),
-            % DeltaSpecs should be new indexes added, and any old indexes which
-            % have been removed by this change where RemoveOld2i is true.
-            %
-            % The actual indexes within the object should reflect any history
-            % of indexes i.e. when RemoveOld2i is false.
-            %
-            % The [{Key, SpecL}] returned should accrue additions over loops if
-            % RemoveOld2i is false
-            case book_riakput(Book, O, DeltaSpecs) of
-                ok -> ok;
-                pause -> timer:sleep(?SLOWOFFER_DELAY)
-            end,
+            PutFun =
+                fun() ->
+                    {O, DeltaSpecs} =
+                        set_object(
+                            Bucket, K, V, IndexGen, RemoveSpc, AddSpc),
+                    % DeltaSpecs should be new indexes added, and any old
+                    % indexes which have been removed by this change where
+                    % RemoveOld2i is true.
+                    %
+                    % The actual indexes within the object should reflect any
+                    % history of indexes i.e. when RemoveOld2i is false.
+                    %
+                    % The [{Key, SpecL}] returned should accrue additions over
+                    % loops if RemoveOld2i is false
+                    R =
+                        case book_riakput(Book, O, DeltaSpecs) of
+                            ok ->
+                                ok;
+                            pause ->
+                                timer:sleep(?SLOWOFFER_DELAY),
+                                pause
+                        end,
+                    ThisProcess ! {R, DeltaSpecs}
+                end,
+            spawn(PutFun),
+            AccOut =
+                receive
+                    {ok, NewSpecs} -> Acc;
+                    {pause, NewSpecs} -> Acc + 1
+                end,
             % Note that order in the SpecL is important, as
             % check_indexed_objects, needs to find the latest item added
-            {K, DeltaSpecs ++ AddSpc}
+            {{K, NewSpecs ++ AddSpc}, AccOut}
         end,
-    RplKSpecL = lists:map(MapFun, KSpecL),
+    {RplKSpecL, Pauses} = lists:mapfoldl(MapFun, 0, KSpecL),
+    io:format(
+        "Altering ~w objects took ~w ms with ~w pauses~n",
+        [length(KSpecL), timer:now_diff(os:timestamp(), SW) div 1000, Pauses]
+    ),
     {RplKSpecL, V}.
 
 rotating_object_check(RootPath, B, NumberOfObjects) ->

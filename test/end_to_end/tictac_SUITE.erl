@@ -378,10 +378,13 @@ index_compare(_Config) ->
     GetTicTacTreeFun =
         fun(X, Bookie) ->
             SW = os:timestamp(),
-            ST = "!",
-            ET = "|",
+            ST = <<"!">>,
+            ET = <<"|">>,
             Q = {tictactree_idx,
-                    {BucketBin, "idx" ++ integer_to_list(X) ++ "_bin", ST, ET},
+                    {BucketBin,
+                        list_to_binary("idx" ++ integer_to_list(X) ++ "_bin"),
+                        ST,
+                        ET},
                     TreeSize,
                     fun(_B, _K) -> accumulate end},
             {async, Folder} = leveled_bookie:book_returnfolder(Bookie, Q),
@@ -442,12 +445,14 @@ index_compare(_Config) ->
     true = DL2_0 == [],
     true = length(DL2_1) > 100,
 
-    IdxSpc = {add, "idx2_bin", "zz999"},
-    {TestObj, TestSpc} = testutil:generate_testobject(BucketBin,
-                                                        term_to_binary("K9.Z"),
-                                                        "Value1",
-                                                        [IdxSpc],
-                                                        [{"MDK1", "MDV1"}]),
+    IdxSpc = {add, <<"idx2_bin">>, <<"zz999">>},
+    {TestObj, TestSpc} =
+        testutil:generate_testobject(
+            BucketBin,
+            term_to_binary("K9.Z"),
+            "Value1",
+            [IdxSpc],
+            [{"MDK1", "MDV1"}]),
     ok = testutil:book_riakput(Book2C, TestObj, TestSpc),
     testutil:check_forobject(Book2C, TestObj),
 
@@ -457,25 +462,30 @@ index_compare(_Config) ->
     TicTacTree3_P3 = GetTicTacTreeFun(2, Book2D),
 
     % Merge the tree across the partitions
-    TicTacTree3_Joined = lists:foldl(fun leveled_tictac:merge_trees/2,
-                                        TicTacTree3_P1,
-                                        [TicTacTree3_P2, TicTacTree3_P3]),
+    TicTacTree3_Joined =
+        lists:foldl(
+            fun leveled_tictac:merge_trees/2,
+            TicTacTree3_P1,
+            [TicTacTree3_P2, TicTacTree3_P3]),
 
     % Find all keys index, and then just the last key
     IdxQ1 = {index_query,
                 BucketBin,
                 {fun testutil:foldkeysfun/3, []},
-                {"idx2_bin", "zz", "zz|"},
+                {<<"idx2_bin">>, <<"zz">>, <<"zz|">>},
                 {true, undefined}},
     {async, IdxFolder1} = leveled_bookie:book_returnfolder(Book2C, IdxQ1),
     true = IdxFolder1() >= 1,
 
-    DL_3to2B = leveled_tictac:find_dirtyleaves(TicTacTree2_P1,
-                                                TicTacTree3_P1),
-    DL_3to2C = leveled_tictac:find_dirtyleaves(TicTacTree2_P2,
-                                                TicTacTree3_P2),
-    DL_3to2D = leveled_tictac:find_dirtyleaves(TicTacTree2_P3,
-                                                TicTacTree3_P3),
+    DL_3to2B =
+        leveled_tictac:find_dirtyleaves(
+            TicTacTree2_P1, TicTacTree3_P1),
+    DL_3to2C =
+        leveled_tictac:find_dirtyleaves(
+            TicTacTree2_P2, TicTacTree3_P2),
+    DL_3to2D =
+        leveled_tictac:find_dirtyleaves(
+            TicTacTree2_P3, TicTacTree3_P3),
     io:format("Individual tree comparison found dirty leaves of ~w ~w ~w~n",
                 [DL_3to2B, DL_3to2C, DL_3to2D]),
 
@@ -509,7 +519,7 @@ index_compare(_Config) ->
     MismatchQ = {index_query,
                     BucketBin,
                     {FoldKeysIndexQFun, []},
-                    {"idx2_bin", "!", "|"},
+                    {<<"idx2_bin">>, <<"!">>, <<"|">>},
                     {true, undefined}},
     {async, MMFldr_2A} = leveled_bookie:book_returnfolder(Book2A, MismatchQ),
     {async, MMFldr_2B} = leveled_bookie:book_returnfolder(Book2B, MismatchQ),
@@ -531,7 +541,7 @@ index_compare(_Config) ->
     io:format("Differences between lists ~w~n", [Diffs]),
 
     % The actual difference is discovered
-    true = lists:member({"zz999", term_to_binary("K9.Z")}, Diffs),
+    true = lists:member({<<"zz999">>, term_to_binary("K9.Z")}, Diffs),
     % Without discovering too many others
     true = length(Diffs) < 20,
 

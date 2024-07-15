@@ -213,11 +213,12 @@ breaking_folds(_Config) ->
     % Find all keys index, and then same again but stop at a midpoint using a
     % throw
     {async, IdxFolder} =
-        leveled_bookie:book_indexfold(Bookie1,
-                                        list_to_binary("Bucket"), 
-                                        {fun testutil:foldkeysfun/3, []}, 
-                                        {"idx1_bin", "#", "|"},
-                                        {true, undefined}),
+        leveled_bookie:book_indexfold(
+            Bookie1,
+            list_to_binary("Bucket"), 
+            {fun testutil:foldkeysfun/3, []}, 
+            {<<"idx1_bin">>, <<"#">>, <<"|">>},
+            {true, undefined}),
     KeyList1 = lists:reverse(IdxFolder()),
     io:format("Index fold with result size ~w~n", [length(KeyList1)]),
     true = KeyCount == length(KeyList1),
@@ -235,11 +236,12 @@ breaking_folds(_Config) ->
             end
         end,
     {async, IdxFolderToMidK} =
-        leveled_bookie:book_indexfold(Bookie1,
-                                        list_to_binary("Bucket"), 
-                                        {FoldKeyThrowFun, []}, 
-                                        {"idx1_bin", "#", "|"},
-                                        {true, undefined}),
+        leveled_bookie:book_indexfold(
+            Bookie1,
+            list_to_binary("Bucket"), 
+            {FoldKeyThrowFun, []}, 
+            {<<"idx1_bin">>, <<"#">>, <<"|">>},
+            {true, undefined}),
     CatchingFold =
         fun(AsyncFolder) ->
             try
@@ -261,10 +263,8 @@ breaking_folds(_Config) ->
             [{K, Size}|Acc]
         end,
     {async, HeadFolder} = 
-        leveled_bookie:book_headfold(Bookie1,
-                                        ?RIAK_TAG, 
-                                        {HeadFoldFun, []}, 
-                                        true, true, false),
+        leveled_bookie:book_headfold(
+            Bookie1, ?RIAK_TAG,  {HeadFoldFun, []}, true, true, false),
     KeySizeList1 = lists:reverse(HeadFolder()),
     io:format("Head fold with result size ~w~n", [length(KeySizeList1)]),
     true = KeyCount == length(KeySizeList1),
@@ -472,11 +472,9 @@ small_load_with2i(_Config) ->
     testutil:check_forobject(Bookie1, TestObject),
     ObjectGen = testutil:get_compressiblevalue_andinteger(),
     IndexGen = testutil:get_randomindexes_generator(8),
-    ObjL1 = testutil:generate_objects(10000,
-                                        uuid,
-                                        [],
-                                        ObjectGen,
-                                        IndexGen),
+    ObjL1 =
+        testutil:generate_objects(
+            10000, uuid, [], ObjectGen, IndexGen),
     testutil:riakload(Bookie1, ObjL1),
     ChkList1 = lists:sublist(lists:sort(ObjL1), 100),
     testutil:check_forlist(Bookie1, ChkList1),
@@ -486,7 +484,7 @@ small_load_with2i(_Config) ->
     IdxQ1 = {index_query,
                 "Bucket",
                 {fun testutil:foldkeysfun/3, []},
-                {"idx1_bin", "#", "|"},
+                {<<"idx1_bin">>, <<"#">>, <<"|">>},
                 {true, undefined}},
     {async, IdxFolder} = leveled_bookie:book_returnfolder(Bookie1, IdxQ1),
     KeyList1 = lists:usort(IdxFolder()),
@@ -495,7 +493,7 @@ small_load_with2i(_Config) ->
     IdxQ2 = {index_query,
                 {"Bucket", LastKey},
                 {fun testutil:foldkeysfun/3, []},
-                {"idx1_bin", LastTerm, "|"},
+                {<<"idx1_bin">>, LastTerm, <<"|">>},
                 {false, undefined}},
     {async, IdxFolderLK} = leveled_bookie:book_returnfolder(Bookie1, IdxQ2),
     KeyList2 = lists:usort(IdxFolderLK()),
@@ -530,12 +528,14 @@ small_load_with2i(_Config) ->
                                                       {FoldObjectsFun, []},
                                                       false),
     KeyHashList2 = HTreeF2(),
-    {async, HTreeF3} = leveled_bookie:book_objectfold(Bookie1,
-                                                      ?RIAK_TAG,
-                                                      "Bucket",
-                                                      {"idx1_bin", "#", "|"},
-                                                      {FoldObjectsFun, []},
-                                                      false),
+    {async, HTreeF3} =
+        leveled_bookie:book_objectfold(
+            Bookie1,
+            ?RIAK_TAG,
+            "Bucket",
+            {<<"idx1_bin">>, <<"#">>, <<"|">>},
+            {FoldObjectsFun, []},
+            false),
     KeyHashList3 = HTreeF3(),
     true = 9901 == length(KeyHashList1), % also includes the test object
     true = 9900 == length(KeyHashList2),
@@ -585,96 +585,86 @@ small_load_with2i(_Config) ->
 
 query_count(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    {ok, Book1} = leveled_bookie:book_start(RootPath,
-                                            2000,
-                                            50000000,
-                                            testutil:sync_strategy()),
+    {ok, Book1} =
+        leveled_bookie:book_start(
+            RootPath, 2000, 50000000, testutil:sync_strategy()),
     BucketBin = list_to_binary("Bucket"),
-    {TestObject, TestSpec} = testutil:generate_testobject(BucketBin,
-                                                            term_to_binary("Key1"),
-                                                            "Value1",
-                                                            [],
-                                                            [{"MDK1", "MDV1"}]),
+    {TestObject, TestSpec} =
+        testutil:generate_testobject(
+            BucketBin, term_to_binary("Key1"), "Value1", [], [{"MDK1", "MDV1"}]),
     ok = testutil:book_riakput(Book1, TestObject, TestSpec),
     testutil:check_forobject(Book1, TestObject),
     testutil:check_formissingobject(Book1, "Bucket1", "Key2"),
     testutil:check_forobject(Book1, TestObject),
-    lists:foreach(fun(_X) ->
-                        V = testutil:get_compressiblevalue(),
-                        Indexes = testutil:get_randomindexes_generator(8),
-                        SW = os:timestamp(),
-                        ObjL1 = testutil:generate_objects(10000,
-                                                            binary_uuid,
-                                                            [],
-                                                            V,
-                                                            Indexes),
-                        testutil:riakload(Book1, ObjL1),
-                        io:format("Put of 10000 objects with 8 index entries "
-                                        ++
-                                        "each completed in ~w microseconds~n",
-                                    [timer:now_diff(os:timestamp(), SW)])
-                        end,
-                        lists:seq(1, 8)),
+    lists:foreach(
+        fun(_X) ->
+            V = testutil:get_compressiblevalue(),
+            Indexes = testutil:get_randomindexes_generator(8),
+            SW = os:timestamp(),
+            ObjL1 = testutil:generate_objects(10000,
+                                                binary_uuid,
+                                                [],
+                                                V,
+                                                Indexes),
+            testutil:riakload(Book1, ObjL1),
+            io:format(
+                "Put of 10000 objects with 8 index entries "
+                "each completed in ~w microseconds~n",
+                [timer:now_diff(os:timestamp(), SW)])
+        end,
+        lists:seq(1, 8)),
     testutil:check_forobject(Book1, TestObject),
-    Total = lists:foldl(fun(X, Acc) ->
-                                IdxF = "idx" ++ integer_to_list(X) ++ "_bin",
-                                T = count_termsonindex(BucketBin,
-                                                        IdxF,
-                                                        Book1,
-                                                        ?KEY_ONLY),
-                                io:format("~w terms found on index ~s~n",
-                                            [T, IdxF]),
-                                Acc + T
-                                end,
-                            0,
-                            lists:seq(1, 8)),
-    ok = case Total of
-                640000 ->
-                    ok
+    Total =
+        lists:foldl(
+            fun(X, Acc) ->
+                IdxF = "idx" ++ integer_to_list(X) ++ "_bin",
+                T =
+                    count_termsonindex(
+                        BucketBin, list_to_binary(IdxF), Book1, ?KEY_ONLY),
+                io:format("~w terms found on index ~s~n", [T, IdxF]),
+                Acc + T
             end,
-    Index1Count = count_termsonindex(BucketBin,
-                                        "idx1_bin",
-                                        Book1,
-                                        ?KEY_ONLY),
+            0,
+            lists:seq(1, 8)),
+    true = Total == 640000,
+    Index1Count =
+        count_termsonindex(
+            BucketBin, <<"idx1_bin">>, Book1, ?KEY_ONLY),
     ok = leveled_bookie:book_close(Book1),
-    {ok, Book2} = leveled_bookie:book_start(RootPath,
-                                            1000,
-                                            50000000,
-                                            testutil:sync_strategy()),
-    Index1Count = count_termsonindex(BucketBin,
-                                        "idx1_bin",
-                                        Book2,
-                                        ?KEY_ONLY),
+    {ok, Book2} =
+        leveled_bookie:book_start(
+            RootPath, 1000, 50000000, testutil:sync_strategy()),
+    Index1Count =
+        count_termsonindex(
+            BucketBin, <<"idx1_bin">>, Book2, ?KEY_ONLY),
     NameList = testutil:name_list(),
-    TotalNameByName = lists:foldl(fun({_X, Name}, Acc) ->
-                                        {ok, Regex} = re:compile("[0-9]+" ++
-                                                                    Name),
-                                        SW = os:timestamp(),
-                                        T = count_termsonindex(BucketBin,
-                                                                "idx1_bin",
-                                                                Book2,
-                                                                {false,
-                                                                    Regex}),
-                                        TD = timer:now_diff(os:timestamp(),
-                                                                SW),
-                                        io:format("~w terms found on " ++
-                                                    "index idx1 with a " ++
-                                                    "regex in ~w " ++
-                                                    "microseconds~n",
-                                                    [T, TD]),
-                                        Acc + T
-                                        end,
-                                    0,
-                                    NameList),
-    ok = case TotalNameByName of
-                Index1Count ->
-                    ok
+    TotalNameByName =
+        lists:foldl(
+            fun({_X, Name}, Acc) ->
+                {ok, Regex} =
+                    re:compile("[0-9]+" ++ Name),
+                SW = os:timestamp(),
+                T =
+                    count_termsonindex(
+                        BucketBin,
+                        list_to_binary("idx1_bin"),
+                        Book2,
+                        {false, Regex}),
+                TD = timer:now_diff(os:timestamp(), SW),
+                io:format(
+                    "~w terms found on  index idx1 with a "
+                    "regex in ~w  microseconds~n",
+                    [T, TD]),
+                Acc + T
             end,
+            0,
+            NameList),
+    true = TotalNameByName == Index1Count,
     {ok, RegMia} = re:compile("[0-9]+Mia"),
     Query1 = {index_query,
                 BucketBin,
                 {fun testutil:foldkeysfun/3, []},
-                {"idx2_bin", "2000", "2000|"},
+                {<<"idx2_bin">>, <<"2000">>, <<"2000|">>},
                 {false, RegMia}},
     {async,
         Mia2KFolder1} = leveled_bookie:book_returnfolder(Book2, Query1),
@@ -682,7 +672,7 @@ query_count(_Config) ->
     Query2 = {index_query,
                 BucketBin,
                 {fun testutil:foldkeysfun/3, []},
-                {"idx2_bin", "2000", "2001"},
+                {<<"idx2_bin">>, <<"2000">>, <<"2001">>},
                 {true, undefined}},
     {async,
         Mia2KFolder2} = leveled_bookie:book_returnfolder(Book2, Query2),
@@ -705,7 +695,7 @@ query_count(_Config) ->
     Query3 = {index_query,
                 BucketBin,
                 {fun testutil:foldkeysfun/3, []},
-                {"idx2_bin", "1980", "2100"},
+                {<<"idx2_bin">>, <<"1980">>, <<"2100">>},
                 {false, RxMia2K}},
     {async,
         Mia2KFolder3} = leveled_bookie:book_returnfolder(Book2, Query3),
@@ -713,26 +703,26 @@ query_count(_Config) ->
     
     V9 = testutil:get_compressiblevalue(),
     Indexes9 = testutil:get_randomindexes_generator(8),
-    [{_RN, Obj9, Spc9}] = testutil:generate_objects(1,
-                                                    binary_uuid,
-                                                    [],
-                                                    V9,
-                                                    Indexes9),
+    [{_RN, Obj9, Spc9}] =
+        testutil:generate_objects(
+            1, binary_uuid, [], V9, Indexes9),
     ok = testutil:book_riakput(Book2, Obj9, Spc9),
-    R9 = lists:map(fun({add, IdxF, IdxT}) ->
-                        Q = {index_query,
-                                BucketBin,
-                                {fun testutil:foldkeysfun/3, []},
-                                {IdxF, IdxT, IdxT},
-                                ?KEY_ONLY},
-                        R = leveled_bookie:book_returnfolder(Book2, Q),
-                        {async, Fldr} = R,
-                        case length(Fldr()) of
-                            X when X > 0 ->
-                                {IdxF, IdxT, X}
-                        end
-                        end,
-                    Spc9),
+    R9 =
+        lists:map(
+            fun({add, IdxF, IdxT}) ->
+                Q = {index_query,
+                        BucketBin,
+                        {fun testutil:foldkeysfun/3, []},
+                        {IdxF, IdxT, IdxT},
+                        ?KEY_ONLY},
+                R = leveled_bookie:book_returnfolder(Book2, Q),
+                {async, Fldr} = R,
+                case length(Fldr()) of
+                    X when X > 0 ->
+                        {IdxF, IdxT, X}
+                end
+            end,
+            Spc9),
     Spc9Del = lists:map(fun({add, IdxF, IdxT}) -> {remove, IdxF, IdxT} end,
                         Spc9),
     ok = testutil:book_riakput(Book2, Obj9, Spc9Del),
@@ -751,44 +741,44 @@ query_count(_Config) ->
                         end,
                     R9),
     ok = leveled_bookie:book_close(Book2),
-    {ok, Book3} = leveled_bookie:book_start(RootPath,
-                                            2000,
-                                            50000000,
-                                            testutil:sync_strategy()),
-    lists:foreach(fun({IdxF, IdxT, X}) ->
-                        Q = {index_query,
-                                BucketBin,
-                                {fun testutil:foldkeysfun/3, []},
-                                {IdxF, IdxT, IdxT},
-                                ?KEY_ONLY},
-                        R = leveled_bookie:book_returnfolder(Book3, Q),
-                        {async, Fldr} = R,
-                        case length(Fldr()) of
-                            Y ->
-                                Y = X - 1
-                        end
-                        end,
-                    R9),
+    {ok, Book3} =
+        leveled_bookie:book_start(
+            RootPath, 2000, 50000000, testutil:sync_strategy()),
+    lists:foreach(
+        fun({IdxF, IdxT, X}) ->
+            Q = {index_query,
+                    BucketBin,
+                    {fun testutil:foldkeysfun/3, []},
+                    {IdxF, IdxT, IdxT},
+                    ?KEY_ONLY},
+            R = leveled_bookie:book_returnfolder(Book3, Q),
+            {async, Fldr} = R,
+            case length(Fldr()) of
+                Y ->
+                    Y = X - 1
+            end
+        end,
+        R9),
     ok = testutil:book_riakput(Book3, Obj9, Spc9),
     ok = leveled_bookie:book_close(Book3),
-    {ok, Book4} = leveled_bookie:book_start(RootPath,
-                                            2000,
-                                            50000000,
-                                            testutil:sync_strategy()),
-    lists:foreach(fun({IdxF, IdxT, X}) ->
-                        Q = {index_query,
-                                BucketBin,
-                                {fun testutil:foldkeysfun/3, []},
-                                {IdxF, IdxT, IdxT},
-                                ?KEY_ONLY},
-                        R = leveled_bookie:book_returnfolder(Book4, Q),
-                        {async, Fldr} = R,
-                        case length(Fldr()) of
-                            X ->
-                                ok
-                        end
-                        end,
-                    R9),
+    {ok, Book4} =
+        leveled_bookie:book_start(
+            RootPath, 2000, 50000000, testutil:sync_strategy()),
+    lists:foreach(
+        fun({IdxF, IdxT, X}) ->
+            Q = {index_query,
+                    BucketBin,
+                    {fun testutil:foldkeysfun/3, []},
+                    {IdxF, IdxT, IdxT},
+                    ?KEY_ONLY},
+            R = leveled_bookie:book_returnfolder(Book4, Q),
+            {async, Fldr} = R,
+            case length(Fldr()) of
+                X ->
+                    ok
+            end
+        end,
+        R9),
     testutil:check_forobject(Book4, TestObject),
     
     FoldBucketsFun = fun(B, Acc) -> sets:add_element(B, Acc) end,
@@ -803,24 +793,15 @@ query_count(_Config) ->
     
     true = sets:size(BucketSet1) == 1, 
     
-    ObjList10A = testutil:generate_objects(5000,
-                                            binary_uuid,
-                                            [],
-                                            V9,
-                                            Indexes9,
-                                            "BucketA"),
-    ObjList10B = testutil:generate_objects(5000,
-                                            binary_uuid,
-                                            [],
-                                            V9,
-                                            Indexes9,
-                                            "BucketB"),
-    ObjList10C = testutil:generate_objects(5000,
-                                            binary_uuid,
-                                            [],
-                                            V9,
-                                            Indexes9,
-                                            "BucketC"),
+    ObjList10A =
+        testutil:generate_objects(
+            5000, binary_uuid, [], V9, Indexes9, "BucketA"),
+    ObjList10B =
+        testutil:generate_objects(
+            5000, binary_uuid, [], V9, Indexes9, "BucketB"),
+    ObjList10C =
+        testutil:generate_objects(
+            5000, binary_uuid, [], V9, Indexes9, "BucketC"),
     testutil:riakload(Book4, ObjList10A),
     testutil:riakload(Book4, ObjList10B),
     testutil:riakload(Book4, ObjList10C),
@@ -847,31 +828,30 @@ query_count(_Config) ->
     ok = leveled_bookie:book_close(Book5),
     
     testutil:reset_filestructure().
-    
 
 
 count_termsonindex(Bucket, IdxField, Book, QType) ->
-    lists:foldl(fun(X, Acc) ->
-                        SW = os:timestamp(),
-                        ST = integer_to_list(X),
-                        ET = ST ++ "|",
-                        Q = {index_query,
-                                Bucket,
-                                {fun testutil:foldkeysfun/3, []},
-                                {IdxField, ST, ET},
-                                QType},
-                        R = leveled_bookie:book_returnfolder(Book, Q),
-                        {async, Folder} = R,
-                        Items = length(Folder()),
-                        io:format("2i query from term ~s on index ~s took " ++
-                                        "~w microseconds~n",
-                                    [ST,
-                                        IdxField,
-                                        timer:now_diff(os:timestamp(), SW)]),
-                        Acc + Items
-                        end,
-                    0,
-                    lists:seq(190, 221)).
+    lists:foldl(
+        fun(X, Acc) ->
+            SW = os:timestamp(),
+            ST = list_to_binary(integer_to_list(X)),
+            Pipe = <<"|">>,
+            ET = <<ST/binary, Pipe/binary>>,
+            Q = {index_query,
+                    Bucket,
+                    {fun testutil:foldkeysfun/3, []},
+                    {IdxField, ST, ET},
+                    QType},
+            R = leveled_bookie:book_returnfolder(Book, Q),
+            {async, Folder} = R,
+            Items = length(Folder()),
+            io:format(
+                "2i query from term ~s on index ~s took ~w microseconds~n",
+                [ST, IdxField, timer:now_diff(os:timestamp(), SW)]),
+            Acc + Items
+        end,
+        0,
+        lists:seq(190, 221)).
 
 multibucket_fold(_Config) ->
     RootPath = testutil:reset_filestructure(),
