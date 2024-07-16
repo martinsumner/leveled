@@ -3,27 +3,31 @@ name: Erlang CI
 on:
   push:
     branches:
-    - develop-3.1
-    - develop-3.0
-    - develop-2.9
+    - develop-3.4
   pull_request:
     branches:
-    - develop-3.1
-    - develop-3.0
-    - develop-2.9
+    - develop-3.4
 
 jobs:
 
   build:
 
-    runs-on: ubuntu-latest
+    name: Test on ${{ matrix.os }} with OTP ${{ matrix.otp }}
+    runs-on: ${{ matrix.os }}
 
-    container:
-      image: erlang:22.3.3
+    strategy:
+      fail-fast: false
+      matrix:
+        otp: [24, 26]
+        os: [ubuntu-latest]
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
+    - name: Install Erlang/OTP
+      uses: erlef/setup-beam@v1
+      with:
+        otp-version: ${{ matrix.otp }}
     - name: Compile
-      run: rebar3 compile
+      run: ./rebar3 compile
     - name: Run tests
-      run: rebar3 do xref, dialyzer, eunit
+      run: ./rebar3 do xref, dialyzer, eunit

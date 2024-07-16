@@ -102,7 +102,7 @@
          callback_mode/0,
          terminate/3,
          code_change/4,
-         format_status/2]).
+         format_status/1]).
 
 %% states
 -export([starting/3,
@@ -925,11 +925,21 @@ terminate(Reason, _StateName, State) ->
 code_change(_OldVsn, StateName, State, _Extra) ->
     {ok, StateName, State}.
 
-format_status(normal, [_PDict, _, State]) ->
-    State;
-format_status(terminate, [_PDict, _, State]) ->
-    State#state{
-        blockindex_cache = redacted, fetch_cache = redacted}.
+
+format_status(Status) ->
+    case maps:get(reason, Status, normal) of
+        terminate ->
+            State = maps:get(state, Status),
+            maps:update(
+                state,
+                State#state{
+                    blockindex_cache = redacted, 
+                    fetch_cache = redacted},
+                Status
+            );
+        _ ->
+            Status
+    end.
 
 
 %%%============================================================================
@@ -3939,10 +3949,11 @@ fetch_status_test() ->
     {ok, Pid, {FirstKey, LastKey}, _Bloom} =
         testsst_new(RP, Filename, 1, KVList1, length(KVList1), native),
     {status, Pid, {module, gen_statem}, SItemL} = sys:get_status(Pid),
-    S = lists:keyfind(state, 1, lists:nth(5, SItemL)),
+    {data,[{"State", {reader, S}}]} = lists:nth(3, lists:nth(5, SItemL)),
     true = is_integer(array:size(S#state.fetch_cache)),
     true = is_integer(array:size(element(2, S#state.blockindex_cache))),
-    ST = format_status(terminate, [dict:new(), starting, S]),
+    Status = format_status(#{reason => terminate, state => S}),
+    ST = maps:get(state, Status),
     ?assertMatch(redacted, ST#state.blockindex_cache),
     ?assertMatch(redacted, ST#state.fetch_cache),
     ok = sst_close(Pid),
