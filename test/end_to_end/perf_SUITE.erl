@@ -83,7 +83,6 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
             {log_level, warn},
             {compression_method, PM},
             {ledger_compression, LC},
-            {max_pencillercachesize, 16000},
             {forced_logs,
                 [b0015, b0016, b0017, b0018, p0032, sst12]}
         ],
