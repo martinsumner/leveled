@@ -27,6 +27,11 @@ suite() -> [{timetrap, {hours, 16}}].
 riak_fullperf(_Config) ->
     riak_fullperf(2048, zstd, as_store).
 
+riak_miniperf(_Config) ->
+    Bucket = {<<"SensibleBucketTypeName">>, <<"SensibleBucketName0">>},
+    R2A = riak_load_tester(Bucket, 2000000, 2048, [], zstd, as_store),
+    output_result(R2A).
+
 riak_fullperf(ObjSize, PM, LC) ->
     Bucket = {<<"SensibleBucketTypeName">>, <<"SensibleBucketName0">>},
     R2A = riak_load_tester(Bucket, 2000000, ObjSize, [], PM, LC),
@@ -56,11 +61,6 @@ riak_profileperf(_Config) ->
 % For standard ct test runs
 riak_ctperf(_Config) ->
     riak_load_tester(<<"B0">>, 400000, 1024, [], native, as_store).
-
-riak_miniperf(_Config) ->
-    Bucket = {<<"SensibleBucketTypeName">>, <<"SensibleBucketName0">>},
-    R2A = riak_load_tester(Bucket, 2000000, 2048, [], zstd, as_store),
-    output_result(R2A).
 
 riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
     ct:log(
@@ -365,7 +365,6 @@ profile_app(Pids, ProfiledFun, P) ->
     {ok, Analysis} = file:read_file(atom_to_list(P) ++ ".log"),
     io:format(user, "~n~s~n", [Analysis])
     .
-
 
 rotate_chunk(Bookie, Bucket, KeyCount, ObjSize) ->
     ct:log(

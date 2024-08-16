@@ -938,7 +938,6 @@ format_status(terminate, [_PDict, _, State]) ->
     State#state{blockindex_cache = redacted}.
 -endif.
 
-
 %%%============================================================================
 %%% External Functions
 %%%============================================================================
@@ -3898,7 +3897,8 @@ fetch_status_test() ->
     {status, Pid, {module, gen_statem}, SItemL} = sys:get_status(Pid),
     S = lists:keyfind(state, 1, lists:nth(5, SItemL)),
     true = is_integer(array:size(element(2, S#state.blockindex_cache))),
-    ST = format_status(terminate, [dict:new(), starting, S]),
+    Status = format_status(#{reason => terminate, state => S}),
+    ST = maps:get(state, Status),
     ?assertMatch(redacted, ST#state.blockindex_cache),
     ok = sst_close(Pid),
     ok = file:delete(filename:join(RP, Filename ++ ".sst")).
