@@ -9,6 +9,7 @@
 -define(PEOPLE_INDEX, <<"people_bin">>).
 -define(MINI_QUERY_DIVISOR, 8).
 -define(RGEX_QUERY_DIVISOR, 32).
+-define(PUT_PAUSE, 40).
 
 -ifndef(performance).
   -define(performance, riak_ctperf).
@@ -82,6 +83,7 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
             {log_level, warn},
             {compression_method, PM},
             {ledger_compression, LC},
+            {max_pencillercachesize, 16000},
             {forced_logs,
                 [b0015, b0016, b0017, b0018, p0032, sst12]}
         ],
@@ -140,7 +142,7 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
     GetMemoryTracker = memory_tracking(get, 1000),
     GetAccountant = accounting(get, 3000, ProfileList),
     TotalGetTime = 
-        random_fetches(get, Bookie1, Bucket, KeyCount, GetFetches),
+        random_fetches(riakget, Bookie1, Bucket, KeyCount div 2, GetFetches),
     ok = stop_accounting(GetAccountant),
     {MT2, MP2, MB2} = stop_tracker(GetMemoryTracker),
 
@@ -235,7 +237,7 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
     UpdateMemoryTracker = memory_tracking(update, 1000),
     UpdateAccountant = accounting(update, 1000, ProfileList),
     TotalUpdateTime =
-        rotate_chunk(Bookie1, <<"UpdBucket">>, KeyCount div 50, ObjSize),
+        rotate_chunk(Bookie1, <<"UpdBucket">>, KeyCount div 100, ObjSize, 2),
     ok = stop_accounting(UpdateAccountant),
     {MT6, MP6, MB6} = stop_tracker(UpdateMemoryTracker),
 
@@ -366,22 +368,96 @@ profile_app(Pids, ProfiledFun, P) ->
     io:format(user, "~n~s~n", [Analysis])
     .
 
-rotate_chunk(Bookie, Bucket, KeyCount, ObjSize) ->
+rotate_chunk(Bookie, Bucket, KeyCount, ObjSize, IdxCount) ->
     ct:log(
         ?INFO,
         "Rotating an ObjList ~w - "
         "time includes object generation",
         [KeyCount]),
-    V1 = base64:encode(leveled_rand:rand_bytes(ObjSize)),
-    V2 = base64:encode(leveled_rand:rand_bytes(ObjSize)),
-    V3 = base64:encode(leveled_rand:rand_bytes(ObjSize)),
     {TC, ok} = 
         timer:tc(
             fun() ->
-                testutil:rotation_withnocheck(
-                    Bookie, Bucket, KeyCount, V1, V2, V3)
+                rotation_withnocheck(
+                    Bookie, Bucket, KeyCount, ObjSize, IdxCount
+                )
             end),
     TC div 1000.
+
+
+rotation_with_prefetch(_Book, _B, 0, _Value, _IdxCnt) ->
+    garbage_collect(),
+    ok;
+rotation_with_prefetch(Book, B, Count, Value, IdxCnt) ->
+    H = erlang:phash2(Count),
+    H1 = H band 127,
+    H2 = (H bsr 7) band 127,
+    H3 = (H bsr 14) band 127,
+    H4 = (H bsr 21) band 63,
+    K = <<H1:8/integer, H2:8/integer, H3:8/integer, H4:8/integer>>,
+    IndexGen = testutil:get_randomindexes_generator(IdxCnt),
+    RemoveSpc =
+        case testutil:book_riakhead(Book, B, K) of
+            not_found ->
+                [];
+            {ok, Head} ->
+                {{SibMetaBin, _Vclock, _Hash, size}, _LMS}
+                    = leveled_head:riak_extract_metadata(Head, size),
+                lists:map(
+                    fun({Fld, Trm}) -> {add, Fld, Trm} end,
+                    leveled_head:get_indexes_from_siblingmetabin(
+                        SibMetaBin, []
+                    )
+                )
+        end,
+    {O, DeltaSpecs} =
+        testutil:set_object(B, K, Value, IndexGen, RemoveSpc),
+    case testutil:book_riakput(Book, O, DeltaSpecs) of
+        ok ->
+            ok;
+        pause ->
+            timer:sleep(?PUT_PAUSE),
+            pause
+    end,
+    rotation_with_prefetch(Book, B, Count - 1, Value, IdxCnt).
+
+
+rotation_withnocheck(Book, B, NumberOfObjects, ObjSize, IdxCnt) ->
+    rotation_with_prefetch(
+        Book,
+        B,
+        NumberOfObjects,
+        base64:encode(leveled_rand:rand_bytes(ObjSize)),
+        IdxCnt
+    ),
+    rotation_with_prefetch(
+        Book,
+        B,
+        NumberOfObjects,
+        base64:encode(leveled_rand:rand_bytes(ObjSize)),
+        IdxCnt
+    ),
+    rotation_with_prefetch(
+        Book,
+        B,
+        NumberOfObjects,
+        base64:encode(leveled_rand:rand_bytes(ObjSize)),
+        IdxCnt
+    ),
+    rotation_with_prefetch(
+        Book,
+        B,
+        NumberOfObjects,
+        base64:encode(leveled_rand:rand_bytes(ObjSize)),
+        IdxCnt
+    ),
+    rotation_with_prefetch(
+        Book,
+        B,
+        NumberOfObjects,
+        base64:encode(leveled_rand:rand_bytes(ObjSize)),
+        IdxCnt
+    ),
+    ok.
 
 generate_chunk(CountPerList, ObjSize, IndexGenFun, Bucket, Chunk) ->
     testutil:generate_objects(
@@ -430,7 +506,7 @@ time_load_chunk(
                 ok ->
                     ThisProcess! {TC, 0};
                 pause ->
-                    timer:sleep(40),
+                    timer:sleep(?PUT_PAUSE),
                     ThisProcess ! {TC + 40000, 1}
             end
         end
@@ -508,6 +584,12 @@ random_fetches(FetchType, Bookie, Bucket, ObjCount, Fetches) ->
                     fun(K) ->
                         {ok, _} =
                             case FetchType of
+                                riakget ->
+                                    {ok, _} =
+                                        testutil:book_riakhead(
+                                            Bookie, Bucket, K
+                                        ),
+                                    testutil:book_riakget(Bookie, Bucket, K);
                                 get ->
                                     testutil:book_riakget(Bookie, Bucket, K);
                                 head ->
@@ -655,7 +737,7 @@ profile_fun(
         update,
         {Bookie, _Bucket, KeyCount, ObjSize, _IndexCount, _IndexesReturned}) ->
     fun() ->
-        rotate_chunk(Bookie, <<"ProfileB">>, KeyCount div 50, ObjSize)
+        rotate_chunk(Bookie, <<"ProfileB">>, KeyCount div 200, ObjSize, 2)
     end;
 profile_fun(
         CounterFold,
