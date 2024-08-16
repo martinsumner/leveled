@@ -138,7 +138,7 @@
     bookie_head|bookie_get|bookie_put|bookie_snap|pcl_fetch|sst_fetch|cdb_get.
 -type pcl_level() :: mem|leveled_pmanifest:lsm_level().
 -type sst_fetch_type() ::
-    fetch_cache|slot_cachedblock|slot_noncachedblock|not_found.
+    slot_cachedblock|slot_noncachedblock|not_found.
 -type microsecs() :: pos_integer().
 -type byte_size() :: pos_integer().
 -type monitor() :: {no_monitor, 0}|{pid(), 0..100}.
@@ -401,13 +401,6 @@ handle_cast({sst_fetch_update, Level, FetchPoint, FetchTime}, State) ->
                     notfound_time =
                         Timings#sst_fetch_timings.notfound_time + FetchTime
                 };
-            fetch_cache ->
-                Timings#sst_fetch_timings{
-                    fetchcache_count =
-                        Timings#sst_fetch_timings.fetchcache_count + 1,
-                    fetchcache_time =
-                        Timings#sst_fetch_timings.fetchcache_time + FetchTime
-                };
             slot_cachedblock ->
                 Timings#sst_fetch_timings{
                     slotcached_count =
@@ -542,11 +535,9 @@ handle_cast({report_stats, sst_fetch}, State) ->
                 [Level,
                     Timings#sst_fetch_timings.sample_count,
                     Timings#sst_fetch_timings.notfound_time,
-                    Timings#sst_fetch_timings.fetchcache_time,
                     Timings#sst_fetch_timings.slotcached_time,
                     Timings#sst_fetch_timings.slotnoncached_time,
                     Timings#sst_fetch_timings.notfound_count,
-                    Timings#sst_fetch_timings.fetchcache_count,
                     Timings#sst_fetch_timings.slotcached_count,
                     Timings#sst_fetch_timings.slotnoncached_count,
                     SamplePeriod

@@ -193,7 +193,7 @@
         sst11 =>
             {info, <<"Level zero creation timings in microseconds pmem_fetch=~w merge_lists=~w build_slots=~w build_summary=~w read_switch=~w">>},
         sst12 =>
-            {info, <<"SST Timings at level=~w for sample_count=~w at timing points notfound_time=~w fetchcache_time=~w slotcached_time=~w slotnoncached_time=~w exiting at points notfound_count=~w fetchcache_count=~w slotcached_count=~w slotnoncached_count=~w with sample_period=~w seconds">>},
+            {info, <<"SST Timings at level=~w for sample_count=~w at timing points notfound_time=~w slotcached_time=~w slotnoncached_time=~w exiting at points notfound_count=~w slotcached_count=~w slotnoncached_count=~w with sample_period=~w seconds">>},
         sst13 =>
             {info, <<"SST merge list build timings of fold_toslot=~w slot_hashlist=~w slot_serialise=~w slot_finish=~w is_basement=~w level=~w">>},
         sst14 =>

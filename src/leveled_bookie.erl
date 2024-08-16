@@ -109,6 +109,7 @@
 -define(OPTION_DEFAULTS,
             [{root_path, undefined},
                 {snapshot_bookie, undefined},
+                {readcache_size, ?READCACHE_SIZE},
                 {cache_size, ?CACHE_SIZE},
                 {cache_multiple, ?MAX_CACHE_MULTTIPLE},
                 {max_journalsize, 1000000000},
@@ -150,6 +151,7 @@
 
 -record(state, {inker :: pid() | undefined,
                 penciller :: pid() | undefined,
+                read_cache :: leveled_cache:read_cache(),
                 cache_size :: pos_integer() | undefined,
                 cache_multiple :: pos_integer() | undefined,
                 ledger_cache = #ledger_cache{} :: ledger_cache(),
@@ -159,7 +161,8 @@
                 head_lookup = true :: boolean(),
                 ink_checking = ?MAX_KEYCHECK_FREQUENCY :: integer(),
                 bookie_monref :: reference() | undefined,
-                monitor = {no_monitor, 0} :: leveled_monitor:monitor()}).
+                monitor = {no_monitor, 0} :: leveled_monitor:monitor()
+            }).
 
 
 -type book_state() :: #state{}.
@@ -186,6 +189,10 @@
             % randomised jitter (randomised jitter will still be added to 
             % configured values)
             % The minimum value is 100 - any lower value will be ignored
+        {readcache_size, non_neg_integer()} |
+            % The size of the read cache for the penciller (i.e. cache of head
+            % responses).  Will only be enabled if > 0 and not using head_only
+            % mode
         {cache_multiple, pos_integer()} |
             % A multiple of the cache size beyond which the cache should not
             % grow even if the penciller is busy.  A pasue will be returned for
@@ -1230,7 +1237,16 @@ init([Opts]) ->
                 PencillerOpts#penciller_options{sst_options = SSTOpts0},            
 
             {Inker, Penciller} =  startup(InkerOpts, PencillerOpts0),
-
+            
+            ReadCache =
+                case {HeadOnly, proplists:get_value(readcache_size, Opts)} of
+                    {false, RCS} when RCS > 0 ->
+                        {ok, RC} = leveled_cache:start(RCS),
+                        RC;
+                    _ ->
+                        undefined
+                end,
+        
             NewETS = ets:new(mem, [ordered_set]),
             leveled_log:log(b0001, [Inker, Penciller]),
             {ok, 
@@ -1242,6 +1258,7 @@ init([Opts]) ->
                     head_lookup = HeadLookup,
                     inker = Inker,
                     penciller = Penciller,
+                    read_cache = ReadCache,
                     ledger_cache = #ledger_cache{mem = NewETS},
                     monitor = {Monitor, StatLogFrequency}}};
         {Bookie, undefined} ->
@@ -1287,6 +1304,7 @@ handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL, DataSync},
     end,
     maybe_longrunning(SWLR, overall_put),
     maybelog_put_timing(State#state.monitor, T0, T1, T2, ObjSize),
+    ok = leveled_cache:purge_head(State#state.read_cache, LedgerKey),
     case maybepush_ledgercache(
             State#state.cache_size,
             State#state.cache_multiple,
@@ -1326,11 +1344,21 @@ handle_call({get, Bucket, Key, Tag}, _From, State)
                                         when State#state.head_only == false ->
     LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
     SW0 = leveled_monitor:maybe_time(State#state.monitor),
-    {H0, _CacheHit} =
-        fetch_head(LedgerKey,
-                    State#state.penciller,
-                    State#state.ledger_cache),
-    HeadResult = 
+    H0 =
+        case leveled_cache:fetch_head(State#state.read_cache, LedgerKey) of
+            not_cached ->
+                element(
+                    1,
+                    fetch_head(
+                        LedgerKey,
+                        State#state.penciller,
+                        State#state.ledger_cache
+                    )
+                );
+            LedgerHead ->
+                LedgerHead
+        end,
+    HeadResult =
         case H0 of
             not_present ->
                 not_found;
@@ -1372,10 +1400,17 @@ handle_call({head, Bucket, Key, Tag, SQNOnly}, _From, State)
     SW0 = leveled_monitor:maybe_time(State#state.monitor),
     LK = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
     {Head, CacheHit} =
-        fetch_head(LK, 
+        case leveled_cache:fetch_head(State#state.read_cache, LK) of
+            not_cached ->
+                fetch_head(
+                    LK, 
                     State#state.penciller, 
                     State#state.ledger_cache,
-                    State#state.head_only),
+                    State#state.head_only
+                );
+            CachedHead ->
+                {CachedHead, true}
+        end,
     {TS0, SW1} = leveled_monitor:step_time(SW0),
     JrnalCheckFreq =
         case State#state.head_only of
@@ -1388,7 +1423,7 @@ handle_call({head, Bucket, Key, Tag, SQNOnly}, _From, State)
         case Head of
             not_present ->
                 {not_found, null, JrnalCheckFreq};
-            Head ->
+            _ ->
                 case leveled_codec:striphead_to_v1details(Head) of
                     {_SeqN, tomb, _MH, _MD} ->
                         {not_found, null, JrnalCheckFreq};
@@ -1420,10 +1455,18 @@ handle_call({head, Bucket, Key, Tag, SQNOnly}, _From, State)
     {TS1, _SW2} = leveled_monitor:step_time(SW1),
     maybelog_head_timing(
         State#state.monitor, TS0, TS1, LedgerMD == not_found, CacheHit),
+    case CacheHit of
+        true ->
+            % Either pulled from the read cache or the write (ledger) cache,
+            % and either way no requirement to add to the cache
+            ok;
+        false ->
+            leveled_cache:cache_head(State#state.read_cache, LK, Head)
+    end,
     case UpdJrnalCheckFreq of
-        JrnalCheckFreq ->
+        UJCF when JrnalCheckFreq == UJCF ->
             {reply, Reply, State};
-        UpdJrnalCheckFreq ->
+        _ ->
             {reply, Reply, State#state{ink_checking = UpdJrnalCheckFreq}}
     end;
 handle_call({snapshot, SnapType, Query, LongRunning}, _From, State) ->
@@ -1498,11 +1541,13 @@ handle_call(close, _From, State) ->
     leveled_inker:ink_close(State#state.inker),
     leveled_penciller:pcl_close(State#state.penciller),
     leveled_monitor:monitor_close(element(1, State#state.monitor)),
+    leveled_cache:stop(State#state.read_cache),
     {stop, normal, ok, State};
 handle_call(destroy, _From, State=#state{is_snapshot=Snp}) when Snp == false ->
     leveled_log:log(b0011, []),
     {ok, InkPathList} = leveled_inker:ink_doom(State#state.inker),
     {ok, PCLPathList} = leveled_penciller:pcl_doom(State#state.penciller),
+    leveled_cache:stop(State#state.read_cache),
     leveled_monitor:monitor_close(element(1, State#state.monitor)),
     lists:foreach(fun(DirPath) -> delete_path(DirPath) end, InkPathList),
     lists:foreach(fun(DirPath) -> delete_path(DirPath) end, PCLPathList),

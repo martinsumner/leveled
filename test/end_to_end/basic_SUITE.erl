@@ -103,7 +103,8 @@ many_put_fetch_head(_Config) ->
         [{root_path, RootPath},
             {max_pencillercachesize, 16000},
             {sync_strategy, riak_sync},
-            {compression_point, on_compact}
+            {compression_point, on_compact},
+            {readcache_size, 0}
         ],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
@@ -195,6 +196,7 @@ bigsst_littlesst(_Config) ->
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = [{root_path, RootPath},
                     {max_journalsize, 50000000},
+                    {readcache_size, 500},
                     {cache_size, 500},
                     {max_pencillercachesize, 16000},
                     {max_sstslots, 256},

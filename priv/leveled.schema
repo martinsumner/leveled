@@ -26,6 +26,13 @@
   hidden
 ]}.
 
+%% @doc The key size of the Bookie's in-memory read cache. Disable by setting to zero.
+{mapping, "leveled.readcache_size", "leveled.readcache_size", [
+  {default, 2048},
+  {datatype, integer},
+  hidden
+]}.
+
 %% @doc The maximum size of the bookie's cache before each new PUT results in
 %% a slow-offer pause.  Prior to Riak 3.0.10 this defaulted to 4
 {mapping, "leveled.cache_multiple", "leveled.cache_multiple", [

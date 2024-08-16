@@ -49,6 +49,10 @@ If the store is used to hold bigger objects, the `max_journalsize` may be scaled
 
 The option `{cache_size, integer()}` is the number of ledger objects that should be cached by the Bookie actor, before being pushed to the Ledger. Note these are ledger objects (so do not normally contain the actual object value, but does include index changes as separate objects).  The default value is 2500.
 
+## Read Cache Size
+
+The option `{cache_size, non_neg_integer()}` is the number of ledger objects that should form the read cache - this is a cache of recent reads distinct to recent writes.  That is to say, an item is only placed in the read cache if it has been read from somewhere beneath the ledger cache. 
+
 ## Penciller Cache Size
 
 The option `{max_pencillercachesize, integer()}` sets the approximate number of options that should be kept in the penciller memory before it flushes that memory to disk.  Note, when this limit is reached, the persist may be delayed by a some random jittering to prevent coordination between multiple stores in the same cluster.

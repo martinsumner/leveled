@@ -102,8 +102,13 @@
 -export([init/1,
          callback_mode/0,
          terminate/3,
-         code_change/4,
-         format_status/2]).
+         code_change/4]).
+
+-if(?OTP_RELEASE >= 25).
+-export([format_status/1]).
+-else.
+-export([format_status/2]).
+-endif.
 
 %% states
 -export([starting/3,
@@ -185,12 +190,6 @@
     :: #summary{}.
 -type blockindex_cache()
     :: {non_neg_integer(), array:array(), non_neg_integer()}.
--type fetch_cache()
-    :: array:array()|no_cache.
--type cache_size()
-    :: no_cache|4|32|64.
--type cache_hash()
-    :: no_cache|non_neg_integer().
 -type summary_filter()
     :: fun((leveled_codec:ledger_key()) -> any()).
 -type segment_check_fun()
@@ -212,7 +211,6 @@
             compression_method = native :: press_method(),
             index_moddate = ?INDEX_MODDATE :: boolean(),
             starting_pid :: pid()|undefined,
-            fetch_cache = no_cache :: fetch_cache() | redacted,
             new_slots :: list()|undefined,
             deferred_startup_tuple :: tuple()|undefined,
             level :: leveled_pmanifest:lsm_level()|undefined,
@@ -514,8 +512,7 @@ starting({call, From},
     Summary = UpdState#state.summary,
     {next_state,
         reader,
-        UpdState#state{
-            level = Level, fetch_cache = new_cache(Level), monitor = Monitor},
+        UpdState#state{level = Level, monitor = Monitor},
         [{reply, From,
             {ok,
                 {Summary#summary.first_key, Summary#summary.last_key},
@@ -562,7 +559,6 @@ starting({call, From},
             high_modified_date = HighModDate,
             starting_pid = StartingPID,
             level = Level,
-            fetch_cache = new_cache(Level),
             monitor = Monitor},
         [{reply,
             From,
@@ -574,12 +570,14 @@ starting({call, From}, {sst_newlevelzero, RootPath, Filename,
     DeferredStartupTuple =
         {RootPath, Filename, Penciller, MaxSQN, OptsSST,
             IdxModDate},
-    {next_state, starting,
+    {next_state,
+        starting,
         State#state{
             deferred_startup_tuple = DeferredStartupTuple,
-            level = 0,
-            fetch_cache = new_cache(0)},
-        [{reply, From, ok}]};
+            level = 0
+        },
+        [{reply, From, ok}]
+    };
 starting({call, From}, close, State) ->
     %% No file should have been created, so nothing to close.
     {stop_and_reply, normal, [{reply, From, ok}], State};
@@ -695,7 +693,7 @@ reader({call, From}, {get_kv, LedgerKey, Hash, Filter}, State) ->
             _ ->
                 {no_monitor, 0}
         end,
-    {KeyValue, BIC, HMD, FC} = 
+    {KeyValue, BIC, HMD} = 
         fetch(
             LedgerKey, Hash,
             State#state.summary,
@@ -704,7 +702,6 @@ reader({call, From}, {get_kv, LedgerKey, Hash, Filter}, State) ->
             State#state.index_moddate,
             State#state.filter_fun,
             State#state.blockindex_cache,
-            State#state.fetch_cache,
             State#state.handle,
             State#state.level,
             Monitor),
@@ -715,20 +712,19 @@ reader({call, From}, {get_kv, LedgerKey, Hash, Filter}, State) ->
             F ->
                 F(KeyValue)
         end,
-    case {BIC, HMD, FC} of
-        {no_update, no_update, no_update} ->
+    case {BIC, HMD} of
+        {no_update, no_update} ->
             {keep_state_and_data, [{reply, From, Result}]};
-        {no_update, no_update, FC} ->
-            {keep_state,
-                State#state{fetch_cache = FC},
-                [{reply, From, Result}]};
-        {BIC, undefined, no_update} ->
+        {_, undefined} ->
             {keep_state,
                 State#state{blockindex_cache = BIC},
                 [{reply, From, Result}]};
-        {BIC, HMD, no_update} ->
+        _ ->
             {keep_state,
-                State#state{blockindex_cache = BIC, high_modified_date = HMD},
+                State#state{
+                    blockindex_cache = BIC,
+                    high_modified_date = HMD
+                },
                 [hibernate, {reply, From, Result}]}
     end;
 reader({call, From},
@@ -787,10 +783,7 @@ reader({call, From}, close, State) ->
 
 reader(cast, {switch_levels, NewLevel}, State) ->
     {keep_state,
-        State#state{
-            level = NewLevel,
-            fetch_cache = new_cache(NewLevel)
-        },
+        State#state{level = NewLevel},
         [hibernate]};
 reader(info, {update_blockindex_cache, BIC}, State) ->
     handle_update_blockindex_cache(BIC, State);
@@ -817,7 +810,7 @@ reader(info, start_complete, State) ->
 
 
 delete_pending({call, From}, {get_kv, LedgerKey, Hash, Filter}, State) ->
-    {KeyValue, _BIC, _HMD, _FC} = 
+    {KeyValue, _BIC, _HMD} = 
         fetch(
             LedgerKey, Hash,
             State#state.summary,
@@ -826,7 +819,6 @@ delete_pending({call, From}, {get_kv, LedgerKey, Hash, Filter}, State) ->
             State#state.index_moddate,
             State#state.filter_fun,
             State#state.blockindex_cache,
-            State#state.fetch_cache,
             State#state.handle,
             State#state.level,
             {no_monitor, 0}),
@@ -926,11 +918,25 @@ terminate(Reason, _StateName, State) ->
 code_change(_OldVsn, StateName, State, _Extra) ->
     {ok, StateName, State}.
 
+-if(?OTP_RELEASE >= 25).
+format_status(Status) ->
+    case maps:get(reason, Status, normal) of
+        terminate ->
+            State = maps:get(state, Status),
+            maps:update(
+                state,
+                State#state{blockindex_cache = redacted},
+                Status
+            );
+        _ ->
+            Status
+    end.
+-else.
 format_status(normal, [_PDict, _, State]) ->
     State;
 format_status(terminate, [_PDict, _, State]) ->
-    State#state{
-        blockindex_cache = redacted, fetch_cache = redacted}.
+    State#state{blockindex_cache = redacted}.
+-endif.
 
 
 %%%============================================================================
@@ -1125,61 +1131,6 @@ extract_hash({SegHash, _ExtraHash}) when is_integer(SegHash) ->
 extract_hash(NotHash) ->
     NotHash.
 
-
--spec new_cache(leveled_pmanifest:lsm_level()) -> fetch_cache().
-new_cache(Level) ->
-    case cache_size(Level) of
-        no_cache ->
-            no_cache;
-        CacheSize ->
-            array:new([{size, CacheSize}])
-    end.
-
--spec cache_hash(leveled_codec:segment_hash(), non_neg_integer()) ->
-    cache_hash().
-cache_hash({_SegHash, ExtraHash}, Level) when is_integer(ExtraHash) ->
-    case cache_size(Level) of
-        no_cache -> no_cache;
-        CH -> ExtraHash band (CH - 1)
-    end.
-
-%% @doc
-%% The lower the level, the bigger the memory cost of supporting the cache,
-%% as each level has more files than the previous level.  Load tests with
-%% any sort of pareto distribution show far better cost/benefit ratios for
-%% cache at higher levels.
--spec cache_size(leveled_pmanifest:lsm_level()) -> cache_size().
-cache_size(N) when N < 3 ->
-    64;
-cache_size(3) ->
-    32;
-cache_size(4) ->
-    16;
-cache_size(5) ->
-    4;
-cache_size(6) ->
-    4;
-cache_size(_LowerLevel) ->
-    no_cache.
-
--spec fetch_from_cache(
-    cache_hash(),
-    fetch_cache()) -> undefined|leveled_codec:ledger_kv().
-fetch_from_cache(_CacheHash, no_cache) ->
-    undefined;
-fetch_from_cache(CacheHash, Cache) ->
-    array:get(CacheHash, Cache).
-
--spec add_to_cache(
-    non_neg_integer(),
-    leveled_codec:ledger_kv(),
-    fetch_cache()) -> fetch_cache().
-add_to_cache(_CacheHash, _KV, no_cache) ->
-    no_cache;
-add_to_cache(CacheHash, KV, FetchCache) ->
-    array:set(CacheHash, KV, FetchCache).
-
-
 -spec tune_hash(non_neg_integer()) -> ?MIN_HASH..?MAX_HASH.
 %% @doc
 %% Only 15 bits of the hash is ever interesting, and this is converted
@@ -1289,21 +1240,19 @@ check_modified(_, _, _) ->
     boolean(),
     summary_filter(),
     blockindex_cache(),
-    fetch_cache(),
     file:fd(),
     leveled_pmanifest:lsm_level(),
     leveled_monitor:monitor())
         -> {not_present|leveled_codec:ledger_kv(),
             blockindex_cache()|no_update,
-            non_neg_integer()|undefined|no_update,
-            fetch_cache()|no_update}.
+            non_neg_integer()|undefined|no_update}.
 
 %% @doc
 %% Fetch a key from the store, potentially taking timings.  Result should be
 %% not_present if the key is not in the store.
 fetch(LedgerKey, Hash,
         Summary,
-        PressMethod, HighModDate, IndexModDate, FilterFun, BIC, FetchCache,
+        PressMethod, HighModDate, IndexModDate, FilterFun, BIC,
         Handle, Level, Monitor) ->
     SW0 = leveled_monitor:maybe_time(Monitor),
     Slot =
@@ -1328,48 +1277,37 @@ fetch(LedgerKey, Hash,
                     maybelog_fetch_timing(
                         Monitor, Level, slot_noncachedblock, SW0)
             end,
-            {Result, BIC0, HMD0, no_update};
+            {Result, BIC0, HMD0};
         {BlockLengths, _LMD, PosBin} ->
             PosList =
                 find_pos(PosBin, segment_checker(extract_hash(Hash))),
             case PosList of
                 [] ->
                     maybelog_fetch_timing(Monitor, Level, not_found, SW0),
-                    {not_present, no_update, no_update, no_update};
+                    {not_present, no_update, no_update};
                 _ ->
-                    CacheHash = cache_hash(Hash, Level),
-                    case fetch_from_cache(CacheHash, FetchCache) of
-                        {LedgerKey, V} ->
+                    StartPos = Slot#slot_index_value.start_position,
+                    Result =
+                        check_blocks(
+                            PosList,
+                            {Handle, StartPos},
+                            BlockLengths,
+                            byte_size(PosBin),
+                            LedgerKey,
+                            PressMethod,
+                            IndexModDate,
+                            not_present),
+                    case Result of
+                        not_present ->
                             maybelog_fetch_timing(
-                                Monitor, Level, fetch_cache, SW0),
-                            {{LedgerKey, V}, no_update, no_update, no_update};
+                                Monitor, Level, not_found, SW0
+                            ),
+                            {not_present, no_update, no_update};
                         _ ->
-                            StartPos = Slot#slot_index_value.start_position,
-                            Result =
-                                check_blocks(
-                                    PosList,
-                                    {Handle, StartPos},
-                                    BlockLengths,
-                                    byte_size(PosBin),
-                                    LedgerKey,
-                                    PressMethod,
-                                    IndexModDate,
-                                    not_present),
-                            case Result of
-                                not_present ->
-                                    maybelog_fetch_timing(
-                                        Monitor, Level, not_found, SW0),
-                                    {not_present,
-                                        no_update, no_update, no_update};
-                                _ ->
-                                    FetchCache0 =
-                                        add_to_cache(
-                                            CacheHash, Result, FetchCache),
-                                    maybelog_fetch_timing(
-                                        Monitor, Level, slot_cachedblock, SW0),
-                                    {Result,
-                                        no_update, no_update, FetchCache0}
-                            end
+                            maybelog_fetch_timing(
+                                Monitor, Level, slot_cachedblock, SW0
+                            ),
+                            {Result, no_update, no_update}
                     end
             end
     end.
@@ -3931,6 +3869,24 @@ delete_pending_tester() ->
     timer:sleep(?DELETE_TIMEOUT + 1000),
     ?assertMatch(false, is_process_alive(Pid)).
 
+-if(?OTP_RELEASE >= 25).
+fetch_status_test() ->
+    {RP, Filename} = {?TEST_AREA, "fetchstatus_test"},
+    KVList0 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 4, 1, 20),
+    KVList1 = lists:ukeysort(1, KVList0),
+    [{FirstKey, _FV}|_Rest] = KVList1,
+    {LastKey, _LV} = lists:last(KVList1),
+    {ok, Pid, {FirstKey, LastKey}, _Bloom} =
+        testsst_new(RP, Filename, 1, KVList1, length(KVList1), native),
+    {status, Pid, {module, gen_statem}, SItemL} = sys:get_status(Pid),
+    {data,[{"State", {reader, S}}]} = lists:nth(3, lists:nth(5, SItemL)),
+    true = is_integer(array:size(element(2, S#state.blockindex_cache))),
+    Status = format_status(#{reason => terminate, state => S}),
+    ST = maps:get(state, Status),
+    ?assertMatch(redacted, ST#state.blockindex_cache),
+    ok = sst_close(Pid),
+    ok = file:delete(filename:join(RP, Filename ++ ".sst")).
+-else.
 fetch_status_test() ->
     {RP, Filename} = {?TEST_AREA, "fetchstatus_test"},
     KVList0 = generate_randomkeys(1, ?LOOK_SLOTSIZE * 4, 1, 20),
@@ -3941,13 +3897,12 @@ fetch_status_test() ->
         testsst_new(RP, Filename, 1, KVList1, length(KVList1), native),
     {status, Pid, {module, gen_statem}, SItemL} = sys:get_status(Pid),
     S = lists:keyfind(state, 1, lists:nth(5, SItemL)),
-    true = is_integer(array:size(S#state.fetch_cache)),
     true = is_integer(array:size(element(2, S#state.blockindex_cache))),
     ST = format_status(terminate, [dict:new(), starting, S]),
     ?assertMatch(redacted, ST#state.blockindex_cache),
-    ?assertMatch(redacted, ST#state.fetch_cache),
     ok = sst_close(Pid),
     ok = file:delete(filename:join(RP, Filename ++ ".sst")).
+-endif.
 
 simple_persisted_test_() ->
     {timeout, 60, fun simple_persisted_test_bothformats/0}.
