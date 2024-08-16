@@ -3897,8 +3897,7 @@ fetch_status_test() ->
     {status, Pid, {module, gen_statem}, SItemL} = sys:get_status(Pid),
     S = lists:keyfind(state, 1, lists:nth(5, SItemL)),
     true = is_integer(array:size(element(2, S#state.blockindex_cache))),
-    Status = format_status(#{reason => terminate, state => S}),
-    ST = maps:get(state, Status),
+    ST = format_status(terminate, [dict:new(), starting, S]),
     ?assertMatch(redacted, ST#state.blockindex_cache),
     ok = sst_close(Pid),
     ok = file:delete(filename:join(RP, Filename ++ ".sst")).
