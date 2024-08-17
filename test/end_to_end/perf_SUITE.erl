@@ -562,25 +562,23 @@ counter(Bookie, estimate) ->
     
 
 random_fetches(FetchType, Bookie, Bucket, ObjCount, Fetches) ->
-    KeysToFetch =
-        lists:map(
-            fun(I) ->
-                Twenty = ObjCount div 5,
-                case I rem 5 of
-                    1 ->
-                        testutil:fixed_bin_key(
-                            Twenty + leveled_rand:uniform(ObjCount - Twenty));
-                    _ ->
-                        testutil:fixed_bin_key(leveled_rand:uniform(Twenty))
-                end
-            end,
-            lists:seq(1, Fetches)
-        ),
+    Twenty = ObjCount div 5,
+    KeyFun = 
+        fun(I) ->        
+            case I rem 5 of
+                1 ->
+                    testutil:fixed_bin_key(
+                        Twenty + leveled_rand:uniform(ObjCount - Twenty));
+                _ ->
+                    testutil:fixed_bin_key(leveled_rand:uniform(Twenty))
+            end
+        end,
     {TC, ok} =
         timer:tc(
             fun() ->
                 lists:foreach(
-                    fun(K) ->
+                    fun(I) ->
+                        K = KeyFun(I),
                         {ok, _} =
                             case FetchType of
                                 riakget ->
@@ -595,7 +593,7 @@ random_fetches(FetchType, Bookie, Bucket, ObjCount, Fetches) ->
                                     testutil:book_riakhead(Bookie, Bucket, K)
                             end
                     end,
-                    KeysToFetch
+                    lists:seq(1, Fetches)
                 )
             end
         ),
