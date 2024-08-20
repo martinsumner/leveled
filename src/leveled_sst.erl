@@ -64,10 +64,18 @@
 
 -include("include/leveled.hrl").
 
--define(LOOK_SLOTSIZE, 128). % Maximum of 128
--define(LOOK_BLOCKSIZE, {24, 32}). % 4x + y = ?LOOK_SLOTSIZE
--define(NOLOOK_SLOTSIZE, 256).
--define(NOLOOK_BLOCKSIZE, {56, 32}). % 4x + y = ?NOLOOK_SLOTSIZE
+-define(LOOK_SLOTSIZE, 128).
+    % Maximum of 128 - would require a new file version to change
+-define(LOOK_BLOCKSIZE, {24, 32}).
+    % 4x + y = ?LOOK_SLOTSIZE - would require a new file version to change
+    % When reading an individual value need to know what the block sizes were
+    % when the file was written - otherwise find_pos doesn't work.
+    % For no_lookup slots this is not an issue as find_pos isn't required, so
+    % it is easier to change the nolook block/slot sizes.
+-define(NOLOOK_BLOCKSIZE, {56, 32}).
+    % Default value, can be changed, and altered by level by amending
+    % nolook_block_size/1.
+
 -define(COMPRESSION_FACTOR, 1).
     % When using native compression - how hard should the compression code
     % try to reduce the size of the compressed output. 1 Is to imply minimal
@@ -200,6 +208,7 @@
     | false.
 -type fetch_levelzero_fun()
     :: fun((pos_integer(), leveled_penciller:levelzero_returnfun()) -> ok).
+-type level_info() :: {boolean(), non_neg_integer()}.
 
 -record(state,
         {summary,
@@ -1930,17 +1939,22 @@ take_max_lastmoddate(undefined, _LMDAcc) ->
 take_max_lastmoddate(LMD, LMDAcc) ->
     max(LMD, LMDAcc).
 
+
+generate_binary_slot(Lookup, {DR, KVL0}, PressMethod, IMD, BT) ->
+    generate_binary_slot(Lookup, {DR, KVL0}, PressMethod, IMD, BT, default).
+
 -spec generate_binary_slot(
     leveled_codec:maybe_lookup(),
     {forward|reverse, list(leveled_codec:ledger_kv())},
     press_method(),
     boolean(),
-    build_timings()) -> {binary_slot(), build_timings()}.
+    build_timings(),
+    default|leveled_pmanifest:lsm_level()) -> {binary_slot(), build_timings()}.
 %% @doc
 %% Generate the serialised slot to be used when storing this sublist of keys
 %% and values
 generate_binary_slot(
-        Lookup, {DR, KVL0}, PressMethod, IndexModDate, BuildTimings0) ->
+        Lookup, {DR, KVL0}, PressMethod, IndexModDate, BuildTimings0, Level) ->
     % The slot should be received reversed - get last key before flipping
     % accumulate_positions/2 should use the reversed KVL for efficiency
     {KVL, KVLr} =
@@ -1977,7 +1991,7 @@ generate_binary_slot(
             lookup ->
                 ?LOOK_BLOCKSIZE;
             no_lookup ->
-                ?NOLOOK_BLOCKSIZE
+                nolook_block_size(Level)
         end,
 
     {B1, B2, B3, B4, B5} =
@@ -2821,99 +2835,140 @@ merge_lists(KVL1, KVL2, LI, SlotList, FirstKey, SlotCount, MaxSlots,
                                 PressMethod, IdxModDate, CountOfTombs, T0) ->
     % Form a slot by merging the two lists until the next 128 K/V pairs have
     % been determined
-    {KVRem1, KVRem2, Slot, FK0} =
-        form_slot(KVL1, KVL2, LI, no_lookup, 0, [], FirstKey),
+    {KVRem1, KVRem2, Slot, FK0} = form_slot(KVL1, KVL2, LI, FirstKey),
     T1 = update_buildtimings(T0, fold_toslot),
     case Slot of
         {_, []} ->
             % There were no actual keys in the slot (maybe some expired)
-            merge_lists(KVRem1,
-                        KVRem2,
-                        LI,
-                        SlotList,
-                        FK0,
-                        SlotCount,
-                        MaxSlots,
-                        PressMethod,
-                        IdxModDate,
-                        CountOfTombs,
-                        T1);
+            merge_lists(
+                KVRem1,
+                KVRem2,
+                LI,
+                SlotList,
+                FK0,
+                SlotCount,
+                MaxSlots,
+                PressMethod,
+                IdxModDate,
+                CountOfTombs,
+                T1
+            );
         {Lookup, KVL} ->
             % Convert the list of KVs for the slot into a binary, and related
             % metadata
             {SlotD, T2} =
                 generate_binary_slot(
-                    Lookup, {reverse, KVL}, PressMethod, IdxModDate, T1),
-            merge_lists(KVRem1,
-                        KVRem2,
-                        LI,
-                        [SlotD|SlotList],
-                        FK0,
-                        SlotCount + 1,
-                        MaxSlots,
-                        PressMethod,
-                        IdxModDate,
-                        leveled_codec:count_tombs(KVL, CountOfTombs),
-                        T2)
+                    Lookup,
+                    {reverse, KVL},
+                    PressMethod,
+                    IdxModDate,
+                    T1,
+                    element(2, LI)
+                ),
+            merge_lists(
+                KVRem1,
+                KVRem2,
+                LI,
+                [SlotD|SlotList],
+                FK0,
+                SlotCount + 1,
+                MaxSlots,
+                PressMethod,
+                IdxModDate,
+                leveled_codec:count_tombs(KVL, CountOfTombs),
+                T2
+            )
     end.
 
--spec form_slot(list(expanded_pointer()),
-                    list(expanded_pointer()),
-                    {boolean(), non_neg_integer()},
-                    lookup|no_lookup,
-                    non_neg_integer(),
-                    list(leveled_codec:ledger_kv()),
-                    leveled_codec:ledger_key()|null) ->
-                {list(expanded_pointer()), list(expanded_pointer()),
-                    {lookup|no_lookup, list(leveled_codec:ledger_kv())},
-                    leveled_codec:ledger_key()}.
+-spec form_slot(
+    list(expanded_pointer()),
+    list(expanded_pointer()),
+    level_info(),
+    leveled_codec:ledger_key()|null) ->
+        {
+            list(expanded_pointer()), list(expanded_pointer()),
+            {lookup|no_lookup, list(leveled_codec:ledger_kv())},
+            leveled_codec:ledger_key()
+        }.
 %% @doc
 %% Merge together Key Value lists to provide a reverse-ordered slot of KVs
-form_slot([], [], _LI, Type, _Size, Slot, FK) ->
+form_slot(KVL1, KVL2, LI, FK) ->
+    SlotSizes = {?LOOK_SLOTSIZE, nolook_slot_size(element(2, LI))},
+    form_slot(KVL1, KVL2, LI, no_lookup, 0, [], FK, SlotSizes).
+ 
+-spec form_slot(
+    list(expanded_pointer()),
+    list(expanded_pointer()),
+    level_info(),
+    lookup|no_lookup,
+    non_neg_integer(),
+    list(leveled_codec:ledger_kv()),
+    leveled_codec:ledger_key()|null,
+    {pos_integer(), pos_integer()}) ->
+        {
+            list(expanded_pointer()), list(expanded_pointer()),
+            {lookup|no_lookup, list(leveled_codec:ledger_kv())},
+            leveled_codec:ledger_key()
+        }.
+form_slot([], [], _LI, Type, _Size, Slot, FK, _SlotSizes) ->
     {[], [], {Type, Slot}, FK};
-form_slot(KVList1, KVList2, _LI, lookup, ?LOOK_SLOTSIZE, Slot, FK) ->
+form_slot(KVList1, KVList2, _LI, lookup, LSS, Slot, FK, {LSS, _NSS}) ->
     {KVList1, KVList2, {lookup, Slot}, FK};
-form_slot(KVList1, KVList2, _LI, no_lookup, ?NOLOOK_SLOTSIZE, Slot, FK) ->
-    {KVList1, KVList2, {no_lookup, Slot}, FK};
-form_slot(KVList1, KVList2, LevelInfo, lookup, Size, Slot, FK) ->
-    case key_dominates(KVList1, KVList2, LevelInfo) of
+form_slot(KVList1, KVList2, LI, lookup, Size, Slot, FK, SSs) ->
+    case key_dominates(KVList1, KVList2, LI) of
         {{next_key, TopKV}, Rem1, Rem2} ->
-            form_slot(
-                Rem1, Rem2, LevelInfo, lookup, Size + 1, [TopKV|Slot], FK);
+            form_slot(Rem1, Rem2, LI, lookup, Size + 1, [TopKV|Slot], FK, SSs);
         {skipped_key, Rem1, Rem2} ->
-            form_slot(Rem1, Rem2, LevelInfo, lookup, Size, Slot, FK)
+            form_slot(Rem1, Rem2, LI, lookup, Size, Slot, FK, SSs)
     end;
-form_slot(KVList1, KVList2, LevelInfo, no_lookup, Size, Slot, FK) ->
-    case key_dominates(KVList1, KVList2, LevelInfo) of
+form_slot(KVList1, KVList2, LI, no_lookup, Size, Slot, FK, {LSS, NSS}) ->
+    case key_dominates(KVList1, KVList2, LI) of
         {{next_key, {TopK, TopV}}, Rem1, Rem2} ->
             FK0 = case FK of null -> TopK; _ -> FK end,
             case leveled_codec:to_lookup(TopK) of
                 no_lookup ->
-                    form_slot(
-                        Rem1,
-                        Rem2,
-                        LevelInfo,
-                        no_lookup,
-                        Size + 1,
-                        [{TopK, TopV}|Slot],
-                        FK0);
+                    case Size + 1 of
+                        NewSize when NewSize == NSS ->
+                            {
+                                Rem1,
+                                Rem2,
+                                {no_lookup,
+                                [{TopK, TopV}|Slot]},
+                                FK0
+                            };
+                        NewSize ->
+                            form_slot(
+                                Rem1,
+                                Rem2,
+                                LI,
+                                no_lookup,
+                                NewSize,
+                                [{TopK, TopV}|Slot],
+                                FK0,
+                                {LSS, NSS}
+                            )
+                    end;
                 lookup ->
-                    case Size >= ?LOOK_SLOTSIZE of
+                    case Size >= LSS of
                         true ->
                             {KVList1, KVList2, {no_lookup, Slot}, FK};
                         false ->
                             form_slot(
                                 Rem1,
                                 Rem2,
-                                LevelInfo,
+                                LI,
                                 lookup,
-                                Size + 1,
+                                Size +  1,
                                 [{TopK, TopV}|Slot],
-                                FK0)
+                                FK0,
+                                {LSS, NSS}
+                            )
                     end
             end;
         {skipped_key, Rem1, Rem2} ->
-            form_slot(Rem1, Rem2, LevelInfo, no_lookup, Size, Slot, FK)
+            form_slot(
+                Rem1, Rem2, LI, no_lookup, Size, Slot, FK, {LSS, NSS}
+            )
     end.
 
 -spec key_dominates(
@@ -2988,7 +3043,20 @@ key_dominates_expanded([H1|T1], [H2|T2]) ->
             {skipped_key, T1, [H2|T2]}
     end.
 
+-spec nolook_block_size(
+    default|leveled_pmanifest:lsm_level()) -> {pos_integer(), pos_integer()}.
+nolook_block_size(L) when is_integer(L), L =< 2 ->
+    {28, 16};
+nolook_block_size(L) when is_integer(L), L =< 4 ->
+    {42, 24};
+nolook_block_size(_) ->
+    ?NOLOOK_BLOCKSIZE.
 
+-spec nolook_slot_size(
+    default|leveled_pmanifest:lsm_level()) -> pos_integer().
+nolook_slot_size(L) ->
+    {Side, Mid} = nolook_block_size(L),
+    Side * 4 + Mid.
 
 %%%============================================================================
 %%% Timing Functions
@@ -3212,12 +3280,16 @@ form_slot_test() ->
     Slot =
         [{{o, "B1", "K5", null},
             {5, {active, infinity}, {99234568, 99234567}, {}}}],
-    R1 = form_slot([SkippingKV], [],
-                    {true, 99999999},
-                    no_lookup,
-                    ?LOOK_SLOTSIZE + 1,
-                    Slot,
-                    {o, "B1", "K5", null}),
+    R1 =
+        form_slot(
+            [SkippingKV], [],
+            {true, 99999999},
+            no_lookup,
+            ?LOOK_SLOTSIZE + 1,
+            Slot,
+            {o, "B1", "K5", null},
+            {?LOOK_SLOTSIZE, 512}
+        ),
     ?assertMatch({[], [], {no_lookup, Slot}, {o, "B1", "K5", null}}, R1).
 
 merge_tombstonelist_test() ->
@@ -3351,8 +3423,11 @@ indexed_list_allindexkeys_test() ->
             FullBinF, all, all, native, false, false)).
 
 indexed_list_allindexkeys_nolookup_test() ->
-    Keys = lists:sublist(lists:ukeysort(1, generate_indexkeys(1000)),
-                            ?NOLOOK_SLOTSIZE),
+    Keys =
+        lists:sublist(
+            lists:ukeysort(1, generate_indexkeys(1000)),
+            nolook_slot_size(default)
+        ),
     {{Header, FullBin, _HL, _LK}, no_timing} =
         generate_binary_slot(
             no_lookup, {forward, Keys}, native, ?INDEX_MODDATE,no_timing),
@@ -3762,18 +3837,20 @@ additional_range_test() ->
     % - ranges which fall between entries in summary
     % - ranges which go beyond the end of the range of the sst
     % - ranges which match to an end key in the summary index
-    IK1 = lists:foldl(fun(X, Acc) ->
-                            Acc ++ generate_indexkey(X, X)
-                        end,
-                        [],
-                        lists:seq(1, ?NOLOOK_SLOTSIZE)),
+    NoLookSlotSize = nolook_slot_size(1),
+    IK1 =
+        lists:foldl(
+            fun(X, Acc) -> Acc ++ generate_indexkey(X, X) end,
+            [],
+            lists:seq(1, NoLookSlotSize)
+        ),
     Gap = 2,
-    IK2 = lists:foldl(fun(X, Acc) ->
-                            Acc ++ generate_indexkey(X, X)
-                        end,
-                        [],
-                        lists:seq(?NOLOOK_SLOTSIZE + Gap + 1,
-                                    2 * ?NOLOOK_SLOTSIZE + Gap)),
+    IK2 =
+        lists:foldl(
+            fun(X, Acc) -> Acc ++ generate_indexkey(X, X) end,
+            [],
+            lists:seq(NoLookSlotSize + Gap + 1, 2 * NoLookSlotSize + Gap)
+        ),
     {ok, P1, {{Rem1, Rem2}, SK, EK}, _Bloom1} =
         testsst_new(?TEST_AREA, "range1_src", IK1, IK2, false, 1, 9999, native),
     ?assertMatch([], Rem1),
@@ -3783,33 +3860,35 @@ additional_range_test() ->
 
     % Basic test - checking scanwidth
     R1 = sst_getkvrange(P1, SK, EK, 1),
-    ?assertMatch(?NOLOOK_SLOTSIZE + 1, length(R1)),
-    QR1 = lists:sublist(R1, ?NOLOOK_SLOTSIZE),
+    ?assertMatch(NoLookSlotSize, length(R1) - 1),
+    QR1 = lists:sublist(R1, NoLookSlotSize),
     ?assertMatch(IK1, QR1),
     R2 = sst_getkvrange(P1, SK, EK, 2),
-    ?assertMatch(?NOLOOK_SLOTSIZE * 2, length(R2)),
-    QR2 = lists:sublist(R2, ?NOLOOK_SLOTSIZE),
-    QR3 = lists:sublist(R2, ?NOLOOK_SLOTSIZE + 1, 2 * ?NOLOOK_SLOTSIZE),
+    ?assertMatch(NoLookSlotSize, length(R2) div 2),
+    QR2 = lists:sublist(R2, NoLookSlotSize),
+    QR3 = lists:sublist(R2, NoLookSlotSize + 1, 2 * NoLookSlotSize),
     ?assertMatch(IK1, QR2),
     ?assertMatch(IK2, QR3),
 
     % Testing the gap
-    [GapSKV] = generate_indexkey(?NOLOOK_SLOTSIZE + 1, ?NOLOOK_SLOTSIZE + 1),
-    [GapEKV] = generate_indexkey(?NOLOOK_SLOTSIZE + 2, ?NOLOOK_SLOTSIZE + 2),
+    [GapSKV] = generate_indexkey(NoLookSlotSize + 1, NoLookSlotSize + 1),
+    [GapEKV] = generate_indexkey(NoLookSlotSize + 2, NoLookSlotSize + 2),
     io:format("Gap test between ~p and ~p", [GapSKV, GapEKV]),
     R3 = sst_getkvrange(P1, element(1, GapSKV), element(1, GapEKV), 1),
     ?assertMatch([], R3),
 
     % Testing beyond the range
-    [PastEKV] = generate_indexkey(2 * ?NOLOOK_SLOTSIZE + Gap + 1,
-                                    2 * ?NOLOOK_SLOTSIZE + Gap + 1),
+    [PastEKV] = generate_indexkey(2 * NoLookSlotSize + Gap + 1,
+                                    2 * NoLookSlotSize + Gap + 1),
     R4 = sst_getkvrange(P1, element(1, GapSKV), element(1, PastEKV), 2),
     ?assertMatch(IK2, R4),
     R5 = sst_getkvrange(P1, SK, element(1, PastEKV), 2),
     IKAll = IK1 ++ IK2,
     ?assertMatch(IKAll, R5),
-    [MidREKV] = generate_indexkey(?NOLOOK_SLOTSIZE + Gap + 2,
-                                    ?NOLOOK_SLOTSIZE + Gap + 2),
+    [MidREKV] =
+        generate_indexkey(
+            NoLookSlotSize + Gap + 2, NoLookSlotSize + Gap + 2
+        ),
     io:format(user, "Mid second range to past range test~n", []),
     R6 = sst_getkvrange(P1, element(1, MidREKV), element(1, PastEKV), 2),
     Exp6 = lists:sublist(IK2, 2, length(IK2)),
