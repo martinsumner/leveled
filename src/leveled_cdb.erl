@@ -1507,12 +1507,12 @@ read_next_n_integerpairs(Handle, NumberOfPairs) ->
     read_integerpairs(Block, []).
 
 read_integerpairs(<<>>, Pairs) ->
-    Pairs;
-read_integerpairs(<<Int1:32/little-integer, Int2:32/little-integer,
-                        Rest/binary>>, Pairs) ->
-    read_integerpairs(<<Rest/binary>>, Pairs ++ [{Int1, Int2}]).
-
-
+    lists:reverse(Pairs);
+read_integerpairs(
+        <<Int1:32/little-integer, Int2:32/little-integer, Rest/binary>>,
+        Pairs
+    ) ->
+    read_integerpairs(<<Rest/binary>>, [{Int1, Int2}|Pairs]).
 
 -spec search_hash_table(
     file:io_device(), tuple(), integer(), any(),
@@ -1732,7 +1732,7 @@ build_hashtree_binary([{TopSlot, TopBin}|SlotMapTail], IdxLen, SlotPos, Bin) ->
     case TopSlot of
         N when N > SlotPos ->
             D = N - SlotPos,
-            Bridge = lists:duplicate(D, <<0:64>>) ++ Bin,
+            Bridge = lists:append(lists:duplicate(D, <<0:64>>), Bin),
             UpdBin = [<<TopBin/binary>>|Bridge],
             build_hashtree_binary(SlotMapTail,
                                     IdxLen,
@@ -1802,7 +1802,7 @@ write_hash_tables([Index|Rest], HashTree, CurrPos, BasePos,
                                 CurrPos + IndexLength * ?DWORD_SIZE,
                                 BasePos,
                                 [{Index, CurrPos, IndexLength}|IndexList],
-                                HT_BinList ++ NewSlotBin,
+                                lists:append(HT_BinList, NewSlotBin),
                                 {T1, T2, T3})
     end.
 

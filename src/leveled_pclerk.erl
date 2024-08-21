@@ -51,10 +51,12 @@
 
 -record(state, {owner :: pid() | undefined,
                 root_path :: string() | undefined,
-                pending_deletions = dict:new() :: dict:dict(),
+                pending_deletions = maps:new() :: deletions_map(),
                 sst_options :: sst_options()
                 }).
 
+-type deletions_map() ::
+    #{pos_integer() => list(leveled_pmanifest:manifest_entry())}.
 -type sst_options() :: #sst_options{}.
 
 %%%============================================================================
@@ -129,7 +131,7 @@ handle_cast({push_work, Work}, State) ->
         handle_work(
             Work,
             State#state.root_path, State#state.sst_options, State#state.owner),
-    PDs = dict:store(ManifestSQN, Deletions, State#state.pending_deletions),
+    PDs = maps:put(ManifestSQN, Deletions, State#state.pending_deletions),
     leveled_log:log(pc022, [ManifestSQN]),
     {noreply, State#state{pending_deletions = PDs}, ?MIN_TIMEOUT};
 handle_cast({prompt_deletions, ManifestSQN}, State) ->
@@ -286,7 +288,7 @@ perform_merge(Manifest,
 
 do_merge([], [], SinkLevel, _SinkB, _RP, NewSQN, _MaxSQN, _Opts, Additions) ->
     leveled_log:log(pc011, [NewSQN, SinkLevel, length(Additions)]),
-    Additions;
+    lists:reverse(Additions);
 do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, OptsSST, Additions) ->
     FileName = leveled_penciller:sst_filename(NewSQN,
                                                 SinkLevel,
@@ -315,7 +317,7 @@ do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, OptsSST, Additions) ->
                             SinkLevel, SinkB,
                             RP, NewSQN, MaxSQN,
                             OptsSST,
-                            Additions ++ [Entry])
+                            [Entry|Additions])
     end.
 
 -spec grooming_scorer(
@@ -346,9 +348,9 @@ return_deletions(ManifestSQN, PendingDeletionD) ->
     % LoopData
     %
     % So this is now allowed to crash again
-    PendingDeletions = dict:fetch(ManifestSQN, PendingDeletionD),
+    PendingDeletions = maps:get(ManifestSQN, PendingDeletionD),
     leveled_log:log(pc021, [ManifestSQN]),
-    {PendingDeletions, dict:erase(ManifestSQN, PendingDeletionD)}.
+    {PendingDeletions, maps:remove(ManifestSQN, PendingDeletionD)}.
 
 %%%============================================================================
 %%% Test

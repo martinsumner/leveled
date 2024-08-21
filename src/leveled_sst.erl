@@ -992,7 +992,7 @@ expand_list_by_pointer(
         [{pointer, SSTPid, Slot, StartKey, EndKey}|LocalPointers],
         SegChecker,
         LowLastMod,
-        OtherPointers ++ Remainder
+        lists:append(OtherPointers, Remainder)
     );
 expand_list_by_pointer(
         {next, ManEntry, StartKey, EndKey},
@@ -1005,7 +1005,7 @@ expand_list_by_pointer(
     SSTPid = ManEntry#manifest_entry.owner,
     leveled_log:log(sst10, [SSTPid, is_process_alive(SSTPid)]),
     ExpPointer = sst_getfilteredrange(SSTPid, StartKey, EndKey, LowLastMod),
-    ExpPointer ++ Tail.
+    lists:append(ExpPointer, Tail).
 
 
 -spec sst_getfilteredrange(
@@ -1420,13 +1420,15 @@ fetch_range(StartKey, EndKey, Summary, FilterFun, true) ->
                     MidSlots),
             case RTrim of
                 true ->
-                    [{pointer, Self, LSlot, StartKey, all}] ++
-                        MidSlotPointers ++
-                        [{pointer, Self, RSlot, all, EndKey}];
+                    lists:append(
+                        [{pointer, Self, LSlot, StartKey, all}|MidSlotPointers],
+                        [{pointer, Self, RSlot, all, EndKey}]
+                    );
                 false ->
-                    [{pointer, Self, LSlot, StartKey, all}] ++
-                        MidSlotPointers ++
+                    lists:append(
+                        [{pointer, Self, LSlot, StartKey, all}|MidSlotPointers],
                         [{pointer, Self, RSlot, all, all}]
+                    )
             end
     end;
 fetch_range(_StartKey, _EndKey, _Summary, _FilterFun, false) ->
@@ -2224,7 +2226,10 @@ read_slots(Handle, SlotList, {SegChecker, LowLastMod, BlockIndexCache},
                     % If there is an attempt to use the seg list query and the
                     % index block cache isn't cached for any part this may be
                     % slower as each slot will be read in turn
-                    {true, read_slotlist([Pointer], Handle) ++ Acc};
+                    {
+                        true,
+                        lists:append(read_slotlist([Pointer], Handle), Acc)
+                    };
                 {BlockLengths, LMD, BlockIdx} ->
                     % If there is a BlockIndex cached then we can use it to
                     % check to see if any of the expected segments are
@@ -2243,9 +2248,11 @@ read_slots(Handle, SlotList, {SegChecker, LowLastMod, BlockIndexCache},
                                 false ->
                                     % No SegChecker - need all the slot now
                                     {NeededBlockIdx,
-                                        read_slotlist([Pointer], Handle) ++ Acc
-                                        };
-                                SegChecker ->
+                                        lists:append(
+                                            read_slotlist([Pointer], Handle),
+                                            Acc
+                                        )};
+                                _ ->
                                     TrimmedKVL =
                                         checkblocks_segandrange(
                                             BlockIdx,
@@ -2255,7 +2262,10 @@ read_slots(Handle, SlotList, {SegChecker, LowLastMod, BlockIndexCache},
                                             IdxModDate,
                                             SegChecker,
                                             {SK, EK}),
-                                    {NeededBlockIdx, TrimmedKVL ++ Acc}
+                                    {
+                                        NeededBlockIdx,
+                                        lists:append(TrimmedKVL, Acc)
+                                    }
                             end
                     end
             end
@@ -2321,7 +2331,7 @@ binaryslot_reader(
     {Acc, BIAcc} =
         binaryslot_reader(
             SlotBinsToFetch, PressMethod, IdxModDate, SegChecker, [], []),
-    {lists:reverse(lists:reverse(SlotsToPoint) ++ Acc), BIAcc}.
+    {lists:reverse(lists:append(lists:reverse(SlotsToPoint), Acc)), BIAcc}.
 
 binaryslot_reader([], _PressMethod, _IdxModDate, _SegChecker, Acc, BIAcc) ->
     {Acc, BIAcc};
@@ -2338,14 +2348,14 @@ binaryslot_reader(
             SlotBin, SK, EK, PressMethod, IdxModDate, SegChecker),
     binaryslot_reader(
         Tail, PressMethod, IdxModDate, SegChecker,
-            lists:reverse(TrimmedL) ++ Acc, [{ID, BICache}|BIAcc]);
+            lists:append(lists:reverse(TrimmedL), Acc), [{ID, BICache}|BIAcc]);
 binaryslot_reader(L, PressMethod, IdxModDate, SegChecker, Acc, BIAcc) ->
     {KVs, Tail} = lists:splitwith(fun(SR) -> tuple_size(SR) == 2 end, L),
     % These entries must already have been filtered for membership inside any
     % range used in the query.
     binaryslot_reader(
         Tail, PressMethod, IdxModDate, SegChecker,
-            lists:reverse(KVs) ++ Acc, BIAcc).
+            lists:append(lists:reverse(KVs), Acc), BIAcc).
 
 
 read_length_list(Handle, LengthList) ->
@@ -2402,7 +2412,7 @@ binaryslot_blockstolist([L|RestLengths], Bin, PressMethod, Acc) ->
         RestLengths,
         RestBin,
         PressMethod,
-        Acc ++ deserialise_block(Block, PressMethod)).
+        lists:append(Acc, deserialise_block(Block, PressMethod))).
 
 -spec binaryslot_tolist(
         binary(), press_method(), boolean())
@@ -2987,7 +2997,6 @@ key_dominates_expanded([H1|T1], [H2|T2]) ->
         false ->
             {skipped_key, T1, [H2|T2]}
     end.
-
 
 
 %%%============================================================================

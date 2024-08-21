@@ -2341,8 +2341,8 @@ preparefor_ledgercache(_InkTag,
     {Bucket, Key, MetaValue, {KeyH, _ObjH}, _LastMods} =
         leveled_codec:generate_ledgerkv(LedgerKey, SQN, Obj, Size, TTL),
     KeyChanges =
-        [{LedgerKey, MetaValue}] ++
-            leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL),
+        [{LedgerKey, MetaValue}|
+            leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL)],
     {KeyH, SQN, KeyChanges}.
 
 
@@ -2392,8 +2392,8 @@ recalcfor_ledgercache(_InkTag,
         leveled_head:diff_indexspecs(element(1, LK), UpdMetadata, OldMetadata),
     {KeyH,
         SQN,
-        [{LK, MetaValue}]
-            ++ leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL)}.
+        [{LK, MetaValue}|
+            leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL)]}.
 
 
 -spec addto_ledgercache({leveled_codec:segment_hash(), 

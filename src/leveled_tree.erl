@@ -356,12 +356,12 @@ treelookup_range_end(EndRange, {NK0, SL0}, Iter0, Output, EndRangeFun) ->
             [{FirstRHSKey, FirstRHSValue}|_Rest] = RHS,
             case EndRangeFun(EndRange, FirstRHSKey, FirstRHSValue) of
                 true ->
-                    Output ++ LHS ++ [{FirstRHSKey, FirstRHSValue}];
+                    lists:append([Output, LHS, [{FirstRHSKey, FirstRHSValue}]]);
                 false ->
-                    Output ++ LHS
+                    lists:append(Output, LHS)
             end;
         false ->
-            UpdOutput = Output ++ SL0,
+            UpdOutput = lists:append(Output, SL0),
             case tree_next(Iter0) of
                 none ->
                     UpdOutput;
@@ -412,14 +412,14 @@ idxtlookup_range_end(EndRange, {TLI, NK0, SL0}, Iter0, Output, EndRangeFun) ->
                 true ->
                     % The start key is not after the end of the range
                     % and so this should be included in the range
-                    Output ++ LHS ++ [{FirstRHSKey, FirstRHSValue}];
+                    lists:append([Output, LHS, [{FirstRHSKey, FirstRHSValue}]]);
                 false ->
                     % the start key of the next key is after the end
                     % of the range and so should not be included
-                    Output ++ LHS
+                    lists:append(Output, LHS)
             end;
         false ->
-            UpdOutput = Output ++ SL0,
+            UpdOutput = lists:append(Output, SL0),
             case tree_next(Iter0) of
                 none ->
                     UpdOutput;
@@ -491,12 +491,12 @@ skpllookup_to_range(StartRange, EndRange, SkipList, EndRangeFun) ->
         2 ->
             RHSofLHL = lists:dropwhile(BeforeFun, lists:nth(1, Lv0List)),
             LHSofRHL = lists:takewhile(AfterFun, lists:last(Lv0List)),
-            RHSofLHL ++ LHSofRHL;
+            lists:append(RHSofLHL, LHSofRHL);
         L ->
             RHSofLHL = lists:dropwhile(BeforeFun, lists:nth(1, Lv0List)),
             LHSofRHL = lists:takewhile(AfterFun, lists:last(Lv0List)),
             MidLists = lists:sublist(Lv0List, 2, L - 2),
-            lists:append([RHSofLHL] ++ MidLists ++ [LHSofRHL])
+            lists:append(lists:append([[RHSofLHL], MidLists, [LHSofRHL]]))
     end.
 
 

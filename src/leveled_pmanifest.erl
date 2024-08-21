@@ -96,10 +96,10 @@
                     min_snapshot_sqn = 0 :: integer(),
                         % The smallest snapshot manifest SQN in the snapshot
                         % list
-                    pending_deletes = dict:new() :: dict:dict(), 
-                    basement :: non_neg_integer(),
+                    pending_deletes = maps:new() :: pending_deletes_map(), 
+                    basement = 0 :: non_neg_integer(),
                         % Currently the lowest level (the largest number)
-                    blooms :: dict:dict()
+                    blooms = maps:new() :: bloom_map()
                     }).      
 
 -type snapshot() ::
@@ -108,8 +108,11 @@
 -type manifest_entry() :: #manifest_entry{}.
 -type manifest_owner() :: pid()|list().
 -type lsm_level() :: 0..7.
--type selector_strategy() ::
-        random|{grooming, fun((list(manifest_entry())) -> manifest_entry())}.
+-type pending_deletes_map()
+    :: #{file:name_all() => {pos_integer(), manifest_entry()}}.
+-type bloom_map() :: #{pid() => leveled_ebloom:bloom()}.
+-type selector_strategy()
+    :: random|{grooming, fun((list(manifest_entry())) -> manifest_entry())}.
 
 -export_type([manifest/0, manifest_entry/0, manifest_owner/0, lsm_level/0]).
 
@@ -129,17 +132,13 @@ new_manifest() ->
         fun(IDX, Acc) ->
             array:set(IDX, leveled_tree:empty(?TREE_TYPE), Acc)
         end,
-    LevelArray1 = lists:foldl(SetLowerLevelFun,
-                                LevelArray0,
-                                lists:seq(2, ?MAX_LEVELS)),
-    #manifest{
-        levels = LevelArray1, 
-        manifest_sqn = 0, 
-        snapshots = [],
-        pending_deletes = dict:new(),
-        basement = 0,
-        blooms = dict:new()
-    }.    
+    LevelArray1 =
+        lists:foldl(
+            SetLowerLevelFun,
+            LevelArray0,
+            lists:seq(2, ?MAX_LEVELS)
+        ),
+    #manifest{levels = LevelArray1}.    
 
 -spec open_manifest(string()) -> manifest().
 %% @doc
@@ -160,9 +159,8 @@ open_manifest(RootPath) ->
                     Acc ++ [list_to_integer(Int)]
             end
         end,
-    ValidManSQNs = lists:reverse(lists:sort(lists:foldl(ExtractSQNFun,
-                                                        [],
-                                                        Filenames))),
+    ValidManSQNs =
+        lists:reverse(lists:sort(lists:foldl(ExtractSQNFun, [], Filenames))),
     open_manifestfile(RootPath, ValidManSQNs).
 
 -spec copy_manifest(manifest()) -> manifest().
@@ -172,7 +170,7 @@ open_manifest(RootPath) ->
 copy_manifest(Manifest) ->
     % Copy the manifest ensuring anything only the master process should care
     % about is switched to be empty
-    Manifest#manifest{snapshots = [], pending_deletes = dict:new()}.
+    Manifest#manifest{snapshots = [], pending_deletes = maps:new()}.
 
 -spec load_manifest(
     manifest(),
@@ -198,7 +196,7 @@ load_manifest(Manifest, LoadFun, SQNFun) ->
             UpdLevels = array:set(LevelIdx, L1, AccMan#manifest.levels),
             FoldBloomFun = 
                 fun({P, B}, BAcc) -> 
-                    dict:store(P, B, BAcc) 
+                    maps:put(P, B, BAcc) 
                 end,
             UpdBlooms = 
                 lists:foldl(FoldBloomFun, AccMan#manifest.blooms, LvlBloom),
@@ -229,7 +227,7 @@ close_manifest(Manifest, CloseEntryFun) ->
         fun({_FN, {_SQN, ME}}) ->
             CloseEntryFun(ME)
         end,
-    lists:foreach(ClosePDFun, dict:to_list(Manifest#manifest.pending_deletes)).
+    lists:foreach(ClosePDFun, maps:to_list(Manifest#manifest.pending_deletes)).
 
 -spec save_manifest(manifest(), string()) -> ok.
 %% @doc
@@ -237,10 +235,14 @@ close_manifest(Manifest, CloseEntryFun) ->
 save_manifest(Manifest, RootPath) ->
     TFP = filepath(RootPath, Manifest#manifest.manifest_sqn, pending_manifest),
     AFP = filepath(RootPath, Manifest#manifest.manifest_sqn, current_manifest),
-    ManBin = term_to_binary(Manifest#manifest{snapshots = [],
-                                                pending_deletes = dict:new(),
-                                                min_snapshot_sqn = 0,
-                                                blooms = dict:new()}),
+    ManBin =
+        term_to_binary(
+            Manifest#manifest{
+                snapshots = [],
+                pending_deletes = maps:new(),
+                min_snapshot_sqn = 0,
+                blooms = maps:new()}
+            ),
     CRC = erlang:crc32(ManBin),
     ToPersist = <<CRC:32/integer, ManBin/binary>>,
     ok = leveled_util:safe_rename(TFP, AFP, ToPersist, true),
@@ -578,7 +580,7 @@ release_snapshot(Manifest, Pid) ->
     FilterFun =
         fun({P, SQN, ST, TO}, {Acc, MinSQN, Found}) ->
             case P of
-                Pid ->
+                PMatch when PMatch == Pid ->
                     {Acc, MinSQN, true};
                 _ ->
                     case seconds_now() > (ST + TO) of 
@@ -617,7 +619,7 @@ release_snapshot(Manifest, Pid) ->
 %% remove the file from the manifest's list of pending_deletes.
 -spec ready_to_delete(manifest(), string()) -> boolean().
 ready_to_delete(Manifest, Filename) ->
-    PendingDelete = dict:find(Filename, Manifest#manifest.pending_deletes),
+    PendingDelete = maps:find(Filename, Manifest#manifest.pending_deletes),
     case {PendingDelete, Manifest#manifest.min_snapshot_sqn} of
         {{ok, _}, 0} ->
             % no shapshots
@@ -638,7 +640,7 @@ clear_pending(Manifest, [], true) ->
 clear_pending(Manifest, [], false) ->
     Manifest;
 clear_pending(Manifest, [FN|RestFN], MaybeRelease) ->
-    PDs = dict:erase(FN, Manifest#manifest.pending_deletes),
+    PDs = maps:remove(FN, Manifest#manifest.pending_deletes),
     clear_pending(
         Manifest#manifest{pending_deletes = PDs},
         RestFN,
@@ -695,7 +697,7 @@ levelzero_present(Manifest) ->
 %% Check to see if a hash is present in a manifest entry by using the exported
 %% bloom filter
 check_bloom(Manifest, FP, Hash) ->
-    case dict:find(FP, Manifest#manifest.blooms) of 
+    case maps:find(FP, Manifest#manifest.blooms) of 
         {ok, Bloom} when is_binary(Bloom) ->
             leveled_ebloom:check_hash(Hash, Bloom);
         _ ->
@@ -818,9 +820,12 @@ add_entry(_LevelIdx, Level, []) ->
     Level;
 add_entry(LevelIdx, Level, Entries) when is_list(Entries) ->
     FirstEntry = lists:nth(1, Entries),
-    PredFun = pred_fun(LevelIdx,
-                        FirstEntry#manifest_entry.start_key,
-                        FirstEntry#manifest_entry.end_key),
+    PredFun =
+        pred_fun(
+            LevelIdx,
+            FirstEntry#manifest_entry.start_key,
+            FirstEntry#manifest_entry.end_key
+        ),
     case LevelIdx =< 1 of
         true ->
             {LHS, RHS} = lists:splitwith(PredFun, Level),
@@ -851,9 +856,12 @@ measure_removals(Removals) ->
     end.
 
 remove_section(LevelIdx, Level, FirstEntry, SectionLength) ->
-    PredFun = pred_fun(LevelIdx,
-                        FirstEntry#manifest_entry.start_key,
-                        FirstEntry#manifest_entry.end_key),
+    PredFun =
+        pred_fun(
+            LevelIdx,
+            FirstEntry#manifest_entry.start_key,
+            FirstEntry#manifest_entry.end_key
+        ),
     case LevelIdx =< 1 of
         true ->
             {LHS, RHS} = lists:splitwith(PredFun, Level),
@@ -862,24 +870,30 @@ remove_section(LevelIdx, Level, FirstEntry, SectionLength) ->
         false ->
             {LHS, RHS} = lists:splitwith(PredFun, leveled_tree:to_list(Level)),
             Post = lists:nthtail(SectionLength, RHS),
-            leveled_tree:from_orderedlist(lists:append([LHS, Post]),
-                                            ?TREE_TYPE,
-                                            ?TREE_WIDTH)
+            leveled_tree:from_orderedlist(
+                lists:append([LHS, Post]), ?TREE_TYPE, ?TREE_WIDTH
+            )
     end.
 
 replace_entry(LevelIdx, Level, Removals, Additions) when LevelIdx =< 1 ->
     {SectionLength, FirstEntry} = measure_removals(Removals),
-    PredFun = pred_fun(LevelIdx,
-                        FirstEntry#manifest_entry.start_key,
-                        FirstEntry#manifest_entry.end_key),
+    PredFun =
+        pred_fun(
+            LevelIdx,
+            FirstEntry#manifest_entry.start_key,
+            FirstEntry#manifest_entry.end_key
+        ),
     {LHS, RHS} = lists:splitwith(PredFun, Level),
     Post = lists:nthtail(SectionLength, RHS),
     lists:append([LHS, Additions, Post]);
 replace_entry(LevelIdx, Level, Removals, Additions) ->
     {SectionLength, FirstEntry} = measure_removals(Removals),
-    PredFun = pred_fun(LevelIdx,
-                        FirstEntry#manifest_entry.start_key,
-                        FirstEntry#manifest_entry.end_key),
+    PredFun =
+        pred_fun(
+            LevelIdx,
+            FirstEntry#manifest_entry.start_key,
+            FirstEntry#manifest_entry.end_key
+        ),
     {LHS, RHS} = lists:splitwith(PredFun, leveled_tree:to_list(Level)),
     Post =
         case RHS of
@@ -899,9 +913,7 @@ replace_entry(LevelIdx, Level, Removals, Additions) ->
 update_pendingdeletes(ManSQN, Removals, PendingDeletes) ->
     DelFun =
         fun(E, Acc) ->
-            dict:store(E#manifest_entry.filename,
-                        {ManSQN, E},
-                        Acc)
+            maps:put(E#manifest_entry.filename, {ManSQN, E}, Acc)
         end,
     Entries = 
         case is_list(Removals) of
@@ -912,10 +924,10 @@ update_pendingdeletes(ManSQN, Removals, PendingDeletes) ->
         end,
     lists:foldl(DelFun, PendingDeletes, Entries).
 
--spec update_blooms(list()|manifest_entry(), 
-                    list()|manifest_entry(), 
-                    any()) 
-                                                -> {any(), list()}.
+-spec update_blooms(
+        list()|manifest_entry(), 
+        list()|manifest_entry(), 
+        any()) -> {any(), list()}.
 %% @doc
 %%
 %% The manifest is a Pid-> Bloom mappping for every Pid, and this needs to 
@@ -936,11 +948,11 @@ update_blooms(Removals, Additions, Blooms) ->
 
     RemFun = 
         fun(R, BloomD) ->
-            dict:erase(R#manifest_entry.owner, BloomD)
+            maps:remove(R#manifest_entry.owner, BloomD)
         end,
     AddFun =
         fun(A, BloomD) ->
-            dict:store(A#manifest_entry.owner, A#manifest_entry.bloom, BloomD)
+            maps:put(A#manifest_entry.owner, A#manifest_entry.bloom, BloomD)
         end,
     StripFun =
         fun(A) ->
@@ -1057,7 +1069,8 @@ open_manifestfile(RootPath, [TopManSQN|Rest]) ->
     case erlang:crc32(BinaryOfTerm) of
         CRC ->
             leveled_log:log(p0012, [TopManSQN]),
-            binary_to_term(BinaryOfTerm);
+            M = binary_to_term(BinaryOfTerm),
+            M#manifest{pending_deletes = maps:new(), blooms = maps:new()};
         _ ->
             leveled_log:log(p0033, [CurrManFile, "crc wonky"]),
             open_manifestfile(RootPath, Rest)
@@ -1518,7 +1531,7 @@ potential_issue_test() ->
                   {idxt,0,{{},{0,nil}}},
                   {idxt,0,{{},{0,nil}}},
                   []}},
-          19, [], 0, dict:new(), 2, dict:new()},
+          19, [], 0, maps:new(), 2, maps:new()},
     Range1 = range_lookup(Manifest, 
                             1, 
                             {o_rkv, "Bucket", null, null}, 
