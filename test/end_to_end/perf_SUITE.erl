@@ -93,13 +93,13 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
         fun(ListID) ->
             fun() ->
                 RandInt = leveled_rand:uniform(IndexCount - 1),
-                IntIndex = "integer" ++ integer_to_list(ListID) ++ "_int",
-                BinIndex = "binary" ++ integer_to_list(ListID) ++ "_bin",
-                [{add, list_to_binary(IntIndex), RandInt},
+                IntIndex = ["integer", integer_to_list(ListID), "_int"],
+                BinIndex = ["binary", integer_to_list(ListID), "_bin"],
+                [{add, iolist_to_binary(IntIndex), RandInt},
                 {add, ?PEOPLE_INDEX, list_to_binary(random_people_index())},
-                {add, list_to_binary(IntIndex), RandInt + 1},
-                {add, list_to_binary(BinIndex), <<RandInt:32/integer>>},
-                {add, list_to_binary(BinIndex), <<(RandInt + 1):32/integer>>}]
+                {add, iolist_to_binary(IntIndex), RandInt + 1},
+                {add, iolist_to_binary(BinIndex), <<RandInt:32/integer>>},
+                {add, iolist_to_binary(BinIndex), <<(RandInt + 1):32/integer>>}]
             end
         end,
 
@@ -361,7 +361,7 @@ profile_app(Pids, ProfiledFun, P) ->
 
     eprof:stop_profiling(),
     eprof:log(atom_to_list(P) ++ ".log"),
-    eprof:analyze(total, [{filter, [{time, 150000}]}]),
+    eprof:analyze(total, [{filter, [{time, 100000}]}]),
     eprof:stop(),
     {ok, Analysis} = file:read_file(atom_to_list(P) ++ ".log"),
     io:format(user, "~n~s~n", [Analysis])
@@ -609,7 +609,7 @@ random_queries(Bookie, Bucket, IDs, IdxCnt, MaxRange, IndexesReturned) ->
         fun() ->
             ID = leveled_rand:uniform(IDs), 
             BinIndex =
-                list_to_binary("binary" ++ integer_to_list(ID) ++ "_bin"),
+                iolist_to_binary(["binary", integer_to_list(ID), "_bin"]),
             Twenty = IdxCnt div 5,
             RI = leveled_rand:uniform(MaxRange),
             [Start, End] =
