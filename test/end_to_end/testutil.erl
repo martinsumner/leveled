@@ -295,8 +295,11 @@ reset_filestructure(RootPath) when is_list(RootPath) ->
     reset_filestructure(0, RootPath).
 
 reset_filestructure(Wait, RootPath) ->
-    io:format("Waiting ~w ms to give a chance for all file closes " ++
-                 "to complete~n", [Wait]),
+    io:format(
+        "Waiting ~w ms to give a chance for all file closes "
+        "to complete~n",
+        [Wait]
+    ),
     timer:sleep(Wait),
     filelib:ensure_dir(RootPath ++ "/journal/"),
     filelib:ensure_dir(RootPath ++ "/ledger/"),
@@ -311,8 +314,11 @@ wait_for_compaction(Bookie) ->
                             false ->
                                 false;
                             true ->
-                                io:format("Loop ~w waiting for journal "
-                                    ++ "compaction to complete~n", [X]),
+                                io:format(
+                                    "Loop ~w waiting for journal "
+                                    "compaction to complete~n",
+                                    [X]
+                                ),
                                 timer:sleep(5000),
                                 F(Bookie)
                         end end,
@@ -855,7 +861,7 @@ put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i, V) ->
                 end,
             % Note that order in the SpecL is important, as
             % check_indexed_objects, needs to find the latest item added
-            {{K, NewSpecs ++ AddSpc}, AccOut}
+            {{K, lists:append(NewSpecs, AddSpc)}, AccOut}
         end,
     {RplKSpecL, Pauses} = lists:mapfoldl(MapFun, 0, KSpecL),
     io:format(
@@ -949,17 +955,22 @@ compact_and_wait(Book) ->
 compact_and_wait(Book, WaitForDelete) ->
     ok = leveled_bookie:book_compactjournal(Book, 30000),
     F = fun leveled_bookie:book_islastcompactionpending/1,
-    lists:foldl(fun(X, Pending) ->
-                        case Pending of
-                            false ->
-                                false;
-                            true ->
-                                io:format("Loop ~w waiting for journal "
-                                    ++ "compaction to complete~n", [X]),
-                                timer:sleep(20000),
-                                F(Book)
-                        end end,
-                    true,
-                    lists:seq(1, 15)),
+    lists:foldl(
+        fun(X, Pending) ->
+            case Pending of
+                false ->
+                    false;
+                true ->
+                    io:format(
+                        "Loop ~w waiting for journal "
+                        "compaction to complete~n",
+                        [X]
+                    ),
+                    timer:sleep(20000),
+                    F(Book)
+            end
+        end,
+        true,
+        lists:seq(1, 15)),
     io:format("Waiting for journal deletes~n"),
     timer:sleep(WaitForDelete).
