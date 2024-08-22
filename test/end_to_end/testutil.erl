@@ -653,8 +653,10 @@ get_value(ObjectBin) ->
             <<SibLength:32/integer, Rest2/binary>> = SibsBin,
             <<ContentBin:SibLength/binary, _MetaBin/binary>> = Rest2,
             case ContentBin of
-                <<0, ContentBin0/binary>> ->
-                    binary_to_term(ContentBin0)
+                <<0:8/integer, ContentBin0/binary>> ->
+                    binary_to_term(ContentBin0);
+                <<1:8/integer, ContentAsIs/binary>> ->
+                    ContentAsIs
             end;
         N ->
             io:format("SibCount of ~w with ObjectBin ~w~n", [N, ObjectBin]),

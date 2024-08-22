@@ -302,13 +302,7 @@ split_builder_speed_tester() ->
     Timings =
         lists:map(
             fun(HashList) ->
-                SlotCount =
-                    case length(HashList) of
-                        0 ->
-                            0;
-                        L ->
-                            min(128, max(2, (L - 1) div 512))
-                    end,
+                SlotCount = min(128, max(2, (length(HashList) - 1) div 512)),
                 InitTuple = list_to_tuple(lists:duplicate(SlotCount, [])),
                 {MTC, SlotHashes} =
                     timer:tc(
