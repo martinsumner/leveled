@@ -459,37 +459,12 @@ rotation_withnocheck(Book, B, NumberOfObjects, ObjSize, IdxCnt) ->
     ok.
 
 generate_chunk(CountPerList, ObjSize, IndexGenFun, Bucket, Chunk) ->
-    IndexGen = IndexGenFun(Chunk),
-    Value = base64:encode(leveled_rand:rand_bytes(ObjSize)),
-    lists:map(
-        fun(KeyNumber) ->
-            {Obj, IdxSpecs} =
-                testutil:set_object(
-                    Bucket, testutil:fixed_bin_key(KeyNumber), Value, IndexGen, []
-                ),
-            {
-                Bucket,
-                testutil:fixed_bin_key(KeyNumber),
-                testutil:to_binary(v1, Obj),
-                IdxSpecs
-            }
-        end,
-        lists:seq((Chunk - 1) * CountPerList + 1, Chunk * CountPerList)
-    ).
-
-load_chunk(Bookie, ObjList) ->
-    lists:foreach(
-        fun({Bucket, Key, BinObject, IndexSpecs}) ->
-            leveled_bookie:book_put(
-                Bookie,
-                Bucket,
-                binary:copy(Key),
-                binary:copy(BinObject),
-                IndexSpecs,
-                ?RIAK_TAG
-            )
-        end,
-        ObjList
+    testutil:generate_objects(
+        CountPerList, 
+        {fixed_binary, (Chunk - 1) * CountPerList + 1}, [],
+        base64:encode(leveled_rand:rand_bytes(ObjSize)),
+        IndexGenFun(Chunk),
+        Bucket
     ).
 
 load_chunk(Bookie, CountPerList, ObjSize, IndexGenFun, Bucket, Chunk) ->
@@ -750,21 +725,10 @@ profile_fun(
 profile_fun(
         {load, IndexGenFun},
         {Bookie, Bucket, KeyCount, ObjSize, _IndexCount, _IndexesReturned}) ->
-    Chunk11 = generate_chunk(KeyCount div 50, ObjSize, IndexGenFun, Bucket, 11),
-    Chunk12 = generate_chunk(KeyCount div 50, ObjSize, IndexGenFun, Bucket, 12),
-    Chunk13 = generate_chunk(KeyCount div 50, ObjSize, IndexGenFun, Bucket, 13),
-    Chunk14 = generate_chunk(KeyCount div 50, ObjSize, IndexGenFun, Bucket, 14),
-    Chunk15 = generate_chunk(KeyCount div 50, ObjSize, IndexGenFun, Bucket, 15),
+    ObjList11 =
+        generate_chunk(KeyCount div 10, ObjSize, IndexGenFun, Bucket, 11),
     fun() ->
-        load_chunk(Bookie, Chunk11),
-        garbage_collect(),
-        load_chunk(Bookie, Chunk12),
-        garbage_collect(),
-        load_chunk(Bookie, Chunk13),
-        garbage_collect(),
-        load_chunk(Bookie, Chunk14),
-        garbage_collect(),
-        load_chunk(Bookie, Chunk15)
+        testutil:riakload(Bookie, ObjList11)
     end;
 profile_fun(
         update,

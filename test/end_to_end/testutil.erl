@@ -65,9 +65,7 @@
             numbered_key/1,
             fixed_bin_key/1,
             convert_to_seconds/1,
-            compact_and_wait/1,
-            to_binary/2
-        ]).
+            compact_and_wait/1]).
 
 -define(RETURN_TERMS, {true, undefined}).
 -define(SLOWOFFER_DELAY, 40).
