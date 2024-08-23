@@ -2318,10 +2318,18 @@ binaryslot_reader(
     % of get_kvreader calls.  This means that slots which are only used in
     % range queries can still populate their block_index caches (on the FSM
     % loop state), and those caches can be used for future queries.
+    {KVs, TailToFetch} =
+        lists:splitwith(fun(SR) -> tuple_size(SR) == 2 end, SlotBinsToFetch),
     {Acc, BIAcc} =
         binaryslot_reader(
-            SlotBinsToFetch, PressMethod, IdxModDate, SegChecker, [], []),
-    {lists:reverse(lists:reverse(SlotsToPoint) ++ Acc), BIAcc}.
+            lists:reverse(TailToFetch),
+            PressMethod,
+            IdxModDate,
+            SegChecker,
+            SlotsToPoint,
+            []
+        ),
+    {KVs ++ Acc, BIAcc}.
 
 binaryslot_reader([], _PressMethod, _IdxModDate, _SegChecker, Acc, BIAcc) ->
     {Acc, BIAcc};
@@ -2337,15 +2345,13 @@ binaryslot_reader(
         binaryslot_trimmed(
             SlotBin, SK, EK, PressMethod, IdxModDate, SegChecker),
     binaryslot_reader(
-        Tail, PressMethod, IdxModDate, SegChecker,
-            lists:reverse(TrimmedL) ++ Acc, [{ID, BICache}|BIAcc]);
-binaryslot_reader(L, PressMethod, IdxModDate, SegChecker, Acc, BIAcc) ->
-    {KVs, Tail} = lists:splitwith(fun(SR) -> tuple_size(SR) == 2 end, L),
-    % These entries must already have been filtered for membership inside any
-    % range used in the query.
-    binaryslot_reader(
-        Tail, PressMethod, IdxModDate, SegChecker,
-            lists:reverse(KVs) ++ Acc, BIAcc).
+        Tail,
+        PressMethod,
+        IdxModDate,
+        SegChecker,
+        TrimmedL ++ Acc,
+        [{ID, BICache}|BIAcc]
+    ).
 
 
 read_length_list(Handle, LengthList) ->
