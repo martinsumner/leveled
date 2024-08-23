@@ -74,7 +74,7 @@
             % At o(10) trillion keys behaviour may become increasingly 
             % difficult to predict.
 
--if(OTP_RELEASE >= 25).
+-if(?OTP_RELEASE >= 25).
 -if(length(?LEVEL_SCALEFACTOR) /= ?MAX_LEVELS).
 -error("length ?LEVEL_SCALEFACTOR differs from ?MAX_LEVELS").
 -endif.
