@@ -2334,7 +2334,7 @@ binaryslot_reader(
 binaryslot_reader([], _PressMethod, _IdxModDate, _SegChecker, Acc, BIAcc) ->
     {Acc, BIAcc};
 binaryslot_reader(
-    [{SlotBin, ID, SK, EK}|Tail],
+        [{SlotBin, ID, SK, EK}|Tail],
         PressMethod, IdxModDate, SegChecker, Acc, BIAcc) ->
     % The start key and end key here, may not the start key and end key the
     % application passed into the query.  If the slot is known to lie entirely
@@ -2343,15 +2343,18 @@ binaryslot_reader(
     % entries in this slot to be trimmed from either or both sides.
     {TrimmedL, BICache} =
         binaryslot_trimmed(
-            SlotBin, SK, EK, PressMethod, IdxModDate, SegChecker),
+            SlotBin, SK, EK, PressMethod, IdxModDate, SegChecker, Acc
+        ),
     binaryslot_reader(
         Tail,
         PressMethod,
         IdxModDate,
         SegChecker,
-        TrimmedL ++ Acc,
+        TrimmedL,
         [{ID, BICache}|BIAcc]
-    ).
+    );
+binaryslot_reader([{K, V}|Tail], PM, IMD, SC, Acc, BIAcc) ->
+    binaryslot_reader(Tail, PM, IMD, SC, [{K, V}|Acc], BIAcc).
 
 
 read_length_list(Handle, LengthList) ->
@@ -2392,28 +2395,13 @@ binaryslot_get(FullBin, Key, Hash, PressMethod, IdxModDate) ->
                 none}
     end.
 
-
--spec binaryslot_blockstolist(
-        list(non_neg_integer()),
+-spec binaryslot_tolist(
         binary(),
         press_method(),
-        list(leveled_codec:ledger_kv())) -> list(leveled_codec:ledger_kv()).
-binaryslot_blockstolist([], _Bin, _PressMethod, Acc) ->
-    Acc;
-binaryslot_blockstolist([0|RestLengths], RestBin, PressMethod, Acc) ->
-    binaryslot_blockstolist(RestLengths, RestBin, PressMethod, Acc);
-binaryslot_blockstolist([L|RestLengths], Bin, PressMethod, Acc) ->
-    <<Block:L/binary, RestBin/binary>> = Bin,
-    binaryslot_blockstolist(
-        RestLengths,
-        RestBin,
-        PressMethod,
-        Acc ++ deserialise_block(Block, PressMethod)).
-
--spec binaryslot_tolist(
-        binary(), press_method(), boolean())
+        boolean(),
+        list(leveled_codec:ledger_kv()|expandable_pointer()))
             -> list(leveled_codec:ledger_kv()).
-binaryslot_tolist(FullBin, PressMethod, IdxModDate) ->
+binaryslot_tolist(FullBin, PressMethod, IdxModDate, InitAcc) ->
     case crc_check_slot(FullBin) of
         {Header, Blocks} ->
             {BlockLengths, _LMD, _PosBinIndex} =
@@ -2423,10 +2411,20 @@ binaryslot_tolist(FullBin, PressMethod, IdxModDate) ->
                 B3L:32/integer,
                 B4L:32/integer,
                 B5L:32/integer>> = BlockLengths,
-            binaryslot_blockstolist(
-                [B1L, B2L, B3L, B4L, B5L], Blocks, PressMethod, []);
+            <<B1:B1L/binary,
+                B2:B2L/binary,
+                B3:B3L/binary,
+                B4:B4L/binary,
+                B5:B5L/binary>> = Blocks,
+            lists:foldl(
+                fun(B, Acc) ->
+                    deserialise_block(B, PressMethod) ++ Acc
+                end,
+                InitAcc,
+                [B5, B4, B3, B2, B1]
+            );
         crc_wonky ->
-            []
+            InitAcc
     end.
 
 -spec binaryslot_trimmed(
@@ -2435,16 +2433,19 @@ binaryslot_tolist(FullBin, PressMethod, IdxModDate) ->
         range_endpoint(),
         press_method(),
         boolean(),
-        segment_check_fun()) ->
+        segment_check_fun(),
+        list(leveled_codec:ledger_kv()|expandable_pointer())
+    ) ->
             {list(leveled_codec:ledger_kv()),
                 list({integer(), binary()})|none}.
 %% @doc
 %% Must return a trimmed and reversed list of results in the range
 binaryslot_trimmed(
-        FullBin, all, all, PressMethod, IdxModDate, false) ->
-    {binaryslot_tolist(FullBin, PressMethod, IdxModDate), none};
+        FullBin, all, all, PressMethod, IdxModDate, false, Acc) ->
+    {binaryslot_tolist(FullBin, PressMethod, IdxModDate, Acc), none};
 binaryslot_trimmed(
-        FullBin, StartKey, EndKey, PressMethod, IdxModDate, SegmentChecker) ->
+        FullBin, StartKey, EndKey, PressMethod, IdxModDate, SegmentChecker, Acc
+    ) ->
     case {crc_check_slot(FullBin), SegmentChecker} of
         % Get a trimmed list of keys in the slot based on the range, trying
         % to minimise the number of blocks which are deserialised by
@@ -2465,7 +2466,7 @@ binaryslot_trimmed(
                     {StartKey, EndKey},
                     Block1, Block2, MidBlock, Block4, Block5,
                     PressMethod),
-            {TrimmedKVL, none};
+            {TrimmedKVL ++ Acc, none};
         {{Header, _Blocks}, SegmentChecker} ->
             {BlockLengths, _LMD, BlockIdx} =
                 extract_header(Header, IdxModDate),
@@ -2478,9 +2479,9 @@ binaryslot_trimmed(
                     IdxModDate,
                     SegmentChecker,
                     {StartKey, EndKey}),
-            {TrimmedKVL, Header};
+            {TrimmedKVL ++ Acc, Header};
         {crc_wonky, _} ->
-            {[], none}
+            {Acc, none}
     end.
 
 -spec blocks_required(
@@ -3065,6 +3066,15 @@ maybelog_fetch_timing({Pid, _SlotFreq}, Level, Type, SW) ->
 -include_lib("eunit/include/eunit.hrl").
 
 -define(TEST_AREA, "test/test_area/").
+
+binaryslot_trimmed(
+    FullBin, StartKey, EndKey, PressMethod, IdxModDate, SegmentChecker) ->
+    binaryslot_trimmed(
+        FullBin, StartKey, EndKey, PressMethod, IdxModDate, SegmentChecker, []
+    ).
+
+binaryslot_tolist(FullBin, PressMethod, IdxModDate) ->
+    binaryslot_tolist(FullBin, PressMethod, IdxModDate, []).
 
 
 sst_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
