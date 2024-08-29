@@ -57,10 +57,11 @@
 %% the transaction log replay; or by using a higher level for of anti-entropy
 %% (i.e. make Riak responsible).
 
-
 -module(leveled_sst).
 
 -behaviour(gen_statem).
+
+-compile({inline,[append/2, append/3, append/4]}).
 
 -include("include/leveled.hrl").
 
@@ -1395,41 +1396,30 @@ fetch(LedgerKey, Hash,
 %% Fetch pointers to the slots the SST file covered by a given key range.
 fetch_range(StartKey, EndKey, Summary, FilterFun, true) ->
     {Slots, RTrim} =
-        lookup_slots(
-            StartKey,
-            EndKey,
-            Summary#summary.index,
-            FilterFun),
+        lookup_slots(StartKey, EndKey, Summary#summary.index, FilterFun),
     Self = self(),
-    SL = length(Slots),
-    case SL of
-        1 ->
-            [Slot] = Slots,
-            case RTrim of
-                true ->
-                    [{pointer, Self, Slot, StartKey, EndKey}];
-                false ->
-                    [{pointer, Self, Slot, StartKey, all}]
-            end;
-        N ->
-            {LSlot, MidSlots, RSlot} =
-                {hd(Slots), lists:sublist(Slots, 2, N - 2), lists:last(Slots)},
+    case {Slots, RTrim} of
+        {[Slot], true} ->
+            [{pointer, Self, Slot, StartKey, EndKey}];
+        {[Slot], false} ->
+            [{pointer, Self, Slot, StartKey, all}];
+        {[Hd|Rest], true} ->
+            {MidSlots, [Tl]} = lists:split(length(Rest) - 1, Rest),
             MidSlotPointers =
                 lists:map(
                     fun(S) -> {pointer, Self, S, all, all} end,
                     MidSlots),
-            case RTrim of
-                true ->
-                    [{pointer, Self, LSlot, StartKey, all}] ++
-                        MidSlotPointers ++
-                        [{pointer, Self, RSlot, all, EndKey}];
-                false ->
-                    [{pointer, Self, LSlot, StartKey, all}] ++
-                        MidSlotPointers ++
-                        [{pointer, Self, RSlot, all, all}]
-            end
+            [{pointer, Self, Hd, StartKey, all}|MidSlotPointers]
+                ++ [{pointer, Self, Tl, all, EndKey}];
+        {[Hd|Rest], false} ->
+            RightPointers =
+                lists:map(
+                    fun(S) -> {pointer, Self, S, all, all} end,
+                    Rest),
+            [{pointer, Self, Hd, StartKey, all}|RightPointers]
     end;
 fetch_range(_StartKey, _EndKey, _Summary, _FilterFun, false) ->
+    %% This has been pre-checked to be uninteresting (i.e. due to modified date)
     [].
 
 -spec compress_level(
@@ -2224,7 +2214,11 @@ read_slots(Handle, SlotList, {SegChecker, LowLastMod, BlockIndexCache},
                     % If there is an attempt to use the seg list query and the
                     % index block cache isn't cached for any part this may be
                     % slower as each slot will be read in turn
-                    {true, read_slotlist([Pointer], Handle) ++ Acc};
+                    {
+                        true,
+                        append(
+                            read_slotlist([Pointer], Handle), Acc)
+                        };
                 {BlockLengths, LMD, BlockIdx} ->
                     % If there is a BlockIndex cached then we can use it to
                     % check to see if any of the expected segments are
@@ -2242,10 +2236,14 @@ read_slots(Handle, SlotList, {SegChecker, LowLastMod, BlockIndexCache},
                             case SegChecker of
                                 false ->
                                     % No SegChecker - need all the slot now
-                                    {NeededBlockIdx,
-                                        read_slotlist([Pointer], Handle) ++ Acc
-                                        };
-                                SegChecker ->
+                                    {
+                                        NeededBlockIdx,
+                                        append(
+                                            read_slotlist([Pointer], Handle),
+                                            Acc
+                                        )
+                                    };
+                                _ ->
                                     TrimmedKVL =
                                         checkblocks_segandrange(
                                             BlockIdx,
@@ -2255,7 +2253,7 @@ read_slots(Handle, SlotList, {SegChecker, LowLastMod, BlockIndexCache},
                                             IdxModDate,
                                             SegChecker,
                                             {SK, EK}),
-                                    {NeededBlockIdx, TrimmedKVL ++ Acc}
+                                    {NeededBlockIdx, append(TrimmedKVL, Acc)}
                             end
                     end
             end
@@ -2318,18 +2316,14 @@ binaryslot_reader(
     % of get_kvreader calls.  This means that slots which are only used in
     % range queries can still populate their block_index caches (on the FSM
     % loop state), and those caches can be used for future queries.
-    {KVs, TailToFetch} =
-        lists:splitwith(fun(SR) -> tuple_size(SR) == 2 end, SlotBinsToFetch),
-    {Acc, BIAcc} =
-        binaryslot_reader(
-            lists:reverse(TailToFetch),
-            PressMethod,
-            IdxModDate,
-            SegChecker,
-            SlotsToPoint,
-            []
-        ),
-    {KVs ++ Acc, BIAcc}.
+    binaryslot_reader(
+        lists:reverse(SlotBinsToFetch),
+        PressMethod,
+        IdxModDate,
+        SegChecker,
+        SlotsToPoint,
+        []
+    ).
 
 binaryslot_reader([], _PressMethod, _IdxModDate, _SegChecker, Acc, BIAcc) ->
     {Acc, BIAcc};
@@ -2418,7 +2412,7 @@ binaryslot_tolist(FullBin, PressMethod, IdxModDate, InitAcc) ->
                 B5:B5L/binary>> = Blocks,
             lists:foldl(
                 fun(B, Acc) ->
-                    deserialise_block(B, PressMethod) ++ Acc
+                    append(deserialise_block(B, PressMethod), Acc)
                 end,
                 InitAcc,
                 [B5, B4, B3, B2, B1]
@@ -2466,7 +2460,7 @@ binaryslot_trimmed(
                     {StartKey, EndKey},
                     Block1, Block2, MidBlock, Block4, Block5,
                     PressMethod),
-            {TrimmedKVL ++ Acc, none};
+            {append(TrimmedKVL, Acc), none};
         {{Header, _Blocks}, SegmentChecker} ->
             {BlockLengths, _LMD, BlockIdx} =
                 extract_header(Header, IdxModDate),
@@ -2479,7 +2473,7 @@ binaryslot_trimmed(
                     IdxModDate,
                     SegmentChecker,
                     {StartKey, EndKey}),
-            {TrimmedKVL ++ Acc, Header};
+            {append(TrimmedKVL, Acc), Header};
         {crc_wonky, _} ->
             {Acc, none}
     end.
@@ -2494,27 +2488,35 @@ blocks_required(
     case filterby_midblock(
             fetchends_rawblock(MidBlockList), {StartKey, EndKey}) of
         empty ->
-            in_range(deserialise_block(B1, PressMethod), StartKey, EndKey)
-            ++ in_range(deserialise_block(B2, PressMethod), StartKey, EndKey)
-            ++ in_range(deserialise_block(B4, PressMethod), StartKey, EndKey)
-            ++ in_range(deserialise_block(B5, PressMethod), StartKey, EndKey);
+            append(
+                in_range(deserialise_block(B1, PressMethod), StartKey, EndKey),
+                in_range(deserialise_block(B2, PressMethod), StartKey, EndKey),
+                in_range(deserialise_block(B4, PressMethod), StartKey, EndKey),
+                in_range(deserialise_block(B5, PressMethod), StartKey, EndKey)
+            );
         all_blocks ->
-            get_lefthand_blocks(B1, B2, PressMethod, StartKey)
-            ++ MidBlockList
-            ++ get_righthand_blocks(B4, B5, PressMethod, EndKey);
+            append(
+                get_lefthand_blocks(B1, B2, PressMethod, StartKey),
+                MidBlockList,
+                get_righthand_blocks(B4, B5, PressMethod, EndKey)
+            );
         lt_mid ->
             in_range(
                 get_lefthand_blocks(B1, B2, PressMethod, StartKey),
                 all,
                 EndKey);
         le_mid ->
-            get_lefthand_blocks(B1, B2, PressMethod, StartKey)
-            ++ in_range(MidBlockList, all, EndKey);
+            append(
+                get_lefthand_blocks(B1, B2, PressMethod, StartKey),
+                in_range(MidBlockList, all, EndKey)
+            );
         mid_only ->
             in_range(MidBlockList, StartKey, EndKey);
         ge_mid ->
-            in_range(MidBlockList, StartKey, all)
-            ++ get_righthand_blocks(B4, B5, PressMethod, EndKey);
+            append(
+                in_range(MidBlockList, StartKey, all),
+                get_righthand_blocks(B4, B5, PressMethod, EndKey)
+            );
         gt_mid ->
             in_range(
                 get_righthand_blocks(B4, B5, PressMethod, EndKey),
@@ -2701,6 +2703,24 @@ revert_position(Pos) ->
                         (TailPos rem SideBlockSize) + 1}
             end
     end.
+
+%%%============================================================================
+%%% Utility functions
+%%%============================================================================
+
+-spec append(list(), list()) -> list().
+append(L1, []) ->
+    L1;
+append(L1, L2) ->
+    L1 ++ L2.
+
+-spec append(list(), list(), list()) -> list().
+append(L1, L2, L3) ->
+    append(L1, append(L2, L3)).
+
+-spec append(list(), list(), list(), list()) -> list().
+append(L1, L2, L3, L4) ->
+    append(L1, append(L2, L3, L4)).
 
 %%%============================================================================
 %%% Merge Functions

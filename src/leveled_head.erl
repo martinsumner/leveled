@@ -417,9 +417,9 @@ decode_maybe_binary(<<0, Bin/binary>>) ->
 decode_maybe_binary(<<_Other:8, Bin/binary>>) ->
     Bin.
 
--spec diff_index_data([{binary(), index_value()}],
-                      [{binary(), index_value()}]) ->
-    [{index_op(), binary(), index_value()}].
+-spec diff_index_data(
+    [{binary(), index_value()}], [{binary(), index_value()}]) ->
+        [{index_op(), binary(), index_value()}].
 diff_index_data(OldIndexes, AllIndexes) ->
     OldIndexSet = ordsets:from_list(OldIndexes),
     AllIndexSet = ordsets:from_list(AllIndexes),
@@ -431,18 +431,20 @@ diff_specs_core(AllIndexSet, OldIndexSet) ->
     RemoveIndexSet =
         ordsets:subtract(OldIndexSet, AllIndexSet),
     NewIndexSpecs =
-        assemble_index_specs(ordsets:subtract(NewIndexSet, OldIndexSet),
-                             add),
+        assemble_index_specs(
+            ordsets:subtract(NewIndexSet, OldIndexSet),
+            add
+        ),
     RemoveIndexSpecs =
-        assemble_index_specs(RemoveIndexSet,
-                             remove),
+        assemble_index_specs(RemoveIndexSet, remove),
     NewIndexSpecs ++ RemoveIndexSpecs.
 
 %% @doc Assemble a list of index specs in the
 %% form of triplets of the form
 %% {IndexOperation, IndexField, IndexValue}.
--spec assemble_index_specs([{binary(), binary()}], index_op()) ->
-                                  [{index_op(), binary(), binary()}].
+-spec assemble_index_specs(
+    [{binary(), binary()}], index_op()) ->
+        [{index_op(), binary(), binary()}].
 assemble_index_specs(Indexes, IndexOp) ->
     [{IndexOp, Index, Value} || {Index, Value} <- Indexes].
 

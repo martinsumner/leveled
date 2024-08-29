@@ -253,9 +253,12 @@ find_dirtyleaves(SrcTree, SnkTree) ->
             {Idx, SrcLeaf} = lists:keyfind(Idx, 1, SrcLeaves),
             {Idx, SnkLeaf} = lists:keyfind(Idx, 1, SnkLeaves),
             L2IdxList = segmentcompare(SrcLeaf, SnkLeaf),
-            Acc ++ lists:map(fun(X) -> X + Idx * ?L2_CHUNKSIZE end, L2IdxList)
+            lists:append(
+                lists:map(fun(X) -> X + Idx * ?L2_CHUNKSIZE end, L2IdxList),
+                Acc
+            )
         end,
-    lists:sort(lists:foldl(FoldFun, [], IdxList)).
+    lists:sort(lists:foldr(FoldFun, [], IdxList)).
 
 -spec find_dirtysegments(binary(), binary()) -> list(integer()).
 %% @doc
@@ -386,9 +389,9 @@ generate_segmentfilter_list(SegmentList, xsmall) ->
             A1 = 1 bsl 14,
             ExpandSegFun = 
                 fun(X, Acc) -> 
-                    Acc ++ [X, X + A0, X + A1, X + A0 + A1]
+                    [X, X + A0, X + A1, X + A0 + A1] ++ Acc
                 end,
-            lists:foldl(ExpandSegFun, [], SegmentList);
+            lists:foldr(ExpandSegFun, [], SegmentList);
         false ->
             false
     end;
