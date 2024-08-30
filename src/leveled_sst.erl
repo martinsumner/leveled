@@ -61,8 +61,6 @@
 
 -behaviour(gen_statem).
 
--compile({inline,[append/2, append/3, append/4]}).
-
 -include("include/leveled.hrl").
 
 -define(LOOK_SLOTSIZE, 128). % Maximum of 128
@@ -2705,9 +2703,19 @@ revert_position(Pos) ->
     end.
 
 %%%============================================================================
-%%% Utility functions
+%%% Optimised list functions
 %%%============================================================================
 
+
+%% @doc See usnit test append_performance_test_/0 and also
+%% https://github.com/erlang/otp/pull/8743
+%% On OTP 26.2.1 -
+%% Time for plus plus 16565
+%% Time for inline append 7453
+%% Time for lists:append 16428
+%% Time for bidmas plus plus 15928
+%% ... this is all about optimising the case where there is an empty list
+%% on the RHS ... and the absolute benefit is marginal
 -spec append(list(), list()) -> list().
 append(L1, []) ->
     L1;
@@ -3182,11 +3190,60 @@ generate_indexkeys(Count, IndexList) ->
 
 generate_indexkey(Term, Count) ->
     IndexSpecs = [{add, "t1_int", Term}],
-    leveled_codec:idx_indexspecs(IndexSpecs,
-                                    "Bucket",
-                                    "Key" ++ integer_to_list(Count),
-                                    Count,
-                                    infinity).
+    leveled_codec:idx_indexspecs(
+        IndexSpecs,
+        "Bucket",
+        "Key" ++ integer_to_list(Count),
+        Count,
+        infinity
+    ).
+
+append_performance_test_() ->
+    {timeout, 300, fun append_performance_tester/0}.
+
+append_performance_tester() ->
+    KVL1 = generate_randomkeys(0, 128, 1, 4),
+    KVL2 = generate_randomkeys(129, 256, 1, 4),
+    KVL3 = generate_randomkeys(257, 384, 1, 4),
+    KVL4 = generate_randomkeys(385, 512, 1, 4),
+
+    SW0 = os:system_time(microsecond),
+    lists:foreach(
+        fun(_I) ->
+            _KVL = KVL1 ++ KVL2 ++ KVL3 ++ KVL4 ++ []
+        end,
+        lists:seq(1, 5000)
+    ),
+    SW1 = os:system_time(microsecond),
+    lists:foreach(
+        fun(_I) ->
+            _KVL = append(KVL1, KVL2, KVL3, append(KVL4, []))
+        end,
+        lists:seq(1, 5000)
+    ),
+    SW2 = os:system_time(microsecond),
+    lists:foreach(
+        fun(_I) ->
+            _KVL = lists:append([KVL1, KVL2, KVL3, KVL4, []])
+        end,
+        lists:seq(1, 5000)
+    ),
+    SW3 = os:system_time(microsecond),
+    lists:foreach(
+        fun(_I) ->
+            _KVL = KVL1 ++ (KVL2 ++ (KVL3 ++ (KVL4 ++ [])))
+        end,
+        lists:seq(1, 5000)
+    ),
+    SW4 = os:system_time(microsecond),
+    io:format(
+        user,
+        "~nTime for plus plus ~w "
+        "Time for inline append ~w "
+        "Time for lists:append ~w "
+        "Time for bidmas plus plus ~w~n",
+        [SW1 - SW0, SW2 - SW1, SW3 - SW2, SW4 - SW3]
+    ).
 
 tombcount_test() ->
     tombcount_tester(1),
