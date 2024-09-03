@@ -32,8 +32,12 @@
             ]).
 
 %% Exported for testing purposes
--export([riak_metadata_to_binary/2,
-            riak_extract_metadata/2]).
+-export(
+    [
+        riak_metadata_to_binary/2,
+        riak_extract_metadata/2,
+        get_indexes_from_siblingmetabin/2
+    ]).
 
 
 -define(MAGIC, 53). % riak_kv -> riak_object
