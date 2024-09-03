@@ -27,7 +27,6 @@ end_per_suite(Config) ->
 
 many_put_compare(_Config) ->
     
-    
     TreeSize = small,
     SegmentCount = 256 * 256,
     % Test requires multiple different databases, so want to mount them all
