@@ -388,6 +388,8 @@ fetchput_snapshot(_Config) ->
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = [{root_path, RootPath},
                     {max_journalsize, 30000000},
+                    {cache_size, 2000},
+                    {max_pencillercachesize, 16000},
                     {sync_strategy, none}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
