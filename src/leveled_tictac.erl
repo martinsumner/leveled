@@ -187,6 +187,7 @@ import_tree(ExportedTree) ->
                         ?VALID_SIZES),
     Width = byte_size(L1Bin) div ?HASH_SIZE,
     {Size, _Width} = lists:keyfind(Width, 2, Sizes),
+   %% assert that side is indeed the provided width
     true = get_size(Size) == Width,
     Lv2Init = array:new([{size, Width}]),
     FoldFun = 
