@@ -268,8 +268,8 @@ find_dirtyleaves(SrcTree, SnkTree) ->
     
     FoldFun =
         fun(Idx, Acc) ->
-            SrcLeaf = element(2, lists:keyfind(Idx, 1, SrcLeaves)),
-            SnkLeaf = element(2, lists:keyfind(Idx, 1, SnkLeaves)),
+            {_, SrcLeaf} = lists:keyfind(Idx, 1, SrcLeaves),
+            {_, SnkLeaf} = lists:keyfind(Idx, 1, SnkLeaves),
             L2IdxList = segmentcompare(SrcLeaf, SnkLeaf),
             lists:foldl(
                 fun(X, InnerAcc) ->
@@ -279,6 +279,7 @@ find_dirtyleaves(SrcTree, SnkTree) ->
                 Acc,
                 L2IdxList)
         end,
+    %% Output not sorted, as sorted by the design of the construction process
     lists:foldl(FoldFun, [], IdxList).
 
 -spec find_dirtysegments(binary(), binary()) -> list(integer()).
