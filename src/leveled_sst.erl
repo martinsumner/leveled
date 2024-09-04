@@ -2711,7 +2711,7 @@ revert_position(Pos) ->
 %% https://github.com/erlang/otp/pull/8743
 %% On OTP 26.2.1 -
 %% Time for plus plus 16565
-%% Time for inline append 7453
+%% Time for append 7453
 %% Time for lists:append 16428
 %% Time for bidmas plus plus 15928
 %% ... this is all about optimising the case where there is an empty list
