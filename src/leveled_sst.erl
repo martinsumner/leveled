@@ -2713,7 +2713,7 @@ revert_position(Pos) ->
 %% Time for plus plus 16565
 %% Time for append 7453
 %% Time for lists:append 16428
-%% Time for bidmas plus plus 15928
+%% Time for right associative plus plus 15928
 %% ... this is all about optimising the case where there is an empty list
 %% on the RHS ... and the absolute benefit is marginal
 -spec append(list(), list()) -> list().
