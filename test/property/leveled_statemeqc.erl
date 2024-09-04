@@ -30,6 +30,7 @@
             [{gen_fsm, send_event, 2}]}]).
 
 -define(NUMTESTS, 1000).
+-define(TEST_TIMEOUT, 300).
 -define(QC_OUT(P),
         eqc:on_output(fun(Str, Args) ->
                               io:format(user, Str, Args) end, P)).
@@ -42,7 +43,7 @@
                        
 
 eqc_test_() ->
-    Timeout = 50,
+    Timeout = ?TEST_TIMEOUT,
     {timeout, max(2 * Timeout, Timeout + 10),
      ?_assertEqual(true, eqc:quickcheck(eqc:testing_time(Timeout, ?QC_OUT(prop_db()))))}.
 
