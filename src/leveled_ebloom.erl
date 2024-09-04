@@ -96,7 +96,7 @@ map_hashes([Hash|Rest], HashListTuple, SlotCount) ->
     SlotHL = element(Slot + 1, HashListTuple),
     map_hashes(
         Rest,
-        setelement(Slot + 1, HashListTuple, [H0|[H1|SlotHL]]),
+        setelement(Slot + 1, HashListTuple, [H0, H1 | SlotHL]),
         SlotCount).
 
 -spec split_hash(external_hash(), slot_count())
