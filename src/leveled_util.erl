@@ -5,12 +5,15 @@
 
 -module(leveled_util).
 
--export([generate_uuid/0,
+-export([
+            generate_uuid/0,
             integer_now/0,
             integer_time/1,
             magic_hash/1,
             t2b/1,
-            safe_rename/4]).
+            safe_rename/4
+        ]
+    ).
 
 -define(WRITE_OPS, [binary, raw, read, write]).
 

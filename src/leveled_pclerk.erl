@@ -217,10 +217,13 @@ merge(SrcLevel, Manifest, RootPath, OptsSST) ->
     Src =
         leveled_pmanifest:mergefile_selector(Manifest, SrcLevel, SelectMethod),
     NewSQN = leveled_pmanifest:get_manifest_sqn(Manifest) + 1,
-    SinkList = leveled_pmanifest:merge_lookup(Manifest,
-                                                SrcLevel + 1,
-                                                Src#manifest_entry.start_key,
-                                                Src#manifest_entry.end_key),
+    SinkList =
+        leveled_pmanifest:merge_lookup(
+            Manifest,
+            SrcLevel + 1,
+            Src#manifest_entry.start_key,
+            Src#manifest_entry.end_key
+        ),
     Candidates = length(SinkList),
     leveled_log:log(pc008, [SrcLevel, Candidates]),
     case Candidates of
@@ -228,10 +231,13 @@ merge(SrcLevel, Manifest, RootPath, OptsSST) ->
             NewLevel = SrcLevel + 1,
             leveled_log:log(pc009, [Src#manifest_entry.filename, NewLevel]),
             leveled_sst:sst_switchlevels(Src#manifest_entry.owner, NewLevel),
-            Man0 = leveled_pmanifest:switch_manifest_entry(Manifest,
-                                                            NewSQN,
-                                                            SrcLevel,
-                                                            Src),
+            Man0 =
+                leveled_pmanifest:switch_manifest_entry(
+                    Manifest,
+                    NewSQN,
+                    SrcLevel,
+                    Src
+                ),
             {Man0, []};
         _ ->
             SST_RP = leveled_penciller:sst_rootpath(RootPath),
@@ -253,44 +259,50 @@ notify_deletions([Head|Tail], Penciller) ->
 %%
 %% SrcLevel is the level of the src sst file, the sink should be srcLevel + 1
 
-perform_merge(Manifest, 
-                Src, SinkList, SrcLevel, 
-                RootPath, NewSQN, 
-                OptsSST) ->
+perform_merge(Manifest, Src, SinkList, SrcLevel, RootPath, NewSQN, OptsSST) ->
     leveled_log:log(pc010, [Src#manifest_entry.filename, NewSQN]),
     SrcList = [{next, Src, all}],
     MaxSQN = leveled_sst:sst_getmaxsequencenumber(Src#manifest_entry.owner),
     SinkLevel = SrcLevel + 1,
     SinkBasement = leveled_pmanifest:is_basement(Manifest, SinkLevel),
     Additions = 
-        do_merge(SrcList, SinkList,
-                    SinkLevel, SinkBasement,
-                    RootPath, NewSQN, MaxSQN,
-                    OptsSST,
-                    []),
+        do_merge(
+            SrcList, SinkList,
+            SinkLevel, SinkBasement,
+            RootPath, NewSQN, MaxSQN,
+            OptsSST,
+            []
+        ),
     RevertPointerFun =
         fun({next, ME, _SK}) ->
             ME
         end,
     SinkManifestList = lists:map(RevertPointerFun, SinkList),
-    Man0 = leveled_pmanifest:replace_manifest_entry(Manifest,
-                                                    NewSQN,
-                                                    SinkLevel,
-                                                    SinkManifestList,
-                                                    Additions),
-    Man2 = leveled_pmanifest:remove_manifest_entry(Man0,
-                                                    NewSQN,
-                                                    SrcLevel,
-                                                    Src),
+    Man0 =
+        leveled_pmanifest:replace_manifest_entry(
+            Manifest,
+            NewSQN,
+            SinkLevel,
+            SinkManifestList,
+            Additions
+        ),
+    Man2 =
+        leveled_pmanifest:remove_manifest_entry(
+            Man0,
+            NewSQN,
+            SrcLevel,
+            Src
+        ),
     {Man2, [Src|SinkManifestList]}.
 
 do_merge([], [], SinkLevel, _SinkB, _RP, NewSQN, _MaxSQN, _Opts, Additions) ->
     leveled_log:log(pc011, [NewSQN, SinkLevel, length(Additions)]),
-    Additions;
+    lists:reverse(Additions);
 do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, OptsSST, Additions) ->
-    FileName = leveled_penciller:sst_filename(NewSQN,
-                                                SinkLevel,
-                                                length(Additions)),
+    FileName =
+        leveled_penciller:sst_filename(
+            NewSQN, SinkLevel, length(Additions)
+        ),
     leveled_log:log(pc012, [NewSQN, FileName, SinkB]),
     TS1 = os:timestamp(),
     case leveled_sst:sst_newmerge(RP, FileName,
@@ -298,24 +310,31 @@ do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, OptsSST, Additions) ->
                                     OptsSST) of
         empty ->
             leveled_log:log(pc013, [FileName]),
-            do_merge([], [],
-                        SinkLevel, SinkB,
-                        RP, NewSQN, MaxSQN,
-                        OptsSST, 
-                        Additions);                        
+            do_merge(
+                [], [],
+                SinkLevel, SinkB,
+                RP, NewSQN, MaxSQN,
+                OptsSST, 
+                Additions
+            );                        
         {ok, Pid, Reply, Bloom} ->
             {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} = Reply,
-                Entry = #manifest_entry{start_key=SmallestKey,
-                                            end_key=HighestKey,
-                                            owner=Pid,
-                                            filename=FileName,
-                                            bloom=Bloom},
+                Entry =
+                    #manifest_entry{
+                        start_key=SmallestKey,
+                        end_key=HighestKey,
+                        owner=Pid,
+                        filename=FileName,
+                        bloom=Bloom
+                    },
                 leveled_log:log_timer(pc015, [], TS1),
-                do_merge(KL1Rem, KL2Rem,
-                            SinkLevel, SinkB,
-                            RP, NewSQN, MaxSQN,
-                            OptsSST,
-                            Additions ++ [Entry])
+                do_merge(
+                    KL1Rem, KL2Rem,
+                    SinkLevel, SinkB,
+                    RP, NewSQN, MaxSQN,
+                    OptsSST,
+                    [Entry|Additions]
+                )
     end.
 
 -spec grooming_scorer(

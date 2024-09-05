@@ -92,11 +92,11 @@ check_hash({_SegHash, Hash}, BloomBin) when is_binary(BloomBin)->
 map_hashes([], HashListTuple,  _SlotCount) ->
     HashListTuple;
 map_hashes([Hash|Rest], HashListTuple, SlotCount) ->
-    {Slot, Hashes} = split_hash(element(2, Hash), SlotCount),
+    {Slot, [H0, H1]} = split_hash(element(2, Hash), SlotCount),
     SlotHL = element(Slot + 1, HashListTuple),
     map_hashes(
         Rest,
-        setelement(Slot + 1, HashListTuple, Hashes ++ SlotHL),
+        setelement(Slot + 1, HashListTuple, [H0, H1 | SlotHL]),
         SlotCount).
 
 -spec split_hash(external_hash(), slot_count())

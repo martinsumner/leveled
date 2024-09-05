@@ -418,9 +418,9 @@ generate_segmentfilter_list(SegmentList, xsmall) ->
             A1 = 1 bsl 14,
             ExpandSegFun = 
                 fun(X, Acc) -> 
-                    Acc ++ [X, X + A0, X + A1, X + A0 + A1]
+                    [X, X + A0, X + A1, X + A0 + A1] ++ Acc
                 end,
-            lists:foldl(ExpandSegFun, [], SegmentList);
+            lists:foldr(ExpandSegFun, [], SegmentList);
         false ->
             false
     end;
