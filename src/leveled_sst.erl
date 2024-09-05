@@ -2705,7 +2705,7 @@ revert_position(Pos) ->
 %%%============================================================================
 
 
-%% @doc See usnit test append_performance_test_/0 and also
+%% @doc See eunit test append_performance_test_/0 and also
 %% https://github.com/erlang/otp/pull/8743
 %% On OTP 26.2.1 -
 %% Time for plus plus 16565
