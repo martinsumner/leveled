@@ -2008,6 +2008,9 @@ format_status_test() ->
     ?assertMatch(redacted, ST#state.levelzero_cache),
     ?assertMatch(redacted, ST#state.levelzero_index),
     ?assertMatch(redacted, ST#state.levelzero_astree),
+    NormStatus = format_status(#{reason => normal, state => S}),
+    NST = maps:get(state, NormStatus),
+    ?assert(is_integer(array:size(element(2, NST#state.manifest)))),
     clean_testdir(RootPath).
 
 close_no_crash_test_() ->

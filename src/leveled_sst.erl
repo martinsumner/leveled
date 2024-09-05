@@ -1396,25 +1396,23 @@ fetch_range(StartKey, EndKey, Summary, FilterFun, true) ->
     {Slots, RTrim} =
         lookup_slots(StartKey, EndKey, Summary#summary.index, FilterFun),
     Self = self(),
-    case {Slots, RTrim} of
-        {[Slot], true} ->
-            [{pointer, Self, Slot, StartKey, EndKey}];
-        {[Slot], false} ->
-            [{pointer, Self, Slot, StartKey, all}];
-        {[Hd|Rest], true} ->
-            {MidSlots, [Tl]} = lists:split(length(Rest) - 1, Rest),
+    case {Slots, if not RTrim -> all; RTrim -> EndKey end} of
+        {[Slot], LastKey} ->
+            [{pointer, Self, Slot, StartKey, LastKey}];
+        {[Hd|Rest], all} ->
+            RightPointers =
+                lists:map(
+                    fun(S) -> {pointer, Self, S, all, all} end,
+                    Rest),
+            [{pointer, Self, Hd, StartKey, all}|RightPointers];
+        {[Hd|Rest], LastKey} ->
+            {MidSlots, [Last]} = lists:split(length(Rest) - 1, Rest),
             MidSlotPointers =
                 lists:map(
                     fun(S) -> {pointer, Self, S, all, all} end,
                     MidSlots),
             [{pointer, Self, Hd, StartKey, all}|MidSlotPointers]
-                ++ [{pointer, Self, Tl, all, EndKey}];
-        {[Hd|Rest], false} ->
-            RightPointers =
-                lists:map(
-                    fun(S) -> {pointer, Self, S, all, all} end,
-                    Rest),
-            [{pointer, Self, Hd, StartKey, all}|RightPointers]
+                ++ [{pointer, Self, Last, all, LastKey}]
     end;
 fetch_range(_StartKey, _EndKey, _Summary, _FilterFun, false) ->
     %% This has been pre-checked to be uninteresting (i.e. due to modified date)
@@ -4050,6 +4048,9 @@ fetch_status_test() ->
     ST = maps:get(state, Status),
     ?assertMatch(redacted, ST#state.blockindex_cache),
     ?assertMatch(redacted, ST#state.fetch_cache),
+    NormStatus = format_status(#{reason => normal, state => S}),
+    NST = maps:get(state, NormStatus),
+    ?assert(is_integer(array:size(NST#state.fetch_cache))),
     ok = sst_close(Pid),
     ok = file:delete(filename:join(RP, Filename ++ ".sst")).
 
