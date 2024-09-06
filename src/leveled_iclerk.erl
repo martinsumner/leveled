@@ -72,7 +72,7 @@
 
 -behaviour(gen_server).
 
--include("include/leveled.hrl").
+-include("leveled.hrl").
 
 -export([init/1,
         handle_call/3,

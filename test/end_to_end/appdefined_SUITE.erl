@@ -1,7 +1,6 @@
 -module(appdefined_SUITE).
--include_lib("common_test/include/ct.hrl").
--include("include/leveled.hrl").
--export([all/0]).
+-include("leveled.hrl").
+-export([all/0, init_per_suite/1, end_per_suite/1]).
 -export([
             application_defined_tag/1,
             bespoketag_recalc/1
@@ -12,7 +11,12 @@ all() -> [
             bespoketag_recalc
             ].
 
+init_per_suite(Config) ->
+    testutil:init_per_suite([{suite, "appdefined"}|Config]),
+    Config.
 
+end_per_suite(Config) ->
+    testutil:end_per_suite(Config).
 
 application_defined_tag(_Config) ->
     T1 = os:timestamp(),

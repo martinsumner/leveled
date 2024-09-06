@@ -1,7 +1,9 @@
 -module(perf_SUITE).
--include("../include/leveled.hrl").
+
+-include("leveled.hrl").
+
 -define(INFO, info).
--export([all/0, suite/0]).
+-export([all/0, suite/0, init_per_suite/1, end_per_suite/1]).
 -export([
     riak_ctperf/1, riak_fullperf/1, riak_profileperf/1, riak_miniperf/1
 ]).
@@ -24,6 +26,13 @@ all() -> [?performance].
 -endif.
 
 suite() -> [{timetrap, {hours, 16}}].
+
+init_per_suite(Config) ->
+    testutil:init_per_suite([{suite, "perf"}|Config]),
+    Config.
+
+end_per_suite(Config) ->
+    testutil:end_per_suite(Config).
 
 riak_fullperf(_Config) ->
     riak_fullperf(2048, zstd, as_store).

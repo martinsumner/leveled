@@ -42,13 +42,11 @@
 %% The first word is the corresponding hash value and the second word is a
 %% file pointer to the actual {key,value} tuple higher in the file.
 %%
-%%
-
 
 -module(leveled_cdb).
 
 -behaviour(gen_statem).
--include("include/leveled.hrl").
+-include("leveled.hrl").
 
 -export([init/1,
             callback_mode/0,

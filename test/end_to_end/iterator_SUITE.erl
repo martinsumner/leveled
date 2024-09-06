@@ -1,11 +1,10 @@
 -module(iterator_SUITE).
 
--include_lib("common_test/include/ct.hrl").
--include("include/leveled.hrl").
+-include("leveled.hrl").
 
 -define(KEY_ONLY, {false, undefined}).
 
--export([all/0]).
+-export([all/0, init_per_suite/1, end_per_suite/1]).
 -export([expiring_indexes/1,
             breaking_folds/1,
             single_object_with2i/1,
@@ -26,6 +25,12 @@ all() -> [
             foldobjects_bybucket_range
             ].
 
+init_per_suite(Config) ->
+    testutil:init_per_suite([{suite, "iterator"}|Config]),
+    Config.
+
+end_per_suite(Config) ->
+    testutil:end_per_suite(Config).
 
 expiring_indexes(_Config) ->
     % Add objects to the store with index entries, where the objects (and hence

@@ -49,7 +49,6 @@
 %% version of the segment-leaf hash from the previous level 1 hash).
 %%
 
-
 -module(leveled_tictac).
 
 -export([

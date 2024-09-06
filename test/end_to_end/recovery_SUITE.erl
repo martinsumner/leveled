@@ -1,7 +1,8 @@
 -module(recovery_SUITE).
--include_lib("common_test/include/ct.hrl").
--include("include/leveled.hrl").
--export([all/0]).
+
+-include("leveled.hrl").
+
+-export([all/0, init_per_suite/1, end_per_suite/1]).
 -export([
             recovery_with_samekeyupdates/1,
             same_key_rotation_withindexes/1,
@@ -38,6 +39,12 @@ all() -> [
             replace_everything
             ].
 
+init_per_suite(Config) ->
+    testutil:init_per_suite([{suite, "recovery"}|Config]),
+    Config.
+
+end_per_suite(Config) ->
+    testutil:end_per_suite(Config).
 
 replace_everything(_Config) ->
     % See https://github.com/martinsumner/leveled/issues/389

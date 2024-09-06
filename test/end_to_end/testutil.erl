@@ -2,6 +2,8 @@
 
 -include("../include/leveled.hrl").
 
+-export([init_per_suite/1, end_per_suite/1]).
+
 -export([book_riakput/3,
             book_tempriakput/4,
             book_riakdelete/4,
@@ -90,6 +92,59 @@
           vclock,
           updatemetadata=dict:store(clean, true, dict:new()),
           updatevalue :: term()}).
+
+
+init_per_suite(Config) ->
+    LogTemplate = [time, " log_level=", level, " ", msg, "\n"],
+    LogFormatter =
+        {
+            logger_formatter,
+                #{
+                    time_designator => $\s,
+                    template => LogTemplate
+                }
+        },
+    {suite, SUITEName} = lists:keyfind(suite, 1, Config),
+    FileName = "leveled_" ++ SUITEName ++ "_ct.log",
+    LogConfig =
+        #{
+            config =>
+                #{
+                    file => FileName,
+                    max_no_files => 5
+                }
+        },
+    
+    LogFilter =
+        fun(LogEvent, LogType) ->
+            Meta = maps:get(meta, LogEvent),
+            case maps:get(log_type, Meta, not_found) of
+                LogType ->
+                    LogEvent;
+                _ ->
+                    ignore
+            end
+        end,
+
+    ok = logger:add_handler(logfile, logger_std_h, LogConfig),
+    ok = logger:set_handler_config(logfile, formatter, LogFormatter),
+    ok = logger:set_handler_config(logfile, level, info),
+    ok = logger:add_handler_filter(logfile, type_filter, {LogFilter, backend}),
+
+    ok = logger:set_handler_config(default, level, notice),
+    ok = logger:set_handler_config(cth_log_redirect, level, notice),
+
+    ok = logger:set_primary_config(level, info),
+
+    Config.
+
+end_per_suite(_Config) ->
+    ok = logger:remove_handler(logfile),
+    ok = logger:set_primary_config(level, notice),
+    ok = logger:set_handler_config(default, level, all),
+    ok = logger:set_handler_config(cth_log_redirect, level, all),
+
+    ok.
 
 riak_object(Bucket, Key, Value, MetaData) ->
     Content = #r_content{metadata=dict:from_list(MetaData), value=Value},

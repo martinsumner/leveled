@@ -17,7 +17,6 @@
 
 -define(WRITE_OPS, [binary, raw, read, write]).
 
-
 -spec generate_uuid() -> list().
 %% @doc
 %% Generate a new globally unique ID as a string.

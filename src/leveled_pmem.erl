@@ -26,7 +26,7 @@
 
 -module(leveled_pmem).
 
--include("include/leveled.hrl").
+-include("leveled.hrl").
 
 -export([
         prepare_for_index/2,

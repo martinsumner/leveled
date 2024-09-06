@@ -61,7 +61,7 @@
 
 -behaviour(gen_statem).
 
--include("include/leveled.hrl").
+-include("leveled.hrl").
 
 -define(LOOK_SLOTSIZE, 128). % Maximum of 128
 -define(LOOK_BLOCKSIZE, {24, 32}). % 4x + y = ?LOOK_SLOTSIZE

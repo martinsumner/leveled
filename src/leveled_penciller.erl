@@ -154,7 +154,6 @@
 %% the current level zero in-memory view.
 %%
 
-
 -module(leveled_penciller).
 
 -behaviour(gen_server).
