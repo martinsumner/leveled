@@ -158,21 +158,44 @@ many_put_compare(_Config) ->
                 [timer:now_diff(os:timestamp(), SWB0Obj)]),
     true = length(leveled_tictac:find_dirtyleaves(TreeA, TreeAObj0)) == 0,
 
-    InitAccTree = leveled_tictac:new_tree(0, TreeSize),
+    InitAccTree = leveled_tictac:new_tree(0, TreeSize, true),
     
     {async, TreeAObjFolder1} =
-        leveled_bookie:book_headfold(Bookie2, 
-                                        ?RIAK_TAG,
-                                        {range, "Bucket", all},
-                                        {FoldObjectsFun, 
-                                            InitAccTree},
-                                        true, true, false),
+        leveled_bookie:book_headfold(
+            Bookie2, 
+            ?RIAK_TAG,
+            {range, "Bucket", all},
+            {FoldObjectsFun, InitAccTree},
+            true,
+            true,
+            false
+        ),
     SWB1Obj = os:timestamp(),
     TreeAObj1 = TreeAObjFolder1(),
-    io:format("Build tictac tree via object fold with "++
-                    "presence check and 200K objects in ~w~n",
-                [timer:now_diff(os:timestamp(), SWB1Obj)]),
+    io:format(
+        "Build tictac tree via object fold with map level 1 "
+        "presence check and 200K objects in ~w~n",
+        [timer:now_diff(os:timestamp(), SWB1Obj)]
+    ),
     true = length(leveled_tictac:find_dirtyleaves(TreeA, TreeAObj1)) == 0,
+    {async, TreeAObjFolder1Alt} =
+        leveled_bookie:book_headfold(
+            Bookie2, 
+            ?RIAK_TAG,
+            {range, "Bucket", all},
+            {FoldObjectsFun, leveled_tictac:new_tree(0, TreeSize, false)},
+            true,
+            true,
+            false
+        ),
+    SWB1ObjAlt = os:timestamp(),
+    TreeAObj1Alt = TreeAObjFolder1Alt(),
+    io:format(
+        "Build tictac tree via object fold with binary level 1 "
+        "presence check and 200K objects in ~w~n",
+        [timer:now_diff(os:timestamp(), SWB1ObjAlt)]
+    ),
+    true = length(leveled_tictac:find_dirtyleaves(TreeA, TreeAObj1Alt)) == 0,
 
     % For an exportable comparison, want hash to be based on something not 
     % coupled to erlang language - so use exportable query
