@@ -54,6 +54,7 @@
 -export([
             new_tree/1,
             new_tree/2,
+            new_tree/3,
             add_kv/4,
             add_kv/5,
             alter_segment/3,
@@ -103,7 +104,7 @@
                         level2 :: array:array()
                         }).
 
--type level1_map() :: #{non_neg_integer() => binary()}.
+-type level1_map() :: #{non_neg_integer() => binary()}|binary().
 
 -type tictactree() ::
     #tictactree{}.
@@ -138,17 +139,30 @@ valid_size(Size) ->
 new_tree(TreeID) ->
     new_tree(TreeID, small).
     
+-spec new_tree(any(), tree_size()) -> tictactree().
 new_tree(TreeID, Size) ->
+    new_tree(TreeID, Size, true).
+
+-spec new_tree(any(), tree_size(), boolean()) -> tictactree().
+new_tree(TreeID, Size, UseMap) ->
     Width = get_size(Size),
     Lv1Width = Width * ?HASH_SIZE * 8,
-    Lv1Init = to_level1_map(<<0:Lv1Width/integer>>),
+    Lv1Init =
+        case UseMap of
+            true ->
+                to_level1_map(<<0:Lv1Width/integer>>);
+            false ->
+                <<0:Lv1Width/integer>>
+        end,
     Lv2Init = array:new([{size, Width}, {default, ?EMPTY}]),
-    #tictactree{treeID = TreeID,
-                    size = Size,
-                    width = Width,
-                    segment_count = Width * ?L2_CHUNKSIZE,
-                    level1 = Lv1Init,
-                    level2 = Lv2Init}.
+    #tictactree{
+        treeID = TreeID,
+        size = Size,
+        width = Width,
+        segment_count = Width * ?L2_CHUNKSIZE,
+        level1 = Lv1Init,
+        level2 = Lv2Init
+    }.
 
 -spec export_tree(tictactree()) -> {struct, list()}.
 %% @doc
@@ -502,16 +516,17 @@ to_level1_map_loop(<<>>, L1MapAcc, _Idx) ->
 to_level1_map_loop(<<Slice:64/binary, Rest/binary>>, L1MapAcc, Idx) ->
     to_level1_map_loop(Rest, maps:put(Idx, Slice, L1MapAcc), Idx + 1).
 
-
 -spec from_level1_map(level1_map()) -> binary().
-from_level1_map(L1Map) ->
+from_level1_map(Level1M) when is_map(Level1M) ->
     lists:foldl(
         fun(I, Acc) ->
-            <<Acc/binary, (maps:get(I, L1Map))/binary>>
+            <<Acc/binary, (maps:get(I, Level1M))/binary>>
         end,
         <<>>,
-        lists:seq(0, maps:size(L1Map) - 1)
-    ).
+        lists:seq(0, maps:size(Level1M) - 1)
+    );
+from_level1_map(Level1B) when is_binary(Level1B) ->
+    Level1B.
 
 -spec extract_segment(
     integer(), tictactree()) -> 
@@ -519,31 +534,53 @@ from_level1_map(L1Map) ->
 %% @doc
 %% Extract the Level 1 and Level 2 slices from a tree to prepare an update
 extract_segment(Segment, TicTacTree) ->
-    Level2Pos =
-        Segment band (?L2_CHUNKSIZE - 1),
     Level1Pos =
         (Segment bsr ?L2_BITSIZE)
             band (TicTacTree#tictactree.width - 1),
-    Level1Slice = Level1Pos div 16,
     
+    Level2Pos =
+        Segment band (?L2_CHUNKSIZE - 1),
     Level2BytePos = ?HASH_SIZE * Level2Pos,
-    Level1BytePos = ?HASH_SIZE * (Level1Pos rem 16),
-    
     Level2 = get_level2(TicTacTree, Level1Pos),
     
     HashIntLength = ?HASH_SIZE * 8,
     <<PreL2:Level2BytePos/binary,
         SegLeaf2:HashIntLength/integer,
         PostL2/binary>> = Level2,
-    <<PreL1:Level1BytePos/binary,
-        SegLeaf1:HashIntLength/integer,
-        PostL1/binary>> = maps:get(Level1Slice, TicTacTree#tictactree.level1),
+    {PreL1, SegLeaf1, PostL1, Level1BytePos} =
+        extract_level1_slice(TicTacTree#tictactree.level1, Level1Pos),
     
     {SegLeaf1, 
         SegLeaf2, 
         {PreL1, Level1BytePos, Level1Pos, HashIntLength, PostL1},
         {PreL2, Level2BytePos, Level2Pos, HashIntLength, PostL2}}.
 
+-spec extract_level1_slice(
+    level1_map(), non_neg_integer()) ->
+        {binary(), non_neg_integer(), binary(), non_neg_integer()}.
+extract_level1_slice(Level1M, Level1Pos) when is_map(Level1M) ->
+    Level1Slice = Level1Pos div 16,
+    HashIntLength = ?HASH_SIZE * 8,
+    Level1BytePos = ?HASH_SIZE * (Level1Pos rem 16),
+    <<PreL1:Level1BytePos/binary,
+        SegLeaf1:HashIntLength/integer,
+        PostL1/binary>> = maps:get(Level1Slice, Level1M),
+    {PreL1, SegLeaf1, PostL1, Level1BytePos};
+extract_level1_slice(Level1B, Level1Pos) when is_binary(Level1B) ->
+    HashIntLength = ?HASH_SIZE * 8,
+    Level1BytePos = ?HASH_SIZE * Level1Pos,
+    <<PreL1:Level1BytePos/binary,
+        SegLeaf1:HashIntLength/integer,
+        PostL1/binary>> = Level1B,
+    {PreL1, SegLeaf1, PostL1, Level1BytePos}.
+
+-spec replace_level1_slice(
+    level1_map(), non_neg_integer(), binary()) -> level1_map().
+replace_level1_slice(Level1M, Level1Pos, Level1Upd) when is_map(Level1M) ->
+    Level1Slice = Level1Pos div 16,
+    maps:put(Level1Slice, Level1Upd, Level1M);
+replace_level1_slice(Level1B, _Level1Pos, Level1Upd) when is_binary(Level1B) ->
+    Level1Upd.
 
 -spec replace_segment(
     integer(), integer(), tree_extract(), tree_extract(), tictactree()) ->
@@ -554,8 +591,6 @@ replace_segment(L1Hash, L2Hash, L1Extract, L2Extract, TicTacTree) ->
     {PreL1, Level1BytePos, Level1Pos, HashIntLength, PostL1} = L1Extract,
     {PreL2, Level2BytePos, _Level2Pos, HashIntLength, PostL2} = L2Extract,
 
-    Level1Slice = Level1Pos div 16,
-
     Level1Upd = <<PreL1:Level1BytePos/binary,
                     L1Hash:HashIntLength/integer,
                     PostL1/binary>>,
@@ -563,7 +598,10 @@ replace_segment(L1Hash, L2Hash, L1Extract, L2Extract, TicTacTree) ->
                     L2Hash:HashIntLength/integer,
                     PostL2/binary>>,
     TicTacTree#tictactree{
-        level1 = maps:put(Level1Slice, Level1Upd, TicTacTree#tictactree.level1),
+        level1 =
+            replace_level1_slice(
+                TicTacTree#tictactree.level1, Level1Pos, Level1Upd
+            ),
         level2 = array:set(Level1Pos, Level2Upd, TicTacTree#tictactree.level2)}.
 
 get_level2(TicTacTree, L1Pos) ->
@@ -768,30 +806,34 @@ dirtyleaves_sorted_test() ->
 
 
 merge_bysize_small_test() ->
-    merge_test_withsize(small).
+    merge_test_withsize(small, true, true),
+    merge_test_withsize(small, true, false).
 
 merge_bysize_medium_test() ->
-    merge_test_withsize(medium).
+    merge_test_withsize(medium, true, true),
+    merge_test_withsize(medium, true, false).
 
 merge_bysize_large_test() ->
-    merge_test_withsize(large).
+    merge_test_withsize(large, true, true),
+    merge_test_withsize(large, true, false).
 
 merge_bysize_xlarge_test_() ->
     {timeout, 60, fun merge_bysize_xlarge_test2/0}.
 
 merge_bysize_xlarge_test2() ->
-    merge_test_withsize(xlarge).
+    merge_test_withsize(xlarge, true, true),
+    merge_test_withsize(xlarge, true, false).
 
-merge_test_withsize(Size) ->
+merge_test_withsize(Size, T1UseMap, T2UseMap) ->
     BinFun = fun(K, V) -> {leveled_util:t2b(K), leveled_util:t2b(V)} end,
     
-    TreeX0 = new_tree(0, Size),
+    TreeX0 = new_tree(0, Size, T1UseMap),
     TreeX1 = add_kv(TreeX0, {o, "B1", "X1", null}, {caine, 1}, BinFun),
     TreeX2 = add_kv(TreeX1, {o, "B1", "X2", null}, {caine, 2}, BinFun),
     TreeX3 = add_kv(TreeX2, {o, "B1", "X3", null}, {caine, 3}, BinFun),
     TreeX4 = add_kv(TreeX3, {o, "B1", "X3", null}, {caine, 4}, BinFun),
     
-    TreeY0 = new_tree(0, Size),
+    TreeY0 = new_tree(0, Size, T2UseMap),
     TreeY1 = add_kv(TreeY0, {o, "B1", "Y1", null}, {caine, 101}, BinFun),
     TreeY2 = add_kv(TreeY1, {o, "B1", "Y2", null}, {caine, 102}, BinFun),
     TreeY3 = add_kv(TreeY2, {o, "B1", "Y3", null}, {caine, 103}, BinFun),
@@ -821,9 +863,13 @@ merge_emptytree_test() ->
     ?assertMatch([], find_dirtyleaves(TreeA, TreeC)).
 
 alter_segment_test() ->
+    alter_segment_tester(true),
+    alter_segment_tester(false).
+
+alter_segment_tester(UseMap) ->
     BinFun = fun(K, V) -> {leveled_util:t2b(K), leveled_util:t2b(V)} end,
     
-    TreeX0 = new_tree(0, small),
+    TreeX0 = new_tree(0, small, UseMap),
     TreeX1 = add_kv(TreeX0, {o, "B1", "X1", null}, {caine, 1}, BinFun),
     TreeX2 = add_kv(TreeX1, {o, "B1", "X2", null}, {caine, 2}, BinFun),
     TreeX3 = add_kv(TreeX2, {o, "B1", "X3", null}, {caine, 3}, BinFun),
@@ -840,9 +886,13 @@ alter_segment_test() ->
     ?assertMatch([], CompareResult).
 
 return_segment_test() ->
+    return_segment_tester(true),
+    return_segment_tester(false).
+
+return_segment_tester(UseMap) ->
     BinFun = fun(K, V) -> {leveled_util:t2b(K), leveled_util:t2b(V)} end,
     
-    TreeX0 = new_tree(0, small),
+    TreeX0 = new_tree(0, small, UseMap),
     {TreeX1, SegID} 
         = add_kv(TreeX0, {o, "B1", "X1", null}, {caine, 1}, BinFun, true),
     TreeX2 = alter_segment(SegID, 0, TreeX1),
