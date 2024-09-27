@@ -57,12 +57,11 @@
 %% the transaction log replay; or by using a higher level for of anti-entropy
 %% (i.e. make Riak responsible).
 
-
 -module(leveled_sst).
 
 -behaviour(gen_statem).
 
--include("include/leveled.hrl").
+-include("leveled.hrl").
 
 -define(LOOK_SLOTSIZE, 128). % Maximum of 128
 -define(LOOK_BLOCKSIZE, {24, 32}). % 4x + y = ?LOOK_SLOTSIZE
@@ -103,7 +102,7 @@
          callback_mode/0,
          terminate/3,
          code_change/4,
-         format_status/2]).
+         format_status/1]).
 
 %% states
 -export([starting/3,
@@ -926,11 +925,21 @@ terminate(Reason, _StateName, State) ->
 code_change(_OldVsn, StateName, State, _Extra) ->
     {ok, StateName, State}.
 
-format_status(normal, [_PDict, _, State]) ->
-    State;
-format_status(terminate, [_PDict, _, State]) ->
-    State#state{
-        blockindex_cache = redacted, fetch_cache = redacted}.
+
+format_status(Status) ->
+    case maps:get(reason, Status, normal) of
+        terminate ->
+            State = maps:get(state, Status),
+            maps:update(
+                state,
+                State#state{
+                    blockindex_cache = redacted, 
+                    fetch_cache = redacted},
+                Status
+            );
+        _ ->
+            Status
+    end.
 
 
 %%%============================================================================
@@ -1385,41 +1394,28 @@ fetch(LedgerKey, Hash,
 %% Fetch pointers to the slots the SST file covered by a given key range.
 fetch_range(StartKey, EndKey, Summary, FilterFun, true) ->
     {Slots, RTrim} =
-        lookup_slots(
-            StartKey,
-            EndKey,
-            Summary#summary.index,
-            FilterFun),
+        lookup_slots(StartKey, EndKey, Summary#summary.index, FilterFun),
     Self = self(),
-    SL = length(Slots),
-    case SL of
-        1 ->
-            [Slot] = Slots,
-            case RTrim of
-                true ->
-                    [{pointer, Self, Slot, StartKey, EndKey}];
-                false ->
-                    [{pointer, Self, Slot, StartKey, all}]
-            end;
-        N ->
-            {LSlot, MidSlots, RSlot} =
-                {hd(Slots), lists:sublist(Slots, 2, N - 2), lists:last(Slots)},
+    case {Slots, if not RTrim -> all; RTrim -> EndKey end} of
+        {[Slot], LastKey} ->
+            [{pointer, Self, Slot, StartKey, LastKey}];
+        {[Hd|Rest], all} ->
+            RightPointers =
+                lists:map(
+                    fun(S) -> {pointer, Self, S, all, all} end,
+                    Rest),
+            [{pointer, Self, Hd, StartKey, all}|RightPointers];
+        {[Hd|Rest], LastKey} ->
+            {MidSlots, [Last]} = lists:split(length(Rest) - 1, Rest),
             MidSlotPointers =
                 lists:map(
                     fun(S) -> {pointer, Self, S, all, all} end,
                     MidSlots),
-            case RTrim of
-                true ->
-                    [{pointer, Self, LSlot, StartKey, all}] ++
-                        MidSlotPointers ++
-                        [{pointer, Self, RSlot, all, EndKey}];
-                false ->
-                    [{pointer, Self, LSlot, StartKey, all}] ++
-                        MidSlotPointers ++
-                        [{pointer, Self, RSlot, all, all}]
-            end
+            [{pointer, Self, Hd, StartKey, all}|MidSlotPointers]
+                ++ [{pointer, Self, Last, all, LastKey}]
     end;
 fetch_range(_StartKey, _EndKey, _Summary, _FilterFun, false) ->
+    %% This has been pre-checked to be uninteresting (i.e. due to modified date)
     [].
 
 -spec compress_level(
@@ -2214,7 +2210,11 @@ read_slots(Handle, SlotList, {SegChecker, LowLastMod, BlockIndexCache},
                     % If there is an attempt to use the seg list query and the
                     % index block cache isn't cached for any part this may be
                     % slower as each slot will be read in turn
-                    {true, read_slotlist([Pointer], Handle) ++ Acc};
+                    {
+                        true,
+                        append(
+                            read_slotlist([Pointer], Handle), Acc)
+                        };
                 {BlockLengths, LMD, BlockIdx} ->
                     % If there is a BlockIndex cached then we can use it to
                     % check to see if any of the expected segments are
@@ -2232,10 +2232,14 @@ read_slots(Handle, SlotList, {SegChecker, LowLastMod, BlockIndexCache},
                             case SegChecker of
                                 false ->
                                     % No SegChecker - need all the slot now
-                                    {NeededBlockIdx,
-                                        read_slotlist([Pointer], Handle) ++ Acc
-                                        };
-                                SegChecker ->
+                                    {
+                                        NeededBlockIdx,
+                                        append(
+                                            read_slotlist([Pointer], Handle),
+                                            Acc
+                                        )
+                                    };
+                                _ ->
                                     TrimmedKVL =
                                         checkblocks_segandrange(
                                             BlockIdx,
@@ -2245,7 +2249,7 @@ read_slots(Handle, SlotList, {SegChecker, LowLastMod, BlockIndexCache},
                                             IdxModDate,
                                             SegChecker,
                                             {SK, EK}),
-                                    {NeededBlockIdx, TrimmedKVL ++ Acc}
+                                    {NeededBlockIdx, append(TrimmedKVL, Acc)}
                             end
                     end
             end
@@ -2308,15 +2312,19 @@ binaryslot_reader(
     % of get_kvreader calls.  This means that slots which are only used in
     % range queries can still populate their block_index caches (on the FSM
     % loop state), and those caches can be used for future queries.
-    {Acc, BIAcc} =
-        binaryslot_reader(
-            SlotBinsToFetch, PressMethod, IdxModDate, SegChecker, [], []),
-    {lists:reverse(lists:reverse(SlotsToPoint) ++ Acc), BIAcc}.
+    binaryslot_reader(
+        lists:reverse(SlotBinsToFetch),
+        PressMethod,
+        IdxModDate,
+        SegChecker,
+        SlotsToPoint,
+        []
+    ).
 
 binaryslot_reader([], _PressMethod, _IdxModDate, _SegChecker, Acc, BIAcc) ->
     {Acc, BIAcc};
 binaryslot_reader(
-    [{SlotBin, ID, SK, EK}|Tail],
+        [{SlotBin, ID, SK, EK}|Tail],
         PressMethod, IdxModDate, SegChecker, Acc, BIAcc) ->
     % The start key and end key here, may not the start key and end key the
     % application passed into the query.  If the slot is known to lie entirely
@@ -2325,17 +2333,18 @@ binaryslot_reader(
     % entries in this slot to be trimmed from either or both sides.
     {TrimmedL, BICache} =
         binaryslot_trimmed(
-            SlotBin, SK, EK, PressMethod, IdxModDate, SegChecker),
+            SlotBin, SK, EK, PressMethod, IdxModDate, SegChecker, Acc
+        ),
     binaryslot_reader(
-        Tail, PressMethod, IdxModDate, SegChecker,
-            lists:reverse(TrimmedL) ++ Acc, [{ID, BICache}|BIAcc]);
-binaryslot_reader(L, PressMethod, IdxModDate, SegChecker, Acc, BIAcc) ->
-    {KVs, Tail} = lists:splitwith(fun(SR) -> tuple_size(SR) == 2 end, L),
-    % These entries must already have been filtered for membership inside any
-    % range used in the query.
-    binaryslot_reader(
-        Tail, PressMethod, IdxModDate, SegChecker,
-            lists:reverse(KVs) ++ Acc, BIAcc).
+        Tail,
+        PressMethod,
+        IdxModDate,
+        SegChecker,
+        TrimmedL,
+        [{ID, BICache}|BIAcc]
+    );
+binaryslot_reader([{K, V}|Tail], PM, IMD, SC, Acc, BIAcc) ->
+    binaryslot_reader(Tail, PM, IMD, SC, [{K, V}|Acc], BIAcc).
 
 
 read_length_list(Handle, LengthList) ->
@@ -2376,28 +2385,13 @@ binaryslot_get(FullBin, Key, Hash, PressMethod, IdxModDate) ->
                 none}
     end.
 
-
--spec binaryslot_blockstolist(
-        list(non_neg_integer()),
+-spec binaryslot_tolist(
         binary(),
         press_method(),
-        list(leveled_codec:ledger_kv())) -> list(leveled_codec:ledger_kv()).
-binaryslot_blockstolist([], _Bin, _PressMethod, Acc) ->
-    Acc;
-binaryslot_blockstolist([0|RestLengths], RestBin, PressMethod, Acc) ->
-    binaryslot_blockstolist(RestLengths, RestBin, PressMethod, Acc);
-binaryslot_blockstolist([L|RestLengths], Bin, PressMethod, Acc) ->
-    <<Block:L/binary, RestBin/binary>> = Bin,
-    binaryslot_blockstolist(
-        RestLengths,
-        RestBin,
-        PressMethod,
-        Acc ++ deserialise_block(Block, PressMethod)).
-
--spec binaryslot_tolist(
-        binary(), press_method(), boolean())
+        boolean(),
+        list(leveled_codec:ledger_kv()|expandable_pointer()))
             -> list(leveled_codec:ledger_kv()).
-binaryslot_tolist(FullBin, PressMethod, IdxModDate) ->
+binaryslot_tolist(FullBin, PressMethod, IdxModDate, InitAcc) ->
     case crc_check_slot(FullBin) of
         {Header, Blocks} ->
             {BlockLengths, _LMD, _PosBinIndex} =
@@ -2407,10 +2401,20 @@ binaryslot_tolist(FullBin, PressMethod, IdxModDate) ->
                 B3L:32/integer,
                 B4L:32/integer,
                 B5L:32/integer>> = BlockLengths,
-            binaryslot_blockstolist(
-                [B1L, B2L, B3L, B4L, B5L], Blocks, PressMethod, []);
+            <<B1:B1L/binary,
+                B2:B2L/binary,
+                B3:B3L/binary,
+                B4:B4L/binary,
+                B5:B5L/binary>> = Blocks,
+            lists:foldl(
+                fun(B, Acc) ->
+                    append(deserialise_block(B, PressMethod), Acc)
+                end,
+                InitAcc,
+                [B5, B4, B3, B2, B1]
+            );
         crc_wonky ->
-            []
+            InitAcc
     end.
 
 -spec binaryslot_trimmed(
@@ -2419,16 +2423,19 @@ binaryslot_tolist(FullBin, PressMethod, IdxModDate) ->
         range_endpoint(),
         press_method(),
         boolean(),
-        segment_check_fun()) ->
+        segment_check_fun(),
+        list(leveled_codec:ledger_kv()|expandable_pointer())
+    ) ->
             {list(leveled_codec:ledger_kv()),
                 list({integer(), binary()})|none}.
 %% @doc
 %% Must return a trimmed and reversed list of results in the range
 binaryslot_trimmed(
-        FullBin, all, all, PressMethod, IdxModDate, false) ->
-    {binaryslot_tolist(FullBin, PressMethod, IdxModDate), none};
+        FullBin, all, all, PressMethod, IdxModDate, false, Acc) ->
+    {binaryslot_tolist(FullBin, PressMethod, IdxModDate, Acc), none};
 binaryslot_trimmed(
-        FullBin, StartKey, EndKey, PressMethod, IdxModDate, SegmentChecker) ->
+        FullBin, StartKey, EndKey, PressMethod, IdxModDate, SegmentChecker, Acc
+    ) ->
     case {crc_check_slot(FullBin), SegmentChecker} of
         % Get a trimmed list of keys in the slot based on the range, trying
         % to minimise the number of blocks which are deserialised by
@@ -2449,7 +2456,7 @@ binaryslot_trimmed(
                     {StartKey, EndKey},
                     Block1, Block2, MidBlock, Block4, Block5,
                     PressMethod),
-            {TrimmedKVL, none};
+            {append(TrimmedKVL, Acc), none};
         {{Header, _Blocks}, SegmentChecker} ->
             {BlockLengths, _LMD, BlockIdx} =
                 extract_header(Header, IdxModDate),
@@ -2462,9 +2469,9 @@ binaryslot_trimmed(
                     IdxModDate,
                     SegmentChecker,
                     {StartKey, EndKey}),
-            {TrimmedKVL, Header};
+            {append(TrimmedKVL, Acc), Header};
         {crc_wonky, _} ->
-            {[], none}
+            {Acc, none}
     end.
 
 -spec blocks_required(
@@ -2477,27 +2484,35 @@ blocks_required(
     case filterby_midblock(
             fetchends_rawblock(MidBlockList), {StartKey, EndKey}) of
         empty ->
-            in_range(deserialise_block(B1, PressMethod), StartKey, EndKey)
-            ++ in_range(deserialise_block(B2, PressMethod), StartKey, EndKey)
-            ++ in_range(deserialise_block(B4, PressMethod), StartKey, EndKey)
-            ++ in_range(deserialise_block(B5, PressMethod), StartKey, EndKey);
+            append(
+                in_range(deserialise_block(B1, PressMethod), StartKey, EndKey),
+                in_range(deserialise_block(B2, PressMethod), StartKey, EndKey),
+                in_range(deserialise_block(B4, PressMethod), StartKey, EndKey),
+                in_range(deserialise_block(B5, PressMethod), StartKey, EndKey)
+            );
         all_blocks ->
-            get_lefthand_blocks(B1, B2, PressMethod, StartKey)
-            ++ MidBlockList
-            ++ get_righthand_blocks(B4, B5, PressMethod, EndKey);
+            append(
+                get_lefthand_blocks(B1, B2, PressMethod, StartKey),
+                MidBlockList,
+                get_righthand_blocks(B4, B5, PressMethod, EndKey)
+            );
         lt_mid ->
             in_range(
                 get_lefthand_blocks(B1, B2, PressMethod, StartKey),
                 all,
                 EndKey);
         le_mid ->
-            get_lefthand_blocks(B1, B2, PressMethod, StartKey)
-            ++ in_range(MidBlockList, all, EndKey);
+            append(
+                get_lefthand_blocks(B1, B2, PressMethod, StartKey),
+                in_range(MidBlockList, all, EndKey)
+            );
         mid_only ->
             in_range(MidBlockList, StartKey, EndKey);
         ge_mid ->
-            in_range(MidBlockList, StartKey, all)
-            ++ get_righthand_blocks(B4, B5, PressMethod, EndKey);
+            append(
+                in_range(MidBlockList, StartKey, all),
+                get_righthand_blocks(B4, B5, PressMethod, EndKey)
+            );
         gt_mid ->
             in_range(
                 get_righthand_blocks(B4, B5, PressMethod, EndKey),
@@ -2684,6 +2699,34 @@ revert_position(Pos) ->
                         (TailPos rem SideBlockSize) + 1}
             end
     end.
+
+%%%============================================================================
+%%% Optimised list functions
+%%%============================================================================
+
+
+%% @doc See eunit test append_performance_test_/0 and also
+%% https://github.com/erlang/otp/pull/8743
+%% On OTP 26.2.1 -
+%% Time for plus plus 16565
+%% Time for append 7453
+%% Time for lists:append 16428
+%% Time for right associative plus plus 15928
+%% ... this is all about optimising the case where there is an empty list
+%% on the RHS ... and the absolute benefit is marginal
+-spec append(list(), list()) -> list().
+append(L1, []) ->
+    L1;
+append(L1, L2) ->
+    L1 ++ L2.
+
+-spec append(list(), list(), list()) -> list().
+append(L1, L2, L3) ->
+    append(L1, append(L2, L3)).
+
+-spec append(list(), list(), list(), list()) -> list().
+append(L1, L2, L3, L4) ->
+    append(L1, append(L2, L3, L4)).
 
 %%%============================================================================
 %%% Merge Functions
@@ -3050,6 +3093,15 @@ maybelog_fetch_timing({Pid, _SlotFreq}, Level, Type, SW) ->
 
 -define(TEST_AREA, "test/test_area/").
 
+binaryslot_trimmed(
+    FullBin, StartKey, EndKey, PressMethod, IdxModDate, SegmentChecker) ->
+    binaryslot_trimmed(
+        FullBin, StartKey, EndKey, PressMethod, IdxModDate, SegmentChecker, []
+    ).
+
+binaryslot_tolist(FullBin, PressMethod, IdxModDate) ->
+    binaryslot_tolist(FullBin, PressMethod, IdxModDate, []).
+
 
 sst_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
     sst_getkvrange(Pid, StartKey, EndKey, ScanWidth, false, 0).
@@ -3136,11 +3188,60 @@ generate_indexkeys(Count, IndexList) ->
 
 generate_indexkey(Term, Count) ->
     IndexSpecs = [{add, "t1_int", Term}],
-    leveled_codec:idx_indexspecs(IndexSpecs,
-                                    "Bucket",
-                                    "Key" ++ integer_to_list(Count),
-                                    Count,
-                                    infinity).
+    leveled_codec:idx_indexspecs(
+        IndexSpecs,
+        "Bucket",
+        "Key" ++ integer_to_list(Count),
+        Count,
+        infinity
+    ).
+
+append_performance_test_() ->
+    {timeout, 300, fun append_performance_tester/0}.
+
+append_performance_tester() ->
+    KVL1 = generate_randomkeys(0, 128, 1, 4),
+    KVL2 = generate_randomkeys(129, 256, 1, 4),
+    KVL3 = generate_randomkeys(257, 384, 1, 4),
+    KVL4 = generate_randomkeys(385, 512, 1, 4),
+
+    SW0 = os:system_time(microsecond),
+    lists:foreach(
+        fun(_I) ->
+            _KVL = KVL1 ++ KVL2 ++ KVL3 ++ KVL4 ++ []
+        end,
+        lists:seq(1, 5000)
+    ),
+    SW1 = os:system_time(microsecond),
+    lists:foreach(
+        fun(_I) ->
+            _KVL = append(KVL1, KVL2, KVL3, append(KVL4, []))
+        end,
+        lists:seq(1, 5000)
+    ),
+    SW2 = os:system_time(microsecond),
+    lists:foreach(
+        fun(_I) ->
+            _KVL = lists:append([KVL1, KVL2, KVL3, KVL4, []])
+        end,
+        lists:seq(1, 5000)
+    ),
+    SW3 = os:system_time(microsecond),
+    lists:foreach(
+        fun(_I) ->
+            _KVL = KVL1 ++ (KVL2 ++ (KVL3 ++ (KVL4 ++ [])))
+        end,
+        lists:seq(1, 5000)
+    ),
+    SW4 = os:system_time(microsecond),
+    io:format(
+        user,
+        "~nTime for plus plus ~w "
+        "Time for inline append ~w "
+        "Time for lists:append ~w "
+        "Time for bidmas plus plus ~w~n",
+        [SW1 - SW0, SW2 - SW1, SW3 - SW2, SW4 - SW3]
+    ).
 
 tombcount_test() ->
     tombcount_tester(1),
@@ -3940,12 +4041,16 @@ fetch_status_test() ->
     {ok, Pid, {FirstKey, LastKey}, _Bloom} =
         testsst_new(RP, Filename, 1, KVList1, length(KVList1), native),
     {status, Pid, {module, gen_statem}, SItemL} = sys:get_status(Pid),
-    S = lists:keyfind(state, 1, lists:nth(5, SItemL)),
+    {data,[{"State", {reader, S}}]} = lists:nth(3, lists:nth(5, SItemL)),
     true = is_integer(array:size(S#state.fetch_cache)),
     true = is_integer(array:size(element(2, S#state.blockindex_cache))),
-    ST = format_status(terminate, [dict:new(), starting, S]),
+    Status = format_status(#{reason => terminate, state => S}),
+    ST = maps:get(state, Status),
     ?assertMatch(redacted, ST#state.blockindex_cache),
     ?assertMatch(redacted, ST#state.fetch_cache),
+    NormStatus = format_status(#{reason => normal, state => S}),
+    NST = maps:get(state, NormStatus),
+    ?assert(is_integer(array:size(NST#state.fetch_cache))),
     ok = sst_close(Pid),
     ok = file:delete(filename:join(RP, Filename ++ ".sst")).
 

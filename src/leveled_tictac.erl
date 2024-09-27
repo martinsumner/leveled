@@ -49,14 +49,12 @@
 %% version of the segment-leaf hash from the previous level 1 hash).
 %%
 
-
 -module(leveled_tictac).
-
--include("include/leveled.hrl").
 
 -export([
             new_tree/1,
             new_tree/2,
+            new_tree/3,
             add_kv/4,
             add_kv/5,
             alter_segment/3,
@@ -102,9 +100,11 @@
                         size  :: tree_size(),
                         width :: integer(),
                         segment_count :: integer(),
-                        level1 :: binary(),
-                        level2 :: any() % an array - but OTP compatibility
+                        level1 :: level1_map(),
+                        level2 :: array:array()
                         }).
+
+-type level1_map() :: #{non_neg_integer() => binary()}|binary().
 
 -type tictactree() ::
     #tictactree{}.
@@ -114,6 +114,11 @@
     {binary(), integer(), integer(), integer(), binary()}.
 -type tree_size() :: 
     xxsmall|xsmall|small|medium|large|xlarge.
+-type bin_extract_fun()
+    ::
+    fun((term(), term()) ->
+        {binary(), binary()|{is_hash, non_neg_integer()}}
+    ).
 
 -export_type([tictactree/0, segment48/0, tree_size/0]).
 
@@ -134,17 +139,30 @@ valid_size(Size) ->
 new_tree(TreeID) ->
     new_tree(TreeID, small).
     
+-spec new_tree(any(), tree_size()) -> tictactree().
 new_tree(TreeID, Size) ->
+    new_tree(TreeID, Size, true).
+
+-spec new_tree(any(), tree_size(), boolean()) -> tictactree().
+new_tree(TreeID, Size, UseMap) ->
     Width = get_size(Size),
     Lv1Width = Width * ?HASH_SIZE * 8,
-    Lv1Init = <<0:Lv1Width/integer>>,
+    Lv1Init =
+        case UseMap of
+            true ->
+                to_level1_map(<<0:Lv1Width/integer>>);
+            false ->
+                <<0:Lv1Width/integer>>
+        end,
     Lv2Init = array:new([{size, Width}, {default, ?EMPTY}]),
-    #tictactree{treeID = TreeID,
-                    size = Size,
-                    width = Width,
-                    segment_count = Width * ?L2_CHUNKSIZE,
-                    level1 = Lv1Init,
-                    level2 = Lv2Init}.
+    #tictactree{
+        treeID = TreeID,
+        size = Size,
+        width = Width,
+        segment_count = Width * ?L2_CHUNKSIZE,
+        level1 = Lv1Init,
+        level2 = Lv2Init
+    }.
 
 -spec export_tree(tictactree()) -> {struct, list()}.
 %% @doc
@@ -159,9 +177,16 @@ export_tree(Tree) ->
     L2 = 
         lists:foldl(EncodeL2Fun, [], lists:seq(0, Tree#tictactree.width - 1)),
     {struct, 
-        [{<<"level1">>, base64:encode_to_string(Tree#tictactree.level1)}, 
-            {<<"level2">>, {struct, lists:reverse(L2)}}
-            ]}.
+        [{<<"level1">>,
+                base64:encode_to_string(
+                    from_level1_map(Tree#tictactree.level1)
+                )
+            }, 
+            {<<"level2">>,
+                {struct, lists:reverse(L2)}
+            }
+        ]
+    }.
 
 -spec import_tree({struct, list()}) -> tictactree().
 %% @doc
@@ -174,8 +199,9 @@ import_tree(ExportedTree) ->
     Sizes = lists:map(fun(SizeTag) -> {SizeTag, get_size(SizeTag)} end, 
                         ?VALID_SIZES),
     Width = byte_size(L1Bin) div ?HASH_SIZE,
-    {Size, Width} = lists:keyfind(Width, 2, Sizes),
-    Width = get_size(Size),
+    {Size, _Width} = lists:keyfind(Width, 2, Sizes),
+   %% assert that side is indeed the provided width
+    true = get_size(Size) == Width,
     Lv2Init = array:new([{size, Width}]),
     FoldFun = 
         fun({X, EncodedL2SegBin}, L2Array) ->
@@ -183,15 +209,18 @@ import_tree(ExportedTree) ->
             array:set(binary_to_integer(X), L2SegBin, L2Array)
         end,
     Lv2 = lists:foldl(FoldFun, Lv2Init, L2List),
-    #tictactree{treeID = import,
-                    size = Size,
-                    width = Width,
-                    segment_count = Width * ?L2_CHUNKSIZE,
-                    level1 = L1Bin,
-                    level2 = Lv2}.
+    garbage_collect(),
+    #tictactree{
+        treeID = import,
+        size = Size,
+        width = Width,
+        segment_count = Width * ?L2_CHUNKSIZE,
+        level1 = to_level1_map(L1Bin),
+        level2 = Lv2
+    }.
 
 
--spec add_kv(tictactree(), term(), term(), fun()) -> tictactree().
+-spec add_kv(tictactree(), term(), term(), bin_extract_fun()) -> tictactree().
 %% @doc
 %% Add a Key and value to a tictactree using the BinExtractFun to extract a 
 %% binary from the Key and value from which to generate the hash.  The 
@@ -200,8 +229,9 @@ import_tree(ExportedTree) ->
 add_kv(TicTacTree, Key, Value, BinExtractFun) ->
     add_kv(TicTacTree, Key, Value, BinExtractFun, false).
 
--spec add_kv(tictactree(), term(), term(), fun(), boolean()) 
-                                    -> tictactree()|{tictactree(), integer()}.
+-spec add_kv(
+    tictactree(), term(), term(), bin_extract_fun(), boolean())
+        -> tictactree()|{tictactree(), integer()}.
 %% @doc
 %% add_kv with ability to return segment ID of Key added
 add_kv(TicTacTree, Key, Value, BinExtractFun, ReturnSegment) ->
@@ -215,14 +245,15 @@ add_kv(TicTacTree, Key, Value, BinExtractFun, ReturnSegment) ->
     SegLeaf2Upd = SegLeaf2 bxor SegChangeHash,
     SegLeaf1Upd = SegLeaf1 bxor SegChangeHash,
 
+    UpdatedTree =
+        replace_segment(
+            SegLeaf1Upd, SegLeaf2Upd, L1Extract, L2Extract, TicTacTree
+        ),
     case ReturnSegment of
         true -> 
-            {replace_segment(SegLeaf1Upd, SegLeaf2Upd, 
-                            L1Extract, L2Extract, TicTacTree),
-                Segment};
+            {UpdatedTree, Segment};
         false ->
-            replace_segment(SegLeaf1Upd, SegLeaf2Upd, 
-                            L1Extract, L2Extract, TicTacTree)
+            UpdatedTree
     end.
 
 -spec alter_segment(integer(), integer(), tictactree()) -> tictactree().
@@ -241,8 +272,9 @@ alter_segment(Segment, Hash, Tree) ->
 %% Returns a list of segment IDs which hold differences between the state
 %% represented by the two trees.
 find_dirtyleaves(SrcTree, SnkTree) ->
-    Size = SrcTree#tictactree.size,
-    Size = SnkTree#tictactree.size,
+    SizeSrc = SrcTree#tictactree.size,
+    SizeSnk = SnkTree#tictactree.size,
+    true = SizeSrc == SizeSnk, 
     
     IdxList = find_dirtysegments(fetch_root(SrcTree), fetch_root(SnkTree)),
     SrcLeaves = fetch_leaves(SrcTree, IdxList),
@@ -250,12 +282,19 @@ find_dirtyleaves(SrcTree, SnkTree) ->
     
     FoldFun =
         fun(Idx, Acc) ->
-            {Idx, SrcLeaf} = lists:keyfind(Idx, 1, SrcLeaves),
-            {Idx, SnkLeaf} = lists:keyfind(Idx, 1, SnkLeaves),
+            {_, SrcLeaf} = lists:keyfind(Idx, 1, SrcLeaves),
+            {_, SnkLeaf} = lists:keyfind(Idx, 1, SnkLeaves),
             L2IdxList = segmentcompare(SrcLeaf, SnkLeaf),
-            Acc ++ lists:map(fun(X) -> X + Idx * ?L2_CHUNKSIZE end, L2IdxList)
+            lists:foldl(
+                fun(X, InnerAcc) ->
+                    SegID = X + Idx * ?L2_CHUNKSIZE,
+                    [SegID|InnerAcc]
+                end,
+                Acc,
+                L2IdxList)
         end,
-    lists:sort(lists:foldl(FoldFun, [], IdxList)).
+    %% Output not sorted, as sorted by the design of the construction process
+    lists:foldl(FoldFun, [], IdxList).
 
 -spec find_dirtysegments(binary(), binary()) -> list(integer()).
 %% @doc
@@ -268,7 +307,7 @@ find_dirtysegments(SrcBin, SinkBin) ->
 %% @doc
 %% Return the level1 binary for a tree.
 fetch_root(TicTacTree) ->
-    TicTacTree#tictactree.level1.
+    from_level1_map(TicTacTree#tictactree.level1).
 
 -spec fetch_leaves(tictactree(), list(integer())) -> list().
 %% @doc
@@ -303,15 +342,21 @@ merge_trees(TreeA, TreeB) ->
             NewLevel2 = merge_binaries(L2A, L2B),
             array:set(SQN, NewLevel2, MergeL2)
         end,
-    NewLevel2 = lists:foldl(MergeFun,
-                                MergedTree#tictactree.level2,
-                                lists:seq(0, MergedTree#tictactree.width - 1)),
+    NewLevel2 =
+        lists:foldl(
+            MergeFun,
+            MergedTree#tictactree.level2,
+            lists:seq(0, MergedTree#tictactree.width - 1)
+        ),
     
-    MergedTree#tictactree{level1 = NewLevel1, level2 = NewLevel2}.
+    MergedTree#tictactree{
+        level1 = to_level1_map(NewLevel1),
+        level2 = NewLevel2
+    }.
 
--spec get_segment(integer(), 
-                    integer()|xxsmall|xsmall|small|medium|large|xlarge) -> 
-                        integer().
+-spec get_segment(
+    integer(), 
+    integer()|xxsmall|xsmall|small|medium|large|xlarge) -> integer().
 %% @doc
 %% Return the segment ID for a Key.  Can pass the tree size or the actual
 %% segment count derived from the size
@@ -339,8 +384,8 @@ tictac_hash(BinKey, Val) when is_binary(BinKey) ->
         end,
     {HashKeyToSeg, AltHashKey bxor HashVal}.
 
--spec keyto_doublesegment32(binary())
-                                    -> {non_neg_integer(), non_neg_integer()}.
+-spec keyto_doublesegment32(
+    binary()) -> {non_neg_integer(), non_neg_integer()}.
 %% @doc
 %% Used in tictac_hash/2 to provide an alternative hash of the key to bxor with
 %% the value, as well as the segment hash to locate the leaf of the tree to be
@@ -372,8 +417,8 @@ keyto_segment48(BinKey) ->
         _Rest/binary>> =  crypto:hash(md5, BinKey),
     {segment_hash, SegmentID, ExtraHash, AltHash}.
 
--spec generate_segmentfilter_list(list(integer()), tree_size())  
-                                                    -> false|list(integer()). 
+-spec generate_segmentfilter_list(
+    list(integer()), tree_size())  -> false|list(integer()). 
 %% @doc
 %% Cannot accelerate segment listing for trees below certain sizes, so check
 %% the creation of segment filter lists with this function
@@ -386,9 +431,9 @@ generate_segmentfilter_list(SegmentList, xsmall) ->
             A1 = 1 bsl 14,
             ExpandSegFun = 
                 fun(X, Acc) -> 
-                    Acc ++ [X, X + A0, X + A1, X + A0 + A1]
+                    [X, X + A0, X + A1, X + A0 + A1] ++ Acc
                 end,
-            lists:foldl(ExpandSegFun, [], SegmentList);
+            lists:foldr(ExpandSegFun, [], SegmentList);
         false ->
             false
     end;
@@ -398,8 +443,8 @@ generate_segmentfilter_list(SegmentList, Size) ->
             SegmentList
     end.
 
--spec adjust_segmentmatch_list(list(integer()), tree_size(), tree_size())
-                                                            -> list(integer()).
+-spec adjust_segmentmatch_list(
+    list(integer()), tree_size(), tree_size()) -> list(integer()).
 %% @doc
 %% If we have dirty segments discovered by comparing trees of size CompareSize,
 %% and we want to see if it matches a segment for a key which was created for a
@@ -441,8 +486,8 @@ adjust_segmentmatch_list(SegmentList, CompareSize, StoreSize) ->
     end.
 
 
--spec match_segment({integer(), tree_size()}, {integer(), tree_size()}) 
-                                                            -> boolean().
+-spec match_segment(
+    {integer(), tree_size()}, {integer(), tree_size()}) -> boolean().
 %% @doc
 %% Does segment A match segment B - given that segment A was generated using
 %% Tree size A and segment B was generated using Tree Size B
@@ -462,39 +507,84 @@ join_segment(BranchID, LeafID) ->
 %%% Internal functions
 %%%============================================================================
 
--spec extract_segment(integer(), tictactree()) -> 
-                        {integer(), integer(), tree_extract(), tree_extract()}.
+-spec to_level1_map(binary()) -> level1_map().
+to_level1_map(L1Bin) ->
+    to_level1_map_loop(L1Bin, maps:new(), 0).
+
+to_level1_map_loop(<<>>, L1MapAcc, _Idx) ->
+    L1MapAcc;
+to_level1_map_loop(<<Slice:64/binary, Rest/binary>>, L1MapAcc, Idx) ->
+    to_level1_map_loop(Rest, maps:put(Idx, Slice, L1MapAcc), Idx + 1).
+
+-spec from_level1_map(level1_map()) -> binary().
+from_level1_map(Level1M) when is_map(Level1M) ->
+    lists:foldl(
+        fun(I, Acc) ->
+            <<Acc/binary, (maps:get(I, Level1M))/binary>>
+        end,
+        <<>>,
+        lists:seq(0, maps:size(Level1M) - 1)
+    );
+from_level1_map(Level1B) when is_binary(Level1B) ->
+    Level1B.
+
+-spec extract_segment(
+    integer(), tictactree()) -> 
+        {integer(), integer(), tree_extract(), tree_extract()}.
 %% @doc
 %% Extract the Level 1 and Level 2 slices from a tree to prepare an update
 extract_segment(Segment, TicTacTree) ->
-    Level2Pos =
-        Segment band (?L2_CHUNKSIZE - 1),
     Level1Pos =
         (Segment bsr ?L2_BITSIZE)
             band (TicTacTree#tictactree.width - 1),
     
+    Level2Pos =
+        Segment band (?L2_CHUNKSIZE - 1),
     Level2BytePos = ?HASH_SIZE * Level2Pos,
-    Level1BytePos = ?HASH_SIZE * Level1Pos,
-    
     Level2 = get_level2(TicTacTree, Level1Pos),
     
     HashIntLength = ?HASH_SIZE * 8,
     <<PreL2:Level2BytePos/binary,
         SegLeaf2:HashIntLength/integer,
         PostL2/binary>> = Level2,
-    <<PreL1:Level1BytePos/binary,
-        SegLeaf1:HashIntLength/integer,
-        PostL1/binary>> = TicTacTree#tictactree.level1,
+    {PreL1, SegLeaf1, PostL1, Level1BytePos} =
+        extract_level1_slice(TicTacTree#tictactree.level1, Level1Pos),
     
     {SegLeaf1, 
         SegLeaf2, 
         {PreL1, Level1BytePos, Level1Pos, HashIntLength, PostL1},
         {PreL2, Level2BytePos, Level2Pos, HashIntLength, PostL2}}.
 
+-spec extract_level1_slice(
+    level1_map(), non_neg_integer()) ->
+        {binary(), non_neg_integer(), binary(), non_neg_integer()}.
+extract_level1_slice(Level1M, Level1Pos) when is_map(Level1M) ->
+    Level1Slice = Level1Pos div 16,
+    HashIntLength = ?HASH_SIZE * 8,
+    Level1BytePos = ?HASH_SIZE * (Level1Pos rem 16),
+    <<PreL1:Level1BytePos/binary,
+        SegLeaf1:HashIntLength/integer,
+        PostL1/binary>> = maps:get(Level1Slice, Level1M),
+    {PreL1, SegLeaf1, PostL1, Level1BytePos};
+extract_level1_slice(Level1B, Level1Pos) when is_binary(Level1B) ->
+    HashIntLength = ?HASH_SIZE * 8,
+    Level1BytePos = ?HASH_SIZE * Level1Pos,
+    <<PreL1:Level1BytePos/binary,
+        SegLeaf1:HashIntLength/integer,
+        PostL1/binary>> = Level1B,
+    {PreL1, SegLeaf1, PostL1, Level1BytePos}.
 
--spec replace_segment(integer(), integer(), 
-                        tree_extract(), tree_extract(), 
-                        tictactree()) -> tictactree().
+-spec replace_level1_slice(
+    level1_map(), non_neg_integer(), binary()) -> level1_map().
+replace_level1_slice(Level1M, Level1Pos, Level1Upd) when is_map(Level1M) ->
+    Level1Slice = Level1Pos div 16,
+    maps:put(Level1Slice, Level1Upd, Level1M);
+replace_level1_slice(Level1B, _Level1Pos, Level1Upd) when is_binary(Level1B) ->
+    Level1Upd.
+
+-spec replace_segment(
+    integer(), integer(), tree_extract(), tree_extract(), tictactree()) ->
+        tictactree().
 %% @doc
 %% Replace a slice of a tree
 replace_segment(L1Hash, L2Hash, L1Extract, L2Extract, TicTacTree) ->
@@ -507,10 +597,12 @@ replace_segment(L1Hash, L2Hash, L1Extract, L2Extract, TicTacTree) ->
     Level2Upd = <<PreL2:Level2BytePos/binary,
                     L2Hash:HashIntLength/integer,
                     PostL2/binary>>,
-    TicTacTree#tictactree{level1 = Level1Upd,
-                            level2 = array:set(Level1Pos,
-                                                Level2Upd,
-                                                TicTacTree#tictactree.level2)}.
+    TicTacTree#tictactree{
+        level1 =
+            replace_level1_slice(
+                TicTacTree#tictactree.level1, Level1Pos, Level1Upd
+            ),
+        level2 = array:set(Level1Pos, Level2Upd, TicTacTree#tictactree.level2)}.
 
 get_level2(TicTacTree, L1Pos) ->
     case array:get(L1Pos, TicTacTree#tictactree.level2) of 
@@ -553,7 +645,7 @@ segmentcompare(SrcBin, SnkBin, Acc, Counter) ->
     <<SrcHash:?HASH_SIZE/binary, SrcTail/binary>> = SrcBin,
     <<SnkHash:?HASH_SIZE/binary, SnkTail/binary>> = SnkBin,
     case SrcHash of
-        SnkHash ->
+        H when H == SnkHash  ->
             segmentcompare(SrcTail, SnkTail, Acc, Counter + 1);
         _ ->
             segmentcompare(SrcTail, SnkTail, [Counter|Acc], Counter + 1)
@@ -576,7 +668,7 @@ merge_binaries(BinA, BinB) ->
 -include_lib("eunit/include/eunit.hrl").
 
 checktree(TicTacTree) ->
-    checktree(TicTacTree#tictactree.level1, TicTacTree, 0).
+    checktree(from_level1_map(TicTacTree#tictactree.level1), TicTacTree, 0).
 
 checktree(<<>>, TicTacTree, Counter) ->
     true = TicTacTree#tictactree.width == Counter;
@@ -656,6 +748,7 @@ simple_test_withsize(Size) ->
     DL0 = find_dirtyleaves(Tree1, Tree0),
     ?assertMatch(true, lists:member(GetSegFun(K1), DL0)),
     DL1 = find_dirtyleaves(Tree3, Tree1),
+    ?assertMatch(DL1, lists:sort(DL1)),
     ?assertMatch(true, lists:member(GetSegFun(K2), DL1)),
     ?assertMatch(true, lists:member(GetSegFun(K3), DL1)),
     ?assertMatch(false, lists:member(GetSegFun(K1), DL1)),
@@ -665,31 +758,82 @@ simple_test_withsize(Size) ->
     ImpTree3 = import_tree(ExpTree3),
     ?assertMatch(DL1, find_dirtyleaves(ImpTree3, Tree1)).
 
+dirtyleaves_sorted_test() ->
+    Tree0 = new_tree(test, large),
+    KVL1 =
+        lists:map(
+            fun(I) -> 
+                {{o, to_bucket(I rem 8), to_key(I), null},
+                    {is_hash, erlang:phash2(integer_to_binary(I))}}
+            end,
+            lists:seq(1, 50000)
+        ),
+    KVL2 =
+        lists:map(
+            fun(I) -> 
+                {{o, to_bucket(I rem 8), to_key(I), null},
+                    {is_hash, erlang:phash2(integer_to_binary(I))}}
+            end,
+            lists:seq(100000, 150000)
+        ),
+    Tree1 =
+        lists:foldl(
+            fun({K, V}, Acc) ->
+                add_kv(Acc, K, V, fun(K0, V0) -> {element(3, K0), V0} end)
+            end,
+            Tree0,
+            KVL1
+        ),
+    Tree2 =
+        lists:foldl(
+            fun({K, V}, Acc) ->
+                add_kv(Acc, K, V, fun(K0, V0) -> {element(3, K0), V0} end)
+            end,
+            Tree0,
+            KVL2
+        ),
+    SW0 = os:system_time(millisecond),
+    DL1 = find_dirtyleaves(Tree1, Tree2),
+    DL2 = find_dirtyleaves(Tree2, Tree1),
+    io:format(
+        user,
+        "Finding approx 100K dirty leaves twice in ~w milliseconds~n",
+        [os:system_time(millisecond) - SW0]
+    ),
+    ?assertMatch(DL1, lists:sort(DL1)),
+    ?assertMatch(DL2, lists:sort(DL2)),
+    ?assertMatch(DL1, DL2).
+
+
 merge_bysize_small_test() ->
-    merge_test_withsize(small).
+    merge_test_withsize(small, true, true),
+    merge_test_withsize(small, true, false).
 
 merge_bysize_medium_test() ->
-    merge_test_withsize(medium).
+    merge_test_withsize(medium, true, true),
+    merge_test_withsize(medium, true, false).
 
 merge_bysize_large_test() ->
-    merge_test_withsize(large).
+    merge_test_withsize(large, true, true),
+    merge_test_withsize(large, true, false).
 
 merge_bysize_xlarge_test_() ->
     {timeout, 60, fun merge_bysize_xlarge_test2/0}.
 
 merge_bysize_xlarge_test2() ->
-    merge_test_withsize(xlarge).
+    merge_test_withsize(xlarge, true, true),
+    merge_test_withsize(xlarge, true, false).
 
-merge_test_withsize(Size) ->
+merge_test_withsize(Size, T1UseMap, T2UseMap) ->
     BinFun = fun(K, V) -> {leveled_util:t2b(K), leveled_util:t2b(V)} end,
     
-    TreeX0 = new_tree(0, Size),
+    TreeX0 = new_tree(0, Size, T1UseMap),
     TreeX1 = add_kv(TreeX0, {o, "B1", "X1", null}, {caine, 1}, BinFun),
     TreeX2 = add_kv(TreeX1, {o, "B1", "X2", null}, {caine, 2}, BinFun),
     TreeX3 = add_kv(TreeX2, {o, "B1", "X3", null}, {caine, 3}, BinFun),
     TreeX4 = add_kv(TreeX3, {o, "B1", "X3", null}, {caine, 4}, BinFun),
     
-    TreeY0 = new_tree(0, Size),
+    TreeY0 = new_tree(0, Size, T2UseMap),
     TreeY1 = add_kv(TreeY0, {o, "B1", "Y1", null}, {caine, 101}, BinFun),
     TreeY2 = add_kv(TreeY1, {o, "B1", "Y2", null}, {caine, 102}, BinFun),
     TreeY3 = add_kv(TreeY2, {o, "B1", "Y3", null}, {caine, 103}, BinFun),
@@ -719,9 +863,13 @@ merge_emptytree_test() ->
     ?assertMatch([], find_dirtyleaves(TreeA, TreeC)).
 
 alter_segment_test() ->
+    alter_segment_tester(true),
+    alter_segment_tester(false).
+
+alter_segment_tester(UseMap) ->
     BinFun = fun(K, V) -> {leveled_util:t2b(K), leveled_util:t2b(V)} end,
     
-    TreeX0 = new_tree(0, small),
+    TreeX0 = new_tree(0, small, UseMap),
     TreeX1 = add_kv(TreeX0, {o, "B1", "X1", null}, {caine, 1}, BinFun),
     TreeX2 = add_kv(TreeX1, {o, "B1", "X2", null}, {caine, 2}, BinFun),
     TreeX3 = add_kv(TreeX2, {o, "B1", "X3", null}, {caine, 3}, BinFun),
@@ -738,9 +886,13 @@ alter_segment_test() ->
     ?assertMatch([], CompareResult).
 
 return_segment_test() ->
+    return_segment_tester(true),
+    return_segment_tester(false).
+
+return_segment_tester(UseMap) ->
     BinFun = fun(K, V) -> {leveled_util:t2b(K), leveled_util:t2b(V)} end,
     
-    TreeX0 = new_tree(0, small),
+    TreeX0 = new_tree(0, small, UseMap),
     {TreeX1, SegID} 
         = add_kv(TreeX0, {o, "B1", "X1", null}, {caine, 1}, BinFun, true),
     TreeX2 = alter_segment(SegID, 0, TreeX1),
@@ -870,6 +1022,70 @@ find_dirtysegments_withanemptytree_test() ->
     ?assertMatch(ExpectedAnswer, find_dirtysegments(fetch_root(T3), <<>>)).
 
 
+tictac_perf_test_() ->
+    {timeout, 120, fun tictac_perf_tester_multi/0}.
+
+tictac_perf_tester_multi() ->
+    tictac_perf_tester(1000000, large),
+    tictac_perf_tester(40000, small).
+
+tictac_perf_tester(KeyCount, TreeSize) ->
+    io:format(user, "Testing with Tree Size ~w~n", [TreeSize]),
+    io:format(user, "Generating ~w Keys and Hashes~n", [KeyCount]),
+    SW0 = os:system_time(millisecond),
+    KVL =
+        lists:map(
+            fun(I) -> 
+                {{o, to_bucket(I rem 8), to_key(I), null},
+                    {is_hash, erlang:phash2(integer_to_binary(I))}}
+            end,
+            lists:seq(1, KeyCount)
+        ),
+    
+    SW1 = os:system_time(millisecond),
+    io:format(user, "Generating Keys took ~w milliseconds~n", [SW1 - SW0]),
+
+    Tree = new_tree(test, TreeSize),
+    log_memory_footprint(),
+
+    SW2 = os:system_time(millisecond),
+    io:format(user, "Generating new tree took ~w milliseconds~n", [SW2 - SW1]),
+
+    UpdTree =
+        lists:foldl(
+            fun({K, V}, Acc) ->
+                add_kv(Acc, K, V, fun(K0, V0) -> {element(3, K0), V0} end)
+            end,
+            Tree,
+            KVL
+        ),
+    
+    SW3 = os:system_time(millisecond),
+    io:format(user, "Loading tree took ~w milliseconds~n", [SW3 - SW2]),
+    log_memory_footprint(),
+
+    ExportedTree = export_tree(UpdTree),
+
+    SW4 = os:system_time(millisecond),
+    io:format(user, "Exporting tree took ~w milliseconds~n", [SW4 - SW3]),
+
+    ImportedTree = import_tree(ExportedTree),
+
+    SW5 = os:system_time(millisecond),
+    io:format(user, "Importing tree took ~w milliseconds~n", [SW5 - SW4]),
+
+    log_memory_footprint(),
+
+    ?assertMatch([], find_dirtyleaves(UpdTree, ImportedTree)).
+
+to_key(N) ->
+    list_to_binary(io_lib:format("K~8..0B", [N])).
+
+to_bucket(N) ->
+    list_to_binary(io_lib:format("B~8..0B", [N])).
+
+log_memory_footprint() ->
+    io:format(user, "Memory footprint ~0p~n", [erlang:memory()]).
 
 
 -endif.

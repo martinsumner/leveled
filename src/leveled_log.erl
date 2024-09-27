@@ -3,7 +3,7 @@
 
 -module(leveled_log).
 
--include("include/leveled.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 -export([log/2,
             log_timer/3,
@@ -17,21 +17,17 @@
             save/1,
             return_settings/0]).
 
--ifdef(TEST).
--export([format_time/1, log_prefix/5]).
--endif.
-
 -record(log_options,
     {log_level = info :: log_level(), 
         forced_logs = [] :: [atom()],
         database_id = 0 :: non_neg_integer()}).
 
--type log_level()  ::  debug | info | warn | error | critical.
+-type log_level()  ::  debug | info | warning | error | critical.
 -type log_options() :: #log_options{}.
 
 -export_type([log_options/0, log_level/0]).
 
--define(LOG_LEVELS, [debug, info, warn, error, critical]).
+-define(LOG_LEVELS, [debug, info, warning, error, critical]).
 -define(DEFAULT_LOG_LEVEL, error).
 
 -define(LOGBASE,
@@ -49,7 +45,7 @@
         b0003 =>
             {info, <<"Bookie closing for reason ~w">>},
         b0004 =>
-            {warn, <<"Bookie snapshot exiting as master store ~w is down for reason ~p">>},
+            {warning, <<"Bookie snapshot exiting as master store ~w is down for reason ~p">>},
         b0005 =>
             {info, <<"LedgerSQN=~w at startup">>},
         b0006 =>
@@ -59,9 +55,9 @@
         b0009 =>
             {debug, <<"Bucket list finds Bucket ~w">>},
         b0011 =>
-            {warn, <<"Call to destroy the store and so all files to be removed">>},
+            {warning, <<"Call to destroy the store and so all files to be removed">>},
         b0013 =>
-            {warn, <<"Long running task took ~w microseconds with task_type=~w">>},
+            {warning, <<"Long running task took ~w microseconds with task_type=~w">>},
         b0015 =>
             {info, <<"Put timing with sample_count=~w ink_time=~w prep_time=~w mem_time=~w with total_object_size=~w with sample_period=~w seconds">>},
         b0016 =>
@@ -71,9 +67,9 @@
         b0018 =>
             {info, <<"Positive HEAD responses timed with sample_count=~w and cache_count=~w found_count=~w fetch_ledger_time=~w fetch_ledgercache_time=~w rsp_time=~w notfound_time=~w with sample_period=~w seconds">>},
         b0019 =>
-            {warn, <<"Use of book_indexfold with constraint of Bucket ~w with no StartKey is deprecated">>},
+            {warning, <<"Use of book_indexfold with constraint of Bucket ~w with no StartKey is deprecated">>},
         b0020 =>
-            {warn, <<"Ratio of penciller cache size ~w to bookie's memory cache size ~w is larger than expected">>},
+            {warning, <<"Ratio of penciller cache size ~w to bookie's memory cache size ~w is larger than expected">>},
         r0001 =>
             {debug, <<"Object fold to process batch of ~w objects">>},
         p0001 =>
@@ -113,7 +109,7 @@
         p0029 =>
             {info, <<"L0 completion confirmed and will transition to not pending">>},
         p0030 =>
-            {warn, <<"We're doomed - intention recorded to destroy all files">>},
+            {warning, <<"We're doomed - intention recorded to destroy all files">>},
         p0031 =>
             {info, <<"Completion of update to levelzero with cache_size=~w level0_due=~w change_pending=~w MinSQN=~w MaxSQN=~w">>},
         p0032 =>
@@ -151,7 +147,7 @@
         pc012 =>
             {debug, <<"File to be created as part of MSN=~w Filename=~s IsBasement=~w">>},
         pc013 =>
-            {warn, <<"Merge resulted in empty file ~s">>},
+            {warning, <<"Merge resulted in empty file ~s">>},
         pc015 =>
             {info, <<"File created">>},
         pc016 =>
@@ -179,7 +175,7 @@
         sst04 =>
             {debug, <<"Exit called for reason ~w on filename ~s">>},
         sst05 =>
-            {warn, <<"Rename rogue filename ~s to ~s">>},
+            {warning, <<"Rename rogue filename ~s to ~s">>},
         sst06 =>
             {debug, <<"File ~s has been set for delete">>},
         sst07 =>
@@ -187,7 +183,7 @@
         sst08 =>
             {info, <<"Completed creation of ~s at level ~w with max sqn ~w">>},
         sst09 =>
-            {warn, <<"Read request exposes slot with bad CRC">>},
+            {warning, <<"Read request exposes slot with bad CRC">>},
         sst10 =>
             {debug, <<"Expansion sought to support pointer to pid ~w status ~w">>},
         sst11 =>
@@ -233,7 +229,7 @@
         i0017 =>
             {debug, <<"At SQN=~w journal has filename ~s">>},
         i0018 =>
-            {warn, <<"We're doomed - intention recorded to destroy all files">>},
+            {warning, <<"We're doomed - intention recorded to destroy all files">>},
         i0020 =>
             {info, <<"Journal backup completed to path=~s with file_count=~w">>},
         i0021 =>
@@ -245,7 +241,7 @@
         i0024 =>
             {info, <<"Prompted roll at NewSQN=~w">>},
         i0025 =>
-            {warn, <<"Journal SQN of ~w is below Ledger SQN of ~w anti-entropy will be required">>},
+            {warning, <<"Journal SQN of ~w is below Ledger SQN of ~w anti-entropy will be required">>},
         i0026 =>
             {info, <<"Deferring shutdown due to snapshot_count=~w">>},
         i0027 =>
@@ -275,9 +271,9 @@
         ic011 =>
             {info, <<"Not clearing filename ~s as modified delta is only ~w seconds">>},
         ic012 =>
-            {warn, <<"Tag ~w not found in Strategy ~w - maybe corrupted">>},
+            {warning, <<"Tag ~w not found in Strategy ~w - maybe corrupted">>},
         ic013 =>
-            {warn, "File with name ~s to be ignored in manifest as scanning for first key returned empty - maybe corrupted"},
+            {warning, "File with name ~s to be ignored in manifest as scanning for first key returned empty - maybe corrupted"},
         ic014 =>
             {info, <<"Compaction to be run with strategy ~w and max_run_length ~w">>},
         cdb01 =>
@@ -291,7 +287,7 @@
         cdb05 =>
             {info, <<"Closing of filename ~s from state ~w for reason ~w">>},
         cdb06 =>
-            {warn, <<"File to be truncated at last position of ~w with end of file at ~w">>},
+            {warning, <<"File to be truncated at last position of ~w with end of file at ~w">>},
         cdb07 =>
             {info, <<"Hashtree index computed">>},
         cdb08 =>
@@ -299,7 +295,7 @@
         cdb09 =>
             {info, <<"Failure to read Key/Value at Position ~w in scan this may be the end of the file">>},
         cdb10 =>
-            {warn, <<"CRC check failed due to error=~s">>},
+            {warning, <<"CRC check failed due to error=~s">>},
         cdb12 =>
             {info, <<"Hashtree index written">>},
         cdb13 =>
@@ -313,9 +309,9 @@
         cdb19 =>
             {info, <<"Sample timings in microseconds for sample_count=~w with totals of cycle_count=~w index_time=~w read_time=~w with sample_period=~w seconds">>},
         cdb20 =>
-            {warn, <<"Error ~w caught when safe reading a file to length ~w">>},
+            {warning, <<"Error ~w caught when safe reading a file to length ~w">>},
         cdb21 =>
-            {warn, <<"File ~s to be deleted but already gone">>}
+            {warning, <<"File ~s to be deleted but already gone">>}
     }).
 
 
@@ -375,8 +371,10 @@ get_opts() ->
         #log_options{} = LO ->
             LO;
         _ ->
-            #log_options{log_level = ?DEFAULT_LOG_LEVEL,
-                         forced_logs = []}
+            #log_options{
+                log_level = ?DEFAULT_LOG_LEVEL,
+                forced_logs = []
+            }
     end.
 
 -spec return_settings() -> {log_level(), list(string())}.
@@ -401,10 +399,14 @@ log(LogRef, Subs, SupportedLogLevels) ->
         true ->
             DBid = LogOpts#log_options.database_id,
             Prefix =
-                log_prefix(
-                    localtime_ms(), LogLevel, LogRef, DBid, self()),
+                log_prefix(LogRef, DBid, self()),
             Suffix = <<"~n">>,
-            io:format(iolist_to_binary([Prefix, Log, Suffix]), Subs);
+            ?LOG(
+                LogLevel,
+                unicode:characters_to_list([Prefix, Log, Suffix]),
+                Subs,
+                #{log_type => backend}
+            );
         false ->
             ok
     end.
@@ -437,13 +439,15 @@ log_timer(LogRef, Subs, StartTime, SupportedLevels) ->
         true ->
             DBid = LogOpts#log_options.database_id,
             Prefix =
-                log_prefix(
-                        localtime_ms(), LogLevel, LogRef, DBid, self()),
+                log_prefix(LogRef, DBid, self()),
             Suffix = <<"~n">>,
             Duration = duration_text(StartTime),
-            io:format(
-                iolist_to_binary([Prefix, Log, Duration, Suffix]),
-                Subs);
+            ?LOG(
+                LogLevel,
+                unicode:characters_to_list([Prefix, Log, Duration, Suffix]),
+                Subs,
+                #{log_type => backend}
+            );
         false ->
             ok
     end.
@@ -458,30 +462,11 @@ log_randomtimer(LogReference, Subs, StartTime, RandomProb) ->
             ok
     end.
 
-localtime_ms() ->
-    {_, _, Micro} = Now = os:timestamp(),
-    {Date, {Hours, Minutes, Seconds}} = calendar:now_to_local_time(Now),
-    {Date, {Hours, Minutes, Seconds, Micro div 1000 rem 1000}}.
-
--spec log_prefix(
-    tuple(), atom(), atom(), non_neg_integer(), pid()) -> io_lib:chars().
-log_prefix({{Y, M, D}, {H, Mi, S, Ms}}, LogLevel, LogRef, DBid, Pid) ->
-    [integer_to_list(Y), $-, i2l(M), $-, i2l(D),
-    $T, i2l(H), $:, i2l(Mi), $:, i2l(S), $., i3l(Ms),
-    " log_level=", atom_to_list(LogLevel), " log_ref=", atom_to_list(LogRef),
-    " db_id=", integer_to_list(DBid), " pid=", pid_to_list(Pid), " "].
-
--spec i2l(non_neg_integer()) -> list().
-i2l(I) when I < 10 ->
-    [$0, $0+I];
-i2l(I) ->
-    integer_to_list(I).
-
--spec i3l(non_neg_integer()) -> list().
-i3l(I) when I < 100 ->
-    [$0 | i2l(I)];
-i3l(I) ->
-    integer_to_list(I).
+-spec log_prefix(atom(), non_neg_integer(), pid()) -> io_lib:chars().
+log_prefix(LogRef, DBid, Pid) ->
+    ["log_ref=", atom_to_list(LogRef),
+        " db_id=", integer_to_list(DBid),
+        " pid=", pid_to_list(Pid), " "].
 
 -spec duration_text(erlang:timestamp()) -> io_lib:chars().
 duration_text(StartTime) ->
@@ -503,31 +488,14 @@ duration_text(StartTime) ->
 
 should_i_log(LogLevel, Levels, LogRef) ->
     should_i_log(LogLevel, Levels, LogRef, get_opts()).
-
-format_time({{Y, M, D}, {H, Mi, S, Ms}}) ->
-    io_lib:format("~b-~2..0b-~2..0b", [Y, M, D]) ++ "T" ++
-        io_lib:format("~2..0b:~2..0b:~2..0b.~3..0b", [H, Mi, S, Ms]).
-
-prefix_compare_test() ->
-    Time = localtime_ms(),
-    DBid = 64,
-    LogLevel = info,
-    LogRef = b0001,
-    {TS0, OldTS} =
-        timer:tc(?MODULE, format_time, [Time]),
-    {TS1, NewPrefix} =
-        timer:tc(?MODULE, log_prefix, [Time, LogLevel, LogRef, DBid, self()]),
-    {NewTS, _Rest} = lists:split(23, lists:flatten(NewPrefix)),
-    ?assertMatch(OldTS, NewTS),
-    io:format(user, "~nTimestamp timings old ~w new ~w~n", [TS0, TS1]).
-
+        
 log_test() ->
     log(d0001, []),
     log_timer(d0001, [], os:timestamp()).
 
-log_warn_test() ->
-    ok = log(g0001, [], [warn, error]),
-    ok = log_timer(g0001, [], os:timestamp(), [warn, error]).
+log_warning_test() ->
+    ok = log(g0001, [], [warning, error]),
+    ok = log_timer(g0001, [], os:timestamp(), [warning, error]).
 
 shouldilog_test() ->
     ok = set_loglevel(debug),
@@ -547,41 +515,5 @@ badloglevel_test() ->
     ?assertMatch(true, is_active_level(?LOG_LEVELS, debug, unsupported)),
     ?assertMatch(true, is_active_level(?LOG_LEVELS, critical, unsupported)).
 
-timing_test() ->
-    % Timing test
-    % Previous LOGBASE used list with string-based keys and values
-    % The size of the LOGBASE was 19,342 words (>150KB), and logs took
-    % o(100) microseconds.
-    % Changing the LOGBASE ot a map with binary-based keys and values does not
-    % appear to improve the speed of logging, but does reduce the size of the
-    % LOGBASE to just over 2,000 words (so an order of magnitude improvement)
-    timer:sleep(10),
-    io:format(user, "Log timings:~n", []),
-    io:format(user, "Logbase size ~w~n", [erts_debug:flat_size(?LOGBASE)]),
-    io:format(
-        user,
-        "Front log timing ~p~n",
-        [timer:tc(fun() -> log(cdb21, ["test_file"]) end)]
-    ),
-    io:format(
-        user,
-        "Mid log timing ~p~n",
-        [timer:tc(fun() -> log(pc013, ["test_file"]) end)]
-    ),
-    io:format(
-        user,
-        "End log timing ~p~n",
-        [timer:tc(fun() -> log(b0003, ["testing"]) end)]
-    ),
-    io:format(
-        user,
-        "Big log timing ~p~n",
-        [timer:tc(fun() -> log(sst13, [100,100,100,100,true,1]) end)]
-    ),
-    io:format(
-        user,
-        "Timer log timing ~p~n",
-        [timer:tc(fun() -> log_timer(pc015, [], os:timestamp()) end)]
-    ).
 
 -endif.

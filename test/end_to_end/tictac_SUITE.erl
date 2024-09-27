@@ -1,7 +1,6 @@
 -module(tictac_SUITE).
--include_lib("common_test/include/ct.hrl").
--include("include/leveled.hrl").
--export([all/0]).
+-include("leveled.hrl").
+-export([all/0, init_per_suite/1, end_per_suite/1]).
 -export([
             many_put_compare/1,
             index_compare/1,
@@ -16,11 +15,18 @@ all() -> [
             tuplebuckets_headonly
             ].
 
--define(LMD_FORMAT, "~4..0w~2..0w~2..0w~2..0w~2..0w").
 -define(V1_VERS, 1).
 -define(MAGIC, 53). % riak_kv -> riak_object
 
+init_per_suite(Config) ->
+    testutil:init_per_suite([{suite, "tictac"}|Config]),
+    Config.
+
+end_per_suite(Config) ->
+    testutil:end_per_suite(Config).
+
 many_put_compare(_Config) ->
+    
     TreeSize = small,
     SegmentCount = 256 * 256,
     % Test requires multiple different databases, so want to mount them all
@@ -158,21 +164,44 @@ many_put_compare(_Config) ->
                 [timer:now_diff(os:timestamp(), SWB0Obj)]),
     true = length(leveled_tictac:find_dirtyleaves(TreeA, TreeAObj0)) == 0,
 
-    InitAccTree = leveled_tictac:new_tree(0, TreeSize),
+    InitAccTree = leveled_tictac:new_tree(0, TreeSize, true),
     
     {async, TreeAObjFolder1} =
-        leveled_bookie:book_headfold(Bookie2, 
-                                        ?RIAK_TAG,
-                                        {range, "Bucket", all},
-                                        {FoldObjectsFun, 
-                                            InitAccTree},
-                                        true, true, false),
+        leveled_bookie:book_headfold(
+            Bookie2, 
+            ?RIAK_TAG,
+            {range, "Bucket", all},
+            {FoldObjectsFun, InitAccTree},
+            true,
+            true,
+            false
+        ),
     SWB1Obj = os:timestamp(),
     TreeAObj1 = TreeAObjFolder1(),
-    io:format("Build tictac tree via object fold with "++
-                    "presence check and 200K objects in ~w~n",
-                [timer:now_diff(os:timestamp(), SWB1Obj)]),
+    io:format(
+        "Build tictac tree via object fold with map level 1 "
+        "presence check and 200K objects in ~w~n",
+        [timer:now_diff(os:timestamp(), SWB1Obj)]
+    ),
     true = length(leveled_tictac:find_dirtyleaves(TreeA, TreeAObj1)) == 0,
+    {async, TreeAObjFolder1Alt} =
+        leveled_bookie:book_headfold(
+            Bookie2, 
+            ?RIAK_TAG,
+            {range, "Bucket", all},
+            {FoldObjectsFun, leveled_tictac:new_tree(0, TreeSize, false)},
+            true,
+            true,
+            false
+        ),
+    SWB1ObjAlt = os:timestamp(),
+    TreeAObj1Alt = TreeAObjFolder1Alt(),
+    io:format(
+        "Build tictac tree via object fold with binary level 1 "
+        "presence check and 200K objects in ~w~n",
+        [timer:now_diff(os:timestamp(), SWB1ObjAlt)]
+    ),
+    true = length(leveled_tictac:find_dirtyleaves(TreeA, TreeAObj1Alt)) == 0,
 
     % For an exportable comparison, want hash to be based on something not 
     % coupled to erlang language - so use exportable query

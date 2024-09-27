@@ -16,7 +16,7 @@
 
 -module(leveled_head).
 
--include("include/leveled.hrl").
+-include("leveled.hrl").
 
 -export([key_to_canonicalbinary/1,
             build_head/2,
@@ -32,8 +32,12 @@
             ]).
 
 %% Exported for testing purposes
--export([riak_metadata_to_binary/2,
-            riak_extract_metadata/2]).
+-export(
+    [
+        riak_metadata_to_binary/2,
+        riak_extract_metadata/2,
+        get_indexes_from_siblingmetabin/2
+    ]).
 
 
 -define(MAGIC, 53). % riak_kv -> riak_object
@@ -417,9 +421,9 @@ decode_maybe_binary(<<0, Bin/binary>>) ->
 decode_maybe_binary(<<_Other:8, Bin/binary>>) ->
     Bin.
 
--spec diff_index_data([{binary(), index_value()}],
-                      [{binary(), index_value()}]) ->
-    [{index_op(), binary(), index_value()}].
+-spec diff_index_data(
+    [{binary(), index_value()}], [{binary(), index_value()}]) ->
+        [{index_op(), binary(), index_value()}].
 diff_index_data(OldIndexes, AllIndexes) ->
     OldIndexSet = ordsets:from_list(OldIndexes),
     AllIndexSet = ordsets:from_list(AllIndexes),
@@ -431,18 +435,20 @@ diff_specs_core(AllIndexSet, OldIndexSet) ->
     RemoveIndexSet =
         ordsets:subtract(OldIndexSet, AllIndexSet),
     NewIndexSpecs =
-        assemble_index_specs(ordsets:subtract(NewIndexSet, OldIndexSet),
-                             add),
+        assemble_index_specs(
+            ordsets:subtract(NewIndexSet, OldIndexSet),
+            add
+        ),
     RemoveIndexSpecs =
-        assemble_index_specs(RemoveIndexSet,
-                             remove),
+        assemble_index_specs(RemoveIndexSet, remove),
     NewIndexSpecs ++ RemoveIndexSpecs.
 
 %% @doc Assemble a list of index specs in the
 %% form of triplets of the form
 %% {IndexOperation, IndexField, IndexValue}.
--spec assemble_index_specs([{binary(), binary()}], index_op()) ->
-                                  [{index_op(), binary(), binary()}].
+-spec assemble_index_specs(
+    [{binary(), binary()}], index_op()) ->
+        [{index_op(), binary(), binary()}].
 assemble_index_specs(Indexes, IndexOp) ->
     [{IndexOp, Index, Value} || {Index, Value} <- Indexes].
 

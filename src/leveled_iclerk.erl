@@ -72,7 +72,7 @@
 
 -behaviour(gen_server).
 
--include("include/leveled.hrl").
+-include("leveled.hrl").
 
 -export([init/1,
         handle_call/3,
@@ -85,7 +85,6 @@
         clerk_compact/6,
         clerk_hashtablecalc/3,
         clerk_trim/3,
-        clerk_promptdeletions/3,
         clerk_stop/1,
         clerk_loglevel/2,
         clerk_addlogs/2,
@@ -93,11 +92,8 @@
 
 -export([schedule_compaction/3]).
 
--define(JOURNAL_FILEX, "cdb").
--define(PENDING_FILEX, "pnd").
 -define(SAMPLE_SIZE, 192).
 -define(BATCH_SIZE, 32).
--define(BATCHES_TO_CHECK, 8).
 -define(CRC_SIZE, 4).
 -define(DEFAULT_RELOAD_STRATEGY, leveled_codec:inker_reload_strategy([])).
 -define(INTERVALS_PER_HOUR, 4).
@@ -187,12 +183,6 @@ clerk_compact(Pid, Checker, InitiateFun, CloseFun, FilterFun, Manifest) ->
 %% Trim the Inker back to the persisted SQN
 clerk_trim(Pid, PersistedSQN, ManifestAsList) ->
     gen_server:cast(Pid, {trim, PersistedSQN, ManifestAsList}).
-
--spec clerk_promptdeletions(pid(), pos_integer(), list()) -> ok. 
-%% @doc
-%%
-clerk_promptdeletions(Pid, ManifestSQN, DeletedFiles) ->
-    gen_server:cast(Pid, {prompt_deletions, ManifestSQN, DeletedFiles}).
 
 -spec clerk_hashtablecalc(ets:tid(), integer(), pid()) -> ok.
 %% @doc
@@ -418,14 +408,6 @@ handle_cast({trim, PersistedSQN, ManifestAsList}, State) ->
         leveled_imanifest:find_persistedentries(PersistedSQN, ManifestAsList),
     leveled_log:log(ic007, []),
     ok = leveled_inker:ink_clerkcomplete(State#state.inker, [], FilesToDelete),
-    {noreply, State};
-handle_cast({prompt_deletions, ManifestSQN, FilesToDelete}, State) ->
-    lists:foreach(fun({_SQN, _FN, J2D, _LK}) ->
-                        leveled_cdb:cdb_deletepending(J2D,
-                                                        ManifestSQN,
-                                                        State#state.inker)
-                        end,
-                    FilesToDelete),
     {noreply, State};
 handle_cast({hashtable_calc, HashTree, StartPos, CDBpid}, State) ->
     {IndexList, HashTreeBin} = leveled_cdb:hashtable_calc(HashTree, StartPos),

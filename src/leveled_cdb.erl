@@ -42,13 +42,11 @@
 %% The first word is the corresponding hash value and the second word is a
 %% file pointer to the actual {key,value} tuple higher in the file.
 %%
-%%
-
 
 -module(leveled_cdb).
 
 -behaviour(gen_statem).
--include("include/leveled.hrl").
+-include("leveled.hrl").
 
 -export([init/1,
             callback_mode/0,
@@ -1722,11 +1720,11 @@ build_hashtree_binary(SlotMap, IndexLength) ->
 
 build_hashtree_binary([], IdxLen, SlotPos, Bin) ->
     case SlotPos of
-        IdxLen ->
-            lists:reverse(Bin);
+        N when N == IdxLen ->
+            Bin;
         N when N < IdxLen ->
             ZeroLen = (IdxLen - N) * 64,
-            lists:reverse([<<0:ZeroLen>>|Bin])
+            [<<0:ZeroLen>>|Bin]
     end;
 build_hashtree_binary([{TopSlot, TopBin}|SlotMapTail], IdxLen, SlotPos, Bin) ->
     case TopSlot of
@@ -1774,7 +1772,7 @@ write_hash_tables([], _HashTree, _CurrPos, _BasePos,
                                         IndexList, HT_BinList, {T1, T2, T3}) ->
     leveled_log:log(cdb14, [T1, T2, T3]),
     IL = lists:reverse(IndexList),
-    {IL, list_to_binary(HT_BinList)};
+    {IL, list_to_binary(lists:reverse(HT_BinList))};
 write_hash_tables([Index|Rest], HashTree, CurrPos, BasePos,
                                         IndexList, HT_BinList, Timers) ->
     SW1 = os:timestamp(),
@@ -1782,13 +1780,15 @@ write_hash_tables([Index|Rest], HashTree, CurrPos, BasePos,
     T1 = timer:now_diff(os:timestamp(), SW1) + element(1, Timers),
     case SlotMap of
         [] ->
-            write_hash_tables(Rest,
-                                HashTree,
-                                CurrPos,
-                                BasePos,
-                                [{Index, BasePos, 0}|IndexList],
-                                HT_BinList,
-                                Timers);
+            write_hash_tables(
+                Rest,
+                HashTree,
+                CurrPos,
+                BasePos,
+                [{Index, BasePos, 0}|IndexList],
+                HT_BinList,
+                Timers
+            );
         _ ->
             SW2 = os:timestamp(),
             IndexLength = length(SlotMap) * 2,
@@ -1797,13 +1797,15 @@ write_hash_tables([Index|Rest], HashTree, CurrPos, BasePos,
             SW3 = os:timestamp(),
             NewSlotBin = build_hashtree_binary(SortedMap, IndexLength),
             T3 = timer:now_diff(os:timestamp(), SW3) + element(3, Timers),
-            write_hash_tables(Rest,
-                                HashTree,
-                                CurrPos + IndexLength * ?DWORD_SIZE,
-                                BasePos,
-                                [{Index, CurrPos, IndexLength}|IndexList],
-                                HT_BinList ++ NewSlotBin,
-                                {T1, T2, T3})
+            write_hash_tables(
+                Rest,
+                HashTree,
+                CurrPos + IndexLength * ?DWORD_SIZE,
+                BasePos,
+                [{Index, CurrPos, IndexLength}|IndexList],
+                lists:append(NewSlotBin, HT_BinList),
+                {T1, T2, T3}
+            )
     end.
 
 
@@ -1949,7 +1951,12 @@ build_hashtree_bunchedatend_binary_test() ->
                 {14, <<15:32, 500:32>>},
                 {15, <<16:32, 600:32>>},
                 {15, <<17:32, 700:32>>}],
-    Bin = list_to_binary(build_hashtree_binary(SlotMap, 16)),
+    Bin =
+        list_to_binary(
+            lists:reverse(
+                build_hashtree_binary(SlotMap, 16)
+            )
+        ),
     ExpBinP1 = <<16:32, 600:32, 10:32, 0:32, 17:32, 700:32, 0:64>>,
     ExpBinP2 = <<11:32, 100:32, 0:192, 12:32, 200:32, 13:32, 300:32, 0:256>>,
     ExpBinP3 = <<14:32, 400:32, 15:32, 500:32>>,
@@ -1965,7 +1972,12 @@ build_hashtree_bunchedatstart_binary_test() ->
                 {6, <<15:32, 500:32>>},
                 {7, <<16:32, 600:32>>},
                 {8, <<17:32, 700:32>>}],
-    Bin = list_to_binary(build_hashtree_binary(SlotMap, 16)),
+    Bin =
+        list_to_binary(
+            lists:reverse(
+                build_hashtree_binary(SlotMap, 16)
+            )
+        ),
     ExpBinP1 = <<0:64, 10:32, 0:32, 11:32, 100:32, 12:32, 200:32>>,
     ExpBinP2 = <<13:32, 300:32, 14:32, 400:32, 15:32, 500:32, 16:32, 600:32>>,
     ExpBinP3 = <<17:32, 700:32, 0:448>>,
@@ -1988,7 +2000,7 @@ build_hashtree_test() ->
                 [<<2424915712:32, 300:32>>, <<0:64>>] ++
                 [<<2424903936:32, 400:32>>, <<2424907008:32, 500:32>>] ++
                 [<<2424913408:32, 600:32>>],
-    ?assertMatch(ExpOut, BinList).
+    ?assertMatch(ExpOut, lists:reverse(BinList)).
 
 
 find_firstzero_test() ->

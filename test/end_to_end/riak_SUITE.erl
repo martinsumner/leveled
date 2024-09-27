@@ -1,7 +1,8 @@
 -module(riak_SUITE).
--include_lib("common_test/include/ct.hrl").
--include("include/leveled.hrl").
--export([all/0]).
+
+-include("leveled.hrl").
+
+-export([all/0, init_per_suite/1, end_per_suite/1]).
 -export([
         basic_riak/1,
         fetchclocks_modifiedbetween/1,
@@ -26,6 +27,12 @@ all() -> [
 
 -define(MAGIC, 53). % riak_kv -> riak_object
 
+init_per_suite(Config) ->
+    testutil:init_per_suite([{suite, "riak"}|Config]),
+    Config.
+
+end_per_suite(Config) ->
+    testutil:end_per_suite(Config).
 
 basic_riak(_Config) ->
     basic_riak_tester(<<"B0">>, 640000),
@@ -65,38 +72,48 @@ basic_riak_tester(Bucket, KeyCount) ->
     CountPerList = KeyCount div 5,
 
     ObjList1 = 
-        testutil:generate_objects(CountPerList, 
-                                    {fixed_binary, 1}, [],
-                                    leveled_rand:rand_bytes(512),
-                                    IndexGenFun(1),
-                                    Bucket),
+        testutil:generate_objects(
+            CountPerList, 
+            {fixed_binary, 1}, [],
+            leveled_rand:rand_bytes(512),
+            IndexGenFun(1),
+            Bucket
+        ),
     ObjList2 =
-        testutil:generate_objects(CountPerList, 
-                                    {fixed_binary, CountPerList + 1}, [],
-                                    leveled_rand:rand_bytes(512),
-                                    IndexGenFun(2),
-                                    Bucket),
+        testutil:generate_objects(
+            CountPerList, 
+            {fixed_binary, CountPerList + 1}, [],
+            leveled_rand:rand_bytes(512),
+            IndexGenFun(2),
+            Bucket
+        ),
     
     ObjList3 =
-        testutil:generate_objects(CountPerList, 
-                                    {fixed_binary, 2 * CountPerList + 1}, [],
-                                    leveled_rand:rand_bytes(512),
-                                    IndexGenFun(3),
-                                    Bucket),
+        testutil:generate_objects(
+            CountPerList, 
+            {fixed_binary, 2 * CountPerList + 1}, [],
+            leveled_rand:rand_bytes(512),
+            IndexGenFun(3),
+            Bucket
+        ),
     
     ObjList4 =
-        testutil:generate_objects(CountPerList, 
-                                    {fixed_binary, 3 * CountPerList + 1}, [],
-                                    leveled_rand:rand_bytes(512),
-                                    IndexGenFun(4),
-                                    Bucket),
+        testutil:generate_objects(
+            CountPerList, 
+            {fixed_binary, 3 * CountPerList + 1}, [],
+            leveled_rand:rand_bytes(512),
+            IndexGenFun(4),
+            Bucket
+        ),
     
     ObjList5 =
-        testutil:generate_objects(CountPerList, 
-                                    {fixed_binary, 4 * CountPerList + 1}, [],
-                                    leveled_rand:rand_bytes(512),
-                                    IndexGenFun(5),
-                                    Bucket),
+        testutil:generate_objects(
+            CountPerList, 
+            {fixed_binary, 4 * CountPerList + 1}, [],
+            leveled_rand:rand_bytes(512),
+            IndexGenFun(5),
+            Bucket
+        ),
     
     % Mix with the ordering on the load, just in case ordering hides issues
     testutil:riakload(Bookie1, ObjList4),
@@ -124,13 +141,13 @@ basic_riak_tester(Bucket, KeyCount) ->
                 ID = integer_to_list(Idx),
                 Index = list_to_binary("integer" ++ ID ++ "_int"),
                 {async, R} = 
-                    leveled_bookie:book_indexfold(Book,
-                                                    {Bucket, <<>>},
-                                                    {FoldKeysFun, []},
-                                                    {Index, 
-                                                        IC, 
-                                                        IC},
-                                                    {true, undefined}),
+                    leveled_bookie:book_indexfold(
+                        Book,
+                        {Bucket, <<>>},
+                        {FoldKeysFun, []},
+                        {Index, IC, IC},
+                        {true, undefined}
+                    ),
                 KTL = R(),
                 CountAcc + length(KTL)
             end
@@ -141,13 +158,13 @@ basic_riak_tester(Bucket, KeyCount) ->
                 ID = integer_to_list(Idx),
                 Index = list_to_binary("binary" ++ ID ++ "_bin"),
                 {async, R} = 
-                    leveled_bookie:book_indexfold(Book,
-                                                    {Bucket, <<>>},
-                                                    {FoldKeysFun, []},
-                                                    {Index, 
-                                                        <<IC:32/integer>>, 
-                                                        <<IC:32/integer>>},
-                                                    {true, undefined}),
+                    leveled_bookie:book_indexfold(
+                        Book,
+                        {Bucket, <<>>},
+                        {FoldKeysFun, []},
+                        {Index, <<IC:32/integer>>, <<IC:32/integer>>},
+                        {true, undefined}
+                    ),
                 KTL = R(),
                 CountAcc + length(KTL)
             end
@@ -215,11 +232,13 @@ basic_riak_tester(Bucket, KeyCount) ->
                     [Obj1, Obj2, Obj3, Obj4, Obj5, Obj2L]),
     
     {async, HeadR} =
-        leveled_bookie:book_headfold(Bookie2, 
-                                        ?RIAK_TAG,
-                                        {HeadFoldFun, []},
-                                        true, false,
-                                        SegList),
+        leveled_bookie:book_headfold(
+            Bookie2, 
+            ?RIAK_TAG,
+            {HeadFoldFun, []},
+            true, false,
+            SegList
+        ),
     SW_SL0 = os:timestamp(),
     KLBySeg = HeadR(),
     io:format("SegList Headfold returned ~w heads in ~w ms~n", 
@@ -230,12 +249,13 @@ basic_riak_tester(Bucket, KeyCount) ->
     true = length(KLBySeg) - length(KLBySegRem) == length(BKList),
 
     {async, HeadRFalsePositive} =
-        leveled_bookie:book_headfold(Bookie2, 
-                                        ?RIAK_TAG,
-                                        {HeadFoldFun, []},
-                                        true, false,
-                                        SegList ++ lists:seq(1, 256)),
-                                        % Make it a large seg list
+        leveled_bookie:book_headfold(
+            Bookie2, 
+            ?RIAK_TAG,
+            {HeadFoldFun, []},
+            true, false,
+            SegList ++ lists:seq(1, 256)
+        ), % Make it a large seg list
     SW_SL1 = os:timestamp(),
     KLByXcessSeg = HeadRFalsePositive(),
     io:format("SegList Headfold with xcess segments returned ~w heads in ~w ms~n",
@@ -452,74 +472,88 @@ fetchclocks_modifiedbetween(_Config) ->
     {ok, Bookie1B} = leveled_bookie:book_start(StartOpts1B),
 
     ObjList0 = 
-        testutil:generate_objects(100000, 
-                                    {fixed_binary, 1}, [],
-                                    leveled_rand:rand_bytes(32),
-                                    fun() -> [] end,
-                                    <<"BaselineB">>),
+        testutil:generate_objects(
+            100000, 
+            {fixed_binary, 1}, [],
+            leveled_rand:rand_bytes(32),
+            fun() -> [] end,
+            <<"BaselineB">>
+        ),
 
     ObjL1StartTS = testutil:convert_to_seconds(os:timestamp()),
     ObjList1 = 
-        testutil:generate_objects(20000, 
-                                    {fixed_binary, 1}, [],
-                                    leveled_rand:rand_bytes(512),
-                                    fun() -> [] end,
-                                    <<"B0">>),
+        testutil:generate_objects(
+            20000, 
+            {fixed_binary, 1}, [],
+            leveled_rand:rand_bytes(512),
+            fun() -> [] end,
+            <<"B0">>
+        ),
     timer:sleep(1000),
     ObjL1EndTS = testutil:convert_to_seconds(os:timestamp()),
     timer:sleep(1000),
 
     _ObjL2StartTS = testutil:convert_to_seconds(os:timestamp()),
     ObjList2 = 
-        testutil:generate_objects(15000, 
-                                    {fixed_binary, 20001}, [],
-                                    leveled_rand:rand_bytes(512),
-                                    fun() -> [] end,
-                                    <<"B0">>),
+        testutil:generate_objects(
+            15000, 
+            {fixed_binary, 20001}, [],
+            leveled_rand:rand_bytes(512),
+            fun() -> [] end,
+            <<"B0">>
+        ),
     timer:sleep(1000),
     _ObjList2EndTS = testutil:convert_to_seconds(os:timestamp()),
     timer:sleep(1000),
 
     ObjL3StartTS = testutil:convert_to_seconds(os:timestamp()),
     ObjList3 = 
-        testutil:generate_objects(35000, 
-                                    {fixed_binary, 35001}, [],
-                                    leveled_rand:rand_bytes(512),
-                                    fun() -> [] end,
-                                    <<"B0">>),
+        testutil:generate_objects(
+            35000, 
+            {fixed_binary, 35001}, [],
+            leveled_rand:rand_bytes(512),
+            fun() -> [] end,
+            <<"B0">>
+        ),
     timer:sleep(1000),
     ObjL3EndTS = testutil:convert_to_seconds(os:timestamp()),
     timer:sleep(1000),
 
     ObjL4StartTS = testutil:convert_to_seconds(os:timestamp()),
     ObjList4 = 
-        testutil:generate_objects(30000, 
-                                    {fixed_binary, 70001}, [],
-                                    leveled_rand:rand_bytes(512),
-                                    fun() -> [] end,
-                                    <<"B0">>),
+        testutil:generate_objects(
+            30000, 
+            {fixed_binary, 70001}, [],
+            leveled_rand:rand_bytes(512),
+            fun() -> [] end,
+            <<"B0">>
+        ),
     timer:sleep(1000),
     _ObjL4EndTS = testutil:convert_to_seconds(os:timestamp()),
     timer:sleep(1000),
 
     ObjL5StartTS = testutil:convert_to_seconds(os:timestamp()),
     ObjList5 = 
-        testutil:generate_objects(8000, 
-                                    {fixed_binary, 1}, [],
-                                    leveled_rand:rand_bytes(512),
-                                    fun() -> [] end,
-                                    <<"B1">>),
+        testutil:generate_objects(
+            8000, 
+            {fixed_binary, 1}, [],
+            leveled_rand:rand_bytes(512),
+            fun() -> [] end,
+            <<"B1">>
+        ),
     timer:sleep(1000),
     _ObjL5EndTS = testutil:convert_to_seconds(os:timestamp()),
     timer:sleep(1000),
 
     ObjL6StartTS = testutil:convert_to_seconds(os:timestamp()),
     ObjList6 = 
-        testutil:generate_objects(7000, 
-                                    {fixed_binary, 1}, [],
-                                    leveled_rand:rand_bytes(512),
-                                    fun() -> [] end,
-                                    <<"B2">>),
+        testutil:generate_objects(
+            7000, 
+            {fixed_binary, 1}, [],
+            leveled_rand:rand_bytes(512),
+            fun() -> [] end,
+            <<"B2">>
+        ),
     timer:sleep(1000),
     ObjL6EndTS = testutil:convert_to_seconds(os:timestamp()),
     timer:sleep(1000),
@@ -561,16 +595,17 @@ fetchclocks_modifiedbetween(_Config) ->
         fun(FoldTarget, ModRange, EndNumber, MaxCount) ->
             fun(_I, {LKN, KC}) ->
                 {async, Runner} = 
-                    leveled_bookie:book_headfold(FoldTarget,
-                                                    ?RIAK_TAG,
-                                                    KeyRangeFun(LKN + 1,
-                                                                EndNumber),
-                                                    {StoreFoldFun, {LKN, KC}},
-                                                    false,
-                                                    true,
-                                                    false,
-                                                    ModRange,
-                                                    MaxCount),
+                    leveled_bookie:book_headfold(
+                        FoldTarget,
+                        ?RIAK_TAG,
+                        KeyRangeFun(LKN + 1, EndNumber),
+                        {StoreFoldFun, {LKN, KC}},
+                        false,
+                        true,
+                        false,
+                        ModRange,
+                        MaxCount
+                    ),
                 {_, {LKN0, KC0}} = Runner(),
                 {LKN0, KC0}
             end
@@ -640,15 +675,15 @@ fetchclocks_modifiedbetween(_Config) ->
     
     NoFilterStart = os:timestamp(),
     {async, R3A_NoFilterRunner} = 
-        leveled_bookie:book_headfold(Bookie1A,
-                                        ?RIAK_TAG,
-                                        KeyRangeFun(1, 100000),
-                                        {CrudeStoreFoldFun(ObjL1StartTS, 
-                                                            ObjL1EndTS),
-                                            {0, 0}},
-                                        false,
-                                        true,
-                                        false),
+        leveled_bookie:book_headfold(
+            Bookie1A,
+            ?RIAK_TAG,
+            KeyRangeFun(1, 100000),
+            {CrudeStoreFoldFun(ObjL1StartTS, ObjL1EndTS), {0, 0}},
+            false,
+            true,
+            false
+        ),
     R3A_NoFilter = R3A_NoFilterRunner(),
     NoFilterTime = timer:now_diff(os:timestamp(), NoFilterStart) div 1000,
     io:format("R3A_NoFilter ~w~n", [R3A_NoFilter]),
@@ -668,88 +703,99 @@ fetchclocks_modifiedbetween(_Config) ->
         end,
 
     {async, R4A_MultiBucketRunner} = 
-        leveled_bookie:book_headfold(Bookie1A,
-                                        ?RIAK_TAG,
-                                        {bucket_list, [<<"B0">>, <<"B2">>]},
-                                        {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
-                                        false,
-                                        true,
-                                        false,
-                                        {ObjL4StartTS, ObjL6EndTS},
-                                            % Range includes ObjjL5 LMDs, 
-                                            % but these ar enot in bucket list
-                                        false),
+        leveled_bookie:book_headfold(
+            Bookie1A,
+            ?RIAK_TAG,
+            {bucket_list, [<<"B0">>, <<"B2">>]},
+            {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
+            false,
+            true,
+            false,
+            {ObjL4StartTS, ObjL6EndTS},
+                % Range includes ObjjL5 LMDs, 
+                % but these ar enot in bucket list
+            false
+        ),
     R4A_MultiBucket = R4A_MultiBucketRunner(),
     io:format("R4A_MultiBucket ~w ~n", [R4A_MultiBucket]),
     true = R4A_MultiBucket == 37000,
 
     {async, R5A_MultiBucketRunner} = 
-        leveled_bookie:book_headfold(Bookie1A,
-                                        ?RIAK_TAG,
-                                        {bucket_list, [<<"B2">>, <<"B0">>]},
-                                            % Reverse the buckets in the bucket
-                                            % list
-                                        {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
-                                        false,
-                                        true,
-                                        false,
-                                        {ObjL4StartTS, ObjL6EndTS},
-                                        false),
+        leveled_bookie:book_headfold(
+            Bookie1A,
+            ?RIAK_TAG,
+            {bucket_list, [<<"B2">>, <<"B0">>]},
+                % Reverse the buckets in the bucket
+                % list
+            {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
+            false,
+            true,
+            false,
+            {ObjL4StartTS, ObjL6EndTS},
+            false
+        ),
     R5A_MultiBucket = R5A_MultiBucketRunner(),
     io:format("R5A_MultiBucket ~w ~n", [R5A_MultiBucket]),
     true = R5A_MultiBucket == 37000,
 
 
     {async, R5B_MultiBucketRunner} = 
-        leveled_bookie:book_headfold(Bookie1B,
-                                        ?RIAK_TAG,
-                                        {bucket_list,
-                                            [<<"BaselineB">>, <<"B2">>, <<"B0">>]},
-                                        {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
-                                        false,
-                                        true,
-                                        false,
-                                        {ObjL4StartTS, ObjL6EndTS},
-                                        false),
+        leveled_bookie:book_headfold(
+            Bookie1B,
+            ?RIAK_TAG,
+            {bucket_list, [<<"BaselineB">>, <<"B2">>, <<"B0">>]},
+            {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
+            false,
+            true,
+            false,
+            {ObjL4StartTS, ObjL6EndTS},
+            false
+        ),
     R5B_MultiBucket = R5B_MultiBucketRunner(),
     io:format("R5B_MultiBucket ~w ~n", [R5B_MultiBucket]),
     true = R5B_MultiBucket == 37000,
 
     testutil:update_some_objects(Bookie1A, ObjList1, 1000),
-    R6A_PlusFilter = lists:foldl(FoldRangesFun(Bookie1A, 
-                                    {ObjL1StartTS, ObjL1EndTS},
-                                    100000,
-                                    100000),
-                        {0, 0}, lists:seq(1, 1)),
+    R6A_PlusFilter =
+        lists:foldl(
+            FoldRangesFun(
+                Bookie1A, {ObjL1StartTS, ObjL1EndTS}, 100000, 100000
+            ),
+            {0, 0},
+            lists:seq(1, 1)),
     io:format("R6A_PlusFilter ~w~n", [R6A_PlusFilter]),
     true = 19000 == element(2, R6A_PlusFilter),
 
     % Hit limit of max count before trying next bucket, with and without a
     % timestamp filter
     {async, R7A_MultiBucketRunner} = 
-        leveled_bookie:book_headfold(Bookie1A,
-                                        ?RIAK_TAG,
-                                        {bucket_list, [<<"B1">>, <<"B2">>]},
-                                        {SimpleCountFun([<<"B1">>, <<"B2">>]), 0},
-                                        false,
-                                        true,
-                                        false,
-                                        {ObjL5StartTS, ObjL6EndTS},
-                                        5000),
+        leveled_bookie:book_headfold(
+            Bookie1A,
+            ?RIAK_TAG,
+            {bucket_list, [<<"B1">>, <<"B2">>]},
+            {SimpleCountFun([<<"B1">>, <<"B2">>]), 0},
+            false,
+            true,
+            false,
+            {ObjL5StartTS, ObjL6EndTS},
+            5000
+        ),
     R7A_MultiBucket = R7A_MultiBucketRunner(),
     io:format("R7A_MultiBucket ~w ~n", [R7A_MultiBucket]),
     true = R7A_MultiBucket == {0, 5000},
 
     {async, R8A_MultiBucketRunner} = 
-        leveled_bookie:book_headfold(Bookie1A,
-                                        ?RIAK_TAG,
-                                        {bucket_list, [<<"B1">>, <<"B2">>]},
-                                        {SimpleCountFun([<<"B1">>, <<"B2">>]), 0},
-                                        false,
-                                        true,
-                                        false,
-                                        false,
-                                        5000),
+        leveled_bookie:book_headfold(
+            Bookie1A,
+            ?RIAK_TAG,
+            {bucket_list, [<<"B1">>, <<"B2">>]},
+            {SimpleCountFun([<<"B1">>, <<"B2">>]), 0},
+            false,
+            true,
+            false,
+            false,
+            5000
+        ),
     R8A_MultiBucket = R8A_MultiBucketRunner(),
     io:format("R8A_MultiBucket ~w ~n", [R8A_MultiBucket]),
     true = R8A_MultiBucket == {0, 5000},
@@ -766,11 +812,13 @@ fetchclocks_modifiedbetween(_Config) ->
 
     io:format("Push tested keys down levels with new objects~n"),
     ObjList7 = 
-        testutil:generate_objects(200000, 
-                                    {fixed_binary, 1}, [],
-                                    leveled_rand:rand_bytes(32),
-                                    fun() -> [] end,
-                                    <<"B1.9">>),
+        testutil:generate_objects(
+            200000, 
+            {fixed_binary, 1}, [],
+            leveled_rand:rand_bytes(32),
+            fun() -> [] end,
+            <<"B1.9">>
+        ),
     testutil:riakload(Bookie1BS, ObjList7),
 
     lmdrange_tester(Bookie1BS, SimpleCountFun,
@@ -794,28 +842,32 @@ time_filtered_query(FoldRangesFun, Bookie, ObjL1StartTS, ObjL1EndTS) ->
 lmdrange_tester(Bookie1BS, SimpleCountFun,
                 ObjL4StartTS, ObjL6StartTS, ObjL6EndTS, TooLate) ->
     {async, R5B_MultiBucketRunner0} = 
-        leveled_bookie:book_headfold(Bookie1BS,
-                                        ?RIAK_TAG,
-                                        all,
-                                        {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
-                                        false,
-                                        true,
-                                        false,
-                                        {ObjL4StartTS, ObjL6EndTS},
-                                        false),
+        leveled_bookie:book_headfold(
+            Bookie1BS,
+            ?RIAK_TAG,
+            all,
+            {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
+            false,
+            true,
+            false,
+            {ObjL4StartTS, ObjL6EndTS},
+            false
+        ),
     R5B_MultiBucket0 = R5B_MultiBucketRunner0(),
     io:format("R5B_MultiBucket0 ~w ~n", [R5B_MultiBucket0]),
     true = R5B_MultiBucket0 == 37000,
     {async, R5B_MultiBucketRunner1} = 
-        leveled_bookie:book_headfold(Bookie1BS,
-                                        ?RIAK_TAG,
-                                        all,
-                                        {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
-                                        false,
-                                        true,
-                                        false,
-                                        {ObjL4StartTS, ObjL6EndTS},
-                                        false),
+        leveled_bookie:book_headfold(
+            Bookie1BS,
+            ?RIAK_TAG,
+            all,
+            {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
+            false,
+            true,
+            false,
+            {ObjL4StartTS, ObjL6EndTS},
+            false
+        ),
     R5B_MultiBucket1 = R5B_MultiBucketRunner1(),
     io:format("R5B_MultiBucket1 ~w ~n", [R5B_MultiBucket1]),
     true = R5B_MultiBucket1 == 37000,
@@ -829,40 +881,46 @@ lmdrange_tester(Bookie1BS, SimpleCountFun,
             end
         end,
     {async, R5B_MultiBucketRunner2} = 
-        leveled_bookie:book_headfold(Bookie1BS,
-                                        ?RIAK_TAG,
-                                        {bucket_list, [<<"B0">>, <<"B2">>]},
-                                        {SimpleMinMaxFun, []},
-                                        false,
-                                        true,
-                                        false,
-                                        {ObjL4StartTS, ObjL6EndTS},
-                                        false),
+        leveled_bookie:book_headfold(
+            Bookie1BS,
+            ?RIAK_TAG,
+            {bucket_list, [<<"B0">>, <<"B2">>]},
+            {SimpleMinMaxFun, []},
+            false,
+            true,
+            false,
+            {ObjL4StartTS, ObjL6EndTS},
+            false
+        ),
     [{<<"B0">>, MinB0K, MaxB0K}, {<<"B2">>, MinB2K, MaxB2K}] =
         R5B_MultiBucketRunner2(),
     io:format("Found Min and Max Keys~n"),
     io:format("B ~s MinK ~s MaxK ~s~n", [<<"B0">>, MinB0K, MaxB0K]),
     io:format("B ~s MinK ~s MaxK ~s~n", [<<"B2">>, MinB2K, MaxB2K]),
     {async, R5B_MultiBucketRunner3a} = 
-        leveled_bookie:book_headfold(Bookie1BS,
-                                        ?RIAK_TAG,
-                                        {range, <<"B0">>, {MinB0K, MaxB0K}},
-                                        {SimpleCountFun([<<"B0">>]), 0},
-                                        false,
-                                        true,
-                                        false,
-                                        {ObjL4StartTS, ObjL6EndTS},
-                                        false),
+        leveled_bookie:book_headfold(
+            Bookie1BS,
+            ?RIAK_TAG,
+            {range, <<"B0">>, {MinB0K, MaxB0K}},
+            {SimpleCountFun([<<"B0">>]), 0},
+            false,
+            true,
+            false,
+            {ObjL4StartTS, ObjL6EndTS},
+            false
+        ),
     {async, R5B_MultiBucketRunner3b} = 
-        leveled_bookie:book_headfold(Bookie1BS,
-                                        ?RIAK_TAG,
-                                        {range, <<"B2">>, {MinB2K, MaxB2K}},
-                                        {SimpleCountFun([<<"B2">>]), 0},
-                                        false,
-                                        true,
-                                        false,
-                                        {ObjL4StartTS, ObjL6EndTS},
-                                        false),
+        leveled_bookie:book_headfold(
+            Bookie1BS,
+            ?RIAK_TAG,
+            {range, <<"B2">>, {MinB2K, MaxB2K}},
+            {SimpleCountFun([<<"B2">>]), 0},
+            false,
+            true,
+            false,
+            {ObjL4StartTS, ObjL6EndTS},
+            false
+        ),
     R5B_MultiBucket3a = R5B_MultiBucketRunner3a(),
     io:format("R5B_MultiBucket3a ~w ~n", [R5B_MultiBucket3a]),
     R5B_MultiBucket3b = R5B_MultiBucketRunner3b(),
@@ -871,32 +929,33 @@ lmdrange_tester(Bookie1BS, SimpleCountFun,
 
     io:format("Query outside of time range~n"),
     {async, R5B_MultiBucketRunner4} = 
-        leveled_bookie:book_headfold(Bookie1BS,
-                                        ?RIAK_TAG,
-                                        all,
-                                        {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
-                                        false,
-                                        true,
-                                        false,
-                                        {ObjL6EndTS,
-                                            TooLate},
-                                        false),
+        leveled_bookie:book_headfold(
+            Bookie1BS,
+            ?RIAK_TAG,
+            all,
+            {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
+            false,
+            true,
+            false,
+            {ObjL6EndTS, TooLate},
+            false
+        ),
     R5B_MultiBucket4 = R5B_MultiBucketRunner4(),
     io:format("R5B_MultiBucket4 ~w ~n", [R5B_MultiBucket4]),
     true = R5B_MultiBucket4 == 0,
 
     io:format("Query with one foot inside of time range~n"),
     {async, R5B_MultiBucketRunner5} = 
-        leveled_bookie:book_headfold(Bookie1BS,
-                                        ?RIAK_TAG,
-                                        all,
-                                        {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
-                                        false,
-                                        true,
-                                        false,
-                                        {ObjL6StartTS,
-                                            TooLate},
-                                        false),
+        leveled_bookie:book_headfold(
+            Bookie1BS,
+            ?RIAK_TAG,
+            all,
+            {SimpleCountFun([<<"B0">>, <<"B2">>]), 0},
+            false,
+            true,
+            false,
+            {ObjL6StartTS, TooLate},
+            false),
     R5B_MultiBucket5 = R5B_MultiBucketRunner5(),
     io:format("R5B_MultiBucket5 ~w ~n", [R5B_MultiBucket5]),
     true = R5B_MultiBucket5 == 7000.
@@ -1310,11 +1369,13 @@ handoff(_Config) ->
     
     % Handoff the data from the first store to the other three stores
     {async, Handoff2} =
-        leveled_bookie:book_objectfold(Bookie1,
-                                       ?RIAK_TAG,
-                                       {FoldObjectsFun(Bookie2), ok},
-                                       false,
-                                       key_order),
+        leveled_bookie:book_objectfold(
+            Bookie1,
+            ?RIAK_TAG,
+            {FoldObjectsFun(Bookie2), ok},
+            false,
+            key_order
+        ),
     SW2 = os:timestamp(),
     ok = Handoff2(),
     Time_HO2 = timer:now_diff(os:timestamp(), SW2)/1000,
@@ -1322,22 +1383,26 @@ handoff(_Config) ->
                 [Time_HO2]),
     SW3 = os:timestamp(),
     {async, Handoff3} =
-        leveled_bookie:book_objectfold(Bookie1,
-                                       ?RIAK_TAG,
-                                       {FoldObjectsFun(Bookie3), ok},
-                                       true,
-                                       sqn_order),
+        leveled_bookie:book_objectfold(
+            Bookie1,
+            ?RIAK_TAG,
+            {FoldObjectsFun(Bookie3), ok},
+            true,
+            sqn_order
+        ),
     ok = Handoff3(),
     Time_HO3 = timer:now_diff(os:timestamp(), SW3)/1000,
     io:format("Handoff to Book3 in sqn_order took ~w milliseconds ~n", 
                 [Time_HO3]),
     SW4 = os:timestamp(),
     {async, Handoff4} =
-        leveled_bookie:book_objectfold(Bookie1,
-                                       ?RIAK_TAG,
-                                       {FoldObjectsFun(Bookie4), ok},
-                                       true,
-                                       sqn_order),
+        leveled_bookie:book_objectfold(
+            Bookie1,
+            ?RIAK_TAG,
+            {FoldObjectsFun(Bookie4), ok},
+            true,
+            sqn_order
+        ),
 
     ok = Handoff4(),
     Time_HO4 = timer:now_diff(os:timestamp(), SW4)/1000,

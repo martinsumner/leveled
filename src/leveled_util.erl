@@ -5,7 +5,8 @@
 
 -module(leveled_util).
 
--export([generate_uuid/0,
+-export([
+            generate_uuid/0,
             integer_now/0,
             integer_time/1,
             magic_hash/1,
@@ -17,7 +18,6 @@
         ]).
 
 -define(WRITE_OPS, [binary, raw, read, write]).
-
 
 -spec generate_uuid() -> list().
 %% @doc

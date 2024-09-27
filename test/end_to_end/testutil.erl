@@ -2,6 +2,8 @@
 
 -include("../include/leveled.hrl").
 
+-export([init_per_suite/1, end_per_suite/1]).
+
 -export([book_riakput/3,
             book_tempriakput/4,
             book_riakdelete/4,
@@ -90,6 +92,59 @@
           vclock,
           updatemetadata=dict:store(clean, true, dict:new()),
           updatevalue :: term()}).
+
+
+init_per_suite(Config) ->
+    LogTemplate = [time, " log_level=", level, " ", msg, "\n"],
+    LogFormatter =
+        {
+            logger_formatter,
+                #{
+                    time_designator => $\s,
+                    template => LogTemplate
+                }
+        },
+    {suite, SUITEName} = lists:keyfind(suite, 1, Config),
+    FileName = "leveled_" ++ SUITEName ++ "_ct.log",
+    LogConfig =
+        #{
+            config =>
+                #{
+                    file => FileName,
+                    max_no_files => 5
+                }
+        },
+    
+    LogFilter =
+        fun(LogEvent, LogType) ->
+            Meta = maps:get(meta, LogEvent),
+            case maps:get(log_type, Meta, not_found) of
+                LogType ->
+                    LogEvent;
+                _ ->
+                    ignore
+            end
+        end,
+
+    ok = logger:add_handler(logfile, logger_std_h, LogConfig),
+    ok = logger:set_handler_config(logfile, formatter, LogFormatter),
+    ok = logger:set_handler_config(logfile, level, info),
+    ok = logger:add_handler_filter(logfile, type_filter, {LogFilter, backend}),
+
+    ok = logger:set_handler_config(default, level, notice),
+    ok = logger:set_handler_config(cth_log_redirect, level, notice),
+
+    ok = logger:set_primary_config(level, info),
+
+    Config.
+
+end_per_suite(_Config) ->
+    ok = logger:remove_handler(logfile),
+    ok = logger:set_primary_config(level, notice),
+    ok = logger:set_handler_config(default, level, all),
+    ok = logger:set_handler_config(cth_log_redirect, level, all),
+
+    ok.
 
 riak_object(Bucket, Key, Value, MetaData) ->
     Content = #r_content{metadata=dict:from_list(MetaData), value=Value},
@@ -295,8 +350,11 @@ reset_filestructure(RootPath) when is_list(RootPath) ->
     reset_filestructure(0, RootPath).
 
 reset_filestructure(Wait, RootPath) ->
-    io:format("Waiting ~w ms to give a chance for all file closes " ++
-                 "to complete~n", [Wait]),
+    io:format(
+        "Waiting ~w ms to give a chance for all file closes "
+        "to complete~n",
+        [Wait]
+    ),
     timer:sleep(Wait),
     filelib:ensure_dir(RootPath ++ "/journal/"),
     filelib:ensure_dir(RootPath ++ "/ledger/"),
@@ -311,8 +369,11 @@ wait_for_compaction(Bookie) ->
                             false ->
                                 false;
                             true ->
-                                io:format("Loop ~w waiting for journal "
-                                    ++ "compaction to complete~n", [X]),
+                                io:format(
+                                    "Loop ~w waiting for journal "
+                                    "compaction to complete~n",
+                                    [X]
+                                ),
                                 timer:sleep(5000),
                                 F(Bookie)
                         end end,
@@ -446,11 +507,15 @@ get_compressiblevalue() ->
     Selector = [{1, S1}, {2, S2}, {3, S3}, {4, S4},
                 {5, S5}, {6, S6}, {7, S7}, {8, S8}],
     L = lists:seq(1, 1024),
-    lists:foldl(fun(_X, Acc) ->
-                    {_, Str} = lists:keyfind(leveled_rand:uniform(8), 1, Selector),
-                    Acc ++ Str end,
-                "",
-                L).
+    iolist_to_binary(
+        lists:foldl(
+            fun(_X, Acc) ->
+                {_, Str} = lists:keyfind(leveled_rand:uniform(8), 1, Selector),
+            [Str|Acc] end,
+            [""],
+            L
+        )
+    ).
 
 generate_smallobjects(Count, KeyNumber) ->
     generate_objects(Count, KeyNumber, [], leveled_rand:rand_bytes(512)).
@@ -547,16 +612,22 @@ set_object(Bucket, Key, Value, IndexGen, Indexes2Remove) ->
 set_object(Bucket, Key, Value, IndexGen, Indexes2Remove, IndexesNotToRemove) ->
     IdxSpecs = IndexGen(),
     Indexes =
-        lists:map(fun({add, IdxF, IdxV}) -> {IdxF, IdxV} end,
-                    IdxSpecs ++ IndexesNotToRemove),
+        lists:map(
+            fun({add, IdxF, IdxV}) -> {IdxF, IdxV} end,
+            lists:flatten([IndexesNotToRemove, IdxSpecs])
+        ),
     Obj = {Bucket,
             Key,
             Value,
-            IdxSpecs ++
-                lists:map(fun({add, IdxF, IdxV}) -> {remove, IdxF, IdxV} end,
-                            Indexes2Remove),
-            [{<<"MDK">>, "MDV" ++ Key},
-                {<<"MDK2">>, "MDV" ++ Key},
+            lists:flatten(
+                IdxSpecs,
+                lists:map(
+                    fun({add, IdxF, IdxV}) -> {remove, IdxF, IdxV} end,
+                    Indexes2Remove
+                )
+            ),
+            [{<<"MDK">>, iolist_to_binary([<<"MDV">>, Key])},
+                {<<"MDK2">>, iolist_to_binary([<<"MDV">>, Key])},
                 {?MD_LASTMOD, os:timestamp()},
                 {?MD_INDEX, Indexes}]},
     {B1, K1, V1, DeltaSpecs, MD} = Obj,
@@ -637,8 +708,10 @@ get_value(ObjectBin) ->
             <<SibLength:32/integer, Rest2/binary>> = SibsBin,
             <<ContentBin:SibLength/binary, _MetaBin/binary>> = Rest2,
             case ContentBin of
-                <<0, ContentBin0/binary>> ->
-                    binary_to_term(ContentBin0)
+                <<0:8/integer, ContentBin0/binary>> ->
+                    binary_to_term(ContentBin0);
+                <<1:8/integer, ContentAsIs/binary>> ->
+                    ContentAsIs
             end;
         N ->
             io:format("SibCount of ~w with ObjectBin ~w~n", [N, ObjectBin]),
@@ -696,8 +769,8 @@ get_randomindexes_generator(Count) ->
             lists:map(
                 fun(X) ->
                     {add,
-                        list_to_binary("idx" ++ integer_to_list(X) ++ "_bin"),
-                        list_to_binary(get_randomdate() ++ get_randomname())}
+                        iolist_to_binary(["idx", integer_to_list(X), "_bin"]),
+                        iolist_to_binary([get_randomdate(), get_randomname()])}
                 end,
                 lists:seq(1, Count))
         end,
@@ -845,7 +918,7 @@ put_altered_indexed_objects(Book, Bucket, KSpecL, RemoveOld2i, V) ->
                 end,
             % Note that order in the SpecL is important, as
             % check_indexed_objects, needs to find the latest item added
-            {{K, NewSpecs ++ AddSpc}, AccOut}
+            {{K, lists:append(NewSpecs, AddSpc)}, AccOut}
         end,
     {RplKSpecL, Pauses} = lists:mapfoldl(MapFun, 0, KSpecL),
     io:format(
@@ -939,17 +1012,22 @@ compact_and_wait(Book) ->
 compact_and_wait(Book, WaitForDelete) ->
     ok = leveled_bookie:book_compactjournal(Book, 30000),
     F = fun leveled_bookie:book_islastcompactionpending/1,
-    lists:foldl(fun(X, Pending) ->
-                        case Pending of
-                            false ->
-                                false;
-                            true ->
-                                io:format("Loop ~w waiting for journal "
-                                    ++ "compaction to complete~n", [X]),
-                                timer:sleep(20000),
-                                F(Book)
-                        end end,
-                    true,
-                    lists:seq(1, 15)),
+    lists:foldl(
+        fun(X, Pending) ->
+            case Pending of
+                false ->
+                    false;
+                true ->
+                    io:format(
+                        "Loop ~w waiting for journal "
+                        "compaction to complete~n",
+                        [X]
+                    ),
+                    timer:sleep(20000),
+                    F(Book)
+            end
+        end,
+        true,
+        lists:seq(1, 15)),
     io:format("Waiting for journal deletes~n"),
     timer:sleep(WaitForDelete).

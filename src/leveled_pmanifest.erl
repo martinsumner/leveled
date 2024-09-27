@@ -14,10 +14,9 @@
 %% access the cache)
 %% - Use a skiplist like enhanced list at lower levels.
 
-
 -module(leveled_pmanifest).
 
--include("include/leveled.hrl").
+-include("leveled.hrl").
 
 -export([
         new_manifest/0,
@@ -74,7 +73,7 @@
             % At o(10) trillion keys behaviour may become increasingly 
             % difficult to predict.
 
--if(OTP_RELEASE >= 25).
+-if(?OTP_RELEASE >= 25).
 -if(length(?LEVEL_SCALEFACTOR) /= ?MAX_LEVELS).
 -error("length ?LEVEL_SCALEFACTOR differs from ?MAX_LEVELS").
 -endif.

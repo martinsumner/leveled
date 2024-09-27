@@ -92,11 +92,11 @@ check_hash({_SegHash, Hash}, BloomBin) when is_binary(BloomBin)->
 map_hashes([], HashListTuple,  _SlotCount) ->
     HashListTuple;
 map_hashes([Hash|Rest], HashListTuple, SlotCount) ->
-    {Slot, Hashes} = split_hash(element(2, Hash), SlotCount),
+    {Slot, [H0, H1]} = split_hash(element(2, Hash), SlotCount),
     SlotHL = element(Slot + 1, HashListTuple),
     map_hashes(
         Rest,
-        setelement(Slot + 1, HashListTuple, Hashes ++ SlotHL),
+        setelement(Slot + 1, HashListTuple, [H0, H1 | SlotHL]),
         SlotCount).
 
 -spec split_hash(external_hash(), slot_count())
@@ -288,5 +288,40 @@ test_bloom(N, Runs) ->
             "build in ~w then ~.3f per pos-check, ~.3f per neg-check, "
             "fpr ~.3f with bytes-per-key ~.3f~n",
         [N, round(TSa), TSb / PosChecks, TSc / (Pos + Neg), FPR, BytesPerKey]).
+
+
+split_builder_speed_test_() ->
+    {timeout, 60, fun split_builder_speed_tester/0}.
+
+split_builder_speed_tester() ->
+    N = 40000,
+    Runs = 50,
+    ListOfHashLists = 
+        lists:map(fun(_X) -> get_hashlist(N * 2) end, lists:seq(1, Runs)),
+
+    Timings =
+        lists:map(
+            fun(HashList) ->
+                SlotCount = min(128, max(2, (length(HashList) - 1) div 512)),
+                InitTuple = list_to_tuple(lists:duplicate(SlotCount, [])),
+                {MTC, SlotHashes} =
+                    timer:tc(
+                        fun map_hashes/3, [HashList, InitTuple, SlotCount]
+                    ),
+                {BTC, _Bloom} =
+                    timer:tc(
+                        fun build_bloom/2, [SlotHashes, SlotCount]
+                    ),
+                {MTC, BTC}
+            end,
+            ListOfHashLists
+        ),
+    {MTs, BTs} = lists:unzip(Timings),
+    io:format(
+        user,
+        "Total time in microseconds for map_hashlist ~w build_bloom ~w~n",
+        [lists:sum(MTs), lists:sum(BTs)]
+    ).
+    
 
 -endif.

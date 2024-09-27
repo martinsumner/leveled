@@ -154,12 +154,11 @@
 %% the current level zero in-memory view.
 %%
 
-
 -module(leveled_penciller).
 
 -behaviour(gen_server).
 
--include("include/leveled.hrl").
+-include("leveled.hrl").
 
 -export([
         init/1,
@@ -168,7 +167,7 @@
         handle_info/2,
         terminate/2,
         code_change/3,
-        format_status/2]).
+        format_status/1]).
 
 -export([
         pcl_snapstart/1,
@@ -207,23 +206,17 @@
 -export([clean_testdir/1]).
 -endif.
 
--define(MAX_WORK_WAIT, 300).
 -define(MANIFEST_FP, "ledger_manifest").
 -define(FILES_FP, "ledger_files").
--define(CURRENT_FILEX, "crr").
--define(PENDING_FILEX, "pnd").
 -define(SST_FILEX, ".sst").
 -define(ARCHIVE_FILEX, ".bak").
 -define(SUPER_MAX_TABLE_SIZE, 40000).
--define(PROMPT_WAIT_ONL0, 5).
 -define(WORKQUEUE_BACKLOG_TOLERANCE, 4).
 -define(COIN_SIDECOUNT, 4).
 -define(SLOW_FETCH, 500000). % Log a very slow fetch - longer than 500ms
 -define(FOLD_SCANWIDTH, 32).
 -define(ITERATOR_SCANWIDTH, 4).
 -define(ITERATOR_MINSCANWIDTH, 1).
--define(TIMING_SAMPLECOUNTDOWN, 10000).
--define(TIMING_SAMPLESIZE, 100).
 -define(SHUTDOWN_LOOPS, 10).
 -define(SHUTDOWN_PAUSE, 10000).
     % How long to wait for snapshots to be released on shutdown
@@ -1230,15 +1223,22 @@ terminate(Reason, _State=#state{is_snapshot=Snap}) when Snap == true ->
 terminate(Reason, _State) ->
     leveled_log:log(p0011, [Reason]).
 
-format_status(normal, [_PDict, State]) ->
-    State;
-format_status(terminate, [_PDict, State]) ->
-    State#state{
-        manifest = redacted, 
-        levelzero_cache = redacted,
-        levelzero_index = redacted,
-        levelzero_astree = redacted}.
-
+format_status(Status) ->
+    case maps:get(reason, Status, normal) of
+        terminate ->
+            State = maps:get(state, Status),
+            maps:update(
+                state,
+                State#state{
+                    manifest = redacted, 
+                    levelzero_cache = redacted,
+                    levelzero_index = redacted,
+                    levelzero_astree = redacted},
+                Status
+            );
+        _ ->
+            Status
+    end.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -1993,13 +1993,17 @@ format_status_test() ->
                                         max_inmemory_tablesize=1000,
                                         sst_options=#sst_options{}}),
     {status, PCL, {module, gen_server}, SItemL} = sys:get_status(PCL),
-    S = lists:keyfind(state, 1, lists:nth(5, SItemL)),
+    {data,[{"State", S}]} = lists:nth(3, lists:nth(5, SItemL)),
     true = is_integer(array:size(element(2, S#state.manifest))),
-    ST = format_status(terminate, [dict:new(), S]),
+    Status = format_status(#{reason => terminate, state => S}),
+    ST = maps:get(state, Status),
     ?assertMatch(redacted, ST#state.manifest),
     ?assertMatch(redacted, ST#state.levelzero_cache),
     ?assertMatch(redacted, ST#state.levelzero_index),
     ?assertMatch(redacted, ST#state.levelzero_astree),
+    NormStatus = format_status(#{reason => normal, state => S}),
+    NST = maps:get(state, NormStatus),
+    ?assert(is_integer(array:size(element(2, NST#state.manifest)))),
     clean_testdir(RootPath).
 
 close_no_crash_test_() ->

@@ -80,12 +80,11 @@
 %% TODO: how to instruct the files to close is tbd
 %%
 
-
 -module(leveled_inker).
 
 -behaviour(gen_server).
 
--include("include/leveled.hrl").
+-include("leveled.hrl").
 
 -export([init/1,
         handle_call/3,
@@ -736,9 +735,12 @@ handle_cast({clerk_complete, ManifestSnippet, FilesToDelete}, State) ->
     NewManifestSQN = State#state.manifest_sqn + 1,
     leveled_imanifest:printer(Man1),
     leveled_imanifest:writer(Man1, NewManifestSQN, State#state.root_path),
-    ok = leveled_iclerk:clerk_promptdeletions(State#state.clerk,
-                                                NewManifestSQN,
-                                                FilesToDelete),
+    lists:foreach(
+        fun({_SQN, _FN, J2D, _LK}) ->
+            leveled_cdb:cdb_deletepending(J2D, NewManifestSQN, self())
+        end,
+        FilesToDelete
+    ),
     {noreply, State#state{manifest=Man1,
                             manifest_sqn=NewManifestSQN,
                             pending_removals=FilesToDelete,
