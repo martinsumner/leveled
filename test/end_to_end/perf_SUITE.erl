@@ -17,10 +17,6 @@
         get_random_postcode/0
     ]).
 
--define(PEOPLE_INDEX, <<"people_bin">>).
--define(MINI_QUERY_DIVISOR, 8).
--define(RGEX_QUERY_DIVISOR, 32).
-
 -ifdef(test_filter_expression).
     -define(TEST_FE, true).
 -else.
@@ -43,18 +39,6 @@ all() -> [?performance].
 -define(MINI_QUERY_DIVISOR, 8).
 -define(RGEX_QUERY_DIVISOR, 32).
 -define(PUT_PAUSE, 40).
-
--ifndef(performance).
-  -define(performance, riak_ctperf).
--endif.
-all() -> [?performance].
-
--if(?performance == riak_profileperf andalso ?OTP_RELEASE >= 24).
-   % Requires map functions from OTP 24
-   -define(ACCOUNTING, true).
--else.
-   -define(ACCOUNTING, false).
--endif.
 
 suite() -> [{timetrap, {hours, 16}}].
 
@@ -102,11 +86,6 @@ riak_profileperf(_Config) ->
 % For standard ct test runs
 riak_ctperf(_Config) ->
     riak_load_tester(<<"B0">>, 400000, 1024, [], native, as_store).
-
-riak_miniperf(_Config) ->
-    Bucket = {<<"SensibleBucketTypeName">>, <<"SensibleBucketName0">>},
-    R2A = riak_load_tester(Bucket, 2000000, 2048, [], zstd, as_store),
-    output_result(R2A).
 
 riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
     ct:log(
@@ -771,42 +750,6 @@ random_people_queries(false, Bookie, Bucket, IndexesReturned) ->
     TC div 1000.
 
 
-random_people_queries(Bookie, Bucket, IndexesReturned) ->
-    SeventiesWillowRegex =
-        "[^\\|]*\\|197[0-9]{5}\\|[^\\|]*\\|"
-        "[^\\|]*#Willow[^\\|]*\\|[^\\|]*#LS[^\\|]*",
-        %% born in the 70s with Willow as a given name
-    QueryFun =
-        fun() ->
-            Surname = get_random_surname(),
-            Range =
-                {?PEOPLE_INDEX,
-                    Surname,
-                    <<Surname/binary, 126:8/integer>>
-            },
-            {ok, TermRegex} =
-                re:compile(SeventiesWillowRegex),
-            FoldKeysFun =  fun(_B, _K, Cnt) -> Cnt + 1 end,
-            {async, R} =
-                leveled_bookie:book_indexfold(
-                    Bookie,
-                    {Bucket, <<>>}, 
-                    {FoldKeysFun, 0},
-                    Range,
-                    {true, TermRegex}),
-            R()
-        end,
-    
-    {TC, {QC, EF}} =
-        timer:tc(fun() -> run_queries(QueryFun, 0, 0, IndexesReturned) end),
-    ct:log(
-        ?INFO,
-        "Fetch of ~w index entries by regex in ~w queries took ~w ms",
-        [EF, QC, TC div 1000]
-    ),
-    TC div 1000.
-
-
 run_queries(_QueryFun, QueryCount, EntriesFound, TargetEntries)
         when EntriesFound >= TargetEntries ->
     {QueryCount, EntriesFound};
@@ -838,13 +781,6 @@ profile_fun(
     fun() ->
         random_people_queries(
             Bookie, Bucket, (IndexesReturned * 2) div ?RGEX_QUERY_DIVISOR)
-    end;
-profile_fun(
-        regex_query,
-        {Bookie, Bucket, _KeyCount, _ObjSize, _IndexCount, IndexesReturned}) ->
-    fun() ->
-        random_people_queries(
-            Bookie, Bucket, IndexesReturned div ?RGEX_QUERY_DIVISOR)
     end;
 profile_fun(
         {head, HeadFetches},
