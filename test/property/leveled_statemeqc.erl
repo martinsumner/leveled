@@ -680,7 +680,7 @@ indexfold(Pid, Constraint, FoldAccT, Range, {_, undefined} = TermHandling, _Coun
     {async, Folder} = leveled_bookie:book_indexfold(Pid, Constraint, FoldAccT, Range, TermHandling),
     Folder;
 indexfold(Pid, Constraint, FoldAccT, Range, {ReturnTerms, RegExp}, _Counter) ->
-    {ok, RE} = re:compile(RegExp),
+    {ok, RE} = leveled_util:regex_compile(RegExp),
     {async, Folder} = leveled_bookie:book_indexfold(Pid, Constraint, FoldAccT, Range, {ReturnTerms, RE}),
     Folder.
 

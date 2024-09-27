@@ -112,10 +112,17 @@
         {index_specs(), infinity|integer()}. % {KeyChanges, TTL}
 -type maybe_lookup() ::
         lookup|no_lookup.
--type regular_expression() ::
-        {re_pattern, term(), term(), term(), term()}|undefined. 
-    % first element must be re_pattern, but tuple may change legnth with
-    % versions
+-type actual_regex() ::
+        {re_pattern, term(), term(), term(), term()}.
+-type capture_value() :: binary()|integer().
+-type query_filter_fun() ::
+        fun((#{binary() => capture_value()}) -> boolean()).
+-type query_eval_fun() ::
+        fun((binary(), binary()) -> #{binary() => capture_value()}).
+-type query_expression() :: 
+        {query, query_eval_fun(), query_filter_fun()}.
+-type term_expression() ::
+        actual_regex()|undefined|query_expression().
 
 -type value_fetcher() ::
     {fun((pid(), leveled_codec:journal_key()) -> any()),
@@ -154,7 +161,8 @@
             maybe_lookup/0,
             last_moddate/0,
             lastmod_range/0,
-            regular_expression/0,
+            term_expression/0,
+            actual_regex/0,
             value_fetcher/0,
             proxy_object/0,
             slimmed_key/0
@@ -292,8 +300,9 @@ maybe_accumulate(
     maybe_accumulate(T, Acc, Count, Filter, AccFun).
 
 -spec accumulate_index(
-        {boolean(), undefined|leveled_runner:mp()}, leveled_runner:acc_fun())
-            -> any().
+        {boolean()|binary(),
+        term_expression()},
+        leveled_runner:acc_fun()) -> any().
 accumulate_index({false, undefined}, FoldKeysFun) ->
     fun({?IDX_TAG, Bucket, _IndexInfo, ObjKey}, _Value, Acc) ->
         FoldKeysFun(Bucket, ObjKey, Acc)
@@ -302,9 +311,19 @@ accumulate_index({true, undefined}, FoldKeysFun) ->
     fun({?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc) ->
         FoldKeysFun(Bucket, {IdxValue, ObjKey}, Acc)
     end;
+accumulate_index(
+        {AddTerm, {query, EvalFun, FilterFun}}, FoldKeysFun) ->
+    fun({?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc) ->
+        CptMap = EvalFun(IdxValue, ObjKey),
+        check_captured_terms(
+            CptMap,
+            FilterFun, AddTerm, FoldKeysFun,
+            Bucket, IdxValue, ObjKey,
+            Acc)
+    end;
 accumulate_index({AddTerm, TermRegex}, FoldKeysFun) ->
     fun({?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc) ->
-        case re:run(IdxValue, TermRegex) of
+        case leveled_util:regex_run(IdxValue, TermRegex, []) of
             nomatch ->
                 Acc;
             _ ->
@@ -316,6 +335,29 @@ accumulate_index({AddTerm, TermRegex}, FoldKeysFun) ->
                 end
         end
     end.
+
+check_captured_terms(
+        CptMap, FilterFun, AddTerm, FoldKeysFun, B, IdxValue, ObjKey, Acc) ->
+    case FilterFun(CptMap) of
+        true ->
+            case AddTerm of
+                true ->
+                    FoldKeysFun(B, {IdxValue, ObjKey}, Acc);
+                false ->
+                    FoldKeysFun(B, ObjKey, Acc);
+                CptKey when is_binary(CptKey) ->
+                    case maps:get(CptKey, CptMap, undefined) of
+                        undefined ->
+                            Acc;
+                        CptValue ->  
+                            FoldKeysFun(B, {CptValue, ObjKey}, Acc)
+                    end
+            end;
+        false ->
+            Acc
+    end.
+
+
 
 -spec key_dominates(ledger_kv(), ledger_kv()) -> boolean().
 %% @doc

@@ -11,9 +11,11 @@
             integer_time/1,
             magic_hash/1,
             t2b/1,
-            safe_rename/4
-        ]
-    ).
+            safe_rename/4,
+            regex_run/3,
+            regex_compile/1,
+            regex_compile/2
+        ]).
 
 -define(WRITE_OPS, [binary, raw, read, write]).
 
@@ -41,6 +43,34 @@ integer_time(TS) ->
     DT = calendar:now_to_universal_time(TS),
     calendar:datetime_to_gregorian_seconds(DT).
 
+
+-type match_option() ::
+    'caseless' |
+    {'offset', non_neg_integer()} |
+    {'capture', value_spec()} |
+    {'capture', value_spec(), value_spec_type()}.
+-type value_spec() ::
+    'all' | 'all_but_first' | 'first' | 'none' | [value_id()].
+-type value_spec_type() :: 'binary'.
+-type value_id() :: binary().
+-type match_index() :: {non_neg_integer(), non_neg_integer()}.
+
+-spec regex_run(
+    iodata(), leveled_codec:actual_regex(), list(match_option())) ->
+        match |
+        nomatch |
+        {match, list(match_index())} |
+        {match, list(binary())} |
+        {error, atom()}.
+regex_run(Subject, CompiledPCRE, Opts) ->
+    re:run(Subject, CompiledPCRE, Opts).
+
+-spec regex_compile(iodata()) -> {ok, leveled_codec:actual_regex()}.
+regex_compile(PlainRegex) ->
+    regex_compile(PlainRegex, pcre).
+
+regex_compile(PlainRegex, pcre) ->
+    re:compile(PlainRegex).
 
 -spec magic_hash(any()) -> 0..16#FFFFFFFF.
 %% @doc 

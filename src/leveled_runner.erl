@@ -62,7 +62,7 @@
 -type acc_fun()
     :: fun((leveled_codec:key(), any(), foldacc()) -> foldacc()).
 -type mp()
-    :: {re_pattern, term(), term(), term(), term()}.
+    :: any().
 
 -export_type([acc_fun/0, mp/0]).
 
@@ -129,12 +129,11 @@ bucket_list(SnapFun, Tag, FoldBucketsFun, InitAcc, MaxBuckets) ->
         end,
     {async, Runner}.
 
--spec index_query(snap_fun(), 
-                    {leveled_codec:ledger_key(), 
-                        leveled_codec:ledger_key(), 
-                        {boolean(), undefined|mp()|iodata()}}, 
-                    {fold_keys_fun(), foldacc()})
-                        -> {async, runner_fun()}.
+-spec index_query(
+    snap_fun(),
+    {leveled_codec:ledger_key(), leveled_codec:ledger_key(), 
+    {boolean()|binary(), leveled_codec:term_expression()}}, 
+    {fold_keys_fun(), foldacc()}) -> {async, runner_fun()}.
 %% @doc
 %% Secondary index query
 %% This has the special capability that it will expect a message to be thrown
@@ -167,7 +166,7 @@ index_query(SnapFun, {StartKey, EndKey, TermHandling}, FoldAccT) ->
                         leveled_codec:key()|null, 
                         key_range(),
                         {fold_keys_fun(), foldacc()},
-                        leveled_codec:regular_expression())
+                        leveled_codec:term_expression())
                         -> {async, runner_fun()}.
 %% @doc
 %% Fold over all keys in `KeyRange' under tag (restricted to a given bucket)
@@ -680,7 +679,7 @@ accumulate_keys(FoldKeysFun, undefined) ->
 accumulate_keys(FoldKeysFun, TermRegex) ->
     fun(Key, _Value, Acc) ->
         {B, K} = leveled_codec:from_ledgerkey(Key),
-        case re:run(K, TermRegex) of
+        case leveled_util:regex_run(K, TermRegex, []) of
             nomatch ->
                 Acc;
             _ ->
