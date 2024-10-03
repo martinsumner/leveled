@@ -3100,21 +3100,24 @@ undefined_rootpath_test() ->
         
 
 foldkeys_headonly_test() ->
-    foldkeys_headonly_tester(5000, 25, "BucketStr"),
+    foldkeys_headonly_tester(5000, 25, <<"BucketStr">>),
     foldkeys_headonly_tester(2000, 25, <<"B0">>).
 
 
 foldkeys_headonly_tester(ObjectCount, BlockSize, BStr) ->
     RootPath = reset_filestructure(),
     
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, 500},
-                                    {head_only, no_lookup}]),
+    {ok, Bookie1} =
+        book_start(
+            [{root_path, RootPath},
+                    {max_journalsize, 1000000},
+                    {cache_size, 500},
+                    {head_only, no_lookup}]
+                ),
     GenObjSpecFun =
         fun(I) ->
             Key = I rem 6,
-            {add, BStr, <<Key:8/integer>>, integer_to_list(I), I}
+            {add, BStr, <<Key:8/integer>>, <<I:32/integer>>, null}
         end,
     ObjSpecs = lists:map(GenObjSpecFun, lists:seq(1, ObjectCount)),
     ObjSpecBlocks = 
@@ -3158,10 +3161,10 @@ is_empty_stringkey_test() ->
     Past = leveled_util:integer_now() - 300,
     ?assertMatch(true, leveled_bookie:book_isempty(Bookie1, ?STD_TAG)),
     ok = book_tempput(Bookie1, 
-                        "B", "K", {value, <<"V">>}, [], 
+                        <<"B">>, <<"K">>, {value, <<"V">>}, [], 
                         ?STD_TAG, Past),
     ok = book_put(Bookie1, 
-                    "B", "K0", {value, <<"V">>}, [], 
+                    <<"B">>, <<"K0">>, {value, <<"V">>}, [], 
                     ?STD_TAG),
     ?assertMatch(false, book_isempty(Bookie1, ?STD_TAG)),
     ok = book_close(Bookie1).
@@ -3241,19 +3244,19 @@ erase_journal_test() ->
     % Put in all the objects with a TTL in the future
     lists:foreach(
         fun({K, V, S}) ->
-            ok = book_put(Bookie1, "Bucket", K, V, S, ?STD_TAG)
+            ok = book_put(Bookie1, <<"Bucket">>, K, V, S, ?STD_TAG)
         end,
         ObjL1),
     lists:foreach(
         fun({K, V, _S}) ->
-            {ok, V} = book_get(Bookie1, "Bucket", K, ?STD_TAG)
+            {ok, V} = book_get(Bookie1, <<"Bucket">>, K, ?STD_TAG)
         end,
         ObjL1),
     
     CheckHeadFun =
         fun(Book) -> 
             fun({K, _V, _S}, Acc) ->
-                case book_head(Book, "Bucket", K, ?STD_TAG) of 
+                case book_head(Book, <<"Bucket">>, K, ?STD_TAG) of 
                     {ok, _Head} -> Acc;
                     not_found -> Acc + 1
                 end

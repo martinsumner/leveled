@@ -54,8 +54,9 @@
 
 -type tag() :: 
         leveled_head:object_tag()|?IDX_TAG|?HEAD_TAG|atom().
--type key() :: 
-        binary()|string()|{binary(), binary()}.
+-type single_key() :: binary().
+-type tuple_key() :: {single_key(), single_key()}.
+-type key() :: single_key()|tuple_key().
         % Keys SHOULD be binary()
         % string() support is a legacy of old tests
 -type sqn() ::
@@ -75,8 +76,15 @@
 
 -type ledger_status() ::
         tomb|{active, non_neg_integer()|infinity}.
+-type primary_key() ::
+        {leveled_head:object_tag(), key(), single_key(), single_key()|null}.
+        % Primary key for an object
 -type ledger_key() :: 
-        {tag(), any(), any(), any()}|all.
+        {tag(),
+            key()|null,
+            key()|null,
+            single_key()|null
+        }|all.
 -type slimmed_key() ::
         {binary(), binary()|null}|binary()|null|all.
 -type ledger_value() ::
@@ -98,10 +106,10 @@
 -type journal_ref() ::
         {ledger_key(), sqn()}.
 -type object_spec_v0() ::
-        {add|remove, key(), key(), key()|null, any()}.
+        {add|remove, key(), single_key(), single_key()|null, metadata()}.
 -type object_spec_v1() ::
-        {add|remove, v1, key(), key(), key()|null, 
-            list(erlang:timestamp())|undefined, any()}.
+        {add|remove, v1, key(), single_key(), single_key()|null, 
+            list(erlang:timestamp())|undefined, metadata()}.
 -type object_spec() ::
         object_spec_v0()|object_spec_v1().
 -type compression_method() ::
@@ -139,6 +147,7 @@
             object_spec/0,
             segment_hash/0,
             ledger_status/0,
+            primary_key/0,
             ledger_key/0,
             ledger_value/0,
             ledger_kv/0,
@@ -209,7 +218,7 @@ headkey_to_canonicalbinary(Key) when element(1, Key) == ?HEAD_TAG ->
 %% Should it be possible to lookup a key in the merge tree.  This is not true
 %% For keys that should only be read through range queries.  Direct lookup
 %% keys will have presence in bloom filters and other lookup accelerators. 
-to_lookup(Key) ->
+to_lookup(Key) when is_tuple(Key) ->
     case element(1, Key) of
         ?IDX_TAG ->
             no_lookup;
@@ -235,12 +244,12 @@ strip_to_keyseqonly({LK, V}) -> {LK, element(1, V)}.
 
 -spec strip_to_indexdetails(ledger_kv()) ->
                                 {integer(), segment_hash(), last_moddate()}.
-strip_to_indexdetails({_, V}) when tuple_size(V) == 4 -> 
+strip_to_indexdetails({_, {SQN, _, SegmentHash, _}})  -> 
     % A v1 value
-    {element(1, V), element(3, V), undefined};
-strip_to_indexdetails({_, V}) when tuple_size(V) > 4 ->
+    {SQN, SegmentHash, undefined};
+strip_to_indexdetails({_, {SQN, _, SegmentHash, _,  LMD}})  ->
     % A v2 value should have a fith element - Last Modified Date
-    {element(1, V), element(3, V), element(5, V)}.
+    {SQN, SegmentHash, LMD}.
 
 -spec striphead_to_v1details(ledger_value()) -> ledger_value().
 striphead_to_v1details(V) -> 
@@ -343,14 +352,17 @@ maybe_reap(_, _) ->
     false.
 
 -spec count_tombs(
-        list(ledger_kv()), non_neg_integer()|not_counted) ->
-            non_neg_integer()|not_counted.
-count_tombs(_List, not_counted) ->
-    not_counted;
+        list(ledger_kv()), non_neg_integer()) ->
+            non_neg_integer().
 count_tombs([], Count) ->
     Count;
-count_tombs([{_K, V}|T], Count) when element(2, V) == tomb ->
-    count_tombs(T, Count + 1);
+count_tombs([{_K, V}|T], Count) when is_tuple(V) ->
+    case element(2, V) of
+        tomb ->
+            count_tombs(T, Count + 1);
+        _ ->
+            count_tombs(T, Count)
+    end;
 count_tombs([_KV|T], Count) ->
     count_tombs(T, Count).
 
@@ -375,13 +387,14 @@ from_ledgerkey({?HEAD_TAG, Bucket, Key, SubKey}) ->
 from_ledgerkey({_Tag, Bucket, Key, _SubKey}) ->
     {Bucket, Key}.
 
--spec to_ledgerkey(any(), any(), tag(), any(), any()) -> ledger_key().
+-spec to_ledgerkey(
+    key(), single_key()|null, tag(), binary(), binary()) -> ledger_key().
 %% @doc
 %% Convert something into a ledger key
 to_ledgerkey(Bucket, Key, Tag, Field, Value) when Tag == ?IDX_TAG ->
     {?IDX_TAG, Bucket, {Field, Value}, Key}.
 
--spec to_ledgerkey(any(), any(), tag()) -> ledger_key().
+-spec to_ledgerkey(key()|null, key()|null, tag()) -> ledger_key().
 %% @doc
 %% Convert something into a ledger key
 to_ledgerkey(Bucket, {Key, SubKey}, ?HEAD_TAG) ->
@@ -496,7 +509,7 @@ to_inkerkv(LedgerKey, SQN, Object, KeyChanges, PressMethod, Compress) ->
         create_value_for_journal({Object, KeyChanges}, Compress, PressMethod),
     {{SQN, InkerType, LedgerKey}, Value}.
 
--spec revert_to_keydeltas(journal_key(), any()) -> {journal_key(), any()}.
+-spec revert_to_keydeltas(journal_key(), binary()) -> {journal_key(), any()}.
 %% @doc
 %% If we wish to retain key deltas when an object in the Journal has been
 %% replaced - then this converts a Journal Key and Value into one which has no
@@ -717,12 +730,16 @@ gen_indexspec(Bucket, Key, IdxOp, IdxField, IdxTerm, SQN, TTL) ->
 %% Take an object_spec as passed in a book_mput, and convert it into to a
 %% valid ledger key and value.  Supports different shaped tuples for different
 %% versions of the object_spec
-gen_headspec({IdxOp, v1, Bucket, Key, SubKey, LMD, Value}, SQN, TTL) ->
+gen_headspec(
+        {IdxOp, v1, Bucket, Key, SubKey, LMD, Value}, SQN, TTL)
+            when is_binary(Key), is_binary(SubKey) ->
      % v1 object spec
     Status = set_status(IdxOp, TTL),
     K = to_ledgerkey(Bucket, {Key, SubKey}, ?HEAD_TAG),
     {K, {SQN, Status, segment_hash(K), Value, get_last_lastmodification(LMD)}};
-gen_headspec({IdxOp, Bucket, Key, SubKey, Value}, SQN, TTL) ->
+gen_headspec(
+        {IdxOp, Bucket, Key, SubKey, Value}, SQN, TTL)
+            when is_binary(Key), is_binary(SubKey) ->
     % v0 object spec
     Status = set_status(IdxOp, TTL),
     K = to_ledgerkey(Bucket, {Key, SubKey}, ?HEAD_TAG),
@@ -751,6 +768,9 @@ return_proxy(Tag, ObjMetadata, InkerClone, JournalRef) ->
                         InkerClone,
                         JournalRef}}).
 
+-spec set_status(
+        add|remove, non_neg_integer()|infinity) ->
+            tomb|{active, non_neg_integer()|infinity}.
 set_status(add, TTL) ->
     {active, TTL};
 set_status(remove, _TTL) ->
@@ -758,10 +778,18 @@ set_status(remove, _TTL) ->
     tomb.
 
 -spec generate_ledgerkv(
-            tuple(), integer(), any(), integer(), tuple()|infinity) ->
-            {any(), any(), any(), 
-                {{integer(), integer()}|no_lookup, integer()}, 
-                list()}.
+        primary_key(),
+        integer(), 
+        any(),
+        integer(),
+        non_neg_integer()|infinity) ->
+            {
+                key(),
+                single_key(),
+                ledger_value_v2(),
+                {segment_hash(), non_neg_integer()},
+                list(erlang:timestamp())
+            }.
 %% @doc
 %% Function to extract from an object the information necessary to populate
 %% the Penciller's ledger.
@@ -776,24 +804,22 @@ set_status(remove, _TTL) ->
 %% siblings)
 generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS) ->
     {Tag, Bucket, Key, _} = PrimaryKey,
-    Status = case Obj of
-                    delete ->
-                        tomb;
-                    _ ->
-                        {active, TS}
-                end,
+    Status = case Obj of delete -> tomb; _ -> {active, TS} end,
     Hash = segment_hash(PrimaryKey),
     {MD, LastMods} = leveled_head:extract_metadata(Tag, Size, Obj),
     ObjHash = leveled_head:get_hash(Tag, MD),
-    Value = {SQN,
-                Status,
-                Hash,
-                MD,
-                get_last_lastmodification(LastMods)},
+    Value =
+        {
+            SQN,
+            Status,
+            Hash,
+            MD,
+            get_last_lastmodification(LastMods)
+        },
     {Bucket, Key, Value, {Hash, ObjHash}, LastMods}.
 
--spec get_last_lastmodification(list(erlang:timestamp())|undefined) 
-                                                -> pos_integer()|undefined.
+-spec get_last_lastmodification(
+    list(erlang:timestamp())|undefined) -> pos_integer()|undefined.
 %% @doc
 %% Get the highest of the last modifications measured in seconds.  This will be
 %% stored as 4 bytes (unsigned) so will last for another 80 + years
@@ -830,10 +856,10 @@ get_keyandobjhash(LK, Value) ->
 %% Get the next key to iterate from a given point
 next_key(Key) when is_binary(Key) ->
     <<Key/binary, 0>>;
-next_key(Key) when is_list(Key) ->
-    Key ++ [0];
 next_key({Type, Bucket}) when is_binary(Type), is_binary(Bucket) ->
-    {Type, next_key(Bucket)}.
+    UpdBucket = next_key(Bucket),
+    true = is_binary(UpdBucket),
+    {Type, UpdBucket}.
 
 
 %%%============================================================================
@@ -870,8 +896,8 @@ indexspecs_test() ->
 
 endkey_passed_test() ->
     TestKey = {i, null, null, null},
-    K1 = {i, 123, {"a", "b"}, <<>>},
-    K2 = {o, 123, {"a", "b"}, <<>>},
+    K1 = {i, <<"123">>, {<<"a">>, <<"b">>}, <<>>},
+    K2 = {o, <<"123">>, {<<"a">>, <<"b">>}, <<>>},
     ?assertMatch(false, endkey_passed(TestKey, K1)),
     ?assertMatch(true, endkey_passed(TestKey, K2)).
 
@@ -899,8 +925,8 @@ head_segment_compare_test() ->
 headspec_v0v1_test() ->
     % A v0 object spec generates the same outcome as a v1 object spec with the
     % last modified date undefined
-    V1 = {add, v1, <<"B">>, <<"K">>, <<"SK">>, undefined, <<"V">>},
-    V0 = {add, <<"B">>, <<"K">>, <<"SK">>, <<"V">>},
+    V1 = {add, v1, <<"B">>, <<"K">>, <<"SK">>, undefined, {<<"V">>}},
+    V0 = {add, <<"B">>, <<"K">>, <<"SK">>, {<<"V">>}},
     TTL = infinity,
     ?assertMatch(true, gen_headspec(V0, 1, TTL) == gen_headspec(V1, 1, TTL)).
 

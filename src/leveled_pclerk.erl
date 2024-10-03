@@ -389,7 +389,13 @@ generate_randomkeys(Count, Acc, BucketLow, BRange) ->
     KNumber =
         lists:flatten(
             io_lib:format("~4..0B", [leveled_rand:uniform(1000)])),
-    K = {o, "Bucket" ++ BNumber, "Key" ++ KNumber, null},
+    K =
+        {
+            o,
+            list_to_binary("Bucket" ++ BNumber),
+            list_to_binary("Key" ++ KNumber),
+            null
+        },
     RandKey = {K, {Count + 1,
                     {active, infinity},
                     leveled_codec:segment_hash(K),
@@ -415,7 +421,6 @@ grooming_score_test() ->
                                     3,
                                     999999,
                                     #sst_options{},
-                                    true,
                                     true),
     {ok, PidL3_1B, _, _} = 
         leveled_sst:sst_newmerge("test/test_area/ledger_files/",
@@ -427,7 +432,6 @@ grooming_score_test() ->
                                     3,
                                     999999,
                                     #sst_options{},
-                                    true,
                                     true),
     
     {ok, PidL3_2, _, _} = 
@@ -439,38 +443,20 @@ grooming_score_test() ->
                                     3,
                                     999999,
                                     #sst_options{},
-                                    true,
                                     true),
-    {ok, PidL3_2NC, _, _} = 
-        leveled_sst:sst_newmerge("test/test_area/ledger_files/",
-                                    "2NC_L3.sst",
-                                    KL3_L3,
-                                    KL4_L3,
-                                    false,
-                                    3,
-                                    999999,
-                                    #sst_options{},
-                                    true,
-                                    false),
-    
     ME1 = #manifest_entry{owner=PidL3_1},
     ME1B = #manifest_entry{owner=PidL3_1B},
     ME2 = #manifest_entry{owner=PidL3_2},
-    ME2NC = #manifest_entry{owner=PidL3_2NC},
     ?assertMatch(ME1, grooming_scorer([ME1, ME2])),
     ?assertMatch(ME1, grooming_scorer([ME2, ME1])),
         % prefer the file with the tombstone
-    ?assertMatch(ME2NC, grooming_scorer([ME1, ME2NC])),
-    ?assertMatch(ME2NC, grooming_scorer([ME2NC, ME1])),
-        % not_counted > 1 - we will merge files in unexpected (i.e. legacy)
-        % format first
     ?assertMatch(ME1B, grooming_scorer([ME1B, ME2])),
     ?assertMatch(ME2, grooming_scorer([ME2, ME1B])),
         % If the file with the tombstone is in the basement, it will have
         % no tombstone so the first file will be chosen
     
     lists:foreach(fun(P) -> leveled_sst:sst_clear(P) end,
-                    [PidL3_1, PidL3_1B, PidL3_2, PidL3_2NC]).
+                    [PidL3_1, PidL3_1B, PidL3_2]).
 
 
 merge_file_test() ->
