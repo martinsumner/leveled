@@ -41,11 +41,14 @@ many_put_compare(_Config) ->
                     {max_pencillercachesize, 16000},
                     {sync_strategy, riak_sync}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
-    {B1, K1, V1, S1, MD} = {"Bucket",
-                                "Key1.1.4567.4321",
-                                "Value1",
-                                [],
-                                [{"MDK1", "MDV1"}]},
+    {B1, K1, V1, S1, MD} =
+        {
+            <<"Bucket">>,
+            <<"Key1.1.4567.4321">>,
+            <<"Value1">>,
+            [],
+            [{<<"MDK1">>, <<"MDV1">>}]
+        },
     {TestObject, TestSpec} = testutil:generate_testobject(B1, K1, V1, S1, MD),
     ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
     testutil:check_forobject(Bookie1, TestObject),
@@ -63,12 +66,15 @@ many_put_compare(_Config) ->
 
     GenList = [2, 20002, 40002, 60002, 80002,
                 100002, 120002, 140002, 160002, 180002],
-    CLs = testutil:load_objects(20000,
-                                GenList,
-                                Bookie2,
-                                TestObject,
-                                fun testutil:generate_smallobjects/2,
-                                20000),
+    CLs =
+        testutil:load_objects(
+            20000,
+            GenList,
+            Bookie2,
+            TestObject,
+            fun testutil:generate_smallobjects/2,
+            20000
+        ),
 
     % Start a new store, and load the same objects (except fot the original
     % test object) into this store
@@ -84,7 +90,7 @@ many_put_compare(_Config) ->
     % state between stores is consistent
 
     TicTacQ = {tictactree_obj,
-                {o_rkv, "Bucket", null, null, true},
+                {o_rkv, <<"Bucket">>, null, null, true},
                 TreeSize,
                 fun(_B, _K) -> accumulate end},
     {async, TreeAFolder} = leveled_bookie:book_returnfolder(Bookie2, TicTacQ),
@@ -113,10 +119,13 @@ many_put_compare(_Config) ->
     true = length(AltList) > 10000,
     % check there are a significant number of differences from empty
 
-    WrongPartitionTicTacQ = {tictactree_obj,
-                            {o_rkv, "Bucket", null, null, false},
-                            TreeSize,
-                            fun(_B, _K) -> pass end},
+    WrongPartitionTicTacQ =
+        {
+            tictactree_obj,
+            {o_rkv, <<"Bucket">>, null, null, false},
+            TreeSize,
+            fun(_B, _K) -> pass end
+        },
     {async, TreeAFolder_WP} = 
         leveled_bookie:book_returnfolder(Bookie2, WrongPartitionTicTacQ),
     TreeAWP = TreeAFolder_WP(),
@@ -151,7 +160,7 @@ many_put_compare(_Config) ->
     {async, TreeAObjFolder0} =
         leveled_bookie:book_headfold(Bookie2,
                                      o_rkv,
-                                     {range, "Bucket", all},
+                                     {range, <<"Bucket">>, all},
                                      FoldAccT,
                                      false,
                                      true,
@@ -170,7 +179,7 @@ many_put_compare(_Config) ->
         leveled_bookie:book_headfold(
             Bookie2, 
             ?RIAK_TAG,
-            {range, "Bucket", all},
+            {range, <<"Bucket">>, all},
             {FoldObjectsFun, InitAccTree},
             true,
             true,
@@ -188,7 +197,7 @@ many_put_compare(_Config) ->
         leveled_bookie:book_headfold(
             Bookie2, 
             ?RIAK_TAG,
-            {range, "Bucket", all},
+            {range, <<"Bucket">>, all},
             {FoldObjectsFun, leveled_tictac:new_tree(0, TreeSize, false)},
             true,
             true,
@@ -218,29 +227,38 @@ many_put_compare(_Config) ->
         end,
     
     {async, TreeAAltObjFolder0} =
-        leveled_bookie:book_headfold(Bookie2, 
-                                        ?RIAK_TAG,
-                                        {range, "Bucket", all},
-                                        {AltFoldObjectsFun, 
-                                            InitAccTree},
-                                        false, true, false),
+        leveled_bookie:book_headfold(
+            Bookie2, 
+            ?RIAK_TAG,
+            {range, <<"Bucket">>, all},
+            {AltFoldObjectsFun,  InitAccTree},
+            false,
+            true,
+            false
+        ),
     SWB2Obj = os:timestamp(),
     TreeAAltObj = TreeAAltObjFolder0(),
-    io:format("Build tictac tree via object fold with no "++
-                    "presence check and 200K objects  and alt hash in ~w~n",
-                [timer:now_diff(os:timestamp(), SWB2Obj)]),
+    io:format(
+        "Build tictac tree via object fold with no "
+        "presence check and 200K objects  and alt hash in ~w~n",
+        [timer:now_diff(os:timestamp(), SWB2Obj)]
+    ),
     {async, TreeBAltObjFolder0} =
-        leveled_bookie:book_headfold(Bookie3, 
-                                        ?RIAK_TAG,
-                                        {range, "Bucket", all},
-                                        {AltFoldObjectsFun, 
-                                            InitAccTree},
-                                        false, true, false),
+        leveled_bookie:book_headfold(
+            Bookie3, 
+            ?RIAK_TAG,
+            {range, <<"Bucket">>, all},
+            {AltFoldObjectsFun, InitAccTree},
+            false,
+            true,
+            false
+        ),
     SWB3Obj = os:timestamp(),
     TreeBAltObj = TreeBAltObjFolder0(),
-    io:format("Build tictac tree via object fold with no "++
-                    "presence check and 200K objects  and alt hash in ~w~n",
-                [timer:now_diff(os:timestamp(), SWB3Obj)]),
+    io:format(
+        "Build tictac tree via object fold with no "
+        "presence check and 200K objects  and alt hash in ~w~n",
+        [timer:now_diff(os:timestamp(), SWB3Obj)]),
     DL_ExportFold = 
         length(leveled_tictac:find_dirtyleaves(TreeBAltObj, TreeAAltObj)),
     io:format("Found dirty leaves with exportable comparison of ~w~n",
@@ -261,7 +279,7 @@ many_put_compare(_Config) ->
                 end
             end
         end,
-    SegQuery = {keylist, o_rkv, "Bucket", {FoldKeysFun(SegList0), []}},
+    SegQuery = {keylist, o_rkv, <<"Bucket">>, {FoldKeysFun(SegList0), []}},
     {async, SegKeyFinder} =
         leveled_bookie:book_returnfolder(Bookie2, SegQuery),
     SWSKL0 = os:timestamp(),
@@ -273,7 +291,7 @@ many_put_compare(_Config) ->
 
     true = length(SegKeyList) >= 1,
     true = length(SegKeyList) < 10,
-    true = lists:member("Key1.1.4567.4321", SegKeyList),
+    true = lists:member(<<"Key1.1.4567.4321">>, SegKeyList),
 
     % Now remove the object which represents the difference between these
     % stores and confirm that the tictac trees will now match
@@ -630,20 +648,23 @@ tuplebuckets_headonly(_Config) ->
     SW1 = os:timestamp(),
 
     {async, HeadRunner1} =
-        leveled_bookie:book_headfold(Bookie1,
-                                        ?HEAD_TAG,
-                                        {bucket_list, BucketList},
-                                        {FoldHeadFun, []},
-                                        false, false,
-                                        false),
+        leveled_bookie:book_headfold(
+            Bookie1,
+            ?HEAD_TAG,
+            {bucket_list, BucketList},
+            {FoldHeadFun, []},
+            false, false,
+            false
+        ),
     ReturnedObjSpecL1 = lists:reverse(HeadRunner1()),
     [FirstItem|_Rest] = ReturnedObjSpecL1,
     LastItem = lists:last(ReturnedObjSpecL1),
 
-    io:format("Returned ~w objects with first ~w and last ~w in ~w ms~n",
-                [length(ReturnedObjSpecL1),
-                    FirstItem, LastItem,
-                    timer:now_diff(os:timestamp(), SW1)/1000]),
+    io:format(
+        "Returned ~w objects with first ~w and last ~w in ~w ms~n",
+        [length(ReturnedObjSpecL1),
+                FirstItem, LastItem,
+                timer:now_diff(os:timestamp(), SW1)/1000]),
 
     true = ReturnedObjSpecL1 == lists:sort(ObjectSpecL),
 
@@ -654,12 +675,14 @@ tuplebuckets_headonly(_Config) ->
     
     SW2 = os:timestamp(),
     {async, HeadRunner2} =
-        leveled_bookie:book_headfold(Bookie1,
-                                        ?HEAD_TAG,
-                                        {bucket_list, BucketList},
-                                        {FoldHeadFun, []},
-                                        false, false,
-                                        SegList),
+        leveled_bookie:book_headfold(
+            Bookie1,
+            ?HEAD_TAG,
+            {bucket_list, BucketList},
+            {FoldHeadFun, []},
+            false, false,
+            SegList
+        ),
     ReturnedObjSpecL2 = lists:reverse(HeadRunner2()),
 
     io:format("Returned ~w objects using seglist in ~w ms~n",
@@ -672,7 +695,6 @@ tuplebuckets_headonly(_Config) ->
     true = lists:member(LastItem, ReturnedObjSpecL2),
 
     leveled_bookie:book_destroy(Bookie1).
-
 
 
 basic_headonly(_Config) ->
@@ -694,11 +716,14 @@ basic_headonly_test(ObjectCount, RemoveCount, HeadOnly) ->
                     {head_only, HeadOnly},
                     {max_journalsize, 500000}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
-    {B1, K1, V1, S1, MD} = {"Bucket",
-                                "Key1.1.4567.4321",
-                                "Value1",
-                                [],
-                                [{"MDK1", "MDV1"}]},
+    {B1, K1, V1, S1, MD} =
+        {
+            <<"Bucket">>,
+            <<"Key1.1.4567.4321">>,
+            <<"Value1">>,
+            [],
+            [{<<"MDK1">>, <<"MDV1">>}]
+        },
     {TestObject, TestSpec} = testutil:generate_testobject(B1, K1, V1, S1, MD),
     {unsupported_message, put} = 
         testutil:book_riakput(Bookie1, TestObject, TestSpec),
@@ -818,23 +843,21 @@ basic_headonly_test(ObjectCount, RemoveCount, HeadOnly) ->
             false = is_process_alive(AltSnapshot);
         no_lookup ->
             {unsupported_message, head} = 
-                leveled_bookie:book_head(Bookie1, 
-                                            SegmentID0, 
-                                            {Bucket0, Key0}, 
-                                            h),
+                leveled_bookie:book_head(
+                    Bookie1,  SegmentID0,   {Bucket0, Key0},  h),
             {unsupported_message, head} = 
-                leveled_bookie:book_headonly(Bookie1, 
-                                                SegmentID0, 
-                                                Bucket0, 
-                                                Key0),
+                leveled_bookie:book_headonly(
+                    Bookie1, SegmentID0, Bucket0, Key0),
             io:format("Closing actual store ~w~n", [Bookie1]),
             ok = leveled_bookie:book_close(Bookie1)
     end,
     
     {ok, FinalJournals} = file:list_dir(JFP),
-    io:format("Trim has reduced journal count from " ++ 
-                    "~w to ~w and ~w after restart~n", 
-                [length(FNs), length(FinalFNs), length(FinalJournals)]),
+    io:format(
+        "Trim has reduced journal count from "
+        "~w to ~w and ~w after restart~n", 
+        [length(FNs), length(FinalFNs), length(FinalJournals)]
+    ),
 
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
 
@@ -849,16 +872,12 @@ basic_headonly_test(ObjectCount, RemoveCount, HeadOnly) ->
             % If we allow HEAD_TAG to be suubject to a lookup, then test this 
             % here
             {ok, Hash0} = 
-                leveled_bookie:book_head(Bookie2, 
-                                            SegmentID0, 
-                                            {Bucket0, Key0}, 
-                                            h);
+                leveled_bookie:book_head(
+                    Bookie2, SegmentID0, {Bucket0, Key0}, h);
         no_lookup ->
             {unsupported_message, head} = 
-                leveled_bookie:book_head(Bookie2, 
-                                            SegmentID0, 
-                                            {Bucket0, Key0}, 
-                                            h)
+                leveled_bookie:book_head(
+                    Bookie2, SegmentID0, {Bucket0, Key0}, h)
     end,
 
     RemoveSpecL0 = lists:sublist(ObjectSpecL, RemoveCount),
@@ -873,10 +892,7 @@ basic_headonly_test(ObjectCount, RemoveCount, HeadOnly) ->
     true = AccC3 == (ObjectCount - RemoveCount),
     false = AccH3 == AccH2,
 
-
     ok = leveled_bookie:book_close(Bookie2).
-
-
 
 
 load_objectspecs([], _SliceSize, _Bookie) ->

@@ -732,18 +732,21 @@ gen_indexspec(Bucket, Key, IdxOp, IdxField, IdxTerm, SQN, TTL) ->
 %% versions of the object_spec
 gen_headspec(
         {IdxOp, v1, Bucket, Key, SubKey, LMD, Value}, SQN, TTL)
-            when is_binary(Key), is_binary(SubKey) ->
+            when is_binary(Key) ->
      % v1 object spec
     Status = set_status(IdxOp, TTL),
-    K = to_ledgerkey(Bucket, {Key, SubKey}, ?HEAD_TAG),
+    K =
+        case SubKey of 
+            null ->
+                to_ledgerkey(Bucket, Key, ?HEAD_TAG);
+            SKB when is_binary(SKB) ->
+                to_ledgerkey(Bucket, {Key, SKB}, ?HEAD_TAG)
+            end,
     {K, {SQN, Status, segment_hash(K), Value, get_last_lastmodification(LMD)}};
 gen_headspec(
         {IdxOp, Bucket, Key, SubKey, Value}, SQN, TTL)
-            when is_binary(Key), is_binary(SubKey) ->
-    % v0 object spec
-    Status = set_status(IdxOp, TTL),
-    K = to_ledgerkey(Bucket, {Key, SubKey}, ?HEAD_TAG),
-    {K, {SQN, Status, segment_hash(K), Value, undefined}}.
+            when is_binary(Key) ->
+    gen_headspec({IdxOp, v1, Bucket, Key, SubKey, undefined, Value}, SQN, TTL).
 
 
 -spec return_proxy(leveled_head:object_tag()|leveled_head:headonly_tag(),
