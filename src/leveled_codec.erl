@@ -910,7 +910,7 @@ endkey_passed_test() ->
 %% Maybe 5 microseconds per hash
 
 hashperf_test() ->
-    OL = lists:map(fun(_X) -> leveled_rand:rand_bytes(8192) end, lists:seq(1, 1000)),
+    OL = lists:map(fun(_X) -> crypto:strong_rand_bytes(8192) end, lists:seq(1, 1000)),
     SW = os:timestamp(),
     _HL = lists:map(fun(Obj) -> erlang:phash2(Obj) end, OL),
     io:format(user, "1000 object hashes in ~w microseconds~n",

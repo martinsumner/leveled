@@ -589,7 +589,7 @@ get_hashaccumulator(JournalCheck, InkerClone, AddKeyFun) ->
     AccFun =
         fun(LK, V, Acc) ->
             {B, K, H} = leveled_codec:get_keyandobjhash(LK, V),
-            Check = leveled_rand:uniform() < ?CHECKJOURNAL_PROB,
+            Check = rand:uniform() < ?CHECKJOURNAL_PROB,
             case JournalCheck and Check of
                 true ->
                     case check_presence(LK, V, InkerClone) of

@@ -628,7 +628,6 @@ pcl_getclerkpid(Pid) ->
 
 init([LogOpts, PCLopts]) ->
     leveled_log:save(LogOpts),
-    leveled_rand:seed(),
     case {PCLopts#penciller_options.root_path,
             PCLopts#penciller_options.start_snapshot,
             PCLopts#penciller_options.snapshot_query,
@@ -1442,7 +1441,7 @@ maybe_cache_too_big(NewL0Size, L0MaxSize, CoinToss) ->
     RandomFactor =
         case CoinToss of
             true ->
-                case leveled_rand:uniform(?COIN_SIDECOUNT) of
+                case rand:uniform(?COIN_SIDECOUNT) of
                     1 ->
                         true;
                     _ ->
@@ -1898,8 +1897,8 @@ generate_randomkeys(0, _SQN, Acc) ->
     lists:reverse(Acc);
 generate_randomkeys(Count, SQN, Acc) ->
     K = {o,
-            lists:concat(["Bucket", leveled_rand:uniform(1024)]),
-            lists:concat(["Key", leveled_rand:uniform(1024)]),
+            lists:concat(["Bucket", rand:uniform(1024)]),
+            lists:concat(["Key", rand:uniform(1024)]),
             null},
     RandKey = {K,
                 {SQN,

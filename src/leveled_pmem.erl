@@ -260,9 +260,9 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
     BNumber =
         lists:flatten(
             io_lib:format("~4..0B",
-                            [BucketLow + leveled_rand:uniform(BRange)])),
+                            [BucketLow + rand:uniform(BRange)])),
     KNumber =
-        lists:flatten(io_lib:format("~4..0B", [leveled_rand:uniform(1000)])),
+        lists:flatten(io_lib:format("~4..0B", [rand:uniform(1000)])),
     {K, V} = {{o, "Bucket" ++ BNumber, "Key" ++ KNumber, null},
                 {Seqn, {active, infinity}, null}},
     generate_randomkeys(Seqn + 1,

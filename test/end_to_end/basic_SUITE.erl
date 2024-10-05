@@ -201,7 +201,7 @@ bigjournal_littlejournal(_Config) ->
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     ObjL1 = 
         testutil:generate_objects(100, 1, [], 
-                                    leveled_rand:rand_bytes(10000), 
+                                    crypto:strong_rand_bytes(10000), 
                                     fun() -> [] end, <<"B">>),
     testutil:riakload(Bookie1, ObjL1),
     ok = leveled_bookie:book_close(Bookie1),
@@ -209,7 +209,7 @@ bigjournal_littlejournal(_Config) ->
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
     ObjL2 = 
         testutil:generate_objects(10, 1000, [], 
-                                    leveled_rand:rand_bytes(10000), 
+                                    crypto:strong_rand_bytes(10000), 
                                     fun() -> [] end, <<"B">>),
     testutil:riakload(Bookie2, ObjL2),
     testutil:check_forlist(Bookie2, ObjL1),
@@ -234,7 +234,7 @@ bigsst_littlesst(_Config) ->
                 100000,
                 1,
                 [],
-                leveled_rand:rand_bytes(100),
+                crypto:strong_rand_bytes(100),
                 fun() -> [] end,
                 <<"B">>)
         ),
@@ -1261,7 +1261,7 @@ bigpcl_bucketlist(_Config) ->
         fun(B) ->
             testutil:generate_objects(
                 ObjectCount, 1, [], 
-                    leveled_rand:rand_bytes(100), 
+                    crypto:strong_rand_bytes(100), 
                 fun() -> [] end, 
                 B
             )

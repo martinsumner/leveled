@@ -504,7 +504,6 @@ ink_getclerkpid(Pid) ->
 
 init([LogOpts, InkerOpts]) ->
     leveled_log:save(LogOpts),
-    leveled_rand:seed(),
     case {InkerOpts#inker_options.root_path,
             InkerOpts#inker_options.start_snapshot} of
         {undefined, true} ->
@@ -1525,7 +1524,7 @@ compact_journal_testto(WRP, ExpectedFiles) ->
                             PK = "KeyZ" ++ integer_to_list(X),
                             {ok, SQN, _} = ink_put(Ink1,
                                                     test_ledgerkey(PK),
-                                                    leveled_rand:rand_bytes(10000),
+                                                    crypto:strong_rand_bytes(10000),
                                                     {[], infinity},
                                                     false),
                             {SQN, test_ledgerkey(PK)}

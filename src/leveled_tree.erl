@@ -580,13 +580,13 @@ generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
 generate_randomkeys(_Seqn, 0, Acc, _BucketLow, _BucketHigh) ->
     Acc;
 generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
-    BRand = leveled_rand:uniform(BRange),
+    BRand = rand:uniform(BRange),
     BNumber =
         lists:flatten(
             io_lib:format("K~4..0B", [BucketLow + BRand])),
     KNumber =
         lists:flatten(
-            io_lib:format("K~8..0B", [leveled_rand:uniform(1000)])),
+            io_lib:format("K~8..0B", [rand:uniform(1000)])),
     {K, V} =
         {{o_kv,
             {<<"btype">>, list_to_binary("Bucket" ++ BNumber)},
@@ -608,7 +608,7 @@ generate_simplekeys(Seqn, Count, Acc) ->
     KNumber =
         list_to_binary(
             lists:flatten(
-                io_lib:format("K~8..0B", [leveled_rand:uniform(100000)]))),
+                io_lib:format("K~8..0B", [rand:uniform(100000)]))),
     generate_simplekeys(Seqn + 1, Count - 1, [{KNumber, Seqn}|Acc]).
 
 

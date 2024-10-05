@@ -204,7 +204,7 @@ log_remove(Pid, ForcedLogs) ->
 
 -spec maybe_time(monitor()) -> erlang:timestamp()|no_timing.
 maybe_time({_Pid, TimingProbability}) ->
-    case leveled_rand:uniform(100) of
+    case rand:uniform(100) of
         N when N =< TimingProbability ->
             os:timestamp();
         _ ->
@@ -230,16 +230,15 @@ get_defaults() ->
 
 init([LogOpts, LogFrequency, LogOrder]) ->
     leveled_log:save(LogOpts),
-    leveled_rand:seed(),
     RandomLogOrder = 
         lists:map(
             fun({_R, SL}) -> SL end,
             lists:keysort(
                 1,
                 lists:map(
-                    fun(L) -> {leveled_rand:uniform(), L} end,
+                    fun(L) -> {rand:uniform(), L} end,
                     LogOrder))),
-    InitialJitter = leveled_rand:uniform(2 * 1000 * LogFrequency),
+    InitialJitter = rand:uniform(2 * 1000 * LogFrequency),
     erlang:send_after(InitialJitter, self(), report_next_stats),
     {ok, #state{log_frequency = LogFrequency, log_order = RandomLogOrder}}.
 

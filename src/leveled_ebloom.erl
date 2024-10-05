@@ -174,9 +174,9 @@ generate_orderedkeys(Seqn, Count, Acc, BucketLow, BucketHigh) ->
     BucketExt =
         io_lib:format("K~4..0B", [BucketLow + BNumber]),
     KeyExt =
-        io_lib:format("K~8..0B", [Seqn * 100 + leveled_rand:uniform(100)]),
+        io_lib:format("K~8..0B", [Seqn * 100 + rand:uniform(100)]),
     LK = leveled_codec:to_ledgerkey("Bucket" ++ BucketExt, "Key" ++ KeyExt, o),
-    Chunk = leveled_rand:rand_bytes(16),
+    Chunk = crypto:strong_rand_bytes(16),
     {_B, _K, MV, _H, _LMs} =
         leveled_codec:generate_ledgerkv(LK, Seqn, Chunk, 64, infinity),
     generate_orderedkeys(
@@ -236,7 +236,7 @@ test_bloom(N, Runs) ->
         fun(HashList) -> 
             HitOrMissFun = 
                 fun (Entry, {HitL, MissL}) ->
-                    case leveled_rand:uniform() < 0.5 of
+                    case rand:uniform() < 0.5 of
                         true -> 
                             {[Entry|HitL], MissL};
                         false ->

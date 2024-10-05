@@ -514,12 +514,12 @@ merge_lookup(Manifest, LevelIdx, StartKey, EndKey) ->
 %% Hence, the initial implementation is to select files to merge at random
 mergefile_selector(Manifest, LevelIdx, _Strategy) when LevelIdx =< 1 ->
     Level = array:get(LevelIdx, Manifest#manifest.levels),
-    lists:nth(leveled_rand:uniform(length(Level)), Level);
+    lists:nth(rand:uniform(length(Level)), Level);
 mergefile_selector(Manifest, LevelIdx, random) ->
     Level =
         leveled_tree:to_list(
             array:get(LevelIdx, Manifest#manifest.levels)),
-    {_SK, ME} = lists:nth(leveled_rand:uniform(length(Level)), Level),
+    {_SK, ME} = lists:nth(rand:uniform(length(Level)), Level),
     ME;
 mergefile_selector(Manifest, LevelIdx, {grooming, ScoringFun}) ->
     Level =
@@ -527,7 +527,7 @@ mergefile_selector(Manifest, LevelIdx, {grooming, ScoringFun}) ->
             array:get(LevelIdx, Manifest#manifest.levels)),
     SelectorFun =
         fun(_I, Acc) ->
-            {_SK, ME} = lists:nth(leveled_rand:uniform(length(Level)), Level),
+            {_SK, ME} = lists:nth(rand:uniform(length(Level)), Level),
             [ME|Acc]
         end,
     Sample =
@@ -1275,7 +1275,7 @@ ext_keylookup_manifest_test() ->
     {ok, BytesCopied} = file:copy(Man7FN, Man7FNAlt),
     {ok, Bin} = file:read_file(Man7FN),
     ?assertMatch(BytesCopied, byte_size(Bin)),
-    RandPos = leveled_rand:uniform(bit_size(Bin) - 1),
+    RandPos = rand:uniform(bit_size(Bin) - 1),
     <<Pre:RandPos/bitstring, BitToFlip:1/integer, Rest/bitstring>> = Bin,
     Flipped = BitToFlip bxor 1,
     ok  = file:write_file(Man7FN,

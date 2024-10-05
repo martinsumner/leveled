@@ -947,7 +947,7 @@ delete_pending(timeout, _, State) ->
     end,
     % If the next thing is another timeout - may be long-running snapshot, so
     % back-off
-    {keep_state_and_data, [leveled_rand:uniform(10) * ?DELETE_TIMEOUT]}.
+    {keep_state_and_data, [rand:uniform(10) * ?DELETE_TIMEOUT]}.
 
 handle_update_blockindex_cache(
         BIC,
@@ -3379,18 +3379,18 @@ generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
 generate_randomkeys(_Seqn, 0, Acc, _BucketLow, _BucketHigh) ->
     Acc;
 generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
-    BRand = leveled_rand:uniform(BRange),
+    BRand = rand:uniform(BRange),
     BNumber =
         lists:flatten(io_lib:format("B~6..0B", [BucketLow + BRand])),
     KNumber =
-        lists:flatten(io_lib:format("K~8..0B", [leveled_rand:uniform(1000000)])),
+        lists:flatten(io_lib:format("K~8..0B", [rand:uniform(1000000)])),
     LK =
         leveled_codec:to_ledgerkey(
             list_to_binary("Bucket" ++ BNumber),
             list_to_binary("Key" ++ KNumber),
             o
         ),
-    Chunk = leveled_rand:rand_bytes(64),
+    Chunk = crypto:strong_rand_bytes(64),
     MV = convert_to_ledgerv(LK, Seqn, Chunk, 64, infinity),
     MD = element(4, MV),
     MD =/= null orelse error(bad_type),
@@ -3420,7 +3420,7 @@ generate_indexkeys(Count) ->
 generate_indexkeys(0, IndexList) ->
     IndexList;
 generate_indexkeys(Count, IndexList) ->
-    Changes = generate_indexkey(leveled_rand:uniform(8000), Count),
+    Changes = generate_indexkey(rand:uniform(8000), Count),
     generate_indexkeys(Count - 1, IndexList ++ Changes).
 
 generate_indexkey(Term, Count) ->
@@ -3492,7 +3492,7 @@ tombcount_tester(Level) ->
     KL2 = generate_indexkeys(N div 2),
     FlipToTombFun =
         fun({K, V}) ->
-            case leveled_rand:uniform(10) of
+            case rand:uniform(10) of
                 X when X > 5 ->
                     {K, setelement(2, V, tomb)};
                 _ ->
@@ -3830,7 +3830,7 @@ indexed_list_mixedkeys_bitflip_test() ->
 
 
 flip_byte(Binary, Offset, Length) ->
-    Byte1 = leveled_rand:uniform(Length) + Offset - 1,
+    Byte1 = rand:uniform(Length) + Offset - 1,
     <<PreB1:Byte1/binary, A:8/integer, PostByte1/binary>> = Binary,
     case A of
         0 ->
@@ -4588,8 +4588,8 @@ corrupted_block_rangetester(PressMethod, TestCount) ->
     KVL1 = lists:ukeysort(1, generate_randomkeys(1, N, 1, 2)),
     RandomRangesFun =
         fun(_X) ->
-            SKint = leveled_rand:uniform(90) + 1,
-            EKint = min(N, leveled_rand:uniform(N - SKint)),
+            SKint = rand:uniform(90) + 1,
+            EKint = min(N, rand:uniform(N - SKint)),
             SK = element(1, lists:nth(SKint, KVL1)),
             EK = element(1, lists:nth(EKint, KVL1)),
             {SK, EK}
@@ -4602,7 +4602,7 @@ corrupted_block_rangetester(PressMethod, TestCount) ->
     B5 = serialise_block(lists:sublist(KVL1, 81, 20), PressMethod),
     CorruptBlockFun =
         fun(Block) ->
-            case leveled_rand:uniform(10) < 2 of
+            case rand:uniform(10) < 2 of
                 true ->
                     flip_byte(Block, 0 , byte_size(Block));
                 false ->
@@ -4656,7 +4656,7 @@ corrupted_block_fetch_tester(PressMethod) ->
 
     CheckFun =
         fun(N, {AccHit, AccMiss}) ->
-            PosL = [min(0, leveled_rand:uniform(N - 2)), N - 1],
+            PosL = [min(0, rand:uniform(N - 2)), N - 1],
             {LK, LV} = lists:nth(N, KVL1),
             {BlockLengths, 0, PosBinIndex} =
                 extract_header(Header, false),
@@ -5274,7 +5274,7 @@ single_key_test() ->
     FileName = "single_key_test",
     Field = <<"t1_bin">>,
     LK = leveled_codec:to_ledgerkey(<<"Bucket0">>, <<"Key0">>, ?STD_TAG),
-    Chunk = leveled_rand:rand_bytes(16),
+    Chunk = crypto:strong_rand_bytes(16),
     MV = convert_to_ledgerv(LK, 1, Chunk, 16, infinity),
     OptsSST =
         #sst_options{press_method=native,
@@ -5423,7 +5423,7 @@ start_sst_fun(ProcessToInform) ->
 blocks_required_test() ->
     B = <<"Bucket">>,
     Idx = <<"idx_bin">>,
-    Chunk = leveled_rand:rand_bytes(32),
+    Chunk = crypto:strong_rand_bytes(32),
     KeyFun =
         fun(I) ->
             list_to_binary(io_lib:format("B~6..0B", [I]))

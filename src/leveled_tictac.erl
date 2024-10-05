@@ -964,7 +964,7 @@ timing_test() ->
 timing_tester(KeyCount, SegCount, SmallSize, LargeSize) ->
     SegList =
         lists:map(fun(_C) -> 
-                        leveled_rand:uniform(get_size(SmallSize) * ?L2_CHUNKSIZE - 1)
+                        rand:uniform(get_size(SmallSize) * ?L2_CHUNKSIZE - 1)
                     end, 
                     lists:seq(1, SegCount)),
     KeyToSegFun =

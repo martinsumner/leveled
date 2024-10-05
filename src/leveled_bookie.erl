@@ -1153,7 +1153,6 @@ book_headstatus(Pid) ->
 
 -spec init([open_options()]) -> {ok, book_state()}.
 init([Opts]) ->
-    leveled_rand:seed(),
     case {proplists:get_value(snapshot_bookie, Opts), 
             proplists:get_value(root_path, Opts)} of
         {undefined, undefined} ->
@@ -2303,7 +2302,7 @@ journal_notfound(CheckFrequency, Inker, LK, SQN) ->
                                                     {boolean(), integer()}.
 %% @doc Use a function to check if an item is found
 check_notfound(CheckFrequency, CheckFun) ->
-    case leveled_rand:uniform(?MAX_KEYCHECK_FREQUENCY) of 
+    case rand:uniform(?MAX_KEYCHECK_FREQUENCY) of 
         X when X =< CheckFrequency ->
             case CheckFun() of
                 probably ->
@@ -2493,7 +2492,7 @@ maybepush_ledgercache(MaxCacheSize, MaxCacheMult, Cache, Penciller) ->
 %% a push should be
 maybe_withjitter(
     CacheSize, MaxCacheSize, MaxCacheMult) when CacheSize > MaxCacheSize ->
-    R = leveled_rand:uniform(MaxCacheMult * MaxCacheSize),
+    R = rand:uniform(MaxCacheMult * MaxCacheSize),
     (CacheSize - MaxCacheSize) > R;
 maybe_withjitter(_CacheSize, _MaxCacheSize, _MaxCacheMult) ->
     false.
@@ -2618,7 +2617,7 @@ generate_multiple_objects(0, _KeyNumber, ObjL) ->
     ObjL;
 generate_multiple_objects(Count, KeyNumber, ObjL) ->
     Key = "Key" ++ integer_to_list(KeyNumber),
-    Value = leveled_rand:rand_bytes(256),
+    Value = crypto:strong_rand_bytes(256),
     IndexSpec = [{add, "idx1_bin", "f" ++ integer_to_list(KeyNumber rem 10)}],
     generate_multiple_objects(Count - 1,
                                 KeyNumber + 1,

@@ -207,7 +207,7 @@ merge(SrcLevel, Manifest, RootPath, OptsSST) ->
                 [SrcLevel + 1, FCnt, MnHBS, MnHS, MnLHS, MnBVHS])
     end,
     SelectMethod =
-        case leveled_rand:uniform(100) of
+        case rand:uniform(100) of
             R when R =< ?GROOMING_PERC ->
                 {grooming, fun grooming_scorer/1};
             _ ->
@@ -385,10 +385,10 @@ generate_randomkeys(Count, Acc, BucketLow, BRange) ->
     BNumber =
         lists:flatten(
             io_lib:format("~4..0B",
-                            [BucketLow + leveled_rand:uniform(BRange)])),
+                            [BucketLow + rand:uniform(BRange)])),
     KNumber =
         lists:flatten(
-            io_lib:format("~4..0B", [leveled_rand:uniform(1000)])),
+            io_lib:format("~4..0B", [rand:uniform(1000)])),
     K =
         {
             o,
