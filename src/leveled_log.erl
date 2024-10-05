@@ -377,7 +377,7 @@ get_opts() ->
             }
     end.
 
--spec return_settings() -> {log_level(), list(string())}.
+-spec return_settings() -> {log_level(), list(atom())}.
 %% @doc
 %% Return the settings outside of the record
 return_settings() ->

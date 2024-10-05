@@ -10,6 +10,12 @@
 
 -include("leveled.hrl").
 
+-eqwalizer({nowarn_function, convert_to_ledgerv/5}).
+
+-ifdef(TEST).
+-export([convert_to_ledgerv/5]).
+-endif.
+
 -export([
         inker_reload_strategy/1,
         strip_to_seqonly/1,
@@ -872,6 +878,17 @@ next_key({Type, Bucket}) when is_binary(Type), is_binary(Bucket) ->
 -ifdef(TEST).
 
 -include_lib("eunit/include/eunit.hrl").
+
+-spec convert_to_ledgerv(
+    leveled_codec:ledger_key(),
+    integer(), 
+    any(),
+    integer(),
+    non_neg_integer()|infinity) -> leveled_codec:ledger_value().
+convert_to_ledgerv(PK, SQN, Obj, Size, TS) ->
+    {_B, _K, MV, _H, _LMs} =
+        leveled_codec:generate_ledgerkv(PK, SQN, Obj, Size, TS),
+    MV.
 
 valid_ledgerkey_test() ->
     UserDefTag = {user_defined, <<"B">>, <<"K">>, null},

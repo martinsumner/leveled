@@ -65,7 +65,6 @@
 
 % Test functions to ignore for equalizer
 -eqwalizer({nowarn_function, fetch_status_test/0}).
--eqwalizer({nowarn_function, convert_to_ledgerv/5}).
 
 -define(LOOK_SLOTSIZE, 128). % Maximum of 128
 -define(LOOK_BLOCKSIZE, {24, 32}). % 4x + y = ?LOOK_SLOTSIZE
@@ -3391,7 +3390,7 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
             o
         ),
     Chunk = crypto:strong_rand_bytes(64),
-    MV = convert_to_ledgerv(LK, Seqn, Chunk, 64, infinity),
+    MV = leveled_codec:convert_to_ledgerv(LK, Seqn, Chunk, 64, infinity),
     MD = element(4, MV),
     MD =/= null orelse error(bad_type),
     ?assertMatch(undefined, element(3, MD)),
@@ -3402,17 +3401,6 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
                         [{LK, MV0}|Acc],
                         BucketLow,
                         BRange).
-
--spec convert_to_ledgerv(
-    leveled_codec:ledger_key(),
-    integer(), 
-    any(),
-    integer(),
-    non_neg_integer()|infinity) -> leveled_codec:ledger_value().
-convert_to_ledgerv(PK, SQN, Obj, Size, TS) ->
-    {_B, _K, MV, _H, _LMs} =
-        leveled_codec:generate_ledgerkv(PK, SQN, Obj, Size, TS),
-    MV.
 
 generate_indexkeys(Count) ->
     generate_indexkeys(Count, []).
@@ -5275,7 +5263,7 @@ single_key_test() ->
     Field = <<"t1_bin">>,
     LK = leveled_codec:to_ledgerkey(<<"Bucket0">>, <<"Key0">>, ?STD_TAG),
     Chunk = crypto:strong_rand_bytes(16),
-    MV = convert_to_ledgerv(LK, 1, Chunk, 16, infinity),
+    MV = leveled_codec:convert_to_ledgerv(LK, 1, Chunk, 16, infinity),
     OptsSST =
         #sst_options{press_method=native,
                         log_options=leveled_log:get_opts()},

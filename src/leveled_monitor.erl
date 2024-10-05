@@ -173,8 +173,10 @@
 
 -spec monitor_start(pos_integer(), list(log_type())) -> {ok, pid()}.
 monitor_start(LogFreq, LogOrder) ->
-    gen_server:start_link(
-        ?MODULE, [leveled_log:get_opts(), LogFreq, LogOrder], []).
+    {ok, Monitor} =
+        gen_server:start_link(
+            ?MODULE, [leveled_log:get_opts(), LogFreq, LogOrder], []),
+    {ok, Monitor}.
 
 -spec add_stat(pid(), statistic()) -> ok.
 add_stat(Watcher, Statistic) ->

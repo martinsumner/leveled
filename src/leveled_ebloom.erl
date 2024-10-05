@@ -91,8 +91,8 @@ check_hash({_SegHash, Hash}, BloomBin) when is_binary(BloomBin)->
         list(leveled_codec:segment_hash()), tuple(), slot_count()) -> tuple().
 map_hashes([], HashListTuple,  _SlotCount) ->
     HashListTuple;
-map_hashes([Hash|Rest], HashListTuple, SlotCount) ->
-    {Slot, [H0, H1]} = split_hash(element(2, Hash), SlotCount),
+map_hashes([{_SH, EH}|Rest], HashListTuple, SlotCount) ->
+    {Slot, [H0, H1]} = split_hash(EH, SlotCount),
     SlotHL = element(Slot + 1, HashListTuple),
     map_hashes(
         Rest,
@@ -175,10 +175,14 @@ generate_orderedkeys(Seqn, Count, Acc, BucketLow, BucketHigh) ->
         io_lib:format("K~4..0B", [BucketLow + BNumber]),
     KeyExt =
         io_lib:format("K~8..0B", [Seqn * 100 + rand:uniform(100)]),
-    LK = leveled_codec:to_ledgerkey("Bucket" ++ BucketExt, "Key" ++ KeyExt, o),
+    LK =
+        leveled_codec:to_ledgerkey(
+            list_to_binary("Bucket" ++ BucketExt),
+            list_to_binary("Key" ++ KeyExt),
+            o
+        ),
     Chunk = crypto:strong_rand_bytes(16),
-    {_B, _K, MV, _H, _LMs} =
-        leveled_codec:generate_ledgerkv(LK, Seqn, Chunk, 64, infinity),
+    MV = leveled_codec:convert_to_ledgerv(LK, Seqn, Chunk, 64, infinity),
     generate_orderedkeys(
         Seqn + 1, Count - 1, [{LK, MV}|Acc], BucketLow, BucketHigh).
 
