@@ -142,7 +142,7 @@
 -type microsecs() :: pos_integer().
 -type byte_size() :: pos_integer().
 -type monitor() :: {no_monitor, 0}|{pid(), 0..100}.
--type timing() :: no_timing|pos_integer().
+-type timing() :: no_timing|microsecs().
 
 
 -type bookie_get_update() ::
