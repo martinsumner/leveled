@@ -789,14 +789,14 @@ set_status(remove, _TTL) ->
 -spec generate_ledgerkv(
         primary_key(),
         integer(), 
-        any(),
+        binary(),
         integer(),
         non_neg_integer()|infinity) ->
             {
                 key(),
                 single_key(),
                 ledger_value_v2(),
-                {segment_hash(), non_neg_integer()},
+                {segment_hash(), non_neg_integer()|null},
                 list(erlang:timestamp())
             }.
 %% @doc

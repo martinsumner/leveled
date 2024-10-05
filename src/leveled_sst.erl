@@ -5434,7 +5434,7 @@ blocks_required_test() ->
             element(
                 3,
                 leveled_codec:generate_ledgerkv(
-                    IdxKey(I), I, null, 0, infinity))
+                    IdxKey(I), I, <<>>, 0, infinity))
         end,
     Block1L =
         lists:map(fun(I) -> {IdxKey(I), IdxValue(I)} end, lists:seq(1, 16)),
