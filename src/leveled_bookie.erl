@@ -2602,13 +2602,11 @@ maybelog_snap_timing({Pid, _StatsFreq}, BookieTime, PCLTime) ->
 book_returnactors(Pid) ->
     gen_server:call(Pid, return_actors).
 
-
 reset_filestructure() ->
     RootPath  = "test/test_area",
     leveled_inker:clean_testdir(RootPath ++ "/" ++ ?JOURNAL_FP),
     leveled_penciller:clean_testdir(RootPath ++ "/" ++ ?LEDGER_FP),
     RootPath.
-
 
 generate_multiple_objects(Count, KeyNumber) ->
     generate_multiple_objects(Count, KeyNumber, []).
@@ -2616,13 +2614,20 @@ generate_multiple_objects(Count, KeyNumber) ->
 generate_multiple_objects(0, _KeyNumber, ObjL) ->
     ObjL;
 generate_multiple_objects(Count, KeyNumber, ObjL) ->
-    Key = "Key" ++ integer_to_list(KeyNumber),
+    Key = list_to_binary("Key" ++ integer_to_list(KeyNumber)),
     Value = crypto:strong_rand_bytes(256),
-    IndexSpec = [{add, "idx1_bin", "f" ++ integer_to_list(KeyNumber rem 10)}],
-    generate_multiple_objects(Count - 1,
-                                KeyNumber + 1,
-                                ObjL ++ [{Key, Value, IndexSpec}]).
-
+    IndexSpec =
+        [
+            {
+                add, <<"idx1_bin">>,
+                list_to_binary("f" ++ integer_to_list(KeyNumber rem 10))
+            }
+        ],
+    generate_multiple_objects(
+        Count - 1,
+        KeyNumber + 1,
+        ObjL ++ [{Key, Value, IndexSpec}]
+    ).
 
 shutdown_test_() ->
     {timeout, 10, fun shutdown_tester/0}.
@@ -2661,83 +2666,105 @@ ttl_test() ->
     ObjL1 = generate_multiple_objects(100, 1),
     % Put in all the objects with a TTL in the future
     Future = leveled_util:integer_now() + 300,
-    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
-                                                        "Bucket", K, V, S,
-                                                        ?STD_TAG,
-                                                        Future) end,
-                    ObjL1),
-    lists:foreach(fun({K, V, _S}) ->
-                        {ok, V} = book_get(Bookie1, "Bucket", K, ?STD_TAG)
-                        end,
-                    ObjL1),
-    lists:foreach(fun({K, _V, _S}) ->
-                        {ok, _} = book_head(Bookie1, "Bucket", K, ?STD_TAG)
-                        end,
-                    ObjL1),
+    lists:foreach(
+        fun({K, V, S}) ->
+            ok =
+                book_tempput(Bookie1, <<"Bucket">>, K, V, S, ?STD_TAG, Future)
+        end,
+        ObjL1
+    ),
+    lists:foreach(
+        fun({K, V, _S}) ->
+            {ok, V} = book_get(Bookie1, <<"Bucket">>, K, ?STD_TAG)
+        end,
+        ObjL1
+    ),
+    lists:foreach(
+        fun({K, _V, _S}) ->
+            {ok, _} = book_head(Bookie1, <<"Bucket">>, K, ?STD_TAG)
+        end,
+        ObjL1
+    ),
 
     ObjL2 = generate_multiple_objects(100, 101),
     Past = leveled_util:integer_now() - 300,
-    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
-                                                        "Bucket", K, V, S,
-                                                        ?STD_TAG,
-                                                        Past) end,
-                    ObjL2),
-    lists:foreach(fun({K, _V, _S}) ->
-                        not_found = book_get(Bookie1, "Bucket", K, ?STD_TAG)
-                        end,
-                    ObjL2),
-    lists:foreach(fun({K, _V, _S}) ->
-                        not_found = book_head(Bookie1, "Bucket", K, ?STD_TAG)
-                        end,
+    lists:foreach(
+        fun({K, V, S}) ->
+            ok = book_tempput(Bookie1, <<"Bucket">>, K, V, S, ?STD_TAG, Past)
+        end,
+        ObjL2),
+    lists:foreach(
+        fun({K, _V, _S}) ->
+            not_found = book_get(Bookie1, <<"Bucket">>, K, ?STD_TAG)
+        end,
+        ObjL2),
+    lists:foreach(
+        fun({K, _V, _S}) ->
+            not_found = book_head(Bookie1, <<"Bucket">>, K, ?STD_TAG)
+        end,
                     ObjL2),
 
-    {async, BucketFolder} = book_returnfolder(Bookie1,
-                                                {bucket_stats, "Bucket"}),
+    {async, BucketFolder} =
+        book_returnfolder(Bookie1, {bucket_stats, <<"Bucket">>}),
     {_Size, Count} = BucketFolder(),
     ?assertMatch(100, Count),
     FoldKeysFun = fun(_B, Item, FKFAcc) -> FKFAcc ++ [Item] end,
-    {async,
-        IndexFolder} = book_returnfolder(Bookie1,
-                                            {index_query,
-                                            "Bucket",
-                                            {FoldKeysFun, []},
-                                            {"idx1_bin", "f8", "f9"},
-                                            {false, undefined}}),
+    {async, IndexFolder} =
+        book_returnfolder(
+            Bookie1,
+            {
+                index_query,
+                <<"Bucket">>,
+                {FoldKeysFun, []},
+                {<<"idx1_bin">>, <<"f8">>, <<"f9">>},
+                {false, undefined}
+            }
+        ),
     KeyList = IndexFolder(),
     ?assertMatch(20, length(KeyList)),
 
     {ok, Regex} = re:compile("f8"),
-    {async,
-        IndexFolderTR} = book_returnfolder(Bookie1,
-                                            {index_query,
-                                            "Bucket",
-                                            {FoldKeysFun, []},
-                                            {"idx1_bin", "f8", "f9"},
-                                            {true, Regex}}),
+    {async, IndexFolderTR} =
+        book_returnfolder(
+            Bookie1,
+            {
+                index_query,
+                <<"Bucket">>,
+                {FoldKeysFun, []},
+                {<<"idx1_bin">>, <<"f8">>, <<"f9">>},
+                {true, Regex}}
+            ),
     TermKeyList = IndexFolderTR(),
     ?assertMatch(10, length(TermKeyList)),
 
     ok = book_close(Bookie1),
     {ok, Bookie2} = book_start([{root_path, RootPath}]),
 
-    {async,
-        IndexFolderTR2} = book_returnfolder(Bookie2,
-                                            {index_query,
-                                            "Bucket",
-                                            {FoldKeysFun, []},
-                                            {"idx1_bin", "f7", "f9"},
-                                            {false, Regex}}),
+    {async, IndexFolderTR2} =
+    book_returnfolder(
+        Bookie2,
+        {
+            index_query,
+            <<"Bucket">>,
+            {FoldKeysFun, []},
+            {<<"idx1_bin">>, <<"f7">>, <<"f9">>},
+            {false, Regex}}
+        ),
     KeyList2 = IndexFolderTR2(),
     ?assertMatch(10, length(KeyList2)),
 
-    lists:foreach(fun({K, _V, _S}) ->
-                        not_found = book_get(Bookie2, "Bucket", K, ?STD_TAG)
-                        end,
-                    ObjL2),
-    lists:foreach(fun({K, _V, _S}) ->
-                        not_found = book_head(Bookie2, "Bucket", K, ?STD_TAG)
-                        end,
-                    ObjL2),
+    lists:foreach(
+        fun({K, _V, _S}) ->
+            not_found = book_get(Bookie2, <<"Bucket">>, K, ?STD_TAG)
+        end,
+        ObjL2
+    ),
+    lists:foreach(
+        fun({K, _V, _S}) ->
+            not_found = book_head(Bookie2, <<"Bucket">>, K, ?STD_TAG)
+        end,
+        ObjL2
+    ),
 
     ok = book_close(Bookie2),
     reset_filestructure().
@@ -2747,45 +2774,55 @@ hashlist_query_test_() ->
 
 hashlist_query_testto() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                {max_journalsize, 1000000},
-                                {cache_size, 500}]),
+    {ok, Bookie1} =
+        book_start(
+            [
+                {root_path, RootPath},
+                {max_journalsize, 1000000},
+                {cache_size, 500}
+            ]
+        ),
     ObjL1 = generate_multiple_objects(1200, 1),
     % Put in all the objects with a TTL in the future
     Future = leveled_util:integer_now() + 300,
-    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
-                                                        "Bucket", K, V, S,
-                                                        ?STD_TAG,
-                                                        Future) end,
-                    ObjL1),
+    lists:foreach(
+        fun({K, V, S}) -> 
+            ok = book_tempput(Bookie1, <<"Bucket">>, K, V, S, ?STD_TAG, Future)
+        end,
+        ObjL1
+    ),
     ObjL2 = generate_multiple_objects(20, 1201),
     % Put in a few objects with a TTL in the past
     Past = leveled_util:integer_now() - 300,
-    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
-                                                        "Bucket", K, V, S,
-                                                        ?STD_TAG,
-                                                        Past) end,
-                    ObjL2),
+    lists:foreach(
+        fun({K, V, S}) ->
+            ok = book_tempput(Bookie1, <<"Bucket">>, K, V, S, ?STD_TAG, Past)
+        end,
+        ObjL2
+    ),
     % Scan the store for the Bucket, Keys and Hashes
-    {async, HTFolder} = book_returnfolder(Bookie1,
-                                                {hashlist_query,
-                                                    ?STD_TAG,
-                                                    false}),
+    {async, HTFolder} =
+        book_returnfolder(Bookie1, {hashlist_query, ?STD_TAG, false}),
     KeyHashList = HTFolder(),
-    lists:foreach(fun({B, _K, H}) ->
-                        ?assertMatch("Bucket", B),
-                        ?assertMatch(true, is_integer(H))
-                        end,
-                    KeyHashList),
+    lists:foreach(
+        fun({B, _K, H}) ->
+            ?assertMatch(<<"Bucket">>, B),
+            ?assertMatch(true, is_integer(H))
+        end,
+        KeyHashList)
+        ,
     ?assertMatch(1200, length(KeyHashList)),
     ok = book_close(Bookie1),
-    {ok, Bookie2} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 200000},
-                                    {cache_size, 500}]),
-    {async, HTFolder2} = book_returnfolder(Bookie2,
-                                                {hashlist_query,
-                                                    ?STD_TAG,
-                                                    false}),
+    {ok, Bookie2} =
+        book_start(
+            [
+                {root_path, RootPath},
+                {max_journalsize, 200000},
+                {cache_size, 500}
+            ]
+        ),
+    {async, HTFolder2} =
+        book_returnfolder(Bookie2, {hashlist_query, ?STD_TAG, false}),
     L0 = length(KeyHashList),
     HTR2 =  HTFolder2(),
     ?assertMatch(L0, length(HTR2)),
@@ -2799,26 +2836,28 @@ hashlist_query_withjournalcheck_test_() ->
 
 hashlist_query_withjournalcheck_testto() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, 500}]),
+    {ok, Bookie1} =
+        book_start(
+            [
+                {root_path, RootPath},
+                {max_journalsize, 1000000},
+                {cache_size, 500}
+            ]
+        ),
     ObjL1 = generate_multiple_objects(800, 1),
     % Put in all the objects with a TTL in the future
     Future = leveled_util:integer_now() + 300,
-    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
-                                                        "Bucket", K, V, S,
-                                                        ?STD_TAG,
-                                                        Future) end,
-                    ObjL1),
-    {async, HTFolder1} = book_returnfolder(Bookie1,
-                                                {hashlist_query,
-                                                    ?STD_TAG,
-                                                    false}),
+    lists:foreach(
+        fun({K, V, S}) ->
+            ok = book_tempput(Bookie1, <<"Bucket">>, K, V, S, ?STD_TAG, Future)
+        end,
+        ObjL1
+    ),
+    {async, HTFolder1} =
+        book_returnfolder(Bookie1, {hashlist_query, ?STD_TAG, false}),
     KeyHashList = HTFolder1(),
-    {async, HTFolder2} = book_returnfolder(Bookie1,
-                                                {hashlist_query,
-                                                    ?STD_TAG,
-                                                    true}),
+    {async, HTFolder2} =
+        book_returnfolder(Bookie1, {hashlist_query, ?STD_TAG, true}),
     ?assertMatch(KeyHashList, HTFolder2()),
     ok = book_close(Bookie1),
     reset_filestructure().
@@ -2828,68 +2867,89 @@ foldobjects_vs_hashtree_test_() ->
 
 foldobjects_vs_hashtree_testto() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, 500}]),
+    {ok, Bookie1} =
+        book_start(
+            [{
+                root_path, RootPath},
+                {max_journalsize, 1000000},
+                {cache_size, 500}
+            ]),
     ObjL1 = generate_multiple_objects(800, 1),
     % Put in all the objects with a TTL in the future
     Future = leveled_util:integer_now() + 300,
-    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
-                                                        "Bucket", K, V, S,
-                                                        ?STD_TAG,
-                                                        Future) end,
-                    ObjL1),
-    {async, HTFolder1} = book_returnfolder(Bookie1,
-                                                {hashlist_query,
-                                                    ?STD_TAG,
-                                                    false}),
+    lists:foreach(
+        fun({K, V, S}) -> ok =
+            book_tempput(Bookie1, <<"Bucket">>, K, V, S, ?STD_TAG, Future)
+        end,
+        ObjL1
+    ),
+    {async, HTFolder1} =
+        book_returnfolder(Bookie1, {hashlist_query, ?STD_TAG, false}),
     KeyHashList1 = lists:usort(HTFolder1()),
 
-    FoldObjectsFun = fun(B, K, V, Acc) ->
-                            [{B, K, erlang:phash2(term_to_binary(V))}|Acc] end,
-    {async, HTFolder2} = book_returnfolder(Bookie1,
-                                            {foldobjects_allkeys, 
-                                                ?STD_TAG, 
-                                                FoldObjectsFun, 
-                                                true}),
+    FoldObjectsFun =
+        fun(B, K, V, Acc) ->
+            [{B, K, erlang:phash2(term_to_binary(V))}|Acc]
+        end,
+    {async, HTFolder2} =
+        book_returnfolder(
+            Bookie1,
+            {
+                foldobjects_allkeys, 
+                ?STD_TAG, 
+                FoldObjectsFun, 
+                true
+            }
+        ),
     KeyHashList2 = HTFolder2(),
     ?assertMatch(KeyHashList1, lists:usort(KeyHashList2)),
 
     FoldHeadsFun =
         fun(B, K, ProxyV, Acc) ->
-            {proxy_object,
-                _MDBin,
-                _Size,
-                {FetchFun, Clone, JK}} = binary_to_term(ProxyV),
+            {proxy_object, _MDBin, _Size, {FetchFun, Clone, JK}} =
+                binary_to_term(ProxyV),
             V = FetchFun(Clone, JK),
             [{B, K, erlang:phash2(term_to_binary(V))}|Acc]
         end,
 
     {async, HTFolder3} =
-        book_returnfolder(Bookie1,
-                            {foldheads_allkeys, 
-                                ?STD_TAG, 
-                                FoldHeadsFun, 
-                                true, true, false, false, false}),
+        book_returnfolder(
+            Bookie1,
+            {
+                foldheads_allkeys, 
+                ?STD_TAG, 
+                FoldHeadsFun, 
+                true,
+                true,
+                false,
+                false,
+                false
+            }
+        ),
     KeyHashList3 = HTFolder3(),
     ?assertMatch(KeyHashList1, lists:usort(KeyHashList3)),
 
     FoldHeadsFun2 =
         fun(B, K, ProxyV, Acc) ->
-            {proxy_object,
-                MD,
-                _Size1,
-                _Fetcher} = binary_to_term(ProxyV),
+            {proxy_object, MD, _Size1, _Fetcher} = binary_to_term(ProxyV),
             {Hash, _Size0, _UserDefinedMD} = MD,
             [{B, K, Hash}|Acc]
         end,
 
     {async, HTFolder4} =
-        book_returnfolder(Bookie1,
-                            {foldheads_allkeys, 
-                                ?STD_TAG, 
-                                FoldHeadsFun2,
-                                false, false, false, false, false}),
+        book_returnfolder(
+            Bookie1,
+            {
+                foldheads_allkeys, 
+                ?STD_TAG, 
+                FoldHeadsFun2,
+                false,
+                false,
+                false,
+                false,
+                false
+            }
+        ),
     KeyHashList4 = HTFolder4(),
     ?assertMatch(KeyHashList1, lists:usort(KeyHashList4)),
 
@@ -2907,134 +2967,203 @@ foldobjects_vs_foldheads_bybucket_testto() ->
 
 folder_cache_test(CacheSize) ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, CacheSize}]),
+    {ok, Bookie1} =
+        book_start(
+            [{
+                root_path, RootPath},
+                {max_journalsize, 1000000},
+                {cache_size, CacheSize
+            }]
+        ),
     _ = book_returnactors(Bookie1),
     ObjL1 = generate_multiple_objects(400, 1),
     ObjL2 = generate_multiple_objects(400, 1),
     % Put in all the objects with a TTL in the future
     Future = leveled_util:integer_now() + 300,
-    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
-                                                        "BucketA", K, V, S,
-                                                        ?STD_TAG,
-                                                        Future) end,
-                    ObjL1),
-    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
-                                                        "BucketB", K, V, S,
-                                                        ?STD_TAG,
-                                                        Future) end,
+    lists:foreach(
+        fun({K, V, S}) ->
+            ok =
+                book_tempput(Bookie1, <<"BucketA">>, K, V, S, ?STD_TAG, Future)
+        end,
+        ObjL1
+    ),
+    lists:foreach(
+        fun({K, V, S}) ->
+            ok =
+                book_tempput(Bookie1, <<"BucketB">>, K, V, S, ?STD_TAG, Future)
+        end,
                     ObjL2),
 
-    FoldObjectsFun = fun(B, K, V, Acc) ->
-                            [{B, K, erlang:phash2(term_to_binary(V))}|Acc] end,
+    FoldObjectsFun =
+        fun(B, K, V, Acc) ->
+            [{B, K, erlang:phash2(term_to_binary(V))}|Acc]
+        end,
     {async, HTFolder1A} =
-        book_returnfolder(Bookie1,
-                            {foldobjects_bybucket,
-                                ?STD_TAG,
-                                "BucketA",
-                                all,
-                                FoldObjectsFun,
-                                false}),
+        book_returnfolder(
+            Bookie1,
+            {
+                foldobjects_bybucket,
+                ?STD_TAG,
+                <<"BucketA">>,
+                all,
+                FoldObjectsFun,
+                false
+            }
+        ),
     KeyHashList1A = HTFolder1A(),
     {async, HTFolder1B} =
-        book_returnfolder(Bookie1,
-                            {foldobjects_bybucket,
-                                ?STD_TAG,
-                                "BucketB",
-                                all,
-                                FoldObjectsFun,
-                                true}),
+        book_returnfolder(
+            Bookie1,
+            {
+                foldobjects_bybucket,
+                ?STD_TAG,
+                <<"BucketB">>,
+                all,
+                FoldObjectsFun,
+                true
+            }
+        ),
     KeyHashList1B = HTFolder1B(),
-    ?assertMatch(false,
-                    lists:usort(KeyHashList1A) == lists:usort(KeyHashList1B)),
+    ?assertMatch(
+        false,
+        lists:usort(KeyHashList1A) == lists:usort(KeyHashList1B)
+    ),
 
     FoldHeadsFun =
         fun(B, K, ProxyV, Acc) ->
-            {proxy_object,
-                        _MDBin,
-                        _Size,
-                        {FetchFun, Clone, JK}} = binary_to_term(ProxyV),
+            {proxy_object, _MDBin, _Size, {FetchFun, Clone, JK}} =
+                binary_to_term(ProxyV),
             V = FetchFun(Clone, JK),
             [{B, K, erlang:phash2(term_to_binary(V))}|Acc]
         end,
 
     {async, HTFolder2A} =
-        book_returnfolder(Bookie1,
-                            {foldheads_bybucket,
-                                ?STD_TAG,
-                                "BucketA",
-                                all,
-                                FoldHeadsFun,
-                                true, true,
-                                false, false, false}),
+        book_returnfolder(
+            Bookie1,
+            {
+                foldheads_bybucket,
+                ?STD_TAG,
+                <<"BucketA">>,
+                all,
+                FoldHeadsFun,
+                true,
+                true,
+                false,
+                false,false
+            }
+        ),
     KeyHashList2A = HTFolder2A(),
     {async, HTFolder2B} =
-        book_returnfolder(Bookie1,
-                            {foldheads_bybucket,
-                                ?STD_TAG,
-                                "BucketB",
-                                all,
-                                FoldHeadsFun,
-                                true, false,
-                                false, false, false}),
+        book_returnfolder(
+            Bookie1,
+            {
+                foldheads_bybucket,
+                ?STD_TAG,
+                <<"BucketB">>,
+                all,
+                FoldHeadsFun,
+                true,
+                false,
+                false,
+                false,
+                false
+            }
+        ),
     KeyHashList2B = HTFolder2B(),
     
-    ?assertMatch(true,
-                    lists:usort(KeyHashList1A) == lists:usort(KeyHashList2A)),
-    ?assertMatch(true,
-                    lists:usort(KeyHashList1B) == lists:usort(KeyHashList2B)),
+    ?assertMatch(
+        true,
+        lists:usort(KeyHashList1A) == lists:usort(KeyHashList2A)
+    ),
+    ?assertMatch(
+        true,
+        lists:usort(KeyHashList1B) == lists:usort(KeyHashList2B)
+    ),
 
     {async, HTFolder2C} =
-        book_returnfolder(Bookie1,
-                            {foldheads_bybucket,
-                                ?STD_TAG,
-                                "BucketB",
-                                {"Key", <<"$all">>},
-                                FoldHeadsFun,
-                                true, false,
-                                false, false, false}),
+        book_returnfolder(
+            Bookie1,
+            {
+                foldheads_bybucket,
+                ?STD_TAG,
+                <<"BucketB">>,
+                {<<"Key">>, <<"$all">>},
+                FoldHeadsFun,
+                true,
+                false, 
+                false,
+                false,
+                false
+            }
+        ),
     KeyHashList2C = HTFolder2C(),
     {async, HTFolder2D} =
-        book_returnfolder(Bookie1,
-                            {foldheads_bybucket,
-                                ?STD_TAG,
-                                "BucketB",
-                                {"Key", "Keyzzzzz"},
-                                FoldHeadsFun,
-                                true, true,
-                                false, false, false}),
+        book_returnfolder(
+            Bookie1,
+            {
+                foldheads_bybucket,
+                ?STD_TAG,
+                <<"BucketB">>,
+                {<<"Key">>, <<"Keyzzzzz">>},
+                FoldHeadsFun,
+                true,
+                true,
+                false,
+                false,
+                false
+            }
+        ),
     KeyHashList2D = HTFolder2D(),
-    ?assertMatch(true,
-                    lists:usort(KeyHashList2B) == lists:usort(KeyHashList2C)),
-    ?assertMatch(true,
-                    lists:usort(KeyHashList2B) == lists:usort(KeyHashList2D)),
+    ?assertMatch(
+        true,
+        lists:usort(KeyHashList2B) == lists:usort(KeyHashList2C)
+    ),
+    ?assertMatch(
+        true,
+        lists:usort(KeyHashList2B) == lists:usort(KeyHashList2D)
+    ),
     
 
     CheckSplitQueryFun = 
         fun(SplitInt) ->
             io:format("Testing SplitInt ~w~n", [SplitInt]),
-            SplitIntEnd = "Key" ++ integer_to_list(SplitInt) ++ "|",
-            SplitIntStart = "Key" ++ integer_to_list(SplitInt + 1),
+            SplitIntEnd =
+                list_to_binary("Key" ++ integer_to_list(SplitInt) ++ "|"),
+            SplitIntStart = 
+                list_to_binary("Key" ++ integer_to_list(SplitInt + 1)),
             {async, HTFolder2E} =
-                book_returnfolder(Bookie1,
-                                    {foldheads_bybucket,
-                                        ?STD_TAG,
-                                        "BucketB",
-                                        {"Key", SplitIntEnd},
-                                        FoldHeadsFun,
-                                        true, false,
-                                        false, false, false}),
+                book_returnfolder(
+                    Bookie1,
+                    {
+                        foldheads_bybucket,
+                        ?STD_TAG,
+                        <<"BucketB">>,
+                        {<<"Key">>, SplitIntEnd},
+                        FoldHeadsFun,
+                        true,
+                        false,
+                        false,
+                        false,
+                        false
+                    }
+                ),
             KeyHashList2E = HTFolder2E(),
             {async, HTFolder2F} =
-                book_returnfolder(Bookie1,
-                                    {foldheads_bybucket,
-                                        ?STD_TAG,
-                                        "BucketB",
-                                        {SplitIntStart, "Key|"},
-                                        FoldHeadsFun,
-                                        true, false,
-                                        false, false, false}),
+                book_returnfolder(
+                    Bookie1,
+                    {
+                        foldheads_bybucket,
+                        ?STD_TAG,
+                        <<"BucketB">>,
+                        {SplitIntStart, <<"Key|">>},
+                        FoldHeadsFun,
+                        true,
+                        false,
+                        false,
+                        false,
+                        false
+                    }
+                ),
             KeyHashList2F = HTFolder2F(),
 
             ?assertMatch(true, length(KeyHashList2E) > 0),
@@ -3054,23 +3183,32 @@ folder_cache_test(CacheSize) ->
 
 small_cachesize_test() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, 1}]),
+    {ok, Bookie1} =
+        book_start(
+            [{
+                root_path, RootPath},
+                {max_journalsize, 1000000},
+                {cache_size, 1}
+            ]),
     ok = leveled_bookie:book_close(Bookie1).
 
 
 is_empty_test() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, 500}]),
+    {ok, Bookie1} =
+        book_start(
+            [{
+                root_path, RootPath},
+                {max_journalsize, 1000000},
+                {cache_size, 500}
+            ]),
     % Put in an object with a TTL in the future
     Future = leveled_util:integer_now() + 300,
     ?assertMatch(true, leveled_bookie:book_isempty(Bookie1, ?STD_TAG)),
-    ok = book_tempput(Bookie1, 
-                        <<"B">>, <<"K">>, {value, <<"V">>}, [], 
-                        ?STD_TAG, Future),
+    ok = 
+        book_tempput(
+            Bookie1,  <<"B">>, <<"K">>, {value, <<"V">>}, [], ?STD_TAG, Future
+        ),
     ?assertMatch(false, leveled_bookie:book_isempty(Bookie1, ?STD_TAG)),
     ?assertMatch(true, leveled_bookie:book_isempty(Bookie1, ?RIAK_TAG)),
 
@@ -3078,10 +3216,14 @@ is_empty_test() ->
 
 is_empty_headonly_test() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, 500},
-                                    {head_only, no_lookup}]),
+    {ok, Bookie1} =
+        book_start(
+            [
+                {root_path, RootPath},
+                {max_journalsize, 1000000},
+                {cache_size, 500},
+                {head_only, no_lookup}
+            ]),
     ?assertMatch(true, book_isempty(Bookie1, ?HEAD_TAG)),
     ObjSpecs = 
         [{add, <<"B1">>, <<"K1">>, <<1:8/integer>>, 100},
@@ -3120,10 +3262,11 @@ foldkeys_headonly_tester(ObjectCount, BlockSize, BStr) ->
         end,
     ObjSpecs = lists:map(GenObjSpecFun, lists:seq(1, ObjectCount)),
     ObjSpecBlocks = 
-        lists:map(fun(I) ->
-                        lists:sublist(ObjSpecs, I * BlockSize + 1, BlockSize)
-                    end,
-                    lists:seq(0, ObjectCount div BlockSize - 1)),
+        lists:map(
+            fun(I) ->
+                lists:sublist(ObjSpecs, I * BlockSize + 1, BlockSize)
+            end,
+            lists:seq(0, ObjectCount div BlockSize - 1)),
     lists:map(fun(Block) -> book_mput(Bookie1, Block) end, ObjSpecBlocks),
     ?assertMatch(false, book_isempty(Bookie1, ?HEAD_TAG)),
     
@@ -3140,10 +3283,14 @@ foldkeys_headonly_tester(ObjectCount, BlockSize, BStr) ->
 
     ok = book_close(Bookie1),
     
-    {ok, Bookie2} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, 500},
-                                    {head_only, no_lookup}]),
+    {ok, Bookie2} =
+        book_start(
+            [
+                {root_path, RootPath},
+                {max_journalsize, 1000000},
+                {cache_size, 500},
+                {head_only, no_lookup}
+            ]),
     {async, Folder2} = book_returnfolder(Bookie2, FolderT),
     Key_SKL2 = lists:reverse(Folder2()),
     ?assertMatch(Key_SKL_Compare, Key_SKL2),
@@ -3153,77 +3300,66 @@ foldkeys_headonly_tester(ObjectCount, BlockSize, BStr) ->
 
 is_empty_stringkey_test() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, 500}]),
+    {ok, Bookie1} = 
+        book_start(
+            [
+                {root_path, RootPath},
+                {max_journalsize, 1000000},
+                {cache_size, 500}
+            ]),
     ?assertMatch(true, book_isempty(Bookie1, ?STD_TAG)),
     Past = leveled_util:integer_now() - 300,
     ?assertMatch(true, leveled_bookie:book_isempty(Bookie1, ?STD_TAG)),
-    ok = book_tempput(Bookie1, 
-                        <<"B">>, <<"K">>, {value, <<"V">>}, [], 
-                        ?STD_TAG, Past),
-    ok = book_put(Bookie1, 
-                    <<"B">>, <<"K0">>, {value, <<"V">>}, [], 
-                    ?STD_TAG),
+    ok = 
+        book_tempput(
+            Bookie1, <<"B">>, <<"K">>, {value, <<"V">>}, [], ?STD_TAG, Past
+        ),
+    ok = book_put(Bookie1, <<"B">>, <<"K0">>, {value, <<"V">>}, [], ?STD_TAG),
     ?assertMatch(false, book_isempty(Bookie1, ?STD_TAG)),
     ok = book_close(Bookie1).
 
 scan_table_test() ->
-    K1 = leveled_codec:to_ledgerkey(<<"B1">>,
-                                        <<"K1">>,
-                                        ?IDX_TAG,
-                                        <<"F1-bin">>,
-                                        <<"AA1">>),
-    K2 = leveled_codec:to_ledgerkey(<<"B1">>,
-                                        <<"K2">>,
-                                        ?IDX_TAG,
-                                        <<"F1-bin">>,
-                                        <<"AA1">>),
-    K3 = leveled_codec:to_ledgerkey(<<"B1">>,
-                                        <<"K3">>,
-                                        ?IDX_TAG,
-                                        <<"F1-bin">>,
-                                        <<"AB1">>),
-    K4 = leveled_codec:to_ledgerkey(<<"B1">>,
-                                        <<"K4">>,
-                                        ?IDX_TAG,
-                                        <<"F1-bin">>,
-                                        <<"AA2">>),
-    K5 = leveled_codec:to_ledgerkey(<<"B2">>,
-                                        <<"K5">>,
-                                        ?IDX_TAG,
-                                        <<"F1-bin">>,
-                                        <<"AA2">>),
+    K1 =
+        leveled_codec:to_ledgerkey(
+            <<"B1">>, <<"K1">>, ?IDX_TAG, <<"F1-bin">>, <<"AA1">>),
+    K2 =
+        leveled_codec:to_ledgerkey(
+            <<"B1">>, <<"K2">>, ?IDX_TAG, <<"F1-bin">>, <<"AA1">>),
+    K3 = 
+        leveled_codec:to_ledgerkey(
+            <<"B1">>, <<"K3">>, ?IDX_TAG, <<"F1-bin">>, <<"AB1">>),
+    K4 =
+        leveled_codec:to_ledgerkey(
+            <<"B1">>, <<"K4">>, ?IDX_TAG, <<"F1-bin">>, <<"AA2">>),
+    K5 = 
+        leveled_codec:to_ledgerkey(
+            <<"B2">>, <<"K5">>, ?IDX_TAG, <<"F1-bin">>, <<"AA2">>),
     Tab0 = ets:new(mem, [ordered_set]),
 
-    SK_A0 = leveled_codec:to_ledgerkey(<<"B1">>,
-                                        null,
-                                        ?IDX_TAG,
-                                        <<"F1-bin">>,
-                                        <<"AA0">>),
-    EK_A9 = leveled_codec:to_ledgerkey(<<"B1">>,
-                                        null,
-                                        ?IDX_TAG,
-                                        <<"F1-bin">>,
-                                        <<"AA9">>),
+    SK_A0 =
+        leveled_codec:to_ledgerkey(
+            <<"B1">>,  null, ?IDX_TAG, <<"F1-bin">>, <<"AA0">>),
+    EK_A9 =
+        leveled_codec:to_ledgerkey(
+            <<"B1">>, null, ?IDX_TAG, <<"F1-bin">>,  <<"AA9">>),
     Empty = {[], infinity, 0},
-    ?assertMatch(Empty,
-                    scan_table(Tab0, SK_A0, EK_A9)),
+    ?assertMatch(Empty, scan_table(Tab0, SK_A0, EK_A9)),
     ets:insert(Tab0, [{K1, {1, active, no_lookup, null}}]),
-    ?assertMatch({[{K1, _}], 1, 1},
-                    scan_table(Tab0, SK_A0, EK_A9)),
+    ?assertMatch({[{K1, _}], 1, 1}, scan_table(Tab0, SK_A0, EK_A9)),
     ets:insert(Tab0, [{K2, {2, active, no_lookup, null}}]),
-    ?assertMatch({[{K1, _}, {K2, _}], 1, 2},
-                    scan_table(Tab0, SK_A0, EK_A9)),
+    ?assertMatch({[{K1, _}, {K2, _}], 1, 2}, scan_table(Tab0, SK_A0, EK_A9)),
     ets:insert(Tab0, [{K3, {3, active, no_lookup, null}}]),
-    ?assertMatch({[{K1, _}, {K2, _}], 1, 2},
-                    scan_table(Tab0, SK_A0, EK_A9)),
+    ?assertMatch({[{K1, _}, {K2, _}], 1, 2}, scan_table(Tab0, SK_A0, EK_A9)),
     ets:insert(Tab0, [{K4, {4, active, no_lookup, null}}]),
-    ?assertMatch({[{K1, _}, {K2, _}, {K4, _}], 1, 4},
-                    scan_table(Tab0, SK_A0, EK_A9)),
+    ?assertMatch(
+        {[{K1, _}, {K2, _}, {K4, _}], 1, 4},
+        scan_table(Tab0, SK_A0, EK_A9)
+    ),
     ets:insert(Tab0, [{K5, {5, active, no_lookup, null}}]),
-    ?assertMatch({[{K1, _}, {K2, _}, {K4, _}], 1, 4},
-                    scan_table(Tab0, SK_A0, EK_A9)).
+    ?assertMatch(
+        {[{K1, _}, {K2, _}, {K4, _}], 1, 4},
+        scan_table(Tab0, SK_A0, EK_A9)
+    ).
 
 longrunning_test() ->
     SW = os:timestamp(),
@@ -3236,9 +3372,13 @@ coverage_cheat_test() ->
 
 erase_journal_test() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath}, 
-                                {max_journalsize, 50000}, 
-                                {cache_size, 100}]),
+    {ok, Bookie1} =
+        book_start(
+            [
+                {root_path, RootPath}, 
+                {max_journalsize, 50000}, 
+                {cache_size, 100}
+            ]),
     ObjL1 = generate_multiple_objects(500, 1),
     % Put in all the objects with a TTL in the future
     lists:foreach(
@@ -3267,70 +3407,73 @@ erase_journal_test() ->
     ok = book_close(Bookie1),
     io:format("Bookie closed - clearing Journal~n"),
     leveled_inker:clean_testdir(RootPath ++ "/" ++ ?JOURNAL_FP),
-    {ok, Bookie2} = book_start([{root_path, RootPath}, 
-                                {max_journalsize, 5000}, 
-                                {cache_size, 100}]),
+    {ok, Bookie2} =
+        book_start([
+            {root_path, RootPath}, 
+            {max_journalsize, 5000}, 
+            {cache_size, 100}]
+        ),
     HeadsNotFound2 = lists:foldl(CheckHeadFun(Bookie2), 0, ObjL1),
     ?assertMatch(500, HeadsNotFound2),
     ok = book_destroy(Bookie2).
 
 sqnorder_fold_test() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, 500}]),
-    ok = book_put(Bookie1, 
-                    <<"B">>, <<"K1">>, {value, <<"V1">>}, [], 
-                    ?STD_TAG),
-    ok = book_put(Bookie1, 
-                    <<"B">>, <<"K2">>, {value, <<"V2">>}, [], 
-                    ?STD_TAG),
+    {ok, Bookie1} =
+        book_start([
+            {root_path, RootPath},
+            {max_journalsize, 1000000},
+            {cache_size, 500}]
+        ),
+    ok = book_put(Bookie1, <<"B">>, <<"K1">>, {value, <<"V1">>}, [], ?STD_TAG),
+    ok = book_put(Bookie1, <<"B">>, <<"K2">>, {value, <<"V2">>}, [], ?STD_TAG),
     
     FoldObjectsFun = fun(B, K, V, Acc) -> Acc ++ [{B, K, V}] end,
     {async, ObjFPre} =
-        book_objectfold(Bookie1,
-                        ?STD_TAG, {FoldObjectsFun, []}, true, sqn_order),
+        book_objectfold(
+            Bookie1, ?STD_TAG, {FoldObjectsFun, []}, true, sqn_order),
     {async, ObjFPost} =
-        book_objectfold(Bookie1,
-                        ?STD_TAG, {FoldObjectsFun, []}, false, sqn_order),
+        book_objectfold(
+            Bookie1, ?STD_TAG, {FoldObjectsFun, []}, false, sqn_order),
     
-    ok = book_put(Bookie1, 
-                    <<"B">>, <<"K3">>, {value, <<"V3">>}, [], 
-                    ?STD_TAG),
+    ok = book_put(Bookie1, <<"B">>, <<"K3">>, {value, <<"V3">>}, [], ?STD_TAG),
 
     ObjLPre = ObjFPre(),
-    ?assertMatch([{<<"B">>, <<"K1">>, {value, <<"V1">>}},
-                    {<<"B">>, <<"K2">>, {value, <<"V2">>}}], ObjLPre),
+    ?assertMatch(
+        [{<<"B">>, <<"K1">>, {value, <<"V1">>}},
+            {<<"B">>, <<"K2">>, {value, <<"V2">>}}],
+        ObjLPre
+    ),
     ObjLPost = ObjFPost(),
-    ?assertMatch([{<<"B">>, <<"K1">>, {value, <<"V1">>}},
-                    {<<"B">>, <<"K2">>, {value, <<"V2">>}},
-                    {<<"B">>, <<"K3">>, {value, <<"V3">>}}], ObjLPost),
+    ?assertMatch(
+        [{<<"B">>, <<"K1">>, {value, <<"V1">>}},
+            {<<"B">>, <<"K2">>, {value, <<"V2">>}},
+            {<<"B">>, <<"K3">>, {value, <<"V3">>}}],
+        ObjLPost
+    ),
     
     ok = book_destroy(Bookie1).
 
 sqnorder_mutatefold_test() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, 500}]),
-    ok = book_put(Bookie1, 
-                    <<"B">>, <<"K1">>, {value, <<"V1">>}, [], 
-                    ?STD_TAG),
-    ok = book_put(Bookie1, 
-                    <<"B">>, <<"K1">>, {value, <<"V2">>}, [], 
-                    ?STD_TAG),
+    {ok, Bookie1} =
+        book_start([
+            {root_path, RootPath},
+            {max_journalsize, 1000000},
+            {cache_size, 500}
+        ]),
+    ok = book_put(Bookie1, <<"B">>, <<"K1">>, {value, <<"V1">>}, [], ?STD_TAG),
+    ok = book_put(Bookie1, <<"B">>, <<"K1">>, {value, <<"V2">>}, [], ?STD_TAG),
     
     FoldObjectsFun = fun(B, K, V, Acc) -> Acc ++ [{B, K, V}] end,
     {async, ObjFPre} =
-        book_objectfold(Bookie1,
-                        ?STD_TAG, {FoldObjectsFun, []}, true, sqn_order),
+        book_objectfold(
+            Bookie1, ?STD_TAG, {FoldObjectsFun, []}, true, sqn_order),
     {async, ObjFPost} =
-        book_objectfold(Bookie1,
-                        ?STD_TAG, {FoldObjectsFun, []}, false, sqn_order),
+        book_objectfold(
+            Bookie1, ?STD_TAG, {FoldObjectsFun, []}, false, sqn_order),
     
-    ok = book_put(Bookie1, 
-                    <<"B">>, <<"K1">>, {value, <<"V3">>}, [], 
-                    ?STD_TAG),
+    ok = book_put(Bookie1, <<"B">>, <<"K1">>, {value, <<"V3">>}, [], ?STD_TAG),
 
     ObjLPre = ObjFPre(),
     ?assertMatch([{<<"B">>, <<"K1">>, {value, <<"V2">>}}], ObjLPre),
@@ -3342,19 +3485,22 @@ sqnorder_mutatefold_test() ->
 check_notfound_test() ->
     ProbablyFun = fun() -> probably end,
     MissingFun = fun() -> missing end,
-    MinFreq = lists:foldl(fun(_I, Freq) ->
-                                {false, Freq0} = 
-                                    check_notfound(Freq, ProbablyFun),
-                                Freq0
-                            end,
-                            100,
-                            lists:seq(1, 5000)), 
-                                % 5000 as needs to be a lot as doesn't decrement
-                                % when random interval is not hit
+    MinFreq =
+        lists:foldl(
+            fun(_I, Freq) ->
+                {false, Freq0} = check_notfound(Freq, ProbablyFun),
+                Freq0
+            end,
+            100,
+            lists:seq(1, 5000)), 
+            % 5000 as needs to be a lot as doesn't decrement
+            % when random interval is not hit
     ?assertMatch(?MIN_KEYCHECK_FREQUENCY, MinFreq),
     
-    ?assertMatch({true, ?MAX_KEYCHECK_FREQUENCY}, 
-                    check_notfound(?MAX_KEYCHECK_FREQUENCY, MissingFun)),
+    ?assertMatch(
+        {true, ?MAX_KEYCHECK_FREQUENCY}, 
+        check_notfound(?MAX_KEYCHECK_FREQUENCY, MissingFun)
+    ),
     
     ?assertMatch({false, 0}, check_notfound(0, MissingFun)).
 

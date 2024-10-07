@@ -1896,15 +1896,18 @@ generate_randomkeys({Count, StartSQN}) ->
 generate_randomkeys(0, _SQN, Acc) ->
     lists:reverse(Acc);
 generate_randomkeys(Count, SQN, Acc) ->
-    K = {o,
-            lists:concat(["Bucket", rand:uniform(1024)]),
-            lists:concat(["Key", rand:uniform(1024)]),
-            null},
-    RandKey = {K,
-                {SQN,
-                {active, infinity},
-                leveled_codec:segment_hash(K),
-                null}},
+    K = 
+        {
+            o,
+            list_to_binary(lists:concat(["Bucket", rand:uniform(1024)])),
+            list_to_binary(lists:concat(["Key", rand:uniform(1024)])),
+            null
+        },
+    RandKey =
+        {
+            K,
+            {SQN, {active, infinity}, leveled_codec:segment_hash(K), null}
+        },
     generate_randomkeys(Count - 1, SQN + 1, [RandKey|Acc]).
 
 clean_testdir(RootPath) ->
@@ -1915,12 +1918,13 @@ clean_subdir(DirPath) ->
     case filelib:is_dir(DirPath) of
         true ->
             {ok, Files} = file:list_dir(DirPath),
-            lists:foreach(fun(FN) ->
-                                File = filename:join(DirPath, FN),
-                                ok = file:delete(File),
-                                io:format("Success deleting ~s~n", [File])
-                                end,
-                            Files);
+            lists:foreach(
+                fun(FN) ->
+                    File = filename:join(DirPath, FN),
+                    ok = file:delete(File),
+                    io:format("Success deleting ~s~n", [File])
+                end,
+                Files);
         false ->
             ok
     end.
@@ -1928,15 +1932,18 @@ clean_subdir(DirPath) ->
 maybe_pause_push(PCL, KL) ->
     T0 = [],
     I0 = leveled_pmem:new_index(),
-    T1 = lists:foldl(fun({K, V}, {AccSL, AccIdx, MinSQN, MaxSQN}) ->
-                            UpdSL = [{K, V}|AccSL],
-                            SQN = leveled_codec:strip_to_seqonly({K, V}),
-                            H = leveled_codec:segment_hash(K),
-                            UpdIdx = leveled_pmem:prepare_for_index(AccIdx, H),
-                            {UpdSL, UpdIdx, min(SQN, MinSQN), max(SQN, MaxSQN)}
-                            end,
-                        {T0, I0, infinity, 0},
-                        KL),
+    T1 =
+        lists:foldl(
+            fun({K, V}, {AccSL, AccIdx, MinSQN, MaxSQN}) ->
+                UpdSL = [{K, V}|AccSL],
+                SQN = leveled_codec:strip_to_seqonly({K, V}),
+                H = leveled_codec:segment_hash(K),
+                UpdIdx = leveled_pmem:prepare_for_index(AccIdx, H),
+                {UpdSL, UpdIdx, min(SQN, MinSQN), max(SQN, MaxSQN)}
+            end,
+            {T0, I0, infinity, 0},
+            KL
+        ),
     SL = element(1, T1),
     Tree = leveled_tree:from_orderedlist(lists:ukeysort(1, SL), ?CACHE_TYPE),
     T2 = setelement(1, T1, Tree),
@@ -2037,70 +2044,134 @@ simple_server_test() ->
     RootPath = "test/test_area/ledger",
     clean_testdir(RootPath),
     {ok, PCL} = 
-        pcl_start(#penciller_options{root_path=RootPath,
-                                        max_inmemory_tablesize=1000,
-                                        sst_options=#sst_options{}}),
-    Key1_Pre = {{o,"Bucket0001", "Key0001", null},
-                    {1, {active, infinity}, null}},
+        pcl_start(
+            #penciller_options{
+                root_path=RootPath,
+                max_inmemory_tablesize=1000,
+                sst_options=#sst_options{}
+            }
+        ),
+    Key1_Pre =
+        {
+            {o, <<"Bucket0001">>, <<"Key0001">>, null},
+            {1, {active, infinity}, null}
+        },
     Key1 = add_missing_hash(Key1_Pre),
     KL1 = generate_randomkeys({1000, 2}),
-    Key2_Pre = {{o,"Bucket0002", "Key0002", null},
-                {1002, {active, infinity}, null}},
+    Key2_Pre = 
+        {
+            {o, <<"Bucket0002">>, <<"Key0002">>, null},
+            {1002, {active, infinity}, null}
+        },
     Key2 = add_missing_hash(Key2_Pre),
     KL2 = generate_randomkeys({900, 1003}),
     % Keep below the max table size by having 900 not 1000
-    Key3_Pre = {{o,"Bucket0003", "Key0003", null},
-                {2003, {active, infinity}, null}},
+    Key3_Pre =
+        {
+            {o, <<"Bucket0003">>, <<"Key0003">>, null},
+            {2003, {active, infinity}, null}
+        },
     Key3 = add_missing_hash(Key3_Pre),
     KL3 = generate_randomkeys({1000, 2004}), 
-    Key4_Pre = {{o,"Bucket0004", "Key0004", null},
-                {3004, {active, infinity}, null}},
+    Key4_Pre =
+        {
+            {o, <<"Bucket0004">>, <<"Key0004">>, null},
+            {3004, {active, infinity}, null}
+        },
     Key4 = add_missing_hash(Key4_Pre),
     KL4 = generate_randomkeys({1000, 3005}),
     ok = maybe_pause_push(PCL, [Key1]),
-    ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001", null})),
+    ?assertMatch(
+        Key1,
+        pcl_fetch(PCL, {o, <<"Bucket0001">>, <<"Key0001">>, null})
+    ),
     ok = maybe_pause_push(PCL, KL1),
-    ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001", null})),
+    ?assertMatch(
+        Key1,
+        pcl_fetch(PCL, {o, <<"Bucket0001">>, <<"Key0001">>, null})
+    ),
     ok = maybe_pause_push(PCL, [Key2]),
-    ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001", null})),
-    ?assertMatch(Key2, pcl_fetch(PCL, {o,"Bucket0002", "Key0002", null})),
+    ?assertMatch(
+        Key1,
+        pcl_fetch(PCL, {o, <<"Bucket0001">>, <<"Key0001">>, null})
+    ),
+    ?assertMatch(
+        Key2,
+        pcl_fetch(PCL, {o, <<"Bucket0002">>, <<"Key0002">>, null})
+    ),
     
     ok = maybe_pause_push(PCL, KL2),
-    ?assertMatch(Key2, pcl_fetch(PCL, {o,"Bucket0002", "Key0002", null})),
+    ?assertMatch(
+        Key2,
+        pcl_fetch(PCL, {o, <<"Bucket0002">>, <<"Key0002">>, null})
+    ),
     ok = maybe_pause_push(PCL, [Key3]),
     
-    ?assertMatch(Key1, pcl_fetch(PCL, {o,"Bucket0001", "Key0001", null})),
-    ?assertMatch(Key2, pcl_fetch(PCL, {o,"Bucket0002", "Key0002", null})),
-    ?assertMatch(Key3, pcl_fetch(PCL, {o,"Bucket0003", "Key0003", null})),
+    ?assertMatch(
+        Key1,
+        pcl_fetch(PCL, {o, <<"Bucket0001">>, <<"Key0001">>, null})
+    ),
+    ?assertMatch(
+        Key2,
+        pcl_fetch(PCL, {o, <<"Bucket0002">>, <<"Key0002">>, null})
+    ),
+    ?assertMatch(
+        Key3,
+        pcl_fetch(PCL, {o, <<"Bucket0003">>, <<"Key0003">>, null})),
     
-    true = pcl_checkbloomtest(PCL, {o,"Bucket0001", "Key0001", null}),
-    true = pcl_checkbloomtest(PCL, {o,"Bucket0002", "Key0002", null}),
-    true = pcl_checkbloomtest(PCL, {o,"Bucket0003", "Key0003", null}),
-    false = pcl_checkbloomtest(PCL, {o,"Bucket9999", "Key9999", null}),
+    true = pcl_checkbloomtest(PCL, {o, <<"Bucket0001">>, <<"Key0001">>, null}),
+    true = pcl_checkbloomtest(PCL, {o, <<"Bucket0002">>, <<"Key0002">>, null}),
+    true = pcl_checkbloomtest(PCL, {o, <<"Bucket0003">>, <<"Key0003">>, null}),
+    false =
+        pcl_checkbloomtest(PCL, {o, <<"Bucket9999">>, <<"Key9999">>, null}),
     
     ok = shutdown_when_compact(PCL),
 
     {ok, PCLr} = 
-        pcl_start(#penciller_options{root_path=RootPath,
-                                        max_inmemory_tablesize=1000,
-                                        sst_options=#sst_options{}}),
+        pcl_start(
+            #penciller_options{
+                root_path=RootPath,
+                max_inmemory_tablesize=1000,
+                sst_options=#sst_options{}
+            }),
     ?assertMatch(2003, pcl_getstartupsequencenumber(PCLr)),
-    % ok = maybe_pause_push(PCLr, [Key2] ++ KL2 ++ [Key3]),
-    true = pcl_checkbloomtest(PCLr, {o,"Bucket0001", "Key0001", null}),
-    true = pcl_checkbloomtest(PCLr, {o,"Bucket0002", "Key0002", null}),
-    true = pcl_checkbloomtest(PCLr, {o,"Bucket0003", "Key0003", null}),
-    false = pcl_checkbloomtest(PCLr, {o,"Bucket9999", "Key9999", null}),
+    true =
+        pcl_checkbloomtest(PCLr, {o, <<"Bucket0001">>, <<"Key0001">>, null}),
+    true =
+        pcl_checkbloomtest(PCLr, {o, <<"Bucket0002">>, <<"Key0002">>, null}),
+    true =
+        pcl_checkbloomtest(PCLr, {o, <<"Bucket0003">>, <<"Key0003">>, null}),
+    false =
+        pcl_checkbloomtest(PCLr, {o, <<"Bucket9999">>, <<"Key9999">>, null}),
     
-    ?assertMatch(Key1, pcl_fetch(PCLr, {o,"Bucket0001", "Key0001", null})),
-    ?assertMatch(Key2, pcl_fetch(PCLr, {o,"Bucket0002", "Key0002", null})),
-    ?assertMatch(Key3, pcl_fetch(PCLr, {o,"Bucket0003", "Key0003", null})),
+    ?assertMatch(
+        Key1,
+        pcl_fetch(PCLr, {o, <<"Bucket0001">>, <<"Key0001">>, null})
+    ),
+    ?assertMatch(
+        Key2,
+        pcl_fetch(PCLr, {o, <<"Bucket0002">>, <<"Key0002">>, null})),
+    ?assertMatch(
+        Key3,
+        pcl_fetch(PCLr, {o, <<"Bucket0003">>, <<"Key0003">>, null})),
     ok = maybe_pause_push(PCLr, KL3),
     ok = maybe_pause_push(PCLr, [Key4]),
     ok = maybe_pause_push(PCLr, KL4),
-    ?assertMatch(Key1, pcl_fetch(PCLr, {o,"Bucket0001", "Key0001", null})),
-    ?assertMatch(Key2, pcl_fetch(PCLr, {o,"Bucket0002", "Key0002", null})),
-    ?assertMatch(Key3, pcl_fetch(PCLr, {o,"Bucket0003", "Key0003", null})),
-    ?assertMatch(Key4, pcl_fetch(PCLr, {o,"Bucket0004", "Key0004", null})),
+
+    ?assertMatch(
+        Key1,
+        pcl_fetch(PCLr, {o, <<"Bucket0001">>, <<"Key0001">>, null})
+    ),
+    ?assertMatch(
+        Key2,
+        pcl_fetch(PCLr, {o, <<"Bucket0002">>, <<"Key0002">>, null})),
+    ?assertMatch(
+        Key3,
+        pcl_fetch(PCLr, {o, <<"Bucket0003">>, <<"Key0003">>, null})),
+    ?assertMatch(
+        Key4,
+        pcl_fetch(PCLr, {o, <<"Bucket0004">>, <<"Key0004">>, null})
+    ),
     
     {ok, PclSnap, null} = 
         leveled_bookie:snapshot_store(
@@ -2112,33 +2183,44 @@ simple_server_test() ->
             undefined,
             false),           
     
-    ?assertMatch(Key1, pcl_fetch(PclSnap, {o,"Bucket0001", "Key0001", null})),
-    ?assertMatch(Key2, pcl_fetch(PclSnap, {o,"Bucket0002", "Key0002", null})),
-    ?assertMatch(Key3, pcl_fetch(PclSnap, {o,"Bucket0003", "Key0003", null})),
-    ?assertMatch(Key4, pcl_fetch(PclSnap, {o,"Bucket0004", "Key0004", null})),
+    ?assertMatch(
+        Key1,
+        pcl_fetch(PclSnap, {o, <<"Bucket0001">>, <<"Key0001">>, null})),
+    ?assertMatch(
+        Key2,
+        pcl_fetch(PclSnap, {o, <<"Bucket0002">>, <<"Key0002">>, null})),
+    ?assertMatch(
+        Key3,
+        pcl_fetch(PclSnap, {o, <<"Bucket0003">>, <<"Key0003">>, null})),
+    ?assertMatch(
+        Key4,
+        pcl_fetch(PclSnap, {o, <<"Bucket0004">>, <<"Key0004">>, null})),
     ?assertMatch(
         current, 
         pcl_checksequencenumber(
-            PclSnap, {o, "Bucket0001", "Key0001", null}, 1)),
+            PclSnap, {o, <<"Bucket0001">>, <<"Key0001">>, null}, 1)),
     ?assertMatch(
         current,
         pcl_checksequencenumber(
-            PclSnap, {o, "Bucket0002", "Key0002", null}, 1002)),
+            PclSnap, {o, <<"Bucket0002">>, <<"Key0002">>, null}, 1002)),
     ?assertMatch(
         current,
         pcl_checksequencenumber(
-            PclSnap, {o, "Bucket0003", "Key0003", null}, 2003)),
+            PclSnap, {o, <<"Bucket0003">>, <<"Key0003">>, null}, 2003)),
     ?assertMatch(
         current,
         pcl_checksequencenumber(
-            PclSnap, {o, "Bucket0004", "Key0004", null}, 3004)),
+            PclSnap, {o, <<"Bucket0004">>, <<"Key0004">>, null}, 3004)),
 
     % Add some more keys and confirm that check sequence number still
     % sees the old version in the previous snapshot, but will see the new 
     % version in a new snapshot
     
-    Key1A_Pre = {{o,"Bucket0001", "Key0001", null},
-                    {4005, {active, infinity}, null}},
+    Key1A_Pre =
+        {
+            {o, <<"Bucket0001">>, <<"Key0001">>, null},
+            {4005, {active, infinity}, null}
+        },
     Key1A = add_missing_hash(Key1A_Pre),
     KL1A = generate_randomkeys({2000, 4006}),
     ok = maybe_pause_push(PCLr, [Key1A]),
@@ -2146,7 +2228,7 @@ simple_server_test() ->
     ?assertMatch(
         current,
         pcl_checksequencenumber(
-            PclSnap, {o, "Bucket0001", "Key0001", null}, 1)),
+            PclSnap, {o, <<"Bucket0001">>, <<"Key0001">>, null}, 1)),
     ok = pcl_close(PclSnap),
      
     {ok, PclSnap2, null} = 
@@ -2162,177 +2244,393 @@ simple_server_test() ->
     ?assertMatch(
         replaced,
         pcl_checksequencenumber(
-            PclSnap2, {o, "Bucket0001", "Key0001", null}, 1)),
+            PclSnap2, {o, <<"Bucket0001">>, <<"Key0001">>, null}, 1)),
     ?assertMatch(
         current,
         pcl_checksequencenumber(
-            PclSnap2, {o, "Bucket0001", "Key0001", null}, 4005)),
+            PclSnap2, {o, <<"Bucket0001">>, <<"Key0001">>, null}, 4005)),
     ?assertMatch(
         current,
         pcl_checksequencenumber(
-            PclSnap2, {o, "Bucket0002", "Key0002", null}, 1002)),
+            PclSnap2, {o, <<"Bucket0002">>, <<"Key0002">>, null}, 1002)),
     ok = pcl_close(PclSnap2),
     ok = pcl_close(PCLr),
     clean_testdir(RootPath).
 
 
 simple_findnextkey_test() ->
-    QueryArrayAsList = [
-    {2, [{{o, "Bucket1", "Key1", null}, {5, {active, infinity}, {0, 0}, null}},
-        {{o, "Bucket1", "Key5", null}, {4, {active, infinity}, {0, 0}, null}}]},
-    {3, [{{o, "Bucket1", "Key3", null}, {3, {active, infinity}, {0, 0}, null}}]},
-    {5, [{{o, "Bucket1", "Key2", null}, {2, {active, infinity}, {0, 0}, null}}]}
-    ],
+    QueryArrayAsList = 
+        [
+            {2,
+                [
+                    {
+                        {o, <<"Bucket1">>, <<"Key1">>, null},
+                        {5, {active, infinity}, {0, 0}, null}
+                    },
+                    {
+                        {o, <<"Bucket1">>, <<"Key5">>, null},
+                        {4, {active, infinity}, {0, 0}, null}
+                    }
+                ]
+            },
+            {3, 
+                [
+                    {
+                        {o, <<"Bucket1">>, <<"Key3">>, null},
+                        {3, {active, infinity}, {0, 0}, null}
+                    }
+                ]
+            },
+            {5, 
+                [
+                    {
+                        {o, <<"Bucket1">>, <<"Key2">>, null},
+                        {2, {active, infinity}, {0, 0}, null}
+                    }
+                ]
+            }
+        ],
     QueryArray = convert_qmanifest_tomap(QueryArrayAsList),
-    {Array2, KV1} = find_nextkey(QueryArray,
-                                    {o, "Bucket1", "Key0", null},
-                                    {o, "Bucket1", "Key5", null}),
-    ?assertMatch({{o, "Bucket1", "Key1", null}, 
-                        {5, {active, infinity}, {0, 0}, null}},
-                    KV1),
-    {Array3, KV2} = find_nextkey(Array2,
-                                    {o, "Bucket1", "Key0", null},
-                                    {o, "Bucket1", "Key5", null}),
-    ?assertMatch({{o, "Bucket1", "Key2", null}, 
-                        {2, {active, infinity}, {0, 0}, null}},
-                    KV2),
-    {Array4, KV3} = find_nextkey(Array3,
-                                    {o, "Bucket1", "Key0", null},
-                                    {o, "Bucket1", "Key5", null}),
-    ?assertMatch({{o, "Bucket1", "Key3", null}, 
-                        {3, {active, infinity}, {0, 0}, null}},
-                    KV3),
-    {Array5, KV4} = find_nextkey(Array4,
-                                    {o, "Bucket1", "Key0", null},
-                                    {o, "Bucket1", "Key5", null}),
-    ?assertMatch({{o, "Bucket1", "Key5", null}, 
-                        {4, {active, infinity}, {0, 0}, null}},
-                    KV4),
-    ER = find_nextkey(Array5,
-                        {o, "Bucket1", "Key0", null},
-                        {o, "Bucket1", "Key5", null}),
+    {Array2, KV1} =
+        find_nextkey(
+            QueryArray,
+            {o, <<"Bucket1">>, <<"Key0">>, null},
+            {o, <<"Bucket1">>, <<"Key5">>, null}
+        ),
+    ?assertMatch(
+        {
+            {o, <<"Bucket1">>, <<"Key1">>, null},
+            {5, {active, infinity}, {0, 0}, null}
+        },
+        KV1),
+    {Array3, KV2} =
+        find_nextkey(
+            Array2,
+            {o, <<"Bucket1">>, <<"Key0">>, null},
+            {o, <<"Bucket1">>, <<"Key5">>, null}
+        ),
+    ?assertMatch(
+        {
+            {o, <<"Bucket1">>, <<"Key2">>, null}, 
+            {2, {active, infinity}, {0, 0}, null}
+        },
+        KV2),
+    {Array4, KV3} =
+        find_nextkey(
+            Array3,
+            {o, <<"Bucket1">>, <<"Key0">>, null},
+            {o, <<"Bucket1">>, <<"Key5">>, null}
+        ),
+    ?assertMatch(
+        {
+            {o, <<"Bucket1">>, <<"Key3">>, null}, 
+            {3, {active, infinity}, {0, 0}, null}
+        },
+        KV3),
+    {Array5, KV4} =
+        find_nextkey(
+            Array4,
+            {o, <<"Bucket1">>, <<"Key0">>, null},
+            {o, <<"Bucket1">>, <<"Key5">>, null}
+        ),
+    ?assertMatch(
+        {
+            {o, <<"Bucket1">>, <<"Key5">>, null}, 
+            {4, {active, infinity}, {0, 0}, null}
+        },
+        KV4),
+    ER =
+        find_nextkey(
+            Array5,
+            {o, <<"Bucket1">>, <<"Key0">>, null},
+            {o, <<"Bucket1">>, <<"Key5">>, null}
+        ),
     ?assertMatch(no_more_keys, ER).
 
 sqnoverlap_findnextkey_test() ->
-    QueryArrayAsList = [
-    {2, [{{o, "Bucket1", "Key1", null}, {5, {active, infinity}, {0, 0}, null}},
-        {{o, "Bucket1", "Key5", null}, {4, {active, infinity}, {0, 0}, null}}]},
-    {3, [{{o, "Bucket1", "Key3", null}, {3, {active, infinity}, {0, 0}, null}}]},
-    {5, [{{o, "Bucket1", "Key5", null}, {2, {active, infinity}, {0, 0}, null}}]}
-    ],
+    QueryArrayAsList = 
+        [
+            {2,
+                [
+                    {
+                        {o, <<"Bucket1">>, <<"Key1">>, null},
+                        {5, {active, infinity}, {0, 0}, null}
+                    },
+                    {
+                        {o, <<"Bucket1">>, <<"Key5">>, null},
+                        {4, {active, infinity}, {0, 0}, null}
+                    }
+                ]
+            },
+            {3, 
+                [
+                    {
+                        {o, <<"Bucket1">>, <<"Key3">>, null},
+                        {3, {active, infinity}, {0, 0}, null}
+                    }
+                ]
+            },
+            {5, 
+                [
+                    {
+                        {o, <<"Bucket1">>, <<"Key5">>, null},
+                        {2, {active, infinity}, {0, 0}, null}
+                    }
+                ]
+            }
+        ],
     QueryArray = convert_qmanifest_tomap(QueryArrayAsList),
-    {Array2, KV1} = find_nextkey(QueryArray,
-                                    {o, "Bucket1", "Key0", null},
-                                    {o, "Bucket1", "Key5", null}),
-    ?assertMatch({{o, "Bucket1", "Key1", null}, 
-                        {5, {active, infinity}, {0, 0}, null}},
-                    KV1),
-    {Array3, KV2} = find_nextkey(Array2,
-                                    {o, "Bucket1", "Key0", null},
-                                    {o, "Bucket1", "Key5", null}),
-    ?assertMatch({{o, "Bucket1", "Key3", null}, 
-                        {3, {active, infinity}, {0, 0}, null}},
-                    KV2),
-    {Array4, KV3} = find_nextkey(Array3,
-                                    {o, "Bucket1", "Key0", null},
-                                    {o, "Bucket1", "Key5", null}),
-    ?assertMatch({{o, "Bucket1", "Key5", null}, 
-                        {4, {active, infinity}, {0, 0}, null}},
-                    KV3),
-    ER = find_nextkey(Array4,
-                        {o, "Bucket1", "Key0", null},
-                        {o, "Bucket1", "Key5", null}),
+    {Array2, KV1} =
+        find_nextkey(
+            QueryArray,
+            {o, <<"Bucket1">>, <<"Key0">>, null},
+            {o, <<"Bucket1">>, <<"Key5">>, null}
+        ),
+    ?assertMatch(
+        {
+            {o, <<"Bucket1">>, <<"Key1">>, null}, 
+            {5, {active, infinity}, {0, 0}, null}
+        },
+        KV1),
+    {Array3, KV2} =
+        find_nextkey(
+            Array2,
+            {o, <<"Bucket1">>, <<"Key0">>, null},
+            {o, <<"Bucket1">>, <<"Key5">>, null}
+        ),
+    ?assertMatch(
+        {
+            {o, <<"Bucket1">>, <<"Key3">>, null}, 
+            {3, {active, infinity}, {0, 0}, null}
+        },
+        KV2),
+    {Array4, KV3} =
+        find_nextkey(
+            Array3,
+            {o, <<"Bucket1">>, <<"Key0">>, null},
+            {o, <<"Bucket1">>, <<"Key5">>, null}
+        ),
+    ?assertMatch(
+        {
+            {o, <<"Bucket1">>, <<"Key5">>, null}, 
+            {4, {active, infinity}, {0, 0}, null}
+        },
+        KV3),
+    ER =
+        find_nextkey(
+            Array4,
+            {o, <<"Bucket1">>, <<"Key0">>, null},
+            {o, <<"Bucket1">>, <<"Key5">>, null}
+        ),
     ?assertMatch(no_more_keys, ER).
 
 sqnoverlap_otherway_findnextkey_test() ->
-    QueryArrayAsList = [
-    {2, [{{o, "Bucket1", "Key1", null}, {5, {active, infinity}, {0, 0}, null}},
-        {{o, "Bucket1", "Key5", null}, {1, {active, infinity}, {0, 0}, null}}]},
-    {3, [{{o, "Bucket1", "Key3", null}, {3, {active, infinity}, {0, 0}, null}}]},
-    {5, [{{o, "Bucket1", "Key5", null}, {2, {active, infinity}, {0, 0}, null}}]}
-    ],
+    QueryArrayAsList = 
+        [
+            {2,
+                [
+                    {
+                        {o, <<"Bucket1">>, <<"Key1">>, null},
+                        {5, {active, infinity}, {0, 0}, null}
+                    },
+                    {
+                        {o, <<"Bucket1">>, <<"Key5">>, null},
+                        {1, {active, infinity}, {0, 0}, null}
+                    }
+                ]
+            },
+            {3, 
+                [
+                    {
+                        {o, <<"Bucket1">>, <<"Key3">>, null},
+                        {3, {active, infinity}, {0, 0}, null}
+                    }
+                ]
+            },
+            {5, 
+                [
+                    {
+                        {o, <<"Bucket1">>, <<"Key5">>, null},
+                        {2, {active, infinity}, {0, 0}, null}
+                    }
+                ]
+            }
+        ],
     QueryArray = convert_qmanifest_tomap(QueryArrayAsList),
-    {Array2, KV1} = find_nextkey(QueryArray,
-                                    {o, "Bucket1", "Key0", null},
-                                    {o, "Bucket1", "Key5", null}),
-    ?assertMatch({{o, "Bucket1", "Key1", null},
-                        {5, {active, infinity}, {0, 0}, null}},
-                    KV1),
-    {Array3, KV2} = find_nextkey(Array2,
-                                    {o, "Bucket1", "Key0", null},
-                                    {o, "Bucket1", "Key5", null}),
-    ?assertMatch({{o, "Bucket1", "Key3", null},
-                        {3, {active, infinity}, {0, 0}, null}},
-                    KV2),
-    {Array4, KV3} = find_nextkey(Array3,
-                                    {o, "Bucket1", "Key0", null},
-                                    {o, "Bucket1", "Key5", null}),
-    ?assertMatch({{o, "Bucket1", "Key5", null},
-                        {2, {active, infinity}, {0, 0}, null}},
-                    KV3),
-    ER = find_nextkey(Array4,
-                        {o, "Bucket1", "Key0", null},
-                        {o, "Bucket1", "Key5", null}),
+    {Array2, KV1} =
+        find_nextkey(
+            QueryArray,
+            {o, <<"Bucket1">>, <<"Key0">>, null},
+            {o, <<"Bucket1">>, <<"Key5">>, null}
+        ),
+    ?assertMatch(
+        {
+            {o, <<"Bucket1">>, <<"Key1">>, null},
+            {5, {active, infinity}, {0, 0}, null}
+        },
+        KV1),
+    {Array3, KV2} =
+        find_nextkey(
+            Array2,
+            {o, <<"Bucket1">>, <<"Key0">>, null},
+            {o, <<"Bucket1">>, <<"Key5">>, null}
+        ),
+    ?assertMatch(
+        {
+            {o, <<"Bucket1">>, <<"Key3">>, null},
+            {3, {active, infinity}, {0, 0}, null}
+        },
+        KV2),
+    {Array4, KV3} =
+        find_nextkey(
+            Array3,
+            {o, <<"Bucket1">>, <<"Key0">>, null},
+            {o, <<"Bucket1">>, <<"Key5">>, null}
+        ),
+    ?assertMatch(
+        {
+            {o, <<"Bucket1">>, <<"Key5">>, null},
+            {2, {active, infinity}, {0, 0}, null}
+        },
+        KV3),
+    ER = find_nextkey(
+        Array4,
+        {o, <<"Bucket1">>, <<"Key0">>, null},
+        {o, <<"Bucket1">>, <<"Key5">>, null}
+    ),
     ?assertMatch(no_more_keys, ER).
 
 foldwithimm_simple_test() ->
     Now = leveled_util:integer_now(),
-    QueryArrayAsList = [
-        {2, [{{o, "Bucket1", "Key1", null},
-                    {5, {active, infinity}, 0, null}},
-                {{o, "Bucket1", "Key5", null},
-                    {1, {active, infinity}, 0, null}}]},
-        {3, [{{o, "Bucket1", "Key3", null},
-                {3, {active, infinity}, 0, null}}]},
-        {5, [{{o, "Bucket1", "Key5", null},
-                {2, {active, infinity}, 0, null}}]}
-    ],
+    QueryArrayAsList = 
+        [
+            {2,
+                [
+                    {
+                        {o, <<"Bucket1">>, <<"Key1">>, null},
+                        {5, {active, infinity}, {0, 0}, null}
+                    },
+                    {
+                        {o, <<"Bucket1">>, <<"Key5">>, null},
+                        {1, {active, infinity}, {0, 0}, null}
+                    }
+                ]
+            },
+            {3, 
+                [
+                    {
+                        {o, <<"Bucket1">>, <<"Key3">>, null},
+                        {3, {active, infinity}, {0, 0}, null}
+                    }
+                ]
+            },
+            {5, 
+                [
+                    {
+                        {o, <<"Bucket1">>, <<"Key5">>, null},
+                        {2, {active, infinity}, {0, 0}, null}
+                    }
+                ]
+            }
+        ],
     QueryArray = convert_qmanifest_tomap(QueryArrayAsList),
-    KL1A = [{{o, "Bucket1", "Key6", null}, {7, {active, infinity}, 0, null}},
-            {{o, "Bucket1", "Key1", null}, {8, {active, infinity}, 0, null}},
-            {{o, "Bucket1", "Key8", null}, {9, {active, infinity}, 0, null}}],
+    KL1A = 
+        [
+            {
+                {o, <<"Bucket1">>, <<"Key6">>, null},
+                {7, {active, infinity}, 0, null}
+            },
+            {
+                {o, <<"Bucket1">>, <<"Key1">>, null},
+                {8, {active, infinity}, 0, null}
+            },
+            {
+                {o, <<"Bucket1">>, <<"Key8">>, null},
+                {9, {active, infinity}, 0, null}
+            }
+        ],
     IMM2 = leveled_tree:from_orderedlist(lists:ukeysort(1, KL1A), ?CACHE_TYPE),
-    IMMiter = leveled_tree:match_range({o, "Bucket1", "Key1", null},
-                                        {o, null, null, null},
-                                        IMM2),
-    AccFun = fun(K, V, Acc) -> SQN = leveled_codec:strip_to_seqonly({K, V}),
-                                Acc ++ [{K, SQN}] end,
-    Acc = keyfolder_test(IMMiter,
-                    QueryArray,
-                    {o, "Bucket1", "Key1", null}, {o, "Bucket1", "Key6", null},
-                    {AccFun, [], Now}),
-    ?assertMatch([{{o, "Bucket1", "Key1", null}, 8},
-                    {{o, "Bucket1", "Key3", null}, 3},
-                    {{o, "Bucket1", "Key5", null}, 2},
-                    {{o, "Bucket1", "Key6", null}, 7}], Acc),
+    IMMiter =
+        leveled_tree:match_range(
+            {o, <<"Bucket1">>, <<"Key1">>, null},
+            {o, null, null, null},
+            IMM2),
+    AccFun =
+        fun(K, V, Acc) ->
+            SQN = leveled_codec:strip_to_seqonly({K, V}),
+            Acc ++ [{K, SQN}]
+        end,
+    Acc = 
+        keyfolder_test(
+            IMMiter,
+            QueryArray,
+            {o, <<"Bucket1">>, <<"Key1">>, null},
+            {o, <<"Bucket1">>, <<"Key6">>, null},
+            {AccFun, [], Now}
+        ),
+    ?assertMatch(
+        [
+            {{o, <<"Bucket1">>, <<"Key1">>, null}, 8},
+            {{o, <<"Bucket1">>, <<"Key3">>, null}, 3},
+            {{o, <<"Bucket1">>, <<"Key5">>, null}, 2},
+            {{o, <<"Bucket1">>, <<"Key6">>, null}, 7}
+        ],
+        Acc),
     
-    IMMiterA = [{{o, "Bucket1", "Key1", null},
-                    {8, {active, infinity}, 0, null}}],
-    AccA = keyfolder_test(IMMiterA,
-                        QueryArray,
-                        {o, "Bucket1", "Key1", null}, 
-                        {o, "Bucket1", "Key6", null},
-                        {AccFun, [], Now}),
-    ?assertMatch([{{o, "Bucket1", "Key1", null}, 8},
-                    {{o, "Bucket1", "Key3", null}, 3},
-                    {{o, "Bucket1", "Key5", null}, 2}], AccA),
+    IMMiterA =
+        [
+            {
+                {o, <<"Bucket1">>, <<"Key1">>, null},
+                {8, {active, infinity}, 0, null}
+            }
+        ],
+    AccA =
+        keyfolder_test(
+            IMMiterA,
+            QueryArray,
+            {o, <<"Bucket1">>, <<"Key1">>, null}, 
+            {o, <<"Bucket1">>, <<"Key6">>, null},
+            {AccFun, [], Now}
+        ),
+    ?assertMatch(
+        [
+            {{o, <<"Bucket1">>, <<"Key1">>, null}, 8},
+            {{o, <<"Bucket1">>, <<"Key3">>, null}, 3},
+            {{o, <<"Bucket1">>, <<"Key5">>, null}, 2}
+        ],
+        AccA),
     
-    AddKV = {{o, "Bucket1", "Key4", null}, {10, {active, infinity}, 0, null}},
+    AddKV =
+        {
+            {o, <<"Bucket1">>, <<"Key4">>, null},
+            {10, {active, infinity}, 0, null}
+        },
     KL1B = [AddKV|KL1A],
     IMM3 = leveled_tree:from_orderedlist(lists:ukeysort(1, KL1B), ?CACHE_TYPE),
-    IMMiterB = leveled_tree:match_range({o, "Bucket1", "Key1", null},
-                                        {o, null, null, null},
-                                        IMM3),
+    IMMiterB =
+        leveled_tree:match_range(
+            {o, <<"Bucket1">>, <<"Key1">>, null},
+            {o, null, null, null},
+            IMM3
+        ),
     io:format("Compare IMM3 with QueryArrary~n"),
-    AccB = keyfolder_test(IMMiterB,
-                    QueryArray,
-                    {o, "Bucket1", "Key1", null}, {o, "Bucket1", "Key6", null},
-                    {AccFun, [], Now}),
-    ?assertMatch([{{o, "Bucket1", "Key1", null}, 8},
-                    {{o, "Bucket1", "Key3", null}, 3},
-                    {{o, "Bucket1", "Key4", null}, 10},
-                    {{o, "Bucket1", "Key5", null}, 2},
-                    {{o, "Bucket1", "Key6", null}, 7}], AccB).
+    AccB =
+        keyfolder_test(
+            IMMiterB,
+            QueryArray,
+            {o, <<"Bucket1">>, <<"Key1">>, null},
+            {o, <<"Bucket1">>, <<"Key6">>, null},
+            {AccFun, [], Now}
+        ),
+    ?assertMatch(
+        [
+            {{o, <<"Bucket1">>, <<"Key1">>, null}, 8},
+            {{o, <<"Bucket1">>, <<"Key3">>, null}, 3},
+            {{o, <<"Bucket1">>, <<"Key4">>, null}, 10},
+            {{o, <<"Bucket1">>, <<"Key5">>, null}, 2},
+            {{o, <<"Bucket1">>, <<"Key6">>, null}, 7}
+        ],
+        AccB).
 
 create_file_test() ->
     {RP, Filename} = {"test/test_area/", "new_file.sst"},

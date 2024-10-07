@@ -82,7 +82,7 @@
 -record(manifest_entry,
                         {start_key :: tuple() | undefined,
                         end_key :: tuple() | undefined,
-                        owner :: pid()|list(),
+                        owner :: pid(),
                         filename :: string() | undefined,
                         bloom = none :: leveled_ebloom:bloom() | none}).
 
