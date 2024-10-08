@@ -176,7 +176,7 @@ generate_orderedkeys(Seqn, Count, Acc, BucketLow, BucketHigh) ->
     KeyExt =
         io_lib:format("K~8..0B", [Seqn * 100 + rand:uniform(100)]),
     LK =
-        leveled_codec:to_ledgerkey(
+        leveled_codec:to_objectkey(
             list_to_binary("Bucket" ++ BucketExt),
             list_to_binary("Key" ++ KeyExt),
             o

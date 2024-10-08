@@ -1263,7 +1263,7 @@ init([Opts]) ->
 
 handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL, DataSync},
                 From, State) when State#state.head_only == false ->
-    LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
+    LedgerKey = leveled_codec:to_objectkey(Bucket, Key, Tag),
     SWLR = os:timestamp(),
     SW0 = leveled_monitor:maybe_time(State#state.monitor),
     {ok, SQN, ObjSize} = leveled_inker:ink_put(State#state.inker,
@@ -1323,7 +1323,7 @@ handle_call({mput, ObjectSpecs, TTL}, From, State)
     end;
 handle_call({get, Bucket, Key, Tag}, _From, State) 
                                         when State#state.head_only == false ->
-    LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
+    LedgerKey = leveled_codec:to_objectkey(Bucket, Key, Tag),
     SW0 = leveled_monitor:maybe_time(State#state.monitor),
     {H0, _CacheHit} =
         fetch_head(LedgerKey,
@@ -1369,7 +1369,7 @@ handle_call({get, Bucket, Key, Tag}, _From, State)
 handle_call({head, Bucket, Key, Tag, SQNOnly}, _From, State) 
                                         when State#state.head_lookup == true ->
     SW0 = leveled_monitor:maybe_time(State#state.monitor),
-    LK = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
+    LK = leveled_codec:to_objectkey(Bucket, Key, Tag),
     {Head, CacheHit} =
         fetch_head(LK, 
                     State#state.penciller, 
@@ -1964,9 +1964,9 @@ get_runner(State, {index_query, Constraint, FoldAccT, Range, TermHandling}) ->
                 {B, null}
         end,
     StartKey = 
-        leveled_codec:to_ledgerkey(Bucket, ObjKey0, ?IDX_TAG, IdxFld, StartT),
+        leveled_codec:to_querykey(Bucket, ObjKey0, ?IDX_TAG, IdxFld, StartT),
     EndKey = 
-        leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG, IdxFld, EndT),
+        leveled_codec:to_querykey(Bucket, null, ?IDX_TAG, IdxFld, EndT),
     SnapFun = return_snapfun(State, ledger, {StartKey, EndKey}, false, false),
     leveled_runner:index_query(SnapFun, 
                                 {StartKey, EndKey, TermHandling}, 
@@ -2128,16 +2128,16 @@ return_ledger_keyrange(Tag, Bucket, KeyRange) ->
     {StartKey, EndKey, Snap} =
         case KeyRange of 
             all -> 
-                {leveled_codec:to_ledgerkey(Bucket, null, Tag),
-                    leveled_codec:to_ledgerkey(Bucket, null, Tag),
+                {leveled_codec:to_querykey(Bucket, null, Tag),
+                    leveled_codec:to_querykey(Bucket, null, Tag),
                     false};
             {StartTerm, <<"$all">>} ->
-                {leveled_codec:to_ledgerkey(Bucket, StartTerm, Tag),
-                    leveled_codec:to_ledgerkey(Bucket, null, Tag),
+                {leveled_codec:to_querykey(Bucket, StartTerm, Tag),
+                    leveled_codec:to_querykey(Bucket, null, Tag),
                     false};
             {StartTerm, EndTerm} ->
-                {leveled_codec:to_ledgerkey(Bucket, StartTerm, Tag),
-                    leveled_codec:to_ledgerkey(Bucket, EndTerm, Tag),
+                {leveled_codec:to_querykey(Bucket, StartTerm, Tag),
+                    leveled_codec:to_querykey(Bucket, EndTerm, Tag),
                     true}
         end,
     SnapQuery = 
@@ -3320,27 +3320,27 @@ is_empty_stringkey_test() ->
 
 scan_table_test() ->
     K1 =
-        leveled_codec:to_ledgerkey(
+        leveled_codec:to_objectkey(
             <<"B1">>, <<"K1">>, ?IDX_TAG, <<"F1-bin">>, <<"AA1">>),
     K2 =
-        leveled_codec:to_ledgerkey(
+        leveled_codec:to_objectkey(
             <<"B1">>, <<"K2">>, ?IDX_TAG, <<"F1-bin">>, <<"AA1">>),
     K3 = 
-        leveled_codec:to_ledgerkey(
+        leveled_codec:to_objectkey(
             <<"B1">>, <<"K3">>, ?IDX_TAG, <<"F1-bin">>, <<"AB1">>),
     K4 =
-        leveled_codec:to_ledgerkey(
+        leveled_codec:to_objectkey(
             <<"B1">>, <<"K4">>, ?IDX_TAG, <<"F1-bin">>, <<"AA2">>),
     K5 = 
-        leveled_codec:to_ledgerkey(
+        leveled_codec:to_objectkey(
             <<"B2">>, <<"K5">>, ?IDX_TAG, <<"F1-bin">>, <<"AA2">>),
     Tab0 = ets:new(mem, [ordered_set]),
 
     SK_A0 =
-        leveled_codec:to_ledgerkey(
+        leveled_codec:to_querykey(
             <<"B1">>,  null, ?IDX_TAG, <<"F1-bin">>, <<"AA0">>),
     EK_A9 =
-        leveled_codec:to_ledgerkey(
+        leveled_codec:to_querykey(
             <<"B1">>, null, ?IDX_TAG, <<"F1-bin">>,  <<"AA9">>),
     Empty = {[], infinity, 0},
     ?assertMatch(Empty, scan_table(Tab0, SK_A0, EK_A9)),

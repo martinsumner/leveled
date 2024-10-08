@@ -327,7 +327,7 @@ handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Manifest0},
 handle_cast(
     {score_filelist, [Entry|Tail]},
     State = #state{scoring_state = ScoringState})
-        when ScoringState =/= undefined ->
+        when ?IS_DEF(ScoringState) ->
     Candidates = State#state.scored_files,
     {LowSQN, FN, JournalP, _LK} = Entry,
     CpctPerc =
@@ -377,7 +377,7 @@ handle_cast(
     {noreply, State#state{scored_files = [Candidate|Candidates]}};
 handle_cast(
     scoring_complete, State = #state{scoring_state = ScoringState})
-        when ScoringState =/= undefined ->
+        when ?IS_DEF(ScoringState) ->
     MaxRunLength = State#state.max_run_length,
     CDBopts = State#state.cdb_options,
     Candidates = lists:reverse(State#state.scored_files),
@@ -430,7 +430,7 @@ handle_cast(
     {noreply, State#state{scoring_state = undefined}, hibernate};
 handle_cast(
     {trim, PersistedSQN, ManifestAsList}, State = #state{inker = Ink})
-        when Ink =/= undefined ->
+        when ?IS_DEF(Ink) ->
     FilesToDelete = 
         leveled_imanifest:find_persistedentries(PersistedSQN, ManifestAsList),
     leveled_log:log(ic007, []),

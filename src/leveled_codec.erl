@@ -27,8 +27,10 @@
         endkey_passed/2,
         key_dominates/2,
         maybe_reap_expiredkey/2,
-        to_ledgerkey/3,
-        to_ledgerkey/5,
+        to_objectkey/3,
+        to_objectkey/5,
+        to_querykey/3,
+        to_querykey/5,
         from_ledgerkey/1,
         from_ledgerkey/2,
         isvalid_ledgerkey/1,
@@ -85,12 +87,12 @@
 -type primary_key() ::
         {leveled_head:object_tag(), key(), single_key(), single_key()|null}.
         % Primary key for an object
+-type object_key() ::
+        {tag(), key(), key(), single_key()|null}.
+-type query_key() ::
+        {tag(), key()|null, key()|null, single_key()|null}|all.
 -type ledger_key() :: 
-        {tag(),
-            key()|null,
-            key()|null,
-            single_key()|null
-        }|all.
+        object_key()|query_key().
 -type slimmed_key() ::
         {binary(), binary()|null}|binary()|null|all.
 -type ledger_value() ::
@@ -100,7 +102,7 @@
 -type ledger_value_v2() ::
         {sqn(), ledger_status(), segment_hash(), metadata(), last_moddate()}.
 -type ledger_kv() ::
-        {ledger_key(), ledger_value()}.
+        {object_key(), ledger_value()}.
 -type compaction_method() ::
         retain|recovr|recalc.
 -type compaction_strategy() ::
@@ -108,9 +110,9 @@
 -type journal_key_tag() ::
         ?INKT_STND|?INKT_TOMB|?INKT_MPUT|?INKT_KEYD.
 -type journal_key() ::
-        {sqn(), journal_key_tag(), ledger_key()}.
+        {sqn(), journal_key_tag(), object_key()}.
 -type journal_ref() ::
-        {ledger_key(), sqn()}.
+        {object_key(), sqn()}.
 -type object_spec_v0() ::
         {add|remove, key(), single_key(), single_key()|null, metadata()}.
 -type object_spec_v1() ::
@@ -154,6 +156,7 @@
             segment_hash/0,
             ledger_status/0,
             primary_key/0,
+            object_key/0,
             ledger_key/0,
             ledger_value/0,
             ledger_kv/0,
@@ -393,19 +396,33 @@ from_ledgerkey({?HEAD_TAG, Bucket, Key, SubKey}) ->
 from_ledgerkey({_Tag, Bucket, Key, _SubKey}) ->
     {Bucket, Key}.
 
--spec to_ledgerkey(
-    key(), single_key()|null, tag(), binary(), binary()) -> ledger_key().
+-spec to_objectkey(
+    key(), single_key(), tag(), binary(), binary()) -> object_key().
 %% @doc
 %% Convert something into a ledger key
-to_ledgerkey(Bucket, Key, Tag, Field, Value) when Tag == ?IDX_TAG ->
+to_objectkey(Bucket, Key, Tag, Field, Value) when Tag == ?IDX_TAG ->
     {?IDX_TAG, Bucket, {Field, Value}, Key}.
 
--spec to_ledgerkey(key()|null, key()|null, tag()) -> ledger_key().
+-spec to_objectkey(key(), key(), tag()) -> object_key().
 %% @doc
 %% Convert something into a ledger key
-to_ledgerkey(Bucket, {Key, SubKey}, ?HEAD_TAG) ->
+to_objectkey(Bucket, {Key, SubKey}, ?HEAD_TAG) ->
     {?HEAD_TAG, Bucket, Key, SubKey};
-to_ledgerkey(Bucket, Key, Tag) ->
+to_objectkey(Bucket, Key, Tag) ->
+    {Tag, Bucket, Key, null}.
+
+-spec to_querykey(
+    key(), single_key()|null, tag(), binary(), binary())
+        -> query_key().
+to_querykey(Bucket, Key, Tag, Field, Value) when Tag == ?IDX_TAG ->
+    {?IDX_TAG, Bucket, {Field, Value}, Key}.
+
+-spec to_querykey(key()|null, key()|null, tag()) -> query_key().
+%% @doc
+%% Convert something into a ledger key
+to_querykey(Bucket, {Key, SubKey}, ?HEAD_TAG) ->
+    {?HEAD_TAG, Bucket, Key, SubKey};
+to_querykey(Bucket, Key, Tag) ->
     {Tag, Bucket, Key, null}.
 
 %% No spec - due to tests
@@ -418,8 +435,8 @@ isvalid_ledgerkey(_LK) ->
     false.
 
 -spec endkey_passed(
-    ledger_key()|slimmed_key(),
-    ledger_key()|slimmed_key()) -> boolean().
+    query_key()|slimmed_key(),
+    object_key()|slimmed_key()) -> boolean().
 %% @doc
 %% Compare a key against a query key, only comparing elements that are non-null
 %% in the Query key.  
@@ -499,14 +516,19 @@ get_tagstrategy(Tag, Strategy) ->
 %%% Manipulate Journal Key and Value
 %%%============================================================================
 
--spec to_inkerkey(ledger_key(), non_neg_integer()) -> journal_key().
+-spec to_inkerkey(object_key(), non_neg_integer()) -> journal_key().
 %% @doc
 %% convertion from ledger_key to journal_key to allow for the key to be fetched
 to_inkerkey(LedgerKey, SQN) ->
     {SQN, ?INKT_STND, LedgerKey}.
 
--spec to_inkerkv(ledger_key(), non_neg_integer(), any(), journal_keychanges(), 
-                    compression_method(), boolean()) -> {journal_key(), any()}.
+-spec to_inkerkv(
+    object_key(),
+    non_neg_integer(),
+    any(),
+    journal_keychanges(), 
+    compression_method(), boolean())
+        -> {journal_key(), binary()}.
 %% @doc
 %% Convert to the correct format of a Journal key and value
 to_inkerkv(LedgerKey, SQN, Object, KeyChanges, PressMethod, Compress) ->
@@ -728,7 +750,7 @@ idx_indexspecs(IndexSpecs, Bucket, Key, SQN, TTL) ->
 
 gen_indexspec(Bucket, Key, IdxOp, IdxField, IdxTerm, SQN, TTL) ->
     Status = set_status(IdxOp, TTL),
-    {to_ledgerkey(Bucket, Key, ?IDX_TAG, IdxField, IdxTerm),
+    {to_objectkey(Bucket, Key, ?IDX_TAG, IdxField, IdxTerm),
         {SQN, Status, no_lookup, null}}.
 
 -spec gen_headspec(object_spec(), integer(), integer()|infinity) -> ledger_kv().
@@ -744,9 +766,9 @@ gen_headspec(
     K =
         case SubKey of 
             null ->
-                to_ledgerkey(Bucket, Key, ?HEAD_TAG);
+                to_objectkey(Bucket, Key, ?HEAD_TAG);
             SKB when is_binary(SKB) ->
-                to_ledgerkey(Bucket, {Key, SKB}, ?HEAD_TAG)
+                to_objectkey(Bucket, {Key, SKB}, ?HEAD_TAG)
             end,
     {K, {SQN, Status, segment_hash(K), Value, get_last_lastmodification(LMD)}};
 gen_headspec(

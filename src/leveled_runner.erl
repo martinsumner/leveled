@@ -76,8 +76,8 @@
 %% @doc
 %% Fold over a bucket accumulating the count of objects and their total sizes
 bucket_sizestats(SnapFun, Bucket, Tag) ->
-    StartKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
-    EndKey = leveled_codec:to_ledgerkey(Bucket, null, Tag),
+    StartKey = leveled_codec:to_querykey(Bucket, null, Tag),
+    EndKey = leveled_codec:to_querykey(Bucket, null, Tag),
     AccFun = accumulate_size(),
     Runner = 
         fun() ->
@@ -175,8 +175,8 @@ bucketkey_query(SnapFun, Tag, Bucket,
                     {StartKey, EndKey}, 
                     {FoldKeysFun, InitAcc},
                     TermRegex) ->
-    SK = leveled_codec:to_ledgerkey(Bucket, StartKey, Tag),
-    EK = leveled_codec:to_ledgerkey(Bucket, EndKey, Tag),
+    SK = leveled_codec:to_querykey(Bucket, StartKey, Tag),
+    EK = leveled_codec:to_querykey(Bucket, EndKey, Tag),
     AccFun = accumulate_keys(FoldKeysFun, TermRegex),
     Runner =
         fun() ->
@@ -203,8 +203,8 @@ bucketkey_query(SnapFun, Tag, Bucket, FunAcc) ->
 %% @doc
 %% Fold over the keys under a given Tag accumulating the hashes
 hashlist_query(SnapFun, Tag, JournalCheck) ->
-    StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
-    EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
+    StartKey = leveled_codec:to_querykey(null, null, Tag),
+    EndKey = leveled_codec:to_querykey(null, null, Tag),
     Runner = 
         fun() ->
             {ok, LedgerSnapshot, JournalSnapshot, AfterFun} = SnapFun(),
@@ -246,14 +246,14 @@ tictactree(SnapFun, {Tag, Bucket, Query}, JournalCheck, TreeSize, Filter) ->
                 case Tag of
                     ?IDX_TAG ->
                         {IdxFld, StartIdx, EndIdx} = Query,
-                        KeyDefFun = fun leveled_codec:to_ledgerkey/5,
+                        KeyDefFun = fun leveled_codec:to_querykey/5,
                         {KeyDefFun(Bucket, null, ?IDX_TAG, IdxFld, StartIdx),
                             KeyDefFun(Bucket, null, ?IDX_TAG, IdxFld, EndIdx),
                             EnsureKeyBinaryFun};
                     _ ->
                         {StartOKey, EndOKey} = Query,
-                        {leveled_codec:to_ledgerkey(Bucket, StartOKey, Tag),
-                            leveled_codec:to_ledgerkey(Bucket, EndOKey, Tag),
+                        {leveled_codec:to_querykey(Bucket, StartOKey, Tag),
+                            leveled_codec:to_querykey(Bucket, EndOKey, Tag),
                             fun(K, H) -> 
                                 V = {is_hash, H},
                                 EnsureKeyBinaryFun(K, V)
@@ -279,8 +279,8 @@ tictactree(SnapFun, {Tag, Bucket, Query}, JournalCheck, TreeSize, Filter) ->
 %% function to each proxy object
 foldheads_allkeys(SnapFun, Tag, FoldFun, JournalCheck,
                     SegmentList, LastModRange, MaxObjectCount) ->
-    StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
-    EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
+    StartKey = leveled_codec:to_querykey(null, null, Tag),
+    EndKey = leveled_codec:to_querykey(null, null, Tag),
     foldobjects(SnapFun, 
                 Tag, 
                 [{StartKey, EndKey}], 
@@ -298,8 +298,8 @@ foldheads_allkeys(SnapFun, Tag, FoldFun, JournalCheck,
 %% @doc
 %% Fold over all objects for a given tag
 foldobjects_allkeys(SnapFun, Tag, FoldFun, key_order) ->
-    StartKey = leveled_codec:to_ledgerkey(null, null, Tag),
-    EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
+    StartKey = leveled_codec:to_querykey(null, null, Tag),
+    EndKey = leveled_codec:to_querykey(null, null, Tag),
     foldobjects(SnapFun, 
                 Tag, 
                 [{StartKey, EndKey}], 
@@ -357,7 +357,7 @@ foldobjects_allkeys(SnapFun, Tag, FoldObjectsFun, sqn_order) ->
             {ok, JournalSQN} = leveled_inker:ink_getjournalsqn(JournalSnapshot),
             IsValidFun = 
                 fun(Bucket, Key, SQN) ->
-                    LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
+                    LedgerKey = leveled_codec:to_objectkey(Bucket, Key, Tag),
                     CheckSQN =
                         leveled_penciller:pcl_checksequencenumber(
                             LedgerSnapshot, LedgerKey, SQN),
@@ -438,9 +438,9 @@ foldheads_bybucket(SnapFun,
 %% and passing those objects into the fold function
 foldobjects_byindex(SnapFun, {Tag, Bucket, Field, FromTerm, ToTerm}, FoldFun) ->
     StartKey =
-        leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG, Field, FromTerm),
+        leveled_codec:to_querykey(Bucket, null, ?IDX_TAG, Field, FromTerm),
     EndKey =
-        leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG, Field, ToTerm),
+        leveled_codec:to_querykey(Bucket, null, ?IDX_TAG, Field, ToTerm),
     foldobjects(SnapFun, 
                 Tag, 
                 [{StartKey, EndKey}], 
@@ -457,8 +457,8 @@ foldobjects_byindex(SnapFun, {Tag, Bucket, Field, FromTerm, ToTerm}, FoldFun) ->
 get_nextbucket(_NextB, _NextK, _Tag, _LS, BKList, {Limit, Limit}) ->
     lists:reverse(BKList);
 get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList, {C, L}) ->
-    StartKey = leveled_codec:to_ledgerkey(NextBucket, NextKey, Tag),
-    EndKey = leveled_codec:to_ledgerkey(null, null, Tag),
+    StartKey = leveled_codec:to_querykey(NextBucket, NextKey, Tag),
+    EndKey = leveled_codec:to_querykey(null, null, Tag),
     ExtractFun =
         fun(LK, V, _Acc) ->
             {leveled_codec:from_ledgerkey(LK), V}
@@ -630,7 +630,7 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
                     {B0, K0, _T0} ->
                         {B0, K0}
                 end,
-            JK = {leveled_codec:to_ledgerkey(B, K, Tag), SQN},
+            JK = {leveled_codec:to_objectkey(B, K, Tag), SQN},
             case DeferredFetch of
                 {true, JournalCheck} ->
                     ProxyObj = 

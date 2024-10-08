@@ -372,7 +372,7 @@ cdb_scan(Pid, FilterFun, InitAcc, StartPosition) ->
                     {cdb_scan, FilterFun, InitAcc, StartPosition},
                     infinity).
 
--spec cdb_lastkey(pid()) -> any().
+-spec cdb_lastkey(pid()) -> leveled_codec:journal_key()|empty.
 %% @doc
 %% Get the last key to be added to the file (which will have the highest
 %% sequence number)
@@ -494,7 +494,7 @@ starting({call, From}, {open_reader, Filename, LastKey}, State) ->
 
 writer(
     {call, From}, {get_kv, Key}, State = #state{handle =IO})
-        when IO =/= undefined ->
+        when ?IS_DEF(IO) ->
     {keep_state_and_data,
         [{reply,
             From,
@@ -505,7 +505,7 @@ writer(
                 State#state.binary_mode)}]};
 writer(
     {call, From}, {key_check, Key}, State = #state{handle =IO})
-        when IO =/= undefined ->
+        when ?IS_DEF(IO) ->
     {keep_state_and_data,
         [{reply,
             From,
@@ -519,7 +519,7 @@ writer(
     {call, From},
     {put_kv, Key, Value, Sync},
     State = #state{last_position = LP, handle = IO})
-        when last_position =/= undefined, IO =/= undefined ->
+        when ?IS_DEF(last_position), ?IS_DEF(IO) ->
     NewCount = State#state.current_count + 1,
     case NewCount >= State#state.max_count of
         true ->
@@ -565,7 +565,7 @@ writer(
     {call, From},
     {mput_kv, KVList},
     State = #state{last_position = LP, handle = IO})
-        when last_position =/= undefined, IO =/= undefined ->
+        when ?IS_DEF(last_position), ?IS_DEF(IO) ->
     NewCount = State#state.current_count + length(KVList),
     TooMany = NewCount >= State#state.max_count,
     NotEmpty = State#state.current_count > 0,
@@ -598,7 +598,7 @@ writer(
     end;
 writer(
     {call, From}, cdb_complete, State = #state{filename = FN})
-        when FN =/= undefined ->
+        when ?IS_DEF(FN) ->
     NewName = determine_new_filename(FN),
     ok = close_file(State#state.handle,
                         State#state.hashtree,
@@ -609,7 +609,7 @@ writer({call, From}, Event, State) ->
     handle_sync_event(Event, From, State);
 writer(
     cast, cdb_roll, State = #state{last_position = LP})
-        when LP =/= undefined ->
+        when ?IS_DEF(LP) ->
     ok = 
         leveled_iclerk:clerk_hashtablecalc(
             State#state.hashtree, LP, self()),
@@ -618,7 +618,7 @@ writer(
 
 rolling(
     {call, From}, {get_kv, Key}, State = #state{handle = IO})
-        when IO =/= undefined ->
+        when ?IS_DEF(IO) ->
     {keep_state_and_data,
         [{reply,
             From,
@@ -629,7 +629,7 @@ rolling(
                 State#state.binary_mode)}]};
 rolling(
     {call, From}, {key_check, Key}, State = #state{handle = IO})
-        when IO =/= undefined ->
+        when ?IS_DEF(IO) ->
     {keep_state_and_data,
         [{reply,
             From,
@@ -647,7 +647,7 @@ rolling(
     {call, From},
     {return_hashtable, IndexList, HashTreeBin},
     State = #state{filename = FN})
-        when filename =/= undefined ->
+        when ?IS_DEF(FN) ->
     SW = os:timestamp(),
     Handle = State#state.handle,
     {ok, BasePos} = file:position(Handle, State#state.last_position),
@@ -683,7 +683,7 @@ rolling(cast, {delete_pending, ManSQN, Inker}, State) ->
 
 reader(
     {call, From}, {get_kv, Key}, State = #state{handle = IO})
-        when IO =/= undefined ->
+        when ?IS_DEF(IO) ->
     Result =
         get_withcache(
             IO,
@@ -716,7 +716,7 @@ reader(
     {call, From},
     {direct_fetch, PositionList, Info},
     State = #state{handle = IO})
-        when IO =/= undefined ->
+        when ?IS_DEF(IO) ->
     FilterFalseKey =
         fun(Tpl) ->
             case element(1, Tpl) of
@@ -756,7 +756,7 @@ reader(
     end;
 reader(
     {call, From}, cdb_complete, State = #state{filename = FN, handle = IO})
-        when filename =/= undefined, IO =/= undefined ->
+        when ?IS_DEF(FN), ?IS_DEF(IO) ->
     leveled_log:log(cdb05, [FN, reader, cdb_ccomplete]),
     ok = file:close(IO),
     {stop_and_reply, normal,
@@ -779,7 +779,7 @@ reader(cast, clerk_complete, _State) ->
 
 delete_pending(
     {call, From}, {get_kv, Key}, State = #state{handle = IO})
-        when IO =/= undefined ->
+        when ?IS_DEF(IO) ->
     Result =
         get_withcache(
             IO,
@@ -791,7 +791,7 @@ delete_pending(
     {keep_state_and_data, [{reply, From, Result}, ?DELETE_TIMEOUT]};
 delete_pending(
     {call, From}, {key_check, Key}, State = #state{handle = IO})
-        when IO =/= undefined ->
+        when ?IS_DEF(IO) ->
     Result =
         get_withcache(
             IO,
@@ -804,25 +804,25 @@ delete_pending(
     {keep_state_and_data, [{reply, From, Result}, ?DELETE_TIMEOUT]};
 delete_pending(
     {call, From}, cdb_close, State = #state{handle = IO, filename = FN})
-        when IO =/= undefined, filename =/= undefined ->
+        when ?IS_DEF(FN), ?IS_DEF(IO) ->
     leveled_log:log(cdb05, [FN, delete_pending, cdb_close]),
     close_pendingdelete(IO, FN, State#state.waste_path),
     {stop_and_reply, normal, [{reply, From, ok}]};
 delete_pending(
     cast, delete_confirmed, State = #state{handle = IO, filename = FN})
-        when IO =/= undefined, filename =/= undefined ->
+        when ?IS_DEF(FN), ?IS_DEF(IO) ->
     leveled_log:log(cdb04, [FN, State#state.delete_point]),
     close_pendingdelete(IO, FN, State#state.waste_path),
     {stop, normal};
 delete_pending(
     cast, destroy, State = #state{handle = IO, filename = FN})
-        when IO =/= undefined, filename =/= undefined ->
+        when ?IS_DEF(FN), ?IS_DEF(IO) ->
     leveled_log:log(cdb05, [FN, delete_pending, destroy]),
     close_pendingdelete(IO, FN, State#state.waste_path),
     {stop, normal};
 delete_pending(
     timeout, _, State=#state{delete_point=ManSQN, handle = IO, filename = FN})
-        when ManSQN > 0, IO =/= undefined, FN =/= undefined ->
+        when ManSQN > 0, ?IS_DEF(FN), ?IS_DEF(IO) ->
     case is_process_alive(State#state.inker) of
         true ->
             ok =
@@ -838,7 +838,7 @@ delete_pending(
 
 handle_sync_event(
     {cdb_scan, FilterFun, Acc, StartPos}, From, State = #state{handle = IO})
-        when IO =/= undefined ->
+        when ?IS_DEF(IO) ->
     {ok, EndPos0} = file:position(IO, eof),
     {ok, StartPos0} =
         case StartPos of
@@ -879,7 +879,7 @@ handle_sync_event(cdb_lastkey, From, State) ->
     {keep_state_and_data, [{reply, From, State#state.last_key}]};
 handle_sync_event(
     cdb_firstkey, From, State = #state{handle = IO})
-        when IO =/= undefined ->
+        when ?IS_DEF(IO) ->
     {ok, EOFPos} = file:position(IO, eof),
     FirstKey =
         case EOFPos of
@@ -925,7 +925,7 @@ handle_sync_event({put_cachedscore, Score}, From, State) ->
         [{reply, From, ok}]};
 handle_sync_event(
     cdb_close, From, _State = #state{handle = IO})
-        when IO =/= undefined ->
+        when ?IS_DEF(IO) ->
     file:close(IO),
     {stop_and_reply, normal, [{reply, From, ok}]}.
 

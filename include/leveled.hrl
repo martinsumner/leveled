@@ -70,6 +70,11 @@
     %% Inker key type used for tombstones
 %%%============================================================================
 
+%%%============================================================================
+%%% Helper Function
+%%%============================================================================
+
+-define(IS_DEF(Attribute), Attribute =/= undefined).
 
 %%%============================================================================
 %%% Shared records
@@ -80,8 +85,8 @@
                         timestamp :: integer()}).                      
 
 -record(manifest_entry,
-                        {start_key :: tuple() | undefined,
-                        end_key :: tuple() | undefined,
+                        {start_key :: tuple(),
+                        end_key :: tuple(),
                         owner :: pid(),
                         filename :: string() | undefined,
                         bloom = none :: leveled_ebloom:bloom() | none}).
@@ -129,7 +134,7 @@
                         singlefile_compactionperc :: float()|undefined,
                         maxrunlength_compactionperc :: float()|undefined,
                         score_onein = 1 :: pos_integer(),
-                        snaptimeout_long :: pos_integer() | undefined,
+                        snaptimeout_long = 60 :: pos_integer(),
                         monitor = {no_monitor, 0}
                             :: leveled_monitor:monitor()}).
 

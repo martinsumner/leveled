@@ -256,8 +256,9 @@
 
 -spec sst_open(
         string(), string(), sst_options(), leveled_pmanifest:lsm_level())
-            -> {ok, pid(),
-                    {leveled_codec:ledger_key(), leveled_codec:ledger_key()},
+            ->
+                {ok, pid(),
+                    {leveled_codec:object_key(), leveled_codec:object_key()},
                     binary()}.
 %% @doc
 %% Open an SST file at a given path and filename.  The first and last keys
@@ -279,7 +280,8 @@ sst_open(RootPath, Filename, OptsSST, Level) ->
                     list(leveled_codec:ledger_kv()),
                     integer(), sst_options())
             -> {ok, pid(),
-                    {leveled_codec:ledger_key(), leveled_codec:ledger_key()},
+                    {leveled_codec:object_key(),
+                        leveled_codec:object_key()},
                     binary()}.
 %% @doc
 %% Start a new SST file at the assigned level passing in a list of Key, Value
@@ -317,8 +319,8 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST, IndexModDate) ->
             -> empty|{ok, pid(),
                 {{list(leveled_codec:ledger_kv()),
                         list(leveled_codec:ledger_kv())},
-                    leveled_codec:ledger_key(),
-                    leveled_codec:ledger_key()},
+                    leveled_codec:object_key(),
+                    leveled_codec:object_key()},
                     binary()}.
 %% @doc
 %% Start a new SST file at the assigned level passing in a two lists of
@@ -407,8 +409,9 @@ sst_newlevelzero(
     {ok, Pid, noreply}.
 
 
--spec sst_get(pid(), leveled_codec:ledger_key())
-                                    -> leveled_codec:ledger_kv()|not_present.
+-spec sst_get(
+    pid(), leveled_codec:object_key()) ->
+        leveled_codec:ledger_kv()|not_present.
 %% @doc
 %% Return a Key, Value pair matching a Key or not_present if the Key is not in
 %% the store.  The segment_hash function is used to accelerate the seeking of
@@ -416,17 +419,18 @@ sst_newlevelzero(
 sst_get(Pid, LedgerKey) ->
     sst_get(Pid, LedgerKey, leveled_codec:segment_hash(LedgerKey)).
 
--spec sst_get(pid(), leveled_codec:ledger_key(), leveled_codec:segment_hash())
-                                    -> leveled_codec:ledger_kv()|not_present.
+-spec sst_get(
+    pid(), leveled_codec:object_key(), leveled_codec:segment_hash())
+        -> leveled_codec:ledger_kv()|not_present.
 %% @doc
 %% Return a Key, Value pair matching a Key or not_present if the Key is not in
 %% the store (with the magic hash precalculated).
 sst_get(Pid, LedgerKey, Hash) ->
     gen_statem:call(Pid, {get_kv, LedgerKey, Hash, undefined}, infinity).
 
--spec sst_getsqn(pid(),
-    leveled_codec:ledger_key(),
-    leveled_codec:segment_hash()) -> leveled_codec:sqn()|not_present.
+-spec sst_getsqn(
+    pid(), leveled_codec:object_key(), leveled_codec:segment_hash())
+        -> leveled_codec:sqn()|not_present.
 %% @doc
 %% Return a SQN for the key or not_present if the key is not in
 %% the store (with the magic hash precalculated).
@@ -489,7 +493,7 @@ sst_deleteconfirmed(Pid) ->
     gen_statem:cast(Pid, close).
 
 -spec sst_checkready(pid()) -> 
-    {ok, string(), leveled_codec:ledger_key(), leveled_codec:ledger_key()}.
+    {ok, string(), leveled_codec:object_key(), leveled_codec:object_key()}.
 %% @doc
 %% If a file has been set to be built, check that it has been built.  Returns
 %% the filename and the {startKey, EndKey} for the manifest.
@@ -711,7 +715,7 @@ starting(cast, {sst_returnslot, FetchedSlot, FetchFun, SlotCount}, State) ->
 
 reader({call, From},
         {get_kv, LedgerKey, Hash, Filter},
-        State = #state{read_state = RS}) when RS =/= undefined ->
+        State = #state{read_state = RS}) when ?IS_DEF(RS)->
     % Get a KV value and potentially take sample timings
     Monitor =
         case Filter of
@@ -760,7 +764,7 @@ reader({call, From},
     end;
 reader({call, From},
         {fetch_range, StartKey, EndKey, LowLastMod},
-        State = #state{read_state = RS}) when RS =/= undefined ->
+        State = #state{read_state = RS}) when ?IS_DEF(RS) ->
     SlotsToPoint =
         fetch_range(
             StartKey,
@@ -775,7 +779,7 @@ reader({call, From},
     {keep_state_and_data, [{reply, From, SlotsToPoint}]};
 reader({call, From},
         {get_slots, SlotList, SegChecker, LowLastMod},
-        State = #state{read_state = RS}) when RS =/= undefined ->
+        State = #state{read_state = RS}) when ?IS_DEF(RS) ->
     PressMethod = State#state.compression_method,
     IdxModDate = State#state.index_moddate,
     {NeedBlockIdx, SlotBins} =
@@ -812,13 +816,13 @@ reader({call, From}, get_tomb_count, State) ->
      [{reply, From, State#state.tomb_count}]};
 reader({call, From},
         close,
-        State = #state{read_state = RS}) when RS =/= undefined ->
+        State = #state{read_state = RS}) when ?IS_DEF(RS) ->
     ok = file:close(RS#read_state.handle),
     {stop_and_reply, normal, [{reply, From, ok}], State};
 
 reader(cast,
         {switch_levels, NewLevel},
-        State = #state{read_state = RS}) when RS =/= undefined ->
+        State = #state{read_state = RS}) when ?IS_DEF(RS) ->
     {keep_state,
         State#state{
             read_state =
@@ -839,7 +843,7 @@ reader(info, bic_complete, State) ->
 reader(
         info,
         start_complete,
-        #state{starting_pid = StartingPid}) when StartingPid =/= undefined ->
+        #state{starting_pid = StartingPid}) when ?IS_DEF(StartingPid) ->
     % The SST file will be started by a clerk, but the clerk may be shut down
     % prior to the manifest being updated about the existence of this SST file.
     % If there is no activity after startup, check the clerk is still alive and
@@ -857,7 +861,7 @@ reader(
 
 delete_pending({call, From},
         {get_kv, LedgerKey, Hash, Filter},
-        State = #state{read_state = RS}) when RS =/= undefined ->
+        State = #state{read_state = RS}) when ?IS_DEF(RS) ->
     {KeyValue, _BIC, _HMD, _FC} = 
         fetch(
             LedgerKey, Hash,
@@ -882,7 +886,7 @@ delete_pending({call, From},
 delete_pending(
         {call, From},
         {fetch_range, StartKey, EndKey, LowLastMod},
-        State = #state{read_state = RS}) when RS =/= undefined ->
+        State = #state{read_state = RS}) when ?IS_DEF(RS) ->
     SlotsToPoint =
         fetch_range(
             StartKey,
@@ -898,7 +902,7 @@ delete_pending(
 delete_pending(
         {call, From},
         {get_slots, SlotList, SegChecker, LowLastMod},
-        State = #state{read_state = RS}) when RS =/= undefined ->
+        State = #state{read_state = RS}) when ?IS_DEF(RS) ->
     PressMethod = State#state.compression_method,
     IdxModDate = State#state.index_moddate,
     {_NeedBlockIdx, SlotBins} =
@@ -914,7 +918,7 @@ delete_pending(
 delete_pending(
         {call, From},
         close,
-        State = #state{read_state = RS}) when RS =/= undefined ->
+        State = #state{read_state = RS}) when ?IS_DEF(RS) ->
     leveled_log:log(sst07, [State#state.filename]),
     ok = file:close(RS#read_state.handle),
     ok = 
@@ -924,7 +928,7 @@ delete_pending(
 delete_pending(
         cast,
         close,
-        State = #state{read_state = RS}) when RS =/= undefined ->
+        State = #state{read_state = RS}) when ?IS_DEF(RS) ->
     leveled_log:log(sst07, [State#state.filename]),
     ok = file:close(RS#read_state.handle),
     ok = 
@@ -950,7 +954,7 @@ delete_pending(timeout, _, State) ->
 
 handle_update_blockindex_cache(
         BIC,
-        State = #state{read_state = RS}) when RS =/= undefined ->
+        State = #state{read_state = RS}) when ?IS_DEF(RS) ->
     {NeedBlockIdx, BlockIndexCache, HighModDate} =
         update_blockindex_cache(
             BIC,
@@ -984,7 +988,7 @@ format_status(Status) ->
         terminate ->
             State = maps:get(state, Status),
             case State#state.read_state of
-                RS when RS =/= undefined ->
+                RS when ?IS_DEF(RS) ->
                     maps:update(
                         state,
                         State#state{
@@ -3384,7 +3388,7 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
     KNumber =
         lists:flatten(io_lib:format("K~8..0B", [rand:uniform(1000000)])),
     LK =
-        leveled_codec:to_ledgerkey(
+        leveled_codec:to_objectkey(
             list_to_binary("Bucket" ++ BNumber),
             list_to_binary("Key" ++ KNumber),
             o
@@ -5261,7 +5265,7 @@ print_compare_size(Type, OptimisedSize, UnoptimisedSize) ->
 single_key_test() ->
     FileName = "single_key_test",
     Field = <<"t1_bin">>,
-    LK = leveled_codec:to_ledgerkey(<<"Bucket0">>, <<"Key0">>, ?STD_TAG),
+    LK = leveled_codec:to_objectkey(<<"Bucket0">>, <<"Key0">>, ?STD_TAG),
     Chunk = crypto:strong_rand_bytes(16),
     MV = leveled_codec:convert_to_ledgerv(LK, 1, Chunk, 16, infinity),
     OptsSST =
@@ -5315,14 +5319,14 @@ strange_range_test() ->
         #sst_options{press_method=native,
                         log_options=leveled_log:get_opts()},
 
-    FK = leveled_codec:to_ledgerkey({<<"T0">>, <<"B0">>}, <<"K0">>, ?RIAK_TAG),
-    LK = leveled_codec:to_ledgerkey({<<"T0">>, <<"B0">>}, <<"K02">>, ?RIAK_TAG),
-    EK = leveled_codec:to_ledgerkey({<<"T0">>, <<"B0">>}, <<"K0299">>, ?RIAK_TAG),
+    FK = leveled_codec:to_objectkey({<<"T0">>, <<"B0">>}, <<"K0">>, ?RIAK_TAG),
+    LK = leveled_codec:to_objectkey({<<"T0">>, <<"B0">>}, <<"K02">>, ?RIAK_TAG),
+    EK = leveled_codec:to_objectkey({<<"T0">>, <<"B0">>}, <<"K0299">>, ?RIAK_TAG),
 
     KL1 =
         lists:map(
             fun(I) ->
-                leveled_codec:to_ledgerkey(
+                leveled_codec:to_objectkey(
                     {<<"T0">>, <<"B0">>},
                     list_to_binary("K00" ++ integer_to_list(I)),
                     ?RIAK_TAG)
@@ -5331,7 +5335,7 @@ strange_range_test() ->
     KL2 =
         lists:map(
             fun(I) ->
-                leveled_codec:to_ledgerkey(
+                leveled_codec:to_objectkey(
                     {<<"T0">>, <<"B0">>},
                     list_to_binary("K02" ++ integer_to_list(I)),
                     ?RIAK_TAG)

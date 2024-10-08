@@ -136,7 +136,7 @@
     {leveled_pmanifest:lsm_level(), #sst_fetch_timings{}}.
 -type log_type() ::
     bookie_head|bookie_get|bookie_put|bookie_snap|pcl_fetch|sst_fetch|cdb_get.
--type pcl_level() :: mem|leveled_pmanifest:lsm_level().
+-type pcl_level() :: memory|leveled_pmanifest:lsm_level().
 -type sst_fetch_type() ::
     fetch_cache|slot_cachedblock|slot_noncachedblock|not_found.
 -type microsecs() :: pos_integer().
