@@ -204,6 +204,7 @@
 
 % Test functions to ignore for equalizer
 -eqwalizer({nowarn_function, fetch_status_test/0}).
+-eqwalizer({nowarn_function, maybe_pause_push/2}).
 
 -ifdef(TEST).
 -export([clean_testdir/1]).
@@ -298,9 +299,9 @@
                     leveled_codec:ledger_kv()|not_present).
 -type levelzero_returnfun() :: fun((levelzero_cacheentry()) -> ok).
 -type pclacc_fun() ::
-        fun((leveled_codec:ledger_key(),
+        fun((leveled_codec:object_key(),
                 leveled_codec:ledger_value(),
-                term()) -> term()).
+                dynamic()) -> dynamic()).
 -type sst_options() :: #sst_options{}.
 
 -export_type(
@@ -390,10 +391,12 @@ pcl_fetchlevelzero(Pid, Slot, ReturnFun) ->
 pcl_fetch(Pid, Key, Hash, UseL0Index) ->
     gen_server:call(Pid, {fetch, Key, Hash, UseL0Index}, infinity).
 
--spec pcl_fetchkeys(pid(), 
-                    leveled_codec:ledger_key(), 
-                    leveled_codec:ledger_key(), 
-                    pclacc_fun(), any(), as_pcl|by_runner) -> any().
+-spec pcl_fetchkeys(
+    pid(),
+    leveled_codec:query_key(),
+    leveled_codec:query_key(),
+    pclacc_fun(),
+    dynamic()) -> dynamic().
 %% @doc
 %% Run a range query between StartKey and EndKey (inclusive).  This will cover
 %% all keys in the range - so must only be run against snapshots of the
@@ -406,6 +409,19 @@ pcl_fetch(Pid, Key, Hash, UseL0Index) ->
 pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc) ->
     pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc, as_pcl).
 
+-spec pcl_fetchkeys
+    (pid(),
+        leveled_codec:query_key(),
+        leveled_codec:query_key(),
+        pclacc_fun(),
+        dynamic(),
+        as_pcl) -> dynamic();
+    (pid(),
+        leveled_codec:query_key(),
+        leveled_codec:query_key(),
+        pclacc_fun(),
+        dynamic(),
+        by_runner) -> fun(() -> dynamic()).
 pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc, By) ->
     gen_server:call(Pid,
                     {fetch_keys, 
@@ -416,13 +432,14 @@ pcl_fetchkeys(Pid, StartKey, EndKey, AccFun, InitAcc, By) ->
                     infinity).
 
 
--spec pcl_fetchkeysbysegment(pid(), 
-                                leveled_codec:ledger_key(), 
-                                leveled_codec:ledger_key(), 
-                                pclacc_fun(), any(), 
-                                leveled_codec:segment_list(),
-                                false | leveled_codec:lastmod_range(),
-                                boolean()) -> any().
+-spec pcl_fetchkeysbysegment(
+    pid(), 
+    leveled_codec:ledger_key(), 
+    leveled_codec:ledger_key(), 
+    pclacc_fun(), any(), 
+    leveled_codec:segment_list(),
+    false | leveled_codec:lastmod_range(),
+    boolean()) -> any().
 %% @doc
 %% Run a range query between StartKey and EndKey (inclusive).  This will cover
 %% all keys in the range - so must only be run against snapshots of the
@@ -453,22 +470,23 @@ pcl_fetchkeysbysegment(Pid, StartKey, EndKey, AccFun, InitAcc,
                         by_runner},
                     infinity).
 
--spec pcl_fetchnextkey(pid(), 
-                        leveled_codec:ledger_key(), 
-                        leveled_codec:ledger_key(), 
-                        pclacc_fun(), any()) -> any().
+-spec pcl_fetchnextkey(
+    pid(), 
+    leveled_codec:ledger_key(), 
+    leveled_codec:ledger_key(), 
+    pclacc_fun(), any()) -> any().
 %% @doc
 %% Run a range query between StartKey and EndKey (inclusive).  This has the
 %% same constraints as pcl_fetchkeys/5, but will only return the first key
 %% found in erlang term order.
 pcl_fetchnextkey(Pid, StartKey, EndKey, AccFun, InitAcc) ->
-    gen_server:call(Pid,
-                    {fetch_keys, 
-                        StartKey, EndKey, 
-                        AccFun, InitAcc, 
-                        false, false, 1,
-                        as_pcl},
-                    infinity).
+    gen_server:call(
+        Pid,
+        {fetch_keys,
+                    StartKey, EndKey, AccFun, InitAcc, false, false, 1, as_pcl
+                },
+        infinity
+    ).
 
 -spec pcl_checksequencenumber(
     pid(), leveled_codec:ledger_key(), integer()) -> sqn_check().

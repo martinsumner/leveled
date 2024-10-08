@@ -29,9 +29,7 @@
 -define(SKIP_WIDTH, 16).
 
 -type tree_type() :: tree|idxt|skpl. 
--type leveled_tree() :: {tree_type(),
-                            integer(), % length
-                            any()}.
+-type leveled_tree() :: {tree_type(), integer(), any()}.
 
 -export_type([leveled_tree/0]).
 
@@ -104,7 +102,7 @@ match(Key, {tree, _L, Tree}) ->
         {_NK, SL, _Iter} ->
             lookup_match(Key, SL)
     end;
-match(Key, {idxt, _L, {TLI, IDX}}) ->
+match(Key, {idxt, _L, {TLI, IDX}}) when is_tuple(TLI) ->
     Iter = tree_iterator_from(Key, IDX),
     case tree_next(Iter) of
         none ->
@@ -136,7 +134,7 @@ search(Key, {tree, _L, Tree}, StartKeyFun) ->
                     {K, V}
             end
     end;
-search(Key, {idxt, _L, {TLI, IDX}}, StartKeyFun) ->
+search(Key, {idxt, _L, {TLI, IDX}}, StartKeyFun) when is_tuple(TLI) ->
     Iter = tree_iterator_from(Key, IDX),
     case tree_next(Iter) of
         none ->
@@ -235,14 +233,13 @@ to_list({tree, _L, Tree}) ->
             Acc ++ SL
         end,
     lists:foldl(FoldFun, [], tree_to_list(Tree));
-to_list({idxt, _L, {TLI, _IDX}}) ->
+to_list({idxt, _L, {TLI, _IDX}}) when is_tuple(TLI) ->
     lists:append(tuple_to_list(TLI));
-to_list({skpl, _L, SkipList}) ->
+to_list({skpl, _L, SkipList}) when is_list(SkipList) ->
     FoldFun = 
         fun({_M, SL}, Acc) ->
             [SL|Acc]
         end,
-
     Lv1List = lists:reverse(lists:foldl(FoldFun, [], SkipList)),
     Lv0List = lists:reverse(lists:foldl(FoldFun, [], lists:append(Lv1List))),
     lists:append(Lv0List).

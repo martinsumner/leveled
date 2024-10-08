@@ -151,12 +151,14 @@
 
 -export_type([tag/0,
             key/0,
+            single_key/0,
             sqn/0,
             object_spec/0,
             segment_hash/0,
             ledger_status/0,
             primary_key/0,
             object_key/0,
+            query_key/0,
             ledger_key/0,
             ledger_value/0,
             ledger_kv/0,
@@ -310,18 +312,25 @@ maybe_accumulate(
     maybe_accumulate(T, Acc, Count, Filter, AccFun).
 
 -spec accumulate_index(
-        {boolean(), undefined|leveled_runner:mp()}, leveled_runner:acc_fun())
-            -> any().
+        {boolean(), undefined|leveled_runner:mp()},
+        leveled_runner:fold_keys_fun())
+            -> leveled_penciller:pclacc_fun().
 accumulate_index({false, undefined}, FoldKeysFun) ->
-    fun({?IDX_TAG, Bucket, _IndexInfo, ObjKey}, _Value, Acc) ->
+    fun(
+        {?IDX_TAG, Bucket, _IndexInfo, ObjKey}, _Value, Acc)
+            when ObjKey =/= null ->
         FoldKeysFun(Bucket, ObjKey, Acc)
     end;
 accumulate_index({true, undefined}, FoldKeysFun) ->
-    fun({?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc) ->
+    fun(
+        {?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc)
+            when IdxValue =/= null, ObjKey =/= null ->
         FoldKeysFun(Bucket, {IdxValue, ObjKey}, Acc)
     end;
 accumulate_index({AddTerm, TermRegex}, FoldKeysFun) ->
-    fun({?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc) ->
+    fun(
+        {?IDX_TAG, Bucket, {_IdxFld, IdxValue}, ObjKey}, _Value, Acc)
+            when IdxValue =/= null, ObjKey =/= null ->
         case re:run(IdxValue, TermRegex) of
             nomatch ->
                 Acc;

@@ -3926,8 +3926,20 @@ merge_tester(NewFunS, NewFunM) ->
     ?assertMatch(ExpFK2, FK2),
     ?assertMatch(ExpLK1, LK1),
     ?assertMatch(ExpLK2, LK2),
-    ML1 = [{next, #manifest_entry{owner = P1}, FK1}],
-    ML2 = [{next, #manifest_entry{owner = P2}, FK2}],
+    DSK = {o, <<"B">>, <<"SK">>, null},
+    DEK = {o, <<"E">>, <<"EK">>, null},
+    ML1 =
+        [{
+            next,
+            #manifest_entry{owner = P1, start_key = DSK, end_key = DEK},
+            FK1
+        }],
+    ML2 =
+        [{
+            next,
+            #manifest_entry{owner = P2, start_key = DSK, end_key = DEK},
+            FK2
+        }],
     NewR =
         NewFunM(?TEST_AREA, "level2_merge", ML1, ML2, false, 2, N * 2, native),
     {ok, P3, {{Rem1, Rem2}, FK3, LK3}, _Bloom3} = NewR,

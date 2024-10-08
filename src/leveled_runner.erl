@@ -39,8 +39,7 @@
 -define(CHECKJOURNAL_PROB, 0.2).
 
 -type key_range() 
-            :: {leveled_codec:ledger_key()|null, 
-                    leveled_codec:ledger_key()|null}.
+    :: {leveled_codec:query_key(), leveled_codec:query_key()}.
 -type foldacc() :: any().
     % Can't currently be specific about what an acc might be
 
@@ -59,12 +58,12 @@
     :: fun(() -> {ok, pid(), pid()|null}).
 -type runner_fun()
     :: fun(() -> foldacc()).
--type acc_fun()
-    :: fun((leveled_codec:key(), any(), foldacc()) -> foldacc()).
+-type objectacc_fun()
+    :: fun((leveled_codec:object_key(), any(), foldacc()) -> foldacc()).
 -type mp()
     :: {re_pattern, term(), term(), term(), term()}.
 
--export_type([acc_fun/0, mp/0]).
+-export_type([fold_keys_fun/0, mp/0]).
 
 %%%============================================================================
 %%% External functions
@@ -165,7 +164,7 @@ index_query(SnapFun, {StartKey, EndKey, TermHandling}, FoldAccT) ->
 -spec bucketkey_query(snap_fun(),
                         leveled_codec:tag(),
                         leveled_codec:key()|null, 
-                        key_range(),
+                        {leveled_codec:single_key()|null, leveled_codec:single_key()|null},
                         {fold_keys_fun(), foldacc()},
                         leveled_codec:regular_expression())
                         -> {async, runner_fun()}.
@@ -217,10 +216,11 @@ hashlist_query(SnapFun, Tag, JournalCheck) ->
         end,
     {async, Runner}.
 
--spec tictactree(snap_fun(), 
-                    {leveled_codec:tag(), leveled_codec:key(), tuple()},
-                    boolean(), atom(), fold_filter_fun()) 
-                    -> {async, runner_fun()}.
+-spec tictactree(
+    snap_fun(), 
+    {leveled_codec:tag(), leveled_codec:key(), tuple()},
+    boolean(), leveled_tictac:tree_size(), fold_filter_fun()) 
+        -> {async, runner_fun()}.
 %% @doc
 %% Return a merkle tree from the fold, directly accessing hashes cached in the 
 %% metadata
@@ -463,32 +463,33 @@ get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList, {C, L}) ->
         fun(LK, V, _Acc) ->
             {leveled_codec:from_ledgerkey(LK), V}
         end,
-    R = leveled_penciller:pcl_fetchnextkey(LedgerSnapshot,
-                                                    StartKey,
-                                                    EndKey,
-                                                    ExtractFun,
-                                                    null),
+    R =
+        leveled_penciller:pcl_fetchnextkey(
+            LedgerSnapshot, StartKey, EndKey, ExtractFun, null),
     case R of
         {1, null} ->
             leveled_log:log(b0008,[]),
             BKList;
-        {0, {{B, K}, _V}} ->
+        {0, {{B, K}, _V}} when is_binary(B) ->
             leveled_log:log(b0009,[B]),
-            get_nextbucket(leveled_codec:next_key(B),
-                            null,
-                            Tag,
-                            LedgerSnapshot,
-                            [{B, K}|BKList],
-                            {C + 1, L})
+            get_nextbucket(
+                leveled_codec:next_key(B),
+                null,
+                Tag,
+                LedgerSnapshot,
+                [{B, K}|BKList],
+                {C + 1, L}
+            )
     end.
 
 
--spec foldobjects(snap_fun(),
-                    atom(),
-                    list(), 
-                    fold_objects_fun()|{fold_objects_fun(), foldacc()}, 
-                    false|{true, boolean()}, false|list(integer())) ->
-                                                        {async, runner_fun()}.
+-spec foldobjects(
+    snap_fun(),
+    atom(),
+    list(), 
+    fold_objects_fun()|{fold_objects_fun(), foldacc()}, 
+    false|{true, boolean()}, false|list(integer()))
+        -> {async, runner_fun()}.
 foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, SegmentList) ->
     foldobjects(SnapFun, Tag, KeyRanges,
                     FoldObjFun, DeferredFetch, SegmentList, false, false).
@@ -534,14 +535,16 @@ foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch,
                     FoldFun, JournalSnapshot, Tag, DeferredFetch),
             FoldFunGen = 
                 fun({StartKey, EndKey}, FoldAcc) ->
-                    leveled_penciller:pcl_fetchkeysbysegment(LedgerSnapshot,
-                                                                StartKey,
-                                                                EndKey,
-                                                                AccFun,
-                                                                FoldAcc, 
-                                                                SegmentList,
-                                                                LastModRange,
-                                                                LimitByCount)
+                    leveled_penciller:pcl_fetchkeysbysegment(
+                        LedgerSnapshot,
+                            StartKey,
+                            EndKey,
+                            AccFun,
+                            FoldAcc, 
+                            SegmentList,
+                            LastModRange,
+                            LimitByCount
+                        )
                 end,
             ListFoldFun = 
                 fun(KeyRange, Acc) ->
@@ -567,9 +570,7 @@ accumulate_hashes(JournalCheck, InkerClone) ->
         fun(B, K, H, Acc) ->
             [{B, K, H}|Acc]
         end,
-    get_hashaccumulator(JournalCheck,
-                            InkerClone,
-                            AddKeyFun).
+    get_hashaccumulator(JournalCheck, InkerClone, AddKeyFun).
 
 accumulate_tree(FilterFun, JournalCheck, InkerClone, HashFun) ->
     AddKeyFun =
@@ -581,9 +582,7 @@ accumulate_tree(FilterFun, JournalCheck, InkerClone, HashFun) ->
                     Tree
             end
         end,
-    get_hashaccumulator(JournalCheck,
-                        InkerClone,
-                        AddKeyFun).
+    get_hashaccumulator(JournalCheck, InkerClone, AddKeyFun).
 
 get_hashaccumulator(JournalCheck, InkerClone, AddKeyFun) ->
     AccFun =
@@ -604,11 +603,12 @@ get_hashaccumulator(JournalCheck, InkerClone, AddKeyFun) ->
         end,
     AccFun.
 
--spec accumulate_objects(fold_objects_fun(),
-                            pid()|null,
-                            leveled_codec:tag(),
-                            false|{true, boolean()})
-                                -> acc_fun().
+-spec accumulate_objects(
+    fold_objects_fun(),
+    pid(),
+    leveled_head:object_tag(),
+    false|{true, boolean()})
+        -> objectacc_fun().
 accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
     AccFun =
         fun(LK, V, Acc) ->
@@ -632,15 +632,14 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
                 end,
             JK = {leveled_codec:to_objectkey(B, K, Tag), SQN},
             case DeferredFetch of
-                {true, JournalCheck} ->
+                {true, JournalCheck} when MD =/= null ->
                     ProxyObj = 
                         leveled_codec:return_proxy(Tag, MD, InkerClone, JK),
                     case JournalCheck of
                         true ->
                             InJournal =
-                                leveled_inker:ink_keycheck(InkerClone,
-                                                            LK,
-                                                            SQN),
+                                leveled_inker:ink_keycheck(
+                                    InkerClone, LK, SQN),
                             case InJournal of
                                 probably ->
                                     FoldObjectsFun(B, K, ProxyObj, Acc);
@@ -730,10 +729,10 @@ throw_test() ->
         fun() ->
             error
         end,
-    ?assertMatch({ok, ['1']}, 
-                    wrap_runner(CompletedFolder, AfterAction)),
-    ?assertException(throw, stop_fold, 
-                        wrap_runner(StoppedFolder, AfterAction)).
+    ?assertMatch({ok, ['1']},  wrap_runner(CompletedFolder, AfterAction)),
+    ?assertException(
+        throw, stop_fold, wrap_runner(StoppedFolder, AfterAction)
+    ).
 
 -endif.
 
