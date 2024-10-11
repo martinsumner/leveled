@@ -2219,16 +2219,6 @@ check_blocks_allkeys(
                 PressMethod,
                 IdxModDate,
                 [{K, V}|Acc]
-            );
-        _ ->
-            check_blocks_allkeys(
-                Rest,
-                BlockPointer,
-                BlockLengths,
-                PosBinLength,
-                PressMethod,
-                IdxModDate,
-                Acc
             )
     end.
 

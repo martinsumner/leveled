@@ -16,6 +16,10 @@
 
 -module(leveled_pmanifest).
 
+% Test uses extracted/edited array related to specific issue, which is not in
+% an expected format
+-eqwalizer({nowarn_function, potential_issue_test/0}).
+
 -include("leveled.hrl").
 
 -export([
@@ -96,10 +100,10 @@
             % A list of snaphots (i.e. clones)
         min_snapshot_sqn = 0 :: integer(),
             % The smallest snapshot manifest SQN in the snapshot list
-        pending_deletes = dict:new() :: dict:dict(), 
+        pending_deletes = new_pending_deletions() :: pending_deletions(),
         basement :: non_neg_integer(),
             % Currently the lowest level (the largest number)
-        blooms :: dict:dict()
+        blooms = new_blooms() :: blooms()
     }).
 
 -type snapshot() ::
@@ -108,6 +112,8 @@
 -type manifest_entry() :: #manifest_entry{}.
 -type manifest_owner() :: pid().
 -type lsm_level() :: 0..7.
+-type pending_deletions() :: dict:dict().
+-type blooms() :: dict:dict().
 -type selector_strategy() ::
         random|{grooming, fun((list(manifest_entry())) -> manifest_entry())}.
 
@@ -137,9 +143,7 @@ new_manifest() ->
         levels = LevelArray1, 
         manifest_sqn = 0, 
         snapshots = [],
-        pending_deletes = dict:new(),
-        basement = 0,
-        blooms = dict:new()
+        basement = 0
     }.    
 
 -spec open_manifest(string()) -> manifest().
@@ -172,7 +176,9 @@ open_manifest(RootPath) ->
 copy_manifest(Manifest) ->
     % Copy the manifest ensuring anything only the master process should care
     % about is switched to be empty
-    Manifest#manifest{snapshots = [], pending_deletes = dict:new()}.
+    Manifest#manifest{
+        snapshots = [], pending_deletes = new_pending_deletions()
+    }.
 
 -spec load_manifest(
     manifest(),
@@ -241,9 +247,9 @@ save_manifest(Manifest, RootPath) ->
         term_to_binary(
             Manifest#manifest{
                 snapshots = [],
-                pending_deletes = dict:new(),
+                pending_deletes = new_pending_deletions(),
                 min_snapshot_sqn = 0,
-                blooms = dict:new()
+                blooms = new_blooms()
             }
         ),
     CRC = erlang:crc32(ManBin),
@@ -404,22 +410,26 @@ remove_manifest_entry(Manifest, ManSQN, LevelIdx, Entry) ->
         update_blooms(Entry, [], Manifest#manifest.blooms),
     UpdLevel = remove_entry(LevelIdx, Level, Entry),
     leveled_log:log(pc019, ["remove", LevelIdx, UpdLevel]),
-    PendingDeletes = update_pendingdeletes(ManSQN,
-                                            Entry,
-                                            Manifest#manifest.pending_deletes),
+    PendingDeletes =
+        update_pendingdeletes(
+            ManSQN, Entry, Manifest#manifest.pending_deletes),
     UpdLevels = array:set(LevelIdx, UpdLevel, Levels),
     case is_empty(LevelIdx, UpdLevel) of
         true ->
-            Manifest#manifest{levels = UpdLevels,
-                                basement = get_basement(UpdLevels),
-                                manifest_sqn = ManSQN,
-                                pending_deletes = PendingDeletes,
-                                blooms = UpdBlooms};
+            Manifest#manifest{
+                levels = UpdLevels,
+                basement = get_basement(UpdLevels),
+                manifest_sqn = ManSQN,
+                pending_deletes = PendingDeletes,
+                blooms = UpdBlooms
+            };
         false ->
-            Manifest#manifest{levels = UpdLevels,
-                                manifest_sqn = ManSQN,
-                                pending_deletes = PendingDeletes,
-                                blooms = UpdBlooms}
+            Manifest#manifest{
+                levels = UpdLevels,
+                manifest_sqn = ManSQN,
+                pending_deletes = PendingDeletes,
+                blooms = UpdBlooms
+            }
     end.
 
 -spec switch_manifest_entry(
@@ -434,10 +444,8 @@ switch_manifest_entry(Manifest, ManSQN, SrcLevel, Entry) ->
     Level = array:get(SrcLevel, Levels),
     UpdLevel = remove_entry(SrcLevel, Level, Entry),
     UpdLevels = array:set(SrcLevel, UpdLevel, Levels),
-    insert_manifest_entry(Manifest#manifest{levels = UpdLevels},
-                            ManSQN,
-                            SrcLevel + 1,
-                            Entry).
+    insert_manifest_entry(
+        Manifest#manifest{levels = UpdLevels}, ManSQN, SrcLevel + 1, Entry).
 
 -spec get_manifest_sqn(manifest()) -> integer().
 %% @doc
@@ -562,7 +570,7 @@ merge_snapshot(PencillerManifest, ClerkManifest) ->
         snapshots = PencillerManifest#manifest.snapshots,
         min_snapshot_sqn = PencillerManifest#manifest.min_snapshot_sqn}.
 
--spec add_snapshot(manifest(), pid()|atom(), integer()) -> manifest().
+-spec add_snapshot(manifest(), pid(), integer()) -> manifest().
 %% @doc
 %% Add a snapshot reference to the manifest, withe rusing the pid or an atom
 %% known to reference a special process.  The timeout should be in seconds, and
@@ -602,9 +610,12 @@ release_snapshot(Manifest, Pid) ->
                     end
             end
         end,
-    {SnapList0, MinSnapSQN, Hit} = lists:foldl(FilterFun,
-                                                {[], infinity, false},
-                                                Manifest#manifest.snapshots),
+    {SnapList0, MinSnapSQN, Hit} =
+        lists:foldl(
+            FilterFun,
+            {[], infinity, false},
+            Manifest#manifest.snapshots
+        ),
     case Hit of 
         false ->
             leveled_log:log(p0039, [Pid, length(SnapList0), MinSnapSQN]);
@@ -613,12 +624,12 @@ release_snapshot(Manifest, Pid) ->
     end,
     case SnapList0 of
         [] ->
-            Manifest#manifest{snapshots = SnapList0,
-                                min_snapshot_sqn = 0};
-        _  ->
+            Manifest#manifest{snapshots = SnapList0, min_snapshot_sqn = 0};
+        _  when is_integer(MinSnapSQN) ->
             leveled_log:log(p0004, [SnapList0]),
-            Manifest#manifest{snapshots = SnapList0,
-                                min_snapshot_sqn = MinSnapSQN}
+            Manifest#manifest{
+                snapshots = SnapList0, min_snapshot_sqn = MinSnapSQN
+            }
     end.
 
 
@@ -791,10 +802,12 @@ load_level(LevelIdx, Level, LoadFun, SQNFun) ->
             lists:foldr(HigherLevelLoadFun, {[], 0, [], []}, Level);
         false ->
             {L0, MaxSQN, Flist, UpdBloomL} = 
-                lists:foldr(LowerLevelLoadFun, 
-                            {[], 0, [], []}, 
-                            leveled_tree:to_list(Level)),
-            {leveled_tree:from_orderedlist(L0, ?TREE_TYPE, ?TREE_WIDTH), 
+                lists:foldr(
+                    LowerLevelLoadFun, 
+                    {[], 0, [], []}, 
+                    leveled_tree:to_list(Level)
+                ),
+            {leveled_tree:from_orderedlist(L0, ?TREE_TYPE, ?TREE_WIDTH),
                 MaxSQN, 
                 Flist,
                 UpdBloomL}
@@ -830,9 +843,12 @@ add_entry(_LevelIdx, Level, []) ->
     Level;
 add_entry(LevelIdx, Level, Entries) when is_list(Entries) ->
     FirstEntry = lists:nth(1, Entries),
-    PredFun = pred_fun(LevelIdx,
-                        FirstEntry#manifest_entry.start_key,
-                        FirstEntry#manifest_entry.end_key),
+    PredFun =
+        pred_fun(
+            LevelIdx,
+            FirstEntry#manifest_entry.start_key,
+            FirstEntry#manifest_entry.end_key
+        ),
     case LevelIdx =< 1 of
         true ->
             {LHS, RHS} = lists:splitwith(PredFun, Level),
@@ -844,9 +860,11 @@ add_entry(LevelIdx, Level, Entries) when is_list(Entries) ->
                     {ME#manifest_entry.end_key, ME}
                 end,
             Entries0 = lists:map(MapFun, Entries),
-            leveled_tree:from_orderedlist(lists:append([LHS, Entries0, RHS]),
-                                            ?TREE_TYPE,
-                                            ?TREE_WIDTH)
+            leveled_tree:from_orderedlist(
+                lists:append([LHS, Entries0, RHS]),
+                ?TREE_TYPE,
+                ?TREE_WIDTH
+            )
     end.
 
 remove_entry(LevelIdx, Level, Entries) ->
@@ -874,24 +892,29 @@ remove_section(LevelIdx, Level, FirstEntry, SectionLength) ->
         false ->
             {LHS, RHS} = lists:splitwith(PredFun, leveled_tree:to_list(Level)),
             Post = lists:nthtail(SectionLength, RHS),
-            leveled_tree:from_orderedlist(lists:append([LHS, Post]),
-                                            ?TREE_TYPE,
-                                            ?TREE_WIDTH)
+            leveled_tree:from_orderedlist(
+                lists:append([LHS, Post]), ?TREE_TYPE, ?TREE_WIDTH)
     end.
 
 replace_entry(LevelIdx, Level, Removals, Additions) when LevelIdx =< 1 ->
     {SectionLength, FirstEntry} = measure_removals(Removals),
-    PredFun = pred_fun(LevelIdx,
-                        FirstEntry#manifest_entry.start_key,
-                        FirstEntry#manifest_entry.end_key),
+    PredFun =
+        pred_fun(
+            LevelIdx,
+            FirstEntry#manifest_entry.start_key,
+            FirstEntry#manifest_entry.end_key
+        ),
     {LHS, RHS} = lists:splitwith(PredFun, Level),
     Post = lists:nthtail(SectionLength, RHS),
     lists:append([LHS, Additions, Post]);
 replace_entry(LevelIdx, Level, Removals, Additions) ->
     {SectionLength, FirstEntry} = measure_removals(Removals),
-    PredFun = pred_fun(LevelIdx,
-                        FirstEntry#manifest_entry.start_key,
-                        FirstEntry#manifest_entry.end_key),
+    PredFun =
+        pred_fun(
+            LevelIdx,
+            FirstEntry#manifest_entry.start_key,
+            FirstEntry#manifest_entry.end_key
+        ),
     {LHS, RHS} = lists:splitwith(PredFun, leveled_tree:to_list(Level)),
     Post =
         case RHS of
@@ -911,9 +934,7 @@ replace_entry(LevelIdx, Level, Removals, Additions) ->
 update_pendingdeletes(ManSQN, Removals, PendingDeletes) ->
     DelFun =
         fun(E, Acc) ->
-            dict:store(E#manifest_entry.filename,
-                        {ManSQN, E},
-                        Acc)
+            dict:store(E#manifest_entry.filename, {ManSQN, E}, Acc)
         end,
     Entries = 
         case is_list(Removals) of
@@ -927,7 +948,8 @@ update_pendingdeletes(ManSQN, Removals, PendingDeletes) ->
 -spec update_blooms(
     list()|manifest_entry(), 
     list()|manifest_entry(), 
-    any()) -> {any(), list()}.
+    blooms())
+        -> {blooms(), list()}.
 %% @doc
 %%
 %% The manifest is a Pid-> Bloom mappping for every Pid, and this needs to 
@@ -997,11 +1019,12 @@ range_lookup_int(Manifest, LevelIdx, StartKey, EndKey, MakePointerFun) ->
             true ->
                 [];
             false ->
-                range_lookup_level(LevelIdx,
-                                    array:get(LevelIdx,
-                                                Manifest#manifest.levels),
-                                    StartKey,
-                                    EndKey)
+                range_lookup_level(
+                    LevelIdx,
+                    array:get(LevelIdx, Manifest#manifest.levels),
+                    StartKey,
+                    EndKey
+                )
         end,
     lists:map(MakePointerFun, Range).
     
@@ -1012,8 +1035,9 @@ range_lookup_level(LevelIdx, Level, QStartKey, QEndKey) when LevelIdx =< 1 ->
         end,
     NotAfterFun =
         fun(M) ->
-            not leveled_codec:endkey_passed(QEndKey,
-                                            M#manifest_entry.start_key)
+            not
+                leveled_codec:endkey_passed(
+                    QEndKey, M#manifest_entry.start_key)
         end,
     {_Before, MaybeIn} = lists:splitwith(BeforeFun, Level),
     {In, _After} = lists:splitwith(NotAfterFun, MaybeIn),
@@ -1029,7 +1053,6 @@ range_lookup_level(_LevelIdx, Level, QStartKey, QEndKey) ->
             ME
         end,
     lists:map(MapFun, Range).
-    
 
 get_basement(Levels) ->
     GetBaseFun =
@@ -1043,7 +1066,6 @@ get_basement(Levels) ->
         end,
     lists:foldl(GetBaseFun, 0, lists:seq(0, ?MAX_LEVELS)).
 
-
 filepath(RootPath, manifest) ->
     MFP = RootPath ++ "/" ++ ?MANIFEST_FP ++ "/",
     filelib:ensure_dir(MFP),
@@ -1056,9 +1078,6 @@ filepath(RootPath, NewMSN, pending_manifest) ->
     filepath(RootPath, manifest)  ++ "nonzero_"
                 ++ integer_to_list(NewMSN) ++ "." ++ ?PENDING_FILEX.
 
-
-
-
 open_manifestfile(_RootPath, L) when L == [] orelse L == [0] ->
     leveled_log:log(p0013, []),
     new_manifest();
@@ -1069,7 +1088,11 @@ open_manifestfile(RootPath, [TopManSQN|Rest]) ->
     case erlang:crc32(BinaryOfTerm) of
         CRC ->
             leveled_log:log(p0012, [TopManSQN]),
-            binary_to_term(BinaryOfTerm);
+            Manifest = binary_to_term(BinaryOfTerm),
+            Manifest#manifest{
+                pending_deletes = new_pending_deletions(),
+                blooms = new_blooms()
+            };
         _ ->
             leveled_log:log(p0033, [CurrManFile, "crc wonky"]),
             open_manifestfile(RootPath, Rest)
@@ -1079,6 +1102,9 @@ seconds_now() ->
     {MegaNow, SecNow, _} = os:timestamp(),
     MegaNow * 1000000 + SecNow.
 
+new_blooms() -> dict:new().
+
+new_pending_deletions() -> dict:new().
 
 %%%============================================================================
 %%% Test
@@ -1660,9 +1686,9 @@ potential_issue_test() ->
           19,
           [],
           0,
-          dict:new(),
+          new_pending_deletions(),
           2,
-          dict:new()},
+          new_blooms()},
     Range1 = 
         range_lookup(
             Manifest, 
