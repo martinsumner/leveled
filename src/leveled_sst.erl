@@ -984,25 +984,19 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 
 
 format_status(Status) ->
-    case maps:get(reason, Status, normal) of
-        terminate ->
-            State = maps:get(state, Status),
-            case State#state.read_state of
-                RS when ?IS_DEF(RS) ->
-                    maps:update(
-                        state,
-                        State#state{
-                            read_state =
-                                RS#read_state{
-                                    blockindex_cache = redacted,
-                                    fetch_cache = redacted
-                                }
-                            },
-                        Status
-                    );
-                _ ->
-                    Status
-                end;
+    case {maps:get(reason, Status, normal), maps:get(state, Status)} of
+        {terminate, State = #state{read_state = RS}} when ?IS_DEF(RS) ->
+            maps:update(
+                state,
+                State#state{
+                    read_state =
+                        RS#read_state{
+                            blockindex_cache = redacted,
+                            fetch_cache = redacted
+                        }
+                    },
+                Status
+            );
         _ ->
             Status
     end.

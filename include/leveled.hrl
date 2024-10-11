@@ -141,7 +141,8 @@
 -record(penciller_options,
                         {root_path :: string() | undefined,
                         sst_options = #sst_options{} :: #sst_options{},
-                        max_inmemory_tablesize :: integer() | undefined,
+                        max_inmemory_tablesize  = ?MIN_PCL_CACHE_SIZE
+                            :: pos_integer(),
                         start_snapshot = false :: boolean(),
                         snapshot_query,
                         bookies_pid :: pid() | undefined,

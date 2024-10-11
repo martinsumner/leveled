@@ -41,11 +41,11 @@
         from_journalkey/1,
         revert_to_keydeltas/2,
         is_full_journalentry/1,
-        split_inkvalue/1,
         check_forinkertype/2,
         get_tagstrategy/2,
         maybe_compress/2,
         create_value_for_journal/3,
+        revert_value_from_journal/1,
         generate_ledgerkv/5,
         get_size/2,
         get_keyandobjhash/2,
@@ -110,7 +110,7 @@
 -type journal_key_tag() ::
         ?INKT_STND|?INKT_TOMB|?INKT_MPUT|?INKT_KEYD.
 -type journal_key() ::
-        {sqn(), journal_key_tag(), object_key()}.
+        {sqn(), journal_key_tag(), primary_key()}.
 -type journal_ref() ::
         {object_key(), sqn()}.
 -type object_spec_v0() ::
@@ -206,23 +206,19 @@ segment_hash(KeyTuple) when is_tuple(KeyTuple) ->
     segment_hash(BinKey).
 
 
-headkey_to_canonicalbinary({?HEAD_TAG, Bucket, Key, SubK})
-                    when is_binary(Bucket), is_binary(Key), is_binary(SubK) ->
+headkey_to_canonicalbinary({
+    ?HEAD_TAG, Bucket, Key, SubK})
+        when is_binary(Bucket), is_binary(Key), is_binary(SubK) ->
     <<Bucket/binary, Key/binary, SubK/binary>>;
-headkey_to_canonicalbinary({?HEAD_TAG, Bucket, Key, null})
-                                    when is_binary(Bucket), is_binary(Key) ->
+headkey_to_canonicalbinary(
+    {?HEAD_TAG, Bucket, Key, null})
+        when is_binary(Bucket), is_binary(Key) ->
     <<Bucket/binary, Key/binary>>;
-headkey_to_canonicalbinary({?HEAD_TAG, {BucketType, Bucket}, Key, SubKey})
-                            when is_binary(BucketType), is_binary(Bucket) ->
-    headkey_to_canonicalbinary({?HEAD_TAG,
-                                <<BucketType/binary, Bucket/binary>>, 
-                                Key,
-                                SubKey});
-headkey_to_canonicalbinary(Key) when element(1, Key) == ?HEAD_TAG ->
-    % In unit tests head specs can have non-binary keys, so handle
-    % this through hashing the whole key
-    leveled_util:t2b(Key).
-
+headkey_to_canonicalbinary(
+    {?HEAD_TAG, {BucketType, Bucket}, Key, SubKey})
+        when is_binary(BucketType), is_binary(Bucket) ->
+    headkey_to_canonicalbinary(
+        {?HEAD_TAG, <<BucketType/binary, Bucket/binary>>, Key, SubKey}).
 
 -spec to_lookup(ledger_key()) -> maybe_lookup().
 %% @doc
@@ -380,10 +376,7 @@ count_tombs([{_K, V}|T], Count) when is_tuple(V) ->
             count_tombs(T, Count + 1);
         _ ->
             count_tombs(T, Count)
-    end;
-count_tombs([_KV|T], Count) ->
-    count_tombs(T, Count).
-
+    end.
 
 -spec from_ledgerkey(atom(), tuple()) -> false|tuple().
 %% @doc
@@ -412,7 +405,9 @@ from_ledgerkey({_Tag, Bucket, Key, _SubKey}) ->
 to_objectkey(Bucket, Key, Tag, Field, Value) when Tag == ?IDX_TAG ->
     {?IDX_TAG, Bucket, {Field, Value}, Key}.
 
--spec to_objectkey(key(), key(), tag()) -> object_key().
+-spec to_objectkey
+    (key(), single_key(), leveled_head:object_tag()) -> primary_key();
+    (key(), key(), tag()) -> object_key().
 %% @doc
 %% Convert something into a ledger key
 to_objectkey(Bucket, {Key, SubKey}, ?HEAD_TAG) ->
@@ -428,9 +423,7 @@ to_querykey(Bucket, Key, Tag, Field, Value) when Tag == ?IDX_TAG ->
 
 -spec to_querykey(key()|null, key()|null, tag()) -> query_key().
 %% @doc
-%% Convert something into a ledger key
-to_querykey(Bucket, {Key, SubKey}, ?HEAD_TAG) ->
-    {?HEAD_TAG, Bucket, Key, SubKey};
+%% Convert something into a ledger query key
 to_querykey(Bucket, Key, Tag) ->
     {Tag, Bucket, Key, null}.
 
@@ -525,14 +518,14 @@ get_tagstrategy(Tag, Strategy) ->
 %%% Manipulate Journal Key and Value
 %%%============================================================================
 
--spec to_inkerkey(object_key(), non_neg_integer()) -> journal_key().
+-spec to_inkerkey(primary_key(), non_neg_integer()) -> journal_key().
 %% @doc
 %% convertion from ledger_key to journal_key to allow for the key to be fetched
 to_inkerkey(LedgerKey, SQN) ->
     {SQN, ?INKT_STND, LedgerKey}.
 
 -spec to_inkerkv(
-    object_key(),
+    primary_key(),
     non_neg_integer(),
     any(),
     journal_keychanges(), 
@@ -625,7 +618,7 @@ serialise_object(Object, false, _Method) ->
 serialise_object(Object, true, _Method) ->
     term_to_binary(Object, [compressed]).
 
--spec revert_value_from_journal(binary()) -> {any(), journal_keychanges()}.
+-spec revert_value_from_journal(binary()) -> {dynamic(), journal_keychanges()}.
 %% @doc
 %% Revert the object back to its deserialised state, along with the list of
 %% key changes associated with the change
@@ -711,10 +704,6 @@ decode_valuetype(TypeInt) ->
 from_journalkey({SQN, _Type, LedgerKey}) ->
     {SQN, LedgerKey}.
 
-
-split_inkvalue(VBin) when is_binary(VBin) ->
-    revert_value_from_journal(VBin).
-
 check_forinkertype(_LedgerKey, delete) ->
     ?INKT_TOMB;
 check_forinkertype(_LedgerKey, head_only) ->
@@ -786,10 +775,11 @@ gen_headspec(
     gen_headspec({IdxOp, v1, Bucket, Key, SubKey, undefined, Value}, SQN, TTL).
 
 
--spec return_proxy(leveled_head:object_tag()|leveled_head:headonly_tag(),
-                    leveled_head:object_metadata(),
-                    pid(), journal_ref())
-                        -> proxy_objectbin()|leveled_head:object_metadata().
+-spec return_proxy
+    (leveled_head:headonly_tag(), leveled_head:object_metadata(), null, journal_ref())
+        -> leveled_head:object_metadata();
+    (leveled_head:object_tag(), leveled_head:object_metadata(), pid(), journal_ref())
+        -> proxy_objectbin().
 %% @doc
 %% If the object has a value, return the metadata and a proxy through which
 %% the applictaion or runner can access the value.  If it is a ?HEAD_TAG
@@ -820,7 +810,7 @@ set_status(remove, _TTL) ->
 -spec generate_ledgerkv(
         primary_key(),
         integer(), 
-        binary(),
+        dynamic(),
         integer(),
         non_neg_integer()|infinity) ->
             {

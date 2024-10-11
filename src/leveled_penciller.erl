@@ -283,10 +283,13 @@
 
 
 -type penciller_options() :: #penciller_options{}.
--type bookies_memory() :: {tuple()|empty_cache,
-                            array:array()|empty_array,
-                            integer()|infinity,
-                            integer()}.
+-type bookies_memory() ::
+        {
+            ets:table()|tuple()|empty_cache,
+            array:array()|empty_array,
+            integer()|infinity,
+            integer()
+        }.
 -type pcl_state() :: #state{}.
 -type levelzero_cacheentry() :: {pos_integer(), leveled_tree:leveled_tree()}.
 -type levelzero_cache() :: list(levelzero_cacheentry()).

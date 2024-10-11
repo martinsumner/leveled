@@ -147,7 +147,7 @@
 
 -record(state, {manifest = [] :: list(),
 				manifest_sqn = 0 :: integer(),
-                journal_sqn = 0 :: integer(),
+                journal_sqn = 0 :: non_neg_integer(),
                 active_journaldb :: pid() | undefined,
                 pending_removals = [] :: list(),
                 registered_snapshots = [] :: list(registered_snapshot()),
@@ -217,7 +217,7 @@ ink_snapstart(InkerOpts) ->
                 any(),
                 leveled_codec:journal_keychanges(),
                 boolean()) ->
-                    {ok, integer(), integer()}.
+                    {ok, non_neg_integer(), pos_integer()}.
 %% @doc
 %% PUT an object into the journal, returning the sequence number for the PUT
 %% as well as the size of the object (information required by the ledger).
@@ -984,7 +984,7 @@ get_cdbopts(InkOpts)->
 
 
 -spec put_object(
-    leveled_codec:object_key(), 
+    leveled_codec:primary_key(), 
     any(), 
     leveled_codec:journal_keychanges(),
     boolean(),
@@ -1093,7 +1093,7 @@ roll_active(ActiveJournal, Manifest, NewSQN, CDBopts, RootPath, ManifestSQN) ->
     end.
 
 -spec key_check(
-    leveled_codec:object_key(), 
+    leveled_codec:primary_key(), 
     integer(), 
     leveled_imanifest:manifest()) -> missing|probably.
 %% @doc
@@ -1315,17 +1315,19 @@ foldfile_between_sequence(MinSQN, MaxSQN, FoldFuns,
             
 
 sequencenumbers_fromfilenames(Filenames, Regex, IntName) ->
-    lists:foldl(fun(FN, Acc) ->
-                            case re:run(FN,
-                                        Regex,
-                                        [{capture, [IntName], list}]) of
-                                nomatch ->
-                                    Acc;
-                                {match, [Int]} when is_list(Int) ->
-                                    Acc ++ [list_to_integer(Int)]
-                            end end,
-                            [],
-                            Filenames).
+    lists:foldl(
+        fun(FN, Acc) ->
+            case re:run(FN,
+                        Regex,
+                        [{capture, [IntName], list}]) of
+                nomatch ->
+                    Acc;
+                {match, [Int]} when is_list(Int) ->
+                    Acc ++ [list_to_integer(Int)]
+            end
+        end,
+        [],
+        Filenames).
 
 filepath(RootPath, journal_dir) ->
     RootPath ++ "/" ++ ?FILES_FP ++ "/";

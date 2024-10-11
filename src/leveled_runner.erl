@@ -55,7 +55,7 @@
     :: fun((leveled_codec:key(), leveled_codec:key()) -> accumulate|pass).
 
 -type snap_fun()
-    :: fun(() -> {ok, pid(), pid()|null}).
+    :: fun(() -> {ok, pid(), pid()|null, fun(() -> ok)}).
 -type runner_fun()
     :: fun(() -> foldacc()).
 -type objectacc_fun()
@@ -131,7 +131,7 @@ bucket_list(SnapFun, Tag, FoldBucketsFun, InitAcc, MaxBuckets) ->
 -spec index_query(snap_fun(), 
                     {leveled_codec:ledger_key(), 
                         leveled_codec:ledger_key(), 
-                        {boolean(), undefined|mp()|iodata()}}, 
+                        {boolean(), undefined|mp()}}, 
                     {fold_keys_fun(), foldacc()})
                         -> {async, runner_fun()}.
 %% @doc
@@ -335,7 +335,7 @@ foldobjects_allkeys(SnapFun, Tag, FoldObjectsFun, sqn_order) ->
                         _ ->
                             {VBin, _VSize} = ExtractFun(JVal),
                             {Obj, _IdxSpecs} =
-                                leveled_codec:split_inkvalue(VBin),
+                                leveled_codec:revert_value_from_journal(VBin),
                             ToLoop = 
                                 case SQN  of 
                                     MaxSQN -> stop;
@@ -353,8 +353,13 @@ foldobjects_allkeys(SnapFun, Tag, FoldObjectsFun, sqn_order) ->
 
     Folder =
         fun() ->
-            {ok, LedgerSnapshot, JournalSnapshot, AfterFun} = SnapFun(),
-            {ok, JournalSQN} = leveled_inker:ink_getjournalsqn(JournalSnapshot),
+            {ok, LedgerSnapshot, JournalSnapshot, AfterFun} = 
+                case SnapFun() of
+                    {ok, LS, JS, AF} when is_pid(JS) ->
+                        {ok, LS, JS, AF}
+                end,
+            {ok, JournalSQN} =
+                leveled_inker:ink_getjournalsqn(JournalSnapshot),
             IsValidFun = 
                 fun(Bucket, Key, SQN) ->
                     LedgerKey = leveled_codec:to_objectkey(Bucket, Key, Tag),
@@ -470,7 +475,7 @@ get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList, {C, L}) ->
         {1, null} ->
             leveled_log:log(b0008,[]),
             BKList;
-        {0, {{B, K}, _V}} when is_binary(B) ->
+        {0, {{B, K}, _V}} when is_binary(B); is_tuple(B) ->
             leveled_log:log(b0009,[B]),
             get_nextbucket(
                 leveled_codec:next_key(B),
@@ -603,11 +608,10 @@ get_hashaccumulator(JournalCheck, InkerClone, AddKeyFun) ->
         end,
     AccFun.
 
--spec accumulate_objects(
-    fold_objects_fun(),
-    pid(),
-    leveled_head:object_tag(),
-    false|{true, boolean()})
+-spec accumulate_objects
+    (fold_objects_fun(), pid(), leveled_head:object_tag(), false|{true, boolean()})
+        -> objectacc_fun();
+    (fold_objects_fun(), null, leveled_head:headonly_tag(), {true, false})
         -> objectacc_fun().
 accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
     AccFun =
@@ -635,8 +639,8 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
                 {true, JournalCheck} when MD =/= null ->
                     ProxyObj = 
                         leveled_codec:return_proxy(Tag, MD, InkerClone, JK),
-                    case JournalCheck of
-                        true ->
+                    case {JournalCheck, InkerClone} of
+                        {true, InkerClone} when is_pid(InkerClone) ->
                             InJournal =
                                 leveled_inker:ink_keycheck(
                                     InkerClone, LK, SQN),
@@ -646,7 +650,7 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
                                 missing ->
                                     Acc
                             end;
-                        false ->
+                        {false, _} ->
                             FoldObjectsFun(B, K, ProxyObj, Acc)
                     end;
                 false ->
