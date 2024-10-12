@@ -114,10 +114,10 @@
                 scoring_state :: scoring_state()|undefined,
                 score_onein = 1 :: pos_integer()}).
 
--record(candidate, {low_sqn :: integer() | undefined,
-                    filename :: string() | undefined,
-                    journal :: pid() | undefined,
-                    compaction_perc :: float() | undefined}).
+-record(candidate, {low_sqn :: integer(),
+                    filename :: string(),
+                    journal :: pid(),
+                    compaction_perc :: float()}).
 
 -record(scoring_state, {filter_fun :: leveled_inker:filterfun(),
                         filter_server :: leveled_inker:filterserver(),
@@ -158,7 +158,13 @@
 %% @doc
 %% Generate a new clerk
 clerk_new(InkerClerkOpts) ->
-    gen_server:start_link(?MODULE, [leveled_log:get_opts(), InkerClerkOpts], []).
+    {ok, Clerk} =
+        gen_server:start_link(
+            ?MODULE,
+            [leveled_log:get_opts(), InkerClerkOpts],
+            []
+        ),
+    {ok, Clerk}.
 
 -spec clerk_compact(pid(),
                     pid(), 
@@ -310,60 +316,71 @@ handle_cast({compact, Checker, InitiateFun, CloseFun, FilterFun, Manifest0},
         end,
     ok = clerk_scorefilelist(self(), lists:filter(NotRollingFun, Manifest)),
     ScoringState =
-        #scoring_state{filter_fun = FilterFun,
-                        filter_server = FilterServer,
-                        max_sqn = MaxSQN,
-                        close_fun = CloseFun,
-                        start_time = SW},
+        #scoring_state{
+            filter_fun = FilterFun,
+            filter_server = FilterServer,
+            max_sqn = MaxSQN,
+            close_fun = CloseFun,
+            start_time = SW
+        },
     {noreply, State#state{scored_files = [], scoring_state = ScoringState}};
-handle_cast({score_filelist, [Entry|Tail]}, State) ->
+handle_cast(
+    {score_filelist, [Entry|Tail]},
+    State = #state{scoring_state = ScoringState})
+        when ?IS_DEF(ScoringState) ->
     Candidates = State#state.scored_files,
     {LowSQN, FN, JournalP, _LK} = Entry,
-    ScoringState = State#state.scoring_state,
     CpctPerc =
         case {leveled_cdb:cdb_getcachedscore(JournalP, os:timestamp()),
-                leveled_rand:uniform(State#state.score_onein) == 1,
+                rand:uniform(State#state.score_onein) == 1,
                 State#state.score_onein} of
             {CachedScore, _UseNewScore, ScoreOneIn} 
                     when CachedScore == undefined; ScoreOneIn == 1 ->
                 % If caches are not used, always use the current score
-                check_single_file(JournalP,
-                                    ScoringState#scoring_state.filter_fun,
-                                    ScoringState#scoring_state.filter_server,
-                                    ScoringState#scoring_state.max_sqn,
-                                    ?SAMPLE_SIZE,
-                                    ?BATCH_SIZE,
-                                    State#state.reload_strategy);
+                check_single_file(
+                    JournalP,
+                    ScoringState#scoring_state.filter_fun,
+                    ScoringState#scoring_state.filter_server,
+                    ScoringState#scoring_state.max_sqn,
+                    ?SAMPLE_SIZE,
+                    ?BATCH_SIZE,
+                    State#state.reload_strategy
+                );
             {CachedScore, true, _ScoreOneIn} ->
                 % If caches are used roll the score towards the current score
                 % Expectation is that this will reduce instances of individual
                 % files being compacted when a run is missed due to cached
                 % scores being used in surrounding journals
                 NewScore = 
-                    check_single_file(JournalP,
-                                    ScoringState#scoring_state.filter_fun,
-                                    ScoringState#scoring_state.filter_server,
-                                    ScoringState#scoring_state.max_sqn,
-                                    ?SAMPLE_SIZE,
-                                    ?BATCH_SIZE,
-                                    State#state.reload_strategy),
+                    check_single_file(
+                        JournalP,
+                        ScoringState#scoring_state.filter_fun,
+                        ScoringState#scoring_state.filter_server,
+                        ScoringState#scoring_state.max_sqn,
+                        ?SAMPLE_SIZE,
+                        ?BATCH_SIZE,
+                        State#state.reload_strategy
+                    ),
                 (NewScore + CachedScore) / 2;
             {CachedScore, false, _ScoreOneIn} ->
                 CachedScore
         end,
     ok = leveled_cdb:cdb_putcachedscore(JournalP, CpctPerc),
     Candidate =
-        #candidate{low_sqn = LowSQN,
-                    filename = FN,
-                    journal = JournalP,
-                    compaction_perc = CpctPerc},
+        #candidate{
+            low_sqn = LowSQN,
+            filename = FN,
+            journal = JournalP,
+            compaction_perc = CpctPerc
+        },
     ok = clerk_scorefilelist(self(), Tail),
     {noreply, State#state{scored_files = [Candidate|Candidates]}};
-handle_cast(scoring_complete, State) ->
+handle_cast(
+    scoring_complete, State = #state{scoring_state = ScoringState})
+        when ?IS_DEF(ScoringState) ->
     MaxRunLength = State#state.max_run_length,
     CDBopts = State#state.cdb_options,
     Candidates = lists:reverse(State#state.scored_files),
-    ScoringState = State#state.scoring_state,
     FilterFun = ScoringState#scoring_state.filter_fun,
     FilterServer = ScoringState#scoring_state.filter_server,
     MaxSQN = ScoringState#scoring_state.max_sqn,
@@ -379,35 +396,45 @@ handle_cast(scoring_complete, State) ->
         true ->
             BestRun1 = sort_run(BestRun0),
             print_compaction_run(BestRun1, ScoreParams),
-            ManifestSlice = compact_files(BestRun1,
-                                            CDBopts,
-                                            FilterFun,
-                                            FilterServer,
-                                            MaxSQN,
-                                            State#state.reload_strategy,
-                                            State#state.compression_method),
-            FilesToDelete = lists:map(fun(C) ->
-                                            {C#candidate.low_sqn,
-                                                C#candidate.filename,
-                                                C#candidate.journal,
-                                                undefined}
-                                            end,
-                                        BestRun1),
+            ManifestSlice =
+                compact_files(
+                    BestRun1,
+                    CDBopts,
+                    FilterFun,
+                    FilterServer,
+                    MaxSQN,
+                    State#state.reload_strategy,
+                    State#state.compression_method
+                ),
+            FilesToDelete =
+                lists:map(
+                    fun(C) ->
+                         {
+                            C#candidate.low_sqn,
+                            C#candidate.filename,
+                            C#candidate.journal,
+                            undefined
+                        }
+                    end,
+                    BestRun1
+                ),
             leveled_log:log(ic002, [length(FilesToDelete)]),
             ok = CloseFun(FilterServer),
-            ok = leveled_inker:ink_clerkcomplete(State#state.inker,
-                                                    ManifestSlice,
-                                                    FilesToDelete);
+            ok =
+                leveled_inker:ink_clerkcomplete(
+                    State#state.inker, ManifestSlice,  FilesToDelete);
         false ->
             ok = CloseFun(FilterServer),
             ok = leveled_inker:ink_clerkcomplete(State#state.inker, [], [])
     end,
     {noreply, State#state{scoring_state = undefined}, hibernate};
-handle_cast({trim, PersistedSQN, ManifestAsList}, State) ->
+handle_cast(
+    {trim, PersistedSQN, ManifestAsList}, State = #state{inker = Ink})
+        when ?IS_DEF(Ink) ->
     FilesToDelete = 
         leveled_imanifest:find_persistedentries(PersistedSQN, ManifestAsList),
     leveled_log:log(ic007, []),
-    ok = leveled_inker:ink_clerkcomplete(State#state.inker, [], FilesToDelete),
+    ok = leveled_inker:ink_clerkcomplete(Ink, [], FilesToDelete),
     {noreply, State};
 handle_cast({hashtable_calc, HashTree, StartPos, CDBpid}, State) ->
     {IndexList, HashTreeBin} = leveled_cdb:hashtable_calc(HashTree, StartPos),
@@ -445,9 +472,9 @@ code_change(_OldVsn, State, _Extra) ->
 %%% External functions
 %%%============================================================================
 
--spec schedule_compaction(list(integer()), 
-                            integer(), 
-                            {integer(), integer(), integer()}) -> integer().
+-spec schedule_compaction(
+    list(integer()), integer(), {integer(), integer(), integer()}) ->
+        integer().
 %% @doc
 %% Schedule the next compaction event for this store.  Chooses a random
 %% interval, and then a random start time within the first third
@@ -483,11 +510,11 @@ schedule_compaction(CompactionHours, RunsPerDay, CurrentTS) ->
     % today.
     RandSelect =
         fun(_X) ->
-            {lists:nth(leveled_rand:uniform(TotalHours), CompactionHours),
-                leveled_rand:uniform(?INTERVALS_PER_HOUR)}
+            {lists:nth(rand:uniform(TotalHours), CompactionHours),
+                rand:uniform(?INTERVALS_PER_HOUR)}
         end,
-    RandIntervals = lists:sort(lists:map(RandSelect,
-                                            lists:seq(1, RunsPerDay))),
+    RandIntervals =
+        lists:sort(lists:map(RandSelect, lists:seq(1, RunsPerDay))),
     
     % Pick the next interval from the list.  The intervals before current time
     % are considered as intervals tomorrow, so will only be next if there are
@@ -508,11 +535,11 @@ schedule_compaction(CompactionHours, RunsPerDay, CurrentTS) ->
     
     % Calculate the offset in seconds to this next interval
     NextS0 = NextI * (IntervalLength * 60)
-                - leveled_rand:uniform(IntervalLength * 60),
+                - rand:uniform(IntervalLength * 60),
     NextM = NextS0 div 60,
     NextS = NextS0 rem 60,
-    TimeDiff = calendar:time_difference(LocalTime,
-                                        {NextDate, {NextH, NextM, NextS}}),
+    TimeDiff =
+        calendar:time_difference(LocalTime, {NextDate, {NextH, NextM, NextS}}),
     {Days, {Hours, Mins, Secs}} = TimeDiff,
     Days * 86400 + Hours * 3600 + Mins * 60 + Secs.
     
@@ -521,13 +548,14 @@ schedule_compaction(CompactionHours, RunsPerDay, CurrentTS) ->
 %%% Internal functions
 %%%============================================================================
 
--spec check_single_file(pid(),
-                        leveled_inker:filterfun(),
-                        leveled_inker:filterserver(),
-                        leveled_codec:sqn(),
-                        non_neg_integer(), non_neg_integer(),
-                        leveled_codec:compaction_strategy()) ->
-                            float().
+-spec check_single_file(
+    pid(),
+    leveled_inker:filterfun(),
+    leveled_inker:filterserver(),
+    leveled_codec:sqn(),
+    non_neg_integer(), non_neg_integer(),
+    leveled_codec:compaction_strategy()) ->
+        float().
 %% @doc
 %% Get a score for a single CDB file in the journal.  This will pull out a bunch 
 %% of keys and sizes at random in an efficient way (by scanning the hashtable
@@ -624,8 +652,8 @@ fetch_inbatches(PositionList, BatchSize, CDB, CheckedList) ->
     fetch_inbatches(Tail, BatchSize, CDB, CheckedList ++ KL_List).
 
 
--spec assess_candidates(list(candidate()), score_parameters()) 
-                                            -> {list(candidate()), float()}.
+-spec assess_candidates(
+    list(candidate()), score_parameters()) -> {list(candidate()), float()}.
 %% @doc
 %% For each run length we need to assess all the possible runs of candidates,
 %% to determine which is the best score - to be put forward as the best
@@ -704,10 +732,12 @@ score_run(Run, {MaxRunLength, MR_CT, SF_CT}) ->
                 (MR_CT - SF_CT) / (MaxRunSize - 1)
         end,
     Target = SF_CT +  TargetIncr * (length(Run) - 1),
-    RunTotal = lists:foldl(fun(Cand, Acc) ->
-                                Acc + Cand#candidate.compaction_perc end,
-                            0.0,
-                            Run),
+    RunTotal =
+        lists:foldl(
+            fun(Cand, Acc) -> Acc + Cand#candidate.compaction_perc end,
+            0.0,
+            Run
+        ),
     Target - RunTotal / length(Run).
 
 
@@ -750,26 +780,29 @@ compact_files([Batch|T], CDBopts, ActiveJournal0,
                             FilterFun, FilterServer, MaxSQN, 
                             RStrategy, PressMethod, ManSlice0) ->
     {SrcJournal, PositionList} = Batch,
-    KVCs0 = leveled_cdb:cdb_directfetch(SrcJournal,
-                                        PositionList,
-                                        key_value_check),
-    KVCs1 = filter_output(KVCs0,
-                            FilterFun,
-                            FilterServer,
-                            MaxSQN,
-                            RStrategy),
-    {ActiveJournal1, ManSlice1} = write_values(KVCs1,
-                                                CDBopts, 
-                                                ActiveJournal0,
-                                                ManSlice0,
-                                                PressMethod),
+    KVCs0 =
+        leveled_cdb:cdb_directfetch(SrcJournal, PositionList, key_value_check),
+    KVCs1 =
+        filter_output(KVCs0, FilterFun, FilterServer, MaxSQN, RStrategy),
+    {ActiveJournal1, ManSlice1} =
+        write_values(
+            KVCs1, CDBopts, ActiveJournal0, ManSlice0, PressMethod),
     % The inker's clerk will no longer need these (potentially large) binaries,
     % so force garbage collection at this point.  This will mean when we roll
     % each CDB file there will be no remaining references to the binaries that
     % have been transferred and the memory can immediately be cleared
     garbage_collect(),
-    compact_files(T, CDBopts, ActiveJournal1, FilterFun, FilterServer, MaxSQN,
-                                RStrategy, PressMethod, ManSlice1).
+    compact_files(
+        T,
+        CDBopts,
+        ActiveJournal1,
+        FilterFun,
+        FilterServer,
+        MaxSQN,
+        RStrategy,
+        PressMethod,
+        ManSlice1
+    ).
 
 get_all_positions([], PositionBatches) ->
     PositionBatches;
@@ -777,23 +810,25 @@ get_all_positions([HeadRef|RestOfBest], PositionBatches) ->
     SrcJournal = HeadRef#candidate.journal,
     Positions = leveled_cdb:cdb_getpositions(SrcJournal, all),
     leveled_log:log(ic008, [HeadRef#candidate.filename, length(Positions)]),
-    Batches = split_positions_into_batches(lists:sort(Positions),
-                                            SrcJournal,
-                                            []),
+    Batches =
+        split_positions_into_batches(
+            lists:sort(Positions), SrcJournal, []
+        ),
     get_all_positions(RestOfBest, PositionBatches ++ Batches).
 
 split_positions_into_batches([], _Journal, Batches) ->
     Batches;
 split_positions_into_batches(Positions, Journal, Batches) ->
-    {ThisBatch, Tail} = if
-                            length(Positions) > ?BATCH_SIZE ->
-                                lists:split(?BATCH_SIZE, Positions);
-                            true ->
-                                {Positions, []}
-                        end,
-    split_positions_into_batches(Tail,
-                                    Journal,
-                                    Batches ++ [{Journal, ThisBatch}]).
+    {ThisBatch, Tail} =
+        if
+            length(Positions) > ?BATCH_SIZE ->
+                lists:split(?BATCH_SIZE, Positions);
+            true ->
+                {Positions, []}
+        end,
+    split_positions_into_batches(
+        Tail, Journal, Batches ++ [{Journal, ThisBatch}]
+    ).
 
 
 %% @doc
@@ -918,7 +953,7 @@ clear_waste(State) ->
             N = calendar:datetime_to_gregorian_seconds(calendar:local_time()),
             DeleteJournalFun =
                 fun(DelJ) ->
-                    LMD = filelib:last_modified(WP ++ DelJ),
+                    LMD = {_,_} = filelib:last_modified(WP ++ DelJ),
                     case N - calendar:datetime_to_gregorian_seconds(LMD) of
                         LMD_Delta when LMD_Delta >= WRP ->
                             ok = file:delete(WP ++ DelJ),
@@ -931,11 +966,9 @@ clear_waste(State) ->
             lists:foreach(DeleteJournalFun, ClearedJournals)
     end.
 
-
 %%%============================================================================
 %%% Test
 %%%============================================================================
-
 
 -ifdef(TEST).
 
@@ -966,24 +999,36 @@ local_time_to_now(DateTime) ->
     {Seconds div 1000000, Seconds rem 1000000, 0}.
 
 simple_score_test() ->
-    Run1 = [#candidate{compaction_perc = 75.0},
-            #candidate{compaction_perc = 75.0},
-            #candidate{compaction_perc = 76.0},
-            #candidate{compaction_perc = 70.0}],
+    DummyC =
+        #candidate{
+            low_sqn = 1, filename="dummy", journal=self(), compaction_perc = 0
+        },
+    Run1 = [DummyC#candidate{compaction_perc = 75.0},
+            DummyC#candidate{compaction_perc = 75.0},
+            DummyC#candidate{compaction_perc = 76.0},
+            DummyC#candidate{compaction_perc = 70.0}],
     ?assertMatch(-4.0, score_run(Run1, {4, 70.0, 40.0})),
-    Run2 = [#candidate{compaction_perc = 75.0}],
+    Run2 = [DummyC#candidate{compaction_perc = 75.0}],
     ?assertMatch(-35.0, score_run(Run2, {4, 70.0, 40.0})),
     ?assertEqual(0.0, score_run([], {4, 40.0, 70.0})),
-    Run3 = [#candidate{compaction_perc = 100.0}],
+    Run3 = [DummyC#candidate{compaction_perc = 100.0}],
     ?assertMatch(-60.0, score_run(Run3, {4, 70.0, 40.0})).
 
 file_gc_test() ->
-    State = #state{waste_path="test/test_area/waste/",
-                    waste_retention_period=1},
+    State =
+        #state{
+            waste_path="test/test_area/waste/", waste_retention_period = 1
+        },
     ok = filelib:ensure_dir(State#state.waste_path),
-    file:write_file(State#state.waste_path ++ "1.cdb", term_to_binary("Hello")),
+    file:write_file(
+        filename:join(State#state.waste_path, "1.cdb"),
+        term_to_binary("Hello")
+    ),
     timer:sleep(1100),
-    file:write_file(State#state.waste_path ++ "2.cdb", term_to_binary("Hello")),
+    file:write_file(
+        filename:join(State#state.waste_path, "2.cdb"),
+        term_to_binary("Hello")
+    ),
     clear_waste(State),
     {ok, ClearedJournals} = file:list_dir(State#state.waste_path),
     ?assertMatch(["2.cdb"], ClearedJournals),
@@ -1004,27 +1049,47 @@ find_bestrun_test() ->
 %% -define(MAXRUNLENGTH_COMPACTION_TARGET, 60.0).
 %% Tested first with blocks significant as no back-tracking
     Params = {4, 60.0, 40.0},
-    Block1 = [#candidate{compaction_perc = 55.0, filename = "a"},
-                #candidate{compaction_perc = 65.0, filename = "b"},
-                #candidate{compaction_perc = 42.0, filename = "c"},
-                #candidate{compaction_perc = 50.0, filename = "d"}],
-    Block2 = [#candidate{compaction_perc = 38.0, filename = "e"},
-                #candidate{compaction_perc = 75.0, filename = "f"},
-                #candidate{compaction_perc = 75.0, filename = "g"},
-                #candidate{compaction_perc = 45.0, filename = "h"}],
-    Block3 = [#candidate{compaction_perc = 70.0, filename = "i"},
-                #candidate{compaction_perc = 100.0, filename = "j"},
-                #candidate{compaction_perc = 100.0, filename = "k"},
-                #candidate{compaction_perc = 100.0, filename = "l"}],
-    Block4 = [#candidate{compaction_perc = 55.0, filename = "m"},
-                #candidate{compaction_perc = 56.0, filename = "n"},
-                #candidate{compaction_perc = 57.0, filename = "o"},
-                #candidate{compaction_perc = 40.0, filename = "p"}],
-    Block5 = [#candidate{compaction_perc = 60.0, filename = "q"},
-                #candidate{compaction_perc = 60.0, filename = "r"}],
+    DummyC =
+        #candidate{
+            low_sqn = 1, filename="dummy", journal=self(), compaction_perc = 0
+        },
+    Block1 =
+        [
+            DummyC#candidate{compaction_perc = 55.0, filename = "a"},
+            DummyC#candidate{compaction_perc = 65.0, filename = "b"},
+            DummyC#candidate{compaction_perc = 42.0, filename = "c"},
+            DummyC#candidate{compaction_perc = 50.0, filename = "d"}
+        ],
+    Block2 =
+        [
+            DummyC#candidate{compaction_perc = 38.0, filename = "e"},
+            DummyC#candidate{compaction_perc = 75.0, filename = "f"},
+            DummyC#candidate{compaction_perc = 75.0, filename = "g"},
+            DummyC#candidate{compaction_perc = 45.0, filename = "h"}
+        ],
+    Block3 =
+        [
+            DummyC#candidate{compaction_perc = 70.0, filename = "i"},
+            DummyC#candidate{compaction_perc = 100.0, filename = "j"},
+            DummyC#candidate{compaction_perc = 100.0, filename = "k"},
+            DummyC#candidate{compaction_perc = 100.0, filename = "l"}
+        ],
+    Block4 =
+        [
+            DummyC#candidate{compaction_perc = 55.0, filename = "m"},
+            DummyC#candidate{compaction_perc = 56.0, filename = "n"},
+            DummyC#candidate{compaction_perc = 57.0, filename = "o"},
+            DummyC#candidate{compaction_perc = 40.0, filename = "p"}
+        ],
+    Block5 =
+        [
+            DummyC#candidate{compaction_perc = 60.0, filename = "q"},
+            DummyC#candidate{compaction_perc = 60.0, filename = "r"}
+        ],
     CList0 = Block1 ++ Block2 ++ Block3 ++ Block4 ++ Block5,
     ?assertMatch(["b", "c", "d", "e"], check_bestrun(CList0, Params)),
-    CList1 = CList0 ++ [#candidate{compaction_perc = 20.0, filename="s"}],
+    CList1 =
+        CList0 ++ [DummyC#candidate{compaction_perc = 20.0, filename="s"}],
     ?assertMatch(["s"], check_bestrun(CList1, Params)),
     CList2 = Block4 ++ Block3 ++ Block2 ++ Block1 ++ Block5,
     ?assertMatch(["h", "a", "b", "c"], check_bestrun(CList2, Params)),
@@ -1219,12 +1284,18 @@ compact_empty_file_test() ->
     ok = leveled_cdb:cdb_destroy(CDB2).
 
 compare_candidate_test() ->
-    Candidate1 = #candidate{low_sqn=1},
-    Candidate2 = #candidate{low_sqn=2},
-    Candidate3 = #candidate{low_sqn=3},
-    Candidate4 = #candidate{low_sqn=4},
-    ?assertMatch([Candidate1, Candidate2, Candidate3, Candidate4],
-                sort_run([Candidate3, Candidate2, Candidate4, Candidate1])).       
+    DummyC =
+        #candidate{
+            low_sqn = 1, filename="dummy", journal=self(), compaction_perc = 0
+        },
+    Candidate1 = DummyC#candidate{low_sqn=1},
+    Candidate2 = DummyC#candidate{low_sqn=2},
+    Candidate3 = DummyC#candidate{low_sqn=3},
+    Candidate4 = DummyC#candidate{low_sqn=4},
+    ?assertMatch(
+        [Candidate1, Candidate2, Candidate3, Candidate4],
+        sort_run([Candidate3, Candidate2, Candidate4, Candidate1])
+    ).       
 
 compact_singlefile_totwosmallfiles_test_() ->
     {timeout, 60, fun compact_singlefile_totwosmallfiles_testto/0}.
@@ -1236,24 +1307,31 @@ compact_singlefile_totwosmallfiles_testto() ->
     FN1 = leveled_inker:filepath(RP, 1, new_journal),
     CDBoptsLarge = #cdb_options{binary_mode=true, max_size=30000000},
     {ok, CDB1} = leveled_cdb:cdb_open_writer(FN1, CDBoptsLarge),
-    lists:foreach(fun(X) ->
-                        LK = test_ledgerkey("Key" ++ integer_to_list(X)),
-                        Value = leveled_rand:rand_bytes(1024),
-                        {IK, IV} = 
-                            leveled_codec:to_inkerkv(LK, X, Value, 
-                                                        {[], infinity},
-                                                        native, true),
-                        ok = leveled_cdb:cdb_put(CDB1, IK, IV)
-                        end,
-                    lists:seq(1, 1000)),
+    lists:foreach(
+        fun(X) ->
+            LK = test_ledgerkey("Key" ++ integer_to_list(X)),
+            Value = crypto:strong_rand_bytes(1024),
+            {IK, IV} = 
+                leveled_codec:to_inkerkv(LK, X, Value, 
+                                            {[], infinity},
+                                            native, true),
+            ok = leveled_cdb:cdb_put(CDB1, IK, IV)
+        end,
+        lists:seq(1, 1000)
+    ),
     {ok, NewName} = leveled_cdb:cdb_complete(CDB1),
     {ok, CDBr} = leveled_cdb:cdb_open_reader(NewName),
     CDBoptsSmall = 
         #cdb_options{binary_mode=true, max_size=400000, file_path=CP},
-    BestRun1 = [#candidate{low_sqn=1,
-                            filename=leveled_cdb:cdb_filename(CDBr),
-                            journal=CDBr,
-                            compaction_perc=50.0}],
+    BestRun1 =
+        [
+            #candidate{
+                low_sqn=1,
+                filename=leveled_cdb:cdb_filename(CDBr),
+                journal=CDBr,
+                compaction_perc=50.0
+            }
+        ],
     FakeFilterFun =
         fun(_FS, _LK, SQN) -> 
             case SQN rem 2 of
@@ -1262,19 +1340,24 @@ compact_singlefile_totwosmallfiles_testto() ->
             end
         end,
     
-    ManifestSlice = compact_files(BestRun1,
-                                    CDBoptsSmall,
-                                    FakeFilterFun,
-                                    null,
-                                    900,
-                                    [{?STD_TAG, recovr}],
-                                    native),
+    ManifestSlice =
+        compact_files(
+            BestRun1,
+            CDBoptsSmall,
+            FakeFilterFun,
+            null,
+            900,
+            [{?STD_TAG, recovr}],
+            native
+        ),
     ?assertMatch(2, length(ManifestSlice)),
-    lists:foreach(fun({_SQN, _FN, CDB, _LK}) ->
-                        ok = leveled_cdb:cdb_deletepending(CDB),
-                        ok = leveled_cdb:cdb_destroy(CDB)
-                        end,
-                    ManifestSlice),
+    lists:foreach(
+        fun({_SQN, _FN, CDB, _LK}) ->
+            ok = leveled_cdb:cdb_deletepending(CDB),
+            ok = leveled_cdb:cdb_destroy(CDB)
+        end,
+        ManifestSlice
+    ),
     ok = leveled_cdb:cdb_deletepending(CDBr),
     ok = leveled_cdb:cdb_destroy(CDBr).
 
@@ -1304,11 +1387,13 @@ size_score_test() ->
             end
         end,
     Score =
-        size_comparison_score(KeySizeList,
-                                FilterFun,
-                                CurrentList,
-                                MaxSQN,
-                                leveled_codec:inker_reload_strategy([])),
+        size_comparison_score(
+            KeySizeList,
+            FilterFun,
+            CurrentList,
+            MaxSQN,
+            leveled_codec:inker_reload_strategy([])
+        ),
     io:format("Score ~w", [Score]),
     ?assertMatch(true, Score > 69.0),
     ?assertMatch(true, Score < 70.0).

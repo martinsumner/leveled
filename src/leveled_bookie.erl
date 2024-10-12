@@ -148,7 +148,7 @@
                         min_sqn = infinity :: integer()|infinity,
                         max_sqn = 0 :: integer()}).
 
--record(state, {inker :: pid() | undefined,
+-record(state, {inker :: pid() | null,
                 penciller :: pid() | undefined,
                 cache_size :: pos_integer() | undefined,
                 cache_multiple :: pos_integer() | undefined,
@@ -359,18 +359,29 @@
         ].
 
 -type load_item() ::
-    {leveled_codec:journal_key_tag()|null, 
-        leveled_codec:ledger_key()|?DUMMY,
-        non_neg_integer(), any(), integer(), 
-        leveled_codec:journal_keychanges()}.
+    {
+        leveled_codec:journal_key_tag()|null, 
+        leveled_codec:primary_key()|?DUMMY,
+        leveled_codec:sqn(),
+        dynamic(), 
+        leveled_codec:journal_keychanges(),
+        integer()
+    }.
 
 -type initial_loadfun() ::
     fun((leveled_codec:journal_key(),
-            any(),
+            dynamic(),
             non_neg_integer(),
-            {non_neg_integer(), non_neg_integer(), ledger_cache()},
+            {non_neg_integer(), non_neg_integer(), list(load_item())},
             fun((any()) -> {binary(), non_neg_integer()})) ->
-                {loop|stop, list(load_item())}).
+                {loop|stop,
+                    {
+                        non_neg_integer(),
+                        non_neg_integer(),
+                        list(load_item())
+                    }
+                }
+            ).
 
 -export_type([initial_loadfun/0, ledger_cache/0]).
 
@@ -421,7 +432,9 @@ book_start(RootPath, LedgerCacheSize, JournalSize, SyncStrategy) ->
 %% comments on the open_options() type
 
 book_start(Opts) ->
-    gen_server:start_link(?MODULE, [set_defaults(Opts)], []).
+    {ok, Bookie} =
+        gen_server:start_link(?MODULE, [set_defaults(Opts)], []),
+    {ok, Bookie}.
 
 
 -spec book_plainstart(list(tuple())) -> {ok, pid()}.
@@ -429,7 +442,9 @@ book_start(Opts) ->
 %% @doc
 %% Start used in tests to start without linking
 book_plainstart(Opts) ->
-    gen_server:start(?MODULE, [set_defaults(Opts)], []).
+    {ok, Bookie} =
+        gen_server:start(?MODULE, [set_defaults(Opts)], []),
+    {ok, Bookie}.
 
 
 -spec book_tempput(pid(), leveled_codec:key(), leveled_codec:key(), any(), 
@@ -448,8 +463,8 @@ book_plainstart(Opts) ->
 %% reload_strategy.  If expired objects are to be compacted entirely, then the
 %% history of KeyChanges will be lost on reload.
 
-book_tempput(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL)
-                                                    when is_integer(TTL) ->
+book_tempput(
+        Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) when is_integer(TTL) ->
     book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL).
 
 %% @doc - Standard PUT
@@ -613,7 +628,7 @@ book_sqn(Pid, Bucket, Key) ->
 book_sqn(Pid, Bucket, Key, Tag) ->
     gen_server:call(Pid, {head, Bucket, Key, Tag, true}, infinity).
 
--spec book_returnfolder(pid(), tuple()) -> {async, fun(() -> term())}.
+-spec book_returnfolder(pid(), tuple()) -> {async, fun(() -> dynamic())}.
 
 %% @doc Folds over store - deprecated
 %% The tuple() is a query, and book_returnfolder will return an {async, Folder}
@@ -685,13 +700,12 @@ book_returnfolder(Pid, RunnerType) ->
                      FoldAccT :: {FoldFun, Acc},
                      Range :: {IndexField, Start, End},
                      TermHandling :: {ReturnTerms, TermRegex}) ->
-                            {async, Runner::fun(() -> term())}
+                            {async, Runner::fun(() -> dynamic())}
                                 when Bucket::term(),
                                      Key :: term(),
                                      StartKey::term(),
                                      FoldFun::fun((Bucket, Key | {IndexVal, Key}, Acc) -> Acc),
-                                     Key::term(),
-                                     Acc::term(),
+                                     Acc::dynamic(),
                                      IndexField::term(),
                                      IndexVal::term(),
                                      Start::IndexVal,
@@ -728,10 +742,9 @@ book_indexfold(Pid, Bucket, FoldAccT, Range, TermHandling) ->
       Tag :: leveled_codec:tag(),
       FoldAccT :: {FoldFun, Acc},
       FoldFun :: fun((Bucket, Acc) -> Acc),
-      Acc :: term(),
+      Acc :: dynamic(),
       Constraint :: first | all,
       Bucket :: term(),
-      Acc :: term(),
       Runner :: fun(() -> Acc).
 book_bucketlist(Pid, Tag, FoldAccT, Constraint) ->
     RunnerType=
@@ -758,7 +771,7 @@ book_bucketlist(Pid, Tag, FoldAccT, Constraint) ->
       Tag :: leveled_codec:tag(),
       FoldAccT :: {FoldFun, Acc},
       FoldFun :: fun((Bucket, Key, Acc) -> Acc),
-      Acc :: term(),
+      Acc :: dynamic(),
       Bucket :: term(),
       Key :: term(),
       Runner :: fun(() -> Acc).
@@ -772,7 +785,7 @@ book_keylist(Pid, Tag, FoldAccT) ->
       Tag :: leveled_codec:tag(),
       FoldAccT :: {FoldFun, Acc},
       FoldFun :: fun((Bucket, Key, Acc) -> Acc),
-      Acc :: term(),
+      Acc :: dynamic(),
       Bucket :: term(),
       Key :: term(),
       Runner :: fun(() -> Acc).
@@ -790,7 +803,7 @@ book_keylist(Pid, Tag, Bucket, FoldAccT) ->
       Tag :: leveled_codec:tag(),
       FoldAccT :: {FoldFun, Acc},
       FoldFun :: fun((Bucket, Key, Acc) -> Acc),
-      Acc :: term(),
+      Acc :: dynamic(),
       Bucket :: term(),
       KeyRange :: {StartKey, EndKey} | all,
       StartKey :: Key,
@@ -809,7 +822,7 @@ book_keylist(Pid, Tag, Bucket, KeyRange, FoldAccT) ->
       Tag :: leveled_codec:tag(),
       FoldAccT :: {FoldFun, Acc},
       FoldFun :: fun((Bucket, Key, Acc) -> Acc),
-      Acc :: term(),
+      Acc :: dynamic(),
       Bucket :: term(),
       KeyRange :: {StartKey, EndKey} | all,
       StartKey :: Key,
@@ -838,7 +851,7 @@ book_keylist(Pid, Tag, Bucket, KeyRange, FoldAccT, TermRegex) ->
       Tag :: leveled_codec:tag(),
       FoldAccT :: {FoldFun, Acc},
       FoldFun :: fun((Bucket, Key, Value, Acc) -> Acc),
-      Acc :: term(),
+      Acc :: dynamic(),
       Bucket :: term(),
       Key :: term(),
       Value :: term(),
@@ -860,7 +873,7 @@ book_objectfold(Pid, Tag, FoldAccT, SnapPreFold) ->
       Tag :: leveled_codec:tag(),
       FoldAccT :: {FoldFun, Acc},
       FoldFun :: fun((Bucket, Key, Value, Acc) -> Acc),
-      Acc :: term(),
+      Acc :: dynamic(),
       Bucket :: term(),
       Key :: term(),
       Value :: term(),
@@ -884,7 +897,7 @@ book_objectfold(Pid, Tag, FoldAccT, SnapPreFold, Order) ->
       Tag :: leveled_codec:tag(),
       FoldAccT :: {FoldFun, Acc},
       FoldFun :: fun((Bucket, Key, Value, Acc) -> Acc),
-      Acc :: term(),
+      Acc :: dynamic(),
       Bucket :: term(),
       Key :: term(),
       Value :: term(),
@@ -940,7 +953,7 @@ book_objectfold(Pid, Tag, Bucket, Limiter, FoldAccT, SnapPreFold) ->
       Tag :: leveled_codec:tag(),
             FoldAccT :: {FoldFun, Acc},
       FoldFun :: fun((Bucket, Key, Value, Acc) -> Acc),
-      Acc :: term(),
+      Acc :: dynamic(),
       Bucket :: term(),
       Key :: term(),
       Value :: term(),
@@ -975,7 +988,7 @@ book_headfold(Pid, Tag, FoldAccT, JournalCheck, SnapPreFold, SegmentList) ->
       EndKey :: Key,
       FoldAccT :: {FoldFun, Acc},
       FoldFun :: fun((Bucket, Key, Value, Acc) -> Acc),
-      Acc :: term(),
+      Acc :: dynamic(),
       Bucket :: term(),
       Key :: term(),
       Value :: term(),
@@ -1008,7 +1021,7 @@ book_headfold(Pid, Tag, Limiter, FoldAccT, JournalCheck, SnapPreFold, SegmentLis
       EndKey :: Key,
       FoldAccT :: {FoldFun, Acc},
       FoldFun :: fun((Bucket, Key, Value, Acc) -> Acc),
-      Acc :: term(),
+      Acc :: dynamic(),
       Bucket :: term(),
       Key :: term(),
       Value :: term(),
@@ -1040,10 +1053,9 @@ book_headfold(Pid, Tag, all, FoldAccT, JournalCheck, SnapPreFold,
                     SegmentList, LastModRange, MaxObjectCount},
     book_returnfolder(Pid, RunnerType).
 
--spec book_snapshot(pid(), 
-                    store|ledger, 
-                    tuple()|undefined, 
-                    boolean()|undefined) -> {ok, pid(), pid()|null}.
+-spec book_snapshot(
+    pid(),  store|ledger, tuple()|no_lookup|undefined, boolean())
+        -> {ok, pid(), pid()|null}.
 
 %% @doc create a snapshot of the store
 %%
@@ -1151,9 +1163,8 @@ book_headstatus(Pid) ->
 %%% gen_server callbacks
 %%%============================================================================
 
--spec init([open_options()]) -> {ok, book_state()}.
+-spec init([open_options()]) -> {ok, book_state()}|{stop, atom()}.
 init([Opts]) ->
-    leveled_rand:seed(),
     case {proplists:get_value(snapshot_bookie, Opts), 
             proplists:get_value(root_path, Opts)} of
         {undefined, undefined} ->
@@ -1262,16 +1273,21 @@ init([Opts]) ->
     end.
 
 
-handle_call({put, Bucket, Key, Object, IndexSpecs, Tag, TTL, DataSync},
-                From, State) when State#state.head_only == false ->
-    LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
+handle_call(
+    {put, Bucket, Key, Object, IndexSpecs, Tag, TTL, DataSync},
+    From,
+    State)
+        when State#state.head_only == false , Tag =/= ?HEAD_TAG ->
+    LedgerKey = leveled_codec:to_objectkey(Bucket, Key, Tag),
     SWLR = os:timestamp(),
     SW0 = leveled_monitor:maybe_time(State#state.monitor),
-    {ok, SQN, ObjSize} = leveled_inker:ink_put(State#state.inker,
-                                               LedgerKey,
-                                               Object,
-                                               {IndexSpecs, TTL},
-                                               DataSync),
+    {ok, SQN, ObjSize} =
+        leveled_inker:ink_put(
+            State#state.inker,
+                LedgerKey,
+                Object,
+                {IndexSpecs, TTL},
+                DataSync),
     {T0, SW1} = leveled_monitor:step_time(SW0),
     Changes =
         preparefor_ledgercache(
@@ -1302,9 +1318,13 @@ handle_call({mput, ObjectSpecs, TTL}, From, State)
     {ok, SQN} = 
         leveled_inker:ink_mput(State#state.inker, dummy, {ObjectSpecs, TTL}),
     Changes = 
-        preparefor_ledgercache(?INKT_MPUT, ?DUMMY, 
-                                SQN, null, length(ObjectSpecs), 
-                                {ObjectSpecs, TTL}),
+        preparefor_ledgercache(
+            ?INKT_MPUT,
+            ?DUMMY, 
+            SQN, null,
+            length(ObjectSpecs), 
+            {ObjectSpecs, TTL}
+        ),
     Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
     case State#state.slow_offer of
         true ->
@@ -1324,7 +1344,7 @@ handle_call({mput, ObjectSpecs, TTL}, From, State)
     end;
 handle_call({get, Bucket, Key, Tag}, _From, State) 
                                         when State#state.head_only == false ->
-    LedgerKey = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
+    LedgerKey = leveled_codec:to_objectkey(Bucket, Key, Tag),
     SW0 = leveled_monitor:maybe_time(State#state.monitor),
     {H0, _CacheHit} =
         fetch_head(LedgerKey,
@@ -1370,7 +1390,7 @@ handle_call({get, Bucket, Key, Tag}, _From, State)
 handle_call({head, Bucket, Key, Tag, SQNOnly}, _From, State) 
                                         when State#state.head_lookup == true ->
     SW0 = leveled_monitor:maybe_time(State#state.monitor),
-    LK = leveled_codec:to_ledgerkey(Bucket, Key, Tag),
+    LK = leveled_codec:to_objectkey(Bucket, Key, Tag),
     {Head, CacheHit} =
         fetch_head(LK, 
                     State#state.penciller, 
@@ -1412,7 +1432,7 @@ handle_call({head, Bucket, Key, Tag, SQNOnly}, _From, State)
         case {LedgerMD, SQNOnly} of
             {not_found, _} ->
                 not_found;
-            {_, false} ->
+            {LedgerMD, false} when LedgerMD =/= null ->
                 {ok, leveled_head:build_head(Tag, LedgerMD)};
             {_, true} ->
                 {ok, SQN}
@@ -1426,14 +1446,18 @@ handle_call({head, Bucket, Key, Tag, SQNOnly}, _From, State)
         UpdJrnalCheckFreq ->
             {reply, Reply, State#state{ink_checking = UpdJrnalCheckFreq}}
     end;
-handle_call({snapshot, SnapType, Query, LongRunning}, _From, State) ->
+handle_call(
+    {snapshot, SnapType, Query, LongRunning},
+    _From,
+    State = #state{penciller = Pcl})
+        when is_pid(Pcl) ->
     % Snapshot the store, specifying if the snapshot should be long running 
     % (i.e. will the snapshot be queued or be required for an extended period 
     % e.g. many minutes)
     {ok, PclSnap, InkSnap} =
         snapshot_store(
             State#state.ledger_cache,
-            State#state.penciller,
+            Pcl,
             State#state.inker,
             State#state.monitor,
             SnapType,
@@ -1494,9 +1518,11 @@ handle_call(hot_backup, _From, State) when State#state.head_only == false ->
                         bookies_pid = self()},
     {ok, Snapshot} = leveled_inker:ink_snapstart(InkerOpts),
     {reply, {async, BackupFun(Snapshot)}, State};
-handle_call(close, _From, State) ->
-    leveled_inker:ink_close(State#state.inker),
-    leveled_penciller:pcl_close(State#state.penciller),
+handle_call(
+    close, _From, State = #state{inker = Inker, penciller = Pcl})
+        when is_pid(Inker), is_pid(Pcl) ->
+    leveled_inker:ink_close(Inker),
+    leveled_penciller:pcl_close(Pcl),
     leveled_monitor:monitor_close(element(1, State#state.monitor)),
     {stop, normal, ok, State};
 handle_call(destroy, _From, State=#state{is_snapshot=Snp}) when Snp == false ->
@@ -1515,11 +1541,11 @@ handle_call(Msg, _From, State) ->
     {reply, {unsupported_message, element(1, Msg)}, State}.
 
 
-handle_cast({log_level, LogLevel}, State) ->
-    PCL = State#state.penciller,
-    INK = State#state.inker,
-    ok = leveled_penciller:pcl_loglevel(PCL, LogLevel),
-    ok = leveled_inker:ink_loglevel(INK, LogLevel),
+handle_cast(
+    {log_level, LogLevel}, State = #state{inker = Inker, penciller = Pcl})
+        when is_pid(Inker), is_pid(Pcl) ->
+    ok = leveled_penciller:pcl_loglevel(Pcl, LogLevel),
+    ok = leveled_inker:ink_loglevel(Inker, LogLevel),
     case element(1, State#state.monitor) of
         no_monitor ->
             ok;
@@ -1528,11 +1554,11 @@ handle_cast({log_level, LogLevel}, State) ->
     end,
     ok = leveled_log:set_loglevel(LogLevel),
     {noreply, State};
-handle_cast({add_logs, ForcedLogs}, State) ->
-    PCL = State#state.penciller,
-    INK = State#state.inker,
-    ok = leveled_penciller:pcl_addlogs(PCL, ForcedLogs),
-    ok = leveled_inker:ink_addlogs(INK, ForcedLogs),
+handle_cast(
+    {add_logs, ForcedLogs}, State = #state{inker = Inker, penciller = Pcl})
+        when is_pid(Inker), is_pid(Pcl) ->
+    ok = leveled_penciller:pcl_addlogs(Pcl, ForcedLogs),
+    ok = leveled_inker:ink_addlogs(Inker, ForcedLogs),
     case element(1, State#state.monitor) of
         no_monitor ->
             ok;
@@ -1541,11 +1567,11 @@ handle_cast({add_logs, ForcedLogs}, State) ->
     end,
     ok = leveled_log:add_forcedlogs(ForcedLogs),
     {noreply, State};
-handle_cast({remove_logs, ForcedLogs}, State) ->
-    PCL = State#state.penciller,
-    INK = State#state.inker,
-    ok = leveled_penciller:pcl_removelogs(PCL, ForcedLogs),
-    ok = leveled_inker:ink_removelogs(INK, ForcedLogs),
+handle_cast(
+    {remove_logs, ForcedLogs}, State = #state{inker = Inker, penciller = Pcl})
+        when is_pid(Inker), is_pid(Pcl) ->
+    ok = leveled_penciller:pcl_removelogs(Pcl, ForcedLogs),
+    ok = leveled_inker:ink_removelogs(Inker, ForcedLogs),
     case element(1, State#state.monitor) of
         no_monitor ->
             ok;
@@ -1661,8 +1687,8 @@ loadqueue_ledgercache(Cache) ->
                         null|pid(),
                         leveled_monitor:monitor(),
                         store|ledger, 
-                        undefined|tuple(),
-                        undefined|boolean()) ->
+                        undefined|no_lookup|tuple(),
+                        boolean()) ->
                             {ok, pid(), pid()|null}.
 %% @doc 
 %% Allow all a snapshot to be created from part of the store, preferably
@@ -1679,7 +1705,7 @@ loadqueue_ledgercache(Cache) ->
 %% lookup is required but the range isn't defined then 'undefined' should be 
 %% passed as the query
 snapshot_store(
-        LedgerCache, Penciller, Inker, Monitor, SnapType, Query, LongRunning) ->
+        LedgerCache, Penciller, Ink, Monitor, SnapType, Query, LongRunning) ->
     SW0 = leveled_monitor:maybe_time(Monitor),
     LedgerCacheReady = readycache_forsnapshot(LedgerCache, Query),
     BookiesMem = {LedgerCacheReady#ledger_cache.loader,
@@ -1687,21 +1713,25 @@ snapshot_store(
                     LedgerCacheReady#ledger_cache.min_sqn,
                     LedgerCacheReady#ledger_cache.max_sqn},
     PCLopts = 
-        #penciller_options{start_snapshot = true,
-                            source_penciller = Penciller,
-                            snapshot_query = Query,
-                            snapshot_longrunning = LongRunning,
-				            bookies_pid = self(),
-                            bookies_mem = BookiesMem},
+        #penciller_options{
+            start_snapshot = true,
+            source_penciller = Penciller,
+            snapshot_query = Query,
+            snapshot_longrunning = LongRunning,
+            bookies_pid = self(),
+            bookies_mem = BookiesMem
+        },
     {TS0, SW1} = leveled_monitor:step_time(SW0),
     {ok, LedgerSnapshot} = leveled_penciller:pcl_snapstart(PCLopts),
     {TS1, _SW2} = leveled_monitor:step_time(SW1),
     ok = maybelog_snap_timing(Monitor, TS0, TS1),
     case SnapType of
-        store ->
-            InkerOpts = #inker_options{start_snapshot = true,
-                                       bookies_pid = self(),
-                                       source_inker = Inker},
+        store when is_pid(Ink) ->
+            InkerOpts =
+                #inker_options{
+                    start_snapshot = true,
+                    bookies_pid = self(),
+                    source_inker = Ink},
             {ok, JournalSnapshot} = leveled_inker:ink_snapstart(InkerOpts),
             {ok, LedgerSnapshot, JournalSnapshot};
         ledger ->
@@ -1797,8 +1827,13 @@ set_options(Opts, Monitor) ->
     ReloadStrategy = leveled_codec:inker_reload_strategy(AltStrategy),
 
     PCLL0CacheSize = 
-        max(?MIN_PCL_CACHE_SIZE, 
-            proplists:get_value(max_pencillercachesize, Opts)),
+        case proplists:get_value(max_pencillercachesize, Opts) of
+            P0CS when is_integer(P0CS), P0CS > ?MIN_PCL_CACHE_SIZE ->
+                P0CS;
+            _ ->
+                ?MIN_PCL_CACHE_SIZE
+        end,
+
     RootPath = proplists:get_value(root_path, Opts),
 
     JournalFP = filename:join(RootPath, ?JOURNAL_FP),
@@ -1896,7 +1931,13 @@ set_options(Opts, Monitor) ->
 %% previous snapshot should be used instead.  Also the snapshot should not be
 %% closed as part of the post-query activity as the snapshot may be reused, and
 %% should be manually closed.
-return_snapfun(State, SnapType, Query, LongRunning, SnapPreFold) ->
+return_snapfun(
+    State = #state{penciller = Pcl, inker = Ink},
+    SnapType,
+    Query,
+    LongRunning,
+    SnapPreFold)
+        when is_pid(Pcl), is_pid(Ink) ->
     CloseFun =
         fun(LS0, JS0) ->
             fun() ->
@@ -1965,9 +2006,9 @@ get_runner(State, {index_query, Constraint, FoldAccT, Range, TermHandling}) ->
                 {B, null}
         end,
     StartKey = 
-        leveled_codec:to_ledgerkey(Bucket, ObjKey0, ?IDX_TAG, IdxFld, StartT),
+        leveled_codec:to_querykey(Bucket, ObjKey0, ?IDX_TAG, IdxFld, StartT),
     EndKey = 
-        leveled_codec:to_ledgerkey(Bucket, null, ?IDX_TAG, IdxFld, EndT),
+        leveled_codec:to_querykey(Bucket, null, ?IDX_TAG, IdxFld, EndT),
     SnapFun = return_snapfun(State, ledger, {StartKey, EndKey}, false, false),
     leveled_runner:index_query(SnapFun, 
                                 {StartKey, EndKey, TermHandling}, 
@@ -2119,8 +2160,15 @@ get_deprecatedrunner(State,
                                 PartitionFilter).
 
 
--spec return_ledger_keyrange(atom(), any(), tuple()|all) -> 
-                                        {tuple(), tuple(), tuple()|no_lookup}.
+-spec return_ledger_keyrange(
+    atom(), leveled_codec:key(), tuple()|all)
+        ->
+            {
+                leveled_codec:query_key(),
+                leveled_codec:query_key(),
+                {leveled_codec:query_key(),
+                    leveled_codec:query_key()}|no_lookup
+            }.
 %% @doc
 %% Convert a range of binary keys into a ledger key range, returning 
 %% {StartLK, EndLK, Query} where Query is to indicate whether the query 
@@ -2129,16 +2177,16 @@ return_ledger_keyrange(Tag, Bucket, KeyRange) ->
     {StartKey, EndKey, Snap} =
         case KeyRange of 
             all -> 
-                {leveled_codec:to_ledgerkey(Bucket, null, Tag),
-                    leveled_codec:to_ledgerkey(Bucket, null, Tag),
+                {leveled_codec:to_querykey(Bucket, null, Tag),
+                    leveled_codec:to_querykey(Bucket, null, Tag),
                     false};
             {StartTerm, <<"$all">>} ->
-                {leveled_codec:to_ledgerkey(Bucket, StartTerm, Tag),
-                    leveled_codec:to_ledgerkey(Bucket, null, Tag),
+                {leveled_codec:to_querykey(Bucket, StartTerm, Tag),
+                    leveled_codec:to_querykey(Bucket, null, Tag),
                     false};
             {StartTerm, EndTerm} ->
-                {leveled_codec:to_ledgerkey(Bucket, StartTerm, Tag),
-                    leveled_codec:to_ledgerkey(Bucket, EndTerm, Tag),
+                {leveled_codec:to_querykey(Bucket, StartTerm, Tag),
+                    leveled_codec:to_querykey(Bucket, EndTerm, Tag),
                     true}
         end,
     SnapQuery = 
@@ -2164,8 +2212,8 @@ maybe_longrunning(SW, Aspect) ->
             ok
     end.
 
--spec readycache_forsnapshot(ledger_cache(), tuple()|no_lookup|undefined) 
-                                                        -> ledger_cache().
+-spec readycache_forsnapshot(
+    ledger_cache(), tuple()|no_lookup|undefined) -> ledger_cache().
 %% @doc
 %% Strip the ledger cach back to only the relevant information needed in 
 %% the query, and to make the cache a snapshot (and so not subject to changes
@@ -2303,7 +2351,7 @@ journal_notfound(CheckFrequency, Inker, LK, SQN) ->
                                                     {boolean(), integer()}.
 %% @doc Use a function to check if an item is found
 check_notfound(CheckFrequency, CheckFun) ->
-    case leveled_rand:uniform(?MAX_KEYCHECK_FREQUENCY) of 
+    case rand:uniform(?MAX_KEYCHECK_FREQUENCY) of 
         X when X =< CheckFrequency ->
             case CheckFun() of
                 probably ->
@@ -2316,28 +2364,32 @@ check_notfound(CheckFrequency, CheckFun) ->
     end.
 
 
--spec preparefor_ledgercache(leveled_codec:journal_key_tag()|null, 
-                                leveled_codec:ledger_key()|?DUMMY,
-                                non_neg_integer(), any(), integer(), 
-                                leveled_codec:journal_keychanges())
-                                    -> {leveled_codec:segment_hash(), 
-                                            non_neg_integer(), 
-                                            list(leveled_codec:ledger_kv())}.
+-spec preparefor_ledgercache(
+    leveled_codec:journal_key_tag()|null, 
+    leveled_codec:primary_key()|?DUMMY,
+    non_neg_integer(),
+    any(),
+    integer(), 
+    leveled_codec:journal_keychanges())
+        -> {leveled_codec:segment_hash(), 
+                non_neg_integer(), 
+                list(leveled_codec:ledger_kv())}.
 %% @doc
 %% Prepare an object and its related key changes for addition to the Ledger 
 %% via the Ledger Cache.
-preparefor_ledgercache(?INKT_MPUT, 
-                        ?DUMMY, SQN, _O, _S, {ObjSpecs, TTL}) ->
+preparefor_ledgercache(?INKT_MPUT, ?DUMMY, SQN, _O, _S, {ObjSpecs, TTL}) ->
     ObjChanges = leveled_codec:obj_objectspecs(ObjSpecs, SQN, TTL),
     {no_lookup, SQN, ObjChanges};
-preparefor_ledgercache(?INKT_KEYD,
-                        LedgerKey, SQN, _Obj, _Size, {IdxSpecs, TTL}) ->
+preparefor_ledgercache(
+        ?INKT_KEYD, LedgerKey, SQN, _Obj, _Size, {IdxSpecs, TTL})
+            when LedgerKey =/= ?DUMMY ->
     {Bucket, Key} = leveled_codec:from_ledgerkey(LedgerKey),
     KeyChanges =
         leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL),
     {no_lookup, SQN, KeyChanges};
-preparefor_ledgercache(_InkTag,
-                        LedgerKey, SQN, Obj, Size, {IdxSpecs, TTL}) ->
+preparefor_ledgercache(
+        _InkTag, LedgerKey, SQN, Obj, Size, {IdxSpecs, TTL}) 
+            when LedgerKey =/= ?DUMMY ->
     {Bucket, Key, MetaValue, {KeyH, _ObjH}, _LastMods} =
         leveled_codec:generate_ledgerkv(LedgerKey, SQN, Obj, Size, TTL),
     KeyChanges =
@@ -2346,31 +2398,31 @@ preparefor_ledgercache(_InkTag,
     {KeyH, SQN, KeyChanges}.
 
 
--spec recalcfor_ledgercache(leveled_codec:journal_key_tag()|null, 
-                                leveled_codec:ledger_key()|?DUMMY,
-                                non_neg_integer(), any(), integer(), 
-                                leveled_codec:journal_keychanges(),
-                                ledger_cache(),
-                                pid())
-                                    -> {leveled_codec:segment_hash(), 
-                                            non_neg_integer(), 
-                                            list(leveled_codec:ledger_kv())}.
+-spec recalcfor_ledgercache(
+    leveled_codec:journal_key_tag()|null, 
+    leveled_codec:primary_key()|?DUMMY,
+    non_neg_integer(),
+    binary()|term(),
+    integer(), 
+    leveled_codec:journal_keychanges(),
+    ledger_cache(),
+    pid())
+        -> {leveled_codec:segment_hash(),
+                non_neg_integer(),
+                list(leveled_codec:ledger_kv())}.
 %% @doc
 %% When loading from the journal to the ledger, may hit a key which has the
 %% `recalc` strategy.  Such a key needs to recalculate the key changes by
 %% comparison with the current state of the ledger, assuming it is a full
 %% journal entry (i.e. KeyDeltas which may be a result of previously running
 %% with a retain strategy should be ignored).  
-recalcfor_ledgercache(InkTag,
-                        _LedgerKey, SQN, _Obj, _Size, {_IdxSpecs, _TTL},
-                        _LedgerCache,
-                        _Penciller)
-                            when InkTag == ?INKT_MPUT; InkTag == ?INKT_KEYD ->
+recalcfor_ledgercache(
+    InkTag, _LedgerKey, SQN, _Obj, _Size, {_IdxSpecs, _TTL}, _LC, _Pcl)
+        when InkTag == ?INKT_MPUT; InkTag == ?INKT_KEYD ->
     {no_lookup, SQN, []};
-recalcfor_ledgercache(_InkTag,
-                        LK, SQN, Obj, Size, {_IgnoreJournalIdxSpecs, TTL},
-                        LedgerCache,
-                        Penciller) ->
+recalcfor_ledgercache(
+    _InkTag, LK, SQN, Obj, Size, {_Ignore, TTL}, LedgerCache, Penciller)
+        when LK =/= ?DUMMY ->
     {Bucket, Key, MetaValue, {KeyH, _ObjH}, _LastMods} =
         leveled_codec:generate_ledgerkv(LK, SQN, Obj, Size, TTL),
     OldObject = 
@@ -2385,9 +2437,16 @@ recalcfor_ledgercache(_InkTag,
             not_present ->
                 not_present;
             {LK, LV} ->
-                leveled_codec:get_metadata(LV)
+                case leveled_codec:get_metadata(LV) of
+                    MDO when MDO =/= null ->
+                        MDO
+                end
         end,
-    UpdMetadata = leveled_codec:get_metadata(MetaValue),
+    UpdMetadata =
+        case leveled_codec:get_metadata(MetaValue) of
+            MDU when MDU =/= null ->
+                MDU
+        end,
     IdxSpecs =
         leveled_head:diff_indexspecs(element(1, LK), UpdMetadata, OldMetadata),
     {KeyH,
@@ -2396,11 +2455,12 @@ recalcfor_ledgercache(_InkTag,
             ++ leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL)}.
 
 
--spec addto_ledgercache({leveled_codec:segment_hash(), 
-                                non_neg_integer(), 
-                                list(leveled_codec:ledger_kv())}, 
-                            ledger_cache()) 
-                                    -> ledger_cache().
+-spec addto_ledgercache(
+    {leveled_codec:segment_hash(), 
+        non_neg_integer(), 
+        list(leveled_codec:ledger_kv())}, 
+    ledger_cache()) 
+        -> ledger_cache().
 %% @doc
 %% Add a set of changes associated with a single sequence number (journal 
 %% update) and key to the ledger cache.  If the changes are not to be looked
@@ -2412,12 +2472,13 @@ addto_ledgercache({H, SQN, KeyChanges}, Cache) ->
                         min_sqn=min(SQN, Cache#ledger_cache.min_sqn),
                         max_sqn=max(SQN, Cache#ledger_cache.max_sqn)}.
 
--spec addto_ledgercache({integer()|no_lookup, 
-                                integer(), 
-                                list(leveled_codec:ledger_kv())}, 
-                            ledger_cache(),
-                            loader) 
-                                    -> ledger_cache().
+-spec addto_ledgercache(
+    {leveled_codec:segment_hash()|no_lookup,
+        integer(),
+        list(leveled_codec:ledger_kv())},
+    ledger_cache(),
+    loader) 
+        -> ledger_cache().
 %% @doc
 %% Add a set of changes associated with a single sequence number (journal 
 %% update) to the ledger cache.  This is used explicitly when loading the
@@ -2469,10 +2530,13 @@ maybepush_ledgercache(MaxCacheSize, MaxCacheMult, Cache, Penciller) ->
     TimeToPush = maybe_withjitter(CacheSize, MaxCacheSize, MaxCacheMult),
     if
         TimeToPush ->
-            CacheToLoad = {Tab,
-                            Cache#ledger_cache.index,
-                            Cache#ledger_cache.min_sqn,
-                            Cache#ledger_cache.max_sqn},
+            CacheToLoad =
+                {   
+                    Tab,
+                    Cache#ledger_cache.index,
+                    Cache#ledger_cache.min_sqn,
+                    Cache#ledger_cache.max_sqn
+                },
             case leveled_penciller:pcl_pushmem(Penciller, CacheToLoad) of
                 ok ->
                     Cache0 = #ledger_cache{},
@@ -2493,7 +2557,7 @@ maybepush_ledgercache(MaxCacheSize, MaxCacheMult, Cache, Penciller) ->
 %% a push should be
 maybe_withjitter(
     CacheSize, MaxCacheSize, MaxCacheMult) when CacheSize > MaxCacheSize ->
-    R = leveled_rand:uniform(MaxCacheMult * MaxCacheSize),
+    R = rand:uniform(MaxCacheMult * MaxCacheSize),
     (CacheSize - MaxCacheSize) > R;
 maybe_withjitter(_CacheSize, _MaxCacheSize, _MaxCacheMult) ->
     false.
@@ -2515,7 +2579,8 @@ get_loadfun() ->
             _ ->
                 {VBin, ValSize} = ExtractFun(ValueInJournal),
                 % VBin may already be a term
-                {Obj, IdxSpecs} = leveled_codec:split_inkvalue(VBin),
+                {Obj, IdxSpecs} =
+                    leveled_codec:revert_value_from_journal(VBin),
                 case SQN of
                     MaxSQN ->
                         {stop,
@@ -2546,11 +2611,14 @@ delete_path(DirPath) ->
         leveled_monitor:timing(),
         leveled_monitor:timing(),
         pos_integer()) -> ok.
-maybelog_put_timing(_Monitor, no_timing, no_timing, no_timing, _Size) ->
-    ok;
-maybelog_put_timing({Pid, _StatsFreq}, InkTime, PrepTime, MemTime, Size) ->
+maybelog_put_timing(
+    {Pid, _StatsFreq}, InkTime, PrepTime, MemTime, Size)
+        when is_pid(Pid),
+            is_integer(InkTime), is_integer(PrepTime), is_integer(MemTime) ->
     leveled_monitor:add_stat(
-        Pid, {bookie_put_update, InkTime, PrepTime, MemTime, Size}).
+        Pid, {bookie_put_update, InkTime, PrepTime, MemTime, Size});
+maybelog_put_timing(_Monitor, _, _, _, _Size) ->
+    ok.
 
 -spec maybelog_head_timing(
         leveled_monitor:monitor(),
@@ -2558,37 +2626,42 @@ maybelog_put_timing({Pid, _StatsFreq}, InkTime, PrepTime, MemTime, Size) ->
         leveled_monitor:timing(),
         boolean(),
         boolean()) -> ok.
-maybelog_head_timing(_Monitor, no_timing, no_timing, _NF, _CH) ->
-    ok;
-maybelog_head_timing({Pid, _StatsFreq}, FetchTime, _, true, _CH) ->
-    leveled_monitor:add_stat(
-        Pid, {bookie_head_update, FetchTime, not_found, 0});
-maybelog_head_timing({Pid, _StatsFreq}, FetchTime, RspTime, _NF, CH) ->
+maybelog_head_timing({Pid, _StatsFreq}, FetchTime, RspTime, false, CH)
+        when is_pid(Pid), is_integer(FetchTime), is_integer(RspTime) ->
     CH0 = case CH of true -> 1; false -> 0 end,
     leveled_monitor:add_stat(
-        Pid, {bookie_head_update, FetchTime, RspTime, CH0}).
+        Pid, {bookie_head_update, FetchTime, RspTime, CH0});
+maybelog_head_timing({Pid, _StatsFreq}, FetchTime, _, true, _CH)
+    when is_pid(Pid), is_integer(FetchTime) ->
+    leveled_monitor:add_stat(
+        Pid, {bookie_head_update, FetchTime, not_found, 0});
+maybelog_head_timing(_Monitor, _, _, _NF, _CH) ->
+    ok.
 
 -spec maybelog_get_timing(
     leveled_monitor:monitor(),
     leveled_monitor:timing(),
     leveled_monitor:timing(),
     boolean()) -> ok.
-maybelog_get_timing(_Monitor, no_timing, no_timing, _NF) ->
-    ok;
-maybelog_get_timing({Pid, _StatsFreq}, HeadTime, _BodyTime, true) ->
+maybelog_get_timing({Pid, _StatsFreq}, HeadTime, BodyTime, false)
+        when is_pid(Pid), is_integer(HeadTime), is_integer(BodyTime) ->
+    leveled_monitor:add_stat(Pid, {bookie_get_update, HeadTime, BodyTime});
+maybelog_get_timing({Pid, _StatsFreq}, HeadTime, _BodyTime, true)
+        when is_pid(Pid), is_integer(HeadTime) ->
     leveled_monitor:add_stat(Pid, {bookie_get_update, HeadTime, not_found});
-maybelog_get_timing({Pid, _StatsFreq}, HeadTime, BodyTime, false) ->
-    leveled_monitor:add_stat(Pid, {bookie_get_update, HeadTime, BodyTime}).
-
+maybelog_get_timing(_Monitor, _, _, _NF) ->
+    ok.
 
 -spec maybelog_snap_timing(
     leveled_monitor:monitor(),
     leveled_monitor:timing(),
     leveled_monitor:timing()) -> ok.
-maybelog_snap_timing(_Monitor, no_timing, no_timing) ->
-    ok;
-maybelog_snap_timing({Pid, _StatsFreq}, BookieTime, PCLTime) ->
-    leveled_monitor:add_stat(Pid, {bookie_snap_update, BookieTime, PCLTime}).
+maybelog_snap_timing({Pid, _StatsFreq}, BookieTime, PCLTime)
+        when is_pid(Pid), is_integer(BookieTime), is_integer(PCLTime) ->
+    leveled_monitor:add_stat(Pid, {bookie_snap_update, BookieTime, PCLTime});
+maybelog_snap_timing(_Monitor, _, _) ->
+    ok.
+
 
 %%%============================================================================
 %%% Test
@@ -2603,13 +2676,11 @@ maybelog_snap_timing({Pid, _StatsFreq}, BookieTime, PCLTime) ->
 book_returnactors(Pid) ->
     gen_server:call(Pid, return_actors).
 
-
 reset_filestructure() ->
     RootPath  = "test/test_area",
     leveled_inker:clean_testdir(RootPath ++ "/" ++ ?JOURNAL_FP),
     leveled_penciller:clean_testdir(RootPath ++ "/" ++ ?LEDGER_FP),
     RootPath.
-
 
 generate_multiple_objects(Count, KeyNumber) ->
     generate_multiple_objects(Count, KeyNumber, []).
@@ -2617,13 +2688,20 @@ generate_multiple_objects(Count, KeyNumber) ->
 generate_multiple_objects(0, _KeyNumber, ObjL) ->
     ObjL;
 generate_multiple_objects(Count, KeyNumber, ObjL) ->
-    Key = "Key" ++ integer_to_list(KeyNumber),
-    Value = leveled_rand:rand_bytes(256),
-    IndexSpec = [{add, "idx1_bin", "f" ++ integer_to_list(KeyNumber rem 10)}],
-    generate_multiple_objects(Count - 1,
-                                KeyNumber + 1,
-                                ObjL ++ [{Key, Value, IndexSpec}]).
-
+    Key = list_to_binary("Key" ++ integer_to_list(KeyNumber)),
+    Value = crypto:strong_rand_bytes(256),
+    IndexSpec =
+        [
+            {
+                add, <<"idx1_bin">>,
+                list_to_binary("f" ++ integer_to_list(KeyNumber rem 10))
+            }
+        ],
+    generate_multiple_objects(
+        Count - 1,
+        KeyNumber + 1,
+        ObjL ++ [{Key, Value, IndexSpec}]
+    ).
 
 shutdown_test_() ->
     {timeout, 10, fun shutdown_tester/0}.
@@ -2648,7 +2726,9 @@ shutdown_tester() ->
 
     timer:sleep(2000),
     ok = leveled_penciller:pcl_close(SnpPCL1),
-    ok = leveled_inker:ink_close(SnpJrnl1),
+    case SnpJrnl1 of
+        P when is_pid(P) -> ok = leveled_inker:ink_close(SnpJrnl1)
+    end,
     SW = os:timestamp(),
     receive ok -> ok end,
     WaitForShutDown = timer:now_diff(SW, os:timestamp()) div 1000,
@@ -2662,83 +2742,105 @@ ttl_test() ->
     ObjL1 = generate_multiple_objects(100, 1),
     % Put in all the objects with a TTL in the future
     Future = leveled_util:integer_now() + 300,
-    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
-                                                        "Bucket", K, V, S,
-                                                        ?STD_TAG,
-                                                        Future) end,
-                    ObjL1),
-    lists:foreach(fun({K, V, _S}) ->
-                        {ok, V} = book_get(Bookie1, "Bucket", K, ?STD_TAG)
-                        end,
-                    ObjL1),
-    lists:foreach(fun({K, _V, _S}) ->
-                        {ok, _} = book_head(Bookie1, "Bucket", K, ?STD_TAG)
-                        end,
-                    ObjL1),
+    lists:foreach(
+        fun({K, V, S}) ->
+            ok =
+                book_tempput(Bookie1, <<"Bucket">>, K, V, S, ?STD_TAG, Future)
+        end,
+        ObjL1
+    ),
+    lists:foreach(
+        fun({K, V, _S}) ->
+            {ok, V} = book_get(Bookie1, <<"Bucket">>, K, ?STD_TAG)
+        end,
+        ObjL1
+    ),
+    lists:foreach(
+        fun({K, _V, _S}) ->
+            {ok, _} = book_head(Bookie1, <<"Bucket">>, K, ?STD_TAG)
+        end,
+        ObjL1
+    ),
 
     ObjL2 = generate_multiple_objects(100, 101),
     Past = leveled_util:integer_now() - 300,
-    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
-                                                        "Bucket", K, V, S,
-                                                        ?STD_TAG,
-                                                        Past) end,
-                    ObjL2),
-    lists:foreach(fun({K, _V, _S}) ->
-                        not_found = book_get(Bookie1, "Bucket", K, ?STD_TAG)
-                        end,
-                    ObjL2),
-    lists:foreach(fun({K, _V, _S}) ->
-                        not_found = book_head(Bookie1, "Bucket", K, ?STD_TAG)
-                        end,
+    lists:foreach(
+        fun({K, V, S}) ->
+            ok = book_tempput(Bookie1, <<"Bucket">>, K, V, S, ?STD_TAG, Past)
+        end,
+        ObjL2),
+    lists:foreach(
+        fun({K, _V, _S}) ->
+            not_found = book_get(Bookie1, <<"Bucket">>, K, ?STD_TAG)
+        end,
+        ObjL2),
+    lists:foreach(
+        fun({K, _V, _S}) ->
+            not_found = book_head(Bookie1, <<"Bucket">>, K, ?STD_TAG)
+        end,
                     ObjL2),
 
-    {async, BucketFolder} = book_returnfolder(Bookie1,
-                                                {bucket_stats, "Bucket"}),
+    {async, BucketFolder} =
+        book_returnfolder(Bookie1, {bucket_stats, <<"Bucket">>}),
     {_Size, Count} = BucketFolder(),
     ?assertMatch(100, Count),
     FoldKeysFun = fun(_B, Item, FKFAcc) -> FKFAcc ++ [Item] end,
-    {async,
-        IndexFolder} = book_returnfolder(Bookie1,
-                                            {index_query,
-                                            "Bucket",
-                                            {FoldKeysFun, []},
-                                            {"idx1_bin", "f8", "f9"},
-                                            {false, undefined}}),
+    {async, IndexFolder} =
+        book_returnfolder(
+            Bookie1,
+            {
+                index_query,
+                <<"Bucket">>,
+                {FoldKeysFun, []},
+                {<<"idx1_bin">>, <<"f8">>, <<"f9">>},
+                {false, undefined}
+            }
+        ),
     KeyList = IndexFolder(),
     ?assertMatch(20, length(KeyList)),
 
     {ok, Regex} = re:compile("f8"),
-    {async,
-        IndexFolderTR} = book_returnfolder(Bookie1,
-                                            {index_query,
-                                            "Bucket",
-                                            {FoldKeysFun, []},
-                                            {"idx1_bin", "f8", "f9"},
-                                            {true, Regex}}),
+    {async, IndexFolderTR} =
+        book_returnfolder(
+            Bookie1,
+            {
+                index_query,
+                <<"Bucket">>,
+                {FoldKeysFun, []},
+                {<<"idx1_bin">>, <<"f8">>, <<"f9">>},
+                {true, Regex}}
+            ),
     TermKeyList = IndexFolderTR(),
     ?assertMatch(10, length(TermKeyList)),
 
     ok = book_close(Bookie1),
     {ok, Bookie2} = book_start([{root_path, RootPath}]),
 
-    {async,
-        IndexFolderTR2} = book_returnfolder(Bookie2,
-                                            {index_query,
-                                            "Bucket",
-                                            {FoldKeysFun, []},
-                                            {"idx1_bin", "f7", "f9"},
-                                            {false, Regex}}),
+    {async, IndexFolderTR2} =
+    book_returnfolder(
+        Bookie2,
+        {
+            index_query,
+            <<"Bucket">>,
+            {FoldKeysFun, []},
+            {<<"idx1_bin">>, <<"f7">>, <<"f9">>},
+            {false, Regex}}
+        ),
     KeyList2 = IndexFolderTR2(),
     ?assertMatch(10, length(KeyList2)),
 
-    lists:foreach(fun({K, _V, _S}) ->
-                        not_found = book_get(Bookie2, "Bucket", K, ?STD_TAG)
-                        end,
-                    ObjL2),
-    lists:foreach(fun({K, _V, _S}) ->
-                        not_found = book_head(Bookie2, "Bucket", K, ?STD_TAG)
-                        end,
-                    ObjL2),
+    lists:foreach(
+        fun({K, _V, _S}) ->
+            not_found = book_get(Bookie2, <<"Bucket">>, K, ?STD_TAG)
+        end,
+        ObjL2
+    ),
+    lists:foreach(
+        fun({K, _V, _S}) ->
+            not_found = book_head(Bookie2, <<"Bucket">>, K, ?STD_TAG)
+        end,
+        ObjL2
+    ),
 
     ok = book_close(Bookie2),
     reset_filestructure().
@@ -2748,45 +2850,55 @@ hashlist_query_test_() ->
 
 hashlist_query_testto() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                {max_journalsize, 1000000},
-                                {cache_size, 500}]),
+    {ok, Bookie1} =
+        book_start(
+            [
+                {root_path, RootPath},
+                {max_journalsize, 1000000},
+                {cache_size, 500}
+            ]
+        ),
     ObjL1 = generate_multiple_objects(1200, 1),
     % Put in all the objects with a TTL in the future
     Future = leveled_util:integer_now() + 300,
-    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
-                                                        "Bucket", K, V, S,
-                                                        ?STD_TAG,
-                                                        Future) end,
-                    ObjL1),
+    lists:foreach(
+        fun({K, V, S}) -> 
+            ok = book_tempput(Bookie1, <<"Bucket">>, K, V, S, ?STD_TAG, Future)
+        end,
+        ObjL1
+    ),
     ObjL2 = generate_multiple_objects(20, 1201),
     % Put in a few objects with a TTL in the past
     Past = leveled_util:integer_now() - 300,
-    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
-                                                        "Bucket", K, V, S,
-                                                        ?STD_TAG,
-                                                        Past) end,
-                    ObjL2),
+    lists:foreach(
+        fun({K, V, S}) ->
+            ok = book_tempput(Bookie1, <<"Bucket">>, K, V, S, ?STD_TAG, Past)
+        end,
+        ObjL2
+    ),
     % Scan the store for the Bucket, Keys and Hashes
-    {async, HTFolder} = book_returnfolder(Bookie1,
-                                                {hashlist_query,
-                                                    ?STD_TAG,
-                                                    false}),
+    {async, HTFolder} =
+        book_returnfolder(Bookie1, {hashlist_query, ?STD_TAG, false}),
     KeyHashList = HTFolder(),
-    lists:foreach(fun({B, _K, H}) ->
-                        ?assertMatch("Bucket", B),
-                        ?assertMatch(true, is_integer(H))
-                        end,
-                    KeyHashList),
+    lists:foreach(
+        fun({B, _K, H}) ->
+            ?assertMatch(<<"Bucket">>, B),
+            ?assertMatch(true, is_integer(H))
+        end,
+        KeyHashList)
+        ,
     ?assertMatch(1200, length(KeyHashList)),
     ok = book_close(Bookie1),
-    {ok, Bookie2} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 200000},
-                                    {cache_size, 500}]),
-    {async, HTFolder2} = book_returnfolder(Bookie2,
-                                                {hashlist_query,
-                                                    ?STD_TAG,
-                                                    false}),
+    {ok, Bookie2} =
+        book_start(
+            [
+                {root_path, RootPath},
+                {max_journalsize, 200000},
+                {cache_size, 500}
+            ]
+        ),
+    {async, HTFolder2} =
+        book_returnfolder(Bookie2, {hashlist_query, ?STD_TAG, false}),
     L0 = length(KeyHashList),
     HTR2 =  HTFolder2(),
     ?assertMatch(L0, length(HTR2)),
@@ -2800,26 +2912,28 @@ hashlist_query_withjournalcheck_test_() ->
 
 hashlist_query_withjournalcheck_testto() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, 500}]),
+    {ok, Bookie1} =
+        book_start(
+            [
+                {root_path, RootPath},
+                {max_journalsize, 1000000},
+                {cache_size, 500}
+            ]
+        ),
     ObjL1 = generate_multiple_objects(800, 1),
     % Put in all the objects with a TTL in the future
     Future = leveled_util:integer_now() + 300,
-    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
-                                                        "Bucket", K, V, S,
-                                                        ?STD_TAG,
-                                                        Future) end,
-                    ObjL1),
-    {async, HTFolder1} = book_returnfolder(Bookie1,
-                                                {hashlist_query,
-                                                    ?STD_TAG,
-                                                    false}),
+    lists:foreach(
+        fun({K, V, S}) ->
+            ok = book_tempput(Bookie1, <<"Bucket">>, K, V, S, ?STD_TAG, Future)
+        end,
+        ObjL1
+    ),
+    {async, HTFolder1} =
+        book_returnfolder(Bookie1, {hashlist_query, ?STD_TAG, false}),
     KeyHashList = HTFolder1(),
-    {async, HTFolder2} = book_returnfolder(Bookie1,
-                                                {hashlist_query,
-                                                    ?STD_TAG,
-                                                    true}),
+    {async, HTFolder2} =
+        book_returnfolder(Bookie1, {hashlist_query, ?STD_TAG, true}),
     ?assertMatch(KeyHashList, HTFolder2()),
     ok = book_close(Bookie1),
     reset_filestructure().
@@ -2829,68 +2943,89 @@ foldobjects_vs_hashtree_test_() ->
 
 foldobjects_vs_hashtree_testto() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, 500}]),
+    {ok, Bookie1} =
+        book_start(
+            [{
+                root_path, RootPath},
+                {max_journalsize, 1000000},
+                {cache_size, 500}
+            ]),
     ObjL1 = generate_multiple_objects(800, 1),
     % Put in all the objects with a TTL in the future
     Future = leveled_util:integer_now() + 300,
-    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
-                                                        "Bucket", K, V, S,
-                                                        ?STD_TAG,
-                                                        Future) end,
-                    ObjL1),
-    {async, HTFolder1} = book_returnfolder(Bookie1,
-                                                {hashlist_query,
-                                                    ?STD_TAG,
-                                                    false}),
+    lists:foreach(
+        fun({K, V, S}) -> ok =
+            book_tempput(Bookie1, <<"Bucket">>, K, V, S, ?STD_TAG, Future)
+        end,
+        ObjL1
+    ),
+    {async, HTFolder1} =
+        book_returnfolder(Bookie1, {hashlist_query, ?STD_TAG, false}),
     KeyHashList1 = lists:usort(HTFolder1()),
 
-    FoldObjectsFun = fun(B, K, V, Acc) ->
-                            [{B, K, erlang:phash2(term_to_binary(V))}|Acc] end,
-    {async, HTFolder2} = book_returnfolder(Bookie1,
-                                            {foldobjects_allkeys, 
-                                                ?STD_TAG, 
-                                                FoldObjectsFun, 
-                                                true}),
+    FoldObjectsFun =
+        fun(B, K, V, Acc) ->
+            [{B, K, erlang:phash2(term_to_binary(V))}|Acc]
+        end,
+    {async, HTFolder2} =
+        book_returnfolder(
+            Bookie1,
+            {
+                foldobjects_allkeys, 
+                ?STD_TAG, 
+                FoldObjectsFun, 
+                true
+            }
+        ),
     KeyHashList2 = HTFolder2(),
     ?assertMatch(KeyHashList1, lists:usort(KeyHashList2)),
 
     FoldHeadsFun =
         fun(B, K, ProxyV, Acc) ->
-            {proxy_object,
-                _MDBin,
-                _Size,
-                {FetchFun, Clone, JK}} = binary_to_term(ProxyV),
+            {proxy_object, _MDBin, _Size, {FetchFun, Clone, JK}} =
+                binary_to_term(ProxyV),
             V = FetchFun(Clone, JK),
             [{B, K, erlang:phash2(term_to_binary(V))}|Acc]
         end,
 
     {async, HTFolder3} =
-        book_returnfolder(Bookie1,
-                            {foldheads_allkeys, 
-                                ?STD_TAG, 
-                                FoldHeadsFun, 
-                                true, true, false, false, false}),
+        book_returnfolder(
+            Bookie1,
+            {
+                foldheads_allkeys, 
+                ?STD_TAG, 
+                FoldHeadsFun, 
+                true,
+                true,
+                false,
+                false,
+                false
+            }
+        ),
     KeyHashList3 = HTFolder3(),
     ?assertMatch(KeyHashList1, lists:usort(KeyHashList3)),
 
     FoldHeadsFun2 =
         fun(B, K, ProxyV, Acc) ->
-            {proxy_object,
-                MD,
-                _Size1,
-                _Fetcher} = binary_to_term(ProxyV),
+            {proxy_object, MD, _Size1, _Fetcher} = binary_to_term(ProxyV),
             {Hash, _Size0, _UserDefinedMD} = MD,
             [{B, K, Hash}|Acc]
         end,
 
     {async, HTFolder4} =
-        book_returnfolder(Bookie1,
-                            {foldheads_allkeys, 
-                                ?STD_TAG, 
-                                FoldHeadsFun2,
-                                false, false, false, false, false}),
+        book_returnfolder(
+            Bookie1,
+            {
+                foldheads_allkeys, 
+                ?STD_TAG, 
+                FoldHeadsFun2,
+                false,
+                false,
+                false,
+                false,
+                false
+            }
+        ),
     KeyHashList4 = HTFolder4(),
     ?assertMatch(KeyHashList1, lists:usort(KeyHashList4)),
 
@@ -2908,138 +3043,207 @@ foldobjects_vs_foldheads_bybucket_testto() ->
 
 folder_cache_test(CacheSize) ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, CacheSize}]),
+    {ok, Bookie1} =
+        book_start(
+            [{
+                root_path, RootPath},
+                {max_journalsize, 1000000},
+                {cache_size, CacheSize
+            }]
+        ),
     _ = book_returnactors(Bookie1),
     ObjL1 = generate_multiple_objects(400, 1),
     ObjL2 = generate_multiple_objects(400, 1),
     % Put in all the objects with a TTL in the future
     Future = leveled_util:integer_now() + 300,
-    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
-                                                        "BucketA", K, V, S,
-                                                        ?STD_TAG,
-                                                        Future) end,
-                    ObjL1),
-    lists:foreach(fun({K, V, S}) -> ok = book_tempput(Bookie1,
-                                                        "BucketB", K, V, S,
-                                                        ?STD_TAG,
-                                                        Future) end,
+    lists:foreach(
+        fun({K, V, S}) ->
+            ok =
+                book_tempput(Bookie1, <<"BucketA">>, K, V, S, ?STD_TAG, Future)
+        end,
+        ObjL1
+    ),
+    lists:foreach(
+        fun({K, V, S}) ->
+            ok =
+                book_tempput(Bookie1, <<"BucketB">>, K, V, S, ?STD_TAG, Future)
+        end,
                     ObjL2),
 
-    FoldObjectsFun = fun(B, K, V, Acc) ->
-                            [{B, K, erlang:phash2(term_to_binary(V))}|Acc] end,
+    FoldObjectsFun =
+        fun(B, K, V, Acc) ->
+            [{B, K, erlang:phash2(term_to_binary(V))}|Acc]
+        end,
     {async, HTFolder1A} =
-        book_returnfolder(Bookie1,
-                            {foldobjects_bybucket,
-                                ?STD_TAG,
-                                "BucketA",
-                                all,
-                                FoldObjectsFun,
-                                false}),
+        book_returnfolder(
+            Bookie1,
+            {
+                foldobjects_bybucket,
+                ?STD_TAG,
+                <<"BucketA">>,
+                all,
+                FoldObjectsFun,
+                false
+            }
+        ),
     KeyHashList1A = HTFolder1A(),
     {async, HTFolder1B} =
-        book_returnfolder(Bookie1,
-                            {foldobjects_bybucket,
-                                ?STD_TAG,
-                                "BucketB",
-                                all,
-                                FoldObjectsFun,
-                                true}),
+        book_returnfolder(
+            Bookie1,
+            {
+                foldobjects_bybucket,
+                ?STD_TAG,
+                <<"BucketB">>,
+                all,
+                FoldObjectsFun,
+                true
+            }
+        ),
     KeyHashList1B = HTFolder1B(),
-    ?assertMatch(false,
-                    lists:usort(KeyHashList1A) == lists:usort(KeyHashList1B)),
+    ?assertMatch(
+        false,
+        lists:usort(KeyHashList1A) == lists:usort(KeyHashList1B)
+    ),
 
     FoldHeadsFun =
         fun(B, K, ProxyV, Acc) ->
-            {proxy_object,
-                        _MDBin,
-                        _Size,
-                        {FetchFun, Clone, JK}} = binary_to_term(ProxyV),
+            {proxy_object, _MDBin, _Size, {FetchFun, Clone, JK}} =
+                binary_to_term(ProxyV),
             V = FetchFun(Clone, JK),
             [{B, K, erlang:phash2(term_to_binary(V))}|Acc]
         end,
 
     {async, HTFolder2A} =
-        book_returnfolder(Bookie1,
-                            {foldheads_bybucket,
-                                ?STD_TAG,
-                                "BucketA",
-                                all,
-                                FoldHeadsFun,
-                                true, true,
-                                false, false, false}),
-    KeyHashList2A = HTFolder2A(),
+        book_returnfolder(
+            Bookie1,
+            {
+                foldheads_bybucket,
+                ?STD_TAG,
+                <<"BucketA">>,
+                all,
+                FoldHeadsFun,
+                true,
+                true,
+                false,
+                false,false
+            }
+        ),
+    KeyHashList2A = return_list_result(HTFolder2A),
     {async, HTFolder2B} =
-        book_returnfolder(Bookie1,
-                            {foldheads_bybucket,
-                                ?STD_TAG,
-                                "BucketB",
-                                all,
-                                FoldHeadsFun,
-                                true, false,
-                                false, false, false}),
-    KeyHashList2B = HTFolder2B(),
+        book_returnfolder(
+            Bookie1,
+            {
+                foldheads_bybucket,
+                ?STD_TAG,
+                <<"BucketB">>,
+                all,
+                FoldHeadsFun,
+                true,
+                false,
+                false,
+                false,
+                false
+            }
+        ),
+    KeyHashList2B = return_list_result(HTFolder2B),
     
-    ?assertMatch(true,
-                    lists:usort(KeyHashList1A) == lists:usort(KeyHashList2A)),
-    ?assertMatch(true,
-                    lists:usort(KeyHashList1B) == lists:usort(KeyHashList2B)),
+    ?assertMatch(
+        true,
+        lists:usort(KeyHashList1A) == lists:usort(KeyHashList2A)
+    ),
+    ?assertMatch(
+        true,
+        lists:usort(KeyHashList1B) == lists:usort(KeyHashList2B)
+    ),
 
     {async, HTFolder2C} =
-        book_returnfolder(Bookie1,
-                            {foldheads_bybucket,
-                                ?STD_TAG,
-                                "BucketB",
-                                {"Key", <<"$all">>},
-                                FoldHeadsFun,
-                                true, false,
-                                false, false, false}),
-    KeyHashList2C = HTFolder2C(),
+        book_returnfolder(
+            Bookie1,
+            {
+                foldheads_bybucket,
+                ?STD_TAG,
+                <<"BucketB">>,
+                {<<"Key">>, <<"$all">>},
+                FoldHeadsFun,
+                true,
+                false, 
+                false,
+                false,
+                false
+            }
+        ),
+    KeyHashList2C = return_list_result(HTFolder2C),
     {async, HTFolder2D} =
-        book_returnfolder(Bookie1,
-                            {foldheads_bybucket,
-                                ?STD_TAG,
-                                "BucketB",
-                                {"Key", "Keyzzzzz"},
-                                FoldHeadsFun,
-                                true, true,
-                                false, false, false}),
-    KeyHashList2D = HTFolder2D(),
-    ?assertMatch(true,
-                    lists:usort(KeyHashList2B) == lists:usort(KeyHashList2C)),
-    ?assertMatch(true,
-                    lists:usort(KeyHashList2B) == lists:usort(KeyHashList2D)),
+        book_returnfolder(
+            Bookie1,
+            {
+                foldheads_bybucket,
+                ?STD_TAG,
+                <<"BucketB">>,
+                {<<"Key">>, <<"Keyzzzzz">>},
+                FoldHeadsFun,
+                true,
+                true,
+                false,
+                false,
+                false
+            }
+        ),
+    KeyHashList2D = return_list_result(HTFolder2D),
+    ?assertMatch(
+        true,
+        lists:usort(KeyHashList2B) == lists:usort(KeyHashList2C)
+    ),
+    ?assertMatch(
+        true,
+        lists:usort(KeyHashList2B) == lists:usort(KeyHashList2D)
+    ),
     
-
     CheckSplitQueryFun = 
         fun(SplitInt) ->
             io:format("Testing SplitInt ~w~n", [SplitInt]),
-            SplitIntEnd = "Key" ++ integer_to_list(SplitInt) ++ "|",
-            SplitIntStart = "Key" ++ integer_to_list(SplitInt + 1),
+            SplitIntEnd =
+                list_to_binary("Key" ++ integer_to_list(SplitInt) ++ "|"),
+            SplitIntStart = 
+                list_to_binary("Key" ++ integer_to_list(SplitInt + 1)),
             {async, HTFolder2E} =
-                book_returnfolder(Bookie1,
-                                    {foldheads_bybucket,
-                                        ?STD_TAG,
-                                        "BucketB",
-                                        {"Key", SplitIntEnd},
-                                        FoldHeadsFun,
-                                        true, false,
-                                        false, false, false}),
-            KeyHashList2E = HTFolder2E(),
+                book_returnfolder(
+                    Bookie1,
+                    {
+                        foldheads_bybucket,
+                        ?STD_TAG,
+                        <<"BucketB">>,
+                        {<<"Key">>, SplitIntEnd},
+                        FoldHeadsFun,
+                        true,
+                        false,
+                        false,
+                        false,
+                        false
+                    }
+                ),
+            KeyHashList2E = return_list_result(HTFolder2E),
             {async, HTFolder2F} =
-                book_returnfolder(Bookie1,
-                                    {foldheads_bybucket,
-                                        ?STD_TAG,
-                                        "BucketB",
-                                        {SplitIntStart, "Key|"},
-                                        FoldHeadsFun,
-                                        true, false,
-                                        false, false, false}),
-            KeyHashList2F = HTFolder2F(),
-
+                book_returnfolder(
+                    Bookie1,
+                    {
+                        foldheads_bybucket,
+                        ?STD_TAG,
+                        <<"BucketB">>,
+                        {SplitIntStart, <<"Key|">>},
+                        FoldHeadsFun,
+                        true,
+                        false,
+                        false,
+                        false,
+                        false
+                    }
+                ),
+            KeyHashList2F = return_list_result(HTFolder2F),
+    
             ?assertMatch(true, length(KeyHashList2E) > 0),
             ?assertMatch(true, length(KeyHashList2F) > 0),
+            
             io:format("Length of 2B ~w 2E ~w 2F ~w~n", 
                         [length(KeyHashList2B), 
                             length(KeyHashList2E), 
@@ -3053,25 +3257,41 @@ folder_cache_test(CacheSize) ->
     ok = book_close(Bookie1),
     reset_filestructure().
 
+-spec return_list_result(fun(() -> list(dynamic()))) -> list().
+return_list_result(FoldFun) ->
+    case FoldFun() of
+        HL when is_list(HL) ->
+            HL
+    end.
+
 small_cachesize_test() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, 1}]),
+    {ok, Bookie1} =
+        book_start(
+            [{
+                root_path, RootPath},
+                {max_journalsize, 1000000},
+                {cache_size, 1}
+            ]),
     ok = leveled_bookie:book_close(Bookie1).
 
 
 is_empty_test() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, 500}]),
+    {ok, Bookie1} =
+        book_start(
+            [{
+                root_path, RootPath},
+                {max_journalsize, 1000000},
+                {cache_size, 500}
+            ]),
     % Put in an object with a TTL in the future
     Future = leveled_util:integer_now() + 300,
     ?assertMatch(true, leveled_bookie:book_isempty(Bookie1, ?STD_TAG)),
-    ok = book_tempput(Bookie1, 
-                        <<"B">>, <<"K">>, {value, <<"V">>}, [], 
-                        ?STD_TAG, Future),
+    ok = 
+        book_tempput(
+            Bookie1,  <<"B">>, <<"K">>, {value, <<"V">>}, [], ?STD_TAG, Future
+        ),
     ?assertMatch(false, leveled_bookie:book_isempty(Bookie1, ?STD_TAG)),
     ?assertMatch(true, leveled_bookie:book_isempty(Bookie1, ?RIAK_TAG)),
 
@@ -3079,13 +3299,17 @@ is_empty_test() ->
 
 is_empty_headonly_test() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, 500},
-                                    {head_only, no_lookup}]),
+    {ok, Bookie1} =
+        book_start(
+            [
+                {root_path, RootPath},
+                {max_journalsize, 1000000},
+                {cache_size, 500},
+                {head_only, no_lookup}
+            ]),
     ?assertMatch(true, book_isempty(Bookie1, ?HEAD_TAG)),
     ObjSpecs = 
-        [{add, <<"B1">>, <<"K1">>, <<1:8/integer>>, 100},
+        [{add, <<"B1">>, <<"K1">>, <<1:8/integer>>, {size, 100}},
             {remove, <<"B1">>, <<"K1">>, <<0:8/integer>>, null}],
     ok = book_mput(Bookie1, ObjSpecs),
     ?assertMatch(false, book_isempty(Bookie1, ?HEAD_TAG)),
@@ -3098,30 +3322,32 @@ undefined_rootpath_test() ->
     ?assertMatch({error, no_root_path}, R),
     error_logger:tty(true).
         
-
 foldkeys_headonly_test() ->
-    foldkeys_headonly_tester(5000, 25, "BucketStr"),
+    foldkeys_headonly_tester(5000, 25, <<"BucketStr">>),
     foldkeys_headonly_tester(2000, 25, <<"B0">>).
-
 
 foldkeys_headonly_tester(ObjectCount, BlockSize, BStr) ->
     RootPath = reset_filestructure(),
     
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, 500},
-                                    {head_only, no_lookup}]),
+    {ok, Bookie1} =
+        book_start(
+            [{root_path, RootPath},
+                    {max_journalsize, 1000000},
+                    {cache_size, 500},
+                    {head_only, no_lookup}]
+                ),
     GenObjSpecFun =
         fun(I) ->
             Key = I rem 6,
-            {add, BStr, <<Key:8/integer>>, integer_to_list(I), I}
+            {add, BStr, <<Key:8/integer>>, <<I:32/integer>>, null}
         end,
     ObjSpecs = lists:map(GenObjSpecFun, lists:seq(1, ObjectCount)),
     ObjSpecBlocks = 
-        lists:map(fun(I) ->
-                        lists:sublist(ObjSpecs, I * BlockSize + 1, BlockSize)
-                    end,
-                    lists:seq(0, ObjectCount div BlockSize - 1)),
+        lists:map(
+            fun(I) ->
+                lists:sublist(ObjSpecs, I * BlockSize + 1, BlockSize)
+            end,
+            lists:seq(0, ObjectCount div BlockSize - 1)),
     lists:map(fun(Block) -> book_mput(Bookie1, Block) end, ObjSpecBlocks),
     ?assertMatch(false, book_isempty(Bookie1, ?HEAD_TAG)),
     
@@ -3130,98 +3356,101 @@ foldkeys_headonly_tester(ObjectCount, BlockSize, BStr) ->
             ?HEAD_TAG, BStr, 
             {fun(_B, {K, SK}, Acc) -> [{K, SK}|Acc] end, []}
         },
-    {async, Folder1} = book_returnfolder(Bookie1, FolderT),
-    Key_SKL1 = lists:reverse(Folder1()),
+    
     Key_SKL_Compare = 
-        lists:usort(lists:map(fun({add, _B, K, SK, _V}) -> {K, SK} end, ObjSpecs)),
-    ?assertMatch(Key_SKL_Compare, Key_SKL1),
+        lists:usort(
+            lists:map(
+                fun({add, _B, K, SK, _V}) -> {K, SK} end, ObjSpecs
+            )
+        ),
+    {async, Folder1} = book_returnfolder(Bookie1, FolderT),
+    case Folder1() of
+        Key_SKL1 when is_list(Key_SKL1) ->
+            ?assertMatch(Key_SKL_Compare, lists:reverse(Key_SKL1))
+    end,
 
     ok = book_close(Bookie1),
     
-    {ok, Bookie2} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, 500},
-                                    {head_only, no_lookup}]),
+    {ok, Bookie2} =
+        book_start(
+            [
+                {root_path, RootPath},
+                {max_journalsize, 1000000},
+                {cache_size, 500},
+                {head_only, no_lookup}
+            ]),
+            
     {async, Folder2} = book_returnfolder(Bookie2, FolderT),
-    Key_SKL2 = lists:reverse(Folder2()),
-    ?assertMatch(Key_SKL_Compare, Key_SKL2),
+    case Folder2() of
+        Key_SKL2 when is_list(Key_SKL2) ->
+            ?assertMatch(Key_SKL_Compare, lists:reverse(Key_SKL2))
+    end,
 
     ok = book_close(Bookie2).
 
 
 is_empty_stringkey_test() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, 500}]),
+    {ok, Bookie1} = 
+        book_start(
+            [
+                {root_path, RootPath},
+                {max_journalsize, 1000000},
+                {cache_size, 500}
+            ]),
     ?assertMatch(true, book_isempty(Bookie1, ?STD_TAG)),
     Past = leveled_util:integer_now() - 300,
     ?assertMatch(true, leveled_bookie:book_isempty(Bookie1, ?STD_TAG)),
-    ok = book_tempput(Bookie1, 
-                        "B", "K", {value, <<"V">>}, [], 
-                        ?STD_TAG, Past),
-    ok = book_put(Bookie1, 
-                    "B", "K0", {value, <<"V">>}, [], 
-                    ?STD_TAG),
+    ok = 
+        book_tempput(
+            Bookie1, <<"B">>, <<"K">>, {value, <<"V">>}, [], ?STD_TAG, Past
+        ),
+    ok = book_put(Bookie1, <<"B">>, <<"K0">>, {value, <<"V">>}, [], ?STD_TAG),
     ?assertMatch(false, book_isempty(Bookie1, ?STD_TAG)),
     ok = book_close(Bookie1).
 
 scan_table_test() ->
-    K1 = leveled_codec:to_ledgerkey(<<"B1">>,
-                                        <<"K1">>,
-                                        ?IDX_TAG,
-                                        <<"F1-bin">>,
-                                        <<"AA1">>),
-    K2 = leveled_codec:to_ledgerkey(<<"B1">>,
-                                        <<"K2">>,
-                                        ?IDX_TAG,
-                                        <<"F1-bin">>,
-                                        <<"AA1">>),
-    K3 = leveled_codec:to_ledgerkey(<<"B1">>,
-                                        <<"K3">>,
-                                        ?IDX_TAG,
-                                        <<"F1-bin">>,
-                                        <<"AB1">>),
-    K4 = leveled_codec:to_ledgerkey(<<"B1">>,
-                                        <<"K4">>,
-                                        ?IDX_TAG,
-                                        <<"F1-bin">>,
-                                        <<"AA2">>),
-    K5 = leveled_codec:to_ledgerkey(<<"B2">>,
-                                        <<"K5">>,
-                                        ?IDX_TAG,
-                                        <<"F1-bin">>,
-                                        <<"AA2">>),
+    K1 =
+        leveled_codec:to_objectkey(
+            <<"B1">>, <<"K1">>, ?IDX_TAG, <<"F1-bin">>, <<"AA1">>),
+    K2 =
+        leveled_codec:to_objectkey(
+            <<"B1">>, <<"K2">>, ?IDX_TAG, <<"F1-bin">>, <<"AA1">>),
+    K3 = 
+        leveled_codec:to_objectkey(
+            <<"B1">>, <<"K3">>, ?IDX_TAG, <<"F1-bin">>, <<"AB1">>),
+    K4 =
+        leveled_codec:to_objectkey(
+            <<"B1">>, <<"K4">>, ?IDX_TAG, <<"F1-bin">>, <<"AA2">>),
+    K5 = 
+        leveled_codec:to_objectkey(
+            <<"B2">>, <<"K5">>, ?IDX_TAG, <<"F1-bin">>, <<"AA2">>),
     Tab0 = ets:new(mem, [ordered_set]),
 
-    SK_A0 = leveled_codec:to_ledgerkey(<<"B1">>,
-                                        null,
-                                        ?IDX_TAG,
-                                        <<"F1-bin">>,
-                                        <<"AA0">>),
-    EK_A9 = leveled_codec:to_ledgerkey(<<"B1">>,
-                                        null,
-                                        ?IDX_TAG,
-                                        <<"F1-bin">>,
-                                        <<"AA9">>),
+    SK_A0 =
+        leveled_codec:to_querykey(
+            <<"B1">>,  null, ?IDX_TAG, <<"F1-bin">>, <<"AA0">>),
+    EK_A9 =
+        leveled_codec:to_querykey(
+            <<"B1">>, null, ?IDX_TAG, <<"F1-bin">>,  <<"AA9">>),
     Empty = {[], infinity, 0},
-    ?assertMatch(Empty,
-                    scan_table(Tab0, SK_A0, EK_A9)),
+    ?assertMatch(Empty, scan_table(Tab0, SK_A0, EK_A9)),
     ets:insert(Tab0, [{K1, {1, active, no_lookup, null}}]),
-    ?assertMatch({[{K1, _}], 1, 1},
-                    scan_table(Tab0, SK_A0, EK_A9)),
+    ?assertMatch({[{K1, _}], 1, 1}, scan_table(Tab0, SK_A0, EK_A9)),
     ets:insert(Tab0, [{K2, {2, active, no_lookup, null}}]),
-    ?assertMatch({[{K1, _}, {K2, _}], 1, 2},
-                    scan_table(Tab0, SK_A0, EK_A9)),
+    ?assertMatch({[{K1, _}, {K2, _}], 1, 2}, scan_table(Tab0, SK_A0, EK_A9)),
     ets:insert(Tab0, [{K3, {3, active, no_lookup, null}}]),
-    ?assertMatch({[{K1, _}, {K2, _}], 1, 2},
-                    scan_table(Tab0, SK_A0, EK_A9)),
+    ?assertMatch({[{K1, _}, {K2, _}], 1, 2}, scan_table(Tab0, SK_A0, EK_A9)),
     ets:insert(Tab0, [{K4, {4, active, no_lookup, null}}]),
-    ?assertMatch({[{K1, _}, {K2, _}, {K4, _}], 1, 4},
-                    scan_table(Tab0, SK_A0, EK_A9)),
+    ?assertMatch(
+        {[{K1, _}, {K2, _}, {K4, _}], 1, 4},
+        scan_table(Tab0, SK_A0, EK_A9)
+    ),
     ets:insert(Tab0, [{K5, {5, active, no_lookup, null}}]),
-    ?assertMatch({[{K1, _}, {K2, _}, {K4, _}], 1, 4},
-                    scan_table(Tab0, SK_A0, EK_A9)).
+    ?assertMatch(
+        {[{K1, _}, {K2, _}, {K4, _}], 1, 4},
+        scan_table(Tab0, SK_A0, EK_A9)
+    ).
 
 longrunning_test() ->
     SW = os:timestamp(),
@@ -3229,31 +3458,36 @@ longrunning_test() ->
     ok = maybe_longrunning(SW, put).
 
 coverage_cheat_test() ->
-    {noreply, _State0} = handle_info(timeout, #state{}),
-    {ok, _State1} = code_change(null, #state{}, null).
+    DummyState = #state{inker = list_to_pid("<0.101.0>")},
+    {noreply, _State0} = handle_info(timeout, DummyState),
+    {ok, _State1} = code_change(null, DummyState, null).
 
 erase_journal_test() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath}, 
-                                {max_journalsize, 50000}, 
-                                {cache_size, 100}]),
+    {ok, Bookie1} =
+        book_start(
+            [
+                {root_path, RootPath}, 
+                {max_journalsize, 50000}, 
+                {cache_size, 100}
+            ]),
     ObjL1 = generate_multiple_objects(500, 1),
     % Put in all the objects with a TTL in the future
     lists:foreach(
         fun({K, V, S}) ->
-            ok = book_put(Bookie1, "Bucket", K, V, S, ?STD_TAG)
+            ok = book_put(Bookie1, <<"Bucket">>, K, V, S, ?STD_TAG)
         end,
         ObjL1),
     lists:foreach(
         fun({K, V, _S}) ->
-            {ok, V} = book_get(Bookie1, "Bucket", K, ?STD_TAG)
+            {ok, V} = book_get(Bookie1, <<"Bucket">>, K, ?STD_TAG)
         end,
         ObjL1),
     
     CheckHeadFun =
         fun(Book) -> 
             fun({K, _V, _S}, Acc) ->
-                case book_head(Book, "Bucket", K, ?STD_TAG) of 
+                case book_head(Book, <<"Bucket">>, K, ?STD_TAG) of 
                     {ok, _Head} -> Acc;
                     not_found -> Acc + 1
                 end
@@ -3265,70 +3499,73 @@ erase_journal_test() ->
     ok = book_close(Bookie1),
     io:format("Bookie closed - clearing Journal~n"),
     leveled_inker:clean_testdir(RootPath ++ "/" ++ ?JOURNAL_FP),
-    {ok, Bookie2} = book_start([{root_path, RootPath}, 
-                                {max_journalsize, 5000}, 
-                                {cache_size, 100}]),
+    {ok, Bookie2} =
+        book_start([
+            {root_path, RootPath}, 
+            {max_journalsize, 5000}, 
+            {cache_size, 100}]
+        ),
     HeadsNotFound2 = lists:foldl(CheckHeadFun(Bookie2), 0, ObjL1),
     ?assertMatch(500, HeadsNotFound2),
     ok = book_destroy(Bookie2).
 
 sqnorder_fold_test() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, 500}]),
-    ok = book_put(Bookie1, 
-                    <<"B">>, <<"K1">>, {value, <<"V1">>}, [], 
-                    ?STD_TAG),
-    ok = book_put(Bookie1, 
-                    <<"B">>, <<"K2">>, {value, <<"V2">>}, [], 
-                    ?STD_TAG),
+    {ok, Bookie1} =
+        book_start([
+            {root_path, RootPath},
+            {max_journalsize, 1000000},
+            {cache_size, 500}]
+        ),
+    ok = book_put(Bookie1, <<"B">>, <<"K1">>, {value, <<"V1">>}, [], ?STD_TAG),
+    ok = book_put(Bookie1, <<"B">>, <<"K2">>, {value, <<"V2">>}, [], ?STD_TAG),
     
     FoldObjectsFun = fun(B, K, V, Acc) -> Acc ++ [{B, K, V}] end,
     {async, ObjFPre} =
-        book_objectfold(Bookie1,
-                        ?STD_TAG, {FoldObjectsFun, []}, true, sqn_order),
+        book_objectfold(
+            Bookie1, ?STD_TAG, {FoldObjectsFun, []}, true, sqn_order),
     {async, ObjFPost} =
-        book_objectfold(Bookie1,
-                        ?STD_TAG, {FoldObjectsFun, []}, false, sqn_order),
+        book_objectfold(
+            Bookie1, ?STD_TAG, {FoldObjectsFun, []}, false, sqn_order),
     
-    ok = book_put(Bookie1, 
-                    <<"B">>, <<"K3">>, {value, <<"V3">>}, [], 
-                    ?STD_TAG),
+    ok = book_put(Bookie1, <<"B">>, <<"K3">>, {value, <<"V3">>}, [], ?STD_TAG),
 
     ObjLPre = ObjFPre(),
-    ?assertMatch([{<<"B">>, <<"K1">>, {value, <<"V1">>}},
-                    {<<"B">>, <<"K2">>, {value, <<"V2">>}}], ObjLPre),
+    ?assertMatch(
+        [{<<"B">>, <<"K1">>, {value, <<"V1">>}},
+            {<<"B">>, <<"K2">>, {value, <<"V2">>}}],
+        ObjLPre
+    ),
     ObjLPost = ObjFPost(),
-    ?assertMatch([{<<"B">>, <<"K1">>, {value, <<"V1">>}},
-                    {<<"B">>, <<"K2">>, {value, <<"V2">>}},
-                    {<<"B">>, <<"K3">>, {value, <<"V3">>}}], ObjLPost),
+    ?assertMatch(
+        [{<<"B">>, <<"K1">>, {value, <<"V1">>}},
+            {<<"B">>, <<"K2">>, {value, <<"V2">>}},
+            {<<"B">>, <<"K3">>, {value, <<"V3">>}}],
+        ObjLPost
+    ),
     
     ok = book_destroy(Bookie1).
 
 sqnorder_mutatefold_test() ->
     RootPath = reset_filestructure(),
-    {ok, Bookie1} = book_start([{root_path, RootPath},
-                                    {max_journalsize, 1000000},
-                                    {cache_size, 500}]),
-    ok = book_put(Bookie1, 
-                    <<"B">>, <<"K1">>, {value, <<"V1">>}, [], 
-                    ?STD_TAG),
-    ok = book_put(Bookie1, 
-                    <<"B">>, <<"K1">>, {value, <<"V2">>}, [], 
-                    ?STD_TAG),
+    {ok, Bookie1} =
+        book_start([
+            {root_path, RootPath},
+            {max_journalsize, 1000000},
+            {cache_size, 500}
+        ]),
+    ok = book_put(Bookie1, <<"B">>, <<"K1">>, {value, <<"V1">>}, [], ?STD_TAG),
+    ok = book_put(Bookie1, <<"B">>, <<"K1">>, {value, <<"V2">>}, [], ?STD_TAG),
     
     FoldObjectsFun = fun(B, K, V, Acc) -> Acc ++ [{B, K, V}] end,
     {async, ObjFPre} =
-        book_objectfold(Bookie1,
-                        ?STD_TAG, {FoldObjectsFun, []}, true, sqn_order),
+        book_objectfold(
+            Bookie1, ?STD_TAG, {FoldObjectsFun, []}, true, sqn_order),
     {async, ObjFPost} =
-        book_objectfold(Bookie1,
-                        ?STD_TAG, {FoldObjectsFun, []}, false, sqn_order),
+        book_objectfold(
+            Bookie1, ?STD_TAG, {FoldObjectsFun, []}, false, sqn_order),
     
-    ok = book_put(Bookie1, 
-                    <<"B">>, <<"K1">>, {value, <<"V3">>}, [], 
-                    ?STD_TAG),
+    ok = book_put(Bookie1, <<"B">>, <<"K1">>, {value, <<"V3">>}, [], ?STD_TAG),
 
     ObjLPre = ObjFPre(),
     ?assertMatch([{<<"B">>, <<"K1">>, {value, <<"V2">>}}], ObjLPre),
@@ -3340,19 +3577,22 @@ sqnorder_mutatefold_test() ->
 check_notfound_test() ->
     ProbablyFun = fun() -> probably end,
     MissingFun = fun() -> missing end,
-    MinFreq = lists:foldl(fun(_I, Freq) ->
-                                {false, Freq0} = 
-                                    check_notfound(Freq, ProbablyFun),
-                                Freq0
-                            end,
-                            100,
-                            lists:seq(1, 5000)), 
-                                % 5000 as needs to be a lot as doesn't decrement
-                                % when random interval is not hit
+    MinFreq =
+        lists:foldl(
+            fun(_I, Freq) ->
+                {false, Freq0} = check_notfound(Freq, ProbablyFun),
+                Freq0
+            end,
+            100,
+            lists:seq(1, 5000)), 
+            % 5000 as needs to be a lot as doesn't decrement
+            % when random interval is not hit
     ?assertMatch(?MIN_KEYCHECK_FREQUENCY, MinFreq),
     
-    ?assertMatch({true, ?MAX_KEYCHECK_FREQUENCY}, 
-                    check_notfound(?MAX_KEYCHECK_FREQUENCY, MissingFun)),
+    ?assertMatch(
+        {true, ?MAX_KEYCHECK_FREQUENCY}, 
+        check_notfound(?MAX_KEYCHECK_FREQUENCY, MissingFun)
+    ),
     
     ?assertMatch({false, 0}, check_notfound(0, MissingFun)).
 

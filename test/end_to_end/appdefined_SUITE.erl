@@ -73,7 +73,7 @@ application_defined_tag_tester(KeyCount, Tag, Functions, ExpectMD) ->
                         [{bespoke_tag1, retain}, {bespoke_tag2, retain}]},
                     {override_functions, Functions}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
-    Value = leveled_rand:rand_bytes(512),
+    Value = crypto:strong_rand_bytes(512),
     MapFun = 
         fun(C) -> 
             {C, object_generator(C, Value)}
@@ -119,7 +119,7 @@ application_defined_tag_tester(KeyCount, Tag, Functions, ExpectMD) ->
 
 object_generator(Count, V) ->
     Hash = erlang:phash2({count, V}),
-    Random = leveled_rand:uniform(1000),
+    Random = rand:uniform(1000),
     Key = list_to_binary(leveled_util:generate_uuid()),
     Bucket = <<"B">>,
     {Bucket, 

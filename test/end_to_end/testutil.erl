@@ -231,12 +231,14 @@ sync_strategy() ->
     none.
 
 book_riakput(Pid, RiakObject, IndexSpecs) ->
-    leveled_bookie:book_put(Pid,
-                            RiakObject#r_object.bucket,
-                            RiakObject#r_object.key,
-                            to_binary(v1, RiakObject),
-                            IndexSpecs,
-                            ?RIAK_TAG).
+    leveled_bookie:book_put(
+        Pid,
+        RiakObject#r_object.bucket,
+        RiakObject#r_object.key,
+        to_binary(v1, RiakObject),
+        IndexSpecs,
+        ?RIAK_TAG
+    ).
 
 book_tempriakput(Pid, RiakObject, IndexSpecs, TTL) ->
     leveled_bookie:book_tempput(
@@ -246,7 +248,8 @@ book_tempriakput(Pid, RiakObject, IndexSpecs, TTL) ->
         to_binary(v1, RiakObject),
         IndexSpecs,
         ?RIAK_TAG,
-        TTL).
+        TTL
+    ).
 
 book_riakdelete(Pid, Bucket, Key, IndexSpecs) ->
     leveled_bookie:book_put(Pid, Bucket, Key, delete, IndexSpecs, ?RIAK_TAG).
@@ -383,9 +386,8 @@ wait_for_compaction(Bookie) ->
 check_bucket_stats(Bookie, Bucket) ->
     FoldSW1 = os:timestamp(),
     io:format("Checking bucket size~n"),
-    {async, Folder1} = leveled_bookie:book_returnfolder(Bookie,
-                                                        {riakbucket_stats,
-                                                            Bucket}),
+    {async, Folder1} =
+        leveled_bookie:book_returnfolder(Bookie, {riakbucket_stats, Bucket}),
     {B1Size, B1Count} = Folder1(),
     io:format("Bucket fold completed in ~w microseconds~n",
                 [timer:now_diff(os:timestamp(), FoldSW1)]),
@@ -399,28 +401,32 @@ check_forlist(Bookie, ChkList) ->
 
 check_forlist(Bookie, ChkList, Log) ->
     SW = os:timestamp(),
-    lists:foreach(fun({_RN, Obj, _Spc}) ->
-                    if
-                        Log == true ->
-                            io:format("Fetching Key ~s~n", [Obj#r_object.key]);
-                        true ->
-                            ok
-                    end,
-                    R = book_riakget(Bookie,
-                                        Obj#r_object.bucket,
-                                        Obj#r_object.key),
-                    true = case R of
-                                {ok, Val} ->
-                                    to_binary(v1, Obj) == Val;
-                                not_found ->
-                                    io:format("Object not found for key ~s~n",
-                                                [Obj#r_object.key]),
-                                    error
-                            end
-                    end,
-                ChkList),
-    io:format("Fetch check took ~w microseconds checking list of length ~w~n",
-                    [timer:now_diff(os:timestamp(), SW), length(ChkList)]).
+    lists:foreach(
+        fun({_RN, Obj, _Spc}) ->
+            if
+                Log == true ->
+                    io:format("Fetching Key ~s~n", [Obj#r_object.key]);
+                true ->
+                    ok
+            end,
+            R = book_riakget(Bookie,
+                                Obj#r_object.bucket,
+                                Obj#r_object.key),
+            true =
+                case R of
+                    {ok, Val} ->
+                        to_binary(v1, Obj) == Val;
+                    not_found ->
+                        io:format("Object not found for key ~s~n",
+                                    [Obj#r_object.key]),
+                        error
+                end
+            end,
+            ChkList),
+    io:format(
+        "Fetch check took ~w microseconds checking list of length ~w~n",
+        [timer:now_diff(os:timestamp(), SW), length(ChkList)]
+    ).
 
 checkhead_forlist(Bookie, ChkList) ->
     SW = os:timestamp(),
@@ -470,11 +476,14 @@ check_formissingobject(Bookie, Bucket, Key) ->
 
 
 generate_testobject() ->
-    {B1, K1, V1, Spec1, MD} = {"Bucket1",
-                                "Key1",
-                                "Value1",
-                                [],
-                                [{"MDK1", "MDV1"}]},
+    {B1, K1, V1, Spec1, MD} =
+        {
+            <<"Bucket1">>,
+            <<"Key1">>,
+            <<"Value1">>,
+            [],
+            [{<<"MDK1">>, <<"MDV1">>}]
+        },
     generate_testobject(B1, K1, V1, Spec1, MD).
 
 generate_testobject(B, K, V, Spec, MD) ->
@@ -493,7 +502,7 @@ generate_compressibleobjects(Count, KeyNumber) ->
 
 
 get_compressiblevalue_andinteger() ->
-    {leveled_rand:uniform(1000), get_compressiblevalue()}.
+    {rand:uniform(1000), get_compressiblevalue()}.
 
 get_compressiblevalue() ->
     S1 = "111111111111111",
@@ -510,7 +519,7 @@ get_compressiblevalue() ->
     iolist_to_binary(
         lists:foldl(
             fun(_X, Acc) ->
-                {_, Str} = lists:keyfind(leveled_rand:uniform(8), 1, Selector),
+                {_, Str} = lists:keyfind(rand:uniform(8), 1, Selector),
             [Str|Acc] end,
             [""],
             L
@@ -518,28 +527,39 @@ get_compressiblevalue() ->
     ).
 
 generate_smallobjects(Count, KeyNumber) ->
-    generate_objects(Count, KeyNumber, [], leveled_rand:rand_bytes(512)).
+    generate_objects(Count, KeyNumber, [], crypto:strong_rand_bytes(512)).
 
 generate_objects(Count, KeyNumber) ->
-    generate_objects(Count, KeyNumber, [], leveled_rand:rand_bytes(4096)).
+    generate_objects(Count, KeyNumber, [], crypto:strong_rand_bytes(4096)).
 
 
 generate_objects(Count, KeyNumber, ObjL, Value) ->
     generate_objects(Count, KeyNumber, ObjL, Value, fun() -> [] end).
 
 generate_objects(Count, KeyNumber, ObjL, Value, IndexGen) ->
-    generate_objects(Count, KeyNumber, ObjL, Value, IndexGen, "Bucket").
+    generate_objects(Count, KeyNumber, ObjL, Value, IndexGen, <<"Bucket">>).
 
 generate_objects(0, _KeyNumber, ObjL, _Value, _IndexGen, _Bucket) ->
     lists:reverse(ObjL);
-generate_objects(Count, binary_uuid, ObjL, Value, IndexGen, Bucket) ->
-    {Obj1, Spec1} = set_object(list_to_binary(Bucket),
-                                list_to_binary(leveled_util:generate_uuid()),
-                                Value,
-                                IndexGen),
+generate_objects(
+        Count, binary_uuid, ObjL, Value, IndexGen, Bucket)
+        when is_list(Bucket) ->
+    generate_objects(
+        Count, binary_uuid, ObjL, Value, IndexGen, list_to_binary(Bucket)
+    );
+generate_objects(
+        Count, binary_uuid, ObjL, Value, IndexGen, Bucket)
+        when is_binary(Bucket) ->
+    {Obj1, Spec1} =
+        set_object(
+            Bucket,
+            list_to_binary(leveled_util:generate_uuid()),
+            Value,
+            IndexGen
+        ),
     generate_objects(Count - 1,
                         binary_uuid,
-                        [{leveled_rand:uniform(), Obj1, Spec1}|ObjL],
+                        [{rand:uniform(), Obj1, Spec1}|ObjL],
                         Value,
                         IndexGen,
                         Bucket);
@@ -550,19 +570,29 @@ generate_objects(Count, uuid, ObjL, Value, IndexGen, Bucket) ->
                                 IndexGen),
     generate_objects(Count - 1,
                         uuid,
-                        [{leveled_rand:uniform(), Obj1, Spec1}|ObjL],
+                        [{rand:uniform(), Obj1, Spec1}|ObjL],
                         Value,
                         IndexGen,
                         Bucket);
-generate_objects(Count, {binary, KeyNumber}, ObjL, Value, IndexGen, Bucket) ->
+generate_objects(
+        Count, {binary, KeyNumber}, ObjL, Value, IndexGen, Bucket)
+        when is_list(Bucket) ->
+    generate_objects(
+        Count, {binary, KeyNumber}, ObjL, Value, IndexGen, list_to_binary(Bucket)
+    );
+generate_objects(
+        Count, {binary, KeyNumber}, ObjL, Value, IndexGen, Bucket)
+        when is_binary(Bucket) ->
     {Obj1, Spec1} = 
-        set_object(list_to_binary(Bucket),
-                    list_to_binary(numbered_key(KeyNumber)),
-                    Value,
-                    IndexGen),
+        set_object(
+            Bucket,
+            list_to_binary(numbered_key(KeyNumber)),
+            Value,
+            IndexGen
+        ),
     generate_objects(Count - 1,
                         {binary, KeyNumber + 1},
-                        [{leveled_rand:uniform(), Obj1, Spec1}|ObjL],
+                        [{rand:uniform(), Obj1, Spec1}|ObjL],
                         Value,
                         IndexGen,
                         Bucket);
@@ -574,7 +604,7 @@ generate_objects(Count, {fixed_binary, KeyNumber}, ObjL, Value, IndexGen, Bucket
                     IndexGen),
     generate_objects(Count - 1,
                         {fixed_binary, KeyNumber + 1},
-                        [{leveled_rand:uniform(), Obj1, Spec1}|ObjL],
+                        [{rand:uniform(), Obj1, Spec1}|ObjL],
                         Value,
                         IndexGen,
                         Bucket);
@@ -585,7 +615,7 @@ generate_objects(Count, KeyNumber, ObjL, Value, IndexGen, Bucket) ->
                                 IndexGen),
     generate_objects(Count - 1,
                         KeyNumber + 1,
-                        [{leveled_rand:uniform(), Obj1, Spec1}|ObjL],
+                        [{rand:uniform(), Obj1, Spec1}|ObjL],
                         Value,
                         IndexGen,
                         Bucket).
@@ -652,7 +682,7 @@ update_some_objects(Bookie, ObjList, SampleSize) ->
             [C] = Obj#r_object.contents,
             MD = C#r_content.metadata,
             MD0 = dict:store(?MD_LASTMOD, os:timestamp(), MD),
-            C0 = C#r_content{value = leveled_rand:rand_bytes(512), 
+            C0 = C#r_content{value = crypto:strong_rand_bytes(512), 
                                 metadata = MD0},
             UpdObj = Obj#r_object{vclock = VC0, contents = [C0]},
             {R, UpdObj, Spec}
@@ -679,11 +709,11 @@ delete_some_objects(Bookie, ObjList, SampleSize) ->
 
 generate_vclock() ->
     lists:map(fun(X) ->
-                    {_, Actor} = lists:keyfind(leveled_rand:uniform(10),
+                    {_, Actor} = lists:keyfind(rand:uniform(10),
                                                 1,
                                                 actor_list()),
                     {Actor, X} end,
-                    lists:seq(1, leveled_rand:uniform(8))).
+                    lists:seq(1, rand:uniform(8))).
 
 update_vclock(VC) ->
     [{Actor, X}|Rest] = VC,
@@ -785,14 +815,14 @@ name_list() ->
 
 get_randomname() ->
     NameList = name_list(),
-    N = leveled_rand:uniform(16),
+    N = rand:uniform(16),
     {N, Name} = lists:keyfind(N, 1, NameList),
     Name.
 
 get_randomdate() ->
     LowTime = 60000000000,
     HighTime = 70000000000,
-    RandPoint = LowTime + leveled_rand:uniform(HighTime - LowTime),
+    RandPoint = LowTime + rand:uniform(HighTime - LowTime),
     Date = calendar:gregorian_seconds_to_datetime(RandPoint),
     {{Year, Month, Day}, {Hour, Minute, Second}} = Date,
     lists:flatten(io_lib:format("~4..0w~2..0w~2..0w~2..0w~2..0w~2..0w",

@@ -28,9 +28,7 @@
 -type manifest() :: list({integer(), list()}).
 %% The manifest is divided into blocks by sequence number, with each block
 %% being a list of manifest entries for that SQN range.
--type manifest_entry() :: {integer(), string(), pid()|string(), any()}.
-%% The Entry should have a pid() as the third element, but a string() may be
-%% used in unit tests
+-type manifest_entry() :: {integer(), string(), pid(), any()}.
 
 -export_type([manifest/0, manifest_entry/0]).
 
@@ -75,8 +73,8 @@ add_entry(Manifest, Entry, ToEnd) ->
             from_list(Man1)
     end.
 
--spec append_lastkey(manifest(), pid(), leveled_codec:journal_key()) 
-                                                            -> manifest().
+-spec append_lastkey(
+    manifest(), pid(), leveled_codec:journal_key()) -> manifest().
 %% @doc
 %% On discovery of the last key in the last journal entry, the manifest can
 %% be updated through this function to have the last key
@@ -100,7 +98,7 @@ remove_entry(Manifest, Entry) ->
     Man0 = lists:keydelete(SQN, 1, to_list(Manifest)),
     from_list(Man0).
 
--spec find_entry(integer(), manifest()) -> pid()|string().
+-spec find_entry(integer(), manifest()) -> pid().
 %% @doc
 %% Given a SQN find the relevant manifest_entry, returning just the pid() of
 %% the journal file (which may be a string() in unit tests)
@@ -257,18 +255,31 @@ build_testmanifest_aslist() ->
     ManifestMapFun =
         fun(N) ->
             NStr = integer_to_list(N),
-            {max(1, N * 1000), "FN" ++ NStr, "pid" ++ NStr, "LK" ++ NStr}
+            {
+                max(1, N * 1000),
+                "FN" ++ NStr,
+                set_pid(N),
+                "LK" ++ NStr
+            }
         end,
     lists:map(ManifestMapFun, lists:reverse(lists:seq(0, 50))).
 
+set_pid(N) ->
+    lists:flatten(io_lib:format("<0.1~2..0w.0>", [N])).
+
 test_testmanifest(Man0) ->
-    ?assertMatch("pid0", find_entry(1, Man0)),
-    ?assertMatch("pid0", find_entry(2, Man0)),
-    ?assertMatch("pid1", find_entry(1001, Man0)),
-    ?assertMatch("pid20", find_entry(20000, Man0)),
-    ?assertMatch("pid20", find_entry(20001, Man0)),
-    ?assertMatch("pid20", find_entry(20999, Man0)),
-    ?assertMatch("pid50", find_entry(99999, Man0)).
+    P0 = set_pid(0),
+    P1 = set_pid(1),
+    P20 = set_pid(20),
+    P50 = set_pid(50),
+
+    ?assertMatch(P0, find_entry(1, Man0)),
+    ?assertMatch(P0, find_entry(2, Man0)),
+    ?assertMatch(P1, find_entry(1001, Man0)),
+    ?assertMatch(P20, find_entry(20000, Man0)),
+    ?assertMatch(P20, find_entry(20001, Man0)),
+    ?assertMatch(P20, find_entry(20999, Man0)),
+    ?assertMatch(P50, find_entry(99999, Man0)).
 
 buildfromlist_test() ->
     ManL = build_testmanifest_aslist(),
@@ -303,7 +314,7 @@ buildrandomfashion_test() ->
     ManL0 = build_testmanifest_aslist(),
     RandMapFun =
         fun(X) ->
-            {leveled_rand:uniform(), X}
+            {rand:uniform(), X}
         end,    
     ManL1 = lists:map(RandMapFun, ManL0),
     ManL2 = lists:sort(ManL1),
@@ -317,7 +328,7 @@ buildrandomfashion_test() ->
     test_testmanifest(Man0),
     ?assertMatch(ManL0, to_list(Man0)),
     
-    RandomEntry = lists:nth(leveled_rand:uniform(50), ManL0),
+    RandomEntry = lists:nth(rand:uniform(50), ManL0),
     Man1 = remove_entry(Man0, RandomEntry),
     Man2 = add_entry(Man1, RandomEntry, false),
     

@@ -377,7 +377,7 @@ get_opts() ->
             }
     end.
 
--spec return_settings() -> {log_level(), list(string())}.
+-spec return_settings() -> {log_level(), list(atom())}.
 %% @doc
 %% Return the settings outside of the record
 return_settings() ->
@@ -454,7 +454,7 @@ log_timer(LogRef, Subs, StartTime, SupportedLevels) ->
 
 -spec log_randomtimer(atom(), list(), erlang:timestamp(), float()) -> ok.
 log_randomtimer(LogReference, Subs, StartTime, RandomProb) ->
-    R = leveled_rand:uniform(),
+    R = rand:uniform(),
     case R < RandomProb of
         true ->
             log_timer(LogReference, Subs, StartTime);

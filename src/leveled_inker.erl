@@ -147,7 +147,7 @@
 
 -record(state, {manifest = [] :: list(),
 				manifest_sqn = 0 :: integer(),
-                journal_sqn = 0 :: integer(),
+                journal_sqn = 0 :: non_neg_integer(),
                 active_journaldb :: pid() | undefined,
                 pending_removals = [] :: list(),
                 registered_snapshots = [] :: list(registered_snapshot()),
@@ -159,7 +159,9 @@
                 is_snapshot = false :: boolean(),
                 compression_method = native :: lz4|native|none,
                 compress_on_receipt = false :: boolean(),
-                snap_timeout :: pos_integer() | undefined, % in seconds
+                snap_timeout = 0 :: non_neg_integer(),
+                    % in seconds, 0 for snapshots
+                    % (only relevant for primary Inker)
                 source_inker :: pid() | undefined,
                 shutdown_loops = ?SHUTDOWN_LOOPS :: non_neg_integer()}).
 
@@ -196,20 +198,26 @@
 %% The inker will need to know what the reload strategy is, to inform the
 %% clerk about the rules to enforce during compaction.
 ink_start(InkerOpts) ->
-    gen_server:start_link(?MODULE, [leveled_log:get_opts(), InkerOpts], []).
+    {ok, Inker} =
+        gen_server:start_link(
+            ?MODULE, [leveled_log:get_opts(), InkerOpts], []),
+    {ok, Inker}.
 
 -spec ink_snapstart(inker_options()) -> {ok, pid()}.
 %% @doc
 %% Don't link on startup as snapshot
 ink_snapstart(InkerOpts) ->
-    gen_server:start(?MODULE, [leveled_log:get_opts(), InkerOpts], []).
+    {ok, Inker} =
+        gen_server:start(
+            ?MODULE, [leveled_log:get_opts(), InkerOpts], []),
+    {ok, Inker}.
 
 -spec ink_put(pid(),
                 leveled_codec:ledger_key(),
                 any(),
                 leveled_codec:journal_keychanges(),
                 boolean()) ->
-                    {ok, integer(), integer()}.
+                    {ok, non_neg_integer(), pos_integer()}.
 %% @doc
 %% PUT an object into the journal, returning the sequence number for the PUT
 %% as well as the size of the object (information required by the ledger).
@@ -504,14 +512,13 @@ ink_getclerkpid(Pid) ->
 
 init([LogOpts, InkerOpts]) ->
     leveled_log:save(LogOpts),
-    leveled_rand:seed(),
     case {InkerOpts#inker_options.root_path,
-            InkerOpts#inker_options.start_snapshot} of
-        {undefined, true} ->
+            InkerOpts#inker_options.start_snapshot,
+            InkerOpts#inker_options.source_inker} of
+        {undefined, true, SrcInker} when ?IS_DEF(SrcInker) ->
             %% monitor the bookie, and close the snapshot when bookie
             %% exits
 	        BookieMonitor = erlang:monitor(process, InkerOpts#inker_options.bookies_pid),
-            SrcInker = InkerOpts#inker_options.source_inker,
             {Manifest,
                 ActiveJournalDB,
                 JournalSQN} = ink_registersnapshot(SrcInker, self()),
@@ -522,7 +529,7 @@ init([LogOpts, InkerOpts]) ->
                             bookie_monref = BookieMonitor,
                             is_snapshot = true}};
             %% Need to do something about timeout
-        {_RootPath, false} ->
+        {_RootPath, false, _SrcInker} ->
             start_from_file(InkerOpts)
     end.
 
@@ -557,10 +564,12 @@ handle_call({fold,
     Manifest = lists:reverse(leveled_imanifest:to_list(State#state.manifest)),
     Folder = 
         fun() ->
-            fold_from_sequence(StartSQN, 
-                                {FilterFun, InitAccFun, FoldFun}, 
-                                Acc, 
-                                Manifest)
+            fold_from_sequence(
+                StartSQN, 
+                {FilterFun, InitAccFun, FoldFun}, 
+                Acc, 
+                Manifest
+            )
         end,
     case By of
         as_ink ->
@@ -583,25 +592,21 @@ handle_call(get_manifest, _From, State) ->
 handle_call(print_manifest, _From, State) ->
     leveled_imanifest:printer(State#state.manifest),
     {reply, ok, State};
-handle_call({compact,
-                Checker,
-                InitiateFun,
-                CloseFun,
-                FilterFun},
-                _From, State=#state{is_snapshot=Snap}) when Snap == false ->
+handle_call(
+    {compact, Checker, InitiateFun, CloseFun, FilterFun},
+    _From,
+    State=#state{is_snapshot=Snap})
+        when Snap == false ->
     Clerk = State#state.clerk,
     Manifest = leveled_imanifest:to_list(State#state.manifest),
-    leveled_iclerk:clerk_compact(State#state.clerk,
-                                    Checker,
-                                    InitiateFun,
-                                    CloseFun,
-                                    FilterFun,
-                                    Manifest),
+    leveled_iclerk:clerk_compact(
+        Clerk, Checker, InitiateFun, CloseFun, FilterFun, Manifest),
     {reply, {ok, Clerk}, State#state{compaction_pending=true}};
 handle_call(compaction_pending, _From, State) ->
     {reply, State#state.compaction_pending, State};
-handle_call({trim, PersistedSQN}, _From, State=#state{is_snapshot=Snap})
-                                                        when Snap == false ->
+handle_call(
+    {trim, PersistedSQN}, _From, State=#state{is_snapshot=Snap})
+        when Snap == false ->
     Manifest = leveled_imanifest:to_list(State#state.manifest),
     ok = leveled_iclerk:clerk_trim(State#state.clerk, PersistedSQN, Manifest),
     {reply, ok, State};
@@ -625,8 +630,9 @@ handle_call(roll, _From, State=#state{is_snapshot=Snap}) when Snap == false ->
                                         manifest_sqn = NewManSQN,
                                         active_journaldb = NewJournalP}}
     end;
-handle_call({backup, BackupPath}, _from, State) 
-                                        when State#state.is_snapshot == true ->
+handle_call(
+    {backup, BackupPath}, _from, State) 
+        when State#state.is_snapshot == true ->
     SW = os:timestamp(),
     BackupJFP = filepath(filename:join(BackupPath, ?JOURNAL_FP), journal_dir),
     ok = filelib:ensure_dir(BackupJFP),
@@ -665,7 +671,7 @@ handle_call({backup, BackupPath}, _from, State)
             leveled_log:log(i0022, [RFN]),
             RemoveFile = filename:join(BackupJFP, RFN),
             case filelib:is_file(RemoveFile) 
-                    and not filelib:is_dir(RemoveFile) of 
+                    andalso not filelib:is_dir(RemoveFile) of 
                 true ->
                     ok = file:delete(RemoveFile);
                 false ->
@@ -699,12 +705,13 @@ handle_call(get_clerkpid, _From, State) ->
 handle_call(close, _From, State=#state{is_snapshot=Snap}) when Snap == true ->
     ok = ink_releasesnapshot(State#state.source_inker, self()),
     {stop, normal, ok, State};
-handle_call(ShutdownType, From, State)
-        when ShutdownType == close; ShutdownType == doom ->  
+handle_call(
+    ShutdownType, From, State = #state{clerk = Clerk})
+        when ?IS_DEF(Clerk) ->
     case ShutdownType of
         doom ->
             leveled_log:log(i0018, []);
-        _ ->
+        close ->
             ok
     end,
     leveled_log:log(i0005, [ShutdownType]),
@@ -714,9 +721,10 @@ handle_call(ShutdownType, From, State)
     gen_server:cast(self(), {maybe_defer_shutdown, ShutdownType, From}),
     {noreply, State}.
 
-
-handle_cast({clerk_complete, ManifestSnippet, FilesToDelete}, State) ->
-    CDBOpts = State#state.cdb_options,
+handle_cast(
+    {clerk_complete, ManifestSnippet, FilesToDelete},
+    State = #state{cdb_options = CDBOpts})
+        when ?IS_DEF(CDBOpts) ->
     DropFun =
         fun(E, Acc) ->
             leveled_imanifest:remove_entry(Acc, E)
@@ -854,8 +862,10 @@ handle_cast({complete_shutdown, ShutdownType, From}, State) ->
     {stop, normal, State}.
 
 %% handle the bookie stopping and stop this snapshot
-handle_info({'DOWN', BookieMonRef, process, _BookiePid, _Info},
-	    State=#state{bookie_monref = BookieMonRef}) ->
+handle_info(
+    {'DOWN', BookieMonRef, process, _BookiePid, _Info},
+    State=#state{bookie_monref = BookieMonRef, source_inker = SrcInker})
+        when ?IS_DEF(SrcInker) ->
     %% Monitor only registered on snapshots
     ok = ink_releasesnapshot(State#state.source_inker, self()),
     {stop, normal, State};
@@ -879,7 +889,10 @@ code_change(_OldVsn, State, _Extra) ->
 -spec start_from_file(inker_options()) -> {ok, ink_state()}.
 %% @doc
 %% Start an Inker from the state on disk (i.e. not a snapshot).  
-start_from_file(InkOpts) ->
+start_from_file(
+    InkOpts =
+        #inker_options{root_path = RootPath, snaptimeout_long = SnapTimeout})
+        when ?IS_DEF(RootPath), ?IS_DEF(SnapTimeout) ->
     % Setting the correct CDB options is important when starting the inker, in
     % particular for waste retention which is determined by the CDB options 
     % with which the file was last opened
@@ -926,9 +939,8 @@ start_from_file(InkOpts) ->
     {Manifest,
         ManifestSQN,
         JournalSQN,
-        ActiveJournal} = build_manifest(ManifestFilenames,
-                                        RootPath,
-                                        CDBopts),
+        ActiveJournal} =
+            build_manifest(ManifestFilenames, RootPath, CDBopts),
     {ok, #state{manifest = Manifest,
                     manifest_sqn = ManifestSQN,
                     journal_sqn = JournalSQN,
@@ -971,61 +983,74 @@ get_cdbopts(InkOpts)->
     CDBopts#cdb_options{waste_path = WasteFP}.
 
 
--spec put_object(leveled_codec:ledger_key(), 
-                    any(), 
-                    leveled_codec:journal_keychanges(),
-                    boolean(),
-                    ink_state()) 
-                        -> {ok|rolling, ink_state(), integer()}.
+-spec put_object(
+    leveled_codec:primary_key(), 
+    any(), 
+    leveled_codec:journal_keychanges(),
+    boolean(),
+    ink_state()) 
+        -> {ok|rolling, ink_state(), integer()}.
 %% @doc
 %% Add the object to the current journal if it fits.  If it doesn't fit, a new 
 %% journal must be started, and the old journal is set to "roll" into a read
 %% only Journal. 
 %% The reply contains the byte_size of the object, using the size calculated
 %% to store the object.
-put_object(LedgerKey, Object, KeyChanges, Sync, State) ->
+put_object(
+    LedgerKey,
+    Object,
+    KeyChanges,
+    Sync,
+    State =
+        #state{
+            active_journaldb = ActiveJournal,
+            cdb_options = CDBOpts,
+            root_path = RP
+        })
+        when ?IS_DEF(ActiveJournal), ?IS_DEF(CDBOpts), ?IS_DEF(RP) ->
     NewSQN = State#state.journal_sqn + 1,
-    ActiveJournal = State#state.active_journaldb,
     {JournalKey, JournalBin} = 
-        leveled_codec:to_inkerkv(LedgerKey,
-                                    NewSQN,
-                                    Object,
-                                    KeyChanges,
-                                    State#state.compression_method,
-                                    State#state.compress_on_receipt),
-    case leveled_cdb:cdb_put(ActiveJournal,
-                                JournalKey,
-                                JournalBin,
-                                Sync) of
+        leveled_codec:to_inkerkv(
+            LedgerKey,
+            NewSQN,
+            Object,
+            KeyChanges,
+            State#state.compression_method,
+            State#state.compress_on_receipt
+        ),
+    PutR = leveled_cdb:cdb_put(ActiveJournal, JournalKey, JournalBin, Sync),
+    case PutR of
         ok ->
-            {ok,
-                State#state{journal_sqn=NewSQN},
-                byte_size(JournalBin)};
+            {ok, State#state{journal_sqn=NewSQN}, byte_size(JournalBin)};
         roll ->
             SWroll = os:timestamp(),
             {NewJournalP, Manifest1, NewManSQN} = 
-                roll_active(ActiveJournal, 
-                            State#state.manifest, 
-                            NewSQN,
-                            State#state.cdb_options,
-                            State#state.root_path,
-                            State#state.manifest_sqn),
+                roll_active(
+                    ActiveJournal, 
+                    State#state.manifest, 
+                    NewSQN,
+                    State#state.cdb_options,
+                    State#state.root_path,
+                    State#state.manifest_sqn
+                ),
             leveled_log:log_timer(i0008, [], SWroll),
-            ok = leveled_cdb:cdb_put(NewJournalP,
-                                        JournalKey,
-                                        JournalBin),
+            ok =
+                leveled_cdb:cdb_put(
+                    NewJournalP, JournalKey, JournalBin),
             {rolling,
-                State#state{journal_sqn=NewSQN,
-                                manifest=Manifest1,
-                                manifest_sqn = NewManSQN,
-                                active_journaldb=NewJournalP},
+                State#state{
+                    journal_sqn=NewSQN,
+                    manifest=Manifest1,
+                    manifest_sqn = NewManSQN,
+                    active_journaldb=NewJournalP},
                 byte_size(JournalBin)}
     end.
 
 
--spec get_object(leveled_codec:ledger_key(), 
-                    integer(), 
-                    leveled_imanifest:manifest()) -> any().
+-spec get_object(
+    leveled_codec:ledger_key(), 
+    integer(), 
+    leveled_imanifest:manifest()) -> any().
 %% @doc
 %% Find the SQN in the manifest and then fetch the object from the Journal, 
 %% in the manifest.  If the fetch is in response to a user GET request then
@@ -1041,28 +1066,36 @@ get_object(LedgerKey, SQN, Manifest, ToIgnoreKeyChanges) ->
     leveled_codec:from_inkerkv(Obj, ToIgnoreKeyChanges).
 
 
--spec roll_active(pid(), leveled_imanifest:manifest(), 
-                    integer(), #cdb_options{}, string(), integer()) ->
-                            {pid(), leveled_imanifest:manifest(), integer()}.
+-spec roll_active(
+    pid(),
+    leveled_imanifest:manifest(), 
+    integer(),
+    #cdb_options{},
+    string(),
+    integer()) -> {pid(), leveled_imanifest:manifest(), integer()}.
 %% @doc
 %% Roll the active journal, and start a new active journal, updating the 
 %% manifest
 roll_active(ActiveJournal, Manifest, NewSQN, CDBopts, RootPath, ManifestSQN) ->
-    LastKey = leveled_cdb:cdb_lastkey(ActiveJournal),
-    ok = leveled_cdb:cdb_roll(ActiveJournal),
-    Manifest0 = 
-        leveled_imanifest:append_lastkey(Manifest, ActiveJournal, LastKey),
-    ManEntry = 
-        start_new_activejournal(NewSQN, RootPath, CDBopts),
-    {_, _, NewJournalP, _} = ManEntry,
-    Manifest1 = leveled_imanifest:add_entry(Manifest0, ManEntry, true),
-    ok = leveled_imanifest:writer(Manifest1, ManifestSQN + 1, RootPath),
-    
-    {NewJournalP, Manifest1, ManifestSQN + 1}.
+    case leveled_cdb:cdb_lastkey(ActiveJournal) of
+        LastKey when LastKey =/= empty ->
+            ok = leveled_cdb:cdb_roll(ActiveJournal),
+            Manifest0 = 
+                leveled_imanifest:append_lastkey(Manifest, ActiveJournal, LastKey),
+            ManEntry = 
+                start_new_activejournal(NewSQN, RootPath, CDBopts),
+            {_, _, NewJournalP, _} = ManEntry,
+            Manifest1 = leveled_imanifest:add_entry(Manifest0, ManEntry, true),
+            ok =
+                leveled_imanifest:writer(Manifest1, ManifestSQN + 1, RootPath),
+            
+            {NewJournalP, Manifest1, ManifestSQN + 1}
+    end.
 
--spec key_check(leveled_codec:ledger_key(), 
-                    integer(), 
-                    leveled_imanifest:manifest()) -> missing|probably.
+-spec key_check(
+    leveled_codec:primary_key(), 
+    integer(), 
+    leveled_imanifest:manifest()) -> missing|probably.
 %% @doc
 %% Checks for the presence of the key at that SQN withing the journal, 
 %% avoiding the cost of actually reading the object from disk.
@@ -1081,40 +1114,36 @@ key_check(LedgerKey, SQN, Manifest) ->
 %% Selects the correct manifest to open, and then starts a process for each 
 %% file in the manifest, storing the PID for that process within the manifest.
 %% Opens an active journal if one is not present.
-build_manifest(ManifestFilenames,
-                RootPath,
-                CDBopts) ->
+build_manifest(ManifestFilenames, RootPath, CDBopts) ->
     % Find the manifest with a highest Manifest sequence number
     % Open it and read it to get the current Confirmed Manifest
     ManifestRegex = "(?<MSQN>[0-9]+)\\." ++ leveled_imanifest:complete_filex(),
-    ValidManSQNs = sequencenumbers_fromfilenames(ManifestFilenames,
-                                                    ManifestRegex,
-                                                    'MSQN'),
-    {Manifest,
-        ManifestSQN} = case length(ValidManSQNs) of
-                            0 ->
-                                {[], 1};
-                            _ ->
-                                PersistedManSQN = lists:max(ValidManSQNs),
-                                M1 = leveled_imanifest:reader(PersistedManSQN,
-                                                                RootPath),
-                                {M1, PersistedManSQN}
-                        end,
+    ValidManSQNs =
+        sequencenumbers_fromfilenames(
+            ManifestFilenames, ManifestRegex, 'MSQN'),
+    {Manifest, ManifestSQN} =
+        case length(ValidManSQNs) of
+            0 ->
+                {[], 1};
+            _ ->
+                PersistedManSQN = lists:max(ValidManSQNs),
+                M1 = leveled_imanifest:reader(PersistedManSQN, RootPath),
+                {M1, PersistedManSQN}
+        end,
     
     % Open the manifest files, completing if necessary and ensure there is
     % a valid active journal at the head of the manifest
     OpenManifest = open_all_manifest(Manifest, RootPath, CDBopts),
     
-    {ActiveLowSQN,
-        _FN,
-        ActiveJournal,
-        _LK} = leveled_imanifest:head_entry(OpenManifest),
-    JournalSQN = case leveled_cdb:cdb_lastkey(ActiveJournal) of
-                        empty ->
-                            ActiveLowSQN;
-                        {JSQN, _Type, _LastKey} ->
-                            JSQN
-                    end,
+    {ActiveLowSQN, _FN, ActiveJournal, _LK} =
+        leveled_imanifest:head_entry(OpenManifest),
+    JournalSQN =
+        case leveled_cdb:cdb_lastkey(ActiveJournal) of
+            empty ->
+                ActiveLowSQN;
+            {JSQN, _Type, _LastKey} ->
+                JSQN
+        end,
     
     % Update the manifest if it has been changed by the process of loading 
     % the manifest (must also increment the manifest SQN).
@@ -1146,8 +1175,9 @@ close_allmanifest([H|ManifestT]) ->
     close_allmanifest(ManifestT).
 
 
--spec open_all_manifest(leveled_imanifest:manifest(), list(), #cdb_options{})
-                                            -> leveled_imanifest:manifest().
+-spec open_all_manifest(
+    leveled_imanifest:manifest(), list(), #cdb_options{})
+        -> leveled_imanifest:manifest().
 %% @doc
 %% Open all the files in the manifets, and updating the manifest with the PIDs
 %% of the opened files
@@ -1185,24 +1215,21 @@ open_all_manifest(Man0, RootPath, CDBOpts) ->
         true ->
             leveled_log:log(i0012, [HeadFN]),
             {ok, HeadR} = leveled_cdb:cdb_open_reader(CompleteHeadFN),
-            LastKey = leveled_cdb:cdb_lastkey(HeadR),
-            LastSQN = element(1, LastKey),
-            ManToHead = leveled_imanifest:add_entry(OpenedTail,
-                                                    {HeadSQN,
-                                                        HeadFN,
-                                                        HeadR,
-                                                        LastKey},
-                                                    true),
-            NewManEntry = start_new_activejournal(LastSQN + 1,
-                                                        RootPath,
-                                                        CDBOpts),
+            LastKey = {LastSQN, _, _} = leveled_cdb:cdb_lastkey(HeadR),
+            ManToHead =
+                leveled_imanifest:add_entry(
+                    OpenedTail,
+                    {HeadSQN, HeadFN, HeadR, LastKey},
+                    true
+                ),
+            NewManEntry =
+                start_new_activejournal(LastSQN + 1, RootPath, CDBOpts),
             leveled_imanifest:add_entry(ManToHead, NewManEntry, true);
         false ->
-            {ok, HeadW} = leveled_cdb:cdb_open_writer(PendingHeadFN,
-                                                        CDBOpts),
-            leveled_imanifest:add_entry(OpenedTail,
-                                            {HeadSQN, HeadFN, HeadW, HeadLK},
-                                            true)
+            {ok, HeadW} =
+                leveled_cdb:cdb_open_writer(PendingHeadFN, CDBOpts),
+            leveled_imanifest:add_entry(
+                OpenedTail, {HeadSQN, HeadFN, HeadW, HeadLK}, true)
     end.
 
 
@@ -1288,17 +1315,19 @@ foldfile_between_sequence(MinSQN, MaxSQN, FoldFuns,
             
 
 sequencenumbers_fromfilenames(Filenames, Regex, IntName) ->
-    lists:foldl(fun(FN, Acc) ->
-                            case re:run(FN,
-                                        Regex,
-                                        [{capture, [IntName], list}]) of
-                                nomatch ->
-                                    Acc;
-                                {match, [Int]} when is_list(Int) ->
-                                    Acc ++ [list_to_integer(Int)]
-                            end end,
-                            [],
-                            Filenames).
+    lists:foldl(
+        fun(FN, Acc) ->
+            case re:run(FN,
+                        Regex,
+                        [{capture, [IntName], list}]) of
+                nomatch ->
+                    Acc;
+                {match, [Int]} when is_list(Int) ->
+                    Acc ++ [list_to_integer(Int)]
+            end
+        end,
+        [],
+        Filenames).
 
 filepath(RootPath, journal_dir) ->
     RootPath ++ "/" ++ ?FILES_FP ++ "/";
@@ -1525,7 +1554,7 @@ compact_journal_testto(WRP, ExpectedFiles) ->
                             PK = "KeyZ" ++ integer_to_list(X),
                             {ok, SQN, _} = ink_put(Ink1,
                                                     test_ledgerkey(PK),
-                                                    leveled_rand:rand_bytes(10000),
+                                                    crypto:strong_rand_bytes(10000),
                                                     {[], infinity},
                                                     false),
                             {SQN, test_ledgerkey(PK)}

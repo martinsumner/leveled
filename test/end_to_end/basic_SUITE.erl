@@ -55,15 +55,19 @@ simple_put_fetch_head_delete(_Config) ->
 
 simple_test_withlog(LogLevel, ForcedLogs) ->
     RootPath = testutil:reset_filestructure(),
-    StartOpts1 = [{root_path, RootPath},
-                    {sync_strategy, testutil:sync_strategy()},
-                    {log_level, LogLevel},
-                    {forced_logs, ForcedLogs}],
+    StartOpts1 =
+        [
+            {root_path, RootPath},
+            {sync_strategy, testutil:sync_strategy()},
+            {log_level, LogLevel},
+            {forced_logs, ForcedLogs},
+            {max_pencillercachesize, 200}
+        ],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
     testutil:check_forobject(Bookie1, TestObject),
-    testutil:check_formissingobject(Bookie1, "Bucket1", "Key2"),
+    testutil:check_formissingobject(Bookie1, <<"Bucket1">>, <<"Key2">>),
     ok = leveled_bookie:book_close(Bookie1),
     StartOpts2 = [{root_path, RootPath},
                     {max_journalsize, 3000000},
@@ -78,29 +82,49 @@ simple_test_withlog(LogLevel, ForcedLogs) ->
     ChkList1 = lists:sublist(lists:sort(ObjList1), 100),
     testutil:check_forlist(Bookie2, ChkList1),
     testutil:check_forobject(Bookie2, TestObject),
-    testutil:check_formissingobject(Bookie2, "Bucket1", "Key2"),
-    ok = leveled_bookie:book_put(Bookie2, "Bucket1", "Key2", "Value2",
-                                    [{add, "Index1", "Term1"}]),
-    {ok, "Value2"} = leveled_bookie:book_get(Bookie2, "Bucket1", "Key2"),
-    {ok, {62888926, S, undefined}} =
-        leveled_bookie:book_head(Bookie2, "Bucket1", "Key2"),
-    true = (S == 58) or (S == 60),
+    testutil:check_formissingobject(Bookie2, <<"Bucket1">>, <<"Key2">>),
+    ok =
+        leveled_bookie:book_put(
+            Bookie2,
+            <<"Bucket1">>,
+            <<"Key2">>,
+            <<"Value2">>,
+            [{add, <<"Index1">>, <<"Term1">>}]
+        ),
+    {ok, <<"Value2">>} =
+        leveled_bookie:book_get(Bookie2, <<"Bucket1">>, <<"Key2">>),
+    {ok, {2220864, S, undefined}} =
+        leveled_bookie:book_head(Bookie2, <<"Bucket1">>, <<"Key2">>),
+    true = (S == 63) or (S == 65),
         % After OTP 26 the object is 58 bytes not 60
-    testutil:check_formissingobject(Bookie2, "Bucket1", "Key2"),
-    ok = leveled_bookie:book_put(Bookie2, "Bucket1", "Key2", <<"Value2">>,
-                                    [{remove, "Index1", "Term1"},
-                                    {add, "Index1", <<"Term2">>}]),
-    {ok, <<"Value2">>} = leveled_bookie:book_get(Bookie2, "Bucket1", "Key2"),
+    testutil:check_formissingobject(Bookie2, <<"Bucket1">>, <<"Key2">>),
+    ok =
+        leveled_bookie:book_put(
+            Bookie2,
+            <<"Bucket1">>,
+            <<"Key2">>,
+            <<"Value2">>,
+            [{remove, <<"Index1">>, <<"Term1">>},
+                {add, <<"Index1">>, <<"Term2">>}]
+            ),
+    {ok, <<"Value2">>} =
+        leveled_bookie:book_get(Bookie2, <<"Bucket1">>, <<"Key2">>),
     ok = leveled_bookie:book_close(Bookie2),
     {ok, Bookie3} = leveled_bookie:book_start(StartOpts2),
-    {ok, <<"Value2">>} = leveled_bookie:book_get(Bookie3, "Bucket1", "Key2"),
-    ok = leveled_bookie:book_delete(Bookie3, "Bucket1", "Key2",
-                                    [{remove, "Index1", "Term1"}]),
-    not_found = leveled_bookie:book_get(Bookie3, "Bucket1", "Key2"),
-    not_found = leveled_bookie:book_head(Bookie3, "Bucket1", "Key2"),
+    {ok, <<"Value2">>} =
+        leveled_bookie:book_get(Bookie3, <<"Bucket1">>, <<"Key2">>),
+    ok =
+        leveled_bookie:book_delete(
+            Bookie3,
+            <<"Bucket1">>,
+            <<"Key2">>,
+            [{remove, <<"Index1">>, <<"Term1">>}]
+        ),
+    not_found = leveled_bookie:book_get(Bookie3, <<"Bucket1">>, <<"Key2">>),
+    not_found = leveled_bookie:book_head(Bookie3, <<"Bucket1">>, <<"Key2">>),
     ok = leveled_bookie:book_close(Bookie3),
     {ok, Bookie4} = leveled_bookie:book_start(StartOpts2),
-    not_found = leveled_bookie:book_get(Bookie4, "Bucket1", "Key2"),
+    not_found = leveled_bookie:book_get(Bookie4, <<"Bucket1">>, <<"Key2">>),
     ok = leveled_bookie:book_destroy(Bookie4).
 
 many_put_fetch_head(_Config) ->
@@ -168,7 +192,7 @@ many_put_fetch_head(_Config) ->
     not_found = leveled_bookie:book_sqn(Bookie3,
                                         testutil:get_bucket(TestObject),
                                         testutil:get_key(TestObject)),
-    testutil:check_formissingobject(Bookie3, "Bookie1", "MissingKey0123"),
+    testutil:check_formissingobject(Bookie3, <<"Bookie1">>, <<"MissingKey0123">>),
     ok = leveled_bookie:book_destroy(Bookie3).
 
 bigjournal_littlejournal(_Config) ->
@@ -181,7 +205,7 @@ bigjournal_littlejournal(_Config) ->
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     ObjL1 = 
         testutil:generate_objects(100, 1, [], 
-                                    leveled_rand:rand_bytes(10000), 
+                                    crypto:strong_rand_bytes(10000), 
                                     fun() -> [] end, <<"B">>),
     testutil:riakload(Bookie1, ObjL1),
     ok = leveled_bookie:book_close(Bookie1),
@@ -189,7 +213,7 @@ bigjournal_littlejournal(_Config) ->
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
     ObjL2 = 
         testutil:generate_objects(10, 1000, [], 
-                                    leveled_rand:rand_bytes(10000), 
+                                    crypto:strong_rand_bytes(10000), 
                                     fun() -> [] end, <<"B">>),
     testutil:riakload(Bookie2, ObjL2),
     testutil:check_forlist(Bookie2, ObjL1),
@@ -214,7 +238,7 @@ bigsst_littlesst(_Config) ->
                 100000,
                 1,
                 [],
-                leveled_rand:rand_bytes(100),
+                crypto:strong_rand_bytes(100),
                 fun() -> [] end,
                 <<"B">>)
         ),
@@ -260,13 +284,16 @@ journal_compaction_tester(Restart, WRP) ->
     ChkList1 = lists:sublist(lists:sort(ObjList1), 10000),
     testutil:check_forlist(Bookie0, ChkList1),
     testutil:check_forobject(Bookie0, TestObject),
-    {B2, K2, V2, Spec2, MD} = {"Bucket2",
-                                "Key2",
-                                "Value2",
-                                [],
-                                [{"MDK2", "MDV2"}]},
-    {TestObject2, TestSpec2} = testutil:generate_testobject(B2, K2,
-                                                            V2, Spec2, MD),
+    {B2, K2, V2, Spec2, MD} =
+        {
+            <<"Bucket2">>,
+            <<"Key2">>,
+            <<"Value2">>,
+            [],
+            [{<<"MDK2">>, <<"MDV2">>}]
+        },
+    {TestObject2, TestSpec2} =
+        testutil:generate_testobject(B2, K2, V2, Spec2, MD),
     ok = testutil:book_riakput(Bookie0, TestObject2, TestSpec2),
     ok = leveled_bookie:book_compactjournal(Bookie0, 30000),
     testutil:check_forlist(Bookie0, ChkList1),
@@ -277,13 +304,15 @@ journal_compaction_tester(Restart, WRP) ->
     testutil:check_forobject(Bookie0, TestObject2),
     %% Delete some of the objects
     ObjListD = testutil:generate_objects(10000, 2),
-    lists:foreach(fun({_R, O, _S}) ->
-                        testutil:book_riakdelete(Bookie0,
-                                                    testutil:get_bucket(O),
-                                                    testutil:get_key(O),
-                                                    [])
-                        end,
-                    ObjListD),
+    lists:foreach(
+        fun({_R, O, _S}) ->
+        testutil:book_riakdelete(Bookie0,
+                                    testutil:get_bucket(O),
+                                    testutil:get_key(O),
+                                    [])
+        end,
+        ObjListD
+    ),
     
     %% Now replace all the other objects
     ObjList2 = testutil:generate_objects(40000, 10002),
@@ -539,11 +568,11 @@ fetchput_snapshot(_Config) ->
         % smaller due to replacements and files deleting
         % This is dependent on the sleep though (yuk)
     
-    {B1Size, B1Count} = testutil:check_bucket_stats(Bookie2, "Bucket1"),
+    {B1Size, B1Count} = testutil:check_bucket_stats(Bookie2, <<"Bucket1">>),
     true = B1Size > 0,
     true = B1Count == 1,
-    {B1Size, B1Count} = testutil:check_bucket_stats(Bookie2, "Bucket1"),
-    {BSize, BCount} = testutil:check_bucket_stats(Bookie2, "Bucket"),
+    {B1Size, B1Count} = testutil:check_bucket_stats(Bookie2, <<"Bucket1">>),
+    {BSize, BCount} = testutil:check_bucket_stats(Bookie2, <<"Bucket">>),
     true = BSize > 0,
     true = BCount == 180000,
 
@@ -622,82 +651,78 @@ load_and_count(JournalSize, BookiesMemSize, PencillerMemSize) ->
     testutil:check_forobject(Bookie1, TestObject),
     io:format("Loading initial small objects~n"),
     G1 = fun testutil:generate_smallobjects/2,
-    lists:foldl(fun(_X, Acc) ->
-                        testutil:load_objects(5000,
-                                                [Acc + 2],
-                                                Bookie1,
-                                                TestObject,
-                                                G1),
-                        {_S, Count} = 
-                            testutil:check_bucket_stats(Bookie1, "Bucket"),
-                        if
-                            Acc + 5000 == Count ->
-                                ok
-                        end,
-                        Acc + 5000 end,
-                        0,
-                        lists:seq(1, 20)),
+    lists:foldl(
+        fun(_X, Acc) ->
+        testutil:load_objects(
+            5000, [Acc + 2], Bookie1, TestObject, G1),
+        {_S, Count} = 
+            testutil:check_bucket_stats(Bookie1, <<"Bucket">>),
+        if
+            Acc + 5000 == Count ->
+                ok
+        end,
+        Acc + 5000 end,
+        0,
+        lists:seq(1, 20)
+    ),
     testutil:check_forobject(Bookie1, TestObject),
     io:format("Loading larger compressible objects~n"),
     G2 = fun testutil:generate_compressibleobjects/2,
-    lists:foldl(fun(_X, Acc) ->
-                        testutil:load_objects(5000,
-                                                [Acc + 2],
-                                                Bookie1,
-                                                TestObject,
-                                                G2),
-                        {_S, Count} = 
-                            testutil:check_bucket_stats(Bookie1, "Bucket"),
-                        if
-                            Acc + 5000 == Count ->
-                                ok
-                        end,
-                        Acc + 5000 end,
-                        100000,
-                        lists:seq(1, 20)),
+    lists:foldl(
+        fun(_X, Acc) ->
+        testutil:load_objects(
+            5000, [Acc + 2], Bookie1, TestObject, G2),
+        {_S, Count} = 
+            testutil:check_bucket_stats(Bookie1, <<"Bucket">>),
+        if
+            Acc + 5000 == Count ->
+                ok
+        end,
+        Acc + 5000 end,
+        100000,
+        lists:seq(1, 20)
+    ),
     testutil:check_forobject(Bookie1, TestObject),
     io:format("Replacing small objects~n"),
-    lists:foldl(fun(_X, Acc) ->
-                        testutil:load_objects(5000,
-                                                [Acc + 2],
-                                                Bookie1,
-                                                TestObject,
-                                                G1),
-                        {_S, Count} = 
-                            testutil:check_bucket_stats(Bookie1, "Bucket"),
-                        if
-                            Count == 200000 ->
-                                ok
-                        end,
-                        Acc + 5000 end,
-                        0,
-                        lists:seq(1, 20)),
+    lists:foldl(
+        fun(_X, Acc) ->
+        testutil:load_objects(
+            5000, [Acc + 2], Bookie1, TestObject, G1),
+        {_S, Count} = 
+            testutil:check_bucket_stats(Bookie1, <<"Bucket">>),
+        if
+            Count == 200000 ->
+                ok
+        end,
+        Acc + 5000 end,
+        0,
+        lists:seq(1, 20)
+    ),
     testutil:check_forobject(Bookie1, TestObject),
     io:format("Loading more small objects~n"),
     io:format("Now with unused snapshot so deletions are blocked~n"),
     {ok, PclClone, null} = 
         leveled_bookie:book_snapshot(Bookie1, ledger, undefined, true),
-    lists:foldl(fun(_X, Acc) ->
-                        testutil:load_objects(5000,
-                                                [Acc + 2],
-                                                Bookie1,
-                                                TestObject,
-                                                G2),
-                        {_S, Count} = 
-                            testutil:check_bucket_stats(Bookie1, "Bucket"),
-                        if
-                            Acc + 5000 == Count ->
-                                ok
-                        end,
-                        Acc + 5000 end,
-                        200000,
-                        lists:seq(1, 20)),
+    lists:foldl(
+        fun(_X, Acc) ->
+        testutil:load_objects(
+            5000, [Acc + 2], Bookie1, TestObject, G2),
+        {_S, Count} = 
+            testutil:check_bucket_stats(Bookie1, <<"Bucket">>),
+        if
+            Acc + 5000 == Count ->
+                ok
+        end,
+        Acc + 5000 end,
+        200000,
+        lists:seq(1, 20)
+    ),
     testutil:check_forobject(Bookie1, TestObject),
     ok = leveled_penciller:pcl_close(PclClone),
-    {_S, 300000} = testutil:check_bucket_stats(Bookie1, "Bucket"),
+    {_S, 300000} = testutil:check_bucket_stats(Bookie1, <<"Bucket">>),
     ok = leveled_bookie:book_close(Bookie1),
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
-    {_, 300000} = testutil:check_bucket_stats(Bookie2, "Bucket"),
+    {_, 300000} = testutil:check_bucket_stats(Bookie2, <<"Bucket">>),
     
     ok = leveled_bookie:book_close(Bookie2),
 
@@ -722,21 +747,19 @@ load_and_count_withdelete(_Config) ->
     testutil:check_forobject(Bookie1, TestObject),
     io:format("Loading initial small objects~n"),
     G1 = fun testutil:generate_smallobjects/2,
-    lists:foldl(fun(_X, Acc) ->
-                        testutil:load_objects(5000,
-                                                [Acc + 2],
-                                                Bookie1,
-                                                TestObject,
-                                                G1),
-                        {_S, Count} = testutil:check_bucket_stats(Bookie1,
-                                                                    "Bucket"),
-                        if
-                            Acc + 5000 == Count ->
-                                ok
-                        end,
-                        Acc + 5000 end,
-                        0,
-                        lists:seq(1, 20)),
+    lists:foldl(
+        fun(_X, Acc) ->
+        testutil:load_objects(
+            5000, [Acc + 2], Bookie1, TestObject, G1),
+        {_S, Count} = testutil:check_bucket_stats(Bookie1, <<"Bucket">>),
+        if
+            Acc + 5000 == Count ->
+                ok
+        end,
+        Acc + 5000 end,
+        0,
+        lists:seq(1, 20)
+    ),
     testutil:check_forobject(Bookie1, TestObject),
     {BucketD, KeyD} =
         {testutil:get_bucket(TestObject), testutil:get_key(TestObject)},
@@ -746,21 +769,19 @@ load_and_count_withdelete(_Config) ->
     {_, 0} = testutil:check_bucket_stats(Bookie1, BucketD),
     io:format("Loading larger compressible objects~n"),
     G2 = fun testutil:generate_compressibleobjects/2,
-    lists:foldl(fun(_X, Acc) ->
-                        testutil:load_objects(5000,
-                                                [Acc + 2],
-                                                Bookie1,
-                                                no_check,
-                                                G2),
-                        {_S, Count} = testutil:check_bucket_stats(Bookie1,
-                                                                    "Bucket"),
-                        if
-                            Acc + 5000 == Count ->
-                                ok
-                        end,
-                        Acc + 5000 end,
-                        100000,
-                        lists:seq(1, 20)),
+    lists:foldl(
+        fun(_X, Acc) ->
+        testutil:load_objects(
+            5000, [Acc + 2], Bookie1, no_check, G2),
+        {_S, Count} = testutil:check_bucket_stats(Bookie1, <<"Bucket">>),
+        if
+            Acc + 5000 == Count ->
+                ok
+        end,
+        Acc + 5000 end,
+        100000,
+        lists:seq(1, 20)
+    ),
     not_found = testutil:book_riakget(Bookie1, BucketD, KeyD),
     ok = leveled_bookie:book_close(Bookie1),
     
@@ -780,11 +801,8 @@ space_clear_ondelete(_Config) ->
                     {sync_strategy, testutil:sync_strategy()}],
     {ok, Book1} = leveled_bookie:book_start(StartOpts1),
     G2 = fun testutil:generate_compressibleobjects/2,
-    testutil:load_objects(20000,
-                            [uuid, uuid, uuid, uuid],
-                            Book1,
-                            no_check,
-                            G2),
+    testutil:load_objects(
+        20000, [uuid, uuid, uuid, uuid], Book1, no_check, G2),
     
     FoldKeysFun = fun(B, K, Acc) -> [{B, K}|Acc] end,
 
@@ -808,10 +826,9 @@ space_clear_ondelete(_Config) ->
     FoldObjectsFun = fun(B, K, ObjBin, Acc) ->
                             [{B, K, erlang:phash2(ObjBin)}|Acc] end,
 
-    {async, HTreeF1} = leveled_bookie:book_objectfold(Book1,
-                                                      ?RIAK_TAG,
-                                                      {FoldObjectsFun, []},
-                                                      false),
+    {async, HTreeF1} =
+        leveled_bookie:book_objectfold(
+            Book1, ?RIAK_TAG, {FoldObjectsFun, []}, false),
 
         % This query does not Snap PreFold - and so will not prevent
         % pending deletes from prompting actual deletes
@@ -822,32 +839,34 @@ space_clear_ondelete(_Config) ->
 
     % Delete the keys
     SW2 = os:timestamp(),
-    lists:foreach(fun({Bucket, Key}) ->
-                        testutil:book_riakdelete(Book1,
-                                                        Bucket,
-                                                        Key,
-                                                        [])
-                        end,
-                    KL1),
-    io:format("Deletion took ~w microseconds for 80K keys~n",
-                                [timer:now_diff(os:timestamp(), SW2)]),
-    
-    
+    lists:foreach(
+        fun({Bucket, Key}) ->
+            testutil:book_riakdelete(Book1, Bucket, Key, [])
+            end,
+        KL1),
+    io:format(
+        "Deletion took ~w microseconds for 80K keys~n",
+        [timer:now_diff(os:timestamp(), SW2)]),
     
     ok = leveled_bookie:book_compactjournal(Book1, 30000),
     F = fun leveled_bookie:book_islastcompactionpending/1,
-    lists:foldl(fun(X, Pending) ->
-                        case Pending of
-                            false ->
-                                false;
-                            true ->
-                                io:format("Loop ~w waiting for journal "
-                                    ++ "compaction to complete~n", [X]),
-                                timer:sleep(20000),
-                                F(Book1)
-                        end end,
-                    true,
-                    lists:seq(1, 15)),
+    lists:foldl(
+        fun(X, Pending) ->
+            case Pending of
+                false ->
+                    false;
+                true ->
+                    io:format(
+                        "Loop ~w waiting for journal "
+                        "compaction to complete~n",
+                        [X]
+                    ),
+                    timer:sleep(20000),
+                    F(Book1)
+            end
+        end,
+        true,
+        lists:seq(1, 15)),
     io:format("Waiting for journal deletes - blocked~n"),
     timer:sleep(20000),
     
@@ -1113,7 +1132,7 @@ many_put_fetch_switchcompression_tester(CompressionMethod) ->
 
     %% Change method back again
     {ok, Bookie3} = leveled_bookie:book_start(StartOpts1),
-    testutil:check_formissingobject(Bookie3, "Bookie1", "MissingKey0123"),
+    testutil:check_formissingobject(Bookie3, <<"Bookie1">>, "MissingKey0123"),
     lists:foreach(
         fun(CL) -> ok = testutil:check_forlist(Bookie3, CL) end, CL2s),
     lists:foreach(
@@ -1244,10 +1263,12 @@ bigpcl_bucketlist(_Config) ->
 
     MapFun =
         fun(B) ->
-            testutil:generate_objects(ObjectCount, 1, [], 
-                                        leveled_rand:rand_bytes(100), 
-                                        fun() -> [] end, 
-                                        B)
+            testutil:generate_objects(
+                ObjectCount, 1, [], 
+                    crypto:strong_rand_bytes(100), 
+                fun() -> [] end, 
+                B
+            )
         end,
     ObjLofL = lists:map(MapFun, BucketList),
     lists:foreach(fun(ObjL) -> testutil:riakload(Bookie1, ObjL) end, ObjLofL),
@@ -1263,11 +1284,15 @@ bigpcl_bucketlist(_Config) ->
     FBAccT = {BucketFold, sets:new()},
 
     {async, BucketFolder1} = 
-        leveled_bookie:book_headfold(Bookie1,
-                                        ?RIAK_TAG,
-                                        {bucket_list, BucketList},
-                                        FBAccT,
-                                        false, false, false),
+        leveled_bookie:book_headfold(
+            Bookie1,
+            ?RIAK_TAG,
+            {bucket_list, BucketList},
+            FBAccT,
+            false,
+            false,
+            false
+        ),
 
     {FoldTime1, BucketList1} = timer:tc(BucketFolder1, []),
     true = BucketCount == sets:size(BucketList1),
@@ -1276,11 +1301,15 @@ bigpcl_bucketlist(_Config) ->
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
     
     {async, BucketFolder2} = 
-        leveled_bookie:book_headfold(Bookie2,
-                                        ?RIAK_TAG,
-                                        {bucket_list, BucketList},
-                                        FBAccT,
-                                        false, false, false),
+        leveled_bookie:book_headfold(
+            Bookie2,
+            ?RIAK_TAG,
+            {bucket_list, BucketList},
+            FBAccT,
+            false,
+            false,
+            false
+        ),
     {FoldTime2, BucketList2} = timer:tc(BucketFolder2, []),
     true = BucketCount == sets:size(BucketList2),
 

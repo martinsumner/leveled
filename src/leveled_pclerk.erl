@@ -48,8 +48,8 @@
 -define(MIN_TIMEOUT, 200).
 -define(GROOMING_PERC, 50).
 
--record(state, {owner :: pid() | undefined,
-                root_path :: string() | undefined,
+-record(state, {owner :: pid()|undefined,
+                root_path :: string()|undefined,
                 pending_deletions = dict:new() :: dict:dict(),
                 sst_options :: sst_options()
                 }).
@@ -123,18 +123,20 @@ handle_call(close, _From, State) ->
 
 handle_cast(prompt, State) ->
     handle_info(timeout, State);
-handle_cast({push_work, Work}, State) ->
+handle_cast(
+    {push_work, Work}, State = #state{root_path = RP, owner = PCL})
+        when ?IS_DEF(RP), is_pid(PCL) ->
     {ManifestSQN, Deletions} =
-        handle_work(
-            Work,
-            State#state.root_path, State#state.sst_options, State#state.owner),
+        handle_work(Work, RP, State#state.sst_options, PCL),
     PDs = dict:store(ManifestSQN, Deletions, State#state.pending_deletions),
     leveled_log:log(pc022, [ManifestSQN]),
     {noreply, State#state{pending_deletions = PDs}, ?MIN_TIMEOUT};
-handle_cast({prompt_deletions, ManifestSQN}, State) ->
-    {Deletions, UpdD} = return_deletions(ManifestSQN,
-                                            State#state.pending_deletions),
-    ok = notify_deletions(Deletions, State#state.owner),
+handle_cast(
+    {prompt_deletions, ManifestSQN}, State = #state{owner = PCL})
+        when is_pid(PCL) ->
+    {Deletions, UpdD} =
+        return_deletions(ManifestSQN, State#state.pending_deletions),
+    ok = notify_deletions(Deletions, PCL),
     {noreply, State#state{pending_deletions = UpdD}, ?MIN_TIMEOUT};
 handle_cast({log_level, LogLevel}, State) ->
     ok = leveled_log:set_loglevel(LogLevel),
@@ -152,8 +154,8 @@ handle_cast({remove_logs, ForcedLogs}, State) ->
     SSTopts0 = SSTopts#sst_options{log_options = leveled_log:get_opts()},
     {noreply, State#state{sst_options = SSTopts0}}.
 
-handle_info(timeout, State) ->
-    ok = leveled_penciller:pcl_workforclerk(State#state.owner),
+handle_info(timeout, State = #state{owner = PCL})  when is_pid(PCL) ->
+    ok = leveled_penciller:pcl_workforclerk(PCL),
     % When handling work, the clerk can collect a large number of binary
     % references, so proactively GC this process before receiving any future
     % work.  In under pressure clusters, clerks with large binary memory
@@ -207,7 +209,7 @@ merge(SrcLevel, Manifest, RootPath, OptsSST) ->
                 [SrcLevel + 1, FCnt, MnHBS, MnHS, MnLHS, MnBVHS])
     end,
     SelectMethod =
-        case leveled_rand:uniform(100) of
+        case rand:uniform(100) of
             R when R =< ?GROOMING_PERC ->
                 {grooming, fun grooming_scorer/1};
             _ ->
@@ -385,11 +387,17 @@ generate_randomkeys(Count, Acc, BucketLow, BRange) ->
     BNumber =
         lists:flatten(
             io_lib:format("~4..0B",
-                            [BucketLow + leveled_rand:uniform(BRange)])),
+                            [BucketLow + rand:uniform(BRange)])),
     KNumber =
         lists:flatten(
-            io_lib:format("~4..0B", [leveled_rand:uniform(1000)])),
-    K = {o, "Bucket" ++ BNumber, "Key" ++ KNumber, null},
+            io_lib:format("~4..0B", [rand:uniform(1000)])),
+    K =
+        {
+            o,
+            list_to_binary("Bucket" ++ BNumber),
+            list_to_binary("Key" ++ KNumber),
+            null
+        },
     RandKey = {K, {Count + 1,
                     {active, infinity},
                     leveled_codec:segment_hash(K),
@@ -415,7 +423,6 @@ grooming_score_test() ->
                                     3,
                                     999999,
                                     #sst_options{},
-                                    true,
                                     true),
     {ok, PidL3_1B, _, _} = 
         leveled_sst:sst_newmerge("test/test_area/ledger_files/",
@@ -427,7 +434,6 @@ grooming_score_test() ->
                                     3,
                                     999999,
                                     #sst_options{},
-                                    true,
                                     true),
     
     {ok, PidL3_2, _, _} = 
@@ -439,38 +445,22 @@ grooming_score_test() ->
                                     3,
                                     999999,
                                     #sst_options{},
-                                    true,
                                     true),
-    {ok, PidL3_2NC, _, _} = 
-        leveled_sst:sst_newmerge("test/test_area/ledger_files/",
-                                    "2NC_L3.sst",
-                                    KL3_L3,
-                                    KL4_L3,
-                                    false,
-                                    3,
-                                    999999,
-                                    #sst_options{},
-                                    true,
-                                    false),
-    
-    ME1 = #manifest_entry{owner=PidL3_1},
-    ME1B = #manifest_entry{owner=PidL3_1B},
-    ME2 = #manifest_entry{owner=PidL3_2},
-    ME2NC = #manifest_entry{owner=PidL3_2NC},
+    DSK = {o, <<"B">>, <<"SK">>, null},
+    DEK = {o, <<"E">>, <<"EK">>, null},
+    ME1 = #manifest_entry{owner=PidL3_1, start_key = DSK, end_key = DEK},
+    ME1B = #manifest_entry{owner=PidL3_1B, start_key = DSK, end_key = DEK},
+    ME2 = #manifest_entry{owner=PidL3_2, start_key = DSK, end_key = DEK},
     ?assertMatch(ME1, grooming_scorer([ME1, ME2])),
     ?assertMatch(ME1, grooming_scorer([ME2, ME1])),
         % prefer the file with the tombstone
-    ?assertMatch(ME2NC, grooming_scorer([ME1, ME2NC])),
-    ?assertMatch(ME2NC, grooming_scorer([ME2NC, ME1])),
-        % not_counted > 1 - we will merge files in unexpected (i.e. legacy)
-        % format first
     ?assertMatch(ME1B, grooming_scorer([ME1B, ME2])),
     ?assertMatch(ME2, grooming_scorer([ME2, ME1B])),
         % If the file with the tombstone is in the basement, it will have
         % no tombstone so the first file will be chosen
     
     lists:foreach(fun(P) -> leveled_sst:sst_clear(P) end,
-                    [PidL3_1, PidL3_1B, PidL3_2, PidL3_2NC]).
+                    [PidL3_1, PidL3_1B, PidL3_2]).
 
 
 merge_file_test() ->

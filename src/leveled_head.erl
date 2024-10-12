@@ -82,7 +82,7 @@
 -type appdefinable_headfun() ::
     fun((object_tag(), object_metadata()) -> head()).
 -type appdefinable_metadatafun() ::
-    fun(({leveled_codec:tag(), non_neg_integer(), any()}) ->
+    fun((leveled_codec:tag(), non_neg_integer(), binary()|delete) ->
         {object_metadata(), list(erlang:timestamp())}).
 -type appdefinable_indexspecsfun() ::
     fun((object_tag(), object_metadata(), object_metadata()|not_present) ->
@@ -117,11 +117,13 @@
 %% @doc
 %% Convert a key to a binary in a consistent way for the tag.  The binary will
 %% then be used to create the hash
-key_to_canonicalbinary({?RIAK_TAG, Bucket, Key, null}) 
-                                    when is_binary(Bucket), is_binary(Key) ->
+key_to_canonicalbinary(
+    {?RIAK_TAG, Bucket, Key, null}) 
+        when is_binary(Bucket), is_binary(Key) ->
     <<Bucket/binary, Key/binary>>;
-key_to_canonicalbinary({?RIAK_TAG, {BucketType, Bucket}, Key, SubKey})
-                            when is_binary(BucketType), is_binary(Bucket) ->
+key_to_canonicalbinary(
+    {?RIAK_TAG, {BucketType, Bucket}, Key, SubKey})
+         when is_binary(BucketType), is_binary(Bucket) ->
     key_to_canonicalbinary({?RIAK_TAG,
                             <<BucketType/binary, Bucket/binary>>,
                             Key,
@@ -130,9 +132,11 @@ key_to_canonicalbinary(Key) when element(1, Key) == ?STD_TAG ->
     default_key_to_canonicalbinary(Key);
 key_to_canonicalbinary(Key) ->
     OverrideFun =
-        get_appdefined_function(key_to_canonicalbinary, 
-                                    fun default_key_to_canonicalbinary/1,
-                                    1),
+        get_appdefined_function(
+            key_to_canonicalbinary, 
+            fun default_key_to_canonicalbinary/1,
+            1
+        ),
     OverrideFun(Key).
     
 default_key_to_canonicalbinary(Key) ->
@@ -162,7 +166,7 @@ default_build_head(_Tag, Metadata) ->
     Metadata.
 
 
--spec extract_metadata(object_tag(), non_neg_integer(), any())
+-spec extract_metadata(object_tag(), non_neg_integer(), binary())
                             -> {object_metadata(), list(erlang:timestamp())}.
 %% @doc
 %% Take the inbound object and extract from it the metadata to be stored within
@@ -239,9 +243,8 @@ defined_objecttags() ->
     [?STD_TAG, ?RIAK_TAG].
 
 
--spec default_reload_strategy(object_tag())
-                                    -> {object_tag(), 
-                                        leveled_codec:compaction_method()}.
+-spec default_reload_strategy(
+    object_tag()) -> {object_tag(), leveled_codec:compaction_method()}.
 %% @doc
 %% State the compaction_method to be used when reloading the Ledger from the
 %% journal for each object tag.  Note, no compaction strategy required for 
@@ -249,25 +252,24 @@ defined_objecttags() ->
 default_reload_strategy(Tag) ->
     {Tag, retain}.
 
-
--spec get_size(object_tag()|headonly_tag(), object_metadata())
-                                                    -> non_neg_integer().
+-spec get_size(
+    object_tag()|headonly_tag(), object_metadata()) -> non_neg_integer().
 %% @doc
 %% Fetch the size from the metadata
-get_size(?RIAK_TAG, RiakObjectMetadata) ->
-    element(4, RiakObjectMetadata);
-get_size(_Tag, ObjectMetadata) ->
-    element(2, ObjectMetadata).
+get_size(?RIAK_TAG, {_, _, _, Size}) ->
+    Size;
+get_size(_Tag, {_, Size, _}) ->
+    Size.
 
 
--spec get_hash(object_tag()|headonly_tag(), object_metadata())
-                                                    -> non_neg_integer().
+-spec get_hash(
+    object_tag()|headonly_tag(), object_metadata()) -> non_neg_integer()|null.
 %% @doc
 %% Fetch the hash from the metadata
-get_hash(?RIAK_TAG, RiakObjectMetadata) ->
-    element(3, RiakObjectMetadata);
-get_hash(_Tag, ObjectMetadata) ->
-    element(1, ObjectMetadata).
+get_hash(?RIAK_TAG, {_, _, Hash, _}) ->
+    Hash;
+get_hash(_Tag, {Hash, _, _}) ->
+    Hash.
 
 -spec standard_hash(any()) -> non_neg_integer().
 %% @doc
@@ -280,9 +282,15 @@ standard_hash(Obj) ->
 %%% Handling Override Functions
 %%%============================================================================
 
--spec get_appdefined_function(
-    appdefinable_function(), appdefinable_function_fun(), non_neg_integer()) ->
-        appdefinable_function_fun().
+-spec get_appdefined_function
+    (key_to_canonicalbinary, appdefinable_keyfun(), 1) ->
+        appdefinable_keyfun();
+    (build_head, appdefinable_headfun(), 2) ->
+        appdefinable_headfun();
+    (extract_metadata, appdefinable_metadatafun(), 3) ->
+        appdefinable_metadatafun();
+    (diff_indexspecs, appdefinable_indexspecsfun(), 3) ->
+        appdefinable_indexspecsfun().
 %% @doc
 %% If a keylist of [{function_name, fun()}] has been set as an environment 
 %% variable for a tag, then this FunctionName can be used instead of the
@@ -300,8 +308,8 @@ get_appdefined_function(FunctionName, DefaultFun, RequiredArity) ->
 %%%============================================================================
 
 
--spec riak_extract_metadata(binary()|delete, non_neg_integer()) -> 
-                            {riak_metadata(), list()}.
+-spec riak_extract_metadata(
+    binary()|delete, non_neg_integer()) -> {riak_metadata(), list()}.
 %% @doc
 %% Riak extract metadata should extract a metadata object which is a 
 %% five-tuple of:
