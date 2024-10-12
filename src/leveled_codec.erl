@@ -405,9 +405,13 @@ from_ledgerkey({_Tag, Bucket, Key, _SubKey}) ->
 to_objectkey(Bucket, Key, Tag, Field, Value) when Tag == ?IDX_TAG ->
     {?IDX_TAG, Bucket, {Field, Value}, Key}.
 
+-if(?OTP_RELEASE >= 26).
 -spec to_objectkey
     (key(), single_key(), leveled_head:object_tag()) -> primary_key();
     (key(), key(), tag()) -> object_key().
+-else.
+-spec to_objectkey(key(), key()|single_key(), tag()) -> object_key().
+-endif.
 %% @doc
 %% Convert something into a ledger key
 to_objectkey(Bucket, {Key, SubKey}, ?HEAD_TAG) ->
