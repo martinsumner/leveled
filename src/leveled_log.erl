@@ -9,6 +9,8 @@
             log_timer/3,
             log_randomtimer/4]).
 
+-export([log/5, log_timer/6]).
+
 -export([set_loglevel/1, 
             set_databaseid/1,
             add_forcedlogs/1,
@@ -24,8 +26,9 @@
 
 -type log_level()  ::  debug | info | warning | error | critical.
 -type log_options() :: #log_options{}.
+-type log_base() :: #{atom() => {log_level(), binary()}}.
 
--export_type([log_options/0, log_level/0]).
+-export_type([log_options/0, log_level/0, log_base/0]).
 
 -define(LOG_LEVELS, [debug, info, warning, error, critical]).
 -define(DEFAULT_LOG_LEVEL, error).
@@ -273,7 +276,7 @@
         ic012 =>
             {warning, <<"Tag ~w not found in Strategy ~w - maybe corrupted">>},
         ic013 =>
-            {warning, "File with name ~s to be ignored in manifest as scanning for first key returned empty - maybe corrupted"},
+            {warning, <<"File with name ~s to be ignored in manifest as scanning for first key returned empty - maybe corrupted">>},
         ic014 =>
             {info, <<"Compaction to be run with strategy ~w and max_run_length ~w">>},
         cdb01 =>
@@ -377,7 +380,7 @@ get_opts() ->
             }
     end.
 
--spec return_settings() -> {log_level(), list(string())}.
+-spec return_settings() -> {log_level(), list(atom())}.
 %% @doc
 %% Return the settings outside of the record
 return_settings() ->
@@ -388,14 +391,15 @@ return_settings() ->
 %%% Prompt Logs
 %%%============================================================================
 
--spec log(atom(), list()) -> ok.
+-spec log(atom(), list()) -> term().
 log(LogReference, Subs) ->
-    log(LogReference, Subs, ?LOG_LEVELS).
+    log(LogReference, Subs, ?LOG_LEVELS, ?LOGBASE, backend).
 
-log(LogRef, Subs, SupportedLogLevels) ->
-    {LogLevel, Log} = maps:get(LogRef, ?LOGBASE),
+-spec log(atom(), list(), list(log_level()), log_base(), atom()) -> term().
+log(LogRef, Subs, SupportedLevels, LogBase, Tag) ->
+    {LogLevel, Log} = maps:get(LogRef, LogBase),
     LogOpts = get_opts(),
-    case should_i_log(LogLevel, SupportedLogLevels, LogRef, LogOpts) of
+    case should_i_log(LogLevel, SupportedLevels, LogRef, LogOpts) of
         true ->
             DBid = LogOpts#log_options.database_id,
             Prefix =
@@ -405,7 +409,7 @@ log(LogRef, Subs, SupportedLogLevels) ->
                 LogLevel,
                 unicode:characters_to_list([Prefix, Log, Suffix]),
                 Subs,
-                #{log_type => backend}
+                #{log_type => Tag}
             );
         false ->
             ok
@@ -428,12 +432,15 @@ is_active_level([L|_], L, _) -> true;
 is_active_level([L|_], _, L) -> false;
 is_active_level([_|T], C, L) -> is_active_level(T, C, L).
 
--spec log_timer(atom(), list(), erlang:timestamp()) -> ok.
+-spec log_timer(atom(), list(), erlang:timestamp()) -> term().
 log_timer(LogReference, Subs, StartTime) ->
-    log_timer(LogReference, Subs, StartTime, ?LOG_LEVELS).
+    log_timer(LogReference, Subs, StartTime, ?LOG_LEVELS, ?LOGBASE, backend).
 
-log_timer(LogRef, Subs, StartTime, SupportedLevels) ->
-    {LogLevel, Log} = maps:get(LogRef, ?LOGBASE),
+-spec log_timer(
+    atom(), list(), erlang:timestamp(), list(log_level()), log_base(), atom())
+        -> term().
+log_timer(LogRef, Subs, StartTime, SupportedLevels, LogBase, Tag) ->
+    {LogLevel, Log} = maps:get(LogRef, LogBase, LogBase),
     LogOpts = get_opts(),
     case should_i_log(LogLevel, SupportedLevels, LogRef, LogOpts) of
         true ->
@@ -446,13 +453,13 @@ log_timer(LogRef, Subs, StartTime, SupportedLevels) ->
                 LogLevel,
                 unicode:characters_to_list([Prefix, Log, Duration, Suffix]),
                 Subs,
-                #{log_type => backend}
+                #{log_type => Tag}
             );
         false ->
             ok
     end.
 
--spec log_randomtimer(atom(), list(), erlang:timestamp(), float()) -> ok.
+-spec log_randomtimer(atom(), list(), erlang:timestamp(), float()) -> term().
 log_randomtimer(LogReference, Subs, StartTime, RandomProb) ->
     R = leveled_rand:uniform(),
     case R < RandomProb of
@@ -494,8 +501,11 @@ log_test() ->
     log_timer(d0001, [], os:timestamp()).
 
 log_warning_test() ->
-    ok = log(g0001, [], [warning, error]),
-    ok = log_timer(g0001, [], os:timestamp(), [warning, error]).
+    ok = log(g0001, [], [warning, error], ?LOGBASE, backend),
+    ok =
+        log_timer(
+            g0001, [], os:timestamp(), [warning, error], ?LOGBASE, backend
+        ).
 
 shouldilog_test() ->
     ok = set_loglevel(debug),
