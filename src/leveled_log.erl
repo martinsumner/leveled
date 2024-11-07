@@ -1,5 +1,24 @@
-%% Module to abstract from choice of logger, and allow use of logReferences
-%% for fast lookup
+%% -------- LOG ---------
+%%
+%% Centralised logging, to make it easier to change log implementation.
+%% 
+%% The use of a ?LOGBASE map is a personal preference.  With formatting of code
+%% using maximum column widths, I prefer not to have log text within the code
+%% itself, as there may be a temptation to make log text misleadingly terse to
+%% make the code more readable.
+%% 
+%% This means that using logger's capability to add actual code line references
+%% to the log becomes mute - as all logs log from the same code line.  However,
+%% the process does enforce the use of log references to provide a simple way
+%% to search the code and find where the log occurred.  This can be helpful
+%% when there are frequent code changes which may change line numbers between
+%% releases (whereas log references stay stable).  The log references
+%% themselves can be helpful when optimising query times in splunk-like log
+%% indexing tools.
+%% 
+%% There are overheads with the approach (e.g. the maps:get/2 call for each log
+%% ).  However, the eprof testing of leveled indicates that this is not a
+%% relatively significant overhead. 
 
 -module(leveled_log).
 
@@ -440,7 +459,7 @@ log_timer(LogReference, Subs, StartTime) ->
     atom(), list(), erlang:timestamp(), list(log_level()), log_base(), atom())
         -> term().
 log_timer(LogRef, Subs, StartTime, SupportedLevels, LogBase, Tag) ->
-    {LogLevel, Log} = maps:get(LogRef, LogBase, LogBase),
+    {LogLevel, Log} = maps:get(LogRef, LogBase),
     LogOpts = get_opts(),
     case should_i_log(LogLevel, SupportedLevels, LogRef, LogOpts) of
         true ->
@@ -495,10 +514,6 @@ duration_text(StartTime) ->
 
 should_i_log(LogLevel, Levels, LogRef) ->
     should_i_log(LogLevel, Levels, LogRef, get_opts()).
-        
-log_test() ->
-    log(d0001, []),
-    log_timer(d0001, [], os:timestamp()).
 
 log_warning_test() ->
     ok = log(g0001, [], [warning, error], ?LOGBASE, backend),
@@ -506,6 +521,20 @@ log_warning_test() ->
         log_timer(
             g0001, [], os:timestamp(), [warning, error], ?LOGBASE, backend
         ).
+
+log_wrongkey_test() ->
+    ?assertException(
+        error,
+        {badkey, wrong0001},
+        log(wrong0001, [],[warning, error], ?LOGBASE, backend)
+    ),
+    ?assertException(
+        error,
+        {badkey, wrong0001},
+        log_timer(
+            wrong0001, [], os:timestamp(), [warning, error], ?LOGBASE, backend
+        )
+    ).
 
 shouldilog_test() ->
     ok = set_loglevel(debug),
