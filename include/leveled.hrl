@@ -88,13 +88,6 @@
                         is_basement = false :: boolean(),
                         timestamp :: integer()}).                      
 
--record(manifest_entry,
-                        {start_key :: tuple(),
-                        end_key :: tuple(),
-                        owner :: pid(),
-                        filename :: string() | undefined,
-                        bloom = none :: leveled_ebloom:bloom() | none}).
-
 -record(cdb_options,
                         {max_size :: pos_integer() | undefined,
                         max_count :: pos_integer() | undefined,

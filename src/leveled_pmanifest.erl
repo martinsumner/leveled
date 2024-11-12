@@ -7,7 +7,7 @@
 %% each level.  This is fine for short-lived volume tests, but as the deeper
 %% levels are used there will be an exponential penalty.
 %%
-%% The originial intention was to swap out this implementation for a
+%% The original intention was to swap out this implementation for a
 %% multi-version ETS table - but that became complex.  So one of two changes
 %% are pending:
 %% - Use a single version ES cache for lower levels (and not allow snapshots to
@@ -52,6 +52,17 @@
         snapshot_pids/1,
         get_sstpids/1
         ]).      
+
+-export(
+    [
+        new_entry/5,
+        entry_startkey/1,
+        entry_endkey/1,
+        entry_filename/1,
+        entry_owner/1,
+        is_entry/1
+    ]
+).
 
 -export([
         filepath/2
@@ -105,6 +116,16 @@
             % Currently the lowest level (the largest number)
         blooms = new_blooms() :: blooms()
     }).
+
+-record(manifest_entry,
+    {
+        start_key :: leveled_codec:object_key(),
+        end_key :: leveled_codec:object_key(),
+        owner :: pid(),
+        filename :: string(),
+        bloom = none :: leveled_ebloom:bloom() | none
+    }
+).
 
 -type snapshot() ::
     {pid(), non_neg_integer(), pos_integer(), pos_integer()}.
@@ -757,9 +778,42 @@ get_sstpids(Manifest) ->
     lists:foldl(FoldFun, [], lists:seq(0, Manifest#manifest.basement)).
 
 %%%============================================================================
-%%% Internal Functions
+%%% Manifest Entry
 %%%============================================================================
 
+-spec new_entry(
+    leveled_codec:object_key(),
+    leveled_codec:object_key(),
+    pid(),
+    string(),
+    leveled_ebloom:bloom()|none) -> manifest_entry().
+new_entry(StartKey, EndKey, Owner, FileName, Bloom) ->
+    #manifest_entry{
+        start_key = StartKey,
+        end_key = EndKey,
+        owner = Owner,
+        filename = FileName,
+        bloom = Bloom
+    }.
+
+-spec is_entry(any()) -> boolean().
+is_entry(ME) -> is_record(ME, manifest_entry).
+
+-spec entry_startkey(manifest_entry()) -> leveled_codec:object_key().
+entry_startkey(ME) -> ME#manifest_entry.start_key.
+
+-spec entry_endkey(manifest_entry()) -> leveled_codec:object_key().
+entry_endkey(ME) -> ME#manifest_entry.end_key.
+
+-spec entry_owner(manifest_entry()) -> pid().
+entry_owner(ME) -> ME#manifest_entry.owner.
+
+-spec entry_filename(manifest_entry()) -> string().
+entry_filename(#manifest_entry{filename = FN}) when ?IS_DEF(FN)-> FN.
+
+%%%============================================================================
+%%% Internal Functions
+%%%============================================================================
 
 -spec get_manifest_entry(
     {tuple(), manifest_entry()}|manifest_entry()) -> manifest_entry().

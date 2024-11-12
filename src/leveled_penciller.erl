@@ -1137,14 +1137,7 @@ handle_cast(
     State = #state{manifest = Man, levelzero_constructor = L0C, clerk = Clerk})
         when ?IS_DEF(Man), ?IS_DEF(L0C), ?IS_DEF(Clerk) ->
     leveled_log:log(p0029, []),
-    ManEntry =
-        #manifest_entry{
-            start_key=StartKey,
-            end_key=EndKey,
-            owner=L0C,
-            filename=FN,
-            bloom=Bloom
-        },
+    ManEntry = leveled_pmanifest:new_entry(StartKey, EndKey, L0C, FN, Bloom),
     ManifestSQN = leveled_pmanifest:get_manifest_sqn(Man) + 1,
     UpdMan =
         leveled_pmanifest:insert_manifest_entry(Man, ManifestSQN, 0, ManEntry),
@@ -1342,9 +1335,12 @@ sst_filename(ManSQN, Level, Count) ->
 %%% Internal functions
 %%%============================================================================
 
+-type update_forcedlogs_fun() :: fun((pid(), list(atom())) -> ok).
+-type update_loglevel_fun() :: fun((pid(), atom()) -> ok).
+
 -spec update_clerk
-    (pid()|undefined, fun((pid(), atom()) -> ok), atom()) -> ok;
-    (pid()|undefined, fun((pid(), list(atom())) -> ok), list(atom())) -> ok.
+    (pid()|undefined, update_loglevel_fun(), atom()) -> ok;
+    (pid()|undefined, update_forcedlogs_fun(), list(atom())) -> ok.
 update_clerk(undefined, _F, _T) ->
     ok;
 update_clerk(Clerk, F, T) when is_pid(Clerk) ->
@@ -1402,12 +1398,8 @@ start_from_file(
                 {ok, L0Pid, {L0StartKey, L0EndKey}, Bloom} = L0Open,
                 L0SQN = leveled_sst:sst_getmaxsequencenumber(L0Pid),
                 L0Entry =
-                    #manifest_entry{
-                        start_key = L0StartKey,
-                        end_key = L0EndKey,
-                        filename = L0FN,
-                        owner = L0Pid,
-                        bloom = Bloom},
+                    leveled_pmanifest:new_entry(
+                        L0StartKey, L0EndKey, L0Pid, L0FN, Bloom),
                 Manifest2 = 
                     leveled_pmanifest:insert_manifest_entry(
                         Manifest1, ManSQN + 1, 0, L0Entry),
@@ -1448,13 +1440,13 @@ shutdown_manifest(Manifest, L0Constructor) ->
     EntryCloseFun =
         fun(ME) ->
             Owner =
-                case is_record(ME, manifest_entry) of
+                case leveled_pmanifest:is_entry(ME) of
                     true ->
-                        ME#manifest_entry.owner;
+                        leveled_pmanifest:entry_owner(ME);
                     false ->
                         case ME of
                             {_SK, ME0} ->
-                                ME0#manifest_entry.owner;
+                                leveled_pmanifest:entry_owner(ME0);
                             ME ->
                                 ME
                         end

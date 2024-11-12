@@ -1044,20 +1044,17 @@ expand_list_by_pointer(
         OtherPointers ++ Remainder
     );
 expand_list_by_pointer(
-        {next, #manifest_entry{owner = SSTPid}, StartKey, EndKey},
-        Tail,
-        _Width,
-        _SegChecker,
-        LowLastMod) when is_pid(SSTPid) ->
+        {next, ME, StartKey, EndKey}, Tail, _Width, _SegChecker, LowLastMod
+    ) ->
     % The first pointer is a pointer to a file - expand_list_by_pointer will
     % in this case convert this into list of pointers within that SST file
     % i.e. of the form {pointer, SSTPid, Slot, StartKey, EndKey}
     % This can then be further expanded by calling again to
     % expand_list_by_pointer
+    SSTPid = leveled_pmanifest:entry_owner(ME),
     leveled_log:log(sst10, [SSTPid, is_process_alive(SSTPid)]),
     ExpPointer = sst_getfilteredrange(SSTPid, StartKey, EndKey, LowLastMod),
     ExpPointer ++ Tail.
-
 
 -spec split_localpointers(
     pid(), list(expandable_pointer())) ->
@@ -3915,13 +3912,13 @@ merge_tester(NewFunS, NewFunM) ->
     ML1 =
         [{
             next,
-            #manifest_entry{owner = P1, start_key = DSK, end_key = DEK},
+            leveled_pmanifest:new_entry(DSK, DEK, P1, "P1", none),
             FK1
         }],
     ML2 =
         [{
             next,
-            #manifest_entry{owner = P2, start_key = DSK, end_key = DEK},
+            leveled_pmanifest:new_entry(DSK, DEK, P2, "P2", none),
             FK2
         }],
     NewR =
