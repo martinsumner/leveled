@@ -29,9 +29,7 @@
 -define(SKIP_WIDTH, 16).
 
 -type tree_type() :: tree|idxt|skpl. 
--type leveled_tree() :: {tree_type(),
-                            integer(), % length
-                            any()}.
+-type leveled_tree() :: {tree_type(), integer(), any()}.
 
 -export_type([leveled_tree/0]).
 
@@ -104,7 +102,7 @@ match(Key, {tree, _L, Tree}) ->
         {_NK, SL, _Iter} ->
             lookup_match(Key, SL)
     end;
-match(Key, {idxt, _L, {TLI, IDX}}) ->
+match(Key, {idxt, _L, {TLI, IDX}}) when is_tuple(TLI) ->
     Iter = tree_iterator_from(Key, IDX),
     case tree_next(Iter) of
         none ->
@@ -136,7 +134,7 @@ search(Key, {tree, _L, Tree}, StartKeyFun) ->
                     {K, V}
             end
     end;
-search(Key, {idxt, _L, {TLI, IDX}}, StartKeyFun) ->
+search(Key, {idxt, _L, {TLI, IDX}}, StartKeyFun) when is_tuple(TLI) ->
     Iter = tree_iterator_from(Key, IDX),
     case tree_next(Iter) of
         none ->
@@ -235,14 +233,13 @@ to_list({tree, _L, Tree}) ->
             Acc ++ SL
         end,
     lists:foldl(FoldFun, [], tree_to_list(Tree));
-to_list({idxt, _L, {TLI, _IDX}}) ->
+to_list({idxt, _L, {TLI, _IDX}}) when is_tuple(TLI) ->
     lists:append(tuple_to_list(TLI));
-to_list({skpl, _L, SkipList}) ->
+to_list({skpl, _L, SkipList}) when is_list(SkipList) ->
     FoldFun = 
         fun({_M, SL}, Acc) ->
             [SL|Acc]
         end,
-
     Lv1List = lists:reverse(lists:foldl(FoldFun, [], SkipList)),
     Lv0List = lists:reverse(lists:foldl(FoldFun, [], lists:append(Lv1List))),
     lists:append(Lv0List).
@@ -580,13 +577,13 @@ generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
 generate_randomkeys(_Seqn, 0, Acc, _BucketLow, _BucketHigh) ->
     Acc;
 generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
-    BRand = leveled_rand:uniform(BRange),
+    BRand = rand:uniform(BRange),
     BNumber =
         lists:flatten(
             io_lib:format("K~4..0B", [BucketLow + BRand])),
     KNumber =
         lists:flatten(
-            io_lib:format("K~8..0B", [leveled_rand:uniform(1000)])),
+            io_lib:format("K~8..0B", [rand:uniform(1000)])),
     {K, V} =
         {{o_kv,
             {<<"btype">>, list_to_binary("Bucket" ++ BNumber)},
@@ -608,7 +605,7 @@ generate_simplekeys(Seqn, Count, Acc) ->
     KNumber =
         list_to_binary(
             lists:flatten(
-                io_lib:format("K~8..0B", [leveled_rand:uniform(100000)]))),
+                io_lib:format("K~8..0B", [rand:uniform(100000)]))),
     generate_simplekeys(Seqn + 1, Count - 1, [{KNumber, Seqn}|Acc]).
 
 
@@ -958,14 +955,13 @@ search_range_idx_test() ->
                                 {o_rkv,"Bucket1","Key1",null},
                                 "<0.320.0>","./16_1_6.sst", none}}]},
                 {1,{{o_rkv,"Bucket1","Key1",null},1,nil,nil}}}},
-    StartKeyFun =
-        fun(ME) ->
-            ME#manifest_entry.start_key
-        end,
-    R = search_range({o_rkv, "Bucket", null, null}, 
-                        {o_rkv, "Bucket", null, null}, 
-                        Tree, 
-                        StartKeyFun),
+    R =
+        search_range(
+            {o_rkv, "Bucket", null, null}, 
+            {o_rkv, "Bucket", null, null}, 
+            Tree, 
+            fun leveled_pmanifest:entry_startkey/1
+        ),
     ?assertMatch(1, length(R)).
 
 -endif.

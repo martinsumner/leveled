@@ -101,7 +101,7 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PM, LC) ->
     IndexGenFun =
         fun(ListID) ->
             fun() ->
-                RandInt = leveled_rand:uniform(IndexCount - 1),
+                RandInt = rand:uniform(IndexCount - 1),
                 IntIndex = ["integer", integer_to_list(ListID), "_int"],
                 BinIndex = ["binary", integer_to_list(ListID), "_bin"],
                 [{add, iolist_to_binary(IntIndex), RandInt},
@@ -434,35 +434,35 @@ rotation_withnocheck(Book, B, NumberOfObjects, ObjSize, IdxCnt) ->
         Book,
         B,
         NumberOfObjects,
-        base64:encode(leveled_rand:rand_bytes(ObjSize)),
+        base64:encode(crypto:strong_rand_bytes(ObjSize)),
         IdxCnt
     ),
     rotation_with_prefetch(
         Book,
         B,
         NumberOfObjects,
-        base64:encode(leveled_rand:rand_bytes(ObjSize)),
+        base64:encode(crypto:strong_rand_bytes(ObjSize)),
         IdxCnt
     ),
     rotation_with_prefetch(
         Book,
         B,
         NumberOfObjects,
-        base64:encode(leveled_rand:rand_bytes(ObjSize)),
+        base64:encode(crypto:strong_rand_bytes(ObjSize)),
         IdxCnt
     ),
     rotation_with_prefetch(
         Book,
         B,
         NumberOfObjects,
-        base64:encode(leveled_rand:rand_bytes(ObjSize)),
+        base64:encode(crypto:strong_rand_bytes(ObjSize)),
         IdxCnt
     ),
     rotation_with_prefetch(
         Book,
         B,
         NumberOfObjects,
-        base64:encode(leveled_rand:rand_bytes(ObjSize)),
+        base64:encode(crypto:strong_rand_bytes(ObjSize)),
         IdxCnt
     ),
     ok.
@@ -471,7 +471,7 @@ generate_chunk(CountPerList, ObjSize, IndexGenFun, Bucket, Chunk) ->
     testutil:generate_objects(
         CountPerList, 
         {fixed_binary, (Chunk - 1) * CountPerList + 1}, [],
-        base64:encode(leveled_rand:rand_bytes(ObjSize)),
+        base64:encode(crypto:strong_rand_bytes(ObjSize)),
         IndexGenFun(Chunk),
         Bucket
     ).
@@ -480,7 +480,7 @@ load_chunk(Bookie, CountPerList, ObjSize, IndexGenFun, Bucket, Chunk) ->
     ct:log(?INFO, "Generating and loading ObjList ~w", [Chunk]),
     time_load_chunk(
         Bookie,
-        {Bucket, base64:encode(leveled_rand:rand_bytes(ObjSize)), IndexGenFun(Chunk)},
+        {Bucket, base64:encode(crypto:strong_rand_bytes(ObjSize)), IndexGenFun(Chunk)},
         (Chunk - 1) * CountPerList + 1,
         Chunk * CountPerList,
         0,
@@ -577,9 +577,9 @@ random_fetches(FetchType, Bookie, Bucket, ObjCount, Fetches) ->
             case I rem 5 of
                 1 ->
                     testutil:fixed_bin_key(
-                        Twenty + leveled_rand:uniform(ObjCount - Twenty));
+                        Twenty + rand:uniform(ObjCount - Twenty));
                 _ ->
-                    testutil:fixed_bin_key(leveled_rand:uniform(Twenty))
+                    testutil:fixed_bin_key(rand:uniform(Twenty))
             end
         end,
     {TC, ok} =
@@ -616,18 +616,18 @@ random_fetches(FetchType, Bookie, Bucket, ObjCount, Fetches) ->
 random_queries(Bookie, Bucket, IDs, IdxCnt, MaxRange, IndexesReturned) ->
     QueryFun =
         fun() ->
-            ID = leveled_rand:uniform(IDs), 
+            ID = rand:uniform(IDs), 
             BinIndex =
                 iolist_to_binary(["binary", integer_to_list(ID), "_bin"]),
             Twenty = IdxCnt div 5,
-            RI = leveled_rand:uniform(MaxRange),
+            RI = rand:uniform(MaxRange),
             [Start, End] =
                 case RI of
                     RI when RI < (MaxRange div 5) ->
-                        R0 = leveled_rand:uniform(IdxCnt - (Twenty + RI)),
+                        R0 = rand:uniform(IdxCnt - (Twenty + RI)),
                         [R0 + Twenty, R0 + Twenty + RI];
                     _ ->
-                        R0 = leveled_rand:uniform(Twenty - RI),
+                        R0 = rand:uniform(Twenty - RI),
                         [R0, R0 + RI]
                 end,
             FoldKeysFun =  fun(_B, _K, Cnt) -> Cnt + 1 end,

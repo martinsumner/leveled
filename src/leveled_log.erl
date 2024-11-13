@@ -480,7 +480,7 @@ log_timer(LogRef, Subs, StartTime, SupportedLevels, LogBase, Tag) ->
 
 -spec log_randomtimer(atom(), list(), erlang:timestamp(), float()) -> term().
 log_randomtimer(LogReference, Subs, StartTime, RandomProb) ->
-    R = leveled_rand:uniform(),
+    R = rand:uniform(),
     case R < RandomProb of
         true ->
             log_timer(LogReference, Subs, StartTime);

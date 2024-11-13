@@ -41,9 +41,12 @@
         cache_full/1
         ]).
 
+% Test functions to ignore for equalizer - due to array issues
+-eqwalizer({nowarn_function, index_performance_test/0}).
+
 -define(MAX_CACHE_LINES, 31). % Must be less than 128
 
--type index_array() :: list(array:array())|[]|none.
+-type index_array() :: list(array:array(binary()))|none.
 
 -export_type([index_array/0]).
 
@@ -58,7 +61,7 @@ cache_full(L0Cache) ->
     length(L0Cache) == ?MAX_CACHE_LINES.
 
 -spec prepare_for_index(
-    array:array(), leveled_codec:segment_hash()) -> array:array().
+    array:array(binary()), leveled_codec:segment_hash()) -> array:array().
 %% @doc
 %% Add the hash of a key to the index.  This is 'prepared' in the sense that
 %% this index is not use until it is loaded into the main index.
@@ -73,18 +76,22 @@ prepare_for_index(IndexArray, Hash) ->
     Bin = array:get(Slot, IndexArray),
     array:set(Slot, <<Bin/binary, H0:24/integer>>, IndexArray).
 
--spec add_to_index(array:array(), index_array(), integer()) -> index_array().
+-spec add_to_index(
+    array:array(binary()), index_array(), integer()) -> index_array().
 %% @doc
 %% Expand the penciller's current index array with the details from a new
 %% ledger cache tree sent from the Bookie.  The tree will have a cache slot
 %% which is the index of this ledger_cache in the list of the ledger_caches
-add_to_index(LM1Array, L0Index, CacheSlot) when CacheSlot < 128 ->
+add_to_index(
+    LM1Array, L0Index, CacheSlot)
+        when CacheSlot < 128, L0Index =/= none ->
     [LM1Array|L0Index].
 
--spec new_index() -> array:array().
+-spec new_index() -> array:array(binary()).
 %% @doc
 %% Create a new index array
 new_index() ->
+    % eqwalizer:ignore - array does contain binary()
     array:new([{size, 256}, {default, <<>>}]).
 
 -spec check_index(leveled_codec:segment_hash(), index_array())
@@ -92,7 +99,7 @@ new_index() ->
 %% @doc
 %% return a list of positions in the list of cache arrays that may contain the
 %% key associated with the hash being checked
-check_index(Hash, L0Index) ->
+check_index(Hash, L0Index) when L0Index =/= none ->
     {Slot, H0} = split_hash(Hash),
     {_L, Positions} =
         lists:foldl(
@@ -239,19 +246,14 @@ check_slotlist(Key, _Hash, CheckList, TreeList) ->
 -include_lib("eunit/include/eunit.hrl").
 
 generate_randomkeys_aslist(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
-    lists:ukeysort(1,
-                    generate_randomkeys(Seqn,
-                                            Count,
-                                            [],
-                                            BucketRangeLow,
-                                            BucketRangeHigh)).
+    lists:ukeysort(
+        1,
+        generate_randomkeys(Seqn, Count, [], BucketRangeLow, BucketRangeHigh)
+    ).
         
 generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
-    KVL = generate_randomkeys(Seqn,
-                                Count,
-                                [],
-                                BucketRangeLow,
-                                BucketRangeHigh),
+    KVL =
+        generate_randomkeys(Seqn, Count, [], BucketRangeLow, BucketRangeHigh),
     leveled_tree:from_orderedlist(lists:ukeysort(1, KVL), ?CACHE_TYPE).
 
 generate_randomkeys(_Seqn, 0, Acc, _BucketLow, _BucketHigh) ->
@@ -260,32 +262,35 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
     BNumber =
         lists:flatten(
             io_lib:format("~4..0B",
-                            [BucketLow + leveled_rand:uniform(BRange)])),
+                            [BucketLow + rand:uniform(BRange)])),
     KNumber =
-        lists:flatten(io_lib:format("~4..0B", [leveled_rand:uniform(1000)])),
-    {K, V} = {{o, "Bucket" ++ BNumber, "Key" ++ KNumber, null},
-                {Seqn, {active, infinity}, null}},
-    generate_randomkeys(Seqn + 1,
-                        Count - 1,
-                        [{K, V}|Acc],
-                        BucketLow,
-                        BRange).
+        lists:flatten(io_lib:format("~4..0B", [rand:uniform(1000)])),
+    {K, V} =
+        {
+            {o,
+                list_to_binary("Bucket" ++ BNumber),
+                list_to_binary("Key" ++ KNumber),
+                null},
+            {Seqn, {active, infinity}, null}
+        },
+    generate_randomkeys(Seqn + 1, Count - 1, [{K, V}|Acc], BucketLow, BRange).
 
 
 compare_method_test() ->
-    R = lists:foldl(fun(_X, {LedgerSQN, L0Size, L0TreeList}) ->
-                            LM1 = generate_randomkeys(LedgerSQN + 1,
-                                                        2000, 1, 500),
-                            add_to_cache(
-                                L0Size,
-                                {LM1, LedgerSQN + 1, LedgerSQN + 2000},
-                                LedgerSQN,
-                                L0TreeList,
-                                true)
-                            end,
-                        {0, 0, []},
-                        lists:seq(1, 16)),
-    
+    R = 
+        lists:foldl(
+            fun(_X, {LedgerSQN, L0Size, L0TreeList}) ->
+                LM1 = generate_randomkeys(LedgerSQN + 1, 2000, 1, 500),
+                add_to_cache(
+                    L0Size,
+                    {LM1, LedgerSQN + 1, LedgerSQN + 2000},
+                    LedgerSQN,
+                    L0TreeList,
+                    true)
+            end,
+            {0, 0, []},
+            lists:seq(1, 16)),
+
     {SQN, Size, TreeList} = R,
     ?assertMatch(32000, SQN),
     ?assertMatch(true, Size =< 32000),
@@ -310,51 +315,62 @@ compare_method_test() ->
                 end
             end,
     
-    S0 = lists:foldl(fun({Key, _V}, Acc) ->
-                            R0 = lists:foldl(FindKeyFun(Key),
-                                                {false, not_found},
-                                                TreeList),
-                            [R0|Acc] end,
-                        [],
-                        TestList),
+    S0 =
+        lists:foldl(
+            fun({Key, _V}, Acc) ->
+                R0 =
+                    lists:foldl(
+                        FindKeyFun(Key), {false, not_found}, TreeList),
+                [R0|Acc]
+            end,
+            [],
+            TestList)
+            ,
     
     PosList = lists:seq(1, length(TreeList)),
-    S1 = lists:foldl(fun({Key, _V}, Acc) ->
-                            R0 = check_levelzero(Key, PosList, TreeList),
-                            [R0|Acc]
-                            end,
-                        [],
-                        TestList),
+    S1 =
+        lists:foldl(
+            fun({Key, _V}, Acc) ->
+                R0 = check_levelzero(Key, PosList, TreeList),
+                [R0|Acc]
+            end,
+        [],
+        TestList
+    ),
     
     ?assertMatch(S0, S1),
     
-    StartKey = {o, "Bucket0100", null, null},
-    EndKey = {o, "Bucket0200", null, null},
+    StartKey = {o, <<"Bucket0100">>, null, null},
+    EndKey = {o, <<"Bucket0200">>, null, null},
     SWa = os:timestamp(),
     FetchFun = fun(Slot) -> lists:nth(Slot, TreeList) end,
     DumpList = to_list(length(TreeList), FetchFun),
-    Q0 = lists:foldl(fun({K, V}, Acc) ->
-                            P = leveled_codec:endkey_passed(EndKey, K),
-                            case {K, P} of
-                                {K, false} when K >= StartKey ->
-                                    [{K, V}|Acc];
-                                _ ->
-                                    Acc
-                            end
-                            end,
-                        [],
-                        DumpList),
+    Q0 =
+        lists:foldl(
+            fun({K, V}, Acc) ->
+                P = leveled_codec:endkey_passed(EndKey, K),
+                case {K, P} of
+                    {K, false} when K >= StartKey ->
+                        [{K, V}|Acc];
+                    _ ->
+                        Acc
+                end
+            end,
+            [],
+            DumpList
+        ),
     Tree = leveled_tree:from_orderedlist(lists:ukeysort(1, Q0), ?CACHE_TYPE),
     Sz0 = leveled_tree:tsize(Tree),
-    io:format("Crude method took ~w microseconds resulting in tree of " ++
-                    "size ~w~n",
-                [timer:now_diff(os:timestamp(), SWa), Sz0]),
+    io:format(
+        "Crude method took ~w microseconds resulting in tree of size ~w~n",
+        [timer:now_diff(os:timestamp(), SWa), Sz0]
+    ),
     SWb = os:timestamp(),
     Q1 = merge_trees(StartKey, EndKey, TreeList, leveled_tree:empty(?CACHE_TYPE)),
     Sz1 = length(Q1),
-    io:format("Merge method took ~w microseconds resulting in tree of " ++
-                    "size ~w~n",
-                [timer:now_diff(os:timestamp(), SWb), Sz1]),
+    io:format(
+        "Merge method took ~w microseconds resulting in tree of size ~w~n",
+        [timer:now_diff(os:timestamp(), SWb), Sz1]),
     ?assertMatch(Sz0, Sz1).
 
 with_index_test_() ->

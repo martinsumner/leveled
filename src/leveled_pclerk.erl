@@ -48,8 +48,8 @@
 -define(MIN_TIMEOUT, 200).
 -define(GROOMING_PERC, 50).
 
--record(state, {owner :: pid() | undefined,
-                root_path :: string() | undefined,
+-record(state, {owner :: pid()|undefined,
+                root_path :: string()|undefined,
                 pending_deletions = dict:new() :: dict:dict(),
                 sst_options :: sst_options()
                 }).
@@ -123,18 +123,20 @@ handle_call(close, _From, State) ->
 
 handle_cast(prompt, State) ->
     handle_info(timeout, State);
-handle_cast({push_work, Work}, State) ->
+handle_cast(
+    {push_work, Work}, State = #state{root_path = RP, owner = PCL})
+        when ?IS_DEF(RP), is_pid(PCL) ->
     {ManifestSQN, Deletions} =
-        handle_work(
-            Work,
-            State#state.root_path, State#state.sst_options, State#state.owner),
+        handle_work(Work, RP, State#state.sst_options, PCL),
     PDs = dict:store(ManifestSQN, Deletions, State#state.pending_deletions),
     leveled_log:log(pc022, [ManifestSQN]),
     {noreply, State#state{pending_deletions = PDs}, ?MIN_TIMEOUT};
-handle_cast({prompt_deletions, ManifestSQN}, State) ->
-    {Deletions, UpdD} = return_deletions(ManifestSQN,
-                                            State#state.pending_deletions),
-    ok = notify_deletions(Deletions, State#state.owner),
+handle_cast(
+    {prompt_deletions, ManifestSQN}, State = #state{owner = PCL})
+        when is_pid(PCL) ->
+    {Deletions, UpdD} =
+        return_deletions(ManifestSQN, State#state.pending_deletions),
+    ok = notify_deletions(Deletions, PCL),
     {noreply, State#state{pending_deletions = UpdD}, ?MIN_TIMEOUT};
 handle_cast({log_level, LogLevel}, State) ->
     ok = leveled_log:set_loglevel(LogLevel),
@@ -152,8 +154,8 @@ handle_cast({remove_logs, ForcedLogs}, State) ->
     SSTopts0 = SSTopts#sst_options{log_options = leveled_log:get_opts()},
     {noreply, State#state{sst_options = SSTopts0}}.
 
-handle_info(timeout, State) ->
-    ok = leveled_penciller:pcl_workforclerk(State#state.owner),
+handle_info(timeout, State = #state{owner = PCL})  when is_pid(PCL) ->
+    ok = leveled_penciller:pcl_workforclerk(PCL),
     % When handling work, the clerk can collect a large number of binary
     % references, so proactively GC this process before receiving any future
     % work.  In under pressure clusters, clerks with large binary memory
@@ -207,7 +209,7 @@ merge(SrcLevel, Manifest, RootPath, OptsSST) ->
                 [SrcLevel + 1, FCnt, MnHBS, MnHS, MnLHS, MnBVHS])
     end,
     SelectMethod =
-        case leveled_rand:uniform(100) of
+        case rand:uniform(100) of
             R when R =< ?GROOMING_PERC ->
                 {grooming, fun grooming_scorer/1};
             _ ->
@@ -220,16 +222,22 @@ merge(SrcLevel, Manifest, RootPath, OptsSST) ->
         leveled_pmanifest:merge_lookup(
             Manifest,
             SrcLevel + 1,
-            Src#manifest_entry.start_key,
-            Src#manifest_entry.end_key
+            leveled_pmanifest:entry_startkey(Src),
+            leveled_pmanifest:entry_endkey(Src)
         ),
     Candidates = length(SinkList),
     leveled_log:log(pc008, [SrcLevel, Candidates]),
     case Candidates of
         0 ->
             NewLevel = SrcLevel + 1,
-            leveled_log:log(pc009, [Src#manifest_entry.filename, NewLevel]),
-            leveled_sst:sst_switchlevels(Src#manifest_entry.owner, NewLevel),
+            leveled_log:log(
+                pc009,
+                [leveled_pmanifest:entry_filename(Src), NewLevel]
+            ),
+            leveled_sst:sst_switchlevels(
+                leveled_pmanifest:entry_owner(Src),
+                NewLevel
+            ),
             Man0 =
                 leveled_pmanifest:switch_manifest_entry(
                     Manifest,
@@ -249,7 +257,11 @@ merge(SrcLevel, Manifest, RootPath, OptsSST) ->
 notify_deletions([], _Penciller) ->
     ok;
 notify_deletions([Head|Tail], Penciller) ->
-    ok = leveled_sst:sst_setfordelete(Head#manifest_entry.owner, Penciller),
+    ok =
+        leveled_sst:sst_setfordelete(
+            leveled_pmanifest:entry_owner(Head),
+            Penciller
+        ),
     notify_deletions(Tail, Penciller).
         
 
@@ -259,9 +271,12 @@ notify_deletions([Head|Tail], Penciller) ->
 %% SrcLevel is the level of the src sst file, the sink should be srcLevel + 1
 
 perform_merge(Manifest, Src, SinkList, SrcLevel, RootPath, NewSQN, OptsSST) ->
-    leveled_log:log(pc010, [Src#manifest_entry.filename, NewSQN]),
+    leveled_log:log(pc010, [leveled_pmanifest:entry_filename(Src), NewSQN]),
     SrcList = [{next, Src, all}],
-    MaxSQN = leveled_sst:sst_getmaxsequencenumber(Src#manifest_entry.owner),
+    MaxSQN =
+        leveled_sst:sst_getmaxsequencenumber(
+            leveled_pmanifest:entry_owner(Src)
+        ),
     SinkLevel = SrcLevel + 1,
     SinkBasement = leveled_pmanifest:is_basement(Manifest, SinkLevel),
     Additions = 
@@ -319,13 +334,8 @@ do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, OptsSST, Additions) ->
         {ok, Pid, Reply, Bloom} ->
             {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} = Reply,
                 Entry =
-                    #manifest_entry{
-                        start_key=SmallestKey,
-                        end_key=HighestKey,
-                        owner=Pid,
-                        filename=FileName,
-                        bloom=Bloom
-                    },
+                    leveled_pmanifest:new_entry(
+                        SmallestKey, HighestKey, Pid, FileName, Bloom),
                 leveled_log:log_timer(pc015, [], TS1),
                 do_merge(
                     KL1Rem, KL2Rem,
@@ -340,7 +350,8 @@ do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, OptsSST, Additions) ->
     list(leveled_pmanifest:manifest_entry()))
         -> leveled_pmanifest:manifest_entry().
 grooming_scorer([ME  | MEs]) ->
-    InitTombCount = leveled_sst:sst_gettombcount(ME#manifest_entry.owner),
+    InitTombCount =
+        leveled_sst:sst_gettombcount(leveled_pmanifest:entry_owner(ME)),
     {HighestTC, BestME} = grooming_scorer(InitTombCount, ME, MEs),
     leveled_log:log(pc024, [HighestTC]),
     BestME.
@@ -348,7 +359,8 @@ grooming_scorer([ME  | MEs]) ->
 grooming_scorer(HighestTC, BestME, []) ->
      {HighestTC, BestME};
 grooming_scorer(HighestTC, BestME, [ME | MEs]) ->
-    TombCount = leveled_sst:sst_gettombcount(ME#manifest_entry.owner),
+    TombCount =
+        leveled_sst:sst_gettombcount(leveled_pmanifest:entry_owner(ME)),
     case TombCount > HighestTC of
         true ->
             grooming_scorer(TombCount, ME, MEs);
@@ -385,11 +397,17 @@ generate_randomkeys(Count, Acc, BucketLow, BRange) ->
     BNumber =
         lists:flatten(
             io_lib:format("~4..0B",
-                            [BucketLow + leveled_rand:uniform(BRange)])),
+                            [BucketLow + rand:uniform(BRange)])),
     KNumber =
         lists:flatten(
-            io_lib:format("~4..0B", [leveled_rand:uniform(1000)])),
-    K = {o, "Bucket" ++ BNumber, "Key" ++ KNumber, null},
+            io_lib:format("~4..0B", [rand:uniform(1000)])),
+    K =
+        {
+            o,
+            list_to_binary("Bucket" ++ BNumber),
+            list_to_binary("Key" ++ KNumber),
+            null
+        },
     RandKey = {K, {Count + 1,
                     {active, infinity},
                     leveled_codec:segment_hash(K),
@@ -415,7 +433,6 @@ grooming_score_test() ->
                                     3,
                                     999999,
                                     #sst_options{},
-                                    true,
                                     true),
     {ok, PidL3_1B, _, _} = 
         leveled_sst:sst_newmerge("test/test_area/ledger_files/",
@@ -427,7 +444,6 @@ grooming_score_test() ->
                                     3,
                                     999999,
                                     #sst_options{},
-                                    true,
                                     true),
     
     {ok, PidL3_2, _, _} = 
@@ -439,102 +455,116 @@ grooming_score_test() ->
                                     3,
                                     999999,
                                     #sst_options{},
-                                    true,
                                     true),
-    {ok, PidL3_2NC, _, _} = 
-        leveled_sst:sst_newmerge("test/test_area/ledger_files/",
-                                    "2NC_L3.sst",
-                                    KL3_L3,
-                                    KL4_L3,
-                                    false,
-                                    3,
-                                    999999,
-                                    #sst_options{},
-                                    true,
-                                    false),
-    
-    ME1 = #manifest_entry{owner=PidL3_1},
-    ME1B = #manifest_entry{owner=PidL3_1B},
-    ME2 = #manifest_entry{owner=PidL3_2},
-    ME2NC = #manifest_entry{owner=PidL3_2NC},
+    DSK = {o, <<"B">>, <<"SK">>, null},
+    DEK = {o, <<"E">>, <<"EK">>, null},
+    ME1 = leveled_pmanifest:new_entry(DSK, DEK, PidL3_1, "dummyL3_1", none),
+    ME1B = leveled_pmanifest:new_entry(DSK, DEK, PidL3_1B, "dummyL3_1B", none),
+    ME2 = leveled_pmanifest:new_entry(DSK, DEK, PidL3_2, "dummyL3_2", none),
     ?assertMatch(ME1, grooming_scorer([ME1, ME2])),
     ?assertMatch(ME1, grooming_scorer([ME2, ME1])),
         % prefer the file with the tombstone
-    ?assertMatch(ME2NC, grooming_scorer([ME1, ME2NC])),
-    ?assertMatch(ME2NC, grooming_scorer([ME2NC, ME1])),
-        % not_counted > 1 - we will merge files in unexpected (i.e. legacy)
-        % format first
     ?assertMatch(ME1B, grooming_scorer([ME1B, ME2])),
     ?assertMatch(ME2, grooming_scorer([ME2, ME1B])),
         % If the file with the tombstone is in the basement, it will have
         % no tombstone so the first file will be chosen
     
     lists:foreach(fun(P) -> leveled_sst:sst_clear(P) end,
-                    [PidL3_1, PidL3_1B, PidL3_2, PidL3_2NC]).
+                    [PidL3_1, PidL3_1B, PidL3_2]).
 
 
 merge_file_test() ->
     ok = filelib:ensure_dir("test/test_area/ledger_files/"),
     KL1_L1 = lists:sort(generate_randomkeys(8000, 0, 1000)),
     {ok, PidL1_1, _, _} = 
-        leveled_sst:sst_new("test/test_area/ledger_files/",
-                            "KL1_L1.sst",
-                            1,
-                            KL1_L1,
-                            999999,
-                            #sst_options{}),
+        leveled_sst:sst_new(
+            "test/test_area/ledger_files/",
+            "KL1_L1.sst",
+            1,
+            KL1_L1,
+            999999,
+            #sst_options{}
+        ),
     KL1_L2 = lists:sort(generate_randomkeys(8000, 0, 250)),
     {ok, PidL2_1, _, _} = 
-        leveled_sst:sst_new("test/test_area/ledger_files/",
-                            "KL1_L2.sst",
-                            2,
-                            KL1_L2,
-                            999999,
-                            #sst_options{}),
+        leveled_sst:sst_new(
+            "test/test_area/ledger_files/",
+            "KL1_L2.sst",
+            2,
+            KL1_L2,
+            999999,
+            #sst_options{}
+        ),
     KL2_L2 = lists:sort(generate_randomkeys(8000, 250, 250)),
     {ok, PidL2_2, _, _} = 
-        leveled_sst:sst_new("test/test_area/ledger_files/",
-                                "KL2_L2.sst",
-                                2,
-                                KL2_L2,
-                                999999,
-                                #sst_options{press_method = lz4}),
+        leveled_sst:sst_new(
+            "test/test_area/ledger_files/",
+            "KL2_L2.sst",
+            2,
+            KL2_L2,
+            999999,
+            #sst_options{press_method = lz4}
+        ),
     KL3_L2 = lists:sort(generate_randomkeys(8000, 500, 250)),
     {ok, PidL2_3, _, _} = 
-        leveled_sst:sst_new("test/test_area/ledger_files/",
-                                "KL3_L2.sst",
-                                2,
-                                KL3_L2,
-                                999999,
-                                #sst_options{press_method = lz4}),
+        leveled_sst:sst_new(
+            "test/test_area/ledger_files/",
+            "KL3_L2.sst",
+            2,
+            KL3_L2,
+            999999,
+            #sst_options{press_method = lz4}
+        ),
     KL4_L2 = lists:sort(generate_randomkeys(8000, 750, 250)),
     {ok, PidL2_4, _, _} = 
-        leveled_sst:sst_new("test/test_area/ledger_files/",
-                                "KL4_L2.sst",
-                                2,
-                                KL4_L2,
-                                999999,
-                                #sst_options{press_method = lz4}),
-    E1 = #manifest_entry{owner = PidL1_1,
-                            filename = "./KL1_L1.sst",
-                            end_key = lists:last(KL1_L1),
-                            start_key = lists:nth(1, KL1_L1)},
-    E2 = #manifest_entry{owner = PidL2_1,
-                            filename = "./KL1_L2.sst",
-                            end_key = lists:last(KL1_L2),
-                            start_key = lists:nth(1, KL1_L2)},
-    E3 = #manifest_entry{owner = PidL2_2,
-                            filename = "./KL2_L2.sst",
-                            end_key = lists:last(KL2_L2),
-                            start_key = lists:nth(1, KL2_L2)},
-    E4 = #manifest_entry{owner = PidL2_3,
-                            filename = "./KL3_L2.sst",
-                            end_key = lists:last(KL3_L2),
-                            start_key = lists:nth(1, KL3_L2)},
-    E5 = #manifest_entry{owner = PidL2_4,
-                            filename = "./KL4_L2.sst",
-                            end_key = lists:last(KL4_L2),
-                            start_key = lists:nth(1, KL4_L2)},
+        leveled_sst:sst_new(
+            "test/test_area/ledger_files/",
+            "KL4_L2.sst",
+            2,
+            KL4_L2,
+            999999,
+            #sst_options{press_method = lz4}
+        ),
+    E1 = 
+        leveled_pmanifest:new_entry(
+            lists:nth(1, KL1_L1),
+            lists:last(KL1_L1),
+            PidL1_1,
+            "./KL1_L1.sst",
+            none
+        ),
+    E2 = 
+        leveled_pmanifest:new_entry(
+            lists:nth(1, KL1_L2),
+            lists:last(KL1_L2),
+            PidL2_1,
+            "./KL1_L2.sst",
+            none
+        ),
+    E3 = 
+        leveled_pmanifest:new_entry(
+            lists:nth(1, KL2_L2),
+            lists:last(KL2_L2),
+            PidL2_2,
+            "./KL2_L2.sst",
+            none
+        ),
+    E4 = 
+        leveled_pmanifest:new_entry(
+            lists:nth(1, KL3_L2),
+            lists:last(KL3_L2),
+            PidL2_3,
+            "./KL3_L2.sst",
+            none
+        ),
+    E5 = 
+        leveled_pmanifest:new_entry(
+            lists:nth(1, KL4_L2),
+            lists:last(KL4_L2),
+            PidL2_4,
+            "./KL4_L2.sst",
+            none
+        ),
     
     Man0 = leveled_pmanifest:new_manifest(),
     Man1 = leveled_pmanifest:insert_manifest_entry(Man0, 1, 2, E2),

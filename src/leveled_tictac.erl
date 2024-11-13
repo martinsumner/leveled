@@ -101,7 +101,7 @@
                         width :: integer(),
                         segment_count :: integer(),
                         level1 :: level1_map(),
-                        level2 :: array:array()
+                        level2 :: array:array(binary())
                         }).
 
 -type level1_map() :: #{non_neg_integer() => binary()}|binary().
@@ -161,6 +161,8 @@ new_tree(TreeID, Size, UseMap) ->
         width = Width,
         segment_count = Width * ?L2_CHUNKSIZE,
         level1 = Lv1Init,
+            % array values are indeed all binaries
+            % eqwalizer:ignore 
         level2 = Lv2Init
     }.
 
@@ -196,13 +198,16 @@ import_tree(ExportedTree) ->
         [{<<"level1">>, L1Base64}, 
         {<<"level2">>, {struct, L2List}}]} = ExportedTree,
     L1Bin = base64:decode(L1Base64),
-    Sizes = lists:map(fun(SizeTag) -> {SizeTag, get_size(SizeTag)} end, 
-                        ?VALID_SIZES),
+    Sizes =
+        lists:map(
+            fun(SizeTag) -> {SizeTag, get_size(SizeTag)} end,
+            ?VALID_SIZES
+        ),
     Width = byte_size(L1Bin) div ?HASH_SIZE,
     {Size, _Width} = lists:keyfind(Width, 2, Sizes),
    %% assert that side is indeed the provided width
     true = get_size(Size) == Width,
-    Lv2Init = array:new([{size, Width}]),
+    Lv2Init = array:new([{size, Width}, {default, ?EMPTY}]),
     FoldFun = 
         fun({X, EncodedL2SegBin}, L2Array) ->
             L2SegBin = zlib:uncompress(base64:decode(EncodedL2SegBin)),
@@ -216,6 +221,8 @@ import_tree(ExportedTree) ->
         width = Width,
         segment_count = Width * ?L2_CHUNKSIZE,
         level1 = to_level1_map(L1Bin),
+            % array values are indeed all binaries
+            % eqwalizer:ignore 
         level2 = Lv2
     }.
 
@@ -229,12 +236,14 @@ import_tree(ExportedTree) ->
 add_kv(TicTacTree, Key, Value, BinExtractFun) ->
     add_kv(TicTacTree, Key, Value, BinExtractFun, false).
 
--spec add_kv(
-    tictactree(), term(), term(), bin_extract_fun(), boolean())
-        -> tictactree()|{tictactree(), integer()}.
+-spec add_kv
+    (tictactree(), term(), term(), bin_extract_fun(), true) ->
+        {tictactree(), integer()};
+    (tictactree(), term(), term(), bin_extract_fun(), false) ->
+        tictactree().
 %% @doc
 %% add_kv with ability to return segment ID of Key added
-add_kv(TicTacTree, Key, Value, BinExtractFun, ReturnSegment) ->
+add_kv(TicTacTree, Key, Value, BinExtractFun, true) ->
     {BinK, BinV} = BinExtractFun(Key, Value),
     {SegHash, SegChangeHash} = tictac_hash(BinK, BinV),
     Segment = get_segment(SegHash, TicTacTree#tictactree.segment_count),
@@ -249,12 +258,9 @@ add_kv(TicTacTree, Key, Value, BinExtractFun, ReturnSegment) ->
         replace_segment(
             SegLeaf1Upd, SegLeaf2Upd, L1Extract, L2Extract, TicTacTree
         ),
-    case ReturnSegment of
-        true -> 
-            {UpdatedTree, Segment};
-        false ->
-            UpdatedTree
-    end.
+    {UpdatedTree, Segment};
+add_kv(TicTacTree, Key, Value, BinExtractFun, false) ->
+    element(1, add_kv(TicTacTree, Key, Value, BinExtractFun, true)).
 
 -spec alter_segment(integer(), integer(), tictactree()) -> tictactree().
 %% @doc
@@ -373,16 +379,13 @@ get_segment(Hash, TreeSize) ->
 %% has already been taken. If the value is not a pre-extracted hash just use 
 %% erlang:phash2.  If an exportable hash of the value is required this should
 %% be managed through the add_kv ExtractFun providing a pre-prepared Hash.
-tictac_hash(BinKey, Val) when is_binary(BinKey) ->
+tictac_hash(
+        BinKey, {is_hash, HashedVal})
+        when is_binary(BinKey), is_integer(HashedVal) ->
     {HashKeyToSeg, AltHashKey} = keyto_doublesegment32(BinKey),
-    HashVal = 
-        case Val of 
-            {is_hash, HashedVal} ->
-                HashedVal;
-            _ ->
-                erlang:phash2(Val)
-        end,
-    {HashKeyToSeg, AltHashKey bxor HashVal}.
+    {HashKeyToSeg, AltHashKey bxor HashedVal};
+tictac_hash(BinKey, ValToHash) when is_binary(BinKey) ->
+    tictac_hash(BinKey, {is_hash, erlang:phash2(ValToHash)}).
 
 -spec keyto_doublesegment32(
     binary()) -> {non_neg_integer(), non_neg_integer()}.
@@ -961,7 +964,7 @@ timing_test() ->
 timing_tester(KeyCount, SegCount, SmallSize, LargeSize) ->
     SegList =
         lists:map(fun(_C) -> 
-                        leveled_rand:uniform(get_size(SmallSize) * ?L2_CHUNKSIZE - 1)
+                        rand:uniform(get_size(SmallSize) * ?L2_CHUNKSIZE - 1)
                     end, 
                     lists:seq(1, SegCount)),
     KeyToSegFun =
