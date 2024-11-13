@@ -46,7 +46,7 @@
 
 -define(MAX_CACHE_LINES, 31). % Must be less than 128
 
--type index_array() :: list(array:array(binary()))|[]|none.
+-type index_array() :: list(array:array(binary()))|none.
 
 -export_type([index_array/0]).
 
