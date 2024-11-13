@@ -410,11 +410,11 @@ return_settings() ->
 %%% Prompt Logs
 %%%============================================================================
 
--spec log(atom(), list()) -> term().
+-spec log(atom(), list()) -> ok.
 log(LogReference, Subs) ->
     log(LogReference, Subs, ?LOG_LEVELS, ?LOGBASE, backend).
 
--spec log(atom(), list(), list(log_level()), log_base(), atom()) -> term().
+-spec log(atom(), list(), list(log_level()), log_base(), atom()) -> ok.
 log(LogRef, Subs, SupportedLevels, LogBase, Tag) ->
     {LogLevel, Log} = maps:get(LogRef, LogBase),
     LogOpts = get_opts(),
@@ -451,13 +451,13 @@ is_active_level([L|_], L, _) -> true;
 is_active_level([L|_], _, L) -> false;
 is_active_level([_|T], C, L) -> is_active_level(T, C, L).
 
--spec log_timer(atom(), list(), erlang:timestamp()) -> term().
+-spec log_timer(atom(), list(), erlang:timestamp()) -> ok.
 log_timer(LogReference, Subs, StartTime) ->
     log_timer(LogReference, Subs, StartTime, ?LOG_LEVELS, ?LOGBASE, backend).
 
 -spec log_timer(
     atom(), list(), erlang:timestamp(), list(log_level()), log_base(), atom())
-        -> term().
+        -> ok.
 log_timer(LogRef, Subs, StartTime, SupportedLevels, LogBase, Tag) ->
     {LogLevel, Log} = maps:get(LogRef, LogBase),
     LogOpts = get_opts(),
