@@ -783,19 +783,16 @@ gen_headspec(
     gen_headspec({IdxOp, v1, Bucket, Key, SubKey, undefined, Value}, SQN, TTL).
 
 
--spec return_proxy
-    (leveled_head:headonly_tag(), leveled_head:object_metadata(), null, journal_ref())
-        -> head_value();
-    (leveled_head:object_tag(), leveled_head:object_metadata(), pid(), journal_ref())
-        -> proxy_objectbin().
+-spec return_proxy(
+    leveled_head:object_tag(),
+    leveled_head:object_metadata(),
+    pid(),
+    journal_ref()) -> proxy_objectbin().
 %% @doc
 %% If the object has a value, return the metadata and a proxy through which
-%% the applictaion or runner can access the value.  If it is a ?HEAD_TAG
-%% then it has no value, so just return the metadata
-return_proxy(?HEAD_TAG, ObjectMetadata, _InkerClone, _JR) ->
-    % Object has no value - so proxy object makese no sense, just return the
-    % metadata as is
-    ObjectMetadata;
+%% the application or runner can access the value.
+%% This is only called if there is an object tag - i.e. ?RIAK_TAG//STD_TAG or
+%% a user-defined tag that uses ObjMetadata in the ?STD_TAG format
 return_proxy(Tag, ObjMetadata, InkerClone, JournalRef) ->
     Size = leveled_head:get_size(Tag, ObjMetadata),
     HeadBin = leveled_head:build_head(Tag, ObjMetadata),
