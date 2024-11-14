@@ -2438,13 +2438,13 @@ recalcfor_ledgercache(
                 not_present;
             {LK, LV} ->
                 case leveled_codec:get_metadata(LV) of
-                    MDO when MDO =/= null ->
+                    MDO when is_tuple(MDO) ->
                         MDO
                 end
         end,
     UpdMetadata =
         case leveled_codec:get_metadata(MetaValue) of
-            MDU when MDU =/= null ->
+            MDU when is_tuple(MDU) ->
                 MDU
         end,
     IdxSpecs =

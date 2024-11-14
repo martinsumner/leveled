@@ -3377,7 +3377,7 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
     Chunk = crypto:strong_rand_bytes(64),
     MV = leveled_codec:convert_to_ledgerv(LK, Seqn, Chunk, 64, infinity),
     MD = element(4, MV),
-    MD =/= null orelse error(bad_type),
+    is_tuple(MD) orelse error(bad_type),
     ?assertMatch(undefined, element(3, MD)),
     MD0 = [{magic_md, [<<0:32/integer>>, base64:encode(Chunk)]}],
     MV0 = setelement(4, MV, setelement(3, MD, MD0)),

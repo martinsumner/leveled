@@ -49,29 +49,31 @@
 -type headonly_tag() :: ?HEAD_TAG.
     % Tag assigned to head_only objects.  Behaviour cannot be changed
 
--type riak_metadata() :: {binary()|delete, 
-                                % Sibling Metadata
-                            binary()|null, 
-                                % Vclock Metadata
-                            non_neg_integer()|null, 
-                                % Hash of vclock - non-exportable 
-                            non_neg_integer()
-                                % Size in bytes of real object
-                            }. 
--type std_metadata() :: {non_neg_integer()|null, 
-                                % Hash of value 
-                            non_neg_integer(), 
-                                % Size in bytes of real object
-                            list(tuple())|undefined
-                                % User-define metadata
-                            }.
--type head_metadata() :: {non_neg_integer()|null, 
-                                % Hash of value 
-                            non_neg_integer()
-                                % Size in bytes of real object
-                            }.
+-type riak_metadata() ::
+        {
+            binary()|delete, 
+                % Sibling Metadata
+            binary()|null, 
+                % Vclock Metadata
+            non_neg_integer()|null, 
+                % Hash of vclock - non-exportable 
+            non_neg_integer()
+                % Size in bytes of real object
+        }. 
+-type std_metadata() ::
+    {
+        non_neg_integer()|null, 
+            % Hash of value 
+        non_neg_integer(), 
+            % Size in bytes of real object
+        list(tuple())|undefined
+            % User-define metadata
+    }.
+        % std_metadata() must be outputted as the metadata format by any
+        % app-defined function
+-type head_metadata() :: leveled_codec:head_value().
 
--type object_metadata() :: riak_metadata()|std_metadata()|head_metadata().
+-type object_metadata() :: riak_metadata()|std_metadata().
 
 -type appdefinable_function() ::
     key_to_canonicalbinary | build_head | extract_metadata | diff_indexspecs.
@@ -80,12 +82,12 @@
 -type appdefinable_keyfun() ::
     fun((tuple()) -> binary()).
 -type appdefinable_headfun() ::
-    fun((object_tag(), object_metadata()) -> head()).
+    fun((object_tag(), std_metadata()) -> head()).
 -type appdefinable_metadatafun() ::
     fun((leveled_codec:tag(), non_neg_integer(), binary()|delete) ->
-        {object_metadata(), list(erlang:timestamp())}).
+        {std_metadata(), list(erlang:timestamp())}).
 -type appdefinable_indexspecsfun() ::
-    fun((object_tag(), object_metadata(), object_metadata()|not_present) ->
+    fun((object_tag(), std_metadata(), std_metadata()|not_present) ->
         leveled_codec:index_specs()).
 -type appdefinable_function_fun() ::
     appdefinable_keyfun() | appdefinable_headfun() |
@@ -96,12 +98,7 @@
 -type index_op() :: add | remove.
 -type index_value() :: integer() | binary().
 
--type head() ::
-    binary()|tuple().
-    % TODO:
-    % This is currently not always a binary.  Wish is to migrate this so that
-    % it is predictably a binary
-
+-type head() :: binary()|tuple()|head_metadata().
 
 -export_type([object_tag/0,
                 headonly_tag/0,
@@ -143,7 +140,9 @@ default_key_to_canonicalbinary(Key) ->
     leveled_util:t2b(Key).
 
 
--spec build_head(object_tag()|headonly_tag(), object_metadata()) -> head().
+-spec build_head
+    (object_tag(), object_metadata()) -> head();
+    (headonly_tag(), head_metadata()) -> head() .
 %% @doc
 %% Return the object metadata as a binary to be the "head" of the object
 build_head(?HEAD_TAG, Value) ->
@@ -253,22 +252,22 @@ default_reload_strategy(Tag) ->
     {Tag, retain}.
 
 -spec get_size(
-    object_tag()|headonly_tag(), object_metadata()) -> non_neg_integer().
+    object_tag(), object_metadata()) -> non_neg_integer().
 %% @doc
 %% Fetch the size from the metadata
 get_size(?RIAK_TAG, {_, _, _, Size}) ->
     Size;
-get_size(_Tag, {_, Size, _}) ->
+get_size(Tag, {_, Size, _}) when Tag =/= ?HEAD_TAG->
     Size.
 
 
 -spec get_hash(
-    object_tag()|headonly_tag(), object_metadata()) -> non_neg_integer()|null.
+    object_tag(), object_metadata()) -> non_neg_integer()|null.
 %% @doc
 %% Fetch the hash from the metadata
 get_hash(?RIAK_TAG, {_, _, Hash, _}) ->
     Hash;
-get_hash(_Tag, {Hash, _, _}) ->
+get_hash(Tag, {Hash, _, _}) when Tag =/= ?HEAD_TAG ->
     Hash.
 
 -spec standard_hash(any()) -> non_neg_integer().

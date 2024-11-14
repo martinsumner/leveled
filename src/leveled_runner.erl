@@ -636,7 +636,9 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
                 end,
             JK = {leveled_codec:to_objectkey(B, K, Tag), SQN},
             case DeferredFetch of
-                {true, JournalCheck} when MD =/= null ->
+                {true, false} when Tag == ?HEAD_TAG ->
+                    FoldObjectsFun(B, K, MD, Acc);
+                {true, JournalCheck} when is_tuple(MD) ->
                     ProxyObj = 
                         leveled_codec:return_proxy(Tag, MD, InkerClone, JK),
                     case {JournalCheck, InkerClone} of

@@ -73,8 +73,9 @@
 -type segment_hash() :: 
         % hash of the key to an aae segment - to be used in ledger filters
         {integer(), integer()}|no_lookup.
+-type head_value() :: any().
 -type metadata() ::
-        tuple()|null. % null for empty metadata
+        tuple()|null|head_value(). % null for empty metadata
 -type last_moddate() ::
         % modified date as determined by the object (not this store)
         % if the object has siblings in the store will be the maximum of those
@@ -177,7 +178,8 @@
             regular_expression/0,
             value_fetcher/0,
             proxy_object/0,
-            slimmed_key/0
+            slimmed_key/0,
+            head_value/0
         ]).
 
 
@@ -428,6 +430,8 @@ to_querykey(Bucket, Key, Tag, Field, Value) when Tag == ?IDX_TAG ->
 -spec to_querykey(key()|null, key()|null, tag()) -> query_key().
 %% @doc
 %% Convert something into a ledger query key
+to_querykey(Bucket, {Key, SubKey}, Tag) ->
+    {Tag, Bucket, Key, SubKey};
 to_querykey(Bucket, Key, Tag) ->
     {Tag, Bucket, Key, null}.
 
@@ -781,7 +785,7 @@ gen_headspec(
 
 -spec return_proxy
     (leveled_head:headonly_tag(), leveled_head:object_metadata(), null, journal_ref())
-        -> leveled_head:object_metadata();
+        -> head_value();
     (leveled_head:object_tag(), leveled_head:object_metadata(), pid(), journal_ref())
         -> proxy_objectbin().
 %% @doc
@@ -872,7 +876,7 @@ get_size(PK, Value) ->
 
 -spec get_keyandobjhash(tuple(), tuple()) -> tuple().
 %% @doc
-%% Return a tucple of {Bucket, Key, Hash} where hash is a hash of the object
+%% Return a tuple of {Bucket, Key, Hash} where hash is a hash of the object
 %% not the key (for example with Riak tagged objects this will be a hash of
 %% the sorted vclock)
 get_keyandobjhash(LK, Value) ->

@@ -2,6 +2,7 @@
 -include("leveled.hrl").
 -export([all/0, init_per_suite/1, end_per_suite/1]).
 -export([
+            multiput_subkeys/1,
             many_put_compare/1,
             index_compare/1,
             basic_headonly/1,
@@ -9,6 +10,7 @@
             ]).
 
 all() -> [
+            multiput_subkeys,
             many_put_compare,
             index_compare,
             basic_headonly,
@@ -25,8 +27,76 @@ init_per_suite(Config) ->
 end_per_suite(Config) ->
     testutil:end_per_suite(Config).
 
-many_put_compare(_Config) ->
+
+multiput_subkeys(_Config) ->
+    multiput_subkeys_byvalue({null, 0}),
+    multiput_subkeys_byvalue(null),
+    multiput_subkeys_byvalue(<<"binaryValue">>).
+
+multiput_subkeys_byvalue(V) ->
+    RootPath = testutil:reset_filestructure("subkeyTest"),
+    StartOpts = [{root_path, RootPath},
+                    {max_journalsize, 10000000},
+                    {max_pencillercachesize, 12000},
+                    {head_only, no_lookup},
+                    {sync_strategy, testutil:sync_strategy()}],
+    {ok, Bookie} = leveled_bookie:book_start(StartOpts),
+    SubKeyCount = 200000,
+
+    B = {<<"MultiBucketType">>, <<"MultiBucket">>},
+    ObjSpecLGen =
+        fun(K) ->
+            lists:map(
+                fun(I) ->
+                    {add, v1, B, K, <<I:32/integer>>, [os:timestamp()], V}
+                end,
+                lists:seq(1, SubKeyCount)
+            )
+        end,
     
+    SpecL1 = ObjSpecLGen(<<1:32/integer>>),
+    load_objectspecs(SpecL1, 32, Bookie),
+    SpecL2 = ObjSpecLGen(<<2:32/integer>>),
+    load_objectspecs(SpecL2, 32, Bookie),
+    SpecL3 = ObjSpecLGen(<<3:32/integer>>),
+    load_objectspecs(SpecL3, 32, Bookie),
+    SpecL4 = ObjSpecLGen(<<4:32/integer>>),
+    load_objectspecs(SpecL4, 32, Bookie),
+    SpecL5 = ObjSpecLGen(<<5:32/integer>>),
+    load_objectspecs(SpecL5, 32, Bookie),
+
+    FoldFun =
+        fun(Bucket, {Key, SubKey}, _Value, Acc) ->
+            case Bucket of
+                Bucket when Bucket == B ->
+                    [{Key, SubKey}|Acc]
+            end
+        end,
+    QueryFun =
+        fun(KeyRange) ->
+            Range = {range, B, KeyRange},
+            {async, R} =
+                leveled_bookie:book_headfold(
+                    Bookie, ?HEAD_TAG, Range, {FoldFun, []}, false, true, false
+                ),
+            L = length(R()),
+            io:format("query result for range ~p is ~w~n", [Range, L]),
+            L
+        end,
+    
+    KR1 = {{<<1:32/integer>>, <<>>}, {<<2:32/integer>>, <<>>}},
+    KR2 = {{<<3:32/integer>>, <<>>}, {<<5:32/integer>>, <<>>}},
+    KR3 =
+        {
+            {<<1:32/integer>>, <<10:32/integer>>},
+            {<<2:32/integer>>, <<19:32/integer>>}
+        },
+    true = SubKeyCount == QueryFun(KR1),
+    true = (SubKeyCount * 2) == QueryFun(KR2),
+    true = (SubKeyCount + 10) == QueryFun(KR3),
+    leveled_bookie:book_destroy(Bookie).
+
+many_put_compare(_Config) ->    
     TreeSize = small,
     SegmentCount = 256 * 256,
     % Test requires multiple different databases, so want to mount them all
