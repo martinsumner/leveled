@@ -7,7 +7,7 @@
 %% each level.  This is fine for short-lived volume tests, but as the deeper
 %% levels are used there will be an exponential penalty.
 %%
-%% The originial intention was to swap out this implementation for a
+%% The original intention was to swap out this implementation for a
 %% multi-version ETS table - but that became complex.  So one of two changes
 %% are pending:
 %% - Use a single version ES cache for lower levels (and not allow snapshots to
@@ -15,6 +15,10 @@
 %% - Use a skiplist like enhanced list at lower levels.
 
 -module(leveled_pmanifest).
+
+% Test uses extracted/edited array related to specific issue, which is not in
+% an expected format
+-eqwalizer({nowarn_function, potential_issue_test/0}).
 
 -include("leveled.hrl").
 
@@ -48,6 +52,17 @@
         snapshot_pids/1,
         get_sstpids/1
         ]).      
+
+-export(
+    [
+        new_entry/5,
+        entry_startkey/1,
+        entry_endkey/1,
+        entry_filename/1,
+        entry_owner/1,
+        is_entry/1
+    ]
+).
 
 -export([
         filepath/2
@@ -85,28 +100,41 @@
 -define(MANIFESTS_TO_RETAIN, 5).
 -define(GROOM_SAMPLE, 16).
 
--record(manifest, {levels,
-                        % an array of lists or trees representing the manifest
-                    manifest_sqn = 0 :: non_neg_integer(),
-                        % The current manifest SQN
-                    snapshots  = []
-                        :: list(snapshot()),
-                        % A list of snaphots (i.e. clones)
-                    min_snapshot_sqn = 0 :: integer(),
-                        % The smallest snapshot manifest SQN in the snapshot
-                        % list
-                    pending_deletes = dict:new() :: dict:dict(), 
-                    basement :: non_neg_integer(),
-                        % Currently the lowest level (the largest number)
-                    blooms :: dict:dict()
-                    }).      
+-record(manifest,
+    {
+        levels :: array:array(dynamic()),
+            % an array of lists or trees representing the manifest, where the
+            % list is created using the to_list function on leveled_treee
+        manifest_sqn = 0 :: non_neg_integer(),
+            % The current manifest SQN
+        snapshots  = [] :: list(snapshot()),
+            % A list of snaphots (i.e. clones)
+        min_snapshot_sqn = 0 :: integer(),
+            % The smallest snapshot manifest SQN in the snapshot list
+        pending_deletes = new_pending_deletions() :: pending_deletions(),
+        basement :: non_neg_integer(),
+            % Currently the lowest level (the largest number)
+        blooms = new_blooms() :: blooms()
+    }).
+
+-record(manifest_entry,
+    {
+        start_key :: leveled_codec:object_key(),
+        end_key :: leveled_codec:object_key(),
+        owner :: pid(),
+        filename :: string(),
+        bloom = none :: leveled_ebloom:bloom() | none
+    }
+).
 
 -type snapshot() ::
     {pid(), non_neg_integer(), pos_integer(), pos_integer()}.
 -type manifest() :: #manifest{}.
 -type manifest_entry() :: #manifest_entry{}.
--type manifest_owner() :: pid()|list().
+-type manifest_owner() :: pid().
 -type lsm_level() :: 0..7.
+-type pending_deletions() :: dict:dict().
+-type blooms() :: dict:dict().
 -type selector_strategy() ::
         random|{grooming, fun((list(manifest_entry())) -> manifest_entry())}.
 
@@ -128,16 +156,15 @@ new_manifest() ->
         fun(IDX, Acc) ->
             array:set(IDX, leveled_tree:empty(?TREE_TYPE), Acc)
         end,
-    LevelArray1 = lists:foldl(SetLowerLevelFun,
-                                LevelArray0,
-                                lists:seq(2, ?MAX_LEVELS)),
+    LevelArray1 =
+        lists:foldl(
+            SetLowerLevelFun, LevelArray0, lists:seq(2, ?MAX_LEVELS)
+        ),
     #manifest{
         levels = LevelArray1, 
         manifest_sqn = 0, 
         snapshots = [],
-        pending_deletes = dict:new(),
-        basement = 0,
-        blooms = dict:new()
+        basement = 0
     }.    
 
 -spec open_manifest(string()) -> manifest().
@@ -159,9 +186,8 @@ open_manifest(RootPath) ->
                     Acc ++ [list_to_integer(Int)]
             end
         end,
-    ValidManSQNs = lists:reverse(lists:sort(lists:foldl(ExtractSQNFun,
-                                                        [],
-                                                        Filenames))),
+    ValidManSQNs =
+        lists:reverse(lists:sort(lists:foldl(ExtractSQNFun, [], Filenames))),
     open_manifestfile(RootPath, ValidManSQNs).
 
 -spec copy_manifest(manifest()) -> manifest().
@@ -171,7 +197,9 @@ open_manifest(RootPath) ->
 copy_manifest(Manifest) ->
     % Copy the manifest ensuring anything only the master process should care
     % about is switched to be empty
-    Manifest#manifest{snapshots = [], pending_deletes = dict:new()}.
+    Manifest#manifest{
+        snapshots = [], pending_deletes = new_pending_deletions()
+    }.
 
 -spec load_manifest(
     manifest(),
@@ -236,10 +264,15 @@ close_manifest(Manifest, CloseEntryFun) ->
 save_manifest(Manifest, RootPath) ->
     TFP = filepath(RootPath, Manifest#manifest.manifest_sqn, pending_manifest),
     AFP = filepath(RootPath, Manifest#manifest.manifest_sqn, current_manifest),
-    ManBin = term_to_binary(Manifest#manifest{snapshots = [],
-                                                pending_deletes = dict:new(),
-                                                min_snapshot_sqn = 0,
-                                                blooms = dict:new()}),
+    ManBin =
+        term_to_binary(
+            Manifest#manifest{
+                snapshots = [],
+                pending_deletes = new_pending_deletions(),
+                min_snapshot_sqn = 0,
+                blooms = new_blooms()
+            }
+        ),
     CRC = erlang:crc32(ManBin),
     ToPersist = <<CRC:32/integer, ManBin/binary>>,
     ok = leveled_util:safe_rename(TFP, AFP, ToPersist, true),
@@ -324,10 +357,12 @@ report_manifest_level(Manifest, LevelIdx) ->
                 TotalBVBS div LevelSize}
     end.
 
-
--spec replace_manifest_entry(manifest(), integer(), integer(),
-                                    list()|manifest_entry(),
-                                    list()|manifest_entry()) -> manifest().
+-spec replace_manifest_entry(
+    manifest(),
+    integer(),
+    integer(),
+    list()|manifest_entry(),
+    list()|manifest_entry()) -> manifest().
 %% @doc
 %% Replace a list of manifest entries in the manifest with a new set of entries
 %% Pass in the new manifest SQN to be used for this manifest.  The list of
@@ -342,28 +377,31 @@ replace_manifest_entry(Manifest, ManSQN, LevelIdx, Removals, Additions) ->
     UpdLevel = replace_entry(LevelIdx, Level, Removals, StrippedAdditions),
     leveled_log:log(pc019, ["insert", LevelIdx, UpdLevel]),
     PendingDeletes = 
-        update_pendingdeletes(ManSQN, 
-                                Removals, 
-                                Manifest#manifest.pending_deletes),
+        update_pendingdeletes(
+            ManSQN,  Removals, Manifest#manifest.pending_deletes),
     UpdLevels = array:set(LevelIdx, UpdLevel, Levels),
     case is_empty(LevelIdx, UpdLevel) of
         true ->
-            Manifest#manifest{levels = UpdLevels,
-                                basement = get_basement(UpdLevels),
-                                manifest_sqn = ManSQN,
-                                pending_deletes = PendingDeletes,
-                                blooms = UpdBlooms};
+            Manifest#manifest{
+                levels = UpdLevels,
+                basement = get_basement(UpdLevels),
+                manifest_sqn = ManSQN,
+                pending_deletes = PendingDeletes,
+                blooms = UpdBlooms
+            };
         false ->
             Basement = max(LevelIdx, Manifest#manifest.basement),
-            Manifest#manifest{levels = UpdLevels,
-                                basement = Basement,
-                                manifest_sqn = ManSQN,
-                                pending_deletes = PendingDeletes,
-                                blooms = UpdBlooms}
+            Manifest#manifest{
+                levels = UpdLevels,
+                basement = Basement,
+                manifest_sqn = ManSQN,
+                pending_deletes = PendingDeletes,
+                blooms = UpdBlooms
+            }
     end.
 
--spec insert_manifest_entry(manifest(), integer(), integer(),
-                                    list()|manifest_entry()) -> manifest().
+-spec insert_manifest_entry(
+    manifest(), integer(), integer(), list()|manifest_entry()) -> manifest().
 %% @doc
 %% Place a single new manifest entry into a level of the manifest, at a given
 %% level and manifest sequence number
@@ -375,13 +413,15 @@ insert_manifest_entry(Manifest, ManSQN, LevelIdx, Entry) ->
     UpdLevel = add_entry(LevelIdx, Level, UpdEntry),
     leveled_log:log(pc019, ["insert", LevelIdx, UpdLevel]),
     Basement = max(LevelIdx, Manifest#manifest.basement),
-    Manifest#manifest{levels = array:set(LevelIdx, UpdLevel, Levels),
-                        basement = Basement,
-                        manifest_sqn = ManSQN,
-                        blooms = UpdBlooms}.
+    Manifest#manifest{
+        levels = array:set(LevelIdx, UpdLevel, Levels),
+        basement = Basement,
+        manifest_sqn = ManSQN,
+        blooms = UpdBlooms
+    }.
 
--spec remove_manifest_entry(manifest(), integer(), integer(),
-                                   list()|manifest_entry()) -> manifest().
+-spec remove_manifest_entry(
+    manifest(), integer(), integer(), list()|manifest_entry()) -> manifest().
 %% @doc
 %% Remove a manifest entry (as it has been merged into the level below)
 remove_manifest_entry(Manifest, ManSQN, LevelIdx, Entry) ->
@@ -391,26 +431,30 @@ remove_manifest_entry(Manifest, ManSQN, LevelIdx, Entry) ->
         update_blooms(Entry, [], Manifest#manifest.blooms),
     UpdLevel = remove_entry(LevelIdx, Level, Entry),
     leveled_log:log(pc019, ["remove", LevelIdx, UpdLevel]),
-    PendingDeletes = update_pendingdeletes(ManSQN,
-                                            Entry,
-                                            Manifest#manifest.pending_deletes),
+    PendingDeletes =
+        update_pendingdeletes(
+            ManSQN, Entry, Manifest#manifest.pending_deletes),
     UpdLevels = array:set(LevelIdx, UpdLevel, Levels),
     case is_empty(LevelIdx, UpdLevel) of
         true ->
-            Manifest#manifest{levels = UpdLevels,
-                                basement = get_basement(UpdLevels),
-                                manifest_sqn = ManSQN,
-                                pending_deletes = PendingDeletes,
-                                blooms = UpdBlooms};
+            Manifest#manifest{
+                levels = UpdLevels,
+                basement = get_basement(UpdLevels),
+                manifest_sqn = ManSQN,
+                pending_deletes = PendingDeletes,
+                blooms = UpdBlooms
+            };
         false ->
-            Manifest#manifest{levels = UpdLevels,
-                                manifest_sqn = ManSQN,
-                                pending_deletes = PendingDeletes,
-                                blooms = UpdBlooms}
+            Manifest#manifest{
+                levels = UpdLevels,
+                manifest_sqn = ManSQN,
+                pending_deletes = PendingDeletes,
+                blooms = UpdBlooms
+            }
     end.
 
--spec switch_manifest_entry(manifest(), integer(), integer(),
-                                    list()|manifest_entry()) -> manifest().
+-spec switch_manifest_entry(
+    manifest(), integer(), integer(), list()|manifest_entry()) -> manifest().
 %% @doc
 %% Switch a manifest etry from this level to the level below (i.e when there
 %% are no overlapping manifest entries in the level below)
@@ -421,10 +465,8 @@ switch_manifest_entry(Manifest, ManSQN, SrcLevel, Entry) ->
     Level = array:get(SrcLevel, Levels),
     UpdLevel = remove_entry(SrcLevel, Level, Entry),
     UpdLevels = array:set(SrcLevel, UpdLevel, Levels),
-    insert_manifest_entry(Manifest#manifest{levels = UpdLevels},
-                            ManSQN,
-                            SrcLevel + 1,
-                            Entry).
+    insert_manifest_entry(
+        Manifest#manifest{levels = UpdLevels}, ManSQN, SrcLevel + 1, Entry).
 
 -spec get_manifest_sqn(manifest()) -> integer().
 %% @doc
@@ -432,8 +474,9 @@ switch_manifest_entry(Manifest, ManSQN, SrcLevel, Entry) ->
 get_manifest_sqn(Manifest) ->
     Manifest#manifest.manifest_sqn.
 
--spec key_lookup(manifest(), integer(), leveled_codec:ledger_key()) 
-                                                    -> false|manifest_owner().
+-spec key_lookup(
+    manifest(), integer(), leveled_codec:ledger_key()) ->
+        false|manifest_owner().
 %% @doc
 %% For a given key find which manifest entry covers that key at that level,
 %% returning false if there is no covering manifest entry at that level.
@@ -442,9 +485,8 @@ key_lookup(Manifest, LevelIdx, Key) ->
         true ->
             false;
         false ->
-            key_lookup_level(LevelIdx,
-                                array:get(LevelIdx, Manifest#manifest.levels),
-                                Key)
+            key_lookup_level(
+                LevelIdx, array:get(LevelIdx, Manifest#manifest.levels), Key)
     end.
 
 -spec query_manifest(
@@ -514,12 +556,12 @@ merge_lookup(Manifest, LevelIdx, StartKey, EndKey) ->
 %% Hence, the initial implementation is to select files to merge at random
 mergefile_selector(Manifest, LevelIdx, _Strategy) when LevelIdx =< 1 ->
     Level = array:get(LevelIdx, Manifest#manifest.levels),
-    lists:nth(leveled_rand:uniform(length(Level)), Level);
+    lists:nth(rand:uniform(length(Level)), Level);
 mergefile_selector(Manifest, LevelIdx, random) ->
     Level =
         leveled_tree:to_list(
             array:get(LevelIdx, Manifest#manifest.levels)),
-    {_SK, ME} = lists:nth(leveled_rand:uniform(length(Level)), Level),
+    {_SK, ME} = lists:nth(rand:uniform(length(Level)), Level),
     ME;
 mergefile_selector(Manifest, LevelIdx, {grooming, ScoringFun}) ->
     Level =
@@ -527,7 +569,7 @@ mergefile_selector(Manifest, LevelIdx, {grooming, ScoringFun}) ->
             array:get(LevelIdx, Manifest#manifest.levels)),
     SelectorFun =
         fun(_I, Acc) ->
-            {_SK, ME} = lists:nth(leveled_rand:uniform(length(Level)), Level),
+            {_SK, ME} = lists:nth(rand:uniform(length(Level)), Level),
             [ME|Acc]
         end,
     Sample =
@@ -549,7 +591,7 @@ merge_snapshot(PencillerManifest, ClerkManifest) ->
         snapshots = PencillerManifest#manifest.snapshots,
         min_snapshot_sqn = PencillerManifest#manifest.min_snapshot_sqn}.
 
--spec add_snapshot(manifest(), pid()|atom(), integer()) -> manifest().
+-spec add_snapshot(manifest(), pid(), integer()) -> manifest().
 %% @doc
 %% Add a snapshot reference to the manifest, withe rusing the pid or an atom
 %% known to reference a special process.  The timeout should be in seconds, and
@@ -589,9 +631,12 @@ release_snapshot(Manifest, Pid) ->
                     end
             end
         end,
-    {SnapList0, MinSnapSQN, Hit} = lists:foldl(FilterFun,
-                                                {[], infinity, false},
-                                                Manifest#manifest.snapshots),
+    {SnapList0, MinSnapSQN, Hit} =
+        lists:foldl(
+            FilterFun,
+            {[], infinity, false},
+            Manifest#manifest.snapshots
+        ),
     case Hit of 
         false ->
             leveled_log:log(p0039, [Pid, length(SnapList0), MinSnapSQN]);
@@ -600,12 +645,12 @@ release_snapshot(Manifest, Pid) ->
     end,
     case SnapList0 of
         [] ->
-            Manifest#manifest{snapshots = SnapList0,
-                                min_snapshot_sqn = 0};
-        _  ->
+            Manifest#manifest{snapshots = SnapList0, min_snapshot_sqn = 0};
+        _  when is_integer(MinSnapSQN) ->
             leveled_log:log(p0004, [SnapList0]),
-            Manifest#manifest{snapshots = SnapList0,
-                                min_snapshot_sqn = MinSnapSQN}
+            Manifest#manifest{
+                snapshots = SnapList0, min_snapshot_sqn = MinSnapSQN
+            }
     end.
 
 
@@ -733,12 +778,45 @@ get_sstpids(Manifest) ->
     lists:foldl(FoldFun, [], lists:seq(0, Manifest#manifest.basement)).
 
 %%%============================================================================
+%%% Manifest Entry
+%%%============================================================================
+
+-spec new_entry(
+    leveled_codec:object_key(),
+    leveled_codec:object_key(),
+    pid(),
+    string(),
+    leveled_ebloom:bloom()|none) -> manifest_entry().
+new_entry(StartKey, EndKey, Owner, FileName, Bloom) ->
+    #manifest_entry{
+        start_key = StartKey,
+        end_key = EndKey,
+        owner = Owner,
+        filename = FileName,
+        bloom = Bloom
+    }.
+
+-spec is_entry(any()) -> boolean().
+is_entry(ME) -> is_record(ME, manifest_entry).
+
+-spec entry_startkey(manifest_entry()) -> leveled_codec:object_key().
+entry_startkey(ME) -> ME#manifest_entry.start_key.
+
+-spec entry_endkey(manifest_entry()) -> leveled_codec:object_key().
+entry_endkey(ME) -> ME#manifest_entry.end_key.
+
+-spec entry_owner(manifest_entry()) -> pid().
+entry_owner(ME) -> ME#manifest_entry.owner.
+
+-spec entry_filename(manifest_entry()) -> string().
+entry_filename(#manifest_entry{filename = FN}) when ?IS_DEF(FN)-> FN.
+
+%%%============================================================================
 %%% Internal Functions
 %%%============================================================================
 
-
--spec get_manifest_entry({tuple(), manifest_entry()}|manifest_entry())
-                            -> manifest_entry().
+-spec get_manifest_entry(
+    {tuple(), manifest_entry()}|manifest_entry()) -> manifest_entry().
 %% @doc
 %% Manifest levels can have entries of two forms, use this if only interested
 %% in the latter form
@@ -778,10 +856,12 @@ load_level(LevelIdx, Level, LoadFun, SQNFun) ->
             lists:foldr(HigherLevelLoadFun, {[], 0, [], []}, Level);
         false ->
             {L0, MaxSQN, Flist, UpdBloomL} = 
-                lists:foldr(LowerLevelLoadFun, 
-                            {[], 0, [], []}, 
-                            leveled_tree:to_list(Level)),
-            {leveled_tree:from_orderedlist(L0, ?TREE_TYPE, ?TREE_WIDTH), 
+                lists:foldr(
+                    LowerLevelLoadFun, 
+                    {[], 0, [], []}, 
+                    leveled_tree:to_list(Level)
+                ),
+            {leveled_tree:from_orderedlist(L0, ?TREE_TYPE, ?TREE_WIDTH),
                 MaxSQN, 
                 Flist,
                 UpdBloomL}
@@ -817,9 +897,12 @@ add_entry(_LevelIdx, Level, []) ->
     Level;
 add_entry(LevelIdx, Level, Entries) when is_list(Entries) ->
     FirstEntry = lists:nth(1, Entries),
-    PredFun = pred_fun(LevelIdx,
-                        FirstEntry#manifest_entry.start_key,
-                        FirstEntry#manifest_entry.end_key),
+    PredFun =
+        pred_fun(
+            LevelIdx,
+            FirstEntry#manifest_entry.start_key,
+            FirstEntry#manifest_entry.end_key
+        ),
     case LevelIdx =< 1 of
         true ->
             {LHS, RHS} = lists:splitwith(PredFun, Level),
@@ -831,9 +914,11 @@ add_entry(LevelIdx, Level, Entries) when is_list(Entries) ->
                     {ME#manifest_entry.end_key, ME}
                 end,
             Entries0 = lists:map(MapFun, Entries),
-            leveled_tree:from_orderedlist(lists:append([LHS, Entries0, RHS]),
-                                            ?TREE_TYPE,
-                                            ?TREE_WIDTH)
+            leveled_tree:from_orderedlist(
+                lists:append([LHS, Entries0, RHS]),
+                ?TREE_TYPE,
+                ?TREE_WIDTH
+            )
     end.
 
 remove_entry(LevelIdx, Level, Entries) ->
@@ -861,24 +946,29 @@ remove_section(LevelIdx, Level, FirstEntry, SectionLength) ->
         false ->
             {LHS, RHS} = lists:splitwith(PredFun, leveled_tree:to_list(Level)),
             Post = lists:nthtail(SectionLength, RHS),
-            leveled_tree:from_orderedlist(lists:append([LHS, Post]),
-                                            ?TREE_TYPE,
-                                            ?TREE_WIDTH)
+            leveled_tree:from_orderedlist(
+                lists:append([LHS, Post]), ?TREE_TYPE, ?TREE_WIDTH)
     end.
 
 replace_entry(LevelIdx, Level, Removals, Additions) when LevelIdx =< 1 ->
     {SectionLength, FirstEntry} = measure_removals(Removals),
-    PredFun = pred_fun(LevelIdx,
-                        FirstEntry#manifest_entry.start_key,
-                        FirstEntry#manifest_entry.end_key),
+    PredFun =
+        pred_fun(
+            LevelIdx,
+            FirstEntry#manifest_entry.start_key,
+            FirstEntry#manifest_entry.end_key
+        ),
     {LHS, RHS} = lists:splitwith(PredFun, Level),
     Post = lists:nthtail(SectionLength, RHS),
     lists:append([LHS, Additions, Post]);
 replace_entry(LevelIdx, Level, Removals, Additions) ->
     {SectionLength, FirstEntry} = measure_removals(Removals),
-    PredFun = pred_fun(LevelIdx,
-                        FirstEntry#manifest_entry.start_key,
-                        FirstEntry#manifest_entry.end_key),
+    PredFun =
+        pred_fun(
+            LevelIdx,
+            FirstEntry#manifest_entry.start_key,
+            FirstEntry#manifest_entry.end_key
+        ),
     {LHS, RHS} = lists:splitwith(PredFun, leveled_tree:to_list(Level)),
     Post =
         case RHS of
@@ -898,9 +988,7 @@ replace_entry(LevelIdx, Level, Removals, Additions) ->
 update_pendingdeletes(ManSQN, Removals, PendingDeletes) ->
     DelFun =
         fun(E, Acc) ->
-            dict:store(E#manifest_entry.filename,
-                        {ManSQN, E},
-                        Acc)
+            dict:store(E#manifest_entry.filename, {ManSQN, E}, Acc)
         end,
     Entries = 
         case is_list(Removals) of
@@ -911,10 +999,11 @@ update_pendingdeletes(ManSQN, Removals, PendingDeletes) ->
         end,
     lists:foldl(DelFun, PendingDeletes, Entries).
 
--spec update_blooms(list()|manifest_entry(), 
-                    list()|manifest_entry(), 
-                    any()) 
-                                                -> {any(), list()}.
+-spec update_blooms(
+    list()|manifest_entry(), 
+    list()|manifest_entry(), 
+    blooms())
+        -> {blooms(), list()}.
 %% @doc
 %%
 %% The manifest is a Pid-> Bloom mappping for every Pid, and this needs to 
@@ -984,11 +1073,12 @@ range_lookup_int(Manifest, LevelIdx, StartKey, EndKey, MakePointerFun) ->
             true ->
                 [];
             false ->
-                range_lookup_level(LevelIdx,
-                                    array:get(LevelIdx,
-                                                Manifest#manifest.levels),
-                                    StartKey,
-                                    EndKey)
+                range_lookup_level(
+                    LevelIdx,
+                    array:get(LevelIdx, Manifest#manifest.levels),
+                    StartKey,
+                    EndKey
+                )
         end,
     lists:map(MakePointerFun, Range).
     
@@ -999,8 +1089,9 @@ range_lookup_level(LevelIdx, Level, QStartKey, QEndKey) when LevelIdx =< 1 ->
         end,
     NotAfterFun =
         fun(M) ->
-            not leveled_codec:endkey_passed(QEndKey,
-                                            M#manifest_entry.start_key)
+            not
+                leveled_codec:endkey_passed(
+                    QEndKey, M#manifest_entry.start_key)
         end,
     {_Before, MaybeIn} = lists:splitwith(BeforeFun, Level),
     {In, _After} = lists:splitwith(NotAfterFun, MaybeIn),
@@ -1016,7 +1107,6 @@ range_lookup_level(_LevelIdx, Level, QStartKey, QEndKey) ->
             ME
         end,
     lists:map(MapFun, Range).
-    
 
 get_basement(Levels) ->
     GetBaseFun =
@@ -1030,7 +1120,6 @@ get_basement(Levels) ->
         end,
     lists:foldl(GetBaseFun, 0, lists:seq(0, ?MAX_LEVELS)).
 
-
 filepath(RootPath, manifest) ->
     MFP = RootPath ++ "/" ++ ?MANIFEST_FP ++ "/",
     filelib:ensure_dir(MFP),
@@ -1043,9 +1132,6 @@ filepath(RootPath, NewMSN, pending_manifest) ->
     filepath(RootPath, manifest)  ++ "nonzero_"
                 ++ integer_to_list(NewMSN) ++ "." ++ ?PENDING_FILEX.
 
-
-
-
 open_manifestfile(_RootPath, L) when L == [] orelse L == [0] ->
     leveled_log:log(p0013, []),
     new_manifest();
@@ -1056,7 +1142,11 @@ open_manifestfile(RootPath, [TopManSQN|Rest]) ->
     case erlang:crc32(BinaryOfTerm) of
         CRC ->
             leveled_log:log(p0012, [TopManSQN]),
-            binary_to_term(BinaryOfTerm);
+            Manifest = binary_to_term(BinaryOfTerm),
+            Manifest#manifest{
+                pending_deletes = new_pending_deletions(),
+                blooms = new_blooms()
+            };
         _ ->
             leveled_log:log(p0033, [CurrManFile, "crc wonky"]),
             open_manifestfile(RootPath, Rest)
@@ -1066,6 +1156,9 @@ seconds_now() ->
     {MegaNow, SecNow, _} = os:timestamp(),
     MegaNow * 1000000 + SecNow.
 
+new_blooms() -> dict:new().
+
+new_pending_deletions() -> dict:new().
 
 %%%============================================================================
 %%% Test
@@ -1079,36 +1172,54 @@ initial_setup() ->
     initial_setup(single_change).
 
 initial_setup(Changes) ->
-    E1 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
-                            end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K93"},
-                            filename="Z1",
-                            owner="pid_z1",
-                            bloom=none},
-    E2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld9"}, "K97"},
-                            end_key={o, "Bucket1", "K71", null},
-                            filename="Z2",
-                            owner="pid_z2",
-                            bloom=none},
-    E3 = #manifest_entry{start_key={o, "Bucket1", "K75", null},
-                            end_key={o, "Bucket1", "K993", null},
-                            filename="Z3",
-                            owner="pid_z3",
-                            bloom=none},
-    E4 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
-                            end_key={i, "Bucket1", {"Idx1", "Fld7"}, "K93"},
-                            filename="Z4",
-                            owner="pid_z4",
-                            bloom=none},
-    E5 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld7"}, "K97"},
-                            end_key={o, "Bucket1", "K78", null},
-                            filename="Z5",
-                            owner="pid_z5",
-                            bloom=none},
-    E6 = #manifest_entry{start_key={o, "Bucket1", "K81", null},
-                            end_key={o, "Bucket1", "K996", null},
-                            filename="Z6",
-                            owner="pid_z6",
-                            bloom=none},
+    E1 =
+        #manifest_entry{
+            start_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld1">>}, <<"K8">>},
+            end_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld9">>}, <<"K93">>},
+            filename="Z1",
+            owner=list_to_pid("<0.101.0>"),
+            bloom=none
+        },
+    E2 =
+        #manifest_entry{
+            start_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld9">>}, <<"K97">>},
+            end_key={o, <<"Bucket1">>, <<"K71">>, null},
+            filename="Z2",
+            owner=list_to_pid("<0.102.0>"),
+            bloom=none
+        },
+    E3 =
+        #manifest_entry{
+            start_key={o, <<"Bucket1">>, <<"K75">>, null},
+            end_key={o, <<"Bucket1">>, <<"K993">>, null},
+            filename="Z3",
+            owner=list_to_pid("<0.103.0>"),
+            bloom=none
+        },
+    E4 =
+        #manifest_entry{
+            start_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld1">>}, <<"K8">>},
+            end_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld7">>}, <<"K93">>},
+            filename="Z4",
+            owner=list_to_pid("<0.104.0>"),
+            bloom=none
+        },
+    E5 =
+        #manifest_entry{
+            start_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld7">>}, <<"K97">>},
+            end_key={o, <<"Bucket1">>, <<"K78">>, null},
+            filename="Z5",
+            owner=list_to_pid("<0.105.0>"),
+            bloom=none
+        },
+    E6 =    
+        #manifest_entry{
+            start_key={o, <<"Bucket1">>, <<"K81">>, null},
+            end_key={o, <<"Bucket1">>, <<"K996">>, null},
+            filename="Z6",
+            owner=list_to_pid("<0.106.0>"),
+            bloom=none
+        },
     initial_setup(Changes, E1, E2, E3, E4, E5, E6).    
 
 
@@ -1137,42 +1248,63 @@ initial_setup(multi_change, E1, E2, E3, E4, E5, E6) ->
 
 
 changeup_setup(Man6) ->
-    E1 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
-                            end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K93"},
-                            filename="Z1",
-                            owner="pid_z1",
-                            bloom=none},
-    E2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld9"}, "K97"},
-                            end_key={o, "Bucket1", "K71", null},
-                            filename="Z2",
-                            owner="pid_z2",
-                            bloom=none},
-    E3 = #manifest_entry{start_key={o, "Bucket1", "K75", null},
-                            end_key={o, "Bucket1", "K993", null},
-                            filename="Z3",
-                            owner="pid_z3",
-                            bloom=none},
+    E1 =
+        #manifest_entry{
+            start_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld1">>}, <<"K8">>},
+            end_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld9">>}, <<"K93">>},
+            filename="Z1",
+            owner=list_to_pid("<0.101.0>"),
+            bloom=none
+        },
+    E2 =
+        #manifest_entry{
+            start_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld9">>}, <<"K97">>},
+            end_key={o, <<"Bucket1">>, <<"K71">>, null},
+            filename="Z2",
+            owner=list_to_pid("<0.102.0>"),
+            bloom=none
+        },
+    E3 =
+        #manifest_entry{
+            start_key={o, <<"Bucket1">>, <<"K75">>, null},
+            end_key={o, <<"Bucket1">>, <<"K993">>, null},
+            filename="Z3",
+            owner=list_to_pid("<0.103.0>"),
+            bloom=none
+        },
                             
-    E1_2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld4"}, "K8"},
-                            end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K62"},
-                            owner="pid_y1",
-                            filename="Y1",
-                            bloom=none},
-    E2_2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld9"}, "K67"},
-                            end_key={o, "Bucket1", "K45", null},
-                            owner="pid_y2",
-                            filename="Y2",
-                            bloom=none},
-    E3_2 = #manifest_entry{start_key={o, "Bucket1", "K47", null},
-                            end_key={o, "Bucket1", "K812", null},
-                            owner="pid_y3",
-                            filename="Y3",
-                            bloom=none},
-    E4_2 = #manifest_entry{start_key={o, "Bucket1", "K815", null},
-                            end_key={o, "Bucket1", "K998", null},
-                            owner="pid_y4",
-                            filename="Y4",
-                            bloom=none},
+    E1_2 =
+        #manifest_entry{
+            start_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld4">>}, <<"K8">>},
+            end_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld9">>}, <<"K62">>},
+            owner=list_to_pid("<0.201.0>"),
+            filename="Y1",
+            bloom=none
+        },
+    E2_2 =
+        #manifest_entry{
+            start_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld9">>}, <<"K67">>},
+            end_key={o, <<"Bucket1">>, <<"K45">>, null},
+            owner=list_to_pid("<0.202.0>"),
+            filename="Y2",
+            bloom=none
+        },
+    E3_2 =
+        #manifest_entry{
+            start_key={o, <<"Bucket1">>, <<"K47">>, null},
+            end_key={o, <<"Bucket1">>, <<"K812">>, null},
+            owner=list_to_pid("<0.203.0>"),
+            filename="Y3",
+            bloom=none
+        },
+    E4_2 =
+        #manifest_entry{
+            start_key={o, <<"Bucket1">>, <<"K815">>, null},
+            end_key={o, <<"Bucket1">>, <<"K998">>, null},
+            owner=list_to_pid("<0.204.0>"),
+            filename="Y4",
+            bloom=none
+        },
     
     Man7 = remove_manifest_entry(Man6, 2, 1, E1),
     Man8 = remove_manifest_entry(Man7, 2, 1, E2),
@@ -1211,11 +1343,11 @@ manifest_gc_test() ->
 
 keylookup_manifest_test() ->
     {Man0, Man1, Man2, Man3, _Man4, _Man5, Man6} = initial_setup(),
-    LK1_1 = {o, "Bucket1", "K711", null},
-    LK1_2 = {o, "Bucket1", "K70", null},
-    LK1_3 = {o, "Bucket1", "K71", null},
-    LK1_4 = {o, "Bucket1", "K75", null},
-    LK1_5 = {o, "Bucket1", "K76", null},
+    LK1_1 = {o, <<"Bucket1">>, <<"K711">>, null},
+    LK1_2 = {o, <<"Bucket1">>, <<"K70">>, null},
+    LK1_3 = {o, <<"Bucket1">>, <<"K71">>, null},
+    LK1_4 = {o, <<"Bucket1">>, <<"K75">>, null},
+    LK1_5 = {o, <<"Bucket1">>, <<"K76">>, null},
     
     ?assertMatch(false, key_lookup(Man0, 1, LK1_1)),
     ?assertMatch(false, key_lookup(Man1, 1, LK1_1)),
@@ -1223,15 +1355,19 @@ keylookup_manifest_test() ->
     ?assertMatch(false, key_lookup(Man3, 1, LK1_1)),
     ?assertMatch(false, key_lookup(Man6, 1, LK1_1)),
     
-    ?assertMatch("pid_z2", key_lookup(Man6, 1, LK1_2)),
-    ?assertMatch("pid_z2", key_lookup(Man6, 1, LK1_3)),
-    ?assertMatch("pid_z3", key_lookup(Man6, 1, LK1_4)),
-    ?assertMatch("pid_z3", key_lookup(Man6, 1, LK1_5)),
+    PZ2 = list_to_pid("<0.102.0>"),
+    PZ3 = list_to_pid("<0.103.0>"),
+    PZ5 = list_to_pid("<0.105.0>"),
+
+    ?assertMatch(PZ2, key_lookup(Man6, 1, LK1_2)),
+    ?assertMatch(PZ2, key_lookup(Man6, 1, LK1_3)),
+    ?assertMatch(PZ3, key_lookup(Man6, 1, LK1_4)),
+    ?assertMatch(PZ3, key_lookup(Man6, 1, LK1_5)),
     
-    ?assertMatch("pid_z5", key_lookup(Man6, 2, LK1_2)),
-    ?assertMatch("pid_z5", key_lookup(Man6, 2, LK1_3)),
-    ?assertMatch("pid_z5", key_lookup(Man6, 2, LK1_4)),
-    ?assertMatch("pid_z5", key_lookup(Man6, 2, LK1_5)),
+    ?assertMatch(PZ5, key_lookup(Man6, 2, LK1_2)),
+    ?assertMatch(PZ5, key_lookup(Man6, 2, LK1_3)),
+    ?assertMatch(PZ5, key_lookup(Man6, 2, LK1_4)),
+    ?assertMatch(PZ5, key_lookup(Man6, 2, LK1_5)),
     
     {_Man7, _Man8, _Man9, _Man10, _Man11, _Man12,
         Man13} = changeup_setup(Man6),
@@ -1242,18 +1378,20 @@ keylookup_manifest_test() ->
     ?assertMatch(false, key_lookup(Man3, 1, LK1_1)),
     ?assertMatch(false, key_lookup(Man6, 1, LK1_1)),
     
-    ?assertMatch("pid_z2", key_lookup(Man6, 1, LK1_2)),
-    ?assertMatch("pid_z2", key_lookup(Man6, 1, LK1_3)),
-    ?assertMatch("pid_z3", key_lookup(Man6, 1, LK1_4)),
-    ?assertMatch("pid_z3", key_lookup(Man6, 1, LK1_5)),
+    ?assertMatch(PZ2, key_lookup(Man6, 1, LK1_2)),
+    ?assertMatch(PZ2, key_lookup(Man6, 1, LK1_3)),
+    ?assertMatch(PZ3, key_lookup(Man6, 1, LK1_4)),
+    ?assertMatch(PZ3, key_lookup(Man6, 1, LK1_5)),
     
-    ?assertMatch("pid_z5", key_lookup(Man6, 2, LK1_2)),
-    ?assertMatch("pid_z5", key_lookup(Man6, 2, LK1_3)),
-    ?assertMatch("pid_z5", key_lookup(Man6, 2, LK1_4)),
-    ?assertMatch("pid_z5", key_lookup(Man6, 2, LK1_5)),
+    ?assertMatch(PZ5, key_lookup(Man6, 2, LK1_2)),
+    ?assertMatch(PZ5, key_lookup(Man6, 2, LK1_3)),
+    ?assertMatch(PZ5, key_lookup(Man6, 2, LK1_4)),
+    ?assertMatch(PZ5, key_lookup(Man6, 2, LK1_5)),
     
-    ?assertMatch("pid_y3", key_lookup(Man13, 1, LK1_4)),
-    ?assertMatch("pid_z5", key_lookup(Man13, 2, LK1_4)).
+    PY3 = list_to_pid("<0.203.0>"),
+
+    ?assertMatch(PY3, key_lookup(Man13, 1, LK1_4)),
+    ?assertMatch(PZ5, key_lookup(Man13, 2, LK1_4)).
 
 ext_keylookup_manifest_test() ->
     RP = "test/test_area",
@@ -1261,10 +1399,13 @@ ext_keylookup_manifest_test() ->
     {_Man0, _Man1, _Man2, _Man3, _Man4, _Man5, Man6} = initial_setup(),
     save_manifest(Man6, RP),
     
-    E7 = #manifest_entry{start_key={o, "Bucket1", "K997", null},
-                            end_key={o, "Bucket1", "K999", null},
-                            filename="Z7",
-                            owner="pid_z7"},
+    E7 =
+        #manifest_entry{
+            start_key={o, <<"Bucket1">>, <<"K997">>, null},
+            end_key={o, <<"Bucket1">>, <<"K999">>, null},
+            filename="Z7",
+            owner=list_to_pid("<0.107.0>")
+        },
     Man7 = insert_manifest_entry(Man6, 2, 2, E7),
     save_manifest(Man7, RP),
     ManOpen1 = open_manifest(RP),
@@ -1275,7 +1416,7 @@ ext_keylookup_manifest_test() ->
     {ok, BytesCopied} = file:copy(Man7FN, Man7FNAlt),
     {ok, Bin} = file:read_file(Man7FN),
     ?assertMatch(BytesCopied, byte_size(Bin)),
-    RandPos = leveled_rand:uniform(bit_size(Bin) - 1),
+    RandPos = rand:uniform(bit_size(Bin) - 1),
     <<Pre:RandPos/bitstring, BitToFlip:1/integer, Rest/bitstring>> = Bin,
     Flipped = BitToFlip bxor 1,
     ok  = file:write_file(Man7FN,
@@ -1288,62 +1429,93 @@ ext_keylookup_manifest_test() ->
     ManOpen2 = open_manifest(RP),
     ?assertMatch(1, get_manifest_sqn(ManOpen2)),
     
-    E1 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
-                            end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K93"},
-                            filename="Z1",
-                            owner="pid_z1",
-                            bloom=none},
-    E2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld9"}, "K97"},
-                            end_key={o, "Bucket1", "K71", null},
-                            filename="Z2",
-                            owner="pid_z2",
-                            bloom=none},
-    E3 = #manifest_entry{start_key={o, "Bucket1", "K75", null},
-                            end_key={o, "Bucket1", "K993", null},
-                            filename="Z3",
-                            owner="pid_z3",
-                            bloom=none},
+    E1 =
+        #manifest_entry{
+            start_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld1">>}, <<"K8">>},
+            end_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld9">>}, <<"K93">>},
+            filename="Z1",
+            owner=list_to_pid("<0.101.0>"),
+            bloom=none
+        },
+    E2 =
+        #manifest_entry{
+            start_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld9">>}, <<"K97">>},
+            end_key={o, <<"Bucket1">>, <<"K71">>, null},
+            filename="Z2",
+            owner=list_to_pid("<0.102.0>"),
+            bloom=none
+        },
+    E3 =
+        #manifest_entry{
+            start_key={o, <<"Bucket1">>, <<"K75">>, null},
+            end_key={o, <<"Bucket1">>, <<"K993">>, null},
+            filename="Z3",
+            owner=list_to_pid("<0.103.0>"),
+            bloom=none
+        },
     
-    E1_2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld4"}, "K8"},
-                            end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K62"},
-                            owner="pid_y1",
-                            filename="Y1",
-                            bloom=none},
-    E2_2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld9"}, "K67"},
-                            end_key={o, "Bucket1", "K45", null},
-                            owner="pid_y2",
-                            filename="Y2",
-                            bloom=none},
-    E3_2 = #manifest_entry{start_key={o, "Bucket1", "K47", null},
-                            end_key={o, "Bucket1", "K812", null},
-                            owner="pid_y3",
-                            filename="Y3",
-                            bloom=none},
-    E4_2 = #manifest_entry{start_key={o, "Bucket1", "K815", null},
-                            end_key={o, "Bucket1", "K998", null},
-                            owner="pid_y4",
-                            filename="Y4",
-                            bloom=none},
+    E1_2 =
+        #manifest_entry{
+            start_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld4">>}, <<"K8">>},
+            end_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld9">>}, <<"K62">>},
+            owner=list_to_pid("<0.201.0>"),
+            filename="Y1",
+            bloom=none
+        },
+    E2_2 =
+        #manifest_entry{
+            start_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld9">>}, <<"K67">>},
+            end_key={o, <<"Bucket1">>, <<"K45">>, null},
+            owner=list_to_pid("<0.202.0>"),
+            filename="Y2",
+            bloom=none
+        },
+    E3_2 =
+        #manifest_entry{
+            start_key={o, <<"Bucket1">>, <<"K47">>, null},
+            end_key={o, <<"Bucket1">>, <<"K812">>, null},
+            owner=list_to_pid("<0.203.0>"),
+            filename="Y3",
+            bloom=none
+        },
+    E4_2 =
+        #manifest_entry{
+            start_key={o, <<"Bucket1">>, <<"K815">>, null},
+            end_key={o, <<"Bucket1">>, <<"K998">>, null},
+            owner=list_to_pid("<0.104.0>"),
+            filename="Y4",
+            bloom=none
+        },
     
     Man8 = replace_manifest_entry(ManOpen2, 2, 1, E1, E1_2),
     Man9 = remove_manifest_entry(Man8, 2, 1, [E2, E3]),
     Man10 = insert_manifest_entry(Man9, 2, 1, [E2_2, E3_2, E4_2]),
     ?assertMatch(2, get_manifest_sqn(Man10)),
     
-    LK1_4 = {o, "Bucket1", "K75", null},
-    ?assertMatch("pid_y3", key_lookup(Man10, 1, LK1_4)),
-    ?assertMatch("pid_z5", key_lookup(Man10, 2, LK1_4)),
+    LK1_4 = {o, <<"Bucket1">>, <<"K75">>, null},
+
+    PY3 = list_to_pid("<0.203.0>"),
+    PZ5 = list_to_pid("<0.105.0>"),
+
+    ?assertMatch(PY3, key_lookup(Man10, 1, LK1_4)),
+    ?assertMatch(PZ5, key_lookup(Man10, 2, LK1_4)),
     
-    E5 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld7"}, "K97"},
-                            end_key={o, "Bucket1", "K78", null},
-                            filename="Z5",
-                            owner="pid_z5",
-                            bloom=none},
-    E6 = #manifest_entry{start_key={o, "Bucket1", "K81", null},
-                            end_key={o, "Bucket1", "K996", null},
-                            filename="Z6",
-                            owner="pid_z6",
-                            bloom=none},
+    E5 =
+        #manifest_entry{
+            start_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld7">>}, <<"K97">>},
+            end_key={o, <<"Bucket1">>, <<"K78">>, null},
+            filename="Z5",
+            owner=PZ5,
+            bloom=none
+        },
+    E6 =
+        #manifest_entry{
+            start_key={o, <<"Bucket1">>, <<"K81">>, null},
+            end_key={o, <<"Bucket1">>, <<"K996">>, null},
+            filename="Z6",
+            owner=list_to_pid("<0.106.0>"),
+            bloom=none
+        },
     
     Man11 = remove_manifest_entry(Man10, 3, 2, [E5, E6]),
     ?assertMatch(3, get_manifest_sqn(Man11)),
@@ -1351,7 +1523,7 @@ ext_keylookup_manifest_test() ->
     
     Man12 = replace_manifest_entry(Man11, 4, 2, E2_2, E5),
     ?assertMatch(4, get_manifest_sqn(Man12)),
-    ?assertMatch("pid_z5", key_lookup(Man12, 2, LK1_4)).
+    ?assertMatch(PZ5, key_lookup(Man12, 2, LK1_4)).
 
 rangequery_manifest_test() ->
     {_Man0, _Man1, _Man2, _Man3, _Man4, _Man5, Man6} = initial_setup(),
@@ -1361,50 +1533,60 @@ rangequery_manifest_test() ->
             {next, ME, _SK} = Pointer,
             ME#manifest_entry.owner
         end,
+
+    PZ1 = list_to_pid("<0.101.0>"),
+    PZ3 = list_to_pid("<0.103.0>"),
+    PZ5 = list_to_pid("<0.105.0>"),
+    PZ6 = list_to_pid("<0.106.0>"),
+    PY1 = list_to_pid("<0.201.0>"),
+    PY3 = list_to_pid("<0.203.0>"),
+    PY4 = list_to_pid("<0.204.0>"),
     
-    SK1 = {o, "Bucket1", "K711", null},
-    EK1 = {o, "Bucket1", "K999", null},
+    SK1 = {o, <<"Bucket1">>, <<"K711">>, null},
+    EK1 = {o, <<"Bucket1">>, <<"K999">>, null},
     RL1_1 = lists:map(PidMapFun, range_lookup(Man6, 1, SK1, EK1)),
-    ?assertMatch(["pid_z3"], RL1_1),
+    ?assertMatch([PZ3], RL1_1),
     RL1_2 = lists:map(PidMapFun, range_lookup(Man6, 2, SK1, EK1)),
-    ?assertMatch(["pid_z5", "pid_z6"], RL1_2),
-    SK2 = {i, "Bucket1", {"Idx1", "Fld8"}, null},
-    EK2 = {i, "Bucket1", {"Idx1", "Fld8"}, null},
+    ?assertMatch([PZ5, PZ6], RL1_2),
+    SK2 = {i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld8">>}, null},
+    EK2 = {i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld8">>}, null},
     RL2_1 = lists:map(PidMapFun, range_lookup(Man6, 1, SK2, EK2)),
-    ?assertMatch(["pid_z1"], RL2_1),
+    ?assertMatch([PZ1], RL2_1),
     RL2_2 = lists:map(PidMapFun, range_lookup(Man6, 2, SK2, EK2)),
-    ?assertMatch(["pid_z5"], RL2_2),
+    ?assertMatch([PZ5], RL2_2),
     
-    SK3 = {o, "Bucket1", "K994", null},
-    EK3 = {o, "Bucket1", "K995", null},
+    SK3 = {o, <<"Bucket1">>, <<"K994">>, null},
+    EK3 = {o, <<"Bucket1">>, <<"K995">>, null},
     RL3_1 = lists:map(PidMapFun, range_lookup(Man6, 1, SK3, EK3)),
     ?assertMatch([], RL3_1),
     RL3_2 = lists:map(PidMapFun, range_lookup(Man6, 2, SK3, EK3)),
-    ?assertMatch(["pid_z6"], RL3_2),
+    ?assertMatch([PZ6], RL3_2),
     
     {_Man7, _Man8, _Man9, _Man10, _Man11, _Man12,
         Man13} = changeup_setup(Man6),
     
     RL1_1A = lists:map(PidMapFun, range_lookup(Man6, 1, SK1, EK1)),
-    ?assertMatch(["pid_z3"], RL1_1A),
+    ?assertMatch([PZ3], RL1_1A),
     RL2_1A = lists:map(PidMapFun, range_lookup(Man6, 1, SK2, EK2)),
-    ?assertMatch(["pid_z1"], RL2_1A),
+    ?assertMatch([PZ1], RL2_1A),
     RL3_1A = lists:map(PidMapFun, range_lookup(Man6, 1, SK3, EK3)),
     ?assertMatch([], RL3_1A),
      
     RL1_1B = lists:map(PidMapFun, range_lookup(Man13, 1, SK1, EK1)),
-    ?assertMatch(["pid_y3", "pid_y4"], RL1_1B),
+    ?assertMatch([PY3, PY4], RL1_1B),
     RL2_1B = lists:map(PidMapFun, range_lookup(Man13, 1, SK2, EK2)),
-    ?assertMatch(["pid_y1"], RL2_1B),
+    ?assertMatch([PY1], RL2_1B),
     RL3_1B = lists:map(PidMapFun, range_lookup(Man13, 1, SK3, EK3)),
-    ?assertMatch(["pid_y4"], RL3_1B).
+    ?assertMatch([PY4], RL3_1B).
 
 levelzero_present_test() ->
-    E0 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
-                            end_key={o, "Bucket1", "Key996", null},
-                            filename="Z0",
-                            owner="pid_z0",
-                            bloom=none},
+    E0 =
+        #manifest_entry{
+            start_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld1">>}, <<"K8">>},
+            end_key={o, <<"Bucket1">>, <<"Key996">>, null},
+            filename="Z0",
+            owner=list_to_pid("<0.101.0>"),
+            bloom=none},
      
     Man0 = new_manifest(),
     ?assertMatch(false, levelzero_present(Man0)),
@@ -1426,21 +1608,30 @@ snapshot_release_test() ->
     PidA3 = spawn(fun() -> ok end),
     PidA4 = spawn(fun() -> ok end),
     Man6 = element(7, initial_setup()),
-    E1 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld1"}, "K8"},
-                            end_key={i, "Bucket1", {"Idx1", "Fld9"}, "K93"},
-                            filename="Z1",
-                            owner="pid_z1",
-                            bloom=none},
-    E2 = #manifest_entry{start_key={i, "Bucket1", {"Idx1", "Fld9"}, "K97"},
-                            end_key={o, "Bucket1", "K71", null},
-                            filename="Z2",
-                            owner="pid_z2",
-                            bloom=none},
-    E3 = #manifest_entry{start_key={o, "Bucket1", "K75", null},
-                            end_key={o, "Bucket1", "K993", null},
-                            filename="Z3",
-                            owner="pid_z3",
-                            bloom=none},
+    E1 =
+        #manifest_entry{
+            start_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld1">>}, <<"K8">>},
+            end_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld9">>}, <<"K93">>},
+            filename="Z1",
+            owner=list_to_pid("<0.101.0>"),
+            bloom=none
+        },
+    E2 =
+        #manifest_entry{
+            start_key={i, <<"Bucket1">>, {<<"Idx1">>, <<"Fld9">>}, <<"K97">>},
+            end_key={o, <<"Bucket1">>, <<"K71">>, null},
+            filename="Z2",
+            owner=list_to_pid("<0.102.0>"),
+            bloom=none
+        },
+    E3 =
+        #manifest_entry{
+            start_key={o, <<"Bucket1">>, <<"K75">>, null},
+            end_key={o, <<"Bucket1">>, <<"K993">>, null},
+            filename="Z3",
+            owner=list_to_pid("<0.103.0>"),
+            bloom=none
+        },
     
     Man7 = add_snapshot(Man6, PidA1, 3600),
     Man8 = remove_manifest_entry(Man7, 2, 1, E1),
@@ -1493,39 +1684,79 @@ snapshot_timeout_test() ->
 
 potential_issue_test() ->
     Manifest = 
-        {manifest,{array,9,0,[],
-                 {[],
-                  [{manifest_entry,{o_rkv,"Bucket","Key10",null},
-                                   {o_rkv,"Bucket","Key12949",null},
-                                   "<0.313.0>","./16_1_0.sst", none},
-                   {manifest_entry,{o_rkv,"Bucket","Key129490",null},
-                                   {o_rkv,"Bucket","Key158981",null},
-                                   "<0.315.0>","./16_1_1.sst", none},
-                   {manifest_entry,{o_rkv,"Bucket","Key158982",null},
-                                   {o_rkv,"Bucket","Key188472",null},
-                                   "<0.316.0>","./16_1_2.sst", none}],
-                  {idxt,1,
-                        {{[{{o_rkv,"Bucket1","Key1",null},
-                            {manifest_entry,{o_rkv,"Bucket","Key9083",null},
-                                            {o_rkv,"Bucket1","Key1",null},
-                                            "<0.320.0>","./16_1_6.sst", none}}]},
-                         {1,{{o_rkv,"Bucket1","Key1",null},1,nil,nil}}}},
-                  {idxt,0,{{},{0,nil}}},
-                  {idxt,0,{{},{0,nil}}},
-                  {idxt,0,{{},{0,nil}}},
-                  {idxt,0,{{},{0,nil}}},
-                  {idxt,0,{{},{0,nil}}},
-                  {idxt,0,{{},{0,nil}}},
-                  []}},
-          19, [], 0, dict:new(), 2, dict:new()},
-    Range1 = range_lookup(Manifest, 
-                            1, 
-                            {o_rkv, "Bucket", null, null}, 
-                            {o_rkv, "Bucket", null, null}),
-    Range2 = range_lookup(Manifest, 
-                            2, 
-                            {o_rkv, "Bucket", null, null}, 
-                            {o_rkv, "Bucket", null, null}),
+        {manifest,
+            {array,9,0,[],
+            {
+                [],
+                [
+                    {manifest_entry,
+                        {o_rkv, <<"Bucket">>, <<"Key10">>, null},
+                        {o_rkv, <<"Bucket">>, <<"Key12949">>,null},
+                        list_to_pid("<0.313.0>"),
+                        "./16_1_0.sst",
+                        none
+                    },
+                    {manifest_entry,
+                        {o_rkv, <<"Bucket">>, <<"Key129490">>, null},
+                        {o_rkv, <<"Bucket">>, <<"Key158981">>, null},
+                        list_to_pid("<0.315.0>"),
+                        "./16_1_1.sst",
+                        none
+                    },
+                    {manifest_entry,
+                        {o_rkv, <<"Bucket">>, <<"Key158982">>, null},
+                        {o_rkv, <<"Bucket">>, <<"Key188472">>, null},
+                        list_to_pid("<0.316.0>"),
+                        "./16_1_2.sst",
+                        none
+                    }
+            ],
+            {
+                idxt,
+                1,
+                {
+                    {
+                        [
+                            {{o_rkv, <<"Bucket1">>, <<"Key1">>, null},
+                                {
+                                    manifest_entry,
+                                    {o_rkv, <<"Bucket">>, <<"Key9083">>, null},
+                                    {o_rkv, <<"Bucket1">>, <<"Key1">>, null},
+                                    list_to_pid("<0.320.0>"),
+                                    "./16_1_6.sst",
+                                    none
+                                }
+                            }
+                        ]
+                    },
+                {1, {{o_rkv, <<"Bucket1">> ,<<"Key1">> ,null},1,nil,nil}}}},
+                {idxt,0,{{},{0,nil}}},
+                {idxt,0,{{},{0,nil}}},
+                {idxt,0,{{},{0,nil}}},
+                {idxt,0,{{},{0,nil}}},
+                {idxt,0,{{},{0,nil}}},
+                {idxt,0,{{},{0,nil}}},
+                []}},
+          19,
+          [],
+          0,
+          new_pending_deletions(),
+          2,
+          new_blooms()},
+    Range1 = 
+        range_lookup(
+            Manifest, 
+            1, 
+            {o_rkv, <<"Bucket">>, null, null}, 
+            {o_rkv, <<"Bucket">>, null, null}
+        ),
+    Range2 =
+        range_lookup(
+            Manifest, 
+            2, 
+            {o_rkv, <<"Bucket">>, null, null}, 
+            {o_rkv, <<"Bucket">>, null, null}
+        ),
     io:format("Range in Level 1 ~w~n", [Range1]),
     io:format("Range in Level 2 ~w~n", [Range2]),
     ?assertMatch(3, length(Range1)),

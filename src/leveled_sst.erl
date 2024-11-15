@@ -63,6 +63,9 @@
 
 -include("leveled.hrl").
 
+% Test functions to ignore for equalizer
+-eqwalizer({nowarn_function, fetch_status_test/0}).
+
 -define(LOOK_SLOTSIZE, 128). % Maximum of 128
 -define(LOOK_BLOCKSIZE, {24, 32}). % 4x + y = ?LOOK_SLOTSIZE
 -define(NOLOOK_SLOTSIZE, 256).
@@ -83,7 +86,6 @@
 -define(FLIPPER32, 4294967295).
 -define(DOUBLESIZE_LEVEL, 3).
 -define(INDEX_MODDATE, true).
--define(TOMB_COUNT, true).
 -define(USE_SET_FOR_SPEED, 32).
 -define(STARTUP_TIMEOUT, 10000).
 -define(MIN_HASH, 32768).
@@ -126,7 +128,7 @@
          sst_gettombcount/1,
          sst_close/1]).
 
--export([sst_newmerge/10]).
+-export([sst_newmerge/9]).
 
 -export([tune_seglist/1, extract_hash/1, segment_checker/1]).
 
@@ -170,7 +172,7 @@
         range_endpoint()}.
 -type expandable_pointer()
     :: slot_pointer()|sst_pointer()|sst_closed_pointer().
--type expanded_pointer()
+-type maybe_expanded_pointer()
     :: leveled_codec:ledger_kv()|expandable_pointer().
 -type expanded_slot() ::
     {binary(), non_neg_integer(), range_endpoint(), range_endpoint()}.
@@ -179,7 +181,12 @@
 -type sst_options()
     :: #sst_options{}.
 -type binary_slot()
-    :: {binary(), binary(), list(integer()), leveled_codec:ledger_key()}.
+    :: {
+        binary(),
+        binary(),
+        list(leveled_codec:segment_hash()),
+        leveled_codec:ledger_key()
+    }.
 -type sst_summary()
     :: #summary{}.
 -type blockindex_cache()
@@ -199,27 +206,38 @@
     | false.
 -type fetch_levelzero_fun()
     :: fun((pos_integer(), leveled_penciller:levelzero_returnfun()) -> ok).
+-type extract_hash() :: non_neg_integer()|no_lookup.
+
+-record(read_state,
+    {
+        handle :: file:io_device(),
+        blockindex_cache :: blockindex_cache()|redacted,
+        fetch_cache :: fetch_cache()|redacted,
+        level :: leveled_pmanifest:lsm_level(),
+        filter_fun :: summary_filter()
+    }
+).
+
+-type read_state() :: #read_state{}.
 
 -record(state,
-        {summary,
-            handle :: file:fd() | undefined,
-            penciller :: pid() | undefined | false,
-            root_path,
-            filename,
-            blockindex_cache ::
-                blockindex_cache() | undefined | redacted,
-            compression_method = native :: press_method(),
-            index_moddate = ?INDEX_MODDATE :: boolean(),
-            starting_pid :: pid()|undefined,
-            fetch_cache = no_cache :: fetch_cache() | redacted,
-            new_slots :: list()|undefined,
-            deferred_startup_tuple :: tuple()|undefined,
-            level :: leveled_pmanifest:lsm_level()|undefined,
-            tomb_count = not_counted
-                    :: non_neg_integer()|not_counted,
-            high_modified_date :: non_neg_integer()|undefined,
-            filter_fun :: summary_filter() | undefined,
-            monitor = {no_monitor, 0} :: leveled_monitor:monitor()}).
+    {
+        summary,
+        penciller :: pid() | undefined | false,
+        root_path,
+        filename,
+        read_state :: read_state() | undefined,
+        compression_method = native :: press_method(),
+        index_moddate = ?INDEX_MODDATE :: boolean(),
+        starting_pid :: pid()|undefined,
+        new_slots :: list()|undefined,
+        deferred_startup_tuple :: tuple()|undefined,
+        tomb_count = not_counted
+                :: non_neg_integer()|not_counted,
+        high_modified_date :: non_neg_integer()|undefined,
+        monitor = {no_monitor, 0} :: leveled_monitor:monitor()
+    }
+).
 
 -record(build_timings,
         {slot_hashlist = 0 :: integer(),
@@ -238,8 +256,9 @@
 
 -spec sst_open(
         string(), string(), sst_options(), leveled_pmanifest:lsm_level())
-            -> {ok, pid(),
-                    {leveled_codec:ledger_key(), leveled_codec:ledger_key()},
+            ->
+                {ok, pid(),
+                    {leveled_codec:object_key(), leveled_codec:object_key()},
                     binary()}.
 %% @doc
 %% Open an SST file at a given path and filename.  The first and last keys
@@ -261,7 +280,8 @@ sst_open(RootPath, Filename, OptsSST, Level) ->
                     list(leveled_codec:ledger_kv()),
                     integer(), sst_options())
             -> {ok, pid(),
-                    {leveled_codec:ledger_key(), leveled_codec:ledger_key()},
+                    {leveled_codec:object_key(),
+                        leveled_codec:object_key()},
                     binary()}.
 %% @doc
 %% Start a new SST file at the assigned level passing in a list of Key, Value
@@ -299,8 +319,8 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST, IndexModDate) ->
             -> empty|{ok, pid(),
                 {{list(leveled_codec:ledger_kv()),
                         list(leveled_codec:ledger_kv())},
-                    leveled_codec:ledger_key(),
-                    leveled_codec:ledger_key()},
+                    leveled_codec:object_key(),
+                    leveled_codec:object_key()},
                     binary()}.
 %% @doc
 %% Start a new SST file at the assigned level passing in a two lists of
@@ -318,11 +338,11 @@ sst_newmerge(RootPath, Filename,
         MaxSQN, OptsSST) when Level > 0 ->
     sst_newmerge(RootPath, Filename,
         KVL1, KVL2, IsBasement, Level,
-        MaxSQN, OptsSST, ?INDEX_MODDATE, ?TOMB_COUNT).
+        MaxSQN, OptsSST, ?INDEX_MODDATE).
 
 sst_newmerge(RootPath, Filename,
         KVL1, KVL2, IsBasement, Level,
-        MaxSQN, OptsSST, IndexModDate, TombCount) ->
+        MaxSQN, OptsSST, IndexModDate) ->
     OptsSST0 = update_options(OptsSST, Level),
     {Rem1, Rem2, SlotList, FK, CountOfTombs} = 
         merge_lists(
@@ -330,8 +350,8 @@ sst_newmerge(RootPath, Filename,
             KVL2,
             {IsBasement, Level},
             OptsSST0,
-            IndexModDate,
-            TombCount),
+            IndexModDate
+        ),
     case SlotList of
         [] ->
             empty;
@@ -348,7 +368,9 @@ sst_newmerge(RootPath, Filename,
                         MaxSQN, 
                         OptsSST0, 
                         IndexModDate, 
-                        CountOfTombs, self()},
+                        CountOfTombs,
+                        self()
+                    },
                     infinity),
             {ok, Pid, {{Rem1, Rem2}, SK, EK}, Bloom}
     end.
@@ -387,8 +409,9 @@ sst_newlevelzero(
     {ok, Pid, noreply}.
 
 
--spec sst_get(pid(), leveled_codec:ledger_key())
-                                    -> leveled_codec:ledger_kv()|not_present.
+-spec sst_get(
+    pid(), leveled_codec:object_key()) ->
+        leveled_codec:ledger_kv()|not_present.
 %% @doc
 %% Return a Key, Value pair matching a Key or not_present if the Key is not in
 %% the store.  The segment_hash function is used to accelerate the seeking of
@@ -396,17 +419,18 @@ sst_newlevelzero(
 sst_get(Pid, LedgerKey) ->
     sst_get(Pid, LedgerKey, leveled_codec:segment_hash(LedgerKey)).
 
--spec sst_get(pid(), leveled_codec:ledger_key(), leveled_codec:segment_hash())
-                                    -> leveled_codec:ledger_kv()|not_present.
+-spec sst_get(
+    pid(), leveled_codec:object_key(), leveled_codec:segment_hash())
+        -> leveled_codec:ledger_kv()|not_present.
 %% @doc
 %% Return a Key, Value pair matching a Key or not_present if the Key is not in
 %% the store (with the magic hash precalculated).
 sst_get(Pid, LedgerKey, Hash) ->
     gen_statem:call(Pid, {get_kv, LedgerKey, Hash, undefined}, infinity).
 
--spec sst_getsqn(pid(),
-    leveled_codec:ledger_key(),
-    leveled_codec:segment_hash()) -> leveled_codec:sqn()|not_present.
+-spec sst_getsqn(
+    pid(), leveled_codec:object_key(), leveled_codec:segment_hash())
+        -> leveled_codec:sqn()|not_present.
 %% @doc
 %% Return a SQN for the key or not_present if the key is not in
 %% the store (with the magic hash precalculated).
@@ -424,7 +448,7 @@ sst_getmaxsequencenumber(Pid) ->
     list(expandable_pointer()),
     pos_integer(),
     segment_check_fun(),
-    non_neg_integer()) -> list(expanded_pointer()).
+    non_neg_integer()) -> list(maybe_expanded_pointer()).
 %% @doc
 %% Expand out a list of pointer to return a list of Keys and Values with a
 %% tail of pointers (once the ScanWidth has been satisfied).
@@ -469,7 +493,7 @@ sst_deleteconfirmed(Pid) ->
     gen_statem:cast(Pid, close).
 
 -spec sst_checkready(pid()) -> 
-    {ok, string(), leveled_codec:ledger_key(), leveled_codec:ledger_key()}.
+    {ok, string(), leveled_codec:object_key(), leveled_codec:object_key()}.
 %% @doc
 %% If a file has been set to be built, check that it has been built.  Returns
 %% the filename and the {startKey, EndKey} for the manifest.
@@ -507,14 +531,17 @@ starting({call, From},
     leveled_log:save(OptsSST#sst_options.log_options),
     Monitor = OptsSST#sst_options.monitor,
     {UpdState, Bloom} =
-        read_file(Filename,
-                    State#state{root_path=RootPath},
-                    OptsSST#sst_options.pagecache_level >= Level),
+        read_file(
+            Filename,
+            State#state{root_path=RootPath},
+            OptsSST#sst_options.pagecache_level >= Level,
+            undefined,
+            Level
+        ),
     Summary = UpdState#state.summary,
     {next_state,
         reader,
-        UpdState#state{
-            level = Level, fetch_cache = new_cache(Level), monitor = Monitor},
+        UpdState#state{monitor = Monitor},
         [{reply, From,
             {ok,
                 {Summary#summary.first_key, Summary#summary.last_key},
@@ -532,7 +559,7 @@ starting({call, From},
     PressMethod = OptsSST#sst_options.press_method,
     {Length, SlotIndex, BlockEntries, SlotsBin, Bloom} =
         build_all_slots(SlotList),
-    {_, BlockIndex, HighModDate} =
+    {_, BlockIndexCache, HighModDate} =
         update_blockindex_cache(
             BlockEntries,
             new_blockindex_cache(Length),
@@ -549,7 +576,10 @@ starting({call, From},
         read_file(
             ActualFilename,
             State#state{root_path=RootPath},
-            OptsSST#sst_options.pagecache_level >= Level),
+            OptsSST#sst_options.pagecache_level >= Level,
+            BlockIndexCache,
+            Level
+        ),
     Summary = UpdState#state.summary,
     leveled_log:log_timer(
         sst08, [ActualFilename, Level, Summary#summary.max_sqn], SW),
@@ -557,11 +587,8 @@ starting({call, From},
     {next_state,
         reader,
         UpdState#state{
-            blockindex_cache = BlockIndex,
             high_modified_date = HighModDate,
             starting_pid = StartingPID,
-            level = Level,
-            fetch_cache = new_cache(Level),
             monitor = Monitor},
         [{reply,
             From,
@@ -575,9 +602,7 @@ starting({call, From}, {sst_newlevelzero, RootPath, Filename,
             IdxModDate},
     {next_state, starting,
         State#state{
-            deferred_startup_tuple = DeferredStartupTuple,
-            level = 0,
-            fetch_cache = new_cache(0)},
+            deferred_startup_tuple = DeferredStartupTuple},
         [{reply, From, ok}]};
 starting({call, From}, close, State) ->
     %% No file should have been created, so nothing to close.
@@ -592,6 +617,7 @@ starting(cast, complete_l0startup, State) ->
         State#state.deferred_startup_tuple,
     SW0 = os:timestamp(),
     FetchedSlots = State#state.new_slots,
+    FetchedSlots =/= undefined orelse error(invalid_type),
     leveled_log:save(OptsSST#sst_options.log_options),
     Monitor = OptsSST#sst_options.monitor,
     PressMethod = OptsSST#sst_options.press_method,
@@ -607,7 +633,7 @@ starting(cast, complete_l0startup, State) ->
     SW2 = os:timestamp(),
     {SlotCount, SlotIndex, BlockEntries, SlotsBin,Bloom} =
         build_all_slots(SlotList),
-    {_, BlockIndex, HighModDate} =
+    {_, BlockIndexCache, HighModDate} =
         update_blockindex_cache(
             BlockEntries,
             new_blockindex_cache(SlotCount),
@@ -632,7 +658,10 @@ starting(cast, complete_l0startup, State) ->
                 root_path=RootPath,              
                 new_slots=undefined, % Important to empty this from state
                 deferred_startup_tuple=undefined},
-            true),
+            true,
+            BlockIndexCache,
+            0
+        ),
     Summary = UpdState#state.summary,
     Time4 = timer:now_diff(os:timestamp(), SW4),
 
@@ -655,16 +684,15 @@ starting(cast, complete_l0startup, State) ->
     {next_state,
         reader,
         UpdState#state{
-            blockindex_cache = BlockIndex,
             high_modified_date = HighModDate,
             monitor = Monitor}};
 starting(cast, {sst_returnslot, FetchedSlot, FetchFun, SlotCount}, State) ->
     FetchedSlots =
-        case FetchedSlot of
-            none ->
-                [];
+        case {FetchedSlot, State#state.new_slots} of
+            {FS, PreviousSlots} when FS =/= none, is_list(PreviousSlots) ->
+                [FetchedSlot|PreviousSlots];
             _ ->
-                [FetchedSlot|State#state.new_slots]
+                []
         end,
     case length(FetchedSlots) == SlotCount of
         true ->
@@ -685,7 +713,9 @@ starting(cast, {sst_returnslot, FetchedSlot, FetchFun, SlotCount}, State) ->
                 State#state{new_slots = FetchedSlots}}
     end.
 
-reader({call, From}, {get_kv, LedgerKey, Hash, Filter}, State) ->
+reader({call, From},
+        {get_kv, LedgerKey, Hash, Filter},
+        State = #state{read_state = RS}) when ?IS_DEF(RS)->
     % Get a KV value and potentially take sample timings
     Monitor =
         case Filter of
@@ -694,65 +724,69 @@ reader({call, From}, {get_kv, LedgerKey, Hash, Filter}, State) ->
             _ ->
                 {no_monitor, 0}
         end,
-    {KeyValue, BIC, HMD, FC} = 
+    FetchResult = 
         fetch(
-            LedgerKey, Hash,
+            LedgerKey,
+            Hash,
             State#state.summary,
             State#state.compression_method,
             State#state.high_modified_date,
             State#state.index_moddate,
-            State#state.filter_fun,
-            State#state.blockindex_cache,
-            State#state.fetch_cache,
-            State#state.handle,
-            State#state.level,
+            RS#read_state.filter_fun,
+            RS#read_state.blockindex_cache,
+            RS#read_state.fetch_cache,
+            RS#read_state.handle,
+            RS#read_state.level,
             Monitor),
-    Result =
+    FilterFun =
         case Filter of
-            undefined ->
-                KeyValue;
-            F ->
-                F(KeyValue)
+            undefined -> fun(KV) -> KV end;
+            F when is_function(F) -> F
         end,
-    case {BIC, HMD, FC} of
-        {no_update, no_update, no_update} ->
-            {keep_state_and_data, [{reply, From, Result}]};
-        {no_update, no_update, FC} ->
+    case FetchResult of
+        {KV, no_update, no_update, no_update} ->
+            {keep_state_and_data, [{reply, From, FilterFun(KV)}]};
+        {KV, no_update, no_update, FC} ->
+            RS0 = RS#read_state{fetch_cache = FC},
             {keep_state,
-                State#state{fetch_cache = FC},
-                [{reply, From, Result}]};
-        {BIC, undefined, no_update} ->
+                State#state{read_state = RS0},
+                [{reply, From, FilterFun(KV)}]};
+        {KV, BIC, undefined, no_update} when BIC =/= no_update ->
+            RS0 = RS#read_state{blockindex_cache = BIC},
             {keep_state,
-                State#state{blockindex_cache = BIC},
-                [{reply, From, Result}]};
-        {BIC, HMD, no_update} ->
+                State#state{read_state = RS0},
+                [{reply, From, FilterFun(KV)}]};
+        {KV, BIC, HMD, no_update} when BIC =/= no_update, HMD =/= no_update ->
+            RS0 = RS#read_state{blockindex_cache = BIC},
             {keep_state,
-                State#state{blockindex_cache = BIC, high_modified_date = HMD},
-                [hibernate, {reply, From, Result}]}
+                State#state{read_state = RS0, high_modified_date = HMD},
+                [hibernate, {reply, From, FilterFun(KV)}]}
     end;
 reader({call, From},
         {fetch_range, StartKey, EndKey, LowLastMod},
-        State) ->
+        State = #state{read_state = RS}) when ?IS_DEF(RS) ->
     SlotsToPoint =
         fetch_range(
             StartKey,
             EndKey,
             State#state.summary,
-            State#state.filter_fun,
+            RS#read_state.filter_fun,
             check_modified(
                 State#state.high_modified_date,
                 LowLastMod,
                 State#state.index_moddate)
             ),
     {keep_state_and_data, [{reply, From, SlotsToPoint}]};
-reader({call, From}, {get_slots, SlotList, SegChecker, LowLastMod}, State) ->
+reader({call, From},
+        {get_slots, SlotList, SegChecker, LowLastMod},
+        State = #state{read_state = RS}) when ?IS_DEF(RS) ->
     PressMethod = State#state.compression_method,
     IdxModDate = State#state.index_moddate,
     {NeedBlockIdx, SlotBins} =
         read_slots(
-            State#state.handle,
+            RS#read_state.handle,
             SlotList,
-            {SegChecker, LowLastMod, State#state.blockindex_cache},
+            {SegChecker, LowLastMod, RS#read_state.blockindex_cache},
             State#state.compression_method,
             State#state.index_moddate),
     {keep_state_and_data,
@@ -780,15 +814,22 @@ reader({call, From}, background_complete, State) ->
 reader({call, From}, get_tomb_count, State) ->
     {keep_state_and_data,
      [{reply, From, State#state.tomb_count}]};
-reader({call, From}, close, State) ->
-    ok = file:close(State#state.handle),
+reader({call, From},
+        close,
+        State = #state{read_state = RS}) when ?IS_DEF(RS) ->
+    ok = file:close(RS#read_state.handle),
     {stop_and_reply, normal, [{reply, From, ok}], State};
 
-reader(cast, {switch_levels, NewLevel}, State) ->
+reader(cast,
+        {switch_levels, NewLevel},
+        State = #state{read_state = RS}) when ?IS_DEF(RS) ->
     {keep_state,
         State#state{
-            level = NewLevel,
-            fetch_cache = new_cache(NewLevel)
+            read_state =
+                RS#read_state{
+                    fetch_cache = new_cache(NewLevel),
+                    level = NewLevel
+                }
         },
         [hibernate]};
 reader(info, {update_blockindex_cache, BIC}, State) ->
@@ -799,7 +840,10 @@ reader(info, bic_complete, State) ->
     % fragmentation
     leveled_log:log(sst14, [State#state.filename]),
     {keep_state_and_data, [hibernate]};
-reader(info, start_complete, State) ->
+reader(
+        info,
+        start_complete,
+        #state{starting_pid = StartingPid}) when ?IS_DEF(StartingPid) ->
     % The SST file will be started by a clerk, but the clerk may be shut down
     % prior to the manifest being updated about the existence of this SST file.
     % If there is no activity after startup, check the clerk is still alive and
@@ -807,7 +851,7 @@ reader(info, start_complete, State) ->
     % If the clerk has crashed, the penciller will restart at the latest
     % manifest, and so this file sill be restarted if and only if it is still
     % part of the store
-    case is_process_alive(State#state.starting_pid) of
+    case is_process_alive(StartingPid) of
         true ->
             {keep_state_and_data, []};
         false ->
@@ -815,7 +859,9 @@ reader(info, start_complete, State) ->
     end.
 
 
-delete_pending({call, From}, {get_kv, LedgerKey, Hash, Filter}, State) ->
+delete_pending({call, From},
+        {get_kv, LedgerKey, Hash, Filter},
+        State = #state{read_state = RS}) when ?IS_DEF(RS) ->
     {KeyValue, _BIC, _HMD, _FC} = 
         fetch(
             LedgerKey, Hash,
@@ -823,11 +869,11 @@ delete_pending({call, From}, {get_kv, LedgerKey, Hash, Filter}, State) ->
             State#state.compression_method,
             State#state.high_modified_date,
             State#state.index_moddate,
-            State#state.filter_fun,
-            State#state.blockindex_cache,
-            State#state.fetch_cache,
-            State#state.handle,
-            State#state.level,
+            RS#read_state.filter_fun,
+            RS#read_state.blockindex_cache,
+            RS#read_state.fetch_cache,
+            RS#read_state.handle,
+            RS#read_state.level,
             {no_monitor, 0}),
     Result =
         case Filter of
@@ -840,13 +886,13 @@ delete_pending({call, From}, {get_kv, LedgerKey, Hash, Filter}, State) ->
 delete_pending(
         {call, From},
         {fetch_range, StartKey, EndKey, LowLastMod},
-        State) ->
+        State = #state{read_state = RS}) when ?IS_DEF(RS) ->
     SlotsToPoint =
         fetch_range(
             StartKey,
             EndKey,
             State#state.summary,
-            State#state.filter_fun,
+            RS#read_state.filter_fun,
             check_modified(
                 State#state.high_modified_date,
                 LowLastMod,
@@ -856,29 +902,35 @@ delete_pending(
 delete_pending(
         {call, From},
         {get_slots, SlotList, SegChecker, LowLastMod},
-        State) ->
+        State = #state{read_state = RS}) when ?IS_DEF(RS) ->
     PressMethod = State#state.compression_method,
     IdxModDate = State#state.index_moddate,
     {_NeedBlockIdx, SlotBins} =
         read_slots(
-            State#state.handle,
+            RS#read_state.handle,
             SlotList,
-            {SegChecker, LowLastMod, State#state.blockindex_cache},
+            {SegChecker, LowLastMod, RS#read_state.blockindex_cache},
             PressMethod,
             IdxModDate),
     {keep_state_and_data,
         [{reply, From, {false, SlotBins, PressMethod, IdxModDate}},
             ?DELETE_TIMEOUT]};
-delete_pending({call, From}, close, State) ->
+delete_pending(
+        {call, From},
+        close,
+        State = #state{read_state = RS}) when ?IS_DEF(RS) ->
     leveled_log:log(sst07, [State#state.filename]),
-    ok = file:close(State#state.handle),
+    ok = file:close(RS#read_state.handle),
     ok = 
         file:delete(
             filename:join(State#state.root_path, State#state.filename)),
     {stop_and_reply, normal, [{reply, From, ok}], State};
-delete_pending(cast, close, State) ->
+delete_pending(
+        cast,
+        close,
+        State = #state{read_state = RS}) when ?IS_DEF(RS) ->
     leveled_log:log(sst07, [State#state.filename]),
-    ok = file:close(State#state.handle),
+    ok = file:close(RS#read_state.handle),
     ok = 
         file:delete(
             filename:join(State#state.root_path, State#state.filename)),
@@ -892,27 +944,32 @@ delete_pending(timeout, _, State) ->
     case State#state.penciller of
         false ->
             ok = leveled_sst:sst_deleteconfirmed(self());
-        PCL ->
+        PCL when is_pid(PCL) ->
             FN = State#state.filename,
             ok = leveled_penciller:pcl_confirmdelete(PCL, FN, self())
-        end,
+    end,
     % If the next thing is another timeout - may be long-running snapshot, so
     % back-off
-    {keep_state_and_data, [leveled_rand:uniform(10) * ?DELETE_TIMEOUT]}.
+    {keep_state_and_data, [rand:uniform(10) * ?DELETE_TIMEOUT]}.
 
-handle_update_blockindex_cache(BIC, State) ->
+handle_update_blockindex_cache(
+        BIC,
+        State = #state{read_state = RS}) when ?IS_DEF(RS) ->
     {NeedBlockIdx, BlockIndexCache, HighModDate} =
         update_blockindex_cache(
             BIC,
-            State#state.blockindex_cache,
+            RS#read_state.blockindex_cache,
             State#state.high_modified_date,
             State#state.index_moddate),
     case NeedBlockIdx of
         true ->
             {keep_state,
                 State#state{
-                    blockindex_cache = BlockIndexCache,
-                    high_modified_date = HighModDate}};
+                    read_state =
+                        RS#read_state{blockindex_cache = BlockIndexCache},
+                    high_modified_date = HighModDate
+                }
+            };
         false ->
             keep_state_and_data
     end.
@@ -927,14 +984,17 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 
 
 format_status(Status) ->
-    case maps:get(reason, Status, normal) of
-        terminate ->
-            State = maps:get(state, Status),
+    case {maps:get(reason, Status, normal), maps:get(state, Status)} of
+        {terminate, State = #state{read_state = RS}} when ?IS_DEF(RS) ->
             maps:update(
                 state,
                 State#state{
-                    blockindex_cache = redacted, 
-                    fetch_cache = redacted},
+                    read_state =
+                        RS#read_state{
+                            blockindex_cache = redacted,
+                            fetch_cache = redacted
+                        }
+                    },
                 Status
             );
         _ ->
@@ -949,7 +1009,7 @@ format_status(Status) ->
 -spec expand_list_by_pointer(
     expandable_pointer(),
     list(expandable_pointer()),
-    pos_integer()) -> list(expanded_pointer()).
+    pos_integer()) -> list(maybe_expanded_pointer()).
 %% @doc
 %% Expand a list of pointers, maybe ending up with a list of keys and values
 %% with a tail of pointers
@@ -966,7 +1026,7 @@ expand_list_by_pointer(Pointer, Tail, Width) ->
     list(expandable_pointer()),
     pos_integer(),
     segment_check_fun(),
-    non_neg_integer()) -> list(expanded_pointer()).
+    non_neg_integer()) -> list(maybe_expanded_pointer()).
 %% @doc
 %% With filters (as described in expand_list_by_pointer/3
 expand_list_by_pointer(
@@ -975,17 +1035,7 @@ expand_list_by_pointer(
     {PotentialPointers, Remainder} =
         lists:split(min(Width - 1, length(Tail)), Tail),
     {LocalPointers, OtherPointers} =
-        lists:partition(
-            fun(Pointer) ->
-                case Pointer of
-                    {pointer, SSTPid, _S, _SK, _EK} ->
-                        true;
-                    _ ->
-                        false
-                end
-            end,
-            PotentialPointers
-        ),
+        split_localpointers(SSTPid, PotentialPointers),
     sst_getfilteredslots(
         SSTPid,
         [{pointer, SSTPid, Slot, StartKey, EndKey}|LocalPointers],
@@ -994,18 +1044,30 @@ expand_list_by_pointer(
         OtherPointers ++ Remainder
     );
 expand_list_by_pointer(
-        {next, ManEntry, StartKey, EndKey},
-        Tail, _Width, _SegChecker, LowLastMod) ->
+        {next, ME, StartKey, EndKey}, Tail, _Width, _SegChecker, LowLastMod
+    ) ->
     % The first pointer is a pointer to a file - expand_list_by_pointer will
     % in this case convert this into list of pointers within that SST file
     % i.e. of the form {pointer, SSTPid, Slot, StartKey, EndKey}
     % This can then be further expanded by calling again to
     % expand_list_by_pointer
-    SSTPid = ManEntry#manifest_entry.owner,
+    SSTPid = leveled_pmanifest:entry_owner(ME),
     leveled_log:log(sst10, [SSTPid, is_process_alive(SSTPid)]),
     ExpPointer = sst_getfilteredrange(SSTPid, StartKey, EndKey, LowLastMod),
     ExpPointer ++ Tail.
 
+-spec split_localpointers(
+    pid(), list(expandable_pointer())) ->
+        {list(slot_pointer()), list(expandable_pointer())}.
+split_localpointers(LocalPid, PotentialPointers) ->
+    lists:partition(
+        fun({pointer, PID, _S, _SK, _EK}) when PID == LocalPid ->
+            true;
+        (_) ->
+            false
+        end,
+        PotentialPointers
+    ).
 
 -spec sst_getfilteredrange(
     pid(),
@@ -1112,7 +1174,7 @@ segment_checker(HashList) when is_list(HashList) ->
     Max = lists:max(HashList),
     case length(HashList) > ?USE_SET_FOR_SPEED of
         true ->
-            HashSet = sets:from_list(HashList),
+            HashSet = sets:from_list(HashList, [{version, 2}]),
             {Min, Max, fun(H) -> sets:is_element(H, HashSet) end};
         false ->
             {Min, Max, fun(H) -> lists:member(H, HashList) end}
@@ -1128,7 +1190,7 @@ sqn_only(KV) ->
     leveled_codec:strip_to_seqonly(KV).
 
 -spec extract_hash(
-        leveled_codec:segment_hash()) -> non_neg_integer()|no_lookup.
+        leveled_codec:segment_hash()) -> extract_hash().
 extract_hash({SegHash, _ExtraHash}) when is_integer(SegHash) ->
     tune_hash(SegHash);
 extract_hash(NotHash) ->
@@ -1141,7 +1203,7 @@ new_cache(Level) ->
         no_cache ->
             no_cache;
         CacheSize ->
-            array:new([{size, CacheSize}])
+            array:new([{size, CacheSize}, {default, none}])
     end.
 
 -spec cache_hash(leveled_codec:segment_hash(), non_neg_integer()) ->
@@ -1171,23 +1233,59 @@ cache_size(6) ->
 cache_size(_LowerLevel) ->
     no_cache.
 
--spec fetch_from_cache(
+-spec get_from_fetchcache(
     cache_hash(),
-    fetch_cache()) -> undefined|leveled_codec:ledger_kv().
-fetch_from_cache(_CacheHash, no_cache) ->
-    undefined;
-fetch_from_cache(CacheHash, Cache) ->
+    fetch_cache()) -> none|leveled_codec:ledger_kv().
+get_from_fetchcache(_CacheHash, no_cache) ->
+    none;
+get_from_fetchcache(CacheHash, Cache) when is_integer(CacheHash) ->
+    % When defining array can use array:array/1 but this will lead to type
+    % issues when using array:new
+    % eqwalizer:ignore 
     array:get(CacheHash, Cache).
 
 -spec add_to_cache(
-    non_neg_integer(),
+    non_neg_integer()|no_cache,
     leveled_codec:ledger_kv(),
     fetch_cache()) -> fetch_cache().
-add_to_cache(_CacheHash, _KV, no_cache) ->
-    no_cache;
-add_to_cache(CacheHash, KV, FetchCache) ->
-    array:set(CacheHash, KV, FetchCache).
+add_to_cache(
+        CacheHash, KV, FetchCache)
+        when is_integer(CacheHash), FetchCache =/= no_cache ->
+    array:set(CacheHash, KV, FetchCache);
+add_to_cache(_CacheHash, _KV, _FetchCache) ->
+    no_cache.
 
+-spec get_from_blockcache(pos_integer(), blockindex_cache()) -> binary()|none.
+get_from_blockcache(SlotID, BIC) when is_integer(SlotID) ->
+    case array:get(SlotID - 1, element(2, BIC)) of
+        CBI when is_binary(CBI) ->
+            CBI;
+        none ->
+            none
+    end.
+
+-spec add_to_blockcache(
+    pos_integer(), blockindex_cache(), binary(), non_neg_integer()|false) ->
+        blockindex_cache().
+add_to_blockcache(SlotID, {Cnt, Cache, HighLMD}, Block, LMD) ->
+    {
+        Cnt + 1,
+        array:set(SlotID - 1, binary:copy(Block), Cache),
+        case LMD of
+            LMD when is_integer(LMD), LMD > HighLMD ->
+                LMD;
+            _ ->
+                HighLMD
+        end
+    }.
+
+-spec size_of_blockcache(blockindex_cache()) -> non_neg_integer().
+size_of_blockcache(BIC) ->
+    array:size(element(2, BIC)).
+
+-spec new_blockindex_cache(pos_integer()) -> blockindex_cache().
+new_blockindex_cache(Size) ->
+    {0, array:new([{size, Size}, {default, none}]), 0}.
 
 -spec tune_hash(non_neg_integer()) -> ?MIN_HASH..?MAX_HASH.
 %% @doc
@@ -1220,44 +1318,40 @@ update_options(OptsSST, Level) ->
         maxslots_level(Level, OptsSST#sst_options.max_sstslots),
     OptsSST#sst_options{press_method = PressMethod0, max_sstslots = MaxSlots0}.
 
--spec new_blockindex_cache(pos_integer()) -> blockindex_cache().
-new_blockindex_cache(Size) ->
-    {0, array:new([{size, Size}, {default, none}]), 0}.
-
 -spec updatebic_foldfun(boolean()) ->
-        fun(({integer(), binary()}, blockindex_cache()) -> blockindex_cache()).
+        fun(({integer(), binary()|none}, blockindex_cache()) -> blockindex_cache()).
 updatebic_foldfun(HMDRequired) ->
-    fun(CacheEntry, {AccCount, Cache, AccHMD}) ->
+    fun(CacheEntry, BIC) ->
         case CacheEntry of
             {ID, Header} when is_binary(Header) ->
-                case array:get(ID - 1, Cache) of
+                case get_from_blockcache(ID, BIC) of
                     none ->
-                        H0 = binary:copy(Header),
-                        AccHMD0 =
+                        LMD =
                             case HMDRequired of
                                 true ->
-                                    max(AccHMD,
-                                        element(2, extract_header(H0, true)));
+                                    {_, ExtractLMD, _} =
+                                        extract_header(Header, true),
+                                    ExtractLMD;
                                 false ->
-                                    AccHMD
+                                    false
                                 end,
-                        {AccCount + 1, array:set(ID - 1, H0, Cache), AccHMD0};
+                        add_to_blockcache(ID, BIC, Header, LMD);
                     _ ->
-                        {AccCount, Cache, AccHMD}
+                        BIC
                 end;
             _ ->
-                {AccCount, Cache, AccHMD}
+                BIC
         end
     end.
 
 -spec update_blockindex_cache(
-        list({integer(), binary()}),
+        list({integer(), binary()|none}),
         blockindex_cache(),
         non_neg_integer()|undefined,
         boolean()) ->
             {boolean(), blockindex_cache(), non_neg_integer()|undefined}.
 update_blockindex_cache(Entries, BIC, HighModDate, IdxModDate) ->
-    case {element(1, BIC), array:size(element(2, BIC))} of
+    case {element(1, BIC), size_of_blockcache(BIC)} of
         {N, N} ->
             {false, BIC, HighModDate};
         {N, S} when N < S ->
@@ -1318,7 +1412,7 @@ fetch(LedgerKey, Hash,
     Slot =
         lookup_slot(LedgerKey, Summary#summary.index, FilterFun),
     SlotID = Slot#slot_index_value.slot_id,
-    CachedBlockIdx = array:get(SlotID - 1, element(2, BIC)),
+    CachedBlockIdx = get_from_blockcache(SlotID, BIC),
 
     case extract_header(CachedBlockIdx, IndexModDate) of
         none ->
@@ -1340,14 +1434,17 @@ fetch(LedgerKey, Hash,
             {Result, BIC0, HMD0, no_update};
         {BlockLengths, _LMD, PosBin} ->
             PosList =
-                find_pos(PosBin, segment_checker(extract_hash(Hash))),
+                case extract_hash(Hash) of
+                    HashExtract when is_integer(HashExtract) ->
+                        find_pos(PosBin, segment_checker(HashExtract))
+                end,
             case PosList of
                 [] ->
                     maybelog_fetch_timing(Monitor, Level, not_found, SW0),
                     {not_present, no_update, no_update, no_update};
                 _ ->
                     CacheHash = cache_hash(Hash, Level),
-                    case fetch_from_cache(CacheHash, FetchCache) of
+                    case get_from_fetchcache(CacheHash, FetchCache) of
                         {LedgerKey, V} ->
                             maybelog_fetch_timing(
                                 Monitor, Level, fetch_cache, SW0),
@@ -1355,29 +1452,32 @@ fetch(LedgerKey, Hash,
                         _ ->
                             StartPos = Slot#slot_index_value.start_position,
                             Result =
-                                check_blocks(
+                                check_blocks_matchkey(
                                     PosList,
                                     {Handle, StartPos},
                                     BlockLengths,
                                     byte_size(PosBin),
                                     LedgerKey,
                                     PressMethod,
-                                    IndexModDate,
-                                    not_present),
+                                    IndexModDate
+                                ),
                             case Result of
                                 not_present ->
                                     maybelog_fetch_timing(
                                         Monitor, Level, not_found, SW0),
                                     {not_present,
                                         no_update, no_update, no_update};
-                                _ ->
+                                {LK, LV} ->
                                     FetchCache0 =
                                         add_to_cache(
-                                            CacheHash, Result, FetchCache),
+                                            CacheHash, {LK, LV}, FetchCache),
                                     maybelog_fetch_timing(
                                         Monitor, Level, slot_cachedblock, SW0),
-                                    {Result,
-                                        no_update, no_update, FetchCache0}
+                                    {{LK, LV},
+                                        no_update,
+                                        no_update,
+                                        FetchCache0
+                                    }
                             end
                     end
             end
@@ -1461,7 +1561,7 @@ write_file(RootPath, Filename, SummaryBin, SlotsBin,
                                         false),
     FinalName.
 
-read_file(Filename, State, LoadPageCache) ->
+read_file(Filename, State, LoadPageCache, BIC, Level) ->
     {Handle, FileVersion, SummaryBin} =
         open_reader(
             filename:join(State#state.root_path, Filename),
@@ -1469,19 +1569,33 @@ read_file(Filename, State, LoadPageCache) ->
     UpdState0 = imp_fileversion(FileVersion, State),
     {Summary, Bloom, SlotList, TombCount} =
         read_table_summary(SummaryBin, UpdState0#state.tomb_count),
-    BlockIndexCache = new_blockindex_cache(Summary#summary.size),
-    UpdState1 = UpdState0#state{blockindex_cache = BlockIndexCache},
     {SlotIndex, FilterFun} =
         from_list(
             SlotList, Summary#summary.first_key, Summary#summary.last_key),
     UpdSummary = Summary#summary{index = SlotIndex},
     leveled_log:log(
         sst03, [Filename, Summary#summary.size, Summary#summary.max_sqn]),
-    {UpdState1#state{summary = UpdSummary,
-                        handle = Handle,
-                        filename = Filename,
-                        tomb_count = TombCount,
-                        filter_fun = FilterFun},
+    ReadState =
+        #read_state{
+            handle = Handle,
+            blockindex_cache =
+                case BIC of
+                    undefined ->
+                        new_blockindex_cache(Summary#summary.size);
+                    _ ->
+                        BIC
+                end,
+            fetch_cache = new_cache(Level),
+            level = Level,
+            filter_fun = FilterFun
+        },
+
+    {UpdState0#state{
+            summary = UpdSummary,
+            filename = Filename,
+            tomb_count = TombCount,
+            read_state = ReadState
+        },
         Bloom}.
 
 gen_fileversion(PressMethod, IdxModDate, CountOfTombs) ->
@@ -1678,7 +1792,7 @@ serialise_block(Term, none) ->
     CRC32 = hmac(Bin),
     <<Bin/binary, CRC32:32/integer>>.
 
--spec deserialise_block(binary(), press_method()) -> any().
+-spec deserialise_block(binary(), press_method()) -> list(leveled_codec:ledger_kv()).
 %% @doc
 %% Convert binary to term
 %% Function split out to make it easier to experiment with different
@@ -1688,21 +1802,27 @@ serialise_block(Term, none) ->
 deserialise_block(Bin, PressMethod) when byte_size(Bin) > 4 ->
     BinS = byte_size(Bin) - 4,
     <<TermBin:BinS/binary, CRC32:32/integer>> = Bin,
-    case hmac(TermBin) of
-        CRC32 ->
-            deserialise_checkedblock(TermBin, PressMethod);
-        _ ->
+    try
+        CRC32 = hmac(TermBin),
+        deserialise_checkedblock(TermBin, PressMethod)
+    catch
+        _Exception:_Reason ->
             []
     end;
 deserialise_block(_Bin, _PM) ->
     [].
 
-deserialise_checkedblock(Bin, lz4) ->
-    {ok, Bin0} = lz4:unpack(Bin),
-    binary_to_term(Bin0);
-deserialise_checkedblock(Bin, zstd) ->
-    binary_to_term(zstd:decompress(Bin));
-deserialise_checkedblock(Bin, _Other) ->
+deserialise_checkedblock(Bin, lz4) when is_binary(Bin) ->
+    case lz4:unpack(Bin) of
+        {ok, Bin0} when is_binary(Bin0) ->
+            binary_to_term(Bin0)
+    end;
+deserialise_checkedblock(Bin, zstd) when is_binary(Bin) ->
+    case zstd:decompress(Bin) of
+        Bin0 when is_binary(Bin0) ->
+            binary_to_term(Bin0)
+    end;
+deserialise_checkedblock(Bin, _Other) when is_binary(Bin) ->
     % native or none can be treated the same
     binary_to_term(Bin).
 
@@ -1766,7 +1886,8 @@ null_filter(Key) -> Key.
 key_filter({_Tag, _Bucket, Key, null}) -> Key.
 
 -spec term_filter(leveled_codec:ledger_key()) -> leveled_codec:slimmed_key().
-term_filter({_Tag, _Bucket, {_Field, Term}, Key}) -> {Term, Key}.
+term_filter({_Tag, _Bucket, {_Field, Term}, Key}) -> 
+    {Term, Key}.
 
 -spec key_prefix_filter(
     pos_integer(), binary()) ->
@@ -1868,12 +1989,13 @@ lookup_slots(StartKey, EndKey, Tree, FilterFun) ->
                 {binary(),
                     non_neg_integer(),
                     list(leveled_codec:segment_hash()),
-                    leveled_codec:last_moddate()}.
+                    non_neg_integer()}.
 %% @doc
 %% Fold function use to accumulate the position information needed to
 %% populate the summary of the slot
-accumulate_positions([], Acc) ->
-    Acc;
+accumulate_positions(
+        [], {PosBin, NoHashCount, HashAcc, LMDAcc}) when is_integer(LMDAcc) ->
+    {PosBin, NoHashCount, HashAcc, LMDAcc};
 accumulate_positions([{K, V}|T], {PosBin, NoHashCount, HashAcc, LMDAcc}) ->
     {_SQN, H1, LMD} = leveled_codec:strip_to_indexdetails({K, V}),
     LMDAcc0 = take_max_lastmoddate(LMD, LMDAcc),
@@ -2053,52 +2175,95 @@ generate_binary_slot(
     {{Header, SlotBin, HashL, LastKey}, BuildTimings3}.
 
 
--spec check_blocks(list(integer()),
-                    binary()|{file:io_device(), integer()},
-                    binary(),
-                    integer(),
-                    leveled_codec:ledger_key()|false,
-                        %% if false the acc is a list, and if true
-                        %% Acc will be initially not_present, and may
-                        %% result in a {K, V} tuple
-                    press_method(),
-                    boolean(),
-                    list()|not_present) ->
-                        list(leveled_codec:ledger_kv())|
-                            not_present|leveled_codec:ledger_kv().
+-spec check_blocks_allkeys(
+    list(integer()),
+    binary()|{file:io_device(), integer()},
+    binary(),
+    integer(),
+    press_method(),
+    boolean(),
+    list()) ->
+        list(leveled_codec:ledger_kv()).
 %% @doc
 %% Acc should start as not_present if LedgerKey is a key, and a list if
 %% LedgerKey is false
-check_blocks([], _BlockPointer, _BlockLengths, _PosBinLength,
-                _LedgerKeyToCheck, _PressMethod, _IdxModDate, not_present) ->
-    not_present;
-check_blocks([], _BlockPointer, _BlockLengths, _PosBinLength,
-                _LedgerKeyToCheck, _PressMethod, _IdxModDate, Acc) ->
+check_blocks_allkeys([], _BP, _BLs, _PBL, _PM, _IMD, Acc) ->
     lists:reverse(Acc);
-check_blocks([Pos|Rest], BlockPointer, BlockLengths, PosBinLength,
-                LedgerKeyToCheck, PressMethod, IdxModDate, Acc) ->
+check_blocks_allkeys(
+        [Pos|Rest],
+        BlockPointer,
+        BlockLengths,
+        PosBinLength,
+        PressMethod,
+        IdxModDate,
+        Acc) ->
     {BlockNumber, BlockPos} = revert_position(Pos),
     BlockBin =
-        read_block(BlockPointer,
-                    BlockLengths,
-                    PosBinLength,
-                    BlockNumber,
-                    additional_offset(IdxModDate)),
-    Result = spawn_check_block(BlockPos, BlockBin, PressMethod),
-    case {Result, LedgerKeyToCheck} of
+        read_block(
+            BlockPointer,
+            BlockLengths,
+            PosBinLength,
+            BlockNumber,
+            additional_offset(IdxModDate)
+        ),
+    case spawn_check_block(BlockPos, BlockBin, PressMethod) of
+        {K, V} ->
+            check_blocks_allkeys(
+                Rest,
+                BlockPointer,
+                BlockLengths,
+                PosBinLength,
+                PressMethod,
+                IdxModDate,
+                [{K, V}|Acc]
+            )
+    end.
+
+-spec check_blocks_matchkey(
+    list(integer()),
+    binary()|{file:io_device(), integer()},
+    binary(),
+    integer(),
+    leveled_codec:ledger_key(),
+    press_method(),
+    boolean()) ->
+        not_present|leveled_codec:ledger_kv().
+%% @doc
+%% Acc should start as not_present if LedgerKey is a key, and a list if
+%% LedgerKey is false
+check_blocks_matchkey([], _BP, _BLs, _PBL, _LKTC, _PM, _IMD) ->
+    not_present;
+check_blocks_matchkey(
+        [Pos|Rest],
+        BlockPointer,
+        BlockLengths,
+        PosBinLength,
+        LedgerKeyToCheck,
+        PressMethod,
+        IdxModDate) ->
+    {BlockNumber, BlockPos} = revert_position(Pos),
+    BlockBin =
+    read_block(BlockPointer,
+        BlockLengths,
+        PosBinLength,
+        BlockNumber,
+        additional_offset(IdxModDate)
+    ),
+    CheckResult = spawn_check_block(BlockPos, BlockBin, PressMethod),
+    case {CheckResult, LedgerKeyToCheck} of
         {{K, V}, K} ->
             {K, V};
-        {{K, V}, false} ->
-            check_blocks(Rest, BlockPointer,
-                            BlockLengths, PosBinLength,
-                            LedgerKeyToCheck, PressMethod, IdxModDate,
-                            [{K, V}|Acc]);
         _ ->
-            check_blocks(Rest, BlockPointer,
-                            BlockLengths, PosBinLength,
-                            LedgerKeyToCheck, PressMethod, IdxModDate,
-                            Acc)
-    end.
+            check_blocks_matchkey(
+                Rest,
+                BlockPointer,
+                BlockLengths,
+                PosBinLength,
+                LedgerKeyToCheck,
+                PressMethod,
+                IdxModDate
+            )
+end.
 
 -spec spawn_check_block(non_neg_integer(), binary(), press_method())
         -> not_present|leveled_codec:ledger_kv().
@@ -2204,7 +2369,7 @@ read_slots(Handle, SlotList, {SegChecker, LowLastMod, BlockIndexCache},
     BinMapFun =
         fun(Pointer, {NeededBlockIdx, Acc}) ->
             {SP, _L, ID, SK, EK} = pointer_mapfun(Pointer),
-            CachedHeader = array:get(ID - 1, element(2, BlockIndexCache)),
+            CachedHeader = get_from_blockcache(ID, BlockIndexCache),
             case extract_header(CachedHeader, IdxModDate) of
                 none ->
                     % If there is an attempt to use the seg list query and the
@@ -2271,9 +2436,15 @@ checkblocks_segandrange(
         PressMethod, IdxModDate, SegChecker, {StartKey, EndKey}) ->
     PositionList = find_pos(BlockIdx, SegChecker),
     KVL =
-        check_blocks(
-            PositionList, SlotOrHandle, BlockLengths, byte_size(BlockIdx),
-            false, PressMethod, IdxModDate, []),
+        check_blocks_allkeys(
+            PositionList,
+            SlotOrHandle,
+            BlockLengths,
+            byte_size(BlockIdx),
+            PressMethod,
+            IdxModDate,
+            []
+        ),
     in_range(KVL, StartKey, EndKey).
 
 
@@ -2371,18 +2542,26 @@ extract_header(Header, false) ->
     <<BlockLengths:BL/binary, PosBinIndex/binary>> = Header,
     {BlockLengths, 0, PosBinIndex}.
 
+-spec binaryslot_get(
+    binary(),
+    leveled_codec:ledger_key(),
+    leveled_codec:segment_hash(),
+    press_method(),
+    boolean()) -> {not_present|leveled_codec:ledger_kv(), binary()|none}.
 binaryslot_get(FullBin, Key, Hash, PressMethod, IdxModDate) ->
     case crc_check_slot(FullBin) of
         {Header, Blocks} ->
             {BlockLengths, _LMD, PosBinIndex} =
                 extract_header(Header, IdxModDate),
             PosList =
-                find_pos(PosBinIndex, segment_checker(extract_hash(Hash))),
+                case extract_hash(Hash) of
+                    HashExtract when is_integer(HashExtract) ->
+                        find_pos(PosBinIndex, segment_checker(HashExtract))
+                end,
             {fetch_value(PosList, BlockLengths, Blocks, Key, PressMethod),
                 Header};
         crc_wonky ->
-            {not_present,
-                none}
+            {not_present, none}
     end.
 
 -spec binaryslot_tolist(
@@ -2390,7 +2569,7 @@ binaryslot_get(FullBin, Key, Hash, PressMethod, IdxModDate) ->
         press_method(),
         boolean(),
         list(leveled_codec:ledger_kv()|expandable_pointer()))
-            -> list(leveled_codec:ledger_kv()).
+            -> list(leveled_codec:ledger_kv()|expandable_pointer()).
 binaryslot_tolist(FullBin, PressMethod, IdxModDate, InitAcc) ->
     case crc_check_slot(FullBin) of
         {Header, Blocks} ->
@@ -2426,7 +2605,7 @@ binaryslot_tolist(FullBin, PressMethod, IdxModDate, InitAcc) ->
         segment_check_fun(),
         list(leveled_codec:ledger_kv()|expandable_pointer())
     ) ->
-            {list(leveled_codec:ledger_kv()),
+            {list(leveled_codec:ledger_kv()|expandable_pointer()),
                 list({integer(), binary()})|none}.
 %% @doc
 %% Must return a trimmed and reversed list of results in the range
@@ -2642,6 +2821,12 @@ block_offsetandlength(BlockLengths, BlockID) ->
             {B1L + B2L + B3L + B4L, B5L}
     end.
 
+-spec fetch_value(
+    list(non_neg_integer()),
+    binary(),
+    binary(),
+    leveled_codec:ledger_key(),
+    press_method()) -> not_present|leveled_codec:ledger_kv().
 fetch_value([], _BlockLengths, _Blocks, _Key, _PressMethod) ->
     not_present;
 fetch_value([Pos|Rest], BlockLengths, Blocks, Key, PressMethod) ->
@@ -2791,12 +2976,12 @@ split_lists(KVList1, SlotLists, N, PressMethod, IdxModDate) ->
     split_lists(KVListRem, [SlotD|SlotLists], N - 1, PressMethod, IdxModDate).
 
 -spec merge_lists(
-    list(expanded_pointer()),
-    list(expanded_pointer()),
+    list(maybe_expanded_pointer()),
+    list(maybe_expanded_pointer()),
     {boolean(), non_neg_integer()},
-    sst_options(), boolean(), boolean()) ->
-            {list(expanded_pointer()),
-            list(expanded_pointer()),
+    sst_options(), boolean()) ->
+            {list(maybe_expanded_pointer()),
+            list(maybe_expanded_pointer()),
                 list(binary_slot()),
                 leveled_codec:ledger_key()|null,
                 non_neg_integer()}.
@@ -2805,9 +2990,7 @@ split_lists(KVList1, SlotLists, N, PressMethod, IdxModDate) ->
 %% provided may include pointers to fetch more Keys/Values from the source
 %% file
 merge_lists(
-        KVList1, KVList2, {IsBase, L}, SSTOpts, IndexModDate, SaveTombCount) ->
-    InitTombCount =
-        case SaveTombCount of true -> 0; false -> not_counted end,
+        KVList1, KVList2, {IsBase, L}, SSTOpts, IndexModDate) ->
     BuildTimings = 
         case IsBase orelse lists:member(L, ?LOG_BUILDTIMINGS_LEVELS) of
             true ->
@@ -2816,16 +2999,23 @@ merge_lists(
                 no_timing
         end,
     merge_lists(
-        KVList1, KVList2,
-        {IsBase, L}, [], null, 0,
-        SSTOpts#sst_options.max_sstslots, SSTOpts#sst_options.press_method,
-        IndexModDate, InitTombCount,
-        BuildTimings).
+        KVList1,
+        KVList2,
+        {IsBase, L},
+        [],
+        null,
+        0,
+        SSTOpts#sst_options.max_sstslots,
+    SSTOpts#sst_options.press_method,
+        IndexModDate,
+        0,
+        BuildTimings
+    ).
 
 
 -spec merge_lists(
-    list(expanded_pointer()),
-    list(expanded_pointer()),
+    list(maybe_expanded_pointer()),
+    list(maybe_expanded_pointer()),
     {boolean(), non_neg_integer()},
     list(binary_slot()),
     leveled_codec:ledger_key()|null,
@@ -2833,11 +3023,11 @@ merge_lists(
     non_neg_integer(),
     press_method(),
     boolean(),
-    non_neg_integer()|not_counted,
+    non_neg_integer(),
     build_timings()) ->
-        {list(expanded_pointer()), list(expanded_pointer()),
+        {list(maybe_expanded_pointer()), list(maybe_expanded_pointer()),
             list(binary_slot()), leveled_codec:ledger_key()|null,
-            non_neg_integer()|not_counted}.
+            non_neg_integer()}.
 
 merge_lists(KVL1, KVL2, LI, SlotList, FirstKey, MaxSlots, MaxSlots,
                                 _PressMethod, _IdxModDate, CountOfTombs, T0) ->
@@ -2890,16 +3080,17 @@ merge_lists(KVL1, KVL2, LI, SlotList, FirstKey, SlotCount, MaxSlots,
                         T2)
     end.
 
--spec form_slot(list(expanded_pointer()),
-                    list(expanded_pointer()),
-                    {boolean(), non_neg_integer()},
-                    lookup|no_lookup,
-                    non_neg_integer(),
-                    list(leveled_codec:ledger_kv()),
-                    leveled_codec:ledger_key()|null) ->
-                {list(expanded_pointer()), list(expanded_pointer()),
-                    {lookup|no_lookup, list(leveled_codec:ledger_kv())},
-                    leveled_codec:ledger_key()}.
+-spec form_slot(
+    list(maybe_expanded_pointer()),
+    list(maybe_expanded_pointer()),
+    {boolean(), non_neg_integer()},
+    lookup|no_lookup,
+    non_neg_integer(),
+    list(leveled_codec:ledger_kv()),
+    leveled_codec:ledger_key()|null) ->
+        {list(maybe_expanded_pointer()), list(maybe_expanded_pointer()),
+            {lookup|no_lookup, list(leveled_codec:ledger_kv())},
+            leveled_codec:ledger_key()|null}.
 %% @doc
 %% Merge together Key Value lists to provide a reverse-ordered slot of KVs
 form_slot([], [], _LI, Type, _Size, Slot, FK) ->
@@ -2932,7 +3123,7 @@ form_slot(KVList1, KVList2, LevelInfo, no_lookup, Size, Slot, FK) ->
                         FK0);
                 lookup ->
                     case Size >= ?LOOK_SLOTSIZE of
-                        true ->
+                        true when FK =/= null ->
                             {KVList1, KVList2, {no_lookup, Slot}, FK};
                         false ->
                             form_slot(
@@ -2950,22 +3141,28 @@ form_slot(KVList1, KVList2, LevelInfo, no_lookup, Size, Slot, FK) ->
     end.
 
 -spec key_dominates(
-        list(expanded_pointer()),
-        list(expanded_pointer()),
-        {boolean()|undefined, leveled_pmanifest:lsm_level()})
+        list(maybe_expanded_pointer()),
+        list(maybe_expanded_pointer()),
+        {boolean(), leveled_pmanifest:lsm_level()})
         -> 
             {{next_key, leveled_codec:ledger_kv()}|skipped_key,
-                list(expanded_pointer()),
-                list(expanded_pointer())}.
+                list(maybe_expanded_pointer()),
+                list(maybe_expanded_pointer())}.
 key_dominates([{pointer, SSTPid, Slot, StartKey, all}|T1], KL2, Level) ->
     key_dominates(
         expand_list_by_pointer(
+            % As the head is a pointer, the tail must be pointers too
+            % So eqwalizer is wrong that this may be
+            % [leveled_codec:ledger_kv()]
+            % eqwalizer:ignore
             {pointer, SSTPid, Slot, StartKey, all}, T1, ?MERGE_SCANWIDTH),
         KL2,
         Level);
 key_dominates([{next, ManEntry, StartKey}|T1], KL2, Level) ->
     key_dominates(
         expand_list_by_pointer(
+            % See above
+            % eqwalizer:ignore
             {next, ManEntry, StartKey, all}, T1, ?MERGE_SCANWIDTH),
         KL2,
         Level);
@@ -2973,12 +3170,16 @@ key_dominates(KL1, [{pointer, SSTPid, Slot, StartKey, all}|T2], Level) ->
     key_dominates(
         KL1,
         expand_list_by_pointer(
+            % See above
+            % eqwalizer:ignore
             {pointer, SSTPid, Slot, StartKey, all}, T2, ?MERGE_SCANWIDTH),
         Level);
 key_dominates(KL1, [{next, ManEntry, StartKey}|T2], Level) ->
     key_dominates(
         KL1,
         expand_list_by_pointer(
+            % See above
+            % eqwalizer:ignore
             {next, ManEntry, StartKey, all}, T2, ?MERGE_SCANWIDTH),
         Level);
 key_dominates(
@@ -2988,7 +3189,7 @@ key_dominates(
         [{K1, V1}|Rest1], [{K2, _V2}|_T2]=Rest2, {false, _TS}) when K1 < K2 ->
     {{next_key, {K1, V1}}, Rest1, Rest2};
 key_dominates(KL1, KL2, Level) ->
-    case key_dominates_expanded(KL1, KL2) of
+    case key_dominates_comparison(KL1, KL2) of
         {{next_key, NKV}, Rest1, Rest2} ->
             case leveled_codec:maybe_reap_expiredkey(NKV, Level) of
                 true ->
@@ -3000,25 +3201,27 @@ key_dominates(KL1, KL2, Level) ->
             {skipped_key, Rest1, Rest2}
     end.
 
--spec key_dominates_expanded(
-        list(expanded_pointer()), list(expanded_pointer()))
+-spec key_dominates_comparison(
+        list(maybe_expanded_pointer()),
+        list(maybe_expanded_pointer()))
+            % first item in each list must be leveled_codec:ledger_kv()
             -> {{next_key, leveled_codec:ledger_kv()}|skipped_key,
-                    list(expanded_pointer()),
-                    list(expanded_pointer())}.
-key_dominates_expanded([H1|T1], []) ->
-    {{next_key, H1}, T1, []};
-key_dominates_expanded([], [H2|T2]) ->
-    {{next_key, H2}, [], T2};
-key_dominates_expanded([{K1, _V1}|_T1]=LHL, [{K2, V2}|T2]) when K2 < K1 ->
+                    list(maybe_expanded_pointer()),
+                    list(maybe_expanded_pointer())}.
+key_dominates_comparison([{K1, V1}|T1], []) ->
+    {{next_key, {K1, V1}}, T1, []};
+key_dominates_comparison([], [{K2, V2}|T2]) ->
+    {{next_key, {K2, V2}}, [], T2};
+key_dominates_comparison([{K1, _V1}|_T1]=LHL, [{K2, V2}|T2]) when K2 < K1 ->
     {{next_key, {K2, V2}}, LHL, T2};
-key_dominates_expanded([{K1, V1}|T1], [{K2, _V2}|_T2]=RHL) when K1 < K2 ->
+key_dominates_comparison([{K1, V1}|T1], [{K2, _V2}|_T2]=RHL) when K1 < K2 ->
     {{next_key, {K1, V1}}, T1, RHL};
-key_dominates_expanded([H1|T1], [H2|T2]) ->
-    case leveled_codec:key_dominates(H1, H2) of
+key_dominates_comparison([{K1, V1}|T1], [{K2, V2}|T2]) ->
+    case leveled_codec:key_dominates({K1, V1}, {K2, V2}) of
         true ->
-            {skipped_key, [H1|T1], T2};
+            {skipped_key, [{K1, V1}|T1], T2};
         false ->
-            {skipped_key, T1, [H2|T2]}
+            {skipped_key, T1, [{K2, V2}|T2]}
     end.
 
 
@@ -3079,8 +3282,11 @@ log_buildtimings(Timings, LI) ->
         erlang:timestamp()|no_timing) -> ok.
 maybelog_fetch_timing(_Monitor, _Level, _Type, no_timing) ->
     ok;
-maybelog_fetch_timing({Pid, _SlotFreq}, Level, Type, SW) ->
-    {TS1, _} = leveled_monitor:step_time(SW),
+maybelog_fetch_timing({Pid, _SlotFreq}, Level, Type, SW) when is_pid(Pid), SW =/= no_timing ->
+    TS1 =
+        case leveled_monitor:step_time(SW) of
+            {TS, _NextSW} when is_integer(TS) -> TS
+        end,
     leveled_monitor:add_stat(Pid, {sst_fetch_update, Level, Type, TS1}).
 
 %%%============================================================================
@@ -3112,7 +3318,7 @@ sst_getkvrange(Pid, StartKey, EndKey, ScanWidth) ->
         range_endpoint(),  
         integer(),
         segment_check_fun(),
-        non_neg_integer()) -> list(leveled_codec:ledger_kv()|slot_pointer()).
+        non_neg_integer()) -> list(maybe_expanded_pointer()).
 %% @doc
 %% Get a range of {Key, Value} pairs as a list between StartKey and EndKey
 %% (inclusive).  The ScanWidth is the maximum size of the range, a pointer
@@ -3145,7 +3351,7 @@ testsst_new(RootPath, Filename,
         #sst_options{press_method=PressMethod,
                         log_options=leveled_log:get_opts()},
     sst_newmerge(RootPath, Filename, KVL1, KVL2, IsBasement, Level, MaxSQN,
-                    OptsSST, false, false).
+                    OptsSST, false).
 
 generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
     generate_randomkeys(Seqn,
@@ -3157,16 +3363,21 @@ generate_randomkeys(Seqn, Count, BucketRangeLow, BucketRangeHigh) ->
 generate_randomkeys(_Seqn, 0, Acc, _BucketLow, _BucketHigh) ->
     Acc;
 generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
-    BRand = leveled_rand:uniform(BRange),
+    BRand = rand:uniform(BRange),
     BNumber =
         lists:flatten(io_lib:format("B~6..0B", [BucketLow + BRand])),
     KNumber =
-        lists:flatten(io_lib:format("K~8..0B", [leveled_rand:uniform(1000000)])),
-    LK = leveled_codec:to_ledgerkey("Bucket" ++ BNumber, "Key" ++ KNumber, o),
-    Chunk = leveled_rand:rand_bytes(64),
-    {_B, _K, MV, _H, _LMs} =
-        leveled_codec:generate_ledgerkv(LK, Seqn, Chunk, 64, infinity),
+        lists:flatten(io_lib:format("K~8..0B", [rand:uniform(1000000)])),
+    LK =
+        leveled_codec:to_objectkey(
+            list_to_binary("Bucket" ++ BNumber),
+            list_to_binary("Key" ++ KNumber),
+            o
+        ),
+    Chunk = crypto:strong_rand_bytes(64),
+    MV = leveled_codec:convert_to_ledgerv(LK, Seqn, Chunk, 64, infinity),
     MD = element(4, MV),
+    MD =/= null orelse error(bad_type),
     ?assertMatch(undefined, element(3, MD)),
     MD0 = [{magic_md, [<<0:32/integer>>, base64:encode(Chunk)]}],
     MV0 = setelement(4, MV, setelement(3, MD, MD0)),
@@ -3176,14 +3387,13 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
                         BucketLow,
                         BRange).
 
-
 generate_indexkeys(Count) ->
     generate_indexkeys(Count, []).
 
 generate_indexkeys(0, IndexList) ->
     IndexList;
 generate_indexkeys(Count, IndexList) ->
-    Changes = generate_indexkey(leveled_rand:uniform(8000), Count),
+    Changes = generate_indexkey(rand:uniform(8000), Count),
     generate_indexkeys(Count - 1, IndexList ++ Changes).
 
 generate_indexkey(Term, Count) ->
@@ -3255,7 +3465,7 @@ tombcount_tester(Level) ->
     KL2 = generate_indexkeys(N div 2),
     FlipToTombFun =
         fun({K, V}) ->
-            case leveled_rand:uniform(10) of
+            case rand:uniform(10) of
                 X when X > 5 ->
                     {K, setelement(2, V, tomb)};
                 _ ->
@@ -3277,18 +3487,11 @@ tombcount_tester(Level) ->
 
     {RP, Filename} = {?TEST_AREA, "tombcount_test"},
     OptsSST =
-        #sst_options{press_method=native,
-                        log_options=leveled_log:get_opts()},
-    {ok, SST1, _KD, _BB} = sst_newmerge(RP, Filename,
-                                KVL1, KVL2, false, Level,
-                                N, OptsSST, false, false),
-    ?assertMatch(not_counted, sst_gettombcount(SST1)),
-    ok = sst_close(SST1),
-    ok = file:delete(filename:join(RP, Filename ++ ".sst")),
-
-    {ok, SST2, _KD1, _BB1} = sst_newmerge(RP, Filename,
-                                KVL1, KVL2, false, Level,
-                                N, OptsSST, false, true),
+        #sst_options{
+            press_method=native, log_options=leveled_log:get_opts()},
+    {ok, SST2, _KD1, _BB1} =
+        sst_newmerge(
+            RP, Filename, KVL1, KVL2, false, Level, N, OptsSST, true),
 
     ?assertMatch(ExpectedCount, sst_gettombcount(SST2)),
     ok = sst_close(SST2),
@@ -3299,37 +3502,42 @@ form_slot_test() ->
     % If a skip key happens, mustn't switch to loookup by accident as could be
     % over the expected size
     SkippingKV =
-        {{o, "B1", "K9999", null}, {9999, tomb, {1234568, 1234567}, {}}},
+        {
+            {o, <<"B1">>, <<"K9999">>, null},
+            {9999, tomb, {1234568, 1234567}, {}}
+        },
     Slot =
-        [{{o, "B1", "K5", null},
+        [{{o, <<"B1">>, <<"K5">>, null},
             {5, {active, infinity}, {99234568, 99234567}, {}}}],
     R1 = form_slot([SkippingKV], [],
                     {true, 99999999},
                     no_lookup,
                     ?LOOK_SLOTSIZE + 1,
                     Slot,
-                    {o, "B1", "K5", null}),
-    ?assertMatch({[], [], {no_lookup, Slot}, {o, "B1", "K5", null}}, R1).
+                    {o, <<"B1">>, <<"K5">>, null}),
+    ?assertMatch(
+        {[], [], {no_lookup, Slot}, {o, <<"B1">>, <<"K5">>, null}},
+        R1
+    ).
 
 merge_tombstonelist_test() ->
     % Merge lists with nothing but tombstones, and file at basement level
     SkippingKV1 =
-        {{o, "B1", "K9995", null}, {9995, tomb, {1234568, 1234567}, {}}},
+        {{o, <<"B1">>, <<"K9995">>, null}, {9995, tomb, {1234568, 1234567}, {}}},
     SkippingKV2 =
-        {{o, "B1", "K9996", null}, {9996, tomb, {1234568, 1234567}, {}}},
+        {{o, <<"B1">>, <<"K9996">>, null}, {9996, tomb, {1234568, 1234567}, {}}},
     SkippingKV3 =
-        {{o, "B1", "K9997", null}, {9997, tomb, {1234568, 1234567}, {}}},
+        {{o, <<"B1">>, <<"K9997">>, null}, {9997, tomb, {1234568, 1234567}, {}}},
     SkippingKV4 =
-        {{o, "B1", "K9998", null}, {9998, tomb, {1234568, 1234567}, {}}},
+        {{o, <<"B1">>, <<"K9998">>, null}, {9998, tomb, {1234568, 1234567}, {}}},
     SkippingKV5 =
-        {{o, "B1", "K9999", null}, {9999, tomb, {1234568, 1234567}, {}}},
+        {{o, <<"B1">>, <<"K9999">>, null}, {9999, tomb, {1234568, 1234567}, {}}},
     R = merge_lists([SkippingKV1, SkippingKV3, SkippingKV5],
                         [SkippingKV2, SkippingKV4],
                         {true, 9999999},
                         #sst_options{press_method = native,
                                         max_sstslots = 256},
-                        ?INDEX_MODDATE,
-                        true),
+                        ?INDEX_MODDATE),
 
     ?assertMatch({[], [], [], null, 0}, R).
 
@@ -3530,15 +3738,17 @@ indexed_list_mixedkeys_bitflip_test() ->
     TestKey2 = element(1, lists:nth(33, KVL1)),
     MH1 = leveled_codec:segment_hash(TestKey1),
     MH2 = leveled_codec:segment_hash(TestKey2),
-
+    
     test_binary_slot(SlotBin, TestKey1, MH1, lists:nth(1, KVL1)),
     test_binary_slot(SlotBin, TestKey2, MH2, lists:nth(33, KVL1)),
     ToList =
         binaryslot_tolist(SlotBin, native, ?INDEX_MODDATE),
     ?assertMatch(Keys, ToList),
 
-    [Pos1] = find_pos(PosBin, segment_checker(extract_hash(MH1))),
-    [Pos2] = find_pos(PosBin, segment_checker(extract_hash(MH2))),
+    EH1 = case extract_hash(MH1) of Int1 when is_integer(Int1) -> Int1 end,
+    EH2 = case extract_hash(MH2) of Int2 when is_integer(Int2) -> Int2 end,
+    [Pos1] = find_pos(PosBin, segment_checker(EH1)),
+    [Pos2] = find_pos(PosBin, segment_checker(EH2)),
     {BN1, _BP1} = revert_position(Pos1),
     {BN2, _BP2} = revert_position(Pos2),
     {Offset1, Length1} = block_offsetandlength(Header, BN1),
@@ -3593,7 +3803,7 @@ indexed_list_mixedkeys_bitflip_test() ->
 
 
 flip_byte(Binary, Offset, Length) ->
-    Byte1 = leveled_rand:uniform(Length) + Offset - 1,
+    Byte1 = rand:uniform(Length) + Offset - 1,
     <<PreB1:Byte1/binary, A:8/integer, PostByte1/binary>> = Binary,
     case A of
         0 ->
@@ -3639,15 +3849,16 @@ size_tester(KVL1, KVL2, N) ->
     io:format(user, "~nStarting ... test with ~w keys ~n", [N]),
 
     {RP, Filename} = {?TEST_AREA, "doublesize_test"},
-    OptsSST =
+    Opts =
         #sst_options{press_method=native,
                         log_options=leveled_log:get_opts()},
-    {ok, SST1, _KD, _BB} = sst_newmerge(RP, Filename,
-                                KVL1, KVL2, false, ?DOUBLESIZE_LEVEL,
-                                N, OptsSST, false, false),
+    {ok, SST1, _KD, _BB} =
+        sst_newmerge(
+            RP, Filename, KVL1, KVL2, false, ?DOUBLESIZE_LEVEL, N, Opts, false
+        ),
     ok = sst_close(SST1),
     {ok, SST2, _SKEK, Bloom} =
-        sst_open(RP, Filename ++ ".sst", OptsSST, ?DOUBLESIZE_LEVEL),
+        sst_open(RP, Filename ++ ".sst", Opts, ?DOUBLESIZE_LEVEL),
     FetchFun =
         fun({K, V}) ->
             {K0, V0} = sst_get(SST2, K),
@@ -3696,8 +3907,20 @@ merge_tester(NewFunS, NewFunM) ->
     ?assertMatch(ExpFK2, FK2),
     ?assertMatch(ExpLK1, LK1),
     ?assertMatch(ExpLK2, LK2),
-    ML1 = [{next, #manifest_entry{owner = P1}, FK1}],
-    ML2 = [{next, #manifest_entry{owner = P2}, FK2}],
+    DSK = {o, <<"B">>, <<"SK">>, null},
+    DEK = {o, <<"E">>, <<"EK">>, null},
+    ML1 =
+        [{
+            next,
+            leveled_pmanifest:new_entry(DSK, DEK, P1, "P1", none),
+            FK1
+        }],
+    ML2 =
+        [{
+            next,
+            leveled_pmanifest:new_entry(DSK, DEK, P2, "P2", none),
+            FK2
+        }],
     NewR =
         NewFunM(?TEST_AREA, "level2_merge", ML1, ML2, false, 2, N * 2, native),
     {ok, P3, {{Rem1, Rem2}, FK3, LK3}, _Bloom3} = NewR,
@@ -3795,9 +4018,14 @@ simple_persisted_rangesegfilter_tester(SSTNewFun) ->
 
     GetSegFun =
         fun(LK) ->
-            extract_hash(
-                leveled_codec:strip_to_segmentonly(
-                    lists:keyfind(LK, 1, KVList1)))
+            case lists:keyfind(LK, 1, KVList1) of
+                LKV when LKV =/= false ->
+                    extract_hash(
+                        leveled_codec:strip_to_segmentonly(
+                            LKV
+                        )
+                    )
+            end
         end,
     SegList =
         lists:map(GetSegFun,
@@ -4042,15 +4270,18 @@ fetch_status_test() ->
         testsst_new(RP, Filename, 1, KVList1, length(KVList1), native),
     {status, Pid, {module, gen_statem}, SItemL} = sys:get_status(Pid),
     {data,[{"State", {reader, S}}]} = lists:nth(3, lists:nth(5, SItemL)),
-    true = is_integer(array:size(S#state.fetch_cache)),
-    true = is_integer(array:size(element(2, S#state.blockindex_cache))),
+    RS = S#state.read_state,
+    true = is_integer(array:size(RS#read_state.fetch_cache)),
+    true = is_integer(array:size(element(2, RS#read_state.blockindex_cache))),
     Status = format_status(#{reason => terminate, state => S}),
     ST = maps:get(state, Status),
-    ?assertMatch(redacted, ST#state.blockindex_cache),
-    ?assertMatch(redacted, ST#state.fetch_cache),
+    RST = ST#state.read_state,
+    ?assertMatch(redacted, RST#read_state.blockindex_cache),
+    ?assertMatch(redacted, RST#read_state.fetch_cache),
     NormStatus = format_status(#{reason => normal, state => S}),
     NST = maps:get(state, NormStatus),
-    ?assert(is_integer(array:size(NST#state.fetch_cache))),
+    RNST = NST#state.read_state,
+    ?assert(is_integer(array:size(RNST#read_state.fetch_cache))),
     ok = sst_close(Pid),
     ok = file:delete(filename:join(RP, Filename ++ ".sst")).
 
@@ -4206,27 +4437,31 @@ check_binary_references(Pid) ->
     TotalBinMem.
 
 key_dominates_test() ->
-    KV1 = {{o, "Bucket", "Key1", null}, {5, {active, infinity}, 0, []}},
-    KV2 = {{o, "Bucket", "Key3", null}, {6, {active, infinity}, 0, []}},
-    KV3 = {{o, "Bucket", "Key2", null}, {3, {active, infinity}, 0, []}},
-    KV4 = {{o, "Bucket", "Key4", null}, {7, {active, infinity}, 0, []}},
-    KV5 = {{o, "Bucket", "Key1", null}, {4, {active, infinity}, 0, []}},
-    KV6 = {{o, "Bucket", "Key1", null}, {99, {tomb, 999}, 0, []}},
-    KV7 = {{o, "Bucket", "Key1", null}, {99, tomb, 0, []}},
+    MakeKVFun =
+        fun(Key, SQN, Status) ->
+            {{o, <<"Bucket">>, Key, null}, {SQN, Status, 0, null, []}}
+        end,
+    KV1 = MakeKVFun(<<"Key1">>, 5, {active, infinity}),
+    KV2 = MakeKVFun(<<"Key3">>, 6, {active, infinity}),
+    KV3 = MakeKVFun(<<"Key2">>, 3, {active, infinity}),
+    KV4 = MakeKVFun(<<"Key4">>, 7, {active, infinity}),
+    KV5 = MakeKVFun(<<"Key1">>, 4, {active, infinity}),
+    KV6 = MakeKVFun(<<"Key1">>, 99, {tomb, 999}),
+    KV7 = MakeKVFun(<<"Key1">>, 99, tomb),
     KL1 = [KV1, KV2],
     KL2 = [KV3, KV4],
     ?assertMatch({{next_key, KV1}, [KV2], KL2},
-                    key_dominates(KL1, KL2, {undefined, 1})),
+                    key_dominates(KL1, KL2, {false, 1})),
     ?assertMatch({{next_key, KV1}, KL2, [KV2]},
-                    key_dominates(KL2, KL1, {undefined, 1})),
+                    key_dominates(KL2, KL1, {false, 1})),
     ?assertMatch({skipped_key, KL2, KL1},
-                    key_dominates([KV5|KL2], KL1, {undefined, 1})),
+                    key_dominates([KV5|KL2], KL1, {false, 1})),
     ?assertMatch({{next_key, KV1}, [KV2], []},
-                    key_dominates(KL1, [], {undefined, 1})),
+                    key_dominates(KL1, [], {false, 1})),
     ?assertMatch({skipped_key, [KV6|KL2], [KV2]},
-                    key_dominates([KV6|KL2], KL1, {undefined, 1})),
+                    key_dominates([KV6|KL2], KL1, {false, 1})),
     ?assertMatch({{next_key, KV6}, KL2, [KV2]},
-                    key_dominates([KV6|KL2], [KV2], {undefined, 1})),
+                    key_dominates([KV6|KL2], [KV2], {false, 1})),
     ?assertMatch({skipped_key, [KV6|KL2], [KV2]},
                     key_dominates([KV6|KL2], KL1, {true, 1})),
     ?assertMatch({skipped_key, [KV6|KL2], [KV2]},
@@ -4248,9 +4483,9 @@ key_dominates_test() ->
     ?assertMatch({skipped_key, [], []},
                     key_dominates([], [KV7], {true, 1})),
     ?assertMatch({skipped_key, [KV7|KL2], [KV2]},
-                    key_dominates([KV7|KL2], KL1, {undefined, 1})),
+                    key_dominates([KV7|KL2], KL1, {false, 1})),
     ?assertMatch({{next_key, KV7}, KL2, [KV2]},
-                    key_dominates([KV7|KL2], [KV2], {undefined, 1})),
+                    key_dominates([KV7|KL2], [KV2], {false, 1})),
     ?assertMatch({skipped_key, [KV7|KL2], [KV2]},
                     key_dominates([KV7|KL2], KL1, {true, 1})),
     ?assertMatch({skipped_key, KL2, [KV2]},
@@ -4277,11 +4512,9 @@ hashmatching_bytreesize_test() ->
                     B,
                     list_to_binary("Key" ++ integer_to_list(X)),
                     null},
-            LKV = leveled_codec:generate_ledgerkv(LK,
-                                                    X,
-                                                    V,
-                                                    byte_size(V),
-                                                    {active, infinity}),
+            LKV =
+                leveled_codec:generate_ledgerkv(
+                    LK, X, V, byte_size(V), infinity),
             {_Bucket, _Key, MetaValue, _Hashes, _LastMods} = LKV,
             {LK, MetaValue}
         end,
@@ -4340,8 +4573,8 @@ corrupted_block_rangetester(PressMethod, TestCount) ->
     KVL1 = lists:ukeysort(1, generate_randomkeys(1, N, 1, 2)),
     RandomRangesFun =
         fun(_X) ->
-            SKint = leveled_rand:uniform(90) + 1,
-            EKint = min(N, leveled_rand:uniform(N - SKint)),
+            SKint = rand:uniform(90) + 1,
+            EKint = min(N, rand:uniform(N - SKint)),
             SK = element(1, lists:nth(SKint, KVL1)),
             EK = element(1, lists:nth(EKint, KVL1)),
             {SK, EK}
@@ -4354,7 +4587,7 @@ corrupted_block_rangetester(PressMethod, TestCount) ->
     B5 = serialise_block(lists:sublist(KVL1, 81, 20), PressMethod),
     CorruptBlockFun =
         fun(Block) ->
-            case leveled_rand:uniform(10) < 2 of
+            case rand:uniform(10) < 2 of
                 true ->
                     flip_byte(Block, 0 , byte_size(Block));
                 false ->
@@ -4408,18 +4641,20 @@ corrupted_block_fetch_tester(PressMethod) ->
 
     CheckFun =
         fun(N, {AccHit, AccMiss}) ->
-            PosL = [min(0, leveled_rand:uniform(N - 2)), N - 1],
+            PosL = [min(0, rand:uniform(N - 2)), N - 1],
             {LK, LV} = lists:nth(N, KVL1),
             {BlockLengths, 0, PosBinIndex} =
                 extract_header(Header, false),
-            R = check_blocks(PosL,
-                                CorruptSlotBin,
-                                BlockLengths,
-                                byte_size(PosBinIndex),
-                                LK,
-                                PressMethod,
-                                false,
-                                not_present),
+            R =
+                check_blocks_matchkey(
+                    PosL,
+                    CorruptSlotBin,
+                    BlockLengths,
+                    byte_size(PosBinIndex),
+                    LK,
+                    PressMethod,
+                    false
+                ),
             case R of
                 not_present ->
                     {AccHit, AccMiss + 1};
@@ -5004,7 +5239,11 @@ range_key_lestthanprefix_test() ->
     ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")).
 
 size_summary(P) ->
-    Summary = element(2, element(2, sys:get_state(P))),
+    Summary = 
+        case sys:get_state(P) of
+            State when is_tuple(State) ->
+                element(2, element(2, State))
+        end,
     true = is_record(Summary, summary),
     erts_debug:flat_size(Summary).
 
@@ -5016,14 +5255,12 @@ print_compare_size(Type, OptimisedSize, UnoptimisedSize) ->
     % Reduced by at least a quarter
     ?assert(OptimisedSize < (UnoptimisedSize - (UnoptimisedSize div 4))).
 
-
 single_key_test() ->
     FileName = "single_key_test",
     Field = <<"t1_bin">>,
-    LK = leveled_codec:to_ledgerkey(<<"Bucket0">>, <<"Key0">>, ?STD_TAG),
-    Chunk = leveled_rand:rand_bytes(16),
-    {_B, _K, MV, _H, _LMs} =
-        leveled_codec:generate_ledgerkv(LK, 1, Chunk, 16, infinity),
+    LK = leveled_codec:to_objectkey(<<"Bucket0">>, <<"Key0">>, ?STD_TAG),
+    Chunk = crypto:strong_rand_bytes(16),
+    MV = leveled_codec:convert_to_ledgerv(LK, 1, Chunk, 16, infinity),
     OptsSST =
         #sst_options{press_method=native,
                         log_options=leveled_log:get_opts()},
@@ -5075,14 +5312,14 @@ strange_range_test() ->
         #sst_options{press_method=native,
                         log_options=leveled_log:get_opts()},
 
-    FK = leveled_codec:to_ledgerkey({<<"T0">>, <<"B0">>}, <<"K0">>, ?RIAK_TAG),
-    LK = leveled_codec:to_ledgerkey({<<"T0">>, <<"B0">>}, <<"K02">>, ?RIAK_TAG),
-    EK = leveled_codec:to_ledgerkey({<<"T0">>, <<"B0">>}, <<"K0299">>, ?RIAK_TAG),
+    FK = leveled_codec:to_objectkey({<<"T0">>, <<"B0">>}, <<"K0">>, ?RIAK_TAG),
+    LK = leveled_codec:to_objectkey({<<"T0">>, <<"B0">>}, <<"K02">>, ?RIAK_TAG),
+    EK = leveled_codec:to_objectkey({<<"T0">>, <<"B0">>}, <<"K0299">>, ?RIAK_TAG),
 
     KL1 =
         lists:map(
             fun(I) ->
-                leveled_codec:to_ledgerkey(
+                leveled_codec:to_objectkey(
                     {<<"T0">>, <<"B0">>},
                     list_to_binary("K00" ++ integer_to_list(I)),
                     ?RIAK_TAG)
@@ -5091,7 +5328,7 @@ strange_range_test() ->
     KL2 =
         lists:map(
             fun(I) ->
-                leveled_codec:to_ledgerkey(
+                leveled_codec:to_objectkey(
                     {<<"T0">>, <<"B0">>},
                     list_to_binary("K02" ++ integer_to_list(I)),
                     ?RIAK_TAG)
@@ -5114,8 +5351,8 @@ strange_range_test() ->
     {ok, P1, {FK, EK}, _Bloom1} =
             sst_new(?TEST_AREA, FileName, 1, KVL, 6000, OptsSST),
 
-    ?assertMatch(LK, element(1, sst_get(P1, LK))),
-    ?assertMatch(FK, element(1, sst_get(P1, FK))),
+    ?assertMatch({LK, _}, sst_get(P1, LK)),
+    ?assertMatch({FK, _}, sst_get(P1, FK)),
     ok = sst_close(P1),
     ok = file:delete(filename:join(?TEST_AREA, FileName ++ ".sst")),
 
@@ -5171,7 +5408,7 @@ start_sst_fun(ProcessToInform) ->
 blocks_required_test() ->
     B = <<"Bucket">>,
     Idx = <<"idx_bin">>,
-    Chunk = leveled_rand:rand_bytes(32),
+    Chunk = crypto:strong_rand_bytes(32),
     KeyFun =
         fun(I) ->
             list_to_binary(io_lib:format("B~6..0B", [I]))
@@ -5194,7 +5431,7 @@ blocks_required_test() ->
             element(
                 3,
                 leveled_codec:generate_ledgerkv(
-                    IdxKey(I), I, null, 0, infinity))
+                    IdxKey(I), I, <<>>, 0, infinity))
         end,
     Block1L =
         lists:map(fun(I) -> {IdxKey(I), IdxValue(I)} end, lists:seq(1, 16)),

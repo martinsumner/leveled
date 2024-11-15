@@ -58,7 +58,7 @@ basic_riak_tester(Bucket, KeyCount) ->
     IndexGenFun =
         fun(ListID) ->
             fun() ->
-                RandInt = leveled_rand:uniform(IndexCount),
+                RandInt = rand:uniform(IndexCount),
                 ID = integer_to_list(ListID),
                 [{add, 
                     list_to_binary("integer" ++ ID ++ "_int"),
@@ -75,7 +75,7 @@ basic_riak_tester(Bucket, KeyCount) ->
         testutil:generate_objects(
             CountPerList, 
             {fixed_binary, 1}, [],
-            leveled_rand:rand_bytes(512),
+            crypto:strong_rand_bytes(512),
             IndexGenFun(1),
             Bucket
         ),
@@ -83,7 +83,7 @@ basic_riak_tester(Bucket, KeyCount) ->
         testutil:generate_objects(
             CountPerList, 
             {fixed_binary, CountPerList + 1}, [],
-            leveled_rand:rand_bytes(512),
+            crypto:strong_rand_bytes(512),
             IndexGenFun(2),
             Bucket
         ),
@@ -92,7 +92,7 @@ basic_riak_tester(Bucket, KeyCount) ->
         testutil:generate_objects(
             CountPerList, 
             {fixed_binary, 2 * CountPerList + 1}, [],
-            leveled_rand:rand_bytes(512),
+            crypto:strong_rand_bytes(512),
             IndexGenFun(3),
             Bucket
         ),
@@ -101,7 +101,7 @@ basic_riak_tester(Bucket, KeyCount) ->
         testutil:generate_objects(
             CountPerList, 
             {fixed_binary, 3 * CountPerList + 1}, [],
-            leveled_rand:rand_bytes(512),
+            crypto:strong_rand_bytes(512),
             IndexGenFun(4),
             Bucket
         ),
@@ -110,7 +110,7 @@ basic_riak_tester(Bucket, KeyCount) ->
         testutil:generate_objects(
             CountPerList, 
             {fixed_binary, 4 * CountPerList + 1}, [],
-            leveled_rand:rand_bytes(512),
+            crypto:strong_rand_bytes(512),
             IndexGenFun(5),
             Bucket
         ),
@@ -276,7 +276,7 @@ summarisable_sstindex(_Config) ->
     ObjListToSort =
         lists:map(
             fun(I) -> 
-                {leveled_rand:uniform(KeyCount * 10),
+                {rand:uniform(KeyCount * 10),
                 testutil:set_object(
                     Bucket, KeyGen(I), integer_to_binary(I), IndexGen, [])}
                 end,
@@ -344,7 +344,7 @@ summarisable_sstindex(_Config) ->
             true = 200 == length(KeyRangeCheckFun(StartKey, EndKey))
         end,
         lists:map(
-            fun(_I) -> leveled_rand:uniform(KeyCount - 200) end,
+            fun(_I) -> rand:uniform(KeyCount - 200) end,
             lists:seq(1, 100))),
 
     IdxObjKeyCount = 50000,
@@ -367,7 +367,7 @@ summarisable_sstindex(_Config) ->
     IdxObjListToSort =
         lists:map(
             fun(I) -> 
-                {leveled_rand:uniform(KeyCount * 10),
+                {rand:uniform(KeyCount * 10),
                     testutil:set_object(
                         Bucket,
                         KeyGen(I),
@@ -419,7 +419,7 @@ summarisable_sstindex(_Config) ->
         end,
         lists:map(
             fun(_I) ->
-                leveled_rand:uniform(IdxObjKeyCount - 20)
+                rand:uniform(IdxObjKeyCount - 20)
             end,
             lists:seq(1, 100))),
     lists:foreach(
@@ -430,7 +430,7 @@ summarisable_sstindex(_Config) ->
         end,
         lists:map(
             fun(_I) ->
-                leveled_rand:uniform(IdxObjKeyCount - 10)
+                rand:uniform(IdxObjKeyCount - 10)
             end,
             lists:seq(1, 100))),
 
@@ -451,7 +451,7 @@ summarisable_sstindex(_Config) ->
             true = 200 == length(KeyRangeCheckFun(StartKey, EndKey))
         end,
         lists:map(
-            fun(_I) -> leveled_rand:uniform(KeyCount - 200) end,
+            fun(_I) -> rand:uniform(KeyCount - 200) end,
             lists:seq(1, 100))),
     
     ok = leveled_bookie:book_destroy(Bookie1).
@@ -475,7 +475,7 @@ fetchclocks_modifiedbetween(_Config) ->
         testutil:generate_objects(
             100000, 
             {fixed_binary, 1}, [],
-            leveled_rand:rand_bytes(32),
+            crypto:strong_rand_bytes(32),
             fun() -> [] end,
             <<"BaselineB">>
         ),
@@ -485,7 +485,7 @@ fetchclocks_modifiedbetween(_Config) ->
         testutil:generate_objects(
             20000, 
             {fixed_binary, 1}, [],
-            leveled_rand:rand_bytes(512),
+            crypto:strong_rand_bytes(512),
             fun() -> [] end,
             <<"B0">>
         ),
@@ -498,7 +498,7 @@ fetchclocks_modifiedbetween(_Config) ->
         testutil:generate_objects(
             15000, 
             {fixed_binary, 20001}, [],
-            leveled_rand:rand_bytes(512),
+            crypto:strong_rand_bytes(512),
             fun() -> [] end,
             <<"B0">>
         ),
@@ -511,7 +511,7 @@ fetchclocks_modifiedbetween(_Config) ->
         testutil:generate_objects(
             35000, 
             {fixed_binary, 35001}, [],
-            leveled_rand:rand_bytes(512),
+            crypto:strong_rand_bytes(512),
             fun() -> [] end,
             <<"B0">>
         ),
@@ -524,7 +524,7 @@ fetchclocks_modifiedbetween(_Config) ->
         testutil:generate_objects(
             30000, 
             {fixed_binary, 70001}, [],
-            leveled_rand:rand_bytes(512),
+            crypto:strong_rand_bytes(512),
             fun() -> [] end,
             <<"B0">>
         ),
@@ -537,7 +537,7 @@ fetchclocks_modifiedbetween(_Config) ->
         testutil:generate_objects(
             8000, 
             {fixed_binary, 1}, [],
-            leveled_rand:rand_bytes(512),
+            crypto:strong_rand_bytes(512),
             fun() -> [] end,
             <<"B1">>
         ),
@@ -550,7 +550,7 @@ fetchclocks_modifiedbetween(_Config) ->
         testutil:generate_objects(
             7000, 
             {fixed_binary, 1}, [],
-            leveled_rand:rand_bytes(512),
+            crypto:strong_rand_bytes(512),
             fun() -> [] end,
             <<"B2">>
         ),
@@ -815,7 +815,7 @@ fetchclocks_modifiedbetween(_Config) ->
         testutil:generate_objects(
             200000, 
             {fixed_binary, 1}, [],
-            leveled_rand:rand_bytes(32),
+            crypto:strong_rand_bytes(32),
             fun() -> [] end,
             <<"B1.9">>
         ),
@@ -1637,7 +1637,7 @@ bigobject_memorycheck(_Config) ->
     ObjPutFun = 
         fun(I) ->
             Key = base64:encode(<<I:32/integer>>),
-            Value = leveled_rand:rand_bytes(1024 * 1024),
+            Value = crypto:strong_rand_bytes(1024 * 1024),
                 % a big object each time!
             {Obj, Spc} = testutil:set_object(Bucket, Key, Value, IndexGen, []),
             testutil:book_riakput(Bookie, Obj, Spc)

@@ -12,3 +12,4 @@ leveled_data/*
 compile_commands.json
 *parser.erl
 *lexer.erl
+elp
