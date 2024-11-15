@@ -802,7 +802,12 @@ space_clear_ondelete(_Config) ->
     {ok, Book1} = leveled_bookie:book_start(StartOpts1),
     G2 = fun testutil:generate_compressibleobjects/2,
     testutil:load_objects(
-        20000, [uuid, uuid, uuid, uuid], Book1, no_check, G2),
+        20000,
+        [binary_uuid, binary_uuid, binary_uuid, binary_uuid],
+        Book1,
+        no_check,
+        G2
+    ),
     
     FoldKeysFun = fun(B, K, Acc) -> [{B, K}|Acc] end,
 

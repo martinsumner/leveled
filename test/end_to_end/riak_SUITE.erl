@@ -1554,26 +1554,17 @@ dollar_bucket_index(_Config) ->
                                               testutil:sync_strategy()),
     ObjectGen = testutil:get_compressiblevalue_andinteger(),
     IndexGen = fun() -> [] end,
-    ObjL1 = testutil:generate_objects(1300,
-                                      uuid,
-                                      [],
-                                      ObjectGen,
-                                      IndexGen,
-                                      <<"Bucket1">>),
+    ObjL1 =
+        testutil:generate_objects(
+            1300, binary_uuid, [], ObjectGen, IndexGen, <<"Bucket1">>),
     testutil:riakload(Bookie1, ObjL1),
-    ObjL2 = testutil:generate_objects(1700,
-                                      uuid,
-                                      [],
-                                      ObjectGen,
-                                      IndexGen,
-                                      <<"Bucket2">>),
+    ObjL2 =
+        testutil:generate_objects(
+            1700, binary_uuid, [], ObjectGen, IndexGen, <<"Bucket2">>),
     testutil:riakload(Bookie1, ObjL2),
-    ObjL3 = testutil:generate_objects(7000,
-                                      uuid,
-                                      [],
-                                      ObjectGen,
-                                      IndexGen,
-                                      <<"Bucket3">>),
+    ObjL3 =
+        testutil:generate_objects(
+            7000, binary_uuid, [], ObjectGen, IndexGen, <<"Bucket3">>),
 
     testutil:riakload(Bookie1, ObjL3),
 
@@ -1583,10 +1574,8 @@ dollar_bucket_index(_Config) ->
     FoldAccT = {FoldKeysFun, []},
 
     {async, Folder} = 
-        leveled_bookie:book_keylist(Bookie1, 
-                                    ?RIAK_TAG, 
-                                    <<"Bucket2">>, 
-                                    FoldAccT),
+        leveled_bookie:book_keylist(
+            Bookie1, ?RIAK_TAG, <<"Bucket2">>, FoldAccT),
     Results = Folder(),
     true = 1700 == length(Results),
     
@@ -1597,26 +1586,32 @@ dollar_bucket_index(_Config) ->
     {ok, REMiss} = leveled_util:regex_compile("no_key"),
 
     {async, FolderREMiss} = 
-        leveled_bookie:book_keylist(Bookie1,
-                                    ?RIAK_TAG,
-                                    <<"Bucket2">>,
-                                    {null, null},
-                                    {FoldKeysFun, []},
-                                    REMiss),
+        leveled_bookie:book_keylist(
+            Bookie1,
+            ?RIAK_TAG,
+            <<"Bucket2">>,
+            {null, null},
+            {FoldKeysFun, []},
+            REMiss
+        ),
     {async, FolderRESingleMatch} = 
-        leveled_bookie:book_keylist(Bookie1,
-                                    ?RIAK_TAG,
-                                    <<"Bucket2">>,
-                                    {null, null},
-                                    {FoldKeysFun, []},
-                                    RESingleMatch),
+        leveled_bookie:book_keylist(
+            Bookie1,
+            ?RIAK_TAG,
+            <<"Bucket2">>,
+            {null, null},
+            {FoldKeysFun, []},
+            RESingleMatch
+        ),
     {async, FolderREAllMatch} = 
-        leveled_bookie:book_keylist(Bookie1,
-                                    ?RIAK_TAG,
-                                    <<"Bucket2">>,
-                                    {null, null},
-                                    {FoldKeysFun, []},
-                                    REAllMatch),
+        leveled_bookie:book_keylist(
+            Bookie1,
+            ?RIAK_TAG,
+            <<"Bucket2">>,
+            {null, null},
+            {FoldKeysFun, []},
+            REAllMatch
+        ),
     
     true = 0 == length(FolderREMiss()),
     true = 1 == length(FolderRESingleMatch()),
@@ -1628,10 +1623,13 @@ dollar_bucket_index(_Config) ->
 
 bigobject_memorycheck(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    {ok, Bookie} = leveled_bookie:book_start(RootPath,
-                                              200,
-                                              1000000000,
-                                              testutil:sync_strategy()),
+    {ok, Bookie} =
+        leveled_bookie:book_start(
+            RootPath,
+            200,
+            1000000000,
+            testutil:sync_strategy()
+        ),
     Bucket = <<"B">>,
     IndexGen = fun() -> [] end,
     ObjPutFun = 
@@ -1653,10 +1651,13 @@ bigobject_memorycheck(_Config) ->
     % All processes
     {_TotalCDBBinMem, _TotalCDBProcesses} = cdb_memory_check(),
     ok = leveled_bookie:book_close(Bookie),
-    {ok, BookieR} = leveled_bookie:book_start(RootPath,
-                                              2000,
-                                              1000000000,
-                                              testutil:sync_strategy()),
+    {ok, BookieR} =
+        leveled_bookie:book_start(
+            RootPath,
+            2000,
+            1000000000,
+            testutil:sync_strategy()
+        ),
     {RS_TotalCDBBinMem, _RS_TotalCDBProcesses} = cdb_memory_check(),
     true = RS_TotalCDBBinMem < 1024 * 1024,
         % No binary object references exist after startup
@@ -1666,25 +1667,29 @@ bigobject_memorycheck(_Config) ->
 
 cdb_memory_check() ->
     TotalCDBProcesses =
-        lists:filter(fun(P) ->
-                        {dictionary, PD} = 
-                            process_info(P, dictionary),
-                        case lists:keyfind('$initial_call', 1, PD) of
-                            {'$initial_call',{leveled_cdb,init,1}} ->
-                                true;
-                            _ ->
-                                false
-                        end
-                        end,
-                        processes()),
+        lists:filter(
+            fun(P) ->
+                {dictionary, PD} = 
+                    process_info(P, dictionary),
+                case lists:keyfind('$initial_call', 1, PD) of
+                    {'$initial_call',{leveled_cdb,init,1}} ->
+                        true;
+                    _ ->
+                        false
+                end
+            end,
+            processes()
+        ),
     TotalCDBBinMem =
-        lists:foldl(fun(P, Acc) ->
-                        BinMem = calc_total_binary_memory(P),
-                        io:format("Memory for pid ~w is ~w~n", [P, BinMem]),
-                        BinMem + Acc
-                    end,
-                        0,
-                        TotalCDBProcesses),
+        lists:foldl(
+            fun(P, Acc) ->
+                BinMem = calc_total_binary_memory(P),
+                io:format("Memory for pid ~w is ~w~n", [P, BinMem]),
+                BinMem + Acc
+            end,
+            0,
+            TotalCDBProcesses
+        ),
     io:format("Total binary memory ~w in ~w CDB processes~n",
                 [TotalCDBBinMem, length(TotalCDBProcesses)]),
     {TotalCDBBinMem, TotalCDBProcesses}.

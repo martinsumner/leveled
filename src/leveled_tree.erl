@@ -950,15 +950,19 @@ empty_test() ->
 search_range_idx_test() ->
     Tree = 
         {idxt,1,
-            {{[{{o_rkv,"Bucket1","Key1",null},
-                {manifest_entry,{o_rkv,"Bucket","Key9083",null},
-                                {o_rkv,"Bucket1","Key1",null},
-                                "<0.320.0>","./16_1_6.sst", none}}]},
-                {1,{{o_rkv,"Bucket1","Key1",null},1,nil,nil}}}},
+            {{[{{o_rkv,<<"Bucket1">>,<<"Key1">>,null},
+                leveled_pmanifest:new_entry(
+                    {o_rkv, <<"Bucket">>, <<"Key9083">>, null},
+                    {o_rkv, <<"Bucket1">>, <<"Key1">>, null},
+                    list_to_pid("<0.320.0>"),
+                    "./16_1_6.sst",
+                    none
+                )}]},
+                {1, {{o_rkv, <<"Bucket1">>, <<"Key1">>, null}, 1, nil, nil}}}},
     R =
         search_range(
-            {o_rkv, "Bucket", null, null}, 
-            {o_rkv, "Bucket", null, null}, 
+            {o_rkv, <<"Bucket">>, null, null}, 
+            {o_rkv, <<"Bucket">>, null, null}, 
             Tree, 
             fun leveled_pmanifest:entry_startkey/1
         ),

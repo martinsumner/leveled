@@ -549,7 +549,7 @@ generate_objects(
     );
 generate_objects(
         Count, binary_uuid, ObjL, Value, IndexGen, Bucket)
-        when is_binary(Bucket) ->
+        when is_binary(Bucket); is_tuple(Bucket) ->
     {Obj1, Spec1} =
         set_object(
             Bucket,
@@ -557,23 +557,14 @@ generate_objects(
             Value,
             IndexGen
         ),
-    generate_objects(Count - 1,
-                        binary_uuid,
-                        [{rand:uniform(), Obj1, Spec1}|ObjL],
-                        Value,
-                        IndexGen,
-                        Bucket);
-generate_objects(Count, uuid, ObjL, Value, IndexGen, Bucket) ->
-    {Obj1, Spec1} = set_object(Bucket,
-                                leveled_util:generate_uuid(),
-                                Value,
-                                IndexGen),
-    generate_objects(Count - 1,
-                        uuid,
-                        [{rand:uniform(), Obj1, Spec1}|ObjL],
-                        Value,
-                        IndexGen,
-                        Bucket);
+    generate_objects(
+        Count - 1,
+        binary_uuid,
+        [{rand:uniform(), Obj1, Spec1}|ObjL],
+        Value,
+        IndexGen,
+        Bucket
+    );
 generate_objects(
         Count, {binary, KeyNumber}, ObjL, Value, IndexGen, Bucket)
         when is_list(Bucket) ->
@@ -879,7 +870,7 @@ put_indexed_objects(Book, Bucket, Count, V) ->
     IndexGen = get_randomindexes_generator(1),
     SW = os:timestamp(),
     ObjL1 = 
-        generate_objects(Count, uuid, [], V, IndexGen, Bucket),
+        generate_objects(Count, binary_uuid, [], V, IndexGen, Bucket),
     KSpecL =
         lists:map(
             fun({_RN, Obj, Spc}) ->

@@ -64,10 +64,10 @@ replace_everything(_Config) ->
             {reload_strategy, [{?RIAK_TAG, recalc}]}]
         end,
     {ok, Book1} = leveled_bookie:book_start(BookOpts(StdJournalCount)),
-    BKT = "ReplaceAll",
-    BKT1 = "ReplaceAll1",
-    BKT2 = "ReplaceAll2",
-    BKT3 = "ReplaceAll3",
+    BKT = <<"ReplaceAll">>,
+    BKT1 = <<"ReplaceAll1">>,
+    BKT2 = <<"ReplaceAll2">>,
+    BKT3 = <<"ReplaceAll3">>,
     {KSpcL1, V1} =
         testutil:put_indexed_objects(Book1, BKT, 50000),
     ok = testutil:check_indexed_objects(Book1, BKT, KSpcL1, V1),
@@ -199,12 +199,12 @@ close_duringcompaction(_Config) ->
                     {cache_size, 2000},
                     {max_journalsize, 2000000},
                     {sync_strategy, testutil:sync_strategy()}],
-    {ok, Spcl1, LastV1} = rotating_object_check(BookOpts, "Bucket1", 6400),
+    {ok, Spcl1, LastV1} = rotating_object_check(BookOpts, <<"Bucket1">>, 6400),
     {ok, Book1} = leveled_bookie:book_start(BookOpts),
     ok = leveled_bookie:book_compactjournal(Book1, 30000),
     ok = leveled_bookie:book_close(Book1),
     {ok, Book2} = leveled_bookie:book_start(BookOpts),
-    ok = testutil:check_indexed_objects(Book2, "Bucket1", Spcl1, LastV1),
+    ok = testutil:check_indexed_objects(Book2, <<"Bucket1">>, Spcl1, LastV1),
     ok = leveled_bookie:book_close(Book2).
 
 recovery_with_samekeyupdates(_Config) ->
@@ -385,7 +385,7 @@ hot_backup_changes(_Config) ->
                     {cache_size, 1000},
                     {max_journalsize, 10000000},
                     {sync_strategy, testutil:sync_strategy()}],
-    B = "Bucket0",    
+    B = <<"Bucket0">>,    
 
     {ok, Book1} = leveled_bookie:book_start(BookOpts),
     {KSpcL1, _V1} = testutil:put_indexed_objects(Book1, B, 20000),
@@ -459,41 +459,62 @@ rotate_wipe_compact(Strategy1, Strategy2) ->
                     {sync_strategy, testutil:sync_strategy()},
                     {reload_strategy, [{?RIAK_TAG, Strategy2}]},
                     {max_run_length, 8}],
-    {ok, Spcl3, LastV3} = rotating_object_check(BookOpts, "Bucket3", 400),
-    ok = restart_from_blankledger(BookOpts, [{"Bucket3", Spcl3, LastV3}]),
-    {ok, Spcl4, LastV4} = rotating_object_check(BookOpts, "Bucket4", 800),
-    ok = restart_from_blankledger(BookOpts, [{"Bucket3", Spcl3, LastV3},
-                                                {"Bucket4", Spcl4, LastV4}]),
-    {ok, Spcl5, LastV5} = rotating_object_check(BookOpts, "Bucket5", 1600),
-    ok = restart_from_blankledger(BookOpts, [{"Bucket3", Spcl3, LastV3},
-                                                {"Bucket5", Spcl5, LastV5}]),
-    {ok, Spcl6, LastV6} = rotating_object_check(BookOpts, "Bucket6", 3200),
+    {ok, Spcl3, LastV3} =
+        rotating_object_check(BookOpts, <<"Bucket3">>, 400),
+    ok = restart_from_blankledger(BookOpts, [{<<"Bucket3">>, Spcl3, LastV3}]),
+    {ok, Spcl4, LastV4} =
+        rotating_object_check(BookOpts, <<"Bucket4">>, 800),
+    ok =
+        restart_from_blankledger(
+            BookOpts, 
+            [{<<"Bucket3">>, Spcl3, LastV3}, {<<"Bucket4">>, Spcl4, LastV4}]
+        ),
+    {ok, Spcl5, LastV5} = rotating_object_check(BookOpts, <<"Bucket5">>, 1600),
+    ok =
+        restart_from_blankledger(
+            BookOpts, 
+            [{<<"Bucket3">>, Spcl3, LastV3}, {<<"Bucket5">>, Spcl5, LastV5}]
+        ),
+    {ok, Spcl6, LastV6} = rotating_object_check(BookOpts, <<"Bucket6">>, 3200),
 
     {ok, Book1} = leveled_bookie:book_start(BookOpts),
     compact_and_wait(Book1),
     ok = leveled_bookie:book_close(Book1),
 
-    ok = restart_from_blankledger(BookOptsAlt, [{"Bucket3", Spcl3, LastV3},
-                                                {"Bucket4", Spcl4, LastV4},
-                                                {"Bucket5", Spcl5, LastV5},
-                                                {"Bucket6", Spcl6, LastV6}]),
+    ok =
+        restart_from_blankledger(
+            BookOptsAlt,
+            [
+                {<<"Bucket3">>, Spcl3, LastV3},
+                {<<"Bucket4">>, Spcl4, LastV4},
+                {<<"Bucket5">>, Spcl5, LastV5},
+                {<<"Bucket6">>, Spcl6, LastV6}
+            ]
+        ),
 
     {ok, Book2} = leveled_bookie:book_start(BookOptsAlt),
     compact_and_wait(Book2),
     ok = leveled_bookie:book_close(Book2),
 
-    ok = restart_from_blankledger(BookOptsAlt, [{"Bucket3", Spcl3, LastV3},
-                                                {"Bucket4", Spcl4, LastV4},
-                                                {"Bucket5", Spcl5, LastV5},
-                                                {"Bucket6", Spcl6, LastV6}]),
+    ok =
+        restart_from_blankledger(
+            BookOptsAlt,
+            [
+                {<<"Bucket3">>, Spcl3, LastV3},
+                {<<"Bucket4">>, Spcl4, LastV4},
+                {<<"Bucket5">>, Spcl5, LastV5},
+                {<<"Bucket6">>, Spcl6, LastV6}
+            ]
+        ),
 
     {ok, Book3} = leveled_bookie:book_start(BookOptsAlt),
 
-    {KSpcL2, _V2} = testutil:put_indexed_objects(Book3, "AltBucket6", 3000),
+    {KSpcL2, _V2} =
+        testutil:put_indexed_objects(Book3, <<"AltBucket6">>, 3000),
     Q2 =
         fun(RT) -> 
             {index_query,
-                "AltBucket6",
+                <<"AltBucket6">>,
                 {fun testutil:foldkeysfun/3, []},
                 {<<"idx1_bin">>, <<"#">>, <<"|">>},
                 {RT, undefined}}
@@ -504,10 +525,13 @@ rotate_wipe_compact(Strategy1, Strategy2) ->
 
     DeleteFun =
         fun({DK, [{add, DIdx, DTerm}]}) ->
-            ok = testutil:book_riakdelete(Book3,
-                                            "AltBucket6",
-                                            DK,
-                                            [{remove, DIdx, DTerm}])
+            ok =
+                testutil:book_riakdelete(
+                    Book3,
+                    <<"AltBucket6">>,
+                    DK,
+                    [{remove, DIdx, DTerm}]
+                )
         end,
     lists:foreach(DeleteFun, KSpcL2),
 
@@ -615,33 +639,37 @@ recovr_strategy(_Config) ->
                     {sync_strategy, testutil:sync_strategy()},
                     {reload_strategy, [{?RIAK_TAG, recovr}]}],
     
-    R6 = rotating_object_check(BookOpts, "Bucket6", 6400),
+    R6 = rotating_object_check(BookOpts, <<"Bucket6">>, 6400),
     {ok, AllSpcL, V4} = R6,
-    leveled_penciller:clean_testdir(proplists:get_value(root_path, BookOpts) ++
-                                    "/ledger"),
+    leveled_penciller:clean_testdir(
+        proplists:get_value(root_path, BookOpts) ++ "/ledger"),
     {ok, Book1} = leveled_bookie:book_start(BookOpts),
     
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = testutil:book_riakput(Book1, TestObject, TestSpec),
-    ok = testutil:book_riakdelete(Book1,
-                                    testutil:get_bucket(TestObject),
-                                    testutil:get_key(TestObject),
-                                    []),
+    ok =
+        testutil:book_riakdelete(
+            Book1,
+            testutil:get_bucket(TestObject),
+            testutil:get_key(TestObject),
+            []
+        ),
     
-    lists:foreach(fun({K, _SpcL}) -> 
-                        {ok, OH} = testutil:book_riakhead(Book1, "Bucket6", K),
-                        VCH = testutil:get_vclock(OH),
-                        {ok, OG} = testutil:book_riakget(Book1, "Bucket6", K),
-                        V = testutil:get_value(OG),
-                        VCG = testutil:get_vclock(OG),
-                        true = V == V4,
-                        true = VCH == VCG
-                        end,
-                    lists:nthtail(6400, AllSpcL)),
+    lists:foreach(
+        fun({K, _SpcL}) -> 
+            {ok, OH} = testutil:book_riakhead(Book1, <<"Bucket6">>, K),
+            VCH = testutil:get_vclock(OH),
+            {ok, OG} = testutil:book_riakget(Book1, <<"Bucket6">>, K),
+            V = testutil:get_value(OG),
+            VCG = testutil:get_vclock(OG),
+            true = V == V4,
+            true = VCH == VCG
+        end,
+        lists:nthtail(6400, AllSpcL)),
     Q =
         fun(RT) ->
             {index_query,
-                "Bucket6",
+                <<"Bucket6">>,
                 {fun testutil:foldkeysfun/3, []},
                 {<<"idx1_bin">>, <<"#">>, <<"|">>},
                 {RT, undefined}}
@@ -666,7 +694,7 @@ recovr_strategy(_Config) ->
 
     {ok, Book2} = leveled_bookie:book_start(RevisedOpts),
 
-    {KSpcL2, _V2} = testutil:put_indexed_objects(Book2, "AltBucket6", 3000),
+    {KSpcL2, _V2} = testutil:put_indexed_objects(Book2, <<"AltBucket6">>, 3000),
     {async, KFolder2} = leveled_bookie:book_returnfolder(Book2, Q(false)),
     KeyList2 = lists:usort(KFolder2()),
     true = length(KeyList2) == 6400,
@@ -674,7 +702,7 @@ recovr_strategy(_Config) ->
     Q2 =
         fun(RT) ->
             {index_query,
-                "AltBucket6",
+                <<"AltBucket6">>,
                 {fun testutil:foldkeysfun/3, []},
                 {<<"idx1_bin">>, <<"#">>, <<"|">>},
                 {RT, undefined}}
@@ -685,10 +713,9 @@ recovr_strategy(_Config) ->
 
     DeleteFun =
         fun({DK, [{add, DIdx, DTerm}]}) ->
-            ok = testutil:book_riakdelete(Book2,
-                                            "AltBucket6",
-                                            DK,
-                                            [{remove, DIdx, DTerm}])
+            ok =
+                testutil:book_riakdelete(
+                    Book2, <<"AltBucket6">>, DK, [{remove, DIdx, DTerm}])
         end,
     lists:foreach(DeleteFun, KSpcL2),
 

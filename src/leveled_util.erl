@@ -45,14 +45,14 @@ integer_time(TS) ->
 
 
 -type match_option() ::
-    'caseless' |
-    {'offset', non_neg_integer()} |
-    {'capture', value_spec()} |
-    {'capture', value_spec(), value_spec_type()}.
+    caseless |
+    {offset, non_neg_integer()} |
+    {capture, value_spec()} |
+    {capture, value_spec(), value_spec_type()}.
 -type value_spec() ::
-    'all' | 'all_but_first' | 'first' | 'none' | [value_id()].
--type value_spec_type() :: 'binary'.
--type value_id() :: binary().
+    all | all_but_first | first | none | [value_id()].
+-type value_spec_type() :: binary.
+-type value_id() :: string().
 -type match_index() :: {non_neg_integer(), non_neg_integer()}.
 
 -spec regex_run(
