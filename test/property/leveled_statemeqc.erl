@@ -342,7 +342,7 @@ mput_pre(S) ->
 %%
 %% Really weird to have to specify a value in case of a remove action
 mput_args(#{leveled := Pid, previous_keys := PK}) ->
-    ?LET(Objs, list({gen_key_in_bucket(PK), nat()}),
+    ?LET(Objs, list({gen_key_in_bucket(PK), null}),
          [Pid, [ {weighted_default({5, add}, {1, remove}), Bucket, Key, SubKey, gen_val()} || {{Key, Bucket}, SubKey} <- Objs ]]).
 
 
