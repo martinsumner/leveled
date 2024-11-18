@@ -527,13 +527,19 @@ log_wrongkey_test() ->
         error,
         {badkey, wrong0001},
         log(wrong0001, [],[warning, error], ?LOGBASE, backend)
-    ),
+    ).
+
+logtimer_wrongkey_test() ->
+    ST = os:timestamp(),
+    % Note - 
+    % An issue with cover means issues with ?assertException, where the
+    % function being tested is split across lines, the closing bracket on the
+    % next line is not recognised as being covered. We want 100% coverage, so
+    % need to write this on one line.
     ?assertException(
         error,
         {badkey, wrong0001},
-        log_timer(
-            wrong0001, [], os:timestamp(), [warning, error], ?LOGBASE, backend
-        )
+        log_timer(wrong0001, [], ST, [warning, error], ?LOGBASE, backend)
     ).
 
 shouldilog_test() ->

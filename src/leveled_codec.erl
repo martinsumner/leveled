@@ -73,8 +73,9 @@
 -type segment_hash() :: 
         % hash of the key to an aae segment - to be used in ledger filters
         {integer(), integer()}|no_lookup.
+-type head_value() :: any().
 -type metadata() ::
-        tuple()|null. % null for empty metadata
+        tuple()|null|head_value(). % null for empty metadata
 -type last_moddate() ::
         % modified date as determined by the object (not this store)
         % if the object has siblings in the store will be the maximum of those
@@ -185,7 +186,8 @@
             actual_regex/0,
             value_fetcher/0,
             proxy_object/0,
-            slimmed_key/0
+            slimmed_key/0,
+            head_value/0
         ]).
 
 
@@ -469,6 +471,8 @@ to_querykey(Bucket, Key, Tag, Field, Value) when Tag == ?IDX_TAG ->
 -spec to_querykey(key()|null, key()|null, tag()) -> query_key().
 %% @doc
 %% Convert something into a ledger query key
+to_querykey(Bucket, {Key, SubKey}, Tag) ->
+    {Tag, Bucket, Key, SubKey};
 to_querykey(Bucket, Key, Tag) ->
     {Tag, Bucket, Key, null}.
 
@@ -820,19 +824,16 @@ gen_headspec(
     gen_headspec({IdxOp, v1, Bucket, Key, SubKey, undefined, Value}, SQN, TTL).
 
 
--spec return_proxy
-    (leveled_head:headonly_tag(), leveled_head:object_metadata(), null, journal_ref())
-        -> leveled_head:object_metadata();
-    (leveled_head:object_tag(), leveled_head:object_metadata(), pid(), journal_ref())
-        -> proxy_objectbin().
+-spec return_proxy(
+    leveled_head:object_tag(),
+    leveled_head:object_metadata(),
+    pid(),
+    journal_ref()) -> proxy_objectbin().
 %% @doc
 %% If the object has a value, return the metadata and a proxy through which
-%% the applictaion or runner can access the value.  If it is a ?HEAD_TAG
-%% then it has no value, so just return the metadata
-return_proxy(?HEAD_TAG, ObjectMetadata, _InkerClone, _JR) ->
-    % Object has no value - so proxy object makese no sense, just return the
-    % metadata as is
-    ObjectMetadata;
+%% the application or runner can access the value.
+%% This is only called if there is an object tag - i.e. ?RIAK_TAG//STD_TAG or
+%% a user-defined tag that uses ObjMetadata in the ?STD_TAG format
 return_proxy(Tag, ObjMetadata, InkerClone, JournalRef) ->
     Size = leveled_head:get_size(Tag, ObjMetadata),
     HeadBin = leveled_head:build_head(Tag, ObjMetadata),
@@ -913,7 +914,7 @@ get_size(PK, Value) ->
 
 -spec get_keyandobjhash(tuple(), tuple()) -> tuple().
 %% @doc
-%% Return a tucple of {Bucket, Key, Hash} where hash is a hash of the object
+%% Return a tuple of {Bucket, Key, Hash} where hash is a hash of the object
 %% not the key (for example with Riak tagged objects this will be a hash of
 %% the sorted vclock)
 get_keyandobjhash(LK, Value) ->
