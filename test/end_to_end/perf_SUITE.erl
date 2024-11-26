@@ -57,7 +57,7 @@ riak_load_tester(Bucket, KeyCount, ObjSize, ProfileList, PressMethod) ->
             {log_level, warn},
             {compression_method, PressMethod},
             {forced_logs,
-                [b0015, b0016, b0017, b0018, p0032, sst12]}
+                [b0015, b0016, b0017, b0018, p0032, sst12, pc008]}
         ],
 
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
