@@ -883,7 +883,11 @@ put_indexed_objects(Book, Bucket, Count, V) ->
     KSpecL =
         lists:map(
             fun({_RN, Obj, Spc}) ->
-                book_riakput(Book, Obj, Spc),
+                R = book_riakput(Book,Obj, Spc),
+                case R of
+                    ok -> ok;
+                    pause -> timer:sleep(?SLOWOFFER_DELAY)
+                end,
                 {testutil:get_key(Obj), Spc}
             end,
             ObjL1),

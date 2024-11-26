@@ -293,7 +293,7 @@
             % To which level of the ledger should the ledger contents be
             % pre-loaded into the pagecache (using fadvise on creation and
             % startup)
-            {compression_method, native|lz4|zstd|none} |
+        {compression_method, native|lz4|zstd|none} |
             % Compression method and point allow Leveled to be switched from
             % using bif based compression (zlib) to using nif based compression
             % (lz4 or zstd).
