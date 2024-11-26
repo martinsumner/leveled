@@ -33,6 +33,7 @@
 %%% Non-configurable startup defaults
 %%%============================================================================
 -define(MAX_SSTSLOTS, 256).
+-define(MAX_MERGEBELOW, 24).
 -define(LOADING_PAUSE, 1000).
 -define(LOADING_BATCH, 1000).
 -define(CACHE_SIZE_JITTER, 25).
@@ -109,7 +110,8 @@
                         press_level = ?COMPRESSION_LEVEL :: non_neg_integer(),
                         log_options = leveled_log:get_opts() 
                             :: leveled_log:log_options(),
-                        max_sstslots = ?MAX_SSTSLOTS :: pos_integer(),
+                        max_sstslots = ?MAX_SSTSLOTS :: pos_integer()|infinity,
+                        max_mergebelow = ?MAX_MERGEBELOW :: pos_integer()|infinity,
                         pagecache_level = ?SST_PAGECACHELEVEL_NOLOOKUP
                             :: pos_integer(),
                         monitor = {no_monitor, 0}

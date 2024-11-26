@@ -2,7 +2,7 @@
 
 -include("leveled.hrl").
 
--export([all/0, init_per_suite/1, end_per_suite/1]).
+-export([all/0, init_per_suite/1, end_per_suite/1, suite/0]).
 -export([
         test_large_lsm_merge/1,
         basic_riak/1,
@@ -14,6 +14,8 @@
         bigobject_memorycheck/1,
         summarisable_sstindex/1
             ]).
+
+suite() -> [{timetrap, {hours, 2}}].
 
 all() -> [
             basic_riak,
@@ -38,16 +40,19 @@ end_per_suite(Config) ->
 
 
 test_large_lsm_merge(_Config) ->
+    lsm_merge_tester(24).
+
+lsm_merge_tester(LoopsPerBucket) ->
     RootPath = testutil:reset_filestructure("lsmMerge"),
     PutsPerLoop = 32000,
-    LoopsPerBucket = 16,
     SampleOneIn = 100,
     StartOpts1 =
         [
             {root_path, RootPath},
             {max_pencillercachesize, 16000},
-            {max_sstslots, 64},
+            {max_sstslots, 96},
                 % Make SST files smaller, to accelerate merges
+            {max_mergebelow, 24},
             {sync_strategy, testutil:sync_strategy()},
             {log_level, warn},
             {compression_method, zstd},
@@ -55,7 +60,7 @@ test_large_lsm_merge(_Config) ->
                 forced_logs,
                 [
                     b0015, b0016, b0017, b0018, p0032, sst12,
-                    pc008, pc011,
+                    pc008, pc010, pc011, pc026,
                     p0018, p0024
                 ]
             }
@@ -121,9 +126,9 @@ test_large_lsm_merge(_Config) ->
     true = (LoopsPerBucket * PutsPerLoop) == maps:get(<<"B2">>, CountMapF1),
 
     TestSampleKeyFun =
-        fun(Book) ->
+        fun(Book, Values) ->
             fun({B, K}) ->
-                ExpectedV = maps:get(B, ValueMap),
+                ExpectedV = maps:get(B, Values),
                 {ok, Obj} = testutil:book_riakget(Book, B, K),
                 true = ExpectedV == testutil:get_value(Obj)
             end
@@ -131,7 +136,9 @@ test_large_lsm_merge(_Config) ->
 
     {GT1, ok} =
         timer:tc(
-            fun() -> lists:foreach(TestSampleKeyFun(Bookie1), SampleKeysF1) end
+            fun() ->
+                lists:foreach(TestSampleKeyFun(Bookie1, ValueMap), SampleKeysF1)
+            end
         ),
     io:format(
         "Returned ~w sample gets in ~w ms~n",
@@ -139,7 +146,10 @@ test_large_lsm_merge(_Config) ->
     ),
 
     ok = leveled_bookie:book_close(Bookie1),
-    {ok, Bookie2} = leveled_bookie:book_start(StartOpts1),
+    {ok, Bookie2} =
+        leveled_bookie:book_start(
+            lists:ukeysort(1, [{max_sstslots, 64}|StartOpts1])
+        ),
 
     {SampleKeysF2, CountMapF2} = CheckBucketFun(Bookie2),
     true = (LoopsPerBucket * PutsPerLoop) == maps:get(<<"B1">>, CountMapF2),
@@ -147,11 +157,33 @@ test_large_lsm_merge(_Config) ->
 
     {GT2, ok} =
         timer:tc(
-            fun() -> lists:foreach(TestSampleKeyFun(Bookie2), SampleKeysF2) end
+            fun() ->
+                lists:foreach(TestSampleKeyFun(Bookie2, ValueMap), SampleKeysF2)
+            end
         ),
     io:format(
         "Returned ~w sample gets in ~w ms~n",
         [length(SampleKeysF2), GT2 div 1000]
+    ),
+
+    V3 = LoadBucketFun(Bookie2, <<"B3">>, LoopsPerBucket),
+    io:format("Completed load of ~s~n", [<<"B3">>]),
+    UpdValueMap = #{<<"B1">> => V1, <<"B2">> => V2, <<"B3">> => V3},
+
+    {SampleKeysF3, CountMapF3} = CheckBucketFun(Bookie2),
+    true = (LoopsPerBucket * PutsPerLoop) == maps:get(<<"B1">>, CountMapF3),
+    true = (LoopsPerBucket * PutsPerLoop) == maps:get(<<"B2">>, CountMapF3),
+    true = (LoopsPerBucket * PutsPerLoop) == maps:get(<<"B3">>, CountMapF3),
+
+    {GT3, ok} =
+        timer:tc(
+            fun() ->
+                lists:foreach(TestSampleKeyFun(Bookie2, UpdValueMap), SampleKeysF3)
+            end
+        ),
+    io:format(
+        "Returned ~w sample gets in ~w ms~n",
+        [length(SampleKeysF3), GT3 div 1000]
     ),
 
     ok = leveled_bookie:book_destroy(Bookie2).
