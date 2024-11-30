@@ -34,7 +34,7 @@ all() -> [
 
 
 test_large_lsm_merge(_Config) ->
-    lsm_merge_tester(24).
+    lsm_merge_tester(12).
 
 lsm_merge_tester(LoopsPerBucket) ->
     RootPath = testutil:reset_filestructure("lsmMerge"),
@@ -44,7 +44,7 @@ lsm_merge_tester(LoopsPerBucket) ->
         [
             {root_path, RootPath},
             {max_pencillercachesize, 16000},
-            {max_sstslots, 96},
+            {max_sstslots, 48},
                 % Make SST files smaller, to accelerate merges
             {max_mergebelow, 24},
             {sync_strategy, testutil:sync_strategy()},

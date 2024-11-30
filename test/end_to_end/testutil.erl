@@ -446,11 +446,15 @@ get_compressiblevalue() ->
     Selector = [{1, S1}, {2, S2}, {3, S3}, {4, S4},
                 {5, S5}, {6, S6}, {7, S7}, {8, S8}],
     L = lists:seq(1, 1024),
-    lists:foldl(fun(_X, Acc) ->
-                    {_, Str} = lists:keyfind(leveled_rand:uniform(8), 1, Selector),
-                    Acc ++ Str end,
-                "",
-                L).
+    iolist_to_binary(
+        lists:foldl(
+            fun(_X, Acc) ->
+                {_, Str} = lists:keyfind(rand:uniform(8), 1, Selector),
+            [Str|Acc] end,
+            [""],
+            L
+        )
+    ).
 
 generate_smallobjects(Count, KeyNumber) ->
     generate_objects(Count, KeyNumber, [], leveled_rand:rand_bytes(512)).
@@ -637,8 +641,10 @@ get_value(ObjectBin) ->
             <<SibLength:32/integer, Rest2/binary>> = SibsBin,
             <<ContentBin:SibLength/binary, _MetaBin/binary>> = Rest2,
             case ContentBin of
-                <<0, ContentBin0/binary>> ->
-                    binary_to_term(ContentBin0)
+                <<0:8/integer, ContentBin0/binary>> ->
+                    binary_to_term(ContentBin0);
+                <<1:8/integer, ContentAsIs/binary>> ->
+                    ContentAsIs
             end;
         N ->
             io:format("SibCount of ~w with ObjectBin ~w~n", [N, ObjectBin]),
@@ -696,8 +702,10 @@ get_randomindexes_generator(Count) ->
             lists:map(
                 fun(X) ->
                     {add,
-                        list_to_binary("idx" ++ integer_to_list(X) ++ "_bin"),
-                        list_to_binary(get_randomdate() ++ get_randomname())}
+                        iolist_to_binary(
+                            "idx" ++ integer_to_list(X) ++ "_bin"),
+                        iolist_to_binary(
+                            get_randomdate() ++ get_randomname())}
                 end,
                 lists:seq(1, Count))
         end,
