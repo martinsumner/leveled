@@ -248,7 +248,18 @@
 
 -type build_timings() :: no_timing|#build_timings{}.
 
--export_type([expandable_pointer/0, press_method/0, segment_check_fun/0]).
+-export_type(
+    [
+        expandable_pointer/0,
+        maybe_expanded_pointer/0,
+        sst_closed_pointer/0,
+        sst_pointer/0,
+        slot_pointer/0,
+        press_method/0,
+        segment_check_fun/0,
+        sst_options/0
+    ]
+).
 
 %%%============================================================================
 %%% API
@@ -312,8 +323,8 @@ sst_new(RootPath, Filename, Level, KVList, MaxSQN, OptsSST, IndexModDate) ->
     end.
 
 -spec sst_newmerge(string(), string(),
-                    list(leveled_codec:ledger_kv()|sst_pointer()),
-                    list(leveled_codec:ledger_kv()|sst_pointer()),
+                    list(maybe_expanded_pointer()),
+                    list(maybe_expanded_pointer()),
                     boolean(), leveled_pmanifest:lsm_level(),
                     integer(), sst_options())
             -> empty|{ok, pid(),
@@ -1529,7 +1540,9 @@ compress_level(_Level, _LevelToCompress, PressMethod) ->
     PressMethod.
 
 -spec maxslots_level(
-        leveled_pmanifest:lsm_level(), pos_integer()) ->  pos_integer().
+        leveled_pmanifest:lsm_level(), pos_integer()|infinity) ->  pos_integer()|infinity.
+maxslots_level(_Level, infinity) ->
+    infinity;
 maxslots_level(Level, MaxSlotCount) when Level < ?DOUBLESIZE_LEVEL ->
     MaxSlotCount;
 maxslots_level(_Level, MaxSlotCount) ->
@@ -3020,7 +3033,7 @@ merge_lists(
     list(binary_slot()),
     leveled_codec:ledger_key()|null,
     non_neg_integer(),
-    non_neg_integer(),
+    pos_integer()|infinity,
     press_method(),
     boolean(),
     non_neg_integer(),

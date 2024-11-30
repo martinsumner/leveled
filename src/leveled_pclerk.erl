@@ -269,7 +269,6 @@ notify_deletions([Head|Tail], Penciller) ->
 %% to be merged into multiple SSTs at a lower level.  
 %%
 %% SrcLevel is the level of the src sst file, the sink should be srcLevel + 1
-
 perform_merge(Manifest, Src, SinkList, SrcLevel, RootPath, NewSQN, OptsSST) ->
     leveled_log:log(pc010, [leveled_pmanifest:entry_filename(Src), NewSQN]),
     SrcList = [{next, Src, all}],
@@ -279,72 +278,188 @@ perform_merge(Manifest, Src, SinkList, SrcLevel, RootPath, NewSQN, OptsSST) ->
         ),
     SinkLevel = SrcLevel + 1,
     SinkBasement = leveled_pmanifest:is_basement(Manifest, SinkLevel),
-    Additions = 
+    MaxMergeBelow = OptsSST#sst_options.max_mergebelow,
+    MergeLimit = merge_limit(SrcLevel, length(SinkList), MaxMergeBelow),
+    {L2Additions, L1Additions, L2FileRemainder} = 
         do_merge(
             SrcList, SinkList,
             SinkLevel, SinkBasement,
             RootPath, NewSQN, MaxSQN,
             OptsSST,
-            []
+            [],
+            MergeLimit
         ),
-    RevertPointerFun =
-        fun({next, ME, _SK}) ->
-            ME
-        end,
-    SinkManifestList = lists:map(RevertPointerFun, SinkList),
+    RevertPointerFun = fun({next, ME, _SK}) -> ME end,
+    SinkManifestRemovals =
+        lists:subtract(
+            lists:map(RevertPointerFun, SinkList),
+            lists:map(RevertPointerFun, L2FileRemainder)
+        ),
     Man0 =
         leveled_pmanifest:replace_manifest_entry(
             Manifest,
             NewSQN,
             SinkLevel,
-            SinkManifestList,
-            Additions
+            SinkManifestRemovals,
+            L2Additions
         ),
-    Man2 =
-        leveled_pmanifest:remove_manifest_entry(
-            Man0,
-            NewSQN,
-            SrcLevel,
-            Src
-        ),
-    {Man2, [Src|SinkManifestList]}.
+    Man1 =
+        case L1Additions of
+            [] ->
+                leveled_pmanifest:remove_manifest_entry(
+                    Man0,
+                    NewSQN,
+                    SrcLevel,
+                    Src
+                );
+            PartialFiles ->
+                leveled_pmanifest:replace_manifest_entry(
+                    Man0,
+                    NewSQN,
+                    SrcLevel,
+                    [Src],
+                    PartialFiles
+                )
+        end,
+    {Man1, [Src|SinkManifestRemovals]}.
 
-do_merge([], [], SinkLevel, _SinkB, _RP, NewSQN, _MaxSQN, _Opts, Additions) ->
-    leveled_log:log(pc011, [NewSQN, SinkLevel, length(Additions)]),
-    lists:reverse(Additions);
-do_merge(KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, OptsSST, Additions) ->
+-spec merge_limit(
+    non_neg_integer(), non_neg_integer(), pos_integer()|infinity)
+        -> pos_integer()|infinity.
+merge_limit(SrcLevel, SinkListLength, MMB) when SrcLevel =< 1; SinkListLength < MMB ->
+    infinity;
+merge_limit(SrcLevel, SinkListLength, MMB) when is_integer(MMB) ->
+    AdditionsLimit = max(1, MMB div 2),
+    leveled_log:log(pc026, [SrcLevel + 1, SinkListLength, AdditionsLimit]),
+    AdditionsLimit.
+
+-type merge_maybe_expanded_pointer() ::
+    leveled_codec:ledger_kv()|
+    leveled_sst:slot_pointer()|
+    leveled_sst:sst_pointer().
+        % Different to leveled_sst:maybe_expanded_pointer/0
+        % No sst_closed_pointer()
+
+-spec do_merge(
+    list(merge_maybe_expanded_pointer()),
+    list(merge_maybe_expanded_pointer()),
+    leveled_pmanifest:lsm_level(),
+    boolean(),
+    string(),
+    pos_integer(),
+    pos_integer(),
+    leveled_sst:sst_options(),
+    list(leveled_pmanifest:manifest_entry()),
+    pos_integer()|infinity) ->
+        {
+            list(leveled_pmanifest:manifest_entry()),
+            list(leveled_pmanifest:manifest_entry()),
+            list(leveled_sst:sst_pointer())
+        }.
+do_merge(
+    [], [], SinkLevel, _SinkB, _RP, NewSQN, _MaxSQN, _Opts, Additions, _Max) ->
+    leveled_log:log(pc011, [NewSQN, SinkLevel, length(Additions), full]),
+    {lists:reverse(Additions), [], []};
+do_merge(
+    KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, OptsSST, Additions, Max)
+        when length(Additions) >= Max ->
+    leveled_log:log(pc011, [NewSQN, SinkLevel, length(Additions), partial]),
+    FNSrc =
+        leveled_penciller:sst_filename(
+            NewSQN, SinkLevel - 1, 1
+        ),
+    FNSnk =
+        leveled_penciller:sst_filename(
+            NewSQN, SinkLevel, length(Additions) + 1
+        ),
+    {ExpandedKL1, []} = split_unexpanded_files(KL1),
+    {ExpandedKL2, L2FilePointersRem} = split_unexpanded_files(KL2),
+    TS1 = os:timestamp(),
+    InfOpts = OptsSST#sst_options{max_sstslots = infinity},
+        % Need to be careful to make sure all the remainder goes in one file,
+        % could be situations whereby the max_sstslots has been changed between
+        % restarts - and so there is too much data for one file in the
+        % remainder ... but don't want to loop round and consider more complex
+        % scenarios here.
+    NewMergeKL1 =
+        leveled_sst:sst_newmerge(
+            RP, FNSrc,ExpandedKL1, [], false, SinkLevel - 1, MaxSQN, InfOpts
+        ),
+    TS2 = os:timestamp(),
+    NewMergeKL2 =
+        leveled_sst:sst_newmerge(
+            RP, FNSnk, [], ExpandedKL2, SinkB, SinkLevel, MaxSQN, InfOpts
+        ),
+    {KL1Additions, [], []} = add_entry(NewMergeKL1, FNSrc, TS1, []),
+    {KL2Additions, [], []} = add_entry(NewMergeKL2, FNSnk, TS2, Additions),
+    {lists:reverse(KL2Additions), KL1Additions, L2FilePointersRem};
+do_merge(
+    KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, OptsSST, Additions, Max) ->
     FileName =
         leveled_penciller:sst_filename(
             NewSQN, SinkLevel, length(Additions)
         ),
     leveled_log:log(pc012, [NewSQN, FileName, SinkB]),
     TS1 = os:timestamp(),
-    case leveled_sst:sst_newmerge(RP, FileName,
-                                    KL1, KL2, SinkB, SinkLevel, MaxSQN,
-                                    OptsSST) of
-        empty ->
-            leveled_log:log(pc013, [FileName]),
-            do_merge(
-                [], [],
-                SinkLevel, SinkB,
-                RP, NewSQN, MaxSQN,
-                OptsSST, 
-                Additions
-            );                        
-        {ok, Pid, Reply, Bloom} ->
-            {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} = Reply,
-                Entry =
-                    leveled_pmanifest:new_entry(
-                        SmallestKey, HighestKey, Pid, FileName, Bloom),
-                leveled_log:log_timer(pc015, [], TS1),
-                do_merge(
-                    KL1Rem, KL2Rem,
-                    SinkLevel, SinkB,
-                    RP, NewSQN, MaxSQN,
-                    OptsSST,
-                    [Entry|Additions]
-                )
-    end.
+    NewMerge =
+        leveled_sst:sst_newmerge(
+            RP, FileName, KL1, KL2, SinkB, SinkLevel, MaxSQN, OptsSST),
+    {UpdAdditions, KL1Rem, KL2Rem} =
+        add_entry(NewMerge, FileName, TS1, Additions),
+    do_merge(
+        KL1Rem,
+        KL2Rem,
+        SinkLevel,
+        SinkB,
+        RP,
+        NewSQN,
+        MaxSQN,
+        OptsSST,
+        UpdAdditions,
+        Max
+    ).
+
+add_entry(empty, FileName, _TS1, Additions) ->
+    leveled_log:log(pc013, [FileName]),
+    {[], [], Additions};
+add_entry({ok, Pid, Reply, Bloom}, FileName, TS1, Additions) ->
+    {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} = Reply,
+    Entry =
+        leveled_pmanifest:new_entry(
+            SmallestKey, HighestKey, Pid, FileName, Bloom),
+    leveled_log:log_timer(pc015, [], TS1),
+    {[Entry|Additions], KL1Rem, KL2Rem}.
+
+
+-spec split_unexpanded_files(
+    list(merge_maybe_expanded_pointer())) -> 
+        {
+            list(leveled_codec:ledger_kv()|leveled_sst:slot_pointer()),
+            list(leveled_sst:sst_pointer())
+        }. 
+split_unexpanded_files(Pointers) ->
+    split_unexpanded_files(Pointers, [], []).
+
+-spec split_unexpanded_files(
+    list(merge_maybe_expanded_pointer()),
+    list(leveled_codec:ledger_kv()|leveled_sst:slot_pointer()),
+    list(leveled_sst:sst_pointer())) -> 
+        {
+            list(leveled_codec:ledger_kv()|leveled_sst:slot_pointer()),
+            list(leveled_sst:sst_pointer())
+        }. 
+split_unexpanded_files([], MaybeExpanded, FilePointers) ->
+    {lists:reverse(MaybeExpanded), lists:reverse(FilePointers)};
+split_unexpanded_files([{next, P, SK}|Rest], MaybeExpanded, FilePointers) ->
+    split_unexpanded_files(Rest, MaybeExpanded, [{next, P, SK}|FilePointers]);
+split_unexpanded_files([{LK, LV}|Rest], MaybeExpanded, []) ->
+        % Should never see this, once a FilePointer has been seen
+    split_unexpanded_files(Rest, [{LK, LV}|MaybeExpanded], []);
+split_unexpanded_files([{pointer, P, SIV, SK, EK}|Rest], MaybeExpanded, []) ->
+        % Should never see this, once a FilePointer has been seen
+    split_unexpanded_files(
+        Rest, [{pointer, P, SIV, SK, EK}|MaybeExpanded], []
+    ).
 
 -spec grooming_scorer(
     list(leveled_pmanifest:manifest_entry()))
