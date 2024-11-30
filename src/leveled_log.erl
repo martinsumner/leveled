@@ -147,7 +147,7 @@
         pc010 =>
             {info, <<"Merge to be commenced for FileToMerge=~s with MSN=~w">>},
         pc011 =>
-            {info, <<"Merge completed with MSN=~w to Level=~w and FileCounter=~w">>},
+            {info, <<"Merge completed with MSN=~w to Level=~w and FileCounter=~w merge_type=~w">>},
         pc012 =>
             {debug, <<"File to be created as part of MSN=~w Filename=~s IsBasement=~w">>},
         pc013 =>
@@ -172,6 +172,8 @@
             {info, <<"Grooming compaction picked file with tomb_count=~w">>},
         pc025 =>
             {info, <<"At level=~w file_count=~w average words for heap_block_size=~w heap_size=~w recent_size=~w bin_vheap_size=~w">>},
+        pc026 =>
+            {info, <<"Performing potential partial to level=~w merge as FileCounter=~w restricting to MaxAdditions=~w">>},
         pm002 =>
             {info, <<"Completed dump of L0 cache to list of l0cache_size=~w">>},
         sst03 =>

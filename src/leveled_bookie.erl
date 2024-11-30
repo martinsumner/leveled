@@ -114,6 +114,7 @@
                 {max_journalsize, 1000000000},
                 {max_journalobjectcount, 200000},
                 {max_sstslots, 256},
+                {max_mergebelow, 24},
                 {sync_strategy, ?DEFAULT_SYNC_STRATEGY},
                 {head_only, false},
                 {waste_retention_period, undefined},
@@ -201,6 +202,12 @@
             % The maximum number of slots in a SST file.  All testing is done
             % at a size of 256 (except for Quickcheck tests}, altering this
             % value is not recommended
+        {max_mergeblow, pos_integer()|infinity} |
+            % The maximum number of files for a single file to be merged into
+            % within the ledger.  If less than this, the merge will continue
+            % without a maximum.  If this or more overlapping below, only up
+            % to max_mergebelow div 2 additions should be created (the merge
+            % should be partial)
         {sync_strategy, sync_mode()} |
             % Should be sync if it is necessary to flush to disk after every
             % write, or none if not (allow the OS to schecdule).  This has a
@@ -293,7 +300,7 @@
             % To which level of the ledger should the ledger contents be
             % pre-loaded into the pagecache (using fadvise on creation and
             % startup)
-            {compression_method, native|lz4|zstd|none} |
+        {compression_method, native|lz4|zstd|none} |
             % Compression method and point allow Leveled to be switched from
             % using bif based compression (zlib) to using nif based compression
             % (lz4 or zstd).
@@ -1836,6 +1843,7 @@ set_options(Opts, Monitor) ->
     CompressionLevel = proplists:get_value(compression_level, Opts),
     
     MaxSSTSlots = proplists:get_value(max_sstslots, Opts),
+    MaxMergeBelow = proplists:get_value(max_mergebelow, Opts),
 
     ScoreOneIn = proplists:get_value(journalcompaction_scoreonein, Opts),
 
@@ -1869,6 +1877,7 @@ set_options(Opts, Monitor) ->
                                     press_level = CompressionLevel,
                                     log_options = leveled_log:get_opts(),
                                     max_sstslots = MaxSSTSlots,
+                                    max_mergebelow = MaxMergeBelow,
                                     monitor = Monitor},
                             monitor = Monitor}
         }.
