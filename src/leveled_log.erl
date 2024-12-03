@@ -41,7 +41,7 @@
 -record(log_options,
     {log_level = info :: log_level(), 
         forced_logs = [] :: [atom()],
-        database_id = 0 :: non_neg_integer()}).
+        database_id :: non_neg_integer()|undefined}).
 
 -type log_level()  ::  debug | info | warning | error | critical.
 -type log_options() :: #log_options{}.
@@ -490,11 +490,15 @@ log_randomtimer(LogReference, Subs, StartTime, RandomProb) ->
             ok
     end.
 
--spec log_prefix(atom(), non_neg_integer(), pid()) -> io_lib:chars().
+-spec log_prefix(atom(), non_neg_integer()|undefined, pid()) -> io_lib:chars().
+log_prefix(LogRef, undefined, Pid) ->
+    ["log_ref=", atom_to_list(LogRef), " pid=", pid_to_list(Pid), " "];
 log_prefix(LogRef, DBid, Pid) ->
-    ["log_ref=", atom_to_list(LogRef),
+    [
+        "log_ref=", atom_to_list(LogRef),
         " db_id=", integer_to_list(DBid),
-        " pid=", pid_to_list(Pid), " "].
+        " pid=", pid_to_list(Pid), " "
+    ].
 
 -spec duration_text(erlang:timestamp()) -> io_lib:chars().
 duration_text(StartTime) ->
