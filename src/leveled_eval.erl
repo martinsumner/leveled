@@ -12,17 +12,24 @@
 %%%============================================================================
 
 -spec generate_eval_function(
-        string(), map()) -> fun((binary(), binary()) -> map()).
+    string(),
+    map()) -> fun((binary(), binary()) -> map())|{error, term()}.
 generate_eval_function(EvalString, Substitutions) ->
-    {ok, ParsedEval} = generate_eval_expression(EvalString, Substitutions),
-    fun(Term, Key) ->
-        apply_eval(ParsedEval, Term, Key, maps:new())
+    try
+        {ok, ParsedEval} = generate_eval_expression(EvalString, Substitutions),
+        fun(Term, Key) ->
+            apply_eval(ParsedEval, Term, Key, maps:new())
+        end
+    catch
+        error:{badmatch, {error, Error, _LN}} ->
+            {error, Error};
+        error:{badmatch, {error, Error}} ->
+            {error, Error}
     end.
 
 %%%============================================================================
 %%% Internal functions
 %%%============================================================================
-
 
 generate_eval_expression(EvalString, Substitutions) ->
     CodePointList = unicode:characters_to_list(EvalString),
@@ -33,7 +40,6 @@ generate_eval_expression(EvalString, Substitutions) ->
         UpdTokens ->
             leveled_evalparser:parse(UpdTokens)
     end.
-
 
 apply_eval({eval, Eval}, Term, Key, AttrMap) ->
     apply_eval(Eval, Term, Key, AttrMap);
@@ -258,6 +264,27 @@ reverse_compare_mapping('=', Term) ->
 -ifdef(TEST).
 
 -include_lib("eunit/include/eunit.hrl").
+
+parse_error_test() ->
+    Q1 = "delm($term, \"|\", ($fn, $dob, $dod, $gns, $pcs))",
+    Q2 = "delim($term, \"|\", ($fn, $dob, $dod, $gns, pcs))",
+    Q3 = "delim($term, \"|\", ($fn, $dob, $dod, $gns, $pcs)))",
+    Q4 = "delim($term, $fn, ($fn, $dob, $dod, $gns, $pcs))",
+    ?assertMatch({error, _E1}, generate_eval_function(Q1, maps:new())),
+    ?assertMatch({error, _E2}, generate_eval_function(Q2, maps:new())),
+    ?assertMatch({error, _E3}, generate_eval_function(Q3, maps:new())),
+    ?assertMatch({error, _E4}, generate_eval_function(Q4, maps:new())),
+    
+    Q5 = "begins_with($fn, :prefix)",
+    ?assertMatch(
+        {error, _E5A},
+        generate_eval_function(Q5, #{"prefix" => <<"ÅßE"/utf8>>})
+    ),
+    ?assertMatch(
+        {error, _E5B},
+        generate_eval_function(Q5, #{<<"prefx">> => <<"ÅßE"/utf8>>})
+    ).
+
 
 basic_test() ->
     EvalString1 = "delim($term, \"|\", ($fn, $dob, $dod, $gns, $pcs))",

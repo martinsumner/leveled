@@ -17,12 +17,20 @@
 %%% External API
 %%%============================================================================
 
--spec generate_filter_function(string(), map()) -> fun((map()) -> boolean()).
+-spec generate_filter_function(
+    string(), map()) -> fun((map()) -> boolean())|{error, term()}.
 generate_filter_function(FilterString, Substitutions) ->
-    {ok, ParsedFilter} =
-        generate_filter_expression(FilterString, Substitutions),
-    fun(AttrMap) ->
-        apply_filter(ParsedFilter, AttrMap)
+    try
+        {ok, ParsedFilter} =
+            generate_filter_expression(FilterString, Substitutions),
+        fun(AttrMap) ->
+            apply_filter(ParsedFilter, AttrMap)
+        end
+    catch
+        error:{badmatch, {error, Error, _LN}} ->
+            {error, Error};
+        error:{badmatch, {error, Error}} ->
+            {error, Error}
     end.
 
 
@@ -202,7 +210,8 @@ apply_filter({attribute_empty, {identifier, _, ID}}, AttrMap) ->
     end.
 
 generate_filter_expression(FilterString, Substitutions) ->
-    {ok, Tokens, _EndLine} = leveled_filterlexer:string(FilterString),
+    String = unicode:characters_to_list(FilterString),
+    {ok, Tokens, _EndLine} = leveled_filterlexer:string(String),
     case substitute_items(Tokens, Substitutions, []) of
         {error, Error} ->
             {error, Error};
@@ -246,6 +255,35 @@ compare('<>', V, CmpA) -> V =/= CmpA.
 -ifdef(TEST).
 
 -include_lib("eunit/include/eunit.hrl").
+
+parse_error_test() ->
+    FE1 = "($a BETWEN \"A\" AND \"A12\") OR (($b >= \"30\") AND contains($c, :d))",
+    FE2 = "($a BETWEEN \"A\" AND \"A12\") ANDOR (($b >= \"30\") AND contains($c, :d))",
+    FE3 = "($a BETWEEN \"A\" AND \"A12\") OR (($b >= \"30\") AND contains($c, :d)))",
+    FE4 = "($a BETWEEN \"A\" AND \"A12\") OR (($b >= \"30\") AND contains($c, :d))",
+    SubsMissing = maps:from_list([{<<"a">>, <<"MA">>}]),
+    SubsWrongType = maps:from_list([{<<"d">>, "42"}]),
+    SubsCorrect = maps:from_list([{<<"d">>, <<"MA">>}]),
+    ?assertMatch(
+        {error, _E1},
+        generate_filter_function(FE1, SubsCorrect)
+    ),
+    ?assertMatch(
+        {error, _E2},
+        generate_filter_function(FE2, SubsCorrect)
+    ),
+    ?assertMatch(
+        {error, _E3},
+        generate_filter_function(FE3, SubsCorrect)
+    ),
+    ?assertMatch(
+        {error, _E4A},
+        generate_filter_function(FE4, SubsMissing)
+    ),
+    ?assertMatch(
+        {error, _E4B},
+        generate_filter_function(FE4, SubsWrongType)
+    ).
 
 invalid_filterexpression_test() ->
     FE1 = "($a BETWEEN \"A\" AND \"A12\") OR (($b >= \"30\") AND contains($c, :d))",
