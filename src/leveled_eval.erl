@@ -50,17 +50,16 @@ apply_eval({
         Term, Key, AttrMap) ->
     case term_to_process(InKey, Term, Key, AttrMap) of
         TermToSplit when is_binary(TermToSplit) ->
-            CptTerms = string:split(TermToSplit, Delim, all),
-            L = min(length(CptTerms), length(ExpKeys)),
-            maps:merge(
-                AttrMap,
-                maps:from_list(
-                    lists:zip(
-                        lists:sublist(ExpKeys, L),
-                        lists:sublist(CptTerms, L)
-                    )
-                )
-            );
+            CP =
+                case get({compile_pattern, Delim}) of
+                    undefined ->
+                        NewDelimCP = compile_delim(Delim),
+                        put({compile_pattern, Delim}, NewDelimCP),
+                        NewDelimCP;
+                    DelimCP ->
+                        DelimCP
+                end,
+            delim(TermToSplit, CP, AttrMap, ExpKeys);
         _ ->
             AttrMap
     end;
@@ -81,12 +80,26 @@ apply_eval(
             )
         ),
     maps:put(OutKey, NewTerm, AttrMap);
-apply_eval({
-        split, {identifier, _, InKey}, DelimAttr, {identifier, _, OutKey}},
+apply_eval(
+        {
+            split,
+            {identifier, _, InKey},
+            {string, _, Splitter},
+            {identifier, _, OutKey}
+        },
         Term, Key, AttrMap) ->
     case term_to_process(InKey, Term, Key, AttrMap) of
         TermToSplit when is_binary(TermToSplit) ->
-            TermList = string:split(TermToSplit, element(3, DelimAttr), all),
+            CP =
+                case get({compile_pattern, Splitter}) of
+                    undefined ->
+                        NewSplitCP = compile_delim(Splitter),
+                        put({compile_pattern, Splitter}, NewSplitCP),
+                        NewSplitCP;
+                    SplitCP ->
+                        SplitCP
+                    end,
+            TermList = binary:split(TermToSplit, CP, [global, trim_all]),
             maps:put(OutKey, TermList, AttrMap);
         _ ->
             AttrMap
@@ -219,13 +232,8 @@ apply_eval(
     case term_to_process(InKey, Term, Key, AttrMap) of
         TermToCapture when is_binary(TermToCapture)->
             case leveled_util:regex_run(TermToCapture, CompiledRE, Opts) of
-                {match, CptTerms} ->
-                    L = min(length(CptTerms), ExpectedKeyLength),
-                    CptMap =
-                        maps:from_list(
-                            lists:zip(
-                                lists:sublist(ExpKeys, L),
-                                lists:sublist(CptTerms, L))),
+                {match, CptTerms} when length(CptTerms) == ExpectedKeyLength ->
+                    CptMap = maps:from_list(lists:zip(ExpKeys, CptTerms)),
                     maps:merge(AttrMap, CptMap);
                 _ ->
                     AttrMap
@@ -257,6 +265,33 @@ reverse_compare_mapping('>=', Term) ->
 reverse_compare_mapping('=', Term) ->
     fun({mapping, T, _A}) -> Term =/= element(3, T) end.
 
+-spec delim(binary(), binary:cp(), map(), list(string())) -> map().
+delim(_Rem,  _CP, AttrMap, []) ->
+    AttrMap;
+delim(Term, CP, AttrMap, [Key|Rest]) ->
+    case binary:match(Term, CP) of
+        nomatch ->
+            maps:put(Key, Term, AttrMap);
+        {0, Length} ->
+            <<_Delim:Length/binary, Rem/binary>> = Term,
+            delim(Rem, CP, AttrMap, Rest);
+        {Pos, Length} ->
+            <<Part:Pos/binary, _Delim:Length/binary, Rem/binary>> = Term,
+            delim(
+                Rem,
+                CP,
+                maps:put(Key, Part, AttrMap),
+                Rest
+            )
+    end.
+
+-spec compile_delim(string()) -> binary:cp().
+compile_delim(Delim) ->
+    case unicode:characters_to_binary(Delim) of
+        DelimBin when is_binary(DelimBin) ->
+            binary:compile_pattern(DelimBin)
+    end.
+
 %%%============================================================================
 %%% Test
 %%%============================================================================
@@ -264,6 +299,114 @@ reverse_compare_mapping('=', Term) ->
 -ifdef(TEST).
 
 -include_lib("eunit/include/eunit.hrl").
+
+delim_test() ->
+    Term1 = <<"SOMEONE|19901223|20240405|TedBob|LS1_4BT">>,
+    Delim = "|",
+    CompiledDelim = compile_delim(Delim),
+    Result1 =
+        delim(
+            Term1, 
+            CompiledDelim,
+            #{}, 
+            ["$fn", "$dob", "$dod", "$gns", "$pcs"]
+        ),
+    ExpMap1 =
+        #{
+            "$fn" => <<"SOMEONE">>,
+            "$dob" => <<"19901223">>,
+            "$dod" => <<"20240405">>,
+            "$gns" => <<"TedBob">>,
+            "$pcs" => <<"LS1_4BT">>
+        },
+    ExpResult1 = lists:sort(maps:to_list(ExpMap1)),
+    ?assertMatch(
+        ExpResult1,
+        lists:sort(maps:to_list(Result1))
+    ),
+    Term2 = <<"SOMEONE|19901223|20240405|TedBob">>,
+    Result2 =
+        delim(
+            Term2, 
+            CompiledDelim,
+            #{}, 
+            ["$fn", "$dob", "$dod", "$gns", "$pcs"]
+        ),
+    ExpMap2 =
+        #{
+            "$fn" => <<"SOMEONE">>,
+            "$dob" => <<"19901223">>,
+            "$dod" => <<"20240405">>,
+            "$gns" => <<"TedBob">>
+        },
+    ExpResult2 = lists:sort(maps:to_list(ExpMap2)),
+    ?assertMatch(
+        ExpResult2,
+        lists:sort(maps:to_list(Result2))
+    ),
+    Term3 = <<"SOMEONE|19901223||TedBob">>,
+    Result3 =
+        delim(
+            Term3, 
+            CompiledDelim, 
+            #{}, 
+            ["$fn", "$dob", "$dod", "$gns", "$pcs"]
+        ),
+    ExpMap3 =
+        #{
+            "$fn" => <<"SOMEONE">>,
+            "$dob" => <<"19901223">>,
+            "$gns" => <<"TedBob">>
+        },
+    ExpResult3 = lists:sort(maps:to_list(ExpMap3)),
+    ?assertMatch(
+        ExpResult3,
+        lists:sort(maps:to_list(Result3))
+    ),
+    Term4 = <<"SOMEONE|19901223|20240405|TedBob|LS1_4BT|">>,
+    Result4 =
+        delim(
+            Term4, 
+            CompiledDelim,
+            #{}, 
+            ["$fn", "$dob", "$dod", "$gns", "$pcs"]
+        ),
+    ?assertMatch(
+        ExpResult1,
+        lists:sort(maps:to_list(Result4))
+    )
+    .
+
+basic_compile_pattern_test() ->
+    % Check nothing happens unexpected with caching in process dictionary
+    EvalString1 = "delim($term, :delim1, ($fn, $dob, $dod, $gns, $pcs))",
+    EvalString2 = "split($gns, :delim2, $gnl)",
+    T1 = <<"SOMEONE|19901223|20240405|#Ted#Bob|LS1_4BT">>,
+    Fun1 =
+        generate_eval_function(
+            EvalString1 ++ "|" ++ EvalString2,
+            #{<<"delim1">> => <<"|">>, <<"delim2">> => <<"#">>}
+        ),
+    M1 = Fun1(T1, <<"K1">>),
+    GNL1 = maps:get(<<"gnl">>, M1),
+    ?assertMatch([<<"Ted">>, <<"Bob">>], GNL1),
+    T2 = <<"SOMEONE#19901223#20240405#|Ted|Bob#LS1_4BT">>,
+    Fun2 =
+        generate_eval_function(
+            EvalString1 ++ "|" ++ EvalString2,
+            #{<<"delim1">> => <<"#">>, <<"delim2">> => <<"|">>}
+        ),
+    M2 = Fun2(T2, <<"K1">>),
+    GNL2 = maps:get(<<"gnl">>, M2),
+    ?assertMatch([<<"Ted">>, <<"Bob">>], GNL2),
+    M3 = Fun2(T2, <<"K1">>),
+    GNL3 = maps:get(<<"gnl">>, M3),
+    ?assertMatch([<<"Ted">>, <<"Bob">>], GNL3),
+    M4 = Fun1(T1, <<"K1">>),
+    GNL4 = maps:get(<<"gnl">>, M4),
+    ?assertMatch([<<"Ted">>, <<"Bob">>], GNL4)
+    .
+
 
 parse_error_test() ->
     Q1 = "delm($term, \"|\", ($fn, $dob, $dod, $gns, $pcs))",
@@ -302,7 +445,7 @@ basic_test() ->
         ),
     ?assertMatch(<<"SMITH">>, maps:get(<<"fn">>, EvalOut3)),
     ?assertMatch(<<"19861216">>, maps:get(<<"dob">>, EvalOut3)),
-    ?assertMatch(<<"">>, maps:get(<<"dod">>, EvalOut3)),
+    ?assertMatch(undefined, maps:get(<<"dod">>, EvalOut3, undefined)),
     ?assertMatch(<<"Willow#Mia">>, maps:get(<<"gns">>, EvalOut3)),
     ?assertMatch(<<"LS1 4BT#LS8 1ZZ">>, maps:get(<<"pcs">>, EvalOut3)),
     ?assertMatch(<<"Willow">>, maps:get(<<"gn1">>, EvalOut3)),
@@ -322,7 +465,7 @@ basic_test() ->
         ),
     ?assertMatch(<<"SMITH">>, maps:get(<<"fn">>, EvalOut4)),
     ?assertMatch(<<"19861216">>, maps:get(<<"dob">>, EvalOut4)),
-    ?assertMatch(<<"">>, maps:get(<<"dod">>, EvalOut4)),
+    ?assertMatch(undefined, maps:get(<<"dod">>, EvalOut4, undefined)),
     ?assertMatch(<<"Willow#Mia">>, maps:get(<<"gns">>, EvalOut4)),
     ?assertMatch(<<"LS1 4BT#LS8 1ZZ">>, maps:get(<<"pcs">>, EvalOut4)),
     ?assertMatch(<<"Willow">>, maps:get(<<"gn1">>, EvalOut4)),
@@ -343,7 +486,7 @@ basic_test() ->
         ),
     ?assertMatch(<<"SMITH">>, maps:get(<<"fn">>, EvalOut5)),
     ?assertMatch(<<"19861216">>, maps:get(<<"dob">>, EvalOut5)),
-    ?assertMatch(<<"">>, maps:get(<<"dod">>, EvalOut5)),
+    ?assertMatch(undefined, maps:get(<<"dod">>, EvalOut5, undefined)),
     ?assertMatch(<<"Willow#Mia">>, maps:get(<<"gns">>, EvalOut5)),
     ?assertMatch(<<"LS1 4BT#LS8 1ZZ">>, maps:get(<<"pcs">>, EvalOut5)),
     ?assertMatch(<<"Willow">>, maps:get(<<"gn1">>, EvalOut5)),
@@ -364,7 +507,7 @@ basic_test() ->
         ),
     ?assertMatch(<<"SMITH">>, maps:get(<<"fn">>, EvalOut6)),
     ?assertMatch(<<"19861216">>, maps:get(<<"dob">>, EvalOut6)),
-    ?assertMatch(<<"">>, maps:get(<<"dod">>, EvalOut6)),
+    ?assertMatch(undefined, maps:get(<<"dod">>, EvalOut6, undefined)),
     ?assertMatch(<<"LS1 4BT#LS8 1ZZ">>, maps:get(<<"pcs">>, EvalOut6)),
     ?assertMatch([<<"MA">>, <<"N1">>, <<"Ve">>], maps:get(<<"gns">>, EvalOut6)),
 
@@ -377,7 +520,7 @@ basic_test() ->
         ),
     ?assertMatch(<<"SMITH">>, maps:get(<<"fn">>, EvalOut7)),
     ?assertMatch(<<"19861216">>, maps:get(<<"dob">>, EvalOut7)),
-    ?assertMatch(<<"">>, maps:get(<<"dod">>, EvalOut7)),
+    ?assertMatch(undefined, maps:get(<<"dod">>, EvalOut7, undefined)),
     ?assertMatch(<<"LS1 4BT#LS8 1ZZ">>, maps:get(<<"pcs">>, EvalOut7)),
     ?assertMatch([<<"MA">>, <<"N1">>, <<"Ve">>], maps:get(<<"gns">>, EvalOut7)),
 
@@ -393,7 +536,7 @@ basic_test() ->
         ),
     ?assertMatch(<<"SMITH">>, maps:get(<<"fn">>, EvalOut8)),
     ?assertMatch(<<"19861216">>, maps:get(<<"dob">>, EvalOut8)),
-    ?assertMatch(<<"">>, maps:get(<<"dod">>, EvalOut8)),
+    ?assertMatch(undefined, maps:get(<<"dod">>, EvalOut8, undefined)),
     ?assertMatch(<<"LS1 4BT#LS8 1ZZ">>, maps:get(<<"pcs">>, EvalOut8)),
     ?assertMatch([<<"Willow">>, <<"Mia">>, <<"Vera">>], maps:get(<<"gns">>, EvalOut8)),
 
