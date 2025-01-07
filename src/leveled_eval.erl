@@ -387,6 +387,8 @@ basic_compile_pattern_test() ->
             EvalString1 ++ "|" ++ EvalString2,
             #{<<"delim1">> => <<"|">>, <<"delim2">> => <<"#">>}
         ),
+    true = is_function(Fun1, 2),
+
     M1 = Fun1(T1, <<"K1">>),
     GNL1 = maps:get(<<"gnl">>, M1),
     ?assertMatch([<<"Ted">>, <<"Bob">>], GNL1),
@@ -396,6 +398,8 @@ basic_compile_pattern_test() ->
             EvalString1 ++ "|" ++ EvalString2,
             #{<<"delim1">> => <<"#">>, <<"delim2">> => <<"|">>}
         ),
+    true = is_function(Fun2, 2),
+    
     M2 = Fun2(T2, <<"K1">>),
     GNL2 = maps:get(<<"gnl">>, M2),
     ?assertMatch([<<"Ted">>, <<"Bob">>], GNL2),

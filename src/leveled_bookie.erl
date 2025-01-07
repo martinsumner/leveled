@@ -745,7 +745,10 @@ book_indexfold(Pid, Bucket, FoldAccT, Range, TermHandling) ->
 -spec book_multiindexfold(
         pid(),
         leveled_codec:key(),
-        fun((leveled_codec:key(), leveled_codec:key(), term()) -> term()),
+        {
+            fun((leveled_codec:key(), leveled_codec:key(), term()) -> term()),
+            term()
+        },
         list({non_neg_integer(), query()}),
         combo_fun())
             -> {async, fun(() -> term())}.
