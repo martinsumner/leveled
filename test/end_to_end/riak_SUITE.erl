@@ -11,6 +11,7 @@
         fetchclocks_modifiedbetween/1,
         crossbucket_aae/1,
         handoff/1,
+        handoff_close/1,
         dollar_bucket_index/1,
         dollar_key_index/1,
         bigobject_memorycheck/1,
@@ -23,6 +24,7 @@ all() -> [
             fetchclocks_modifiedbetween,
             crossbucket_aae,
             handoff,
+            handoff_close,
             dollar_bucket_index,
             dollar_key_index,
             bigobject_memorycheck,
@@ -1632,6 +1634,63 @@ dollar_key_index(_Config) ->
 
     ok = leveled_bookie:book_close(Bookie1),
     testutil:reset_filestructure().
+
+handoff_close(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    KeyCount = 500000,
+    Bucket = {<<"BType">>, <<"BName">>},
+    StartOpts1 =
+        [
+            {root_path, RootPath},
+            {max_journalobjectcount, KeyCount + 1},
+            {max_pencillercachesize, 12000},
+            {sync_strategy, testutil:sync_strategy()}
+        ],
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+    ObjList1 = 
+        testutil:generate_objects(
+            KeyCount div 10, 
+            {fixed_binary, 1}, [],
+            leveled_rand:rand_bytes(512),
+            fun() -> [] end,
+            Bucket
+        ),
+    ObjList2 = 
+        testutil:generate_objects(
+            KeyCount - (KeyCount div 10), 
+            {fixed_binary, KeyCount div 10 + 1}, [],
+            leveled_rand:rand_bytes(512),
+            fun() -> [] end,
+            Bucket
+        ),
+    testutil:riakload(Bookie1, ObjList1),
+    FoldObjectsFun =
+        fun(_, _, _, Acc) ->
+            [os:timestamp()|Acc]
+        end,
+    {async, Runner} =
+        leveled_bookie:book_objectfold(
+            Bookie1,
+            ?RIAK_TAG,
+            {FoldObjectsFun, []},
+            true,
+            sqn_order
+        ),
+    testutil:riakload(Bookie1, ObjList2),
+    TSList = Runner(),
+    QueryCompletionTime = os:timestamp(),
+    LastTS = hd(TSList),
+    io:format(
+        "Found ~w objects with Last TS ~w completion time ~w~n",
+        [length(TSList), LastTS, QueryCompletionTime]
+    ),
+    true = KeyCount div 10 == length(TSList),
+    TimeSinceLastObjectTouchedMS =
+        timer:now_diff(QueryCompletionTime, LastTS) div 1000,
+    true = TimeSinceLastObjectTouchedMS < 1000,
+    leveled_bookie:book_destroy(Bookie1),
+    testutil:reset_filestructure().
+
 
 %% @doc test that the riak specific $bucket indexes can be iterated
 %% using leveled's existing folders
