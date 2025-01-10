@@ -322,7 +322,7 @@ foldobjects_allkeys(SnapFun, Tag, FoldObjectsFun, sqn_order) ->
     FilterFun =
         fun(JKey, JVal, _Pos, Acc, ExtractFun) ->
             {SQN, InkTag, LedgerKey} = JKey,
-            case {InkTag, leveled_codec:from_ledgerkey(Tag, LedgerKey)} of 
+            case {InkTag, leveled_codec:from_ledgerkey(Tag, LedgerKey)} of
                 {?INKT_STND, {B, K}} ->
                     % Ignore tombstones and non-matching Tags and Key changes
                     % objects.  
@@ -335,14 +335,14 @@ foldobjects_allkeys(SnapFun, Tag, FoldObjectsFun, sqn_order) ->
                         _ ->
                             {VBin, _VSize} = ExtractFun(JVal),
                             {Obj, _IdxSpecs} =
-                                leveled_codec:revert_value_from_journal(VBin),
-                            ToLoop = 
-                                case SQN  of 
-                                    MaxSQN -> stop;
-                                    _ -> loop
-                                end,
-                            {ToLoop, 
-                                {MinSQN, MaxSQN, [{B, K, SQN, Obj}|BatchAcc]}}
+                                leveled_codec:revert_value_from_journal(
+                                    VBin,
+                                    true
+                                ),
+                            {
+                                case SQN  of MaxSQN -> stop; _ -> loop end, 
+                                {MinSQN, MaxSQN, [{B, K, SQN, Obj}|BatchAcc]}
+                            }
                     end;
                 _ ->
                     {loop, Acc}

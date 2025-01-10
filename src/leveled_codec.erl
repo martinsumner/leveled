@@ -46,6 +46,7 @@
         maybe_compress/2,
         create_value_for_journal/3,
         revert_value_from_journal/1,
+        revert_value_from_journal/2,
         generate_ledgerkv/5,
         get_size/2,
         get_keyandobjhash/2,
