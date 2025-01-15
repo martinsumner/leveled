@@ -756,6 +756,8 @@ delete_pending({call, From}, cdb_close, State) ->
                         State#state.filename,
                         State#state.waste_path),
     {stop_and_reply, normal, [{reply, From, ok}]};
+delete_pending({call, From}, Event, State) ->
+    handle_sync_event(Event, From, State);
 delete_pending(cast, delete_confirmed, State=#state{delete_point=ManSQN}) ->
     leveled_log:log(cdb04, [State#state.filename, ManSQN]),
     close_pendingdelete(State#state.handle,
