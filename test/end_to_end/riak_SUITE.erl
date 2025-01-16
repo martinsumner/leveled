@@ -1703,7 +1703,8 @@ handoff_withcompaction(_Config) ->
             {root_path, RootPath},
             {max_journalobjectcount, KeyCount div 4},
             {max_pencillercachesize, 12000},
-            {sync_strategy, testutil:sync_strategy()}
+            {sync_strategy, testutil:sync_strategy()},
+            {max_run_length, 4}
         ],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     ObjList1 = 
