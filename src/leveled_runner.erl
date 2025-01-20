@@ -269,11 +269,14 @@ tictactree(SnapFun, {Tag, Bucket, Query}, JournalCheck, TreeSize, Filter) ->
         end,
     {async, Runner}.
 
--spec foldheads_allkeys(snap_fun(), leveled_codec:tag(), 
-                        fold_objects_fun()|{fold_objects_fun(), foldacc()}, 
-                        boolean(), false|list(integer()),
-                        false|leveled_codec:lastmod_range(),
-                        false|pos_integer()) -> {async, runner_fun()}.
+-spec foldheads_allkeys(
+    snap_fun(),
+    leveled_codec:tag(), 
+    fold_objects_fun()|{fold_objects_fun(), foldacc()}, 
+    boolean()|defer,
+    false|list(integer()),
+    false|leveled_codec:lastmod_range(),
+    false|pos_integer()) -> {async, runner_fun()}.
 %% @doc
 %% Fold over all heads in the store for a given tag - applying the passed 
 %% function to each proxy object
@@ -412,7 +415,7 @@ foldobjects_bybucket(SnapFun, Tag, KeyRanges, FoldFun) ->
                             leveled_codec:tag(), 
                             list(key_range()), 
                             fold_objects_fun()|{fold_objects_fun(), foldacc()},
-                            boolean(),
+                            boolean()|defer,
                             false|list(integer()),
                             false|leveled_codec:lastmod_range(),
                             false|pos_integer()) 
@@ -501,7 +504,7 @@ foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, SegmentList) ->
 
 -spec foldobjects(snap_fun(), atom(), list(),
                     fold_objects_fun()|{fold_objects_fun(), foldacc()}, 
-                    false|{true, boolean()},
+                    false|{true, boolean()|defer},
                     false|list(integer()),
                     false|leveled_codec:lastmod_range(),
                     false|pos_integer()) -> {async, runner_fun()}.
@@ -609,9 +612,14 @@ get_hashaccumulator(JournalCheck, InkerClone, AddKeyFun) ->
     AccFun.
 
 -spec accumulate_objects
-    (fold_objects_fun(), pid(), leveled_head:object_tag(), false|{true, boolean()})
+    (fold_objects_fun(),
+        pid(),
+        leveled_head:object_tag(),
+        false|{true, boolean()|defer})
         -> objectacc_fun();
-    (fold_objects_fun(), null, leveled_head:headonly_tag(), {true, false})
+    (fold_objects_fun(),
+        null, leveled_head:headonly_tag(),
+        {true, false})
         -> objectacc_fun().
 accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
     AccFun =
