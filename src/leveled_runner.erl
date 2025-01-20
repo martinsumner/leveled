@@ -652,7 +652,7 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
                                 missing ->
                                     Acc
                             end;
-                        {false, _} ->
+                        _ ->
                             FoldObjectsFun(B, K, ProxyObj, Acc)
                     end;
                 false ->

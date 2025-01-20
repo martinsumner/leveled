@@ -946,15 +946,22 @@ book_objectfold(Pid, Tag, Bucket, Limiter, FoldAccT, SnapPreFold) ->
 %% `Acc'. The ProxyObject is an object that only contains the
 %% head/metadata, and no object data from the journal. The `Acc' in
 %% the first call is that provided as the second element of `FoldAccT'
-%% and thereafter the return of the previous all to the fold fun. If
-%% `JournalCheck' is `true' then the journal is checked to see if the
-%% object in the ledger is present, which means a snapshot of the
-%% whole store is required, if `false', then no such check is
-%% performed, and onlt ledger need be snapshotted. `SnapPreFold' is a
-%% boolean that determines if the snapshot is taken when the folder is
-%% requested `true', or when when run `false'. `SegmentList' can be
-%% `false' meaning, all heads, or a list of integers that designate
-%% segments in a TicTac Tree.
+%% and thereafter the return of the previous all to the fold fun.
+%% 
+%% If `JournalCheck' is `true' then the journal is checked to see if the
+%% object in the ledger is present, which means a snapshot of the whole store
+%% is required, if `false', then no such check is performed, and only ledger
+%% need be snapshotted. However, if the intention is to defer fetching the
+%% value but don't wish to cost of chekcing the Journal to be made during the
+%% fold (e.g. as any exception will be handled later), then the `defer`
+%% option can be used.  This will snapshot the Journal, but not check for
+%% presence.  Note that the fetch must still be made within the timefroma of
+%% the fold (as the snapshot will expire with the fold).
+%% 
+%% `SnapPreFold' is a boolean that determines if the snapshot is taken when
+%% the folder is requested `true', or when when run `false'. `SegmentList' can
+%% be `false' meaning, all heads, or a list of integers that designate segments
+%% in a TicTac Tree.
 -spec book_headfold(pid(), Tag, FoldAccT, JournalCheck, SnapPreFold, SegmentList) ->
                            {async, Runner} when
       Tag :: leveled_codec:tag(),
@@ -964,7 +971,7 @@ book_objectfold(Pid, Tag, Bucket, Limiter, FoldAccT, SnapPreFold) ->
       Bucket :: term(),
       Key :: term(),
       Value :: term(),
-      JournalCheck :: boolean(),
+      JournalCheck :: boolean()|defer,
       SnapPreFold :: boolean(),
       SegmentList :: false | list(integer()),
       Runner :: fun(() -> Acc).
@@ -999,7 +1006,7 @@ book_headfold(Pid, Tag, FoldAccT, JournalCheck, SnapPreFold, SegmentList) ->
       Bucket :: term(),
       Key :: term(),
       Value :: term(),
-      JournalCheck :: boolean(),
+      JournalCheck :: boolean()|defer,
       SnapPreFold :: boolean(),
       SegmentList :: false | list(integer()),
       Runner :: fun(() -> Acc).
@@ -1032,7 +1039,7 @@ book_headfold(Pid, Tag, Limiter, FoldAccT, JournalCheck, SnapPreFold, SegmentLis
       Bucket :: term(),
       Key :: term(),
       Value :: term(),
-      JournalCheck :: boolean(),
+      JournalCheck :: boolean()|defer,
       SnapPreFold :: boolean(),
       SegmentList :: false | list(integer()),
       LastModRange :: false | leveled_codec:lastmod_range(),
@@ -1989,7 +1996,7 @@ return_snapfun(
             fun() -> {ok, LS, JS, fun() -> ok end} end
     end.
 
--spec snaptype_by_presence(boolean()) -> store|ledger.
+-spec snaptype_by_presence(boolean()|defer) -> store|ledger.
 %% @doc
 %% Folds that traverse over object heads, may also either require to return 
 %% the object, or at least confirm the object is present in the Ledger.  This
@@ -1997,6 +2004,8 @@ return_snapfun(
 %% snapshot to one that covers the whole store (i.e. both ledger and journal),
 %% rather than just the ledger.
 snaptype_by_presence(true) ->
+    store;
+snaptype_by_presence(defer) ->
     store;
 snaptype_by_presence(false) -> 
     ledger.
@@ -2030,9 +2039,8 @@ get_runner(State, {keylist, Tag, Bucket, FoldAccT}) ->
     leveled_runner:bucketkey_query(SnapFun, Tag, Bucket, FoldAccT);
 get_runner(State, {keylist, Tag, Bucket, KeyRange, FoldAccT, TermRegex}) ->
     SnapFun = return_snapfun(State, ledger, no_lookup, true, true),
-    leveled_runner:bucketkey_query(SnapFun, 
-                                    Tag, Bucket, KeyRange, 
-                                    FoldAccT, TermRegex);
+    leveled_runner:bucketkey_query(
+        SnapFun,  Tag, Bucket, KeyRange, FoldAccT, TermRegex);
 %% Set of runners for object or metadata folds
 get_runner(State, 
             {foldheads_allkeys, 
@@ -2041,10 +2049,15 @@ get_runner(State,
                 LastModRange, MaxObjectCount}) ->
     SnapType = snaptype_by_presence(JournalCheck),
     SnapFun = return_snapfun(State, SnapType, no_lookup, true, SnapPreFold),
-    leveled_runner:foldheads_allkeys(SnapFun, 
-                                        Tag, FoldFun, 
-                                        JournalCheck, SegmentList,
-                                        LastModRange, MaxObjectCount);
+    leveled_runner:foldheads_allkeys(
+        SnapFun,
+        Tag,
+        FoldFun,
+        JournalCheck,
+        SegmentList,
+        LastModRange,
+        MaxObjectCount
+    );
 get_runner(State,
             {foldobjects_allkeys, Tag, FoldFun, SnapPreFold}) ->
     get_runner(State, 
@@ -2071,13 +2084,16 @@ get_runner(State,
         end,
     SnapType = snaptype_by_presence(JournalCheck),
     SnapFun = return_snapfun(State, SnapType, no_lookup, true, SnapPreFold),
-    leveled_runner:foldheads_bybucket(SnapFun,
-                                        Tag,
-                                        lists:map(KeyRangeFun, BucketList),
-                                        FoldFun,
-                                        JournalCheck,
-                                        SegmentList,
-                                        LastModRange, MaxObjectCount);
+    leveled_runner:foldheads_bybucket(
+        SnapFun,
+        Tag,
+        lists:map(KeyRangeFun, BucketList),
+        FoldFun,
+        JournalCheck,
+        SegmentList,
+        LastModRange,
+        MaxObjectCount
+    );
 get_runner(State,
             {foldheads_bybucket, 
                 Tag, 
@@ -2088,13 +2104,16 @@ get_runner(State,
     {StartKey, EndKey, SnapQ} = return_ledger_keyrange(Tag, Bucket, KeyRange),
     SnapType = snaptype_by_presence(JournalCheck),
     SnapFun = return_snapfun(State, SnapType, SnapQ, true, SnapPreFold),
-    leveled_runner:foldheads_bybucket(SnapFun, 
-                                        Tag, 
-                                        [{StartKey, EndKey}], 
-                                        FoldFun, 
-                                        JournalCheck,
-                                        SegmentList,
-                                        LastModRange, MaxObjectCount);
+    leveled_runner:foldheads_bybucket(
+        SnapFun, 
+        Tag, 
+        [{StartKey, EndKey}], 
+        FoldFun, 
+        JournalCheck,
+        SegmentList,
+        LastModRange,
+        MaxObjectCount
+    );
 get_runner(State,
             {foldobjects_bybucket, 
                 Tag, Bucket, KeyRange, 
@@ -2102,19 +2121,16 @@ get_runner(State,
                 SnapPreFold}) ->
     {StartKey, EndKey, SnapQ} = return_ledger_keyrange(Tag, Bucket, KeyRange),
     SnapFun = return_snapfun(State, store, SnapQ, true, SnapPreFold),
-    leveled_runner:foldobjects_bybucket(SnapFun, 
-                                        Tag, 
-                                        [{StartKey, EndKey}], 
-                                        FoldFun);
+    leveled_runner:foldobjects_bybucket(
+        SnapFun,  Tag,  [{StartKey, EndKey}], FoldFun);
 get_runner(State, 
             {foldobjects_byindex,
                 Tag, Bucket, {Field, FromTerm, ToTerm},
                 FoldObjectsFun,
                 SnapPreFold}) ->
     SnapFun = return_snapfun(State, store, no_lookup, true, SnapPreFold),
-    leveled_runner:foldobjects_byindex(SnapFun, 
-                                        {Tag, Bucket, Field, FromTerm, ToTerm},
-                                        FoldObjectsFun);
+    leveled_runner:foldobjects_byindex(
+        SnapFun, {Tag, Bucket, Field, FromTerm, ToTerm},FoldObjectsFun);
 get_runner(State, {bucket_list, Tag, FoldAccT}) ->
     {FoldBucketsFun, Acc} = FoldAccT,
     SnapFun = return_snapfun(State, ledger, no_lookup, false, false),
