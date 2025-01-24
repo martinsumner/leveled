@@ -429,42 +429,29 @@ idxtlookup_range_end(EndRange, {TLI, NK0, SL0}, Iter0, Output, EndRangeFun) ->
             end 
     end.
 
+skplfold_range([], _StartRange, _EndRange, Acc) ->
+    Acc;
+skplfold_range([{K, _SL}|Rest], StartRange, EndRange, Acc) when StartRange > K ->
+    skplfold_range(Rest, StartRange, EndRange, Acc);
+skplfold_range([{K, SL}|Rest], StartRange, EndRange, Acc) ->
+    case leveled_codec:endkey_passed(EndRange, K) of
+        true ->
+            [SL|Acc];
+        false ->
+            skplfold_range(Rest, StartRange, EndRange, [SL|Acc])
+    end.
+    
 
 skpllookup_to_range(StartRange, EndRange, SkipList, EndRangeFun) ->
-    FoldFun =
-        fun({K, SL}, {PassedStart, PassedEnd, Acc}) ->
-            case {PassedStart, PassedEnd} of
-                {false, false} ->
-                    case StartRange > K of
-                        true ->
-                            {PassedStart, PassedEnd, Acc};
-                        false ->
-                            case leveled_codec:endkey_passed(EndRange, K) of
-                                true ->
-                                    {true, true, [SL|Acc]};
-                                false ->
-                                    {true, false, [SL|Acc]}
-                            end
-                    end;
-                {true, false} ->
-                    case leveled_codec:endkey_passed(EndRange, K) of
-                        true ->
-                            {true, true, [SL|Acc]};
-                        false ->
-                            {true, false, [SL|Acc]}
-                    end;
-                {true, true} ->
-                    {PassedStart, PassedEnd, Acc}
-            end
-        end,
-    Lv1List = lists:reverse(element(3,
-                                    lists:foldl(FoldFun,
-                                                {false, false, []},
-                                                SkipList))),
-    Lv0List = lists:reverse(element(3,
-                                    lists:foldl(FoldFun,
-                                                {false, false, []},
-                                                lists:append(Lv1List)))),
+    Lv1List =
+        lists:reverse(
+            skplfold_range(SkipList, StartRange, EndRange, [])
+        ),
+    Lv0List =
+        lists:reverse(
+            skplfold_range(
+                lists:append(Lv1List), StartRange, EndRange, [])
+        ),
     BeforeFun =
         fun({K, _V}) ->
             K < StartRange
@@ -479,20 +466,20 @@ skpllookup_to_range(StartRange, EndRange, SkipList, EndRangeFun) ->
             end
         end,
     
-    case length(Lv0List) of
-        0 ->
+    case Lv0List of
+        [] ->
             [];
-        1 ->
-            RHS = lists:dropwhile(BeforeFun, lists:nth(1, Lv0List)),
+        [SingleList] ->
+            RHS = lists:dropwhile(BeforeFun, SingleList),
             lists:takewhile(AfterFun, RHS);
-        2 ->
-            RHSofLHL = lists:dropwhile(BeforeFun, lists:nth(1, Lv0List)),
-            LHSofRHL = lists:takewhile(AfterFun, lists:last(Lv0List)),
+        [LHList, RHList] ->
+            RHSofLHL = lists:dropwhile(BeforeFun, LHList),
+            LHSofRHL = lists:takewhile(AfterFun, RHList),
             RHSofLHL ++ LHSofRHL;
-        L ->
-            RHSofLHL = lists:dropwhile(BeforeFun, lists:nth(1, Lv0List)),
-            LHSofRHL = lists:takewhile(AfterFun, lists:last(Lv0List)),
-            MidLists = lists:sublist(Lv0List, 2, L - 2),
+        [LHL|Rest] ->
+            RHSofLHL = lists:dropwhile(BeforeFun, LHL),
+            LHSofRHL = lists:takewhile(AfterFun, lists:last(Rest)),
+            MidLists = lists:sublist(Rest, length(Rest) - 1),
             lists:append([RHSofLHL] ++ MidLists ++ [LHSofRHL])
     end.
 
