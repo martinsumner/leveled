@@ -25,6 +25,12 @@
 -define(BINARY_SETTINGS, [{compressed, ?COMPRESSION_FACTOR}]).
 
 -type block_type() :: ?BLOCK_TYPE0|?BLOCK_TYPE1|?BLOCK_TYPE2|?BLOCK_TYPE3.
+-type top_and_tail() ::
+    {
+        leveled_codec:ledger_key()|not_present,
+        leveled_codec:ledger_key()|not_present,
+        fun(() -> list(leveled_codec:ledger_kv()))
+    }.
 
 -export(
     [
@@ -173,12 +179,7 @@ get_all(Block, {0, PressMethod}) ->
     check_block(Block, [], ExtractFun).
 
 -spec get_topandtail(
-    binary(), leveled_sst:block_method()) ->
-        {
-            leveled_codec:ledger_key()|not_present,
-            leveled_codec:ledger_key()|not_present,
-            fun(() -> list(leveled_codec:ledger_kv()))
-        }.
+    binary(), leveled_sst:block_method()) -> top_and_tail().
 get_topandtail(Block, {0, PressMethod}) ->
     ExtractFun =
         fun(CheckedBlock) ->
@@ -267,9 +268,19 @@ decompress_block(BlockBin, lz4) ->
     {ok, Bin} = lz4:unpack(BlockBin),
     Bin;
 decompress_block(BlockBin, zstd) ->
-    zstd:decompress(BlockBin).
+    case zstd:decompress(BlockBin) of
+        DeflateBin when is_binary(DeflateBin) ->
+            DeflateBin
+    end.
 
--spec check_block(binary(), term(), fun((binary()) -> term())) -> term().
+-spec
+    check_block
+        (binary(), list(), fun((binary()) -> list(leveled_codec:ledger_kv())))
+            -> list(leveled_codec:ledger_kv());
+        (binary(), not_present, fun((binary()) -> leveled_codec:ledger_kv()))
+            -> leveled_codec:ledger_kv()|not_present;
+        (binary(), top_and_tail(), fun((binary()) -> top_and_tail()))
+            -> top_and_tail().
 check_block(Block, Default, ExtractFun) when byte_size(Block) > 4 ->
     BinS = byte_size(Block) - 4,
     <<TermBin:BinS/binary, CRC32:32/integer>> = Block,
@@ -283,16 +294,8 @@ check_block(Block, Default, ExtractFun) when byte_size(Block) > 4 ->
 check_block(_Block, Default, _ExtractFun) ->
     Default.
 
--type topandtail_response()
-    ::
-        {
-            leveled_codec:ledger_key(),
-            leveled_codec:ledger_key(),
-            fun(() -> list(leveled_codec:ledger_kv()))
-        }.
-
 -spec get_topandtail_block(
-    binary(), leveled_sst:press_method()) -> topandtail_response().
+    binary(), leveled_sst:press_method()) -> top_and_tail().
 get_topandtail_block(CheckedBlock, PressMethod) ->
     CheckedSize = byte_size(CheckedBlock),
     <<TypedBlock:(CheckedSize - 1)/binary, Type:8/integer>> = CheckedBlock,
@@ -301,7 +304,7 @@ get_topandtail_block(CheckedBlock, PressMethod) ->
 
 -spec get_topandtail_block(
     block_type(), binary(), leveled_sst:press_method()) ->
-        topandtail_response().
+        top_and_tail().
 get_topandtail_block(Type, TypedBlock, PM) when Type == ?BLOCK_TYPE3 ->
     <<TTSz:16/integer, TopTail:TTSz/binary, _/binary>> = TypedBlock,
     {Top, Tail} = binary_to_term(TopTail),
@@ -334,7 +337,9 @@ get_nth_item(Type, N, TypedBlock, PM) when Type == ?BLOCK_TYPE3 ->
     <<TTSz:16/integer, _TopTail:TTSz/binary, AllBin/binary>> = TypedBlock,
     get_nth_item(?BLOCK_TYPE0, N, AllBin, PM);
 get_nth_item(Type, N, TypedBlock, PressMethod)
-        when Type == ?BLOCK_TYPE1; Type == ?BLOCK_TYPE2 ->
+        when 
+            (Type == ?BLOCK_TYPE1 orelse Type == ?BLOCK_TYPE2 ) andalso
+            (PressMethod == lz4 orelse PressMethod == zstd) ->
     Width = case Type of ?BLOCK_TYPE1 -> 6; ?BLOCK_TYPE2 -> 8 end,
     <<
         ASz:16/integer,
@@ -457,7 +462,7 @@ v1_block_test() ->
     v1_block_tester(no_lookup, {1, zstd}, 24).
 
 v1_bigblock_test() ->
-    BigBlob = crypto:strong_rand_bytes(8192),
+    BigBlob = crypto:strong_rand_bytes(16384),
     {MegaSec, Sec, MicroSec} = os:timestamp(),
     MetaBin =
         <<
@@ -475,11 +480,32 @@ v1_bigblock_test() ->
             MetaBin/binary
         >>,
     v1_block_tester(lookup, {1, zstd}, 24, SibMetaBin),
+    v1_block_tester(lookup, {1, zstd}, 32, SibMetaBin),
     v1_block_tester(lookup, {1, zstd}, 25, SibMetaBin),
     v1_block_tester(lookup, {1, native}, 32, SibMetaBin),
     v1_block_tester(lookup, {1, native}, 31, SibMetaBin),
     v1_block_tester(no_lookup, {1, zstd}, 24, SibMetaBin).
 
+v1_nolookup_bigtail_test() ->
+    BigBlob = crypto:strong_rand_bytes(1024),
+    BigBucket = base64:encode(crypto:strong_rand_bytes(65536)),
+    {MegaSec, Sec, MicroSec} = os:timestamp(),
+    MetaBin =
+        <<
+            MegaSec:32/integer,
+            Sec:32/integer,
+            MicroSec:32/integer,
+            BigBlob/binary
+        >>,
+    MetaLen = byte_size(MetaBin),
+    SibMetaBin =
+        <<
+            1:32/integer,
+            0:32/integer,
+            MetaLen:32/integer,
+            MetaBin/binary
+        >>,
+    v1_block_tester(no_lookup, {1, zstd}, 24, SibMetaBin, BigBucket).
 
 v1_block_tester(Lookup, BlockMethod, BlockSize) ->
     v1_block_tester(
@@ -490,7 +516,9 @@ v1_block_tester(Lookup, BlockMethod, BlockSize) ->
     ).
 
 v1_block_tester(Lookup, BlockMethod, BlockSize, SibMetaBin) ->
-    B = <<"Bucket">>,
+    v1_block_tester(Lookup, BlockMethod, BlockSize, SibMetaBin, <<"Bucket">>).
+
+v1_block_tester(Lookup, BlockMethod, BlockSize, SibMetaBin, B) ->
     V =
         leveled_head:riak_metadata_to_binary(
             term_to_binary([{"actor1", 1}]),

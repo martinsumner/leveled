@@ -4637,7 +4637,7 @@ corrupted_block_rangetester(BlockMethod, TestCount) ->
             no_lookup, BlockMethod, lists:sublist(KVL1, 41, 20)),
     B4 =
         leveled_sstblock:serialise_block(
-            np_lookup, BlockMethod, lists:sublist(KVL1, 61, 20)),
+            no_lookup, BlockMethod, lists:sublist(KVL1, 61, 20)),
     B5 =
         leveled_sstblock:serialise_block(
             no_lookup, BlockMethod, lists:sublist(KVL1, 81, 20)),
