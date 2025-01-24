@@ -2821,12 +2821,46 @@ next_block_required({_FK, LK}, EndKey) ->
 in_range(KVL, all, all) ->
     KVL;
 in_range(KVL, all, EK) ->
-    lists:takewhile(
-        fun({K, _V}) -> not leveled_codec:endkey_passed(EK, K) end, KVL);
+    before_end(KVL, EK, []);
 in_range(KVL, SK, all) ->
-    lists:dropwhile(fun({K, _V}) -> K < SK end, KVL);
+    after_start(KVL, SK);
 in_range(KVL, SK, EK) ->
-    in_range(in_range(KVL, SK, all), all, EK).
+    before_end(after_start(KVL, SK), EK, []).
+
+before_end(KVL, EK, Acc) when length(KVL) > 12 ->
+    case leveled_codec:endkey_passed(EK, element(1, lists:nth(6, KVL))) of
+        true ->
+            append(
+                Acc,
+                lists:takewhile(
+                    fun({K, _V}) -> not leveled_codec:endkey_passed(EK, K) end,
+                    KVL
+                )
+            );
+        false ->
+            {B, MB} = lists:split(6, KVL),
+            before_end(MB, EK, append(Acc, B))
+    end;
+before_end(KVL, EK, Acc) ->
+    append(
+        Acc,
+        lists:takewhile(
+            fun({K, _V}) -> not leveled_codec:endkey_passed(EK, K) end,
+            KVL
+        )
+    ).
+
+after_start(KVL, SK) when length(KVL) > 24 ->
+    case element(1, lists:nth(12, KVL)) < SK of
+        true ->
+            {_B, MB} = lists:split(12, KVL),
+            after_start(MB, SK);
+        false ->
+            lists:dropwhile(fun({K, _V}) -> K < SK end, KVL)
+    end;
+after_start(KVL, SK) ->
+    lists:dropwhile(fun({K, _V}) -> K < SK end, KVL).
+
 
 crc_check_slot(FullBin) ->
     <<CRC32PBL:32/integer,
