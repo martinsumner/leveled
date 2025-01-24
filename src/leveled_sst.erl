@@ -2689,90 +2689,103 @@ blocks_required(
         leveled_sstblock:get_topandtail(MidBlock, BlockMethod),
     case filterby_midblock({Top, Tail}, {StartKey, EndKey}) of
         empty ->
-            append(
-                in_range(
+            in_range(
+                append(
                     leveled_sstblock:get_all(B1, BlockMethod),
-                    StartKey,
-                    EndKey
-                ),
-                in_range(
                     leveled_sstblock:get_all(B2, BlockMethod),
-                    StartKey,
-                    EndKey
-                ),
-                in_range(
                     leveled_sstblock:get_all(B4, BlockMethod),
-                    StartKey,
-                    EndKey
+                    leveled_sstblock:get_all(B5, BlockMethod)
                 ),
-                in_range(
-                    leveled_sstblock:get_all(B5, BlockMethod),
-                    StartKey,
-                    EndKey
-                )
+                StartKey,
+                EndKey
             );
         all_blocks ->
             append(
-                get_lefthand_blocks(B1, B2, BlockMethod, StartKey),
+                in_range(
+                    get_lefthand_blocks(
+                        B1, B2, BlockMethod, StartKey, EndKey),
+                    StartKey,
+                    all
+                ),
                 MidBlockFetchFun(),
-                get_righthand_blocks(B4, B5, BlockMethod, EndKey)
+                in_range(
+                    get_righthand_blocks(
+                        B4, B5, BlockMethod, StartKey, EndKey),
+                    all,
+                    EndKey
+                )
             );
         lt_mid ->
             in_range(
-                get_lefthand_blocks(B1, B2, BlockMethod, StartKey),
-                all,
+                get_lefthand_blocks(
+                    B1, B2, BlockMethod, StartKey, EndKey),
+                StartKey,
                 EndKey);
         le_mid ->
-            append(
-                get_lefthand_blocks(B1, B2, BlockMethod, StartKey),
-                in_range(MidBlockFetchFun(), all, EndKey)
+            in_range(
+                append(
+                    get_lefthand_blocks(
+                        B1, B2, BlockMethod, StartKey, EndKey),
+                    MidBlockFetchFun()
+                ),
+                StartKey,
+                EndKey
             );
         mid_only ->
             in_range(MidBlockFetchFun(), StartKey, EndKey);
         ge_mid ->
-            append(
-                in_range(MidBlockFetchFun(), StartKey, all),
-                get_righthand_blocks(B4, B5, BlockMethod, EndKey)
+            in_range(
+                append(
+                    MidBlockFetchFun(),
+                    get_righthand_blocks(
+                        B4, B5, BlockMethod, all, EndKey)
+                ),
+                StartKey,
+                EndKey
             );
         gt_mid ->
             in_range(
-                get_righthand_blocks(B4, B5, BlockMethod, EndKey),
+                get_righthand_blocks(
+                    B4, B5, BlockMethod, StartKey, EndKey),
                 StartKey,
-                all)
+                EndKey
+            )
     end.
 
-get_lefthand_blocks(B1, B2, BlockMethod, StartKey) ->
+get_lefthand_blocks(B1, B2, BlockMethod, StartKey, EndKey) ->
     {Top, Tail, InnerLeftBlockFetchFun} =
         leveled_sstblock:get_topandtail(B2, BlockMethod),
     case previous_block_required({Top, Tail}, StartKey) of
         true ->
             append(
-                in_range(
-                    leveled_sstblock:get_all(B1, BlockMethod),
-                    StartKey,
-                    all
-                ),
-                InnerLeftBlockFetchFun()
+                leveled_sstblock:get_all(B1, BlockMethod),
+                case this_leftblock_required({Top, Tail}, EndKey) of
+                    true ->
+                        InnerLeftBlockFetchFun();
+                    _ ->
+                        []
+                end
             );
         false ->
-            in_range(InnerLeftBlockFetchFun(), StartKey, all)
+            InnerLeftBlockFetchFun()
     end.
 
-get_righthand_blocks(B4, B5, BlockMethod, EndKey) ->
+get_righthand_blocks(B4, B5, BlockMethod, StartKey, EndKey) ->
     {Top, Tail, InnerRightBlockFetchFun} =
         leveled_sstblock:get_topandtail(B4, BlockMethod),
     case next_block_required({Top, Tail}, EndKey) of
         true ->
             append(
-                InnerRightBlockFetchFun(),
-                in_range(
-                    leveled_sstblock:get_all(B5, BlockMethod),
-                    all,
-                    EndKey
-                )
+                case this_rightblock_required({Top, Tail}, StartKey) of
+                    true ->
+                        InnerRightBlockFetchFun();
+                    _ ->
+                        []
+                end,
+                leveled_sstblock:get_all(B5, BlockMethod)
             );
         false ->
-            in_range(InnerRightBlockFetchFun(), all, EndKey)
+            InnerRightBlockFetchFun()
     end.
 
 filterby_midblock({not_present, not_present}, _RangeKeys) ->
@@ -2799,6 +2812,20 @@ filterby_midblock({MidFirst, MidLast}, {_StartKey, EndKey}) ->
         {false, false} ->
             all_blocks
     end.
+
+this_leftblock_required({not_present, not_present}, _EndKey) ->
+    true;
+this_leftblock_required(_, all) ->
+    true;
+this_leftblock_required({Top, _Tail}, EndKey) ->
+    not leveled_codec:endkey_passed(EndKey, Top).
+        
+this_rightblock_required({not_present, not_present}, _StartKey) ->
+    true;
+this_rightblock_required(_, all) ->
+    true;
+this_rightblock_required({_Top, Tail}, StartKey) ->
+    Tail >= StartKey.
 
 previous_block_required({not_present, not_present}, _SK) ->
     true;
@@ -2827,8 +2854,14 @@ in_range(KVL, SK, all) ->
 in_range(KVL, SK, EK) ->
     before_end(after_start(KVL, SK), EK, []).
 
-before_end(KVL, EK, Acc) when length(KVL) > 12 ->
-    case leveled_codec:endkey_passed(EK, element(1, lists:nth(6, KVL))) of
+-define(MAX_AHEAD, 12).
+-define(CHECK_AHEAD, 8).
+
+before_end(KVL, EK, Acc) when length(KVL) > ?MAX_AHEAD ->
+    SkipCheck =
+    leveled_codec:endkey_passed(
+        EK, element(1, lists:nth(?CHECK_AHEAD, KVL))),
+    case SkipCheck of
         true ->
             append(
                 Acc,
@@ -2838,7 +2871,7 @@ before_end(KVL, EK, Acc) when length(KVL) > 12 ->
                 )
             );
         false ->
-            {B, MB} = lists:split(6, KVL),
+            {B, MB} = lists:split(?CHECK_AHEAD, KVL),
             before_end(MB, EK, append(Acc, B))
     end;
 before_end(KVL, EK, Acc) ->
@@ -2850,10 +2883,11 @@ before_end(KVL, EK, Acc) ->
         )
     ).
 
-after_start(KVL, SK) when length(KVL) > 24 ->
-    case element(1, lists:nth(12, KVL)) < SK of
+after_start(KVL, SK) when length(KVL) > ?MAX_AHEAD ->
+    SkipCheck = element(1, lists:nth(?CHECK_AHEAD, KVL)) < SK,
+    case SkipCheck of
         true ->
-            {_B, MB} = lists:split(12, KVL),
+            {_B, MB} = lists:split(?CHECK_AHEAD, KVL),
             after_start(MB, SK);
         false ->
             lists:dropwhile(fun({K, _V}) -> K < SK end, KVL)
