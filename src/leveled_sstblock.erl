@@ -13,10 +13,19 @@
 -module(leveled_sstblock).
 
 -define(MAX_SUBBLOCK_SIZE, 1 bsl 16).
--define(BLOCK_TYPE0, 0). % Block is just a list of terms 
--define(BLOCK_TYPE1, 1). % Lookup block divided into 4 blocks of 6
--define(BLOCK_TYPE2, 2). % Lookup block divided into 4 blocks of 8
--define(BLOCK_TYPE3, 3). % Nolookup block with first/last terms at head
+-define(BLOCK_TYPE0, 0).
+    % Block is just a list of terms 
+-define(BLOCK_TYPE1, 1).
+    % Lookup block divided into 4 blocks of 6
+    % 24 KV blocks only
+-define(BLOCK_TYPE2, 2).
+    % Lookup block divided into 4 blocks of 8
+    % 32 KV blocks only
+-define(BLOCK_TYPE3, 3).
+    % Nolookup block with first/last terms at head
+-define(BLOCK_TYPE4, 4).
+    % Nolookup block with first/last terms at head, and block split into L/M/R
+    % 56 KV blocks only
 -define(COMPRESSION_FACTOR, 1).
     % When using native compression - how hard should the compression code
     % try to reduce the size of the compressed output. 1 Is to imply minimal
@@ -24,12 +33,15 @@
     % https://www.erlang.org/doc/man/erlang.html#term_to_binary-2
 -define(BINARY_SETTINGS, [{compressed, ?COMPRESSION_FACTOR}]).
 
--type block_type() :: ?BLOCK_TYPE0|?BLOCK_TYPE1|?BLOCK_TYPE2|?BLOCK_TYPE3.
+-type block_type() ::
+    ?BLOCK_TYPE0|?BLOCK_TYPE1|?BLOCK_TYPE2|?BLOCK_TYPE3|?BLOCK_TYPE4.
+-type range_filter() ::
+    all|{leveled_codec:ledger_key(), leveled_codec:ledger_key()}.
 -type top_and_tail() ::
     {
         leveled_codec:ledger_key()|not_present,
         leveled_codec:ledger_key()|not_present,
-        fun(() -> list(leveled_codec:ledger_kv()))
+        fun((range_filter()) -> list(leveled_codec:ledger_kv()))
     }.
 
 -export(
@@ -132,6 +144,67 @@ serialise_block(
         _ ->
             serialise_block_aslist(PressMethod, TL)
     end;
+serialise_block(
+    no_lookup,
+    {1, PressMethod},
+    [
+        L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12,
+        L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23, L24,
+        M1, M2, M3, M4, M5, M6, M7, M8,
+        R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12,
+        R13, R14, R15, R16, R17, R18, R19, R20, R21, R22, R23, R24
+    ] = TermList
+)
+        when
+            PressMethod == zstd; PressMethod == lz4 ->
+    LBn =
+        term_to_binary(
+            [
+                L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12,
+                L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23, L24
+            ]
+        ),
+    MBn = term_to_binary([M1, M2, M3, M4, M5, M6, M7, M8]),
+    RBn =
+        term_to_binary(
+            [
+                R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12,
+                R13, R14, R15, R16, R17, R18, R19, R20, R21, R22, R23, R24
+            ]
+        ),
+    TTBn = term_to_binary({element(1, L1), element(1, R24)}),
+    case {byte_size(LBn), byte_size(MBn), byte_size(RBn), byte_size(TTBn)} of
+        {LSz, MSz, RSz, TTSz}
+            when
+                LSz < ?MAX_SUBBLOCK_SIZE,
+                MSz < ?MAX_SUBBLOCK_SIZE,
+                RSz < ?MAX_SUBBLOCK_SIZE,
+                TTSz < ?MAX_SUBBLOCK_SIZE
+            ->
+                CompressedBin =
+                    compress_block(
+                        <<
+                            LSz:16/integer,
+                            MSz:16/integer,
+                            RSz:16/integer,
+                            LBn/binary,
+                            MBn/binary,
+                            RBn/binary
+                        >>,
+                        PressMethod
+                    ),
+
+                crc_validate_bin(
+                    <<
+                        TTSz:16/integer,
+                        TTBn/binary,
+                        CompressedBin/binary,
+                        (?BLOCK_TYPE4):8/integer
+                    >>
+                );
+        _ ->
+            serialise_block_aslist(PressMethod, TermList)
+    end;
 serialise_block(no_lookup, {1, PressMethod}, TermList)
         when
             length(TermList) > 2, 
@@ -187,12 +260,12 @@ get_topandtail(Block, {0, PressMethod}) ->
             {
                 element(1, hd(TL)),
                 element(1, lists:last(TL)),
-                fun() -> TL end
+                fun(_) -> TL end
             }
         end,
     check_block(
         Block,
-        {not_present, not_present, fun() -> [] end},
+        {not_present, not_present, fun(_) -> [] end},
         ExtractFun
     );
 get_topandtail(Block, {1, PressMethod}) ->
@@ -202,7 +275,7 @@ get_topandtail(Block, {1, PressMethod}) ->
         end,
     check_block(
         Block,
-        {not_present, not_present, fun() -> [] end},
+        {not_present, not_present, fun(_) -> [] end},
         ExtractFun
     ).
 
@@ -226,7 +299,7 @@ get_nth(N, Block, {0, PressMethod}) ->
     check_block(Block, not_present, ExtractFun).
 
 %%%============================================================================
-%%% Internal functions - v1
+%%% General internal functions - v1
 %%%============================================================================
 
 -spec crc_validate_bin(binary()) -> binary().
@@ -294,13 +367,16 @@ check_block(Block, Default, ExtractFun) when byte_size(Block) > 4 ->
 check_block(_Block, Default, _ExtractFun) ->
     Default.
 
+%%%============================================================================
+%%% Block-type specific cases - v1
+%%%============================================================================
+
 -spec get_topandtail_block(
     binary(), leveled_sst:press_method()) -> top_and_tail().
 get_topandtail_block(CheckedBlock, PressMethod) ->
     CheckedSize = byte_size(CheckedBlock),
     <<TypedBlock:(CheckedSize - 1)/binary, Type:8/integer>> = CheckedBlock,
     get_topandtail_block(Type, TypedBlock, PressMethod).
-
 
 -spec get_topandtail_block(
     block_type(), binary(), leveled_sst:press_method()) ->
@@ -311,11 +387,71 @@ get_topandtail_block(Type, TypedBlock, PM) when Type == ?BLOCK_TYPE3 ->
     {
         Top,
         Tail,
-        fun() -> get_all_block(?BLOCK_TYPE3, TypedBlock, PM) end
+        fun(_) -> get_all_block(?BLOCK_TYPE3, TypedBlock, PM) end
     };
+get_topandtail_block(Type, TypedBlock, PM)
+        when
+            Type == ?BLOCK_TYPE4 andalso
+            (PM == lz4 orelse PM == zstd) ->
+    <<
+        TTSz:16/integer,
+        TopTail:TTSz/binary,
+        CompressedBin/binary
+    >> = TypedBlock,
+    {Top, Tail} = binary_to_term(TopTail),
+    FetchFun =
+        fun(Range) ->
+            <<
+                LSz:16/integer,
+                MSz:16/integer,
+                RSz:16/integer,
+                LBn:LSz/binary,
+                MBn:MSz/binary,
+                RBn:RSz/binary
+            >> = decompress_block(CompressedBin, PM),
+            MidBlock = binary_to_term(MBn),
+            BlockNeeds =
+                case Range of
+                    all ->
+                        all_blocks;
+                    {SK, EK} ->
+                        leveled_sst:filterby_midblock(
+                            {
+                                element(1, hd(MidBlock)),
+                                element(1, lists:last(MidBlock))
+                            },
+                            {SK, EK}
+                        )
+                end,
+            case BlockNeeds of
+                lt_mid ->
+                    binary_to_term(LBn);
+                le_mid ->
+                    leveled_sst:append(
+                        binary_to_term(LBn),
+                        MidBlock
+                    );
+                mid_only ->
+                    MidBlock;
+                ge_mid ->
+                    leveled_sst:append(
+                        MidBlock,
+                        binary_to_term(RBn)
+                    );
+                gt_mid ->
+                    binary_to_term(RBn);
+                _ ->
+                    leveled_sst:append(
+                        binary_to_term(LBn),
+                        MidBlock,
+                        binary_to_term(RBn)
+                    )
+            end
+        end,
+    {Top, Tail, FetchFun};
 get_topandtail_block(Type, TypedBlock, PM) ->
     TL = get_all_block(Type, TypedBlock, PM),
-    {element(1, hd(TL)), element(1, lists:last(TL)), fun() -> TL end}.
+    {element(1, hd(TL)), element(1, lists:last(TL)), fun(_) -> TL end}.
 
 -spec get_nth_item(
     pos_integer(), binary(), leveled_sst:press_method()) ->
@@ -336,6 +472,10 @@ get_nth_item(Type, N, TypedBlock, _PM) when Type == ?BLOCK_TYPE0 ->
 get_nth_item(Type, N, TypedBlock, PM) when Type == ?BLOCK_TYPE3 ->
     <<TTSz:16/integer, _TopTail:TTSz/binary, AllBin/binary>> = TypedBlock,
     get_nth_item(?BLOCK_TYPE0, N, AllBin, PM);
+get_nth_item(Type, N, TypedBlock, PM) when Type == ?BLOCK_TYPE4 ->
+    % No need to optimise - we don't expect to be asked for get_nth_item
+    % ona  no_lookup block
+    lists:nth(N, get_all_block(Type, TypedBlock, PM));
 get_nth_item(Type, N, TypedBlock, PressMethod)
         when 
             (Type == ?BLOCK_TYPE1 orelse Type == ?BLOCK_TYPE2 ) andalso
@@ -385,6 +525,28 @@ get_all_block(Type, TypedBlock, PM) when Type == ?BLOCK_TYPE3 ->
         AllBin/binary
     >> = TypedBlock,
     get_all_block(?BLOCK_TYPE0, AllBin, PM);
+get_all_block(Type, TypedBlock, PM)
+        when
+            Type == ?BLOCK_TYPE4 andalso
+            (PM == lz4 orelse PM == zstd) ->
+    <<
+        TTSz:16/integer,
+        _TopTail:TTSz/binary,
+        CompressedBin/binary
+    >> = TypedBlock,
+    <<
+        LSz:16/integer,
+        MSz:16/integer,
+        RSz:16/integer,
+        LBn:LSz/binary,
+        MBn:MSz/binary,
+        RBn:RSz/binary
+    >> = decompress_block(CompressedBin, PM),
+    leveled_sst:append(
+        binary_to_term(LBn),
+        binary_to_term(MBn),
+        binary_to_term(RBn)
+    );
 get_all_block(_Type, TypedBlock, PM)
         when PM == lz4; PM == zstd ->
     <<
@@ -505,7 +667,8 @@ v1_nolookup_bigtail_test() ->
             MetaLen:32/integer,
             MetaBin/binary
         >>,
-    v1_block_tester(no_lookup, {1, zstd}, 24, SibMetaBin, BigBucket).
+    v1_block_tester(no_lookup, {1, zstd}, 24, SibMetaBin, BigBucket),
+    v1_block_tester(no_lookup, {1, zstd}, 56, SibMetaBin, BigBucket).
 
 v1_block_tester(Lookup, BlockMethod, BlockSize) ->
     v1_block_tester(
@@ -550,7 +713,7 @@ v1_block_tester(Lookup, BlockMethod, BlockSize, SibMetaBin, B) ->
     {Top, Tail, AllFun} = get_topandtail(Block, BlockMethod),
     ?assertMatch(Top, element(1, hd(KVL))),
     ?assertMatch(Tail, element(1, lists:last(KVL))),
-    ?assertMatch(KVL, AllFun()),
+    ?assertMatch(KVL, AllFun(all)),
     ?assertMatch(KVL, get_all(Block, BlockMethod)).
 
 

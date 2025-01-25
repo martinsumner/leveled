@@ -134,7 +134,7 @@
 
 -export([in_range/3]).
 
--export([hmac/1, append/4]).
+-export([hmac/1, append/2, append/3, append/4, filterby_midblock/2]).
 
 -record(slot_index_value,
         {slot_id :: integer(),
@@ -2707,7 +2707,7 @@ blocks_required(
                     StartKey,
                     all
                 ),
-                MidBlockFetchFun(),
+                MidBlockFetchFun(all),
                 in_range(
                     get_righthand_blocks(
                         B4, B5, BlockMethod, StartKey, EndKey),
@@ -2720,23 +2720,24 @@ blocks_required(
                 get_lefthand_blocks(
                     B1, B2, BlockMethod, StartKey, EndKey),
                 StartKey,
-                EndKey);
+                EndKey
+            );
         le_mid ->
             in_range(
                 append(
                     get_lefthand_blocks(
                         B1, B2, BlockMethod, StartKey, EndKey),
-                    MidBlockFetchFun()
+                    MidBlockFetchFun(all)
                 ),
                 StartKey,
                 EndKey
             );
         mid_only ->
-            in_range(MidBlockFetchFun(), StartKey, EndKey);
+            in_range(MidBlockFetchFun(all), StartKey, EndKey);
         ge_mid ->
             in_range(
                 append(
-                    MidBlockFetchFun(),
+                    MidBlockFetchFun(all),
                     get_righthand_blocks(
                         B4, B5, BlockMethod, all, EndKey)
                 ),
@@ -2757,17 +2758,19 @@ get_lefthand_blocks(B1, B2, BlockMethod, StartKey, EndKey) ->
         leveled_sstblock:get_topandtail(B2, BlockMethod),
     case previous_block_required({Top, Tail}, StartKey) of
         true ->
-            append(
-                leveled_sstblock:get_all(B1, BlockMethod),
-                case this_leftblock_required({Top, Tail}, EndKey) of
-                    true ->
-                        InnerLeftBlockFetchFun();
-                    _ ->
-                        []
-                end
-            );
+            case this_leftblock_required({Top, Tail}, EndKey) of
+                true ->
+                    append(
+                        leveled_sstblock:get_all(B1, BlockMethod),
+                        InnerLeftBlockFetchFun(all)
+                    );
+                _ ->
+                    {_, _, OuterLeftBlockFetchFun} =
+                        leveled_sstblock:get_topandtail(B1, BlockMethod),
+                    OuterLeftBlockFetchFun({StartKey, EndKey})
+            end;
         false ->
-            InnerLeftBlockFetchFun()
+            InnerLeftBlockFetchFun({StartKey, EndKey})
     end.
 
 get_righthand_blocks(B4, B5, BlockMethod, StartKey, EndKey) ->
@@ -2775,17 +2778,19 @@ get_righthand_blocks(B4, B5, BlockMethod, StartKey, EndKey) ->
         leveled_sstblock:get_topandtail(B4, BlockMethod),
     case next_block_required({Top, Tail}, EndKey) of
         true ->
-            append(
-                case this_rightblock_required({Top, Tail}, StartKey) of
-                    true ->
-                        InnerRightBlockFetchFun();
-                    _ ->
-                        []
-                end,
-                leveled_sstblock:get_all(B5, BlockMethod)
-            );
+            case this_rightblock_required({Top, Tail}, StartKey) of
+                true ->
+                    append(
+                        InnerRightBlockFetchFun(all),
+                        leveled_sstblock:get_all(B5, BlockMethod)
+                    );
+                _ ->
+                    {_, _, OuterRightBlockFetchFun} =
+                        leveled_sstblock:get_topandtail(B5, BlockMethod),
+                    OuterRightBlockFetchFun({StartKey, EndKey})
+            end;
         false ->
-            InnerRightBlockFetchFun()
+            InnerRightBlockFetchFun({StartKey, EndKey})
     end.
 
 filterby_midblock({not_present, not_present}, _RangeKeys) ->
