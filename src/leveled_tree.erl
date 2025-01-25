@@ -45,8 +45,8 @@
 from_orderedset(Table, Type) ->
     from_orderedlist(ets:tab2list(Table), Type, ?SKIP_WIDTH).
 
--spec from_orderedset(ets:tab(), tree_type(), integer()|auto)
-                                                            -> leveled_tree().
+-spec from_orderedset(
+    ets:tab(), tree_type(), integer()|auto) -> leveled_tree().
 %% @doc
 %% Convert an ETS table of Keys and Values (of table type ordered_set) into a
 %% leveled_tree of the given type.  The SkipWidth is an integer representing
@@ -63,8 +63,8 @@ from_orderedset(Table, Type, SkipWidth) ->
 from_orderedlist(OrderedList, Type) ->
     from_orderedlist(OrderedList, Type, ?SKIP_WIDTH).
 
--spec from_orderedlist(list(tuple()), tree_type(), integer()|auto)
-                                                            -> leveled_tree().
+-spec from_orderedlist(
+    list(tuple()), tree_type(), integer()|auto) -> leveled_tree().
 %% @doc
 %% Convert a list of Keys and Values (of table type ordered_set) into a
 %% leveled_tree of the given type.  The SkipWidth is an integer representing
@@ -114,7 +114,11 @@ match(Key, {skpl, _L, SkipList}) ->
     SL0 = skpl_getsublist(Key, SkipList),
     lookup_match(Key, SL0).
 
--spec search(tuple()|integer(), leveled_tree(), fun()) -> none|tuple().
+-spec search(
+    tuple()|integer(),
+    leveled_tree(),
+    fun((leveled_pmanifest:manifest_entry()) -> leveled_codec:object_key()))
+        -> none|tuple().
 %% @doc
 %% Search is used when the tree is a manifest of key ranges and it is necessary
 %% to find a rnage which may contain the key.  The StartKeyFun is used if the
@@ -162,10 +166,10 @@ search(Key, {skpl, _L, SkipList}, StartKeyFun) ->
             none
     end.
 
--spec match_range(tuple()|integer()|all,
-                    tuple()|integer()|all,
-                    leveled_tree())
-                                 -> list().
+-spec match_range(
+    tuple()|integer()|all,
+    tuple()|integer()|all,
+    leveled_tree()) -> list().
 %% @doc
 %% Return a range of value between trees from a tree associated with an
 %% exact match for the given key.  This assumes the tree contains the actual
@@ -181,11 +185,11 @@ match_range(StartRange, EndRange, Tree) ->
         end,
     match_range(StartRange, EndRange, Tree, EndRangeFun).
 
--spec match_range(tuple()|integer()|all,
-                    tuple()|integer()|all,
-                    leveled_tree(),
-                    fun())
-                                 -> list().
+-spec match_range(
+    tuple()|integer()|all,
+    tuple()|integer()|all,
+    leveled_tree(),
+    fun((term(), term(), term()) -> boolean())) -> list().
 %% @doc
 %% As match_range/3 but a function can be passed to be used when comparing the
 %5 EndKey with a key in the tree (such as leveled_codec:endkey_passed), where
@@ -197,11 +201,12 @@ match_range(StartRange, EndRange, {idxt, _L, Tree}, EndRangeFun) ->
 match_range(StartRange, EndRange, {skpl, _L, SkipList}, EndRangeFun) ->
     skpllookup_to_range(StartRange, EndRange, SkipList, EndRangeFun).
 
--spec search_range(tuple()|integer()|all,
-                    tuple()|integer()|all,
-                    leveled_tree(),
-                    fun())
-                                -> list().
+-spec search_range(
+    tuple()|integer()|all,
+    tuple()|integer()|all,
+    leveled_tree(),
+    fun((leveled_pmanifest:manifest_entry()) -> leveled_codec:object_key()))
+        -> list().
 %% @doc
 %% Extract a range from a tree, with search used when the tree is a manifest
 %% of key ranges and it is necessary to find a rnage which may encapsulate the
