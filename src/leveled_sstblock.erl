@@ -409,7 +409,7 @@ get_topandtail_block(Type, TypedBlock, PM)
                 MBn:MSz/binary,
                 RBn:RSz/binary
             >> = decompress_block(CompressedBin, PM),
-            MidBlock = binary_to_term(MBn),
+            [M1, M2, M3, M4,M5, M6, M7, M8] = binary_to_term(MBn),
             BlockNeeds =
                 case Range of
                     all ->
@@ -417,8 +417,8 @@ get_topandtail_block(Type, TypedBlock, PM)
                     {SK, EK} ->
                         leveled_sst:filterby_midblock(
                             {
-                                element(1, hd(MidBlock)),
-                                element(1, lists:last(MidBlock))
+                                element(1, M1),
+                                element(1, M8)
                             },
                             {SK, EK}
                         )
@@ -427,25 +427,45 @@ get_topandtail_block(Type, TypedBlock, PM)
                 lt_mid ->
                     binary_to_term(LBn);
                 le_mid ->
-                    leveled_sst:append(
-                        binary_to_term(LBn),
-                        MidBlock
-                    );
+                    [
+                        L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12,
+                        L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23, L24
+                    ] = binary_to_term(LBn),
+                    [
+                        L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12,
+                        L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23, L24,
+                        M1, M2, M3, M4,M5, M6, M7, M8 
+                    ];
                 mid_only ->
-                    MidBlock;
+                    [M1, M2, M3, M4,M5, M6, M7, M8];
                 ge_mid ->
-                    leveled_sst:append(
-                        MidBlock,
-                        binary_to_term(RBn)
-                    );
+                    [
+                        R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12,
+                        R13, R14, R15, R16, R17, R18, R19, R20, R21, R22, R23, R24
+                    ] = binary_to_term(RBn),
+                    [
+                        M1, M2, M3, M4,M5, M6, M7, M8,
+                        R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12,
+                        R13, R14, R15, R16, R17, R18, R19, R20, R21, R22, R23, R24
+                    ];
                 gt_mid ->
                     binary_to_term(RBn);
                 _ ->
-                    leveled_sst:append(
-                        binary_to_term(LBn),
-                        MidBlock,
-                        binary_to_term(RBn)
-                    )
+                    [
+                        L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12,
+                        L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23, L24
+                    ] = binary_to_term(LBn),
+                    [
+                        R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12,
+                        R13, R14, R15, R16, R17, R18, R19, R20, R21, R22, R23, R24
+                    ] = binary_to_term(RBn),
+                    [
+                        L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12,
+                        L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23, L24,
+                        M1, M2, M3, M4,M5, M6, M7, M8,
+                        R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12,
+                        R13, R14, R15, R16, R17, R18, R19, R20, R21, R22, R23, R24
+                    ]
             end
         end,
     {Top, Tail, FetchFun};
@@ -561,7 +581,8 @@ get_all_block(Type, TypedBlock, PM)
         R13, R14, R15, R16, R17, R18, R19, R20, R21, R22, R23, R24
     ];
 get_all_block(_Type, TypedBlock, PM)
-        when PM == lz4; PM == zstd ->
+        when
+            (PM == lz4 orelse PM == zstd) ->
     <<
         ASz:16/integer,
         BSz:16/integer,
