@@ -361,7 +361,8 @@ check_block(Block, Default, ExtractFun) when byte_size(Block) > 4 ->
         CRC32 = leveled_sst:hmac(TermBin),
         ExtractFun(TermBin)
     catch
-        _Exception:_Reason ->
+        _Exception:Reason:Trace ->
+            leveled_log:log(sst15, [Reason, Trace]),
             Default
     end;
 check_block(_Block, Default, _ExtractFun) ->
@@ -489,13 +490,6 @@ get_nth_item(Type, N, TypedBlock, PM)
     lists:nth(N, binary_to_term(decompress_block(TypedBlock, PM)));
 get_nth_item(Type, N, TypedBlock, _PM) when Type == ?BLOCK_TYPE0 ->
     lists:nth(N, binary_to_term(TypedBlock));
-get_nth_item(Type, N, TypedBlock, PM) when Type == ?BLOCK_TYPE3 ->
-    <<TTSz:16/integer, _TopTail:TTSz/binary, AllBin/binary>> = TypedBlock,
-    get_nth_item(?BLOCK_TYPE0, N, AllBin, PM);
-get_nth_item(Type, N, TypedBlock, PM) when Type == ?BLOCK_TYPE4 ->
-    % No need to optimise - we don't expect to be asked for get_nth_item
-    % ona  no_lookup block
-    lists:nth(N, get_all_block(Type, TypedBlock, PM));
 get_nth_item(Type, N, TypedBlock, PressMethod)
         when 
             (Type == ?BLOCK_TYPE1 orelse Type == ?BLOCK_TYPE2 ) andalso
@@ -765,14 +759,19 @@ v1_block_tester(Lookup, BlockMethod, BlockSize, SibMetaBin, B) ->
         end,
     KVL = lists:map(GenKeyFun, lists:seq(1, BlockSize)),
     Block = serialise_block(Lookup, BlockMethod, KVL),
-    LKV1 = get_nth(1, Block, BlockMethod),
-    ?assertMatch(LKV1, hd(KVL)),
-    LKV6 = get_nth(6, Block, BlockMethod),
-    ?assertMatch(LKV6, lists:nth(6, KVL)),
-    LKV7 = get_nth(7, Block, BlockMethod),
-    ?assertMatch(LKV7, lists:nth(7, KVL)),
-    LKV24 = get_nth(24, Block, BlockMethod),
-    ?assertMatch(LKV24, lists:nth(24, KVL)),
+    case Lookup of
+        lookup ->
+            LKV1 = get_nth(1, Block, BlockMethod),
+            ?assertMatch(LKV1, hd(KVL)),
+            LKV6 = get_nth(6, Block, BlockMethod),
+            ?assertMatch(LKV6, lists:nth(6, KVL)),
+            LKV7 = get_nth(7, Block, BlockMethod),
+            ?assertMatch(LKV7, lists:nth(7, KVL)),
+            LKV24 = get_nth(24, Block, BlockMethod),
+            ?assertMatch(LKV24, lists:nth(24, KVL));
+        no_lookup ->
+            ok
+    end,
     {Top, Tail, AllFun} = get_topandtail(Block, BlockMethod),
     ?assertMatch(Top, element(1, hd(KVL))),
     ?assertMatch(Tail, element(1, lists:last(KVL))),

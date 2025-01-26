@@ -4681,11 +4681,17 @@ stop_whenstarter_stopped_testto() ->
         end,
     ?assertMatch(false, lists:foldl(TestFun, true, [10000, 2000, 2000, 2000])).
 
-corrupted_block_range_test() ->
+corrupted_block_range_v0_test() ->
     corrupted_block_rangetester({0, native}, 100),
     corrupted_block_rangetester({0, lz4}, 100),
     corrupted_block_rangetester({0, zstd}, 100),
     corrupted_block_rangetester({0, none}, 100).
+
+corrupted_block_range_v1_test() ->
+    corrupted_block_rangetester({1, native}, 100),
+    corrupted_block_rangetester({1, lz4}, 100),
+    corrupted_block_rangetester({1, zstd}, 100),
+    corrupted_block_rangetester({1, none}, 100).
 
 corrupted_block_rangetester(BlockMethod, TestCount) ->
     N = 100,
@@ -4736,11 +4742,17 @@ corrupted_block_rangetester(BlockMethod, TestCount) ->
     end,
     lists:foreach(CheckFun, RandomRanges).
 
-corrupted_block_fetch_test() ->
+corrupted_block_fetch_v0_test() ->
     corrupted_block_fetch_tester({0, native}),
     corrupted_block_fetch_tester({0, lz4}),
     corrupted_block_fetch_tester({0, zstd}),
     corrupted_block_fetch_tester({0, none}).
+
+corrupted_block_fetch_v1_test() ->
+    corrupted_block_fetch_tester({1, native}),
+    corrupted_block_fetch_tester({1, lz4}),
+    corrupted_block_fetch_tester({1, zstd}),
+    corrupted_block_fetch_tester({1, none}).
 
 corrupted_block_fetch_tester(BlockMethod) ->
     KC = 120,

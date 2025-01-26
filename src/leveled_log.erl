@@ -218,6 +218,8 @@
             {info, <<"SST merge list build timings of fold_toslot=~w slot_hashlist=~w slot_serialise=~w slot_finish=~w is_basement=~w level=~w">>},
         sst14 =>
             {debug, <<"File ~s has completed BIC">>},
+        sst15 =>
+            {warning, <<"Default returned from block due to handling error ~0p ~0p">>},
         i0001 =>
             {info, <<"Unexpected failure to fetch value for Key=~w SQN=~w with reason ~w">>},
         i0002 =>
