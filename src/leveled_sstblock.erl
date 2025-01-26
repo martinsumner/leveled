@@ -580,8 +580,9 @@ get_all_block(Type, TypedBlock, PM)
         R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12,
         R13, R14, R15, R16, R17, R18, R19, R20, R21, R22, R23, R24
     ];
-get_all_block(_Type, TypedBlock, PM)
+get_all_block(Type, TypedBlock, PM)
         when
+            Type == ?BLOCK_TYPE1,
             (PM == lz4 orelse PM == zstd) ->
     <<
         ASz:16/integer,
@@ -593,12 +594,40 @@ get_all_block(_Type, TypedBlock, PM)
         CBn:CSz/binary,
         DBn:DSz/binary
     >> = decompress_block(TypedBlock, PM),
-    leveled_sst:append(
-        binary_to_term(ABn),
-        binary_to_term(BBn),
-        binary_to_term(CBn),
-        binary_to_term(DBn)
-    ).
+    [A1, A2, A3, A4, A5, A6] = binary_to_term(ABn),
+    [B1, B2, B3, B4, B5, B6] = binary_to_term(BBn),
+    [C1, C2, C3, C4, C5, C6] = binary_to_term(CBn),
+    [D1, D2, D3, D4, D5, D6] = binary_to_term(DBn),
+    [
+        A1, A2, A3, A4, A5, A6,
+        B1, B2, B3, B4, B5, B6,
+        C1, C2, C3, C4, C5, C6,
+        D1, D2, D3, D4, D5, D6
+    ];
+get_all_block(Type, TypedBlock, PM)
+        when
+            Type == ?BLOCK_TYPE2,
+            (PM == lz4 orelse PM == zstd) ->
+    <<
+        ASz:16/integer,
+        BSz:16/integer,
+        CSz:16/integer,
+        DSz:16/integer,
+        ABn:ASz/binary,
+        BBn:BSz/binary,
+        CBn:CSz/binary,
+        DBn:DSz/binary
+    >> = decompress_block(TypedBlock, PM),
+    [A1, A2, A3, A4, A5, A6, A7, A8] = binary_to_term(ABn),
+    [B1, B2, B3, B4, B5, B6, B7, B8] = binary_to_term(BBn),
+    [C1, C2, C3, C4, C5, C6, C7, C8] = binary_to_term(CBn),
+    [D1, D2, D3, D4, D5, D6, D7, D8] = binary_to_term(DBn),
+    [
+        A1, A2, A3, A4, A5, A6, A7, A8,
+        B1, B2, B3, B4, B5, B6, B7, B8,
+        C1, C2, C3, C4, C5, C6, C7, C8,
+        D1, D2, D3, D4, D5, D6, D7, D8
+    ].
 
 %%%============================================================================
 %%% Internal functions - v0

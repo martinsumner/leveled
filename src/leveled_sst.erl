@@ -134,7 +134,7 @@
 
 -export([in_range/3]).
 
--export([hmac/1, append/2, append/3, append/4, filterby_midblock/2]).
+-export([hmac/1, filterby_midblock/2]).
 
 -record(slot_index_value,
         {slot_id :: integer(),
