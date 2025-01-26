@@ -361,8 +361,8 @@ check_block(Block, Default, ExtractFun) when byte_size(Block) > 4 ->
         CRC32 = leveled_sst:hmac(TermBin),
         ExtractFun(TermBin)
     catch
-        _Exception:Reason:Trace ->
-            leveled_log:log(sst15, [Reason, Trace]),
+        _Exception:Reason ->
+            leveled_log:log(sst15, [Reason]),
             Default
     end;
 check_block(_Block, Default, _ExtractFun) ->

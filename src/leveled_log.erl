@@ -219,7 +219,7 @@
         sst14 =>
             {debug, <<"File ~s has completed BIC">>},
         sst15 =>
-            {warning, <<"Default returned from block due to handling error ~0p ~0p">>},
+            {warning, <<"Default returned from block due to handling error ~0p">>},
         i0001 =>
             {info, <<"Unexpected failure to fetch value for Key=~w SQN=~w with reason ~w">>},
         i0002 =>
