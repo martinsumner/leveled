@@ -637,6 +637,47 @@ query_count(_Config) ->
     Index1Count =
         count_termsonindex(
             BucketBin, <<"idx1_bin">>, Book1, ?KEY_ONLY),
+
+    TermCountFun = 
+        fun(_B, {T, _K}, Acc) ->
+            Cnt = maps:get(T, Acc, 0),
+            maps:put(T, Cnt, Acc)
+        end,
+
+    {async, TermRunner} = 
+        leveled_bookie:book_returnfolder(
+            Book1,
+            {
+                index_query,
+                BucketBin,
+                {TermCountFun, maps:new()},
+                {<<"idx1_bin">>, <<"0">>, <<"|">>},
+                {true, undefined}
+            }
+        ),
+
+    TermCounts = TermRunner(),
+    io:format("TermCounts ~0p", [TermCounts]),
+    lists:foreach(
+        fun(T) ->
+            {async, TR0} = 
+                leveled_bookie:book_returnfolder(
+                    Book1,
+                    {
+                        index_query,
+                        BucketBin,
+                        {fun testutil:foldkeysfun/3, []},
+                        {<<"idx1_bin">>, T, <<T/binary, "|">>},
+                        ?KEY_ONLY
+                    }
+                ),
+            ResultsForTerm = length(TR0()),
+            io:format("Results for term ~w ~w", [T, ResultsForTerm]),
+            maps:get(T, TermCounts) == ResultsForTerm
+        end,
+        maps:keys(TermCounts)
+    ),
+
     ok = leveled_bookie:book_close(Book1),
     {ok, Book2} =
         leveled_bookie:book_start(

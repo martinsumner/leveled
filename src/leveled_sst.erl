@@ -2764,7 +2764,7 @@ get_lefthand_blocks(B1, B2, BlockMethod, StartKey, EndKey) ->
                         leveled_sstblock:get_all(B1, BlockMethod),
                         InnerLeftBlockFetchFun(all)
                     );
-                _ ->
+                false ->
                     {_, _, OuterLeftBlockFetchFun} =
                         leveled_sstblock:get_topandtail(B1, BlockMethod),
                     OuterLeftBlockFetchFun({StartKey, EndKey})
@@ -2784,7 +2784,7 @@ get_righthand_blocks(B4, B5, BlockMethod, StartKey, EndKey) ->
                         InnerRightBlockFetchFun(all),
                         leveled_sstblock:get_all(B5, BlockMethod)
                     );
-                _ ->
+                false ->
                     {_, _, OuterRightBlockFetchFun} =
                         leveled_sstblock:get_topandtail(B5, BlockMethod),
                     OuterRightBlockFetchFun({StartKey, EndKey})

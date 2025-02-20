@@ -1,7 +1,16 @@
 %% -------- SST Block Functions ---------
 %%
-%% Functions to serialise and deserialise blocks in leveled_sst 
+%% Functions to serialise and then fetch from those serialised blocks, i.e.
+%% - serialise_block/3
+%% - get_all/2 deserialise returning all
+%% - get_topandtail/2 return only the first and last elements, as well as a 
+%% function to return the remainder, so that deserialisation of the remainder
+%% may be avoided on inspection of top and tail
+%% - get_nth/3 deserialise enough of the block to return just the nth item
 %%
+%% The fetch functions may be optimised for the block type to minimise the
+%% work required to fetch the required amount of deserialised data.
+%% 
 %% Standard block sizes are
 %% -define(LOOK_BLOCKSIZE, {24, 32}).
 %% -define(NOLOOK_BLOCKSIZE, {56, 32}).
@@ -60,7 +69,7 @@
 
 -spec serialise_block(
     lookup|no_lookup,
-    {0|1, leveled_sst:press_method()},
+    {leveled_sst:block_version(), leveled_sst:press_method()},
     list(leveled_codec:ledger_kv())) ->
         binary().
 serialise_block(
@@ -410,7 +419,7 @@ get_topandtail_block(Type, TypedBlock, PM)
                 MBn:MSz/binary,
                 RBn:RSz/binary
             >> = decompress_block(CompressedBin, PM),
-            [M1, M2, M3, M4,M5, M6, M7, M8] = binary_to_term(MBn),
+            [M1, M2, M3, M4, M5, M6, M7, M8] = binary_to_term(MBn),
             BlockNeeds =
                 case Range of
                     all ->
@@ -439,10 +448,10 @@ get_topandtail_block(Type, TypedBlock, PM)
                         L7, L8, L9, L10, L11, L12,
                         L13, L14, L15, L16, L17, L18,
                         L19, L20, L21, L22, L23, L24,
-                        M1, M2, M3, M4,M5, M6, M7, M8 
+                        M1, M2, M3, M4, M5, M6, M7, M8 
                     ];
                 mid_only ->
-                    [M1, M2, M3, M4,M5, M6, M7, M8];
+                    [M1, M2, M3, M4, M5, M6, M7, M8];
                 ge_mid ->
                     [
                         R1, R2, R3, R4, R5, R6,
@@ -451,7 +460,7 @@ get_topandtail_block(Type, TypedBlock, PM)
                         R19, R20, R21, R22, R23, R24
                     ] = binary_to_term(RBn),
                     [
-                        M1, M2, M3, M4,M5, M6, M7, M8,
+                        M1, M2, M3, M4, M5, M6, M7, M8,
                         R1, R2, R3, R4, R5, R6,
                         R7, R8, R9, R10, R11, R12,
                         R13, R14, R15, R16, R17, R18,
@@ -477,7 +486,7 @@ get_topandtail_block(Type, TypedBlock, PM)
                         L7, L8, L9, L10, L11, L12,
                         L13, L14, L15, L16, L17, L18,
                         L19, L20, L21, L22, L23, L24,
-                        M1, M2, M3, M4,M5, M6, M7, M8,
+                        M1, M2, M3, M4, M5, M6, M7, M8,
                         R1, R2, R3, R4, R5, R6,
                         R7, R8, R9, R10, R11, R12,
                         R13, R14, R15, R16, R17, R18,
@@ -503,7 +512,7 @@ get_nth_item(N, CheckedBlock, PressMethod) ->
         leveled_codec:ledger_kv().
 get_nth_item(Type, N, TypedBlock, PM)
         when Type == ?BLOCK_TYPE0, (PM == zstd orelse PM == lz4) ->
-    lists:nth(N, binary_to_term(decompress_block(TypedBlock, PM)));
+    lists:nth(N, deserialise_checkedblock(TypedBlock, PM));
 get_nth_item(Type, N, TypedBlock, _PM) when Type == ?BLOCK_TYPE0 ->
     lists:nth(N, binary_to_term(TypedBlock));
 get_nth_item(Type, N, TypedBlock, PressMethod)
@@ -545,7 +554,7 @@ get_all_block(CheckedBlock, PressMethod) ->
             list(leveled_codec:ledger_kv()).
 get_all_block(Type, TypedBlock, PM)
         when Type == ?BLOCK_TYPE0, (PM == zstd orelse PM == lz4) ->
-    binary_to_term(decompress_block(TypedBlock, PM));
+    deserialise_checkedblock(TypedBlock, PM);
 get_all_block(Type, TypedBlock, _PM) when Type == ?BLOCK_TYPE0 ->
     binary_to_term(TypedBlock);
 get_all_block(Type, TypedBlock, PM) when Type == ?BLOCK_TYPE3 ->
