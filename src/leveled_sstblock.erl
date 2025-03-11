@@ -343,14 +343,14 @@ compress_block(BlockBin, lz4) ->
     {ok, Bin} = lz4:pack(BlockBin),
     Bin;
 compress_block(BlockBin, zstd) ->
-    zstd:compress(BlockBin).
+    ezstd:compress(BlockBin).
     
 -spec decompress_block(binary(), lz4|zstd) -> binary().
 decompress_block(BlockBin, lz4) ->
     {ok, Bin} = lz4:unpack(BlockBin),
     Bin;
 decompress_block(BlockBin, zstd) ->
-    case zstd:decompress(BlockBin) of
+    case ezstd:decompress(BlockBin) of
         DeflateBin when is_binary(DeflateBin) ->
             DeflateBin
     end.
@@ -658,7 +658,7 @@ deserialise_checkedblock(Bin, lz4) when is_binary(Bin) ->
             binary_to_term(Bin0)
     end;
 deserialise_checkedblock(Bin, zstd) when is_binary(Bin) ->
-    case zstd:decompress(Bin) of
+    case ezstd:decompress(Bin) of
         Bin0 when is_binary(Bin0) ->
             binary_to_term(Bin0)
     end;
@@ -681,7 +681,7 @@ serialise_block(Term, native) ->
     CRC32 = leveled_sst:hmac(Bin),
     <<Bin/binary, CRC32:32/integer>>;
 serialise_block(Term, zstd) ->
-    Bin = zstd:compress(term_to_binary(Term)),
+    Bin = ezstd:compress(term_to_binary(Term)),
     CRC32 = leveled_sst:hmac(Bin),
     <<Bin/binary, CRC32:32/integer>>;
 serialise_block(Term, none) ->

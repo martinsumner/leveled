@@ -616,7 +616,7 @@ serialise_object(Object, true, Method) when is_binary(Object) ->
             {ok, Bin} = lz4:pack(Object),
             Bin;
         zstd ->
-            zstd:compress(Object);
+            ezstd:compress(Object);
         native ->
             zlib:compress(Object);
         none ->
@@ -656,7 +656,7 @@ deserialise_object(Binary, true, true, lz4) ->
     {ok, Deflated} = lz4:unpack(Binary),
     Deflated;
 deserialise_object(Binary, true, true, zstd) ->
-    zstd:decompress(Binary);
+    ezstd:decompress(Binary);
 deserialise_object(Binary, true, true, native) ->
     zlib:uncompress(Binary);
 deserialise_object(Binary, true, false, _) ->
