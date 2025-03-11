@@ -468,16 +468,16 @@ isvalid_ledgerkey(_LK) ->
 %% false and further results may be required from further ranges.
 endkey_passed(all, _) ->
     false;
-endkey_passed({K1, null, null, null}, {K1, _, _, _}) ->
-    false;
-endkey_passed({K1, K2, null, null}, {K1, K2, _, _}) ->
-    false;
-endkey_passed({K1, K2, K3, null}, {K1, K2, K3, _}) ->
-    false;
-endkey_passed({K1, null}, {K1, _}) ->
+endkey_passed({KQ1, null, null, null}, {KR1, _, _, _}) when KQ1 =/= null ->
+    KQ1 < KR1;
+endkey_passed({K1, KQ2, null, null}, {K1, KR2, _, _}) when KQ2 =/= null ->
+    KQ2 < KR2;
+endkey_passed({K1, K2, KQ3, null}, {K1, K2, KR3, _}) when KQ3 =/= null ->
+    KQ3 < KR3;
+endkey_passed({KQ1, null}, {KR1, _}) when KQ1 =/= null ->
     % See leveled_sst SlotIndex implementation.  Here keys may be slimmed to
     % single binaries or two element tuples before forming the index.
-    false;
+    KQ1 < KR1;
 endkey_passed(null, _) ->
     false;
 endkey_passed(QueryEndKey, RangeEndKey) ->
