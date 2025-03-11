@@ -1,6 +1,6 @@
 %% -------- Utility Functions ---------
 %%
-%% Generally helpful funtions within leveled
+%% Generally helpful functions within leveled
 %%
 
 -module(leveled_util).

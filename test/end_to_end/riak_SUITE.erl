@@ -6,6 +6,7 @@
 -export([
         test_large_lsm_merge/1,
         basic_riak/1,
+        block_version_change/1,
         fetchclocks_modifiedbetween/1,
         crossbucket_aae/1,
         handoff/1,
@@ -21,6 +22,7 @@ suite() -> [{timetrap, {hours, 2}}].
 
 all() -> [
             basic_riak,
+            block_version_change,
             fetchclocks_modifiedbetween,
             crossbucket_aae,
             handoff,
@@ -192,14 +194,188 @@ lsm_merge_tester(LoopsPerBucket) ->
 
     ok = leveled_bookie:book_destroy(Bookie2).
 
+block_version_change(_Config) ->
+    KeyCount = 40000,
+    Bucket = {<<"Type0">>, <<"B0">>},
+    IndexCount = 8,
+
+    RootPath = testutil:reset_filestructure("blockVerion"),
+    StartOpts1 =
+        [
+            {root_path, RootPath},
+            {max_pencillercachesize, 12000},
+            {block_version, 0},
+            {sync_strategy, testutil:sync_strategy()},
+            {database_id, 32},
+            {stats_logfrequency, 5},
+            {stats_probability, 80}
+        ],
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+
+    IndexGenFun =
+        fun(ListID) ->
+            fun() ->
+                RandInt = rand:uniform(IndexCount),
+                ID = integer_to_list(ListID),
+                [
+                    {
+                        add, 
+                        list_to_binary("integer" ++ ID ++ "_int"),
+                        RandInt
+                    },
+                    {
+                        add, 
+                        list_to_binary("binary" ++ ID ++ "_bin"),
+                        <<RandInt:32/integer>>
+                    }
+                ]
+            end
+        end,
+
+    ObjList1 = 
+        testutil:generate_objects(
+            KeyCount, 
+            {fixed_binary, 1}, [],
+            crypto:strong_rand_bytes(512),
+            IndexGenFun(1),
+            Bucket
+        ),
+    testutil:riakload(Bookie1, ObjList1),
+
+    SubList1 = lists:sublist(lists:ukeysort(1, ObjList1), 1000),
+    ok = testutil:check_forlist(Bookie1, SubList1),
+
+    FoldKeysFun =  fun(_B, K, Acc) -> [K|Acc] end,
+    IntIndexFold =
+        fun(Idx, Book) ->
+            fun(IC, CountAcc) ->
+                ID = integer_to_list(Idx),
+                Index = list_to_binary("integer" ++ ID ++ "_int"),
+                {async, R} = 
+                    leveled_bookie:book_indexfold(
+                        Book,
+                        {Bucket, <<>>},
+                        {FoldKeysFun, []},
+                        {Index, IC, IC},
+                        {true, undefined}
+                    ),
+                KTL = R(),
+                CountAcc + length(KTL)
+            end
+        end,
+    BinIndexFold =
+        fun(Idx, Book) ->
+            fun(IC, CountAcc) ->
+                ID = integer_to_list(Idx),
+                Index = list_to_binary("binary" ++ ID ++ "_bin"),
+                {async, R} = 
+                    leveled_bookie:book_indexfold(
+                        Book,
+                        {Bucket, <<>>},
+                        {FoldKeysFun, []},
+                        {Index, <<IC:32/integer>>, <<IC:32/integer>>},
+                        {true, undefined}
+                    ),
+                KTL = R(),
+                CountAcc + length(KTL)
+            end
+        end,
+
+    CheckIndices =
+        fun(Bookie, ObjList, Idx) ->
+            SWA = os:timestamp(),
+            TotalIntIndexEntries =
+                lists:foldl(
+                    IntIndexFold(Idx, Bookie),
+                    0,
+                    lists:seq(1, IndexCount)
+                ),
+            io:format(
+                "~w queries returned count=~w in ~w ms~n",
+                [
+                    IndexCount, 
+                    TotalIntIndexEntries,
+                    timer:now_diff(os:timestamp(), SWA) div 1000
+                ]
+            ),
+            true = TotalIntIndexEntries == length(ObjList1),
+            SWB = os:timestamp(),
+            TotalBinIndexEntries =
+                lists:foldl(
+                    BinIndexFold(Idx, Bookie),
+                    0,
+                    lists:seq(1, IndexCount)
+                ),
+            io:format(
+                "~w queries returned count=~w in ~w ms~n",
+                [
+                    IndexCount, 
+                    TotalBinIndexEntries,
+                    timer:now_diff(os:timestamp(), SWB) div 1000
+                ]
+            ),
+            true = TotalBinIndexEntries == length(ObjList)
+        end,
+    
+    CheckIndices(Bookie1, ObjList1, 1),
+    
+    ok = leveled_bookie:book_close(Bookie1),
+
+    StartOpts2 = lists:ukeysort(1, [{block_version, 1}|StartOpts1]),
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
+
+    ObjList2 = 
+        testutil:generate_objects(
+            KeyCount, 
+            {fixed_binary, KeyCount + 1}, [],
+            crypto:strong_rand_bytes(512),
+            IndexGenFun(2),
+            Bucket
+        ),
+    testutil:riakload(Bookie2, ObjList2),
+
+    SubList2 = lists:sublist(lists:ukeysort(1, ObjList2), 1000),
+    ok = testutil:check_forlist(Bookie2, SubList1),
+    ok = testutil:check_forlist(Bookie2, SubList2),
+
+    CheckIndices(Bookie2, ObjList1, 1),
+    CheckIndices(Bookie2, ObjList2, 2),
+
+    ok = leveled_bookie:book_close(Bookie2),
+    
+    {ok, Bookie3} = leveled_bookie:book_start(StartOpts1),
+
+    ObjList3 = 
+        testutil:generate_objects(
+            KeyCount, 
+            {fixed_binary, KeyCount + KeyCount + 1}, [],
+            crypto:strong_rand_bytes(512),
+            IndexGenFun(3),
+            Bucket
+        ),
+    testutil:riakload(Bookie3, ObjList3),
+
+    SubList3 = lists:sublist(lists:ukeysort(1, ObjList3), 1000),
+    ok = testutil:check_forlist(Bookie3, SubList1),
+    ok = testutil:check_forlist(Bookie3, SubList2),
+    ok = testutil:check_forlist(Bookie3, SubList3),
+
+    CheckIndices(Bookie3, ObjList1, 1),
+    CheckIndices(Bookie3, ObjList2, 2),
+    CheckIndices(Bookie3, ObjList3, 3),
+    
+    ok = leveled_bookie:book_destroy(Bookie3).
+
 basic_riak(_Config) ->
     basic_riak_tester(<<"B0">>, 640000),
     basic_riak_tester({<<"Type0">>, <<"B0">>}, 80000).
 
 basic_riak_tester(Bucket, KeyCount) ->
     % Key Count should be > 10K and divisible by 5
-    io:format("Basic riak test with Bucket ~w KeyCount ~w~n",
-                [Bucket, KeyCount]),
+    io:format(
+        "Basic riak test with Bucket ~w KeyCount ~w~n",
+        [Bucket, KeyCount]
+    ),
     IndexCount = 20,
 
     RootPath = testutil:reset_filestructure("basicRiak"),

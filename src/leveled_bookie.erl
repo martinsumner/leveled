@@ -127,6 +127,7 @@
                 {ledger_preloadpagecache_level, ?SST_PAGECACHELEVEL_LOOKUP},
                 {compression_method, ?COMPRESSION_METHOD},
                 {ledger_compression, as_store},
+                {block_version, 1},
                 {compression_point, ?COMPRESSION_POINT},
                 {compression_level, ?COMPRESSION_LEVEL},
                 {log_level, ?LOG_LEVEL},
@@ -309,6 +310,10 @@
             % Define an alternative to the compression method to be used by the
             % ledger only.  Default is as_store - use the method defined as
             % compression_method for the whole store
+        {block_version, 0|1} |
+            % Version of the leveled_sst blocks.  Block version 0 does not use
+            % sub-blocks, whereas block version 1 has multiple types of blocks
+            % which can be split into sub-blocks
         {compression_point, on_compact|on_receipt} |
             % The =compression point can be changed between on_receipt (all
             % values are compressed as they are received), to on_compact where
@@ -1884,45 +1889,54 @@ set_options(Opts, Monitor) ->
         end,
     CompressionLevel = proplists:get_value(compression_level, Opts),
     
+    BlockVersion = proplists:get_value(block_version, Opts),
     MaxSSTSlots = proplists:get_value(max_sstslots, Opts),
     MaxMergeBelow = proplists:get_value(max_mergebelow, Opts),
 
     ScoreOneIn = proplists:get_value(journalcompaction_scoreonein, Opts),
 
-    {#inker_options{root_path = JournalFP,
-                    reload_strategy = ReloadStrategy,
-                    max_run_length = proplists:get_value(max_run_length, Opts),
-                    singlefile_compactionperc = SFL_CompPerc,
-                    maxrunlength_compactionperc = MRL_CompPerc,
-                    waste_retention_period = WRP,
-                    snaptimeout_long = SnapTimeoutLong,
-                    compression_method = JournalCompression,
-                    compress_on_receipt = CompressOnReceipt,
-                    score_onein = ScoreOneIn,
-                    cdb_options = 
-                        #cdb_options{
-                            max_size = MaxJournalSize,
-                            max_count = MaxJournalCount,
-                            binary_mode = true,
-                            sync_strategy = SyncStrat,
-                            log_options = leveled_log:get_opts(),
-                            monitor = Monitor},
-                    monitor = Monitor},
-        #penciller_options{root_path = LedgerFP,
-                            max_inmemory_tablesize = PCLL0CacheSize,
-                            levelzero_cointoss = true,
-                            snaptimeout_short = SnapTimeoutShort,
-                            snaptimeout_long = SnapTimeoutLong,
-                            sst_options =
-                                #sst_options{
-                                    press_method = LedgerCompression,
-                                    press_level = CompressionLevel,
-                                    log_options = leveled_log:get_opts(),
-                                    max_sstslots = MaxSSTSlots,
-                                    max_mergebelow = MaxMergeBelow,
-                                    monitor = Monitor},
-                            monitor = Monitor}
-        }.
+    {
+        #inker_options{
+            root_path = JournalFP,
+            reload_strategy = ReloadStrategy,
+            max_run_length = proplists:get_value(max_run_length, Opts),
+            singlefile_compactionperc = SFL_CompPerc,
+            maxrunlength_compactionperc = MRL_CompPerc,
+            waste_retention_period = WRP,
+            snaptimeout_long = SnapTimeoutLong,
+            compression_method = JournalCompression,
+            compress_on_receipt = CompressOnReceipt,
+            score_onein = ScoreOneIn,
+            cdb_options = 
+                #cdb_options{
+                    max_size = MaxJournalSize,
+                    max_count = MaxJournalCount,
+                    binary_mode = true,
+                    sync_strategy = SyncStrat,
+                    log_options = leveled_log:get_opts(),
+                    monitor = Monitor
+                },
+            monitor = Monitor
+        },
+        #penciller_options{
+            root_path = LedgerFP,
+            max_inmemory_tablesize = PCLL0CacheSize,
+            levelzero_cointoss = true,
+            snaptimeout_short = SnapTimeoutShort,
+            snaptimeout_long = SnapTimeoutLong,
+            sst_options =
+                #sst_options{
+                    press_method = LedgerCompression,
+                    press_level = CompressionLevel,
+                    block_version = BlockVersion,
+                    log_options = leveled_log:get_opts(),
+                    max_sstslots = MaxSSTSlots,
+                    max_mergebelow = MaxMergeBelow,
+                    monitor = Monitor
+                },
+            monitor = Monitor
+        }
+    }.
 
 
 -spec return_snapfun(
