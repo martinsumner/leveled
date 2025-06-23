@@ -132,5 +132,51 @@ safe_rename_test() ->
     ok = safe_rename(TempFN1, RealFN1, <<2:128/integer>>, true),
     ?assertMatch({ok, <<2:128/integer>>}, file:read_file(RealFN1)).
 
+b2t_speed_test() ->
+    %% This test is written as a demonstration of the binary_to_term
+    %% performance issue - https://github.com/martinsumner/leveled/issues/476
+    %% The issue is in the performance of OTP, and is a regression introduced
+    %% then the binary handling was refactored between OTP 26 and OTP 27
+    KeyMapFun =
+        fun(StartInt) ->
+            lists:map(
+                fun(I) ->
+                    {
+                        {
+                            o_rkv,
+                            {<<"BucketTypeName<">>, <<"BucketName">>},
+                            generate_uuid(),
+                            null
+                        },
+                        {null, rand:uniform(1 bsl 32), I}
+                    }
+                end,
+                lists:seq(StartInt, StartInt + 64)
+            )
+        end,
+    BinList =
+        lists:map(
+            fun(I) ->
+                term_to_binary(KeyMapFun((I - 1) * 64))
+            end,
+            lists:seq(1, 1000)
+        ),
+    TimingsList =
+        lists:map(
+            fun(B) ->
+                element(1, timer:tc(fun() -> binary_to_term(B) end))
+            end,
+            BinList
+        ),
+    io:format(
+        user,
+        "~nTotal time ~w max ~w min ~w~n",
+        [
+            lists:sum(TimingsList),
+            lists:max(TimingsList),
+            lists:min(TimingsList)
+        ]
+    ).
+
 
 -endif.
