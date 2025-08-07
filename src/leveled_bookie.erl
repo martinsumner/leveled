@@ -82,6 +82,7 @@
 -export([
          book_returnfolder/2,
          book_indexfold/5,
+         book_multiindexfold/5,
          book_bucketlist/4,
          book_keylist/3,
          book_keylist/4,
@@ -707,23 +708,24 @@ book_returnfolder(Pid, RunnerType) ->
 %% be interrupted by a throw, which will be forwarded to the worker (whilst
 %% still closing down the snapshot).  This may be used, for example, to
 %% curtail a fold in the application at max_results
--spec book_indexfold(pid(),
-                     Constraint:: {Bucket, StartKey},
-                     FoldAccT :: {FoldFun, Acc},
-                     Range :: {IndexField, Start, End},
-                     TermHandling :: {ReturnTerms, TermRegex}) ->
-                            {async, Runner::fun(() -> dynamic())}
-                                when Bucket::term(),
-                                     Key :: term(),
-                                     StartKey::term(),
-                                     FoldFun::fun((Bucket, Key | {IndexVal, Key}, Acc) -> Acc),
-                                     Acc::dynamic(),
-                                     IndexField::term(),
-                                     IndexVal::term(),
-                                     Start::IndexVal,
-                                     End::IndexVal,
-                                     ReturnTerms::boolean(),
-                                     TermRegex :: leveled_codec:regular_expression().
+-spec book_indexfold(
+    pid(),
+    Constraint:: {Bucket, StartKey},
+    FoldAccT :: {FoldFun, Acc},
+    Range :: {IndexField, Start, End},
+    TermHandling :: {ReturnTerms, TermExpression}) ->
+        {async, Runner::fun(() -> dynamic())}
+            when Bucket::term(),
+                    Key :: term(),
+                    StartKey::term(),
+                    FoldFun::fun((Bucket, Key | {IndexVal, Key}, Acc) -> Acc),
+                    Acc::dynamic(),
+                    IndexField::term(),
+                    IndexVal::term(),
+                    Start::IndexVal,
+                    End::IndexVal,
+                    ReturnTerms::boolean()|binary(),
+                    TermExpression :: leveled_codec:term_expression().
 
 book_indexfold(Pid, Constraint, FoldAccT, Range, TermHandling)
                                                 when is_tuple(Constraint) ->
@@ -739,6 +741,26 @@ book_indexfold(Pid, Bucket, FoldAccT, Range, TermHandling) ->
     leveled_log:log(b0019, [Bucket]),
     book_indexfold(Pid, {Bucket, null}, FoldAccT, Range, TermHandling).
 
+-type query()
+    :: {binary(), binary(), binary(), leveled_codec:term_expression()}.
+-type combo_fun()
+    :: fun((list(sets:set(leveled_codec:key())))
+            -> sets:set(leveled_codec:key())).
+
+-spec book_multiindexfold(
+        pid(),
+        leveled_codec:key(),
+        {
+            fun((leveled_codec:key(), leveled_codec:key(), term()) -> term()),
+            term()
+        },
+        list({non_neg_integer(), query()}),
+        combo_fun())
+            -> {async, fun(() -> term())}.
+book_multiindexfold(Pid, Bucket, FoldAccT, Queries, ComboFun) ->
+    RunnerType =
+        {multi_index_query, Bucket, FoldAccT, Queries, ComboFun},
+    book_returnfolder(Pid, RunnerType).
 
 %% @doc list buckets. Folds over the ledger only. Given a `Tag' folds
 %% over the keyspace calling `FoldFun' from `FoldAccT' for each
@@ -840,7 +862,7 @@ book_keylist(Pid, Tag, Bucket, KeyRange, FoldAccT) ->
       StartKey :: Key,
       EndKey :: Key,
       Key :: term(),
-      TermRegex :: leveled_codec:regular_expression(),
+      TermRegex :: leveled_codec:term_expression(),
       Runner :: fun(() -> Acc).
 book_keylist(Pid, Tag, Bucket, KeyRange, FoldAccT, TermRegex) ->
     RunnerType = {keylist, Tag, Bucket, KeyRange, FoldAccT, TermRegex},
@@ -2029,22 +2051,53 @@ snaptype_by_presence(false) ->
 %% Get an {async, Runner} for a given fold type.  Fold types have different 
 %% tuple inputs
 get_runner(State, {index_query, Constraint, FoldAccT, Range, TermHandling}) ->
-    {IdxFld, StartT, EndT} = Range,
-    {Bucket, ObjKey0} =
-        case Constraint of
-            {B, SK} ->
-                {B, SK};
-            B ->
-                {B, null}
-        end,
-    StartKey = 
-        leveled_codec:to_querykey(Bucket, ObjKey0, ?IDX_TAG, IdxFld, StartT),
-    EndKey = 
-        leveled_codec:to_querykey(Bucket, null, ?IDX_TAG, IdxFld, EndT),
+    {StartKey, EndKey} = index_range(Constraint, Range),
     SnapFun = return_snapfun(State, ledger, {StartKey, EndKey}, false, false),
-    leveled_runner:index_query(SnapFun, 
-                                {StartKey, EndKey, TermHandling}, 
-                                FoldAccT);
+    leveled_runner:index_query(
+        SnapFun, {StartKey, EndKey, TermHandling}, FoldAccT);
+get_runner(
+        State,
+        {multi_index_query, Bucket, FoldAccT, Queries, ComboFun}) ->
+    {FoldFun, InitAcc} = FoldAccT,
+    KeyFolder = fun(_B, K, Acc) -> [K|Acc] end,
+    QueryRunners =
+        lists:map(
+            fun({SetId, {IdxFld, StartTerm, EndTerm, Expr}}) ->
+                {SK, EK} =
+                    index_range(
+                        {Bucket, null}, {IdxFld, StartTerm, EndTerm}),
+                SnapFun =
+                    return_snapfun(State, ledger, {SK, EK}, false, true),
+                {async, Runner} =
+                    leveled_runner:index_query(
+                        SnapFun, {SK, EK, {false, Expr}}, {KeyFolder, []}
+                    ),
+                {SetId, Runner}
+            end,
+            Queries
+        ),
+    OverallRunner =
+        fun() ->
+            FinalSet =
+                ComboFun(
+                    maps:from_list(
+                        lists:map(
+                            fun({SetId, R}) ->
+                                case R() of
+                                    KLR when is_list(KLR) ->
+                                        {SetId, sets:from_list(KLR)}
+                                end
+                            end,
+                            QueryRunners)
+                    )
+                ),
+            lists:foldl(
+                fun(K, Acc) -> FoldFun(Bucket, K, Acc) end,
+                InitAcc,
+                sets:to_list(FinalSet)
+            )
+        end,
+    {async, OverallRunner};
 get_runner(State, {keylist, Tag, FoldAccT}) ->
     SnapFun = return_snapfun(State, ledger, no_lookup, true, true),
     leveled_runner:bucketkey_query(SnapFun, Tag, null, FoldAccT);
@@ -2054,13 +2107,14 @@ get_runner(State, {keylist, Tag, Bucket, FoldAccT}) ->
 get_runner(State, {keylist, Tag, Bucket, KeyRange, FoldAccT, TermRegex}) ->
     SnapFun = return_snapfun(State, ledger, no_lookup, true, true),
     leveled_runner:bucketkey_query(
-        SnapFun,  Tag, Bucket, KeyRange, FoldAccT, TermRegex);
+        SnapFun, Tag, Bucket, KeyRange, FoldAccT, TermRegex);
 %% Set of runners for object or metadata folds
-get_runner(State, 
-            {foldheads_allkeys, 
-                Tag, FoldFun, 
-                JournalCheck, SnapPreFold, SegmentList,
-                LastModRange, MaxObjectCount}) ->
+get_runner(
+        State, 
+        {foldheads_allkeys, 
+            Tag, FoldFun, 
+            JournalCheck, SnapPreFold, SegmentList,
+            LastModRange, MaxObjectCount}) ->
     SnapType = snaptype_by_presence(JournalCheck),
     SnapFun = return_snapfun(State, SnapType, no_lookup, true, SnapPreFold),
     leveled_runner:foldheads_allkeys(
@@ -2072,25 +2126,30 @@ get_runner(State,
         LastModRange,
         MaxObjectCount
     );
-get_runner(State,
-            {foldobjects_allkeys, Tag, FoldFun, SnapPreFold}) ->
-    get_runner(State, 
-                {foldobjects_allkeys, Tag, FoldFun, SnapPreFold, key_order});
-get_runner(State, 
-            {foldobjects_allkeys, Tag, FoldFun, SnapPreFold, key_order}) ->
-    SnapFun = return_snapfun(State, store, no_lookup, true, SnapPreFold),
-    leveled_runner:foldobjects_allkeys(SnapFun, Tag, FoldFun, key_order);
-get_runner(State,
-            {foldobjects_allkeys, Tag, FoldFun, SnapPreFold, sqn_order}) ->
-    SnapFun = return_snapfun(State, store, undefined, true, SnapPreFold),
-    leveled_runner:foldobjects_allkeys(SnapFun, Tag, FoldFun, sqn_order);
-get_runner(State,
-            {foldheads_bybucket,
-                Tag, 
-                BucketList, bucket_list,
-                FoldFun,
-                JournalCheck, SnapPreFold,
-                SegmentList, LastModRange, MaxObjectCount}) ->
+get_runner(State, {foldobjects_allkeys, Tag, FoldFun, SnapPreFold}) ->
+    get_runner(
+        State, {foldobjects_allkeys, Tag, FoldFun, SnapPreFold, key_order});
+get_runner(State, {foldobjects_allkeys, Tag, FoldFun, SnapPreFold, Order}) ->
+    case Order of
+        key_order ->
+            SnapFun =
+                return_snapfun(State, store, no_lookup, true, SnapPreFold),
+            leveled_runner:foldobjects_allkeys(
+                SnapFun, Tag, FoldFun, key_order);
+        sqn_order ->
+            SnapFun =
+                return_snapfun(State, store, undefined, true, SnapPreFold),
+            leveled_runner:foldobjects_allkeys(
+                SnapFun, Tag, FoldFun, sqn_order)
+    end;
+get_runner(
+        State,
+        {foldheads_bybucket,
+            Tag, 
+            BucketList, bucket_list,
+            FoldFun,
+            JournalCheck, SnapPreFold,
+            SegmentList, LastModRange, MaxObjectCount}) ->
     KeyRangeFun = 
         fun(Bucket) ->
             {StartKey, EndKey, _} = return_ledger_keyrange(Tag, Bucket, all),
@@ -2108,18 +2167,19 @@ get_runner(State,
         LastModRange,
         MaxObjectCount
     );
-get_runner(State,
-            {foldheads_bybucket, 
-                Tag, 
-                Bucket, KeyRange, 
-                FoldFun, 
-                JournalCheck, SnapPreFold,
-                SegmentList, LastModRange, MaxObjectCount}) ->
+get_runner(
+        State,
+        {foldheads_bybucket, 
+            Tag, 
+            Bucket, KeyRange, 
+            FoldFun, 
+            JournalCheck, SnapPreFold,
+            SegmentList, LastModRange, MaxObjectCount}) ->
     {StartKey, EndKey, SnapQ} = return_ledger_keyrange(Tag, Bucket, KeyRange),
     SnapType = snaptype_by_presence(JournalCheck),
     SnapFun = return_snapfun(State, SnapType, SnapQ, true, SnapPreFold),
     leveled_runner:foldheads_bybucket(
-        SnapFun, 
+        SnapFun,
         Tag, 
         [{StartKey, EndKey}], 
         FoldFun, 
@@ -2128,23 +2188,25 @@ get_runner(State,
         LastModRange,
         MaxObjectCount
     );
-get_runner(State,
-            {foldobjects_bybucket, 
-                Tag, Bucket, KeyRange, 
-                FoldFun, 
-                SnapPreFold}) ->
+get_runner(
+        State,
+        {foldobjects_bybucket, 
+            Tag, Bucket, KeyRange, 
+            FoldFun, 
+            SnapPreFold}) ->
     {StartKey, EndKey, SnapQ} = return_ledger_keyrange(Tag, Bucket, KeyRange),
     SnapFun = return_snapfun(State, store, SnapQ, true, SnapPreFold),
     leveled_runner:foldobjects_bybucket(
-        SnapFun,  Tag,  [{StartKey, EndKey}], FoldFun);
-get_runner(State, 
-            {foldobjects_byindex,
-                Tag, Bucket, {Field, FromTerm, ToTerm},
-                FoldObjectsFun,
-                SnapPreFold}) ->
+        SnapFun, Tag, [{StartKey, EndKey}], FoldFun);
+get_runner(
+        State, 
+        {foldobjects_byindex,
+            Tag, Bucket, {Field, FromTerm, ToTerm},
+            FoldObjectsFun,
+            SnapPreFold}) ->
     SnapFun = return_snapfun(State, store, no_lookup, true, SnapPreFold),
     leveled_runner:foldobjects_byindex(
-        SnapFun, {Tag, Bucket, Field, FromTerm, ToTerm},FoldObjectsFun);
+        SnapFun, {Tag, Bucket, Field, FromTerm, ToTerm}, FoldObjectsFun);
 get_runner(State, {bucket_list, Tag, FoldAccT}) ->
     {FoldBucketsFun, Acc} = FoldAccT,
     SnapFun = return_snapfun(State, ledger, no_lookup, false, false),
@@ -2157,6 +2219,21 @@ get_runner(State, {first_bucket, Tag, FoldAccT}) ->
 get_runner(State, DeprecatedQuery) ->
     get_deprecatedrunner(State, DeprecatedQuery).
 
+
+index_range(Constraint, Range) ->
+    {IdxFld, StartT, EndT} = Range,
+    {Bucket, ObjKey0} =
+        case Constraint of
+            {B, SK} ->
+                {B, SK};
+            B ->
+                {B, null}
+        end,
+    StartKey = 
+        leveled_codec:to_querykey(Bucket, ObjKey0, ?IDX_TAG, IdxFld, StartT),
+    EndKey = 
+        leveled_codec:to_querykey(Bucket, null, ?IDX_TAG, IdxFld, EndT),
+    {StartKey, EndKey}.
 
 -spec get_deprecatedrunner(book_state(), tuple()) ->
                                                 {async, fun(() -> term())}.
@@ -2838,17 +2915,16 @@ ttl_test() ->
     KeyList = IndexFolder(),
     ?assertMatch(20, length(KeyList)),
 
-    {ok, Regex} = re:compile("f8"),
+    {ok, Regex} = leveled_util:regex_compile("f8"),
     {async, IndexFolderTR} =
         book_returnfolder(
             Bookie1,
-            {
-                index_query,
-                <<"Bucket">>,
-                {FoldKeysFun, []},
-                {<<"idx1_bin">>, <<"f8">>, <<"f9">>},
-                {true, Regex}}
-            ),
+            {index_query,
+            <<"Bucket">>,
+            {FoldKeysFun, []},
+            {<<"idx1_bin">>, <<"f8">>, <<"f9">>},
+            {true, Regex}}
+        ),
     TermKeyList = IndexFolderTR(),
     ?assertMatch(10, length(TermKeyList)),
 

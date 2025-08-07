@@ -1820,8 +1820,8 @@ dollar_key_index(_Config) ->
     io:format("Length of Result of folder ~w~n", [ResLen]),
     true = 657 == ResLen,
 
-    {ok, REMatch} = re:compile("K.y"),
-    {ok, REMiss} = re:compile("key"),
+    {ok, REMatch} = leveled_util:regex_compile("K.y"),
+    {ok, REMiss} = leveled_util:regex_compile("key"),
     
     {async, FolderREMatch} = 
         leveled_bookie:book_keylist(
@@ -2102,15 +2102,15 @@ dollar_bucket_index(_Config) ->
     IndexGen = fun() -> [] end,
     ObjL1 =
         testutil:generate_objects(
-            1300, uuid, [], ObjectGen, IndexGen, <<"Bucket1">>),
+            1300, binary_uuid, [], ObjectGen, IndexGen, <<"Bucket1">>),
     testutil:riakload(Bookie1, ObjL1),
     ObjL2 =
         testutil:generate_objects(
-            1700, uuid, [], ObjectGen, IndexGen, <<"Bucket2">>),
+            1700, binary_uuid, [], ObjectGen, IndexGen, <<"Bucket2">>),
     testutil:riakload(Bookie1, ObjL2),
     ObjL3 =
         testutil:generate_objects(
-            7000, uuid, [], ObjectGen, IndexGen, <<"Bucket3">>),
+            7000, binary_uuid, [], ObjectGen, IndexGen, <<"Bucket3">>),
 
     testutil:riakload(Bookie1, ObjL3),
 
@@ -2125,9 +2125,9 @@ dollar_bucket_index(_Config) ->
     
     {<<"Bucket2">>, SampleKey} = lists:nth(100, Results),
     UUID = "[a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{12}",
-    {ok, RESingleMatch} = re:compile(SampleKey),
-    {ok, REAllMatch} = re:compile(UUID),
-    {ok, REMiss} = re:compile("no_key"),
+    {ok, RESingleMatch} = leveled_util:regex_compile(SampleKey),
+    {ok, REAllMatch} = leveled_util:regex_compile(UUID),
+    {ok, REMiss} = leveled_util:regex_compile("no_key"),
 
     {async, FolderREMiss} = 
         leveled_bookie:book_keylist(
@@ -2167,10 +2167,13 @@ dollar_bucket_index(_Config) ->
 
 bigobject_memorycheck(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    {ok, Bookie} = leveled_bookie:book_start(RootPath,
-                                              200,
-                                              1000000000,
-                                              testutil:sync_strategy()),
+    {ok, Bookie} =
+        leveled_bookie:book_start(
+            RootPath,
+            200,
+            1000000000,
+            testutil:sync_strategy()
+        ),
     Bucket = <<"B">>,
     IndexGen = fun() -> [] end,
     ObjPutFun = 
@@ -2192,10 +2195,13 @@ bigobject_memorycheck(_Config) ->
     % All processes
     {_TotalCDBBinMem, _TotalCDBProcesses} = cdb_memory_check(),
     ok = leveled_bookie:book_close(Bookie),
-    {ok, BookieR} = leveled_bookie:book_start(RootPath,
-                                              2000,
-                                              1000000000,
-                                              testutil:sync_strategy()),
+    {ok, BookieR} =
+        leveled_bookie:book_start(
+            RootPath,
+            2000,
+            1000000000,
+            testutil:sync_strategy()
+        ),
     {RS_TotalCDBBinMem, _RS_TotalCDBProcesses} = cdb_memory_check(),
     true = RS_TotalCDBBinMem < 1024 * 1024,
         % No binary object references exist after startup
@@ -2205,25 +2211,29 @@ bigobject_memorycheck(_Config) ->
 
 cdb_memory_check() ->
     TotalCDBProcesses =
-        lists:filter(fun(P) ->
-                        {dictionary, PD} = 
-                            process_info(P, dictionary),
-                        case lists:keyfind('$initial_call', 1, PD) of
-                            {'$initial_call',{leveled_cdb,init,1}} ->
-                                true;
-                            _ ->
-                                false
-                        end
-                        end,
-                        processes()),
+        lists:filter(
+            fun(P) ->
+                {dictionary, PD} = 
+                    process_info(P, dictionary),
+                case lists:keyfind('$initial_call', 1, PD) of
+                    {'$initial_call',{leveled_cdb,init,1}} ->
+                        true;
+                    _ ->
+                        false
+                end
+            end,
+            processes()
+        ),
     TotalCDBBinMem =
-        lists:foldl(fun(P, Acc) ->
-                        BinMem = calc_total_binary_memory(P),
-                        io:format("Memory for pid ~w is ~w~n", [P, BinMem]),
-                        BinMem + Acc
-                    end,
-                        0,
-                        TotalCDBProcesses),
+        lists:foldl(
+            fun(P, Acc) ->
+                BinMem = calc_total_binary_memory(P),
+                io:format("Memory for pid ~w is ~w~n", [P, BinMem]),
+                BinMem + Acc
+            end,
+            0,
+            TotalCDBProcesses
+        ),
     io:format("Total binary memory ~w in ~w CDB processes~n",
                 [TotalCDBBinMem, length(TotalCDBProcesses)]),
     {TotalCDBBinMem, TotalCDBProcesses}.

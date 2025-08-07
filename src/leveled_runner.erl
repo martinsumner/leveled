@@ -61,7 +61,7 @@
 -type objectacc_fun()
     :: fun((leveled_codec:object_key(), any(), foldacc()) -> foldacc()).
 -type mp()
-    :: {re_pattern, term(), term(), term(), term()}.
+    :: any().
 
 -export_type([fold_keys_fun/0, mp/0]).
 
@@ -128,12 +128,11 @@ bucket_list(SnapFun, Tag, FoldBucketsFun, InitAcc, MaxBuckets) ->
         end,
     {async, Runner}.
 
--spec index_query(snap_fun(), 
-                    {leveled_codec:ledger_key(), 
-                        leveled_codec:ledger_key(), 
-                        {boolean(), undefined|mp()}}, 
-                    {fold_keys_fun(), foldacc()})
-                        -> {async, runner_fun()}.
+-spec index_query(
+    snap_fun(),
+    {leveled_codec:ledger_key(), leveled_codec:ledger_key(), 
+    {boolean()|binary(), leveled_codec:term_expression()}}, 
+    {fold_keys_fun(), foldacc()}) -> {async, runner_fun()}.
 %% @doc
 %% Secondary index query
 %% This has the special capability that it will expect a message to be thrown
@@ -166,7 +165,7 @@ index_query(SnapFun, {StartKey, EndKey, TermHandling}, FoldAccT) ->
                         leveled_codec:key()|null, 
                         {leveled_codec:single_key()|null, leveled_codec:single_key()|null},
                         {fold_keys_fun(), foldacc()},
-                        leveled_codec:regular_expression())
+                        leveled_codec:term_expression())
                         -> {async, runner_fun()}.
 %% @doc
 %% Fold over all keys in `KeyRange' under tag (restricted to a given bucket)
@@ -514,7 +513,7 @@ foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, SegmentList) ->
 %% the full object), or {true, CheckPresence} - in which case a proxy object
 %% will be created that if understood by the fold function will allow the fold
 %% function to work on the head of the object, and defer fetching the body in
-%% case such a fetch is unecessary.
+%% case such a fetch is unnecessary.
 foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, 
                                 SegmentList, LastModRange, MaxObjectCount) ->
     {FoldFun, InitAcc} =
@@ -693,7 +692,7 @@ accumulate_keys(FoldKeysFun, undefined) ->
 accumulate_keys(FoldKeysFun, TermRegex) ->
     fun(Key, _Value, Acc) ->
         {B, K} = leveled_codec:from_ledgerkey(Key),
-        case re:run(K, TermRegex) of
+        case leveled_util:regex_run(K, TermRegex, []) of
             nomatch ->
                 Acc;
             _ ->
