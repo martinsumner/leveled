@@ -48,10 +48,11 @@ end_per_suite(Config) ->
 
 replace_everything(_Config) ->
     % See https://github.com/martinsumner/leveled/issues/389
-    % Also replaces previous test which was checking the comapction process
+    % Also replaces previous test which was checking the compaction process
     % respects the journal object count passed at startup
     RootPath = testutil:reset_filestructure(),
     BackupPath = testutil:reset_filestructure("backupRE"),
+    JournalPath = filename:join(RootPath, "journal/journal_files"),
     CompPath = filename:join(RootPath, "journal/journal_files/post_compact"),
     SmallJournalCount = 7000,
     StdJournalCount = 20000,
@@ -74,13 +75,13 @@ replace_everything(_Config) ->
     {KSpcL2, V2} = 
         testutil:put_altered_indexed_objects(Book1, BKT, KSpcL1),
     ok = testutil:check_indexed_objects(Book1, BKT, KSpcL2, V2),
-    compact_and_wait(Book1, 1000),
-    compact_and_wait(Book1, 1000),
+    {ok, FileList0} =  file:list_dir(JournalPath),
+    io:format(
+        "Number of journal files before compaction ~w~n", 
+        [length(FileList0)]
+    ),
     {ok, FileList1} =  file:list_dir(CompPath),
-    io:format("Number of files after compaction ~w~n", [length(FileList1)]),
-    compact_and_wait(Book1, 1000),
-    {ok, FileList2} =  file:list_dir(CompPath),
-    io:format("Number of files after compaction ~w~n", [length(FileList2)]),
+    FileList2 = check_compaction(Book1, CompPath),
     true = FileList1 =< FileList2,
         %% There will normally be 5 journal files after 50K write then alter
         %% That may be two files with entirely altered objects - which will be
@@ -92,10 +93,14 @@ replace_everything(_Config) ->
         %% is randomisation in both the scoring and the journal size (due to
         %% jittering of parameters).
     compact_and_wait(Book1, 1000),
-    {ok, FileList3} =  file:list_dir(CompPath),
-    io:format("Number of files after compaction ~w~n", [length(FileList3)]),
-        %% By the third compaction there should be no further changes
-    true = FileList2 == FileList3,
+    {ok, FileList3a} =  file:list_dir(CompPath),
+    io:format("Number of files after compaction ~w~n", [length(FileList3a)]),
+    compact_and_wait(Book1, 1000),
+    {ok, FileList3b} =  file:list_dir(CompPath),
+    io:format("Number of files after compaction ~w~n", [length(FileList3b)]),
+        %% By the fourth compaction there should be no further changes
+    true = FileList3a == FileList3b,
+    true = 0 < FileList3b,
     {async, BackupFun} = leveled_bookie:book_hotbackup(Book1),
     ok = BackupFun(BackupPath),
 
@@ -301,6 +306,17 @@ recovery_with_samekeyupdates(_Config) ->
     ok = leveled_bookie:book_close(Book2),
     testutil:reset_filestructure(BackupPath),
     testutil:reset_filestructure().
+
+check_compaction(Book, CompPath) ->
+    compact_and_wait(Book, 1000),
+    {ok, FileList} =  file:list_dir(CompPath),
+    io:format("Number of files after compaction ~w~n", [length(FileList)]),
+    case FileList > 0 of
+        true ->
+            FileList;
+        _ ->
+            check_compaction(Book, CompPath)
+    end.
 
 same_key_rotation_withindexes(_Config) ->
     % If we have the same key - but the indexes change.  Do we consistently

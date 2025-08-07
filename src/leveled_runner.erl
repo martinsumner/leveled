@@ -268,11 +268,14 @@ tictactree(SnapFun, {Tag, Bucket, Query}, JournalCheck, TreeSize, Filter) ->
         end,
     {async, Runner}.
 
--spec foldheads_allkeys(snap_fun(), leveled_codec:tag(), 
-                        fold_objects_fun()|{fold_objects_fun(), foldacc()}, 
-                        boolean(), false|list(integer()),
-                        false|leveled_codec:lastmod_range(),
-                        false|pos_integer()) -> {async, runner_fun()}.
+-spec foldheads_allkeys(
+    snap_fun(),
+    leveled_codec:tag(), 
+    fold_objects_fun()|{fold_objects_fun(), foldacc()}, 
+    boolean()|defer,
+    false|list(integer()),
+    false|leveled_codec:lastmod_range(),
+    false|pos_integer()) -> {async, runner_fun()}.
 %% @doc
 %% Fold over all heads in the store for a given tag - applying the passed 
 %% function to each proxy object
@@ -321,7 +324,7 @@ foldobjects_allkeys(SnapFun, Tag, FoldObjectsFun, sqn_order) ->
     FilterFun =
         fun(JKey, JVal, _Pos, Acc, ExtractFun) ->
             {SQN, InkTag, LedgerKey} = JKey,
-            case {InkTag, leveled_codec:from_ledgerkey(Tag, LedgerKey)} of 
+            case {InkTag, leveled_codec:from_ledgerkey(Tag, LedgerKey)} of
                 {?INKT_STND, {B, K}} ->
                     % Ignore tombstones and non-matching Tags and Key changes
                     % objects.  
@@ -334,14 +337,14 @@ foldobjects_allkeys(SnapFun, Tag, FoldObjectsFun, sqn_order) ->
                         _ ->
                             {VBin, _VSize} = ExtractFun(JVal),
                             {Obj, _IdxSpecs} =
-                                leveled_codec:revert_value_from_journal(VBin),
-                            ToLoop = 
-                                case SQN  of 
-                                    MaxSQN -> stop;
-                                    _ -> loop
-                                end,
-                            {ToLoop, 
-                                {MinSQN, MaxSQN, [{B, K, SQN, Obj}|BatchAcc]}}
+                                leveled_codec:revert_value_from_journal(
+                                    VBin,
+                                    true
+                                ),
+                            {
+                                case SQN  of MaxSQN -> stop; _ -> loop end, 
+                                {MinSQN, MaxSQN, [{B, K, SQN, Obj}|BatchAcc]}
+                            }
                     end;
                 _ ->
                     {loop, Acc}
@@ -411,7 +414,7 @@ foldobjects_bybucket(SnapFun, Tag, KeyRanges, FoldFun) ->
                             leveled_codec:tag(), 
                             list(key_range()), 
                             fold_objects_fun()|{fold_objects_fun(), foldacc()},
-                            boolean(),
+                            boolean()|defer,
                             false|list(integer()),
                             false|leveled_codec:lastmod_range(),
                             false|pos_integer()) 
@@ -500,7 +503,7 @@ foldobjects(SnapFun, Tag, KeyRanges, FoldObjFun, DeferredFetch, SegmentList) ->
 
 -spec foldobjects(snap_fun(), atom(), list(),
                     fold_objects_fun()|{fold_objects_fun(), foldacc()}, 
-                    false|{true, boolean()},
+                    false|{true, boolean()|defer},
                     false|list(integer()),
                     false|leveled_codec:lastmod_range(),
                     false|pos_integer()) -> {async, runner_fun()}.
@@ -608,9 +611,14 @@ get_hashaccumulator(JournalCheck, InkerClone, AddKeyFun) ->
     AccFun.
 
 -spec accumulate_objects
-    (fold_objects_fun(), pid(), leveled_head:object_tag(), false|{true, boolean()})
+    (fold_objects_fun(),
+        pid(),
+        leveled_head:object_tag(),
+        false|{true, boolean()|defer})
         -> objectacc_fun();
-    (fold_objects_fun(), null, leveled_head:headonly_tag(), {true, false})
+    (fold_objects_fun(),
+        null, leveled_head:headonly_tag(),
+        {true, false})
         -> objectacc_fun().
 accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
     AccFun =
@@ -651,7 +659,7 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
                                 missing ->
                                     Acc
                             end;
-                        {false, _} ->
+                        _ ->
                             FoldObjectsFun(B, K, ProxyObj, Acc)
                     end;
                 false ->

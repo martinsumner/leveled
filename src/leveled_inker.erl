@@ -565,7 +565,8 @@ handle_call({fold,
     Folder = 
         fun() ->
             fold_from_sequence(
-                StartSQN, 
+                StartSQN,
+                State#state.journal_sqn,
                 {FilterFun, InitAccFun, FoldFun}, 
                 Acc, 
                 Manifest
@@ -1240,8 +1241,12 @@ start_new_activejournal(SQN, RootPath, CDBOpts) ->
 
 
 
--spec fold_from_sequence(integer(), {fun(), fun(), fun()}, any(), list()) 
-                                                                    -> any().
+-spec fold_from_sequence(
+    non_neg_integer(),
+    pos_integer(),
+    {fun(), fun(), fun()},
+    any(),
+    list()) -> any().
 %% @doc
 %%
 %% Scan from the starting sequence number to the end of the Journal.  Apply
@@ -1249,71 +1254,88 @@ start_new_activejournal(SQN, RootPath, CDBOpts) ->
 %% objects - and then apply the FoldFun to the batch once the batch is 
 %% complete
 %%
-%% Inputs - MinSQN, FoldFuns, OverallAccumulator, Inker's Manifest
+%% Inputs - MinSQN, JournalSQN, FoldFuns, OverallAccumulator, Inker's Manifest
 %%
 %% The fold loops over all the CDB files in the Manifest.  Each file is looped
 %% over in batches using foldfile_between_sequence/7.  The batch is a range of
 %% sequence numbers (so the batch size may be << ?LOADING_BATCH) in compacted 
 %% files
-fold_from_sequence(_MinSQN, _FoldFuns, Acc, []) ->
+fold_from_sequence(_MinSQN, _JournalSQN, _FoldFuns, Acc, []) ->
     Acc;
-fold_from_sequence(MinSQN, FoldFuns, Acc, [{LowSQN, FN, Pid, _LK}|Rest])
-                                                    when LowSQN >= MinSQN ->    
-    {NextMinSQN, Acc0} = foldfile_between_sequence(MinSQN,
-                                                    MinSQN + ?LOADING_BATCH,
-                                                    FoldFuns,
-                                                    Acc,
-                                                    Pid,
-                                                    undefined,
-                                                    FN),
-    fold_from_sequence(NextMinSQN, FoldFuns, Acc0, Rest);
-fold_from_sequence(MinSQN, FoldFuns, Acc, [{_LowSQN, FN, Pid, _LK}|Rest]) ->
+fold_from_sequence(
+    MinSQN, JournalSQN, FoldFuns, Acc, [{LowSQN, FN, Pid, _LK}|Rest])
+        when LowSQN >= MinSQN ->    
+    {NextMinSQN, Acc0} =
+        foldfile_between_sequence(
+            MinSQN,
+            MinSQN + ?LOADING_BATCH,
+            JournalSQN,
+            FoldFuns,
+            Acc,
+            Pid,
+            undefined,
+            FN
+        ),
+    fold_from_sequence(NextMinSQN, JournalSQN, FoldFuns, Acc0, Rest);
+fold_from_sequence(
+    MinSQN, JournalSQN, FoldFuns, Acc, [{_LowSQN, FN, Pid, _LK}|Rest]) ->
     % If this file has a LowSQN less than the minimum, we can skip it if the 
     % next file also has a LowSQN below the minimum
     {NextMinSQN, Acc0} = 
         case Rest of
             [] ->
-                foldfile_between_sequence(MinSQN,
-                                            MinSQN + ?LOADING_BATCH,
-                                            FoldFuns,
-                                            Acc,
-                                            Pid,
-                                            undefined,
-                                            FN);
+                foldfile_between_sequence(
+                    MinSQN,
+                    MinSQN + ?LOADING_BATCH,
+                    JournalSQN,
+                    FoldFuns,
+                    Acc,
+                    Pid,
+                    undefined,
+                    FN
+                );
             [{NextSQN, _NxtFN, _NxtPid, _NxtLK}|_Rest] when NextSQN > MinSQN ->
-                foldfile_between_sequence(MinSQN,
-                                            MinSQN + ?LOADING_BATCH,
-                                            FoldFuns,
-                                            Acc,
-                                            Pid,
-                                            undefined,
-                                            FN);
+                foldfile_between_sequence(
+                    MinSQN,
+                    MinSQN + ?LOADING_BATCH,
+                    JournalSQN,
+                    FoldFuns,
+                    Acc,
+                    Pid,
+                    undefined,
+                    FN
+                );
             _ ->
                 {MinSQN, Acc}    
         end,
-    fold_from_sequence(NextMinSQN, FoldFuns, Acc0, Rest).
+    fold_from_sequence(NextMinSQN, JournalSQN, FoldFuns, Acc0, Rest).
 
-foldfile_between_sequence(MinSQN, MaxSQN, FoldFuns, 
-                                                Acc, CDBpid, StartPos, FN) ->
+foldfile_between_sequence(
+        MinSQN, MaxSQN, JournalSQN, FoldFuns, Acc, CDBpid, StartPos, FN) ->
     {FilterFun, InitAccFun, FoldFun} = FoldFuns,
     InitBatchAcc = {MinSQN, MaxSQN, InitAccFun(FN, MinSQN)},
     
     case leveled_cdb:cdb_scan(CDBpid, FilterFun, InitBatchAcc, StartPos) of
         {eof, {AccMinSQN, _AccMaxSQN, BatchAcc}} ->
             {AccMinSQN, FoldFun(BatchAcc, Acc)};
+        {_LastPosition, {AccMinSQN, _AccMaxSQN, BatchAcc}}
+                when AccMinSQN >= JournalSQN ->
+            {AccMinSQN, FoldFun(BatchAcc, Acc)};
         {LastPosition, {_AccMinSQN, _AccMaxSQN, BatchAcc}} ->
             UpdAcc = FoldFun(BatchAcc, Acc),
             NextSQN = MaxSQN + 1,
-            foldfile_between_sequence(NextSQN,
-                                        NextSQN + ?LOADING_BATCH,
-                                        FoldFuns,
-                                        UpdAcc,
-                                        CDBpid,
-                                        LastPosition,
-                                        FN)
+            foldfile_between_sequence(
+                NextSQN,
+                NextSQN + ?LOADING_BATCH,
+                JournalSQN,
+                FoldFuns,
+                UpdAcc,
+                CDBpid,
+                LastPosition,
+                FN
+            )
     end.
             
-
 sequencenumbers_fromfilenames(Filenames, Regex, IntName) ->
     lists:foldl(
         fun(FN, Acc) ->

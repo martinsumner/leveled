@@ -378,6 +378,16 @@ memory_usage() ->
 
 profile_app(Pids, ProfiledFun, P) ->
 
+    MinTime =
+        case P of
+            P when P == query; P == mini_query ->
+                100000;
+            P when P == head; P == load ->
+                200000;
+            _ ->
+                150000
+        end,
+
     eprof:start(),
     eprof:start_profiling(Pids),
 
@@ -385,7 +395,7 @@ profile_app(Pids, ProfiledFun, P) ->
 
     eprof:stop_profiling(),
     eprof:log(atom_to_list(P) ++ ".log"),
-    eprof:analyze(total, [{filter, [{time, 160000}]}]),
+    eprof:analyze(total, [{filter, [{time, MinTime}]}]),
     eprof:stop(),
     {ok, Analysis} = file:read_file(atom_to_list(P) ++ ".log"),
     io:format(user, "~n~s~n", [Analysis])

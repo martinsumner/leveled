@@ -808,6 +808,8 @@ delete_pending(
     leveled_log:log(cdb05, [FN, delete_pending, cdb_close]),
     close_pendingdelete(IO, FN, State#state.waste_path),
     {stop_and_reply, normal, [{reply, From, ok}]};
+delete_pending({call, From}, Event, State) ->
+    handle_sync_event(Event, From, State);
 delete_pending(
     cast, delete_confirmed, State = #state{handle = IO, filename = FN})
         when ?IS_DEF(FN), ?IS_DEF(IO) ->

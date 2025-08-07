@@ -41,7 +41,7 @@
 -record(log_options,
     {log_level = info :: log_level(), 
         forced_logs = [] :: [atom()],
-        database_id = 0 :: non_neg_integer()}).
+        database_id :: non_neg_integer()|undefined}).
 
 -type log_level()  ::  debug | info | warning | error | critical.
 -type log_options() :: #log_options{}.
@@ -218,6 +218,8 @@
             {info, <<"SST merge list build timings of fold_toslot=~w slot_hashlist=~w slot_serialise=~w slot_finish=~w is_basement=~w level=~w">>},
         sst14 =>
             {debug, <<"File ~s has completed BIC">>},
+        sst15 =>
+            {warning, <<"Default returned from block due to handling error ~0p">>},
         i0001 =>
             {info, <<"Unexpected failure to fetch value for Key=~w SQN=~w with reason ~w">>},
         i0002 =>
@@ -490,11 +492,15 @@ log_randomtimer(LogReference, Subs, StartTime, RandomProb) ->
             ok
     end.
 
--spec log_prefix(atom(), non_neg_integer(), pid()) -> io_lib:chars().
+-spec log_prefix(atom(), non_neg_integer()|undefined, pid()) -> io_lib:chars().
+log_prefix(LogRef, undefined, Pid) ->
+    ["log_ref=", atom_to_list(LogRef), " pid=", pid_to_list(Pid), " "];
 log_prefix(LogRef, DBid, Pid) ->
-    ["log_ref=", atom_to_list(LogRef),
+    [
+        "log_ref=", atom_to_list(LogRef),
         " db_id=", integer_to_list(DBid),
-        " pid=", pid_to_list(Pid), " "].
+        " pid=", pid_to_list(Pid), " "
+    ].
 
 -spec duration_text(erlang:timestamp()) -> io_lib:chars().
 duration_text(StartTime) ->

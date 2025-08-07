@@ -143,7 +143,8 @@ end_per_suite(_Config) ->
     ok = logger:set_primary_config(level, notice),
     ok = logger:set_handler_config(default, level, all),
     ok = logger:set_handler_config(cth_log_redirect, level, all),
-
+    % 10s delay to allow for any delete_pending files to close wihtout crashing
+    timer:sleep(10000),
     ok.
 
 riak_object(Bucket, Key, Value, MetaData) ->

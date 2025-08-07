@@ -27,6 +27,7 @@
 -define(SST_PAGECACHELEVEL_LOOKUP, 4).
 -define(DEFAULT_STATS_PERC, 10).
 -define(DEFAULT_SYNC_STRATEGY, none).
+-define(DEFAULT_BLOCK_VERSION, 1).
 %%%============================================================================
 
 %%%============================================================================
@@ -35,7 +36,7 @@
 -define(MAX_SSTSLOTS, 256).
 -define(MAX_MERGEBELOW, 24).
 -define(LOADING_PAUSE, 1000).
--define(LOADING_BATCH, 1000).
+-define(LOADING_BATCH, 200).
 -define(CACHE_SIZE_JITTER, 25).
 -define(JOURNAL_SIZE_JITTER, 20).
 -define(LONG_RUNNING, 1000000).
@@ -111,17 +112,22 @@
                             :: leveled_monitor:monitor()}).
 
 -record(sst_options,
-                        {press_method = ?COMPRESSION_METHOD
-                            :: leveled_sst:press_method(),
-                        press_level = ?COMPRESSION_LEVEL :: non_neg_integer(),
-                        log_options = leveled_log:get_opts() 
-                            :: leveled_log:log_options(),
-                        max_sstslots = ?MAX_SSTSLOTS :: pos_integer()|infinity,
-                        max_mergebelow = ?MAX_MERGEBELOW :: pos_integer()|infinity,
-                        pagecache_level = ?SST_PAGECACHELEVEL_NOLOOKUP
-                            :: pos_integer(),
-                        monitor = {no_monitor, 0}
-                            :: leveled_monitor:monitor()}).
+    {
+        press_method = ?COMPRESSION_METHOD
+            :: leveled_sst:press_method(),
+        block_version = ?DEFAULT_BLOCK_VERSION
+            :: leveled_sst:block_version(),
+        press_level = ?COMPRESSION_LEVEL :: non_neg_integer(),
+        log_options = leveled_log:get_opts() 
+            :: leveled_log:log_options(),
+        max_sstslots = ?MAX_SSTSLOTS :: pos_integer()|infinity,
+        max_mergebelow = ?MAX_MERGEBELOW :: pos_integer()|infinity,
+        pagecache_level = ?SST_PAGECACHELEVEL_NOLOOKUP
+            :: pos_integer(),
+        monitor = {no_monitor, 0}
+            :: leveled_monitor:monitor()
+        }
+    ).
 
 -record(inker_options,
                         {cdb_max_size :: integer() | undefined,

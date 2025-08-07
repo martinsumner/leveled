@@ -6,9 +6,12 @@
 -export([
         test_large_lsm_merge/1,
         basic_riak/1,
+        block_version_change/1,
         fetchclocks_modifiedbetween/1,
         crossbucket_aae/1,
         handoff/1,
+        handoff_close/1,
+        handoff_withcompaction/1,
         dollar_bucket_index/1,
         dollar_key_index/1,
         bigobject_memorycheck/1,
@@ -19,9 +22,12 @@ suite() -> [{timetrap, {hours, 2}}].
 
 all() -> [
             basic_riak,
+            block_version_change,
             fetchclocks_modifiedbetween,
             crossbucket_aae,
             handoff,
+            handoff_close,
+            handoff_withcompaction,
             dollar_bucket_index,
             dollar_key_index,
             bigobject_memorycheck,
@@ -188,14 +194,188 @@ lsm_merge_tester(LoopsPerBucket) ->
 
     ok = leveled_bookie:book_destroy(Bookie2).
 
+block_version_change(_Config) ->
+    KeyCount = 40000,
+    Bucket = {<<"Type0">>, <<"B0">>},
+    IndexCount = 8,
+
+    RootPath = testutil:reset_filestructure("blockVerion"),
+    StartOpts1 =
+        [
+            {root_path, RootPath},
+            {max_pencillercachesize, 12000},
+            {block_version, 0},
+            {sync_strategy, testutil:sync_strategy()},
+            {database_id, 32},
+            {stats_logfrequency, 5},
+            {stats_probability, 80}
+        ],
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+
+    IndexGenFun =
+        fun(ListID) ->
+            fun() ->
+                RandInt = rand:uniform(IndexCount),
+                ID = integer_to_list(ListID),
+                [
+                    {
+                        add, 
+                        list_to_binary("integer" ++ ID ++ "_int"),
+                        RandInt
+                    },
+                    {
+                        add, 
+                        list_to_binary("binary" ++ ID ++ "_bin"),
+                        <<RandInt:32/integer>>
+                    }
+                ]
+            end
+        end,
+
+    ObjList1 = 
+        testutil:generate_objects(
+            KeyCount, 
+            {fixed_binary, 1}, [],
+            crypto:strong_rand_bytes(512),
+            IndexGenFun(1),
+            Bucket
+        ),
+    testutil:riakload(Bookie1, ObjList1),
+
+    SubList1 = lists:sublist(lists:ukeysort(1, ObjList1), 1000),
+    ok = testutil:check_forlist(Bookie1, SubList1),
+
+    FoldKeysFun =  fun(_B, K, Acc) -> [K|Acc] end,
+    IntIndexFold =
+        fun(Idx, Book) ->
+            fun(IC, CountAcc) ->
+                ID = integer_to_list(Idx),
+                Index = list_to_binary("integer" ++ ID ++ "_int"),
+                {async, R} = 
+                    leveled_bookie:book_indexfold(
+                        Book,
+                        {Bucket, <<>>},
+                        {FoldKeysFun, []},
+                        {Index, IC, IC},
+                        {true, undefined}
+                    ),
+                KTL = R(),
+                CountAcc + length(KTL)
+            end
+        end,
+    BinIndexFold =
+        fun(Idx, Book) ->
+            fun(IC, CountAcc) ->
+                ID = integer_to_list(Idx),
+                Index = list_to_binary("binary" ++ ID ++ "_bin"),
+                {async, R} = 
+                    leveled_bookie:book_indexfold(
+                        Book,
+                        {Bucket, <<>>},
+                        {FoldKeysFun, []},
+                        {Index, <<IC:32/integer>>, <<IC:32/integer>>},
+                        {true, undefined}
+                    ),
+                KTL = R(),
+                CountAcc + length(KTL)
+            end
+        end,
+
+    CheckIndices =
+        fun(Bookie, ObjList, Idx) ->
+            SWA = os:timestamp(),
+            TotalIntIndexEntries =
+                lists:foldl(
+                    IntIndexFold(Idx, Bookie),
+                    0,
+                    lists:seq(1, IndexCount)
+                ),
+            io:format(
+                "~w queries returned count=~w in ~w ms~n",
+                [
+                    IndexCount, 
+                    TotalIntIndexEntries,
+                    timer:now_diff(os:timestamp(), SWA) div 1000
+                ]
+            ),
+            true = TotalIntIndexEntries == length(ObjList1),
+            SWB = os:timestamp(),
+            TotalBinIndexEntries =
+                lists:foldl(
+                    BinIndexFold(Idx, Bookie),
+                    0,
+                    lists:seq(1, IndexCount)
+                ),
+            io:format(
+                "~w queries returned count=~w in ~w ms~n",
+                [
+                    IndexCount, 
+                    TotalBinIndexEntries,
+                    timer:now_diff(os:timestamp(), SWB) div 1000
+                ]
+            ),
+            true = TotalBinIndexEntries == length(ObjList)
+        end,
+    
+    CheckIndices(Bookie1, ObjList1, 1),
+    
+    ok = leveled_bookie:book_close(Bookie1),
+
+    StartOpts2 = lists:ukeysort(1, [{block_version, 1}|StartOpts1]),
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
+
+    ObjList2 = 
+        testutil:generate_objects(
+            KeyCount, 
+            {fixed_binary, KeyCount + 1}, [],
+            crypto:strong_rand_bytes(512),
+            IndexGenFun(2),
+            Bucket
+        ),
+    testutil:riakload(Bookie2, ObjList2),
+
+    SubList2 = lists:sublist(lists:ukeysort(1, ObjList2), 1000),
+    ok = testutil:check_forlist(Bookie2, SubList1),
+    ok = testutil:check_forlist(Bookie2, SubList2),
+
+    CheckIndices(Bookie2, ObjList1, 1),
+    CheckIndices(Bookie2, ObjList2, 2),
+
+    ok = leveled_bookie:book_close(Bookie2),
+    
+    {ok, Bookie3} = leveled_bookie:book_start(StartOpts1),
+
+    ObjList3 = 
+        testutil:generate_objects(
+            KeyCount, 
+            {fixed_binary, KeyCount + KeyCount + 1}, [],
+            crypto:strong_rand_bytes(512),
+            IndexGenFun(3),
+            Bucket
+        ),
+    testutil:riakload(Bookie3, ObjList3),
+
+    SubList3 = lists:sublist(lists:ukeysort(1, ObjList3), 1000),
+    ok = testutil:check_forlist(Bookie3, SubList1),
+    ok = testutil:check_forlist(Bookie3, SubList2),
+    ok = testutil:check_forlist(Bookie3, SubList3),
+
+    CheckIndices(Bookie3, ObjList1, 1),
+    CheckIndices(Bookie3, ObjList2, 2),
+    CheckIndices(Bookie3, ObjList3, 3),
+    
+    ok = leveled_bookie:book_destroy(Bookie3).
+
 basic_riak(_Config) ->
     basic_riak_tester(<<"B0">>, 640000),
     basic_riak_tester({<<"Type0">>, <<"B0">>}, 80000).
 
 basic_riak_tester(Bucket, KeyCount) ->
     % Key Count should be > 10K and divisible by 5
-    io:format("Basic riak test with Bucket ~w KeyCount ~w~n",
-                [Bucket, KeyCount]),
+    io:format(
+        "Basic riak test with Bucket ~w KeyCount ~w~n",
+        [Bucket, KeyCount]
+    ),
     IndexCount = 20,
 
     RootPath = testutil:reset_filestructure("basicRiak"),
@@ -1125,11 +1305,14 @@ crossbucket_aae(_Config) ->
                     {max_pencillercachesize, 16000},
                     {sync_strategy, riak_sync}],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
-    {B1, K1, V1, S1, MD} = {<<"Bucket">>,
-                                <<"Key1.1.4567.4321">>,
-                                <<"Value1">>,
-                                [],
-                                [{<<"MDK1">>, <<"MDV1">>}]},
+    {B1, K1, V1, S1, MD} =
+        {
+            <<"Bucket">>,
+            <<"Key1.1.4567.4321">>,
+            <<"Value1">>,
+            [],
+            [{<<"MDK1">>, <<"MDV1">>}]
+        },
     {TestObject, TestSpec} = testutil:generate_testobject(B1, K1, V1, S1, MD),
     ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
     testutil:check_forobject(Bookie1, TestObject),
@@ -1147,12 +1330,15 @@ crossbucket_aae(_Config) ->
 
     GenList = 
         [{binary, 2}, {binary, 40002}, {binary, 80002}, {binary, 120002}],
-    CLs = testutil:load_objects(40000,
-                                GenList,
-                                Bookie2,
-                                TestObject,
-                                fun testutil:generate_smallobjects/2,
-                                40000),
+    CLs =
+        testutil:load_objects(
+            40000,
+            GenList,
+            Bookie2,
+            TestObject,
+            fun testutil:generate_smallobjects/2,
+            40000
+        ),
 
     %% Check all the objects are found - used to trigger HEAD performance log
     ok = testutil:checkhead_forlist(Bookie2, lists:nth(1, CLs)),
@@ -1476,12 +1662,14 @@ handoff(_Config) ->
     GenList = 
         [binary_uuid, binary_uuid, binary_uuid, binary_uuid],
     [CL0, CL1, CL2, CL3] = 
-        testutil:load_objects(40000,
-                                GenList,
-                                Bookie1,
-                                no_check,
-                                fun testutil:generate_smallobjects/2,
-                                40000),
+        testutil:load_objects(
+            40000,
+            GenList,
+            Bookie1,
+            no_check,
+            fun testutil:generate_smallobjects/2,
+            40000
+        ),
     
     % Update an delete some objects
     testutil:update_some_objects(Bookie1, CL0, 1000),
@@ -1605,34 +1793,29 @@ handoff(_Config) ->
 %% leveled's existing folders
 dollar_key_index(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    {ok, Bookie1} = leveled_bookie:book_start(RootPath,
-                                              2000,
-                                              50000000,
-                                              testutil:sync_strategy()),
+    {ok, Bookie1} =
+        leveled_bookie:book_start(
+            RootPath, 2000, 50000000, testutil:sync_strategy()),
     ObjectGen = testutil:get_compressiblevalue_andinteger(),
     IndexGen = fun() -> [] end,
-    ObjL1 = testutil:generate_objects(1300,
-                                      {fixed_binary, 1},
-                                      [],
-                                      ObjectGen,
-                                      IndexGen,
-                                      <<"Bucket1">>),
+    ObjL1 =
+        testutil:generate_objects(
+            1300, {fixed_binary, 1}, [], ObjectGen, IndexGen, <<"Bucket1">>),
     testutil:riakload(Bookie1, ObjL1),
 
-    FoldKeysFun = fun(_B, K, Acc) ->
-                          [ K |Acc]
-                  end,
+    FoldKeysFun = fun(_B, K, Acc) -> [ K |Acc] end,
 
     StartKey = testutil:fixed_bin_key(123),
     EndKey = testutil:fixed_bin_key(779),
 
     {async, Folder} = 
-        leveled_bookie:book_keylist(Bookie1,
-                                    ?RIAK_TAG,
-                                    <<"Bucket1">>,
-                                    {StartKey, EndKey},
-                                    {FoldKeysFun, []}
-                                    ),
+        leveled_bookie:book_keylist(
+            Bookie1,
+            ?RIAK_TAG,
+            <<"Bucket1">>,
+            {StartKey, EndKey},
+            {FoldKeysFun, []}
+        ),
     ResLen = length(Folder()),
     io:format("Length of Result of folder ~w~n", [ResLen]),
     true = 657 == ResLen,
@@ -1641,19 +1824,23 @@ dollar_key_index(_Config) ->
     {ok, REMiss} = leveled_util:regex_compile("key"),
     
     {async, FolderREMatch} = 
-        leveled_bookie:book_keylist(Bookie1,
-                                    ?RIAK_TAG,
-                                    <<"Bucket1">>,
-                                    {StartKey, EndKey},
-                                    {FoldKeysFun, []},
-                                    REMatch),
+        leveled_bookie:book_keylist(
+            Bookie1,
+            ?RIAK_TAG,
+            <<"Bucket1">>,
+            {StartKey, EndKey},
+            {FoldKeysFun, []},
+            REMatch
+        ),
     {async, FolderREMiss} = 
-        leveled_bookie:book_keylist(Bookie1,
-                                    ?RIAK_TAG,
-                                    <<"Bucket1">>,
-                                    {StartKey, EndKey},
-                                    {FoldKeysFun, []},
-                                    REMiss),
+        leveled_bookie:book_keylist(
+            Bookie1,
+            ?RIAK_TAG,
+            <<"Bucket1">>,
+            {StartKey, EndKey},
+            {FoldKeysFun, []},
+            REMiss
+        ),
                                                 
     true = 657 == length(FolderREMatch()),
     true = 0 == length(FolderREMiss()),
@@ -1662,34 +1849,39 @@ dollar_key_index(_Config) ->
     % $key index query
     DeleteFun =
         fun(KeyID) ->
-            ok = leveled_bookie:book_put(Bookie1, 
-                                            <<"Bucket1">>, 
-                                            testutil:fixed_bin_key(KeyID), 
-                                            delete, [],
-                                            ?RIAK_TAG)
+            ok =
+                leveled_bookie:book_put(
+                    Bookie1, 
+                    <<"Bucket1">>, 
+                    testutil:fixed_bin_key(KeyID), 
+                    delete,
+                    [],
+                    ?RIAK_TAG
+                )
         end,
     DelList = [200, 400, 600, 800, 1200],
     lists:foreach(DeleteFun, DelList),
     
     {async, DeleteFolder0} = 
-        leveled_bookie:book_keylist(Bookie1,
-                                    ?RIAK_TAG,
-                                    <<"Bucket1">>,
-                                    {StartKey, EndKey},
-                                    {FoldKeysFun, []}
-                                    ),
+        leveled_bookie:book_keylist(
+            Bookie1,
+            ?RIAK_TAG,
+            <<"Bucket1">>,
+            {StartKey, EndKey},
+            {FoldKeysFun, []}
+        ),
     ResultsDeleteFolder0 = length(DeleteFolder0()),
     io:format("Length of Result of folder ~w~n", [ResultsDeleteFolder0]),
     true = 657 - 3 == ResultsDeleteFolder0,
 
     {async, DeleteFolder1} = 
-        leveled_bookie:book_keylist(Bookie1,
-                                    ?RIAK_TAG,
-                                    <<"Bucket1">>,
-                                    {testutil:fixed_bin_key(1151), 
-                                        testutil:fixed_bin_key(1250)},
-                                    {FoldKeysFun, []}
-                                    ),
+        leveled_bookie:book_keylist(
+            Bookie1,
+            ?RIAK_TAG,
+            <<"Bucket1">>,
+            {testutil:fixed_bin_key(1151), testutil:fixed_bin_key(1250)},
+            {FoldKeysFun, []}
+        ),
     ResultsDeleteFolder1 = length(DeleteFolder1()),
     io:format("Length of Result of folder ~w~n", [ResultsDeleteFolder1]),
     true = 100 -1 == ResultsDeleteFolder1,
@@ -1697,14 +1889,215 @@ dollar_key_index(_Config) ->
     ok = leveled_bookie:book_close(Bookie1),
     testutil:reset_filestructure().
 
+handoff_close(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    KeyCount = 500000,
+    Bucket = {<<"BType">>, <<"BName">>},
+    StartOpts1 =
+        [
+            {root_path, RootPath},
+            {max_journalobjectcount, KeyCount + 1},
+            {max_pencillercachesize, 12000},
+            {sync_strategy, testutil:sync_strategy()}
+        ],
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+    ObjList1 = 
+        testutil:generate_objects(
+            KeyCount div 10, 
+            {fixed_binary, 1}, [],
+            crypto:strong_rand_bytes(512),
+            fun() -> [] end,
+            Bucket
+        ),
+    ObjList2 = 
+        testutil:generate_objects(
+            KeyCount - (KeyCount div 10), 
+            {fixed_binary, KeyCount div 10 + 1}, [],
+            crypto:strong_rand_bytes(512),
+            fun() -> [] end,
+            Bucket
+        ),
+    testutil:riakload(Bookie1, ObjList1),
+    FoldObjectsFun =
+        fun(_, _, _, Acc) ->
+            [os:timestamp()|Acc]
+        end,
+    {async, Runner} =
+        leveled_bookie:book_objectfold(
+            Bookie1,
+            ?RIAK_TAG,
+            {FoldObjectsFun, []},
+            true,
+            sqn_order
+        ),
+    testutil:riakload(Bookie1, ObjList2),
+    TSList = Runner(),
+    QueryCompletionTime = os:timestamp(),
+    LastTS = hd(TSList),
+    io:format(
+        "Found ~w objects with Last TS ~w completion time ~w~n",
+        [length(TSList), LastTS, QueryCompletionTime]
+    ),
+    true = KeyCount div 10 == length(TSList),
+    TimeSinceLastObjectTouchedMS =
+        timer:now_diff(QueryCompletionTime, LastTS) div 1000,
+    true = TimeSinceLastObjectTouchedMS < 1000,
+    leveled_bookie:book_destroy(Bookie1),
+    testutil:reset_filestructure().
+
+
+handoff_withcompaction(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    KeyCount = 100000,
+    Bucket = {<<"BType">>, <<"BName">>},
+    StartOpts1 =
+        [
+            {root_path, RootPath},
+            {max_journalobjectcount, KeyCount div 4},
+            {max_pencillercachesize, 12000},
+            {sync_strategy, testutil:sync_strategy()},
+            {max_run_length, 4}
+        ],
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+    ObjList1 = 
+        testutil:generate_objects(
+            KeyCount div 4, 
+            {fixed_binary, 1}, [],
+            crypto:strong_rand_bytes(512),
+            fun() -> [] end,
+            Bucket
+        ),
+    testutil:riakload(Bookie1, ObjList1),
+    ObjList2 = 
+        testutil:generate_objects(
+            KeyCount div 4, 
+            {fixed_binary, (KeyCount div 4) + 1}, [],
+            crypto:strong_rand_bytes(512),
+            fun() -> [] end,
+            Bucket
+        ),
+    testutil:riakload(Bookie1, ObjList2),
+    ObjList3 = 
+        testutil:generate_objects(
+            KeyCount div 4, 
+            {fixed_binary, (KeyCount div 4) * 2 + 1}, [],
+            crypto:strong_rand_bytes(512),
+            fun() -> [] end,
+            Bucket
+        ),
+    testutil:riakload(Bookie1, ObjList3),
+    ObjList4 = 
+        testutil:generate_objects(
+            KeyCount div 4, 
+            {fixed_binary, (KeyCount div 4) * 3 + 1}, [],
+            crypto:strong_rand_bytes(512),
+            fun() -> [] end,
+            Bucket
+        ),
+    testutil:riakload(Bookie1, ObjList4),
+    % Now update some objects to prompt compaction
+    testutil:update_some_objects(Bookie1, ObjList1, KeyCount div 8),
+    testutil:update_some_objects(Bookie1, ObjList2, KeyCount div 8),
+    testutil:update_some_objects(Bookie1, ObjList3, KeyCount div 8),
+    testutil:update_some_objects(Bookie1, ObjList4, KeyCount div 8),
+
+    % Setup a handoff-style fold to snapshot journal
+    FoldObjectsFun =
+        fun(_B, _K, Obj, Acc) ->
+            [Obj|Acc]
+        end,
+    {async, Runner} =
+        leveled_bookie:book_objectfold(
+            Bookie1,
+            ?RIAK_TAG,
+            {FoldObjectsFun, []},
+            true,
+            sqn_order
+        ),
+    
+    % Now compact the journal, twice to be sure
+    ok = leveled_bookie:book_compactjournal(Bookie1, 30000),
+    testutil:wait_for_compaction(Bookie1),
+    ok = leveled_bookie:book_compactjournal(Bookie1, 30000),
+    testutil:wait_for_compaction(Bookie1),
+
+    % Run the fold - some cdb files should now be delete_pending
+    {TC0, Results} = timer:tc(Runner),
+    io:format(
+        "Found ~w objects (sqn_order) in ~w ms~n",
+        [length(Results), TC0 div 1000]
+    ),
+    true = KeyCount == length(Results),
+
+    FoldAndFetchFun =
+        fun(_B, _K, PO, Acc) ->
+            {   
+                proxy_object,
+                _HeadBin,
+                _Size,
+                {FetchFun, Clone, Ref}
+            } = binary_to_term(PO),
+            Obj = FetchFun(Clone, Ref),
+            [Obj|Acc]
+        end,
+    {async, HeadFolder} =
+        leveled_bookie:book_headfold(
+            Bookie1,
+            ?RIAK_TAG,
+            {FoldAndFetchFun, []},
+            true,
+            false,
+            false
+        ),
+    {TC1, HeadWithFetchResults} = timer:tc(HeadFolder),
+    io:format(
+        "Found ~w objects (check_presence) in ~w ms~n",
+        [length(HeadWithFetchResults), TC1 div 1000]
+    ),
+    {async, KO_ObjRunner} =
+        leveled_bookie:book_objectfold(
+            Bookie1,
+            ?RIAK_TAG,
+            {FoldObjectsFun, []},
+            false,
+            key_order
+        ),
+    {TC2, ObjectInKeyOrderResults} = timer:tc(KO_ObjRunner),
+    io:format(
+        "Found ~w objects (key_order) in ~w ms~n",
+        [length(HeadWithFetchResults), TC2 div 1000]
+    ),
+
+    true = ObjectInKeyOrderResults == HeadWithFetchResults,
+
+    {async, HeadFolderDefer} =
+        leveled_bookie:book_headfold(
+            Bookie1,
+            ?RIAK_TAG,
+            {FoldAndFetchFun, []},
+            defer,
+            false,
+            false
+        ),
+    {TC3, HeadWithDeferFetchResults} = timer:tc(HeadFolderDefer),
+        io:format(
+            "Found ~w objects (no check_presence) in ~w ms~n",
+            [length(HeadWithDeferFetchResults), TC3 div 1000]
+        ),
+    
+    true = HeadWithFetchResults == HeadWithDeferFetchResults,
+ 
+    leveled_bookie:book_destroy(Bookie1),
+    testutil:reset_filestructure().
+
+
 %% @doc test that the riak specific $bucket indexes can be iterated
 %% using leveled's existing folders
 dollar_bucket_index(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    {ok, Bookie1} = leveled_bookie:book_start(RootPath,
-                                              2000,
-                                              50000000,
-                                              testutil:sync_strategy()),
+    {ok, Bookie1} =
+        leveled_bookie:book_start(
+            RootPath, 2000, 50000000, testutil:sync_strategy()),
     ObjectGen = testutil:get_compressiblevalue_andinteger(),
     IndexGen = fun() -> [] end,
     ObjL1 =
@@ -1721,9 +2114,7 @@ dollar_bucket_index(_Config) ->
 
     testutil:riakload(Bookie1, ObjL3),
 
-    FoldKeysFun = fun(B, K, Acc) ->
-                          [{B, K}|Acc]
-                  end,
+    FoldKeysFun = fun(B, K, Acc) -> [{B, K}|Acc] end,
     FoldAccT = {FoldKeysFun, []},
 
     {async, Folder} = 

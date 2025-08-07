@@ -128,6 +128,7 @@
                 {ledger_preloadpagecache_level, ?SST_PAGECACHELEVEL_LOOKUP},
                 {compression_method, ?COMPRESSION_METHOD},
                 {ledger_compression, as_store},
+                {block_version, 1},
                 {compression_point, ?COMPRESSION_POINT},
                 {compression_level, ?COMPRESSION_LEVEL},
                 {log_level, ?LOG_LEVEL},
@@ -310,6 +311,10 @@
             % Define an alternative to the compression method to be used by the
             % ledger only.  Default is as_store - use the method defined as
             % compression_method for the whole store
+        {block_version, 0|1} |
+            % Version of the leveled_sst blocks.  Block version 0 does not use
+            % sub-blocks, whereas block version 1 has multiple types of blocks
+            % which can be split into sub-blocks
         {compression_point, on_compact|on_receipt} |
             % The =compression point can be changed between on_receipt (all
             % values are compressed as they are received), to on_compact where
@@ -968,15 +973,22 @@ book_objectfold(Pid, Tag, Bucket, Limiter, FoldAccT, SnapPreFold) ->
 %% `Acc'. The ProxyObject is an object that only contains the
 %% head/metadata, and no object data from the journal. The `Acc' in
 %% the first call is that provided as the second element of `FoldAccT'
-%% and thereafter the return of the previous all to the fold fun. If
-%% `JournalCheck' is `true' then the journal is checked to see if the
-%% object in the ledger is present, which means a snapshot of the
-%% whole store is required, if `false', then no such check is
-%% performed, and onlt ledger need be snapshotted. `SnapPreFold' is a
-%% boolean that determines if the snapshot is taken when the folder is
-%% requested `true', or when when run `false'. `SegmentList' can be
-%% `false' meaning, all heads, or a list of integers that designate
-%% segments in a TicTac Tree.
+%% and thereafter the return of the previous all to the fold fun.
+%% 
+%% If `JournalCheck' is `true' then the journal is checked to see if the
+%% object in the ledger is present, which means a snapshot of the whole store
+%% is required, if `false', then no such check is performed, and only ledger
+%% need be snapshotted. However, if the intention is to defer fetching the
+%% value but don't wish to cost of chekcing the Journal to be made during the
+%% fold (e.g. as any exception will be handled later), then the `defer`
+%% option can be used.  This will snapshot the Journal, but not check for
+%% presence.  Note that the fetch must still be made within the timefroma of
+%% the fold (as the snapshot will expire with the fold).
+%% 
+%% `SnapPreFold' is a boolean that determines if the snapshot is taken when
+%% the folder is requested `true', or when when run `false'. `SegmentList' can
+%% be `false' meaning, all heads, or a list of integers that designate segments
+%% in a TicTac Tree.
 -spec book_headfold(pid(), Tag, FoldAccT, JournalCheck, SnapPreFold, SegmentList) ->
                            {async, Runner} when
       Tag :: leveled_codec:tag(),
@@ -986,7 +998,7 @@ book_objectfold(Pid, Tag, Bucket, Limiter, FoldAccT, SnapPreFold) ->
       Bucket :: term(),
       Key :: term(),
       Value :: term(),
-      JournalCheck :: boolean(),
+      JournalCheck :: boolean()|defer,
       SnapPreFold :: boolean(),
       SegmentList :: false | list(integer()),
       Runner :: fun(() -> Acc).
@@ -1021,7 +1033,7 @@ book_headfold(Pid, Tag, FoldAccT, JournalCheck, SnapPreFold, SegmentList) ->
       Bucket :: term(),
       Key :: term(),
       Value :: term(),
-      JournalCheck :: boolean(),
+      JournalCheck :: boolean()|defer,
       SnapPreFold :: boolean(),
       SegmentList :: false | list(integer()),
       Runner :: fun(() -> Acc).
@@ -1054,7 +1066,7 @@ book_headfold(Pid, Tag, Limiter, FoldAccT, JournalCheck, SnapPreFold, SegmentLis
       Bucket :: term(),
       Key :: term(),
       Value :: term(),
-      JournalCheck :: boolean(),
+      JournalCheck :: boolean()|defer,
       SnapPreFold :: boolean(),
       SegmentList :: false | list(integer()),
       LastModRange :: false | leveled_codec:lastmod_range(),
@@ -1899,45 +1911,54 @@ set_options(Opts, Monitor) ->
         end,
     CompressionLevel = proplists:get_value(compression_level, Opts),
     
+    BlockVersion = proplists:get_value(block_version, Opts),
     MaxSSTSlots = proplists:get_value(max_sstslots, Opts),
     MaxMergeBelow = proplists:get_value(max_mergebelow, Opts),
 
     ScoreOneIn = proplists:get_value(journalcompaction_scoreonein, Opts),
 
-    {#inker_options{root_path = JournalFP,
-                    reload_strategy = ReloadStrategy,
-                    max_run_length = proplists:get_value(max_run_length, Opts),
-                    singlefile_compactionperc = SFL_CompPerc,
-                    maxrunlength_compactionperc = MRL_CompPerc,
-                    waste_retention_period = WRP,
-                    snaptimeout_long = SnapTimeoutLong,
-                    compression_method = JournalCompression,
-                    compress_on_receipt = CompressOnReceipt,
-                    score_onein = ScoreOneIn,
-                    cdb_options = 
-                        #cdb_options{
-                            max_size = MaxJournalSize,
-                            max_count = MaxJournalCount,
-                            binary_mode = true,
-                            sync_strategy = SyncStrat,
-                            log_options = leveled_log:get_opts(),
-                            monitor = Monitor},
-                    monitor = Monitor},
-        #penciller_options{root_path = LedgerFP,
-                            max_inmemory_tablesize = PCLL0CacheSize,
-                            levelzero_cointoss = true,
-                            snaptimeout_short = SnapTimeoutShort,
-                            snaptimeout_long = SnapTimeoutLong,
-                            sst_options =
-                                #sst_options{
-                                    press_method = LedgerCompression,
-                                    press_level = CompressionLevel,
-                                    log_options = leveled_log:get_opts(),
-                                    max_sstslots = MaxSSTSlots,
-                                    max_mergebelow = MaxMergeBelow,
-                                    monitor = Monitor},
-                            monitor = Monitor}
-        }.
+    {
+        #inker_options{
+            root_path = JournalFP,
+            reload_strategy = ReloadStrategy,
+            max_run_length = proplists:get_value(max_run_length, Opts),
+            singlefile_compactionperc = SFL_CompPerc,
+            maxrunlength_compactionperc = MRL_CompPerc,
+            waste_retention_period = WRP,
+            snaptimeout_long = SnapTimeoutLong,
+            compression_method = JournalCompression,
+            compress_on_receipt = CompressOnReceipt,
+            score_onein = ScoreOneIn,
+            cdb_options = 
+                #cdb_options{
+                    max_size = MaxJournalSize,
+                    max_count = MaxJournalCount,
+                    binary_mode = true,
+                    sync_strategy = SyncStrat,
+                    log_options = leveled_log:get_opts(),
+                    monitor = Monitor
+                },
+            monitor = Monitor
+        },
+        #penciller_options{
+            root_path = LedgerFP,
+            max_inmemory_tablesize = PCLL0CacheSize,
+            levelzero_cointoss = true,
+            snaptimeout_short = SnapTimeoutShort,
+            snaptimeout_long = SnapTimeoutLong,
+            sst_options =
+                #sst_options{
+                    press_method = LedgerCompression,
+                    press_level = CompressionLevel,
+                    block_version = BlockVersion,
+                    log_options = leveled_log:get_opts(),
+                    max_sstslots = MaxSSTSlots,
+                    max_mergebelow = MaxMergeBelow,
+                    monitor = Monitor
+                },
+            monitor = Monitor
+        }
+    }.
 
 
 -spec return_snapfun(
@@ -2011,7 +2032,7 @@ return_snapfun(
             fun() -> {ok, LS, JS, fun() -> ok end} end
     end.
 
--spec snaptype_by_presence(boolean()) -> store|ledger.
+-spec snaptype_by_presence(boolean()|defer) -> store|ledger.
 %% @doc
 %% Folds that traverse over object heads, may also either require to return 
 %% the object, or at least confirm the object is present in the Ledger.  This
@@ -2019,6 +2040,8 @@ return_snapfun(
 %% snapshot to one that covers the whole store (i.e. both ledger and journal),
 %% rather than just the ledger.
 snaptype_by_presence(true) ->
+    store;
+snaptype_by_presence(defer) ->
     store;
 snaptype_by_presence(false) -> 
     ledger.
@@ -2101,7 +2124,8 @@ get_runner(
         JournalCheck,
         SegmentList,
         LastModRange,
-        MaxObjectCount);
+        MaxObjectCount
+    );
 get_runner(State, {foldobjects_allkeys, Tag, FoldFun, SnapPreFold}) ->
     get_runner(
         State, {foldobjects_allkeys, Tag, FoldFun, SnapPreFold, key_order});
@@ -2140,7 +2164,9 @@ get_runner(
         FoldFun,
         JournalCheck,
         SegmentList,
-        LastModRange, MaxObjectCount);
+        LastModRange,
+        MaxObjectCount
+    );
 get_runner(
         State,
         {foldheads_bybucket, 
@@ -2159,7 +2185,9 @@ get_runner(
         FoldFun, 
         JournalCheck,
         SegmentList,
-        LastModRange, MaxObjectCount);
+        LastModRange,
+        MaxObjectCount
+    );
 get_runner(
         State,
         {foldobjects_bybucket, 

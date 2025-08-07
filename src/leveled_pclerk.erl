@@ -421,7 +421,7 @@ do_merge(
 
 add_entry(empty, FileName, _TS1, Additions) ->
     leveled_log:log(pc013, [FileName]),
-    {[], [], Additions};
+    {Additions, [], []};
 add_entry({ok, Pid, Reply, Bloom}, FileName, TS1, Additions) ->
     {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} = Reply,
     Entry =
