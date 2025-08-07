@@ -1,23 +1,21 @@
 %% -------- Set Operations ---------
 %%
-%% Support for set operations (i.e on sets of keys) within leveled 
+%% Support for set operations (i.e on sets of keys) within leveled
 %%
 
 -module(leveled_setop).
 
 -export([generate_setop_function/1]).
 
-
 %%%============================================================================
 %%% External API
 %%%============================================================================
 
 -spec generate_setop_function(
-        string()) ->
-            fun((#{non_neg_integer() => sets:set(binary())})
-                -> sets:set(binary())
-            )|
-            {error, term()}.
+    string()
+) ->
+    fun((#{non_neg_integer() => sets:set(binary())}) -> sets:set(binary()))
+    | {error, term()}.
 generate_setop_function(EvalString) ->
     try
         {ok, ParsedEval} = generate_setop_expression(EvalString),
@@ -45,18 +43,21 @@ apply_setop({setop, SetOp}, SetList) ->
 apply_setop({set_id, _, SetID}, SetList) ->
     get_set(SetID, SetList);
 apply_setop(
-        {SetFunctionName, {set_id, _, SetIDa}, {set_id, _, SetIDb}},
-        SetList) ->
+    {SetFunctionName, {set_id, _, SetIDa}, {set_id, _, SetIDb}},
+    SetList
+) ->
     SetFunction = set_function(SetFunctionName),
     SetFunction(get_set(SetIDa, SetList), get_set(SetIDb, SetList));
 apply_setop(
-        {SetFunctionName, {set_id, _, SetIDa}, Condition},
-        SetList) ->
+    {SetFunctionName, {set_id, _, SetIDa}, Condition},
+    SetList
+) ->
     SetFunction = set_function(SetFunctionName),
     SetFunction(get_set(SetIDa, SetList), apply_setop(Condition, SetList));
 apply_setop(
-        {SetFunctionName, Condition, {set_id, _, SetIDb}},
-        SetList) ->
+    {SetFunctionName, Condition, {set_id, _, SetIDb}},
+    SetList
+) ->
     SetFunction = set_function(SetFunctionName),
     SetFunction(apply_setop(Condition, SetList), get_set(SetIDb, SetList));
 apply_setop({SetFunctionName, ConditionA, ConditionB}, SetList) ->
@@ -76,7 +77,6 @@ set_function('SUBTRACT') ->
 %% (That is, do not throw an error)
 get_set(SetID, SetMap) ->
     maps:get(SetID, SetMap, sets:new()).
-
 
 %%%============================================================================
 %%% Test
@@ -102,7 +102,6 @@ parse_error_test() ->
     ?assertMatch({error, _E3}, generate_setop_function(Q3)),
     ?assertMatch({error, _E4}, generate_setop_function(Q4)).
 
-
 parser_formal_test() ->
     Q1 = "($1 INTERSECT $2) UNION $3",
     Q2 = "($1 INTERSECT $2) UNION ($3 INTERSECT $4)",
@@ -124,33 +123,33 @@ parser_tester(Q1, Q2, Q3, Q4) ->
 
     R1 =
         lists:sort(
-            sets:to_list(F1(#{1 => S1, 2 => S2, 3 => S3})
-        )
-    ),
+            sets:to_list(F1(#{1 => S1, 2 => S2, 3 => S3}))
+        ),
     R2 =
         lists:sort(
-            sets:to_list(F2(#{1 => S1, 2 => S2, 3 => S3, 4 => S4})
-        )
-    ),
+            sets:to_list(F2(#{1 => S1, 2 => S2, 3 => S3, 4 => S4}))
+        ),
     R3 =
         lists:sort(
-            sets:to_list(F3(#{1 => S1, 2 => S2, 3 => S3, 4 => S4, 5 => S5})
-        )
-    ),
-        R4 =
+            sets:to_list(F3(#{1 => S1, 2 => S2, 3 => S3, 4 => S4, 5 => S5}))
+        ),
+    R4 =
         lists:sort(
-            sets:to_list(F4(#{1 => S1, 2 => S2, 3 => S3, 4 => S4, 5 => S5})
-        )
-    ),
+            sets:to_list(F4(#{1 => S1, 2 => S2, 3 => S3, 4 => S4, 5 => S5}))
+        ),
 
     ?assertMatch(
-        [<<"K3">>, <<"K4">>, <<"K5">>, <<"K7">>, <<"K8">>, <<"K9">>], R1),
+        [<<"K3">>, <<"K4">>, <<"K5">>, <<"K7">>, <<"K8">>, <<"K9">>], R1
+    ),
     ?assertMatch(
-        [<<"K3">>, <<"K4">>, <<"K5">>, <<"K7">>, <<"K9">>], R2),
+        [<<"K3">>, <<"K4">>, <<"K5">>, <<"K7">>, <<"K9">>], R2
+    ),
     ?assertMatch(
-        [<<"K3">>, <<"K7">>, <<"K9">>], R3),
+        [<<"K3">>, <<"K7">>, <<"K9">>], R3
+    ),
     ?assertMatch(
-        [<<"K3">>, <<"K8">>], R4).
+        [<<"K3">>, <<"K8">>], R4
+    ).
 
 minimal_test() ->
     S1 = sets:from_list([<<"K1">>, <<"K2">>, <<"K3">>, <<"K4">>, <<"K5">>]),
@@ -160,11 +159,10 @@ minimal_test() ->
     S2 = sets:from_list([<<"K3">>, <<"K4">>, <<"K5">>, <<"K6">>, <<"K7">>]),
     S3 = sets:from_list([<<"K1">>, <<"K2">>]),
     F2 = generate_setop_function_noerror("$1 INTERSECT ($2 UNION $3)"),
-    R2  = lists:sort(sets:to_list(F2(#{1 => S1, 2 => S2, 3 => S3}))),
+    R2 = lists:sort(sets:to_list(F2(#{1 => S1, 2 => S2, 3 => S3}))),
     ?assertMatch([<<"K1">>, <<"K2">>, <<"K3">>, <<"K4">>, <<"K5">>], R2),
     F3 = generate_setop_function_noerror("$1 INTERSECT ($2 UNION $2)"),
-    R3  = lists:sort(sets:to_list(F3(#{1 => S1, 2 => S2}))),
+    R3 = lists:sort(sets:to_list(F3(#{1 => S1, 2 => S2}))),
     ?assertMatch([<<"K3">>, <<"K4">>, <<"K5">>], R3).
-
 
 -endif.

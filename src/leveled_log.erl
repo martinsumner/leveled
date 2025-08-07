@@ -1,12 +1,12 @@
 %% -------- LOG ---------
 %%
 %% Centralised logging, to make it easier to change log implementation.
-%% 
+%%
 %% The use of a ?LOGBASE map is a personal preference.  With formatting of code
 %% using maximum column widths, I prefer not to have log text within the code
 %% itself, as there may be a temptation to make log text misleadingly terse to
 %% make the code more readable.
-%% 
+%%
 %% This means that using logger's capability to add actual code line references
 %% to the log becomes mute - as all logs log from the same code line.  However,
 %% the process does enforce the use of log references to provide a simple way
@@ -15,35 +15,40 @@
 %% releases (whereas log references stay stable).  The log references
 %% themselves can be helpful when optimising query times in splunk-like log
 %% indexing tools.
-%% 
+%%
 %% There are overheads with the approach (e.g. the maps:get/2 call for each log
 %% ).  However, the eprof testing of leveled indicates that this is not a
-%% relatively significant overhead. 
+%% relatively significant overhead.
 
 -module(leveled_log).
 
 -include_lib("kernel/include/logger.hrl").
 
--export([log/2,
-            log_timer/3,
-            log_randomtimer/4]).
+-export([
+    log/2,
+    log_timer/3,
+    log_randomtimer/4
+]).
 
 -export([log/5, log_timer/6]).
 
--export([set_loglevel/1, 
-            set_databaseid/1,
-            add_forcedlogs/1,
-            remove_forcedlogs/1,
-            get_opts/0,
-            save/1,
-            return_settings/0]).
+-export([
+    set_loglevel/1,
+    set_databaseid/1,
+    add_forcedlogs/1,
+    remove_forcedlogs/1,
+    get_opts/0,
+    save/1,
+    return_settings/0
+]).
 
--record(log_options,
-    {log_level = info :: log_level(), 
-        forced_logs = [] :: [atom()],
-        database_id :: non_neg_integer()|undefined}).
+-record(log_options, {
+    log_level = info :: log_level(),
+    forced_logs = [] :: [atom()],
+    database_id :: non_neg_integer() | undefined
+}).
 
--type log_level()  ::  debug | info | warning | error | critical.
+-type log_level() :: debug | info | warning | error | critical.
 -type log_options() :: #log_options{}.
 -type log_base() :: #{atom() => {log_level(), binary()}}.
 
@@ -52,294 +57,333 @@
 -define(LOG_LEVELS, [debug, info, warning, error, critical]).
 -define(DEFAULT_LOG_LEVEL, error).
 
--define(LOGBASE,
-    #{
-        g0001 => 
-            {info, <<"Generic log point">>},
-        g0002 =>
-            {info, <<"Generic log point with term ~w">>},
-        d0001 =>
-            {info, <<"Generic debug log">>},
-        b0001 =>
-            {info, <<"Bookie starting with Ink ~w Pcl ~w">>},
-        b0002 =>
-            {info, <<"Snapshot starting with Ink ~w Pcl ~w">>},
-        b0003 =>
-            {info, <<"Bookie closing for reason ~w">>},
-        b0004 =>
-            {warning, <<"Bookie snapshot exiting as master store ~w is down for reason ~p">>},
-        b0005 =>
-            {info, <<"LedgerSQN=~w at startup">>},
-        b0006 =>
-            {info, <<"Reached end of load batch with SQN ~w">>},
-        b0008 =>
-            {info, <<"Bucket list finds no more results">>},
-        b0009 =>
-            {debug, <<"Bucket list finds Bucket ~w">>},
-        b0011 =>
-            {warning, <<"Call to destroy the store and so all files to be removed">>},
-        b0013 =>
-            {warning, <<"Long running task took ~w microseconds with task_type=~w">>},
-        b0015 =>
-            {info, <<"Put timing with sample_count=~w ink_time=~w prep_time=~w mem_time=~w with total_object_size=~w with sample_period=~w seconds">>},
-        b0016 =>
-            {info, <<"Get timing with sample_count=~w and head_time=~w body_time=~w with fetch_count=~w with sample_period=~w seconds">>},
-        b0017 =>
-            {info, <<"Snapshot timing with sample_count=~w and bookie_time=~w pcl_time=~w with sample_period=~w seconds">>},
-        b0018 =>
-            {info, <<"Positive HEAD responses timed with sample_count=~w and cache_count=~w found_count=~w fetch_ledger_time=~w fetch_ledgercache_time=~w rsp_time=~w notfound_time=~w with sample_period=~w seconds">>},
-        b0019 =>
-            {warning, <<"Use of book_indexfold with constraint of Bucket ~w with no StartKey is deprecated">>},
-        b0020 =>
-            {warning, <<"Ratio of penciller cache size ~w to bookie's memory cache size ~w is larger than expected">>},
-        r0001 =>
-            {debug, <<"Object fold to process batch of ~w objects">>},
-        p0001 =>
-            {debug, <<"Ledger snapshot ~w registered">>},
-        p0003 =>
-            {debug, <<"Ledger snapshot ~w released">>},
-        p0004 =>
-            {debug, <<"Remaining ledger snapshots are ~w">>},
-        p0005 =>
-            {debug, <<"Delete confirmed as file ~s is removed from Manifest">>},
-        p0007 =>
-            {debug, <<"Shutdown complete for cloned Penciller for reason ~w">>},
-        p0008 =>
-            {info, <<"Penciller closing for reason ~w">>},
-        p0010 =>
-            {info, <<"level zero discarded_count=~w on close of Penciller">>},
-        p0011 =>
-            {debug, <<"Shutdown complete for Penciller for reason ~w">>},
-        p0012 =>
-            {info, <<"Store to be started based on manifest sequence number of ~w">>},
-        p0013 =>
-            {info, <<"Seqence number of 0 indicates no valid manifest">>},
-        p0014 =>
-            {info, <<"Maximum sequence number of ~w found in nonzero levels">>},
-        p0015 =>
-            {info, <<"L0 file found ~s">>},
-        p0016 =>
-            {info, <<"L0 file had maximum sequence number of ~w">>},
-        p0017 =>
-            {info, <<"No L0 file found">>},
-        p0018 =>
-            {info, <<"Response to push_mem of returned with cache_size=~w L0_pending=~w merge_backlog=~w cachelines_full=~w">>},
-        p0019 =>
-            {info, <<"Rolling level zero to filename ~s at ledger sqn ~w">>},
-        p0024 =>
-            {info, <<"Outstanding compaction work items of ~w with backlog status of ~w L0 full ~w">>},
-        p0029 =>
-            {info, <<"L0 completion confirmed and will transition to not pending">>},
-        p0030 =>
-            {warning, <<"We're doomed - intention recorded to destroy all files">>},
-        p0031 =>
-            {info, <<"Completion of update to levelzero with cache_size=~w level0_due=~w change_pending=~w MinSQN=~w MaxSQN=~w">>},
-        p0032 =>
-            {info, <<"Fetch head timing with sample_count=~w and level timings of foundmem_time=~w found0_time=~w found1_time=~w found2_time=~w found3_time=~w foundlower_time=~w missed_time=~w with counts of foundmem_count=~w found0_count=~w found1_count=~w found2_count=~w found3_count=~w foundlower_count=~w missed_count=~w with sample_period=~w seconds">>},
-        p0033 =>
-            {error, <<"Corrupted manifest file at path ~s to be ignored due to error ~s">>},
-        p0035 =>
-            {info, <<"Startup with Manifest SQN of ~w">>},
-        p0037 =>
-            {debug, <<"Merging of penciller L0 tree from size ~w complete">>},
-        p0038 =>
-            {info, <<"Timeout of snapshot with pid=~w at SQN=~w at TS ~w set to timeout=~w">>},
-        p0039 =>
-            {debug, <<"Failed to release pid=~w leaving SnapshotCount=~w and MinSQN=~w">>},
-        p0040 =>
-            {info, <<"Archiving filename ~s as unused at startup">>},
-        p0041 =>
-            {info, <<"Penciller manifest switched from SQN ~w to ~w">>},
-        p0042 =>
-            {info, <<"Deferring shutdown due to snapshot_count=~w">>},
-        pc001 =>
-            {info, <<"Penciller's clerk ~w started with owner ~w">>},
-        pc005 =>
-            {info, <<"Penciller's Clerk ~w shutdown now complete for reason ~w">>},
-        pc007 =>
-            {debug, <<"Clerk prompting Penciller regarding manifest change">>},
-        pc008 =>
-            {info, <<"Merge from level ~w to merge into ~w files below">>},
-        pc009 =>
-            {debug, <<"File ~s to simply switch levels to level ~w">>},
-        pc010 =>
-            {info, <<"Merge to be commenced for FileToMerge=~s with MSN=~w">>},
-        pc011 =>
-            {info, <<"Merge completed with MSN=~w to Level=~w and FileCounter=~w merge_type=~w">>},
-        pc012 =>
-            {debug, <<"File to be created as part of MSN=~w Filename=~s IsBasement=~w">>},
-        pc013 =>
-            {warning, <<"Merge resulted in empty file ~s">>},
-        pc015 =>
-            {info, <<"File created">>},
-        pc016 =>
-            {info, <<"Slow fetch from SFT ~w of ~w us at level ~w with result ~w">>},
-        pc017 =>
-            {debug, <<"Notified clerk of manifest change">>},
-        pc018 =>
-            {info, <<"Saved manifest file">>},
-        pc019 =>
-            {debug, <<"After ~s level ~w is ~w">>},
-        pc021 =>
-            {debug, <<"Prompting deletions at ManifestSQN=~w">>},
-        pc022 =>
-            {debug, <<"Storing reference to deletions at ManifestSQN=~w">>},
-        pc023 =>
-            {info, <<"At level=~w file_count=~w avg_mem=~w file with most memory fn=~s p=~w mem=~w">>},
-        pc024 =>
-            {info, <<"Grooming compaction picked file with tomb_count=~w">>},
-        pc025 =>
-            {info, <<"At level=~w file_count=~w average words for heap_block_size=~w heap_size=~w recent_size=~w bin_vheap_size=~w">>},
-        pc026 =>
-            {info, <<"Performing potential partial to level=~w merge as FileCounter=~w restricting to MaxAdditions=~w">>},
-        pm002 =>
-            {info, <<"Completed dump of L0 cache to list of l0cache_size=~w">>},
-        sst03 =>
-            {info, <<"Opening SST file with filename ~s slot_count=~w and max sqn ~w">>},
-        sst04 =>
-            {debug, <<"Exit called for reason ~w on filename ~s">>},
-        sst05 =>
-            {warning, <<"Rename rogue filename ~s to ~s">>},
-        sst06 =>
-            {debug, <<"File ~s has been set for delete">>},
-        sst07 =>
-            {info, <<"Exit called and now clearing ~s">>},
-        sst08 =>
-            {info, <<"Completed creation of ~s at level ~w with max sqn ~w">>},
-        sst09 =>
-            {warning, <<"Read request exposes slot with bad CRC">>},
-        sst10 =>
-            {debug, <<"Expansion sought to support pointer to pid ~w status ~w">>},
-        sst11 =>
-            {info, <<"Level zero creation timings in microseconds pmem_fetch=~w merge_lists=~w build_slots=~w build_summary=~w read_switch=~w">>},
-        sst12 =>
-            {info, <<"SST Timings at level=~w for sample_count=~w at timing points notfound_time=~w fetchcache_time=~w slotcached_time=~w slotnoncached_time=~w exiting at points notfound_count=~w fetchcache_count=~w slotcached_count=~w slotnoncached_count=~w with sample_period=~w seconds">>},
-        sst13 =>
-            {info, <<"SST merge list build timings of fold_toslot=~w slot_hashlist=~w slot_serialise=~w slot_finish=~w is_basement=~w level=~w">>},
-        sst14 =>
-            {debug, <<"File ~s has completed BIC">>},
-        sst15 =>
-            {warning, <<"Default returned from block due to handling error ~0p">>},
-        i0001 =>
-            {info, <<"Unexpected failure to fetch value for Key=~w SQN=~w with reason ~w">>},
-        i0002 =>
-            {debug, <<"Journal snapshot ~w registered at SQN ~w">>},
-        i0003 =>
-            {debug, <<"Journal snapshot ~w released">>},
-        i0004 =>
-            {info, <<"Remaining number of journal snapshots is ~w">>},
-        i0005 =>
-            {info, <<"Inker closing journal for reason ~w">>},
-        i0006 =>
-            {info, <<"Close triggered with journal_sqn=~w and manifest_sqn=~w">>},
-        i0007 =>
-            {info, <<"Inker manifest when closing is:">>},
-        i0008 =>
-            {info, <<"Put to new active journal required roll and manifest write">>},
-        i0009 =>
-            {info, <<"Updated manifest on startup:">>},
-        i0010 =>
-            {info, <<"Unchanged manifest on startup:">>},
-        i0011 =>
-            {info, <<"Manifest is empty, starting from manifest SQN 1">>},
-        i0012 =>
-            {info, <<"Head manifest entry ~s is complete so new active journal required">>},
-        i0013 =>
-            {info, <<"File ~s to be removed from manifest">>},
-        i0014 =>
-            {info, <<"On startup loading from filename ~s from SQN ~w">>},
-        i0015 =>
-            {info, <<"Opening manifest file at ~s with SQN ~w">>},
-        i0016 =>
-            {info, <<"Writing new version of manifest for manifestSQN=~w">>},
-        i0017 =>
-            {debug, <<"At SQN=~w journal has filename ~s">>},
-        i0018 =>
-            {warning, <<"We're doomed - intention recorded to destroy all files">>},
-        i0020 =>
-            {info, <<"Journal backup completed to path=~s with file_count=~w">>},
-        i0021 =>
-            {info, <<"Ingoring filename=~s with SQN=~w and JournalSQN=~w">>},
-        i0022 =>
-            {info, <<"Removing filename=~s from backup folder as not in backup">>},
-        i0023 =>
-            {info, <<"Backup commencing into folder with ~w existing files">>},
-        i0024 =>
-            {info, <<"Prompted roll at NewSQN=~w">>},
-        i0025 =>
-            {warning, <<"Journal SQN of ~w is below Ledger SQN of ~w anti-entropy will be required">>},
-        i0026 =>
-            {info, <<"Deferring shutdown due to snapshot_count=~w">>},
-        i0027 =>
-            {debug, <<"Shutdown complete for cloned Inker for reason ~w">>},
-        i0028 =>
-            {debug, <<"Shutdown complete for Inker for reason ~w">>},
-        ic001 =>
-            {info, <<"Closed for reason ~w so maybe leaving garbage">>},
-        ic002 =>
-            {info, <<"Clerk updating Inker as compaction complete of ~w files">>},
-        ic003 =>
-            {info, <<"Scoring of compaction runs complete with highest score=~w with run of run_length=~w">>},
-        ic004 =>
-            {info, <<"Score=~w with mean_byte_jump=~w for filename ~s">>},
-        ic005 =>
-            {info, <<"Compaction to be performed on file_count=~w with compaction_score=~w">>},
-        ic006 =>
-            {info, <<"Filename ~s is part of compaction run">>},
-        ic007 =>
-            {info, <<"Clerk has completed compaction process">>},
-        ic008 =>
-            {info, <<"Compaction source ~s has yielded ~w positions">>},
-        ic009 =>
-            {info, <<"Generate journal for compaction with filename ~s">>},
-        ic010 =>
-            {info, <<"Clearing journal with filename ~s">>},
-        ic011 =>
-            {info, <<"Not clearing filename ~s as modified delta is only ~w seconds">>},
-        ic012 =>
-            {warning, <<"Tag ~w not found in Strategy ~w - maybe corrupted">>},
-        ic013 =>
-            {warning, <<"File with name ~s to be ignored in manifest as scanning for first key returned empty - maybe corrupted">>},
-        ic014 =>
-            {info, <<"Compaction to be run with strategy ~w and max_run_length ~w">>},
-        cdb01 =>
-            {info, <<"Opening file for writing with filename ~s">>},
-        cdb02 =>
-            {info, <<"Opening file for reading with filename ~s">>},
-        cdb03 =>
-            {info, <<"Re-opening file for reading with filename ~s">>},
-        cdb04 =>
-            {info, <<"Deletion confirmed for file ~s at ManifestSQN ~w">>},
-        cdb05 =>
-            {info, <<"Closing of filename ~s from state ~w for reason ~w">>},
-        cdb06 =>
-            {warning, <<"File to be truncated at last position of ~w with end of file at ~w">>},
-        cdb07 =>
-            {info, <<"Hashtree index computed">>},
-        cdb08 =>
-            {info, <<"Renaming file from ~s to ~s for which existence is ~w">>},
-        cdb09 =>
-            {info, <<"Failure to read Key/Value at Position ~w in scan this may be the end of the file">>},
-        cdb10 =>
-            {warning, <<"CRC check failed due to error=~s">>},
-        cdb12 =>
-            {info, <<"Hashtree index written">>},
-        cdb13 =>
-            {debug, <<"Write options of ~w">>},
-        cdb14 =>
-            {info, <<"Microsecond timings for hashtree build of to_list=~w sort=~w build=~w">>},
-        cdb15 =>
-            {info, <<"Collision in search for hash ~w">>},
-        cdb18 =>
-            {info, <<"Handled return and write of hashtable">>},
-        cdb19 =>
-            {info, <<"Sample timings in microseconds for sample_count=~w with totals of cycle_count=~w index_time=~w read_time=~w with sample_period=~w seconds">>},
-        cdb20 =>
-            {warning, <<"Error ~w caught when safe reading a file to length ~w">>},
-        cdb21 =>
-            {warning, <<"File ~s to be deleted but already gone">>}
-    }).
-
+-define(LOGBASE, #{
+    g0001 =>
+        {info, <<"Generic log point">>},
+    g0002 =>
+        {info, <<"Generic log point with term ~w">>},
+    d0001 =>
+        {info, <<"Generic debug log">>},
+    b0001 =>
+        {info, <<"Bookie starting with Ink ~w Pcl ~w">>},
+    b0002 =>
+        {info, <<"Snapshot starting with Ink ~w Pcl ~w">>},
+    b0003 =>
+        {info, <<"Bookie closing for reason ~w">>},
+    b0004 =>
+        {warning,
+            <<"Bookie snapshot exiting as master store ~w is down for reason ~p">>},
+    b0005 =>
+        {info, <<"LedgerSQN=~w at startup">>},
+    b0006 =>
+        {info, <<"Reached end of load batch with SQN ~w">>},
+    b0008 =>
+        {info, <<"Bucket list finds no more results">>},
+    b0009 =>
+        {debug, <<"Bucket list finds Bucket ~w">>},
+    b0011 =>
+        {warning,
+            <<"Call to destroy the store and so all files to be removed">>},
+    b0013 =>
+        {warning,
+            <<"Long running task took ~w microseconds with task_type=~w">>},
+    b0015 =>
+        {info,
+            <<"Put timing with sample_count=~w ink_time=~w prep_time=~w mem_time=~w with total_object_size=~w with sample_period=~w seconds">>},
+    b0016 =>
+        {info,
+            <<"Get timing with sample_count=~w and head_time=~w body_time=~w with fetch_count=~w with sample_period=~w seconds">>},
+    b0017 =>
+        {info,
+            <<"Snapshot timing with sample_count=~w and bookie_time=~w pcl_time=~w with sample_period=~w seconds">>},
+    b0018 =>
+        {info,
+            <<"Positive HEAD responses timed with sample_count=~w and cache_count=~w found_count=~w fetch_ledger_time=~w fetch_ledgercache_time=~w rsp_time=~w notfound_time=~w with sample_period=~w seconds">>},
+    b0019 =>
+        {warning,
+            <<"Use of book_indexfold with constraint of Bucket ~w with no StartKey is deprecated">>},
+    b0020 =>
+        {warning,
+            <<"Ratio of penciller cache size ~w to bookie's memory cache size ~w is larger than expected">>},
+    r0001 =>
+        {debug, <<"Object fold to process batch of ~w objects">>},
+    p0001 =>
+        {debug, <<"Ledger snapshot ~w registered">>},
+    p0003 =>
+        {debug, <<"Ledger snapshot ~w released">>},
+    p0004 =>
+        {debug, <<"Remaining ledger snapshots are ~w">>},
+    p0005 =>
+        {debug, <<"Delete confirmed as file ~s is removed from Manifest">>},
+    p0007 =>
+        {debug, <<"Shutdown complete for cloned Penciller for reason ~w">>},
+    p0008 =>
+        {info, <<"Penciller closing for reason ~w">>},
+    p0010 =>
+        {info, <<"level zero discarded_count=~w on close of Penciller">>},
+    p0011 =>
+        {debug, <<"Shutdown complete for Penciller for reason ~w">>},
+    p0012 =>
+        {info,
+            <<"Store to be started based on manifest sequence number of ~w">>},
+    p0013 =>
+        {info, <<"Seqence number of 0 indicates no valid manifest">>},
+    p0014 =>
+        {info, <<"Maximum sequence number of ~w found in nonzero levels">>},
+    p0015 =>
+        {info, <<"L0 file found ~s">>},
+    p0016 =>
+        {info, <<"L0 file had maximum sequence number of ~w">>},
+    p0017 =>
+        {info, <<"No L0 file found">>},
+    p0018 =>
+        {info,
+            <<"Response to push_mem of returned with cache_size=~w L0_pending=~w merge_backlog=~w cachelines_full=~w">>},
+    p0019 =>
+        {info, <<"Rolling level zero to filename ~s at ledger sqn ~w">>},
+    p0024 =>
+        {info,
+            <<"Outstanding compaction work items of ~w with backlog status of ~w L0 full ~w">>},
+    p0029 =>
+        {info,
+            <<"L0 completion confirmed and will transition to not pending">>},
+    p0030 =>
+        {warning, <<"We're doomed - intention recorded to destroy all files">>},
+    p0031 =>
+        {info,
+            <<"Completion of update to levelzero with cache_size=~w level0_due=~w change_pending=~w MinSQN=~w MaxSQN=~w">>},
+    p0032 =>
+        {info,
+            <<"Fetch head timing with sample_count=~w and level timings of foundmem_time=~w found0_time=~w found1_time=~w found2_time=~w found3_time=~w foundlower_time=~w missed_time=~w with counts of foundmem_count=~w found0_count=~w found1_count=~w found2_count=~w found3_count=~w foundlower_count=~w missed_count=~w with sample_period=~w seconds">>},
+    p0033 =>
+        {error,
+            <<"Corrupted manifest file at path ~s to be ignored due to error ~s">>},
+    p0035 =>
+        {info, <<"Startup with Manifest SQN of ~w">>},
+    p0037 =>
+        {debug, <<"Merging of penciller L0 tree from size ~w complete">>},
+    p0038 =>
+        {info,
+            <<"Timeout of snapshot with pid=~w at SQN=~w at TS ~w set to timeout=~w">>},
+    p0039 =>
+        {debug,
+            <<"Failed to release pid=~w leaving SnapshotCount=~w and MinSQN=~w">>},
+    p0040 =>
+        {info, <<"Archiving filename ~s as unused at startup">>},
+    p0041 =>
+        {info, <<"Penciller manifest switched from SQN ~w to ~w">>},
+    p0042 =>
+        {info, <<"Deferring shutdown due to snapshot_count=~w">>},
+    pc001 =>
+        {info, <<"Penciller's clerk ~w started with owner ~w">>},
+    pc005 =>
+        {info, <<"Penciller's Clerk ~w shutdown now complete for reason ~w">>},
+    pc007 =>
+        {debug, <<"Clerk prompting Penciller regarding manifest change">>},
+    pc008 =>
+        {info, <<"Merge from level ~w to merge into ~w files below">>},
+    pc009 =>
+        {debug, <<"File ~s to simply switch levels to level ~w">>},
+    pc010 =>
+        {info, <<"Merge to be commenced for FileToMerge=~s with MSN=~w">>},
+    pc011 =>
+        {info,
+            <<"Merge completed with MSN=~w to Level=~w and FileCounter=~w merge_type=~w">>},
+    pc012 =>
+        {debug,
+            <<"File to be created as part of MSN=~w Filename=~s IsBasement=~w">>},
+    pc013 =>
+        {warning, <<"Merge resulted in empty file ~s">>},
+    pc015 =>
+        {info, <<"File created">>},
+    pc016 =>
+        {info,
+            <<"Slow fetch from SFT ~w of ~w us at level ~w with result ~w">>},
+    pc017 =>
+        {debug, <<"Notified clerk of manifest change">>},
+    pc018 =>
+        {info, <<"Saved manifest file">>},
+    pc019 =>
+        {debug, <<"After ~s level ~w is ~w">>},
+    pc021 =>
+        {debug, <<"Prompting deletions at ManifestSQN=~w">>},
+    pc022 =>
+        {debug, <<"Storing reference to deletions at ManifestSQN=~w">>},
+    pc023 =>
+        {info,
+            <<"At level=~w file_count=~w avg_mem=~w file with most memory fn=~s p=~w mem=~w">>},
+    pc024 =>
+        {info, <<"Grooming compaction picked file with tomb_count=~w">>},
+    pc025 =>
+        {info,
+            <<"At level=~w file_count=~w average words for heap_block_size=~w heap_size=~w recent_size=~w bin_vheap_size=~w">>},
+    pc026 =>
+        {info,
+            <<"Performing potential partial to level=~w merge as FileCounter=~w restricting to MaxAdditions=~w">>},
+    pm002 =>
+        {info, <<"Completed dump of L0 cache to list of l0cache_size=~w">>},
+    sst03 =>
+        {info,
+            <<"Opening SST file with filename ~s slot_count=~w and max sqn ~w">>},
+    sst04 =>
+        {debug, <<"Exit called for reason ~w on filename ~s">>},
+    sst05 =>
+        {warning, <<"Rename rogue filename ~s to ~s">>},
+    sst06 =>
+        {debug, <<"File ~s has been set for delete">>},
+    sst07 =>
+        {info, <<"Exit called and now clearing ~s">>},
+    sst08 =>
+        {info, <<"Completed creation of ~s at level ~w with max sqn ~w">>},
+    sst09 =>
+        {warning, <<"Read request exposes slot with bad CRC">>},
+    sst10 =>
+        {debug, <<"Expansion sought to support pointer to pid ~w status ~w">>},
+    sst11 =>
+        {info,
+            <<"Level zero creation timings in microseconds pmem_fetch=~w merge_lists=~w build_slots=~w build_summary=~w read_switch=~w">>},
+    sst12 =>
+        {info,
+            <<"SST Timings at level=~w for sample_count=~w at timing points notfound_time=~w fetchcache_time=~w slotcached_time=~w slotnoncached_time=~w exiting at points notfound_count=~w fetchcache_count=~w slotcached_count=~w slotnoncached_count=~w with sample_period=~w seconds">>},
+    sst13 =>
+        {info,
+            <<"SST merge list build timings of fold_toslot=~w slot_hashlist=~w slot_serialise=~w slot_finish=~w is_basement=~w level=~w">>},
+    sst14 =>
+        {debug, <<"File ~s has completed BIC">>},
+    sst15 =>
+        {warning, <<"Default returned from block due to handling error ~0p">>},
+    i0001 =>
+        {info,
+            <<"Unexpected failure to fetch value for Key=~w SQN=~w with reason ~w">>},
+    i0002 =>
+        {debug, <<"Journal snapshot ~w registered at SQN ~w">>},
+    i0003 =>
+        {debug, <<"Journal snapshot ~w released">>},
+    i0004 =>
+        {info, <<"Remaining number of journal snapshots is ~w">>},
+    i0005 =>
+        {info, <<"Inker closing journal for reason ~w">>},
+    i0006 =>
+        {info, <<"Close triggered with journal_sqn=~w and manifest_sqn=~w">>},
+    i0007 =>
+        {info, <<"Inker manifest when closing is:">>},
+    i0008 =>
+        {info,
+            <<"Put to new active journal required roll and manifest write">>},
+    i0009 =>
+        {info, <<"Updated manifest on startup:">>},
+    i0010 =>
+        {info, <<"Unchanged manifest on startup:">>},
+    i0011 =>
+        {info, <<"Manifest is empty, starting from manifest SQN 1">>},
+    i0012 =>
+        {info,
+            <<"Head manifest entry ~s is complete so new active journal required">>},
+    i0013 =>
+        {info, <<"File ~s to be removed from manifest">>},
+    i0014 =>
+        {info, <<"On startup loading from filename ~s from SQN ~w">>},
+    i0015 =>
+        {info, <<"Opening manifest file at ~s with SQN ~w">>},
+    i0016 =>
+        {info, <<"Writing new version of manifest for manifestSQN=~w">>},
+    i0017 =>
+        {debug, <<"At SQN=~w journal has filename ~s">>},
+    i0018 =>
+        {warning, <<"We're doomed - intention recorded to destroy all files">>},
+    i0020 =>
+        {info, <<"Journal backup completed to path=~s with file_count=~w">>},
+    i0021 =>
+        {info, <<"Ingoring filename=~s with SQN=~w and JournalSQN=~w">>},
+    i0022 =>
+        {info, <<"Removing filename=~s from backup folder as not in backup">>},
+    i0023 =>
+        {info, <<"Backup commencing into folder with ~w existing files">>},
+    i0024 =>
+        {info, <<"Prompted roll at NewSQN=~w">>},
+    i0025 =>
+        {warning,
+            <<"Journal SQN of ~w is below Ledger SQN of ~w anti-entropy will be required">>},
+    i0026 =>
+        {info, <<"Deferring shutdown due to snapshot_count=~w">>},
+    i0027 =>
+        {debug, <<"Shutdown complete for cloned Inker for reason ~w">>},
+    i0028 =>
+        {debug, <<"Shutdown complete for Inker for reason ~w">>},
+    ic001 =>
+        {info, <<"Closed for reason ~w so maybe leaving garbage">>},
+    ic002 =>
+        {info, <<"Clerk updating Inker as compaction complete of ~w files">>},
+    ic003 =>
+        {info,
+            <<"Scoring of compaction runs complete with highest score=~w with run of run_length=~w">>},
+    ic004 =>
+        {info, <<"Score=~w with mean_byte_jump=~w for filename ~s">>},
+    ic005 =>
+        {info,
+            <<"Compaction to be performed on file_count=~w with compaction_score=~w">>},
+    ic006 =>
+        {info, <<"Filename ~s is part of compaction run">>},
+    ic007 =>
+        {info, <<"Clerk has completed compaction process">>},
+    ic008 =>
+        {info, <<"Compaction source ~s has yielded ~w positions">>},
+    ic009 =>
+        {info, <<"Generate journal for compaction with filename ~s">>},
+    ic010 =>
+        {info, <<"Clearing journal with filename ~s">>},
+    ic011 =>
+        {info,
+            <<"Not clearing filename ~s as modified delta is only ~w seconds">>},
+    ic012 =>
+        {warning, <<"Tag ~w not found in Strategy ~w - maybe corrupted">>},
+    ic013 =>
+        {warning,
+            <<"File with name ~s to be ignored in manifest as scanning for first key returned empty - maybe corrupted">>},
+    ic014 =>
+        {info,
+            <<"Compaction to be run with strategy ~w and max_run_length ~w">>},
+    cdb01 =>
+        {info, <<"Opening file for writing with filename ~s">>},
+    cdb02 =>
+        {info, <<"Opening file for reading with filename ~s">>},
+    cdb03 =>
+        {info, <<"Re-opening file for reading with filename ~s">>},
+    cdb04 =>
+        {info, <<"Deletion confirmed for file ~s at ManifestSQN ~w">>},
+    cdb05 =>
+        {info, <<"Closing of filename ~s from state ~w for reason ~w">>},
+    cdb06 =>
+        {warning,
+            <<"File to be truncated at last position of ~w with end of file at ~w">>},
+    cdb07 =>
+        {info, <<"Hashtree index computed">>},
+    cdb08 =>
+        {info, <<"Renaming file from ~s to ~s for which existence is ~w">>},
+    cdb09 =>
+        {info,
+            <<"Failure to read Key/Value at Position ~w in scan this may be the end of the file">>},
+    cdb10 =>
+        {warning, <<"CRC check failed due to error=~s">>},
+    cdb12 =>
+        {info, <<"Hashtree index written">>},
+    cdb13 =>
+        {debug, <<"Write options of ~w">>},
+    cdb14 =>
+        {info,
+            <<"Microsecond timings for hashtree build of to_list=~w sort=~w build=~w">>},
+    cdb15 =>
+        {info, <<"Collision in search for hash ~w">>},
+    cdb18 =>
+        {info, <<"Handled return and write of hashtable">>},
+    cdb19 =>
+        {info,
+            <<"Sample timings in microseconds for sample_count=~w with totals of cycle_count=~w index_time=~w read_time=~w with sample_period=~w seconds">>},
+    cdb20 =>
+        {warning, <<"Error ~w caught when safe reading a file to length ~w">>},
+    cdb21 =>
+        {warning, <<"File ~s to be deleted but already gone">>}
+}).
 
 %%%============================================================================
 %%% Manage Log Options
@@ -444,24 +488,26 @@ should_i_log(LogLevel, Levels, LogRef, LogOpts) ->
         true ->
             true;
         false ->
-            if CurLevel == LogLevel ->
+            if
+                CurLevel == LogLevel ->
                     true;
-               true ->
+                true ->
                     is_active_level(Levels, CurLevel, LogLevel)
             end
     end.
 
-is_active_level([L|_], L, _) -> true;
-is_active_level([L|_], _, L) -> false;
-is_active_level([_|T], C, L) -> is_active_level(T, C, L).
+is_active_level([L | _], L, _) -> true;
+is_active_level([L | _], _, L) -> false;
+is_active_level([_ | T], C, L) -> is_active_level(T, C, L).
 
 -spec log_timer(atom(), list(), erlang:timestamp()) -> ok.
 log_timer(LogReference, Subs, StartTime) ->
     log_timer(LogReference, Subs, StartTime, ?LOG_LEVELS, ?LOGBASE, backend).
 
 -spec log_timer(
-    atom(), list(), erlang:timestamp(), list(log_level()), log_base(), atom())
-        -> ok.
+    atom(), list(), erlang:timestamp(), list(log_level()), log_base(), atom()
+) ->
+    ok.
 log_timer(LogRef, Subs, StartTime, SupportedLevels, LogBase, Tag) ->
     {LogLevel, Log} = maps:get(LogRef, LogBase),
     LogOpts = get_opts(),
@@ -492,22 +538,31 @@ log_randomtimer(LogReference, Subs, StartTime, RandomProb) ->
             ok
     end.
 
--spec log_prefix(atom(), non_neg_integer()|undefined, pid()) -> io_lib:chars().
+-spec log_prefix(atom(), non_neg_integer() | undefined, pid()) ->
+    io_lib:chars().
 log_prefix(LogRef, undefined, Pid) ->
     ["log_ref=", atom_to_list(LogRef), " pid=", pid_to_list(Pid), " "];
 log_prefix(LogRef, DBid, Pid) ->
     [
-        "log_ref=", atom_to_list(LogRef),
-        " db_id=", integer_to_list(DBid),
-        " pid=", pid_to_list(Pid), " "
+        "log_ref=",
+        atom_to_list(LogRef),
+        " db_id=",
+        integer_to_list(DBid),
+        " pid=",
+        pid_to_list(Pid),
+        " "
     ].
 
 -spec duration_text(erlang:timestamp()) -> io_lib:chars().
 duration_text(StartTime) ->
     case timer:now_diff(os:timestamp(), StartTime) of
         US when US > 1000 ->
-            [" with us_duration=", integer_to_list(US),
-            " or ms_duration=", integer_to_list(US div 1000)];
+            [
+                " with us_duration=",
+                integer_to_list(US),
+                " or ms_duration=",
+                integer_to_list(US div 1000)
+            ];
         US ->
             [" with us_duration=", integer_to_list(US)]
     end.
@@ -534,12 +589,12 @@ log_wrongkey_test() ->
     ?assertException(
         error,
         {badkey, wrong0001},
-        log(wrong0001, [],[warning, error], ?LOGBASE, backend)
+        log(wrong0001, [], [warning, error], ?LOGBASE, backend)
     ).
 
 logtimer_wrongkey_test() ->
     ST = os:timestamp(),
-    % Note - 
+    % Note -
     % An issue with cover means issues with ?assertException, where the
     % function being tested is split across lines, the closing bracket on the
     % next line is not recognised as being covered. We want 100% coverage, so
@@ -567,6 +622,5 @@ badloglevel_test() ->
     % Set a bad log level - and everything logs
     ?assertMatch(true, is_active_level(?LOG_LEVELS, debug, unsupported)),
     ?assertMatch(true, is_active_level(?LOG_LEVELS, critical, unsupported)).
-
 
 -endif.
