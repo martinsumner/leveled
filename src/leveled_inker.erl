@@ -730,10 +730,7 @@ handle_call(
         fun(RFN) ->
             leveled_log:log(i0022, [RFN]),
             RemoveFile = filename:join(BackupJFP, RFN),
-            case
-                filelib:is_file(RemoveFile) andalso
-                    not filelib:is_dir(RemoveFile)
-            of
+            case filelib:is_regular(RemoveFile) of
                 true ->
                     ok = file:delete(RemoveFile);
                 false ->
