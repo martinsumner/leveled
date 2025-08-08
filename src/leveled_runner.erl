@@ -43,10 +43,10 @@
 -type foldacc() :: any().
 % Can't currently be specific about what an acc might be
 
+%% erlfmt:ignore - issues with editors when function definitions are split
 -type fold_objects_fun() ::
-    fun(
-        (leveled_codec:key(), leveled_codec:key(), any(), foldacc()) ->
-            foldacc()
+    fun((leveled_codec:key(), leveled_codec:key(), any(), foldacc())
+        -> foldacc()
     ).
 -type fold_keys_fun() ::
     fun((leveled_codec:key(), leveled_codec:key(), foldacc()) -> foldacc()).
@@ -420,7 +420,12 @@ foldobjects_allkeys(SnapFun, Tag, FoldObjectsFun, sqn_order) ->
                         ),
                     % Need to check that we have not folded past the point
                     % at which the snapshot was taken
-                    (JournalSQN >= SQN) and (CheckSQN == current)
+                    case {JournalSQN, CheckSQN} of
+                        {JournalSQN, current} when JournalSQN >= SQN ->
+                            true;
+                        _ ->
+                            false
+                    end
                 end,
 
             BatchFoldFun =

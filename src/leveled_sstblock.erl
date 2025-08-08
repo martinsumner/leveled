@@ -66,40 +66,19 @@
 %%% API
 %%%============================================================================
 
+%% erlfmt:ignore-begin
 -spec serialise_block(
-    lookup | no_lookup,
+    lookup|no_lookup,
     {leveled_sst:block_version(), leveled_sst:press_method()},
-    list(leveled_codec:ledger_kv())
-) ->
-    binary().
+    list(leveled_codec:ledger_kv())) ->
+        binary().
 serialise_block(
     lookup,
     {1, PressMethod},
-    [
-        A1,
-        A2,
-        A3,
-        A4,
-        A5,
-        A6,
-        B1,
-        B2,
-        B3,
-        B4,
-        B5,
-        B6,
-        C1,
-        C2,
-        C3,
-        C4,
-        C5,
-        C6,
-        D1,
-        D2,
-        D3,
-        D4,
-        D5,
-        D6
+    [   A1, A2, A3, A4, A5, A6,
+        B1, B2, B3, B4, B5, B6,
+        C1, C2, C3, C4, C5, C6,
+        D1, D2, D3, D4, D5, D6
     ] = TL
 ) when PressMethod == lz4; PressMethod == zstd ->
     ABn = term_to_binary([A1, A2, A3, A4, A5, A6]),
@@ -107,12 +86,12 @@ serialise_block(
     CBn = term_to_binary([C1, C2, C3, C4, C5, C6]),
     DBn = term_to_binary([D1, D2, D3, D4, D5, D6]),
     case {byte_size(ABn), byte_size(BBn), byte_size(CBn), byte_size(DBn)} of
-        {ASz, BSz, CSz, DSz} when
-            ASz < ?MAX_SUBBLOCK_SIZE,
-            BSz < ?MAX_SUBBLOCK_SIZE,
-            CSz < ?MAX_SUBBLOCK_SIZE,
-            DSz < ?MAX_SUBBLOCK_SIZE
-        ->
+        {ASz, BSz, CSz, DSz}
+            when
+                ASz < ?MAX_SUBBLOCK_SIZE,
+                BSz < ?MAX_SUBBLOCK_SIZE,
+                CSz < ?MAX_SUBBLOCK_SIZE,
+                DSz < ?MAX_SUBBLOCK_SIZE ->
             BlockBin =
                 <<
                     ASz:16/integer,
@@ -123,7 +102,7 @@ serialise_block(
                     BBn/binary,
                     CBn/binary,
                     DBn/binary
-                >>,
+                    >>,
             crc_validate_bin(
                 <<
                     (compress_block(BlockBin, PressMethod))/binary,
@@ -137,38 +116,10 @@ serialise_block(
     lookup,
     {1, PressMethod},
     [
-        A1,
-        A2,
-        A3,
-        A4,
-        A5,
-        A6,
-        A7,
-        A8,
-        B1,
-        B2,
-        B3,
-        B4,
-        B5,
-        B6,
-        B7,
-        B8,
-        C1,
-        C2,
-        C3,
-        C4,
-        C5,
-        C6,
-        C7,
-        C8,
-        D1,
-        D2,
-        D3,
-        D4,
-        D5,
-        D6,
-        D7,
-        D8
+        A1, A2, A3, A4, A5, A6, A7, A8,
+        B1, B2, B3, B4, B5, B6, B7, B8,
+        C1, C2, C3, C4, C5, C6, C7, C8,
+        D1, D2, D3, D4, D5, D6, D7, D8
     ] = TL
 ) when PressMethod == lz4; PressMethod == zstd ->
     ABn = term_to_binary([A1, A2, A3, A4, A5, A6, A7, A8]),
@@ -176,12 +127,12 @@ serialise_block(
     CBn = term_to_binary([C1, C2, C3, C4, C5, C6, C7, C8]),
     DBn = term_to_binary([D1, D2, D3, D4, D5, D6, D7, D8]),
     case {byte_size(ABn), byte_size(BBn), byte_size(CBn), byte_size(DBn)} of
-        {ASz, BSz, CSz, DSz} when
-            ASz < ?MAX_SUBBLOCK_SIZE,
-            BSz < ?MAX_SUBBLOCK_SIZE,
-            CSz < ?MAX_SUBBLOCK_SIZE,
-            DSz < ?MAX_SUBBLOCK_SIZE
-        ->
+        {ASz, BSz, CSz, DSz}
+            when
+                ASz < ?MAX_SUBBLOCK_SIZE,
+                BSz < ?MAX_SUBBLOCK_SIZE,
+                CSz < ?MAX_SUBBLOCK_SIZE,
+                DSz < ?MAX_SUBBLOCK_SIZE ->
             BlockBin =
                 <<
                     ASz:16/integer,
@@ -192,7 +143,7 @@ serialise_block(
                     BBn/binary,
                     CBn/binary,
                     DBn/binary
-                >>,
+                    >>,
             crc_validate_bin(
                 <<
                     (compress_block(BlockBin, PressMethod))/binary,
@@ -206,162 +157,67 @@ serialise_block(
     no_lookup,
     {1, PressMethod},
     [
-        L1,
-        L2,
-        L3,
-        L4,
-        L5,
-        L6,
-        L7,
-        L8,
-        L9,
-        L10,
-        L11,
-        L12,
-        L13,
-        L14,
-        L15,
-        L16,
-        L17,
-        L18,
-        L19,
-        L20,
-        L21,
-        L22,
-        L23,
-        L24,
-        M1,
-        M2,
-        M3,
-        M4,
-        M5,
-        M6,
-        M7,
-        M8,
-        R1,
-        R2,
-        R3,
-        R4,
-        R5,
-        R6,
-        R7,
-        R8,
-        R9,
-        R10,
-        R11,
-        R12,
-        R13,
-        R14,
-        R15,
-        R16,
-        R17,
-        R18,
-        R19,
-        R20,
-        R21,
-        R22,
-        R23,
-        R24
+        L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12,
+        L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23, L24,
+        M1, M2, M3, M4, M5, M6, M7, M8,
+        R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12,
+        R13, R14, R15, R16, R17, R18, R19, R20, R21, R22, R23, R24
     ] = TermList
-) when
-    PressMethod == zstd; PressMethod == lz4
-->
+)
+        when
+            PressMethod == zstd; PressMethod == lz4 ->
     LBn =
         term_to_binary(
             [
-                L1,
-                L2,
-                L3,
-                L4,
-                L5,
-                L6,
-                L7,
-                L8,
-                L9,
-                L10,
-                L11,
-                L12,
-                L13,
-                L14,
-                L15,
-                L16,
-                L17,
-                L18,
-                L19,
-                L20,
-                L21,
-                L22,
-                L23,
-                L24
+                L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12,
+                L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23, L24
             ]
         ),
     MBn = term_to_binary([M1, M2, M3, M4, M5, M6, M7, M8]),
     RBn =
         term_to_binary(
             [
-                R1,
-                R2,
-                R3,
-                R4,
-                R5,
-                R6,
-                R7,
-                R8,
-                R9,
-                R10,
-                R11,
-                R12,
-                R13,
-                R14,
-                R15,
-                R16,
-                R17,
-                R18,
-                R19,
-                R20,
-                R21,
-                R22,
-                R23,
-                R24
+                R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12,
+                R13, R14, R15, R16, R17, R18, R19, R20, R21, R22, R23, R24
             ]
         ),
     TTBn = term_to_binary({element(1, L1), element(1, R24)}),
     case {byte_size(LBn), byte_size(MBn), byte_size(RBn), byte_size(TTBn)} of
-        {LSz, MSz, RSz, TTSz} when
-            LSz < ?MAX_SUBBLOCK_SIZE,
-            MSz < ?MAX_SUBBLOCK_SIZE,
-            RSz < ?MAX_SUBBLOCK_SIZE,
-            TTSz < ?MAX_SUBBLOCK_SIZE
-        ->
-            CompressedBin =
-                compress_block(
-                    <<
-                        LSz:16/integer,
-                        MSz:16/integer,
-                        RSz:16/integer,
-                        LBn/binary,
-                        MBn/binary,
-                        RBn/binary
-                    >>,
-                    PressMethod
-                ),
+        {LSz, MSz, RSz, TTSz}
+            when
+                LSz < ?MAX_SUBBLOCK_SIZE,
+                MSz < ?MAX_SUBBLOCK_SIZE,
+                RSz < ?MAX_SUBBLOCK_SIZE,
+                TTSz < ?MAX_SUBBLOCK_SIZE
+            ->
+                CompressedBin =
+                    compress_block(
+                        <<
+                            LSz:16/integer,
+                            MSz:16/integer,
+                            RSz:16/integer,
+                            LBn/binary,
+                            MBn/binary,
+                            RBn/binary
+                        >>,
+                        PressMethod
+                    ),
 
-            crc_validate_bin(
-                <<
-                    TTSz:16/integer,
-                    TTBn/binary,
-                    CompressedBin/binary,
-                    (?BLOCK_TYPE4):8/integer
-                >>
-            );
+                crc_validate_bin(
+                    <<
+                        TTSz:16/integer,
+                        TTBn/binary,
+                        CompressedBin/binary,
+                        (?BLOCK_TYPE4):8/integer
+                    >>
+                );
         _ ->
             serialise_block_aslist(PressMethod, TermList)
     end;
-serialise_block(no_lookup, {1, PressMethod}, TermList) when
-    length(TermList) > 2,
-    PressMethod == zstd;
-    PressMethod == lz4
-->
+serialise_block(no_lookup, {1, PressMethod}, TermList)
+        when
+            length(TermList) > 2, 
+            PressMethod == zstd; PressMethod == lz4 ->
     TopTail =
         term_to_binary(
             {
@@ -387,6 +243,7 @@ serialise_block(_, {1, PressMethod}, TermList) ->
     serialise_block_aslist(PressMethod, TermList);
 serialise_block(_, {0, PressMethod}, TermList) ->
     serialise_block(TermList, PressMethod).
+%% erlfmt:ignore-end
 
 -spec get_all(
     binary(), leveled_sst:block_method()
@@ -528,18 +385,17 @@ check_block(_Block, Default, _ExtractFun) ->
 %%% Block-type specific cases - v1
 %%%============================================================================
 
+%% erlfmt:ignore-begin
 -spec get_topandtail_block(
-    binary(), leveled_sst:press_method()
-) -> top_and_tail().
+    binary(), leveled_sst:press_method()) -> top_and_tail().
 get_topandtail_block(CheckedBlock, PressMethod) ->
     CheckedSize = byte_size(CheckedBlock),
     <<TypedBlock:(CheckedSize - 1)/binary, Type:8/integer>> = CheckedBlock,
     get_topandtail_block(Type, TypedBlock, PressMethod).
 
 -spec get_topandtail_block(
-    block_type(), binary(), leveled_sst:press_method()
-) ->
-    top_and_tail().
+    block_type(), binary(), leveled_sst:press_method()) ->
+        top_and_tail().
 get_topandtail_block(Type, TypedBlock, PM) when Type == ?BLOCK_TYPE3 ->
     <<TTSz:16/integer, TopTail:TTSz/binary, _/binary>> = TypedBlock,
     {Top, Tail} = binary_to_term(TopTail),
@@ -548,10 +404,10 @@ get_topandtail_block(Type, TypedBlock, PM) when Type == ?BLOCK_TYPE3 ->
         Tail,
         fun(_) -> get_all_block(?BLOCK_TYPE3, TypedBlock, PM) end
     };
-get_topandtail_block(Type, TypedBlock, PM) when
-    Type == ?BLOCK_TYPE4 andalso
-        (PM == lz4 orelse PM == zstd)
-->
+get_topandtail_block(Type, TypedBlock, PM)
+        when
+            Type == ?BLOCK_TYPE4 andalso
+            (PM == lz4 orelse PM == zstd) ->
     <<
         TTSz:16/integer,
         TopTail:TTSz/binary,
@@ -587,240 +443,59 @@ get_topandtail_block(Type, TypedBlock, PM) when
                     binary_to_term(LBn);
                 le_mid ->
                     [
-                        L1,
-                        L2,
-                        L3,
-                        L4,
-                        L5,
-                        L6,
-                        L7,
-                        L8,
-                        L9,
-                        L10,
-                        L11,
-                        L12,
-                        L13,
-                        L14,
-                        L15,
-                        L16,
-                        L17,
-                        L18,
-                        L19,
-                        L20,
-                        L21,
-                        L22,
-                        L23,
-                        L24
+                        L1, L2, L3, L4, L5, L6,
+                        L7, L8, L9, L10, L11, L12,
+                        L13, L14, L15, L16, L17, L18,
+                        L19, L20, L21, L22, L23, L24
                     ] = binary_to_term(LBn),
                     [
-                        L1,
-                        L2,
-                        L3,
-                        L4,
-                        L5,
-                        L6,
-                        L7,
-                        L8,
-                        L9,
-                        L10,
-                        L11,
-                        L12,
-                        L13,
-                        L14,
-                        L15,
-                        L16,
-                        L17,
-                        L18,
-                        L19,
-                        L20,
-                        L21,
-                        L22,
-                        L23,
-                        L24,
-                        M1,
-                        M2,
-                        M3,
-                        M4,
-                        M5,
-                        M6,
-                        M7,
-                        M8
+                        L1, L2, L3, L4, L5, L6,
+                        L7, L8, L9, L10, L11, L12,
+                        L13, L14, L15, L16, L17, L18,
+                        L19, L20, L21, L22, L23, L24,
+                        M1, M2, M3, M4, M5, M6, M7, M8 
                     ];
                 mid_only ->
                     [M1, M2, M3, M4, M5, M6, M7, M8];
                 ge_mid ->
                     [
-                        R1,
-                        R2,
-                        R3,
-                        R4,
-                        R5,
-                        R6,
-                        R7,
-                        R8,
-                        R9,
-                        R10,
-                        R11,
-                        R12,
-                        R13,
-                        R14,
-                        R15,
-                        R16,
-                        R17,
-                        R18,
-                        R19,
-                        R20,
-                        R21,
-                        R22,
-                        R23,
-                        R24
+                        R1, R2, R3, R4, R5, R6,
+                        R7, R8, R9, R10, R11, R12,
+                        R13, R14, R15, R16, R17, R18,
+                        R19, R20, R21, R22, R23, R24
                     ] = binary_to_term(RBn),
                     [
-                        M1,
-                        M2,
-                        M3,
-                        M4,
-                        M5,
-                        M6,
-                        M7,
-                        M8,
-                        R1,
-                        R2,
-                        R3,
-                        R4,
-                        R5,
-                        R6,
-                        R7,
-                        R8,
-                        R9,
-                        R10,
-                        R11,
-                        R12,
-                        R13,
-                        R14,
-                        R15,
-                        R16,
-                        R17,
-                        R18,
-                        R19,
-                        R20,
-                        R21,
-                        R22,
-                        R23,
-                        R24
+                        M1, M2, M3, M4, M5, M6, M7, M8,
+                        R1, R2, R3, R4, R5, R6,
+                        R7, R8, R9, R10, R11, R12,
+                        R13, R14, R15, R16, R17, R18,
+                        R19, R20, R21, R22, R23, R24
                     ];
                 gt_mid ->
                     binary_to_term(RBn);
                 _ ->
                     [
-                        L1,
-                        L2,
-                        L3,
-                        L4,
-                        L5,
-                        L6,
-                        L7,
-                        L8,
-                        L9,
-                        L10,
-                        L11,
-                        L12,
-                        L13,
-                        L14,
-                        L15,
-                        L16,
-                        L17,
-                        L18,
-                        L19,
-                        L20,
-                        L21,
-                        L22,
-                        L23,
-                        L24
+                        L1, L2, L3, L4, L5, L6,
+                        L7, L8, L9, L10, L11, L12,
+                        L13, L14, L15, L16, L17, L18,
+                        L19, L20, L21, L22, L23, L24
                     ] = binary_to_term(LBn),
                     [
-                        R1,
-                        R2,
-                        R3,
-                        R4,
-                        R5,
-                        R6,
-                        R7,
-                        R8,
-                        R9,
-                        R10,
-                        R11,
-                        R12,
-                        R13,
-                        R14,
-                        R15,
-                        R16,
-                        R17,
-                        R18,
-                        R19,
-                        R20,
-                        R21,
-                        R22,
-                        R23,
-                        R24
+                        R1, R2, R3, R4, R5, R6,
+                        R7, R8, R9, R10, R11, R12,
+                        R13, R14, R15, R16, R17, R18,
+                        R19, R20, R21, R22, R23, R24
                     ] = binary_to_term(RBn),
                     [
-                        L1,
-                        L2,
-                        L3,
-                        L4,
-                        L5,
-                        L6,
-                        L7,
-                        L8,
-                        L9,
-                        L10,
-                        L11,
-                        L12,
-                        L13,
-                        L14,
-                        L15,
-                        L16,
-                        L17,
-                        L18,
-                        L19,
-                        L20,
-                        L21,
-                        L22,
-                        L23,
-                        L24,
-                        M1,
-                        M2,
-                        M3,
-                        M4,
-                        M5,
-                        M6,
-                        M7,
-                        M8,
-                        R1,
-                        R2,
-                        R3,
-                        R4,
-                        R5,
-                        R6,
-                        R7,
-                        R8,
-                        R9,
-                        R10,
-                        R11,
-                        R12,
-                        R13,
-                        R14,
-                        R15,
-                        R16,
-                        R17,
-                        R18,
-                        R19,
-                        R20,
-                        R21,
-                        R22,
-                        R23,
-                        R24
+                        L1, L2, L3, L4, L5, L6,
+                        L7, L8, L9, L10, L11, L12,
+                        L13, L14, L15, L16, L17, L18,
+                        L19, L20, L21, L22, L23, L24,
+                        M1, M2, M3, M4, M5, M6, M7, M8,
+                        R1, R2, R3, R4, R5, R6,
+                        R7, R8, R9, R10, R11, R12,
+                        R13, R14, R15, R16, R17, R18,
+                        R19, R20, R21, R22, R23, R24
                     ]
             end
         end,
@@ -830,33 +505,26 @@ get_topandtail_block(Type, TypedBlock, PM) ->
     {element(1, hd(TL)), element(1, lists:last(TL)), fun(_) -> TL end}.
 
 -spec get_nth_item(
-    pos_integer(), binary(), leveled_sst:press_method()
-) ->
-    leveled_codec:ledger_kv().
+    pos_integer(), binary(), leveled_sst:press_method()) ->
+        leveled_codec:ledger_kv().
 get_nth_item(N, CheckedBlock, PressMethod) ->
     CheckedSize = byte_size(CheckedBlock),
     <<TypedBlock:(CheckedSize - 1)/binary, Type:8/integer>> = CheckedBlock,
     get_nth_item(Type, N, TypedBlock, PressMethod).
 
 -spec get_nth_item(
-    block_type(), pos_integer(), binary(), leveled_sst:press_method()
-) ->
-    leveled_codec:ledger_kv().
-get_nth_item(Type, N, TypedBlock, PM) when
-    Type == ?BLOCK_TYPE0, (PM == zstd orelse PM == lz4)
-->
+    block_type(), pos_integer(), binary(), leveled_sst:press_method()) ->
+        leveled_codec:ledger_kv().
+get_nth_item(Type, N, TypedBlock, PM)
+        when Type == ?BLOCK_TYPE0, (PM == zstd orelse PM == lz4) ->
     lists:nth(N, deserialise_checkedblock(TypedBlock, PM));
 get_nth_item(Type, N, TypedBlock, _PM) when Type == ?BLOCK_TYPE0 ->
     lists:nth(N, binary_to_term(TypedBlock));
-get_nth_item(Type, N, TypedBlock, PressMethod) when
-    (Type == ?BLOCK_TYPE1 orelse Type == ?BLOCK_TYPE2) andalso
-        (PressMethod == lz4 orelse PressMethod == zstd)
-->
-    Width =
-        case Type of
-            ?BLOCK_TYPE1 -> 6;
-            ?BLOCK_TYPE2 -> 8
-        end,
+get_nth_item(Type, N, TypedBlock, PressMethod)
+        when 
+            (Type == ?BLOCK_TYPE1 orelse Type == ?BLOCK_TYPE2 ) andalso
+            (PressMethod == lz4 orelse PressMethod == zstd) ->
+    Width = case Type of ?BLOCK_TYPE1 -> 6; ?BLOCK_TYPE2 -> 8 end,
     <<
         ASz:16/integer,
         BSz:16/integer,
@@ -867,7 +535,7 @@ get_nth_item(Type, N, TypedBlock, PressMethod) when
         CBn:CSz/binary,
         DBn:DSz/binary
     >> = decompress_block(TypedBlock, PressMethod),
-    case N of
+    case N of 
         N when N =< Width ->
             lists:nth(N, binary_to_term(ABn));
         N when N =< (2 * Width) ->
@@ -879,21 +547,18 @@ get_nth_item(Type, N, TypedBlock, PressMethod) when
     end.
 
 -spec get_all_block(
-    binary(), leveled_sst:press_method()
-) ->
-    list(leveled_codec:ledger_kv()).
+    binary(), leveled_sst:press_method()) ->
+        list(leveled_codec:ledger_kv()).
 get_all_block(CheckedBlock, PressMethod) ->
     CheckedSize = byte_size(CheckedBlock),
     <<TypedBlock:(CheckedSize - 1)/binary, Type:8/integer>> = CheckedBlock,
     get_all_block(Type, TypedBlock, PressMethod).
 
 -spec get_all_block(
-    block_type(), binary(), leveled_sst:press_method()
-) ->
-    list(leveled_codec:ledger_kv()).
-get_all_block(Type, TypedBlock, PM) when
-    Type == ?BLOCK_TYPE0, (PM == zstd orelse PM == lz4)
-->
+        block_type(), binary(), leveled_sst:press_method()) ->
+            list(leveled_codec:ledger_kv()).
+get_all_block(Type, TypedBlock, PM)
+        when Type == ?BLOCK_TYPE0, (PM == zstd orelse PM == lz4) ->
     deserialise_checkedblock(TypedBlock, PM);
 get_all_block(Type, TypedBlock, _PM) when Type == ?BLOCK_TYPE0 ->
     binary_to_term(TypedBlock);
@@ -904,10 +569,10 @@ get_all_block(Type, TypedBlock, PM) when Type == ?BLOCK_TYPE3 ->
         AllBin/binary
     >> = TypedBlock,
     get_all_block(?BLOCK_TYPE0, AllBin, PM);
-get_all_block(Type, TypedBlock, PM) when
-    Type == ?BLOCK_TYPE4 andalso
-        (PM == lz4 orelse PM == zstd)
-->
+get_all_block(Type, TypedBlock, PM)
+        when
+            Type == ?BLOCK_TYPE4 andalso
+            (PM == lz4 orelse PM == zstd) ->
     <<
         TTSz:16/integer,
         _TopTail:TTSz/binary,
@@ -922,122 +587,27 @@ get_all_block(Type, TypedBlock, PM) when
         RBn:RSz/binary
     >> = decompress_block(CompressedBin, PM),
     [
-        L1,
-        L2,
-        L3,
-        L4,
-        L5,
-        L6,
-        L7,
-        L8,
-        L9,
-        L10,
-        L11,
-        L12,
-        L13,
-        L14,
-        L15,
-        L16,
-        L17,
-        L18,
-        L19,
-        L20,
-        L21,
-        L22,
-        L23,
-        L24
+        L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12,
+        L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23, L24
     ] = binary_to_term(LBn),
     [
         M1, M2, M3, M4, M5, M6, M7, M8
     ] = binary_to_term(MBn),
     [
-        R1,
-        R2,
-        R3,
-        R4,
-        R5,
-        R6,
-        R7,
-        R8,
-        R9,
-        R10,
-        R11,
-        R12,
-        R13,
-        R14,
-        R15,
-        R16,
-        R17,
-        R18,
-        R19,
-        R20,
-        R21,
-        R22,
-        R23,
-        R24
+        R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12,
+        R13, R14, R15, R16, R17, R18, R19, R20, R21, R22, R23, R24
     ] = binary_to_term(RBn),
     [
-        L1,
-        L2,
-        L3,
-        L4,
-        L5,
-        L6,
-        L7,
-        L8,
-        L9,
-        L10,
-        L11,
-        L12,
-        L13,
-        L14,
-        L15,
-        L16,
-        L17,
-        L18,
-        L19,
-        L20,
-        L21,
-        L22,
-        L23,
-        L24,
-        M1,
-        M2,
-        M3,
-        M4,
-        M5,
-        M6,
-        M7,
-        M8,
-        R1,
-        R2,
-        R3,
-        R4,
-        R5,
-        R6,
-        R7,
-        R8,
-        R9,
-        R10,
-        R11,
-        R12,
-        R13,
-        R14,
-        R15,
-        R16,
-        R17,
-        R18,
-        R19,
-        R20,
-        R21,
-        R22,
-        R23,
-        R24
+        L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12,
+        L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23, L24,
+        M1, M2, M3, M4, M5, M6, M7, M8,
+        R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12,
+        R13, R14, R15, R16, R17, R18, R19, R20, R21, R22, R23, R24
     ];
-get_all_block(Type, TypedBlock, PM) when
-    Type == ?BLOCK_TYPE1,
-    (PM == lz4 orelse PM == zstd)
-->
+get_all_block(Type, TypedBlock, PM)
+        when
+            Type == ?BLOCK_TYPE1,
+            (PM == lz4 orelse PM == zstd) ->
     <<
         ASz:16/integer,
         BSz:16/integer,
@@ -1053,35 +623,15 @@ get_all_block(Type, TypedBlock, PM) when
     [C1, C2, C3, C4, C5, C6] = binary_to_term(CBn),
     [D1, D2, D3, D4, D5, D6] = binary_to_term(DBn),
     [
-        A1,
-        A2,
-        A3,
-        A4,
-        A5,
-        A6,
-        B1,
-        B2,
-        B3,
-        B4,
-        B5,
-        B6,
-        C1,
-        C2,
-        C3,
-        C4,
-        C5,
-        C6,
-        D1,
-        D2,
-        D3,
-        D4,
-        D5,
-        D6
+        A1, A2, A3, A4, A5, A6,
+        B1, B2, B3, B4, B5, B6,
+        C1, C2, C3, C4, C5, C6,
+        D1, D2, D3, D4, D5, D6
     ];
-get_all_block(Type, TypedBlock, PM) when
-    Type == ?BLOCK_TYPE2,
-    (PM == lz4 orelse PM == zstd)
-->
+get_all_block(Type, TypedBlock, PM)
+        when
+            Type == ?BLOCK_TYPE2,
+            (PM == lz4 orelse PM == zstd) ->
     <<
         ASz:16/integer,
         BSz:16/integer,
@@ -1097,39 +647,12 @@ get_all_block(Type, TypedBlock, PM) when
     [C1, C2, C3, C4, C5, C6, C7, C8] = binary_to_term(CBn),
     [D1, D2, D3, D4, D5, D6, D7, D8] = binary_to_term(DBn),
     [
-        A1,
-        A2,
-        A3,
-        A4,
-        A5,
-        A6,
-        A7,
-        A8,
-        B1,
-        B2,
-        B3,
-        B4,
-        B5,
-        B6,
-        B7,
-        B8,
-        C1,
-        C2,
-        C3,
-        C4,
-        C5,
-        C6,
-        C7,
-        C8,
-        D1,
-        D2,
-        D3,
-        D4,
-        D5,
-        D6,
-        D7,
-        D8
+        A1, A2, A3, A4, A5, A6, A7, A8,
+        B1, B2, B3, B4, B5, B6, B7, B8,
+        C1, C2, C3, C4, C5, C6, C7, C8,
+        D1, D2, D3, D4, D5, D6, D7, D8
     ].
+%% erlfmt:ignore-end
 
 %%%============================================================================
 %%% Internal functions - v0

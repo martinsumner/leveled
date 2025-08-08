@@ -144,15 +144,11 @@
 -type cdb_options() :: #cdb_options{}.
 -type hashtable_index() :: tuple().
 -type file_location() :: integer() | eof.
+-type extract_fun() :: fun((binary()) -> any()).
+%% erlfmt:ignore - issues with editors when function definitions are split
 -type filter_fun() ::
-    fun(
-        (
-            any(),
-            binary(),
-            integer(),
-            term() | {term(), term()},
-            fun((binary()) -> any())
-        ) -> {stop | loop, any()}
+    fun((any(), binary(), integer(), term() | {term(), term()}, extract_fun()) ->
+            {stop | loop, any()}
     ).
 
 -export_type([filter_fun/0]).

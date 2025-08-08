@@ -115,9 +115,10 @@
     {binary(), integer(), integer(), integer(), binary()}.
 -type tree_size() ::
     xxsmall | xsmall | small | medium | large | xlarge.
+%% erlfmt:ignore - issues with editors when function definitions are split
 -type bin_extract_fun() ::
-    fun(
-        (term(), term()) -> {binary(), binary() | {is_hash, non_neg_integer()}}
+    fun((term(), term())
+        -> {binary(), binary() | {is_hash, non_neg_integer()}}
     ).
 
 -export_type([tictactree/0, segment48/0, tree_size/0]).

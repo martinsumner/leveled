@@ -86,16 +86,15 @@
     fun((tuple()) -> binary()).
 -type appdefinable_headfun() ::
     fun((object_tag(), std_metadata()) -> head()).
+%% erlfmt:ignore - issues with editors when function definitions are split
 -type appdefinable_metadatafun() ::
-    fun(
-        (leveled_codec:tag(), non_neg_integer(), binary() | delete) -> {
-            std_metadata(), list(erlang:timestamp())
-        }
+    fun((leveled_codec:tag(), non_neg_integer(), binary() | delete)
+        -> {std_metadata(), list(erlang:timestamp())}
     ).
+%% erlfmt:ignore - issues with editors when function definitions are split
 -type appdefinable_indexspecsfun() ::
-    fun(
-        (object_tag(), std_metadata(), std_metadata() | not_present) ->
-            leveled_codec:index_specs()
+    fun((object_tag(), std_metadata(), std_metadata() | not_present)
+        -> leveled_codec:index_specs()
     ).
 -type appdefinable_function_fun() ::
     appdefinable_keyfun()

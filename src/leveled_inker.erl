@@ -171,10 +171,10 @@
 -type ink_state() :: #state{}.
 -type registered_snapshot() :: {pid(), erlang:timestamp(), integer()}.
 -type filterserver() :: pid() | list(tuple()).
+%% erlfmt:ignore - issues with editors when function definitions are split
 -type filterfun() ::
-    fun(
-        (filterserver(), leveled_codec:ledger_key(), leveled_codec:sqn()) ->
-            current | replaced | missing
+    fun((filterserver(), leveled_codec:ledger_key(), leveled_codec:sqn())
+        -> current | replaced | missing
     ).
 -type filterclosefun() :: fun((filterserver()) -> ok).
 -type filterinitfun() :: fun((pid()) -> {filterserver(), leveled_codec:sqn()}).
@@ -828,11 +828,19 @@ handle_cast({confirm_delete, ManSQN, CDB}, State) ->
     % Check there are no snapshots that may be aware of the file process that
     % is waiting to delete itself.
     CheckSQNFun =
+        % Note that the formatting of this function is a result of a peculiar
+        % conflict between the demands of an editor and the issues with erlfmt
         fun({_R, _TS, SnapSQN}, Bool) ->
-            % If the Snapshot SQN was at the same point the file was set to
-            % delete (or after), then the snapshot would not have been told
-            % of the file, and the snapshot should not hold up its deletion
-            (SnapSQN >= ManSQN) and Bool
+            case {SnapSQN, Bool} of
+                {SnapSQN, true} when SnapSQN >= ManSQN ->
+                    % If the Snapshot SQN was at the same point the file was
+                    % set to delete (or after), then the snapshot would not
+                    % have been told of the file, and the snapshot should not
+                    % hold up its deletion
+                    true;
+                _ ->
+                    false
+            end
         end,
     CheckSnapshotExpiryFun =
         fun({_R, TS, _SnapSQN}) ->

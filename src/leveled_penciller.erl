@@ -301,23 +301,21 @@
 -type levelzero_cacheentry() :: {pos_integer(), leveled_tree:leveled_tree()}.
 -type levelzero_cache() :: list(levelzero_cacheentry()).
 -type sqn_check() :: current | replaced | missing.
+%% erlfmt:ignore - issues with editors when function definitions are split
 -type sst_fetchfun() ::
-    fun(
-        (
+    fun((
             pid(),
             leveled_codec:ledger_key(),
             leveled_codec:segment_hash(),
             non_neg_integer()
-        ) -> leveled_codec:ledger_kv() | not_present
+        )
+        -> leveled_codec:ledger_kv() | not_present
     ).
 -type levelzero_returnfun() :: fun((levelzero_cacheentry()) -> ok).
+%% erlfmt:ignore - issues with editors when function definitions are split
 -type pclacc_fun() ::
-    fun(
-        (
-            leveled_codec:object_key(),
-            leveled_codec:ledger_value(),
-            dynamic()
-        ) -> dynamic()
+    fun((leveled_codec:object_key(), leveled_codec:ledger_value(), dynamic())
+        -> dynamic()
     ).
 -type sst_options() :: #sst_options{}.
 

@@ -211,11 +211,15 @@
     no_cache | non_neg_integer().
 -type summary_filter() ::
     fun((leveled_codec:ledger_key()) -> any()).
+%% erlfmt:ignore - issues with editors when function definitions are split
 -type segment_check_fun() ::
     non_neg_integer()
-    | {non_neg_integer(), non_neg_integer(), fun(
-        (non_neg_integer()) -> boolean()
-    )}
+    | 
+        {
+            non_neg_integer(),
+            non_neg_integer(),
+            fun((non_neg_integer()) -> boolean())
+        }
     | false.
 -type fetch_levelzero_fun() ::
     fun((pos_integer(), leveled_penciller:levelzero_returnfun()) -> ok).
@@ -1158,20 +1162,21 @@ expand_list_by_pointer(
     ExpPointer = sst_getfilteredrange(SSTPid, StartKey, EndKey, LowLastMod),
     ExpPointer ++ Tail.
 
+%% erlfmt:ignore-begin - issues with editors when function definitions are split
 -spec split_localpointers(
     pid(), list(expandable_pointer())
 ) ->
     {list(slot_pointer()), list(expandable_pointer())}.
 split_localpointers(LocalPid, PotentialPointers) ->
     lists:partition(
-        fun
-            ({pointer, PID, _S, _SK, _EK}) when PID == LocalPid ->
+        fun({pointer, PID, _S, _SK, _EK}) when PID == LocalPid ->
                 true;
             (_) ->
                 false
         end,
         PotentialPointers
     ).
+%% erlfmt:ignore-end
 
 -spec sst_getfilteredrange(
     pid(),
@@ -1438,9 +1443,10 @@ update_options(OptsSST, Level) ->
         maxslots_level(Level, OptsSST#sst_options.max_sstslots),
     OptsSST#sst_options{press_method = PressMethod0, max_sstslots = MaxSlots0}.
 
+%% erlfmt:ignore - issues with editors when function definitions are split
 -spec updatebic_foldfun(boolean()) ->
-    fun(
-        ({integer(), binary() | none}, blockindex_cache()) -> blockindex_cache()
+    fun(({integer(), binary() | none}, blockindex_cache())
+        -> blockindex_cache()
     ).
 updatebic_foldfun(HMDRequired) ->
     fun(CacheEntry, BIC) ->
@@ -2011,12 +2017,12 @@ from_list(SlotList, FirstKey, LastKey) ->
         FilterFun
     }.
 
+%% erlfmt:ignore - issues with editors when function definitions are split
 -spec get_filterfun(
     leveled_codec:ledger_key(), leveled_codec:ledger_key()
 ) ->
-    fun(
-        (leveled_codec:ledger_key()) ->
-            leveled_codec:ledger_key() | leveled_codec:slimmed_key()
+    fun((leveled_codec:ledger_key())
+        -> leveled_codec:ledger_key() | leveled_codec:slimmed_key()
     ).
 get_filterfun(
     {?IDX_TAG, B, {Field, FT}, FK}, {?IDX_TAG, B, {Field, LT}, LK}
@@ -2549,9 +2555,9 @@ pointer_mapfun({pointer, _Pid, Slot, SK, EK}) ->
         EK
     }.
 
+%% erlfmt:ignore - issues with editors when function definitions are split
 -type slotbin_fun() ::
-    fun(
-        (
+    fun((
             {
                 non_neg_integer(),
                 non_neg_integer(),
