@@ -828,19 +828,11 @@ handle_cast({confirm_delete, ManSQN, CDB}, State) ->
     % Check there are no snapshots that may be aware of the file process that
     % is waiting to delete itself.
     CheckSQNFun =
-        % Note that the formatting of this function is a result of a peculiar
-        % conflict between the demands of an editor and the issues with erlfmt
         fun({_R, _TS, SnapSQN}, Bool) ->
-            case {SnapSQN, Bool} of
-                {SnapSQN, true} when SnapSQN >= ManSQN ->
-                    % If the Snapshot SQN was at the same point the file was
-                    % set to delete (or after), then the snapshot would not
-                    % have been told of the file, and the snapshot should not
-                    % hold up its deletion
-                    true;
-                _ ->
-                    false
-            end
+            % If the Snapshot SQN was at the same point the file was set to
+            % delete (or after), then the snapshot would not have been told of
+            % the file, and the snapshot should not hold up its deletion
+            SnapSQN >= ManSQN andalso Bool
         end,
     CheckSnapshotExpiryFun =
         fun({_R, TS, _SnapSQN}) ->

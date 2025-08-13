@@ -420,12 +420,7 @@ foldobjects_allkeys(SnapFun, Tag, FoldObjectsFun, sqn_order) ->
                         ),
                     % Need to check that we have not folded past the point
                     % at which the snapshot was taken
-                    case {JournalSQN, CheckSQN} of
-                        {JournalSQN, current} when JournalSQN >= SQN ->
-                            true;
-                        _ ->
-                            false
-                    end
+                    JournalSQN >= SQN andalso CheckSQN == current
                 end,
 
             BatchFoldFun =
