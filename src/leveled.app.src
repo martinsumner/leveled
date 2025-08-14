@@ -1,16 +1,16 @@
-{application, leveled,
- [
-  {description, "Key Value store based on LSM-Tree and designed for larger values"},
-  {vsn, git},
-  {registered, []},
-  {applications, [
-                  kernel,
-                  stdlib,
-                  lz4,
-                  zstd
-                 ]},
-  {maintainers, ["Martin Sumner"]},
-  {licenses, ["Apache"]},
-  {links, [{"Github", "https://github.com/martinsumner/leveled"}]},
-  {env, [{root_path, "test"}]}
- ]}.
+{application, leveled, [
+    {description,
+        "Key Value store based on LSM-Tree and designed for larger values"},
+    {vsn, git},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib,
+        lz4,
+        zstd
+    ]},
+    {maintainers, ["Martin Sumner"]},
+    {licenses, ["Apache"]},
+    {links, [{"Github", "https://github.com/martinsumner/leveled"}]},
+    {env, [{root_path, "test"}]}
+]}.

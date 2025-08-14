@@ -1,6 +1,6 @@
 %% -------- Eval Functions ---------
 %%
-%% Support for different eval expressions within leveled 
+%% Support for different eval expressions within leveled
 %%
 
 -module(leveled_eval).
@@ -13,7 +13,8 @@
 
 -spec generate_eval_function(
     string(),
-    map()) -> fun((binary(), binary()) -> map())|{error, term()}.
+    map()
+) -> fun((binary(), binary()) -> map()) | {error, term()}.
 generate_eval_function(EvalString, Substitutions) ->
     try
         {ok, ParsedEval} = generate_eval_expression(EvalString, Substitutions),
@@ -45,9 +46,14 @@ apply_eval({eval, Eval}, Term, Key, AttrMap) ->
     apply_eval(Eval, Term, Key, AttrMap);
 apply_eval({'PIPE', Eval1, 'INTO', Eval2}, Term, Key, AttrMap) ->
     apply_eval(Eval2, Term, Key, apply_eval(Eval1, Term, Key, AttrMap));
-apply_eval({
-        delim, {identifier, _, InKey}, {string, _, Delim}, ExpKeys},
-        Term, Key, AttrMap) ->
+apply_eval(
+    {
+        delim, {identifier, _, InKey}, {string, _, Delim}, ExpKeys
+    },
+    Term,
+    Key,
+    AttrMap
+) ->
     case term_to_process(InKey, Term, Key, AttrMap) of
         TermToSplit when is_binary(TermToSplit) ->
             CP =
@@ -64,8 +70,11 @@ apply_eval({
             AttrMap
     end;
 apply_eval(
-        {join, InKeys, {string, _, Delim}, {identifier, _, OutKey}},
-        _Term, _Key, AttrMap) ->
+    {join, InKeys, {string, _, Delim}, {identifier, _, OutKey}},
+    _Term,
+    _Key,
+    AttrMap
+) ->
     NewTerm =
         unicode:characters_to_binary(
             lists:join(
@@ -81,13 +90,16 @@ apply_eval(
         ),
     maps:put(OutKey, NewTerm, AttrMap);
 apply_eval(
-        {
-            split,
-            {identifier, _, InKey},
-            {string, _, Splitter},
-            {identifier, _, OutKey}
-        },
-        Term, Key, AttrMap) ->
+    {
+        split,
+        {identifier, _, InKey},
+        {string, _, Splitter},
+        {identifier, _, OutKey}
+    },
+    Term,
+    Key,
+    AttrMap
+) ->
     case term_to_process(InKey, Term, Key, AttrMap) of
         TermToSplit when is_binary(TermToSplit) ->
             CP =
@@ -98,15 +110,18 @@ apply_eval(
                         NewSplitCP;
                     SplitCP ->
                         SplitCP
-                    end,
+                end,
             TermList = binary:split(TermToSplit, CP, [global, trim_all]),
             maps:put(OutKey, TermList, AttrMap);
         _ ->
             AttrMap
     end;
 apply_eval(
-        {slice, {identifier, _, InKey}, WidthAttr, {identifier, _, OutKey}},
-        Term, Key, AttrMap) ->
+    {slice, {identifier, _, InKey}, WidthAttr, {identifier, _, OutKey}},
+    Term,
+    Key,
+    AttrMap
+) ->
     Width = element(3, WidthAttr),
     case term_to_process(InKey, Term, Key, AttrMap) of
         TermToSlice when is_binary(TermToSlice) ->
@@ -116,17 +131,20 @@ apply_eval(
                     fun(S) -> string:slice(TermToSlice, S, Width) end,
                     lists:map(
                         fun(I) -> Width * I end,
-                        lists:seq(0, TermCount - 1))),
+                        lists:seq(0, TermCount - 1)
+                    )
+                ),
             maps:put(OutKey, TermList, AttrMap);
         _ ->
             AttrMap
     end;
 apply_eval(
-        {index,
-            {identifier, _, InKey},
-            StartAtr, LengthAttr,
-            {identifier, _, OutKey}},
-        Term, Key, AttrMap) ->
+    {index, {identifier, _, InKey}, StartAtr, LengthAttr,
+        {identifier, _, OutKey}},
+    Term,
+    Key,
+    AttrMap
+) ->
     Start = element(3, StartAtr),
     Length = element(3, LengthAttr),
     case term_to_process(InKey, Term, Key, AttrMap) of
@@ -145,10 +163,12 @@ apply_eval(
             AttrMap
     end;
 apply_eval(
-        {kvsplit,
-            {identifier, _, InKey},
-            {string, _, DelimPair}, {string, _, DelimKV}},
-        Term, Key, AttrMap) ->
+    {kvsplit, {identifier, _, InKey}, {string, _, DelimPair},
+        {string, _, DelimKV}},
+    Term,
+    Key,
+    AttrMap
+) ->
     case term_to_process(InKey, Term, Key, AttrMap) of
         TermToSplit when is_binary(TermToSplit) ->
             lists:foldl(
@@ -167,8 +187,11 @@ apply_eval(
             AttrMap
     end;
 apply_eval(
-        {to_integer, {identifier, _, InKey}, {identifier, _, OutKey}},
-        Term, Key, AttrMap) ->
+    {to_integer, {identifier, _, InKey}, {identifier, _, OutKey}},
+    Term,
+    Key,
+    AttrMap
+) ->
     case term_to_process(InKey, Term, Key, AttrMap) of
         TermToConvert when is_binary(TermToConvert) ->
             case string:to_integer(TermToConvert) of
@@ -183,8 +206,11 @@ apply_eval(
             AttrMap
     end;
 apply_eval(
-        {to_string, {identifier, _, InKey}, {identifier, _, OutKey}},
-        Term, Key, AttrMap) ->
+    {to_string, {identifier, _, InKey}, {identifier, _, OutKey}},
+    Term,
+    Key,
+    AttrMap
+) ->
     case term_to_process(InKey, Term, Key, AttrMap) of
         TermToConvert when is_integer(TermToConvert) ->
             maps:put(
@@ -198,8 +224,11 @@ apply_eval(
             AttrMap
     end;
 apply_eval(
-        {map, InID, Comparator, MapList, Default, OutID},
-        Term, Key, AttrMap) ->
+    {map, InID, Comparator, MapList, Default, OutID},
+    Term,
+    Key,
+    AttrMap
+) ->
     {identifier, _, InKey} = InID,
     {identifier, _, OutKey} = OutID,
     TermToCompare = term_to_process(InKey, Term, Key, AttrMap),
@@ -207,13 +236,17 @@ apply_eval(
     case lists:dropwhile(F, MapList) of
         [] ->
             maps:put(OutKey, element(3, Default), AttrMap);
-        [{mapping, _T, Assignment}|_Rest] ->
+        [{mapping, _T, Assignment} | _Rest] ->
             maps:put(OutKey, element(3, Assignment), AttrMap)
     end;
 apply_eval(
-        {MathOp, OperandX, OperandY, {identifier, _, OutKey}},
-        _Term, _Key, AttrMap)
-        when MathOp == add; MathOp == subtract ->
+    {MathOp, OperandX, OperandY, {identifier, _, OutKey}},
+    _Term,
+    _Key,
+    AttrMap
+) when
+    MathOp == add; MathOp == subtract
+->
     X = maybe_fetch_operand(OperandX, AttrMap),
     Y = maybe_fetch_operand(OperandY, AttrMap),
     case MathOp of
@@ -225,12 +258,15 @@ apply_eval(
             AttrMap
     end;
 apply_eval(
-        {regex, {identifier, _, InKey}, CompiledRE, ExpKeys},
-        Term, Key, AttrMap) ->
+    {regex, {identifier, _, InKey}, CompiledRE, ExpKeys},
+    Term,
+    Key,
+    AttrMap
+) ->
     ExpectedKeyLength = length(ExpKeys),
     Opts = [{capture, all_but_first, binary}],
     case term_to_process(InKey, Term, Key, AttrMap) of
-        TermToCapture when is_binary(TermToCapture)->
+        TermToCapture when is_binary(TermToCapture) ->
             case leveled_util:regex_run(TermToCapture, CompiledRE, Opts) of
                 {match, CptTerms} when length(CptTerms) == ExpectedKeyLength ->
                     CptMap = maps:from_list(lists:zip(ExpKeys, CptTerms)),
@@ -266,9 +302,9 @@ reverse_compare_mapping('=', Term) ->
     fun({mapping, T, _A}) -> Term =/= element(3, T) end.
 
 -spec delim(binary(), binary:cp(), map(), list(string())) -> map().
-delim(_Rem,  _CP, AttrMap, []) ->
+delim(_Rem, _CP, AttrMap, []) ->
     AttrMap;
-delim(Term, CP, AttrMap, [Key|Rest]) ->
+delim(Term, CP, AttrMap, [Key | Rest]) ->
     case binary:match(Term, CP) of
         nomatch ->
             maps:put(Key, Term, AttrMap);
@@ -306,9 +342,9 @@ delim_test() ->
     CompiledDelim = compile_delim(Delim),
     Result1 =
         delim(
-            Term1, 
+            Term1,
             CompiledDelim,
-            #{}, 
+            #{},
             ["$fn", "$dob", "$dod", "$gns", "$pcs"]
         ),
     ExpMap1 =
@@ -327,9 +363,9 @@ delim_test() ->
     Term2 = <<"SOMEONE|19901223|20240405|TedBob">>,
     Result2 =
         delim(
-            Term2, 
+            Term2,
             CompiledDelim,
-            #{}, 
+            #{},
             ["$fn", "$dob", "$dod", "$gns", "$pcs"]
         ),
     ExpMap2 =
@@ -347,9 +383,9 @@ delim_test() ->
     Term3 = <<"SOMEONE|19901223||TedBob">>,
     Result3 =
         delim(
-            Term3, 
-            CompiledDelim, 
-            #{}, 
+            Term3,
+            CompiledDelim,
+            #{},
             ["$fn", "$dob", "$dod", "$gns", "$pcs"]
         ),
     ExpMap3 =
@@ -366,16 +402,15 @@ delim_test() ->
     Term4 = <<"SOMEONE|19901223|20240405|TedBob|LS1_4BT|">>,
     Result4 =
         delim(
-            Term4, 
+            Term4,
             CompiledDelim,
-            #{}, 
+            #{},
             ["$fn", "$dob", "$dod", "$gns", "$pcs"]
         ),
     ?assertMatch(
         ExpResult1,
         lists:sort(maps:to_list(Result4))
-    )
-    .
+    ).
 
 basic_compile_pattern_test() ->
     % Check nothing happens unexpected with caching in process dictionary
@@ -399,7 +434,7 @@ basic_compile_pattern_test() ->
             #{<<"delim1">> => <<"#">>, <<"delim2">> => <<"|">>}
         ),
     true = is_function(Fun2, 2),
-    
+
     M2 = Fun2(T2, <<"K1">>),
     GNL2 = maps:get(<<"gnl">>, M2),
     ?assertMatch([<<"Ted">>, <<"Bob">>], GNL2),
@@ -408,9 +443,7 @@ basic_compile_pattern_test() ->
     ?assertMatch([<<"Ted">>, <<"Bob">>], GNL3),
     M4 = Fun1(T1, <<"K1">>),
     GNL4 = maps:get(<<"gnl">>, M4),
-    ?assertMatch([<<"Ted">>, <<"Bob">>], GNL4)
-    .
-
+    ?assertMatch([<<"Ted">>, <<"Bob">>], GNL4).
 
 parse_error_test() ->
     Q1 = "delm($term, \"|\", ($fn, $dob, $dod, $gns, $pcs))",
@@ -421,7 +454,7 @@ parse_error_test() ->
     ?assertMatch({error, _E2}, generate_eval_function(Q2, maps:new())),
     ?assertMatch({error, _E3}, generate_eval_function(Q3, maps:new())),
     ?assertMatch({error, _E4}, generate_eval_function(Q4, maps:new())),
-    
+
     Q5 = "begins_with($fn, :prefix)",
     ?assertMatch(
         {error, _E5A},
@@ -432,11 +465,10 @@ parse_error_test() ->
         generate_eval_function(Q5, #{<<"prefx">> => <<"ÅßE"/utf8>>})
     ).
 
-
 basic_test() ->
     EvalString1 = "delim($term, \"|\", ($fn, $dob, $dod, $gns, $pcs))",
     EvalString2 = "delim($gns, \"#\", ($gn1, $gn2, $gn3))",
-    
+
     EvalString3 = EvalString1 ++ " | " ++ EvalString2,
     {ok, Tokens3, _EndLine3} = leveled_evallexer:string(EvalString3),
     {ok, ParsedExp3} = leveled_evalparser:parse(Tokens3),
@@ -455,7 +487,6 @@ basic_test() ->
     ?assertMatch(<<"Willow">>, maps:get(<<"gn1">>, EvalOut3)),
     ?assertMatch(<<"Mia">>, maps:get(<<"gn2">>, EvalOut3)),
     ?assertNot(maps:is_key(<<"gn3">>, EvalOut3)),
-
 
     EvalString4 = EvalString3 ++ " | join(($dob, $fn), \"|\", $dobfn)",
     {ok, Tokens4, _EndLine4} = leveled_evallexer:string(EvalString4),
@@ -477,8 +508,8 @@ basic_test() ->
     ?assertNot(maps:is_key(<<"gn3">>, EvalOut4)),
     ?assertMatch(<<"19861216|SMITH">>, maps:get(<<"dobfn">>, EvalOut4)),
 
-
-    EvalString5 = EvalString4 ++ " | index($dob, 0, 4, $yob) | to_integer($yob, $yob)",
+    EvalString5 =
+        EvalString4 ++ " | index($dob, 0, 4, $yob) | to_integer($yob, $yob)",
     {ok, Tokens5, _EndLine5} = leveled_evallexer:string(EvalString5),
     {ok, ParsedExp5} = leveled_evalparser:parse(Tokens5),
     EvalOut5 =
@@ -542,7 +573,9 @@ basic_test() ->
     ?assertMatch(<<"19861216">>, maps:get(<<"dob">>, EvalOut8)),
     ?assertMatch(undefined, maps:get(<<"dod">>, EvalOut8, undefined)),
     ?assertMatch(<<"LS1 4BT#LS8 1ZZ">>, maps:get(<<"pcs">>, EvalOut8)),
-    ?assertMatch([<<"Willow">>, <<"Mia">>, <<"Vera">>], maps:get(<<"gns">>, EvalOut8)),
+    ?assertMatch(
+        [<<"Willow">>, <<"Mia">>, <<"Vera">>], maps:get(<<"gns">>, EvalOut8)
+    ),
 
     EvalString9 =
         "delim($term, \"|\", ($name, $height, $weight, $pick)) |"
@@ -564,123 +597,123 @@ basic_test() ->
     ?assertMatch(224, maps:get(<<"height">>, EvalOut9)),
     ?assertMatch(95, maps:get(<<"weight">>, EvalOut9)),
     ?assertMatch(<<"#1">>, maps:get(<<"pick">>, EvalOut9)),
-        % Not changes as not starting with integer
+    % Not changes as not starting with integer
     ?assertMatch(<<"SPURS">>, maps:get(<<"team">>, EvalOut9)),
     ?assertMatch(<<"00001">>, maps:get(<<"number">>, EvalOut9)),
     ?assertNot(maps:is_key(<<"doh">>, EvalOut9)),
 
     %% Age at 30 April 2024
     EvalString10 =
-        EvalString5 ++ 
-        " | index($dob, 4, 4, $birthday)"
-        " | map($birthday, <=, ((\"0430\", 2024)), 2023, $yoc)"
-        " | subtract($yoc, $yob, $age)"
-        " | add($age, 1, $age_next)"
-        " | to_string($age, $age)"
-        ,
+        EvalString5 ++
+            " | index($dob, 4, 4, $birthday)"
+            " | map($birthday, <=, ((\"0430\", 2024)), 2023, $yoc)"
+            " | subtract($yoc, $yob, $age)"
+            " | add($age, 1, $age_next)"
+            " | to_string($age, $age)",
+
     {ok, Tokens10, _EndLine10} = leveled_evallexer:string(EvalString10),
     {ok, ParsedExp10} = leveled_evalparser:parse(Tokens10),
     EvalOut10A =
         apply_eval(
-                ParsedExp10,
-                <<"SMITH|19861216||Willow#Mia#Vera|LS1 4BT#LS8 1ZZ">>,
-                <<"9000000001">>,
-                maps:new()
-            ),
+            ParsedExp10,
+            <<"SMITH|19861216||Willow#Mia#Vera|LS1 4BT#LS8 1ZZ">>,
+            <<"9000000001">>,
+            maps:new()
+        ),
     ?assertMatch(<<"37">>, maps:get(<<"age">>, EvalOut10A)),
     ?assertMatch(38, maps:get(<<"age_next">>, EvalOut10A)),
     EvalOut10B =
         apply_eval(
-                ParsedExp10,
-                <<"SMITH|19860216||Willow#Mia#Vera|LS1 4BT#LS8 1ZZ">>,
-                <<"9000000001">>,
-                maps:new()
-            ),
+            ParsedExp10,
+            <<"SMITH|19860216||Willow#Mia#Vera|LS1 4BT#LS8 1ZZ">>,
+            <<"9000000001">>,
+            maps:new()
+        ),
     ?assertMatch(<<"38">>, maps:get(<<"age">>, EvalOut10B)),
     EvalString10F =
-        EvalString1 ++ 
-        " | index($dob, 0, 4, $yob)"
-        " | index($dob, 4, 4, $birthday)"
-        " | map($birthday, <=, ((\"0430\", 2024)), 2023, $yoc)"
-        " | subtract($yoc, $yob, $age)"
+        EvalString1 ++
+            " | index($dob, 0, 4, $yob)"
+            " | index($dob, 4, 4, $birthday)"
+            " | map($birthday, <=, ((\"0430\", 2024)), 2023, $yoc)"
+            " | subtract($yoc, $yob, $age)"
             % yob has not been converted to an integer,
             % so the age will not be set
-        " | to_string($age, $age)"
-        ,
+            " | to_string($age, $age)",
+
     {ok, Tokens10F, _EndLine10F} = leveled_evallexer:string(EvalString10F),
     {ok, ParsedExp10F} = leveled_evalparser:parse(Tokens10F),
     EvalOut10F =
         apply_eval(
-                ParsedExp10F,
-                <<"SMITH|19861216||Willow#Mia#Vera|LS1 4BT#LS8 1ZZ">>,
-                <<"9000000001">>,
-                maps:new()
-            ),
+            ParsedExp10F,
+            <<"SMITH|19861216||Willow#Mia#Vera|LS1 4BT#LS8 1ZZ">>,
+            <<"9000000001">>,
+            maps:new()
+        ),
     ?assertNot(maps:is_key(<<"age">>, EvalOut10F)),
 
     EvalString11A =
         EvalString1 ++
             " | map($dob, <, "
-                "((\"1946\", \"Silent\"), (\"1966\", \"Boomer\"),"
-                "(\"1980\", \"GenX\"), (\"1997\", \"Millenial\")), \"GenZ\","
-                " $generation)",
+            "((\"1946\", \"Silent\"), (\"1966\", \"Boomer\"),"
+            "(\"1980\", \"GenX\"), (\"1997\", \"Millenial\")), \"GenZ\","
+            " $generation)",
     {ok, Tokens11A, _EndLine11A} = leveled_evallexer:string(EvalString11A),
     {ok, ParsedExp11A} = leveled_evalparser:parse(Tokens11A),
     EvalOut11A =
         apply_eval(
-                ParsedExp11A,
-                <<"SMITH|19861216||Willow#Mia#Vera|LS1 4BT#LS8 1ZZ">>,
-                <<"9000000001">>,
-                maps:new()
-            ),
+            ParsedExp11A,
+            <<"SMITH|19861216||Willow#Mia#Vera|LS1 4BT#LS8 1ZZ">>,
+            <<"9000000001">>,
+            maps:new()
+        ),
     ?assertMatch(<<"Millenial">>, maps:get(<<"generation">>, EvalOut11A)),
     EvalString11B =
         EvalString1 ++
             " | map($dob, <=, "
-                "((\"1945\", \"Silent\"), (\"1965\", \"Boomer\"),"
-                "(\"1979\", \"GenX\"), (\"1996\", \"Millenial\")), \"GenZ\","
-                " $generation)",
+            "((\"1945\", \"Silent\"), (\"1965\", \"Boomer\"),"
+            "(\"1979\", \"GenX\"), (\"1996\", \"Millenial\")), \"GenZ\","
+            " $generation)",
     {ok, Tokens11B, _EndLine11B} = leveled_evallexer:string(EvalString11B),
     {ok, ParsedExp11B} = leveled_evalparser:parse(Tokens11B),
     EvalOut11B =
         apply_eval(
-                ParsedExp11B,
-                <<"SMITH|19861216||Willow#Mia#Vera|LS1 4BT#LS8 1ZZ">>,
-                <<"9000000001">>,
-                maps:new()
-            ),
+            ParsedExp11B,
+            <<"SMITH|19861216||Willow#Mia#Vera|LS1 4BT#LS8 1ZZ">>,
+            <<"9000000001">>,
+            maps:new()
+        ),
     ?assertMatch(<<"Millenial">>, maps:get(<<"generation">>, EvalOut11B)),
     EvalString11C =
         EvalString1 ++
             " | map($dob, >, "
-                "((\"1996\", \"GenZ\"), (\"1979\", \"Millenial\"),"
-                "(\"1965\", \"GenX\"), (\"1945\", \"Boomer\")), \"Silent\","
-                " $generation)",
+            "((\"1996\", \"GenZ\"), (\"1979\", \"Millenial\"),"
+            "(\"1965\", \"GenX\"), (\"1945\", \"Boomer\")), \"Silent\","
+            " $generation)",
     {ok, Tokens11C, _EndLine11C} = leveled_evallexer:string(EvalString11C),
     {ok, ParsedExp11C} = leveled_evalparser:parse(Tokens11C),
     EvalOut11C =
         apply_eval(
-                ParsedExp11C,
-                <<"SMITH|19861216||Willow#Mia#Vera|LS1 4BT#LS8 1ZZ">>,
-                <<"9000000001">>,
-                maps:new()
-            ),
+            ParsedExp11C,
+            <<"SMITH|19861216||Willow#Mia#Vera|LS1 4BT#LS8 1ZZ">>,
+            <<"9000000001">>,
+            maps:new()
+        ),
     ?assertMatch(<<"Millenial">>, maps:get(<<"generation">>, EvalOut11C)),
     EvalString11D =
         EvalString1 ++
             " | map($dob, >=, "
-                "((\"1997\", \"GenZ\"), (\"1980\", \"Millenial\"),"
-                "(\"1966\", \"GenX\"), (\"1946\", \"Boomer\")), \"Silent\","
-                " $generation)",
+            "((\"1997\", \"GenZ\"), (\"1980\", \"Millenial\"),"
+            "(\"1966\", \"GenX\"), (\"1946\", \"Boomer\")), \"Silent\","
+            " $generation)",
     {ok, Tokens11D, _EndLine11D} = leveled_evallexer:string(EvalString11D),
     {ok, ParsedExp11D} = leveled_evalparser:parse(Tokens11D),
     EvalOut11D =
         apply_eval(
-                ParsedExp11D,
-                <<"SMITH|19861216||Willow#Mia#Vera|LS1 4BT#LS8 1ZZ">>,
-                <<"9000000001">>,
-                maps:new()
-            ),
+            ParsedExp11D,
+            <<"SMITH|19861216||Willow#Mia#Vera|LS1 4BT#LS8 1ZZ">>,
+            <<"9000000001">>,
+            maps:new()
+        ),
     ?assertMatch(<<"Millenial">>, maps:get(<<"generation">>, EvalOut11D)),
 
     EvalString12 =
@@ -694,17 +727,17 @@ basic_test() ->
         " add($DEBUG, $INFO, $TOTAL) |"
         " add($TOTAL, $WARN, $TOTAL) |"
         " add($TOTAL, $ERROR, $TOTAL) |"
-        " add($TOTAL, $CRITICAL, $TOTAL)"
-        ,
+        " add($TOTAL, $CRITICAL, $TOTAL)",
+
     {ok, Tokens12, _EndLine12} = leveled_evallexer:string(EvalString12),
     {ok, ParsedExp12} = leveled_evalparser:parse(Tokens12),
     EvalOut12 =
         apply_eval(
-                ParsedExp12,
-                <<"063881703147|DEBUG=804|INFO=186|WARN=10">>,
-                <<"ABC1233">>,
-                maps:new()
-            ),
+            ParsedExp12,
+            <<"063881703147|DEBUG=804|INFO=186|WARN=10">>,
+            <<"ABC1233">>,
+            maps:new()
+        ),
     ?assertMatch(63881703147, maps:get(<<"ts">>, EvalOut12)),
     ?assertMatch(1000, maps:get(<<"TOTAL">>, EvalOut12)),
     ?assertNot(maps:is_key(<<"CRITICAL">>, EvalOut12)),
@@ -712,9 +745,9 @@ basic_test() ->
     EvalString13 =
         "kvsplit($term, \"|\", \":\") |"
         " map($cup_year, =, "
-            "((\"1965\", \"bad\"), (\"1970\", \"bad\"), "
-            "(\"1972\", \"good\"), (\"1974\", \"bad\")), "
-            "\"indifferent\", $cup_happy) ",
+        "((\"1965\", \"bad\"), (\"1970\", \"bad\"), "
+        "(\"1972\", \"good\"), (\"1974\", \"bad\")), "
+        "\"indifferent\", $cup_happy) ",
     {ok, Tokens13, _EndLine13} = leveled_evallexer:string(EvalString13),
     {ok, ParsedExp13} = leveled_evalparser:parse(Tokens13),
     EvalOut13A =
@@ -739,13 +772,12 @@ basic_test() ->
         check_regex_eval(
             "regex($term, :regex, ($fn, $dob, $dod, $gns, $pcs))",
             ExtractRegex
-        )
-    .
+        ).
 
 unicode_test() ->
     EvalString1 = "delim($term, \"|\", ($fn, $dob, $dod, $gns, $pcs))",
     EvalString2 = "delim($gns, \"#\", ($gn1, $gn2, $gn3))",
-    
+
     EvalString3 = EvalString1 ++ " | " ++ EvalString2,
     {ok, Tokens3, _EndLine3} = leveled_evallexer:string(EvalString3),
     {ok, ParsedExp3} = leveled_evalparser:parse(Tokens3),
@@ -754,14 +786,14 @@ unicode_test() ->
         apply_eval(
             ParsedExp3,
             <<"ÅßERG|19861216||Willow#Mia|LS1 4BT#LS8 1ZZ"/utf8>>,
-                % Note index terms will have to be unicode_binary() type
-                % for this to work a latin-1 binary of
-                % <<"ÅßERG|19861216||Willow#Mia|LS1 4BT#LS8 1ZZ">> will fail to
-                % match - use unicode:characters_to_binary(B, latin1, utf8) to
-                % convert
+            % Note index terms will have to be unicode_binary() type
+            % for this to work a latin-1 binary of
+            % <<"ÅßERG|19861216||Willow#Mia|LS1 4BT#LS8 1ZZ">> will fail to
+            % match - use unicode:characters_to_binary(B, latin1, utf8) to
+            % convert
             <<"9000000001">>,
             maps:new()
-            ),
+        ),
     ?assertMatch(<<"ÅßERG"/utf8>>, maps:get(<<"fn">>, EvalOutUnicode0)),
     FE19 = "begins_with($fn, :prefix)",
     {ok, Filter19} =
@@ -775,7 +807,7 @@ unicode_test() ->
             EvalOutUnicode0
         )
     ),
-    
+
     EvalString4 = EvalString1 ++ "| slice($gns, 2, $gns)",
     {ok, Tokens4, _EndLine4} = leveled_evallexer:string(EvalString4),
     {ok, ParsedExp4} = leveled_evalparser:parse(Tokens4),
@@ -785,7 +817,7 @@ unicode_test() ->
             <<"ÅßERG|19861216||Åbß0Ca|LS1 4BT#LS8 1ZZ"/utf8>>,
             <<"9000000001">>,
             maps:new()
-            ),
+        ),
     FE20 = ":gsc_check IN $gns",
     {ok, Filter20} =
         leveled_filter:generate_filter_expression(
@@ -830,15 +862,13 @@ unicode_test() ->
             Filter23,
             EvalOutUnicode1
         )
-    )
-    .
-
+    ).
 
 check_regex_eval(EvalString14, ExtractRegex) ->
     {ok, ParsedExp14} =
         generate_eval_expression(
             EvalString14,
-            #{<<"regex">> => list_to_binary(ExtractRegex)}  
+            #{<<"regex">> => list_to_binary(ExtractRegex)}
         ),
     EvalOut14 =
         apply_eval(
@@ -871,11 +901,11 @@ bad_type_test() ->
     ?assertMatch(224, maps:get(<<"height">>, EvalOut9)),
     ?assertMatch(95, maps:get(<<"weight">>, EvalOut9)),
     ?assertMatch(<<"#1">>, maps:get(<<"pick">>, EvalOut9)),
-        % Not changes as not starting with integer
+    % Not changes as not starting with integer
     ?assertMatch(<<"SPURS">>, maps:get(<<"team">>, EvalOut9)),
     ?assertMatch(<<"00001">>, maps:get(<<"number">>, EvalOut9)),
     ?assertNot(maps:is_key(<<"doh">>, EvalOut9)),
-    
+
     EvalStringF1 = EvalString9 ++ " | delim($height, \"|\", ($foo, $bar))",
     {ok, TokensF1, _EndLineF1} = leveled_evallexer:string(EvalStringF1),
     {ok, ParsedExpF1} = leveled_evalparser:parse(TokensF1),
@@ -889,7 +919,7 @@ bad_type_test() ->
     ?assertNot(maps:is_key(<<"foo">>, EvalOutF1)),
     ?assertNot(maps:is_key(<<"bar">>, EvalOutF1)),
     ?assertMatch(224, maps:get(<<"height">>, EvalOutF1)),
-    
+
     EvalStringF2 = EvalString9 ++ " | split($height, \"|\", $foo)",
     {ok, TokensF2, _EndLineF2} = leveled_evallexer:string(EvalStringF2),
     {ok, ParsedExpF2} = leveled_evalparser:parse(TokensF2),
@@ -970,9 +1000,9 @@ bad_type_test() ->
 
     EvalStringF8 =
         EvalString9 ++
-        " | regex($height, :regex, ($height_int)) |"
-        " to_integer($height_int, $height_int)",
-    
+            " | regex($height, :regex, ($height_int)) |"
+            " to_integer($height_int, $height_int)",
+
     {ok, ParsedExpF8} =
         generate_eval_expression(
             EvalStringF8,
@@ -989,10 +1019,10 @@ bad_type_test() ->
 
     EvalStringF9 =
         EvalString9 ++
-        " | to_string($height, $height)"
-        " | regex($height, :regex, ($height_int)) |"
-        " to_integer($height_int, $height_int)",
-    
+            " | to_string($height, $height)"
+            " | regex($height, :regex, ($height_int)) |"
+            " to_integer($height_int, $height_int)",
+
     {ok, ParsedExpF9} =
         generate_eval_expression(
             EvalStringF9,
@@ -1005,17 +1035,15 @@ bad_type_test() ->
             <<"SPURS|00001">>,
             maps:new()
         ),
-        ?assertMatch(224, maps:get(<<"height_int">>, EvalOutF9))
-    .
-    
+    ?assertMatch(224, maps:get(<<"height_int">>, EvalOutF9)).
 
 generate_test() ->
     EvalString13 =
         "kvsplit($term, \"|\", \":\") |"
         " map($cup_year, =, "
-            "((\"1965\", \"bad\"), (\"1970\", \"bad\"), "
-            "(:clarke, \"good\"), (\"1974\", \"bad\")), "
-            "\"indifferent\", $cup_happy) ",
+        "((\"1965\", \"bad\"), (\"1970\", \"bad\"), "
+        "(:clarke, \"good\"), (\"1974\", \"bad\")), "
+        "\"indifferent\", $cup_happy) ",
     {ok, ParsedExp13} =
         generate_eval_expression(EvalString13, #{<<"clarke">> => <<"1972">>}),
     EvalOut13A =
