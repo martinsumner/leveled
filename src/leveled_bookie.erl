@@ -52,6 +52,7 @@
     book_put/5,
     book_put/6,
     book_put/8,
+    book_put/9,
     book_tempput/7,
     book_mput/2,
     book_mput/3,
@@ -386,9 +387,10 @@
         integer()
     }.
 
+%% erlfmt:ignore-begin
+%% Avoid issues with syntaxt highlighting when fun is split from `(`
 -type initial_loadfun() ::
-    fun(
-        (
+    fun((
             leveled_codec:journal_key(),
             dynamic(),
             non_neg_integer(),
@@ -401,6 +403,7 @@
                 list(load_item())
             }}
     ).
+%% erlfmt:ignore-end
 
 -export_type([initial_loadfun/0, ledger_cache/0]).
 
@@ -557,7 +560,7 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag) ->
 ) -> ok | pause.
 
 book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) when is_atom(Tag) ->
-    book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL, false).
+    book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL, false, false).
 
 -spec book_put(
     pid(),
@@ -570,9 +573,23 @@ book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL) when is_atom(Tag) ->
     boolean()
 ) -> ok | pause.
 book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL, DataSync) ->
+    book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL, DataSync, false).
+
+-spec book_put(
+    pid(),
+    leveled_codec:key(),
+    leveled_codec:key(),
+    any(),
+    leveled_codec:index_specs(),
+    leveled_codec:tag(),
+    infinity | integer(),
+    boolean(),
+    boolean()
+) -> ok | pause.
+book_put(Pid, Bucket, Key, Object, IndexSpecs, Tag, TTL, DataSync, AsyncPut) ->
     gen_server:call(
         Pid,
-        {put, Bucket, Key, Object, IndexSpecs, Tag, TTL, DataSync},
+        {put, Bucket, Key, Object, IndexSpecs, Tag, TTL, DataSync, AsyncPut},
         infinity
     ).
 
@@ -1437,12 +1454,20 @@ init([Opts]) ->
     end.
 
 handle_call(
-    {put, Bucket, Key, Object, IndexSpecs, Tag, TTL, DataSync},
+    {put, Bucket, Key, Object, IndexSpecs, Tag, TTL, DataSync, AsyncPut},
     From,
     State
 ) when
     State#state.head_only == false, Tag =/= ?HEAD_TAG
 ->
+    AlreadyReturned =
+        case AsyncPut andalso (not State#state.slow_offer) of
+            true ->
+                gen_server:reply(From, ok),
+                true;
+            false ->
+                false
+        end,
     LedgerKey = leveled_codec:to_objectkey(Bucket, Key, Tag),
     SWLR = os:timestamp(),
     SW0 = leveled_monitor:maybe_time(State#state.monitor),
@@ -1462,11 +1487,16 @@ handle_call(
     {T1, SW2} = leveled_monitor:step_time(SW1),
     Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
     {T2, _SW3} = leveled_monitor:step_time(SW2),
-    case State#state.slow_offer of
+    case AlreadyReturned of
         true ->
-            gen_server:reply(From, pause);
+            ok;
         false ->
-            gen_server:reply(From, ok)
+            case State#state.slow_offer of
+                true ->
+                    gen_server:reply(From, pause);
+                false ->
+                    gen_server:reply(From, ok)
+            end
     end,
     maybe_longrunning(SWLR, overall_put),
     maybelog_put_timing(State#state.monitor, T0, T1, T2, ObjSize),

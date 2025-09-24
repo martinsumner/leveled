@@ -92,14 +92,16 @@ simple_test_withlog(LogLevel, ForcedLogs) ->
             <<"Bucket1">>,
             <<"Key2">>,
             <<"Value2">>,
-            [{add, <<"Index1">>, <<"Term1">>}]
+            [{add, <<"Index1">>, <<"Term1">>}],
+            ?STD_TAG,
+            infinity, 
+            false
         ),
     {ok, <<"Value2">>} =
         leveled_bookie:book_get(Bookie2, <<"Bucket1">>, <<"Key2">>),
     {ok, {2220864, S, undefined}} =
         leveled_bookie:book_head(Bookie2, <<"Bucket1">>, <<"Key2">>),
     true = (S == 63) or (S == 65),
-    % After OTP 26 the object is 58 bytes not 60
     testutil:check_formissingobject(Bookie2, <<"Bucket1">>, <<"Key2">>),
     ok =
         leveled_bookie:book_put(
@@ -110,7 +112,11 @@ simple_test_withlog(LogLevel, ForcedLogs) ->
             [
                 {remove, <<"Index1">>, <<"Term1">>},
                 {add, <<"Index1">>, <<"Term2">>}
-            ]
+            ],
+            ?STD_TAG,
+            infinity,
+            false,
+            true
         ),
     {ok, <<"Value2">>} =
         leveled_bookie:book_get(Bookie2, <<"Bucket1">>, <<"Key2">>),
