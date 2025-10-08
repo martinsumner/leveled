@@ -52,7 +52,6 @@
     idx_indexspecs/5,
     obj_objectspecs/3,
     segment_hash/1,
-    to_lookup/1,
     next_key/1,
     return_proxy/4,
     get_metadata/1,
@@ -247,19 +246,6 @@ headkey_to_canonicalbinary(
     headkey_to_canonicalbinary(
         {?HEAD_TAG, <<BucketType/binary, Bucket/binary>>, Key, SubKey}
     ).
-
--spec to_lookup(ledger_key()) -> maybe_lookup().
-%% @doc
-%% Should it be possible to lookup a key in the merge tree.  This is not true
-%% For keys that should only be read through range queries.  Direct lookup
-%% keys will have presence in bloom filters and other lookup accelerators.
-to_lookup(Key) when is_tuple(Key) ->
-    case element(1, Key) of
-        ?IDX_TAG ->
-            no_lookup;
-        _ ->
-            lookup
-    end.
 
 %% @doc
 %% Some helper functions to get a sub_components of the key/value

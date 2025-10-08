@@ -3455,7 +3455,7 @@ merge_lists(
     % Form a slot by merging the two lists until the next 128 K/V pairs have
     % been determined
     {KVRem1, KVRem2, Slot, FK0} =
-        form_slot(KVL1, KVL2, LI, no_lookup, 0, [], FirstKey),
+        form_slot_nolookup(KVL1, KVL2, LI, 0, [], FirstKey),
     T1 = update_buildtimings(T0, fold_toslot),
     case Slot of
         {_, []} ->
@@ -3495,11 +3495,40 @@ merge_lists(
             )
     end.
 
--spec form_slot(
+-spec form_slot_lookup(
     list(maybe_expanded_pointer()),
     list(maybe_expanded_pointer()),
     {boolean(), non_neg_integer()},
-    lookup | no_lookup,
+    non_neg_integer(),
+    list(leveled_codec:ledger_kv()),
+    leveled_codec:ledger_key() | null
+) ->
+    {
+        list(maybe_expanded_pointer()),
+        list(maybe_expanded_pointer()),
+        {lookup, list(leveled_codec:ledger_kv())},
+        leveled_codec:ledger_key() | null
+    }.
+%% @doc
+%% Merge together Key Value lists to provide a reverse-ordered slot of KVs
+form_slot_lookup([], [], _LI, _Size, Slot, FK) ->
+    {[], [], {lookup, Slot}, FK};
+form_slot_lookup(KVList1, KVList2, _LI, ?LOOK_SLOTSIZE, Slot, FK) ->
+    {KVList1, KVList2, {lookup, Slot}, FK};
+form_slot_lookup(KVList1, KVList2, LevelInfo, Size, Slot, FK) ->
+    case key_dominates(KVList1, KVList2, LevelInfo) of
+        {{next_key, {TopK, TopV}}, Rem1, Rem2} ->
+            form_slot_lookup(
+                Rem1, Rem2,LevelInfo, Size + 1, [{TopK, TopV} | Slot], FK
+                    );
+        {skipped_key, Rem1, Rem2} ->
+            form_slot_lookup(Rem1, Rem2, LevelInfo, Size, Slot, FK)
+    end.
+
+-spec form_slot_nolookup(
+    list(maybe_expanded_pointer()),
+    list(maybe_expanded_pointer()),
+    {boolean(), non_neg_integer()},
     non_neg_integer(),
     list(leveled_codec:ledger_kv()),
     leveled_codec:ledger_key() | null
@@ -3510,61 +3539,43 @@ merge_lists(
         {lookup | no_lookup, list(leveled_codec:ledger_kv())},
         leveled_codec:ledger_key() | null
     }.
-%% @doc
-%% Merge together Key Value lists to provide a reverse-ordered slot of KVs
-form_slot([], [], _LI, Type, _Size, Slot, FK) ->
-    {[], [], {Type, Slot}, FK};
-form_slot(KVList1, KVList2, _LI, lookup, ?LOOK_SLOTSIZE, Slot, FK) ->
-    {KVList1, KVList2, {lookup, Slot}, FK};
-form_slot(KVList1, KVList2, _LI, no_lookup, ?NOLOOK_SLOTSIZE, Slot, FK) ->
+
+form_slot_nolookup([], [], _LI, _Size, Slot, FK) ->
+    {[], [], {no_lookup, Slot}, FK};
+form_slot_nolookup(KVList1, KVList2, _LI, ?NOLOOK_SLOTSIZE, Slot, FK) ->
     {KVList1, KVList2, {no_lookup, Slot}, FK};
-form_slot(KVList1, KVList2, LevelInfo, Lookup, Size, Slot, FK) ->
+form_slot_nolookup(KVList1, KVList2, LevelInfo, Size, Slot, FK) ->
     case key_dominates(KVList1, KVList2, LevelInfo) of
-        {{next_key, {TopK, TopV}}, Rem1, Rem2} ->
-            case Lookup of
-                lookup ->
-                    form_slot(
+        {{next_key, {{Tag, _, _, _} = TopK, TopV}}, Rem1, Rem2} ->
+            FK0 =
+                case FK of
+                    null -> TopK;
+                    _ -> FK
+                end,
+            case Tag of
+                ?IDX_TAG ->
+                    form_slot_nolookup(
                         Rem1,
                         Rem2,
                         LevelInfo,
-                        lookup,
                         Size + 1,
                         [{TopK, TopV} | Slot],
-                        FK
+                        FK0
                     );
-                no_lookup ->
-                    FK0 =
-                        case FK of
-                            null -> TopK;
-                            _ -> FK
-                        end,
-                    case leveled_codec:to_lookup(TopK) of
-                        no_lookup ->
-                            form_slot(
-                                Rem1,
-                                Rem2,
-                                LevelInfo,
-                                no_lookup,
-                                Size + 1,
-                                [{TopK, TopV} | Slot],
-                                FK0
-                            );
-                        lookup when Size >= ?LOOK_SLOTSIZE, FK =/= null ->
-                            {KVList1, KVList2, {no_lookup, Slot}, FK};
-                        lookup ->
-                            form_slot(
-                                Rem1,
-                                Rem2,
-                                LevelInfo,
-                                lookup,
-                                Size + 1,
-                                [{TopK, TopV} | Slot],
-                                FK0
-                            )
-                    end
+                _ when Size >= ?LOOK_SLOTSIZE, FK =/= null ->
+                    {KVList1, KVList2, {no_lookup, Slot}, FK};
+                _ ->
+                    form_slot_lookup(
+                        Rem1,
+                        Rem2,
+                        LevelInfo,
+                        Size + 1,
+                        [{TopK, TopV} | Slot],
+                        FK0
+                    )
             end;
         {skipped_key, Rem1, Rem2} ->
-            form_slot(Rem1, Rem2, LevelInfo, Lookup, Size, Slot, FK)
+            form_slot_nolookup(Rem1, Rem2, LevelInfo, Size, Slot, FK)
     end.
 
 -spec key_dominates(
@@ -3625,56 +3636,28 @@ key_dominates([{K1, V1} | T1], [], Level) ->
         false ->
             {{next_key, {K1, V1}}, T1, []}
     end;
-key_dominates(KL1, [{next, ManEntry, StartKey} | T2], Level) ->
-    key_dominates(
-        KL1,
-        expand_list_by_pointer(
-            {next, ManEntry, StartKey, all},
-            % See above
-            % eqwalizer:ignore
-            T2,
-            ?MERGE_SCANWIDTH
-        ),
-        Level
+key_dominates(KL1, KL2, Level) ->
+    key_dominates(maybe_expand_keys(KL1), maybe_expand_keys(KL2), Level).
+
+-spec maybe_expand_keys(list(maybe_expanded_pointer())) -> list(maybe_expanded_pointer()).
+maybe_expand_keys([{next, ManEntry, StartKey} | T]) ->
+    expand_list_by_pointer(
+        {next, ManEntry, StartKey, all},
+        % Can't prove to eqwalizer there's no KV pairs in tail
+        % eqwalizer:ignore
+        T,
+        ?MERGE_SCANWIDTH
     );
-key_dominates(KL1, [{pointer, SSTPid, Slot, StartKey, all} | T2], Level) ->
-    key_dominates(
-        KL1,
-        expand_list_by_pointer(
-            {pointer, SSTPid, Slot, StartKey, all},
-            % See above
-            % eqwalizer:ignore
-            T2,
-            ?MERGE_SCANWIDTH
-        ),
-        Level
+maybe_expand_keys([{pointer, SSTPid, Slot, StartKey, all} | T]) ->
+    expand_list_by_pointer(
+        {pointer, SSTPid, Slot, StartKey, all},
+        % Can't prove to eqwalizer there's no KV pairs in tail
+        % eqwalizer:ignore
+        T,
+        ?MERGE_SCANWIDTH
     );
-key_dominates([{next, ManEntry, StartKey} | T1], KL2, Level) ->
-    key_dominates(
-        expand_list_by_pointer(
-            {next, ManEntry, StartKey, all},
-            % See above
-            % eqwalizer:ignore
-            T1,
-            ?MERGE_SCANWIDTH
-        ),
-        KL2,
-        Level
-    );
-key_dominates([{pointer, SSTPid, Slot, StartKey, all} | T1], KL2, Level) ->
-    key_dominates(
-        expand_list_by_pointer(
-            {pointer, SSTPid, Slot, StartKey, all},
-            % As the head is a pointer, the tail must be pointers too
-            % So eqwalizer is wrong that this may be
-            % [leveled_codec:ledger_kv()]
-            % eqwalizer:ignore
-            T1,
-            ?MERGE_SCANWIDTH
-        ),
-        KL2,
-        Level
-    ).
+maybe_expand_keys(KVL) ->
+    KVL.
 
 %%%============================================================================
 %%% Timing Functions
@@ -3999,11 +3982,10 @@ form_slot_test() ->
                 {5, {active, infinity}, {99234568, 99234567}, {}}
             }
         ],
-    R1 = form_slot(
+    R1 = form_slot_nolookup(
         [SkippingKV],
         [],
         {true, 99999999},
-        no_lookup,
         ?LOOK_SLOTSIZE + 1,
         Slot,
         {o, <<"B1">>, <<"K5">>, null}
