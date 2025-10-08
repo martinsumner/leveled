@@ -61,6 +61,8 @@
 
 -behaviour(gen_statem).
 
+-compile({inline, [key_dominates/3]}).
+
 -include("leveled.hrl").
 
 % Test functions to ignore for equalizer
@@ -3516,39 +3518,36 @@ form_slot(KVList1, KVList2, _LI, lookup, ?LOOK_SLOTSIZE, Slot, FK) ->
     {KVList1, KVList2, {lookup, Slot}, FK};
 form_slot(KVList1, KVList2, _LI, no_lookup, ?NOLOOK_SLOTSIZE, Slot, FK) ->
     {KVList1, KVList2, {no_lookup, Slot}, FK};
-form_slot(KVList1, KVList2, LevelInfo, lookup, Size, Slot, FK) ->
-    case key_dominates(KVList1, KVList2, LevelInfo) of
-        {{next_key, TopKV}, Rem1, Rem2} ->
-            form_slot(
-                Rem1, Rem2, LevelInfo, lookup, Size + 1, [TopKV | Slot], FK
-            );
-        {skipped_key, Rem1, Rem2} ->
-            form_slot(Rem1, Rem2, LevelInfo, lookup, Size, Slot, FK)
-    end;
-form_slot(KVList1, KVList2, LevelInfo, no_lookup, Size, Slot, FK) ->
+form_slot(KVList1, KVList2, LevelInfo, Lookup, Size, Slot, FK) ->
     case key_dominates(KVList1, KVList2, LevelInfo) of
         {{next_key, {TopK, TopV}}, Rem1, Rem2} ->
-            FK0 =
-                case FK of
-                    null -> TopK;
-                    _ -> FK
-                end,
-            case leveled_codec:to_lookup(TopK) of
-                no_lookup ->
+            case Lookup of
+                lookup ->
                     form_slot(
                         Rem1,
                         Rem2,
                         LevelInfo,
-                        no_lookup,
+                        lookup,
                         Size + 1,
                         [{TopK, TopV} | Slot],
-                        FK0
+                        FK
                     );
-                lookup ->
-                    case Size >= ?LOOK_SLOTSIZE of
-                        true when FK =/= null ->
+                no_lookup ->
+                    FK0 = case FK of null -> TopK; _ -> FK end,
+                    case leveled_codec:to_lookup(TopK) of
+                        no_lookup ->
+                            form_slot(
+                                Rem1,
+                                Rem2,
+                                LevelInfo,
+                                no_lookup,
+                                Size + 1,
+                                [{TopK, TopV} | Slot],
+                                FK0
+                            );
+                        lookup when Size >= ?LOOK_SLOTSIZE, FK =/= null ->
                             {KVList1, KVList2, {no_lookup, Slot}, FK};
-                        false ->
+                        lookup ->
                             form_slot(
                                 Rem1,
                                 Rem2,
@@ -3561,7 +3560,7 @@ form_slot(KVList1, KVList2, LevelInfo, no_lookup, Size, Slot, FK) ->
                     end
             end;
         {skipped_key, Rem1, Rem2} ->
-            form_slot(Rem1, Rem2, LevelInfo, no_lookup, Size, Slot, FK)
+            form_slot(Rem1, Rem2, LevelInfo, Lookup, Size, Slot, FK)
     end.
 
 -spec key_dominates(
@@ -3574,30 +3573,60 @@ form_slot(KVList1, KVList2, LevelInfo, no_lookup, Size, Slot, FK) ->
         list(maybe_expanded_pointer()),
         list(maybe_expanded_pointer())
     }.
-key_dominates([{pointer, SSTPid, Slot, StartKey, all} | T1], KL2, Level) ->
+key_dominates([{K1, _V1} | _T1] = KVL1, [{K2, V2} | T2], {false, _TS}) when K2 < K1 ->
+    {{next_key, {K2, V2}}, KVL1, T2};
+key_dominates([{K1, _V1} | _T1] = KVL1, [{K2, V2} | T2], Level) when K2 < K1 ->
+    case leveled_codec:maybe_reap_expiredkey({K2, V2}, Level) of
+        true ->
+            {skipped_key, KVL1, T2};
+        false ->
+            {{next_key, {K2, V2}}, KVL1, T2}
+    end;
+key_dominates([{K1, V1} | T1] = KVL1, [{K2, V2} | T2] = KVL2, Level) ->
+    case {K1 < K2, Level} of
+        {true, {false, _TS}} ->
+            {{next_key, {K1, V1}}, T1, KVL2};
+        {true, Level} ->
+            case leveled_codec:maybe_reap_expiredkey({K1, V1}, Level) of
+                true ->
+                    {skipped_key, T1, KVL2};
+                false ->
+                    {{next_key, {K1, V1}}, T1, KVL2}
+            end;
+        {false, _Level} ->
+            case leveled_codec:key_dominates({K1, V1}, {K2, V2}) of
+                true ->
+                    {skipped_key, KVL1, T2};
+                false ->
+                    {skipped_key, T1, KVL2}
+            end
+    end;
+key_dominates([], [{K2, V2} | T2], {false, _TS}) ->
+    {{next_key, {K2, V2}}, [], T2};
+key_dominates([], [{K2, V2} | T2], Level) ->
+    case leveled_codec:maybe_reap_expiredkey({K2, V2}, Level) of
+        true ->
+            {skipped_key, [], T2};
+        false ->
+            {{next_key, {K2, V2}}, [], T2}
+    end;
+key_dominates([{K1, V1} | T1], [], Level) ->
+    case leveled_codec:maybe_reap_expiredkey({K1, V1}, Level) of
+        true ->
+            {skipped_key, T1, []};
+        false ->
+            {{next_key, {K1, V1}}, T1, []}
+    end;
+key_dominates(KL1, [{next, ManEntry, StartKey} | T2], Level) ->
     key_dominates(
-        expand_list_by_pointer(
-            {pointer, SSTPid, Slot, StartKey, all},
-            % As the head is a pointer, the tail must be pointers too
-            % So eqwalizer is wrong that this may be
-            % [leveled_codec:ledger_kv()]
-            % eqwalizer:ignore
-            T1,
-            ?MERGE_SCANWIDTH
-        ),
-        KL2,
-        Level
-    );
-key_dominates([{next, ManEntry, StartKey} | T1], KL2, Level) ->
-    key_dominates(
+        KL1,
         expand_list_by_pointer(
             {next, ManEntry, StartKey, all},
             % See above
             % eqwalizer:ignore
-            T1,
+            T2,
             ?MERGE_SCANWIDTH
         ),
-        KL2,
         Level
     );
 key_dominates(KL1, [{pointer, SSTPid, Slot, StartKey, all} | T2], Level) ->
@@ -3612,68 +3641,33 @@ key_dominates(KL1, [{pointer, SSTPid, Slot, StartKey, all} | T2], Level) ->
         ),
         Level
     );
-key_dominates(KL1, [{next, ManEntry, StartKey} | T2], Level) ->
+key_dominates([{next, ManEntry, StartKey} | T1], KL2, Level) ->
     key_dominates(
-        KL1,
         expand_list_by_pointer(
             {next, ManEntry, StartKey, all},
             % See above
             % eqwalizer:ignore
-            T2,
+            T1,
             ?MERGE_SCANWIDTH
         ),
+        KL2,
         Level
     );
-key_dominates(
-    [{K1, _V1} | _T1] = Rest1, [{K2, V2} | Rest2], {false, _TS}
-) when K2 < K1 ->
-    {{next_key, {K2, V2}}, Rest1, Rest2};
-key_dominates(
-    [{K1, V1} | Rest1], [{K2, _V2} | _T2] = Rest2, {false, _TS}
-) when K1 < K2 ->
-    {{next_key, {K1, V1}}, Rest1, Rest2};
-key_dominates(KL1, KL2, Level) ->
-    case key_dominates_comparison(KL1, KL2) of
-        {{next_key, NKV}, Rest1, Rest2} ->
-            case leveled_codec:maybe_reap_expiredkey(NKV, Level) of
-                true ->
-                    {skipped_key, Rest1, Rest2};
-                false ->
-                    {{next_key, NKV}, Rest1, Rest2}
-            end;
-        {skipped_key, Rest1, Rest2} ->
-            {skipped_key, Rest1, Rest2}
-    end.
+key_dominates([{pointer, SSTPid, Slot, StartKey, all} | T1], KL2, Level) ->
+    key_dominates(
+        expand_list_by_pointer(
+            {pointer, SSTPid, Slot, StartKey, all},
+            % As the head is a pointer, the tail must be pointers too
+            % So eqwalizer is wrong that this may be
+            % [leveled_codec:ledger_kv()]
+            % eqwalizer:ignore
+            T1,
+            ?MERGE_SCANWIDTH
+        ),
+        KL2,
+        Level
+    ).
 
--spec key_dominates_comparison(
-    list(maybe_expanded_pointer()),
-    list(maybe_expanded_pointer())
-) ->
-    % first item in each list must be leveled_codec:ledger_kv()
-    {
-        {next_key, leveled_codec:ledger_kv()} | skipped_key,
-        list(maybe_expanded_pointer()),
-        list(maybe_expanded_pointer())
-    }.
-key_dominates_comparison([{K1, V1} | T1], []) ->
-    {{next_key, {K1, V1}}, T1, []};
-key_dominates_comparison([], [{K2, V2} | T2]) ->
-    {{next_key, {K2, V2}}, [], T2};
-key_dominates_comparison([{K1, _V1} | _T1] = LHL, [{K2, V2} | T2]) when
-    K2 < K1
-->
-    {{next_key, {K2, V2}}, LHL, T2};
-key_dominates_comparison([{K1, V1} | T1], [{K2, _V2} | _T2] = RHL) when
-    K1 < K2
-->
-    {{next_key, {K1, V1}}, T1, RHL};
-key_dominates_comparison([{K1, V1} | T1], [{K2, V2} | T2]) ->
-    case leveled_codec:key_dominates({K1, V1}, {K2, V2}) of
-        true ->
-            {skipped_key, [{K1, V1} | T1], T2};
-        false ->
-            {skipped_key, T1, [{K2, V2} | T2]}
-    end.
 
 %%%============================================================================
 %%% Timing Functions
