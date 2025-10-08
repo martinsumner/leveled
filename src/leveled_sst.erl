@@ -61,7 +61,7 @@
 
 -behaviour(gen_statem).
 
--compile({inline, [key_dominates/3]}).
+-compile({inline, [key_dominates/2]}).
 
 -include("leveled.hrl").
 
@@ -3516,13 +3516,35 @@ form_slot_lookup([], [], _LI, _Size, Slot, FK) ->
 form_slot_lookup(KVList1, KVList2, _LI, ?LOOK_SLOTSIZE, Slot, FK) ->
     {KVList1, KVList2, {lookup, Slot}, FK};
 form_slot_lookup(KVList1, KVList2, LevelInfo, Size, Slot, FK) ->
-    case key_dominates(KVList1, KVList2, LevelInfo) of
-        {{next_key, {TopK, TopV}}, Rem1, Rem2} ->
+    NextKey =
+        case key_dominates(KVList1, KVList2) of
+            {{next_key, {TopK, TopV}}, Rem1, Rem2} ->
+                case LevelInfo of
+                    {false, _} ->
+                        {TopK, TopV};
+                    _Basement ->
+                        MaybeExpire =
+                            leveled_codec:maybe_reap_expiredkey(
+                                {TopK, TopV},
+                                LevelInfo
+                            ),
+                        case MaybeExpire of
+                            true ->
+                                none;
+                            false ->
+                                {TopK, TopV}
+                        end
+                end;
+            {skipped_key, Rem1, Rem2} ->
+                none
+        end,
+    case NextKey of
+        none ->
+            form_slot_lookup(Rem1, Rem2, LevelInfo, Size, Slot, FK);
+        NextKV ->
             form_slot_lookup(
-                Rem1, Rem2,LevelInfo, Size + 1, [{TopK, TopV} | Slot], FK
-                    );
-        {skipped_key, Rem1, Rem2} ->
-            form_slot_lookup(Rem1, Rem2, LevelInfo, Size, Slot, FK)
+                Rem1, Rem2, LevelInfo, Size + 1, [NextKV | Slot], FK
+            )
     end.
 
 -spec form_slot_nolookup(
@@ -3545,11 +3567,35 @@ form_slot_nolookup([], [], _LI, _Size, Slot, FK) ->
 form_slot_nolookup(KVList1, KVList2, _LI, ?NOLOOK_SLOTSIZE, Slot, FK) ->
     {KVList1, KVList2, {no_lookup, Slot}, FK};
 form_slot_nolookup(KVList1, KVList2, LevelInfo, Size, Slot, FK) ->
-    case key_dominates(KVList1, KVList2, LevelInfo) of
-        {{next_key, {{Tag, _, _, _} = TopK, TopV}}, Rem1, Rem2} ->
+    NextKey =
+        case key_dominates(KVList1, KVList2) of
+            {{next_key, {TopK, TopV}}, Rem1, Rem2} ->
+                case LevelInfo of
+                    {false, _} ->
+                        {TopK, TopV};
+                    _Basement ->
+                        MaybeExpire =
+                            leveled_codec:maybe_reap_expiredkey(
+                                {TopK, TopV},
+                                LevelInfo
+                            ),
+                        case MaybeExpire of
+                            true ->
+                                none;
+                            false ->
+                                {TopK, TopV}
+                        end
+                end;
+            {skipped_key, Rem1, Rem2} ->
+                none
+        end,
+    case NextKey of
+        none ->
+            form_slot_nolookup(Rem1, Rem2, LevelInfo, Size, Slot, FK);
+        {{Tag, _, _, _} = NextK, NextV} ->
             FK0 =
                 case FK of
-                    null -> TopK;
+                    null -> NextK;
                     _ -> FK
                 end,
             case Tag of
@@ -3559,7 +3605,7 @@ form_slot_nolookup(KVList1, KVList2, LevelInfo, Size, Slot, FK) ->
                         Rem2,
                         LevelInfo,
                         Size + 1,
-                        [{TopK, TopV} | Slot],
+                        [{NextK, NextV} | Slot],
                         FK0
                     );
                 _ when Size >= ?LOOK_SLOTSIZE, FK =/= null ->
@@ -3570,76 +3616,41 @@ form_slot_nolookup(KVList1, KVList2, LevelInfo, Size, Slot, FK) ->
                         Rem2,
                         LevelInfo,
                         Size + 1,
-                        [{TopK, TopV} | Slot],
+                        [{NextK, NextV} | Slot],
                         FK0
                     )
-            end;
-        {skipped_key, Rem1, Rem2} ->
-            form_slot_nolookup(Rem1, Rem2, LevelInfo, Size, Slot, FK)
+            end
     end.
 
 -spec key_dominates(
     list(maybe_expanded_pointer()),
-    list(maybe_expanded_pointer()),
-    {boolean(), leveled_pmanifest:lsm_level()}
+    list(maybe_expanded_pointer())
 ) ->
     {
         {next_key, leveled_codec:ledger_kv()} | skipped_key,
         list(maybe_expanded_pointer()),
         list(maybe_expanded_pointer())
     }.
-key_dominates([{K1, _V1} | _T1] = KVL1, [{K2, V2} | T2], {false, _TS}) when
-    K2 < K1
-->
+key_dominates([{K1, _V1} | _T1] = KVL1, [{K2, V2} | T2]) when K2 < K1 ->
     {{next_key, {K2, V2}}, KVL1, T2};
-key_dominates([{K1, _V1} | _T1] = KVL1, [{K2, V2} | T2], Level) when K2 < K1 ->
-    case leveled_codec:maybe_reap_expiredkey({K2, V2}, Level) of
+key_dominates([{K1, V1} | T1], [{K2, _V2} | _T2] = KVL2) when K1 < K2 ->
+    {{next_key, {K1, V1}}, T1, KVL2};
+key_dominates([{K1, V1} | T1] = KVL1, [{K2, V2} | T2] = KVL2) when K1 =:= K2 ->
+    case leveled_codec:key_dominates({K1, V1}, {K2, V2}) of
         true ->
             {skipped_key, KVL1, T2};
         false ->
-            {{next_key, {K2, V2}}, KVL1, T2}
+            {skipped_key, T1, KVL2}
     end;
-key_dominates([{K1, V1} | T1] = KVL1, [{K2, V2} | T2] = KVL2, Level) ->
-    case {K1 < K2, Level} of
-        {true, {false, _TS}} ->
-            {{next_key, {K1, V1}}, T1, KVL2};
-        {true, Level} ->
-            case leveled_codec:maybe_reap_expiredkey({K1, V1}, Level) of
-                true ->
-                    {skipped_key, T1, KVL2};
-                false ->
-                    {{next_key, {K1, V1}}, T1, KVL2}
-            end;
-        {false, _Level} ->
-            case leveled_codec:key_dominates({K1, V1}, {K2, V2}) of
-                true ->
-                    {skipped_key, KVL1, T2};
-                false ->
-                    {skipped_key, T1, KVL2}
-            end
-    end;
-key_dominates([], [{K2, V2} | T2], {false, _TS}) ->
+key_dominates([], [{K2, V2} | T2]) ->
     {{next_key, {K2, V2}}, [], T2};
-key_dominates([], [{K2, V2} | T2], Level) ->
-    case leveled_codec:maybe_reap_expiredkey({K2, V2}, Level) of
-        true ->
-            {skipped_key, [], T2};
-        false ->
-            {{next_key, {K2, V2}}, [], T2}
-    end;
-key_dominates([{K1, V1} | T1], [], {false, _TS}) ->
+key_dominates([{K1, V1} | T1], []) ->
     {{next_key, {K1, V1}}, T1, []};
-key_dominates([{K1, V1} | T1], [], Level) ->
-    case leveled_codec:maybe_reap_expiredkey({K1, V1}, Level) of
-        true ->
-            {skipped_key, T1, []};
-        false ->
-            {{next_key, {K1, V1}}, T1, []}
-    end;
-key_dominates(KL1, KL2, Level) ->
-    key_dominates(maybe_expand_keys(KL1), maybe_expand_keys(KL2), Level).
+key_dominates(KL1, KL2) ->
+    key_dominates(maybe_expand_keys(KL1), maybe_expand_keys(KL2)).
 
--spec maybe_expand_keys(list(maybe_expanded_pointer())) -> list(maybe_expanded_pointer()).
+-spec maybe_expand_keys(list(maybe_expanded_pointer())) ->
+    list(maybe_expanded_pointer()).
 maybe_expand_keys([{next, ManEntry, StartKey} | T]) ->
     expand_list_by_pointer(
         {next, ManEntry, StartKey, all},
@@ -5050,6 +5061,19 @@ check_binary_references(Pid) ->
         lists:foldl(fun({_R, BM, _RC}, Acc) -> Acc + BM end, 0, BinList),
     io:format(user, "Total binary memory ~w~n", [TotalBinMem]),
     TotalBinMem.
+
+key_dominates(KVL1, KVL2, LevelInfo) ->
+    case key_dominates(KVL1, KVL2) of
+        {{next_key, NK}, Rem1, Rem2} = UseNext ->
+            case leveled_codec:maybe_reap_expiredkey(NK, LevelInfo) of
+                true ->
+                    {skipped_key, Rem1, Rem2};
+                false ->
+                    UseNext
+            end;
+        SkipResponse ->
+            SkipResponse
+    end.
 
 key_dominates_test() ->
     MakeKVFun =
