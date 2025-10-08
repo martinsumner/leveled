@@ -3533,7 +3533,11 @@ form_slot(KVList1, KVList2, LevelInfo, Lookup, Size, Slot, FK) ->
                         FK
                     );
                 no_lookup ->
-                    FK0 = case FK of null -> TopK; _ -> FK end,
+                    FK0 =
+                        case FK of
+                            null -> TopK;
+                            _ -> FK
+                        end,
                     case leveled_codec:to_lookup(TopK) of
                         no_lookup ->
                             form_slot(
@@ -3573,7 +3577,9 @@ form_slot(KVList1, KVList2, LevelInfo, Lookup, Size, Slot, FK) ->
         list(maybe_expanded_pointer()),
         list(maybe_expanded_pointer())
     }.
-key_dominates([{K1, _V1} | _T1] = KVL1, [{K2, V2} | T2], {false, _TS}) when K2 < K1 ->
+key_dominates([{K1, _V1} | _T1] = KVL1, [{K2, V2} | T2], {false, _TS}) when
+    K2 < K1
+->
     {{next_key, {K2, V2}}, KVL1, T2};
 key_dominates([{K1, _V1} | _T1] = KVL1, [{K2, V2} | T2], Level) when K2 < K1 ->
     case leveled_codec:maybe_reap_expiredkey({K2, V2}, Level) of
@@ -3610,6 +3616,8 @@ key_dominates([], [{K2, V2} | T2], Level) ->
         false ->
             {{next_key, {K2, V2}}, [], T2}
     end;
+key_dominates([{K1, V1} | T1], [], {false, _TS}) ->
+    {{next_key, {K1, V1}}, T1, []};
 key_dominates([{K1, V1} | T1], [], Level) ->
     case leveled_codec:maybe_reap_expiredkey({K1, V1}, Level) of
         true ->
@@ -3667,7 +3675,6 @@ key_dominates([{pointer, SSTPid, Slot, StartKey, all} | T1], KL2, Level) ->
         KL2,
         Level
     ).
-
 
 %%%============================================================================
 %%% Timing Functions
