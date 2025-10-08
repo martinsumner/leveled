@@ -25,7 +25,6 @@
     striphead_to_v1details/1,
     endkey_passed/2,
     key_dominates/2,
-    maybe_reap_expiredkey/2,
     to_objectkey/3,
     to_objectkey/5,
     to_querykey/3,
@@ -432,27 +431,6 @@ check_captured_terms(
 %% the other, or if the match, which key is "better" and should be the winner
 key_dominates(LObj, RObj) ->
     strip_to_seqonly(LObj) >= strip_to_seqonly(RObj).
-
--spec maybe_reap_expiredkey(ledger_kv(), {boolean(), integer()}) -> boolean().
-%% @doc
-%% Make a reap decision based on the level in the ledger (needs to be expired
-%% and in the basement).  the level is a tuple of the is_basement boolean, and
-%% a timestamp passed into the calling function
-maybe_reap_expiredkey(KV, LevelD) ->
-    Status = strip_to_statusonly(KV),
-    maybe_reap(Status, LevelD).
-
-maybe_reap({_, infinity}, _) ->
-    % key is not set to expire
-    false;
-maybe_reap({_, TS}, {true, CurrTS}) when CurrTS > TS ->
-    % basement and ready to expire
-    true;
-maybe_reap(tomb, {true, _CurrTS}) ->
-    % always expire in basement
-    true;
-maybe_reap(_, _) ->
-    false.
 
 -spec count_tombs(
     list(ledger_kv()), non_neg_integer()
