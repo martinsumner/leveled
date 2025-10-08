@@ -3509,36 +3509,26 @@ merge_lists(
         {lookup, list(leveled_codec:ledger_kv())},
         leveled_codec:ledger_key() | null
     }.
-%% @doc
-%% Merge together Key Value lists to provide a reverse-ordered slot of KVs
 form_slot_lookup([], [], _LI, _Size, Slot, FK) ->
     {[], [], {lookup, Slot}, FK};
 form_slot_lookup(KVList1, KVList2, _LI, ?LOOK_SLOTSIZE, Slot, FK) ->
     {KVList1, KVList2, {lookup, Slot}, FK};
 form_slot_lookup(KVList1, KVList2, LevelInfo, Size, Slot, FK) ->
-    NextKey =
-        case key_dominates(KVList1, KVList2) of
-            {{next_key, {TopK, TopV}}, Rem1, Rem2} ->
-                case LevelInfo of
-                    {false, _} ->
-                        {TopK, TopV};
-                    _Basement ->
-                        MaybeExpire =
-                            leveled_codec:maybe_reap_expiredkey(
-                                {TopK, TopV},
-                                LevelInfo
-                            ),
-                        case MaybeExpire of
-                            true ->
-                                none;
-                            false ->
-                                {TopK, TopV}
-                        end
+    NextKV =
+        case {key_dominates(KVList1, KVList2), LevelInfo} of
+            {{{next_key, KV}, Rem1, Rem2}, {false, _}} ->
+                KV;
+            {{{next_key, KV}, Rem1, Rem2}, _} ->
+                case leveled_codec:maybe_reap_expiredkey(KV, LevelInfo) of
+                    true ->
+                        none;
+                    false ->
+                        KV
                 end;
-            {skipped_key, Rem1, Rem2} ->
+            {{skipped_key, Rem1, Rem2}, _} ->
                 none
         end,
-    case NextKey of
+    case NextKV of
         none ->
             form_slot_lookup(Rem1, Rem2, LevelInfo, Size, Slot, FK);
         NextKV ->
@@ -3561,35 +3551,26 @@ form_slot_lookup(KVList1, KVList2, LevelInfo, Size, Slot, FK) ->
         {lookup | no_lookup, list(leveled_codec:ledger_kv())},
         leveled_codec:ledger_key() | null
     }.
-
 form_slot_nolookup([], [], _LI, _Size, Slot, FK) ->
     {[], [], {no_lookup, Slot}, FK};
 form_slot_nolookup(KVList1, KVList2, _LI, ?NOLOOK_SLOTSIZE, Slot, FK) ->
     {KVList1, KVList2, {no_lookup, Slot}, FK};
 form_slot_nolookup(KVList1, KVList2, LevelInfo, Size, Slot, FK) ->
-    NextKey =
-        case key_dominates(KVList1, KVList2) of
-            {{next_key, {TopK, TopV}}, Rem1, Rem2} ->
-                case LevelInfo of
-                    {false, _} ->
-                        {TopK, TopV};
-                    _Basement ->
-                        MaybeExpire =
-                            leveled_codec:maybe_reap_expiredkey(
-                                {TopK, TopV},
-                                LevelInfo
-                            ),
-                        case MaybeExpire of
-                            true ->
-                                none;
-                            false ->
-                                {TopK, TopV}
-                        end
+    NextKV =
+        case {key_dominates(KVList1, KVList2), LevelInfo} of
+            {{{next_key, KV}, Rem1, Rem2}, {false, _}} ->
+                KV;
+            {{{next_key, KV}, Rem1, Rem2}, _} ->
+                case leveled_codec:maybe_reap_expiredkey(KV, LevelInfo) of
+                    true ->
+                        none;
+                    false ->
+                        KV
                 end;
-            {skipped_key, Rem1, Rem2} ->
+            {{skipped_key, Rem1, Rem2}, _} ->
                 none
         end,
-    case NextKey of
+    case NextKV of
         none ->
             form_slot_nolookup(Rem1, Rem2, LevelInfo, Size, Slot, FK);
         {{Tag, _, _, _} = NextK, NextV} ->
@@ -3635,7 +3616,7 @@ key_dominates([{K1, _V1} | _T1] = KVL1, [{K2, V2} | T2]) when K2 < K1 ->
     {{next_key, {K2, V2}}, KVL1, T2};
 key_dominates([{K1, V1} | T1], [{K2, _V2} | _T2] = KVL2) when K1 < K2 ->
     {{next_key, {K1, V1}}, T1, KVL2};
-key_dominates([{K1, V1} | T1] = KVL1, [{K2, V2} | T2] = KVL2) when K1 =:= K2 ->
+key_dominates([{K1, V1} | T1] = KVL1, [{K2, V2} | T2] = KVL2) when K1 == K2 ->
     case leveled_codec:key_dominates({K1, V1}, {K2, V2}) of
         true ->
             {skipped_key, KVL1, T2};
