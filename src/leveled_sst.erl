@@ -61,7 +61,7 @@
 
 -behaviour(gen_statem).
 
--compile({inline, [key_dominates/2, maybe_reap_expiredkey/2]}).
+-compile({inline, [key_dominates/2, maybe_reap_expiredkey/2, tune_hash/1]}).
 
 -include("leveled.hrl").
 
@@ -96,6 +96,7 @@
 -define(MIN_HASH, 32768).
 -define(MAX_HASH, 65535).
 -define(LOG_BUILDTIMINGS_LEVELS, [3]).
+-define(NO_LOOKUP_POS, {<<127:8/integer>>, [], 0}).
 
 -ifdef(TEST).
 -define(HIBERNATE_TIMEOUT, 5000).
@@ -226,6 +227,13 @@
 -type fetch_levelzero_fun() ::
     fun((pos_integer(), leveled_penciller:levelzero_returnfun()) -> ok).
 -type extract_hash() :: non_neg_integer() | no_lookup.
+-type position_acc() ::
+    {
+        binary(),
+        list(leveled_codec:segment_hash()),
+        % undefined last_mod_date not supported
+        non_neg_integer()
+    }.
 
 -record(read_state, {
     handle :: file:io_device(),
@@ -2163,115 +2171,102 @@ lookup_slots(StartKey, EndKey, Tree, FilterFun) ->
 
 -spec accumulate_positions(
     list(leveled_codec:ledger_kv()),
-    {
-        binary(),
-        non_neg_integer(),
-        list(leveled_codec:segment_hash()),
-        leveled_codec:last_moddate()
-    }
+    {non_neg_integer(), position_acc()}
 ) ->
-    {
-        binary(),
-        non_neg_integer(),
-        list(leveled_codec:segment_hash()),
-        non_neg_integer()
-    }.
+    position_acc().
 %% @doc
 %% Fold function use to accumulate the position information needed to
 %% populate the summary of the slot
-accumulate_positions(
-    [], {PosBin, NoHashCount, HashAcc, LMDAcc}
-) when is_integer(LMDAcc) ->
-    {PosBin, NoHashCount, HashAcc, LMDAcc};
-accumulate_positions([{K, V} | T], {PosBin, NoHashCount, HashAcc, LMDAcc}) ->
-    {_SQN, H1, LMD} = leveled_codec:strip_to_indexdetails({K, V}),
+accumulate_positions([], {NHC, {PosBin, HashAcc, LMDAcc}}) when
+    is_integer(LMDAcc)
+->
+    finalise_posbin({NHC, {PosBin, HashAcc, LMDAcc}});
+accumulate_positions([{K, V} | T], {NHC, PosAcc}) ->
+    accumulate_positions(T, accumulate_position({K, V}, {NHC, PosAcc})).
+
+-spec finalise_posbin({non_neg_integer(), position_acc()}) -> position_acc().
+finalise_posbin({NHC, {PosBin, HashAcc, LMDAcc}}) when NHC > 0 ->
+    {<<PosBin/binary, (NHC - 1):8/integer>>, HashAcc, LMDAcc};
+finalise_posbin({_, {PosBin, HashAcc, LMDAcc}}) ->
+    {PosBin, HashAcc, LMDAcc}.
+
+-spec accumulate_position(leveled_codec:ledger_kv(), {
+    non_neg_integer(), position_acc()
+}) -> {non_neg_integer(), position_acc()}.
+accumulate_position(NextKV, {NHC, {PosBin, HashAcc, LMDAcc}}) ->
+    {_SQN, H1, LMD} = leveled_codec:strip_to_indexdetails(NextKV),
     LMDAcc0 = take_max_lastmoddate(LMD, LMDAcc),
     case extract_hash(H1) of
         PosH1 when is_integer(PosH1) ->
-            case NoHashCount of
+            case NHC of
                 0 ->
-                    accumulate_positions(
-                        T,
+                    {
+                        0,
                         {
-                            <<PosH1:16/integer, PosBin/binary>>,
-                            0,
+                            <<PosBin/binary, PosH1:16/integer>>,
                             [H1 | HashAcc],
                             LMDAcc0
                         }
-                    );
+                    };
                 N when N =< 128 ->
                     % The No Hash Count is an integer between 0 and 127
                     % and so at read time should count NHC + 1
-                    NHC = N - 1,
-                    accumulate_positions(
-                        T,
+                    {
+                        0,
                         {
-                            <<PosH1:16/integer, NHC:8/integer, PosBin/binary>>,
-                            0,
+                            <<PosBin/binary, (N - 1):8/integer,
+                                PosH1:16/integer>>,
                             [H1 | HashAcc],
                             LMDAcc0
                         }
-                    )
+                    }
             end;
         _ ->
-            accumulate_positions(
-                T, {PosBin, NoHashCount + 1, HashAcc, LMDAcc0}
-            )
+            {NHC + 1, {PosBin, HashAcc, LMDAcc0}}
     end.
 
 -spec take_max_lastmoddate(
     leveled_codec:last_moddate(), leveled_codec:last_moddate()
 ) ->
-    leveled_codec:last_moddate().
+    non_neg_integer().
 %% @doc
 %% Get the last modified date.  If no Last Modified Date on any object, can't
 %% add the accelerator and should check each object in turn
 take_max_lastmoddate(undefined, _LMDAcc) ->
     ?FLIPPER32;
-take_max_lastmoddate(LMD, LMDAcc) ->
+take_max_lastmoddate(LMD, LMDAcc) when is_integer(LMD), is_integer(LMDAcc) ->
     max(LMD, LMDAcc).
+
+%% @doc
+%% Generate the serialised slot to be used when storing this sublist of keys
+%% and values
+generate_binary_slot(
+    lookup, {forward, KVL}, BlockMethod, IndexModDate, Timings0
+) ->
+    PosInfo = accumulate_positions(KVL, {0, {<<>>, [], 0}}),
+    generate_binary_slot(
+        lookup, {forward, KVL}, BlockMethod, IndexModDate, Timings0, PosInfo
+    ).
 
 -spec generate_binary_slot(
     leveled_codec:maybe_lookup(),
     {forward | reverse, list(leveled_codec:ledger_kv())},
     block_method(),
     boolean(),
-    build_timings()
+    build_timings(),
+    position_acc()
 ) -> {binary_slot(), build_timings()}.
-%% @doc
-%% Generate the serialised slot to be used when storing this sublist of keys
-%% and values
 generate_binary_slot(
-    Lookup, {DR, KVL0}, BlockMethod, IndexModDate, BuildTimings0
+    Lookup, {DR, KVL0}, BlockMethod, IndexModDate, BuildTimings0, PosInfo
 ) ->
-    % The slot should be received reversed - get last key before flipping
-    % accumulate_positions/2 should use the reversed KVL for efficiency
-    {KVL, KVLr} =
+    {KVL, LastKey} =
         case DR of
             forward ->
-                {KVL0, lists:reverse(KVL0)};
+                {KVL0, element(1, lists:last(KVL0))};
             reverse ->
-                {lists:reverse(KVL0), KVL0}
+                {lists:reverse(KVL0), element(1, hd(KVL0))}
         end,
-    LastKey = element(1, hd(KVLr)),
-
-    {HashL, PosBinIndex, LMD} =
-        case Lookup of
-            lookup ->
-                {PosBinIndex0, NHC, HashL0, LMD0} =
-                    accumulate_positions(KVLr, {<<>>, 0, [], 0}),
-                PosBinIndex1 =
-                    case NHC of
-                        0 ->
-                            PosBinIndex0;
-                        _ ->
-                            N = NHC - 1,
-                            <<0:1/integer, N:7/integer, PosBinIndex0/binary>>
-                    end,
-                {HashL0, PosBinIndex1, LMD0};
-            no_lookup ->
-                {[], <<0:1/integer, 127:7/integer>>, 0}
-        end,
+    {PosBinIndex, HashL, LMD} = PosInfo,
 
     BuildTimings1 = update_buildtimings(BuildTimings0, slot_hashlist),
 
@@ -3454,7 +3449,7 @@ merge_lists(
 ) ->
     % Form a slot by merging the two lists until the next 128 K/V pairs have
     % been determined
-    {KVRem1, KVRem2, Slot, FK0} =
+    {KVRem1, KVRem2, Slot, FK0, PosAcc} =
         form_slot(KVL1, KVL2, LI, 0, [], FirstKey),
     T1 = update_buildtimings(T0, fold_toslot),
     case Slot of
@@ -3478,7 +3473,7 @@ merge_lists(
             % metadata
             {SlotD, T2} =
                 generate_binary_slot(
-                    Lookup, {reverse, KVL}, BlockMethod, IdxModDate, T1
+                    Lookup, {reverse, KVL}, BlockMethod, IdxModDate, T1, PosAcc
                 ),
             merge_lists(
                 KVRem1,
@@ -3510,18 +3505,20 @@ update_first_key(null, Slot) ->
     list(maybe_expanded_pointer()),
     {boolean(), non_neg_integer()},
     non_neg_integer(),
-    list(leveled_codec:ledger_kv())
+    list(leveled_codec:ledger_kv()),
+    {non_neg_integer(), position_acc()}
 ) ->
     {
         list(maybe_expanded_pointer()),
         list(maybe_expanded_pointer()),
-        {lookup, list(leveled_codec:ledger_kv())}
+        {lookup, list(leveled_codec:ledger_kv())},
+        position_acc()
     }.
-form_slot_lookup([], [], _LI, _Size, Slot) ->
-    {[], [], {lookup, Slot}};
-form_slot_lookup(KVList1, KVList2, _LI, ?LOOK_SLOTSIZE, Slot) ->
-    {KVList1, KVList2, {lookup, Slot}};
-form_slot_lookup(KVList1, KVList2, Level, Size, Slot) ->
+form_slot_lookup([], [], _LI, _Size, Slot, PosAcc) ->
+    {[], [], {lookup, Slot}, finalise_posbin(PosAcc)};
+form_slot_lookup(KVList1, KVList2, _LI, ?LOOK_SLOTSIZE, Slot, PosAcc) ->
+    {KVList1, KVList2, {lookup, Slot}, finalise_posbin(PosAcc)};
+form_slot_lookup(KVList1, KVList2, Level, Size, Slot, PosAcc) ->
     NextKV =
         case key_dominates(KVList1, KVList2) of
             {{next_key, KV}, Rem1, Rem2} ->
@@ -3531,9 +3528,16 @@ form_slot_lookup(KVList1, KVList2, Level, Size, Slot) ->
         end,
     case NextKV of
         none ->
-            form_slot_lookup(Rem1, Rem2, Level, Size, Slot);
+            form_slot_lookup(Rem1, Rem2, Level, Size, Slot, PosAcc);
         NextKV ->
-            form_slot_lookup(Rem1, Rem2, Level, Size + 1, [NextKV | Slot])
+            form_slot_lookup(
+                Rem1,
+                Rem2,
+                Level,
+                Size + 1,
+                [NextKV | Slot],
+                accumulate_position(NextKV, PosAcc)
+            )
     end.
 
 -spec form_slot(
@@ -3548,16 +3552,24 @@ form_slot_lookup(KVList1, KVList2, Level, Size, Slot) ->
         list(maybe_expanded_pointer()),
         list(maybe_expanded_pointer()),
         {lookup | no_lookup, list(leveled_codec:ledger_kv())},
-        leveled_codec:ledger_key() | null
+        leveled_codec:ledger_key() | null,
+        position_acc()
     }.
 form_slot(KVL1, KVL2, Level, Size, Slot, FirstKey) ->
-    {Rem1, Rem2, {Type, MergedKVL}} = form_slot(KVL1, KVL2, Level, Size, Slot),
-    {Rem1, Rem2, {Type, MergedKVL}, update_first_key(FirstKey, MergedKVL)}.
+    {Rem1, Rem2, {Type, MergedKVL}, PosAcc} =
+        form_slot(KVL1, KVL2, Level, Size, Slot),
+    {
+        Rem1,
+        Rem2,
+        {Type, MergedKVL},
+        update_first_key(FirstKey, MergedKVL),
+        PosAcc
+    }.
 
 form_slot([], [], _LI, _Size, Slot) ->
-    {[], [], {no_lookup, Slot}};
+    {[], [], {no_lookup, Slot}, ?NO_LOOKUP_POS};
 form_slot(KVList1, KVList2, _LI, ?NOLOOK_SLOTSIZE, Slot) ->
-    {KVList1, KVList2, {no_lookup, Slot}};
+    {KVList1, KVList2, {no_lookup, Slot}, ?NO_LOOKUP_POS};
 form_slot(KVList1, KVList2, Level, Size, Slot) ->
     NextKV =
         case key_dominates(KVList1, KVList2) of
@@ -3572,10 +3584,15 @@ form_slot(KVList1, KVList2, Level, Size, Slot) ->
         {{?IDX_TAG, _, _, _} = NextK, NextV} ->
             form_slot(Rem1, Rem2, Level, Size + 1, [{NextK, NextV} | Slot]);
         _NextKV when Size >= ?LOOK_SLOTSIZE ->
-            {KVList1, KVList2, {no_lookup, Slot}};
+            {KVList1, KVList2, {no_lookup, Slot}, {?NO_LOOKUP_POS, [], 0}};
         NextKV ->
             form_slot_lookup(
-                Rem1, Rem2, Level, Size + 1, [NextKV | Slot]
+                Rem1,
+                Rem2,
+                Level,
+                Size + 1,
+                [NextKV | Slot],
+                accumulate_position(NextKV, {Size, {<<>>, [], 0}})
             )
     end.
 
@@ -3974,7 +3991,7 @@ form_slot_test() ->
         {o, <<"B1">>, <<"K5">>, null}
     ),
     ?assertMatch(
-        {[], [], {no_lookup, Slot}, {o, <<"B1">>, <<"K5">>, null}},
+        {[], [], {no_lookup, Slot}, {o, <<"B1">>, <<"K5">>, null}, _},
         R1
     ).
 
@@ -4151,7 +4168,12 @@ indexed_list_allindexkeys_nolookup_test() ->
     ),
     {{Header, FullBin, _HL, _LK}, no_timing} =
         generate_binary_slot(
-            no_lookup, {forward, Keys}, {0, native}, ?INDEX_MODDATE, no_timing
+            no_lookup,
+            {forward, Keys},
+            {0, native},
+            ?INDEX_MODDATE,
+            no_timing,
+            ?NO_LOOKUP_POS
         ),
     ?assertMatch(<<_BL:20/binary, _LMD:32/integer, 127:8/integer>>, Header),
     % SW = os:timestamp(),
