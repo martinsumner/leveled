@@ -3455,7 +3455,7 @@ merge_lists(
     % Form a slot by merging the two lists until the next 128 K/V pairs have
     % been determined
     {KVRem1, KVRem2, Slot, FK0} =
-        form_slot_nolookup(KVL1, KVL2, LI, 0, [], FirstKey),
+        form_slot(KVL1, KVL2, LI, 0, [], FirstKey),
     T1 = update_buildtimings(T0, fold_toslot),
     case Slot of
         {_, []} ->
@@ -3495,25 +3495,33 @@ merge_lists(
             )
     end.
 
+-spec update_first_key(
+    null | leveled_codec:ledger_key(), list(leveled_codec:ledger_kv())
+) -> null | leveled_codec:ledger_key().
+update_first_key(FK, _) when FK =/= null ->
+    FK;
+update_first_key(null, []) ->
+    null;
+update_first_key(null, Slot) ->
+    element(1, lists:last(Slot)).
+
 -spec form_slot_lookup(
     list(maybe_expanded_pointer()),
     list(maybe_expanded_pointer()),
     {boolean(), non_neg_integer()},
     non_neg_integer(),
-    list(leveled_codec:ledger_kv()),
-    leveled_codec:ledger_key() | null
+    list(leveled_codec:ledger_kv())
 ) ->
     {
         list(maybe_expanded_pointer()),
         list(maybe_expanded_pointer()),
-        {lookup, list(leveled_codec:ledger_kv())},
-        leveled_codec:ledger_key() | null
+        {lookup, list(leveled_codec:ledger_kv())}
     }.
-form_slot_lookup([], [], _LI, _Size, Slot, FK) ->
-    {[], [], {lookup, Slot}, FK};
-form_slot_lookup(KVList1, KVList2, _LI, ?LOOK_SLOTSIZE, Slot, FK) ->
-    {KVList1, KVList2, {lookup, Slot}, FK};
-form_slot_lookup(KVList1, KVList2, Level, Size, Slot, FK) ->
+form_slot_lookup([], [], _LI, _Size, Slot) ->
+    {[], [], {lookup, Slot}};
+form_slot_lookup(KVList1, KVList2, _LI, ?LOOK_SLOTSIZE, Slot) ->
+    {KVList1, KVList2, {lookup, Slot}};
+form_slot_lookup(KVList1, KVList2, Level, Size, Slot) ->
     NextKV =
         case key_dominates(KVList1, KVList2) of
             {{next_key, KV}, Rem1, Rem2} ->
@@ -3523,12 +3531,12 @@ form_slot_lookup(KVList1, KVList2, Level, Size, Slot, FK) ->
         end,
     case NextKV of
         none ->
-            form_slot_lookup(Rem1, Rem2, Level, Size, Slot, FK);
+            form_slot_lookup(Rem1, Rem2, Level, Size, Slot);
         NextKV ->
-            form_slot_lookup(Rem1, Rem2, Level, Size + 1, [NextKV | Slot], FK)
+            form_slot_lookup(Rem1, Rem2, Level, Size + 1, [NextKV | Slot])
     end.
 
--spec form_slot_nolookup(
+-spec form_slot(
     list(maybe_expanded_pointer()),
     list(maybe_expanded_pointer()),
     {boolean(), non_neg_integer()},
@@ -3542,11 +3550,15 @@ form_slot_lookup(KVList1, KVList2, Level, Size, Slot, FK) ->
         {lookup | no_lookup, list(leveled_codec:ledger_kv())},
         leveled_codec:ledger_key() | null
     }.
-form_slot_nolookup([], [], _LI, _Size, Slot, FK) ->
-    {[], [], {no_lookup, Slot}, FK};
-form_slot_nolookup(KVList1, KVList2, _LI, ?NOLOOK_SLOTSIZE, Slot, FK) ->
-    {KVList1, KVList2, {no_lookup, Slot}, FK};
-form_slot_nolookup(KVList1, KVList2, Level, Size, Slot, FK) ->
+form_slot(KVL1, KVL2, Level, Size, Slot, FirstKey) ->
+    {Rem1, Rem2, {Type, MergedKVL}} = form_slot(KVL1, KVL2, Level, Size, Slot),
+    {Rem1, Rem2, {Type, MergedKVL}, update_first_key(FirstKey, MergedKVL)}.
+
+form_slot([], [], _LI, _Size, Slot) ->
+    {[], [], {no_lookup, Slot}};
+form_slot(KVList1, KVList2, _LI, ?NOLOOK_SLOTSIZE, Slot) ->
+    {KVList1, KVList2, {no_lookup, Slot}};
+form_slot(KVList1, KVList2, Level, Size, Slot) ->
     NextKV =
         case key_dominates(KVList1, KVList2) of
             {{next_key, KV}, Rem1, Rem2} ->
@@ -3554,26 +3566,16 @@ form_slot_nolookup(KVList1, KVList2, Level, Size, Slot, FK) ->
             {skipped_key, Rem1, Rem2} ->
                 none
         end,
-    case {NextKV, FK} of
-        {none, _} ->
-            form_slot_nolookup(Rem1, Rem2, Level, Size, Slot, FK);
-        {{{?IDX_TAG, _, _, _} = NextK, NextV}, null} ->
-            form_slot_nolookup(
-                Rem1, Rem2, Level, Size + 1, [{NextK, NextV} | Slot], NextK
-            );
-        {{{?IDX_TAG, _, _, _} = NextK, NextV}, FK} ->
-            form_slot_nolookup(
-                Rem1, Rem2, Level, Size + 1, [{NextK, NextV} | Slot], FK
-            );
-        {_, FK} when Size >= ?LOOK_SLOTSIZE, FK =/= null ->
-            {KVList1, KVList2, {no_lookup, Slot}, FK};
-        {{NextK, NextV}, null} ->
+    case NextKV of
+        none ->
+            form_slot(Rem1, Rem2, Level, Size, Slot);
+        {{?IDX_TAG, _, _, _} = NextK, NextV} ->
+            form_slot(Rem1, Rem2, Level, Size + 1, [{NextK, NextV} | Slot]);
+        _ when Size >= ?LOOK_SLOTSIZE ->
+            {KVList1, KVList2, {no_lookup, Slot}};
+        {NextK, NextV} ->
             form_slot_lookup(
-                Rem1, Rem2, Level, Size + 1, [{NextK, NextV} | Slot], NextK
-            );
-        {{NextK, NextV}, FK} ->
-            form_slot_lookup(
-                Rem1, Rem2, Level, Size + 1, [{NextK, NextV} | Slot], FK
+                Rem1, Rem2, Level, Size + 1, [{NextK, NextV} | Slot]
             )
     end.
 
@@ -3965,7 +3967,7 @@ form_slot_test() ->
                 {5, {active, infinity}, {99234568, 99234567}, {}}
             }
         ],
-    R1 = form_slot_nolookup(
+    R1 = form_slot(
         [SkippingKV],
         [],
         {true, 99999999},
