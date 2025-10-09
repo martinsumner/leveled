@@ -3590,17 +3590,15 @@ form_slot(KVList1, KVList2, Level, Size, Slot) ->
     }.
 key_dominates([{K1, _V1} | _T1] = KVL1, [{K2, V2} | T2]) when K2 < K1 ->
     {{next_key, {K2, V2}}, KVL1, T2};
+key_dominates([{K1, V1} | T1], [{K2, _V2} | _T2] = KVL2) when K1 < K2 ->
+    {{next_key, {K1, V1}}, T1, KVL2};
 key_dominates([{K1, V1} | T1] = KVL1, [{K2, V2} | T2] = KVL2) ->
-    case K1 < K2 of
+    % Equality is implied as lists non-empty and top keys 2-tuples
+    case leveled_codec:key_dominates({K1, V1}, {K2, V2}) of
         true ->
-            {{next_key, {K1, V1}}, T1, KVL2};
+            {skipped_key, KVL1, T2};
         false ->
-            case leveled_codec:key_dominates({K1, V1}, {K2, V2}) of
-                true ->
-                    {skipped_key, KVL1, T2};
-                false ->
-                    {skipped_key, T1, KVL2}
-            end
+            {skipped_key, T1, KVL2}
     end;
 key_dominates([], [{K2, V2} | T2]) ->
     {{next_key, {K2, V2}}, [], T2};
