@@ -3571,11 +3571,11 @@ form_slot(KVList1, KVList2, Level, Size, Slot) ->
             form_slot(Rem1, Rem2, Level, Size, Slot);
         {{?IDX_TAG, _, _, _} = NextK, NextV} ->
             form_slot(Rem1, Rem2, Level, Size + 1, [{NextK, NextV} | Slot]);
-        _ when Size >= ?LOOK_SLOTSIZE ->
+        _NextKV when Size >= ?LOOK_SLOTSIZE ->
             {KVList1, KVList2, {no_lookup, Slot}};
-        {NextK, NextV} ->
+        NextKV ->
             form_slot_lookup(
-                Rem1, Rem2, Level, Size + 1, [{NextK, NextV} | Slot]
+                Rem1, Rem2, Level, Size + 1, [NextKV | Slot]
             )
     end.
 
