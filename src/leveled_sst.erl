@@ -61,6 +61,8 @@
 
 -behaviour(gen_statem).
 
+-compile({inline, [key_dominates/2, maybe_reap_expiredkey/2]}).
+
 -include("leveled.hrl").
 
 % Test functions to ignore for equalizer
@@ -3453,7 +3455,7 @@ merge_lists(
     % Form a slot by merging the two lists until the next 128 K/V pairs have
     % been determined
     {KVRem1, KVRem2, Slot, FK0} =
-        form_slot(KVL1, KVL2, LI, no_lookup, 0, [], FirstKey),
+        form_slot(KVL1, KVL2, LI, 0, [], FirstKey),
     T1 = update_buildtimings(T0, fold_toslot),
     case Slot of
         {_, []} ->
@@ -3493,11 +3495,51 @@ merge_lists(
             )
     end.
 
+-spec update_first_key(
+    null | leveled_codec:ledger_key(), list(leveled_codec:ledger_kv())
+) -> null | leveled_codec:ledger_key().
+update_first_key(FK, _) when FK =/= null ->
+    FK;
+update_first_key(null, []) ->
+    null;
+update_first_key(null, Slot) ->
+    element(1, lists:last(Slot)).
+
+-spec form_slot_lookup(
+    list(maybe_expanded_pointer()),
+    list(maybe_expanded_pointer()),
+    {boolean(), non_neg_integer()},
+    non_neg_integer(),
+    list(leveled_codec:ledger_kv())
+) ->
+    {
+        list(maybe_expanded_pointer()),
+        list(maybe_expanded_pointer()),
+        {lookup, list(leveled_codec:ledger_kv())}
+    }.
+form_slot_lookup([], [], _LI, _Size, Slot) ->
+    {[], [], {lookup, Slot}};
+form_slot_lookup(KVList1, KVList2, _LI, ?LOOK_SLOTSIZE, Slot) ->
+    {KVList1, KVList2, {lookup, Slot}};
+form_slot_lookup(KVList1, KVList2, Level, Size, Slot) ->
+    NextKV =
+        case key_dominates(KVList1, KVList2) of
+            {{next_key, KV}, Rem1, Rem2} ->
+                maybe_reap_expiredkey(KV, Level);
+            {skipped_key, Rem1, Rem2} ->
+                none
+        end,
+    case NextKV of
+        none ->
+            form_slot_lookup(Rem1, Rem2, Level, Size, Slot);
+        NextKV ->
+            form_slot_lookup(Rem1, Rem2, Level, Size + 1, [NextKV | Slot])
+    end.
+
 -spec form_slot(
     list(maybe_expanded_pointer()),
     list(maybe_expanded_pointer()),
     {boolean(), non_neg_integer()},
-    lookup | no_lookup,
     non_neg_integer(),
     list(leveled_codec:ledger_kv()),
     leveled_codec:ledger_key() | null
@@ -3508,171 +3550,96 @@ merge_lists(
         {lookup | no_lookup, list(leveled_codec:ledger_kv())},
         leveled_codec:ledger_key() | null
     }.
-%% @doc
-%% Merge together Key Value lists to provide a reverse-ordered slot of KVs
-form_slot([], [], _LI, Type, _Size, Slot, FK) ->
-    {[], [], {Type, Slot}, FK};
-form_slot(KVList1, KVList2, _LI, lookup, ?LOOK_SLOTSIZE, Slot, FK) ->
-    {KVList1, KVList2, {lookup, Slot}, FK};
-form_slot(KVList1, KVList2, _LI, no_lookup, ?NOLOOK_SLOTSIZE, Slot, FK) ->
-    {KVList1, KVList2, {no_lookup, Slot}, FK};
-form_slot(KVList1, KVList2, LevelInfo, lookup, Size, Slot, FK) ->
-    case key_dominates(KVList1, KVList2, LevelInfo) of
-        {{next_key, TopKV}, Rem1, Rem2} ->
-            form_slot(
-                Rem1, Rem2, LevelInfo, lookup, Size + 1, [TopKV | Slot], FK
-            );
-        {skipped_key, Rem1, Rem2} ->
-            form_slot(Rem1, Rem2, LevelInfo, lookup, Size, Slot, FK)
-    end;
-form_slot(KVList1, KVList2, LevelInfo, no_lookup, Size, Slot, FK) ->
-    case key_dominates(KVList1, KVList2, LevelInfo) of
-        {{next_key, {TopK, TopV}}, Rem1, Rem2} ->
-            FK0 =
-                case FK of
-                    null -> TopK;
-                    _ -> FK
-                end,
-            case leveled_codec:to_lookup(TopK) of
-                no_lookup ->
-                    form_slot(
-                        Rem1,
-                        Rem2,
-                        LevelInfo,
-                        no_lookup,
-                        Size + 1,
-                        [{TopK, TopV} | Slot],
-                        FK0
-                    );
-                lookup ->
-                    case Size >= ?LOOK_SLOTSIZE of
-                        true when FK =/= null ->
-                            {KVList1, KVList2, {no_lookup, Slot}, FK};
-                        false ->
-                            form_slot(
-                                Rem1,
-                                Rem2,
-                                LevelInfo,
-                                lookup,
-                                Size + 1,
-                                [{TopK, TopV} | Slot],
-                                FK0
-                            )
-                    end
-            end;
-        {skipped_key, Rem1, Rem2} ->
-            form_slot(Rem1, Rem2, LevelInfo, no_lookup, Size, Slot, FK)
+form_slot(KVL1, KVL2, Level, Size, Slot, FirstKey) ->
+    {Rem1, Rem2, {Type, MergedKVL}} = form_slot(KVL1, KVL2, Level, Size, Slot),
+    {Rem1, Rem2, {Type, MergedKVL}, update_first_key(FirstKey, MergedKVL)}.
+
+form_slot([], [], _LI, _Size, Slot) ->
+    {[], [], {no_lookup, Slot}};
+form_slot(KVList1, KVList2, _LI, ?NOLOOK_SLOTSIZE, Slot) ->
+    {KVList1, KVList2, {no_lookup, Slot}};
+form_slot(KVList1, KVList2, Level, Size, Slot) ->
+    NextKV =
+        case key_dominates(KVList1, KVList2) of
+            {{next_key, KV}, Rem1, Rem2} ->
+                maybe_reap_expiredkey(KV, Level);
+            {skipped_key, Rem1, Rem2} ->
+                none
+        end,
+    case NextKV of
+        none ->
+            form_slot(Rem1, Rem2, Level, Size, Slot);
+        {{?IDX_TAG, _, _, _} = NextK, NextV} ->
+            form_slot(Rem1, Rem2, Level, Size + 1, [{NextK, NextV} | Slot]);
+        _NextKV when Size >= ?LOOK_SLOTSIZE ->
+            {KVList1, KVList2, {no_lookup, Slot}};
+        NextKV ->
+            form_slot_lookup(
+                Rem1, Rem2, Level, Size + 1, [NextKV | Slot]
+            )
     end.
 
 -spec key_dominates(
     list(maybe_expanded_pointer()),
-    list(maybe_expanded_pointer()),
-    {boolean(), leveled_pmanifest:lsm_level()}
-) ->
-    {
-        {next_key, leveled_codec:ledger_kv()} | skipped_key,
-        list(maybe_expanded_pointer()),
-        list(maybe_expanded_pointer())
-    }.
-key_dominates([{pointer, SSTPid, Slot, StartKey, all} | T1], KL2, Level) ->
-    key_dominates(
-        expand_list_by_pointer(
-            {pointer, SSTPid, Slot, StartKey, all},
-            % As the head is a pointer, the tail must be pointers too
-            % So eqwalizer is wrong that this may be
-            % [leveled_codec:ledger_kv()]
-            % eqwalizer:ignore
-            T1,
-            ?MERGE_SCANWIDTH
-        ),
-        KL2,
-        Level
-    );
-key_dominates([{next, ManEntry, StartKey} | T1], KL2, Level) ->
-    key_dominates(
-        expand_list_by_pointer(
-            {next, ManEntry, StartKey, all},
-            % See above
-            % eqwalizer:ignore
-            T1,
-            ?MERGE_SCANWIDTH
-        ),
-        KL2,
-        Level
-    );
-key_dominates(KL1, [{pointer, SSTPid, Slot, StartKey, all} | T2], Level) ->
-    key_dominates(
-        KL1,
-        expand_list_by_pointer(
-            {pointer, SSTPid, Slot, StartKey, all},
-            % See above
-            % eqwalizer:ignore
-            T2,
-            ?MERGE_SCANWIDTH
-        ),
-        Level
-    );
-key_dominates(KL1, [{next, ManEntry, StartKey} | T2], Level) ->
-    key_dominates(
-        KL1,
-        expand_list_by_pointer(
-            {next, ManEntry, StartKey, all},
-            % See above
-            % eqwalizer:ignore
-            T2,
-            ?MERGE_SCANWIDTH
-        ),
-        Level
-    );
-key_dominates(
-    [{K1, _V1} | _T1] = Rest1, [{K2, V2} | Rest2], {false, _TS}
-) when K2 < K1 ->
-    {{next_key, {K2, V2}}, Rest1, Rest2};
-key_dominates(
-    [{K1, V1} | Rest1], [{K2, _V2} | _T2] = Rest2, {false, _TS}
-) when K1 < K2 ->
-    {{next_key, {K1, V1}}, Rest1, Rest2};
-key_dominates(KL1, KL2, Level) ->
-    case key_dominates_comparison(KL1, KL2) of
-        {{next_key, NKV}, Rest1, Rest2} ->
-            case leveled_codec:maybe_reap_expiredkey(NKV, Level) of
-                true ->
-                    {skipped_key, Rest1, Rest2};
-                false ->
-                    {{next_key, NKV}, Rest1, Rest2}
-            end;
-        {skipped_key, Rest1, Rest2} ->
-            {skipped_key, Rest1, Rest2}
-    end.
-
--spec key_dominates_comparison(
-    list(maybe_expanded_pointer()),
     list(maybe_expanded_pointer())
 ) ->
-    % first item in each list must be leveled_codec:ledger_kv()
     {
         {next_key, leveled_codec:ledger_kv()} | skipped_key,
         list(maybe_expanded_pointer()),
         list(maybe_expanded_pointer())
     }.
-key_dominates_comparison([{K1, V1} | T1], []) ->
-    {{next_key, {K1, V1}}, T1, []};
-key_dominates_comparison([], [{K2, V2} | T2]) ->
-    {{next_key, {K2, V2}}, [], T2};
-key_dominates_comparison([{K1, _V1} | _T1] = LHL, [{K2, V2} | T2]) when
-    K2 < K1
-->
-    {{next_key, {K2, V2}}, LHL, T2};
-key_dominates_comparison([{K1, V1} | T1], [{K2, _V2} | _T2] = RHL) when
-    K1 < K2
-->
-    {{next_key, {K1, V1}}, T1, RHL};
-key_dominates_comparison([{K1, V1} | T1], [{K2, V2} | T2]) ->
+key_dominates([{K1, _V1} | _T1] = KVL1, [{K2, V2} | T2]) when K2 < K1 ->
+    {{next_key, {K2, V2}}, KVL1, T2};
+key_dominates([{K1, V1} | T1], [{K2, _V2} | _T2] = KVL2) when K1 < K2 ->
+    {{next_key, {K1, V1}}, T1, KVL2};
+key_dominates([{K1, V1} | T1] = KVL1, [{K2, V2} | T2] = KVL2) ->
+    % Equality is implied as lists non-empty and top keys 2-tuples
     case leveled_codec:key_dominates({K1, V1}, {K2, V2}) of
         true ->
-            {skipped_key, [{K1, V1} | T1], T2};
+            {skipped_key, KVL1, T2};
         false ->
-            {skipped_key, T1, [{K2, V2} | T2]}
+            {skipped_key, T1, KVL2}
+    end;
+key_dominates([], [{K2, V2} | T2]) ->
+    {{next_key, {K2, V2}}, [], T2};
+key_dominates([{K1, V1} | T1], []) ->
+    {{next_key, {K1, V1}}, T1, []};
+key_dominates(KL1, KL2) ->
+    key_dominates(maybe_expand_keys(KL1), maybe_expand_keys(KL2)).
+
+-spec maybe_expand_keys(list(maybe_expanded_pointer())) ->
+    list(maybe_expanded_pointer()).
+maybe_expand_keys([{next, ManEntry, StartKey} | T]) ->
+    expand_list_by_pointer(
+        {next, ManEntry, StartKey, all},
+        % Can't prove to eqwalizer there's no KV pairs in tail
+        % eqwalizer:ignore
+        T,
+        ?MERGE_SCANWIDTH
+    );
+maybe_expand_keys([{pointer, SSTPid, Slot, StartKey, all} | T]) ->
+    expand_list_by_pointer(
+        {pointer, SSTPid, Slot, StartKey, all},
+        % Can't prove to eqwalizer there's no KV pairs in tail
+        % eqwalizer:ignore
+        T,
+        ?MERGE_SCANWIDTH
+    );
+maybe_expand_keys(KVL) ->
+    KVL.
+
+-spec maybe_reap_expiredkey(leveled_codec:ledger_kv(), {boolean(), integer()}) ->
+    leveled_codec:ledger_kv() | none.
+maybe_reap_expiredkey(KV, {false, _}) ->
+    KV;
+maybe_reap_expiredkey(KV, {true, CurrTS}) ->
+    case leveled_codec:strip_to_statusonly(KV) of
+        {_, TS} when is_integer(TS), CurrTS > TS ->
+            none;
+        tomb ->
+            none;
+        _ ->
+            KV
     end.
 
 %%%============================================================================
@@ -4002,7 +3969,6 @@ form_slot_test() ->
         [SkippingKV],
         [],
         {true, 99999999},
-        no_lookup,
         ?LOOK_SLOTSIZE + 1,
         Slot,
         {o, <<"B1">>, <<"K5">>, null}
@@ -5067,6 +5033,19 @@ check_binary_references(Pid) ->
         lists:foldl(fun({_R, BM, _RC}, Acc) -> Acc + BM end, 0, BinList),
     io:format(user, "Total binary memory ~w~n", [TotalBinMem]),
     TotalBinMem.
+
+key_dominates(KVL1, KVL2, LevelInfo) ->
+    case key_dominates(KVL1, KVL2) of
+        {{next_key, NK}, Rem1, Rem2} = UseNext ->
+            case maybe_reap_expiredkey(NK, LevelInfo) of
+                none ->
+                    {skipped_key, Rem1, Rem2};
+                _ ->
+                    UseNext
+            end;
+        SkipResponse ->
+            SkipResponse
+    end.
 
 key_dominates_test() ->
     MakeKVFun =
