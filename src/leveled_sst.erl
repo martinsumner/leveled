@@ -3588,14 +3588,17 @@ form_slot_nolookup(KVList1, KVList2, Level, Size, Slot, FK) ->
     }.
 key_dominates([{K1, _V1} | _T1] = KVL1, [{K2, V2} | T2]) when K2 < K1 ->
     {{next_key, {K2, V2}}, KVL1, T2};
-key_dominates([{K1, V1} | T1], [{K2, _V2} | _T2] = KVL2) when K1 < K2 ->
-    {{next_key, {K1, V1}}, T1, KVL2};
-key_dominates([{K1, V1} | T1] = KVL1, [{K2, V2} | T2] = KVL2) when K1 == K2 ->
-    case leveled_codec:key_dominates({K1, V1}, {K2, V2}) of
+key_dominates([{K1, V1} | T1] = KVL1, [{K2, V2} | T2] = KVL2) ->
+    case K1 < K2 of
         true ->
-            {skipped_key, KVL1, T2};
+            {{next_key, {K1, V1}}, T1, KVL2};
         false ->
-            {skipped_key, T1, KVL2}
+            case leveled_codec:key_dominates({K1, V1}, {K2, V2}) of
+                true ->
+                    {skipped_key, KVL1, T2};
+                false ->
+                    {skipped_key, T1, KVL2}
+            end
     end;
 key_dominates([], [{K2, V2} | T2]) ->
     {{next_key, {K2, V2}}, [], T2};
@@ -3625,14 +3628,13 @@ maybe_expand_keys([{pointer, SSTPid, Slot, StartKey, all} | T]) ->
 maybe_expand_keys(KVL) ->
     KVL.
 
--spec maybe_reap_expiredkey(leveled_codec:ledger_kv(), {boolean(), integer()}) -> leveled_codec:ledger_kv()|none.
+-spec maybe_reap_expiredkey(leveled_codec:ledger_kv(), {boolean(), integer()}) ->
+    leveled_codec:ledger_kv() | none.
 maybe_reap_expiredkey(KV, {false, _}) ->
     KV;
 maybe_reap_expiredkey(KV, {true, CurrTS}) ->
     case leveled_codec:strip_to_statusonly(KV) of
-        {_, infinity} ->
-            KV;
-        {_, TS} when CurrTS > TS ->
+        {_, TS} when is_integer(TS), CurrTS > TS ->
             none;
         tomb ->
             none;
@@ -5036,9 +5038,9 @@ key_dominates(KVL1, KVL2, LevelInfo) ->
     case key_dominates(KVL1, KVL2) of
         {{next_key, NK}, Rem1, Rem2} = UseNext ->
             case maybe_reap_expiredkey(NK, LevelInfo) of
-                true ->
+                none ->
                     {skipped_key, Rem1, Rem2};
-                false ->
+                _ ->
                     UseNext
             end;
         SkipResponse ->
