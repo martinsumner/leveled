@@ -2042,7 +2042,7 @@ find_nextkeys(
     {[LCnt | OtherLevels] = LoopLs, {BKL, BKV} = PrevBest},
     FoundKVs,
     Ls,
-    {_W, ScanWidth} = BI,
+    {W, ScanWidth} = BI,
     {{StartKey, EndKey}, {LowLastMod, _High}, SegChecker} = SI
 ) ->
     case maps:get(LCnt, Iter) of
@@ -2094,6 +2094,23 @@ find_nextkeys(
                 Iter,
                 {OtherLevels, {LCnt, {Key, Val}}},
                 FoundKVs,
+                Ls,
+                BI,
+                SI
+            );
+        [{Key, Val} | _RestOfKeys] when
+            Key < element(1, BKV),
+            OtherLevels == [],
+            length(FoundKVs) < (W - 1)
+        ->
+            %% This is the basement level, and it contains the best key.  The
+            %% Next key must either be at this level or the best found above in
+            %% this loop, so we can now short-circuit the loop to compare just
+            %% these two levels again.
+            find_nextkeys(
+                maps:update_with(LCnt, fun tl/1, Iter),
+                {[LCnt], {BKL, BKV}},
+                [{Key, Val} | FoundKVs],
                 Ls,
                 BI,
                 SI
