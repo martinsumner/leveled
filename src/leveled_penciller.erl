@@ -2055,40 +2055,6 @@ find_nextkeys(
                 BI,
                 SI
             );
-        [{next, Owner, _SK} | RestOfKeys] ->
-            % Expansion required
-            Pointer = {next, Owner, StartKey, EndKey},
-            UpdList =
-                leveled_sst:sst_expandpointer(
-                    Pointer, RestOfKeys, ScanWidth, SegChecker, LowLastMod
-                ),
-            % Need to loop around at this level (LCnt) as we have not yet
-            % examined a real key at this level
-            find_nextkeys(
-                maps:update(LCnt, UpdList, Iter),
-                {LoopLs, PrevBest},
-                FoundKVs,
-                Ls,
-                BI,
-                SI
-            );
-        [{pointer, SSTPid, Slot, PSK, PEK} | RestOfKeys] ->
-            % Expansion required
-            Pointer = {pointer, SSTPid, Slot, PSK, PEK},
-            UpdList =
-                leveled_sst:sst_expandpointer(
-                    Pointer, RestOfKeys, ScanWidth, SegChecker, LowLastMod
-                ),
-            % Need to loop around at this level (LCnt) as we have not yet
-            % examined a real key at this level
-            find_nextkeys(
-                maps:update(LCnt, UpdList, Iter),
-                {LoopLs, PrevBest},
-                FoundKVs,
-                Ls,
-                BI,
-                SI
-            );
         [{Key, Val} | _RestOfKeys] when BKV == null ->
             find_nextkeys(
                 Iter,
@@ -2098,16 +2064,14 @@ find_nextkeys(
                 BI,
                 SI
             );
-        [{Key, Val} | _RestOfKeys] when Key < element(1, BKV) ->
+        [{Key, Val} | RestOfKeys] when Key < element(1, BKV) ->
             case OtherLevels of
                 [] when W > 1 ->
-                    %% This is the basement level, and it contains the best
-                    %% key.  The Next key must either be at this level or the
-                    %% best found above in this loop, so we can now
-                    %% short-circuit the loop to compare just these two levels
-                    %% again.
+                    %% This is the last level to be checked, and it contains
+                    %% the best key.  Only needed to compare this level and
+                    %% with the next-best key in the next loop
                     find_nextkeys(
-                        maps:update_with(LCnt, fun tl/1, Iter),
+                        maps:update(LCnt, RestOfKeys, Iter),
                         {[LCnt], {BKL, BKV}},
                         [{Key, Val} | FoundKVs],
                         Ls,
@@ -2124,15 +2088,29 @@ find_nextkeys(
                         SI
                     )
             end;
-        [{Key, _Val} | _RestOfKeys] when Key > element(1, BKV) ->
-            find_nextkeys(
-                Iter,
-                {OtherLevels, PrevBest},
-                FoundKVs,
-                Ls,
-                BI,
-                SI
-            );
+        [{Key, Val} | _RestOfKeys] when BKV =/= null, Key > element(1, BKV) ->
+            case OtherLevels of
+                [] when W > 1 ->
+                    %% No other levels to try so next best is the Key, make
+                    %% this level's key the next best and try all other levels
+                    find_nextkeys(
+                        maps:update_with(BKL, fun tl/1, Iter),
+                        {lists:subtract(Ls, [LCnt]), {LCnt, {Key, Val}}},
+                        [BKV | FoundKVs],
+                        Ls,
+                        {W - 1, ScanWidth},
+                        SI
+                    );
+                _ ->
+                    find_nextkeys(
+                        Iter,
+                        {OtherLevels, PrevBest},
+                        FoundKVs,
+                        Ls,
+                        BI,
+                        SI
+                    )
+            end;
         [{Key, Val} | _RestOfKeys] when BKV =/= null ->
             case leveled_codec:key_dominates({Key, Val}, BKV) of
                 true ->
@@ -2153,7 +2131,29 @@ find_nextkeys(
                         BI,
                         SI
                     )
-            end
+            end;
+        [Pointer0 | RestOfKeys] ->
+            Pointer =
+                case Pointer0 of
+                    {next, Owner, _SK} ->
+                        {next, Owner, StartKey, EndKey};
+                    Pointer0 ->
+                        Pointer0
+                end,
+            UpdList =
+                leveled_sst:sst_expandpointer(
+                    Pointer, RestOfKeys, ScanWidth, SegChecker, LowLastMod
+                ),
+            % Need to loop around at this level (LCnt) as we have not yet
+            % examined a real key at this level
+            find_nextkeys(
+                maps:update(LCnt, UpdList, Iter),
+                {LoopLs, PrevBest},
+                FoundKVs,
+                Ls,
+                BI,
+                SI
+            )
     end.
 
 %%%============================================================================
