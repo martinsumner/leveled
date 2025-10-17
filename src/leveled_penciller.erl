@@ -2088,29 +2088,15 @@ find_nextkeys(
                         SI
                     )
             end;
-        [{Key, Val} | _RestOfKeys] when BKV =/= null, Key > element(1, BKV) ->
-            case OtherLevels of
-                [] when W > 1 ->
-                    %% No other levels to try so next best is the Key, make
-                    %% this level's key the next best and try all other levels
-                    find_nextkeys(
-                        maps:update_with(BKL, fun tl/1, Iter),
-                        {lists:subtract(Ls, [LCnt]), {LCnt, {Key, Val}}},
-                        [BKV | FoundKVs],
-                        Ls,
-                        {W - 1, ScanWidth},
-                        SI
-                    );
-                _ ->
-                    find_nextkeys(
-                        Iter,
-                        {OtherLevels, PrevBest},
-                        FoundKVs,
-                        Ls,
-                        BI,
-                        SI
-                    )
-            end;
+        [{Key, _Val} | _RestOfKeys] when Key > element(1, BKV) ->
+            find_nextkeys(
+                Iter,
+                {OtherLevels, PrevBest},
+                FoundKVs,
+                Ls,
+                BI,
+                SI
+            );
         [{Key, Val} | _RestOfKeys] when BKV =/= null ->
             case leveled_codec:key_dominates({Key, Val}, BKV) of
                 true ->
