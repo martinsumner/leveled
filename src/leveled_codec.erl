@@ -25,7 +25,6 @@
     striphead_to_v1details/1,
     endkey_passed/2,
     key_dominates/2,
-    maybe_reap_expiredkey/2,
     to_objectkey/3,
     to_objectkey/5,
     to_querykey/3,
@@ -52,7 +51,6 @@
     idx_indexspecs/5,
     obj_objectspecs/3,
     segment_hash/1,
-    to_lookup/1,
     next_key/1,
     return_proxy/4,
     get_metadata/1,
@@ -248,19 +246,6 @@ headkey_to_canonicalbinary(
         {?HEAD_TAG, <<BucketType/binary, Bucket/binary>>, Key, SubKey}
     ).
 
--spec to_lookup(ledger_key()) -> maybe_lookup().
-%% @doc
-%% Should it be possible to lookup a key in the merge tree.  This is not true
-%% For keys that should only be read through range queries.  Direct lookup
-%% keys will have presence in bloom filters and other lookup accelerators.
-to_lookup(Key) when is_tuple(Key) ->
-    case element(1, Key) of
-        ?IDX_TAG ->
-            no_lookup;
-        _ ->
-            lookup
-    end.
-
 %% @doc
 %% Some helper functions to get a sub_components of the key/value
 
@@ -446,27 +431,6 @@ check_captured_terms(
 %% the other, or if the match, which key is "better" and should be the winner
 key_dominates(LObj, RObj) ->
     strip_to_seqonly(LObj) >= strip_to_seqonly(RObj).
-
--spec maybe_reap_expiredkey(ledger_kv(), {boolean(), integer()}) -> boolean().
-%% @doc
-%% Make a reap decision based on the level in the ledger (needs to be expired
-%% and in the basement).  the level is a tuple of the is_basement boolean, and
-%% a timestamp passed into the calling function
-maybe_reap_expiredkey(KV, LevelD) ->
-    Status = strip_to_statusonly(KV),
-    maybe_reap(Status, LevelD).
-
-maybe_reap({_, infinity}, _) ->
-    % key is not set to expire
-    false;
-maybe_reap({_, TS}, {true, CurrTS}) when CurrTS > TS ->
-    % basement and ready to expire
-    true;
-maybe_reap(tomb, {true, _CurrTS}) ->
-    % always expire in basement
-    true;
-maybe_reap(_, _) ->
-    false.
 
 -spec count_tombs(
     list(ledger_kv()), non_neg_integer()
