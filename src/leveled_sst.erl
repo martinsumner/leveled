@@ -2177,8 +2177,7 @@ lookup_slots(StartKey, EndKey, Tree, FilterFun) ->
 %% @doc
 %% Fold function use to accumulate the position information needed to
 %% populate the summary of the slot
-accumulate_positions([], {NHC, {PosBin, HashAcc, LMDAcc}})
-->
+accumulate_positions([], {NHC, {PosBin, HashAcc, LMDAcc}}) ->
     finalise_posbin({NHC, {PosBin, HashAcc, LMDAcc}});
 accumulate_positions([{K, V} | T], {NHC, PosAcc}) ->
     accumulate_positions(T, accumulate_position({K, V}, {NHC, PosAcc})).
