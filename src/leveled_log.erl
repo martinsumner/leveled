@@ -460,10 +460,10 @@ return_settings() ->
 
 -spec log(atom(), list()) -> ok.
 log(LogReference, Subs) ->
-    log(LogReference, Subs, ?LOG_LEVELS, ?LOGBASE, backend).
+    log(LogReference, Subs, ?LOG_LEVELS, ?LOGBASE, [backend, leveled]).
 
--spec log(atom(), list(), list(log_level()), log_base(), atom()) -> ok.
-log(LogRef, Subs, SupportedLevels, LogBase, Tag) ->
+-spec log(atom(), list(), list(log_level()), log_base(), list(atom())) -> ok.
+log(LogRef, Subs, SupportedLevels, LogBase, Domain) ->
     {LogLevel, Log} = maps:get(LogRef, LogBase),
     LogOpts = get_opts(),
     case should_i_log(LogLevel, SupportedLevels, LogRef, LogOpts) of
@@ -476,7 +476,7 @@ log(LogRef, Subs, SupportedLevels, LogBase, Tag) ->
                 LogLevel,
                 unicode:characters_to_list([Prefix, Log, Suffix]),
                 Subs,
-                #{log_type => Tag}
+                #{domain => Domain}
             );
         false ->
             ok
@@ -502,13 +502,20 @@ is_active_level([_ | T], C, L) -> is_active_level(T, C, L).
 
 -spec log_timer(atom(), list(), erlang:timestamp()) -> ok.
 log_timer(LogReference, Subs, StartTime) ->
-    log_timer(LogReference, Subs, StartTime, ?LOG_LEVELS, ?LOGBASE, backend).
+    log_timer(
+        LogReference,
+        Subs,
+        StartTime,
+        ?LOG_LEVELS,
+        ?LOGBASE,
+        [backend, leveled]
+    ).
 
 -spec log_timer(
-    atom(), list(), erlang:timestamp(), list(log_level()), log_base(), atom()
+    atom(), list(), erlang:timestamp(), list(log_level()), log_base(), [atom()]
 ) ->
     ok.
-log_timer(LogRef, Subs, StartTime, SupportedLevels, LogBase, Tag) ->
+log_timer(LogRef, Subs, StartTime, SupportedLevels, LogBase, Domain) ->
     {LogLevel, Log} = maps:get(LogRef, LogBase),
     LogOpts = get_opts(),
     case should_i_log(LogLevel, SupportedLevels, LogRef, LogOpts) of
@@ -522,7 +529,7 @@ log_timer(LogRef, Subs, StartTime, SupportedLevels, LogBase, Tag) ->
                 LogLevel,
                 unicode:characters_to_list([Prefix, Log, Duration, Suffix]),
                 Subs,
-                #{log_type => Tag}
+                #{domain => Domain}
             );
         false ->
             ok
@@ -579,17 +586,22 @@ should_i_log(LogLevel, Levels, LogRef) ->
     should_i_log(LogLevel, Levels, LogRef, get_opts()).
 
 log_warning_test() ->
-    ok = log(g0001, [], [warning, error], ?LOGBASE, backend),
+    ok = log(g0001, [], [warning, error], ?LOGBASE, [backend, leveled]),
     ok =
         log_timer(
-            g0001, [], os:timestamp(), [warning, error], ?LOGBASE, backend
+            g0001,
+            [],
+            os:timestamp(),
+            [warning, error],
+            ?LOGBASE,
+            [backend, leveled]
         ).
 
 log_wrongkey_test() ->
     ?assertException(
         error,
         {badkey, wrong0001},
-        log(wrong0001, [], [warning, error], ?LOGBASE, backend)
+        log(wrong0001, [], [warning, error], ?LOGBASE, [backend, leveled])
     ).
 
 logtimer_wrongkey_test() ->
@@ -599,10 +611,12 @@ logtimer_wrongkey_test() ->
     % function being tested is split across lines, the closing bracket on the
     % next line is not recognised as being covered. We want 100% coverage, so
     % need to write this on one line.
+    LLs = [warning, error],
+    Ds = [backend, leveled],
     ?assertException(
         error,
         {badkey, wrong0001},
-        log_timer(wrong0001, [], ST, [warning, error], ?LOGBASE, backend)
+        log_timer(wrong0001, [], ST, LLs, ?LOGBASE, Ds)
     ).
 
 shouldilog_test() ->
