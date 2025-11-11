@@ -590,7 +590,7 @@ get_tagstrategy(Tag, Strategy) ->
             %% running in head_only mode - so don't warn
             retain;
         false ->
-            leveled_log:log(ic012, [Tag, Strategy]),
+            ?STD_LOG(ic012, [Tag, Strategy]),
             retain
     end.
 

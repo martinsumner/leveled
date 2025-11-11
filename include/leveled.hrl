@@ -1,3 +1,5 @@
+-include_lib("kernel/include/logger.hrl").
+
 %%%============================================================================
 %%% File paths
 %%%============================================================================
@@ -81,10 +83,45 @@
 -define(EQC_TIME_BUDGET, 120).
 
 %%%============================================================================
-%%% Helper Function
+%%% Helper Functions
 %%%============================================================================
 
 -define(IS_DEF(Attribute), Attribute =/= undefined).
+
+-define(LOG_LOCATION,
+    #{
+        mfa => {?MODULE, ?FUNCTION_NAME, ?FUNCTION_ARITY},
+        line => ?LINE,
+        file => ?FILE}
+    ).
+
+-define(STD_LOG(LogRef, Subs),
+    erlang:apply(
+        logger,
+        macro_log,
+        [?LOG_LOCATION|leveled_log:log(LogRef, Subs)])
+).
+
+-define(RND_LOG(LogRef, Subs, StartTime, RandomProb),
+    case rand:uniform() < RandomProb of
+        true ->
+            erlang:apply(
+                logger,
+                macro_log,
+                [?LOG_LOCATION|leveled_log:log_timer(LogRef, Subs, StartTime)]
+            );
+        false ->
+            ok
+    end
+).
+
+-define(TMR_LOG(LogRef, Subs, StartTime),
+    erlang:apply(
+        logger,
+        macro_log,
+        [?LOG_LOCATION|leveled_log:log_timer(LogRef, Subs, StartTime)]
+    )
+).
 
 -if(?OTP_RELEASE < 26).
 -type dynamic() :: any().

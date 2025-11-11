@@ -98,7 +98,19 @@
 }).
 
 init_per_suite(Config) ->
-    LogTemplate = [time, " log_level=", level, " ", msg, "\n"],
+    LogTemplate =
+        [
+            time,
+            " [",
+            level,
+            "] ",
+            {pid, [pid, "@"], []},
+            {mfa, [mfa, ":"], []},
+            {line, [line, ":"], []},
+            " ",
+            msg,
+            "\n"
+        ],
     LogFormatter =
         {
             logger_formatter,

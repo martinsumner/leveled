@@ -787,7 +787,7 @@ book_indexfold(Pid, Bucket, FoldAccT, Range, TermHandling) ->
     % future release this code branch may be removed, and such queries may
     % instead return `error`.  For now null is assumed to be lower than any
     % key
-    leveled_log:log(b0019, [Bucket]),
+    ?STD_LOG(b0019, [Bucket]),
     book_indexfold(Pid, {Bucket, null}, FoldAccT, Range, TermHandling).
 
 -type query() ::
@@ -1377,7 +1377,7 @@ init([Opts]) ->
             % and performance may be unpredictable
             case CacheRatio > 32 of
                 true ->
-                    leveled_log:log(b0020, [PCLMaxSize, ConfiguredCacheSize]);
+                    ?STD_LOG(b0020, [PCLMaxSize, ConfiguredCacheSize]);
                 false ->
                     ok
             end,
@@ -1406,7 +1406,7 @@ init([Opts]) ->
             {Inker, Penciller} = startup(InkerOpts, PencillerOpts0),
 
             NewETS = ets:new(mem, [ordered_set]),
-            leveled_log:log(b0001, [Inker, Penciller]),
+            ?STD_LOG(b0001, [Inker, Penciller]),
             {ok, #state{
                 cache_size = CacheSize,
                 cache_multiple = MaxCacheMultiple,
@@ -1424,7 +1424,7 @@ init([Opts]) ->
             BookieMonitor = erlang:monitor(process, Bookie),
             NewETS = ets:new(mem, [ordered_set]),
             {HeadOnly, Lookup} = leveled_bookie:book_headstatus(Bookie),
-            leveled_log:log(b0002, [Inker, Penciller]),
+            ?STD_LOG(b0002, [Inker, Penciller]),
             {ok, #state{
                 penciller = Penciller,
                 inker = Inker,
@@ -1729,7 +1729,7 @@ handle_call(
 handle_call(destroy, _From, State = #state{is_snapshot = Snp}) when
     Snp == false
 ->
-    leveled_log:log(b0011, []),
+    ?STD_LOG(b0011, []),
     {ok, InkPathList} = leveled_inker:ink_doom(State#state.inker),
     {ok, PCLPathList} = leveled_penciller:pcl_doom(State#state.penciller),
     leveled_monitor:monitor_close(element(1, State#state.monitor)),
@@ -1794,13 +1794,13 @@ handle_info(
     {'DOWN', BookieMonRef, process, BookiePid, Info},
     State = #state{bookie_monref = BookieMonRef, is_snapshot = true}
 ) ->
-    leveled_log:log(b0004, [BookiePid, Info]),
+    ?STD_LOG(b0004, [BookiePid, Info]),
     {stop, normal, State};
 handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(Reason, _State) ->
-    leveled_log:log(b0003, [Reason]).
+    ?STD_LOG(b0003, [Reason]).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -1854,7 +1854,7 @@ push_to_penciller(Penciller, LoadItemList, LedgerCache, ReloadStrategy) ->
         ),
     case length(UpdLedgerCache#ledger_cache.load_queue) of
         N when N > ?LOADING_BATCH ->
-            leveled_log:log(b0006, [UpdLedgerCache#ledger_cache.max_sqn]),
+            ?STD_LOG(b0006, [UpdLedgerCache#ledger_cache.max_sqn]),
             ok =
                 push_to_penciller_loop(
                     Penciller, loadqueue_ledgercache(UpdLedgerCache)
@@ -1990,7 +1990,7 @@ startup(InkerOpts, PencillerOpts) ->
     {ok, Inker} = leveled_inker:ink_start(InkerOpts),
     {ok, Penciller} = leveled_penciller:pcl_start(PencillerOpts),
     LedgerSQN = leveled_penciller:pcl_getstartupsequencenumber(Penciller),
-    leveled_log:log(b0005, [LedgerSQN]),
+    ?STD_LOG(b0005, [LedgerSQN]),
     ReloadStrategy = InkerOpts#inker_options.reload_strategy,
     LoadFun = get_loadfun(),
     BatchFun =
@@ -2001,7 +2001,7 @@ startup(InkerOpts, PencillerOpts) ->
         end,
     InitAccFun =
         fun(FN, CurrentMinSQN) ->
-            leveled_log:log(i0014, [FN, CurrentMinSQN]),
+            ?STD_LOG(i0014, [FN, CurrentMinSQN]),
             []
         end,
     FinalAcc =
@@ -2525,7 +2525,7 @@ return_ledger_keyrange(Tag, Bucket, KeyRange) ->
 maybe_longrunning(SW, Aspect) ->
     case timer:now_diff(os:timestamp(), SW) of
         N when N > ?LONG_RUNNING ->
-            leveled_log:log(b0013, [N, Aspect]);
+            ?STD_LOG(b0013, [N, Aspect]);
         _ ->
             ok
     end.
