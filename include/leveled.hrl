@@ -88,18 +88,18 @@
 
 -define(IS_DEF(Attribute), Attribute =/= undefined).
 
--define(LOG_LOCATION,
-    #{
-        mfa => {?MODULE, ?FUNCTION_NAME, ?FUNCTION_ARITY},
-        line => ?LINE,
-        file => ?FILE}
-    ).
+-define(LOG_LOCATION, #{
+    mfa => {?MODULE, ?FUNCTION_NAME, ?FUNCTION_ARITY},
+    line => ?LINE,
+    file => ?FILE
+}).
 
 -define(STD_LOG(LogRef, Subs),
     erlang:apply(
         logger,
         macro_log,
-        [?LOG_LOCATION|leveled_log:log(LogRef, Subs)])
+        [?LOG_LOCATION | leveled_log:log(LogRef, Subs)]
+    )
 ).
 
 -define(RND_LOG(LogRef, Subs, StartTime, RandomProb),
@@ -108,7 +108,7 @@
             erlang:apply(
                 logger,
                 macro_log,
-                [?LOG_LOCATION|leveled_log:log_timer(LogRef, Subs, StartTime)]
+                [?LOG_LOCATION | leveled_log:log_timer(LogRef, Subs, StartTime)]
             );
         false ->
             ok
@@ -119,7 +119,7 @@
     erlang:apply(
         logger,
         macro_log,
-        [?LOG_LOCATION|leveled_log:log_timer(LogRef, Subs, StartTime)]
+        [?LOG_LOCATION | leveled_log:log_timer(LogRef, Subs, StartTime)]
     )
 ).
 
