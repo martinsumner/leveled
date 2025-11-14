@@ -22,21 +22,21 @@
 
 -module(leveled_log).
 
--include_lib("kernel/include/logger.hrl").
-
 -export([
-    log/2,
-    log_timer/3
+    log/4,
+    log_timer/5,
+    should_i_log/3,
+    get_opts/0,
+    get_log/1
 ]).
 
--export([log/4, log_timer/5]).
+-export([log/6, log_timer/7]).
 
 -export([
     set_loglevel/1,
     set_databaseid/1,
     add_forcedlogs/1,
     remove_forcedlogs/1,
-    get_opts/0,
     save/1,
     return_settings/0
 ]).
@@ -404,6 +404,10 @@ set_databaseid(DBid) when is_integer(DBid) ->
     UpdLO = LO#log_options{database_id = DBid},
     save(UpdLO).
 
+-spec get_log(atom()) -> {log_level(), binary()}.
+get_log(LogRef) ->
+    maps:get(LogRef, ?LOGBASE).
+
 -spec add_forcedlogs(list(atom())) -> ok.
 %% @doc
 %% Add a forced log to the list of forced logs. this will cause the log of this
@@ -457,32 +461,22 @@ return_settings() ->
 %%% Prompt Logs
 %%%============================================================================
 
--spec log(atom(), list()) -> list().
-log(LogReference, Subs) ->
-    log(LogReference, Subs, ?LOGBASE, [backend, leveled]).
+-spec log(log_level(), atom(), log_options(), list()) -> list().
+log(LogLevel, LogRef, LogOpts, Subs) ->
+    log(LogLevel, LogRef, LogOpts, Subs, ?LOGBASE, [backend, leveled]).
 
--spec log(atom(), list(), log_base(), list(atom())) -> list().
-log(LogRef, Subs, LogBase, Domain) ->
-    {LogLevel, Log} = maps:get(LogRef, LogBase),
-    LogOpts = get_opts(),
+-spec log(log_level(), atom(), log_options(), list(), log_base(), list(atom())) ->
+    list().
+log(LogLevel, LogRef, LogOpts, Subs, LogBase, Domain) ->
+    {_LogLevel, Log} = maps:get(LogRef, LogBase),
     DBid = LogOpts#log_options.database_id,
     Prefix = log_prefix(LogRef, DBid),
-    case should_i_log(LogLevel, LogRef, LogOpts) of
-        true ->
-            [
-                LogLevel,
-                unicode:characters_to_list([Prefix, Log]),
-                Subs,
-                #{domain => Domain}
-            ];
-        false ->
-            [
-                debug,
-                unicode:characters_to_list([Prefix, Log]),
-                Subs,
-                #{domain => Domain}
-            ]
-    end.
+    [
+        LogLevel,
+        unicode:characters_to_list([Prefix, Log]),
+        Subs,
+        #{domain => Domain}
+    ].
 
 should_i_log(LogLevel, LogRef, LogOpts) ->
     #log_options{log_level = CurLevel, forced_logs = ForcedLogs} = LogOpts,
@@ -502,10 +496,13 @@ is_active_level([L | _], L, _) -> true;
 is_active_level([L | _], _, L) -> false;
 is_active_level([_ | T], C, L) -> is_active_level(T, C, L).
 
--spec log_timer(atom(), list(), erlang:timestamp()) -> list().
-log_timer(LogReference, Subs, StartTime) ->
+-spec log_timer(log_level(), atom(), log_options(), list(), erlang:timestamp()) ->
+    list().
+log_timer(LogLevel, LogRef, LogOpts, Subs, StartTime) ->
     log_timer(
-        LogReference,
+        LogLevel,
+        LogRef,
+        LogOpts,
         Subs,
         StartTime,
         ?LOGBASE,
@@ -513,31 +510,26 @@ log_timer(LogReference, Subs, StartTime) ->
     ).
 
 -spec log_timer(
-    atom(), list(), erlang:timestamp(), log_base(), [atom()]
+    log_level(),
+    atom(),
+    log_options(),
+    list(),
+    erlang:timestamp(),
+    log_base(),
+    [atom()]
 ) ->
     list().
-log_timer(LogRef, Subs, StartTime, LogBase, Domain) ->
-    {LogLevel, Log} = maps:get(LogRef, LogBase),
-    LogOpts = get_opts(),
+log_timer(LogLevel, LogRef, LogOpts, Subs, StartTime, LogBase, Domain) ->
+    {_LogLevel, Log} = maps:get(LogRef, LogBase),
     DBid = LogOpts#log_options.database_id,
     Prefix = log_prefix(LogRef, DBid),
     Duration = duration_text(StartTime),
-    case should_i_log(LogLevel, LogRef, LogOpts) of
-        true ->
-            [
-                LogLevel,
-                unicode:characters_to_list([Prefix, Log, Duration]),
-                Subs,
-                #{domain => Domain}
-            ];
-        false ->
-            [
-                debug,
-                unicode:characters_to_list([Prefix, Log, Duration]),
-                Subs,
-                #{domain => Domain}
-            ]
-    end.
+    [
+        LogLevel,
+        unicode:characters_to_list([Prefix, Log, Duration]),
+        Subs,
+        #{domain => Domain}
+    ].
 
 -spec log_prefix(atom(), non_neg_integer() | undefined) ->
     io_lib:chars().
@@ -577,29 +569,11 @@ duration_text(StartTime) ->
 should_i_log(LogLevel, LogRef) ->
     should_i_log(LogLevel, LogRef, get_opts()).
 
-nolog_defult_test() ->
-    %% As the default log level is error, an attempt to log at an info level
-    %% will be dropped to debug, so that it will be ignored by logger - unless
-    %% the application is running in debug mode
-    %%
-    %% This is confusing, but is a compromise to allow the migration of the old
-    %% behaviour of leveled_log to one that is more as expected within logger.
-    [debug, _LogLine1, [], DomMap] =
-        log(g0001, [], ?LOGBASE, [backend, leveled]),
-    [debug, _LogLine2, [], DomMap] =
-        log_timer(
-            g0001,
-            [],
-            os:timestamp(),
-            ?LOGBASE,
-            [backend, leveled]
-        ).
-
 log_wrongkey_test() ->
     ?assertException(
         error,
         {badkey, wrong0001},
-        log(wrong0001, [], ?LOGBASE, [backend, leveled])
+        log(info, wrong0001, get_opts(), [], ?LOGBASE, [backend, leveled])
     ).
 
 logtimer_wrongkey_test() ->
@@ -613,7 +587,7 @@ logtimer_wrongkey_test() ->
     ?assertException(
         error,
         {badkey, wrong0001},
-        log_timer(wrong0001, [], ST, ?LOGBASE, Ds)
+        log_timer(info, wrong0001, get_opts(), [], ST, ?LOGBASE, Ds)
     ).
 
 shouldilog_test() ->

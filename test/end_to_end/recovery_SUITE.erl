@@ -64,7 +64,8 @@ replace_everything(_Config) ->
                 {cache_size, 2000},
                 {max_journalobjectcount, JournalObjectCount},
                 {sync_strategy, testutil:sync_strategy()},
-                {reload_strategy, [{?RIAK_TAG, recalc}]}
+                {reload_strategy, [{?RIAK_TAG, recalc}]},
+                {log_level, warning}
             ]
         end,
     {ok, Book1} = leveled_bookie:book_start(BookOpts(StdJournalCount)),
