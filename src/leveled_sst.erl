@@ -655,9 +655,7 @@ starting(
             Level
         ),
     Summary = UpdState#state.summary,
-    ?TMR_LOG(
-        sst08, [ActualFilename, Level, Summary#summary.max_sqn], SW
-    ),
+    ?TMR_LOG(sst08, [ActualFilename, Level, Summary#summary.max_sqn], SW),
     erlang:send_after(?STARTUP_TIMEOUT, self(), start_complete),
     {next_state, reader,
         UpdState#state{
@@ -755,9 +753,7 @@ starting(cast, complete_l0startup, State) ->
     Summary = UpdState#state.summary,
     Time4 = timer:now_diff(os:timestamp(), SW4),
 
-    ?TMR_LOG(
-        sst08, [ActualFilename, 0, Summary#summary.max_sqn], SW0
-    ),
+    ?TMR_LOG(sst08, [ActualFilename, 0, Summary#summary.max_sqn], SW0),
     ?STD_LOG(sst11, [Time0, Time1, Time2, Time3, Time4]),
 
     case Penciller of
@@ -1765,16 +1761,15 @@ read_file(Filename, State, LoadPageCache, BIC, Level) ->
             SlotList, Summary#summary.first_key, Summary#summary.last_key
         ),
     UpdSummary = Summary#summary{index = SlotIndex},
-    ?STD_LOG(
-        sst03, [Filename, Summary#summary.size, Summary#summary.max_sqn]
-    ),
+    Size = Summary#summary.size,
+    ?STD_LOG(sst03, [Filename, Size, Summary#summary.max_sqn]),
     ReadState =
         #read_state{
             handle = Handle,
             blockindex_cache =
                 case BIC of
                     undefined ->
-                        new_blockindex_cache(Summary#summary.size);
+                        new_blockindex_cache(Size);
                     _ ->
                         BIC
                 end,

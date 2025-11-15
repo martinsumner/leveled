@@ -749,21 +749,18 @@ handle_call(
 
     L0Pending = State#state.levelzero_pending,
     WorkBacklog = State#state.work_backlog,
-    CacheAlreadyFull = leveled_pmem:cache_full(State#state.levelzero_cache),
+    CacheFull = leveled_pmem:cache_full(State#state.levelzero_cache),
     L0Size = State#state.levelzero_size,
 
     % The clerk is prompted into action as there may be a L0 write required
     ok = leveled_pclerk:clerk_prompt(State#state.clerk),
 
-    case L0Pending or WorkBacklog or CacheAlreadyFull of
+    case L0Pending orelse WorkBacklog orelse CacheFull of
         true ->
             % Cannot update the cache, or roll the memory so reply `returned`
             % The Bookie must now retain the lesger cache and try to push the
             % updated cache at a later time
-            ?STD_LOG(
-                p0018,
-                [L0Size, L0Pending, WorkBacklog, CacheAlreadyFull]
-            ),
+            ?STD_LOG(p0018, [L0Size, L0Pending, WorkBacklog, CacheFull]),
             {reply, returned, State};
         false ->
             % Return ok as cache has been updated on State and the Bookie
@@ -793,12 +790,8 @@ handle_call(
                             State#state.levelzero_index,
                             length(State#state.levelzero_cache) + 1
                         ),
-                    ?RND_LOG(
-                        p0031,
-                        [NewL0Size, true, true, MinSQN, MaxSQN],
-                        SW,
-                        0.1
-                    ),
+                    Subs = [NewL0Size, true, true, MinSQN, MaxSQN],
+                    ?RND_LOG(p0031, Subs, SW, 0.1),
                     {reply, ok, State#state{
                         levelzero_cache = UpdL0Cache,
                         levelzero_size = NewL0Size,
@@ -896,9 +889,7 @@ handle_call(
                 lists:filter(FilterFun, L0AsList)
         end,
 
-    ?RND_LOG(
-        p0037, [State#state.levelzero_size], SW, 0.01
-    ),
+    ?RND_LOG(p0037, [State#state.levelzero_size], SW, 0.01),
 
     %% Rename any reference to loop state that may be used by the function
     %% to be returned - https://github.com/martinsumner/leveled/issues/326
@@ -994,9 +985,7 @@ handle_call(
                         State#state.levelzero_cache,
                         LM1Cache
                     ),
-                ?RND_LOG(
-                    p0037, [State#state.levelzero_size], SW, 0.01
-                ),
+                ?RND_LOG(p0037, [State#state.levelzero_size], SW, 0.01),
                 {
                     #state{
                         levelzero_astree = L0AsTree,

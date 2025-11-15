@@ -743,11 +743,8 @@ handle_call(
         State#state.manifest_sqn,
         filename:join(BackupPath, ?JOURNAL_FP)
     ),
-    ?TMR_LOG(
-        i0020,
-        [filename:join(BackupPath, ?JOURNAL_FP), length(BackupManifest)],
-        SW
-    ),
+    BackupJournalPath = filename:join(BackupPath, ?JOURNAL_FP),
+    ?TMR_LOG(i0020, [BackupJournalPath, length(BackupManifest)], SW),
     {reply, ok, State};
 handle_call({check_sqn, LedgerSQN}, _From, State) ->
     case State#state.journal_sqn of

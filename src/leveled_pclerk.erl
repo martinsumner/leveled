@@ -217,14 +217,8 @@ merge(SrcLevel, Manifest, RootPath, OptsSST) ->
         {0, 0, undefined, 0, 0, 0, 0} ->
             ok;
         {FCnt, MnMem, {MaxFN, MaxP, MaxMem}, MnHBS, MnHS, MnLHS, MnBVHS} ->
-            ?STD_LOG(
-                pc023,
-                [SrcLevel + 1, FCnt, MnMem, MaxFN, MaxP, MaxMem]
-            ),
-            ?STD_LOG(
-                pc025,
-                [SrcLevel + 1, FCnt, MnHBS, MnHS, MnLHS, MnBVHS]
-            )
+            ?STD_LOG(pc023, [SrcLevel + 1, FCnt, MnMem, MaxFN, MaxP, MaxMem]),
+            ?STD_LOG(pc025, [SrcLevel + 1, FCnt, MnHBS, MnHS, MnLHS, MnBVHS])
     end,
     SelectMethod =
         case rand:uniform(100) of
@@ -248,10 +242,7 @@ merge(SrcLevel, Manifest, RootPath, OptsSST) ->
     case Candidates of
         0 ->
             NewLevel = SrcLevel + 1,
-            ?STD_LOG(
-                pc009,
-                [leveled_pmanifest:entry_filename(Src), NewLevel]
-            ),
+            ?STD_LOG(pc009, [leveled_pmanifest:entry_filename(Src), NewLevel]),
             leveled_sst:sst_switchlevels(
                 leveled_pmanifest:entry_owner(Src),
                 NewLevel

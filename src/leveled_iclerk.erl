@@ -322,12 +322,9 @@ handle_call(stop, _From, State) ->
 
 handle_cast(
     {compact, Checker, InitiateFun, CloseFun, FilterFun, Manifest0},
-    State
+    State = #state{max_run_length = MRL, reload_strategy = RS}
 ) ->
-    ?STD_LOG(ic014, [
-        State#state.reload_strategy,
-        State#state.max_run_length
-    ]),
+    ?STD_LOG(ic014, [RS, MRL]),
     % Empty the waste folder
     clear_waste(State),
     SW = os:timestamp(),
