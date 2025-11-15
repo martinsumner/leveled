@@ -534,7 +534,7 @@ log_timer(LogLevel, LogRef, LogOpts, Subs, StartTime, LogBase, Domain) ->
 -spec log_prefix(atom(), non_neg_integer() | undefined) ->
     io_lib:chars().
 log_prefix(LogRef, undefined) ->
-    ["log_ref=", atom_to_list(LogRef)];
+    ["log_ref=", atom_to_list(LogRef), " "];
 log_prefix(LogRef, DBid) ->
     [
         "log_ref=",
