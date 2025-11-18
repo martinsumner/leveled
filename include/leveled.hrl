@@ -103,6 +103,7 @@
     )
 ).
 
+%% Erlang apply is used because  a variable list of arguments is provided
 -define(STD_LOG_INT(LogLevel, LogRef, Subs, LogOpts),
     case
         logger:allow(LogLevel, ?MODULE) andalso
