@@ -342,7 +342,7 @@ mput_pre(S) ->
 %%
 %% Really weird to have to specify a value in case of a remove action
 mput_args(#{leveled := Pid, previous_keys := PK}) ->
-    ?LET(Objs, list({gen_key_in_bucket(PK), nat()}),
+    ?LET(Objs, list({gen_key_in_bucket(PK), null}),
          [Pid, [ {weighted_default({5, add}, {1, remove}), Bucket, Key, SubKey, gen_val()} || {{Key, Bucket}, SubKey} <- Objs ]]).
 
 
@@ -680,7 +680,7 @@ indexfold(Pid, Constraint, FoldAccT, Range, {_, undefined} = TermHandling, _Coun
     {async, Folder} = leveled_bookie:book_indexfold(Pid, Constraint, FoldAccT, Range, TermHandling),
     Folder;
 indexfold(Pid, Constraint, FoldAccT, Range, {ReturnTerms, RegExp}, _Counter) ->
-    {ok, RE} = re:compile(RegExp),
+    {ok, RE} = leveled_util:regex_compile(RegExp),
     {async, Folder} = leveled_bookie:book_indexfold(Pid, Constraint, FoldAccT, Range, {ReturnTerms, RE}),
     Folder.
 

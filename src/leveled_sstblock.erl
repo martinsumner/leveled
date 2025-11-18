@@ -3,18 +3,18 @@
 %% Functions to serialise and then fetch from those serialised blocks, i.e.
 %% - serialise_block/3
 %% - get_all/2 deserialise returning all
-%% - get_topandtail/2 return only the first and last elements, as well as a 
+%% - get_topandtail/2 return only the first and last elements, as well as a
 %% function to return the remainder, so that deserialisation of the remainder
 %% may be avoided on inspection of top and tail
 %% - get_nth/3 deserialise enough of the block to return just the nth item
 %%
 %% The fetch functions may be optimised for the block type to minimise the
 %% work required to fetch the required amount of deserialised data.
-%% 
+%%
 %% Standard block sizes are
 %% -define(LOOK_BLOCKSIZE, {24, 32}).
 %% -define(NOLOOK_BLOCKSIZE, {56, 32}).
-%% 
+%%
 %% Requirement to serialise LOOK_BLOCKS to optimise for picking the nth value
 %% Requirement to serialise NOLOOK_BLOCKS to optimise for picking the first and
 %% last values
@@ -23,33 +23,33 @@
 
 -define(MAX_SUBBLOCK_SIZE, 1 bsl 16).
 -define(BLOCK_TYPE0, 0).
-    % Block is just a list of terms 
+% Block is just a list of terms
 -define(BLOCK_TYPE1, 1).
-    % Lookup block divided into 4 blocks of 6
-    % 24 KV blocks only
+% Lookup block divided into 4 blocks of 6
+% 24 KV blocks only
 -define(BLOCK_TYPE2, 2).
-    % Lookup block divided into 4 blocks of 8
-    % 32 KV blocks only
+% Lookup block divided into 4 blocks of 8
+% 32 KV blocks only
 -define(BLOCK_TYPE3, 3).
-    % Nolookup block with first/last terms at head
+% Nolookup block with first/last terms at head
 -define(BLOCK_TYPE4, 4).
-    % Nolookup block with first/last terms at head, and block split into L/M/R
-    % 56 KV blocks only
+% Nolookup block with first/last terms at head, and block split into L/M/R
+% 56 KV blocks only
 -define(COMPRESSION_FACTOR, 1).
-    % When using native compression - how hard should the compression code
-    % try to reduce the size of the compressed output. 1 Is to imply minimal
-    % effort, 6 is default in OTP:
-    % https://www.erlang.org/doc/man/erlang.html#term_to_binary-2
+% When using native compression - how hard should the compression code
+% try to reduce the size of the compressed output. 1 Is to imply minimal
+% effort, 6 is default in OTP:
+% https://www.erlang.org/doc/man/erlang.html#term_to_binary-2
 -define(BINARY_SETTINGS, [{compressed, ?COMPRESSION_FACTOR}]).
 
 -type block_type() ::
-    ?BLOCK_TYPE0|?BLOCK_TYPE1|?BLOCK_TYPE2|?BLOCK_TYPE3|?BLOCK_TYPE4.
+    ?BLOCK_TYPE0 | ?BLOCK_TYPE1 | ?BLOCK_TYPE2 | ?BLOCK_TYPE3 | ?BLOCK_TYPE4.
 -type range_filter() ::
-    all|{leveled_codec:ledger_key(), leveled_codec:ledger_key()}.
+    all | {leveled_codec:ledger_key(), leveled_codec:ledger_key()}.
 -type top_and_tail() ::
     {
-        leveled_codec:ledger_key()|not_present,
-        leveled_codec:ledger_key()|not_present,
+        leveled_codec:ledger_key() | not_present,
+        leveled_codec:ledger_key() | not_present,
         fun((range_filter()) -> list(leveled_codec:ledger_kv()))
     }.
 
@@ -66,7 +66,7 @@
 %%% API
 %%%============================================================================
 
-
+%% erlfmt:ignore-begin
 -spec serialise_block(
     lookup|no_lookup,
     {leveled_sst:block_version(), leveled_sst:press_method()},
@@ -243,10 +243,12 @@ serialise_block(_, {1, PressMethod}, TermList) ->
     serialise_block_aslist(PressMethod, TermList);
 serialise_block(_, {0, PressMethod}, TermList) ->
     serialise_block(TermList, PressMethod).
+%% erlfmt:ignore-end
 
 -spec get_all(
-    binary(), leveled_sst:block_method()) ->
-        list(leveled_codec:ledger_kv()).
+    binary(), leveled_sst:block_method()
+) ->
+    list(leveled_codec:ledger_kv()).
 get_all(Block, {1, PressMethod}) ->
     ExtractFun =
         fun(CheckedBlock) ->
@@ -261,7 +263,8 @@ get_all(Block, {0, PressMethod}) ->
     check_block(Block, [], ExtractFun).
 
 -spec get_topandtail(
-    binary(), leveled_sst:block_method()) -> top_and_tail().
+    binary(), leveled_sst:block_method()
+) -> top_and_tail().
 get_topandtail(Block, {0, PressMethod}) ->
     ExtractFun =
         fun(CheckedBlock) ->
@@ -289,8 +292,9 @@ get_topandtail(Block, {1, PressMethod}) ->
     ).
 
 -spec get_nth(
-    pos_integer(), binary(), leveled_sst:block_method()) ->
-        leveled_codec:ledger_kv()|not_present.
+    pos_integer(), binary(), leveled_sst:block_method()
+) ->
+    leveled_codec:ledger_kv() | not_present.
 get_nth(N, Block, {1, PressMethod}) ->
     ExtractFun =
         fun(CheckedBlock) ->
@@ -317,8 +321,9 @@ crc_validate_bin(Bin) ->
     <<Bin/binary, CRC32:32/integer>>.
 
 -spec serialise_block_aslist(
-    leveled_sst:press_method(), list(leveled_codec:ledger_kv()))
-        -> binary().
+    leveled_sst:press_method(), list(leveled_codec:ledger_kv())
+) ->
+    binary().
 serialise_block_aslist(PM, TermList) when PM == lz4; PM == zstd ->
     CompressedBin =
         <<
@@ -335,17 +340,17 @@ serialise_block_aslist(native, TermList) ->
     crc_validate_bin(CompressedBin);
 serialise_block_aslist(none, TermList) ->
     UncompressedBin =
-        <<(term_to_binary(TermList))/binary, ?BLOCK_TYPE0:8/integer >>,
+        <<(term_to_binary(TermList))/binary, ?BLOCK_TYPE0:8/integer>>,
     crc_validate_bin(UncompressedBin).
 
--spec compress_block(binary(), lz4|zstd) -> binary().
+-spec compress_block(binary(), lz4 | zstd) -> binary().
 compress_block(BlockBin, lz4) ->
     {ok, Bin} = lz4:pack(BlockBin),
     Bin;
 compress_block(BlockBin, zstd) ->
     ezstd:compress(BlockBin).
-    
--spec decompress_block(binary(), lz4|zstd) -> binary().
+
+-spec decompress_block(binary(), lz4 | zstd) -> binary().
 decompress_block(BlockBin, lz4) ->
     {ok, Bin} = lz4:unpack(BlockBin),
     Bin;
@@ -355,14 +360,13 @@ decompress_block(BlockBin, zstd) ->
             DeflateBin
     end.
 
--spec
-    check_block
-        (binary(), list(), fun((binary()) -> list(leveled_codec:ledger_kv())))
-            -> list(leveled_codec:ledger_kv());
-        (binary(), not_present, fun((binary()) -> leveled_codec:ledger_kv()))
-            -> leveled_codec:ledger_kv()|not_present;
-        (binary(), top_and_tail(), fun((binary()) -> top_and_tail()))
-            -> top_and_tail().
+-spec check_block
+    (binary(), list(), fun((binary()) -> list(leveled_codec:ledger_kv()))) ->
+        list(leveled_codec:ledger_kv());
+    (binary(), not_present, fun((binary()) -> leveled_codec:ledger_kv())) ->
+        leveled_codec:ledger_kv() | not_present;
+    (binary(), top_and_tail(), fun((binary()) -> top_and_tail())) ->
+        top_and_tail().
 check_block(Block, Default, ExtractFun) when byte_size(Block) > 4 ->
     BinS = byte_size(Block) - 4,
     <<TermBin:BinS/binary, CRC32:32/integer>> = Block,
@@ -381,6 +385,7 @@ check_block(_Block, Default, _ExtractFun) ->
 %%% Block-type specific cases - v1
 %%%============================================================================
 
+%% erlfmt:ignore-begin
 -spec get_topandtail_block(
     binary(), leveled_sst:press_method()) -> top_and_tail().
 get_topandtail_block(CheckedBlock, PressMethod) ->
@@ -647,6 +652,7 @@ get_all_block(Type, TypedBlock, PM)
         C1, C2, C3, C4, C5, C6, C7, C8,
         D1, D2, D3, D4, D5, D6, D7, D8
     ].
+%% erlfmt:ignore-end
 
 %%%============================================================================
 %%% Internal functions - v0
@@ -772,13 +778,12 @@ v1_block_tester(Lookup, BlockMethod, BlockSize, SibMetaBin, B) ->
     GenKeyFun =
         fun(X) ->
             LK =
-                {?RIAK_TAG,
-                    B,
-                    list_to_binary("Key" ++ integer_to_list(X)),
+                {?RIAK_TAG, B, list_to_binary("Key" ++ integer_to_list(X)),
                     null},
             LKV =
                 leveled_codec:generate_ledgerkv(
-                    LK, X, V, byte_size(V), infinity),
+                    LK, X, V, byte_size(V), infinity
+                ),
             {_Bucket, _Key, MetaValue, _Hashes, _LastMods} = LKV,
             {LK, MetaValue}
         end,
@@ -802,7 +807,5 @@ v1_block_tester(Lookup, BlockMethod, BlockSize, SibMetaBin, B) ->
     ?assertMatch(Tail, element(1, lists:last(KVL))),
     ?assertMatch(KVL, AllFun(all)),
     ?assertMatch(KVL, get_all(Block, BlockMethod)).
-
-
 
 -endif.
