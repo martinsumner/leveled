@@ -655,9 +655,7 @@ starting(
             Level
         ),
     Summary = UpdState#state.summary,
-    leveled_log:log_timer(
-        sst08, [ActualFilename, Level, Summary#summary.max_sqn], SW
-    ),
+    ?TMR_LOG(sst08, [ActualFilename, Level, Summary#summary.max_sqn], SW),
     erlang:send_after(?STARTUP_TIMEOUT, self(), start_complete),
     {next_state, reader,
         UpdState#state{
@@ -755,10 +753,8 @@ starting(cast, complete_l0startup, State) ->
     Summary = UpdState#state.summary,
     Time4 = timer:now_diff(os:timestamp(), SW4),
 
-    leveled_log:log_timer(
-        sst08, [ActualFilename, 0, Summary#summary.max_sqn], SW0
-    ),
-    leveled_log:log(sst11, [Time0, Time1, Time2, Time3, Time4]),
+    ?TMR_LOG(sst08, [ActualFilename, 0, Summary#summary.max_sqn], SW0),
+    ?STD_LOG(sst11, [Time0, Time1, Time2, Time3, Time4]),
 
     case Penciller of
         undefined ->
@@ -898,7 +894,7 @@ reader({call, From}, get_maxsequencenumber, State) ->
     Summary = State#state.summary,
     {keep_state_and_data, [{reply, From, Summary#summary.max_sqn}]};
 reader({call, From}, {set_for_delete, Penciller}, State) ->
-    leveled_log:log(sst06, [State#state.filename]),
+    ?STD_LOG(sst06, [State#state.filename]),
     {next_state, delete_pending, State#state{penciller = Penciller}, [
         {reply, From, ok}, ?DELETE_TIMEOUT
     ]};
@@ -938,7 +934,7 @@ reader(info, bic_complete, State) ->
     % The block index cache is complete, so the memory footprint should be
     % relatively stable from this point.  Hibernate to help minimise
     % fragmentation
-    leveled_log:log(sst14, [State#state.filename]),
+    ?STD_LOG(sst14, [State#state.filename]),
     {keep_state_and_data, [hibernate]};
 reader(
     info,
@@ -1029,7 +1025,7 @@ delete_pending(
     close,
     State = #state{read_state = RS}
 ) when ?IS_DEF(RS) ->
-    leveled_log:log(sst07, [State#state.filename]),
+    ?STD_LOG(sst07, [State#state.filename]),
     ok = file:close(RS#read_state.handle),
     ok =
         file:delete(
@@ -1041,7 +1037,7 @@ delete_pending(
     close,
     State = #state{read_state = RS}
 ) when ?IS_DEF(RS) ->
-    leveled_log:log(sst07, [State#state.filename]),
+    ?STD_LOG(sst07, [State#state.filename]),
     ok = file:close(RS#read_state.handle),
     ok =
         file:delete(
@@ -1089,7 +1085,7 @@ handle_update_blockindex_cache(
 terminate(normal, delete_pending, _State) ->
     ok;
 terminate(Reason, _StateName, State) ->
-    leveled_log:log(sst04, [Reason, State#state.filename]).
+    ?STD_LOG(sst04, [Reason, State#state.filename]).
 
 code_change(_OldVsn, StateName, State, _Extra) ->
     {ok, StateName, State}.
@@ -1168,7 +1164,7 @@ expand_list_by_pointer(
     % This can then be further expanded by calling again to
     % expand_list_by_pointer
     SSTPid = leveled_pmanifest:entry_owner(ME),
-    leveled_log:log(sst10, [SSTPid, is_process_alive(SSTPid)]),
+    ?STD_LOG(sst10, [SSTPid, is_process_alive(SSTPid)]),
     ExpPointer = sst_getfilteredrange(SSTPid, StartKey, EndKey, LowLastMod),
     ExpPointer ++ Tail.
 
@@ -1730,7 +1726,7 @@ write_file(
             AltName =
                 filename:join(RootPath, filename:basename(FinalName)) ++
                     ?DISCARD_EXT,
-            leveled_log:log(sst05, [FinalName, AltName]),
+            ?STD_LOG(sst05, [FinalName, AltName]),
             ok = file:rename(filename:join(RootPath, FinalName), AltName);
         false ->
             ok
@@ -1765,16 +1761,15 @@ read_file(Filename, State, LoadPageCache, BIC, Level) ->
             SlotList, Summary#summary.first_key, Summary#summary.last_key
         ),
     UpdSummary = Summary#summary{index = SlotIndex},
-    leveled_log:log(
-        sst03, [Filename, Summary#summary.size, Summary#summary.max_sqn]
-    ),
+    Size = Summary#summary.size,
+    ?STD_LOG(sst03, [Filename, Size, Summary#summary.max_sqn]),
     ReadState =
         #read_state{
             handle = Handle,
             blockindex_cache =
                 case BIC of
                     undefined ->
-                        new_blockindex_cache(Summary#summary.size);
+                        new_blockindex_cache(Size);
                     _ ->
                         BIC
                 end,
@@ -3165,7 +3160,7 @@ crc_check_slot(FullBin) ->
         {CRC32H, CRC32PBL} ->
             {Header, Blocks};
         _ ->
-            leveled_log:log(sst09, []),
+            ?STD_LOG(sst09, []),
             crc_wonky
     end.
 
@@ -3698,7 +3693,7 @@ update_buildtimings(Timings, Stage) ->
 log_buildtimings(no_timing, _LI) ->
     ok;
 log_buildtimings(Timings, LI) ->
-    leveled_log:log(
+    ?STD_LOG(
         sst13,
         [
             Timings#build_timings.fold_toslot,

@@ -720,7 +720,7 @@ init([LogOpts, PCLopts]) ->
                 pcl_registersnapshot(
                     SrcPenciller, self(), Query, BookiesMem, LongRunning
                 ),
-            leveled_log:log(p0001, [self()]),
+            ?STD_LOG(p0001, [self()]),
             {ok, State#state{
                 is_snapshot = true,
                 clerk = undefined,
@@ -749,21 +749,18 @@ handle_call(
 
     L0Pending = State#state.levelzero_pending,
     WorkBacklog = State#state.work_backlog,
-    CacheAlreadyFull = leveled_pmem:cache_full(State#state.levelzero_cache),
+    CacheFull = leveled_pmem:cache_full(State#state.levelzero_cache),
     L0Size = State#state.levelzero_size,
 
     % The clerk is prompted into action as there may be a L0 write required
     ok = leveled_pclerk:clerk_prompt(State#state.clerk),
 
-    case L0Pending or WorkBacklog or CacheAlreadyFull of
+    case L0Pending orelse WorkBacklog orelse CacheFull of
         true ->
             % Cannot update the cache, or roll the memory so reply `returned`
             % The Bookie must now retain the lesger cache and try to push the
             % updated cache at a later time
-            leveled_log:log(
-                p0018,
-                [L0Size, L0Pending, WorkBacklog, CacheAlreadyFull]
-            ),
+            ?STD_LOG(p0018, [L0Size, L0Pending, WorkBacklog, CacheFull]),
             {reply, returned, State};
         false ->
             % Return ok as cache has been updated on State and the Bookie
@@ -793,12 +790,8 @@ handle_call(
                             State#state.levelzero_index,
                             length(State#state.levelzero_cache) + 1
                         ),
-                    leveled_log:log_randomtimer(
-                        p0031,
-                        [NewL0Size, true, true, MinSQN, MaxSQN],
-                        SW,
-                        0.1
-                    ),
+                    Subs = [NewL0Size, true, true, MinSQN, MaxSQN],
+                    ?RND_LOG(p0031, Subs, SW, 0.1),
                     {reply, ok, State#state{
                         levelzero_cache = UpdL0Cache,
                         levelzero_size = NewL0Size,
@@ -896,9 +889,7 @@ handle_call(
                 lists:filter(FilterFun, L0AsList)
         end,
 
-    leveled_log:log_randomtimer(
-        p0037, [State#state.levelzero_size], SW, 0.01
-    ),
+    ?RND_LOG(p0037, [State#state.levelzero_size], SW, 0.01),
 
     %% Rename any reference to loop state that may be used by the function
     %% to be returned - https://github.com/martinsumner/leveled/issues/326
@@ -994,9 +985,7 @@ handle_call(
                         State#state.levelzero_cache,
                         LM1Cache
                     ),
-                leveled_log:log_randomtimer(
-                    p0037, [State#state.levelzero_size], SW, 0.01
-                ),
+                ?RND_LOG(p0037, [State#state.levelzero_size], SW, 0.01),
                 {
                     #state{
                         levelzero_astree = L0AsTree,
@@ -1076,7 +1065,7 @@ handle_call(
     % The penciller should close each file in the manifest, and call a close
     % on the clerk.
     ok = leveled_pclerk:clerk_close(Clerk),
-    leveled_log:log(p0008, [close]),
+    ?STD_LOG(p0008, [close]),
     L0Left = State#state.levelzero_size > 0,
     case (not State#state.levelzero_pending and L0Left) of
         true ->
@@ -1092,7 +1081,7 @@ handle_call(
                 ),
             ok = leveled_sst:sst_close(Constructor);
         false ->
-            leveled_log:log(p0010, [State#state.levelzero_size])
+            ?STD_LOG(p0010, [State#state.levelzero_size])
     end,
     gen_server:cast(self(), {maybe_defer_shutdown, close, From}),
     {noreply, State};
@@ -1101,7 +1090,7 @@ handle_call(
 ) when
     ?IS_DEF(Clerk)
 ->
-    leveled_log:log(p0030, []),
+    ?STD_LOG(p0030, []),
     ok = leveled_pclerk:clerk_close(Clerk),
     gen_server:cast(self(), {maybe_defer_shutdown, doom, From}),
     {noreply, State};
@@ -1151,7 +1140,7 @@ handle_cast(
 ->
     NewManSQN = leveled_pmanifest:get_manifest_sqn(Manifest),
     OldManSQN = leveled_pmanifest:get_manifest_sqn(OldManifest),
-    leveled_log:log(p0041, [OldManSQN, NewManSQN]),
+    ?STD_LOG(p0041, [OldManSQN, NewManSQN]),
     % Only safe to update the manifest if the SQN increments
     if
         NewManSQN > OldManSQN ->
@@ -1182,7 +1171,7 @@ handle_cast(
 ->
     Manifest0 =
         leveled_pmanifest:release_snapshot(Manifest, Snapshot),
-    leveled_log:log(p0003, [Snapshot]),
+    ?STD_LOG(p0003, [Snapshot]),
     {noreply, State#state{manifest = Manifest0}};
 handle_cast(
     {confirm_delete, PDFN, FilePid}, State = #state{is_snapshot = Snap}
@@ -1205,7 +1194,7 @@ handle_cast(
     % will be cleared from pending using the maybe_release boolean
     case leveled_pmanifest:ready_to_delete(State#state.manifest, PDFN) of
         true ->
-            leveled_log:log(p0005, [PDFN]),
+            ?STD_LOG(p0005, [PDFN]),
             ok = leveled_sst:sst_deleteconfirmed(FilePid),
             case State#state.work_ongoing of
                 true ->
@@ -1242,7 +1231,7 @@ handle_cast(
 ) when
     ?IS_DEF(Man), ?IS_DEF(L0C), ?IS_DEF(Clerk)
 ->
-    leveled_log:log(p0029, []),
+    ?STD_LOG(p0029, []),
     ManEntry = leveled_pmanifest:new_entry(StartKey, EndKey, L0C, FN, Bloom),
     ManifestSQN = leveled_pmanifest:get_manifest_sqn(Man) + 1,
     UpdMan =
@@ -1320,7 +1309,7 @@ handle_cast(
                     % L0 work to do, or because the backlog has grown beyond
                     % tolerance
                     Backlog = WC >= ?WORKQUEUE_BACKLOG_TOLERANCE,
-                    leveled_log:log(p0024, [WC, Backlog, L0Full]),
+                    ?STD_LOG(p0024, [WC, Backlog, L0Full]),
                     [TL | _Tail] = WL,
                     ok = leveled_pclerk:clerk_push(Clerk, {TL, Man}),
                     {noreply, State#state{
@@ -1375,7 +1364,7 @@ handle_cast(
             % complete_shutdown cast is sent
             case State#state.shutdown_loops of
                 LoopCount when LoopCount > 0 ->
-                    leveled_log:log(p0042, [N]),
+                    ?STD_LOG(p0042, [N]),
                     timer:sleep(?SHUTDOWN_PAUSE div ?SHUTDOWN_LOOPS),
                     gen_server:cast(
                         self(), {maybe_defer_shutdown, ShutdownType, From}
@@ -1422,9 +1411,9 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(Reason, _State = #state{is_snapshot = Snap}) when Snap == true ->
-    leveled_log:log(p0007, [Reason]);
+    ?STD_LOG(p0007, [Reason]);
 terminate(Reason, _State) ->
-    leveled_log:log(p0011, [Reason]).
+    ?STD_LOG(p0011, [Reason]).
 
 format_status(Status) ->
     case maps:get(reason, Status, normal) of
@@ -1516,15 +1505,15 @@ start_from_file(
     SQNFun = fun leveled_sst:sst_getmaxsequencenumber/1,
     {MaxSQN, Manifest1, FileList} =
         leveled_pmanifest:load_manifest(Manifest0, OpenFun, SQNFun),
-    leveled_log:log(p0014, [MaxSQN]),
+    ?STD_LOG(p0014, [MaxSQN]),
     ManSQN = leveled_pmanifest:get_manifest_sqn(Manifest1),
-    leveled_log:log(p0035, [ManSQN]),
+    ?STD_LOG(p0035, [ManSQN]),
     %% Find any L0 files
     L0FN = sst_filename(ManSQN + 1, 0, 0),
     {{InitManifest, InitLedgerSQN, InitPersistSQN}, FileList0} =
         case filelib:is_file(filename:join(sst_rootpath(RootPath), L0FN)) of
             true ->
-                leveled_log:log(p0015, [L0FN]),
+                ?STD_LOG(p0015, [L0FN]),
                 L0Open =
                     leveled_sst:sst_open(
                         sst_rootpath(RootPath), L0FN, OptsSST, 0
@@ -1539,14 +1528,14 @@ start_from_file(
                     leveled_pmanifest:insert_manifest_entry(
                         Manifest1, ManSQN + 1, 0, L0Entry
                     ),
-                leveled_log:log(p0016, [L0SQN]),
+                ?STD_LOG(p0016, [L0SQN]),
                 LedgerSQN = max(MaxSQN, L0SQN),
                 {
                     {Manifest2, LedgerSQN, LedgerSQN},
                     [L0FN | FileList]
                 };
             false ->
-                leveled_log:log(p0017, []),
+                ?STD_LOG(p0017, []),
                 {{Manifest1, MaxSQN, MaxSQN}, FileList}
         end,
     ok = archive_files(RootPath, FileList0),
@@ -1622,7 +1611,7 @@ archive_files(RootPath, UsedFileList) ->
                         true ->
                             UnusedFiles;
                         false ->
-                            leveled_log:log(p0040, [FN0]),
+                            ?STD_LOG(p0040, [FN0]),
                             [FN0 | UnusedFiles]
                     end;
                 _ ->
@@ -1697,7 +1686,7 @@ maybe_cache_too_big(NewL0Size, L0MaxSize, CoinToss) ->
 roll_memory(NextManSQN, LedgerSQN, RootPath, none, CL, SSTOpts, false) ->
     L0Path = sst_rootpath(RootPath),
     L0FN = sst_filename(NextManSQN, 0, 0),
-    leveled_log:log(p0019, [L0FN, LedgerSQN]),
+    ?STD_LOG(p0019, [L0FN, LedgerSQN]),
     PCL = self(),
     FetchFun =
         fun(Slot, ReturnFun) -> pcl_fetchlevelzero(PCL, Slot, ReturnFun) end,
@@ -1823,10 +1812,10 @@ log_slowfetch(T0, R, PID, Level, FetchTolerance) ->
         {T, R} when T < FetchTolerance ->
             R;
         {T, not_present} ->
-            leveled_log:log(pc016, [PID, T, Level, not_present]),
+            ?STD_LOG(pc016, [PID, T, Level, not_present]),
             not_present;
         {T, R} ->
-            leveled_log:log(pc016, [PID, T, Level, found]),
+            ?STD_LOG(pc016, [PID, T, Level, found]),
             R
     end.
 

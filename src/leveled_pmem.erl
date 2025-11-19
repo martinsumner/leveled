@@ -167,7 +167,7 @@ to_list(Slots, FetchFun) ->
         [],
         SlotList
     ),
-    leveled_log:log_timer(pm002, [length(FullList)], SW),
+    ?TMR_LOG(pm002, [length(FullList)], SW),
     FullList.
 
 -spec check_levelzero(tuple(), list(integer()), list()) ->

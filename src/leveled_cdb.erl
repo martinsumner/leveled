@@ -476,10 +476,10 @@ callback_mode() ->
 
 starting({call, From}, {open_writer, Filename}, State) ->
     leveled_log:save(State#state.log_options),
-    leveled_log:log(cdb01, [Filename]),
+    ?STD_LOG(cdb01, [Filename]),
     {LastPosition, HashTree, LastKey} = open_active_file(Filename),
     {WriteOps, UpdStrategy} = set_writeops(State#state.sync_strategy),
-    leveled_log:log(cdb13, [WriteOps]),
+    ?STD_LOG(cdb13, [WriteOps]),
     {ok, Handle} = file:open(Filename, WriteOps),
     State0 = State#state{
         handle = Handle,
@@ -493,7 +493,7 @@ starting({call, From}, {open_writer, Filename}, State) ->
     {next_state, writer, State0, [{reply, From, ok}, hibernate]};
 starting({call, From}, {open_reader, Filename}, State) ->
     leveled_log:save(State#state.log_options),
-    leveled_log:log(cdb02, [Filename]),
+    ?STD_LOG(cdb02, [Filename]),
     {Handle, Index, LastKey} = open_for_readonly(Filename, false),
     State0 = State#state{
         handle = Handle,
@@ -504,7 +504,7 @@ starting({call, From}, {open_reader, Filename}, State) ->
     {next_state, reader, State0, [{reply, From, ok}, hibernate]};
 starting({call, From}, {open_reader, Filename, LastKey}, State) ->
     leveled_log:save(State#state.log_options),
-    leveled_log:log(cdb02, [Filename]),
+    ?STD_LOG(cdb02, [Filename]),
     {Handle, Index, LastKey} = open_for_readonly(Filename, LastKey),
     State0 = State#state{
         handle = Handle,
@@ -706,7 +706,7 @@ rolling(
     ok = write_top_index_table(Handle, BasePos, IndexList),
     file:close(Handle),
     ok = rename_for_read(FN, NewName),
-    leveled_log:log(cdb03, [NewName]),
+    ?STD_LOG(cdb03, [NewName]),
     ets:delete(State#state.hashtree),
     {NewHandle, Index, LastKey} =
         open_for_readonly(NewName, State#state.last_key),
@@ -720,7 +720,7 @@ rolling(
         true ->
             {next_state, delete_pending, State0, [{reply, From, ok}]};
         false ->
-            leveled_log:log_timer(cdb18, [], SW),
+            ?TMR_LOG(cdb18, [], SW),
             {next_state, reader, State0, [{reply, From, ok}, hibernate]}
     end;
 rolling({call, From}, check_hashtable, _State) ->
@@ -819,7 +819,7 @@ reader(
 ) when
     ?IS_DEF(FN), ?IS_DEF(IO)
 ->
-    leveled_log:log(cdb05, [FN, reader, cdb_ccomplete]),
+    ?STD_LOG(cdb05, [FN, reader, cdb_ccomplete]),
     ok = file:close(IO),
     {stop_and_reply, normal, [{reply, From, {ok, FN}}], State#state{
         handle = undefined
@@ -870,7 +870,7 @@ delete_pending(
 ) when
     ?IS_DEF(FN), ?IS_DEF(IO)
 ->
-    leveled_log:log(cdb05, [FN, delete_pending, cdb_close]),
+    ?STD_LOG(cdb05, [FN, delete_pending, cdb_close]),
     close_pendingdelete(IO, FN, State#state.waste_path),
     {stop_and_reply, normal, [{reply, From, ok}]};
 delete_pending({call, From}, Event, State) ->
@@ -880,7 +880,7 @@ delete_pending(
 ) when
     ?IS_DEF(FN), ?IS_DEF(IO)
 ->
-    leveled_log:log(cdb04, [FN, State#state.delete_point]),
+    ?STD_LOG(cdb04, [FN, State#state.delete_point]),
     close_pendingdelete(IO, FN, State#state.waste_path),
     {stop, normal};
 delete_pending(
@@ -888,7 +888,7 @@ delete_pending(
 ) when
     ?IS_DEF(FN), ?IS_DEF(IO)
 ->
-    leveled_log:log(cdb05, [FN, delete_pending, destroy]),
+    ?STD_LOG(cdb05, [FN, delete_pending, destroy]),
     close_pendingdelete(IO, FN, State#state.waste_path),
     {stop, normal};
 delete_pending(
@@ -906,7 +906,7 @@ delete_pending(
                 ),
             {keep_state_and_data, [?DELETE_TIMEOUT]};
         false ->
-            leveled_log:log(cdb04, [FN, ManSQN]),
+            ?STD_LOG(cdb04, [FN, ManSQN]),
             close_pendingdelete(IO, FN, State#state.waste_path),
             {stop, normal}
     end.
@@ -1058,7 +1058,7 @@ close_pendingdelete(Handle, Filename, WasteFP) ->
         false ->
             % This may happen when there has been a destroy while files are
             % still pending deletion
-            leveled_log:log(cdb21, [Filename])
+            ?STD_LOG(cdb21, [Filename])
     end.
 
 -spec set_writeops(sync | riak_sync | none) ->
@@ -1101,7 +1101,7 @@ open_active_file(FileName) when is_list(FileName) ->
                 {?BASE_POSITION, 0} ->
                     ok;
                 _ ->
-                    leveled_log:log(cdb06, [LastPosition, EndPosition])
+                    ?STD_LOG(cdb06, [LastPosition, EndPosition])
             end,
             {ok, _LastPosition} = file:position(Handle, LastPosition),
             ok = file:truncate(Handle),
@@ -1280,7 +1280,7 @@ hashtable_calc(HashTree, StartPos) ->
     Seq = lists:seq(0, 255),
     SWC = os:timestamp(),
     {IndexList, HashTreeBin} = write_hash_tables(Seq, HashTree, StartPos),
-    leveled_log:log_timer(cdb07, [], SWC),
+    ?TMR_LOG(cdb07, [], SWC),
     {IndexList, HashTreeBin}.
 
 %%%%%%%%%%%%%%%%%%%%
@@ -1292,7 +1292,7 @@ determine_new_filename(Filename) ->
 
 rename_for_read(Filename, NewName) ->
     %% Rename file
-    leveled_log:log(cdb08, [Filename, NewName, filelib:is_file(NewName)]),
+    ?STD_LOG(cdb08, [Filename, NewName, filelib:is_file(NewName)]),
     file:rename(Filename, NewName).
 
 -spec open_for_readonly(string(), term()) ->
@@ -1487,7 +1487,7 @@ scan_over_file(Handle, Position, FilterFun, Output, LastKey) ->
                     % Not interesting that we've nothing to read at base
                     ok;
                 _ ->
-                    leveled_log:log(cdb09, [Position])
+                    ?STD_LOG(cdb09, [Position])
             end,
             % Bring file back to that position
             {ok, Position} = file:position(Handle, {bof, Position}),
@@ -1590,7 +1590,7 @@ safe_read_next(Handle, Length, ReadType) ->
         end
     catch
         error:ReadError ->
-            leveled_log:log(cdb20, [ReadError, Length]),
+            ?STD_LOG(cdb20, [ReadError, Length]),
             false
     end.
 
@@ -1604,11 +1604,11 @@ crccheck(<<CRC:32/integer, Value/binary>>, KeyBin) when is_binary(KeyBin) ->
         CRC ->
             Value;
         _ ->
-            leveled_log:log(cdb10, ["mismatch"]),
+            ?STD_LOG(cdb10, ["mismatch"]),
             false
     end;
 crccheck(_V, _KB) ->
-    leveled_log:log(cdb10, ["size"]),
+    ?STD_LOG(cdb10, ["size"]),
     false.
 
 -spec calc_crc(binary(), binary()) -> integer().
@@ -1710,7 +1710,7 @@ search_hash_table(
                 end,
             case KV of
                 missing ->
-                    leveled_log:log(cdb15, [Hash]),
+                    ?STD_LOG(cdb15, [Hash]),
                     search_hash_table(
                         Handle,
                         {FirstHashPosition, Slot, CycleCount + 1, TotalSlots},
@@ -1765,7 +1765,7 @@ perform_write_hash_tables(Handle, HashTreeBin, StartPos) ->
     ok = file:write(Handle, HashTreeBin),
     {ok, EndPos} = file:position(Handle, cur),
     ok = file:advise(Handle, StartPos, EndPos - StartPos, will_need),
-    leveled_log:log_timer(cdb12, [], SWW),
+    ?TMR_LOG(cdb12, [], SWW),
     ok.
 
 %% Write the top most 255 doubleword entries.  First word is the
@@ -1952,7 +1952,7 @@ write_hash_tables(
     HT_BinList,
     {T1, T2, T3}
 ) ->
-    leveled_log:log(cdb14, [T1, T2, T3]),
+    ?STD_LOG(cdb14, [T1, T2, T3]),
     IL = lists:reverse(IndexList),
     {IL, list_to_binary(lists:reverse(HT_BinList))};
 write_hash_tables(

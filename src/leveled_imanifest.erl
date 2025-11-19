@@ -3,6 +3,8 @@
 
 -module(leveled_imanifest).
 
+-include("leveled.hrl").
+
 -export([
     generate_entry/1,
     add_entry/3,
@@ -52,7 +54,7 @@ generate_entry(Journal) ->
             [{StartSQN, NewFN, PidR, LastKey}];
         empty ->
             ok = leveled_cdb:cdb_close(PidR),
-            leveled_log:log(ic013, [NewFN]),
+            ?STD_LOG(ic013, [NewFN]),
             []
     end.
 
@@ -95,7 +97,7 @@ append_lastkey(Manifest, Pid, LastKey) ->
 %% Remove an entry from a manifest (after compaction)
 remove_entry(Manifest, Entry) ->
     {SQN, FN, _PidR, _LastKey} = Entry,
-    leveled_log:log(i0013, [FN]),
+    ?STD_LOG(i0013, [FN]),
     Man0 = lists:keydelete(SQN, 1, to_list(Manifest)),
     from_list(Man0).
 
@@ -152,7 +154,7 @@ to_list(Manifest) ->
 %% loss on rollback.
 reader(SQN, RootPath) ->
     ManifestPath = leveled_inker:filepath(RootPath, manifest_dir),
-    leveled_log:log(i0015, [ManifestPath, SQN]),
+    ?STD_LOG(i0015, [ManifestPath, SQN]),
     {ok, MBin} = file:read_file(
         filename:join(
             ManifestPath,
@@ -182,7 +184,7 @@ writer(Manifest, ManSQN, RootPath) ->
     %% check backwards compatible (so that the reader can read manifests both
     %% with and without a CRC check)
     MBin = term_to_binary(to_list(Manifest), [compressed]),
-    leveled_log:log(i0016, [ManSQN]),
+    ?STD_LOG(i0016, [ManSQN]),
     ok = leveled_util:safe_rename(TmpFN, NewFN, MBin, true),
     GC_SQN = ManSQN - ?MANIFESTS_TO_RETAIN,
     GC_Man = filename:join(
@@ -203,7 +205,7 @@ writer(Manifest, ManSQN, RootPath) ->
 printer(Manifest) ->
     lists:foreach(
         fun({SQN, FN, _PID, _LK}) ->
-            leveled_log:log(i0017, [SQN, FN])
+            ?STD_LOG(i0017, [SQN, FN])
         end,
         to_list(Manifest)
     ).

@@ -434,7 +434,7 @@ foldobjects_allkeys(SnapFun, Tag, FoldObjectsFun, sqn_order) ->
                                     Acc
                             end
                         end,
-                    leveled_log:log(r0001, [length(BatchAcc)]),
+                    ?STD_LOG(r0001, [length(BatchAcc)]),
                     lists:foldr(ObjFun, ObjAcc, BatchAcc)
                 end,
 
@@ -539,10 +539,10 @@ get_nextbucket(NextBucket, NextKey, Tag, LedgerSnapshot, BKList, {C, L}) ->
         ),
     case R of
         {1, null} ->
-            leveled_log:log(b0008, []),
+            ?STD_LOG(b0008, []),
             BKList;
         {0, {{B, K}, _V}} when is_binary(B); is_tuple(B) ->
-            leveled_log:log(b0009, [B]),
+            ?STD_LOG(b0009, [B]),
             get_nextbucket(
                 leveled_codec:next_key(B),
                 null,

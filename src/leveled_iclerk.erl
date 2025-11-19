@@ -322,12 +322,9 @@ handle_call(stop, _From, State) ->
 
 handle_cast(
     {compact, Checker, InitiateFun, CloseFun, FilterFun, Manifest0},
-    State
+    State = #state{max_run_length = MRL, reload_strategy = RS}
 ) ->
-    leveled_log:log(ic014, [
-        State#state.reload_strategy,
-        State#state.max_run_length
-    ]),
+    ?STD_LOG(ic014, [RS, MRL]),
     % Empty the waste folder
     clear_waste(State),
     SW = os:timestamp(),
@@ -427,7 +424,7 @@ handle_cast(
         {MaxRunLength, State#state.maxrunlength_compactionperc,
             State#state.singlefile_compactionperc},
     {BestRun0, Score} = assess_candidates(Candidates, ScoreParams),
-    leveled_log:log_timer(ic003, [Score, length(BestRun0)], SW),
+    ?TMR_LOG(ic003, [Score, length(BestRun0)], SW),
     case Score > 0.0 of
         true ->
             BestRun1 = sort_run(BestRun0),
@@ -454,7 +451,7 @@ handle_cast(
                     end,
                     BestRun1
                 ),
-            leveled_log:log(ic002, [length(FilesToDelete)]),
+            ?STD_LOG(ic002, [length(FilesToDelete)]),
             ok = CloseFun(FilterServer),
             ok =
                 leveled_inker:ink_clerkcomplete(
@@ -472,7 +469,7 @@ handle_cast(
 ->
     FilesToDelete =
         leveled_imanifest:find_persistedentries(PersistedSQN, ManifestAsList),
-    leveled_log:log(ic007, []),
+    ?STD_LOG(ic007, []),
     ok = leveled_inker:ink_clerkcomplete(Ink, [], FilesToDelete),
     {noreply, State};
 handle_cast({hashtable_calc, HashTree, StartPos, CDBpid}, State) ->
@@ -501,7 +498,7 @@ handle_info(_Info, State) ->
 terminate(normal, _State) ->
     ok;
 terminate(Reason, _State) ->
-    leveled_log:log(ic001, [Reason]).
+    ?STD_LOG(ic001, [Reason]).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -633,12 +630,12 @@ check_single_file(
     Score.
 
 safely_log_filescore([], FN, Score, SW) ->
-    leveled_log:log_timer(ic004, [Score, empty, FN], SW);
+    ?TMR_LOG(ic004, [Score, empty, FN], SW);
 safely_log_filescore(PositionList, FN, Score, SW) ->
     AvgJump =
         (lists:last(PositionList) - lists:nth(1, PositionList)) div
             length(PositionList),
-    leveled_log:log_timer(ic004, [Score, AvgJump, FN], SW).
+    ?TMR_LOG(ic004, [Score, AvgJump, FN], SW).
 
 -spec size_comparison_score(
     list(key_size() | corrupted_test_key_size()),
@@ -801,12 +798,12 @@ score_run(Run, {MaxRunLength, MR_CT, SF_CT}) ->
     Target - RunTotal / length(Run).
 
 print_compaction_run(BestRun, ScoreParams) ->
-    leveled_log:log(
+    ?STD_LOG(
         ic005, [length(BestRun), score_run(BestRun, ScoreParams)]
     ),
     lists:foreach(
         fun(File) ->
-            leveled_log:log(ic006, [File#candidate.filename])
+            ?STD_LOG(ic006, [File#candidate.filename])
         end,
         BestRun
     ).
@@ -906,7 +903,7 @@ get_all_positions([], PositionBatches) ->
 get_all_positions([HeadRef | RestOfBest], PositionBatches) ->
     SrcJournal = HeadRef#candidate.journal,
     Positions = leveled_cdb:cdb_getpositions(SrcJournal, all),
-    leveled_log:log(ic008, [HeadRef#candidate.filename, length(Positions)]),
+    ?STD_LOG(ic008, [HeadRef#candidate.filename, length(Positions)]),
     Batches =
         split_positions_into_batches(
             lists:sort(Positions), SrcJournal, []
@@ -1027,7 +1024,7 @@ write_values(KVCList, CDBopts, Journal0, ManSlice0, PressMethod) ->
                 {SQN, _LK} = leveled_codec:from_journalkey(TK),
                 FP = CDBopts#cdb_options.file_path,
                 FN = leveled_inker:filepath(FP, SQN, compact_journal),
-                leveled_log:log(ic009, [FN]),
+                ?STD_LOG(ic009, [FN]),
                 leveled_cdb:cdb_open_writer(FN, CDBopts);
             _ ->
                 {ok, Journal0}
@@ -1055,9 +1052,9 @@ clear_waste(State) ->
                     case N - calendar:datetime_to_gregorian_seconds(LMD) of
                         LMD_Delta when LMD_Delta >= WRP ->
                             ok = file:delete(WP ++ DelJ),
-                            leveled_log:log(ic010, [WP ++ DelJ]);
+                            ?STD_LOG(ic010, [WP ++ DelJ]);
                         LMD_Delta ->
-                            leveled_log:log(ic011, [WP ++ DelJ, LMD_Delta]),
+                            ?STD_LOG(ic011, [WP ++ DelJ, LMD_Delta]),
                             ok
                     end
                 end,

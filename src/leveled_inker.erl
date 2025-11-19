@@ -581,7 +581,7 @@ handle_call({fetch, Key, SQN}, _From, State) ->
         {{SQN, Key}, {Value, _IndexSpecs}} ->
             {reply, {ok, Value}, State};
         Other ->
-            leveled_log:log(i0001, [Key, SQN, Other]),
+            ?STD_LOG(i0001, [Key, SQN, Other]),
             {reply, not_present, State}
     end;
 handle_call({get, Key, SQN}, _From, State) ->
@@ -619,7 +619,7 @@ handle_call(
         {Requestor, os:timestamp(), State#state.manifest_sqn}
         | State#state.registered_snapshots
     ],
-    leveled_log:log(i0002, [Requestor, State#state.manifest_sqn]),
+    ?STD_LOG(i0002, [Requestor, State#state.manifest_sqn]),
     {reply,
         {
             State#state.manifest,
@@ -673,7 +673,7 @@ handle_call(roll, _From, State = #state{is_snapshot = Snap}) when
                     State#state.root_path,
                     State#state.manifest_sqn
                 ),
-            leveled_log:log_timer(i0024, [NewSQN], SWroll),
+            ?TMR_LOG(i0024, [NewSQN], SWroll),
             {reply, ok, State#state{
                 journal_sqn = NewSQN,
                 manifest = Manifest1,
@@ -690,7 +690,7 @@ handle_call(
     BackupJFP = filepath(filename:join(BackupPath, ?JOURNAL_FP), journal_dir),
     ok = filelib:ensure_dir(BackupJFP),
     {ok, CurrentFNs} = file:list_dir(BackupJFP),
-    leveled_log:log(i0023, [length(CurrentFNs)]),
+    ?STD_LOG(i0023, [length(CurrentFNs)]),
     BackupFun =
         fun({SQN, FN, PidR, LastKey}, {ManAcc, FTRAcc}) ->
             case SQN < State#state.journal_sqn of
@@ -714,7 +714,7 @@ handle_call(
                         ExtendedBaseFN | FTRAcc
                     ]};
                 false ->
-                    leveled_log:log(i0021, [FN, SQN, State#state.journal_sqn]),
+                    ?STD_LOG(i0021, [FN, SQN, State#state.journal_sqn]),
                     {ManAcc, FTRAcc}
             end
         end,
@@ -728,7 +728,7 @@ handle_call(
     FilesToRemove = lists:subtract(CurrentFNs, FilesToRetain),
     RemoveFun =
         fun(RFN) ->
-            leveled_log:log(i0022, [RFN]),
+            ?STD_LOG(i0022, [RFN]),
             RemoveFile = filename:join(BackupJFP, RFN),
             case filelib:is_regular(RemoveFile) of
                 true ->
@@ -743,16 +743,13 @@ handle_call(
         State#state.manifest_sqn,
         filename:join(BackupPath, ?JOURNAL_FP)
     ),
-    leveled_log:log_timer(
-        i0020,
-        [filename:join(BackupPath, ?JOURNAL_FP), length(BackupManifest)],
-        SW
-    ),
+    BackupJournalPath = filename:join(BackupPath, ?JOURNAL_FP),
+    ?TMR_LOG(i0020, [BackupJournalPath, length(BackupManifest)], SW),
     {reply, ok, State};
 handle_call({check_sqn, LedgerSQN}, _From, State) ->
     case State#state.journal_sqn of
         JSQN when JSQN < LedgerSQN ->
-            leveled_log:log(i0025, [JSQN, LedgerSQN]),
+            ?STD_LOG(i0025, [JSQN, LedgerSQN]),
             {reply, ok, State#state{journal_sqn = LedgerSQN}};
         _JSQN ->
             {reply, ok, State}
@@ -776,12 +773,12 @@ handle_call(
 ->
     case ShutdownType of
         doom ->
-            leveled_log:log(i0018, []);
+            ?STD_LOG(i0018, []);
         close ->
             ok
     end,
-    leveled_log:log(i0005, [ShutdownType]),
-    leveled_log:log(
+    ?STD_LOG(i0005, [ShutdownType]),
+    ?STD_LOG(
         i0006, [State#state.journal_sqn, State#state.manifest_sqn]
     ),
     ok = leveled_iclerk:clerk_stop(State#state.clerk),
@@ -852,12 +849,12 @@ handle_cast({confirm_delete, ManSQN, CDB}, State) ->
     end,
     {noreply, State#state{registered_snapshots = RegisteredSnapshots0}};
 handle_cast({release_snapshot, Snapshot}, State) ->
-    leveled_log:log(i0003, [Snapshot]),
+    ?STD_LOG(i0003, [Snapshot]),
     case lists:keydelete(Snapshot, 1, State#state.registered_snapshots) of
         [] ->
             {noreply, State#state{registered_snapshots = []}};
         Rs ->
-            leveled_log:log(i0004, [length(Rs)]),
+            ?STD_LOG(i0004, [length(Rs)]),
             {noreply, State#state{registered_snapshots = Rs}}
     end;
 handle_cast({log_level, LogLevel}, State) ->
@@ -901,7 +898,7 @@ handle_cast({maybe_defer_shutdown, ShutdownType, From}, State) ->
             % complete_shutdown cast is sent
             case State#state.shutdown_loops of
                 LoopCount when LoopCount > 0 ->
-                    leveled_log:log(i0026, [N]),
+                    ?STD_LOG(i0026, [N]),
                     timer:sleep(?SHUTDOWN_PAUSE div ?SHUTDOWN_LOOPS),
                     gen_server:cast(
                         self(), {maybe_defer_shutdown, ShutdownType, From}
@@ -952,9 +949,9 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(Reason, _State = #state{is_snapshot = Snap}) when Snap == true ->
-    leveled_log:log(i0027, [Reason]);
+    ?STD_LOG(i0027, [Reason]);
 terminate(Reason, _State) ->
-    leveled_log:log(i0028, [Reason]).
+    ?STD_LOG(i0028, [Reason]).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -1036,7 +1033,7 @@ start_from_file(
 %% @doc
 %% Shutdown all files in the manifest
 shutdown_manifest(Manifest) ->
-    leveled_log:log(i0007, []),
+    ?STD_LOG(i0007, []),
     leveled_imanifest:printer(Manifest),
     ManAsList = leveled_imanifest:to_list(Manifest),
     close_allmanifest(ManAsList).
@@ -1116,7 +1113,7 @@ put_object(
                     State#state.root_path,
                     State#state.manifest_sqn
                 ),
-            leveled_log:log_timer(i0008, [], SWroll),
+            ?TMR_LOG(i0008, [], SWroll),
             ok =
                 leveled_cdb:cdb_put(
                     NewJournalP, JournalKey, JournalBin
@@ -1238,13 +1235,13 @@ build_manifest(ManifestFilenames, RootPath, CDBopts) ->
     UpdManifestSQN =
         if
             length(OpenManifest) > length(Manifest) ->
-                leveled_log:log(i0009, []),
+                ?STD_LOG(i0009, []),
                 leveled_imanifest:printer(OpenManifest),
                 NextSQN = ManifestSQN + 1,
                 leveled_imanifest:writer(OpenManifest, NextSQN, RootPath),
                 NextSQN;
             true ->
-                leveled_log:log(i0010, []),
+                ?STD_LOG(i0010, []),
                 leveled_imanifest:printer(OpenManifest),
                 ManifestSQN
         end,
@@ -1269,7 +1266,7 @@ close_allmanifest([H | ManifestT]) ->
 %% Open all the files in the manifets, and updating the manifest with the PIDs
 %% of the opened files
 open_all_manifest([], RootPath, CDBOpts) ->
-    leveled_log:log(i0011, []),
+    ?STD_LOG(i0011, []),
     leveled_imanifest:add_entry(
         [],
         start_new_activejournal(0, RootPath, CDBOpts),
@@ -1302,7 +1299,7 @@ open_all_manifest(Man0, RootPath, CDBOpts) ->
     PendingHeadFN = HeadFN ++ "." ++ ?PENDING_FILEX,
     case filelib:is_file(CompleteHeadFN) of
         true ->
-            leveled_log:log(i0012, [HeadFN]),
+            ?STD_LOG(i0012, [HeadFN]),
             {ok, HeadR} = leveled_cdb:cdb_open_reader(CompleteHeadFN),
             LastKey = {LastSQN, _, _} = leveled_cdb:cdb_lastkey(HeadR),
             ManToHead =
