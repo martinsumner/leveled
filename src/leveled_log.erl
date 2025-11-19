@@ -27,7 +27,8 @@
     log_timer/5,
     should_i_log/3,
     get_opts/0,
-    get_log/1
+    get_log/1,
+    get_loglevel/1
 ]).
 
 -export([log/6, log_timer/7]).
@@ -52,6 +53,8 @@
 -type log_base() :: #{atom() => {log_level(), binary()}}.
 
 -export_type([log_options/0, log_level/0, log_base/0]).
+
+-define(DOMAIN, [backend, leveled]).
 
 -define(LOG_LEVELS, [debug, info, warning, error, critical]).
 -define(DEFAULT_LOG_LEVEL, error).
@@ -408,6 +411,11 @@ set_databaseid(DBid) when is_integer(DBid) ->
 get_log(LogRef) ->
     maps:get(LogRef, ?LOGBASE).
 
+-spec get_loglevel(atom()) -> log_level().
+get_loglevel(LogRef) ->
+    {LogLevel, _LogText} = maps:get(LogRef, ?LOGBASE),
+    LogLevel.
+
 -spec add_forcedlogs(list(atom())) -> ok.
 %% @doc
 %% Add a forced log to the list of forced logs. this will cause the log of this
@@ -463,7 +471,7 @@ return_settings() ->
 
 -spec log(log_level(), atom(), log_options(), list()) -> list().
 log(LogLevel, LogRef, LogOpts, Subs) ->
-    log(LogLevel, LogRef, LogOpts, Subs, ?LOGBASE, [backend, leveled]).
+    log(LogLevel, LogRef, LogOpts, Subs, ?LOGBASE, ?DOMAIN).
 
 -spec log(log_level(), atom(), log_options(), list(), log_base(), list(atom())) ->
     list().
@@ -506,7 +514,7 @@ log_timer(LogLevel, LogRef, LogOpts, Subs, StartTime) ->
         Subs,
         StartTime,
         ?LOGBASE,
-        [backend, leveled]
+        ?DOMAIN
     ).
 
 -spec log_timer(

@@ -96,7 +96,7 @@
 
 -define(STD_LOG(LogRef, Subs),
     ?STD_LOG_INT(
-        element(1, leveled_log:get_log(LogRef)),
+        leveled_log:get_loglevel(LogRef),
         LogRef,
         Subs,
         leveled_log:get_opts()
@@ -127,7 +127,7 @@
     case rand:uniform() < RandomProb of
         true ->
             ?TMR_LOG_INT(
-                element(1, leveled_log:get_log(LogRef)),
+                leveled_log:get_loglevel(LogRef),
                 LogRef,
                 Subs,
                 leveled_log:get_opts(),
@@ -140,7 +140,7 @@
 
 -define(TMR_LOG(LogRef, Subs, StartTime),
     ?TMR_LOG_INT(
-        element(1, leveled_log:get_log(LogRef)),
+        leveled_log:get_loglevel(LogRef),
         LogRef,
         Subs,
         leveled_log:get_opts(),
