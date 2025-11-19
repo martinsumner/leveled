@@ -27,7 +27,6 @@
     log_timer/5,
     should_i_log/3,
     get_opts/0,
-    get_log/1,
     get_loglevel/1
 ]).
 
@@ -406,10 +405,6 @@ set_databaseid(DBid) when is_integer(DBid) ->
     LO = get_opts(),
     UpdLO = LO#log_options{database_id = DBid},
     save(UpdLO).
-
--spec get_log(atom()) -> {log_level(), binary()}.
-get_log(LogRef) ->
-    maps:get(LogRef, ?LOGBASE).
 
 -spec get_loglevel(atom()) -> log_level().
 get_loglevel(LogRef) ->
