@@ -353,7 +353,18 @@ pcl_start(PCLopts) ->
 %% Don't link to the bookie - this is a snpashot
 pcl_snapstart(PCLopts) ->
     {ok, PclSnap} =
-        gen_server:start(?MODULE, [leveled_log:get_opts(), PCLopts], []),
+        gen_server:start(
+            ?MODULE,
+            [leveled_log:get_opts(), PCLopts],
+            [
+                {
+                    spawn_opt,
+                    [
+                        {min_heap_size, ?BIG_HEAP_SIZE}
+                    ]
+                }
+            ]
+        ),
     {ok, PclSnap}.
 
 -spec pcl_pushmem(pid(), bookies_memory()) -> ok | returned.

@@ -104,7 +104,17 @@
 -define(HIBERNATE_TIMEOUT, 60000).
 -endif.
 
--define(START_OPTS, [{hibernate_after, ?HIBERNATE_TIMEOUT}]).
+-define(START_OPTS,
+    [
+        {hibernate_after, ?HIBERNATE_TIMEOUT},
+        {
+            spawn_opt,
+                [
+                    {min_heap_size, ?BIG_HEAP_SIZE}
+                ]
+        }
+    ]
+).
 
 -export([
     init/1,
@@ -773,10 +783,14 @@ starting(cast, complete_l0startup, State) ->
             ),
             ok
     end,
-    {next_state, reader, UpdState#state{
-        high_modified_date = HighModDate,
-        monitor = Monitor
-    }};
+    {
+        next_state,
+        reader,
+        UpdState#state{
+            high_modified_date = HighModDate,
+            monitor = Monitor
+        }
+    };
 starting(cast, {sst_returnslot, FetchedSlot, FetchFun, SlotCount}, State) ->
     FetchedSlots =
         case {FetchedSlot, State#state.new_slots} of
@@ -952,9 +966,10 @@ reader(
     % If the clerk has crashed, the penciller will restart at the latest
     % manifest, and so this file sill be restarted if and only if it is still
     % part of the store
+    process_flag(min_heap_size, element(2, erlang:system_info(min_heap_size))),
     case is_process_alive(StartingPid) of
         true ->
-            {keep_state_and_data, []};
+            {keep_state_and_data, [hibernate]};
         false ->
             {stop, normal}
     end.
@@ -2500,10 +2515,14 @@ check_blocks_matchkey(
 spawn_check_block(BlockPos, BlockBin, BlockMethod) ->
     Parent = self(),
     Pid =
-        spawn_link(
+        spawn_opt(
             fun() ->
                 check_block(Parent, BlockPos, BlockBin, BlockMethod)
-            end
+            end,
+            [
+                link,
+                {min_heap_size, ?BIG_HEAP_SIZE}
+            ]
         ),
     receive
         {checked_block, Pid, R} -> R
@@ -2575,13 +2594,27 @@ pointer_mapfun({pointer, _Pid, Slot, SK, EK}) ->
         range_endpoint()
     }.
 
--spec binarysplit(list(slotbin()), binary(), list(expanded_slot())) ->
+-spec binarysplit(
+    list(slotbin()), binary(), list(expanded_slot()), boolean())
+->
     list(expanded_slot()).
-binarysplit([], _Binary, Acc) ->
+binarysplit([], _Binary, Acc, _Copy) ->
     lists:reverse(Acc);
-binarysplit([{_SP, L, ID, SK, EK} | T], MultiSlotBin, Acc) ->
+binarysplit([{_SP, L, ID, SK, EK} | T], MultiSlotBin, Acc, Copy) ->
     <<SlotBin:L/binary, RestBin/binary>> = MultiSlotBin,
-    binarysplit(T, RestBin, [{SlotBin, ID, SK, EK} | Acc]).
+    binarysplit(
+        T,
+        RestBin,
+        [
+            {
+                if Copy -> binary:copy(SlotBin); true -> SlotBin end,
+                ID,
+                SK,
+                EK
+            } | Acc
+        ],
+        Copy
+    ).
 
 -type binary_splitter() :: fun(() -> list(expanded_slot())).
 
@@ -2614,7 +2647,7 @@ read_slots(
 ) ->
     % No list of segments passed or useful Low LastModified Date
     % Just read slots in SlotList
-    {false, read_slotlist(SlotList, Handle)};
+    {false, read_slotlist(SlotList, Handle, true)};
 read_slots(
     Handle,
     SlotList,
@@ -2636,8 +2669,8 @@ read_slots(
                     % If there is an attempt to use the seg list query and the
                     % index block cache isn't cached for any part this may be
                     % slower as each slot will be read in turn
-                    F = read_slotlist([Pointer], Handle),
-                    {true, append(F(), Acc)};
+                    ESP = read_slotlist([Pointer], Handle, false),
+                    {true, append(ESP, Acc)};
                 {BlockLengths, LMD, BlockIdx} ->
                     % If there is a BlockIndex cached then we can use it to
                     % check to see if any of the expected segments are
@@ -2655,8 +2688,17 @@ read_slots(
                             case SegChecker of
                                 false ->
                                     % No SegChecker - need all the slot now
-                                    F = read_slotlist([Pointer], Handle),
-                                    {NeededBlockIdx, append(F(), Acc)};
+                                    {
+                                        NeededBlockIdx,
+                                        append(
+                                            read_slotlist(
+                                                [Pointer],
+                                                Handle,
+                                                false
+                                            ),
+                                            Acc
+                                        )
+                                    };
                                 _ ->
                                     TrimmedKVL =
                                         checkblocks_segandrange(
@@ -2707,10 +2749,15 @@ checkblocks_segandrange(
         ),
     in_range(KVL, StartKey, EndKey).
 
-read_slotlist(SlotList, Handle) ->
+read_slotlist(SlotList, Handle, Defer) ->
     LengthList = lists:map(fun pointer_mapfun/1, SlotList),
     MultiSlotBin = read_length_list(Handle, LengthList),
-    fun() -> binarysplit(LengthList, MultiSlotBin, []) end.
+    case Defer of
+        true ->
+            fun() -> binarysplit(LengthList, MultiSlotBin, [], true) end;
+        false ->
+            binarysplit(LengthList, MultiSlotBin, [], false)
+    end.
 
 -spec binaryslot_reader(
     list(expanded_slot()),
