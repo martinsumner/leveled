@@ -1231,9 +1231,24 @@ sst_getfilteredslots(Pid, SlotList, SegChecker, LowLastMod, Pointers) ->
             Pid, {get_slots, SlotList, SegChecker, LowLastMod}, infinity
         ),
     {L, BIC} =
-        binaryslot_reader(
-            SlotBins, PressMethod, IdxModDate, SegChecker, Pointers
-        ),
+        case SlotBins of
+            SlotBinsFun when is_function(SlotBinsFun, 0) ->
+                binaryslot_reader(
+                    SlotBinsFun(),
+                    PressMethod,
+                    IdxModDate,
+                    SegChecker,
+                    Pointers
+                );
+            SlotBins when is_list(SlotBins) ->
+                binaryslot_reader(
+                    SlotBins,
+                    PressMethod,
+                    IdxModDate,
+                    SegChecker,
+                    Pointers
+                )
+        end,
     case NeedBlockIdx of
         true ->
             erlang:send(Pid, {update_blockindex_cache, BIC});
@@ -2560,21 +2575,15 @@ pointer_mapfun({pointer, _Pid, Slot, SK, EK}) ->
         range_endpoint()
     }.
 
--type slotbin_out() ::
-    {
-        binary(),
-        non_neg_integer(),
-        range_endpoint(),
-        range_endpoint()
-    }.
-
--spec binarysplit(list(slotbin()), binary(), list(slotbin_out())) ->
-    list(slotbin_out()).
+-spec binarysplit(list(slotbin()), binary(), list(expanded_slot())) ->
+    list(expanded_slot()).
 binarysplit([], _Binary, Acc) ->
     lists:reverse(Acc);
 binarysplit([{_SP, L, ID, SK, EK} | T], MultiSlotBin, Acc) ->
     <<SlotBin:L/binary, RestBin/binary>> = MultiSlotBin,
     binarysplit(T, RestBin, [{SlotBin, ID, SK, EK} | Acc]).
+
+-type binary_splitter() :: fun(() -> list(expanded_slot())).
 
 -spec read_slots(
     file:io_device(),
@@ -2583,7 +2592,10 @@ binarysplit([{_SP, L, ID, SK, EK} | T], MultiSlotBin, Acc) ->
     block_method(),
     boolean()
 ) ->
-    {boolean(), list(expanded_slot() | leveled_codec:ledger_kv())}.
+    {
+        boolean(),
+        binary_splitter() | list(expanded_slot() | leveled_codec:ledger_kv())
+    }.
 %% @doc
 %% Reading slots is generally unfiltered, but in the special case when
 %% querting across slots when only matching segment IDs are required the
@@ -2624,13 +2636,8 @@ read_slots(
                     % If there is an attempt to use the seg list query and the
                     % index block cache isn't cached for any part this may be
                     % slower as each slot will be read in turn
-                    {
-                        true,
-                        append(
-                            read_slotlist([Pointer], Handle),
-                            Acc
-                        )
-                    };
+                    F = read_slotlist([Pointer], Handle),
+                    {true, append(F(), Acc)};
                 {BlockLengths, LMD, BlockIdx} ->
                     % If there is a BlockIndex cached then we can use it to
                     % check to see if any of the expected segments are
@@ -2648,13 +2655,8 @@ read_slots(
                             case SegChecker of
                                 false ->
                                     % No SegChecker - need all the slot now
-                                    {
-                                        NeededBlockIdx,
-                                        append(
-                                            read_slotlist([Pointer], Handle),
-                                            Acc
-                                        )
-                                    };
+                                    F = read_slotlist([Pointer], Handle),
+                                    {NeededBlockIdx, append(F(), Acc)};
                                 _ ->
                                     TrimmedKVL =
                                         checkblocks_segandrange(
@@ -2708,7 +2710,7 @@ checkblocks_segandrange(
 read_slotlist(SlotList, Handle) ->
     LengthList = lists:map(fun pointer_mapfun/1, SlotList),
     MultiSlotBin = read_length_list(Handle, LengthList),
-    binarysplit(LengthList, MultiSlotBin, []).
+    fun() -> binarysplit(LengthList, MultiSlotBin, []) end.
 
 -spec binaryslot_reader(
     list(expanded_slot()),
