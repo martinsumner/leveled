@@ -888,8 +888,8 @@ reader(
             RS#read_state.handle,
             SlotList,
             {SegChecker, LowLastMod, RS#read_state.blockindex_cache},
-            State#state.block_method,
-            State#state.index_moddate
+            BlockMethod,
+            IdxModDate
         ),
     {keep_state_and_data, [
         {reply, From, {NeedBlockIdx, SlotBins, BlockMethod, IdxModDate}}
@@ -2551,28 +2551,30 @@ pointer_mapfun({pointer, _Pid, Slot, SK, EK}) ->
     }.
 
 %% erlfmt:ignore - issues with editors when function definitions are split
--type slotbin_fun() ::
-    fun((
-            {
-                non_neg_integer(),
-                non_neg_integer(),
-                non_neg_integer(),
-                range_endpoint(),
-                range_endpoint()
-            }
-        ) -> expanded_slot()
-    ).
+-type slotbin() ::
+    {
+        non_neg_integer(),
+        non_neg_integer(),
+        non_neg_integer(),
+        range_endpoint(),
+        range_endpoint()
+    }.
 
--spec binarysplit_mapfun(binary(), integer()) -> slotbin_fun().
-%% @doc
-%% Return a function that can pull individual slot binaries from a binary
-%% covering multiple slots
-binarysplit_mapfun(MultiSlotBin, StartPos) ->
-    fun({SP, L, ID, SK, EK}) ->
-        Start = SP - StartPos,
-        <<_Pre:Start/binary, SlotBin:L/binary, _Post/binary>> = MultiSlotBin,
-        {SlotBin, ID, SK, EK}
-    end.
+-type slotbin_out() ::
+    {
+        binary(),
+        non_neg_integer(),
+        range_endpoint(),
+        range_endpoint()
+    }.
+
+-spec binarysplit(list(slotbin()), binary(), list(slotbin_out())) ->
+    list(slotbin_out()).
+binarysplit([], _Binary, Acc) ->
+    lists:reverse(Acc);
+binarysplit([{_SP, L, ID, SK, EK} | T], MultiSlotBin, Acc) ->
+    <<SlotBin:L/binary, RestBin/binary>> = MultiSlotBin,
+    binarysplit(T, RestBin, [{SlotBin, ID, SK, EK} | Acc]).
 
 -spec read_slots(
     file:io_device(),
@@ -2625,7 +2627,8 @@ read_slots(
                     {
                         true,
                         append(
-                            read_slotlist([Pointer], Handle), Acc
+                            read_slotlist([Pointer], Handle),
+                            Acc
                         )
                     };
                 {BlockLengths, LMD, BlockIdx} ->
@@ -2704,8 +2707,8 @@ checkblocks_segandrange(
 
 read_slotlist(SlotList, Handle) ->
     LengthList = lists:map(fun pointer_mapfun/1, SlotList),
-    {MultiSlotBin, StartPos} = read_length_list(Handle, LengthList),
-    lists:map(binarysplit_mapfun(MultiSlotBin, StartPos), LengthList).
+    MultiSlotBin = read_length_list(Handle, LengthList),
+    binarysplit(LengthList, MultiSlotBin, []).
 
 -spec binaryslot_reader(
     list(expanded_slot()),
@@ -2783,7 +2786,7 @@ read_length_list(Handle, LengthList) ->
         element(1, lists:last(LengthList)) +
             element(2, lists:last(LengthList)),
     {ok, MultiSlotBin} = file:pread(Handle, StartPos, EndPos - StartPos),
-    {MultiSlotBin, StartPos}.
+    MultiSlotBin.
 
 -spec extract_header(
     binary() | none, boolean()
