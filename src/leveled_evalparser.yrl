@@ -80,5 +80,5 @@ re_compile(RegexStr) ->
     re_compile(RegexStr, {pcre, element(2, RegexStr)}).
 
 re_compile({string, _LN, Regex}, Method) ->
-    {ok, CRE} = leveled_util:regex_compile(Regex, element(1, Method)),
-    CRE.
+    {ok, _CRE} = leveled_util:regex_compile(Regex, element(1, Method)),
+    Regex.

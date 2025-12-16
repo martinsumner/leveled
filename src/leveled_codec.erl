@@ -138,7 +138,7 @@
 -type maybe_lookup() ::
     lookup | no_lookup.
 -type actual_regex() ::
-    {re_pattern, term(), term(), term(), term()}.
+    {re_pattern, term(), term(), term(), term()} | iodata().
 -type capture_value() :: binary() | integer().
 -type query_filter_fun() ::
     fun((#{binary() => capture_value()}) -> boolean()).

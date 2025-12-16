@@ -764,7 +764,13 @@ query_count(_Config) ->
         {index_query, BucketBin, {fun testutil:foldkeysfun/3, []},
             {<<"idx2_bin">>, <<"2000">>, <<"2000|">>}, {false, RegMia}},
     {async, Mia2KFolder1} = leveled_bookie:book_returnfolder(Book2, Query1),
+    Query1A =
+        {index_query, BucketBin, {fun testutil:foldkeysfun/3, []},
+            {<<"idx2_bin">>, <<"2000">>, <<"2000|">>},
+            {false, <<"[0-9]+Mia">>}},
+    {async, Mia2KFolder1A} = leveled_bookie:book_returnfolder(Book2, Query1A),
     Mia2000Count1 = length(Mia2KFolder1()),
+    Mia2000Count1 = length(Mia2KFolder1A()),
     Query2 =
         {index_query, BucketBin, {fun testutil:foldkeysfun/3, []},
             {<<"idx2_bin">>, <<"2000">>, <<"2001">>}, {true, undefined}},
