@@ -75,7 +75,7 @@ clerk_new(Owner, RootPath, OptsSST) ->
             []
         ),
     ok = gen_server:call(Pid, {load, Owner, RootPath}, infinity),
-    leveled_log:log(pc001, [Pid, Owner]),
+    ?STD_LOG(pc001, [Pid, Owner]),
     {ok, Pid}.
 
 -spec clerk_prompt(pid()) -> ok.
@@ -138,7 +138,7 @@ handle_cast(
     {ManifestSQN, Deletions} =
         handle_work(Work, RP, State#state.sst_options, PCL),
     PDs = dict:store(ManifestSQN, Deletions, State#state.pending_deletions),
-    leveled_log:log(pc022, [ManifestSQN]),
+    ?STD_LOG(pc022, [ManifestSQN]),
     {noreply, State#state{pending_deletions = PDs}, ?MIN_TIMEOUT};
 handle_cast(
     {prompt_deletions, ManifestSQN}, State = #state{owner = PCL}
@@ -175,7 +175,7 @@ handle_info(timeout, State = #state{owner = PCL}) when is_pid(PCL) ->
     {noreply, State, ?MAX_TIMEOUT}.
 
 terminate(Reason, _State) ->
-    leveled_log:log(pc005, [self(), Reason]).
+    ?STD_LOG(pc005, [self(), Reason]).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -196,13 +196,13 @@ handle_work(
 ) ->
     {UpdManifest, EntriesToDelete} =
         merge(SrcLevel, Manifest, RootPath, SSTOpts),
-    leveled_log:log(pc007, []),
+    ?STD_LOG(pc007, []),
     SWMC = os:timestamp(),
     ok = leveled_penciller:pcl_manifestchange(Owner, UpdManifest),
-    leveled_log:log_timer(pc017, [], SWMC),
+    ?TMR_LOG(pc017, [], SWMC),
     SWSM = os:timestamp(),
     ok = leveled_pmanifest:save_manifest(UpdManifest, RootPath),
-    leveled_log:log_timer(pc018, [], SWSM),
+    ?TMR_LOG(pc018, [], SWSM),
     {leveled_pmanifest:get_manifest_sqn(UpdManifest), EntriesToDelete}.
 
 -spec merge(
@@ -217,14 +217,8 @@ merge(SrcLevel, Manifest, RootPath, OptsSST) ->
         {0, 0, undefined, 0, 0, 0, 0} ->
             ok;
         {FCnt, MnMem, {MaxFN, MaxP, MaxMem}, MnHBS, MnHS, MnLHS, MnBVHS} ->
-            leveled_log:log(
-                pc023,
-                [SrcLevel + 1, FCnt, MnMem, MaxFN, MaxP, MaxMem]
-            ),
-            leveled_log:log(
-                pc025,
-                [SrcLevel + 1, FCnt, MnHBS, MnHS, MnLHS, MnBVHS]
-            )
+            ?STD_LOG(pc023, [SrcLevel + 1, FCnt, MnMem, MaxFN, MaxP, MaxMem]),
+            ?STD_LOG(pc025, [SrcLevel + 1, FCnt, MnHBS, MnHS, MnLHS, MnBVHS])
     end,
     SelectMethod =
         case rand:uniform(100) of
@@ -244,14 +238,11 @@ merge(SrcLevel, Manifest, RootPath, OptsSST) ->
             leveled_pmanifest:entry_endkey(Src)
         ),
     Candidates = length(SinkList),
-    leveled_log:log(pc008, [SrcLevel, Candidates]),
+    ?STD_LOG(pc008, [SrcLevel, Candidates]),
     case Candidates of
         0 ->
             NewLevel = SrcLevel + 1,
-            leveled_log:log(
-                pc009,
-                [leveled_pmanifest:entry_filename(Src), NewLevel]
-            ),
+            ?STD_LOG(pc009, [leveled_pmanifest:entry_filename(Src), NewLevel]),
             leveled_sst:sst_switchlevels(
                 leveled_pmanifest:entry_owner(Src),
                 NewLevel
@@ -293,7 +284,7 @@ notify_deletions([Head | Tail], Penciller) ->
 %%
 %% SrcLevel is the level of the src sst file, the sink should be srcLevel + 1
 perform_merge(Manifest, Src, SinkList, SrcLevel, RootPath, NewSQN, OptsSST) ->
-    leveled_log:log(pc010, [leveled_pmanifest:entry_filename(Src), NewSQN]),
+    ?STD_LOG(pc010, [leveled_pmanifest:entry_filename(Src), NewSQN]),
     SrcList = [{next, Src, all}],
     MaxSQN =
         leveled_sst:sst_getmaxsequencenumber(
@@ -360,7 +351,7 @@ merge_limit(SrcLevel, SinkListLength, MMB) when
     infinity;
 merge_limit(SrcLevel, SinkListLength, MMB) when is_integer(MMB) ->
     AdditionsLimit = max(1, MMB div 2),
-    leveled_log:log(pc026, [SrcLevel + 1, SinkListLength, AdditionsLimit]),
+    ?STD_LOG(pc026, [SrcLevel + 1, SinkListLength, AdditionsLimit]),
     AdditionsLimit.
 
 -type merge_maybe_expanded_pointer() ::
@@ -390,14 +381,14 @@ merge_limit(SrcLevel, SinkListLength, MMB) when is_integer(MMB) ->
 do_merge(
     [], [], SinkLevel, _SinkB, _RP, NewSQN, _MaxSQN, _Opts, Additions, _Max
 ) ->
-    leveled_log:log(pc011, [NewSQN, SinkLevel, length(Additions), full]),
+    ?STD_LOG(pc011, [NewSQN, SinkLevel, length(Additions), full]),
     {lists:reverse(Additions), [], []};
 do_merge(
     KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, OptsSST, Additions, Max
 ) when
     length(Additions) >= Max
 ->
-    leveled_log:log(pc011, [NewSQN, SinkLevel, length(Additions), partial]),
+    ?STD_LOG(pc011, [NewSQN, SinkLevel, length(Additions), partial]),
     FNSrc =
         leveled_penciller:sst_filename(
             NewSQN, SinkLevel - 1, 1
@@ -434,7 +425,7 @@ do_merge(
         leveled_penciller:sst_filename(
             NewSQN, SinkLevel, length(Additions)
         ),
-    leveled_log:log(pc012, [NewSQN, FileName, SinkB]),
+    ?STD_LOG(pc012, [NewSQN, FileName, SinkB]),
     TS1 = os:timestamp(),
     NewMerge =
         leveled_sst:sst_newmerge(
@@ -456,7 +447,7 @@ do_merge(
     ).
 
 add_entry(empty, FileName, _TS1, Additions) ->
-    leveled_log:log(pc013, [FileName]),
+    ?STD_LOG(pc013, [FileName]),
     {Additions, [], []};
 add_entry({ok, Pid, Reply, Bloom}, FileName, TS1, Additions) ->
     {{KL1Rem, KL2Rem}, SmallestKey, HighestKey} = Reply,
@@ -464,7 +455,7 @@ add_entry({ok, Pid, Reply, Bloom}, FileName, TS1, Additions) ->
         leveled_pmanifest:new_entry(
             SmallestKey, HighestKey, Pid, FileName, Bloom
         ),
-    leveled_log:log_timer(pc015, [], TS1),
+    ?TMR_LOG(pc015, [], TS1),
     {[Entry | Additions], KL1Rem, KL2Rem}.
 
 -spec split_unexpanded_files(
@@ -507,7 +498,7 @@ grooming_scorer([ME | MEs]) ->
     InitTombCount =
         leveled_sst:sst_gettombcount(leveled_pmanifest:entry_owner(ME)),
     {HighestTC, BestME} = grooming_scorer(InitTombCount, ME, MEs),
-    leveled_log:log(pc024, [HighestTC]),
+    ?STD_LOG(pc024, [HighestTC]),
     BestME.
 
 grooming_scorer(HighestTC, BestME, []) ->
@@ -531,7 +522,7 @@ return_deletions(ManifestSQN, PendingDeletionD) ->
     %
     % So this is now allowed to crash again
     PendingDeletions = dict:fetch(ManifestSQN, PendingDeletionD),
-    leveled_log:log(pc021, [ManifestSQN]),
+    ?STD_LOG(pc021, [ManifestSQN]),
     {PendingDeletions, dict:erase(ManifestSQN, PendingDeletionD)}.
 
 %%%============================================================================

@@ -21,6 +21,8 @@
 
 -module(leveled_sstblock).
 
+-include("leveled.hrl").
+
 -define(MAX_SUBBLOCK_SIZE, 1 bsl 16).
 -define(BLOCK_TYPE0, 0).
 % Block is just a list of terms
@@ -375,7 +377,7 @@ check_block(Block, Default, ExtractFun) when byte_size(Block) > 4 ->
         ExtractFun(TermBin)
     catch
         _Exception:Reason ->
-            leveled_log:log(sst15, [Reason]),
+            ?STD_LOG(sst15, [Reason]),
             Default
     end;
 check_block(_Block, Default, _ExtractFun) ->
@@ -702,7 +704,6 @@ serialise_block(Term, none) ->
 -ifdef(TEST).
 
 -include_lib("eunit/include/eunit.hrl").
--include("leveled.hrl").
 
 v1_block_test() ->
     v1_block_tester(lookup, {1, zstd}, 24),

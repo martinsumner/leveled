@@ -1,3 +1,5 @@
+-include_lib("kernel/include/logger.hrl").
+
 %%%============================================================================
 %%% File paths
 %%%============================================================================
@@ -81,10 +83,95 @@
 -define(EQC_TIME_BUDGET, 120).
 
 %%%============================================================================
-%%% Helper Function
+%%% Helper Functions
 %%%============================================================================
 
 -define(IS_DEF(Attribute), Attribute =/= undefined).
+
+-define(LOG_LOCATION, #{
+    mfa => {?MODULE, ?FUNCTION_NAME, ?FUNCTION_ARITY},
+    line => ?LINE,
+    file => ?FILE
+}).
+
+-define(STD_LOG(LogRef, Subs),
+    ?STD_LOG_INT(
+        leveled_log:get_loglevel(LogRef),
+        LogRef,
+        Subs,
+        leveled_log:get_opts()
+    )
+).
+
+%% Erlang apply is used because  a variable list of arguments is provided
+-define(STD_LOG_INT(LogLevel, LogRef, Subs, LogOpts),
+    case
+        logger:allow(LogLevel, ?MODULE) andalso
+            leveled_log:should_i_log(LogLevel, LogRef, LogOpts)
+    of
+        true ->
+            erlang:apply(
+                logger,
+                macro_log,
+                [
+                    ?LOG_LOCATION
+                    | leveled_log:log(LogLevel, LogRef, LogOpts, Subs)
+                ]
+            );
+        false ->
+            ok
+    end
+).
+
+-define(RND_LOG(LogRef, Subs, StartTime, RandomProb),
+    case rand:uniform() < RandomProb of
+        true ->
+            ?TMR_LOG_INT(
+                leveled_log:get_loglevel(LogRef),
+                LogRef,
+                Subs,
+                leveled_log:get_opts(),
+                StartTime
+            );
+        false ->
+            ok
+    end
+).
+
+-define(TMR_LOG(LogRef, Subs, StartTime),
+    ?TMR_LOG_INT(
+        leveled_log:get_loglevel(LogRef),
+        LogRef,
+        Subs,
+        leveled_log:get_opts(),
+        StartTime
+    )
+).
+
+-define(TMR_LOG_INT(LogLevel, LogRef, Subs, LogOpts, StartTime),
+    case
+        logger:allow(LogLevel, ?MODULE) andalso
+            leveled_log:should_i_log(LogLevel, LogRef, LogOpts)
+    of
+        true ->
+            erlang:apply(
+                logger,
+                macro_log,
+                [
+                    ?LOG_LOCATION
+                    | leveled_log:log_timer(
+                        LogLevel,
+                        LogRef,
+                        LogOpts,
+                        Subs,
+                        StartTime
+                    )
+                ]
+            );
+        false ->
+            ok
+    end
+).
 
 -if(?OTP_RELEASE < 26).
 -type dynamic() :: any().

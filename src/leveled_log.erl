@@ -22,22 +22,21 @@
 
 -module(leveled_log).
 
--include_lib("kernel/include/logger.hrl").
-
 -export([
-    log/2,
-    log_timer/3,
-    log_randomtimer/4
+    log/4,
+    log_timer/5,
+    should_i_log/3,
+    get_opts/0,
+    get_loglevel/1
 ]).
 
--export([log/5, log_timer/6]).
+-export([log/6, log_timer/7]).
 
 -export([
     set_loglevel/1,
     set_databaseid/1,
     add_forcedlogs/1,
     remove_forcedlogs/1,
-    get_opts/0,
     save/1,
     return_settings/0
 ]).
@@ -53,6 +52,8 @@
 -type log_base() :: #{atom() => {log_level(), binary()}}.
 
 -export_type([log_options/0, log_level/0, log_base/0]).
+
+-define(DOMAIN, [backend, leveled]).
 
 -define(LOG_LEVELS, [debug, info, warning, error, critical]).
 -define(DEFAULT_LOG_LEVEL, error).
@@ -405,6 +406,11 @@ set_databaseid(DBid) when is_integer(DBid) ->
     UpdLO = LO#log_options{database_id = DBid},
     save(UpdLO).
 
+-spec get_loglevel(atom()) -> log_level().
+get_loglevel(LogRef) ->
+    {LogLevel, _LogText} = maps:get(LogRef, ?LOGBASE),
+    LogLevel.
+
 -spec add_forcedlogs(list(atom())) -> ok.
 %% @doc
 %% Add a forced log to the list of forced logs. this will cause the log of this
@@ -458,31 +464,24 @@ return_settings() ->
 %%% Prompt Logs
 %%%============================================================================
 
--spec log(atom(), list()) -> ok.
-log(LogReference, Subs) ->
-    log(LogReference, Subs, ?LOG_LEVELS, ?LOGBASE, backend).
+-spec log(log_level(), atom(), log_options(), list()) -> list().
+log(LogLevel, LogRef, LogOpts, Subs) ->
+    log(LogLevel, LogRef, LogOpts, Subs, ?LOGBASE, ?DOMAIN).
 
--spec log(atom(), list(), list(log_level()), log_base(), atom()) -> ok.
-log(LogRef, Subs, SupportedLevels, LogBase, Tag) ->
-    {LogLevel, Log} = maps:get(LogRef, LogBase),
-    LogOpts = get_opts(),
-    case should_i_log(LogLevel, SupportedLevels, LogRef, LogOpts) of
-        true ->
-            DBid = LogOpts#log_options.database_id,
-            Prefix =
-                log_prefix(LogRef, DBid, self()),
-            Suffix = <<"~n">>,
-            ?LOG(
-                LogLevel,
-                unicode:characters_to_list([Prefix, Log, Suffix]),
-                Subs,
-                #{log_type => Tag}
-            );
-        false ->
-            ok
-    end.
+-spec log(log_level(), atom(), log_options(), list(), log_base(), list(atom())) ->
+    list().
+log(LogLevel, LogRef, LogOpts, Subs, LogBase, Domain) ->
+    {_LogLevel, Log} = maps:get(LogRef, LogBase),
+    DBid = LogOpts#log_options.database_id,
+    Prefix = log_prefix(LogRef, DBid),
+    [
+        LogLevel,
+        unicode:characters_to_list([Prefix, Log]),
+        Subs,
+        #{domain => Domain}
+    ].
 
-should_i_log(LogLevel, Levels, LogRef, LogOpts) ->
+should_i_log(LogLevel, LogRef, LogOpts) ->
     #log_options{log_level = CurLevel, forced_logs = ForcedLogs} = LogOpts,
     case lists:member(LogRef, ForcedLogs) of
         true ->
@@ -492,7 +491,7 @@ should_i_log(LogLevel, Levels, LogRef, LogOpts) ->
                 CurLevel == LogLevel ->
                     true;
                 true ->
-                    is_active_level(Levels, CurLevel, LogLevel)
+                    is_active_level(?LOG_LEVELS, CurLevel, LogLevel)
             end
     end.
 
@@ -500,56 +499,51 @@ is_active_level([L | _], L, _) -> true;
 is_active_level([L | _], _, L) -> false;
 is_active_level([_ | T], C, L) -> is_active_level(T, C, L).
 
--spec log_timer(atom(), list(), erlang:timestamp()) -> ok.
-log_timer(LogReference, Subs, StartTime) ->
-    log_timer(LogReference, Subs, StartTime, ?LOG_LEVELS, ?LOGBASE, backend).
+-spec log_timer(log_level(), atom(), log_options(), list(), erlang:timestamp()) ->
+    list().
+log_timer(LogLevel, LogRef, LogOpts, Subs, StartTime) ->
+    log_timer(
+        LogLevel,
+        LogRef,
+        LogOpts,
+        Subs,
+        StartTime,
+        ?LOGBASE,
+        ?DOMAIN
+    ).
 
 -spec log_timer(
-    atom(), list(), erlang:timestamp(), list(log_level()), log_base(), atom()
+    log_level(),
+    atom(),
+    log_options(),
+    list(),
+    erlang:timestamp(),
+    log_base(),
+    [atom()]
 ) ->
-    ok.
-log_timer(LogRef, Subs, StartTime, SupportedLevels, LogBase, Tag) ->
-    {LogLevel, Log} = maps:get(LogRef, LogBase),
-    LogOpts = get_opts(),
-    case should_i_log(LogLevel, SupportedLevels, LogRef, LogOpts) of
-        true ->
-            DBid = LogOpts#log_options.database_id,
-            Prefix =
-                log_prefix(LogRef, DBid, self()),
-            Suffix = <<"~n">>,
-            Duration = duration_text(StartTime),
-            ?LOG(
-                LogLevel,
-                unicode:characters_to_list([Prefix, Log, Duration, Suffix]),
-                Subs,
-                #{log_type => Tag}
-            );
-        false ->
-            ok
-    end.
+    list().
+log_timer(LogLevel, LogRef, LogOpts, Subs, StartTime, LogBase, Domain) ->
+    {_LogLevel, Log} = maps:get(LogRef, LogBase),
+    DBid = LogOpts#log_options.database_id,
+    Prefix = log_prefix(LogRef, DBid),
+    Duration = duration_text(StartTime),
+    [
+        LogLevel,
+        unicode:characters_to_list([Prefix, Log, Duration]),
+        Subs,
+        #{domain => Domain}
+    ].
 
--spec log_randomtimer(atom(), list(), erlang:timestamp(), float()) -> term().
-log_randomtimer(LogReference, Subs, StartTime, RandomProb) ->
-    R = rand:uniform(),
-    case R < RandomProb of
-        true ->
-            log_timer(LogReference, Subs, StartTime);
-        false ->
-            ok
-    end.
-
--spec log_prefix(atom(), non_neg_integer() | undefined, pid()) ->
+-spec log_prefix(atom(), non_neg_integer() | undefined) ->
     io_lib:chars().
-log_prefix(LogRef, undefined, Pid) ->
-    ["log_ref=", atom_to_list(LogRef), " pid=", pid_to_list(Pid), " "];
-log_prefix(LogRef, DBid, Pid) ->
+log_prefix(LogRef, undefined) ->
+    ["log_ref=", atom_to_list(LogRef), " "];
+log_prefix(LogRef, DBid) ->
     [
         "log_ref=",
         atom_to_list(LogRef),
         " db_id=",
         integer_to_list(DBid),
-        " pid=",
-        pid_to_list(Pid),
         " "
     ].
 
@@ -575,21 +569,14 @@ duration_text(StartTime) ->
 
 -include_lib("eunit/include/eunit.hrl").
 
-should_i_log(LogLevel, Levels, LogRef) ->
-    should_i_log(LogLevel, Levels, LogRef, get_opts()).
-
-log_warning_test() ->
-    ok = log(g0001, [], [warning, error], ?LOGBASE, backend),
-    ok =
-        log_timer(
-            g0001, [], os:timestamp(), [warning, error], ?LOGBASE, backend
-        ).
+should_i_log(LogLevel, LogRef) ->
+    should_i_log(LogLevel, LogRef, get_opts()).
 
 log_wrongkey_test() ->
     ?assertException(
         error,
         {badkey, wrong0001},
-        log(wrong0001, [], [warning, error], ?LOGBASE, backend)
+        log(info, wrong0001, get_opts(), [], ?LOGBASE, [backend, leveled])
     ).
 
 logtimer_wrongkey_test() ->
@@ -599,24 +586,25 @@ logtimer_wrongkey_test() ->
     % function being tested is split across lines, the closing bracket on the
     % next line is not recognised as being covered. We want 100% coverage, so
     % need to write this on one line.
+    Ds = [backend, leveled],
     ?assertException(
         error,
         {badkey, wrong0001},
-        log_timer(wrong0001, [], ST, [warning, error], ?LOGBASE, backend)
+        log_timer(info, wrong0001, get_opts(), [], ST, ?LOGBASE, Ds)
     ).
 
 shouldilog_test() ->
     ok = set_loglevel(debug),
-    ?assertMatch(true, should_i_log(info, ?LOG_LEVELS, g0001)),
+    ?assertMatch(true, should_i_log(info, g0001)),
     ok = set_loglevel(info),
-    ?assertMatch(true, should_i_log(info, ?LOG_LEVELS, g0001)),
+    ?assertMatch(true, should_i_log(info, g0001)),
     ok = add_forcedlogs([g0001]),
     ok = set_loglevel(error),
-    ?assertMatch(true, should_i_log(info, ?LOG_LEVELS, g0001)),
-    ?assertMatch(false, should_i_log(info, ?LOG_LEVELS, g0002)),
+    ?assertMatch(true, should_i_log(info, g0001)),
+    ?assertMatch(false, should_i_log(info, g0002)),
     ok = remove_forcedlogs([g0001]),
     ok = set_loglevel(info),
-    ?assertMatch(false, should_i_log(debug, ?LOG_LEVELS, d0001)).
+    ?assertMatch(false, should_i_log(debug, d0001)).
 
 badloglevel_test() ->
     % Set a bad log level - and everything logs

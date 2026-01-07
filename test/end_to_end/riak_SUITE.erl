@@ -2032,6 +2032,29 @@ dollar_key_index(_Config) ->
     true = 657 == length(FolderREMatch()),
     true = 0 == length(FolderREMiss()),
 
+    % Repeat without pre-compiling the regex
+    {async, FolderREMatchIORE} =
+        leveled_bookie:book_keylist(
+            Bookie1,
+            ?RIAK_TAG,
+            <<"Bucket1">>,
+            {StartKey, EndKey},
+            {FoldKeysFun, []},
+            <<"K.y">>
+        ),
+    {async, FolderREMissIORE} =
+        leveled_bookie:book_keylist(
+            Bookie1,
+            ?RIAK_TAG,
+            <<"Bucket1">>,
+            {StartKey, EndKey},
+            {FoldKeysFun, []},
+            <<"key">>
+        ),
+
+    true = 657 == length(FolderREMatchIORE()),
+    true = 0 == length(FolderREMissIORE()),
+
     % Delete an object - and check that it does not show in
     % $key index query
     DeleteFun =
