@@ -137,6 +137,7 @@
 -define(WASTE_FP, "waste").
 -define(JOURNAL_FILEX, "cdb").
 -define(PENDING_FILEX, "pnd").
+-define(ARCHIVE_FILEX, "bak").
 -define(TEST_KC, {[], infinity}).
 -define(SHUTDOWN_LOOPS, 10).
 -define(SHUTDOWN_PAUSE, 10000).
@@ -682,7 +683,7 @@ handle_call(roll, _From, State = #state{is_snapshot = Snap}) when
             }}
     end;
 handle_call(
-    {backup, BackupPath}, _from, State
+    {backup, BackupPath}, _From, State
 ) when
     State#state.is_snapshot == true
 ->
@@ -699,20 +700,21 @@ handle_call(
                     ExtendedBaseFN = BaseFN ++ "." ++ ?JOURNAL_FILEX,
                     BackupName = filename:join(BackupJFP, BaseFN),
                     true = leveled_cdb:finished_rolling(PidR),
-                    case
+                    Link =
                         file:make_link(
                             FN ++ "." ++ ?JOURNAL_FILEX,
                             BackupName ++ "." ++ ?JOURNAL_FILEX
-                        )
-                    of
+                        ),
+                    case Link of
                         ok ->
                             ok;
                         {error, eexist} ->
                             ok
                     end,
-                    {[{SQN, BackupName, PidR, LastKey} | ManAcc], [
-                        ExtendedBaseFN | FTRAcc
-                    ]};
+                    {
+                        [{SQN, BackupName, PidR, LastKey} | ManAcc],
+                        [ExtendedBaseFN | FTRAcc]
+                    };
                 false ->
                     ?STD_LOG(i0021, [FN, SQN, State#state.journal_sqn]),
                     {ManAcc, FTRAcc}
@@ -1263,7 +1265,7 @@ close_allmanifest([H | ManifestT]) ->
 ) ->
     leveled_imanifest:manifest().
 %% @doc
-%% Open all the files in the manifets, and updating the manifest with the PIDs
+%% Open all the files in the manifest, and updating the manifest with the PIDs
 %% of the opened files
 open_all_manifest([], RootPath, CDBOpts) ->
     ?STD_LOG(i0011, []),
@@ -1273,10 +1275,12 @@ open_all_manifest([], RootPath, CDBOpts) ->
         true
     );
 open_all_manifest(Man0, RootPath, CDBOpts) ->
+    OnDiskJournalSet =
+        sets:from_list(get_all_completejournals(RootPath), [{version, 2}]),
     Man1 = leveled_imanifest:to_list(Man0),
     [{HeadSQN, HeadFN, _IgnorePid, HeadLK} | ManifestTail] = Man1,
     OpenJournalFun =
-        fun(ManEntry) ->
+        fun(ManEntry, Acc) ->
             {LowSQN, FN, _, LK_RO} = ManEntry,
             CFN = FN ++ "." ++ ?JOURNAL_FILEX,
             PFN = FN ++ "." ++ ?PENDING_FILEX,
@@ -1284,40 +1288,80 @@ open_all_manifest(Man0, RootPath, CDBOpts) ->
                 true ->
                     {ok, Pid} =
                         leveled_cdb:cdb_reopen_reader(CFN, LK_RO, CDBOpts),
-                    {LowSQN, FN, Pid, LK_RO};
+                    {
+                        {LowSQN, FN, Pid, LK_RO},
+                        sets:del_element(CFN, Acc)
+                    };
                 false ->
-                    W = leveled_cdb:cdb_open_writer(PFN, CDBOpts),
-                    {ok, Pid} = W,
+                    {ok, Pid} = leveled_cdb:cdb_open_writer(PFN, CDBOpts),
                     ok = leveled_cdb:cdb_roll(Pid),
                     LK_WR = leveled_cdb:cdb_lastkey(Pid),
-                    {LowSQN, FN, Pid, LK_WR}
+                    {
+                        {LowSQN, FN, Pid, LK_WR},
+                        Acc
+                    }
             end
         end,
-    OpenedTailAsList = lists:map(OpenJournalFun, ManifestTail),
+    {
+        OpenedTailAsList,
+        FilteredOnDiskJournalSet
+    } =
+        lists:mapfoldl(OpenJournalFun, OnDiskJournalSet, ManifestTail),
     OpenedTail = leveled_imanifest:from_list(OpenedTailAsList),
     CompleteHeadFN = HeadFN ++ "." ++ ?JOURNAL_FILEX,
     PendingHeadFN = HeadFN ++ "." ++ ?PENDING_FILEX,
-    case filelib:is_file(CompleteHeadFN) of
-        true ->
-            ?STD_LOG(i0012, [HeadFN]),
-            {ok, HeadR} = leveled_cdb:cdb_open_reader(CompleteHeadFN),
-            LastKey = {LastSQN, _, _} = leveled_cdb:cdb_lastkey(HeadR),
-            ManToHead =
+    StartedManifest =
+        case filelib:is_file(CompleteHeadFN) of
+            true ->
+                ?STD_LOG(i0012, [HeadFN]),
+                {ok, HeadR} = leveled_cdb:cdb_open_reader(CompleteHeadFN),
+                LastKey = {LastSQN, _, _} = leveled_cdb:cdb_lastkey(HeadR),
+                ManToHead =
+                    leveled_imanifest:add_entry(
+                        OpenedTail,
+                        {HeadSQN, HeadFN, HeadR, LastKey},
+                        true
+                    ),
+                NewManEntry =
+                    start_new_activejournal(LastSQN + 1, RootPath, CDBOpts),
+                leveled_imanifest:add_entry(ManToHead, NewManEntry, true);
+            false ->
+                {ok, HeadW} =
+                    leveled_cdb:cdb_open_writer(PendingHeadFN, CDBOpts),
                 leveled_imanifest:add_entry(
-                    OpenedTail,
-                    {HeadSQN, HeadFN, HeadR, LastKey},
-                    true
-                ),
-            NewManEntry =
-                start_new_activejournal(LastSQN + 1, RootPath, CDBOpts),
-            leveled_imanifest:add_entry(ManToHead, NewManEntry, true);
-        false ->
-            {ok, HeadW} =
-                leveled_cdb:cdb_open_writer(PendingHeadFN, CDBOpts),
-            leveled_imanifest:add_entry(
-                OpenedTail, {HeadSQN, HeadFN, HeadW, HeadLK}, true
-            )
-    end.
+                    OpenedTail, {HeadSQN, HeadFN, HeadW, HeadLK}, true
+                )
+        end,
+    lists:foreach(
+        fun(FN) ->
+            NewName =
+                lists:sublist(FN, length(FN) - 4) ++ "." ++ ?ARCHIVE_FILEX,
+            ?STD_LOG(i0029, [FN]),
+            file:rename(FN, NewName)
+        end,
+        sets:to_list(
+            sets:del_element(CompleteHeadFN, FilteredOnDiskJournalSet)
+        )
+    ),
+    StartedManifest.
+
+-spec get_all_completejournals(string()) -> list(file:filename()).
+get_all_completejournals(RootPath) ->
+    JFiles = list_dir(filepath(RootPath, journal_dir)),
+    CFiles = list_dir(filepath(RootPath, journal_compact_dir)),
+    lists:filter(
+        fun(FN) ->
+            filename:extension(FN) == ("." ++ ?JOURNAL_FILEX)
+        end,
+        JFiles ++ CFiles
+    ).
+
+-spec list_dir(string()) -> list(file:filename()).
+list_dir(Path) ->
+    {ok, Files} = file:list_dir(Path),
+    lists:map(
+        fun(FN) -> filename:join(Path, FN) end, Files
+    ).
 
 start_new_activejournal(SQN, RootPath, CDBOpts) ->
     Filename = filepath(RootPath, SQN, new_journal),

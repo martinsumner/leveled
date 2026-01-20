@@ -311,6 +311,9 @@
         {debug, <<"Shutdown complete for cloned Inker for reason ~w">>},
     i0028 =>
         {debug, <<"Shutdown complete for Inker for reason ~w">>},
+    i0029 =>
+        {warning,
+            <<"Journal with FN=~s renamed to backup as not active in manifest">>},
     ic001 =>
         {info, <<"Closed for reason ~w so maybe leaving garbage">>},
     ic002 =>
