@@ -138,6 +138,8 @@
 -define(JOURNAL_FILEX, "cdb").
 -define(PENDING_FILEX, "pnd").
 -define(ARCHIVE_FILEX, "bak").
+    % Note that archive means "no longer active", it is an indication of
+    % removable waste not of backup.
 -define(TEST_KC, {[], infinity}).
 -define(SHUTDOWN_LOOPS, 10).
 -define(SHUTDOWN_PAUSE, 10000).
