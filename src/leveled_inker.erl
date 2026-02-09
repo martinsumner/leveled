@@ -1335,7 +1335,7 @@ open_all_manifest(Man0, RootPath, CDBOpts) ->
     lists:foreach(
         fun(FN) ->
             NewName =
-                lists:sublist(FN, length(FN) - 4) ++ "." ++ ?ARCHIVE_FILEX,
+                filename:flatten([filename:rootname(FN), "." ++ ?ARCHIVE_FILEX]),
             ?STD_LOG(i0029, [FN]),
             file:rename(FN, NewName)
         end,
