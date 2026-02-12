@@ -40,7 +40,8 @@
     log_level/2,
     log_add/2,
     log_remove/2,
-    get_defaults/0
+    get_defaults/0,
+    get_bookie_status/1
 ]).
 
 -define(LOG_LIST, [
@@ -54,6 +55,39 @@
 ]).
 -define(LOG_FREQUENCY_SECONDS, 30).
 
+-define(INITIAL_BOOKIE_STATUS, #{
+    fetch_count_by_level =>
+        #{
+            not_found => #{count => 0, time => 0},
+            mem => #{count => 0, time => 0},
+            lower => #{count => 0, time => 0},
+            '0' => #{count => 0, time => 0},
+            '1' => #{count => 0, time => 0},
+            '2' => #{count => 0, time => 0},
+            '3' => #{count => 0, time => 0}
+        },
+    get_body_time => 0,
+    get_sample_count => 0,
+    head_rsp_time => 0,
+    head_sample_count => 0,
+    journal_last_compaction_time => undefined,
+    journal_last_compaction_duration => undefined,
+    journal_last_compaction_score => undefined,
+    journal_last_compaction_max => undefined,
+    journal_last_compaction_mean => undefined,
+    journal_last_compaction_runlength => undefined,
+    ledger_cache_size => undefined,
+    level_files_count => #{},
+    n_active_journal_files => 1,
+    penciller_inmem_cache_size => undefined,
+    penciller_last_merge_time => undefined,
+    penciller_work_backlog_status => undefined,
+    put_ink_time => 0,
+    put_mem_time => 0,
+    put_prep_time => 0,
+    put_sample_count => 0
+}).
+
 -record(bookie_get_timings, {
     sample_count = 0 :: non_neg_integer(),
     head_time = 0 :: non_neg_integer(),
@@ -66,7 +100,6 @@
     sample_count = 0 :: non_neg_integer(),
     cache_count = 0 :: non_neg_integer(),
     found_count = 0 :: non_neg_integer(),
-    cache_hits = 0 :: non_neg_integer(),
     fetch_ledger_time = 0 :: non_neg_integer(),
     fetch_ledgercache_time = 0 :: non_neg_integer(),
     rsp_time = 0 :: non_neg_integer(),
@@ -130,6 +163,40 @@
     sample_start_time = os:timestamp() :: erlang:timestamp()
 }).
 
+-type bookie_status() :: #{
+    ledger_cache_size => undefined | non_neg_integer(),
+    n_active_journal_files => pos_integer(),
+    level_files_count => #{non_neg_integer() => non_neg_integer()},
+    penciller_inmem_cache_size => undefined | pos_integer(),
+    penciller_work_backlog_status =>
+        undefined | {non_neg_integer(), boolean(), boolean()},
+    penciller_last_merge_time => undefined | integer(),
+    journal_last_compaction_time => undefined | pos_integer(),
+    journal_last_compaction_duration => undefined | non_neg_integer(),
+    journal_last_compaction_score => undefined | float(),
+    journal_last_compaction_max => undefined | float(),
+    journal_last_compaction_mean => undefined | float(),
+    journal_last_compaction_runlength => undefined | non_neg_integer(),
+    fetch_count_by_level =>
+        undefined
+        | #{
+            reporting_fetch_level() => #{
+                count => non_neg_integer(),
+                time => non_neg_integer()
+            }
+        },
+    get_body_time => undefined | non_neg_integer(),
+    get_sample_count => non_neg_integer(),
+    head_rsp_time => undefined | non_neg_integer(),
+    head_sample_count => non_neg_integer(),
+    put_ink_time => undefined | non_neg_integer(),
+    put_mem_time => undefined | non_neg_integer(),
+    put_prep_time => undefined | non_neg_integer(),
+    put_sample_count => non_neg_integer()
+}.
+-type reporting_fetch_level() ::
+    not_found | mem | '0' | '1' | '2' | '3' | lower.
+
 -record(state, {
     bookie_get_timings = #bookie_get_timings{} :: bookie_get_timings(),
     bookie_head_timings = #bookie_head_timings{} :: bookie_head_timings(),
@@ -139,7 +206,8 @@
     sst_fetch_timings = [] :: list(sst_fetch_timings()),
     cdb_get_timings = #cdb_get_timings{} :: cdb_get_timings(),
     log_frequency = ?LOG_FREQUENCY_SECONDS :: pos_integer(),
-    log_order = [] :: list(log_type())
+    log_order = [] :: list(log_type()),
+    bookie_status :: bookie_status()
 }).
 
 -type bookie_get_timings() :: #bookie_get_timings{}.
@@ -181,6 +249,26 @@
         microsecs()}.
 -type cdb_get_update() ::
     {cdb_get_update, pos_integer(), microsecs(), microsecs()}.
+-type bookie_status_update() ::
+    {ledger_cache_size_update, pos_integer()}
+    | {n_active_journal_files_update, integer()}
+    | {avg_compaction_score_update, float()}
+    | {level_files_count_update, #{non_neg_integer() => pos_integer()},
+        TS :: non_neg_integer()}
+    | {penciller_inmem_cache_size_update, pos_integer()}
+    | {penciller_work_backlog_status_update, {
+        non_neg_integer(), boolean(), boolean()
+    }}
+    | {
+        journal_compaction,
+        float(),
+        float(),
+        float(),
+        pos_integer(),
+        non_neg_integer(),
+        pos_integer()
+    }
+    | {metadata_objsize_ratio_update, not_implemented}.
 -type statistic() ::
     bookie_get_update()
     | bookie_head_update()
@@ -188,7 +276,8 @@
     | bookie_snap_update()
     | pcl_fetch_update()
     | sst_fetch_update()
-    | cdb_get_update().
+    | cdb_get_update()
+    | bookie_status_update().
 
 -export_type([monitor/0, timing/0, sst_fetch_type/0, log_type/0]).
 
@@ -204,7 +293,9 @@ monitor_start(LogFreq, LogOrder) ->
         ),
     {ok, Monitor}.
 
--spec add_stat(pid(), statistic()) -> ok.
+-spec add_stat(no_monitor | pid(), statistic()) -> ok.
+add_stat(no_monitor, _Statistic) ->
+    ok;
 add_stat(Watcher, Statistic) ->
     gen_server:cast(Watcher, Statistic).
 
@@ -229,6 +320,10 @@ log_add(Pid, ForcedLogs) ->
 -spec log_remove(pid(), list(string())) -> ok.
 log_remove(Pid, ForcedLogs) ->
     gen_server:cast(Pid, {log_remove, ForcedLogs}).
+
+-spec get_bookie_status(pid()) -> bookie_status().
+get_bookie_status(Pid) ->
+    gen_server:call(Pid, get_bookie_status).
 
 -spec maybe_time(monitor()) -> erlang:timestamp() | no_timing.
 maybe_time({_Pid, TimingProbability}) ->
@@ -272,8 +367,66 @@ init([LogOpts, LogFrequency, LogOrder]) ->
         ),
     InitialJitter = rand:uniform(2 * 1000 * LogFrequency),
     erlang:send_after(InitialJitter, self(), report_next_stats),
-    {ok, #state{log_frequency = LogFrequency, log_order = RandomLogOrder}}.
+    {ok, #state{
+        log_frequency = LogFrequency,
+        log_order = RandomLogOrder,
+        bookie_status = ?INITIAL_BOOKIE_STATUS
+    }}.
 
+handle_call(
+    get_bookie_status,
+    _From,
+    #state{
+        bookie_status = BS,
+        bookie_get_timings = GT,
+        bookie_put_timings = PT,
+        bookie_head_timings = HT,
+        pcl_fetch_timings = PFT
+    } = State
+) ->
+    FCL = #{
+        not_found => #{
+            count => PFT#pcl_fetch_timings.notfound_count,
+            time => PFT#pcl_fetch_timings.notfound_time
+        },
+        mem => #{
+            count => PFT#pcl_fetch_timings.foundmem_count,
+            time => PFT#pcl_fetch_timings.foundmem_time
+        },
+        '0' => #{
+            count => PFT#pcl_fetch_timings.found0_count,
+            time => PFT#pcl_fetch_timings.found0_time
+        },
+        '1' => #{
+            count => PFT#pcl_fetch_timings.found1_count,
+            time => PFT#pcl_fetch_timings.found1_time
+        },
+        '2' => #{
+            count => PFT#pcl_fetch_timings.found2_count,
+            time => PFT#pcl_fetch_timings.found2_time
+        },
+        '3' => #{
+            count => PFT#pcl_fetch_timings.found3_count,
+            time => PFT#pcl_fetch_timings.found3_time
+        },
+        lower => #{
+            count => PFT#pcl_fetch_timings.foundlower_count,
+            time => PFT#pcl_fetch_timings.foundlower_time
+        }
+    },
+    StatusEnriched =
+        BS#{
+            get_sample_count => GT#bookie_get_timings.sample_count,
+            get_body_time => GT#bookie_get_timings.body_time,
+            head_sample_count => HT#bookie_head_timings.sample_count,
+            head_rsp_time => HT#bookie_head_timings.rsp_time,
+            put_sample_count => PT#bookie_put_timings.sample_count,
+            put_prep_time => PT#bookie_put_timings.prep_time,
+            put_ink_time => PT#bookie_put_timings.ink_time,
+            put_mem_time => PT#bookie_put_timings.mem_time,
+            fetch_count_by_level => FCL
+        },
+    {reply, StatusEnriched, State};
 handle_call(close, _From, State) ->
     {stop, normal, ok, State}.
 
@@ -633,7 +786,51 @@ handle_cast({log_add, ForcedLogs}, State) ->
     {noreply, State};
 handle_cast({log_remove, ForcedLogs}, State) ->
     ok = leveled_log:remove_forcedlogs(ForcedLogs),
-    {noreply, State}.
+    {noreply, State};
+handle_cast({ledger_cache_size_update, A}, State = #state{bookie_status = BS}) ->
+    {noreply, State#state{bookie_status = BS#{ledger_cache_size => A}}};
+handle_cast(
+    {n_active_journal_files_update, Delta}, State = #state{bookie_status = BS0}
+) ->
+    A = maps:get(n_active_journal_files, BS0),
+    BS = maps:put(n_active_journal_files, A + Delta, BS0),
+    {noreply, State#state{bookie_status = BS}};
+handle_cast(
+    {level_files_count_update, U, TS}, State = #state{bookie_status = BS0}
+) ->
+    A = maps:get(level_files_count, BS0),
+    BS1 = maps:put(level_files_count, maps:merge(A, U), BS0),
+    BS2 = maps:put(penciller_last_merge_time, TS, BS1),
+    {noreply, State#state{bookie_status = BS2}};
+handle_cast(
+    {penciller_inmem_cache_size_update, A}, State = #state{bookie_status = BS}
+) ->
+    {noreply, State#state{bookie_status = BS#{penciller_inmem_cache_size => A}}};
+handle_cast(
+    {penciller_work_backlog_status_update, A},
+    State = #state{bookie_status = BS}
+) ->
+    {noreply, State#state{
+        bookie_status = BS#{penciller_work_backlog_status => A}
+    }};
+handle_cast(
+    {journal_compaction, MaxScore, MeanScore, Score, LRL, Duration, StartTime},
+    State = #state{bookie_status = BS}
+) ->
+    {
+        noreply,
+        State#state{
+            bookie_status =
+                BS#{
+                    journal_last_compaction_time => StartTime,
+                    journal_last_compaction_duration => Duration,
+                    journal_last_compaction_score => Score,
+                    journal_last_compaction_max => MaxScore,
+                    journal_last_compaction_mean => MeanScore,
+                    journal_last_compaction_runlength => LRL
+                }
+        }
+    }.
 
 handle_info(report_next_stats, State) ->
     erlang:send_after(
@@ -664,7 +861,12 @@ code_change(_OldVsn, State, _Extra) ->
 coverage_cheat_test() ->
     {ok, M} = monitor_start(1, []),
     timer:sleep(2000),
-    {ok, _State1} = code_change(null, #state{}, null),
+    {ok, _State1} =
+        code_change(
+            null,
+            #state{bookie_status = ?INITIAL_BOOKIE_STATUS},
+            null
+        ),
     ok = add_stat(M, {pcl_fetch_update, 4, 100}),
     ok = report_stats(M, pcl_fetch),
     % Can close, so empty log_order hasn't crashed

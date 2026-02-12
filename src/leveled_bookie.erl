@@ -75,7 +75,8 @@
     book_loglevel/2,
     book_addlogs/2,
     book_removelogs/2,
-    book_headstatus/1
+    book_headstatus/1,
+    book_status/1
 ]).
 
 %% folding API
@@ -1316,6 +1317,24 @@ book_removelogs(Pid, ForcedLogs) ->
 book_headstatus(Pid) ->
     gen_server:call(Pid, head_status, infinity).
 
+-spec book_status(pid()) -> map().
+%% @doc
+%% Return a proplist containing the following items:
+%% * current size of the ledger cache;
+%% * number of active journal files;
+%% * average compaction score for the journal;
+%% * current distribution of files across the ledger (e.g. count of files by level);
+%% * current size of the penciller in-memory cache;
+%% * penciller work backlog status;
+%% * last merge time (penciller);
+%% * last compaction time (journal);
+%% * last compaction result (journal) e.g. files compacted and compaction score;
+%% * ratio of metadata to object size (recent PUTs);
+%% * PUT/GET/HEAD recent time/count metrics;
+%% * mean level for recent fetches.
+book_status(Pid) ->
+    gen_server:call(Pid, status, infinity).
+
 %%%============================================================================
 %%% gen_server callbacks
 %%%============================================================================
@@ -1475,7 +1494,8 @@ handle_call(
             State#state.cache_size,
             State#state.cache_multiple,
             Cache0,
-            State#state.penciller
+            State#state.penciller,
+            State#state.monitor
         )
     of
         {ok, Cache} ->
@@ -1509,7 +1529,8 @@ handle_call({mput, ObjectSpecs, TTL}, From, State) when
             State#state.cache_size,
             State#state.cache_multiple,
             Cache0,
-            State#state.penciller
+            State#state.penciller,
+            State#state.monitor
         )
     of
         {ok, Cache} ->
@@ -1686,7 +1707,8 @@ handle_call({compact_journal, Timeout}, From, State) when
                     State#state.cache_size,
                     State#state.cache_multiple,
                     State#state.ledger_cache,
-                    State#state.penciller
+                    State#state.penciller,
+                    State#state.monitor
                 )
             of
                 {_, NewCache} ->
@@ -1740,6 +1762,8 @@ handle_call(return_actors, _From, State) ->
     {reply, {ok, State#state.inker, State#state.penciller}, State};
 handle_call(head_status, _From, State) ->
     {reply, {State#state.head_only, State#state.head_lookup}, State};
+handle_call(status, _From, State) ->
+    {reply, status(State), State};
 handle_call(Msg, _From, State) ->
     {reply, {unsupported_message, element(1, Msg)}, State}.
 
@@ -2877,7 +2901,11 @@ check_in_ledgercache(PK, Hash, Cache, loader) ->
     end.
 
 -spec maybepush_ledgercache(
-    pos_integer(), pos_integer(), ledger_cache(), pid()
+    pos_integer(),
+    pos_integer(),
+    ledger_cache(),
+    pid(),
+    leveled_monitor:monitor()
 ) ->
     {ok | returned, ledger_cache()}.
 %% @doc
@@ -2890,9 +2918,12 @@ check_in_ledgercache(PK, Hash, Cache, loader) ->
 %% in the reply.  Try again later when it isn't busy (and also potentially
 %% implement a slow_offer state to slow down the pace at which PUTs are being
 %% received)
-maybepush_ledgercache(MaxCacheSize, MaxCacheMult, Cache, Penciller) ->
+maybepush_ledgercache(
+    MaxCacheSize, MaxCacheMult, Cache, Penciller, {Monitor, _}
+) ->
     Tab = Cache#ledger_cache.mem,
     CacheSize = ets:info(Tab, size),
+    leveled_monitor:add_stat(Monitor, {ledger_cache_size_update, CacheSize}),
     TimeToPush = maybe_withjitter(CacheSize, MaxCacheSize, MaxCacheMult),
     if
         TimeToPush ->
@@ -3047,6 +3078,11 @@ maybelog_snap_timing({Pid, _StatsFreq}, BookieTime, PCLTime) when
     leveled_monitor:add_stat(Pid, {bookie_snap_update, BookieTime, PCLTime});
 maybelog_snap_timing(_Monitor, _, _) ->
     ok.
+
+status(#state{monitor = {no_monitor, 0}}) ->
+    #{};
+status(#state{monitor = {Monitor, _}}) ->
+    leveled_monitor:get_bookie_status(Monitor).
 
 %%%============================================================================
 %%% Test

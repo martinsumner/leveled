@@ -790,6 +790,10 @@ handle_call(
                             State#state.levelzero_index,
                             length(State#state.levelzero_cache) + 1
                         ),
+                    {Monitor, _} = State#state.monitor,
+                    leveled_monitor:add_stat(
+                        Monitor, {penciller_inmem_cache_size_update, NewL0Size}
+                    ),
                     Subs = [NewL0Size, true, true, MinSQN, MaxSQN],
                     ?RND_LOG(p0031, Subs, SW, 0.1),
                     {reply, ok, State#state{
@@ -1249,7 +1253,12 @@ handle_cast(
     }};
 handle_cast(
     work_for_clerk,
-    State = #state{manifest = Man, levelzero_cache = L0Cache, clerk = Clerk}
+    State = #state{
+        manifest = Man,
+        levelzero_cache = L0Cache,
+        clerk = Clerk,
+        monitor = {Monitor, _}
+    }
 ) when
     ?IS_DEF(Man), ?IS_DEF(L0Cache), ?IS_DEF(Clerk)
 ->
@@ -1281,9 +1290,19 @@ handle_cast(
             {WL, WC} = leveled_pmanifest:check_for_work(Man),
             case {WC, (CacheAlreadyFull or CacheOverSize)} of
                 {0, false} ->
+                    leveled_monitor:add_stat(
+                        Monitor,
+                        {penciller_work_backlog_status_update,
+                            {0, false, false}}
+                    ),
                     % No work required
                     {noreply, State#state{work_backlog = false}};
                 {WC, true} when WC < ?WORKQUEUE_BACKLOG_TOLERANCE ->
+                    leveled_monitor:add_stat(
+                        Monitor,
+                        {penciller_work_backlog_status_update,
+                            {WC, false, true}}
+                    ),
                     % Rolling the memory to create a new Level Zero file
                     % Must not do this if there is a work backlog beyond the
                     % tolerance, as then the backlog may never be addressed.
@@ -1309,6 +1328,11 @@ handle_cast(
                     % L0 work to do, or because the backlog has grown beyond
                     % tolerance
                     Backlog = WC >= ?WORKQUEUE_BACKLOG_TOLERANCE,
+                    leveled_monitor:add_stat(
+                        Monitor,
+                        {penciller_work_backlog_status_update,
+                            {WC, Backlog, L0Full}}
+                    ),
                     ?STD_LOG(p0024, [WC, Backlog, L0Full]),
                     [TL | _Tail] = WL,
                     ok = leveled_pclerk:clerk_push(Clerk, {TL, Man}),

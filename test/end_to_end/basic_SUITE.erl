@@ -15,7 +15,8 @@
     bigsst_littlesst/1,
     safereaderror_startup/1,
     remove_journal_test/1,
-    bigpcl_bucketlist/1
+    bigpcl_bucketlist/1,
+    bookie_status_report/1
 ]).
 
 all() ->
@@ -33,7 +34,8 @@ all() ->
         bigsst_littlesst,
         safereaderror_startup,
         remove_journal_test,
-        bigpcl_bucketlist
+        bigpcl_bucketlist,
+        bookie_status_report
     ].
 
 init_per_suite(Config) ->
@@ -42,6 +44,196 @@ init_per_suite(Config) ->
 
 end_per_suite(Config) ->
     testutil:end_per_suite(Config).
+
+bookie_status_report(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    StartOpts =
+        [
+            {root_path, RootPath},
+            {sync_strategy, testutil:sync_strategy()},
+            {log_level, info},
+            %% ensure all stats are always collected
+            {stats_percentage, 100},
+            %% to trigger penciller merge events sooner
+            {max_pencillercachesize, 16000},
+            %% to create more journal files (exactly 8 for the 80k of
+            %% keys loaded in the test)
+            {max_journalobjectcount, 10000},
+            {forced_logs, []}
+        ],
+    {ok, Bookie} = leveled_bookie:book_start(StartOpts),
+
+    InitialReport =
+        #{
+            ledger_cache_size => undefined,
+            n_active_journal_files => 1,
+            level_files_count => #{},
+            penciller_inmem_cache_size => undefined,
+            penciller_work_backlog_status => {0, false, false},
+            penciller_last_merge_time => undefined,
+            journal_last_compaction_time => undefined,
+            journal_last_compaction_duration => undefined,
+            journal_last_compaction_score => undefined,
+            journal_last_compaction_max => undefined,
+            journal_last_compaction_mean => undefined,
+            journal_last_compaction_runlength => undefined,
+            fetch_count_by_level =>
+                #{
+                    not_found => #{count => 0, time => 0},
+                    mem => #{count => 0, time => 0},
+                    lower => #{count => 0, time => 0},
+                    '0' => #{count => 0, time => 0},
+                    '1' => #{count => 0, time => 0},
+                    '2' => #{count => 0, time => 0},
+                    '3' => #{count => 0, time => 0}
+                },
+            get_sample_count => 0,
+            get_body_time => 0,
+            head_sample_count => 0,
+            head_rsp_time => 0,
+            put_sample_count => 0,
+            put_prep_time => 0,
+            put_ink_time => 0,
+            put_mem_time => 0
+        },
+    InitialReport = leveled_bookie:book_status(Bookie),
+    io:format("\nInitial report, before any IO\n~p\n", [InitialReport]),
+    check_n_journal_files(RootPath, InitialReport),
+
+    {TObj, TSpec} = testutil:generate_testobject(),
+    ok = testutil:book_riakput(Bookie, TObj, TSpec),
+
+    Rep1 = leveled_bookie:book_status(Bookie),
+    1 = maps:get(ledger_cache_size, Rep1),
+    1 = maps:get(put_sample_count, Rep1),
+    GoodPutPrepTime = 10000,
+    GoodPutInkTime = 10000,
+    GoodPutMemTime = 100,
+    within_range(1, GoodPutPrepTime, maps:get(put_prep_time, Rep1)),
+    within_range(1, GoodPutInkTime, maps:get(put_ink_time, Rep1)),
+    within_range(1, GoodPutMemTime, maps:get(put_mem_time, Rep1)),
+    #{} = maps:get(level_files_count, Rep1),
+    check_n_journal_files(RootPath, Rep1),
+
+    {r_object, TBkt, TKey, _, _, _, _} = TObj,
+    {ok, _} = testutil:book_riakget(Bookie, TBkt, TKey),
+    Rep2 = leveled_bookie:book_status(Bookie),
+    io:format("\nReport after a single PUT+GET\n~p\n", [Rep2]),
+    1 = maps:get(get_sample_count, Rep2),
+    GoodGetBodyTime = 500,
+    within_range(1, GoodGetBodyTime, maps:get(get_body_time, Rep2)),
+    #{} = maps:get(level_files_count, Rep2),
+    check_n_journal_files(RootPath, Rep2),
+
+    io:format("Prompt journal compaction~n"),
+    CompactionStarted1 = os:system_time(millisecond),
+    ok = leveled_bookie:book_compactjournal(Bookie, 30000),
+    testutil:wait_for_compaction(Bookie),
+
+    Rep3 = leveled_bookie:book_status(Bookie),
+    io:format("\nReport after first compaction:\n~p\n", [Rep3]),
+    +0.0 = maps:get(journal_last_compaction_score, Rep3),
+    within_range(
+        CompactionStarted1,
+        os:system_time(millisecond),
+        maps:get(journal_last_compaction_time, Rep3)
+    ),
+    #{} = maps:get(level_files_count, Rep3),
+    undefined = maps:get(penciller_inmem_cache_size, Rep3),
+    undefined = maps:get(penciller_last_merge_time, Rep3),
+    check_n_journal_files(RootPath, Rep3),
+
+    io:format("Load 80K objects and then delete them~n"),
+    testutil:load_objects(
+        20000,
+        [binary_uuid, binary_uuid, binary_uuid, binary_uuid],
+        Bookie,
+        no_check,
+        fun testutil:generate_compressibleobjects/2
+    ),
+    FoldKeysFun = fun(B, K, Acc) -> [{B, K} | Acc] end,
+    {async, F1} =
+        leveled_bookie:book_keylist(Bookie, o_rkv, {FoldKeysFun, []}),
+    KL1 = F1(),
+    lists:foreach(
+        fun({Bucket, Key}) ->
+            testutil:book_riakdelete(Bookie, Bucket, Key, [])
+        end,
+        KL1
+    ),
+
+    Rep4 = leveled_bookie:book_status(Bookie),
+    io:format("\nReport after loading 80K objects:\n~p\n", [Rep4]),
+    %% we have reduced max penciller cache size to make it certain a
+    %% merge occurs after so many PUTs
+    within_range(
+        CompactionStarted1,
+        os:system_time(millisecond),
+        maps:get(penciller_last_merge_time, Rep4)
+    ),
+    check_n_journal_files(RootPath, Rep4),
+
+    io:format("Prompt journal compaction again~n"),
+    CompactionStarted2 = os:system_time(millisecond),
+    ok = leveled_bookie:book_compactjournal(Bookie, 30000),
+    testutil:wait_for_compaction(Bookie),
+
+    Rep5 = leveled_bookie:book_status(Bookie),
+    io:format("\nReport after second compaction:\n~p\n", [Rep5]),
+    #{1 := 1} = maps:get(level_files_count, Rep5),
+    within_range(
+        CompactionStarted2,
+        os:system_time(millisecond),
+        maps:get(journal_last_compaction_time, Rep5)
+    ),
+    JLCRScore = maps:get(journal_last_compaction_score, Rep5),
+    within_range(0.0, 100.0, JLCRScore),
+    within_range(20.0, 90.0, maps:get(journal_last_compaction_mean, Rep5)),
+    true = 100.0 >= maps:get(journal_last_compaction_max, Rep5),
+    JLCRRL = maps:get(journal_last_compaction_runlength, Rep5),
+    within_range(7, 9, JLCRRL),
+    within_range(
+        0,
+        40000,
+        maps:get(penciller_inmem_cache_size, Rep5)
+    ),
+    check_n_journal_files(RootPath, Rep5),
+
+    io:format("Sleeping 10s to see 8 files are actually deleted\n", []),
+    timer:sleep(_DELETE_TIMEOUT = 10_000 + 1_000),
+
+    Rep6 = leveled_bookie:book_status(Bookie),
+    check_n_journal_files(RootPath, Rep6),
+
+    SnapOpts = [{snapshot_bookie, Bookie}],
+    {ok, BookSnap} = leveled_bookie:book_start(SnapOpts),
+    #{} = leveled_bookie:book_status(BookSnap),
+    ok = leveled_bookie:book_close(BookSnap),
+
+    io:format("\nClosing book and reopening\n", []),
+    ok = leveled_bookie:book_close(Bookie),
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts),
+    Rep7 = leveled_bookie:book_status(Bookie2),
+    check_n_journal_files(RootPath, Rep7),
+
+    ok = leveled_bookie:book_destroy(Bookie2).
+
+within_range(Min, Max, V) ->
+    true = Min =< V,
+    true = Max >= V.
+
+check_n_journal_files(RootPath, Rep) ->
+    A = length(
+        filelib:wildcard(RootPath ++ "/journal/journal_files/*.{cdb,pnd}")
+    ),
+    B = length(
+        filelib:wildcard(
+            RootPath ++ "/journal/journal_files/post_compact/*.{cdb,pnd}"
+        )
+    ),
+    C = maps:get(n_active_journal_files, Rep),
+    io:format("journal files: ~b (reported: ~b)\n", [A + B, C]),
+    C = A + B.
 
 simple_put_fetch_head_delete(_Config) ->
     io:format("simple test with info and no forced logs~n"),

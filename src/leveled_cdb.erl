@@ -494,6 +494,8 @@ starting({call, From}, {open_writer, Filename}, State) ->
 starting({call, From}, {open_reader, Filename}, State) ->
     leveled_log:save(State#state.log_options),
     ?STD_LOG(cdb02, [Filename]),
+    {Monitor, _} = State#state.monitor,
+    leveled_monitor:add_stat(Monitor, {n_active_journal_files_update, +1}),
     {Handle, Index, LastKey} = open_for_readonly(Filename, false),
     State0 = State#state{
         handle = Handle,
@@ -505,6 +507,8 @@ starting({call, From}, {open_reader, Filename}, State) ->
 starting({call, From}, {open_reader, Filename, LastKey}, State) ->
     leveled_log:save(State#state.log_options),
     ?STD_LOG(cdb02, [Filename]),
+    {Monitor, _} = State#state.monitor,
+    leveled_monitor:add_stat(Monitor, {n_active_journal_files_update, +1}),
     {Handle, Index, LastKey} = open_for_readonly(Filename, LastKey),
     State0 = State#state{
         handle = Handle,
@@ -650,6 +654,8 @@ writer(
 ) when
     ?IS_DEF(LP)
 ->
+    {Monitor, _} = State#state.monitor,
+    leveled_monitor:add_stat(Monitor, {n_active_journal_files_update, +1}),
     ok =
         leveled_iclerk:clerk_hashtablecalc(
             State#state.hashtree, LP, self()
@@ -880,6 +886,8 @@ delete_pending(
 ) when
     ?IS_DEF(FN), ?IS_DEF(IO)
 ->
+    {Monitor, _} = State#state.monitor,
+    leveled_monitor:add_stat(Monitor, {n_active_journal_files_update, -1}),
     ?STD_LOG(cdb04, [FN, State#state.delete_point]),
     close_pendingdelete(IO, FN, State#state.waste_path),
     {stop, normal};
@@ -906,6 +914,10 @@ delete_pending(
                 ),
             {keep_state_and_data, [?DELETE_TIMEOUT]};
         false ->
+            {Monitor, _} = State#state.monitor,
+            leveled_monitor:add_stat(
+                Monitor, {n_active_journal_files_update, -1}
+            ),
             ?STD_LOG(cdb04, [FN, ManSQN]),
             close_pendingdelete(IO, FN, State#state.waste_path),
             {stop, normal}
