@@ -94,7 +94,7 @@ simple_test_withlog(LogLevel, ForcedLogs) ->
             <<"Value2">>,
             [{add, <<"Index1">>, <<"Term1">>}],
             ?STD_TAG,
-            infinity, 
+            infinity,
             false
         ),
     {ok, <<"Value2">>} =
