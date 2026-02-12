@@ -655,6 +655,15 @@ starting(
             Level
         ),
     Summary = UpdState#state.summary,
+
+    if
+        Level == 0 ->
+            leveled_monitor:add_stat(
+                element(1, Monitor), {penciller_inmem_cache_size_update, 0}
+            );
+        el /= se ->
+            noop
+    end,
     ?TMR_LOG(sst08, [ActualFilename, Level, Summary#summary.max_sqn], SW),
     erlang:send_after(?STARTUP_TIMEOUT, self(), start_complete),
     {next_state, reader,
@@ -753,6 +762,9 @@ starting(cast, complete_l0startup, State) ->
     Summary = UpdState#state.summary,
     Time4 = timer:now_diff(os:timestamp(), SW4),
 
+    leveled_monitor:add_stat(
+        element(1, Monitor), {penciller_inmem_cache_size_update, 0}
+    ),
     ?TMR_LOG(sst08, [ActualFilename, 0, Summary#summary.max_sqn], SW0),
     ?STD_LOG(sst11, [Time0, Time1, Time2, Time3, Time4]),
 

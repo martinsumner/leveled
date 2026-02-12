@@ -421,46 +421,69 @@ handle_cast(
     CloseFun = ScoringState#scoring_state.close_fun,
     SW = ScoringState#scoring_state.start_time,
     ScoreParams =
-        {MaxRunLength, State#state.maxrunlength_compactionperc,
-            State#state.singlefile_compactionperc},
+        {
+            MaxRunLength,
+            State#state.maxrunlength_compactionperc,
+            State#state.singlefile_compactionperc
+        },
     {BestRun0, Score} = assess_candidates(Candidates, ScoreParams),
     ?TMR_LOG(ic003, [Score, length(BestRun0)], SW),
-    case Score > 0.0 of
-        true ->
-            BestRun1 = sort_run(BestRun0),
-            print_compaction_run(BestRun1, ScoreParams),
-            ManifestSlice =
-                compact_files(
-                    BestRun1,
-                    CDBopts,
-                    FilterFun,
-                    FilterServer,
-                    MaxSQN,
-                    State#state.reload_strategy,
-                    State#state.compression_method
-                ),
-            FilesToDelete =
-                lists:map(
-                    fun(C) ->
-                        {
-                            C#candidate.low_sqn,
-                            C#candidate.filename,
-                            C#candidate.journal,
-                            undefined
-                        }
-                    end,
-                    BestRun1
-                ),
-            ?STD_LOG(ic002, [length(FilesToDelete)]),
-            ok = CloseFun(FilterServer),
-            ok =
-                leveled_inker:ink_clerkcomplete(
-                    State#state.inker, ManifestSlice, FilesToDelete
-                );
-        false ->
-            ok = CloseFun(FilterServer),
-            ok = leveled_inker:ink_clerkcomplete(State#state.inker, [], [])
-    end,
+    LRL =
+        case Score > 0.0 of
+            true ->
+                BestRun1 = sort_run(BestRun0),
+                print_compaction_run(BestRun1, ScoreParams),
+                ManifestSlice =
+                    compact_files(
+                        BestRun1,
+                        CDBopts,
+                        FilterFun,
+                        FilterServer,
+                        MaxSQN,
+                        State#state.reload_strategy,
+                        State#state.compression_method
+                    ),
+                FilesToDelete =
+                    lists:map(
+                        fun(C) ->
+                            {
+                                C#candidate.low_sqn,
+                                C#candidate.filename,
+                                C#candidate.journal,
+                                undefined
+                            }
+                        end,
+                        BestRun1
+                    ),
+                ?STD_LOG(ic002, [length(FilesToDelete)]),
+                ok = CloseFun(FilterServer),
+                ok =
+                    leveled_inker:ink_clerkcomplete(
+                        State#state.inker, ManifestSlice, FilesToDelete
+                    ),
+                length(BestRun0);
+            false ->
+                ok = CloseFun(FilterServer),
+                ok =
+                    leveled_inker:ink_clerkcomplete(State#state.inker, [], []),
+                0
+        end,
+    {Monitor, _} = CDBopts#cdb_options.monitor,
+    {MaxScore, MeanScore} = calc_run_stats(Candidates),
+    {MegaST, SecST, MicroST} = ScoringState#scoring_state.start_time,
+    StartTimeMilli = (MegaST * 1000000 + SecST) * 1000 + (MicroST div 1000),
+    leveled_monitor:add_stat(
+        Monitor,
+        {
+            journal_compaction,
+            MaxScore,
+            MeanScore,
+            Score,
+            LRL,
+            os:system_time(millisecond) - StartTimeMilli,
+            StartTimeMilli
+        }
+    ),
     {noreply, State#state{scoring_state = undefined}, hibernate};
 handle_cast(
     {trim, PersistedSQN, ManifestAsList}, State = #state{inker = Ink}
@@ -583,6 +606,18 @@ schedule_compaction(CompactionHours, RunsPerDay, CurrentTS) ->
 %%%============================================================================
 %%% Internal functions
 %%%============================================================================
+
+-spec calc_run_stats(list(candidate())) -> {float(), float()}.
+calc_run_stats(Candidates) ->
+    case lists:map(fun(C) -> C#candidate.compaction_perc end, Candidates) of
+        L when length(L) > 0 ->
+            {
+                lists:max(L),
+                lists:sum(L) / length(L)
+            };
+        _ ->
+            {0.0, 0.0}
+    end.
 
 -spec check_single_file(
     pid(),
@@ -714,7 +749,7 @@ fetch_inbatches(PositionList, BatchSize, CDB, CheckedList) ->
 %%
 %% Although this requires many loops over the list of the candidate, as the
 %% file scores have already been calculated the cost per loop should not be
-%% a high burden.  Reducing the maximum run length, will reduce the cost of
+%% a high burden.  Reducing the maximum run length, will reduce the cost if
 %% this exercise should be a problem.
 %%
 %% The score parameters are used to produce the score of the compaction run,
@@ -756,7 +791,7 @@ assess_candidates(AllCandidates, Params) ->
     {list(candidate()), float()}.
 %% @doc
 %% For a given run length, calculate the scores for all consecutive runs of
-%% files, comparing the score with the best run which has beens een so far.
+%% files, comparing the score with the best run which has beens seen so far.
 %% The best is a tuple of the actual run of candidates, along with the score
 %% achieved for that run
 assess_for_runlength(RunLength, AllCandidates, Params, Best) ->
@@ -775,7 +810,7 @@ assess_for_runlength(RunLength, AllCandidates, Params, Best) ->
 -spec score_run(list(candidate()), score_parameters()) -> float().
 %% @doc
 %% Score a run.  Caluclate the avergae score across all the files in the run,
-%% and deduct that from a target score.  Good candidate runs for comapction
+%% and deduct that from a target score.  Good candidate runs for compaction
 %% have larger (positive) scores.  Bad candidate runs for compaction have
 %% negative scores.
 score_run([], _Params) ->
@@ -1265,7 +1300,10 @@ check_single_file_test() ->
     Score1 = check_single_file(CDB, LedgerFun1, LedgerSrv1, 9, 8, 4, RS),
     ?assertMatch(37.5, Score1),
     LedgerFun2 = fun(_Srv, _Key, _ObjSQN) -> current end,
-    Score2 = check_single_file(CDB, LedgerFun2, LedgerSrv1, 9, 8, 4, RS),
+    Score2 =
+        check_single_file(
+            CDB, LedgerFun2, LedgerSrv1, 9, 8, 4, RS
+        ),
     ?assertMatch(100.0, Score2),
     Score3 = check_single_file(CDB, LedgerFun1, LedgerSrv1, 9, 8, 3, RS),
     ?assertMatch(37.5, Score3),
@@ -1414,7 +1452,8 @@ compact_empty_file_test() ->
         {3, {o, "Bucket", "Key3", null}}
     ],
     LedgerFun1 = fun(_Srv, _Key, _ObjSQN) -> replaced end,
-    Score1 = check_single_file(CDB2, LedgerFun1, LedgerSrv1, 9, 8, 4, RS),
+    Score1 =
+        check_single_file(CDB2, LedgerFun1, LedgerSrv1, 9, 8, 4, RS),
     ?assert((+0.0 =:= Score1) orelse (-0.0 =:= Score1)),
     ok = leveled_cdb:cdb_deletepending(CDB2),
     ok = leveled_cdb:cdb_destroy(CDB2).

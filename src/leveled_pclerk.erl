@@ -379,15 +379,27 @@ merge_limit(SrcLevel, SinkListLength, MMB) when is_integer(MMB) ->
         list(leveled_sst:sst_pointer())
     }.
 do_merge(
-    [], [], SinkLevel, _SinkB, _RP, NewSQN, _MaxSQN, _Opts, Additions, _Max
+    [], [], SinkLevel, _SinkB, _RP, NewSQN, _MaxSQN, SSTOpts, Additions, _Max
 ) ->
+    {Monitor, _} = SSTOpts#sst_options.monitor,
+    leveled_monitor:add_stat(
+        Monitor,
+        {level_files_count_update, #{SinkLevel => length(Additions)},
+            os:system_time(millisecond)}
+    ),
     ?STD_LOG(pc011, [NewSQN, SinkLevel, length(Additions), full]),
     {lists:reverse(Additions), [], []};
 do_merge(
-    KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, OptsSST, Additions, Max
+    KL1, KL2, SinkLevel, SinkB, RP, NewSQN, MaxSQN, SSTOpts, Additions, Max
 ) when
     length(Additions) >= Max
 ->
+    {Monitor, _} = SSTOpts#sst_options.monitor,
+    leveled_monitor:add_stat(
+        Monitor,
+        {level_files_count_update, #{SinkLevel => length(Additions)},
+            os:system_time(millisecond)}
+    ),
     ?STD_LOG(pc011, [NewSQN, SinkLevel, length(Additions), partial]),
     FNSrc =
         leveled_penciller:sst_filename(
@@ -400,7 +412,7 @@ do_merge(
     {ExpandedKL1, []} = split_unexpanded_files(KL1),
     {ExpandedKL2, L2FilePointersRem} = split_unexpanded_files(KL2),
     TS1 = os:timestamp(),
-    InfOpts = OptsSST#sst_options{max_sstslots = infinity},
+    InfOpts = SSTOpts#sst_options{max_sstslots = infinity},
     % Need to be careful to make sure all the remainder goes in one file,
     % could be situations whereby the max_sstslots has been changed between
     % restarts - and so there is too much data for one file in the
