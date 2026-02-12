@@ -859,8 +859,16 @@ aae_missingjournal(_Config) ->
     {async, AllHeadF2} =
         leveled_bookie:book_returnfolder(
             Bookie2,
-            {foldheads_allkeys, ?RIAK_TAG, FoldHeadsFun, true, true, false,
-                false, false}
+            {
+                foldheads_allkeys,
+                ?RIAK_TAG,
+                FoldHeadsFun,
+                true,
+                true,
+                false,
+                false,
+                false
+            }
         ),
     HeadL2 = length(AllHeadF2()),
     io:format("Fold head returned ~w objects~n", [HeadL2]),
@@ -868,6 +876,39 @@ aae_missingjournal(_Config) ->
     true = HeadL2 > 0,
 
     ok = leveled_bookie:book_close(Bookie2),
+
+    % Add extra journal file - check it gets switched to .bak
+    FNXJ = RootPath ++ "/journal/journal_files/extra_file",
+    FNXC = RootPath ++ "/journal/journal_files/post_compact/extra_file",
+    ok = file:write_file(FNXJ ++ ".cdb", <<"NotaCDB">>),
+    ok = file:write_file(FNXC ++ ".cdb", <<"NotaCDB">>),
+    {ok, _} = file:read_file_info(FNXJ ++ ".cdb"),
+    {ok, _} = file:read_file_info(FNXC ++ ".cdb"),
+
+    {ok, Bookie3} = leveled_bookie:book_start(StartOpts),
+    {async, AllHeadF3} =
+        leveled_bookie:book_returnfolder(
+            Bookie3,
+            {
+                foldheads_allkeys,
+                ?RIAK_TAG,
+                FoldHeadsFun,
+                true,
+                true,
+                false,
+                false,
+                false
+            }
+        ),
+    HeadL3 = length(AllHeadF3()),
+    true = HeadL3 == HeadL2,
+
+    ok = leveled_bookie:book_close(Bookie3),
+
+    {error, enoent} = file:read_file_info(FNXJ ++ ".cdb"),
+    {error, enoent} = file:read_file_info(FNXJ ++ ".cdb"),
+    {ok, <<"NotaCDB">>} = file:read_file(FNXJ ++ ".bak"),
+    {ok, <<"NotaCDB">>} = file:read_file(FNXC ++ ".bak"),
     testutil:reset_filestructure().
 
 simple_cachescoring(_Config) ->
