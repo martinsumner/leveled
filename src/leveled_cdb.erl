@@ -724,7 +724,12 @@ rolling(
     },
     case State#state.deferred_delete of
         true ->
-            {next_state, delete_pending, State0, [{reply, From, ok}]};
+            {
+                next_state,
+                delete_pending,
+                State0,
+                [{reply, From, ok}, ?DELETE_TIMEOUT]
+            };
         false ->
             ?TMR_LOG(cdb18, [], SW),
             {next_state, reader, State0, [{reply, From, ok}, hibernate]}
@@ -3090,6 +3095,35 @@ pendingdelete_test() ->
     ok = cdb_deletepending(P2),
     % No issues destroying even though the file has already been removed
     ok = cdb_destroy(P2).
+
+deletewhenrolling_test_() ->
+    {timeout, 60000, fun deletewhenrolling_tester/0}.
+
+deletewhenrolling_tester() ->
+    F1 = "test/test_area/deleterolling_test.pnd",
+    file:delete(F1),
+    {ok, P1} = cdb_open_writer(F1, #cdb_options{binary_mode = false}),
+    KVList = generate_sequentialkeys(5000, []),
+    ok = cdb_mput(P1, KVList),
+    ok = cdb_roll(P1),
+    SpawnFakeInker = spawn(fun() -> ok end),
+    ok = cdb_deletepending(P1, 5000, SpawnFakeInker),
+    ?assertMatch({"Key1", "Value1"}, cdb_get(P1, "Key1")),
+    ?assertMatch({"Key1000", "Value1000"}, cdb_get(P1, "Key1000")),
+    ?assertMatch({"Key4000", "Value4000"}, cdb_get(P1, "Key4000")),
+    timer:sleep(?DELETE_TIMEOUT - 1000),
+    lists:foreach(
+        fun(_I) ->
+            case is_process_alive(P1) of
+                true ->
+                    timer:sleep(1000);
+                false ->
+                    ok
+            end
+        end,
+        lists:seq(1, 10)
+    ),
+    ?assertMatch(false, is_process_alive(P1)).
 
 getpositions_sample_test() ->
     % what if we try and get positions with a file with o(1000) entries
