@@ -32,7 +32,7 @@
 -define(DEFAULT_STATS_PERC, 10).
 -define(DEFAULT_SYNC_STRATEGY, none).
 -define(DEFAULT_BLOCK_VERSION, 1).
--define(LEDGER_VALUE_VERSION, 2).
+-define(LEDGER_VALUE_VERSION, 3).
 %%%============================================================================
 
 %%%============================================================================

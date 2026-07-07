@@ -21,8 +21,9 @@
     ledgermd_status/1,
     ledgermd_seg/1,
     ledgermd_seglmd/1,
-    ledgermd_sqnstatus/1,
-    ledgermd_sqnstatusumd/1,
+    ledgermd_statussqn/1,
+    ledgermd_statussqnumd/1,
+    ledgermd_sqnumd/1,
     endkey_passed/2,
     key_dominates/2,
     to_objectkey/3,
@@ -253,32 +254,32 @@ headkey_to_canonicalbinary(
 % tomb | {active, non_neg_integer() | infinity}
 
 -spec ledgermd_status(ledger_value()) -> ledger_status().
-ledgermd_status(V) when is_binary(V) ->
+ledgermd_status(<<3:8/integer, V/binary>>) ->
     read_v3_value(V, [status]);
 ledgermd_status(V) when is_tuple(V) ->
     element(2, V).
 
 -spec ledgermd_sqn(ledger_value()) -> non_neg_integer().
-ledgermd_sqn(V) when is_binary(V) ->
+ledgermd_sqn(<<3:8/integer, V/binary>>) ->
     read_v3_value(V, [sqn]);
 ledgermd_sqn(V) when is_tuple(V) ->
     element(1, V).
 
 -spec ledgermd_seg(ledger_value()) -> segment_hash().
-ledgermd_seg(V) when is_binary(V) ->
+ledgermd_seg(<<3:8/integer, V/binary>>) ->
     read_v3_value(V, [seg_hash]);
 ledgermd_seg(V) when is_tuple(V) ->
     element(3, V).
 
--spec ledgermd_sqnstatus(ledger_value()) ->
-    {non_neg_integer(), ledger_status()}.
-ledgermd_sqnstatus(V) when is_binary(V) ->
-    read_v3_value(V, [sqn, status]);
-ledgermd_sqnstatus(V) when is_tuple(V) ->
-    {element(1, V), element(2, V)}.
+-spec ledgermd_statussqn(ledger_value()) ->
+    {ledger_status(), non_neg_integer()}.
+ledgermd_statussqn(<<3:8/integer, V/binary>>) ->
+    read_v3_value(V, [status, sqn]);
+ledgermd_statussqn(V) when is_tuple(V) ->
+    {element(2, V), element(1, V)}.
 
 -spec ledgermd_seglmd(ledger_value()) -> {segment_hash(), last_moddate()}.
-ledgermd_seglmd(V) when is_binary(V) ->
+ledgermd_seglmd(<<3:8/integer, V/binary>>) ->
     read_v3_value(V, [seg_hash, lmd]);
 ledgermd_seglmd({_, _, SegHash, _, LMD}) ->
     {SegHash, LMD};
@@ -286,24 +287,33 @@ ledgermd_seglmd({_, _, SegHash, _}) ->
     {SegHash, undefined}.
 
 -spec ledgermd_statuslmd(ledger_value()) -> {ledger_status(), last_moddate()}.
-ledgermd_statuslmd(V) when is_binary(V) ->
+ledgermd_statuslmd(<<3:8/integer, V/binary>>) ->
     read_v3_value(V, [status, lmd]);
 ledgermd_statuslmd({_, Status, _, _, LMD}) ->
     {Status, LMD};
 ledgermd_statuslmd({_, Status, _, _}) ->
     {Status, undefined}.
 
--spec ledgermd_sqnstatusumd(
+-spec ledgermd_statussqnumd(
     ledger_value()
 ) ->
-    {non_neg_integer(), ledger_status(), metadata() | null}.
-ledgermd_sqnstatusumd(V) when is_binary(V) ->
-    read_v3_value(V, [sqn, status, umd]);
-ledgermd_sqnstatusumd(V) when is_tuple(V) ->
-    {element(1, V), element(2, V), element(4, V)}.
+    {ledger_status(), non_neg_integer(), metadata() | null}.
+ledgermd_statussqnumd(<<3:8/integer, V/binary>>) ->
+    read_v3_value(V, [status, sqn, umd]);
+ledgermd_statussqnumd(V) when is_tuple(V) ->
+    {element(2, V), element(1, V), element(4, V)}.
+
+-spec ledgermd_sqnumd(
+    ledger_value()
+) ->
+    {non_neg_integer(), metadata() | null}.
+ledgermd_sqnumd(<<3:8/integer, V/binary>>) ->
+    read_v3_value(V, [sqn, umd]);
+ledgermd_sqnumd(V) when is_tuple(V) ->
+    {element(1, V), element(4, V)}.
 
 -spec ledgermd_umd(ledger_value()) -> metadata() | null.
-ledgermd_umd(V) when is_binary(V) ->
+ledgermd_umd(<<3:8/integer, V/binary>>) ->
     read_v3_value(V, [umd]);
 ledgermd_umd(V) when is_tuple(V) ->
     element(4, V).
@@ -322,12 +332,21 @@ ledgermd_umd(V) when is_tuple(V) ->
 %% folding over heads -> v2 values, index-keys -> v1 values.
 maybe_accumulate([], Acc, Count, _Filter, _Fun) ->
     {Acc, Count};
+maybe_accumulate(
+    [{K, V} | T], Acc, Count, {Now, ModRange} = Filter, AccFun
+) when
+    ModRange == ?OPEN_LASTMOD_RANGE
+->
+    case {ledgermd_status(V), Now} of
+        {{active, TS}, Now} when TS >= Now ->
+            maybe_accumulate(T, AccFun(K, V, Acc), Count + 1, Filter, AccFun);
+        _ ->
+            maybe_accumulate(T, Acc, Count, Filter, AccFun)
+    end;
 maybe_accumulate([{K, V} | T], Acc, Count, Filter, AccFun) ->
     case {ledgermd_statuslmd(V), Filter} of
         {{{active, TS}, undefined}, {Now, _ModRange}} when TS >= Now ->
             maybe_accumulate(T, AccFun(K, V, Acc), Count + 1, Filter, AccFun);
-        {{tomb, _}, _} ->
-            maybe_accumulate(T, Acc, Count, Filter, AccFun);
         {{{active, TS}, LMD}, {Now, {LowDate, HighDate}}} when
             TS >= Now, LMD >= LowDate, LMD =< HighDate
         ->
@@ -1018,30 +1037,21 @@ create_v3_value(SQN, Status, Hash, MD, LMTS) ->
                 <<0:8/integer>>
         end,
     <<
-        SQNBin/binary,
+        3:8/integer,
         StatusBin/binary,
         SegHashBin/binary,
         LMTSBin/binary,
+        SQNBin/binary,
         MDBin/binary
     >>.
 
 read_v3_value(ValueBin, Items) ->
-    read_v3_value(ValueBin, sqn, Items, []).
+    read_v3_value(ValueBin, status, Items, []).
 
 read_v3_value(_RemBin, _NextITem, [], [SingleItem]) ->
     SingleItem;
 read_v3_value(_RemBin, _NextItem, [], Acc) ->
     list_to_tuple(lists:reverse(Acc));
-read_v3_value(<<SqnSize:8/integer, Rem/binary>>, sqn, [Next | Items], Acc) ->
-    <<SQN:SqnSize/binary, Rest/binary>> = Rem,
-    case Next of
-        sqn ->
-            read_v3_value(Rest, status, Items, [
-                binary:decode_unsigned(SQN) | Acc
-            ]);
-        _ ->
-            read_v3_value(Rest, status, [Next | Items], Acc)
-    end;
 read_v3_value(
     <<I:4/integer, 0:4/integer, Rem/binary>>, status, [Next | Items], Acc
 ) when I < 2 ->
@@ -1087,15 +1097,25 @@ read_v3_value(
 read_v3_value(<<0:8/integer, Rem/binary>>, lmd, [Next | Items], Acc) ->
     case Next of
         lmd ->
-            read_v3_value(Rem, umd, Items, [undefined | Acc]);
+            read_v3_value(Rem, sqn, Items, [undefined | Acc]);
         _ ->
-            read_v3_value(Rem, umd, [Next | Items], Acc)
+            read_v3_value(Rem, sqn, [Next | Items], Acc)
     end;
 read_v3_value(<<LmdSize:8/integer, Rem/binary>>, lmd, [Next | Items], Acc) ->
     <<LMD:LmdSize/binary, Rest/binary>> = Rem,
     case Next of
         lmd ->
-            read_v3_value(Rest, umd, Items, [binary:decode_unsigned(LMD) | Acc]);
+            read_v3_value(Rest, sqn, Items, [binary:decode_unsigned(LMD) | Acc]);
+        _ ->
+            read_v3_value(Rest, sqn, [Next | Items], Acc)
+    end;
+read_v3_value(<<SqnSize:8/integer, Rem/binary>>, sqn, [Next | Items], Acc) ->
+    <<SQN:SqnSize/binary, Rest/binary>> = Rem,
+    case Next of
+        sqn ->
+            read_v3_value(Rest, umd, Items, [
+                binary:decode_unsigned(SQN) | Acc
+            ]);
         _ ->
             read_v3_value(Rest, umd, [Next | Items], Acc)
     end;
@@ -1265,16 +1285,16 @@ v3_value_test() ->
     V3Val = create_v3_value(SQN, Status, Hash, UMD, LMD),
     ?assertMatch(SQN, ledgermd_sqn(V3Val)),
     ?assertMatch(Status, ledgermd_status(V3Val)),
-    ?assertMatch({SQN, Status}, ledgermd_sqnstatus(V3Val)),
+    ?assertMatch({Status, SQN}, ledgermd_statussqn(V3Val)),
     ?assertMatch({Hash, LMD}, ledgermd_seglmd(V3Val)),
-    ?assertMatch({SQN, Status, UMD}, ledgermd_sqnstatusumd(V3Val)),
+    ?assertMatch({Status, SQN, UMD}, ledgermd_statussqnumd(V3Val)),
 
     TempStatus = {active, leveled_util:integer_now() + 100},
     V3ValB = create_v3_value(SQN, TempStatus, Hash, UMD, LMD),
     ?assertMatch(SQN, ledgermd_sqn(V3ValB)),
     ?assertMatch(TempStatus, ledgermd_status(V3ValB)),
-    ?assertMatch({SQN, TempStatus}, ledgermd_sqnstatus(V3ValB)),
+    ?assertMatch({TempStatus, SQN}, ledgermd_statussqn(V3ValB)),
     ?assertMatch({Hash, LMD}, ledgermd_seglmd(V3ValB)),
-    ?assertMatch({SQN, TempStatus, UMD}, ledgermd_sqnstatusumd(V3ValB)).
+    ?assertMatch({TempStatus, SQN, UMD}, ledgermd_statussqnumd(V3ValB)).
 
 -endif.

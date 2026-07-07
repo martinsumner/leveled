@@ -722,7 +722,7 @@ accumulate_objects(FoldObjectsFun, InkerClone, Tag, DeferredFetch) ->
             % a fold_objects), then a metadata object needs to be built to be
             % returned - but a quick check that Key is present in the Journal
             % is made first
-            {SQN, _St, MD} = leveled_codec:ledgermd_sqnstatusumd(V),
+            {SQN, MD} = leveled_codec:ledgermd_sqnumd(V),
             {B, K} =
                 case leveled_codec:from_ledgerkey(LK) of
                     {B0, K0} ->

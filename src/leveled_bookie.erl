@@ -1571,8 +1571,8 @@ handle_call({get, Bucket, Key, Tag}, _From, State) when
             not_present ->
                 not_found;
             Head ->
-                {Seqn, Status} =
-                    leveled_codec:ledgermd_sqnstatus(Head),
+                {Status, Seqn} =
+                    leveled_codec:ledgermd_statussqn(Head),
                 case Status of
                     tomb ->
                         not_found;
@@ -1629,10 +1629,10 @@ handle_call({head, Bucket, Key, Tag, SQNOnly}, _From, State) when
             not_present ->
                 {not_found, null, JrnalCheckFreq};
             Head ->
-                case leveled_codec:ledgermd_sqnstatusumd(Head) of
-                    {_SeqN, tomb, _MD} ->
+                case leveled_codec:ledgermd_statussqnumd(Head) of
+                    {tomb, _Seqn, _MD} ->
                         {not_found, null, JrnalCheckFreq};
-                    {SeqN, {active, TS}, MD} ->
+                    {{active, TS}, SeqN, MD} ->
                         case TS >= leveled_util:integer_now() of
                             true ->
                                 I = State#state.inker,
@@ -2850,14 +2850,14 @@ recalcfor_ledgercache(
             not_present ->
                 not_present;
             {LK, LV} ->
-                case leveled_codec:ledgermd_sqnstatusumd(LV) of
-                    {_OSQN, _OStatus, MDO} when is_tuple(MDO) ->
+                case leveled_codec:ledgermd_sqnumd(LV) of
+                    {_OSQN, MDO} when is_tuple(MDO) ->
                         MDO
                 end
         end,
     UpdMetadata =
-        case leveled_codec:ledgermd_sqnstatusumd(MetaValue) of
-            {_USQN, _UStatus, MDU} when is_tuple(MDU) ->
+        case leveled_codec:ledgermd_sqnumd(MetaValue) of
+            {_USQN, MDU} when is_tuple(MDU) ->
                 MDU
         end,
     IdxSpecs =
