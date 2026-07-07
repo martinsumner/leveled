@@ -17,12 +17,12 @@
 
 -export([
     inker_reload_strategy/1,
-    strip_to_seqonly/1,
-    strip_to_statusonly/1,
-    strip_to_segmentonly/1,
-    strip_to_keyseqonly/1,
-    strip_to_indexdetails/1,
-    striphead_to_v1details/1,
+    ledgermd_sqn/1,
+    ledgermd_status/1,
+    ledgermd_seg/1,
+    ledgermd_seglmd/1,
+    ledgermd_sqnstatus/1,
+    ledgermd_sqnstatusumd/1,
     endkey_passed/2,
     key_dominates/2,
     to_objectkey/3,
@@ -45,15 +45,14 @@
     create_value_for_journal/3,
     revert_value_from_journal/1,
     revert_value_from_journal/2,
-    generate_ledgerkv/5,
+    generate_ledgerkv/6,
     get_size/2,
     get_keyandobjhash/2,
-    idx_indexspecs/5,
-    obj_objectspecs/3,
+    idx_indexspecs/6,
+    obj_objectspecs/4,
     segment_hash/1,
     next_key/1,
     return_proxy/4,
-    get_metadata/1,
     maybe_accumulate/5,
     accumulate_index/2,
     count_tombs/2
@@ -83,6 +82,7 @@
     integer() | undefined.
 -type lastmod_range() :: {integer(), pos_integer() | infinity}.
 
+-type ledger_value_version() :: 2 | 3.
 -type ledger_status() ::
     tomb | {active, non_neg_integer() | infinity}.
 -type primary_key() ::
@@ -97,11 +97,12 @@
 -type slimmed_key() ::
     {binary(), binary() | null} | binary() | null | all.
 -type ledger_value() ::
-    ledger_value_v1() | ledger_value_v2().
+    ledger_value_v1() | ledger_value_v2() | ledger_value_v3().
 -type ledger_value_v1() ::
     {sqn(), ledger_status(), segment_hash(), metadata()}.
 -type ledger_value_v2() ::
     {sqn(), ledger_status(), segment_hash(), metadata(), last_moddate()}.
+-type ledger_value_v3() :: binary().
 -type ledger_kv() ::
     {object_key(), ledger_value()}.
 -type compaction_method() ::
@@ -180,6 +181,7 @@
     query_key/0,
     ledger_key/0,
     ledger_value/0,
+    ledger_value_version/0,
     ledger_kv/0,
     compaction_strategy/0,
     compaction_method/0,
@@ -248,35 +250,63 @@ headkey_to_canonicalbinary(
 
 %% @doc
 %% Some helper functions to get a sub_components of the key/value
+% tomb | {active, non_neg_integer() | infinity}
 
--spec strip_to_statusonly(ledger_kv()) -> ledger_status().
-strip_to_statusonly({_, V}) -> element(2, V).
+-spec ledgermd_status(ledger_value()) -> ledger_status().
+ledgermd_status(V) when is_binary(V) ->
+    read_v3_value(V, [status]);
+ledgermd_status(V) when is_tuple(V) ->
+    element(2, V).
 
--spec strip_to_seqonly(ledger_kv()) -> non_neg_integer().
-strip_to_seqonly({_, V}) -> element(1, V).
+-spec ledgermd_sqn(ledger_value()) -> non_neg_integer().
+ledgermd_sqn(V) when is_binary(V) ->
+    read_v3_value(V, [sqn]);
+ledgermd_sqn(V) when is_tuple(V) ->
+    element(1, V).
 
--spec strip_to_segmentonly(ledger_kv()) -> segment_hash().
-strip_to_segmentonly({_LK, LV}) -> element(3, LV).
+-spec ledgermd_seg(ledger_value()) -> segment_hash().
+ledgermd_seg(V) when is_binary(V) ->
+    read_v3_value(V, [seg_hash]);
+ledgermd_seg(V) when is_tuple(V) ->
+    element(3, V).
 
--spec strip_to_keyseqonly(ledger_kv()) -> {ledger_key(), integer()}.
-strip_to_keyseqonly({LK, V}) -> {LK, element(1, V)}.
+-spec ledgermd_sqnstatus(ledger_value()) ->
+    {non_neg_integer(), ledger_status()}.
+ledgermd_sqnstatus(V) when is_binary(V) ->
+    read_v3_value(V, [sqn, status]);
+ledgermd_sqnstatus(V) when is_tuple(V) ->
+    {element(1, V), element(2, V)}.
 
--spec strip_to_indexdetails(ledger_kv()) ->
-    {integer(), segment_hash(), last_moddate()}.
-strip_to_indexdetails({_, {SQN, _, SegmentHash, _}}) ->
-    % A v1 value
-    {SQN, SegmentHash, undefined};
-strip_to_indexdetails({_, {SQN, _, SegmentHash, _, LMD}}) ->
-    % A v2 value should have a fith element - Last Modified Date
-    {SQN, SegmentHash, LMD}.
+-spec ledgermd_seglmd(ledger_value()) -> {segment_hash(), last_moddate()}.
+ledgermd_seglmd(V) when is_binary(V) ->
+    read_v3_value(V, [seg_hash, lmd]);
+ledgermd_seglmd({_, _, SegHash, _, LMD}) ->
+    {SegHash, LMD};
+ledgermd_seglmd({_, _, SegHash, _}) ->
+    {SegHash, undefined}.
 
--spec striphead_to_v1details(ledger_value()) -> ledger_value().
-striphead_to_v1details(V) ->
-    {element(1, V), element(2, V), element(3, V), element(4, V)}.
+-spec ledgermd_statuslmd(ledger_value()) -> {ledger_status(), last_moddate()}.
+ledgermd_statuslmd(V) when is_binary(V) ->
+    read_v3_value(V, [status, lmd]);
+ledgermd_statuslmd({_, Status, _, _, LMD}) ->
+    {Status, LMD};
+ledgermd_statuslmd({_, Status, _, _}) ->
+    {Status, undefined}.
 
--spec get_metadata(ledger_value()) -> metadata().
-get_metadata(LV) ->
-    element(4, LV).
+-spec ledgermd_sqnstatusumd(
+    ledger_value()
+) ->
+    {non_neg_integer(), ledger_status(), metadata() | null}.
+ledgermd_sqnstatusumd(V) when is_binary(V) ->
+    read_v3_value(V, [sqn, status, umd]);
+ledgermd_sqnstatusumd(V) when is_tuple(V) ->
+    {element(1, V), element(2, V), element(4, V)}.
+
+-spec ledgermd_umd(ledger_value()) -> metadata() | null.
+ledgermd_umd(V) when is_binary(V) ->
+    read_v3_value(V, [umd]);
+ledgermd_umd(V) when is_tuple(V) ->
+    element(4, V).
 
 -spec maybe_accumulate(
     list(leveled_codec:ledger_kv()),
@@ -292,60 +322,19 @@ get_metadata(LV) ->
 %% folding over heads -> v2 values, index-keys -> v1 values.
 maybe_accumulate([], Acc, Count, _Filter, _Fun) ->
     {Acc, Count};
-maybe_accumulate(
-    [{K, {_SQN, {active, TS}, _SH, _MD, undefined} = V} | T],
-    Acc,
-    Count,
-    {Now, _ModRange} = Filter,
-    AccFun
-) when
-    TS >= Now
-->
-    maybe_accumulate(T, AccFun(K, V, Acc), Count + 1, Filter, AccFun);
-maybe_accumulate(
-    [{K, {_SQN, {active, TS}, _SH, _MD} = V} | T],
-    Acc,
-    Count,
-    {Now, _ModRange} = Filter,
-    AccFun
-) when
-    TS >= Now
-->
-    maybe_accumulate(T, AccFun(K, V, Acc), Count + 1, Filter, AccFun);
-maybe_accumulate(
-    [{_K, {_SQN, tomb, _SH, _MD, _LMD}} | T],
-    Acc,
-    Count,
-    Filter,
-    AccFun
-) ->
-    maybe_accumulate(T, Acc, Count, Filter, AccFun);
-maybe_accumulate(
-    [{_K, {_SQN, tomb, _SH, _MD}} | T],
-    Acc,
-    Count,
-    Filter,
-    AccFun
-) ->
-    maybe_accumulate(T, Acc, Count, Filter, AccFun);
-maybe_accumulate(
-    [{K, {_SQN, {active, TS}, _SH, _MD, LMD} = V} | T],
-    Acc,
-    Count,
-    {Now, {LowDate, HighDate}} = Filter,
-    AccFun
-) when
-    TS >= Now, LMD >= LowDate, LMD =< HighDate
-->
-    maybe_accumulate(T, AccFun(K, V, Acc), Count + 1, Filter, AccFun);
-maybe_accumulate(
-    [_LV | T],
-    Acc,
-    Count,
-    Filter,
-    AccFun
-) ->
-    maybe_accumulate(T, Acc, Count, Filter, AccFun).
+maybe_accumulate([{K, V} | T], Acc, Count, Filter, AccFun) ->
+    case {ledgermd_statuslmd(V), Filter} of
+        {{{active, TS}, undefined}, {Now, _ModRange}} when TS >= Now ->
+            maybe_accumulate(T, AccFun(K, V, Acc), Count + 1, Filter, AccFun);
+        {{tomb, _}, _} ->
+            maybe_accumulate(T, Acc, Count, Filter, AccFun);
+        {{{active, TS}, LMD}, {Now, {LowDate, HighDate}}} when
+            TS >= Now, LMD >= LowDate, LMD =< HighDate
+        ->
+            maybe_accumulate(T, AccFun(K, V, Acc), Count + 1, Filter, AccFun);
+        _ ->
+            maybe_accumulate(T, Acc, Count, Filter, AccFun)
+    end.
 
 -spec accumulate_index(
     {boolean() | binary(), term_expression()},
@@ -430,7 +419,7 @@ check_captured_terms(
 %% When comparing two keys in the ledger need to find if one key comes before
 %% the other, or if the match, which key is "better" and should be the winner
 key_dominates(LObj, RObj) ->
-    strip_to_seqonly(LObj) >= strip_to_seqonly(RObj).
+    ledgermd_sqn(element(2, LObj)) >= ledgermd_sqn(element(2, RObj)).
 
 -spec count_tombs(
     list(ledger_kv()), non_neg_integer()
@@ -438,8 +427,8 @@ key_dominates(LObj, RObj) ->
     non_neg_integer().
 count_tombs([], Count) ->
     Count;
-count_tombs([{_K, V} | T], Count) when is_tuple(V) ->
-    case element(2, V) of
+count_tombs([{_K, V} | T], Count) ->
+    case ledgermd_status(V) of
         tomb ->
             count_tombs(T, Count + 1);
         _ ->
@@ -810,13 +799,18 @@ is_full_journalentry(_OtherJKType) ->
 %%% Other Ledger Functions
 %%%============================================================================
 
--spec obj_objectspecs(list(tuple()), integer(), integer() | infinity) ->
+-spec obj_objectspecs(
+    list(tuple()),
+    integer(),
+    integer() | infinity,
+    ledger_value_version()
+) ->
     list(ledger_kv()).
 %% @doc
 %% Convert object specs to KV entries ready for the ledger
-obj_objectspecs(ObjectSpecs, SQN, TTL) ->
+obj_objectspecs(ObjectSpecs, SQN, TTL, VV) ->
     lists:map(
-        fun(ObjectSpec) -> gen_headspec(ObjectSpec, SQN, TTL) end,
+        fun(ObjectSpec) -> gen_headspec(ObjectSpec, SQN, TTL, VV) end,
         ObjectSpecs
     ).
 
@@ -825,34 +819,45 @@ obj_objectspecs(ObjectSpecs, SQN, TTL) ->
     any(),
     any(),
     integer(),
-    integer() | infinity
+    integer() | infinity,
+    ledger_value_version()
 ) ->
     list(ledger_kv()).
 %% @doc
 %% Convert index specs to KV entries ready for the ledger
-idx_indexspecs(IndexSpecs, Bucket, Key, SQN, TTL) ->
+idx_indexspecs(IndexSpecs, Bucket, Key, SQN, TTL, VV) ->
     lists:map(
         fun({IdxOp, IdxFld, IdxTrm}) ->
-            gen_indexspec(Bucket, Key, IdxOp, IdxFld, IdxTrm, SQN, TTL)
+            gen_indexspec(Bucket, Key, IdxOp, IdxFld, IdxTrm, SQN, TTL, VV)
         end,
         IndexSpecs
     ).
 
-gen_indexspec(Bucket, Key, IdxOp, IdxField, IdxTerm, SQN, TTL) ->
+gen_indexspec(Bucket, Key, IdxOp, IdxField, IdxTerm, SQN, TTL, VV) ->
     Status = set_status(IdxOp, TTL),
     {
         to_objectkey(Bucket, Key, ?IDX_TAG, IdxField, IdxTerm),
-        {SQN, Status, no_lookup, null}
+        case VV of
+            2 ->
+                {SQN, Status, no_lookup, null};
+            3 ->
+                create_v3_value(SQN, Status, no_lookup, null, undefined)
+        end
     }.
 
--spec gen_headspec(object_spec(), integer(), integer() | infinity) ->
+-spec gen_headspec(
+    object_spec(),
+    integer(),
+    integer() | infinity,
+    ledger_value_version()
+) ->
     ledger_kv().
 %% @doc
 %% Take an object_spec as passed in a book_mput, and convert it into to a
 %% valid ledger key and value.  Supports different shaped tuples for different
 %% versions of the object_spec
 gen_headspec(
-    {IdxOp, v1, Bucket, Key, SubKey, LMD, Value}, SQN, TTL
+    {IdxOp, v1, Bucket, Key, SubKey, LMD, Value}, SQN, TTL, VV
 ) when
     is_binary(Key)
 ->
@@ -865,13 +870,28 @@ gen_headspec(
             SKB when is_binary(SKB) ->
                 to_objectkey(Bucket, {Key, SKB}, ?HEAD_TAG)
         end,
-    {K, {SQN, Status, segment_hash(K), Value, get_last_lastmodification(LMD)}};
+    SegHash = segment_hash(K),
+    LMTS = get_last_lastmodification(LMD),
+    {
+        K,
+        case VV of
+            2 ->
+                {SQN, Status, SegHash, Value, LMTS};
+            3 ->
+                create_v3_value(SQN, Status, SegHash, Value, LMTS)
+        end
+    };
 gen_headspec(
-    {IdxOp, Bucket, Key, SubKey, Value}, SQN, TTL
+    {IdxOp, Bucket, Key, SubKey, Value}, SQN, TTL, VV
 ) when
     is_binary(Key)
 ->
-    gen_headspec({IdxOp, v1, Bucket, Key, SubKey, undefined, Value}, SQN, TTL).
+    gen_headspec(
+        {IdxOp, v1, Bucket, Key, SubKey, undefined, Value},
+        SQN,
+        TTL,
+        VV
+    ).
 
 -spec return_proxy(
     leveled_head:object_tag(),
@@ -908,12 +928,13 @@ set_status(remove, _TTL) ->
     integer(),
     dynamic(),
     integer(),
-    non_neg_integer() | infinity
+    non_neg_integer() | infinity,
+    ledger_value_version()
 ) ->
     {
         key(),
         single_key(),
-        ledger_value_v2(),
+        ledger_value_v2() | ledger_value_v3(),
         {segment_hash(), non_neg_integer() | null},
         list(erlang:timestamp())
     }.
@@ -929,7 +950,7 @@ set_status(remove, _TTL) ->
 %% of the value to be used for equality checking between objects
 %% LastMods - the last modified dates for the object (may be multiple due to
 %% siblings)
-generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS) ->
+generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS, VV) ->
     {Tag, Bucket, Key, _} = PrimaryKey,
     Status =
         case Obj of
@@ -939,15 +960,150 @@ generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS) ->
     Hash = segment_hash(PrimaryKey),
     {MD, LastMods} = leveled_head:extract_metadata(Tag, Size, Obj),
     ObjHash = leveled_head:get_hash(Tag, MD),
+    LMD = get_last_lastmodification(LastMods),
     Value =
-        {
-            SQN,
-            Status,
-            Hash,
-            MD,
-            get_last_lastmodification(LastMods)
-        },
+        case VV of
+            2 ->
+                {SQN, Status, Hash, MD, LMD};
+            3 ->
+                create_v3_value(SQN, Status, Hash, MD, LMD)
+        end,
     {Bucket, Key, Value, {Hash, ObjHash}, LastMods}.
+
+-spec create_v3_value(
+    non_neg_integer(),
+    ledger_status(),
+    segment_hash() | no_lookup,
+    leveled_head:object_metadata() | metadata(),
+    pos_integer() | undefined
+) ->
+    binary().
+create_v3_value(SQN, Status, Hash, MD, LMTS) ->
+    SQNB = binary:encode_unsigned(SQN),
+    SQNBin = <<(byte_size(SQNB)):8/integer, SQNB/binary>>,
+    StatusBin =
+        case Status of
+            {active, infinity} ->
+                <<0:4/integer, 0:4/integer>>;
+            tomb ->
+                <<1:4/integer, 0:4/integer>>;
+            {active, TS} when is_integer(TS) ->
+                TSB = binary:encode_unsigned(TS),
+                <<2:4/integer, (byte_size(TSB)):4/integer, TSB/binary>>
+        end,
+    SegHashBin =
+        case Hash of
+            {SegHash, ExtraHash} ->
+                <<0:8/integer, SegHash:16/integer, ExtraHash:32/integer>>;
+            no_lookup ->
+                <<1:8/integer>>
+        end,
+
+    MDBin =
+        case MD of
+            null ->
+                <<0:8/integer>>;
+            MD ->
+                case term_to_binary(MD) of
+                    MDB when byte_size(MDB) < (1 bsl 24) ->
+                        <<1:8/integer, (byte_size(MDB)):24/integer, MDB/binary>>
+                end
+        end,
+    LMTSBin =
+        case LMTS of
+            LMTS when is_integer(LMTS) ->
+                LMTSB = binary:encode_unsigned(LMTS),
+                <<(byte_size(LMTSB)):8/integer, LMTSB/binary>>;
+            undefined ->
+                <<0:8/integer>>
+        end,
+    <<
+        SQNBin/binary,
+        StatusBin/binary,
+        SegHashBin/binary,
+        LMTSBin/binary,
+        MDBin/binary
+    >>.
+
+read_v3_value(ValueBin, Items) ->
+    read_v3_value(ValueBin, sqn, Items, []).
+
+read_v3_value(_RemBin, _NextITem, [], [SingleItem]) ->
+    SingleItem;
+read_v3_value(_RemBin, _NextItem, [], Acc) ->
+    list_to_tuple(lists:reverse(Acc));
+read_v3_value(<<SqnSize:8/integer, Rem/binary>>, sqn, [Next | Items], Acc) ->
+    <<SQN:SqnSize/binary, Rest/binary>> = Rem,
+    case Next of
+        sqn ->
+            read_v3_value(Rest, status, Items, [
+                binary:decode_unsigned(SQN) | Acc
+            ]);
+        _ ->
+            read_v3_value(Rest, status, [Next | Items], Acc)
+    end;
+read_v3_value(
+    <<I:4/integer, 0:4/integer, Rem/binary>>, status, [Next | Items], Acc
+) when I < 2 ->
+    case {Next, I} of
+        {Next, _I} when Next =/= status ->
+            read_v3_value(Rem, seg_hash, [Next | Items], Acc);
+        {status, 0} ->
+            read_v3_value(Rem, seg_hash, Items, [{active, infinity} | Acc]);
+        {status, 1} ->
+            read_v3_value(Rem, seg_hash, Items, [tomb | Acc])
+    end;
+read_v3_value(
+    <<2:4/integer, L:4/integer, Rem/binary>>, status, [Next | Items], Acc
+) ->
+    <<TS:L/binary, Rest/binary>> = Rem,
+    case Next of
+        status ->
+            read_v3_value(Rest, seg_hash, Items, [
+                {active, binary:decode_unsigned(TS)} | Acc
+            ]);
+        _ ->
+            read_v3_value(Rest, seg_hash, [Next | Items], Acc)
+    end;
+read_v3_value(<<1:8/integer, Rem/binary>>, seg_hash, [Next | Items], Acc) ->
+    case Next of
+        seg_hash ->
+            read_v3_value(Rem, lmd, Items, [undefined | Acc]);
+        _ ->
+            read_v3_value(Rem, lmd, [Next | Items], Acc)
+    end;
+read_v3_value(
+    <<0:8/integer, SH:16/integer, EH:32/integer, Rem/binary>>,
+    seg_hash,
+    [Next | Items],
+    Acc
+) ->
+    case Next of
+        seg_hash ->
+            read_v3_value(Rem, lmd, Items, [{SH, EH} | Acc]);
+        _ ->
+            read_v3_value(Rem, lmd, [Next | Items], Acc)
+    end;
+read_v3_value(<<0:8/integer, Rem/binary>>, lmd, [Next | Items], Acc) ->
+    case Next of
+        lmd ->
+            read_v3_value(Rem, umd, Items, [undefined | Acc]);
+        _ ->
+            read_v3_value(Rem, umd, [Next | Items], Acc)
+    end;
+read_v3_value(<<LmdSize:8/integer, Rem/binary>>, lmd, [Next | Items], Acc) ->
+    <<LMD:LmdSize/binary, Rest/binary>> = Rem,
+    case Next of
+        lmd ->
+            read_v3_value(Rest, umd, Items, [binary:decode_unsigned(LMD) | Acc]);
+        _ ->
+            read_v3_value(Rest, umd, [Next | Items], Acc)
+    end;
+read_v3_value(<<0:8/integer, Rem/binary>>, umd, [umd], Acc) ->
+    read_v3_value(Rem, umd, [], [null | Acc]);
+read_v3_value(<<1:8/integer, UmdSize:24/integer, Rem/binary>>, umd, [umd], Acc) ->
+    <<UMD:UmdSize/binary, Rest/binary>> = Rem,
+    read_v3_value(Rest, umd, [], [binary_to_term(UMD) | Acc]).
 
 -spec get_last_lastmodification(
     list(erlang:timestamp()) | undefined
@@ -965,8 +1121,10 @@ get_last_lastmodification(LastMods) ->
 
 get_size(PK, Value) ->
     {Tag, _Bucket, _Key, _} = PK,
-    MD = element(4, Value),
-    leveled_head:get_size(Tag, MD).
+    case ledgermd_umd(Value) of
+        MD when is_tuple(MD) ->
+            leveled_head:get_size(Tag, MD)
+    end.
 
 -spec get_keyandobjhash(tuple(), tuple()) -> tuple().
 %% @doc
@@ -975,13 +1133,15 @@ get_size(PK, Value) ->
 %% the sorted vclock)
 get_keyandobjhash(LK, Value) ->
     {Tag, Bucket, Key, _} = LK,
-    MD = element(4, Value),
     case Tag of
         ?IDX_TAG ->
             % returns {Bucket, Key, IdxValue}
             from_ledgerkey(LK);
         _ ->
-            {Bucket, Key, leveled_head:get_hash(Tag, MD)}
+            case ledgermd_umd(Value) of
+                MD when is_tuple(MD) ->
+                    {Bucket, Key, leveled_head:get_hash(Tag, MD)}
+            end
     end.
 
 -spec next_key(key()) -> key().
@@ -1011,7 +1171,7 @@ next_key({Type, Bucket}) when is_binary(Type), is_binary(Bucket) ->
 ) -> leveled_codec:ledger_value().
 convert_to_ledgerv(PK, SQN, Obj, Size, TS) ->
     {_B, _K, MV, _H, _LMs} =
-        leveled_codec:generate_ledgerkv(PK, SQN, Obj, Size, TS),
+        leveled_codec:generate_ledgerkv(PK, SQN, Obj, Size, TS, 2),
     MV.
 
 valid_ledgerkey_test() ->
@@ -1031,7 +1191,7 @@ indexspecs_test() ->
         {add, "t1_bin", "adbc123"},
         {remove, "t1_bin", "abdc456"}
     ],
-    Changes = idx_indexspecs(IndexSpecs, "Bucket", "Key2", 1, infinity),
+    Changes = idx_indexspecs(IndexSpecs, "Bucket", "Key2", 1, infinity, 2),
     ?assertMatch(
         {
             {i, "Bucket", {"t1_int", 456}, "Key2"},
@@ -1091,6 +1251,30 @@ headspec_v0v1_test() ->
     V1 = {add, v1, <<"B">>, <<"K">>, <<"SK">>, undefined, {<<"V">>}},
     V0 = {add, <<"B">>, <<"K">>, <<"SK">>, {<<"V">>}},
     TTL = infinity,
-    ?assertMatch(true, gen_headspec(V0, 1, TTL) == gen_headspec(V1, 1, TTL)).
+    ?assertMatch(
+        true,
+        gen_headspec(V0, 1, TTL, 2) == gen_headspec(V1, 1, TTL, 2)
+    ).
+
+v3_value_test() ->
+    SQN = 1000,
+    Status = {active, infinity},
+    Hash = segment_hash(<<"K">>),
+    UMD = {<<"Bin1">>, <<"Bin2">>, erlang:phash2(<<"Bin2">>), 1024},
+    LMD = leveled_util:integer_now(),
+    V3Val = create_v3_value(SQN, Status, Hash, UMD, LMD),
+    ?assertMatch(SQN, ledgermd_sqn(V3Val)),
+    ?assertMatch(Status, ledgermd_status(V3Val)),
+    ?assertMatch({SQN, Status}, ledgermd_sqnstatus(V3Val)),
+    ?assertMatch({Hash, LMD}, ledgermd_seglmd(V3Val)),
+    ?assertMatch({SQN, Status, UMD}, ledgermd_sqnstatusumd(V3Val)),
+
+    TempStatus = {active, leveled_util:integer_now() + 100},
+    V3ValB = create_v3_value(SQN, TempStatus, Hash, UMD, LMD),
+    ?assertMatch(SQN, ledgermd_sqn(V3ValB)),
+    ?assertMatch(TempStatus, ledgermd_status(V3ValB)),
+    ?assertMatch({SQN, TempStatus}, ledgermd_sqnstatus(V3ValB)),
+    ?assertMatch({Hash, LMD}, ledgermd_seglmd(V3ValB)),
+    ?assertMatch({SQN, TempStatus, UMD}, ledgermd_sqnstatusumd(V3ValB)).
 
 -endif.

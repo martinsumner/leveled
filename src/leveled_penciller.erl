@@ -877,7 +877,7 @@ handle_call(
                     fun(LKV) ->
                         CheckSeg =
                             leveled_sst:extract_hash(
-                                leveled_codec:strip_to_segmentonly(LKV)
+                                leveled_codec:ledgermd_seg(element(2, LKV))
                             ),
                         case CheckSeg of
                             CheckSeg when
@@ -1863,7 +1863,7 @@ compare_to_sqn(ObjSQN, _SQN) when is_integer(ObjSQN) ->
     % confusion in snapshots.
     current;
 compare_to_sqn(Obj, SQN) ->
-    compare_to_sqn(leveled_codec:strip_to_seqonly(Obj), SQN).
+    compare_to_sqn(leveled_codec:ledgermd_sqn(element(2, Obj)), SQN).
 
 -spec maybelog_fetch_timing(
     leveled_monitor:monitor(),
@@ -2264,7 +2264,7 @@ maybe_pause_push(PCL, KL) ->
         lists:foldl(
             fun({K, V}, {AccSL, AccIdx, MinSQN, MaxSQN}) ->
                 UpdSL = [{K, V} | AccSL],
-                SQN = leveled_codec:strip_to_seqonly({K, V}),
+                SQN = leveled_codec:ledgermd_sqn(V),
                 H = leveled_codec:segment_hash(K),
                 UpdIdx = leveled_pmem:prepare_for_index(AccIdx, H),
                 {UpdSL, UpdIdx, min(SQN, MinSQN), max(SQN, MaxSQN)}
@@ -2901,7 +2901,7 @@ foldwithimm_simple_test() ->
         ),
     AccFun =
         fun(K, V, Acc) ->
-            SQN = leveled_codec:strip_to_seqonly({K, V}),
+            SQN = leveled_codec:ledgermd_sqn(V),
             Acc ++ [{K, SQN}]
         end,
     Acc =
