@@ -1611,8 +1611,6 @@ many_put_fetch_switch_tester({StartOpts1, StartOpts2, StartOpts3}) ->
 
     ok = leveled_bookie:book_close(Bookie4),
 
-
-
     {ok, Bookie5} = leveled_bookie:book_start(StartOpts2),
     lists:foreach(
         fun(CL) -> ok = testutil:check_forlist(Bookie5, CL) end, CL1s
