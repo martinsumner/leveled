@@ -953,7 +953,7 @@ set_status(remove, _TTL) ->
     {
         key(),
         single_key(),
-        ledger_value_v2() | ledger_value_v3(),
+        ledger_value_v1() | ledger_value_v2() | ledger_value_v3(),
         {segment_hash(), non_neg_integer() | null},
         list(erlang:timestamp())
     }.
@@ -982,6 +982,9 @@ generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS, VV) ->
     LMD = get_last_lastmodification(LastMods),
     Value =
         case VV of
+            1 ->
+                % To be used in testing to recerate old objects
+                {SQN, Status, Hash, MD};
             2 ->
                 {SQN, Status, Hash, MD, LMD};
             3 ->
@@ -1193,6 +1196,23 @@ convert_to_ledgerv(PK, SQN, Obj, Size, TS) ->
     {_B, _K, MV, _H, _LMs} =
         leveled_codec:generate_ledgerkv(PK, SQN, Obj, Size, TS, 2),
     MV.
+
+accumulate_legacy_object_test() ->
+    LK =
+        to_objectkey(<<"Bucket1">>, <<"Key1">>, o),
+    Chunk = crypto:strong_rand_bytes(64),
+    {_, _, LV, _, _} = generate_ledgerkv(LK, 100, Chunk, 64, infinity, 1),
+    Fun = fun(K, V, Acc) -> [{K, V} | Acc] end,
+    {Acc, C} =
+        maybe_accumulate(
+            [{LK, LV}],
+            [],
+            0,
+            {leveled_util:integer_now(), {0, 10}},
+            Fun
+        ),
+    ?assertMatch(1, C),
+    ?assertMatch([{LK, LV}], Acc).
 
 valid_ledgerkey_test() ->
     UserDefTag = {user_defined, <<"B">>, <<"K">>, null},

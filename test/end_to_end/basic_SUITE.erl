@@ -1621,9 +1621,10 @@ many_put_fetch_switch_tester({StartOpts1, StartOpts2, StartOpts3}) ->
     lists:foreach(
         fun(CL) -> ok = testutil:check_forlist(Bookie5, CL) end, CL5s
     ),
-    {async, BucketFolder5} =
-        leveled_bookie:book_returnfolder(Bookie5, {bucket_stats, <<"Bucket">>}),
-    {Size5, Count5} = BucketFolder5(),
+
+    {Size5, Count5} = testutil:check_bucket_stats(Bookie5, <<"Bucket">>),
+    io:format("Stats ~w ~w from ~s~n", [Size5, Count5, <<"Bucket">>]),
+
     ok = leveled_bookie:book_close(Bookie5),
 
     {ok, Bookie6} = leveled_bookie:book_start(StartOpts1),
@@ -1637,12 +1638,12 @@ many_put_fetch_switch_tester({StartOpts1, StartOpts2, StartOpts3}) ->
         fun(CL) -> ok = testutil:check_forlist(Bookie6, CL) end, CL5s
     ),
 
-    {async, BucketFolder6} =
-        leveled_bookie:book_returnfolder(Bookie6, {bucket_stats, <<"Bucket">>}),
-    {Size6, Count6} = BucketFolder6(),
+    {Size6, Count6} = testutil:check_bucket_stats(Bookie6, <<"Bucket">>),
 
     true = Size5 == Size6,
     true = Count5 == Count6,
+    true = Size5 > 0,
+    true = Count5 > 0,
 
     ok = leveled_bookie:book_destroy(Bookie6).
 
