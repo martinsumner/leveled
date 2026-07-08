@@ -40,6 +40,10 @@ end_per_suite(Config) ->
     testutil:end_per_suite(Config).
 
 expiring_indexes(_Config) ->
+    expiring_indexes_tester(2),
+    expiring_indexes_tester(3).
+
+expiring_indexes_tester(LVV) ->
     % Add objects to the store with index entries, where the objects (and hence
     % the indexes have an expiry time.  Confirm that the indexes and the
     % objects are no longer present after the expiry time (and are present
@@ -55,6 +59,7 @@ expiring_indexes(_Config) ->
             {root_path, RootPath},
             {max_pencillercachesize, 16000},
             {max_journalobjectcount, 30000},
+            {ledger_value_version, LVV},
             {sync_strategy, testutil:sync_strategy()}
         ],
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
@@ -632,10 +637,13 @@ small_load_with2i(_Config) ->
 
 query_count(_Config) ->
     RootPath = testutil:reset_filestructure(),
-    {ok, Book1} =
-        leveled_bookie:book_start(
-            RootPath, 2000, 50000000, testutil:sync_strategy()
-        ),
+    StartOpts2 = [
+        {root_path, RootPath},
+        {max_journalsize, 50000000},
+        {ledger_value_version, 2},
+        {sync_strategy, testutil:sync_strategy()}
+    ],
+    {ok, Book1} = leveled_bookie:book_start(StartOpts2),
     BucketBin = list_to_binary("Bucket"),
     {TestObject, TestSpec} =
         testutil:generate_testobject(

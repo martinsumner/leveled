@@ -36,14 +36,15 @@ multiput_subkeys(_Config) ->
 
 multiput_subkeys_byvalue(V) ->
     RootPath = testutil:reset_filestructure("subkeyTest"),
-    StartOpts = [
+    StartOpts2 = [
         {root_path, RootPath},
         {max_journalsize, 10000000},
         {max_pencillercachesize, 12000},
         {head_only, no_lookup},
+        {ledger_value_version, 2},
         {sync_strategy, testutil:sync_strategy()}
     ],
-    {ok, Bookie} = leveled_bookie:book_start(StartOpts),
+    {ok, Bookie} = leveled_bookie:book_start(StartOpts2),
     SubKeyCount = 200000,
 
     B = {<<"MultiBucketType">>, <<"MultiBucket">>},
@@ -61,12 +62,23 @@ multiput_subkeys_byvalue(V) ->
     load_objectspecs(SpecL1, 32, Bookie),
     SpecL2 = ObjSpecLGen(<<2:32/integer>>),
     load_objectspecs(SpecL2, 32, Bookie),
+
+    ok = leveled_bookie:book_close(Bookie),
+    StartOpts3 =
+        lists:keyreplace(
+            ledger_value_version,
+            1,
+            StartOpts2,
+            {ledger_value_version, 3}
+        ),
+    {ok, Bookie3} = leveled_bookie:book_start(StartOpts3),
+
     SpecL3 = ObjSpecLGen(<<3:32/integer>>),
-    load_objectspecs(SpecL3, 32, Bookie),
+    load_objectspecs(SpecL3, 32, Bookie3),
     SpecL4 = ObjSpecLGen(<<4:32/integer>>),
-    load_objectspecs(SpecL4, 32, Bookie),
+    load_objectspecs(SpecL4, 32, Bookie3),
     SpecL5 = ObjSpecLGen(<<5:32/integer>>),
-    load_objectspecs(SpecL5, 32, Bookie),
+    load_objectspecs(SpecL5, 32, Bookie3),
 
     FoldFun =
         fun(Bucket, {Key, SubKey}, _Value, Acc) ->
@@ -76,11 +88,17 @@ multiput_subkeys_byvalue(V) ->
             end
         end,
     QueryFun =
-        fun(KeyRange) ->
+        fun(KeyRange, CurrentBookie) ->
             Range = {range, B, KeyRange},
             {async, R} =
                 leveled_bookie:book_headfold(
-                    Bookie, ?HEAD_TAG, Range, {FoldFun, []}, false, true, false
+                    CurrentBookie,
+                    ?HEAD_TAG,
+                    Range,
+                    {FoldFun, []},
+                    false,
+                    true,
+                    false
                 ),
             L = length(R()),
             io:format("query result for range ~p is ~w~n", [Range, L]),
@@ -94,10 +112,18 @@ multiput_subkeys_byvalue(V) ->
             {<<1:32/integer>>, <<10:32/integer>>},
             {<<2:32/integer>>, <<19:32/integer>>}
         },
-    true = SubKeyCount == QueryFun(KR1),
-    true = (SubKeyCount * 2) == QueryFun(KR2),
-    true = (SubKeyCount + 10) == QueryFun(KR3),
-    leveled_bookie:book_destroy(Bookie).
+    true = SubKeyCount == QueryFun(KR1, Bookie3),
+    true = (SubKeyCount * 2) == QueryFun(KR2, Bookie3),
+    true = (SubKeyCount + 10) == QueryFun(KR3, Bookie3),
+
+    leveled_bookie:book_close(Bookie3),
+    {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
+
+    true = SubKeyCount == QueryFun(KR1, Bookie2),
+    true = (SubKeyCount * 2) == QueryFun(KR2, Bookie2),
+    true = (SubKeyCount + 10) == QueryFun(KR3, Bookie2),
+
+    leveled_bookie:book_destroy(Bookie2).
 
 many_put_compare(_Config) ->
     TreeSize = small,

@@ -1288,6 +1288,8 @@ v3_value_test() ->
     ?assertMatch({Status, SQN}, ledgermd_statussqn(V3Val)),
     ?assertMatch({Hash, LMD}, ledgermd_seglmd(V3Val)),
     ?assertMatch({Status, SQN, UMD}, ledgermd_statussqnumd(V3Val)),
+    ?assertMatch({Status, LMD}, ledgermd_statuslmd(V3Val)),
+    ?assertMatch(UMD, ledgermd_umd(V3Val)),
 
     TempStatus = {active, leveled_util:integer_now() + 100},
     V3ValB = create_v3_value(SQN, TempStatus, Hash, UMD, LMD),
@@ -1295,6 +1297,8 @@ v3_value_test() ->
     ?assertMatch(TempStatus, ledgermd_status(V3ValB)),
     ?assertMatch({TempStatus, SQN}, ledgermd_statussqn(V3ValB)),
     ?assertMatch({Hash, LMD}, ledgermd_seglmd(V3ValB)),
-    ?assertMatch({TempStatus, SQN, UMD}, ledgermd_statussqnumd(V3ValB)).
+    ?assertMatch({TempStatus, SQN, UMD}, ledgermd_statussqnumd(V3ValB)),
+    ?assertMatch({TempStatus, LMD}, ledgermd_statuslmd(V3ValB)),
+    ?assertMatch(UMD, ledgermd_umd(V3ValB)).
 
 -endif.

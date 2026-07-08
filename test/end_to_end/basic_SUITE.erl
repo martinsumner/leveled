@@ -11,6 +11,7 @@
     space_clear_ondelete/1,
     is_empty_test/1,
     many_put_fetch_switchcompression/1,
+    many_put_fetch_switchledgerversion/1,
     bigjournal_littlejournal/1,
     bigsst_littlesst/1,
     safereaderror_startup/1,
@@ -30,6 +31,7 @@ all() ->
         space_clear_ondelete,
         is_empty_test,
         many_put_fetch_switchcompression,
+        many_put_fetch_switchledgerversion,
         bigjournal_littlejournal,
         bigsst_littlesst,
         safereaderror_startup,
@@ -1395,14 +1397,49 @@ remove_journal_test(_Config) ->
 
 many_put_fetch_switchcompression(_Config) ->
     {T0, ok} =
-        timer:tc(fun many_put_fetch_switchcompression_tester/1, [native]),
+        timer:tc(
+            fun many_put_fetch_switch_tester/1,
+            [set_compression_start_opts(native)]
+        ),
     {T1, ok} =
-        timer:tc(fun many_put_fetch_switchcompression_tester/1, [lz4]),
+        timer:tc(
+            fun many_put_fetch_switch_tester/1,
+            [set_compression_start_opts(lz4)]
+        ),
     {T2, ok} =
-        timer:tc(fun many_put_fetch_switchcompression_tester/1, [zstd]),
+        timer:tc(
+            fun many_put_fetch_switch_tester/1,
+            [set_compression_start_opts(zstd)]
+        ),
     io:format("Test timings native=~w lz4=~w, zstd=~w", [T0, T1, T2]).
 
-many_put_fetch_switchcompression_tester(CompressionMethod) ->
+many_put_fetch_switchledgerversion(_Config) ->
+    {T0, ok} =
+        timer:tc(
+            fun many_put_fetch_switch_tester/1,
+            [set_ledgermd_version_start_opts(2, 3, 2)]
+        ),
+    {T1, ok} =
+        timer:tc(
+            fun many_put_fetch_switch_tester/1,
+            [set_ledgermd_version_start_opts(3, 2, 3)]
+        ),
+    {T2, ok} =
+        timer:tc(
+            fun many_put_fetch_switch_tester/1,
+            [set_ledgermd_version_start_opts(3, 3, 3)]
+        ),
+    {T3, ok} =
+        timer:tc(
+            fun many_put_fetch_switch_tester/1,
+            [set_ledgermd_version_start_opts(2, 2, 2)]
+        ),
+    io:format(
+        "Test timings switching ~w ~w all l3 ~w all l2 ~w~n",
+        [T0, T1, T2, T3]
+    ).
+
+set_compression_start_opts(CompressionMethod) ->
     RootPath = testutil:reset_filestructure(),
     StartOpts1 = [
         {root_path, RootPath},
@@ -1429,7 +1466,40 @@ many_put_fetch_switchcompression_tester(CompressionMethod) ->
         {compression_method, none},
         {ledger_compression, as_store}
     ],
+    {StartOpts1, StartOpts2, StartOpts3}.
 
+set_ledgermd_version_start_opts(SL, ML, EL) ->
+    RootPath = testutil:reset_filestructure(),
+    StartOpts1 = [
+        {root_path, RootPath},
+        {max_pencillercachesize, 16000},
+        {max_journalobjectcount, 30000},
+        {sync_strategy, testutil:sync_strategy()},
+        {compression_method, zstd},
+        {ledger_compression, as_store},
+        {ledger_value_version, SL}
+    ],
+    StartOpts2 = [
+        {root_path, RootPath},
+        {max_pencillercachesize, 24000},
+        {max_journalobjectcount, 30000},
+        {sync_strategy, testutil:sync_strategy()},
+        {compression_method, zstd},
+        {ledger_compression, as_store},
+        {ledger_value_version, ML}
+    ],
+    StartOpts3 = [
+        {root_path, RootPath},
+        {max_pencillercachesize, 16000},
+        {max_journalobjectcount, 30000},
+        {sync_strategy, testutil:sync_strategy()},
+        {compression_method, zstd},
+        {ledger_compression, as_store},
+        {ledger_value_version, EL}
+    ],
+    {StartOpts1, StartOpts2, StartOpts3}.
+
+many_put_fetch_switch_tester({StartOpts1, StartOpts2, StartOpts3}) ->
     {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
     {TestObject, TestSpec} = testutil:generate_testobject(),
     ok = testutil:book_riakput(Bookie1, TestObject, TestSpec),
@@ -1541,7 +1611,8 @@ many_put_fetch_switchcompression_tester(CompressionMethod) ->
 
     ok = leveled_bookie:book_close(Bookie4),
 
-    %% Change compression method -> lz4
+
+
     {ok, Bookie5} = leveled_bookie:book_start(StartOpts2),
     lists:foreach(
         fun(CL) -> ok = testutil:check_forlist(Bookie5, CL) end, CL1s
@@ -1552,9 +1623,11 @@ many_put_fetch_switchcompression_tester(CompressionMethod) ->
     lists:foreach(
         fun(CL) -> ok = testutil:check_forlist(Bookie5, CL) end, CL5s
     ),
+    {async, BucketFolder5} =
+        leveled_bookie:book_returnfolder(Bookie5, {bucket_stats, <<"Bucket">>}),
+    {Size5, Count5} = BucketFolder5(),
     ok = leveled_bookie:book_close(Bookie5),
 
-    %% Change compression method -> native
     {ok, Bookie6} = leveled_bookie:book_start(StartOpts1),
     lists:foreach(
         fun(CL) -> ok = testutil:check_forlist(Bookie6, CL) end, CL1s
@@ -1565,6 +1638,13 @@ many_put_fetch_switchcompression_tester(CompressionMethod) ->
     lists:foreach(
         fun(CL) -> ok = testutil:check_forlist(Bookie6, CL) end, CL5s
     ),
+
+    {async, BucketFolder6} =
+        leveled_bookie:book_returnfolder(Bookie6, {bucket_stats, <<"Bucket">>}),
+    {Size6, Count6} = BucketFolder6(),
+
+    true = Size5 == Size6,
+    true = Count5 == Count6,
 
     ok = leveled_bookie:book_destroy(Bookie6).
 
