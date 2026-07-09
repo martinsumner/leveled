@@ -51,7 +51,7 @@
 -record(state, {
     owner :: pid() | undefined,
     root_path :: string() | undefined,
-    pending_deletions = dict:new() :: dict:dict(),
+    pending_deletions = maps:new() :: map(),
     sst_options :: sst_options()
 }).
 
@@ -137,7 +137,7 @@ handle_cast(
 ->
     {ManifestSQN, Deletions} =
         handle_work(Work, RP, State#state.sst_options, PCL),
-    PDs = dict:store(ManifestSQN, Deletions, State#state.pending_deletions),
+    PDs = maps:put(ManifestSQN, Deletions, State#state.pending_deletions),
     ?STD_LOG(pc022, [ManifestSQN]),
     {noreply, State#state{pending_deletions = PDs}, ?MIN_TIMEOUT};
 handle_cast(
@@ -533,9 +533,9 @@ return_deletions(ManifestSQN, PendingDeletionD) ->
     % LoopData
     %
     % So this is now allowed to crash again
-    PendingDeletions = dict:fetch(ManifestSQN, PendingDeletionD),
+    PendingDeletions = maps:get(ManifestSQN, PendingDeletionD),
     ?STD_LOG(pc021, [ManifestSQN]),
-    {PendingDeletions, dict:erase(ManifestSQN, PendingDeletionD)}.
+    {PendingDeletions, maps:remove(ManifestSQN, PendingDeletionD)}.
 
 %%%============================================================================
 %%% Test
