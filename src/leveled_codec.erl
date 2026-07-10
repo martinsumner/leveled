@@ -254,6 +254,10 @@ headkey_to_canonicalbinary(
 % tomb | {active, non_neg_integer() | infinity}
 
 -spec ledgermd_status(ledger_value()) -> ledger_status().
+ledgermd_status(<<3:8/integer, 0:8/integer, _Rest/binary>>) ->
+    {active, infinity};
+ledgermd_status(<<3:8/integer, 1:4/integer, 0:4/integer, _Rest/binary>>) ->
+    tomb;
 ledgermd_status(<<3:8/integer, V/binary>>) ->
     read_v3_value(V, [status]);
 ledgermd_status(V) when is_tuple(V) ->
@@ -279,6 +283,17 @@ ledgermd_statussqn(V) when is_tuple(V) ->
     {element(2, V), element(1, V)}.
 
 -spec ledgermd_seglmd(ledger_value()) -> {segment_hash(), last_moddate()}.
+ledgermd_seglmd(
+    <<
+        3:8/integer,
+        _:4/integer,
+        0:4/integer,
+        1:8/integer,
+        0:8/integer,
+        _Rest/binary
+    >>
+) ->
+    {no_lookup, undefined};
 ledgermd_seglmd(<<3:8/integer, V/binary>>) ->
     read_v3_value(V, [seg_hash, lmd]);
 ledgermd_seglmd({_, _, SegHash, _, LMD}) ->
@@ -1081,7 +1096,7 @@ read_v3_value(
 read_v3_value(<<1:8/integer, Rem/binary>>, seg_hash, [Next | Items], Acc) ->
     case Next of
         seg_hash ->
-            read_v3_value(Rem, lmd, Items, [undefined | Acc]);
+            read_v3_value(Rem, lmd, Items, [no_lookup | Acc]);
         _ ->
             read_v3_value(Rem, lmd, [Next | Items], Acc)
     end;
