@@ -264,6 +264,22 @@ ledgermd_status(V) when is_tuple(V) ->
     element(2, V).
 
 -spec ledgermd_sqn(ledger_value()) -> non_neg_integer().
+ledgermd_sqn(
+    <<
+        3:8/integer,
+        _:4/integer,
+        0:4/integer,
+        0:8/integer,
+        _:6/binary,
+        4:8/integer,
+        _:4/binary,
+        Rem/binary
+    >>
+) ->
+    % Short circuit the value extraction when object has no TTL, has a standard
+    % hash and the LMD is stored in 4 bytes (will be 22nd century before LMD is
+    % 5 bytes)
+    read_v3_value(Rem, sqn, [sqn], []);
 ledgermd_sqn(<<3:8/integer, V/binary>>) ->
     read_v3_value(V, [sqn]);
 ledgermd_sqn(V) when is_tuple(V) ->
@@ -277,6 +293,21 @@ ledgermd_seg(V) when is_tuple(V) ->
 
 -spec ledgermd_statussqn(ledger_value()) ->
     {ledger_status(), non_neg_integer()}.
+ledgermd_statussqn(
+    <<
+        3:8/integer,
+        0:8/integer,
+        0:8/integer,
+        _:6/binary,
+        4:8/integer,
+        _:4/binary,
+        Rem/binary
+    >>
+) ->
+    % Short circuit the value extraction when object has no TTL, has a standard
+    % hash and the LMD is stored in 4 bytes (will be 22nd century before LMD is
+    % 5 bytes)
+    {{active, infinity}, read_v3_value(Rem, sqn, [sqn], [])};
 ledgermd_statussqn(<<3:8/integer, V/binary>>) ->
     read_v3_value(V, [status, sqn]);
 ledgermd_statussqn(V) when is_tuple(V) ->
@@ -293,6 +324,8 @@ ledgermd_seglmd(
         _Rest/binary
     >>
 ) ->
+    % Short circuit the value extraction when object is an index entry, so no
+    % hash, with no TTL
     {no_lookup, undefined};
 ledgermd_seglmd(<<3:8/integer, V/binary>>) ->
     read_v3_value(V, [seg_hash, lmd]);
@@ -302,6 +335,18 @@ ledgermd_seglmd({_, _, SegHash, _}) ->
     {SegHash, undefined}.
 
 -spec ledgermd_statuslmd(ledger_value()) -> {ledger_status(), last_moddate()}.
+ledgermd_statuslmd(
+    <<
+        3:8/integer,
+        0:8/integer,
+        1:8/integer,
+        0:8/integer,
+        _Rest/binary
+    >>
+) ->
+    % Short circuit the value extraction when object is an active index entry,
+    % so no hash, with no TTL
+    {{active, infinity}, undefined};
 ledgermd_statuslmd(<<3:8/integer, V/binary>>) ->
     read_v3_value(V, [status, lmd]);
 ledgermd_statuslmd({_, Status, _, _, LMD}) ->
@@ -322,6 +367,22 @@ ledgermd_statussqnumd(V) when is_tuple(V) ->
     ledger_value()
 ) ->
     {non_neg_integer(), metadata() | null}.
+ledgermd_sqnumd(
+    <<
+        3:8/integer,
+        _:4/integer,
+        0:4/integer,
+        0:8/integer,
+        _:6/binary,
+        4:8/integer,
+        _:4/binary,
+        Rem/binary
+    >>
+) ->
+    % Short circuit the value extraction when object has no TTL, has a standard
+    % hash and the LMD is stored in 4 bytes (will be 22nd century before LMD is
+    % 5 bytes)
+    read_v3_value(Rem, sqn, [sqn, umd], []);
 ledgermd_sqnumd(<<3:8/integer, V/binary>>) ->
     read_v3_value(V, [sqn, umd]);
 ledgermd_sqnumd(V) when is_tuple(V) ->
