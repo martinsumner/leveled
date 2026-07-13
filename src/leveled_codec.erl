@@ -335,18 +335,6 @@ ledgermd_seglmd({_, _, SegHash, _}) ->
     {SegHash, undefined}.
 
 -spec ledgermd_statuslmd(ledger_value()) -> {ledger_status(), last_moddate()}.
-ledgermd_statuslmd(
-    <<
-        3:8/integer,
-        0:8/integer,
-        1:8/integer,
-        0:8/integer,
-        _Rest/binary
-    >>
-) ->
-    % Short circuit the value extraction when object is an active index entry,
-    % so no hash, with no TTL
-    {{active, infinity}, undefined};
 ledgermd_statuslmd(<<3:8/integer, V/binary>>) ->
     read_v3_value(V, [status, lmd]);
 ledgermd_statuslmd({_, Status, _, _, LMD}) ->
