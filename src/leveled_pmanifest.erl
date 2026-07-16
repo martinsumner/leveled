@@ -114,7 +114,7 @@
     manifest_sqn = 0 :: non_neg_integer(),
     % The current manifest SQN
     snapshots = [] :: list(snapshot()),
-    % A list of snaphots (i.e. clones)
+    % A list of snapshots (i.e. clones)
     min_snapshot_sqn = 0 :: integer(),
     % The smallest snapshot manifest SQN in the snapshot list
     pending_deletes = new_pending_deletions() :: pending_deletions(),
