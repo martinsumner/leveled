@@ -456,7 +456,9 @@ outofrange_test_by_type(Type) ->
     ?assertMatch(none, match(5, T)),
     ?assertMatch(none, match(97, T)),
     ?assertMatch(none, match(197, T)),
-    ?assertMatch(none, match(201, T)).
+    ?assertMatch(none, match(201, T)),
+
+    ?assertMatch(none, search(201, T)).
 
 tree_tolist_test() ->
     tolist_test_by_type(tree).
