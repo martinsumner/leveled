@@ -204,7 +204,7 @@ check_levelzero(Key, Hash, PosList, TreeList) ->
 merge_trees(StartKey, EndKey, TreeList, LevelMinus1) ->
     lists:foldl(
         fun(Tree, Acc) ->
-            R = leveled_tree:match_range(StartKey, EndKey, Tree),
+            R = leveled_tree:between(StartKey, EndKey, Tree),
             lists:ukeymerge(1, Acc, R)
         end,
         [],

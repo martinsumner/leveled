@@ -2588,10 +2588,7 @@ readycache_forsnapshot(LedgerCache, {StartKey, EndKey}) ->
     end;
 readycache_forsnapshot(LedgerCache, Query) ->
     % Need to convert the Ledger Cache away from using the ETS table
-    Tree = leveled_tree:from_orderedset(
-        LedgerCache#ledger_cache.mem,
-        ?CACHE_TYPE
-    ),
+    Tree = leveled_tree:from_ets(LedgerCache#ledger_cache.mem, ?CACHE_TYPE),
     case leveled_tree:tsize(Tree) of
         0 ->
             #ledger_cache{

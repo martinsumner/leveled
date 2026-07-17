@@ -1100,15 +1100,16 @@ key_lookup_level(LevelIdx, [Entry | Rest], Key) when LevelIdx =< 1 ->
             key_lookup_level(LevelIdx, Rest, Key)
     end;
 key_lookup_level(_LevelIdx, Level, Key) ->
-    StartKeyFun =
-        fun(ME) ->
-            ME#manifest_entry.start_key
-        end,
-    case leveled_tree:search(Key, Level, StartKeyFun) of
+    case leveled_tree:search(Key, Level) of
         none ->
             false;
         {_EK, ME} ->
-            ME#manifest_entry.owner
+            case Key >= ME#manifest_entry.start_key of
+                true ->
+                    ME#manifest_entry.owner;
+                false ->
+                    false
+            end
     end.
 
 range_lookup_int(Manifest, LevelIdx, StartKey, EndKey, MakePointerFun) ->
@@ -1141,11 +1142,14 @@ range_lookup_level(LevelIdx, Level, QStartKey, QEndKey) when LevelIdx =< 1 ->
     {In, _After} = lists:splitwith(NotAfterFun, MaybeIn),
     In;
 range_lookup_level(_LevelIdx, Level, QStartKey, QEndKey) ->
-    StartKeyFun =
-        fun(ME) ->
-            ME#manifest_entry.start_key
+    EndRangeFun =
+        fun(ER, _FirstRHSKey, FirstRHSME) ->
+            not leveled_codec:endkey_passed(
+                ER,
+                FirstRHSME#manifest_entry.start_key
+            )
         end,
-    Range = leveled_tree:search_range(QStartKey, QEndKey, Level, StartKeyFun),
+    Range = leveled_tree:between(QStartKey, QEndKey, Level, EndRangeFun),
     MapFun =
         fun({_EK, ME}) ->
             ME
