@@ -113,6 +113,14 @@ ledger_metadata() ->
 ledger_last_moddate() ->
     oneof([undefined, ?LET(N, choose(-16#ffff, 16#ffff), N + 1786520336)]).
 
+v3_binary() ->
+    ?LET(Sqn, pos(),
+        ?LET(Status, ledger_status(),
+            ?LET(SegHash, ledger_seg_hash(),
+                ?LET(Lmd, ledger_last_moddate(),
+                    ?LET(MD, ledger_metadata(),
+                        leveled_codec:create_v3_value(Sqn, Status, SegHash, MD, Lmd)))))).
+
 
 %% From type definition in leveled_codec.erl:
 %% -type ledger_value_v2() ::  {sqn(), ledger_status(), segment_hash(), metadata(), last_moddate()}.
@@ -152,5 +160,24 @@ prop_value_versions() ->
             {status3, equals(leveled_codec:ledgermd_status(VV3), Status)}
         ])
       end).
+
+prop_v3_binary() ->
+  ?FORALL(
+      V3Binary,
+      v3_binary(),
+    begin
+        %% Test no crash on decoding any v3 binary, even if it is invalid.
+        Sqn = leveled_codec:ledgermd_sqn(V3Binary),
+        Status = leveled_codec:ledgermd_status(V3Binary),
+        SegHash = leveled_codec:ledgermd_seg(V3Binary),
+        MD = leveled_codec:ledgermd_umd(V3Binary),
+        {SegHash, Lmd} = leveled_codec:ledgermd_seglmd(V3Binary),
+        {Status, Lmd} = leveled_codec:ledgermd_statuslmd(V3Binary),
+        {Status, Sqn} = leveled_codec:ledgermd_statussqn(V3Binary),
+        {Status, Sqn, MD} = leveled_codec:ledgermd_statussqnumd(V3Binary),
+        {Sqn, MD} = leveled_codec:ledgermd_sqnumd(V3Binary),
+        true
+      end).
+
 
 -endif.
