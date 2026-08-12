@@ -36,7 +36,7 @@
 %% status-tomb        = %x10              ; high-nibble=1 (tomb),   low-nibble=0
 %%
 %% TTL: high-nibble=2, low-nibble=L, followed by L bytes of timestamp
-%% status-active-ttl  = ttl-header *OCTET ; *OCTET length is low-nibble of ttl-header
+%% status-active-ttl  = ttl-header *OCTET ; 1*15OCTET length is low-nibble of ttl-header
 %% ttl-header         = %x21-2F           ; byte = (0x2 << 4) | L, L in 1..15
 %%                                        ; L = byte_size(binary:encode_unsigned(TTL))
 %%                                        ; TTL expressed as seconds since Unix epoch
@@ -57,17 +57,17 @@
 %% lmd-present        = lmd-length lmd-value
 %% lmd-length         = OCTET             ; L in 1..4 (epoch seconds fit in 4 bytes
 %%                                        ; until year 2106; encoded as minimum bytes)
-%% lmd-value          = 1*4OCTET          ; big-endian unsigned integer, L bytes
+%% lmd-value          = 1*255OCTET        ; big-endian unsigned integer, L bytes
 %%
 %% LV3-SQN            = sqn-length sqn-value
 %% sqn-length         = OCTET             ; L = byte_size(binary:encode_unsigned(SQN))
-%% sqn-value          = 1*OCTET           ; big-endian unsigned integer, L bytes
+%% sqn-value          = 1*255OCTET        ; big-endian unsigned integer, L bytes
 %%
-%% %% LV3-UMD            = umd-absent
+%% %% LV3-UMD          = umd-absent
 %%                    / umd-present
 %% 
 %% umd-absent         = %x00
-%% umd-present        = %x01 umd-length umd-bytes
+%% umd-present        = %x01 umd-length umd-bytes    ; NOTE seems not needed with %x01, see lmd
 %% umd-length         = 3OCTET            ; 24-bit big-endian byte count N, N < 16777216
 %% umd-bytes          = 1*OCTET           ; N bytes of Erlang EXT (term_to_binary/1)
 %%                                        ; WARNING: no size guard in create_v3_value
@@ -113,13 +113,63 @@ ledger_metadata() ->
 ledger_last_moddate() ->
     oneof([undefined, ?LET(N, choose(-16#ffff, 16#ffff), N + 1786520336)]).
 
+%% Grammar-based generators for ledger-value-v3 binary fields.
+%% Each generator corresponds directly to an ABNF rule in the spec above.
+
+%% LV3-STATUS = status-active-inf / status-tomb / status-active-ttl
+gen_lv3_status() ->
+    oneof([
+        return(<<0:8>>),                             %% status-active-inf = %x00
+        return(<<1:4, 0:4>>),                        %% status-tomb       = %x10
+        ?LET(L, choose(1, 15),                       %% status-active-ttl = ttl-header *OCTET
+            ?LET(Bytes, binary(L),
+                <<2:4, L:4, Bytes/binary>>))
+    ]).
+
+%% LV3-SEG-HASH = seg-hash-present / seg-hash-absent
+gen_lv3_seg_hash() ->
+    oneof([
+        return(<<1:8>>),                             %% seg-hash-absent  = %x01
+        ?LET({SH, EH},                               %% seg-hash-present = %x00 seg-hash-lo extra-hash
+             {choose(0, 16#ffff), choose(0, 16#ffffffff)},
+             <<0:8, SH:16, EH:32>>)
+    ]).
+
+%% LV3-LMD = lmd-absent / lmd-present
+gen_lv3_lmd() ->
+    oneof([
+        return(<<0:8>>),                             %% lmd-absent  = %x00
+        ?LET(L, choose(1, 255),                      %% lmd-present = lmd-length lmd-value
+            ?LET(Bytes, binary(L),
+                <<L:8, Bytes/binary>>))
+    ]).
+
+%% LV3-SQN = sqn-length sqn-value
+gen_lv3_sqn() ->
+    ?LET(L, choose(1, 255),
+        ?LET(Bytes, binary(L),
+            <<L:8, Bytes/binary>>)).
+
+%% LV3-UMD = umd-absent / umd-present
+gen_lv3_umd() ->
+    oneof([
+        return(<<0:8>>),                             %% umd-absent  = %x00
+        ?LET(Term, ledger_metadata(),                %% umd-present = %x01 umd-length umd-bytes
+            begin
+                UMDBin = term_to_binary(Term),
+                N = byte_size(UMDBin),
+                <<1:8, N:24, UMDBin/binary>>
+            end)
+    ]).
+
+%% ledger-value-v3 = LV3-VERSION LV3-STATUS LV3-SEG-HASH LV3-LMD LV3-SQN LV3-UMD
 v3_binary() ->
-    ?LET(Sqn, pos(),
-        ?LET(Status, ledger_status(),
-            ?LET(SegHash, ledger_seg_hash(),
-                ?LET(Lmd, ledger_last_moddate(),
-                    ?LET(MD, ledger_metadata(),
-                        leveled_codec:create_v3_value(Sqn, Status, SegHash, MD, Lmd)))))).
+    ?LET(
+        {StatusBin, SegHashBin, LmdBin, SqnBin, UmdBin},
+        {gen_lv3_status(), gen_lv3_seg_hash(), gen_lv3_lmd(), gen_lv3_sqn(), gen_lv3_umd()},
+        <<3:8, StatusBin/binary, SegHashBin/binary, LmdBin/binary, SqnBin/binary, UmdBin/binary>>
+    ).
+
 
 
 %% From type definition in leveled_codec.erl:
