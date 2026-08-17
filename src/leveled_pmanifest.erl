@@ -127,7 +127,7 @@
     start_key :: leveled_codec:object_key(),
     end_key :: leveled_codec:object_key(),
     owner :: pid(),
-    filename :: string(),
+    filename :: file:filename(),
     bloom = none :: leveled_ebloom:bloom() | none
 }).
 
@@ -137,7 +137,8 @@
 -type manifest_entry() :: #manifest_entry{}.
 -type manifest_owner() :: pid().
 -type lsm_level() :: 0..7.
--type pending_deletions() :: map().
+-type pending_deletions() ::
+    #{file:filename() => {non_neg_integer(), manifest_entry()}}.
 -type blooms() :: map().
 -type selector_strategy() ::
     random | {grooming, fun((list(manifest_entry())) -> manifest_entry())}.
@@ -263,10 +264,10 @@ close_manifest(Manifest, CloseEntryFun) ->
     lists:foreach(CloseLevelFun, lists:seq(0, Manifest#manifest.basement)),
 
     ClosePDFun =
-        fun({_FN, {_SQN, ME}}) ->
+        fun(_FN, {_SQN, ME}) ->
             CloseEntryFun(ME)
         end,
-    lists:foreach(ClosePDFun, maps:to_list(Manifest#manifest.pending_deletes)).
+    maps:foreach(ClosePDFun, Manifest#manifest.pending_deletes).
 
 -spec save_manifest(manifest(), string()) -> ok.
 %% @doc
