@@ -127,7 +127,7 @@
     start_key :: leveled_codec:object_key(),
     end_key :: leveled_codec:object_key(),
     owner :: pid(),
-    filename :: string(),
+    filename :: file:filename(),
     bloom = none :: leveled_ebloom:bloom() | none
 }).
 
@@ -137,8 +137,9 @@
 -type manifest_entry() :: #manifest_entry{}.
 -type manifest_owner() :: pid().
 -type lsm_level() :: 0..7.
--type pending_deletions() :: dict:dict().
--type blooms() :: dict:dict().
+-type pending_deletions() ::
+    #{file:filename() => {non_neg_integer(), manifest_entry()}}.
+-type blooms() :: map().
 -type selector_strategy() ::
     random | {grooming, fun((list(manifest_entry())) -> manifest_entry())}.
 
@@ -230,7 +231,7 @@ load_manifest(Manifest, LoadFun, SQNFun) ->
             UpdLevels = array:set(LevelIdx, L1, AccMan#manifest.levels),
             FoldBloomFun =
                 fun({P, B}, BAcc) ->
-                    dict:store(P, B, BAcc)
+                    maps:put(P, B, BAcc)
                 end,
             UpdBlooms =
                 lists:foldl(FoldBloomFun, AccMan#manifest.blooms, LvlBloom),
@@ -263,10 +264,10 @@ close_manifest(Manifest, CloseEntryFun) ->
     lists:foreach(CloseLevelFun, lists:seq(0, Manifest#manifest.basement)),
 
     ClosePDFun =
-        fun({_FN, {_SQN, ME}}) ->
+        fun(_FN, {_SQN, ME}) ->
             CloseEntryFun(ME)
         end,
-    lists:foreach(ClosePDFun, dict:to_list(Manifest#manifest.pending_deletes)).
+    maps:foreach(ClosePDFun, Manifest#manifest.pending_deletes).
 
 -spec save_manifest(manifest(), string()) -> ok.
 %% @doc
@@ -478,7 +479,7 @@ remove_manifest_entry(Manifest, ManSQN, LevelIdx, Entry) ->
     manifest(), integer(), integer(), list() | manifest_entry()
 ) -> manifest().
 %% @doc
-%% Switch a manifest etry from this level to the level below (i.e when there
+%% Switch a manifest entry from this level to the level below (i.e when there
 %% are no overlapping manifest entries in the level below)
 switch_manifest_entry(Manifest, ManSQN, SrcLevel, Entry) ->
     % Move to level below - so needs to be removed but not marked as a
@@ -695,12 +696,13 @@ release_snapshot(Manifest, Pid) ->
 %% remove the file from the manifest's list of pending_deletes.
 -spec ready_to_delete(manifest(), string()) -> boolean().
 ready_to_delete(Manifest, Filename) ->
-    PendingDelete = dict:find(Filename, Manifest#manifest.pending_deletes),
+    PendingDelete =
+        maps:get(Filename, Manifest#manifest.pending_deletes, undefined),
     case {PendingDelete, Manifest#manifest.min_snapshot_sqn} of
-        {{ok, _}, 0} ->
+        {Found, 0} when Found =/= undefined ->
             % no shapshots
             true;
-        {{ok, {ChangeSQN, _ME}}, N} when N >= ChangeSQN ->
+        {{ChangeSQN, _ME}, N} when N >= ChangeSQN ->
             % Every snapshot is looking at a version of history after this
             % was removed
             true;
@@ -716,7 +718,7 @@ clear_pending(Manifest, [], true) ->
 clear_pending(Manifest, [], false) ->
     Manifest;
 clear_pending(Manifest, [FN | RestFN], MaybeRelease) ->
-    PDs = dict:erase(FN, Manifest#manifest.pending_deletes),
+    PDs = maps:remove(FN, Manifest#manifest.pending_deletes),
     clear_pending(
         Manifest#manifest{pending_deletes = PDs},
         RestFN,
@@ -773,8 +775,8 @@ levelzero_present(Manifest) ->
 %% Check to see if a hash is present in a manifest entry by using the exported
 %% bloom filter
 check_bloom(Manifest, FP, Hash) ->
-    case dict:find(FP, Manifest#manifest.blooms) of
-        {ok, Bloom} when is_binary(Bloom) ->
+    case maps:get(FP, Manifest#manifest.blooms, undefined) of
+        Bloom when is_binary(Bloom) ->
             leveled_ebloom:check_hash(Hash, Bloom);
         _ ->
             true
@@ -1033,7 +1035,7 @@ replace_entry(LevelIdx, Level, Removals, Additions) ->
 update_pendingdeletes(ManSQN, Removals, PendingDeletes) ->
     DelFun =
         fun(E, Acc) ->
-            dict:store(E#manifest_entry.filename, {ManSQN, E}, Acc)
+            maps:put(E#manifest_entry.filename, {ManSQN, E}, Acc)
         end,
     Entries =
         case is_list(Removals) of
@@ -1070,11 +1072,11 @@ update_blooms(Removals, Additions, Blooms) ->
 
     RemFun =
         fun(R, BloomD) ->
-            dict:erase(R#manifest_entry.owner, BloomD)
+            maps:remove(R#manifest_entry.owner, BloomD)
         end,
     AddFun =
         fun(A, BloomD) ->
-            dict:store(A#manifest_entry.owner, A#manifest_entry.bloom, BloomD)
+            maps:put(A#manifest_entry.owner, A#manifest_entry.bloom, BloomD)
         end,
     StripFun =
         fun(A) ->
@@ -1200,9 +1202,9 @@ seconds_now() ->
     {MegaNow, SecNow, _} = os:timestamp(),
     MegaNow * 1000000 + SecNow.
 
-new_blooms() -> dict:new().
+new_blooms() -> maps:new().
 
-new_pending_deletions() -> dict:new().
+new_pending_deletions() -> maps:new().
 
 %%%============================================================================
 %%% Test
