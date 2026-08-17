@@ -67,14 +67,14 @@ from_ets(Table, Type) ->
     from_ets(Table, Type, ?SKIP_WIDTH).
 
 -spec from_ets(
-    ets:tab(), tree_type(), integer() | auto
+    ets:tab(), tree_type(), pos_integer()
 ) -> leveled_tree().
 %% @doc
 %% Convert an ETS table of Keys and Values (of table type ordered_set) into a
 %% leveled_tree of the given type.  The SkipWidth is an integer representing
 %% the underlying list size joined in the tree (the trees are all trees of
 %% lists of this size).
-from_ets(Table, Type, SkipWidth) ->
+from_ets(Table, Type, SkipWidth) when is_integer(SkipWidth), SkipWidth > 0 ->
     from_orderedlist(ets:tab2list(Table), Type, SkipWidth).
 
 -spec from_orderedlist(list(tuple()), tree_type()) -> leveled_tree().
@@ -98,7 +98,7 @@ from_orderedlist(OrderedList, idxt, SkipWidth) ->
     L = length(OrderedList),
     {idxt, L, idxt_fromorderedlist(OrderedList, {[], [], 1}, L, SkipWidth)}.
 
--spec match(tuple() | integer(), leveled_tree()) -> none | {value, any()}.
+-spec match(tuple(), leveled_tree()) -> none | {value, any()}.
 %% @doc
 %% Return the value from a tree associated with an exact match for the given
 %% key.  This assumes the tree contains the actual keys and values to be
@@ -114,7 +114,7 @@ match(Key, {idxt, _L, {TLI, IDX}}) when is_tuple(TLI) ->
             lookup_match(Key, element(ListID, TLI))
     end.
 
--spec search(tuple() | integer(), leveled_tree()) -> none | tuple().
+-spec search(tuple(), leveled_tree()) -> none | tuple().
 %% @doc
 %% Find the first key >= to the SearchKey in the tree.
 search(Key, {tree, Tree}) ->
@@ -135,8 +135,8 @@ search(Key, {idxt, _L, {TLI, IDX}}) when is_tuple(TLI) ->
     end.
 
 -spec between(
-    tuple() | integer() | all,
-    tuple() | integer() | all,
+    tuple() | all,
+    tuple() | all,
     leveled_tree()
 ) -> list().
 %% @doc
@@ -150,8 +150,8 @@ between(StartRange, EndRange, Tree) ->
     between(StartRange, EndRange, Tree, EndRangeFun).
 
 -spec between(
-    tuple() | integer() | all,
-    tuple() | integer() | all,
+    tuple() | all,
+    tuple() | all,
     leveled_tree(),
     fun((term(), term(), term()) -> boolean())
 ) -> list().
@@ -410,7 +410,7 @@ idxt_search_test() ->
 search_test_by_type(Type) ->
     MapFun =
         fun(N) ->
-            {N * 4, N * 4 - 2}
+            {{N * 4}, {N * 4 - 2}}
         end,
     KL = lists:map(MapFun, lists:seq(1, 50)),
     T = from_orderedlist(KL, Type),
@@ -420,16 +420,18 @@ search_test_by_type(Type) ->
         end,
 
     statistics(runtime),
-    ?assertMatch([], between(0, 1, T, EndRangeFun)),
-    ?assertMatch([], between(201, 202, T, EndRangeFun)),
-    ?assertMatch([{4, 2}], between(2, 4, T, EndRangeFun)),
-    ?assertMatch([{4, 2}], between(2, 5, T, EndRangeFun)),
-    ?assertMatch([{4, 2}, {8, 6}], between(2, 6, T, EndRangeFun)),
-    ?assertMatch(50, length(between(2, 200, T, EndRangeFun))),
-    ?assertMatch(50, length(between(2, 198, T, EndRangeFun))),
-    ?assertMatch(49, length(between(2, 197, T, EndRangeFun))),
-    ?assertMatch(49, length(between(4, 197, T, EndRangeFun))),
-    ?assertMatch(48, length(between(5, 197, T, EndRangeFun))),
+    ?assertMatch([], between({0}, {1}, T, EndRangeFun)),
+    ?assertMatch([], between({201}, {202}, T, EndRangeFun)),
+    ?assertMatch([{{4}, {2}}], between({2}, {4}, T, EndRangeFun)),
+    ?assertMatch([{{4}, {2}}], between({2}, {5}, T, EndRangeFun)),
+    ?assertMatch([{{4}, {2}}, {{8}, {6}}], between({2}, {6}, T, EndRangeFun)),
+    ?assertMatch(50, length(between({2}, {200}, T, EndRangeFun))),
+    ?assertMatch(50, length(between({2}, {198}, T, EndRangeFun))),
+    ?assertMatch(50, length(between(all, {198}, T, EndRangeFun))),
+    ?assertMatch(49, length(between({2}, {197}, T, EndRangeFun))),
+    ?assertMatch(49, length(between(all, {197}, T, EndRangeFun))),
+    ?assertMatch(49, length(between({4}, {197}, T, EndRangeFun))),
+    ?assertMatch(48, length(between({5}, {197}, T, EndRangeFun))),
     {_, T1} = statistics(runtime),
     io:format(
         user,
@@ -446,19 +448,19 @@ idxt_oor_test() ->
 outofrange_test_by_type(Type) ->
     MapFun =
         fun(N) ->
-            {N * 4, N * 4 - 2}
+            {{N * 4}, N * 4 - 2}
         end,
     KL = lists:map(MapFun, lists:seq(1, 50)),
     T = from_orderedlist(KL, Type),
 
     io:format("Out of range searches~n"),
-    ?assertMatch(none, match(0, T)),
-    ?assertMatch(none, match(5, T)),
-    ?assertMatch(none, match(97, T)),
-    ?assertMatch(none, match(197, T)),
-    ?assertMatch(none, match(201, T)),
+    ?assertMatch(none, match({0}, T)),
+    ?assertMatch(none, match({5}, T)),
+    ?assertMatch(none, match({97}, T)),
+    ?assertMatch(none, match({197}, T)),
+    ?assertMatch(none, match({201}, T)),
 
-    ?assertMatch(none, search(201, T)).
+    ?assertMatch(none, search({201}, T)).
 
 tree_tolist_test() ->
     tolist_test_by_type(tree).
@@ -469,7 +471,7 @@ idxt_tolist_test() ->
 tolist_test_by_type(Type) ->
     MapFun =
         fun(N) ->
-            {N * 4, N * 4 - 2}
+            {{N * 4}, N * 4 - 2}
         end,
     KL = lists:map(MapFun, lists:seq(1, 50)),
     T = from_orderedlist(KL, Type),
