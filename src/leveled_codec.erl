@@ -1091,8 +1091,15 @@ create_v3_value(SQN, Status, Hash, MD, LMTS) ->
                 <<0:8/integer>>;
             _ ->
                 case term_to_binary(MD) of
-                    MDB when byte_size(MDB) < (1 bsl 24) ->
-                        <<1:8/integer, (byte_size(MDB)):24/integer, MDB/binary>>
+                    MDB ->
+                        MDBSize = byte_size(MDB),
+                        LengthByteSize = size_bytelength(MDBSize, 0),
+                        <<
+                            1:4/integer,
+                            LengthByteSize:4/integer,
+                            MDBSize:(LengthByteSize * 8)/integer,
+                            MDB/binary
+                        >>
                 end
         end,
     LMTSBin =
@@ -1111,6 +1118,19 @@ create_v3_value(SQN, Status, Hash, MD, LMTS) ->
         SQNBin/binary,
         MDBin/binary
     >>.
+
+%% @doc How many bytes are required to store the length of the object
+%% if the byte-size od the object is Size.  e.g. Size <= 255 bytes has a length
+%% of 1 byte, < 64KB a length of 2 bytes, < 16MB a length of 3 bytes etc.
+%% This length will then be stored in 4-bits within the header of the item.
+-spec size_bytelength(non_neg_integer(), 0..14) -> 1..15.
+size_bytelength(Size, Acc) when Acc < 15 ->
+    case Size bsr 8 of
+        0 ->
+            Acc + 1;
+        UpdSize ->
+            size_bytelength(UpdSize, Acc + 1)
+    end.
 
 read_v3_value(ValueBin, Items) ->
     read_v3_value(ValueBin, status, Items, []).
@@ -1188,7 +1208,17 @@ read_v3_value(<<SqnSize:8/integer, Rem/binary>>, sqn, [Next | Items], Acc) ->
     end;
 read_v3_value(<<0:8/integer, Rem/binary>>, umd, [umd], Acc) ->
     read_v3_value(Rem, umd, [], [null | Acc]);
-read_v3_value(<<1:8/integer, UmdSize:24/integer, Rem/binary>>, umd, [umd], Acc) ->
+read_v3_value(
+    <<
+        1:4/integer,
+        L:4/integer,
+        UmdSize:(L * 8)/integer,
+        Rem/binary
+    >>,
+    umd,
+    [umd],
+    Acc
+) ->
     <<UMD:UmdSize/binary, Rest/binary>> = Rem,
     read_v3_value(Rest, umd, [], [binary_to_term(UMD) | Acc]).
 
