@@ -66,11 +66,11 @@ riak_fullperf(ObjSize, PM, LC) ->
     output_result(R2B),
     R2C = riak_load_tester(Bucket, 2000000, ObjSize, [], PM, LC),
     output_result(R2C),
-    R5A = riak_load_tester(Bucket, 5000000, ObjSize, [], PM, LC),
+    R5A = riak_load_tester(Bucket, 3000000, ObjSize, [], PM, LC),
     output_result(R5A),
-    R5B = riak_load_tester(Bucket, 5000000, ObjSize, [], PM, LC),
+    R5B = riak_load_tester(Bucket, 3000000, ObjSize, [], PM, LC),
     output_result(R5B),
-    R10 = riak_load_tester(Bucket, 8000000, ObjSize, [], PM, LC),
+    R10 = riak_load_tester(Bucket, 5000000, ObjSize, [], PM, LC),
     output_result(R10).
 
 riak_profileperf(_Config) ->
@@ -407,7 +407,7 @@ profile_app(Pids, ProfiledFun, P) ->
     MinTime =
         case P of
             P when P == query; P == mini_query ->
-                100000;
+                120000;
             P when P == head; P == load ->
                 200000;
             _ ->

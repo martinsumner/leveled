@@ -218,17 +218,17 @@
         % should be partial)
         | {sync_strategy, sync_mode()}
         % Should be sync if it is necessary to flush to disk after every
-        % write, or none if not (allow the OS to schecdule).  This has a
+        % write, or none if not (allow the OS to schedule).  This has a
         % significant impact on performance which can be mitigated
         % partially in hardware (e.g through use of FBWC).
-        % riak_sync is used for backwards compatability with OTP16 - and
+        % riak_sync is used for backwards compatibility with OTP16 - and
         % will manually call sync() after each write (rather than use the
         % O_SYNC option on startup)
         | {head_only, false | with_lookup | no_lookup}
         % When set to true, there are three fundamental changes as to how
         % leveled will work:
-        % - Compaction of the journalwill be managed by simply removing any
-        % journal file thathas a highest sequence number persisted to the
+        % - Compaction of the journal will be managed by simply removing any
+        % journal file that has a highest sequence number persisted to the
         % ledger;
         % - GETs are not supported, only head requests;
         % - PUTs should arrive batched object specs using the book_mput/2
@@ -1246,7 +1246,7 @@ book_islastcompactionpending(Pid) ->
 
 %% @doc Trim the journal when in head_only mode
 %%
-%% In head_only mode the journlacna be trimmed of entries which are before the
+%% In head_only mode the journal can be trimmed of entries which are before the
 %% persisted SQN.  This is much quicker than compacting the journal
 
 book_trimjournal(Pid) ->
@@ -2588,10 +2588,7 @@ readycache_forsnapshot(LedgerCache, {StartKey, EndKey}) ->
     end;
 readycache_forsnapshot(LedgerCache, Query) ->
     % Need to convert the Ledger Cache away from using the ETS table
-    Tree = leveled_tree:from_orderedset(
-        LedgerCache#ledger_cache.mem,
-        ?CACHE_TYPE
-    ),
+    Tree = leveled_tree:from_ets(LedgerCache#ledger_cache.mem, ?CACHE_TYPE),
     case leveled_tree:tsize(Tree) of
         0 ->
             #ledger_cache{

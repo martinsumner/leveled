@@ -1,35 +1,57 @@
 %% -------- TREE ---------
 %%
-%% This module is intended to address two issues
-%% - the lack of iterator_from support in OTP16 gb_trees
-%% - the time to convert from/to list in gb_trees
+%% There are two trees supported within leveled, tree and idxt - however idxt
+%% is the only one used at present.
 %%
-%% Leveled had had a skiplist implementation previously, and this is a
-%% variation on that.  The Treein this case is a bunch of sublists of length
-%% SKIP_WIDTH with the start_keys in a gb_tree.
+%% The tree type is a gb_trees:tree(), and the idxt is a variation whereby 1 in
+%% 12 keys go into a gb_trees:tree(), and there is a tuple of sublists 12-wide
+%% kept to one side.  All operations in idxt are a tree walk followed by a
+%% check against the relevant sublists.
+%%
+%% The indexed keys in idxt are the end keys in each sublist.
+%%
+%% The idxt approach is faster to convert to/from a list.  It is also faster
+%% to find matching ranges.  It is slower at lookups, but only marginally
+%% slower.
+%%
+%% There are timing tests within the eunit test suite for this module to
+%% demonstrate the difference.
+%%
+%% This is not a general purpose solution.  The `between` function used the
+%% leveled_codec:endkey_passed/2 function to determine the top of the range.
+%% This function will act in an expected way (e.g. out of range if
+%% RangeEndKey < TreeKey) if not a tuple, but differently if a key-like tuple
+%% from the leveled_codec (due to the need to handle a null within the tuple
+%% in the expected way).
+%%
+%% A more efficient implementation would be possible if simple term ordering
+%% was used instead.  Do not use this as a generic alternative to gb_trees
+%% because of this inefficiency.
 
 -module(leveled_tree).
 
--include("leveled.hrl").
-
 -export([
     from_orderedlist/2,
-    from_orderedset/2,
+    from_ets/2,
     from_orderedlist/3,
-    from_orderedset/3,
+    from_ets/3,
     to_list/1,
-    match_range/3,
-    search_range/4,
+    between/3,
+    between/4,
     match/2,
-    search/3,
+    search/2,
     tsize/1,
     empty/1
 ]).
 
--define(SKIP_WIDTH, 16).
+-define(SKIP_WIDTH, 12).
 
--type tree_type() :: tree | idxt | skpl.
--type leveled_tree() :: {tree_type(), integer(), any()}.
+-type tree_type() :: tree | idxt.
+-type leveled_tree_tree() :: {tree, gb_trees:tree()}.
+-type leveled_tree_idxt() ::
+    {idxt, non_neg_integer(), {tuple(), gb_trees:tree()}}.
+-type leveled_tree() ::
+    leveled_tree_tree() | leveled_tree_idxt().
 
 -export_type([leveled_tree/0]).
 
@@ -37,23 +59,22 @@
 %%% API
 %%%============================================================================
 
--spec from_orderedset(ets:tab(), tree_type()) -> leveled_tree().
+-spec from_ets(ets:tab(), tree_type()) -> leveled_tree().
 %% @doc
 %% Convert an ETS table of Keys and Values (of table type ordered_set) into a
 %% leveled_tree of the given type.
-from_orderedset(Table, Type) ->
-    from_orderedlist(ets:tab2list(Table), Type, ?SKIP_WIDTH).
+from_ets(Table, Type) ->
+    from_ets(Table, Type, ?SKIP_WIDTH).
 
--spec from_orderedset(
-    ets:tab(), tree_type(), integer() | auto
+-spec from_ets(
+    ets:tab(), tree_type(), pos_integer()
 ) -> leveled_tree().
 %% @doc
 %% Convert an ETS table of Keys and Values (of table type ordered_set) into a
 %% leveled_tree of the given type.  The SkipWidth is an integer representing
 %% the underlying list size joined in the tree (the trees are all trees of
-%% lists of this size).  For the skpl type the width can be auto-sized based
-%% on the length
-from_orderedset(Table, Type, SkipWidth) ->
+%% lists of this size).
+from_ets(Table, Type, SkipWidth) when is_integer(SkipWidth), SkipWidth > 0 ->
     from_orderedlist(ets:tab2list(Table), Type, SkipWidth).
 
 -spec from_orderedlist(list(tuple()), tree_type()) -> leveled_tree().
@@ -70,193 +91,108 @@ from_orderedlist(OrderedList, Type) ->
 %% Convert a list of Keys and Values (of table type ordered_set) into a
 %% leveled_tree of the given type.  The SkipWidth is an integer representing
 %% the underlying list size joined in the tree (the trees are all trees of
-%% lists of this size).  For the skpl type the width can be auto-sized based
-%% on the length
-from_orderedlist(OrderedList, tree, SkipWidth) ->
-    L = length(OrderedList),
-    {tree, L, tree_fromorderedlist(OrderedList, [], L, SkipWidth)};
+%% lists of this size).
+from_orderedlist(OrderedList, tree, _SkipWidth) ->
+    {tree, gb_trees:from_orddict(OrderedList)};
 from_orderedlist(OrderedList, idxt, SkipWidth) ->
     L = length(OrderedList),
-    {idxt, L, idxt_fromorderedlist(OrderedList, {[], [], 1}, L, SkipWidth)};
-from_orderedlist(OrderedList, skpl, _SkipWidth) ->
-    L = length(OrderedList),
-    SkipWidth =
-        % Autosize the skip width
-        case L of
-            L when L > 4096 -> 32;
-            L when L > 512 -> 16;
-            L when L > 64 -> 8;
-            _ -> 4
-        end,
-    {skpl, L, skpl_fromorderedlist(OrderedList, L, SkipWidth, 2)}.
+    {idxt, L, idxt_fromorderedlist(OrderedList, {[], [], 1}, L, SkipWidth)}.
 
--spec match(tuple() | integer(), leveled_tree()) -> none | {value, any()}.
+-spec match(tuple(), leveled_tree()) -> none | {value, any()}.
 %% @doc
 %% Return the value from a tree associated with an exact match for the given
 %% key.  This assumes the tree contains the actual keys and values to be
-%% macthed against, not a manifest representing ranges of keys and values.
-match(Key, {tree, _L, Tree}) ->
-    Iter = tree_iterator_from(Key, Tree),
-    case tree_next(Iter) of
-        none ->
-            none;
-        {_NK, SL, _Iter} ->
-            lookup_match(Key, SL)
-    end;
+%% matched against, not a manifest representing ranges of keys and values.
+match(Key, {tree, Tree}) ->
+    gb_trees:lookup(Key, Tree);
 match(Key, {idxt, _L, {TLI, IDX}}) when is_tuple(TLI) ->
-    Iter = tree_iterator_from(Key, IDX),
-    case tree_next(Iter) of
+    Iter = gb_trees:iterator_from(Key, IDX),
+    case gb_trees:next(Iter) of
         none ->
             none;
-        {_NK, ListID, _Iter} ->
+        {_NK, ListID, _Iter} when is_integer(ListID) ->
             lookup_match(Key, element(ListID, TLI))
-    end;
-match(Key, {skpl, _L, SkipList}) ->
-    SL0 = skpl_getsublist(Key, SkipList),
-    lookup_match(Key, SL0).
-
--spec search(
-    tuple() | integer(),
-    leveled_tree(),
-    fun((leveled_pmanifest:manifest_entry()) -> leveled_codec:object_key())
-) ->
-    none | tuple().
-%% @doc
-%% Search is used when the tree is a manifest of key ranges and it is necessary
-%% to find a rnage which may contain the key.  The StartKeyFun is used if the
-%% values contain extra information that can be used to determine if the key is
-%% or is not present.
-search(Key, {tree, _L, Tree}, StartKeyFun) ->
-    Iter = tree_iterator_from(Key, Tree),
-    case tree_next(Iter) of
-        none ->
-            none;
-        {_NK, SL, _Iter} ->
-            {K, V} = lookup_best(Key, SL),
-            case Key < StartKeyFun(V) of
-                true ->
-                    none;
-                false ->
-                    {K, V}
-            end
-    end;
-search(Key, {idxt, _L, {TLI, IDX}}, StartKeyFun) when is_tuple(TLI) ->
-    Iter = tree_iterator_from(Key, IDX),
-    case tree_next(Iter) of
-        none ->
-            none;
-        {_NK, ListID, _Iter} ->
-            {K, V} = lookup_best(Key, element(ListID, TLI)),
-            case Key < StartKeyFun(V) of
-                true ->
-                    none;
-                false ->
-                    {K, V}
-            end
-    end;
-search(Key, {skpl, _L, SkipList}, StartKeyFun) ->
-    SL0 = skpl_getsublist(Key, SkipList),
-    case lookup_best(Key, SL0) of
-        {K, V} ->
-            case Key < StartKeyFun(V) of
-                true ->
-                    none;
-                false ->
-                    {K, V}
-            end;
-        none ->
-            none
     end.
 
--spec match_range(
-    tuple() | integer() | all,
-    tuple() | integer() | all,
+-spec search(tuple(), leveled_tree()) -> none | tuple().
+%% @doc
+%% Find the first key >= to the SearchKey in the tree.
+search(Key, {tree, Tree}) ->
+    Iter = gb_trees:iterator_from(Key, Tree),
+    case gb_trees:next(Iter) of
+        none ->
+            none;
+        {NK, V, _Iter} ->
+            {NK, V}
+    end;
+search(Key, {idxt, _L, {TLI, IDX}}) when is_tuple(TLI) ->
+    Iter = gb_trees:iterator_from(Key, IDX),
+    case gb_trees:next(Iter) of
+        none ->
+            none;
+        {_NK, ListID, _Iter} when is_integer(ListID) ->
+            lookup_best(Key, element(ListID, TLI))
+    end.
+
+-spec between(
+    tuple() | all,
+    tuple() | all,
     leveled_tree()
 ) -> list().
 %% @doc
-%% Return a range of value between trees from a tree associated with an
-%% exact match for the given key.  This assumes the tree contains the actual
-%% keys and values to be macthed against, not a manifest representing ranges
-%% of keys and values.
-%%
-%% The keyword all can be used as a substitute for the StartKey to remove a
-%% constraint from the range.
-match_range(StartRange, EndRange, Tree) ->
+%% Return a range of {K, V} pairs from the tree between the StartRange key
+%% and the EndRange key.
+between(StartRange, EndRange, Tree) ->
     EndRangeFun =
         fun(ER, FirstRHSKey, _FirstRHSValue) ->
             ER == FirstRHSKey
         end,
-    match_range(StartRange, EndRange, Tree, EndRangeFun).
+    between(StartRange, EndRange, Tree, EndRangeFun).
 
--spec match_range(
-    tuple() | integer() | all,
-    tuple() | integer() | all,
+-spec between(
+    tuple() | all,
+    tuple() | all,
     leveled_tree(),
     fun((term(), term(), term()) -> boolean())
 ) -> list().
 %% @doc
-%% As match_range/3 but a function can be passed to be used when comparing the
-%5 EndKey with a key in the tree (such as leveled_codec:endkey_passed), where
-%% Erlang term comparison will not give the desired result.
-match_range(StartRange, EndRange, {tree, _L, Tree}, EndRangeFun) ->
-    treelookup_range_start(StartRange, EndRange, Tree, EndRangeFun);
-match_range(StartRange, EndRange, {idxt, _L, Tree}, EndRangeFun) ->
-    idxtlookup_range_start(StartRange, EndRange, Tree, EndRangeFun);
-match_range(StartRange, EndRange, {skpl, _L, SkipList}, EndRangeFun) ->
-    skpllookup_to_range(StartRange, EndRange, SkipList, EndRangeFun).
-
--spec search_range(
-    tuple() | integer() | all,
-    tuple() | integer() | all,
-    leveled_tree(),
-    fun((leveled_pmanifest:manifest_entry()) -> leveled_codec:object_key())
-) ->
-    list().
-%% @doc
-%% Extract a range from a tree, with search used when the tree is a manifest
-%% of key ranges and it is necessary to find a rnage which may encapsulate the
-%% key range.
+%% As between/3 but a function can be passed to be used when comparing the
+%% EndKey with a key in the tree.
 %%
-%% The StartKeyFun is used if the values contain extra information that can be
-%% used to determine if the key is or is not present.
-search_range(StartRange, EndRange, Tree, StartKeyFun) ->
-    EndRangeFun =
-        fun(ER, _FirstRHSKey, FirstRHSValue) ->
-            StartRHSKey = StartKeyFun(FirstRHSValue),
-            not leveled_codec:endkey_passed(ER, StartRHSKey)
-        end,
-    case Tree of
-        {tree, _L, T} ->
-            treelookup_range_start(StartRange, EndRange, T, EndRangeFun);
-        {idxt, _L, T} ->
-            idxtlookup_range_start(StartRange, EndRange, T, EndRangeFun);
-        {skpl, _L, SL} ->
-            skpllookup_to_range(StartRange, EndRange, SL, EndRangeFun)
-    end.
+%% The EndKey is the next key in the tree which is not strictly less than the
+%% EndRange Key.
+%%
+%% e.g. To always include this key:
+%%  EndRangeFun = fun(_, _, _) -> true end
+%% To only include if it is equal:
+%%  EndRangeFun = fun(ER, EK, _EV) -> ER == EK end
+%%
+%% The value of this final key is also passed in the function, should the entry
+%% represent a range of entries, and the value includes the start of that
+%% range.  For examples of using this see leveled_pmanifest.
+%%
+%% The top of the range is checked using leveled_codec:endkey_passed/2, which
+%% is different to strict erlang term order then the keys are a tuple in the
+%% format expected in the leveled_codec module.  This function has special
+%% handling of null elements within the tuple.
+between(StartRange, EndRange, {tree, Tree}, EndRangeFun) ->
+    treelookup_range_start(StartRange, EndRange, Tree, EndRangeFun);
+between(StartRange, EndRange, {idxt, _L, Tree}, EndRangeFun) ->
+    idxtlookup_range_start(StartRange, EndRange, Tree, EndRangeFun).
 
 -spec to_list(leveled_tree()) -> list().
 %% @doc
 %% Collapse the tree back to a list
-to_list({tree, _L, Tree}) ->
-    FoldFun =
-        fun({_MK, SL}, Acc) ->
-            Acc ++ SL
-        end,
-    lists:foldl(FoldFun, [], tree_to_list(Tree));
+to_list({tree, Tree}) ->
+    gb_trees:to_list(Tree);
 to_list({idxt, _L, {TLI, _IDX}}) when is_tuple(TLI) ->
-    lists:append(tuple_to_list(TLI));
-to_list({skpl, _L, SkipList}) when is_list(SkipList) ->
-    FoldFun =
-        fun({_M, SL}, Acc) ->
-            [SL | Acc]
-        end,
-    Lv1List = lists:reverse(lists:foldl(FoldFun, [], SkipList)),
-    Lv0List = lists:reverse(lists:foldl(FoldFun, [], lists:append(Lv1List))),
-    lists:append(Lv0List).
+    lists:append(tuple_to_list(TLI)).
 
 -spec tsize(leveled_tree()) -> integer().
 %% @doc
 %% Return the count of items in a tree
+tsize({tree, Tree}) ->
+    gb_trees:size(Tree);
 tsize({_Type, L, _Tree}) ->
     L.
 
@@ -264,23 +200,13 @@ tsize({_Type, L, _Tree}) ->
 %% @doc
 %% Return an empty tree of the given type
 empty(tree) ->
-    {tree, 0, empty_tree()};
+    {tree, gb_trees:empty()};
 empty(idxt) ->
-    {idxt, 0, {{}, empty_tree()}};
-empty(skpl) ->
-    {skpl, 0, []}.
+    {idxt, 0, {{}, gb_trees:empty()}}.
 
 %%%============================================================================
 %%% Internal Functions
 %%%============================================================================
-
-tree_fromorderedlist([], TmpList, _L, _SkipWidth) ->
-    gb_trees:from_orddict(lists:reverse(TmpList));
-tree_fromorderedlist(OrdList, TmpList, L, SkipWidth) ->
-    SubLL = min(SkipWidth, L),
-    {Head, Tail} = lists:split(SubLL, OrdList),
-    {LastK, _LastV} = lists:last(Head),
-    tree_fromorderedlist(Tail, [{LastK, Head} | TmpList], L - SubLL, SkipWidth).
 
 idxt_fromorderedlist([], {TmpListElements, TmpListIdx, _C}, _L, _SkipWidth) ->
     {
@@ -298,29 +224,6 @@ idxt_fromorderedlist(OrdList, {TmpListElements, TmpListIdx, C}, L, SkipWidth) ->
         SkipWidth
     ).
 
-skpl_fromorderedlist(SkipList, _L, _SkipWidth, 0) ->
-    SkipList;
-skpl_fromorderedlist(SkipList, L, SkipWidth, Height) ->
-    SkipList0 = roll_list(SkipList, L, [], SkipWidth),
-    skpl_fromorderedlist(SkipList0, length(SkipList0), SkipWidth, Height - 1).
-
-roll_list([], 0, SkipList, _SkipWidth) ->
-    lists:reverse(SkipList);
-roll_list(KVList, L, SkipList, SkipWidth) ->
-    SubLL = min(SkipWidth, L),
-    {Head, Tail} = lists:split(SubLL, KVList),
-    {LastK, _LastV} = lists:last(Head),
-    roll_list(Tail, L - SubLL, [{LastK, Head} | SkipList], SkipWidth).
-
-% lookup_match(_Key, []) ->
-%     none;
-% lookup_match(Key, [{EK, _EV}|_Tail]) when EK > Key ->
-%     none;
-% lookup_match(Key, [{Key, EV}|_Tail]) ->
-%     {value, EV};
-% lookup_match(Key, [_Top|Tail]) ->
-%     lookup_match(Key, Tail).
-
 lookup_match(Key, KVList) ->
     case lists:keyfind(Key, 1, KVList) of
         false ->
@@ -329,236 +232,115 @@ lookup_match(Key, KVList) ->
             {value, Value}
     end.
 
-lookup_best(_Key, []) ->
-    none;
 lookup_best(Key, [{EK, EV} | _Tail]) when EK >= Key ->
     {EK, EV};
 lookup_best(Key, [_Top | Tail]) ->
     lookup_best(Key, Tail).
 
 treelookup_range_start(StartRange, EndRange, Tree, EndRangeFun) ->
-    Iter0 = tree_iterator_from(StartRange, Tree),
-    case tree_next(Iter0) of
-        none ->
-            [];
-        {NK, SL, Iter1} ->
-            PredFun =
-                fun({K, _V}) ->
-                    K < StartRange
-                end,
-            {_LHS, RHS} = lists:splitwith(PredFun, SL),
-            treelookup_range_end(EndRange, {NK, RHS}, Iter1, [], EndRangeFun)
-    end.
+    Iter0 = gb_trees:iterator_from(StartRange, Tree),
+    lists:reverse(tree_range_fold(Iter0, EndRange, EndRangeFun, [])).
 
-treelookup_range_end(EndRange, {NK0, SL0}, Iter0, Output, EndRangeFun) ->
-    PredFun =
-        fun({K, _V}) ->
-            not leveled_codec:endkey_passed(EndRange, K)
-        end,
-    case leveled_codec:endkey_passed(EndRange, NK0) of
-        true ->
-            {LHS, RHS} = lists:splitwith(PredFun, SL0),
-            [{FirstRHSKey, FirstRHSValue} | _Rest] = RHS,
-            case EndRangeFun(EndRange, FirstRHSKey, FirstRHSValue) of
+tree_range_fold(Iter, EndRange, EndRangeFun, Acc) ->
+    case gb_trees:next(Iter) of
+        none ->
+            Acc;
+        {NK, NV, Iter1} ->
+            case leveled_codec:endkey_passed(EndRange, NK) of
                 true ->
-                    Output ++ LHS ++ [{FirstRHSKey, FirstRHSValue}];
+                    case EndRangeFun(EndRange, NK, NV) of
+                        true ->
+                            [{NK, NV} | Acc];
+                        false ->
+                            Acc
+                    end;
                 false ->
-                    Output ++ LHS
-            end;
-        false ->
-            UpdOutput = Output ++ SL0,
-            case tree_next(Iter0) of
-                none ->
-                    UpdOutput;
-                {NK1, SL1, Iter1} ->
-                    treelookup_range_end(
-                        EndRange,
-                        {NK1, SL1},
-                        Iter1,
-                        UpdOutput,
-                        EndRangeFun
-                    )
+                    tree_range_fold(Iter1, EndRange, EndRangeFun, [
+                        {NK, NV} | Acc
+                    ])
             end
     end.
 
 idxtlookup_range_start(StartRange, EndRange, {TLI, IDX}, EndRangeFun) ->
     % TLI tuple of lists, IDS is a gb_tree of End Keys mapping to tuple
     % indexes
-    Iter0 = tree_iterator_from(StartRange, IDX),
-    case tree_next(Iter0) of
+    Iter0 = gb_trees:iterator_from(StartRange, IDX),
+    case gb_trees:next(Iter0) of
         none ->
             [];
         {NK, ListID, Iter1} ->
-            PredFun =
+            BeforeFun =
                 fun({K, _V}) ->
                     K < StartRange
                 end,
-            {_LHS, RHS} = lists:splitwith(PredFun, element(ListID, TLI)),
+            {_LHS, RHS} = lists:splitwith(BeforeFun, element(ListID, TLI)),
             % The RHS is the list of {EK, SK} elements where the EK >=  the
             % StartRange, otherwise the LHS falls before the range
-            idxtlookup_range_end(
-                EndRange, {TLI, NK, RHS}, Iter1, [], EndRangeFun
-            )
+            case idxtlookup_range_end(EndRange, NK, Iter1, []) of
+                {[], true} ->
+                    right_trim(RHS, EndRangeFun, EndRange);
+                {[], false} ->
+                    RHS;
+                {[HdIdx | RestIdx], RTrim} ->
+                    RHS ++
+                        lists:foldl(
+                            fun(I, Acc) -> element(I, TLI) ++ Acc end,
+                            case RTrim of
+                                true ->
+                                    right_trim(
+                                        element(HdIdx, TLI),
+                                        EndRangeFun,
+                                        EndRange
+                                    );
+                                false ->
+                                    []
+                            end,
+                            case RTrim of
+                                true ->
+                                    RestIdx;
+                                false ->
+                                    [HdIdx | RestIdx]
+                            end
+                        )
+            end
     end.
 
-idxtlookup_range_end(EndRange, {TLI, NK0, SL0}, Iter0, Output, EndRangeFun) ->
+right_trim(SubList, EndRangeFun, EndRange) ->
     PredFun =
         fun({K, _V}) ->
             not leveled_codec:endkey_passed(EndRange, K)
         % true if EndRange is after K
         end,
+    {LHS, [{FirstRHSKey, FirstRHSValue} | _Rest]} =
+        lists:splitwith(PredFun, SubList),
+    case EndRangeFun(EndRange, FirstRHSKey, FirstRHSValue) of
+        true ->
+            % The start key is not after the end of the range
+            % and so this should be included in the range
+            LHS ++ [{FirstRHSKey, FirstRHSValue}];
+        false ->
+            % the start key of the next key is after the end
+            % of the range and so should not be included
+            LHS
+    end.
+
+idxtlookup_range_end(EndRange, NK0, Iter0, Acc) ->
     case leveled_codec:endkey_passed(EndRange, NK0) of
         true ->
-            % The end key of this list is after the end of the range, so no
-            % longer interested in any of the rest of the tree - just this
-            % sublist
-            {LHS, RHS} = lists:splitwith(PredFun, SL0),
-            % Split the {EK, SK} pairs based on the EndRange.  Note that the
-            % last key is passed the end range - so the RHS cannot be empty, it
-            % must at least include the last key (as NK0 is at the end of SL0).
-            [{FirstRHSKey, FirstRHSValue} | _Rest] = RHS,
-            case EndRangeFun(EndRange, FirstRHSKey, FirstRHSValue) of
-                true ->
-                    % The start key is not after the end of the range
-                    % and so this should be included in the range
-                    Output ++ LHS ++ [{FirstRHSKey, FirstRHSValue}];
-                false ->
-                    % the start key of the next key is after the end
-                    % of the range and so should not be included
-                    Output ++ LHS
-            end;
+            {Acc, true};
         false ->
-            UpdOutput = Output ++ SL0,
-            case tree_next(Iter0) of
+            case gb_trees:next(Iter0) of
                 none ->
-                    UpdOutput;
+                    {Acc, false};
                 {NK1, ListID, Iter1} ->
                     idxtlookup_range_end(
                         EndRange,
-                        {TLI, NK1, element(ListID, TLI)},
+                        NK1,
                         Iter1,
-                        UpdOutput,
-                        EndRangeFun
+                        [ListID | Acc]
                     )
             end
     end.
-
-skplfold_range([], _StartRange, _EndRange, Acc) ->
-    Acc;
-skplfold_range([{K, _SL} | Rest], StartRange, EndRange, Acc) when
-    StartRange > K
-->
-    skplfold_range(Rest, StartRange, EndRange, Acc);
-skplfold_range([{K, SL} | Rest], StartRange, EndRange, Acc) ->
-    case leveled_codec:endkey_passed(EndRange, K) of
-        true ->
-            [SL | Acc];
-        false ->
-            skplfold_range(Rest, StartRange, EndRange, [SL | Acc])
-    end.
-
-skpllookup_to_range(StartRange, EndRange, SkipList, EndRangeFun) ->
-    Lv1List =
-        lists:reverse(
-            skplfold_range(SkipList, StartRange, EndRange, [])
-        ),
-    Lv0List =
-        lists:reverse(
-            skplfold_range(
-                lists:append(Lv1List), StartRange, EndRange, []
-            )
-        ),
-    BeforeFun =
-        fun({K, _V}) ->
-            K < StartRange
-        end,
-    AfterFun =
-        fun({K, V}) ->
-            case leveled_codec:endkey_passed(EndRange, K) of
-                false ->
-                    true;
-                true ->
-                    EndRangeFun(EndRange, K, V)
-            end
-        end,
-
-    case Lv0List of
-        [] ->
-            [];
-        [SingleList] ->
-            RHS = lists:dropwhile(BeforeFun, SingleList),
-            lists:takewhile(AfterFun, RHS);
-        [LHList, RHList] ->
-            RHSofLHL = lists:dropwhile(BeforeFun, LHList),
-            LHSofRHL = lists:takewhile(AfterFun, RHList),
-            RHSofLHL ++ LHSofRHL;
-        [LHL | Rest] ->
-            RHSofLHL = lists:dropwhile(BeforeFun, LHL),
-            LHSofRHL = lists:takewhile(AfterFun, lists:last(Rest)),
-            MidLists = lists:sublist(Rest, length(Rest) - 1),
-            lists:append([RHSofLHL] ++ MidLists ++ [LHSofRHL])
-    end.
-
-skpl_getsublist(Key, SkipList) ->
-    FoldFun =
-        fun({Mark, SL}, Acc) ->
-            case {Acc, Mark} of
-                {[], Mark} when Mark >= Key ->
-                    SL;
-                _ ->
-                    Acc
-            end
-        end,
-    SL1 = lists:foldl(FoldFun, [], SkipList),
-    lists:foldl(FoldFun, [], SL1).
-
-%%%============================================================================
-%%% Balance tree implementation
-%%%============================================================================
-
-empty_tree() ->
-    gb_trees:empty().
-
-tree_to_list(T) ->
-    gb_trees:to_list(T).
-
-tree_iterator_from(K, T) ->
-    % For OTP 16 compatibility with gb_trees
-    iterator_from(K, T).
-
-tree_next(I) ->
-    % For OTP 16 compatibility with gb_trees
-    next(I).
-
-iterator_from(S, {_, T}) ->
-    iterator_1_from(S, T).
-
-iterator_1_from(S, T) ->
-    iterator_from(S, T, []).
-
-iterator_from(S, {K, _, _, T}, As) when K < S ->
-    iterator_from(S, T, As);
-iterator_from(_, {_, _, nil, _} = T, As) ->
-    [T | As];
-iterator_from(S, {_, _, L, _} = T, As) ->
-    iterator_from(S, L, [T | As]);
-iterator_from(_, nil, As) ->
-    As.
-
-next([{X, V, _, T} | As]) ->
-    {X, V, iterator(T, As)};
-next([]) ->
-    none.
-
-%% The iterator structure is really just a list corresponding to
-%% the call stack of an in-order traversal. This is quite fast.
-
-iterator({_, _, nil, _} = T, As) ->
-    [T | As];
-iterator({_, _, L, _} = T, As) ->
-    iterator(L, [T | As]);
-iterator(nil, As) ->
-    As.
 
 %%%============================================================================
 %%% Test
@@ -625,30 +407,31 @@ idxt_search_test() ->
     search_test_by_type(idxt),
     extra_searchrange_test_by_type(idxt).
 
-skpl_search_test() ->
-    search_test_by_type(skpl),
-    extra_searchrange_test_by_type(skpl).
-
 search_test_by_type(Type) ->
     MapFun =
         fun(N) ->
-            {N * 4, N * 4 - 2}
+            {{N * 4}, {N * 4 - 2}}
         end,
     KL = lists:map(MapFun, lists:seq(1, 50)),
     T = from_orderedlist(KL, Type),
+    EndRangeFun =
+        fun(ER, _FirstRHSKey, FirstRHSValue) ->
+            ER >= FirstRHSValue
+        end,
 
-    StartKeyFun = fun(V) -> V end,
     statistics(runtime),
-    ?assertMatch([], search_range(0, 1, T, StartKeyFun)),
-    ?assertMatch([], search_range(201, 202, T, StartKeyFun)),
-    ?assertMatch([{4, 2}], search_range(2, 4, T, StartKeyFun)),
-    ?assertMatch([{4, 2}], search_range(2, 5, T, StartKeyFun)),
-    ?assertMatch([{4, 2}, {8, 6}], search_range(2, 6, T, StartKeyFun)),
-    ?assertMatch(50, length(search_range(2, 200, T, StartKeyFun))),
-    ?assertMatch(50, length(search_range(2, 198, T, StartKeyFun))),
-    ?assertMatch(49, length(search_range(2, 197, T, StartKeyFun))),
-    ?assertMatch(49, length(search_range(4, 197, T, StartKeyFun))),
-    ?assertMatch(48, length(search_range(5, 197, T, StartKeyFun))),
+    ?assertMatch([], between({0}, {1}, T, EndRangeFun)),
+    ?assertMatch([], between({201}, {202}, T, EndRangeFun)),
+    ?assertMatch([{{4}, {2}}], between({2}, {4}, T, EndRangeFun)),
+    ?assertMatch([{{4}, {2}}], between({2}, {5}, T, EndRangeFun)),
+    ?assertMatch([{{4}, {2}}, {{8}, {6}}], between({2}, {6}, T, EndRangeFun)),
+    ?assertMatch(50, length(between({2}, {200}, T, EndRangeFun))),
+    ?assertMatch(50, length(between({2}, {198}, T, EndRangeFun))),
+    ?assertMatch(50, length(between(all, {198}, T, EndRangeFun))),
+    ?assertMatch(49, length(between({2}, {197}, T, EndRangeFun))),
+    ?assertMatch(49, length(between(all, {197}, T, EndRangeFun))),
+    ?assertMatch(49, length(between({4}, {197}, T, EndRangeFun))),
+    ?assertMatch(48, length(between({5}, {197}, T, EndRangeFun))),
     {_, T1} = statistics(runtime),
     io:format(
         user,
@@ -662,31 +445,22 @@ tree_oor_test() ->
 idxt_oor_test() ->
     outofrange_test_by_type(idxt).
 
-skpl_oor_test() ->
-    outofrange_test_by_type(skpl).
-
 outofrange_test_by_type(Type) ->
     MapFun =
         fun(N) ->
-            {N * 4, N * 4 - 2}
+            {{N * 4}, N * 4 - 2}
         end,
     KL = lists:map(MapFun, lists:seq(1, 50)),
     T = from_orderedlist(KL, Type),
 
     io:format("Out of range searches~n"),
-    ?assertMatch(none, match(0, T)),
-    ?assertMatch(none, match(5, T)),
-    ?assertMatch(none, match(97, T)),
-    ?assertMatch(none, match(197, T)),
-    ?assertMatch(none, match(201, T)),
+    ?assertMatch(none, match({0}, T)),
+    ?assertMatch(none, match({5}, T)),
+    ?assertMatch(none, match({97}, T)),
+    ?assertMatch(none, match({197}, T)),
+    ?assertMatch(none, match({201}, T)),
 
-    StartKeyFun = fun(V) -> V end,
-
-    ?assertMatch(none, search(0, T, StartKeyFun)),
-    ?assertMatch(none, search(5, T, StartKeyFun)),
-    ?assertMatch(none, search(97, T, StartKeyFun)),
-    ?assertMatch(none, search(197, T, StartKeyFun)),
-    ?assertMatch(none, search(201, T, StartKeyFun)).
+    ?assertMatch(none, search({201}, T)).
 
 tree_tolist_test() ->
     tolist_test_by_type(tree).
@@ -694,13 +468,10 @@ tree_tolist_test() ->
 idxt_tolist_test() ->
     tolist_test_by_type(idxt).
 
-skpl_tolist_test() ->
-    tolist_test_by_type(skpl).
-
 tolist_test_by_type(Type) ->
     MapFun =
         fun(N) ->
-            {N * 4, N * 4 - 2}
+            {{N * 4}, N * 4 - 2}
         end,
     KL = lists:map(MapFun, lists:seq(1, 50)),
     T = from_orderedlist(KL, Type),
@@ -713,29 +484,21 @@ timing_tests_tree_test_() ->
 timing_tests_idxt_test_() ->
     {timeout, 60, fun idxt_timing/0}.
 
-timing_tests_skpl_test_() ->
-    {timeout, 60, fun skpl_timing/0}.
-
 tree_timing() ->
-    log_tree_test_by_(16, tree, 8000),
-    log_tree_test_by_(16, tree, 4000),
-    log_tree_test_by_(4, tree, 256).
+    log_tree_test_by_(1, tree, 8000),
+    log_tree_test_by_(1, tree, 4000),
+    log_tree_test_by_(1, tree, 2000),
+    log_tree_test_by_(1, tree, 256),
+    log_tree_test_by_simplekey_(1, tree, 256).
 
 idxt_timing() ->
-    log_tree_test_by_(16, idxt, 8000),
-    log_tree_test_by_(16, idxt, 4000),
-    log_tree_test_by_(4, idxt, 256),
-    log_tree_test_by_(16, idxt, 256),
-    log_tree_test_by_simplekey_(16, idxt, 256).
-
-skpl_timing() ->
-    log_tree_test_by_(auto, skpl, 8000),
-    log_tree_test_by_(auto, skpl, 4000),
-    log_tree_test_by_simplekey_(auto, skpl, 4000),
-    log_tree_test_by_(auto, skpl, 512),
-    log_tree_test_by_simplekey_(auto, skpl, 512),
-    log_tree_test_by_(auto, skpl, 256),
-    log_tree_test_by_simplekey_(auto, skpl, 256).
+    log_tree_test_by_(12, idxt, 8000),
+    log_tree_test_by_(12, idxt, 4000),
+    log_tree_test_by_(32, idxt, 2000),
+    log_tree_test_by_(12, idxt, 2000),
+    log_tree_test_by_(6, idxt, 2000),
+    log_tree_test_by_(12, idxt, 256),
+    log_tree_test_by_simplekey_(12, idxt, 256).
 
 log_tree_test_by_(Width, Type, N) ->
     KL = lists:ukeysort(1, generate_randomkeys(1, N, 1, N div 5)),
@@ -770,7 +533,7 @@ tree_test_by_(Width, Type, KL, ComplexKey) ->
     OS = ets:new(test, [ordered_set, private]),
     ets:insert(OS, KL),
     SWaETS = os:timestamp(),
-    Tree0 = from_orderedset(OS, Type, Width),
+    Tree0 = from_ets(OS, Type, Width),
     io:format(
         user,
         "Generating tree from ETS in ~w microseconds" ++
@@ -855,7 +618,121 @@ tree_test_by_(Width, Type, KL, ComplexKey) ->
         user,
         "Search all keys twice for near match in ~w microseconds~n",
         [timer:now_diff(os:timestamp(), SWaSRCH2)]
+    ),
+
+    BigRanges =
+        lists:map(
+            fun(I) ->
+                get_random_range(
+                    KL,
+                    case I rem 2 of
+                        0 -> exact;
+                        1 -> over
+                    end,
+                    400
+                )
+            end,
+            lists:seq(1, 1000)
+        ),
+    ok = test_ranges(BigRanges, Tree0, Tree1, big),
+    MidRanges =
+        lists:map(
+            fun(I) ->
+                get_random_range(
+                    KL,
+                    case I rem 2 of
+                        0 -> exact;
+                        1 -> over
+                    end,
+                    40
+                )
+            end,
+            lists:seq(1, 1000)
+        ),
+    ok = test_ranges(MidRanges, Tree0, Tree1, mid),
+    SmallRanges =
+        lists:map(
+            fun(I) ->
+                get_random_range(
+                    KL,
+                    case I rem 2 of
+                        0 -> exact;
+                        1 -> over
+                    end,
+                    10
+                )
+            end,
+            lists:seq(1, 1000)
+        ),
+    ok = test_ranges(SmallRanges, Tree0, Tree1, small),
+
+    {TC0, OL} = timer:tc(fun() -> to_list(Tree0) end),
+    {TC1, OL} = timer:tc(fun() -> to_list(Tree1) end),
+
+    io:format(user, "Reverted both to_list in ~w microseconds~n", [TC0 + TC1]).
+
+test_ranges(TestRanges, Tree0, Tree1, Size) ->
+    {TCRange0, RL0} =
+        timer:tc(
+            fun() ->
+                lists:map(
+                    fun({SK, EK, SL}) ->
+                        {between(SK, EK, Tree0), SL}
+                    end,
+                    TestRanges
+                )
+            end
+        ),
+    {TCRange1, RL1} =
+        timer:tc(
+            fun() ->
+                lists:map(
+                    fun({SK, EK, SL}) ->
+                        {between(SK, EK, Tree1), SL}
+                    end,
+                    TestRanges
+                )
+            end
+        ),
+    lists:foreach(
+        fun({R, Exp}) ->
+            ?assertMatch(Exp, R)
+        end,
+        RL0
+    ),
+    lists:foreach(
+        fun({R, Exp}) ->
+            ?assertMatch(Exp, R)
+        end,
+        RL1
+    ),
+    io:format(
+        user,
+        "Matched 1000 ~w ranges in both trees in ~w microseconds~n",
+        [Size, TCRange0 + TCRange1]
     ).
+
+get_random_range(KL, RangeType, MaxSize) ->
+    L = length(KL),
+    R = rand:uniform(L - 5),
+    RangeSize = min(max(4, rand:uniform(L - R)), MaxSize),
+    SL = lists:sublist(KL, R, RangeSize),
+    case {RangeType, lists:last(SL)} of
+        {exact, LastKV} ->
+            {element(1, hd(SL)), element(1, LastKV), SL};
+        {over, {{o_kv, B, FullKey, null}, _LastV}} ->
+            LastKey =
+                {
+                    o_kv,
+                    B,
+                    list_to_binary(binary_to_list(FullKey) ++ "0"),
+                    null
+                },
+            {element(1, hd(SL)), LastKey, SL};
+        {over, {K, _V}} ->
+            LastKey = list_to_binary(binary_to_list(K) ++ "0"),
+            {element(1, hd(SL)), LastKey, SL}
+    end.
 
 tree_matchrange_test() ->
     matchrange_test_by_type(tree),
@@ -864,10 +741,6 @@ tree_matchrange_test() ->
 idxt_matchrange_test() ->
     matchrange_test_by_type(idxt),
     extra_matchrange_test_by_type(idxt).
-
-skpl_matchrange_test() ->
-    matchrange_test_by_type(skpl),
-    extra_matchrange_test_by_type(skpl).
 
 matchrange_test_by_type(Type) ->
     N = 4000,
@@ -892,7 +765,7 @@ matchrange_test_by_type(Type) ->
 
     LengthR =
         fun(SK, EK, T) ->
-            length(match_range(SK, EK, T))
+            length(between(SK, EK, T))
         end,
 
     KL_Length = length(KL),
@@ -927,7 +800,7 @@ extra_matchrange_test_by_type(Type) ->
                 {o_kv, SB, list_to_binary(binary_to_list(SK) ++ "0"), null},
             ERangeK =
                 {o_kv, EB, list_to_binary(binary_to_list(EK) ++ "0"), null},
-            ?assertMatch(49, length(match_range(SRangeK, ERangeK, Tree0)))
+            ?assertMatch(49, length(between(SRangeK, ERangeK, Tree0)))
         end,
     lists:foreach(TestRangeLFun, RangeLists).
 
@@ -940,7 +813,13 @@ extra_searchrange_test_by_type(Type) ->
 
     SubL = lists:sublist(KL, 2000, 3100),
 
-    SKFun = fun(V) -> V end,
+    EndRangeFun =
+        fun(ER, _FirstRHSKey, FirstRHSME) ->
+            not leveled_codec:endkey_passed(
+                ER,
+                FirstRHSME
+            )
+        end,
 
     TestRangeLFun =
         fun(P) ->
@@ -958,7 +837,7 @@ extra_searchrange_test_by_type(Type) ->
             BRangeK =
                 {o_kv, EB, list_to_binary(binary_to_list(EK) ++ "0"), null},
             ?assertMatch(
-                25, length(search_range(FRangeK, BRangeK, Tree0, SKFun))
+                25, length(between(FRangeK, BRangeK, Tree0, EndRangeFun))
             )
         end,
     lists:foreach(TestRangeLFun, lists:seq(1, 50)).
@@ -976,26 +855,29 @@ match_fun(Tree) ->
     end.
 
 search_exactmatch_fun(Tree) ->
-    StartKeyFun = fun(_V) -> all end,
     fun({K, V}) ->
-        ?assertMatch({K, V}, search(K, Tree, StartKeyFun))
+        ?assertMatch({K, V}, search(K, Tree))
     end.
 
 search_nearmatch_fun(Tree) ->
-    StartKeyFun = fun(_V) -> all end,
     fun({K, {NK, NV}}) ->
-        ?assertMatch({NK, NV}, search(K, Tree, StartKeyFun))
+        ?assertMatch({NK, NV}, search(K, Tree))
     end.
 
 empty_test() ->
     T0 = empty(tree),
     ?assertMatch(0, tsize(T0)),
-    T1 = empty(skpl),
-    ?assertMatch(0, tsize(T1)),
     T2 = empty(idxt),
     ?assertMatch(0, tsize(T2)).
 
-search_range_idx_test() ->
+between_idx_test() ->
+    EndRangeFun =
+        fun(ER, _FirstRHSKey, FirstRHSME) ->
+            not leveled_codec:endkey_passed(
+                ER,
+                leveled_pmanifest:entry_startkey(FirstRHSME)
+            )
+        end,
     Tree =
         {idxt, 1, {
             {[
@@ -1010,14 +892,16 @@ search_range_idx_test() ->
                     )
                 }
             ]},
-            {1, {{o_rkv, <<"Bucket1">>, <<"Key1">>, null}, 1, nil, nil}}
+            gb_trees:from_orddict(
+                [{{o_rkv, <<"Bucket1">>, <<"Key1">>, null}, 1}]
+            )
         }},
     R =
-        search_range(
+        between(
             {o_rkv, <<"Bucket">>, null, null},
             {o_rkv, <<"Bucket">>, null, null},
             Tree,
-            fun leveled_pmanifest:entry_startkey/1
+            EndRangeFun
         ),
     ?assertMatch(1, length(R)).
 
