@@ -1089,7 +1089,7 @@ create_v3_value(SQN, Status, Hash, MD, LMTS) ->
         case MD of
             null ->
                 <<0:8/integer>>;
-            MD ->
+            _ ->
                 case term_to_binary(MD) of
                     MDB when byte_size(MDB) < (1 bsl 24) ->
                         <<1:8/integer, (byte_size(MDB)):24/integer, MDB/binary>>
