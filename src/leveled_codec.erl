@@ -1059,7 +1059,7 @@ generate_ledgerkv(PrimaryKey, SQN, Obj, Size, TS, VV) ->
 -spec create_v3_value(
     non_neg_integer(),
     ledger_status(),
-    segment_hash() | no_lookup,
+    segment_hash(),
     leveled_head:object_metadata() | metadata(),
     pos_integer() | undefined
 ) ->
