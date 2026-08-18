@@ -71,7 +71,7 @@
     pos_integer().
 -type segment_hash() ::
     % hash of the key to an aae segment - to be used in ledger filters
-    {integer(), integer()} | no_lookup.
+    {non_neg_integer(), non_neg_integer()} | no_lookup.
 -type head_value() :: any().
 -type metadata() ::
     % null for empty metadata
