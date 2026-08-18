@@ -407,7 +407,7 @@ profile_app(Pids, ProfiledFun, P) ->
     MinTime =
         case P of
             P when P == query; P == mini_query ->
-                100000;
+                120000;
             P when P == head; P == load ->
                 200000;
             _ ->

@@ -34,7 +34,7 @@ If the lookup does not return an entry, then the Bookie must request that the Pe
 
 The Penciller on receiving a request to lookup a Key (with hash), needs to check first in its in-memory view of level-zero.  Level zero is formed of a:
 
-- a list of trees, with each tree being the output of an export of a Ledger Cache (it is exported using ets:tab2list, and then converted to a tree using leveled_tree:from_orderedset).  
+- a list of trees, with each tree being the output of an export of a Ledger Cache (it is exported using ets:tab2list, and then converted to a tree using leveled_tree:from_ets).  
 - an index of hashes, which is an array that has accumulated the index arrays formed within the Bookie's Ledger cache.
 
 The index of hashes is used to find which of the trees in the list of trees that the Key may be present in.  The hash is converted into a slot and lookup hash part, and the binary is pulled from the entry in the array that aligns with the slot.

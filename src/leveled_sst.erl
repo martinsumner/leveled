@@ -2111,20 +2111,12 @@ term_prefix_filter(N, Prefix) ->
     end.
 
 lookup_slot(Key, Tree, FilterFun) ->
-    StartKeyFun =
-        fun(_V) ->
-            all
-        end,
     % The penciller should never ask for presence out of range - so will
-    % always return a slot (as we don't compare to StartKey)
-    {_LK, Slot} = leveled_tree:search(FilterFun(Key), Tree, StartKeyFun),
+    % always return a slot
+    {_LK, Slot} = leveled_tree:search(FilterFun(Key), Tree),
     Slot.
 
 lookup_slots(StartKey, EndKey, Tree, FilterFun) ->
-    StartKeyFun =
-        fun(_V) ->
-            all
-        end,
     MapFun =
         fun({_LK, Slot}) ->
             Slot
@@ -2140,11 +2132,11 @@ lookup_slots(StartKey, EndKey, Tree, FilterFun) ->
             _ -> FilterFun(EndKey)
         end,
     SlotList =
-        leveled_tree:search_range(
+        leveled_tree:between(
             FilteredStartKey,
             FilteredEndKey,
             Tree,
-            StartKeyFun
+            fun(_, _, _) -> true end
         ),
     {EK, _EndSlot} = lists:last(SlotList),
     {

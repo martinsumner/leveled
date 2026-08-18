@@ -149,7 +149,7 @@ bucket_list(SnapFun, Tag, FoldBucketsFun, InitAcc, MaxBuckets) ->
 %% This has the special capability that it will expect a message to be thrown
 %% during the query - and handle this without crashing the penciller snapshot
 %% This allows for this query to be used with a max_results check in the
-%% applictaion - and to throw a stop message to be caught by the worker
+%% application - and to throw a stop message to be caught by the worker
 %% handling the runner.  This behaviour will not prevent the snapshot from
 %% closing neatly, allowing delete_pending files to be cleared without waiting
 %% for a timeout

@@ -50,7 +50,7 @@
 -define(MIN_KEYCHECK_FREQUENCY, 1).
 -define(MAX_LEVELS, 8).
 %% Should equal the length of the LEVEL_SCALEFACTOR
--define(CACHE_TYPE, skpl).
+-define(CACHE_TYPE, idxt).
 %%%============================================================================
 
 %%%============================================================================
