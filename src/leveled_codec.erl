@@ -13,7 +13,7 @@
 
 -ifdef(TEST).
 -export([convert_to_ledgerv/5]).
--export([ledgermd_statuslmd/1, ledgermd_sqnumd/1, ledgermd_umd/1, create_v3_value/5]).
+-export([ledgermd_statuslmd/1, ledgermd_umd/1, create_v3_value/5]).
 -endif.
 
 -export([
