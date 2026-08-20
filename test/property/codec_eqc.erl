@@ -157,18 +157,15 @@ gen_lv3_umd() ->
         ?LET(Term, ledger_metadata(),                %% umd-present = %x01 umd-length umd-bytes
             begin
                 UMDBin = term_to_binary(Term),
-                N = byte_size(UMDBin),
-                <<1:8, N:24, UMDBin/binary>>
+                UmdSize = byte_size(UMDBin),
+                Bytes = byte_size(binary:encode_unsigned(UmdSize)),
+                <<1:4, Bytes:4, UmdSize:(Bytes*8), UMDBin/binary>>
             end)
     ]).
 
 %% ledger-value-v3 = LV3-VERSION LV3-STATUS LV3-SEG-HASH LV3-LMD LV3-SQN LV3-UMD
 v3_binary() ->
-    ?LET(
-        {StatusBin, SegHashBin, LmdBin, SqnBin, UmdBin},
-        {gen_lv3_status(), gen_lv3_seg_hash(), gen_lv3_lmd(), gen_lv3_sqn(), gen_lv3_umd()},
-        <<3:8, StatusBin/binary, SegHashBin/binary, LmdBin/binary, SqnBin/binary, UmdBin/binary>>
-    ).
+   {gen_lv3_status(), gen_lv3_seg_hash(), gen_lv3_lmd(), gen_lv3_sqn(), gen_lv3_umd()}.
 
 
 
@@ -213,9 +210,10 @@ prop_value_versions() ->
 
 prop_v3_binary() ->
   ?FORALL(
-      V3Binary,
+      {StatusBin, SegHashBin, LmdBin, SqnBin, UmdBin},
       v3_binary(),
     begin
+        V3Binary = <<3:8, StatusBin/binary, SegHashBin/binary, LmdBin/binary, SqnBin/binary, UmdBin/binary>>,
         %% Test no crash on decoding any v3 binary, even if it is invalid.
         Sqn = leveled_codec:ledgermd_sqn(V3Binary),
         Status = leveled_codec:ledgermd_status(V3Binary),
@@ -226,7 +224,8 @@ prop_v3_binary() ->
         {Status, Sqn} = leveled_codec:ledgermd_statussqn(V3Binary),
         {Status, Sqn, MD} = leveled_codec:ledgermd_statussqnumd(V3Binary),
         {Sqn, MD} = leveled_codec:ledgermd_sqnumd(V3Binary),
-        true
+        ?WHENFAIL(eqc:format("term ~p~n", [{Sqn, Status, SegHash, MD, Lmd}]),
+          equals(leveled_codec:create_v3_value(Sqn, Status, SegHash, MD, Lmd), V3Binary))
       end).
 
 
