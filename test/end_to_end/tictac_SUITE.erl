@@ -914,21 +914,22 @@ headonly_trim_and_key_rotation(_Config) ->
     ok = leveled_bookie:book_trimjournal(Bookie1),
 
     WaitForTrimFun =
-        fun(N, false) ->
-            {ok, PollFNs} = file:list_dir(JFP),
-            io:format(
-                "Journal files count discovered after trim triggered ~w~n",
-                [length(PollFNs)]
-            ),
-            case length(PollFNs) < length(FNs) of
-                true ->
-                    true;
-                false ->
-                    timer:sleep(N * 1000),
-                    false
-            end;
-        (_N, true) ->
-            true
+        fun
+            (N, false) ->
+                {ok, PollFNs} = file:list_dir(JFP),
+                io:format(
+                    "Journal files count discovered after trim triggered ~w~n",
+                    [length(PollFNs)]
+                ),
+                case length(PollFNs) < length(FNs) of
+                    true ->
+                        true;
+                    false ->
+                        timer:sleep(N * 1000),
+                        false
+                end;
+            (_N, true) ->
+                true
         end,
 
     true = lists:foldl(WaitForTrimFun, false, [1, 2, 3, 5, 8, 13, 21]),

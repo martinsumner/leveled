@@ -2953,7 +2953,12 @@ maybepush_ledgercache(
     end.
 
 -spec maybe_withjitter(
-    non_neg_integer(), pos_integer(), pos_integer(), non_neg_integer(), non_neg_integer() | infinity, pos_integer()
+    non_neg_integer(),
+    pos_integer(),
+    pos_integer(),
+    non_neg_integer(),
+    non_neg_integer() | infinity,
+    pos_integer()
 ) -> boolean().
 %% @doc
 %% Push down randomly, but the closer to 4 * the maximum size, the more likely
