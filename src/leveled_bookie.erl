@@ -115,7 +115,7 @@
     {root_path, undefined},
     {snapshot_bookie, undefined},
     {cache_size, ?CACHE_SIZE},
-    {cache_multiple, ?MAX_CACHE_MULTTIPLE},
+    {cache_multiple, ?MAX_CACHE_MULTIPLE},
     {max_journalsize, 1000000000},
     {max_journalobjectcount, 200000},
     {max_sstslots, 256},
@@ -152,8 +152,8 @@
         tuple() | empty_cache,
     load_queue = [] :: list(),
     index = leveled_pmem:new_index(),
-    min_sqn = infinity :: integer() | infinity,
-    max_sqn = 0 :: integer()
+    min_sqn = infinity :: non_neg_integer() | infinity,
+    max_sqn = 0 :: non_neg_integer()
 }).
 
 -record(state, {
@@ -2921,7 +2921,15 @@ maybepush_ledgercache(
     Tab = Cache#ledger_cache.mem,
     CacheSize = ets:info(Tab, size),
     leveled_monitor:add_stat(Monitor, {ledger_cache_size_update, CacheSize}),
-    TimeToPush = maybe_withjitter(CacheSize, MaxCacheSize, MaxCacheMult),
+    TimeToPush =
+        maybe_withjitter(
+            CacheSize,
+            MaxCacheSize,
+            MaxCacheMult,
+            Cache#ledger_cache.max_sqn,
+            Cache#ledger_cache.min_sqn,
+            ?MAX_SQN_MULTIPLE * MaxCacheSize
+        ),
     if
         TimeToPush ->
             CacheToLoad =
@@ -2945,17 +2953,24 @@ maybepush_ledgercache(
     end.
 
 -spec maybe_withjitter(
-    non_neg_integer(), pos_integer(), pos_integer()
+    non_neg_integer(), pos_integer(), pos_integer(), non_neg_integer(), non_neg_integer() | infinity, pos_integer()
 ) -> boolean().
 %% @doc
 %% Push down randomly, but the closer to 4 * the maximum size, the more likely
 %% a push should be
 maybe_withjitter(
-    CacheSize, MaxCacheSize, MaxCacheMult
+    CacheSize, MaxCacheSize, MaxCacheMult, _MaxSQN, _MinSQN, _MaxSQNDiff
 ) when CacheSize > MaxCacheSize ->
     R = rand:uniform(MaxCacheMult * MaxCacheSize),
     (CacheSize - MaxCacheSize) > R;
-maybe_withjitter(_CacheSize, _MaxCacheSize, _MaxCacheMult) ->
+maybe_withjitter(
+    _CacheSize, _MaxCacheSize, MaxCacheMult, MaxSQN, MinSQN, MaxSQNDiff
+) when is_integer(MinSQN), (MaxSQN - MinSQN) > MaxSQNDiff ->
+    R = rand:uniform(MaxCacheMult * MaxSQNDiff),
+    ((MaxSQN - MinSQN) - MaxSQNDiff) > R;
+maybe_withjitter(
+    _CacheSize, _MaxCacheSize, _MaxCacheMult, _MaxSQN, _MinSQN, _MaxSQNDiff
+) ->
     false.
 
 -spec get_loadfun() -> initial_loadfun().
