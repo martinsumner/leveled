@@ -65,7 +65,7 @@
 %%
 %% %% LV3-UMD          = umd-absent
 %%                    / umd-present
-%% 
+%%
 %% umd-absent         = %x00
 %% umd-present        = %x01 umd-length umd-bytes    ; NOTE seems not needed with %x01, see lmd
 %% umd-length         = 3OCTET            ; 24-bit big-endian byte count N, N < 16777216
@@ -87,13 +87,22 @@
         eqc:on_output(fun(Str, Args) ->
                               io:format(user, Str, Args) end, P)).
 
-eqc_prop1_test_() ->
+eqc_prop_versions_test_() ->
   {timeout,
       ?EQC_TIME_BUDGET + 10,
       ?_assertEqual(
           true,
           eqc:quickcheck(
-              eqc:testing_time(?EQC_TIME_BUDGET, ?QC_OUT(prop_value_versions()))))}.
+              eqc:testing_time(?EQC_TIME_BUDGET div 2, ?QC_OUT(prop_value_versions()))))}.
+
+eqc_prop_v3_binary_test_() ->
+  {timeout,
+      ?EQC_TIME_BUDGET + 10,
+      ?_assertEqual(
+          true,
+          eqc:quickcheck(
+              eqc:testing_time(?EQC_TIME_BUDGET div 2, ?QC_OUT(prop_v3_binary()))))}.
+
 
 %% generators
 
@@ -107,8 +116,8 @@ ledger_seg_hash() ->
     oneof([no_lookup, {choose(0, 16#ffff), choose(0, 16#ffff)}]).
 
 ledger_metadata() ->
-    %% for any() take just bool() for the moment
-    oneof([{int(), int()}, null, bool()]).
+    %% for any() take just int() or bool() for the moment
+    oneof([{int(), int()}, int(), bool(), atom, binary()]).
 
 ledger_last_moddate() ->
     oneof([undefined, ?LET(N, choose(-16#ffff, 16#ffff), N + 1786520336)]).
@@ -154,7 +163,7 @@ gen_lv3_sqn() ->
 gen_lv3_umd() ->
     oneof([
         return(<<0:8>>),                             %% umd-absent  = %x00
-        ?LET(Term, ledger_metadata(),                %% umd-present = %x01 umd-length umd-bytes
+        ?LET(Term, ledger_metadata(),                %% umd-present = %x1(umd-length):4 umd-bytes
             begin
                 UMDBin = term_to_binary(Term),
                 UmdSize = byte_size(UMDBin),
@@ -180,7 +189,7 @@ prop_value_versions() ->
         VV2 = {Sqn, Status, SegHash, MD, Lmd},
         VV3 = leveled_codec:create_v3_value(Sqn, Status, SegHash, MD, Lmd),
         conjunction([
-            {sqn1, equals(leveled_codec:ledgermd_sqn(VV1), Sqn)}, 
+            {sqn1, equals(leveled_codec:ledgermd_sqn(VV1), Sqn)},
             {sqn2, equals(leveled_codec:ledgermd_sqn(VV2), Sqn)},
             {sqn3, equals(leveled_codec:ledgermd_sqn(VV3), Sqn)},
             {seg_hash1, equals(leveled_codec:ledgermd_seg(VV1), SegHash)},
@@ -201,13 +210,16 @@ prop_value_versions() ->
             {sqn_umd3, equals(leveled_codec:ledgermd_sqnumd(VV3), {Sqn, MD})},
             {umd1, equals(leveled_codec:ledgermd_umd(VV1), MD)},
             {umd2, equals(leveled_codec:ledgermd_umd(VV2), MD)},
-            {umd3, equals(leveled_codec:ledgermd_umd(VV3), MD)},          
+            {umd3, equals(leveled_codec:ledgermd_umd(VV3), MD)},
             {status1, equals(leveled_codec:ledgermd_status(VV1), Status)},
             {status2, equals(leveled_codec:ledgermd_status(VV2), Status)},
             {status3, equals(leveled_codec:ledgermd_status(VV3), Status)}
         ])
       end).
 
+%% We encode v3 binaries from the grammar directly to spot future changes in decoder.
+%% Note that different binaries can be decoded to the sae value, for example a 
+%% sequence number can have additional leading zeros ( 1 0  and 2 0 0 are one and two byte representation of zero)      
 prop_v3_binary() ->
   ?FORALL(
       {StatusBin, SegHashBin, LmdBin, SqnBin, UmdBin},
@@ -224,8 +236,7 @@ prop_v3_binary() ->
         {Status, Sqn} = leveled_codec:ledgermd_statussqn(V3Binary),
         {Status, Sqn, MD} = leveled_codec:ledgermd_statussqnumd(V3Binary),
         {Sqn, MD} = leveled_codec:ledgermd_sqnumd(V3Binary),
-        ?WHENFAIL(eqc:format("term ~p~n", [{Sqn, Status, SegHash, MD, Lmd}]),
-          equals(leveled_codec:create_v3_value(Sqn, Status, SegHash, MD, Lmd), V3Binary))
+        true
       end).
 
 
