@@ -1327,7 +1327,7 @@ segment_checker(false) ->
 sqn_only(not_present) ->
     not_present;
 sqn_only(KV) ->
-    leveled_codec:strip_to_seqonly(KV).
+    leveled_codec:ledgermd_sqn(element(2, KV)).
 
 -spec extract_hash(
     leveled_codec:segment_hash()
@@ -2191,7 +2191,7 @@ finalise_posbin({_, {PosBin, HashAcc, LMDAcc}}) ->
     non_neg_integer(), position_acc()
 }) -> {non_neg_integer(), position_acc()}.
 accumulate_position(NextKV, {NHC, {PosBin, HashAcc, LMDAcc}}) ->
-    {_SQN, H1, LMD} = leveled_codec:strip_to_indexdetails(NextKV),
+    {H1, LMD} = leveled_codec:ledgermd_seglmd(element(2, NextKV)),
     LMDAcc0 = take_max_lastmoddate(LMD, LMDAcc),
     case extract_hash(H1) of
         PosH1 when is_integer(PosH1) ->
@@ -3647,7 +3647,7 @@ maybe_expand_keys(KVL) ->
 maybe_reap_expiredkey(KV, {false, _}) ->
     KV;
 maybe_reap_expiredkey(KV, {true, CurrTS}) ->
-    case leveled_codec:strip_to_statusonly(KV) of
+    case leveled_codec:ledgermd_status(element(2, KV)) of
         {_, TS} when is_integer(TS), CurrTS > TS ->
             none;
         tomb ->
@@ -3839,6 +3839,7 @@ generate_randomkeys(Seqn, Count, Acc, BucketLow, BRange) ->
         ),
     Chunk = crypto:strong_rand_bytes(64),
     MV = leveled_codec:convert_to_ledgerv(LK, Seqn, Chunk, 64, infinity),
+    is_tuple(MV) orelse error(bad_type),
     MD = element(4, MV),
     is_tuple(MD) orelse error(bad_type),
     ?assertMatch(undefined, element(3, MD)),
@@ -3868,7 +3869,8 @@ generate_indexkey(Term, Count) ->
         "Bucket",
         "Key" ++ integer_to_list(Count),
         Count,
-        infinity
+        infinity,
+        2
     ).
 
 append_performance_test_() ->
@@ -4569,11 +4571,7 @@ simple_persisted_rangesegfilter_tester(SSTNewFun) ->
         fun(LK) ->
             case lists:keyfind(LK, 1, KVList1) of
                 LKV when LKV =/= false ->
-                    extract_hash(
-                        leveled_codec:strip_to_segmentonly(
-                            LKV
-                        )
-                    )
+                    extract_hash(leveled_codec:ledgermd_seg(element(2, LKV)))
             end
         end,
     SegList =
@@ -4828,7 +4826,7 @@ reader_hibernate_tester() ->
     {ok, Pid, {FirstKey, LastKey}, _Bloom} =
         testsst_new(RP, Filename, 1, KVList1, length(KVList1), {0, native}),
     ?assertMatch({FirstKey, FV}, sst_get(Pid, FirstKey)),
-    SQN = leveled_codec:strip_to_seqonly({FirstKey, FV}),
+    SQN = leveled_codec:ledgermd_sqn(FV),
     ?assertMatch(
         SQN,
         sst_getsqn(Pid, FirstKey, leveled_codec:segment_hash(FirstKey))
@@ -5184,7 +5182,7 @@ hashmatching_bytreesize_test() ->
                     null},
             LKV =
                 leveled_codec:generate_ledgerkv(
-                    LK, X, V, byte_size(V), infinity
+                    LK, X, V, byte_size(V), infinity, 2
                 ),
             {_Bucket, _Key, MetaValue, _Hashes, _LastMods} = LKV,
             {LK, MetaValue}
@@ -6021,7 +6019,8 @@ single_key_test() ->
             <<"Bucket">>,
             <<"Key">>,
             1,
-            infinity
+            infinity,
+            2
         ),
     {ok, P2, {IdxK, IdxK}, _Bloom2} =
         sst_new(?TEST_AREA, FileName, 1, [{IdxK, IdxV}], 6000, OptsSST),
@@ -6099,7 +6098,7 @@ strange_range_test() ->
     GenerateValue =
         fun(K) ->
             element(
-                3, leveled_codec:generate_ledgerkv(K, 1, V, 16, infinity)
+                3, leveled_codec:generate_ledgerkv(K, 1, V, 16, infinity, 2)
             )
         end,
 
@@ -6131,7 +6130,8 @@ strange_range_test() ->
             <<"Bucket">>,
             <<"Key">>,
             1,
-            infinity
+            infinity,
+            2
         ),
     {ok, P2, {_FIdxK, _EIdxK}, _Bloom2} =
         sst_new(
@@ -6193,7 +6193,7 @@ blocks_required_test() ->
             element(
                 3,
                 leveled_codec:generate_ledgerkv(
-                    StdKey(I), I, Chunk, 32, infinity
+                    StdKey(I), I, Chunk, 32, infinity, 2
                 )
             )
         end,
@@ -6202,7 +6202,7 @@ blocks_required_test() ->
             element(
                 3,
                 leveled_codec:generate_ledgerkv(
-                    IdxKey(I), I, <<>>, 0, infinity
+                    IdxKey(I), I, <<>>, 0, infinity, 2
                 )
             )
         end,
