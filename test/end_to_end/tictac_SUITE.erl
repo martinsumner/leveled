@@ -6,7 +6,8 @@
     many_put_compare/1,
     index_compare/1,
     basic_headonly/1,
-    tuplebuckets_headonly/1
+    tuplebuckets_headonly/1,
+    headonly_trim_and_key_rotation/1
 ]).
 
 all() ->
@@ -15,7 +16,8 @@ all() ->
         many_put_compare,
         index_compare,
         basic_headonly,
-        tuplebuckets_headonly
+        tuplebuckets_headonly,
+        headonly_trim_and_key_rotation
     ].
 
 -define(V1_VERS, 1).
@@ -163,7 +165,7 @@ many_put_compare(_Config) ->
     {ok, Bookie2} = leveled_bookie:book_start(StartOpts2),
     testutil:check_forobject(Bookie2, TestObject),
 
-    % Generate 200K objects to be sued within the test, and load them into
+    % Generate 200K objects to be used within the test, and load them into
     % the first store (outputting the generated objects as a list of lists)
     % to be used elsewhere
 
@@ -892,6 +894,74 @@ tuplebuckets_headonly(_Config) ->
 
     leveled_bookie:book_destroy(Bookie1).
 
+headonly_trim_and_key_rotation(_Config) ->
+    %% Rotate a small set of keys, and ensure that trim still has an impact
+    %% See - https://github.com/martinsumner/leveled/issues/497
+    RootPathHO = testutil:reset_filestructure("trimHO"),
+    StartOpts1 = [
+        {root_path, RootPathHO},
+        {max_pencillercachesize, 8000},
+        {cache_size, 2000},
+        {head_only, no_lookup},
+        {max_journalobjectcount, 5000}
+    ],
+
+    {ok, Bookie1} = leveled_bookie:book_start(StartOpts1),
+
+    ObjectSpecFun =
+        fun(Op, V) ->
+            fun(N) ->
+                Bucket = <<"B", N:8/integer>>,
+                Key = <<"K", N:32/integer>>,
+                <<SegmentID:20/integer, _RestBS/bitstring>> =
+                    crypto:hash(md5, term_to_binary({Bucket, Key})),
+                {Op, v1, <<SegmentID:32/integer>>, Bucket, Key, undefined,
+                    {value, V}}
+            end
+        end,
+
+    LoadFun =
+        fun(Book, V, Cnt) ->
+            ST = os:system_time(millisecond),
+            ObjectSpecL = lists:map(ObjectSpecFun(add, V), lists:seq(1, Cnt)),
+            ok = load_objectspecs(ObjectSpecL, 8, Book),
+            io:format(
+                "ObjectSpec load of ~w took ~w ms~n",
+                [Cnt, os:system_time(millisecond) - ST]
+            )
+        end,
+
+    lists:foreach(fun(I) -> LoadFun(Bookie1, I, 1000) end, lists:seq(1, 2000)),
+
+    JFP = RootPathHO ++ "/journal/journal_files",
+    {ok, FNs} = file:list_dir(JFP),
+
+    io:format("Journal file count of ~w discovered~n", [length(FNs)]),
+    ok = leveled_bookie:book_trimjournal(Bookie1),
+
+    WaitForTrimFun =
+        fun
+            (N, false) ->
+                {ok, PollFNs} = file:list_dir(JFP),
+                io:format(
+                    "Journal files count discovered after trim triggered ~w~n",
+                    [length(PollFNs)]
+                ),
+                case length(PollFNs) < length(FNs) of
+                    true ->
+                        true;
+                    false ->
+                        timer:sleep(N * 1000),
+                        false
+                end;
+            (_N, true) ->
+                true
+        end,
+
+    true = lists:foldl(WaitForTrimFun, false, [1, 2, 3, 5, 8, 13, 21]),
+
+    ok = leveled_bookie:book_destroy(Bookie1).
+
 basic_headonly(_Config) ->
     ObjectCount = 200000,
     RemoveCount = 100,
@@ -989,7 +1059,7 @@ basic_headonly_test(ObjectCount, RemoveCount, HeadOnly) ->
     {ok, FinalFNs} = file:list_dir(JFP),
 
     ok = leveled_bookie:book_trimjournal(Bookie1),
-    % CCheck a second trim is still OK
+    % Check a second trim is still OK
 
     [{add, SegmentID0, Bucket0, Key0, Hash0} | _Rest] = ObjectSpecL,
     case HeadOnly of

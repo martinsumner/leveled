@@ -11,7 +11,8 @@
 %%% Configurable startup defaults
 %%%============================================================================
 -define(CACHE_SIZE, 2500).
--define(MAX_CACHE_MULTTIPLE, 2).
+-define(MAX_CACHE_MULTIPLE, 2).
+-define(MAX_SQN_MULTIPLE, 4).
 -define(MIN_CACHE_SIZE, 100).
 -define(MIN_PCL_CACHE_SIZE, 400).
 -define(MAX_PCL_CACHE_SIZE, 28000).
