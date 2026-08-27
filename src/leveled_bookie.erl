@@ -132,6 +132,7 @@
     {ledger_preloadpagecache_level, ?SST_PAGECACHELEVEL_LOOKUP},
     {compression_method, ?COMPRESSION_METHOD},
     {ledger_compression, as_store},
+    {ledger_value_version, ?LEDGER_VALUE_VERSION},
     {block_version, 1},
     {compression_point, ?COMPRESSION_POINT},
     {compression_level, ?COMPRESSION_LEVEL},
@@ -167,6 +168,8 @@
     head_only = false :: boolean(),
     head_lookup = true :: boolean(),
     ink_checking = ?MAX_KEYCHECK_FREQUENCY :: integer(),
+    ledger_value_version = ?LEDGER_VALUE_VERSION ::
+        leveled_codec:ledger_value_version(),
     bookie_monref :: reference() | undefined,
     monitor = {no_monitor, 0} :: leveled_monitor:monitor()
 }).
@@ -317,6 +320,9 @@
         % Define an alternative to the compression method to be used by the
         % ledger only.  Default is as_store - use the method defined as
         % compression_method for the whole store
+        | {ledger_value_version, 2 | 3}
+        % version 2 uses a tuple for the value in the ledger, whereas version
+        % 3 has a purely binary value to support direct decoding
         | {block_version, 0 | 1}
         % Version of the leveled_sst blocks.  Block version 0 does not use
         % sub-blocks, whereas block version 1 has multiple types of blocks
@@ -387,9 +393,9 @@
         integer()
     }.
 
+%% erlfmt:ignore format avoids issues with VSCode/ELP
 -type initial_loadfun() ::
-    fun(
-        (
+    fun((
             leveled_codec:journal_key(),
             dynamic(),
             non_neg_integer(),
@@ -1360,6 +1366,8 @@ init([Opts]) ->
             leveled_log:add_forcedlogs(ForcedLogs),
             DatabaseID = proplists:get_value(database_id, Opts),
             leveled_log:set_databaseid(DatabaseID),
+            LedgerValueVersion =
+                proplists:get_value(ledger_value_version, Opts),
 
             {ok, Monitor} =
                 leveled_monitor:monitor_start(
@@ -1422,7 +1430,8 @@ init([Opts]) ->
             PencillerOpts0 =
                 PencillerOpts#penciller_options{sst_options = SSTOpts0},
 
-            {Inker, Penciller} = startup(InkerOpts, PencillerOpts0),
+            {Inker, Penciller} =
+                startup(InkerOpts, PencillerOpts0, LedgerValueVersion),
 
             NewETS = ets:new(mem, [ordered_set]),
             ?STD_LOG(b0001, [Inker, Penciller]),
@@ -1434,6 +1443,7 @@ init([Opts]) ->
                 head_lookup = HeadLookup,
                 inker = Inker,
                 penciller = Penciller,
+                ledger_value_version = LedgerValueVersion,
                 ledger_cache = #ledger_cache{mem = NewETS},
                 monitor = {Monitor, StatLogFrequency}
             }};
@@ -1476,7 +1486,13 @@ handle_call(
     {T0, SW1} = leveled_monitor:step_time(SW0),
     Changes =
         preparefor_ledgercache(
-            null, LedgerKey, SQN, Object, ObjSize, {IndexSpecs, TTL}
+            null,
+            LedgerKey,
+            SQN,
+            Object,
+            ObjSize,
+            {IndexSpecs, TTL},
+            State#state.ledger_value_version
         ),
     {T1, SW2} = leveled_monitor:step_time(SW1),
     Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
@@ -1515,7 +1531,8 @@ handle_call({mput, ObjectSpecs, TTL}, From, State) when
             SQN,
             null,
             length(ObjectSpecs),
-            {ObjectSpecs, TTL}
+            {ObjectSpecs, TTL},
+            State#state.ledger_value_version
         ),
     Cache0 = addto_ledgercache(Changes, State#state.ledger_cache),
     case State#state.slow_offer of
@@ -1554,8 +1571,8 @@ handle_call({get, Bucket, Key, Tag}, _From, State) when
             not_present ->
                 not_found;
             Head ->
-                {Seqn, Status, _MH, _MD} =
-                    leveled_codec:striphead_to_v1details(Head),
+                {Status, Seqn} =
+                    leveled_codec:ledgermd_statussqn(Head),
                 case Status of
                     tomb ->
                         not_found;
@@ -1612,10 +1629,10 @@ handle_call({head, Bucket, Key, Tag, SQNOnly}, _From, State) when
             not_present ->
                 {not_found, null, JrnalCheckFreq};
             Head ->
-                case leveled_codec:striphead_to_v1details(Head) of
-                    {_SeqN, tomb, _MH, _MD} ->
+                case leveled_codec:ledgermd_statussqnumd(Head) of
+                    {tomb, _Seqn, _MD} ->
                         {not_found, null, JrnalCheckFreq};
-                    {SeqN, {active, TS}, _MH, MD} ->
+                    {{active, TS}, SeqN, MD} ->
                         case TS >= leveled_util:integer_now() of
                             true ->
                                 I = State#state.inker,
@@ -1843,13 +1860,14 @@ empty_ledgercache() ->
     pid(),
     list(load_item()),
     ledger_cache(),
-    leveled_codec:compaction_strategy()
+    leveled_codec:compaction_strategy(),
+    leveled_codec:ledger_value_version()
 ) ->
     ledger_cache().
 %% @doc
 %% The push to penciller must start as a tree to correctly de-duplicate
 %% the list by order before becoming a de-duplicated list for loading
-push_to_penciller(Penciller, LoadItemList, LedgerCache, ReloadStrategy) ->
+push_to_penciller(Penciller, LoadItemList, LedgerCache, ReloadStrategy, VV) ->
     UpdLedgerCache =
         lists:foldl(
             fun({InkTag, PK, SQN, Obj, IndexSpecs, ValSize}, AccLC) ->
@@ -1864,11 +1882,18 @@ push_to_penciller(Penciller, LoadItemList, LedgerCache, ReloadStrategy) ->
                                 ValSize,
                                 IndexSpecs,
                                 AccLC,
-                                Penciller
+                                Penciller,
+                                VV
                             );
                         _ ->
                             preparefor_ledgercache(
-                                InkTag, PK, SQN, Obj, ValSize, IndexSpecs
+                                InkTag,
+                                PK,
+                                SQN,
+                                Obj,
+                                ValSize,
+                                IndexSpecs,
+                                VV
                             )
                     end,
                 addto_ledgercache(Chngs, AccLC, loader)
@@ -2004,13 +2029,18 @@ fetch_value(Inker, {Key, SQN}) ->
 %%% Internal functions
 %%%============================================================================
 
--spec startup(#inker_options{}, #penciller_options{}) -> {pid(), pid()}.
+-spec startup(
+    #inker_options{},
+    #penciller_options{},
+    leveled_codec:ledger_value_version()
+) ->
+    {pid(), pid()}.
 %% @doc
 %% Startup the Inker and the Penciller, and prompt the loading of the Penciller
 %% from the Inker.  The Penciller may be shutdown without the latest data
 %% having been persisted: and so the Iker must be able to update the Penciller
 %% on startup with anything that happened but wasn't flushed to disk.
-startup(InkerOpts, PencillerOpts) ->
+startup(InkerOpts, PencillerOpts, VV) ->
     {ok, Inker} = leveled_inker:ink_start(InkerOpts),
     {ok, Penciller} = leveled_penciller:pcl_start(PencillerOpts),
     LedgerSQN = leveled_penciller:pcl_getstartupsequencenumber(Penciller),
@@ -2020,7 +2050,7 @@ startup(InkerOpts, PencillerOpts) ->
     BatchFun =
         fun(BatchAcc, Acc) ->
             push_to_penciller(
-                Penciller, BatchAcc, Acc, ReloadStrategy
+                Penciller, BatchAcc, Acc, ReloadStrategy, VV
             )
         end,
     InitAccFun =
@@ -2633,7 +2663,7 @@ scan_table(Table, StartKey, EndKey) ->
         [] ->
             scan_table(Table, StartKey, EndKey, [], infinity, 0);
         [{StartKey, StartVal}] ->
-            SQN = leveled_codec:strip_to_seqonly({StartKey, StartVal}),
+            SQN = leveled_codec:ledgermd_sqn(StartVal),
             scan_table(
                 Table,
                 StartKey,
@@ -2654,7 +2684,7 @@ scan_table(Table, StartKey, EndKey, Acc, MinSQN, MaxSQN) ->
                     {lists:reverse(Acc), MinSQN, MaxSQN};
                 false ->
                     [{NextKey, NextVal}] = ets:lookup(Table, NextKey),
-                    SQN = leveled_codec:strip_to_seqonly({NextKey, NextVal}),
+                    SQN = leveled_codec:ledgermd_sqn(NextVal),
                     scan_table(
                         Table,
                         NextKey,
@@ -2735,7 +2765,8 @@ check_notfound(CheckFrequency, CheckFun) ->
     non_neg_integer(),
     any(),
     integer(),
-    leveled_codec:journal_keychanges()
+    leveled_codec:journal_keychanges(),
+    leveled_codec:ledger_value_version()
 ) ->
     {
         leveled_codec:segment_hash(),
@@ -2745,28 +2776,28 @@ check_notfound(CheckFrequency, CheckFun) ->
 %% @doc
 %% Prepare an object and its related key changes for addition to the Ledger
 %% via the Ledger Cache.
-preparefor_ledgercache(?INKT_MPUT, ?DUMMY, SQN, _O, _S, {ObjSpecs, TTL}) ->
-    ObjChanges = leveled_codec:obj_objectspecs(ObjSpecs, SQN, TTL),
+preparefor_ledgercache(?INKT_MPUT, ?DUMMY, SQN, _O, _S, {ObjSpecs, TTL}, VV) ->
+    ObjChanges = leveled_codec:obj_objectspecs(ObjSpecs, SQN, TTL, VV),
     {no_lookup, SQN, ObjChanges};
 preparefor_ledgercache(
-    ?INKT_KEYD, LedgerKey, SQN, _Obj, _Size, {IdxSpecs, TTL}
+    ?INKT_KEYD, LedgerKey, SQN, _Obj, _Size, {IdxSpecs, TTL}, VV
 ) when
     LedgerKey =/= ?DUMMY
 ->
     {Bucket, Key} = leveled_codec:from_ledgerkey(LedgerKey),
     KeyChanges =
-        leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL),
+        leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL, VV),
     {no_lookup, SQN, KeyChanges};
 preparefor_ledgercache(
-    _InkTag, LedgerKey, SQN, Obj, Size, {IdxSpecs, TTL}
+    _InkTag, LedgerKey, SQN, Obj, Size, {IdxSpecs, TTL}, VV
 ) when
     LedgerKey =/= ?DUMMY
 ->
     {Bucket, Key, MetaValue, {KeyH, _ObjH}, _LastMods} =
-        leveled_codec:generate_ledgerkv(LedgerKey, SQN, Obj, Size, TTL),
+        leveled_codec:generate_ledgerkv(LedgerKey, SQN, Obj, Size, TTL, VV),
     KeyChanges =
         [{LedgerKey, MetaValue}] ++
-            leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL),
+            leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL, VV),
     {KeyH, SQN, KeyChanges}.
 
 -spec recalcfor_ledgercache(
@@ -2777,7 +2808,8 @@ preparefor_ledgercache(
     integer(),
     leveled_codec:journal_keychanges(),
     ledger_cache(),
-    pid()
+    pid(),
+    leveled_codec:ledger_value_version()
 ) ->
     {
         leveled_codec:segment_hash(),
@@ -2791,18 +2823,18 @@ preparefor_ledgercache(
 %% journal entry (i.e. KeyDeltas which may be a result of previously running
 %% with a retain strategy should be ignored).
 recalcfor_ledgercache(
-    InkTag, _LedgerKey, SQN, _Obj, _Size, {_IdxSpecs, _TTL}, _LC, _Pcl
+    InkTag, _LedgerKey, SQN, _Obj, _Size, {_IdxSpecs, _TTL}, _LC, _Pcl, _VV
 ) when
     InkTag == ?INKT_MPUT; InkTag == ?INKT_KEYD
 ->
     {no_lookup, SQN, []};
 recalcfor_ledgercache(
-    _InkTag, LK, SQN, Obj, Size, {_Ignore, TTL}, LedgerCache, Penciller
+    _InkTag, LK, SQN, Obj, Size, {_Ignore, TTL}, LedgerCache, Penciller, VV
 ) when
     LK =/= ?DUMMY
 ->
     {Bucket, Key, MetaValue, {KeyH, _ObjH}, _LastMods} =
-        leveled_codec:generate_ledgerkv(LK, SQN, Obj, Size, TTL),
+        leveled_codec:generate_ledgerkv(LK, SQN, Obj, Size, TTL, VV),
     OldObject =
         case check_in_ledgercache(LK, KeyH, LedgerCache, loader) of
             false ->
@@ -2815,21 +2847,21 @@ recalcfor_ledgercache(
             not_present ->
                 not_present;
             {LK, LV} ->
-                case leveled_codec:get_metadata(LV) of
-                    MDO when is_tuple(MDO) ->
+                case leveled_codec:ledgermd_sqnumd(LV) of
+                    {_OSQN, MDO} when is_tuple(MDO) ->
                         MDO
                 end
         end,
     UpdMetadata =
-        case leveled_codec:get_metadata(MetaValue) of
-            MDU when is_tuple(MDU) ->
+        case leveled_codec:ledgermd_sqnumd(MetaValue) of
+            {_USQN, MDU} when is_tuple(MDU) ->
                 MDU
         end,
     IdxSpecs =
         leveled_head:diff_indexspecs(element(1, LK), UpdMetadata, OldMetadata),
     {KeyH, SQN,
         [{LK, MetaValue}] ++
-            leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL)}.
+            leveled_codec:idx_indexspecs(IdxSpecs, Bucket, Key, SQN, TTL, VV)}.
 
 -spec addto_ledgercache(
     {

@@ -783,7 +783,7 @@ v1_block_tester(Lookup, BlockMethod, BlockSize, SibMetaBin, B) ->
                     null},
             LKV =
                 leveled_codec:generate_ledgerkv(
-                    LK, X, V, byte_size(V), infinity
+                    LK, X, V, byte_size(V), infinity, 2
                 ),
             {_Bucket, _Key, MetaValue, _Hashes, _LastMods} = LKV,
             {LK, MetaValue}
